@@ -614,3 +614,192 @@ fn parse_error_unclosed_paren_neg() {
         out.stdout
     );
 }
+
+// =============================================================================
+// Harvested from tests/legacy/repl_negative_old.rs (FIXME 0124) — S82 Wave 2.
+//
+// The classification helpers + display-format assertions in the legacy file
+// inspected Rust-internal state (`format_result`, `session.shared.symbol_tables`).
+// The genuinely-uncovered NEGATIVE assertions are re-expressed here as e2e
+// REPL captures against the live binary's `/list` + definition-display surface.
+// Items already covered in the active suite (defn-display normalization,
+// module-scoping refusal, enum-constructor classification) are NOT re-ported —
+// see tests/plan/s82-harvest-repl_negative_old.md for the per-test disposition.
+// =============================================================================
+
+// spec: repl/spec.md §3.3 (neg) — no symbol appears in two /list categories.
+// A defn classifies under Fns ONLY; a deftype name under Types ONLY. The two
+// must be disjoint: 'foo' must not leak into the Types section, 'Color' must
+// not leak into the Fns section.
+// (carry: legacy/repl_negative_old.rs::list_neg_no_item_in_two_categories)
+#[test]
+fn list_neg_no_item_in_two_categories() {
+    let out = repl_prims("(defn foo [x] x)
+(deftype Color Red Green Blue)
+/list
+");
+    let stdout = out.stdout.clone();
+    // Isolate the Types section (from "Types:" up to the next category header).
+    let types_section = stdout
+        .find("Types:")
+        .map(|i| {
+            let rest = &stdout[i..];
+            let end = rest[1..].find("Fns:").map(|j| j + 1).unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .unwrap_or("");
+    assert!(
+        !types_section.contains("foo"),
+        "function 'foo' MUST NOT appear in the Types section of /list; got:\n{}",
+        stdout
+    );
+    // Isolate the Fns section (from "Fns:" to end).
+    let fns_section = stdout.find("Fns:").map(|i| &stdout[i..]).unwrap_or("");
+    assert!(
+        !fns_section.contains("Color"),
+        "type 'Color' MUST NOT appear in the Fns section of /list; got:\n{}",
+        stdout
+    );
+}
+
+// spec: repl/spec.md §1.4 (neg) — type names in a definition display MUST be
+// fully qualified; a bare unqualified `Int` MUST NOT appear in type position.
+// (carry: legacy/repl_negative_old.rs::display_neg_type_always_qualified
+//        + display_neg_defn_monomorphic_fully_qualified)
+#[test]
+fn display_neg_type_always_qualified() {
+    let out = repl_prims("(import [primitives [mul-i64]])
+(defn double [x] (mul-i64 x 2))
+");
+    // Positive: the qualified form appears.
+    assert!(
+        out.stdout.contains("primitives/Int"),
+        "defn display MUST use qualified 'primitives/Int'; got:\n{}",
+        out.stdout
+    );
+    // Negative: with every qualified occurrence stripped, no bare 'Int' remains.
+    let stripped = out.stdout.replace("primitives/Int", "");
+    assert!(
+        !stripped.contains("Int"),
+        "defn display MUST NOT contain a bare unqualified 'Int'; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.4 (neg) — defn returning Bool shows BOTH param and
+// return types fully qualified (`primitives/Int`, `primitives/Bool`).
+// (carry: legacy/repl_negative_old.rs::display_neg_defn_bool_return_fully_qualified)
+#[test]
+fn display_neg_defn_bool_return_fully_qualified() {
+    let out = repl_prims("(import [primitives [gt-i64]])
+(defn is-pos [x] (gt-i64 x 0))
+");
+    out.assert_stdout_contains("primitives/Bool")
+        .assert_stdout_contains("primitives/Int");
+}
+
+// spec: repl/spec.md §1.4 (neg) — a multi-parameter polymorphic defn normalizes
+// ALL type variables to consecutive letters; no internal `tN` names leak.
+// (carry: legacy/repl_negative_old.rs::display_neg_type_vars_normalized_multi_param)
+#[test]
+fn display_neg_type_vars_normalized_multi_param() {
+    let out = repl("(defn konst [x y] x)\n");
+    let stdout = out.stdout.clone();
+    for i in 0..20 {
+        assert!(
+            !stdout.contains(&format!("t{i}")),
+            "multi-param poly defn MUST NOT show internal var 't{i}'; got:\n{}",
+            stdout
+        );
+    }
+    // Positive: the normalized scheme is present (two distinct letters).
+    assert!(
+        stdout.contains("user/konst"),
+        "defn display should name 'user/konst'; got:\n{}",
+        stdout
+    );
+}
+
+// spec: repl/spec.md §1.4 (neg) — a polymorphic function returning an ADT MUST
+// NOT show raw type-variable ids (`tN`) in its display.
+// (carry: legacy/repl_negative_old.rs::display_neg_polymorphic_adt_return_no_raw_vars)
+#[test]
+fn display_neg_polymorphic_adt_return_no_raw_vars() {
+    let out = repl("(deftype (Option a) None (Some [:a val]))
+(defn wrap [x] (Some x))
+");
+    let stdout = out.stdout.clone();
+    for i in 0..30 {
+        assert!(
+            !stdout.contains(&format!("t{i}")),
+            "polymorphic ADT-return defn MUST NOT show raw var 't{i}'; got:\n{}",
+            stdout
+        );
+    }
+}
+
+// spec: repl/spec.md §1.3 (neg) — an enum `deftype` display shows the type name,
+// NOT a function-like `(Fn ...)` type. (A product-type ctor legitimately shows a
+// constructor `(Fn ...)` per S79 dual-facet — only the enum case is asserted
+// here; the legacy product-type Fn-absence assertion is superseded by design.)
+// (carry: legacy/repl_negative_old.rs::display_neg_deftype_not_function
+//        + display_neg_deftype_with_fields_not_function [positive part only])
+#[test]
+fn display_neg_deftype_enum_not_function() {
+    let out = repl("(deftype Color Red Green Blue)\n");
+    out.assert_stdout_contains(":user/Color ; deftype")
+        .assert_stdout_does_not_contain("(Fn")
+        .assert_stdout_does_not_contain("closure");
+}
+
+// spec: repl/spec.md §1.3 — a product `deftype` display names the qualified type.
+// (carry: legacy/repl_negative_old.rs::display_neg_deftype_with_fields_not_function)
+#[test]
+fn display_deftype_with_fields_qualified_name() {
+    // `repl_prims` brings primitive type names (`Int`) into scope so the
+    // product-type field annotations resolve.
+    repl_prims("(deftype Point [:Int x :Int y])\n")
+        .assert_stdout_contains("user/Point");
+}
+
+// spec: repl/spec.md §5.1 (neg) — using a type name as a function MUST error,
+// and the error MUST NOT corrupt the session (the next expression succeeds).
+// (carry: legacy/repl_negative_old.rs::module_neg_type_name_not_callable)
+#[test]
+fn module_neg_type_name_not_callable() {
+    let out = repl_prims("(Int 42)
+42
+");
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error"),
+        "calling a type name 'Int' as a function MUST error; got:\nstdout={}\nstderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // Session survives: the following bare integer still evaluates.
+    out.assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: repl/spec.md §3.3 (neg) — a parameterized data constructor (`Some`,
+// taking a field) MUST NOT appear under the Fns category of /list, even though
+// it is function-like in application position.
+// (carry: legacy/repl_negative_old.rs::list_neg_data_constructor_not_in_functions)
+#[test]
+fn list_neg_data_constructor_not_in_fns() {
+    let out = repl("(deftype (Option a) None (Some [:a val]))
+/list
+");
+    let stdout = out.stdout.clone();
+    if let Some(fns_pos) = stdout.find("Fns:") {
+        let after_fns = &stdout[fns_pos..];
+        for ctor in ["None", "Some"] {
+            assert!(
+                !after_fns.contains(ctor),
+                "/list Fns: section MUST NOT contain data constructor '{ctor}'; got:\n{}",
+                stdout
+            );
+        }
+    }
+    // (If there's no Fns section at all, the intent — ctors are not Fns — holds.)
+}

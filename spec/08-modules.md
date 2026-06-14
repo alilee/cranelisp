@@ -15,7 +15,7 @@ Each `.cl` source file defines exactly one module. The module's identity is deri
 
 The entry file (the file passed to the compiler or REPL) defines the **root module**. In batch mode, this is the file containing `main`.
 
-Module identity is determined solely by the file's path relative to the project root. A `(mod name)` declaration does **not** rename the loaded module — it triggers loading of whatever file is found at the resolved path, and that file's module identity is the path of the file itself. If `main.cl` contains `(mod util)` and the search (Section 8.2.5) finds `util.cl` at the project root, the loaded module is named `util` (not `main.util`). If instead `main/util.cl` is found, the loaded module is named `main.util`.
+Module identity is determined solely by the file's path relative to the project root. A `(mod name)` declaration does **not** rename the loaded module — it triggers loading of the file at the resolved nested path, and that file's module identity is the path of the file itself. If `main.cl` contains `(mod util)`, the search (Section 8.2.5) resolves to the nested child `main/util.cl`, so the loaded module is named `main.util` — never a sibling `util.cl` at the project root (that file, if present, is the independent peer module `util`, reachable only via `import`, not `mod`).
 
 ```
 project/
@@ -91,22 +91,32 @@ Sibling files (e.g., `handler.cl` in the same directory as `app.cl`) are NOT con
 
 **Example -- multi-module project:**
 
+The entry file `main.cl` declares two submodules. Per §8.2.5, each `(mod name)` resolves to the nested child path `{stem}/{name}.cl` — so `main.cl`'s `(mod util)` loads `main/util.cl` (module `main.util`) and `(mod math)` loads `main/math.cl` (module `main.math`). The submodules live in the `main/` directory beside the entry file, NOT as siblings of `main.cl`:
+
+```
+project/
+  main.cl             ; root module (entry point)
+  main/
+    util.cl           ; module "main.util"
+    math.cl           ; module "main.math"
+```
+
 ```clojure
 ;; main.cl (entry point)
 (mod util)
 (mod math)
 
 (defn main []
-  (print (show (util/helper 42))))
+  (print (show (main.util/helper 42))))
 ```
 
 ```clojure
-;; util.cl
+;; main/util.cl  -> module "main.util"
 (defn helper [:Int x] :Int (+ x 1))
 ```
 
 ```clojure
-;; math.cl
+;; main/math.cl  -> module "main.math"
 (defn double [:Int x] :Int (* x 2))
 ```
 
@@ -260,8 +270,8 @@ A module MAY contain multiple `import` forms. Their effects accumulate: names im
 
 ```clojure
 ;; main.cl
-(mod types)
-(import [types [Point make-point x y]])
+(mod types)                                    ; resolves to main/types.cl (module main.types)
+(import [main.types [Point make-point x y]])
 
 (defn main []
   (let [p (make-point 3 4)]
@@ -269,7 +279,7 @@ A module MAY contain multiple `import` forms. Their effects accumulate: names im
 ```
 
 ```clojure
-;; types.cl
+;; main/types.cl  -> module "main.types"
 (deftype Point [:Int x :Int y])
 (defn make-point [:Int x :Int y] :Point (Point x y))
 ```
@@ -706,17 +716,17 @@ A private name:
 **Example:**
 
 ```clojure
-;; util.cl
+;; main/util.cl  -> module "main.util" (nested child of main.cl, per §8.2.5)
 (defn helper [:Int x] :Int (+ x 1))         ; public
 (defn- internal [:Int x] :Int (* x x))       ; private
 
 ;; main.cl
-(mod util)
-(import [util [helper]])   ; ok
-(import [util [internal]]) ; error: 'internal' is not public in 'util'
+(mod util)                      ; resolves to main/util.cl (module main.util)
+(import [main.util [helper]])   ; ok
+(import [main.util [internal]]) ; error: 'internal' is not public in 'main.util'
 
-(util/helper 42)           ; ok
-(util/internal 42)         ; error: 'internal' is private
+(main.util/helper 42)           ; ok
+(main.util/internal 42)         ; error: 'internal' is private
 ```
 
 ## 8.8 Prelude [Tested tests/stdlib::prelude_loads_without_errors, tests/modules::prelude_like_reexport_compiles]
@@ -968,17 +978,20 @@ Typing a module name at the REPL SHOULD display information about that module: i
 
 The following example demonstrates the full module system in a project with multiple files, imports, exports, visibility, and qualified access.
 
+Per §8.2.5, every `(mod name)` resolves to the nested child path `{stem}/{name}.cl`. So `main.cl`'s `(mod shapes)` loads `main/shapes.cl` (module `main.shapes`), and that file's `(mod display)` in turn loads `main/shapes/display.cl` (module `main.shapes.display`). Submodules are always nested under their declaring file's directory — never siblings:
+
 ```
 project/
-  main.cl
-  shapes.cl
-  shapes/
-    display.cl
+  main.cl                   ; root module (entry point)
+  main/
+    shapes.cl               ; module "main.shapes"
+    shapes/
+      display.cl            ; module "main.shapes.display"
 ```
 
 ```clojure
-;; shapes.cl
-(mod display)
+;; main/shapes.cl  -> module "main.shapes"
+(mod display)               ; resolves to main/shapes/display.cl
 
 (deftype Shape
   (Circle [:Float radius])
@@ -994,7 +1007,7 @@ project/
 ```
 
 ```clojure
-;; shapes/display.cl
+;; main/shapes/display.cl  -> module "main.shapes.display"
 (import [primitives [*]])
 
 (impl Display Shape
@@ -1007,15 +1020,15 @@ project/
 
 ```clojure
 ;; main.cl
-(mod shapes)
+(mod shapes)               ; resolves to main/shapes.cl (module main.shapes)
 (platform stdio)
-(import [shapes   [circle rect Shape Circle Rect]
-         platform.stdio [*]])
+(import [main.shapes     [circle rect Shape Circle Rect]
+         platform.stdio  [*]])
 
 (defn main []
   (do
-    (print (show (circle 2.5)))         ; uses imported 'circle' and 'show'
-    (print (show (rect 3.0 4.0)))       ; uses imported 'rect'
-    (print (show (shapes/circle 1.0)))  ; qualified access also works
+    (print (show (circle 2.5)))              ; uses imported 'circle' and 'show'
+    (print (show (rect 3.0 4.0)))            ; uses imported 'rect'
+    (print (show (main.shapes/circle 1.0)))  ; qualified access also works
     ))
 ```

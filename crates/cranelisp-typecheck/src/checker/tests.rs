@@ -1,14 +1,59 @@
     use super::*;
+    use crate::builtins::FixtureBuilder;
     use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath,
         Span, Symbol, Visibility,
     };
+
+    /// Empty fixture (FIXME 0243 narrowing). The module-locality / resolution /
+    /// prelude-fallback tests in this file build their OWN modules and seed
+    /// exactly the entries they need (via `seed_value` / direct inserts); the
+    /// startup-negative tests assert the heavy world is NOT present. Neither
+    /// consults the `full()` seeded primitives/macros/IO, so an empty builder
+    /// is both minimal and the most honest starting position.
+    fn tf() -> TestFixture {
+        TestFixture::with_content(FixtureBuilder::new())
+    }
+
+    /// Fixture seeding the `IO` ADT in `primitives` (FIXME 0243 narrowing). The
+    /// internal-constructor-gate tests publicly re-export `Bind` from
+    /// `primitives` and chain-follow to read its `internal: true` discriminator,
+    /// so the `primitives` `Bind` Constructor Def must actually exist —
+    /// `with_io()` seeds it (and requires `with_builtin_type_names()` first,
+    /// bootstrap order). Nothing heavier is consulted.
+    fn tf_io() -> TestFixture {
+        TestFixture::with_content(
+            FixtureBuilder::new().with_builtin_type_names().with_io(),
+        )
+    }
+
+    /// Fixture seeding builtin type names + the Ring 0/1/3 primitive `Def`s
+    /// (FIXME 0243 narrowing). The trait-impl-resolution / dispatch-fallback
+    /// tests glob-import `primitives` into a module and reference `add-i64` /
+    /// `Int` in impl bodies, so both the builtin type name `Int` and the
+    /// `add-i64` `Def` must exist in the `primitives` module.
+    fn tf_prims() -> TestFixture {
+        TestFixture::with_content(
+            FixtureBuilder::new().with_builtin_type_names().with_primitives(),
+        )
+    }
+
+    /// Fixture seeding the synthetic `macros` module (Sexp/SList ADTs +
+    /// sconcat) — FIXME 0243 narrowing. The qualified-sum-ctor-resolution test
+    /// resolves `macros/SCons`, so the `macros` module must be present;
+    /// `with_macros_sexp()` requires `with_builtin_type_names()` first
+    /// (bootstrap order — Sexp/SList fields reference builtin scalars).
+    fn tf_macros() -> TestFixture {
+        TestFixture::with_content(
+            FixtureBuilder::new().with_builtin_type_names().with_macros_sexp(),
+        )
+    }
 
     // --- Module-scoped type environments ---
 
     // spec: 08-modules §8.13 — default REPL module is "user"
     #[test]
     fn test_default_module_is_user() {
-        let tf = TestFixture::new();
+        let tf = tf();
         assert_eq!(tf.state.current_module.as_ref(), "user");
     }
 
@@ -17,6 +62,11 @@
     // are empty after ensure_module_exists.
     #[test]
     fn test_bare_module_has_root_contents_only() {
+        // This test VALIDATES the fully-seeded world: special forms at root
+        // `""`, primitives + builtin type names in `primitives`, IO, and the
+        // `macros` module — while asserting NONE of them leak into a bare
+        // module. It must keep `full()` (FIXME 0243: explicitly NOT narrowed —
+        // narrowing would defeat the test's purpose).
         let mut tf = TestFixture::new();
         tf.set_current_module(ModuleFullPath::from("bare"));
 
@@ -70,7 +120,7 @@
     // root `""` (Principle 17 amendment, FIXME 0193).
     #[test]
     fn test_set_current_module_creates_new() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         tf.set_current_module(ModuleFullPath::from("math"));
         assert_eq!(tf.state.current_module.as_ref(), "math");
         assert!(tf.symbol_table().get("if").is_none(), "special forms at root \"\", not seeded");
@@ -83,7 +133,7 @@
     // Per FIXME 0193 amendment: `user` has no special status.
     #[test]
     fn test_switch_back_to_user_preserves_builtins() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         tf.set_current_module(ModuleFullPath::from("other"));
         tf.set_current_module(ModuleFullPath::from("user"));
         assert!(tf.symbol_table().get("if").is_none(), "user not architecturally privileged");
@@ -93,7 +143,7 @@
     // spec: 08-modules §8.6 — modules have independent symbol tables
     #[test]
     fn test_modules_are_independent() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // Define something in user
         tf.symbol_table_mut().insert(
             Symbol::from("user-only"),
@@ -176,7 +226,7 @@
     // spec: 08-modules §8.5 — qualified name resolves public symbol in target module
     #[test]
     fn test_resolve_qualified_public() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
         tf.set_current_module(ModuleFullPath::from("user"));
 
@@ -187,7 +237,7 @@
     // spec: 08-modules §8.7 — private symbol access denied from outside module
     #[test]
     fn test_resolve_qualified_private_denied() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_module(&mut tf, "math", vec![("internal", Visibility::Private)]);
         tf.set_current_module(ModuleFullPath::from("user"));
 
@@ -199,7 +249,7 @@
     // spec: 08-modules §8.7 — private symbol accessible from child module in subtree
     #[test]
     fn test_resolve_qualified_private_allowed_in_subtree() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_module(&mut tf, "math", vec![("internal", Visibility::Private)]);
         tf.set_current_module(ModuleFullPath::from("math.test"));
 
@@ -210,7 +260,7 @@
     // spec: 08-modules §8.6 — qualified lookup returns None for nonexistent symbol
     #[test]
     fn test_resolve_qualified_not_found() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
         tf.set_current_module(ModuleFullPath::from("user"));
 
@@ -221,7 +271,7 @@
     // spec: 08-modules §8.6 — qualified lookup on unknown module returns None
     #[test]
     fn test_resolve_qualified_unknown_module() {
-        let tf = TestFixture::new();
+        let tf = tf();
         let result = tf.resolve_qualified(&ModuleFullPath::from("unknown"), "foo").unwrap();
         assert!(result.is_none());
     }
@@ -256,7 +306,7 @@
     // spec: 08-modules §8.3 — qualified resolution follows module alias
     #[test]
     fn test_resolve_qualified_uses_alias() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_module(&mut tf, "core.option", vec![("Some", Visibility::Public)]);
         tf.set_current_module(ModuleFullPath::from("main"));
 
@@ -279,7 +329,7 @@
     // spec: 08-modules §8.5 — direct qualified path works without alias
     #[test]
     fn test_resolve_qualified_without_alias_unchanged() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_module(&mut tf, "math", vec![("add", Visibility::Public)]);
         tf.set_current_module(ModuleFullPath::from("main"));
 
@@ -293,7 +343,7 @@
     // FIXME 0193). Special forms at root `""`, not seeded.
     #[test]
     fn test_new_module_does_not_have_primitives() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         tf.set_current_module(ModuleFullPath::from("mymod"));
         assert!(tf.symbol_table().get("add-i64").is_none(), "add-i64 needs import");
         assert!(tf.symbol_table().get("bind").is_none(), "bind needs import");
@@ -306,7 +356,7 @@
     // spec: pipeline-v3.md §3.4.3 — AtomicU32 TypeId allocation is monotonic
     #[test]
     fn test_fresh_var_ids_are_monotonic() {
-        let tf = TestFixture::new();
+        let tf = tf();
         let env = tf.env();
         let (_, id1) = env.fresh_var_id();
         let (_, id2) = env.fresh_var_id();
@@ -318,7 +368,7 @@
     // spec: pipeline-v3.md §3.4.3 — fresh_var returns unique Var types
     #[test]
     fn test_fresh_var_returns_unique_vars() {
-        let tf = TestFixture::new();
+        let tf = tf();
         let env = tf.env();
         let v1 = env.fresh_var();
         let v2 = env.fresh_var();
@@ -346,7 +396,7 @@
     // an empty `SymbolTable`. Special forms live at root `""` only.
     #[test]
     fn ensure_module_exists_creates_empty_table() {
-        let tf = TestFixture::new();
+        let tf = tf();
         let path = ModuleFullPath::from("fresh-mod-a");
         assert!(
             tf.modules.get(&path).is_none(),
@@ -375,7 +425,7 @@
         // `modules[helper]` with a real symbol; a concurrent
         // `ensure_module_exists(helper)` on the REPL thread must NOT
         // overwrite the table.
-        let tf = TestFixture::new();
+        let tf = tf();
         let path = ModuleFullPath::from("fresh-mod-b");
 
         // Pre-seed with a user-visible symbol (emulating what the
@@ -458,7 +508,9 @@
         CREATED.store(0, AOrd::Relaxed);
         ALREADY_PRESENT.store(0, AOrd::Relaxed);
 
-        let tf = Arc::new(TestFixture::new());
+        // Concurrency test over `ensure_module_exists` only — needs no seeded
+        // world (FIXME 0243 narrowing).
+        let tf = Arc::new(tf());
         let path = ModuleFullPath::from(CONCURRENT_PATH);
         assert!(tf.modules.get(&path).is_none());
 
@@ -586,7 +638,7 @@
     // absent from M's.
     #[test]
     fn test_trait_impl_write_lands_in_trait_home_not_writer() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf_prims();
 
         // Need primitives imported into M so the impl body (`add-i64`) and
         // the bare type name `Int` are resolvable.
@@ -679,7 +731,7 @@
     // the decoys MUST be ignored.
     #[test]
     fn test_impl_resolution_chain_follows_not_universe_scans() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf_prims();
 
         let l = ModuleFullPath::from("chain_l");
         let m = ModuleFullPath::from("chain_m");
@@ -809,7 +861,7 @@
     // name-key.
     #[test]
     fn test_trait_method_dispatch_falls_back_to_prelude_outer_scope() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf_prims();
 
         let prelude = ModuleFullPath::from("prelude");
         let user = ModuleFullPath::from("user");
@@ -886,7 +938,7 @@
     // in N, the same lookup chain-follows the per-symbol Import edge to M.
     #[test]
     fn test_short_name_lookup_is_current_module_only() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
 
         let m = ModuleFullPath::from("home_m");
         let n = ModuleFullPath::from("consumer_n");
@@ -967,7 +1019,7 @@
     #[test]
     fn test_instantiate_no_self_map_when_counter_collides() {
         use std::collections::HashMap;
-        let tf = TestFixture::new();
+        let tf = tf();
         // Force the counter to collide with the scheme's bound var id (1).
         tf.set_next_id(1);
 
@@ -1023,7 +1075,7 @@
     // resolves against the `prelude` module's table (value/scheme path).
     #[test]
     fn prelude_fallback_resolves_bare_value_when_bit_on() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // prelude defines `map`; M does not.
         seed_value(&mut tf, "prelude", "map");
         let m = ModuleFullPath::from("app");
@@ -1043,7 +1095,7 @@
     // does NOT see prelude names by bare reference.
     #[test]
     fn prelude_fallback_absent_when_bit_off() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_value(&mut tf, "prelude", "map");
         let m = ModuleFullPath::from("app_off");
         tf.set_current_module(m.clone());
@@ -1061,7 +1113,7 @@
     // implicit prelude (inner scope consulted before the outer fallback).
     #[test]
     fn prelude_fallback_inner_definition_shadows_prelude() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // Both prelude and M define `map`; M's own def must win (inner first).
         seed_value(&mut tf, "prelude", "map");
         let m = ModuleFullPath::from("app_shadow");
@@ -1088,7 +1140,7 @@
     // prelude, then chain-follows the re-export to the canonical entry.
     #[test]
     fn prelude_fallback_chain_follows_reexport_to_primitive() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // `prims` defines the canonical `add-i64`.
         seed_value(&mut tf, "prims", "add-i64");
         // prelude re-exports it (an Import edge, like `(export [prims [*]])`).
@@ -1134,7 +1186,7 @@
     // symbol does not get rescued by prelude.
     #[test]
     fn prelude_fallback_qualified_never_falls_back() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // prelude defines `helper`; module `other` does NOT.
         seed_value(&mut tf, "prelude", "helper");
         seed_module(&mut tf, "other", vec![("something_else", Visibility::Public)]);
@@ -1156,7 +1208,7 @@
     // with the bit (hypothetically) ON does not loop.
     #[test]
     fn prelude_module_does_not_fall_back_onto_itself() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         tf.set_current_module(ModuleFullPath::from("prelude"));
         // Even with the bit ON for prelude (which int never sets), a bare miss
         // must not recurse onto prelude again.
@@ -1173,7 +1225,7 @@
     #[test]
     fn prelude_fallback_resolves_bare_type_via_resolve_family() {
         use cranelisp_types::TypeName;
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // prelude defines a nullary ADT `Maybe`.
         tf.set_current_module(ModuleFullPath::from("prelude"));
         tf.register_type_def_self(
@@ -1239,7 +1291,7 @@
     // (`lookup`) AND entry path (`resolve_entry_in_current_module`) both miss.
     #[test]
     fn prelude_private_def_not_bare_reachable_value_path() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // prelude has a PRIVATE helper `secret` (top-level defns default Private).
         seed_value_vis(&mut tf, "prelude", "secret", Visibility::Private);
         let m = ModuleFullPath::from("app_priv");
@@ -1264,7 +1316,7 @@
     // the USER's binding (inner scope), never the private prelude one.
     #[test]
     fn prelude_private_def_does_not_shadow_user_binding() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_value_vis(&mut tf, "prelude", "helper", Visibility::Private);
         let m = ModuleFullPath::from("app_own");
         seed_value(&mut tf, "app_own", "helper"); // user's own PUBLIC helper
@@ -1293,7 +1345,7 @@
     // fallback + chain-follow to the canonical primitive Def.
     #[test]
     fn prelude_public_reexport_still_reachable_after_visibility_fix() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         seed_value(&mut tf, "prims", "add-i64"); // canonical, public
         tf.set_current_module(ModuleFullPath::from("prelude"));
         tf.symbol_table_mut().insert(
@@ -1329,7 +1381,7 @@
     #[test]
     fn prelude_private_type_not_reachable_via_resolve_family() {
         use cranelisp_types::TypeName;
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // prelude defines a PRIVATE nullary ADT `Hidden`.
         tf.set_current_module(ModuleFullPath::from("prelude"));
         tf.register_type_def_self(
@@ -1364,7 +1416,7 @@
     // prelude trait's method IS (regression guard).
     #[test]
     fn prelude_private_trait_method_not_reachable() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
 
         // PUBLIC prelude trait `PubT` with method `pub-op` — reachable.
         tf.set_current_module(ModuleFullPath::from("prelude"));
@@ -1409,7 +1461,7 @@
     #[test]
     fn prelude_fallback_resolves_pattern_ctor_when_bit_on() {
         use cranelisp_types::TypeName;
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // prelude defines a PUBLIC sum ADT `Maybe2` with ctors `Nada`/`Just2`.
         tf.set_current_module(ModuleFullPath::from("prelude"));
         tf.register_type_def_self(
@@ -1475,7 +1527,7 @@
     #[test]
     fn fq_sum_ctor_resolves_in_pattern_from_unimporting_module() {
         use cranelisp_types::TypeName;
-        let mut tf = TestFixture::new();
+        let mut tf = tf_macros();
         // A user module that has NOT imported `macros` — the clause-fn body's
         // resolution context. No prelude fallback bit is set, so the qualified
         // reference cannot leak in via the outer scope; it must resolve purely
@@ -1525,7 +1577,7 @@
     // discriminator, NOT its visibility, is the rejection).
     #[test]
     fn prelude_fallback_internal_ctor_gate_rejects_bind() {
-        let mut tf = TestFixture::new();
+        let mut tf = tf_io();
         // prelude PUBLICLY re-exports `Bind` from primitives (an Import edge,
         // like `(export [primitives [*]])`).
         tf.set_current_module(ModuleFullPath::from("prelude"));
@@ -1583,7 +1635,7 @@
     #[test]
     fn prelude_fallback_ctor_chokepoints_off_when_bit_off() {
         use cranelisp_types::TypeName;
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // prelude PUBLICLY re-exports `Bind`, and defines a public ctor `Solo`.
         tf.set_current_module(ModuleFullPath::from("prelude"));
         tf.symbol_table_mut().insert(
@@ -1632,7 +1684,7 @@
     #[test]
     fn prelude_private_ctor_not_reachable_via_fallback() {
         use cranelisp_types::TypeName;
-        let mut tf = TestFixture::new();
+        let mut tf = tf();
         // prelude defines a PRIVATE sum ADT `HiddenT` with ctor `HiddenC`.
         tf.set_current_module(ModuleFullPath::from("prelude"));
         tf.register_type_def_self(

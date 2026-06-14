@@ -1716,10 +1716,17 @@ where
             if let Type::Var(resolved_id) = resolved
                 && scheme_var_set.contains(&resolved_id)
             {
-                constraints
-                    .entry(resolved_id)
-                    .or_default()
-                    .extend(traits.iter().cloned());
+                // Multiple `constrained_var`s can `apply`-resolve onto the SAME
+                // scheme var; a plain `.extend(...)` then concatenates without
+                // dedup, yielding garbled runs like `[Eq, Display, Display]`
+                // (FIXME 0354 Bug A). Dedup the extend so a stacked-bound binder
+                // gets a clean witness layout (`[Eq, Display]`).
+                let bucket = constraints.entry(resolved_id).or_default();
+                for t in traits {
+                    if !bucket.contains(t) {
+                        bucket.push(t.clone());
+                    }
+                }
             }
         }
 

@@ -8,6 +8,7 @@
 
 (import [prelude []])
 
+(import [primitives [Bool String str-concat]])
 (import [compare.eq [Eq = !=]])
 (import [text.display [Display show]])
 (import [fn.option [Option Some None]])

@@ -39,6 +39,19 @@ pub enum TypeExpr {
     /// Applied type constructor with as-written head qualification:
     /// `(Option Int)`, `(option/Option :a)`, `(List :a)`
     Applied(TypeRef, Vec<TypeExpr>),
+    /// An unspecified type satisfying these trait bounds — a constrained type
+    /// variable's annotation, carrying the run of stacked `:Trait` annotations
+    /// on a single binder (`[:Eq :Display a]`, spec §3.9.2). Mutually exclusive
+    /// with a concrete-type annotation in the same slot: a param annotation is
+    /// *either* a concrete type (the other `TypeExpr` variants) *or* a set of
+    /// trait bounds, never both. Holding one-of-{type, bounds} in the single
+    /// `Option<TypeExpr>` param slot captures that exclusion by construction
+    /// (FIXME 0346 ruled option (a) over a sidecar `{ty, bounds}` struct, which
+    /// would model a state — both specified — that cannot exist). The
+    /// `TraitRef`s carry as-written qualification (`:fmt/Display`); typecheck
+    /// resolves them and accumulates the bounds onto the type variable's
+    /// `Scheme.constraints` (spec §3.9.3 try-type-then-trait).
+    Bounds(Vec<TraitRef>),
 }
 
 impl TypeExpr {

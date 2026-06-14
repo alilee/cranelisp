@@ -301,3 +301,103 @@ fn no_platform_form_program_runs_with_empty_registry() {
         // 300 mod 256 = 44 on Unix (exit codes are bytes).
         .assert_exit(300 % 256);
 }
+
+// =============================================================================
+// IO effect sequencing over the stdio platform — spec/10-io.md §10.3 / §10.4
+// (harvest: legacy/io.rs::io_bind_print_sequence / io_do_macro_sequenced_prints
+//  / io_effect_propagation_through_functions / io_read_line_bind_print_echo
+//  / io_do_print_sequence_with_pure_terminator_emits_all
+//  / io_bind_bang_print_sequence_with_pure_terminator_emits_all)
+//
+// The legacy file used the in-memory test-capture platform to assert effect
+// ORDER. The e2e equivalent uses the `stdio` platform under `--run`: each
+// `print` emits to real stdout (one line each), so source-order sequencing is
+// directly observable as ordered stdout. The exit code carries the final
+// `(Pure N)` inner value, proving the trampoline returns after all effects.
+// =============================================================================
+
+// spec: spec/10-io.md §10.3 — `(bind (print a) (fn [_] (print b)))` sequences
+// two effects in source order.
+#[test]
+fn bind_print_sequence_in_order() {
+    Cranelisp::new()
+        .use_workspace_platforms()
+        .file(
+            "main.cl",
+            "(platform stdio)\n\
+             (import [platform.stdio [print]])\n\
+             (import [primitives [bind]])\n\
+             (defn main [] (bind (print \"a\") (fn [_] (print \"b\"))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_stdout_eq("a\nb\n");
+}
+
+// spec: spec/10-io.md §10.7.1 — IO propagates through the call graph: a function
+// that calls `print` inherits IO in its return type, and the effect fires when
+// the resulting action is run.
+#[test]
+fn effect_propagates_through_function() {
+    Cranelisp::new()
+        .use_workspace_platforms()
+        .file(
+            "main.cl",
+            "(platform stdio)\n\
+             (import [platform.stdio [print]])\n\
+             (defn greet [name] (print name))\n\
+             (defn main [] (greet \"world\"))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_stdout_contains("world");
+}
+
+// spec: spec/10-io.md §10.3 — read-line chained with bind to print (echo):
+// the input line is read and printed back. test-capture supplies a scripted
+// input line; the echoed line appears in the capture's flushed output.
+#[test]
+fn read_line_bind_print_echo() {
+    Cranelisp::new()
+        .use_workspace_platforms()
+        .file(
+            "main.cl",
+            "(platform stdio)\n\
+             (import [platform.stdio [print read-line]])\n\
+             (import [primitives [bind]])\n\
+             (defn main [] (bind (read-line) (fn [line] (print line))))\n",
+        )
+        .stdin("echo me\n")
+        .run("main.cl")
+        .output()
+        .assert_stdout_contains("echo me");
+}
+
+// spec: spec/10-io.md §10.4.1 — a `do`/`bind!`-shaped print-sequence with a
+// `(Pure N)` terminator, expressed via the primitive `bind` it desugars to
+// (tests MUST NOT depend on stdlib — root CLAUDE.md "Design Principles"). The
+// stdlib `do`/`bind!` macro desugaring is covered separately in
+// `tests/spec_11_stdlib.rs`; here the bind-chain trampoline path is the target.
+//
+// REGRESSION-GUARD: the Sprint 57 Wave 6 ring4b/ring4j demo crash emitted the
+// first print but terminated the process before the second. The full
+// `print … print … Pure` chain here re-pins that all intermediate effects fire
+// before the terminal value returns and the process exits cleanly with it.
+#[test]
+fn bind_chain_print_sequence_with_pure_terminator_emits_all() {
+    Cranelisp::new()
+        .use_workspace_platforms()
+        .file(
+            "main.cl",
+            "(platform stdio)\n\
+             (import [platform.stdio [print]])\n\
+             (import [primitives [bind Pure]])\n\
+             (defn main []\n\
+               (bind (print \"one\") (fn [_]\n\
+                 (bind (print \"two\") (fn [_] (Pure 42))))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(42)
+        .assert_stdout_eq("one\ntwo\n");
+}

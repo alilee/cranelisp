@@ -105,6 +105,28 @@ pub(crate) fn got_data_symbol_name(module_path: &ModuleFullPath) -> String {
     )
 }
 
+/// Pure core of `FnCompiler::inner_fn_discriminator` (FIXME 0347 defect 1).
+///
+/// Returns the mono-instance discriminator prefix for a span-derived inner-fn
+/// name: the sanitized enclosing-fn name + `"__"` when an enclosing name is
+/// present, else the empty string. Sanitization maps every non-`[A-Za-z0-9_]`
+/// char to `_` so a mangled mono name (`reduce$Int+Vec`) yields a clean symbol
+/// prefix (`reduce_Int_Vec__`). Free function so the uniqueness property is
+/// unit-testable without constructing a full `FnCompiler`.
+pub(crate) fn inner_fn_discriminator_for(current_fn_name: Option<&Symbol>) -> String {
+    match current_fn_name {
+        Some(name) => {
+            let sanitized: String = name
+                .as_ref()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+                .collect();
+            format!("{sanitized}__")
+        }
+        None => String::new(),
+    }
+}
+
 /// Resolve a function name to `(defining_module, module_local_slot)` by
 /// walking `symbol_tables` starting at `current_module`.
 ///
@@ -148,8 +170,18 @@ where
         }
         let st = tables.get(module)?;
         let entry = st.get(bare)?;
+        // Read the callable address through the SSOT accessor, never the raw
+        // `got_slot` field: a constrained-fn template carries a phantom
+        // `got_slot` (allocated Pass 1, never populated — its mono variants
+        // carry the real slots), so reading the field directly resolved the
+        // template's NULL slot cross-module → `call_indirect` through null →
+        // SIGSEGV (FIXME 0354). `callable_got_slot()` returns `None` for a
+        // constrained template, so the call lowers to a clean "no callable
+        // slot / unresolved" typed error instead of a null call.
+        if let Some(slot) = entry.callable_got_slot() {
+            return Some((module.clone(), slot));
+        }
         match entry {
-            ModuleEntry::Def { got_slot: Some(slot), .. } => Some((module.clone(), *slot)),
             ModuleEntry::Import { source, .. } => {
                 let source_module = source.module.clone();
                 let source_symbol = source.symbol.clone();
@@ -932,6 +964,27 @@ where
             pending_closure_drop_glue: None,
             in_trace_body: false,
         }
+    }
+
+    /// Monomorphisation-aware discriminator for span-derived inner-function
+    /// names (lambdas, fn-as-value wrappers, operator-as-value wrappers).
+    ///
+    /// **FIXME 0347 defect (1).** Inner functions are named by source span
+    /// (`__lambda_<start>_<end>__`, `__wrap_<name>_<start>_<end>__`). When the
+    /// ENCLOSING function is monomorphised — the same source span compiled into
+    /// N distinct monomorphic instances within ONE `Module` — every instance
+    /// re-emits the same span-derived name, so the second `define_function`
+    /// collides (`Duplicate definition of identifier`). The enclosing function's
+    /// name IS the per-instance discriminator: each mono copy carries a distinct
+    /// mangled name (`reduce$Int+Vec`, `id$Int`, …), so prefixing the inner
+    /// name with it uniquifies the N copies. When no enclosing name is set
+    /// (top-level expression, nested-lambda inner compiler), the span alone
+    /// suffices for uniqueness within that scope, so the prefix is empty.
+    ///
+    /// Non-`[A-Za-z0-9_]` chars in the enclosing name (`$`, `+`, `/`, `.`) are
+    /// mapped to `_` so the result is a clean Cranelift symbol.
+    pub(crate) fn inner_fn_discriminator(&self) -> String {
+        inner_fn_discriminator_for(self.current_fn_name.as_ref())
     }
 
     /// Compile a function definition body into Cranelift IR.
@@ -1965,6 +2018,91 @@ mod tests {
             ast: None,
             code: None,
         }
+    }
+
+    // ── inner-fn name discriminator (FIXME 0347 defect 1) ────────────────────
+
+    // spec: design/arch/fixmes/0347 — span-derived inner-fn names
+    //   (`__lambda_…`, `__wrap_…`) MUST be uniquified per monomorphic instance
+    //   of the enclosing fn, else N mono copies collide on one symbol.
+    #[test]
+    fn inner_fn_discriminator_uniquifies_per_mono_instance() {
+        use cranelisp_types::Symbol;
+        // Two monomorphic instances of one source fn carry distinct mangled
+        // names; the discriminator must differ so a shared lambda span yields
+        // distinct symbols.
+        let a = inner_fn_discriminator_for(Some(&Symbol::from("reduce$Int+Vec")));
+        let b = inner_fn_discriminator_for(Some(&Symbol::from("reduce$Float+Vec")));
+        assert_ne!(a, b, "distinct mono instances must yield distinct discriminators");
+
+        // The composed lambda names (the actual collision surface) differ.
+        let span = (305usize, 312usize);
+        let name_a = format!("__lambda_{a}{}_{}__", span.0, span.1);
+        let name_b = format!("__lambda_{b}{}_{}__", span.0, span.1);
+        assert_ne!(
+            name_a, name_b,
+            "two mono copies of one lambda span must emit distinct symbols \
+             (else the 2nd define_function collides)"
+        );
+
+        // Sanitization: $/+/./ become _, leaving a clean Cranelift symbol.
+        assert!(
+            a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "discriminator must be a clean symbol: {a:?}"
+        );
+        assert_eq!(a, "reduce_Int_Vec__");
+
+        // No enclosing fn (top-level expr / nested-lambda inner compiler): empty
+        // prefix — the span alone disambiguates within that scope.
+        assert_eq!(inner_fn_discriminator_for(None), "");
+    }
+
+    // spec: design/arch/fixmes/0350 — the span-derived closure DROP-GLUE name
+    //   (`runtime/closure_drop_glue_<start>_<end>`) MUST be uniquified per
+    //   monomorphic instance the SAME way the lambda body name is (0347), else
+    //   N mono copies of one lambda span emit N drop-glue defs with the
+    //   identical name → linker `Duplicate definition of identifier`.
+    #[test]
+    fn closure_drop_glue_name_uniquifies_per_mono_instance() {
+        use cranelisp_types::Symbol;
+        // Two monomorphic instances of one source fn — the same shape that
+        // collided on the lambda body name in 0347.
+        let a = inner_fn_discriminator_for(Some(&Symbol::from("apply$Int+Vec")));
+        let b = inner_fn_discriminator_for(Some(&Symbol::from("apply$Float+Vec")));
+
+        // The composed drop-glue names (the 0350 collision surface) differ.
+        let span = (2004usize, 2022usize);
+        let glue_a =
+            format!("runtime/closure_drop_glue_{a}{}_{}", span.0, span.1);
+        let glue_b =
+            format!("runtime/closure_drop_glue_{b}{}_{}", span.0, span.1);
+        assert_ne!(
+            glue_a, glue_b,
+            "two mono copies of one lambda span must emit distinct drop-glue \
+             symbols (else the 2nd define_function collides)"
+        );
+
+        // The drop-glue name MUST share the lambda body's discriminator scheme
+        // so the (body, drop-glue) pair stay paired per mono instance.
+        let body_a = format!("__lambda_{a}{}_{}__", span.0, span.1);
+        let body_b = format!("__lambda_{b}{}_{}__", span.0, span.1);
+        assert!(
+            glue_a.contains(&a) && body_a.contains(&a),
+            "body+drop-glue of instance A must carry the same discriminator"
+        );
+        assert!(
+            glue_b.contains(&b) && body_b.contains(&b),
+            "body+drop-glue of instance B must carry the same discriminator"
+        );
+
+        // No enclosing fn: empty prefix, span alone disambiguates — the
+        // pre-0350 behaviour for top-level / nested-lambda scopes is preserved.
+        let none = inner_fn_discriminator_for(None);
+        assert_eq!(none, "");
+        assert_eq!(
+            format!("runtime/closure_drop_glue_{none}{}_{}", span.0, span.1),
+            "runtime/closure_drop_glue_2004_2022"
+        );
     }
 
     /// A `DefKind::PrimitiveExtern` entry — host-promised, slot-less, no

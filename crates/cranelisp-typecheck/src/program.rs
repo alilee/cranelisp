@@ -830,17 +830,52 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Box::new(self.apply_subst(state, ret_ty)),
         );
         let trial_scheme = self.generalize(state, &fn_type);
+
+        // FIXME 0344 — generalize-before-cross-defn-use (PURE-parametric only).
+        // Write the generalized scheme back to this defn's symbol-table entry
+        // NOW, immediately after its body is checked, so a later-source sibling
+        // in the same cluster that calls it instantiates a FRESH (polymorphic)
+        // copy rather than monomorphising the defn's own still-`mono` Pass-1
+        // vars. Without this, a fold helper threading a polymorphic accumulator
+        // distinct from the element type (`vec-reduce`) collapses `b`, `a`, and
+        // `Vec` onto one var when a sibling Vec-accumulator use is checked.
+        //
+        // Gated on `trial_scheme.constraints.is_empty()`: this writeback is for
+        // PURE parametric polymorphism (the 0344 fold shape). A *constrained*
+        // fn (one whose scheme carries trait constraints) MUST keep its `mono`
+        // Pass-1 entry so a same-program caller monomorphises it through the
+        // shared substitution (the established constrained-fn-vs-same-program
+        // behaviour the monomorphisation pipeline depends on); generalizing a
+        // constrained fn here would suppress that call-site pinning. The
+        // recursion-name binding itself stays `mono(fn_type)` (set in
+        // `check_defn_body`) in both cases — we do NOT make the self-reference
+        // polymorphic (polymorphic recursion is undecidable in HM). This
+        // writeback is idempotent with `finalize`'s Phase-2 writeback
+        // (`finalize_check_result_inner` ~line 1109): both recompute from the
+        // same `accumulator.defn_type_vars` source vars + the same global
+        // `subst`, so the later pass writes the identical scheme.
+        if trial_scheme.constraints.is_empty()
+            && let Some(ModuleEntry::Def { scheme, .. }) =
+                self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
+        {
+            *scheme = trial_scheme.clone();
+        }
+
+        // Eager constrained-fn detection reads from the trial scheme (regression
+        // guard (a): constraint detection still keys off `trial_scheme`, not the
+        // entry's scheme field).
         let constrained_fn = if !trial_scheme.constraints.is_empty() {
-            if let Some(ModuleEntry::Def { kind, .. }) =
+            if let Some(entry) =
                 self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
             {
                 let cf = ConstrainedFn {
                     variant: defn.variants[0].clone(),
                     scheme: trial_scheme,
                 };
-                **kind = DefKind::UserFn {
-                    constrained_fn: Some(Box::new(cf)),
-                };
+                // Sole-writer for the constrained-template flip: sets `kind` AND
+                // clears the phantom `got_slot` in one atomic op (FIXME 0354).
+                entry.mark_constrained_template(cf);
+                entry.assert_well_formed();
             }
             Some(defn.name.clone())
         } else {
@@ -976,8 +1011,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Box::new(self.apply_subst(state, ret_ty)),
             );
             let trial_scheme = self.generalize(state, &fn_type);
+
+            // FIXME 0344 — generalize-before-cross-defn-use, mirrored at the
+            // multi-sig variant site (PURE-parametric only): write the
+            // generalized scheme back to the variant's `__vN` entry now so a
+            // sibling that references it sees a polymorphic, instantiable view.
+            // A constrained variant keeps its `mono` entry for same-program
+            // call-site monomorphisation. Idempotent with `finalize` Phase 2.
+            if trial_scheme.constraints.is_empty()
+                && let Some(ModuleEntry::Def { scheme, .. }) =
+                    self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
+            {
+                *scheme = trial_scheme.clone();
+            }
+
             if !trial_scheme.constraints.is_empty()
-                && let Some(ModuleEntry::Def { kind, .. }) =
+                && let Some(entry) =
                     self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
             {
                 let cf = ConstrainedFn {
@@ -986,9 +1035,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     ),
                     scheme: trial_scheme,
                 };
-                **kind = DefKind::UserFn {
-                    constrained_fn: Some(Box::new(cf)),
-                };
+                // Sole-writer for the constrained-template flip: sets `kind` AND
+                // clears the phantom `got_slot` in one atomic op (FIXME 0354).
+                entry.mark_constrained_template(cf);
+                entry.assert_well_formed();
             }
         }
 
@@ -1092,15 +1142,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.finalize_check_result_inner(state, accumulator, working_program, strategy)
     }
 
-    fn finalize_check_result_inner(
+    /// Re-generalize every defn's scheme from its `defn_type_vars` source vars
+    /// resolved through the current global substitution, and clear any
+    /// false-positive constrained-fn markers whose schemes ended up
+    /// constraint-free.
+    ///
+    /// Run once after body-checking (the original Phase-2 generalization) and
+    /// AGAIN after monomorphisation (FIXME 0349): pass4's call-site result
+    /// propagation can pin a caller's previously-loose result var (a
+    /// forward-referenced callee left it polymorphic), and re-running this makes
+    /// the caller's stored scheme reflect that pinning — turning a spuriously
+    /// polymorphic caller (`main : (Fn [] (IO t))`) into its true monomorphic
+    /// form (`main : (Fn [] (IO Int))`). Idempotent for defns whose source vars
+    /// did not move between calls.
+    fn regeneralize_defn_schemes(
         &self,
         state: &mut CheckState,
-        accumulator: &mut ModuleCheckAccumulator,
-        working_program: &[TopLevel],
-        strategy: ModuleStrategy,
-    ) -> Result<CheckResult, CranelispError> {
-        // Phase 2: generalize all functions (matching pass2_check_bodies Phase 2).
-        // Clear false-positive constrained markers.
+        accumulator: &ModuleCheckAccumulator,
+    ) {
         for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
             let fn_type = Type::Fn(
                 param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
@@ -1118,6 +1177,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
             }
         }
+    }
+
+    fn finalize_check_result_inner(
+        &self,
+        state: &mut CheckState,
+        accumulator: &mut ModuleCheckAccumulator,
+        working_program: &[TopLevel],
+        strategy: ModuleStrategy,
+    ) -> Result<CheckResult, CranelispError> {
+        // Phase 2: generalize all functions (matching pass2_check_bodies Phase 2).
+        // Clear false-positive constrained markers.
+        self.regeneralize_defn_schemes(state, accumulator);
 
         // Phase 3: re-resolve deferred trait calls with final substitution.
         // Per-defn resolution already ran in check_form_body, but cross-defn
@@ -1203,6 +1274,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Vec<MonoDefn> was carried on CheckResult.mono_defns pre-slim; no
         // longer needed — mono entries live on SymbolTable.
         let _mono_defns = self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
+
+        // FIXME 0349 — re-generalize after monomorphisation. pass4's call-site
+        // result propagation (`monomorphise_call`) can pin a caller's
+        // previously-loose result var (a forward-referenced callee left it
+        // polymorphic). Re-running generalization makes the caller's STORED
+        // scheme reflect that pinning, so a spuriously-polymorphic caller
+        // collapses to its true monomorphic scheme and the backend emits a
+        // direct call to the mono variant rather than the polymorphic template.
+        self.regeneralize_defn_schemes(state, accumulator);
 
         // Pass 5: overloads and auto-curry already resolved per-defn.
         // Drain any remaining entries (e.g., from mono defn generation).
@@ -1368,8 +1448,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Put defaults back so finalize knows about them
         accumulator.default_method_defns = defaults;
 
-        // Pass 2: Check bodies for all forms
+        // Pass 2: Check bodies for all forms.
+        // FIXME 0354 Bug A: mirror `check_forms`' production path — restore the
+        // post-Pass-1 bound-param constraints before each form's body check so a
+        // prior form's body-instantiation residue (e.g. a `Display`-only var
+        // from `show`) does not bleed into this form's generalize.
+        let pass1_constraints = state.active_constraints.clone();
         for form in &working_program {
+            state.active_constraints = pass1_constraints.clone();
             let result = self.check_form_body(state, form, &mut accumulator)?;
             self.merge_form_result_inner(state, &mut accumulator, result);
         }
@@ -1377,6 +1463,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Check bodies of default method defns too.
         let defaults_for_body: Vec<Defn> = accumulator.default_method_defns.clone();
         for defn in &defaults_for_body {
+            state.active_constraints = pass1_constraints.clone();
             let form = TopLevel::Defn(defn.clone());
             let result = self.check_form_body(state, &form, &mut accumulator)?;
             self.merge_form_result_inner(state, &mut accumulator, result);
@@ -1813,6 +1900,42 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         names
     }
 
+    /// Resolve a stacked trait-bound parameter annotation (`:Eq :Display a`,
+    /// spec §3.9.2) to a fresh constrained type variable (spec §3.9.3
+    /// try-type-then-trait; FIXME 0346 / 0341 typecheck half).
+    ///
+    /// Allocates a fresh `Type::Var`, resolves each `TraitRef` to its
+    /// `FQTraitName` (a qualified ref names its module directly; a bare ref is
+    /// resolved via the current-module-or-prelude chain), and records the
+    /// (var, trait) pairs on `state.active_constraints`. `generalize` then lifts
+    /// these onto the defn's `Scheme.constraints` when the var is quantified.
+    ///
+    /// The binder is deliberately NOT unified with any concrete type here — it
+    /// is a fresh constrained var, and any concrete shape is contributed by the
+    /// body's use of the parameter (the bounds restrict which instantiations are
+    /// legal, exactly as a body-driven constrained-fn does).
+    fn resolve_bound_param(
+        &self,
+        state: &mut CheckState,
+        bounds: &[cranelisp_types::TraitRef],
+        span: Span,
+    ) -> Result<Type, CranelispError> {
+        let (var_ty, var_id) = self.fresh_var_id();
+        for tref in bounds {
+            let home = match &tref.module {
+                // Qualified ref (`:fmt/Display`) names its module directly.
+                Some(m) => m.clone(),
+                // Bare ref (`:Display`) resolves via current-module-or-prelude.
+                None => self
+                    .resolve_trait(state, tref.name.as_ref(), span)
+                    .map_err(CranelispError::from)?,
+            };
+            let fqtn = cranelisp_types::FQTraitName::new(home, tref.name.clone());
+            state.active_constraints.add(var_id, fqtn);
+        }
+        Ok(var_ty)
+    }
+
     /// Create fresh type variables for a function's parameters and return type,
     /// respecting any annotations, and register the signature in the symbol table.
     ///
@@ -1853,13 +1976,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let mut param_types = Vec::new();
         for (_name, ann) in defn.params().iter() {
-            let param_ty = if let Some(ann) = ann {
-                let var_map = HashMap::new();
-                self.resolve_type_expr_in_module(
-                    ann, &var_map, &state.current_module, defn.span,
-                )?
-            } else {
-                self.fresh_var()
+            let param_ty = match ann {
+                // Stacked trait-bound annotation (`:Eq :Display a`, spec §3.9.2):
+                // the binder is "an unspecified type satisfying these traits"
+                // (spec §3.9.3 try-type-then-trait). It resolves to a FRESH
+                // constrained type variable, NOT a concrete type — so it is
+                // intercepted here, before delegating to the pure
+                // `TypeExpr -> Type` resolver (which has no fresh-var allocator
+                // or constraint sink). The traits accumulate onto the var via
+                // `active_constraints`, which `generalize` later lifts onto the
+                // defn's `Scheme.constraints` (FIXME 0346 / 0341 typecheck half).
+                Some(cranelisp_types::TypeExpr::Bounds(bounds)) => {
+                    self.resolve_bound_param(state, bounds, defn.span)?
+                }
+                Some(ann) => {
+                    let var_map = HashMap::new();
+                    self.resolve_type_expr_in_module(
+                        ann, &var_map, &state.current_module, defn.span,
+                    )?
+                }
+                None => self.fresh_var(),
             };
             param_types.push(param_ty);
         }
@@ -1981,16 +2117,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(Vec::new());
         }
 
-        // Collect call sites: (fn_name, arg_spans, call_span)
+        // Collect call sites: (fn_name, arg_spans, call_span).
+        //
+        // FIXME 0349 — scan EVERY defn body, including those that are themselves
+        // in `constrained_fn_names`. A constrained/polymorphic defn can still
+        // host a *concrete* call to another constrained fn that needs a mono
+        // variant. Under forward-reference ordering a caller (`main`) can stay
+        // spuriously polymorphic (its result var never pinned because the callee
+        // it forward-references was generalized before the helper that ties its
+        // accumulator) and thus land in `constrained_fn_names`; skipping its body
+        // wholesale meant the `(reduce add-i64 0 [1 2 3])` call site was never
+        // collected and `reduce$Int+Vec` was never created — so `main` called the
+        // polymorphic template and returned the initial accumulator (0344/0349).
+        // We must NOT skip such bodies; we only skip a call from a fn to ITSELF
+        // (the generic self-recursion of a constrained defn is not a concrete
+        // call site — its arg types are the defn's own generic vars).
         let mut call_sites = Vec::new();
         for defn in defns {
-            // Don't scan constrained fns for calls to themselves — those
-            // are the generic definitions, not concrete call sites.
-            if constrained_fn_names.contains(&defn.name) {
-                continue;
-            }
-            Self::collect_constrained_calls(
+            Self::collect_constrained_calls_excluding_self(
                 defn.body(),
+                &defn.name,
                 constrained_fn_names,
                 &mut call_sites,
             );
@@ -2067,6 +2213,37 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Recurse into children via the shared enumeration helper.
         for_each_child_expr(expr, |child| {
             Self::collect_constrained_calls(child, constrained_fn_names, out)
+        });
+    }
+
+    /// Like [`collect_constrained_calls`] but excludes calls a constrained fn
+    /// makes to ITSELF (FIXME 0349).
+    ///
+    /// A constrained/polymorphic defn's self-recursion is the generic definition,
+    /// not a concrete monomorphisation site — its argument types are the defn's
+    /// own generic vars, so there is no concrete instantiation to specialise.
+    /// Every OTHER constrained call inside the body (including calls to *other*
+    /// constrained fns from within a constrained fn) IS a real call site and must
+    /// be collected, so a forward-referenced helper gets its mono variant created
+    /// regardless of source definition order.
+    fn collect_constrained_calls_excluding_self(
+        expr: &Expr,
+        self_name: &Symbol,
+        constrained_fn_names: &HashSet<Symbol>,
+        out: &mut Vec<(Symbol, Vec<Span>, Span)>,
+    ) {
+        if let Expr::Apply { callee, args, span, .. } = expr
+            && let Expr::Var { name, .. } = callee.as_ref()
+            && constrained_fn_names.contains(name)
+            && name != self_name
+        {
+            let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
+            out.push((name.clone(), arg_spans, *span));
+        }
+        for_each_child_expr(expr, |child| {
+            Self::collect_constrained_calls_excluding_self(
+                child, self_name, constrained_fn_names, out,
+            )
         });
     }
 

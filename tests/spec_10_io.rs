@@ -494,6 +494,204 @@ fn auto_curry_io_returning_fn() {
 }
 
 // =============================================================================
+// IO type errors — spec/10-io.md §10.3 (bind shape) + §10.1.2 (Purity Guarantee)
+// (harvest: legacy/io.rs::io_neg_* — bind arg/continuation typing + purity)
+// =============================================================================
+
+// spec: spec/10-io.md §10.3 — bind's first argument MUST be `(IO a)`; a bare
+// Int is a type error.
+#[test]
+fn bind_first_arg_must_be_io_neg() {
+    let out = repl("(bind 42 (fn [x] (Pure x)))\n");
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "bind with non-IO first arg MUST be a type error; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/10-io.md §10.3 — bind's second argument MUST be a function
+// `(Fn [a] (IO b))`; a bare Int is a type error.
+#[test]
+fn bind_second_arg_must_be_function_neg() {
+    let out = repl("(bind (Pure 42) 99)\n");
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "bind with non-function second arg MUST be a type error; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/10-io.md §10.3 — bind's continuation MUST return `(IO b)`; a
+// continuation returning a bare value (here `x`, an Int) is a type error.
+#[test]
+fn bind_continuation_must_return_io_neg() {
+    let out = repl("(bind (Pure 42) (fn [x] x))\n");
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "bind continuation returning non-IO MUST be a type error; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/10-io.md §10.1 — IO is parametric: `IO Int` and `IO Bool` do not
+// unify, so an `if` with one Pure-Int branch and one Pure-Bool branch errors.
+#[test]
+fn io_int_vs_io_bool_mismatch_neg() {
+    let out = repl("(if (eq-i64 1 1) (Pure 1) (Pure true))\n");
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "IO Int vs IO Bool branches MUST be a type error; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/10-io.md §10.7.2 — match arm consistency: mixing an `(IO Int)` arm
+// with a bare-`Int` arm is a type error (all arms must share the IO shape).
+#[test]
+fn match_arms_mixed_io_and_bare_neg() {
+    let out = repl(
+        "(deftype Color Red Green Blue)\n\
+         (match Red [Red (Pure 1) Green 2 Blue (Pure 3)])\n",
+    );
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "match arms mixing (IO Int) and bare Int MUST be a type error; got:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
+// then-combinator / discard-pattern RC — spec/10-io.md §10.3 + §10.8.1
+// (harvest: legacy/io.rs::io_then_combinator_* + io_bind_unused_heap_param)
+//
+// `(bind a (fn [_] b))` is the `then` combinator: the first action's result
+// is discarded. The discarded value's RC must be balanced (dec'd) so a heap
+// value is not leaked or double-freed. These run through the REPL and assert
+// the final value survives — an RC mis-count would crash or corrupt the result.
+// =============================================================================
+
+// spec: spec/10-io.md §10.3 — discard a NeverHeap Int result, keep the next.
+#[test]
+fn then_discard_int_result() {
+    repl("(bind (Pure 999) (fn [_] (Pure 42)))\n")
+        .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/10-io.md §10.3 — discard an AlwaysHeap String result, keep an Int.
+// Regression guard: the `_` parameter must be dec'd to avoid leaking the String.
+#[test]
+fn then_discard_string_result() {
+    repl(r#"(bind (Pure "discarded") (fn [_] (Pure 42)))
+"#)
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/10-io.md §10.3 — discard a Mixed-heap ADT result, keep an Int.
+#[test]
+fn then_discard_adt_result() {
+    repl(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (bind (Pure (Some 99)) (fn [_] (Pure 42)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/10-io.md §10.3 — two discards chained: both heap results dec'd.
+#[test]
+fn then_chained_discards() {
+    repl(r#"(bind (Pure "first") (fn [_] (bind (Pure "second") (fn [_] (Pure 0)))))
+"#)
+    .assert_stdout_contains(":primitives/Int 0");
+}
+
+// spec: spec/10-io.md §10.3 — a named (non-`_`) parameter that is unused must
+// still be dec'd, same RC obligation as the `_` discard.
+#[test]
+fn then_unused_named_heap_param() {
+    repl(r#"(bind (Pure "unused") (fn [x] (Pure 77)))
+"#)
+    .assert_stdout_contains(":primitives/Int 77");
+}
+
+// =============================================================================
+// IO wrapping ADT values — spec/10-io.md §10.2.3 (Examples)
+// (harvest: legacy/io.rs::io_pure_option_none / io_pure_option_some)
+// =============================================================================
+
+// spec: spec/10-io.md §10.2.3 — Pure wraps an Option None; eval unwraps the IO
+// inline and the Option ADT is the displayed value.
+#[test]
+fn pure_wraps_option_none() {
+    repl(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (defn mk [] (Pure None))\n\
+         (mk)\n",
+    )
+    .assert_stdout_contains("Option");
+}
+
+// spec: spec/10-io.md §10.2.3 — Pure wraps an Option (Some 42).
+#[test]
+fn pure_wraps_option_some() {
+    repl(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (defn mk [] (Pure (Some 42)))\n\
+         (mk)\n",
+    )
+    .assert_stdout_contains("Some");
+}
+
+// =============================================================================
+// pure as an ordinary value (higher-order) — spec/10-io.md §10.2.2 (Purpose)
+// (harvest: legacy/io.rs::io_pure_as_higher_order)
+// =============================================================================
+
+// spec: spec/10-io.md §10.2 — a user `pure` (defn wrapping Pure) is an ordinary
+// function: it can be passed as a higher-order argument and applied.
+#[test]
+fn pure_as_higher_order_function() {
+    repl(
+        "(defn my-pure [x] (Pure x))\n\
+         (defn apply-to-42 [f] (f 42))\n\
+         (apply-to-42 my-pure)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 42");
+}
+
+// =============================================================================
+// Deep bind chain + batch exit code — spec/10-io.md §10.8.2 (Trampoline) + §10.6.1
+// (harvest: legacy/io.rs::io_trampoline_deep_bind_chain + io_batch_exit_code_from_bind)
+// =============================================================================
+
+// spec: spec/10-io.md §10.8.2 — the trampoline interprets a deeply-nested bind
+// chain iteratively (O(1) stack). A named-defn continuation threaded through 9
+// binds returns the accumulated count via the process exit code under `--run`.
+#[test]
+fn run_mode_deep_bind_chain_named_continuation() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(
+            "(defn add-one [x] (Pure (add-i64 x 1)))\n\
+             (defn main []\n\
+               (bind (Pure 0)\n\
+                 (fn [a] (bind (add-one a)\n\
+                 (fn [b] (bind (add-one b)\n\
+                 (fn [c] (bind (add-one c)\n\
+                 (fn [d] (bind (add-one d)\n\
+                 (fn [e] (bind (add-one e)\n\
+                 (fn [f] (bind (add-one f)\n\
+                 (fn [g] (bind (add-one g)\n\
+                 (fn [h] (bind (add-one h)\n\
+                 (fn [i] (Pure i))))))))))))))))))))",
+        )
+        .output()
+        // 0, then add-one applied 8 times = 8.
+        .assert_exit(8);
+}
+
+// =============================================================================
 // FIXME 0103 — IoObserver in cranelisp-intrinsics; trace.rs/io_trace.rs in int
 // =============================================================================
 //
@@ -510,6 +708,20 @@ fn auto_curry_io_returning_fn() {
 // ordering — line ordering may shift slightly across the relocation). The
 // second test verifies the public-API home of `register_io_observer` is
 // `cranelisp-intrinsics`, not `cranelisp-runtime`, post-relocation.
+//
+// Off-path (`CRANELISP_IO_TRACE` unset) overhead — design
+// `design/backend/archive/io-trampoline-trace.md` §9 AC 2's "< 1%" bound — is
+// NOT asserted here. The former S61 placeholder `..._subprocess_completes_
+// within_generous_ceiling` (a 5-second subprocess wall-clock ceiling) proved a
+// weak structural property only; it did not survive the port to this file. Per
+// FIXME 0021 (user-ratified S81 W-H) the authoritative off-path measure is the
+// in-process criterion microbench `benches/io_trace_off_path.rs`
+// (`cargo bench --features bench --bench io_trace_off_path`), which measures the
+// filter-OFF `record_event` per-call cost at nanosecond resolution: a fixed
+// ~0.29 ns guard (one relaxed OnceLock load + null-check + branch). A
+// subprocess / suite-wall-clock test cannot reach that resolution (process-spawn
+// + I/O jitter swamps the signal), so no integration-tier ceiling is added — the
+// criterion bench is the single authoritative AC-2 measurement.
 
 // spec: spec/10-io.md §"IO observation contract" + spec/12-runtime.md
 // §"Diagnostic logging".

@@ -303,9 +303,14 @@ where
 
         // Create a wrapper function: (env_ptr, a, b) -> i64
         // The wrapper ignores env_ptr and calls the primitive via GOT-indirect.
+        // Span-derived + mono-discriminated name (FIXME 0347 defect 1) so
+        // monomorphic copies of the enclosing fn do not collide on a shared
+        // operator-as-value wrapper symbol.
         let wrapper_name = format!(
-            "__wrap_op_{primitive_name}_{}_{}__",
-            span.start, span.end
+            "__wrap_op_{primitive_name}_{}{}_{}__",
+            self.inner_fn_discriminator(),
+            span.start,
+            span.end
         );
         let mut wrapper_sig = self.module.make_signature();
         wrapper_sig.params.push(AbiParam::new(types::I64)); // env_ptr (ignored)

@@ -308,33 +308,57 @@ fn ensure_module(
 fn register_special_forms(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
 ) {
-    let special_forms = [
-        ("if", "conditional: (if cond then else)"),
-        ("let", "local binding: (let [x e] body)"),
-        ("fn", "lambda: (fn [params] body)"),
-        ("defn", "function definition: (defn name [params] body)"),
-        ("deftype", "type definition: (deftype Name ctor1 ctor2 ...)"),
-        ("match", "pattern matching: (match expr [pat body] ...)"),
+    // Each special form carries its REAL type scheme — the SpecialForm entry is
+    // the SINGLE SOURCE for the `:Type` prefix the REPL renders (FIXME 0338, S82
+    // W2). The former placeholder `mono(Type::Int)` schemes + the parallel
+    // hardcoded `format_special_form_display` `match name { … }` sig table are
+    // retired (Principle 7 single-source-of-truth). `if` carries its true
+    // `(Fn [Bool a a] a)` shape; the structural forms carry a generic two-arg
+    // `(Fn [a a] b)` (a structural macro's argument/return types are not a
+    // meaningful monotype — the prefix just signals "form-shaped", consistent
+    // with the self-documenting-REPL principle).
+    //
+    // `(fn [tys] ret)` builder over fresh `Var` ids (ids are display-local — the
+    // renderer re-numbers each entry's vars `a`, `b`, … independently).
+    let generic = || {
+        mono(Type::Fn(
+            vec![Type::Var(0), Type::Var(0)],
+            Box::new(Type::Var(1)),
+        ))
+    };
+    let if_scheme = mono(Type::Fn(
+        vec![Type::Bool, Type::Var(0), Type::Var(0)],
+        Box::new(Type::Var(0)),
+    ));
+    let special_forms: [(&str, Scheme, &str); 9] = [
+        ("if", if_scheme, "conditional: (if cond then else)"),
+        ("let", generic(), "local binding: (let [x e] body)"),
+        ("fn", generic(), "lambda: (fn [params] body)"),
+        ("defn", generic(), "function definition: (defn name [params] body)"),
+        ("deftype", generic(), "type definition: (deftype Name ctor1 ctor2 ...)"),
+        ("match", generic(), "pattern matching: (match expr [pat body] ...)"),
         (
             "deftrait",
+            generic(),
             "trait declaration: (deftrait (TraitName a) (method [a ...] ret) ...)",
         ),
         (
             "impl",
+            generic(),
             "trait implementation: (impl TraitName Type (method [params] body) ...)",
         ),
-        ("defmacro", "macro definition: (defmacro name [params] body)"),
+        ("defmacro", generic(), "macro definition: (defmacro name [params] body)"),
     ];
 
     let root_path = ModuleFullPath::from("");
     let mut root = symbol_tables
         .get_mut(&root_path)
         .unwrap_or_else(|| unreachable!("invariant: root \"\" module should exist (bootstrap)"));
-    for (name, desc) in special_forms {
+    for (name, scheme, desc) in special_forms {
         root.insert(
             Symbol::from(name),
             ModuleEntry::SpecialForm {
-                scheme: mono(Type::Int),
+                scheme,
                 param_names: vec![],
                 docstring: Some(desc.to_string()),
                 description: desc.to_string(),
@@ -350,8 +374,8 @@ fn register_special_forms(
     // `""`, alongside the other root special forms — NOT in `primitives`. The
     // `Trace`/`TraceCall` ADT names + their accessors STAY in `primitives`
     // (form/ADT asymmetry, spec §3.2.4); only the *form* name `trace` is here.
-    // The richer scheme/param metadata is preserved (the structural forms above
-    // carry only a placeholder scheme; `trace` carries its real shape).
+    // Like the structural forms above, `trace` carries its real `Fn` scheme so
+    // the REPL renders a `:Type` prefix from the entry (FIXME 0338).
     let trace_ty = Type::ADT(primitives_fqtn("Trace"), vec![]);
     let trace_form_desc = "Execution trace: (trace expr) — evaluates expr with call instrumentation, returns Trace ADT";
     root.insert(

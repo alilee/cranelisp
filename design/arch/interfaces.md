@@ -223,8 +223,30 @@ pub enum TypeExpr {
     FnType(Vec<TypeExpr>, Box<TypeExpr>),
     TypeVar(Symbol),
     Applied(TypeName, Vec<TypeExpr>),
+    Bounds(Vec<TraitRef>),
 }
 ```
+
+**`Bounds` — the constrained-type-variable annotation (FIXME 0346, S82).** A
+parameter annotation is *either* a concrete type *or* a set of trait bounds,
+never both: you cannot write a concrete type and then also constrain it. The
+param slot is one `Option<TypeExpr>` per binder
+(`Vec<(Symbol, Option<TypeExpr>)>` on `Lambda` / `DefnVariant`), and
+`TypeExpr::Bounds(Vec<TraitRef>)` is the variant that slot takes when the
+binder carries a run of stacked `:Trait` annotations (`[:Eq :Display a]`, spec
+§3.9.2). Holding **one-of-{concrete type, bounds set}** in the single
+`Option<TypeExpr>` slot encodes the mutual exclusion *by construction* — the
+ruled alternative (a sidecar struct carrying both `ty` and `bounds`) would model
+a state that cannot exist. The `TraitRef`s carry as-written qualification
+(`:fmt/Display`); typecheck resolves them and accumulates the bounds onto the
+type variable's `Scheme.constraints` (spec §3.9.3 try-type-then-trait). This is
+the same `TraitRef` reference type used by `TraitImpl::type_constraints:
+Vec<(Symbol, TraitRef)>`. The param-tuple shape is **unchanged** by this
+addition — zero call-site churn (minimum-mechanism). Frontend emits `Bounds`
+from the accumulated annotation run; typecheck consumes it at the param-resolve
+site (`program.rs:1856`). *(Note: the surrounding `TypeExpr` block above is a
+historical v1 sketch — the live source carries `Named(TypeRef)` / `Applied(TypeRef, …)`
+per S69 Submission 27; the `Bounds` payload `Vec<TraitRef>` is exact to source.)*
 
 ### Patterns
 
@@ -629,6 +651,8 @@ The codegen payload the backend used to consume from `CheckResult` has been redi
 | `constrained_fn_names: HashSet<Symbol>` | Derivable by scanning `SymbolTable` for `ModuleEntry::Def { kind: UserFn { constrained_fn: Some(_) }, .. }` — negation of `defined_symbols()` within `UserFn`. |
 | `type_defs`, `constructor_to_type` | Already on `SymbolTable` as `ModuleEntry::TypeDef` / `ModuleEntry::Constructor`. |
 | `call_graph: CallGraph` | Transient within-module graph still produced during typecheck for TCO / analysis (see §"Call Graph"); persistent per-symbol `callees: Vec<FQSymbol>` lives on `ModuleEntry::Def` / `ModuleEntry::Macro` per Decision 21. |
+
+**Callable-address accessor — `ModuleEntry::callable_got_slot()` (FIXME 0354).** The row above notes a constrained template is the *negation of `defined_symbols()` within `UserFn`* — i.e. it is **not** codegen-compilable. The dual fact at the call-resolution seam is that it is **not directly callable**, which a second accessor makes explicit: `callable_got_slot() -> Option<usize>` returns the GOT slot only for a non-template `Def`, and `None` for a constrained template *regardless of the stored `got_slot` field*. The two fields involved (`got_slot` on `Def`, `constrained_fn` inside `DefKind::UserFn`) are set at different pipeline stages — Pass 1 allocates the slot before constraint status is known; Pass 2 flips the kind in place — so the illegal pairing (template + `Some(slot)`) is not type-unrepresentable without collapsing `got_slot` into `DefKind` (a 180-read-site churn Decision 35 rejects). Per Principle 18's *single-source-of-truth* form, the invariant is enforced at the read seam: backend call-target resolution (`resolve_got_target`) reads through `callable_got_slot()`, never the raw field. The correlation is maintained by the sole-writer `mark_constrained_template(cf)` (flip + clear together) and guarded by `assert_well_formed()` in debug builds. See BC §7 "Callable address is read through an accessor".
 
 ### Residual `CheckResult` — typecheck-internal only
 

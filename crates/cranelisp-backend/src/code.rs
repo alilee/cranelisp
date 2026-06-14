@@ -201,4 +201,53 @@ mod tests {
         fn _requires_code_store<T: cranelisp_types::CodeStore>() {}
         _requires_code_store::<Code>();
     }
+
+    // spec: design/int/symbol-table-generics.md §2.1 — `Code::Linker` carries
+    //       `Arc<Linker>`; one cache-loaded `.o` batch backs MULTIPLE `Def`
+    //       entries (each its own `Code::Linker` clone), all sharing one
+    //       `Arc<Linker>`. The batch's mmap'd regions reclaim only when the
+    //       LAST clone drops. S82 harvest of the legacy
+    //       `decision31_code_linker_session_scope_only` reg-guard (FIXME 0133):
+    //       the session-scope multi-entry-one-batch shape, lifted to the Code
+    //       layer (`Linker` reclaim is structural via `MmapMut::Drop`, with no
+    //       global counter — the guard is the `Arc::strong_count` lifecycle and
+    //       a clean drop chain).
+    #[test]
+    fn code_linker_multiple_entries_share_one_batch() {
+        let linker = Arc::new(
+            crate::cache::linker::Linker::new().expect("Linker::new must succeed for test"),
+        );
+        assert_eq!(Arc::strong_count(&linker), 1, "fresh Arc<Linker> refcount 1");
+
+        // Two `Def` entries reference the same cache-loaded batch.
+        let code1 = Code::linker(Arc::clone(&linker));
+        let code2 = Code::linker(Arc::clone(&linker));
+        assert_eq!(
+            Arc::strong_count(&linker),
+            3,
+            "two Code::Linker clones each hold one Arc clone (1 local + 2 = 3)"
+        );
+
+        // Dropping one entry decrements but does NOT reclaim — the other entry
+        // still references the batch.
+        drop(code1);
+        assert_eq!(
+            Arc::strong_count(&linker),
+            2,
+            "dropping one entry's Code::Linker leaves the batch alive for the other"
+        );
+
+        drop(code2);
+        assert_eq!(
+            Arc::strong_count(&linker),
+            1,
+            "dropping the second entry leaves only the local Arc"
+        );
+
+        // Drop the last clone — the Linker (and its MmapMut regions) reclaims.
+        // Reaching the end without a panic is the assertion: the drop chain
+        // completed cleanly (a double-free / use-after-free in Linker::Drop
+        // would abort here).
+        drop(linker);
+    }
 }

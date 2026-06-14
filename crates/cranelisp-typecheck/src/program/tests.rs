@@ -68,8 +68,23 @@
     }
 
     /// Create a TypeChecker with primitives imported into a "test" module.
+    ///
+    /// Narrowed (FIXME 0243) from `TestFixture::new()` (= `full()`) to the
+    /// content the program-level pipeline tests in this file consume: builtin
+    /// type names + the Ring 0/1/3 primitive `Def`s + the synthetic `macros`
+    /// module + the IO ADT (`Bind`/`Pure`/`Effect` are referenced directly).
+    /// Only `with_special_forms()` is dropped — special forms are resolved at
+    /// the AST level, never via symbol-table name lookup, and no test in this
+    /// file probes the special-form entries. Bootstrap order requires
+    /// `with_builtin_type_names()` before primitives / macros / IO.
     fn tc_with_prims() -> TestFixture {
-        let mut tc = TestFixture::new();
+        let mut tc = TestFixture::with_content(
+            crate::builtins::FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_primitives()
+                .with_macros_sexp()
+                .with_io(),
+        );
         tc.set_current_module(ModuleFullPath::from("test"));
         seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
         tc
@@ -2956,13 +2971,28 @@
 
         let _result = tc.check(&program, &ctx, ModuleStrategy::Additive).unwrap();
 
-        // All expr_types should be fully resolved on annotated ASTs (post-slim).
+        // expr_types in MONOMORPHIC function bodies must be fully resolved. A
+        // genuinely POLYMORPHIC body legitimately carries `Type::Var` entries
+        // (design/typecheck/inference.md §"Polymorphic Type Variables in
+        // expr_types": `(defn id [x] x)` records `x` as `Var(N)` — correct for a
+        // Ring-0/1 polymorphic def; monomorphisation produces the concrete
+        // specialised copies). Post-FIXME-0344, `id` correctly stays polymorphic
+        // here (it is generalized before its `use-id` caller is checked), so its
+        // body `x` is a Var — that is the corrected inference, not a regression.
+        // Guard resolution only for monomorphic-scheme defns.
         for (_name, entry) in tc.symbol_table().all_symbols() {
-            if let ModuleEntry::Def { ast: Some(defn), .. } = entry {
+            if let ModuleEntry::Def { ast: Some(defn), scheme, .. } = entry {
+                if !scheme.type_vars.is_empty() {
+                    // Polymorphic def — Var entries in its body are expected.
+                    continue;
+                }
                 let mut _any = false;
                 let mut all_resolved = true;
                 walk_inferred_types(&defn.body, &mut _any, &mut all_resolved);
-                assert!(all_resolved, "unresolved Var in expr_types after check()");
+                assert!(
+                    all_resolved,
+                    "unresolved Var in a MONOMORPHIC defn body after check()",
+                );
             }
         }
     }
@@ -4113,6 +4143,8 @@
             scheme.type_vars.len(),
             scheme,
         );
+        // Pin the EXACT correct scheme shape: `(Fn [(Fn [b a] b) b (Vec a)] b)`
+        // with b (accumulator/result) ≠ a (element) — the canonical reduce type.
         if let Type::Fn(params, ret) = &scheme.ty {
             assert_eq!(params.len(), 3, "reduce takes (f init v)");
             // accumulator (init) is params[1]; result is ret. Neither may be a
@@ -4123,8 +4155,163 @@
                  not collapse to (Vec _): init={:?} ret={:?} (FIXME 0344)",
                 params[1], ret,
             );
+            // params[0] is the folding fn `(Fn [b a] b)`.
+            let (b_acc, a_elem) = match &params[0] {
+                Type::Fn(f_params, f_ret) => {
+                    assert_eq!(f_params.len(), 2, "fold fn takes (acc elem)");
+                    let b = match &f_params[0] {
+                        Type::Var(id) => *id,
+                        other => panic!("fold-fn accumulator param must be a Var, got {other:?}"),
+                    };
+                    let a = match &f_params[1] {
+                        Type::Var(id) => *id,
+                        other => panic!("fold-fn element param must be a Var, got {other:?}"),
+                    };
+                    // Fold fn returns the accumulator type `b`.
+                    assert_eq!(
+                        f_ret.as_ref(), &Type::Var(b),
+                        "fold fn must return the accumulator var b, got {f_ret:?}",
+                    );
+                    (b, a)
+                }
+                other => panic!("reduce's first param must be a fold fn, got {other:?}"),
+            };
+            // b ≠ a — the accumulator type is INDEPENDENT of the element type.
+            assert_ne!(
+                b_acc, a_elem,
+                "accumulator var b and element var a must be DISTINCT (FIXME 0344)",
+            );
+            // init (params[1]) and result (ret) are both the accumulator var b.
+            assert_eq!(params[1], Type::Var(b_acc), "init must be the accumulator var b");
+            assert_eq!(ret.as_ref(), &Type::Var(b_acc), "result must be the accumulator var b");
+            // v (params[2]) is `(Vec a)` — element type a.
+            match &params[2] {
+                Type::ADT(name, args) if name.name.as_ref() == "Vec" => {
+                    assert_eq!(args.len(), 1, "Vec is unary");
+                    assert_eq!(args[0], Type::Var(a_elem), "v must be (Vec a) over the element var");
+                }
+                other => panic!("reduce's third param must be (Vec a), got {other:?}"),
+            }
         } else {
             panic!("reduce scheme is not a function type: {:?}", scheme.ty);
+        }
+
+        // The concrete Int-accumulator use `(reduce add-i64 0 [1 2 3])`, checked
+        // AS A FOLLOW-ON REPL FORM after the cluster, must type-check and infer
+        // `Int` — the observable downstream contract from the FIXME. It
+        // instantiates a FRESH copy of reduce's now-generalized scheme; before
+        // the fix this fails with `expected (Vec t…), got Int`. Checking it as a
+        // single trailing form (not in the 4-defn batch) makes `compute_display`
+        // populate the subst-resolved result type.
+        let call_sexps = cranelisp_frontend::parse("(reduce add-i64 0 [1 2 3])").expect("parse call");
+        let call_prog = cranelisp_frontend::build_forms(&call_sexps).expect("build_forms call");
+        assert_eq!(call_prog.len(), 1, "expected a single trailing expression form");
+        let call_result = tc
+            .check_program_self(&call_prog)
+            .expect("Int-accumulator reduce call must type-check (FIXME 0344)");
+        let display = call_result
+            .display
+            .expect("trailing expression must produce a display type");
+        assert_eq!(
+            display.ty, Type::Int,
+            "(reduce add-i64 0 [1 2 3]) must infer Int (FIXME 0344), got {:?}",
+            display.ty,
+        );
+    }
+
+    // spec: spec/03-types.md §3.4 — monomorphisation must create the concrete
+    //   mono variant for a call to a polymorphic fn REGARDLESS of whether the
+    //   callee was defined before or after the helper it forward-references.
+    //
+    // FIXME(/typecheck 0349): the final layer of 0344. Even with the 0344
+    //   over-unification fixed (the stored schemes of `reduce`/`reduce-loop`
+    //   are correctly polymorphic), a FORWARD-REFERENCE definition order
+    //   (`reduce` BEFORE `reduce-loop`) left a concrete CALLER (`main`,
+    //   `(reduce add-i64 0 [1 2 3])`) spuriously polymorphic: `reduce` was
+    //   generalized after its body-check, but its body call to the
+    //   not-yet-body-checked `reduce-loop` did not yet tie its accumulator to
+    //   its result var, so `reduce` generalized with init/result as INDEPENDENT
+    //   vars. The caller then bound its own result to `reduce`'s loose result
+    //   var, staying `(IO t)` — which (a) marked `main` itself "constrained"
+    //   (polymorphic + ast), so its body was skipped by pass4 and the
+    //   `reduce$Int+Vec` mono variant was NEVER created, and (b) left `main`
+    //   calling the polymorphic template (returns the initial accumulator, 0)
+    //   instead of the specialised fold.
+    //
+    //   The fix: pass4 (1) scans EVERY defn body for concrete constrained calls,
+    //   excluding only self-recursion, so a constrained/polymorphic caller's
+    //   concrete call sites are still collected; (2) `monomorphise_call`
+    //   propagates the concrete return type back to the call site, pinning the
+    //   caller's result var; (3) finalize re-generalizes after pass4 so the
+    //   caller's STORED scheme collapses to its true monomorphic form.
+    //
+    //   This UNIT pins the order-independence at the typecheck seam; the e2e
+    //   `tests/spec_04_expressions.rs::polymorphic_accumulator_fold_does_not_over_unify`
+    //   pins the end-to-end value (`(reduce add-i64 0 [1 2 3])` => 6).
+    #[test]
+    fn forward_reference_polymorphic_call_creates_mono_variant() {
+        let mut tc = tc_with_prims();
+        // FORWARD reference: `reduce` is defined BEFORE the helper it calls
+        // (`reduce-loop`). Plus a concrete caller `main` that folds with Int.
+        let src = "\
+            (defn reduce [f init v] (reduce-loop f init v (vec-len v) 0))\n\
+            (defn reduce-loop [f acc v :primitives/Int len :primitives/Int i]\n  \
+              (if (ge-i64 i len) acc\n    \
+                (reduce-loop f (f acc (vec-get v i)) v len (add-i64 i 1))))\n\
+            (defn main [] (reduce add-i64 0 [1 2 3]))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+
+        let result = tc.check_program_self(&program);
+        assert!(
+            result.is_ok(),
+            "forward-reference polymorphic fold must type-check (FIXME 0349); \
+             got error: {:?}",
+            result.as_ref().err().map(|e| e.message().to_string()),
+        );
+
+        // A concrete mono variant for the Int-accumulator call MUST have been
+        // created — regardless of the forward-reference definition order. Before
+        // the fix NO `reduce$…` entry exists (the caller was skipped by pass4).
+        let mono_count = tc
+            .symbol_table()
+            .all_symbols()
+            .filter(|(name, _)| name.as_ref().starts_with("reduce$"))
+            .count();
+        assert!(
+            mono_count >= 1,
+            "a `reduce$…` mono variant must be created for the concrete \
+             Int-accumulator call under forward-reference ordering (FIXME 0349); \
+             found mono variants: {:?}",
+            tc.symbol_table()
+                .all_symbols()
+                .filter(|(n, _)| n.as_ref().starts_with("reduce$"))
+                .map(|(n, _)| n.as_ref().to_string())
+                .collect::<Vec<_>>(),
+        );
+
+        // And the concrete caller `main` must collapse to its true MONOMORPHIC
+        // scheme `(Fn [] Int)` — NOT stay spuriously polymorphic. A leftover
+        // free var in `main`'s scheme is the witness of the forward-ref defect.
+        let main_scheme = match tc.symbol_table().get("main") {
+            Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+            other => panic!("main not a Def in symbol table: {other:?}"),
+        };
+        assert!(
+            main_scheme.type_vars.is_empty(),
+            "main must be monomorphic after pass4 re-generalization \
+             (FIXME 0349); got polymorphic scheme {main_scheme:?}",
+        );
+        match &main_scheme.ty {
+            Type::Fn(params, ret) => {
+                assert!(params.is_empty(), "main takes no args");
+                assert_eq!(
+                    ret.as_ref(), &Type::Int,
+                    "main folds Ints to an Int (FIXME 0349); got ret {:?}",
+                    ret,
+                );
+            }
+            other => panic!("main scheme is not a function type: {other:?}"),
         }
     }
 
@@ -4134,6 +4321,104 @@
     // ADT onto the accumulator var.
     fn is_vec(t: &Type) -> bool {
         matches!(t, Type::ADT(name, _) if name.name.as_ref() == "Vec")
+    }
+
+    /// Register a minimal single-method trait `name` (method `method` with a
+    /// `Self`-typed parameter and `Bool` return) in the fixture's current
+    /// module, so a `Bounds([..])` param annotation can resolve it.
+    fn register_marker_trait(tc: &mut TestFixture, name: &str, method: &str) {
+        let decl = TraitDecl {
+            name: TraitName::from(name),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from(method),
+                docstring: None,
+                params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("Bool"),
+                )),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl_self(&decl).unwrap();
+        tc.clear_transient_state();
+    }
+
+    // spec: spec/03-types.md §3.9.3 — a stacked trait-bound parameter annotation
+    //   (`[:Eq :Display a]`) resolves the binder to a FRESH type variable
+    //   constrained by ALL stacked traits (try-type-then-trait), accumulating
+    //   both traits onto the defn's generalized `Scheme.constraints`.
+    //
+    // This is the TYPECHECK half of defect 0341 (the frontend parse half lands
+    // separately). Constructed at the typecheck seam — the param annotation is a
+    // `TypeExpr::Bounds([Eq, Display])` (the shape the frontend will emit), so
+    // no frontend dependency. (FIXME 0346 carrier; FIXME 0341 typecheck half.)
+    #[test]
+    fn stacked_trait_bounds_param_accumulates_constraints() {
+        let mut tc = tc_with_prims();
+        register_marker_trait(&mut tc, "Eq", "eq?");
+        register_marker_trait(&mut tc, "Display", "show");
+
+        // (defn identity [:Eq :Display x] x) — the param `x` carries a run of
+        // two stacked trait bounds; the body returns it unchanged so its type
+        // stays the constrained binder var.
+        let bounds = TypeExpr::Bounds(vec![
+            cranelisp_types::TraitRef::new(None, TraitName::from("Eq")),
+            cranelisp_types::TraitRef::new(None, TraitName::from("Display")),
+        ]);
+        let defn = Defn {
+            name: Symbol::from("identity"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("x"), Some(bounds))],
+                body: Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let program = vec![TopLevel::Defn(defn)];
+        tc.check_program_self(&program)
+            .expect("defn with stacked trait-bound param must type-check");
+
+        let scheme = match tc.symbol_table().get("identity") {
+            Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+            other => panic!("identity not a Def: {other:?}"),
+        };
+
+        // The scheme generalizes over the single binder var, and that var
+        // carries BOTH trait constraints (Eq AND Display).
+        assert_eq!(
+            scheme.type_vars.len(), 1,
+            "identity generalizes over its single constrained binder: {scheme:?}",
+        );
+        let binder = scheme.type_vars[0];
+        let constraints = scheme
+            .constraints
+            .get(&binder)
+            .unwrap_or_else(|| panic!("binder var {binder} has no constraints: {scheme:?}"));
+        let names: std::collections::HashSet<&str> =
+            constraints.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            names.contains("Eq") && names.contains("Display"),
+            "binder must be constrained by BOTH Eq and Display, got {names:?} \
+             (FIXME 0341 typecheck half)",
+        );
+        // The function shape is `(Fn [a] a)` over that single binder.
+        match &scheme.ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0], Type::Var(binder));
+                assert_eq!(ret.as_ref(), &Type::Var(binder));
+            }
+            other => panic!("identity scheme not a fn type: {other:?}"),
+        }
     }
 
     // spec: design/typecheck/ast-annotation.md §10.2.3 — CheckResult has only
@@ -4153,4 +4438,127 @@
         let _ = &r.display;
         assert_eq!(r.warnings.len(), 0);
         assert!(r.display.is_none());
+    }
+
+    // spec: spec/09-macros.md §9.3.4 — forward reference to undefined macro is
+    // not expanded. Harvested from
+    // `tests/legacy/ring3_repl.rs::r3_neg_forward_reference_not_expanded`
+    // (FIXME 0125, REGRESSION-GUARD). Macro expansion is a frontend concern;
+    // the typecheck-internal fact this guards is the consequence: calling a
+    // name that was never defined as a macro is treated as an ordinary
+    // application of an undefined symbol and MUST fail to typecheck (it is NOT
+    // silently macro-expanded into success). This pins the "no implicit
+    // forward-ref expansion" guarantee at the typecheck seam.
+    #[test]
+    fn r3_neg_forward_reference_not_expanded() {
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse("(defn use-it [] (not-yet-defined 42))")
+            .expect("parse must succeed");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms must succeed");
+        let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive);
+        assert!(
+            result.is_err(),
+            "a forward reference to an undefined name must fail to typecheck, \
+             not be silently macro-expanded; got Ok"
+        );
+    }
+
+    // =========================================================================
+    // S82 harvest (FIXME 0134): `assert_type_error(...)` callsites from the
+    // quarantined legacy ring0/ring1 files, reduced to direct `tc.check()`
+    // Err-expecting unit tests. Each pins a typecheck-internal rejection that
+    // is not separately covered by the existing infer/program unit suite.
+    // Source programs are reproduced verbatim from the legacy file; assertions
+    // assert ONLY that the program fails to typecheck (error message text is
+    // not pinned — the legacy `assert_type_error` passed `""`).
+    // =========================================================================
+
+    /// Parse + build a whole program from source and assert it fails to check.
+    /// Mirrors the legacy `assert_type_error(src, "")` helper at the typecheck
+    /// seam (no REPL / no binary).
+    fn assert_check_rejects(src: &str) {
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse(src).expect("parse must succeed");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms must succeed");
+        let result = tc.check(&program, &test_ctx(), cranelisp_types::ModuleStrategy::Additive);
+        assert!(result.is_err(), "expected a type error for {src:?}, got Ok");
+    }
+
+    // spec: spec/03-types.md §3.5 — Float cannot be passed to an Int-typed
+    // primitive. Harvested from `tests/legacy/ring0.rs::float_type_error_mixed`.
+    #[test]
+    fn harvest_float_type_error_mixed() {
+        assert_check_rejects("(defn main [] (add-i64 1 1.5))");
+    }
+
+    // spec: spec/03-types.md §3.5 — String cannot be passed where Int is
+    // expected. Harvested from
+    // `tests/legacy/ring1.rs::error_string_where_int_expected`.
+    #[test]
+    fn harvest_error_string_where_int_expected() {
+        assert_check_rejects("(defn main [] (add-i64 \"hello\" 1))");
+    }
+
+    // spec: spec/03-types.md §3.5 — Int cannot be passed where String is
+    // expected (str-len arg). Harvested from
+    // `tests/legacy/ring1.rs::error_int_where_string_expected`.
+    #[test]
+    fn harvest_error_int_where_string_expected() {
+        assert_check_rejects("(defn main [] (str-len 42))");
+    }
+
+    // spec: spec/05-definitions.md §5.2.7 — a constructor field's declared type
+    // is enforced at the call site (Bool where the field is :Int). Harvested
+    // from `tests/legacy/ring1.rs::error_adt_constructor_wrong_type`.
+    #[test]
+    fn harvest_error_adt_constructor_wrong_type() {
+        assert_check_rejects(
+            "(deftype Point [:Int x :Int y]) (defn main [] (match (Point true 2) [(Point x y) x]))",
+        );
+    }
+
+    // spec: spec/04-expressions.md §4.4 — `if` branches must unify; a String
+    // then-branch and an Int else-branch is a type error. Harvested from
+    // `tests/legacy/ring1.rs::error_if_branches_type_mismatch_string_int`.
+    #[test]
+    fn harvest_error_if_branches_type_mismatch_string_int() {
+        assert_check_rejects("(defn main [] (if true \"hello\" 42))");
+    }
+
+    // spec: spec/07-traits.md §7.8 — a constrained-fn template is NOT directly
+    // callable (only its monomorphised variants are). FIXME 0354: the Pass-2
+    // constrained-template flip MUST clear the phantom Pass-1 `got_slot` via the
+    // `mark_constrained_template` sole-writer, so call-target resolution
+    // (`callable_got_slot()`) returns `None` and a cross-module constrained
+    // call can never lower to a null `call_indirect` (the SIGSEGV).
+    #[test]
+    fn constrained_template_flip_clears_callable_slot() {
+        use cranelisp_types::ConstrainedFn as CF;
+        // Build a plain user-fn Def carrying a Pass-1-allocated got_slot.
+        let mut entry: ModuleEntry = ModuleEntry::def(
+            crate::scheme::mono(Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)))),
+            DefKind::UserFn { constrained_fn: None },
+        )
+        .got_slot(7)
+        .build();
+        // Pre-flip: a plain Def is callable through its allocated slot.
+        assert_eq!(entry.callable_got_slot(), Some(7));
+        assert!(!entry.is_constrained_template());
+
+        // Flip to a constrained template via the sole-writer.
+        let cf = CF {
+            variant: DefnVariant {
+                params: vec![(Symbol::from("a"), None)],
+                body: Expr::var(Symbol::from("a"), span(0, 1)),
+                span: span(0, 1),
+            },
+            scheme: crate::scheme::mono(Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)))),
+        };
+        assert!(entry.mark_constrained_template(cf));
+
+        // Post-flip: it IS a template, and is NOT directly callable — the
+        // phantom slot is cleared, so callable_got_slot() is None.
+        assert!(entry.is_constrained_template());
+        assert_eq!(entry.callable_got_slot(), None);
+        entry.assert_well_formed();
     }

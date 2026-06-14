@@ -254,9 +254,13 @@ pub cranelisp_types::ModuleEntry::TypeDef::visibility: cranelisp_types::Visibili
 impl cranelisp_types::ModuleEntry<()>
 pub fn cranelisp_types::ModuleEntry<()>::into_concrete<C: cranelisp_types::CodeStore>(self) -> cranelisp_types::ModuleEntry<C>
 impl<C: cranelisp_types::CodeStore> cranelisp_types::ModuleEntry<C>
+pub fn cranelisp_types::ModuleEntry<C>::assert_well_formed(&self)
+pub fn cranelisp_types::ModuleEntry<C>::callable_got_slot(&self) -> core::option::Option<usize>
 pub fn cranelisp_types::ModuleEntry<C>::callees(&self) -> &[cranelisp_types::FQSymbol]
 pub fn cranelisp_types::ModuleEntry<C>::def(cranelisp_types::Scheme, cranelisp_types::DefKind) -> cranelisp_types::DefBuilder<C>
+pub fn cranelisp_types::ModuleEntry<C>::is_constrained_template(&self) -> bool
 pub fn cranelisp_types::ModuleEntry<C>::is_public(&self) -> bool
+pub fn cranelisp_types::ModuleEntry<C>::mark_constrained_template(&mut self, cranelisp_types::ConstrainedFn) -> bool
 impl<C: cranelisp_types::CodeStore> core::convert::From<cranelisp_types::DefBuilder<C>> for cranelisp_types::ModuleEntry<C>
 pub fn cranelisp_types::ModuleEntry<C>::from(cranelisp_types::DefBuilder<C>) -> Self
 impl<C: cranelisp_types::CodeStore> core::marker::Send for cranelisp_types::ModuleEntry<C>
@@ -524,6 +528,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::Type
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::Type
 pub enum cranelisp_types::TypeExpr
 pub cranelisp_types::TypeExpr::Applied(cranelisp_types::TypeRef, alloc::vec::Vec<cranelisp_types::TypeExpr>)
+pub cranelisp_types::TypeExpr::Bounds(alloc::vec::Vec<cranelisp_types::TraitRef>)
 pub cranelisp_types::TypeExpr::FnType(alloc::vec::Vec<cranelisp_types::TypeExpr>, alloc::boxed::Box<cranelisp_types::TypeExpr>)
 pub cranelisp_types::TypeExpr::Named(cranelisp_types::TypeRef)
 pub cranelisp_types::TypeExpr::SelfType

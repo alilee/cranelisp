@@ -1681,4 +1681,128 @@ mod tests {
         assert!(ids.vec_new.is_some(), "runtime/vec_new accessor");
         assert!(ids.vec_drop.is_some(), "runtime/vec_drop accessor");
     }
+
+    // ── Decision 31 reclaim reg-guards (S82 harvest of legacy
+    //    tests/legacy/v4_jit_reclaim.rs, FIXME 0133) ─────────────────────────
+    //
+    // The 6 legacy tests asserted Decision-31 reclaim invariants through the
+    // full `ReplSession` eval pipeline (`bytes_current()` deltas, session-held
+    // `Arc<Jit>` clone counts, `Code` enum shapes on `ModuleEntry::Def`). Per
+    // tests/CLAUDE.md §"Two tiers" + the s82-harvest disposition, the
+    // byte-counter / session-coupled assertions cannot be expressed at the
+    // unit tier; what IS the durable, crate-internal kernel of each reg-guard
+    // is the `Arc<Jit>` reclaim discipline that `Jit::drop` materialises. These
+    // units pin that kernel directly on `Arc<Jit>` — the same retention root
+    // the session layers `Code::Jit` over. All are REGRESSION-GUARDs (6 in the
+    // legacy file): a regression in `Jit::drop` / the reclaim counter surfaces
+    // here before it surfaces as a session-level leak or a dangling GOT slot.
+    #[allow(clippy::arc_with_non_send_sync)]
+    fn arc_jit() -> std::sync::Arc<Jit> {
+        // `Arc<Jit>` is intentionally not Send+Sync (Jit is not Sync); the
+        // reclaim discipline under test IS the production `Code::Jit(Arc<Jit>)`
+        // shape, so the non-Send-Sync Arc is the thing under test.
+        std::sync::Arc::new(Jit::new_with_symbols(&[]).expect("Jit::new for reclaim test"))
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 31 Scenario 2 (headline assertion 1)
+    //       — a REDEFINITION produces a NEW JIT batch, never reuses the prior
+    //       batch's allocation. Kernel of the legacy
+    //       `decision31_scenario2_per_redefinition_jit_pages_reclaimed`
+    //       Arc::ptr_eq guard, lifted off the session to the Arc level.
+    #[test]
+    fn jit_batches_are_distinct_allocations() {
+        use std::sync::Arc;
+        let first = arc_jit();
+        let second = arc_jit();
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "two separately-constructed JIT batches must be distinct Arc \
+             allocations — a redefinition reusing the prior batch's allocation \
+             violates Decision 31 Scenario 2"
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 31 Scenario 2 footnote
+    //       (unbounded-growth guard) — N batches created and released drive
+    //       at least N reclaims. Kernel of the legacy
+    //       `decision31_scenario2_repeated_redefinition_no_unbounded_growth`
+    //       reclaim-delta assertion: pre-Wave-3b `kept_jits` retained every
+    //       batch (0 reclaims until session drop); post-fix each batch's pages
+    //       reclaim as its last Arc clone drops.
+    #[test]
+    fn repeated_batch_drop_reclaims_each() {
+        const N: u64 = 50;
+        let before = jit_free_memory_call_count();
+        for _ in 0..N {
+            let jit = arc_jit();
+            drop(jit); // last (only) clone drops → Jit::drop → free_memory
+        }
+        let after = jit_free_memory_call_count();
+        assert!(
+            after - before >= N,
+            "expected at least {N} JIT::free_memory calls across {N} \
+             create+drop cycles, got {}. Pre-Wave-3b retention would have \
+             shown 0 reclaims until session teardown.",
+            after - before
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 31 Scenario 1 — a batch with no
+    //       surviving holder reclaims IMMEDIATELY on drop (the per-eval case:
+    //       an expression eval creates no `ModuleEntry::Def`, so the eval-fn
+    //       batch is the sole Arc holder and its pages reclaim at end of eval).
+    //       Kernel of `decision31_scenario1_per_eval_jit_pages_reclaimed`.
+    #[test]
+    fn sole_holder_batch_reclaims_on_drop() {
+        let before = jit_free_memory_call_count();
+        {
+            let _jit = arc_jit(); // sole holder; no session entry retains it
+        } // drops here
+        let after = jit_free_memory_call_count();
+        assert_eq!(
+            after, before + 1,
+            "a batch with a single Arc holder must reclaim exactly once when \
+             that holder drops (counter before={before}, after={after})"
+        );
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 31 Scenario 2 + Wave-3b carry-forward
+    //       invariant — reclaim fires ONLY when the LAST clone drops; while any
+    //       other clone lives, the pages stay valid. This is the crate-internal
+    //       kernel of the legacy
+    //       `wave3b_invariant_register_defn_does_not_drop_existing_arc_jit`
+    //       guard: the carry-forward keeps a second Arc clone alive across a
+    //       failed redefinition, so the original batch's GOT-referenced pages
+    //       must NOT reclaim mid-typecheck.
+    #[test]
+    fn batch_not_reclaimed_while_a_clone_survives() {
+        use std::sync::Arc;
+        let session_clone = arc_jit();
+        let captured_clone = Arc::clone(&session_clone); // the "carry-forward" / test clone
+        assert_eq!(Arc::strong_count(&session_clone), 2);
+
+        let before = jit_free_memory_call_count();
+        // Drop the "session" clone (the entry's `code` field being replaced).
+        drop(session_clone);
+        let after_partial_drop = jit_free_memory_call_count();
+        assert_eq!(
+            after_partial_drop, before,
+            "dropping one of two Arc<Jit> clones MUST NOT reclaim — the batch's \
+             pages are still referenced by the surviving clone; reclaiming here \
+             would dangle the GOT slot (Wave 3b carry-forward invariant)"
+        );
+        assert_eq!(
+            Arc::strong_count(&captured_clone),
+            1,
+            "the surviving clone is now the sole holder"
+        );
+
+        // Now drop the last clone — reclaim fires exactly once.
+        drop(captured_clone);
+        let after_final_drop = jit_free_memory_call_count();
+        assert_eq!(
+            after_final_drop, before + 1,
+            "dropping the LAST Arc<Jit> clone must reclaim exactly once"
+        );
+    }
 }

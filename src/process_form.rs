@@ -365,21 +365,27 @@ fn compile_macro_with_state(
     Ok(())
 }
 
-/// Compile a single macro clause using the `_with_state` API.
+/// Compile a single macro clause — the SINGLE implementation shared by both
+/// entry shapes (FIXME 0109 Wave D collapse).
 ///
-/// Mirrors `compile_macro_clause_inline` but uses `&TypeChecker` + `&mut CheckState`
-/// instead of `&mut ModuleCompiler`.
-#[allow(clippy::too_many_arguments)]
-fn compile_macro_clause_with_state(
+/// Post-Decision-44 the `_with_state` (raw-refs, resolver path) and `_inline`
+/// (`&mut ModuleCompiler`, Pass-2 path) clause compilers had byte-identical
+/// bodies — the only difference was where the references came from. This core
+/// takes the references explicitly; the two thin adapters
+/// (`compile_macro_clause_with_state` / `compile_macro_clause_inline`) source
+/// them from their respective callers. No behavioural change: each adapter
+/// passes exactly the references its former body used (the `_with_state`
+/// shared-state→aliases/prelude resolution, incl. the unit-test leaked-default
+/// fallback, lives in that adapter, unchanged).
+fn compile_macro_clause_core(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    next_type_id: &std::sync::atomic::AtomicU32,
-    check_state: &mut CheckState,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     target_module: &ModuleFullPath,
     macro_name: &Symbol,
     clause_idx: usize,
     clause: &cranelisp_frontend::MacroClause,
     span: Span,
-    accumulator: &mut ModuleCheckAccumulator,
     typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
     shared_state: Option<&crate::session_v4::SharedState>,
 ) -> Result<(), CranelispError> {
@@ -399,30 +405,7 @@ fn compile_macro_clause_with_state(
 
     // Step 4: Typecheck via the collapsed `check_forms` surface (Decision 44
     // 2026-05-13 third amendment). `check_program_compat` runs the internal
-    // Pass 1 + Pass 2 + finalize sequence in one call. `check_state` /
-    // `accumulator` are no longer threaded through the public typecheck
-    // surface — they are vestigial parameters on this function (kept for
-    // source-compat with pre-S66 callers).
-    let _ = check_state;
-    let _ = accumulator;
-    let _ = next_type_id;
-    // module_aliases lives on SharedState; this `_with_state` macro-clause path
-    // is slated for deletion in the W-Macro Pass-1 rewrite (fire B). When
-    // shared_state is absent (unit-test paths), an empty leaked alias map is a
-    // safe stand-in (macro clause bodies do not use alias imports).
-    let module_aliases: &cranelisp_types::ModuleAliases = match shared_state {
-        Some(s) => &s.module_aliases,
-        None => Box::leak(Box::new(cranelisp_types::ModuleAliases::default())),
-    };
-    // Same Option<&SharedState> handling as `module_aliases`: a macro clause
-    // body does not use prelude bare-name fallback (its synthesised body uses
-    // qualified `macros/*` refs), so an empty map (all-OFF) is a safe stand-in.
-    let prelude_fallback: &cranelisp_typecheck::PreludeFallback = match shared_state {
-        Some(s) => &s.prelude_fallback,
-        None => Box::leak(Box::new(
-            cranelisp_typecheck::PreludeFallback::default(),
-        )),
-    };
+    // Pass 1 + Pass 2 + finalize sequence in one call.
     check_program_compat_no_gap(
         symbol_tables,
         module_aliases,
@@ -457,7 +440,6 @@ fn compile_macro_clause_with_state(
     // extracted `defn_name`, so the prior `Defn` reconstruction is dropped.
     let tc_modules = symbol_tables;
     ensure_typecheck_product(typecheck_products, target_module);
-    let _ = accumulator;
     let names = [defn_name.clone()];
     inline_jit_codegen_for_names(
         target_module,
@@ -469,6 +451,52 @@ fn compile_macro_clause_with_state(
     )?;
 
     Ok(())
+}
+
+/// Compile a single macro clause from the resolver's raw references (no
+/// `&mut ModuleCompiler`). Thin adapter over [`compile_macro_clause_core`].
+///
+/// `check_state` / `accumulator` / `next_type_id` are vestigial under the
+/// collapsed `check_forms` surface (kept for source-compat with the resolver
+/// call site). `module_aliases` / `prelude_fallback` derive from `shared_state`
+/// — when absent (unit-test paths) an empty leaked default is a safe stand-in
+/// (macro clause bodies use qualified `macros/*` refs, never aliases or the
+/// prelude bare-name fallback).
+#[allow(clippy::too_many_arguments)]
+fn compile_macro_clause_with_state(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    next_type_id: &std::sync::atomic::AtomicU32,
+    check_state: &mut CheckState,
+    target_module: &ModuleFullPath,
+    macro_name: &Symbol,
+    clause_idx: usize,
+    clause: &cranelisp_frontend::MacroClause,
+    span: Span,
+    accumulator: &mut ModuleCheckAccumulator,
+    typecheck_products: &dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+    shared_state: Option<&crate::session_v4::SharedState>,
+) -> Result<(), CranelispError> {
+    let _ = (check_state, accumulator, next_type_id);
+    let module_aliases: &cranelisp_types::ModuleAliases = match shared_state {
+        Some(s) => &s.module_aliases,
+        None => Box::leak(Box::new(cranelisp_types::ModuleAliases::default())),
+    };
+    let prelude_fallback: &cranelisp_typecheck::PreludeFallback = match shared_state {
+        Some(s) => &s.prelude_fallback,
+        None => Box::leak(Box::new(cranelisp_typecheck::PreludeFallback::default())),
+    };
+    compile_macro_clause_core(
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+        target_module,
+        macro_name,
+        clause_idx,
+        clause,
+        span,
+        typecheck_products,
+        shared_state,
+    )
 }
 
 /// Scope the resolver's borrows to just the expansion phase.
@@ -939,9 +967,23 @@ pub fn process_cluster_once(
             // Finalize: single `check_program_compat` over the expanded
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
-            finalize_cluster(
+            let outcome = finalize_cluster(
                 ctx, module, &expanded_program, &mut accumulator,
-            )
+            )?;
+            // FIXME 0342 — only AFTER the parent's symbols are committed to live
+            // (finalize_cluster done) do we drive declared submodules. This is
+            // the deferral that lets a submodule's `(import [super [helper]])`
+            // resolve the now-live parent symbol. A submodule that needs loading
+            // surfaces as a `Gap`; the cluster retries from the top (idempotent —
+            // already-loaded submodules are skipped). Both the worker entry
+            // (`cluster::process_cluster`) and the REPL entry
+            // (`session_v4::process_single_form`) drive this same core.
+            if matches!(outcome, ClusterOnce::Done { .. })
+                && let Some(dep) = drive_submodules(ctx, module)?
+            {
+                return Ok(ClusterOnce::Gap { dep });
+            }
+            Ok(outcome)
         }
         Pass2Result::BlockedOnFqModule { dep_module } => {
             // An FQ macro reference to an unloaded module surfaced during
@@ -2151,16 +2193,32 @@ fn handle_mod(
 ) -> Result<BlockAction, CranelispError> {
     if let Some(body_sexps) = &decl.inline_body {
         // Step 1 (§8.2.2): write the inline body to the submodule backing file.
+        // Always required — the submodule loads from this child `.cl` regardless
+        // of whether the parent keeps the inline body (REPL) or is rewritten to
+        // a bare reference (batch).
         write_inline_mod_to_disk(module, &decl.name, body_sexps, ctx.project_root)?;
         // Step 2 (§8.2.2, FIXME 0217): rewrite the PARENT source file, replacing
         // the inline `(mod name form…)` form with a bare `(mod name)` reference,
         // then drop `inline_body` from the in-memory ModDecl so the persistent
         // symbol-table shape matches a manually-created submodule (the §8.2.2
-        // "indistinguishable" + "one-time creation syntax" invariants). Failures
-        // to locate/rewrite the parent file are non-fatal — step 1 already
-        // created the backing file, so loading proceeds; the rewrite is the
+        // "indistinguishable" + "one-time creation syntax" invariants).
+        //
+        // REPL-mode preservation (FIXME 0343): in REPL mode the parent file is
+        // the user's editable, regenerated-from-state backing file. Extracting
+        // its inline `(mod …)` body to a bare reference (then having
+        // `regenerate_backing_file` rewrite the parent from the table, which
+        // cannot reproduce the CHILD's defns) silently DROPS the submodule body
+        // from the parent on disk — a data-corruption defect. So the extraction
+        // rewrite fires ONLY in batch mode (`--run`/`--link`, introspection
+        // None); in REPL mode the parent keeps the inline body verbatim (the
+        // child `.cl` from step 1 makes the submodule loadable; regeneration is
+        // role-gated off for submodule-bearing parents, see `save::should_*`).
+        // Failures to locate/rewrite the parent file are non-fatal — step 1
+        // already created the backing file, so loading proceeds; the rewrite is
         // durable-shape cleanup, not a correctness gate for this run.
-        rewrite_parent_inline_mod(ctx, module, decl);
+        if ctx.introspection.is_none() {
+            rewrite_parent_inline_mod(ctx, module, decl);
+        }
     }
 
     // Compute submodule path: "main" + "util" → "main.util"
@@ -2176,6 +2234,37 @@ fn handle_mod(
     // `module_part` of a bare qualified reference. Idempotent across re-entry
     // (e.g. cache-hit / already-loaded paths below).
     register_submodule_alias(ctx, &decl.name, &sub_path, decl.span);
+
+    // FIXME 0342 — DEFER the submodule register+typecheck-block. During Pass 0
+    // the PARENT's own definitions are not yet registered/committed to live, so
+    // a submodule that imports a parent symbol via `(import [super [helper]])`
+    // would typecheck BEFORE `helper` exists and fail "'helper' not found in
+    // module '<parent>'" (a non-cyclic child→parent `super` import, conforming
+    // per spec §8.3.8). Pass 0 therefore does ONLY the lightweight,
+    // ordering-independent work (inline-body write above + alias) and returns
+    // `Continue`; the submodule is driven (resolved + registered + blocked on)
+    // AFTER `finalize_cluster` commits the parent's symbols — see
+    // `drive_submodules`. Idempotent on the cluster's retry-from-top: already
+    // loaded submodules are skipped by `drive_submodule`'s contains-key gate.
+    Ok(BlockAction::Continue)
+}
+
+/// Drive a single declared submodule to typecheck readiness (register + block),
+/// AFTER the parent cluster has committed its own symbols (FIXME 0342). Returns
+/// `Continue` when the submodule is already loaded / cache-hit (no block) or
+/// `Block { dep_module }` when the caller must surface a `Gap` and retry the
+/// cluster from the top once the submodule is live.
+///
+/// This is the deferred second half of the former `handle_mod` body — the
+/// file-resolution + `register_dep` + `register_module` + `block_for_typecheck`
+/// sequence, moved out of Pass 0 so the parent's definitions are live (and thus
+/// visible to a `super` import) before the submodule typechecks.
+fn drive_submodule(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    decl: &cranelisp_types::ModDecl,
+) -> Result<BlockAction, CranelispError> {
+    let sub_path = ModuleFullPath::from(format!("{}.{}", module, decl.name));
 
     // Already loaded — resolution chain handles qualified references.
     if ctx.symbol_tables.contains_key(&sub_path) {
@@ -2236,6 +2325,30 @@ fn handle_mod(
     Ok(BlockAction::Block {
         dep_module: sub_path,
     })
+}
+
+/// Drive all of `module`'s declared submodules to typecheck readiness AFTER the
+/// parent cluster has committed its symbols (FIXME 0342). Returns the first
+/// submodule that needed loading (so the caller surfaces a `Gap` and retries the
+/// cluster from the top); `None` when every submodule is already live. The
+/// cluster's retry-from-top makes this drain one submodule per pass — idempotent
+/// (`drive_submodule` skips already-loaded ones).
+fn drive_submodules(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+) -> Result<Option<ModuleFullPath>, CranelispError> {
+    // Snapshot the decls — `drive_submodule` borrows `ctx` mutably (registers
+    // modules), so we cannot hold a `submodules` borrow across the call.
+    let decls: Vec<cranelisp_types::ModDecl> = match ctx.symbol_tables.get(module) {
+        Some(st) => st.submodules.clone(),
+        None => return Ok(None),
+    };
+    for decl in &decls {
+        if let BlockAction::Block { dep_module } = drive_submodule(ctx, module, decl)? {
+            return Ok(Some(dep_module));
+        }
+    }
+    Ok(None)
 }
 
 /// Outcome of the layout-hash gate (platform-interface.md §5.5.4).
@@ -2667,12 +2780,11 @@ fn compile_macro_if_needed(
 // parameters and returned Ok(()). The (now-deleted) scheduler block_for_macro_codegen
 // handles dependency compilation through the normal priority codegen path.
 
-/// Compile a single macro clause inline using the worker's shared state.
-///
-/// Mirrors `compile_single_clause` from expander.rs but uses the worker's
-/// JIT lifetime management and GOT registration instead of creating an
-/// isolated JIT per clause. Uses `check_form` (per-form API) instead of
-/// the monolithic `tc.check()`.
+/// Compile a single macro clause inline using the worker's `&mut ModuleCompiler`.
+/// Thin adapter over [`compile_macro_clause_core`] (FIXME 0109 Wave D collapse)
+/// — sources the references from `ctx` directly (its `module_aliases` /
+/// `prelude_fallback` are the live worker maps, no leaked-default fallback).
+/// `accumulator` is vestigial under the collapsed `check_forms` surface.
 fn compile_macro_clause_inline(
     ctx: &mut ModuleCompiler,
     macro_name: &Symbol,
@@ -2681,72 +2793,20 @@ fn compile_macro_clause_inline(
     span: Span,
     accumulator: &mut ModuleCheckAccumulator,
 ) -> Result<(), CranelispError> {
-    // Step 1: Synthesize the defn Sexp.
-    let synth_sexp = cranelisp_frontend::synthesize_macro_clause_defn(
-        macro_name.as_ref(),
-        clause_idx,
-        clause,
-        span,
-    );
-
-    // Step 2: Expand quasiquotes.
-    let expanded_sexp = cranelisp_frontend::expand_quasiquotes(&synth_sexp)?;
-
-    // Step 3: Build AST (macro clause bodies use quasiquote constructs,
-    // not other macros, so no expander is needed). Macro clause synthesis is
-    // compiler-generated; user `(trace ...)` cannot reach this path.
-    let program = build_program_compat(&[expanded_sexp])?;
-
-    // Step 4: Typecheck via the collapsed `check_forms` surface (Decision 44
-    // 2026-05-13 third amendment) — single call runs Pass 1 + Pass 2 + finalize.
-    let module = ctx.current_module.clone();
     let _ = accumulator;
-    check_program_compat_no_gap(
+    let module = ctx.current_module.clone();
+    compile_macro_clause_core(
         ctx.symbol_tables,
         ctx.module_aliases,
         ctx.prelude_fallback,
         &module,
-        &program,
-    )?;
-
-    // Step 5: Extract the defn from the annotated symbol table (not the unannotated program).
-    // The typechecker stores annotated defns (with resolved_call on AST nodes) in
-    // ModuleEntry::Def.ast. Using the unannotated program would lose these annotations.
-    let defn_name = program
-        .iter()
-        .find_map(|tl| match tl {
-            TopLevel::Defn(d) => Some(d.name.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| CranelispError::MacroError {
-            message: format!(
-                "macro clause {} for '{}' produced no defn",
-                clause_idx, macro_name
-            ),
-            location: ErrorLocation::from_span(span),
-        })?;
-
-    // Compile macro clause through the unified compile_to_module path.
-    // Macro clause functions are normal functions on per-module GOTs — the
-    // typechecker has registered `defn_name` on the current module's symbol
-    // table with `ast: Some(_)` and `got_slot: Some(_)` (Wave 0 invariant).
-    // S69 Submission 35: `ast` is `DefnVariant` (no `name`); the codegen
-    // `names` array keys off `defn_name` directly (Defn reconstruction dropped).
-    let module = ctx.current_module.clone();
-    let tc_modules = ctx.symbol_tables;
-    ensure_typecheck_product(ctx.typecheck_products, &module);
-    let _ = accumulator;
-    let names = [defn_name.clone()];
-    inline_jit_codegen_for_names(
-        &module,
-        &names,
-        tc_modules,
-        None,
-        &[],
+        macro_name,
+        clause_idx,
+        clause,
+        span,
+        ctx.typecheck_products,
         ctx.shared_state,
-    )?;
-
-    Ok(())
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -3495,6 +3555,83 @@ mod tests {
         assert!(
             splice_inline_mod_to_bare("(mod child (defn", "child").is_none(),
             "a source that does not parse MUST be a no-op (best-effort)",
+        );
+    }
+
+    /// Minimal `ModuleCompiler` for exercising `handle_mod`'s Pass-0 behaviour.
+    /// (Mirrors `worker::tests::mk_writer_test_ctx`, which is not visible here.)
+    fn mk_mod_test_ctx<'a>(
+        symbol_tables: &'a dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+        next_type_id: &'a std::sync::atomic::AtomicU32,
+        scheduler: &'a CompileScheduler,
+        typecheck_products: &'a dashmap::DashMap<ModuleFullPath, crate::session_v4::TypecheckProduct>,
+        module: ModuleFullPath,
+    ) -> ModuleCompiler<'a> {
+        let module_aliases: &'static cranelisp_types::ModuleAliases =
+            Box::leak(Box::new(cranelisp_types::ModuleAliases::default()));
+        let prelude_fallback: &'static cranelisp_typecheck::PreludeFallback =
+            Box::leak(Box::new(cranelisp_typecheck::PreludeFallback::default()));
+        ModuleCompiler {
+            symbol_tables,
+            next_type_id,
+            module_aliases,
+            prelude_fallback,
+            check_state: CheckState::new(module.clone()),
+            current_module: module,
+            scheduler,
+            typecheck_products,
+            introspection: None,
+            lib_dirs: &[],
+            platform_dirs: &[],
+            project_root: Path::new("/"),
+            shared_state: None,
+        }
+    }
+
+    // FIXME 0342 — Pass-0 `handle_mod` MUST NOT register+block the submodule
+    // for typecheck: it returns `Continue` (only the lightweight alias /
+    // inline-write work happens in Pass 0). The submodule is driven AFTER
+    // `finalize_cluster` commits the parent's symbols (so a `super` import of a
+    // parent symbol resolves). This pins "no block during Pass-0".
+    // spec: spec/08-modules.md §8.3.8
+    #[test]
+    fn handle_mod_pass0_returns_continue_no_block() {
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+        let next_type_id = std::sync::atomic::AtomicU32::new(0);
+        let scheduler = CompileScheduler::new();
+        let typecheck_products = dashmap::DashMap::new();
+        let mut ctx = mk_mod_test_ctx(
+            &symbol_tables, &next_type_id, &scheduler, &typecheck_products,
+            module.clone(),
+        );
+
+        // A bare `(mod test)` decl (no inline body — the inline-write path is
+        // skipped, so no FS access). Pass-0 handling MUST return `Continue` —
+        // it does NOT resolve the submodule file or block on its typecheck.
+        let decl = cranelisp_types::ModDecl {
+            name: "test".into(),
+            visibility: Visibility::Public,
+            inline_body: None,
+            span: Span::SYNTHETIC,
+        };
+        let action = handle_mod(&mut ctx, &module, &decl)
+            .expect("Pass-0 handle_mod must not error for a bare (mod test)");
+        assert!(
+            matches!(action, BlockAction::Continue),
+            "Pass-0 handle_mod MUST return Continue (defer submodule drive to \
+             post-finalize), got a Block",
+        );
+        // The submodule is NOT yet registered (drive is deferred).
+        assert!(
+            !symbol_tables.contains_key(&ModuleFullPath::from("user.test")),
+            "Pass-0 handle_mod MUST NOT register the submodule (deferred to \
+             drive_submodules after finalize)",
         );
     }
 }

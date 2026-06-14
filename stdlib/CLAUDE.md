@@ -2,6 +2,33 @@
 
 Standard library for Cranelisp. Owned by `/stdlib` skill.
 
+## Current State (Sprint 82 Phase 6 — defect-restore)
+
+S82 fixed four S81-surfaced defects that had forced stdlib workarounds.
+Restored this phase:
+
+- **assert-eq stacked bounds (0341 parse half).** `testing/assertions.cl`
+  now LOADS — its `[:Eq :Display a :Eq :Display b]` signature parses, and
+  the file imports `[primitives [Bool String str-concat]]` so the bare
+  `:Bool`/`:String`/`str-concat` resolve under the null import.
+  `assert-true`/`assert-false` work end-to-end. **CAVEAT:** *calling*
+  `assert-eq` (a cross-module call of a stacked-trait-bound fn) currently
+  SIGSEGVs — the `Bounds` carrier corrupts on module reload (the importer
+  path of 0341 is not fully fixed). Filed as **FIXME 0354** (/typecheck).
+  Until 0354 lands, stdlib self-tests use `assert-true`/`assert-false`,
+  not `assert-eq`.
+- **`(mod test)` self-tests restored in `testing/runner.cl`** (0342 super
+  import + 0343 source-regen-no-clobber). The submodule imports the
+  runner's parent helpers via `super`, asserts with `assert-true`/
+  `assert-false`, survives a load without rewriting the backing `.cl`, and
+  runs green via the in-language runner
+  (`(discover-tests ["testing.runner.test"])` → 4/4 pass).
+- **`vec-reduce` (0344) works** — `(vec-reduce add-i64 0 [1 2 3])` ⇒ 6,
+  scheme `(Fn [(Fn [a b] a) a (Vec b)] a)`. It was never physically
+  removed; 0344 unblocks its use (the runner's tally/report folds remain
+  hand-rolled loops because they predate the fix — fine to migrate to
+  `vec-reduce` in a later pass).
+
 ## Current State (Sprint 81 Wave I-5)
 
 The prelude is a **pure re-export shell** — zero inline definitions. All macros

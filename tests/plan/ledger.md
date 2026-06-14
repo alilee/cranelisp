@@ -36,6 +36,358 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 82 full-clear COMPLETE — `sprint23.rs` (0144) harvested + DELETED; FIXME 0144 CLOSED; quarantine empty (/dev backend, 2026-06-14)
+
+The final file. The one remaining GAP from `tests/legacy/sprint23.rs` —
+`watch_unchanged_modules_keep_cache`, the §14.7 watch invariant that an
+unchanged module keeps its cached `.o` while a changed sibling is recompiled —
+was ported as a **cranelisp-backend cache-manifest unit test**:
+`crates/cranelisp-backend/src/cache/manifest.rs::
+check_manifest_changed_module_misses_unchanged_sibling_hits` (green; spec
+`design/backend/module-caching.md §3`). It pins the paired same-manifest
+property the watcher relies on: present a changed hash for A → A is NOT a cache
+hit; present B's unchanged hash → B IS still a cache hit. The prior
+`..._unrelated_module_change_does_not_invalidate` harvest only asserted the
+unchanged-sibling half; this pins both halves together.
+
+`tests/legacy/sprint23.rs` DELETED (`git rm`); FIXME `0144` DELETED (`git rm -f`
+— it carried uncommitted /qa review annotations). `tests/legacy/` now contains
+**only `README.md`** (quarantine table emptied; "HARVEST COMPLETE" note added).
+
+**FINAL HARVEST TALLY: 20/20 legacy files deleted; all 12 harvest FIXMEs closed**
+(0124, 0125, 0127, 0130, 0133, 0134, 0135, 0136, 0143, 0144, 0148, 0149). The
+Sprint-64 quarantine is fully drained — every load-bearing assertion is now in
+the active e2e suite or an owning-crate `#[cfg(test)]` module; provenance lives
+in git history.
+
+### Sprint 82 — IO-trace off-path microbench (FIXME 0021 + 0336 CLOSED) (/qa, 2026-06-14)
+
+Authored `benches/io_trace_off_path.rs` (criterion, `harness = false`,
+`bench`-feature-gated), the release-mode microbench FIXME 0021 called for, now
+unblocked by 0336's `io_trace::bench_record_event_off_path` accessor. The bench
+calls the filter-OFF `record_event` path **in-process at nanosecond resolution**
+against a no-op baseline + a per-event "effect_proxy" denominator.
+
+**Measured (release, Linux, 2026-06-14):** noop_baseline ≈ 0.835 ns; off_path ≈
+1.129 ns; effect_proxy ≈ 1.974 ns ⇒ **guard_cost ≈ 0.29 ns** — a fixed,
+sub-nanosecond per-event-site cost (one relaxed `OnceLock` load + null-check +
+branch). The off-path guard is constant, so design
+`design/backend/archive/io-trampoline-trace.md` §9 **AC 2 ("< 1%")** holds for
+any event site whose own work is ≥ ~29 ns — which every real IO-trampoline /
+platform-effect dispatch (alloc + indirect call + RC = hundreds of ns to µs)
+trivially exceeds. The authoritative, machine-independent figure the bench
+establishes is the absolute ~0.29 ns guard cost; `<1%` follows from it for all
+real event sites. Run: `cargo bench --features bench --bench io_trace_off_path`.
+
+**Integration ceiling:** the original S61 placeholder
+`io_trace_off_path_subprocess_completes_within_generous_ceiling` (5-second
+subprocess wall-clock) no longer exists — it was dropped in the port of
+`sprint61_observability_io.rs` → `spec_10_io.rs` and was never carried over. No
+new integration ceiling is added: a subprocess / suite-wall-clock test cannot
+reach nanosecond resolution (process-spawn + I/O jitter swamps the signal), so
+the criterion bench is the single authoritative AC-2 measure. A comment in
+`spec_10_io.rs` (above the io_trace snapshot tests) records this and points to
+the bench.
+
+**FIXMEs 0021 + 0336 CLOSED + `git rm`'d** (accessor exists + bench establishes
+the bound). Workspace stays at 2 reds (the intentional 0351 guards) — no
+regression. `cargo bench --features bench --bench io_trace_off_path` builds +
+runs; the no-feature `cargo bench` builds the inert fallback cleanly.
+
+### Sprint 82 CLOSE — FIXME 0354 cross-module stacked-bound SIGSEGV repro + close-validation (/qa, 2026-06-14)
+
+Authored the third failing-not-ignored known-defect guard — FIXME 0354, the
+Phase-6 /stdlib SIGSEGV discovery — and ran a light close-validation sweep.
+
+**Part 1 — FIXME 0354 failing-not-ignored e2e repro (S83-deferred defect):**
+
+| Test (binary::fn) | FIXME | Owner | Disposition / one-line |
+|---|---|---|---|
+| `spec_07_traits::cross_module_stacked_trait_bound_call_runs_to_clean_exit` | 0354 | /typecheck | out-of-scope (owner=/typecheck), target S83 — spec §7.8 + §8.5: a stacked-bound fn `[:Eq :Display a :Eq :Display b]` defined in an IMPORTED `helper.cl` and called from `entry.cl` MUST run to a clean exit. `(cmp 1 1)`=`"11"`, `(str-len "11")`=2 → exit 2. Today the call SIGSEGVs (exit 139). The same fn defined+called same-module works (`stacked_trait_bounds_*_compiles`, both green), isolating the defect to the `TypeExpr::Bounds`-carrier corruption across module scheme serialize/reload. |
+
+**Stderr / exit signature (verbatim):** `Segmentation fault (core dumped)`,
+exit 139 (nextest surfaces this as "expected exit 2, got None" — signal-killed,
+no exit code). Confirmed manually: `helper.cl` + `entry.cl` + `prelude.cl`
+(test-standard) under `--run entry.cl` ⇒ SIGSEGV (core dumped). NOTE: the crash
+requires the harness's project-root `prelude.cl` auto-load path — pointing
+`CRANELISP_LIB` at the preludes dir instead surfaces a *type error*
+(`unknown trait \`Eq\``), so the repro uses `PreludeVariant::TestStandard`
+(drops `prelude.cl` into the project tmpdir) to hit the real reload path.
+
+**Part 2 — light close-validation (S82 defect fixes hold end-to-end):**
+
+| Surface | Result |
+|---|---|
+| `--test exemplar` | green (exemplar still builds/solves) |
+| `super_import_*` (0342, spec_08_modules) | green |
+| `trace::*` timing+capture (0340) | green |
+| `stacked_trait_bounds_*_compiles` same-module (0341, spec_07_traits) | green |
+| `polymorphic_accumulator_fold_does_not_over_unify` (0344, spec_04_expressions) | green |
+| `mod_submodule_body_survives_source_regeneration` (0343, repl_persist) | green |
+| `/info`·`/sig`·bare-`trace` self-doc (0338, repl_introspection) | green |
+
+**Workspace after this work: 3 reds, all named known-defect guards, all S83:**
+- `spec_05_definitions::generated_field_accessor_resolves_as_free_callable` (0351, /typecheck)
+- `spec_08_modules::self_qualified_type_reference_resolves_to_local_type` (0351, /typecheck)
+- `spec_07_traits::cross_module_stacked_trait_bound_call_runs_to_clean_exit` (0354, /typecheck) ← NEW
+
+NO other reds. All three are failing-not-ignored per
+`memory/feedback_failing_not_ignored.md`; they flip green when /typecheck
+resolves 0351 / 0354. `spec_link_check.py` clean on the new citation.
+
+### Sprint 82 harvest ENDGAME — verify-and-delete sweep + 0351 repros (/qa, 2026-06-14)
+
+The S82 harvest endgame: (1) confirmed the sketch_port (0136) GAPs are covered;
+(2) authored 2 failing-not-ignored 0351 repros; (3) ran the verify-and-delete
+sweep over all 20 `tests/legacy/*.rs` files against the current active suite
+(incl. all S82 backend/typecheck/intrinsics/platform/frontend unit harvests +
+prior-sprint e2e carry-forwards).
+
+**Workspace after the endgame: 2558 run / 2556 passed / 2 failed / 0 skipped**
+(65s, Linux, `--no-fail-fast`). The **2 reds are the intentional 0351
+failing-not-ignored guards** below — NOT regressions. (Net +3 vs the pre-endgame
+2555: 2 reds + 1 green `_`-discard carry-forward.) NB the /dev-owned unit test
+`session_v4::persistent_worker_tests::reload_during_compile_race_completes`
+intermittently FAILs under fail-fast parallelism but PASSES under `--no-fail-fast`
+— a pre-existing scheduling race in a `src/session_v4.rs` unit test, not /qa-owned
+and not introduced by this work (flag to /dev int for the race fix).
+
+**Part 1 — sketch_port (0136) harvest:** all 34 GAPs verified covered in the
+active suite (the wave-5.6 reaudit's recommended GAP-COVER targets all exist,
+authored across S64–S81; the 11-known-failure lineage — multi-sig, default-method
+synthesis/override, first-class ctor, parameterized-ADT impl, `_`-wildcard,
+Pure/trace-nanos — all have covering tests; `discover-tests`/`catch-runtime-error`
+user-composition covered by `spec_12_runtime.rs::discover_tests_and_catch_runtime_error_user_composition`).
+The ONE residue shape — multiple `_` discard params accepted (sketch #11) — was
+NOT otherwise covered; ported as **`spec_05_definitions.rs::defn_multiple_discard_params_accepted`** (green, spec §5.1.1).
+
+**Part 2 — 0351 failing-not-ignored repros (S83-deferred defects):**
+
+| Test (binary::fn) | FIXME | Owner | Disposition / one-line |
+|---|---|---|---|
+| `spec_05_definitions::generated_field_accessor_resolves_as_free_callable` | 0351 | /typecheck | out-of-scope (owner=/typecheck), target S83 — spec §5.2.6: a field accessor is an auto-generated free fn named for the field; `(v (Box 5))` MUST → 5. Today errors `undefined variable: v`. Single-file, no module. Spec arbitration confirmed accessors ARE auto-generated free fns (not match-only) → genuine defect. |
+| `spec_08_modules::self_qualified_type_reference_resolves_to_local_type` | 0351 | /typecheck | out-of-scope (owner=/typecheck), target S83 — spec §8.5: a module MUST be able to ref its own types by FQ name; `:t/Box` inside `t.cl` MUST resolve. Today errors `unknown type \`t/Box\` (from module \`\`)`. Single-file, no super-import. |
+
+Stderr signatures (verbatim):
+- accessor: `Error: type error at 1..2: undefined variable: v`.
+- self-qualified: `module 't' failed: type error at 34..79: unknown type \`t/Box\` (from module \`\`)`.
+
+**Part 3 — verify-and-delete sweep.** 15 files DELETED (100% covered/obsolete,
+re-verified against the current active suite, not the conservative pre-harvest
+disposition), 8 harvest FIXMEs closed; 5 files KEPT with precise un-harvested
+residue.
+
+**DELETED (15 files; FIXMEs closed: 0125, 0130, 0133, 0134, 0136, 0143, 0148, 0149):**
+`e2e.rs` / `ring0.rs` / `ring1.rs` / `ring2.rs` (0134 — GAP-COVER all authored;
+72/77/28/18 distinct carried origins in the active suite); `sketch_port.rs`
+(0136 — Part 1); `ring3_repl.rs` (0125 — 1 GAP covered by `spec_09_macros.rs`/
+`s76_macro_availability.rs`); `ring4_trace_taxonomy.rs` (0130 — 4 trace
+type-shape GAPs covered by `trace.rs`/`got_trace.rs` + intrinsics units);
+`v4_jit_reclaim.rs` (0133 — 6 reg-guards all covered by
+`cranelisp-backend/src/{jit,code}.rs` units); `v4_pipeline.rs` (0149 — 0 GAP);
+`wave6_demo_repros.rs` (0148 — 0 GAP, Defect-6 guard active in `regression.rs`);
+`examples.rs`/`examples_run.rs`/`exemplar.rs`/`exemplar_solver_correctness.rs`
+(0143); `io_minimal.rs` (0127 partial — 5/0/0).
+
+**KEPT (3 files; FIXMEs stay OPEN — residue ledger):**
+(`repl_negative_old.rs` / 0124 was harvested + DELETED in the S82 full-clear —
+see the "0124 harvested + DELETED" entry above.)
+
+| File | FIXME | Residue (count) | Owing crate(s) |
+|---|---|---|---|
+| `sprint23.rs` | 0144 | 1 GAP — `watch_unchanged_modules_keep_cache` (cache-manifest invariant) | cranelisp-backend (cache submodule) or tests/cache.rs |
+
+(`io.rs` / 0127 was harvested + DELETED + FIXME CLOSED in the S82 endgame — see
+the "0127 harvested + DELETED" entry below. `lenient.rs` / 0135 was harvested +
+DELETED + FIXME CLOSED in the S82 full-clear — see the "0135 harvested + DELETED"
+entry below.)
+
+### Sprint 82 full-clear — `lenient.rs` (0135) harvested + DELETED; FIXME 0135 CLOSED (/dev backend, 2026-06-14)
+
+The 5 GAP residue from `tests/legacy/lenient.rs` (the `test_io_schedule_*`
+IO-scheduling tests; the 11 lenient-eval *correctness* tests were already COVERED
+in `spec_04_expressions.rs::lenient_*` / `spec_12_runtime.rs`) was dispositioned
+and the file DELETED:
+
+- **COVERED-on-recheck (4 of 5):**
+  - `test_io_schedule_commutative_pair_par` — Par-node CLIF emission kernel is
+    COVERED by `cranelisp-backend` `control_flow.rs::par_codegen_tests::par_bind_emits_par_node_with_branch_count`
+    + `par_bind_branch_count_tracks_bindings`; the `Commutative` class lift by
+    `cranelisp-platform` `manifest_lifts_commutative_scheduling_class`.
+  - `test_io_schedule_sequential_no_par` — the `Sequential` class lift is COVERED
+    by `manifest_lifts_sequential_scheduling_class`; the no-Par codegen negative
+    is NEWLY PORTED this change-set (below).
+  - `test_io_schedule_data_dependent_no_par` — the data-dependency analysis kernel
+    is COVERED by `control_flow.rs::sparkability_tests::dependent_binding_is_not_sparkable`
+    + `mixed_independent_and_dependent_returns_only_independent`.
+  - (ResourceSerial token PLACEMENT — COVERED by `cranelisp-platform`
+    `resource_serial_token_lands_on_effect_node`.)
+- **PORTED (1)** as a backend `#[cfg(test)]` unit (codegen-internal negative):
+  `crates/cranelisp-backend/src/compiler/control_flow.rs`
+  `par_codegen_tests::sequential_let_emits_no_par_node` — a plain `Expr::Let`
+  (not `Expr::ParBind`) must NOT emit an IO_TAG_PAR=3 Par node. CLIF inspection;
+  `// spec: spec/10-io.md §10.12.2`.
+- **NEW FIXME 0353 (2 of 5 carried, not dropped):** the two legacy
+  `test_io_schedule_resource_serial_*_token_*` GAPs were TODO STUBS (no
+  assertion) — same-token-serializes / diff-token-parallelizes is a runtime
+  trampoline decision (intrinsics, Decision 0043), not unit-testable, and not
+  e2e-witnessable until the `cranelisp-test-capture` DLL gains ResourceSerial
+  functions. Filed `design/arch/fixmes/0353-io-resource-serial-token-serialization-e2e-fixture.md`
+  (target /platform → fixture, then /qa → timing e2e) rather than committing a
+  test that can only skip. No source defect implied.
+
+File DELETED (`git rm tests/legacy/lenient.rs`); README row removed; FIXME 0135
+DELETED (`git rm`). Net: 1 ported (backend unit) + 4 covered + 1 new FIXME
+(covering the 2 runtime stubs).
+
+### Sprint 82 endgame — `io.rs` (0127) harvested + DELETED; FIXME 0127 CLOSED (/qa, 2026-06-14)
+
+The 38 GAP residue from `tests/legacy/io.rs` (the IO-monad surface beyond the 38
+Pure/Bind/match/let tests already COVERED in `spec_10_io.rs`) was harvested as
+**e2e** (preferred over the FIXME's original Rust-API unit-test plan, which
+pre-dated the two-tier strategy in `tests/CLAUDE.md`). Every assertion is now
+e2e-expressible against the binary; no internal-API unit harvest was needed.
+
+- **PORTED → `tests/spec_10_io.rs` (16):** IO type-errors (6:
+  `bind_first_arg_must_be_io_neg`, `bind_second_arg_must_be_function_neg`,
+  `bind_continuation_must_return_io_neg`, `io_int_vs_io_bool_mismatch_neg`,
+  `match_arms_mixed_io_and_bare_neg`; the purity-guarantee case is subsumed by
+  these + `if_branch_consistency_neg_mixed`); then-combinator RC discard (5:
+  `then_discard_int_result`, `then_discard_string_result`,
+  `then_discard_adt_result`, `then_chained_discards`,
+  `then_unused_named_heap_param`); IO+ADT Option (2: `pure_wraps_option_none`,
+  `pure_wraps_option_some`); pure-as-HOF (1: `pure_as_higher_order_function`);
+  deep-bind-chain + batch exit-code (1, merged: `run_mode_deep_bind_chain_named_continuation`).
+- **PORTED → `tests/spec_platforms.rs` (5):** platform print/read-line effect
+  sequencing over the `stdio` platform under `--run` (ordering observable as
+  ordered stdout, replacing the legacy in-memory test-capture order assertions):
+  `bind_print_sequence_in_order`, `effect_propagates_through_function`,
+  `read_line_bind_print_echo`, and the 2 S57-demo-crash reg-guards collapsed into
+  `bind_chain_print_sequence_with_pure_terminator_emits_all` (expressed via the
+  primitive `bind` the `do`/`bind!` macros desugar to — tests MUST NOT depend on
+  stdlib).
+- **PORTED → `tests/spec_11_stdlib.rs` (3):** `bind!` macro desugaring
+  (`macro_bind_bang_single_binding`, `macro_bind_bang_multiple_bindings`,
+  `macro_bind_bang_sequential_reference`). The `do` macro was already covered
+  (`macro_do_*`). These are the only file permitted to use the workspace stdlib.
+- **PORTED → `tests/spec_04_expressions.rs` (4):** auto-curry shapes not yet
+  covered (`auto_curry_two_param_partial_apply`,
+  `auto_curry_three_param_partial_apply`, `auto_curry_too_many_args_error_neg`,
+  `auto_curry_wrong_type_error_neg`). The higher-order + anonymous-lambda-reject
+  + constrained variants were already covered.
+- **COVERED, no port needed:** platform print-single / read-line-single
+  (`platform_print_via_test_capture` / `platform_read_line_via_test_capture`);
+  `do` desugar (`macro_do_*`); auto-curry HOF + repl + constrained.
+
+All ports green. `tests/legacy/io.rs` DELETED (`git rm`), README row removed,
+FIXME `0127` CLOSED (`git rm`). No new defect-repro filed — every harvested
+assertion passes. 0 GAP remain for 0127.
+
+### Sprint 82 full-clear — `repl_experience.rs` (0124) harvested + DELETED (/qa, 2026-06-14)
+
+Re-verified `tests/legacy/repl_experience.rs` (190 tests) against the CURRENT
+active suite — the S82-Wave-0 "85 GAP" was an over-count. Nearly all dispositioned
+GAPs are already covered e2e (dot-notation ctor display, type-var normalization,
+trait operators, closure/string/vec display, error recovery, lifecycle — carried
+forward in prior waves). Disposition on re-verify:
+
+- **MARKED-COVERED (~175):** matched to named active tests in
+  `repl_introspection.rs`, `repl_lifecycle.rs`, `repl_negative.rs`,
+  `spec_appendix_a_builtins.rs`, `spec_04_expressions.rs`, `spec_07_traits.rs`
+  (display format, defn/deftype/closure display, trait-op dispatch, recursion,
+  ADT match, redefinition, error categories/spans/recovery, all 19 Ring-0
+  primitives). The `format_result(...)` / `ReplSession::eval().ty()` unit shapes
+  are subsumed by the e2e `:Type value` assertions (one line carries both
+  inferred type and value). 5 OBSOLETE (perf microbenchmarks).
+- **PORTED (15)** as e2e REPL-capture into `tests/repl_introspection.rs` (S82
+  harvest section), all green:
+  `display_empty_vec_value`, `display_product_adt_multi_field_value`,
+  `display_polymorphic_adt_multi_field_value`, `display_nested_adt_field_value`,
+  `display_defn_polymorphic_adt_return_type`,
+  `display_overloaded_fn_shows_all_variants` (was a legacy failing-not-ignored
+  /int gap — now FIXED), `display_type_lookup_shows_impl_section`,
+  `display_type_lookup_neg_no_impl_section_when_none`,
+  `display_user_list_value_shows_elements_and_nil`,
+  `display_infinite_seq_value_does_not_hang`, `display_float_infinity_value`,
+  `display_float_nan_value`. (`// spec:`-cited repl/spec.md §1.2/§1.3/§1.5/§4.1.1/§4.1.3;
+  pass `spec_link_check.py`.)
+
+`tests/legacy/repl_experience.rs` DELETED; README row removed. **0124 stays
+OPEN** — it also covers `repl_negative_old.rs` (handled separately); 0124 closes
+when that file is also deleted.
+
+### Sprint 82 full-clear — `repl_negative_old.rs` (0124) harvested + DELETED; FIXME 0124 CLOSED (/qa, 2026-06-14)
+
+The second-and-final 0124 file. Re-verified all 18 Wave-0 GAPs in
+`tests/legacy/repl_negative_old.rs` (31 tests) against the CURRENT active suite.
+Disposition on re-verify:
+
+- **MARKED-COVERED (9 of the 18 GAPs, + the 11 already-covered, + 2 obsolete):**
+  - `list_neg_fresh_session_special_forms_only` → `repl_introspection::list_empty_session` + `list_neg_no_special_forms_category`
+  - `list_neg_defn_adds_functions_not_primitives` → `repl_introspection::list_shows_fn_after_defn` + `list_neg_no_primitives_in_user`
+  - `display_neg_type_vars_normalized` → `repl_introspection::defn_display_polymorphic_id`
+  - `module_neg_unimported_primitive_unbound` + `module_neg_primitive_module_scoping` → `spec_08_prelude_outer_scope::{prelude_refusal_neg_prelude_name_not_bare, qualified_primitive_resolves_in_normal_module, prelude_refusal_qualified_primitive_still_resolves}`
+  - The `/list`-classification slice is also covered by the S81 int harvest
+    `src/session_v4.rs::list_classification_tests::list_user_definitions_classifies_and_excludes_imports`.
+- **PORTED (9)** as e2e REPL-capture into `tests/repl_negative.rs` (S82 harvest
+  section), all green: `list_neg_no_item_in_two_categories`,
+  `display_neg_type_always_qualified` (= legacy qualified-type + monomorphic-FQ),
+  `display_neg_defn_bool_return_fully_qualified`,
+  `display_neg_type_vars_normalized_multi_param`,
+  `display_neg_polymorphic_adt_return_no_raw_vars`,
+  `display_neg_deftype_enum_not_function`,
+  `display_deftype_with_fields_qualified_name`,
+  `module_neg_type_name_not_callable`, `list_neg_data_constructor_not_in_fns`.
+  (`// spec:`-cited repl/spec.md §1.3/§1.4/§3.3/§5.1; 47/47 citations pass
+  `spec_link_check.py`.)
+- **Scope reductions:** legacy product-`deftype` "MUST NOT contain `(Fn`" is
+  superseded by S79 dual-facet (product ctor legitimately shows its constructor
+  `(Fn ...)`); only the `user/Point` positive was ported.
+- **New finding filed (FIXME 0352, /backend, NOT a regression):** `/list`
+  renders raw internal type vars (`id : (Fn [t1] t1)`) — out of the legacy
+  file's scope (it only exercised the covered `format_result` definition-display
+  path, never `/list`). A failing repro is owed when `/backend` schedules the
+  fix; deliberately NOT added as a red guard here to keep the harvest green.
+
+`tests/legacy/repl_negative_old.rs` DELETED; README row removed; **FIXME 0124
+CLOSED + deleted** (both its files now harvested + gone). README sweep paragraph
+updated to 17 deleted / 9 FIXMEs closed / 3 kept.
+
+### Sprint 82 — final 5 reds resolved (all test-side fixes, /qa, 2026-06-14)
+
+The S82 compiler-side defect work flipped most S81 guards; the 5 remaining
+workspace reds were **test-fixture problems**, not compiler defects. All five
+resolved by editing TESTS only. Workspace is now **2523 run / 2523 passed / 0
+failed / 0 skipped**.
+
+| Test (binary::fn) | FIXME | Resolution |
+|---|---|---|
+| `spec_08_modules::bare_mod_decl_resolves_sibling_file_for_entry_main` → **renamed** `::bare_mod_decl_resolves_nested_child_for_entry_main` | 0337 | Guard encoded OLD *sibling* expectation; nested-only is now normative (FIXME 0345 ruling). Rewritten to assert `main.cl` `(mod child)` → resolves NESTED `main/child.cl` → exit 42. PASSES against the (correct) impl. |
+| `spec_08_modules::bare_mod_decl_neg_does_not_seek_nested_submodule` → **renamed** `::bare_mod_decl_neg_does_not_resolve_sibling_file` | 0337 | Negative inverted: now asserts a bare `(mod child)` does NOT auto-resolve a SIBLING `child.cl` (only nested `{stem}/child.cl`); build fails naming `main.child`. PASSES. |
+| `examples::multi_file_nested_directory_example_runs_with_documented_exit` (NEW) | 0337 | CI-coverage corrective: self-contained nested `tempfile::TempDir` multi-file directory project (`main.cl` + `main/math.cl` + `main/util.cl`) run via `--run`, asserts exit 33. Decoupled from `examples/16-modules/` (not yet relaid out — Phase-6 /examples task). Durable green CI extension. |
+| `trace::trace_captures_call_name_and_operands` | 0340 | RE-SHAPED: traced `add-i64` (inline-CLIF primitive, no GOT slot → empty trace is FAITHFUL, non-defect per Phase-3 escalation 3). Re-pointed to GOT-slotted user callee `(trace (greet "bob"))`; asserts `user/greet` + operand `"bob"` captured. PASSES. |
+| `trace::trace_neg_no_placeholder_name_or_empty_args` | 0340 | RE-SHAPED to same GOT-slotted callee; asserts real callee `user/greet` + `primitives/str-concat` captured (dropped `SList.SNil`-absence assertion — it legitimately appears on leaf nodes). PASSES. |
+| `trace::trace_small_expr_completes_under_ceiling` (NEW) | 0340 | Stage-1 timing guard: `(trace (greet "bob"))` completes under 5s ceiling (healthy ~130ms; bad path was ~31s). Regression gate, not microbench. PASSES (backend timing fix landed in-sprint). |
+| `spec_08_modules::super_import_resolves_parent_type_constructor` | 0342 | Bad fixture fixed: postfix `[b :superp/Box]` is INVALID (`:Type` binds following form); also `box-v` accessor + self-qualified `:superp/Box` are broken (separate tail, see below). Rewrote to extract via `match` (spec-blessed) + dropped self-qualified annotation; guard's subject (super-import of parent ctor) now resolves → exit 9. PASSES. |
+
+**Remaining typecheck tail (NOT a red — surfaced during 0342 fixture repair, no
+failing test in suite):** two independent pre-existing typecheck issues found
+while fixing the 0342 ctor fixture, both reproduce in a SINGLE file (not
+super-specific):
+- **Field-name accessor not a free callable** — `(deftype Box [:primitives/Int v])`
+  per spec §5 auto-generates an accessor named after the field (`v`), but
+  `(v b)` errors `undefined variable: v` even in a single file. (The original
+  fixture's `box-v` was doubly wrong: accessor name is the field name, not
+  `{type}-{field}`.)
+- **Self-qualified type reference fails** — annotating with a type by its OWN
+  defining module's qualified name (`:superp/Box` inside `superp.cl`, or `:t/Box`
+  inside `t.cl`) errors `unknown type \`X\` (from module \`\`)`.
+
+Crate ownership: **/typecheck** (type/symbol resolution). These are NOT forced
+into a /qa compiler fix; reported for a typecheck tail. No guard authored — they
+are out-of-band of the 5 named reds and would need a /qa→/typecheck defect
+handoff with its own narrowed repro if pursued.
+
 ## Current Entries (as of 2026-05-09, Sprint 66 Phase 5 Wave 1, post-S64 baseline carries forward)
 
 ### Sprint 81 close — failing-not-ignored repros for 7 Phase-6 defects (/qa, 2026-06-13, SHA `48dcea3`)

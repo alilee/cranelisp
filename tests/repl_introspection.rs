@@ -2203,3 +2203,254 @@ fn sig_resolves_trace_special_form() {
     out.assert_stdout_contains("trace")
         .assert_stdout_does_not_contain("unknown symbol");
 }
+
+// =============================================================================
+// S82 harvest from tests/legacy/repl_experience.rs (FIXME 0124) — Ring-1/Ring-2A
+// display GAPs re-expressed as e2e REPL-capture.
+//
+// The legacy file asserted these via the deleted `ReplSession::eval()` Rust API
+// (`result.ty()` / `result.value()` / `format_result(value, &Type)` /
+// `repl_eval_display`). The active suite already covered the bulk (int/float/
+// bool/string display, defn/deftype/closure display, type-var normalization,
+// trait operators, dot-notation ctor display, error recovery, recursion,
+// lifecycle). The tests below are the genuine, user-observable display gaps that
+// had NO active e2e equivalent. Each re-expresses the legacy assertion as a
+// single REPL capture asserting the `:Type value` display (which captures BOTH
+// the inferred type AND the value in one shape).
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — empty Vec value displays as `[]` (with the
+// `(primitives/Vec a)` type prefix), not a raw pointer.
+// (harvest: legacy/repl_experience.rs::display_vec_empty)
+#[test]
+fn display_empty_vec_value() {
+    let out = repl("[]\n");
+    assert!(
+        out.stdout.contains("primitives/Vec") && out.stdout.contains("[]"),
+        "empty Vec MUST display the Vec type prefix and `[]` value per §1.5; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 — a product ADT value with MULTIPLE fields displays
+// every field recursively (`(Named "alice" 42)`), not a raw pointer. Distinct
+// from the single-field product carry `data_constructor_product_no_dot_notation_display`.
+// (harvest: legacy/repl_experience.rs::display_product_adt_string_field)
+#[test]
+fn display_product_adt_multi_field_value() {
+    let out = repl(
+        "(import [primitives [Int String]])\n\
+         (deftype Named [:String name :Int value])\n\
+         (Named \"alice\" 42)\n",
+    );
+    assert!(
+        out.stdout.contains("(Named \"alice\" 42)"),
+        "multi-field product ADT MUST render every field per §1.5; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":user/Named"),
+        "multi-field product ADT MUST carry the `:user/Named` type tag; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 — a polymorphic ADT value with MULTIPLE fields of
+// distinct types displays both fields AND the fully-instantiated type
+// `(user/Pair primitives/Int primitives/String)`. Distinct from the
+// single-type-arg `(Option.Some 42)` carry.
+// (harvest: legacy/repl_experience.rs::u1_9_polymorphic_adt_multi_field_display)
+#[test]
+fn display_polymorphic_adt_multi_field_value() {
+    let out = repl(
+        "(import [primitives [Int String]])\n\
+         (deftype (Pair a b) (MkPair [:a fst :b snd]))\n\
+         (MkPair 42 \"hi\")\n",
+    );
+    assert!(
+        out.stdout.contains("42") && out.stdout.contains("\"hi\""),
+        "multi-field polymorphic ADT MUST render both fields per §1.5; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("(user/Pair primitives/Int primitives/String)"),
+        "type MUST be the fully-instantiated `(user/Pair primitives/Int \
+         primitives/String)`; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 — a NESTED ADT field displays recursively: the inner
+// constructor and its payload both appear (`(Some (Some 42))` shows `Some`
+// twice and `42`), not a raw pointer for the inner value.
+// (harvest: legacy/repl_experience.rs::display_adt_nested_adt_field)
+#[test]
+fn display_nested_adt_field_value() {
+    let out = repl(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (Some (Some 42))\n",
+    );
+    assert!(
+        out.stdout.matches("Some").count() >= 2 && out.stdout.contains("42"),
+        "nested ADT field MUST display the inner constructor and payload \
+         recursively per §1.5; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.3 — a polymorphic fn that returns a parameterized ADT
+// displays the type-var-preserving signature `(Fn [a] (user/Option a))`, not a
+// monomorphized or `t0`-leaking shape.
+// (harvest: legacy/repl_experience.rs::ring1_defn_polymorphic_adt_return_type)
+#[test]
+fn display_defn_polymorphic_adt_return_type() {
+    let out = repl(
+        "(deftype (Option a) None (Some [:a val]))\n\
+         (defn wrap [x] (Some x))\n",
+    );
+    assert!(
+        out.stdout.contains(":(Fn [a] (user/Option a)) user/wrap"),
+        "polymorphic fn returning a parameterized ADT MUST display \
+         `:(Fn [a] (user/Option a)) user/wrap` per §1.3; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.1 — a bare lookup of an OVERLOADED fn displays ALL
+// variant signatures (one line per clause), not just the first. This was a
+// known /int gap in the legacy era (the legacy test was failing-not-ignored);
+// the current implementation surfaces both variants.
+// (harvest: legacy/repl_experience.rs::display_overloaded_fn_shows_all_variants)
+#[test]
+fn display_overloaded_fn_shows_all_variants() {
+    let out = repl_prims(
+        "(defn pick ([:Int x] x) ([:Int x :Int y] (add-i64 x y)))\n\
+         pick\n",
+    );
+    let has_1_arg = out.stdout.contains("[primitives/Int]");
+    let has_2_arg = out.stdout.contains("[primitives/Int primitives/Int]");
+    assert!(
+        has_1_arg && has_2_arg,
+        "overloaded fn MUST show BOTH variant signatures on bare lookup per \
+         §4.1.1; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3 — bare lookup of a type with trait impls lists the
+// implementing trait names under an `; impl:` section. Distinct from
+// `bare_type_lookup_includes_match_section` (which covers the `; match:` ctors
+// section only).
+// (harvest: legacy/repl_experience.rs::display_type_shows_related_trait_impls)
+#[test]
+fn display_type_lookup_shows_impl_section() {
+    let out = repl(
+        "(deftype Color Red Green Blue)\n\
+         (deftrait Shade (brightness [self] Int))\n\
+         (impl Shade Color (defn brightness [c] 1))\n\
+         Color\n",
+    );
+    assert!(
+        out.stdout.contains("; impl:") && out.stdout.contains("Shade"),
+        "type lookup MUST list implementing traits under `; impl:` per §4.1.3; \
+         got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.3 (negative) — a type with NO trait impls MUST NOT
+// render an `; impl:` section (empty categories are omitted).
+// (harvest: legacy/repl_experience.rs::display_type_no_impls_omits_impl_section)
+#[test]
+fn display_type_lookup_neg_no_impl_section_when_none() {
+    let out = repl("(deftype Lonely Alone)\nLonely\n");
+    assert!(
+        !out.stdout.contains("; impl:"),
+        "type with no impls MUST NOT render an `; impl:` section per §4.1.3; \
+         got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 — a non-empty user-defined List value displays its
+// elements (the generic ADT recursive `(List.Cons h t)` form), with the empty
+// tail showing `List.Nil` — not a raw heap pointer. Tests define List inline
+// (no stdlib dependency per tests/CLAUDE.md isolation).
+// (harvest: legacy/repl_experience.rs::display_list_non_empty_shows_elements + display_list_nil)
+#[test]
+fn display_user_list_value_shows_elements_and_nil() {
+    let out = repl_prims(
+        "(deftype (List a) Nil (Cons [:a h :(List a) t]))\n\
+         (Cons 1 (Cons 2 (Cons 3 Nil)))\n\
+         Nil\n",
+    );
+    for elem in ["1", "2", "3"] {
+        assert!(
+            out.stdout.contains(elem),
+            "list display MUST contain element {elem} per §1.5; got:\n{}",
+            out.stdout
+        );
+    }
+    assert!(
+        out.stdout.contains("List.Nil"),
+        "empty list MUST display as `List.Nil` per §1.5; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("<closure>"),
+        "list value MUST NOT display as `<closure>` per §1.5; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 — a lazy/infinite user-defined Seq value displays
+// without HANGING: the head element renders and the thunked tail shows as
+// `<closure>` (the tail is NOT forced). The key invariant is termination.
+// (harvest: legacy/repl_experience.rs::display_seq_infinite_does_not_hang)
+#[test]
+fn display_infinite_seq_value_does_not_hang() {
+    let out = repl_prims(
+        "(deftype (Seq a) SeqNil (SeqCons [:a h :(Fn [] (Seq a)) rest]))\n\
+         (defn range-from [n] (SeqCons n (fn [] (range-from (add-i64 n 1)))))\n\
+         (range-from 7)\n",
+    );
+    // Did not hang (the harness has a timeout); head element 7 is present and
+    // the thunked tail is shown unforced as `<closure>`.
+    assert!(
+        out.stdout.contains("7"),
+        "Seq display MUST show the head element without forcing the tail per \
+         §1.5; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("<closure>"),
+        "Seq thunked tail MUST display unforced as `<closure>` per §1.5; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.2 — Float infinity displays with an `inf` token (not a
+// raw NaN-boxed integer). Produced via `(div-f64 1.0 0.0)`.
+// (harvest: legacy/repl_experience.rs::display_float_infinity)
+#[test]
+fn display_float_infinity_value() {
+    let out = repl_prims("(div-f64 1.0 0.0)\n");
+    assert!(
+        out.stdout.contains("inf"),
+        "Float infinity MUST display an `inf` token per §1.2; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.2 — Float NaN displays with a `NaN` token. Produced via
+// `(div-f64 0.0 0.0)`.
+// (harvest: legacy/repl_experience.rs::display_float_nan)
+#[test]
+fn display_float_nan_value() {
+    let out = repl_prims("(div-f64 0.0 0.0)\n");
+    assert!(
+        out.stdout.contains("NaN"),
+        "Float NaN MUST display a `NaN` token per §1.2; got:\n{}",
+        out.stdout
+    );
+}

@@ -2376,4 +2376,166 @@ mod tests {
             null_alloc_with_tag as *const () as usize
         );
     }
+
+    // ---------------------------------------------------------------------
+    // S82 harvest — 0135 (legacy/lenient.rs) platform-owned scheduling-class
+    // GAPs. The lenient-eval *correctness* subset (independent/dependent
+    // bindings, cheap-builtin threshold, env opt-out, …) is e2e-covered
+    // (spec_04_expressions.rs::lenient_*, spec_12_runtime.rs). The Par-node
+    // *emission* / bind-chain *data-dependency analysis* is backend (Par
+    // codegen) — already harvested there. What `cranelisp-platform` genuinely
+    // owns of the `io_schedule_*` GAPs is the **scheduling-class declaration +
+    // marshaling surface**: the per-fn `SchedulingClass` discriminant must
+    // survive the C-ABI manifest round-trip (`manifest_to_descriptors`'s u32 →
+    // typed-enum lift), and a `ResourceSerial` fn's per-call resource token
+    // must land on the Effect node at the documented offset. These are the
+    // platform half of the legacy `io_schedule_sequential_*` /
+    // `io_schedule_data_dependent_*` / `io_schedule_resource_serial_*` triple;
+    // the scheduling *decision* (sequential vs Par, same-vs-different-token
+    // serialization at the trampoline) is NOT platform's — it is backend /
+    // intrinsics (lib.rs IO trampoline note; Decision 0043), so those
+    // assertions are not ported here.
+
+    // Build a one-fn `PlatformManifest` carrying a given scheduling-class
+    // discriminant, with all string fields valid UTF-8, and return its
+    // round-tripped descriptor's typed `scheduling_class`. The backing
+    // byte-slices are passed in by the caller so they outlive the call.
+    fn descriptor_scheduling_class(class_discriminant: u32) -> SchedulingClass {
+        let name: &[u8] = b"sched";
+        let version: &[u8] = b"0.1.0";
+        let fn_name: &[u8] = b"f";
+        let type_sig: &[u8] = b"(Fn [] (IO primitives/Int))";
+        let docstring: &[u8] = b"";
+
+        let func = PlatformFn {
+            name: fn_name.as_ptr(),
+            name_len: fn_name.len(),
+            ptr: std::ptr::null(),
+            param_count: 0,
+            type_sig: type_sig.as_ptr(),
+            type_sig_len: type_sig.len(),
+            docstring: docstring.as_ptr(),
+            docstring_len: docstring.len(),
+            param_names: std::ptr::null(),
+            param_name_lens: std::ptr::null(),
+            param_name_count: 0,
+            scheduling_class: class_discriminant,
+        };
+        let funcs = [func];
+        let manifest = PlatformManifest {
+            abi_version: ABI_VERSION,
+            name: name.as_ptr(),
+            name_len: name.len(),
+            version: version.as_ptr(),
+            version_len: version.len(),
+            functions: funcs.as_ptr(),
+            function_count: 1,
+        };
+
+        // SAFETY: every pointer above borrows a slice that lives to the end of
+        // this fn, and the lengths match. `manifest_to_descriptors` reads the
+        // manifest once and copies into owned shapes before returning.
+        let (_name, _version, descriptors) =
+            unsafe { manifest_to_descriptors(&manifest) }.expect("valid manifest round-trips");
+        assert_eq!(descriptors.len(), 1, "one fn in, one descriptor out");
+        descriptors[0].scheduling_class
+    }
+
+    // spec: spec/10-io.md §10.12.2 — a `Sequential`-declared platform fn
+    // (discriminant 0) round-trips through the C-ABI manifest as the typed
+    // `SchedulingClass::Sequential`. (Platform half of legacy
+    // lenient.rs::test_io_schedule_sequential_no_par — the order-preservation
+    // *decision* is backend/intrinsics; what platform owns is the class lift.)
+    #[test]
+    fn manifest_lifts_sequential_scheduling_class() {
+        assert_eq!(descriptor_scheduling_class(0), SchedulingClass::Sequential);
+    }
+
+    // spec: spec/10-io.md §10.12.1 — a `Commutative`-declared platform fn
+    // (discriminant 1) round-trips as `SchedulingClass::Commutative`. This is
+    // the class on which the backend bases its Par-node emission for
+    // data-independent pairs (legacy lenient.rs::test_io_schedule_commutative_pair_par
+    // / test_io_schedule_data_dependent_no_par — the *data-dependency* analysis
+    // is backend; platform owns the class declaration that gates it).
+    #[test]
+    fn manifest_lifts_commutative_scheduling_class() {
+        assert_eq!(descriptor_scheduling_class(1), SchedulingClass::Commutative);
+    }
+
+    // spec: spec/10-io.md §10.12.4 — a `ResourceSerial`-declared platform fn
+    // (discriminant 2) round-trips as `SchedulingClass::ResourceSerial`.
+    // (Platform half of legacy
+    // lenient.rs::test_io_schedule_resource_serial_*_token_* — the token
+    // *serialization* at the trampoline is intrinsics, not platform.)
+    #[test]
+    fn manifest_lifts_resource_serial_scheduling_class() {
+        assert_eq!(
+            descriptor_scheduling_class(2),
+            SchedulingClass::ResourceSerial
+        );
+    }
+
+    // spec: spec/10-io.md §10.12.2 — an unknown scheduling-class discriminant
+    // is conservatively lifted to `Sequential` (the safe default;
+    // `SchedulingClass::from_u32` fallback). Negative guard: a DLL built
+    // against a newer ABI declaring an unknown class must NOT be silently
+    // treated as parallelizable.
+    #[test]
+    fn manifest_lifts_unknown_scheduling_class_to_sequential_neg() {
+        assert_eq!(descriptor_scheduling_class(99), SchedulingClass::Sequential);
+    }
+
+    // spec: spec/10-io.md §10.12.4 — a `ResourceSerial` fn's per-call resource
+    // token is written onto the Effect node at `IO_EFFECT_RESOURCE_OFFSET`
+    // (offset 16), where the trampoline reads it to group-by-token. This is
+    // the platform-owned token-placement half of the resource-serial GAP; the
+    // same-vs-different-token serialization *decision* lives in the intrinsics
+    // trampoline (Decision 0043). A distinct non-zero token from the default-0
+    // (unscheduled) effect is exercised to pin the placement.
+    #[test]
+    fn resource_serial_token_lands_on_effect_node() {
+        extern "C" fn token_test_alloc(size: i64) -> i64 {
+            let total = HEAP_HEADER_SIZE as usize + size as usize;
+            unsafe {
+                let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+                let base = std::alloc::alloc_zeroed(layout);
+                *(base as *mut i64) = total as i64;
+                *((base as *mut i64).add(1)) = 1; // rc = 1
+                (base as i64) + HEAP_HEADER_SIZE
+            }
+        }
+        let cb = HostCallbacks {
+            alloc: token_test_alloc,
+            alloc_with_tag: null_alloc_with_tag,
+        };
+        let host = HostContext::new();
+        // SAFETY: `&cb` is a valid HostCallbacks for the duration of init.
+        unsafe { host.init(&cb) };
+
+        // A ResourceSerial fn sets a non-zero token (e.g. a file descriptor);
+        // contrast with the default-0 token an unscheduled effect carries.
+        let token = 0x1234_i64;
+        let io: CLIO<CLInt> = CLIO::effect_on_resource(token, || CLInt::from(0i64));
+        let base: i64 = io.into();
+        let payload = base + HEAP_HEADER_SIZE;
+        let (tag, tok, default_tok) = unsafe {
+            let tag = *(payload as *const i64);
+            let tok = *((payload + IO_EFFECT_RESOURCE_OFFSET) as *const i64);
+            // A token-less effect must carry token 0 (unscheduled).
+            let io0: CLIO<CLInt> = CLIO::effect(|| CLInt::from(0i64));
+            let base0: i64 = io0.into();
+            let default_tok =
+                *((base0 + HEAP_HEADER_SIZE + IO_EFFECT_RESOURCE_OFFSET) as *const i64);
+            (tag, tok, default_tok)
+        };
+        assert_eq!(tag, IO_TAG_EFFECT, "node is an Effect node");
+        assert_eq!(
+            tok, token,
+            "ResourceSerial token must land at IO_EFFECT_RESOURCE_OFFSET (16)"
+        );
+        assert_eq!(
+            default_tok, 0,
+            "a token-less effect carries the unscheduled token 0"
+        );
+    }
 }

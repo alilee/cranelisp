@@ -1,8 +1,31 @@
     use super::*;
+    use crate::builtins::FixtureBuilder;
     use crate::checker::TestFixture;
     use cranelisp_types::{Defn, DefnVariant, FQSymbol, ModuleEntry, ModuleFullPath,
         Span, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility,
     };
+
+    /// Empty fixture (FIXME 0243 narrowing). For the startup-negative tests
+    /// that assert NOTHING is registered (no traits / no impls / no operators)
+    /// — the empty builder is the most honest starting position for "nothing
+    /// seeded" and also the minimal one.
+    fn tf() -> TestFixture {
+        TestFixture::with_content(FixtureBuilder::new())
+    }
+
+    /// Fixture seeding builtin type names + the Ring 0/1/3 primitive `Def`s
+    /// (FIXME 0243 narrowing). The trait-decl / trait-impl / resolution tests
+    /// register impls whose `target` is `Int` (needs the builtin type name in
+    /// scope) and whose method bodies call `add-i64` (needs the primitive
+    /// `Def`). This is the minimal preset those tests consume — `full()`'s
+    /// special forms, `macros` module, and IO ADT are not touched. `with_io()`
+    /// is omitted; `with_primitives()` requires `with_builtin_type_names()`
+    /// first (bootstrap order).
+    fn tf_prims() -> TestFixture {
+        TestFixture::with_content(
+            FixtureBuilder::new().with_builtin_type_names().with_primitives(),
+        )
+    }
 
     /// Seed glob-import edges from `source` into the fixture's CURRENT module,
     /// mirroring `(import [source [*]])`. Import registration is no longer a
@@ -38,8 +61,10 @@
     }
 
     /// Create a TypeChecker with primitives imported into a "test" module.
+    /// Narrowed (FIXME 0243) from `TestFixture::new()` (= `full()`) to the
+    /// builtin-type-names + primitives content the dependent tests consume.
     fn tc_with_prims() -> TestFixture {
-        let mut tc = TestFixture::new();
+        let mut tc = tf_prims();
         tc.set_current_module(ModuleFullPath::from("test"));
         seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
         tc
@@ -73,7 +98,7 @@
     // spec: 07-traits §7.1 — no traits registered at startup
     #[test]
     fn test_no_traits_at_startup() {
-        let tc = TestFixture::new();
+        let tc = tf();
         // No traits should be discoverable via lookup
         assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_none());
     }
@@ -81,7 +106,7 @@
     // spec: 07-traits §7.3 — no impls registered at startup
     #[test]
     fn test_no_impls_at_startup() {
-        let tc = TestFixture::new();
+        let tc = tf();
         // No impls should be discoverable via has_impl
         assert!(!tc.has_impl(&TraitName::from("Num"), &TypeName::from("Int")));
     }
@@ -182,7 +207,7 @@
     // spec: 07-traits §7.1 — deftrait registers trait and methods in symbol table
     #[test]
     fn test_register_trait_decl() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf_prims();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
 
@@ -203,7 +228,7 @@
     // spec: 07-traits §7.1 — duplicate trait declaration is an error
     #[test]
     fn test_register_duplicate_trait_fails() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf_prims();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
         let err = tc.register_trait_decl_self(&decl).unwrap_err();
@@ -213,7 +238,7 @@
     // spec: 03-types §3.4.1 — trait method scheme carries trait constraint
     #[test]
     fn test_trait_method_has_constrained_scheme() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf_prims();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
 
@@ -330,7 +355,7 @@
     // spec: 07-traits §7.4.3 — no matching impl returns TypeError
     #[test]
     fn test_try_resolve_trait_method_no_impl() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf_prims();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
         // No impl registered for Bool under TestTrait
@@ -353,7 +378,7 @@
     // spec: 07-traits §7.4.1 — non-trait-method name returns None
     #[test]
     fn test_try_resolve_non_trait_method() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf_prims();
         let result = tc.try_resolve_trait_method_self(
             &Symbol::from("add-i64"),
             &[Type::Int, Type::Int],
@@ -404,7 +429,7 @@
     // spec: 07-traits §7.1 — is_trait_method distinguishes trait methods from plain fns
     #[test]
     fn test_is_trait_method() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf_prims();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
 
@@ -505,7 +530,7 @@
     // spec: pipeline-orchestration §5 — no core traits at startup (Decision 17 eliminated)
     #[test]
     fn test_no_core_traits_at_startup() {
-        let tc = TestFixture::new();
+        let tc = tf();
         // Traits come from prelude .cl files, NOT compiler builtins.
         // No traits should be discoverable via SymbolTable lookup.
         assert!(tc.lookup_trait_decl(&TraitName::from("Num")).is_none(),
@@ -517,7 +542,7 @@
     // spec: pipeline-orchestration §5 — operator symbols NOT in symbol table at startup
     #[test]
     fn test_no_operators_at_startup() {
-        let tc = TestFixture::new();
+        let tc = tf();
         let ops = ["+", "-", "*", "/", "=", "!=", "<", ">", "<=", ">="];
         for op in ops {
             assert!(
@@ -733,7 +758,7 @@
     fn test_generate_default_methods_produces_real_bodies() {
         // Register Eq trait inline and create an impl with only "=" provided.
         // The "!=" default should be generated with a real body.
-        let mut tc = TestFixture::new();
+        let mut tc = tf_prims();
 
         // Register Eq trait inline (as prelude would)
         let eq_decl = TraitDecl {

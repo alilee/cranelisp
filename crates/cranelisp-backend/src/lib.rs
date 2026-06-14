@@ -3218,6 +3218,256 @@ mod tests {
         assert_eq!(result.unwrap(), 3);
     }
 
+    // ===== FIXME 0134 harvest (backend slice): Vec-COW value-correctness +
+    // RC-balance kernels of the quarantined `tests/legacy/{ring1,ring2,e2e}.rs`
+    // GAPs. The existing `test_compile_vec_set_{copy_path,on_temp}` tests prove
+    // vec-set COMPILES and RUNS but assert only the result LENGTH (=3). The
+    // disposition (`s82-harvest-conformance_bulk.md` flag 1: backend =
+    // `assert_rc_balanced` + Vec-COW edge cases) names the uncovered angles:
+    // (a) the COPY path leaves the ORIGINAL vec untouched
+    //     (legacy `vec_set_cow_preserves_original`);
+    // (b) a set preserves OTHER positions' values
+    //     (legacy `vec_set_preserves_other_elements`);
+    // (c) RC balance — a vec lifecycle returns live bytes to baseline
+    //     (legacy `assert_rc_balanced`).
+    // These run at the backend unit layer via `test_compile_and_run` (full
+    // codegen + JIT execute), reading element VALUES via vec-get — the durable
+    // value-level guards the length-only tests lack. =====
+
+    /// Build `(vec-get <vec_expr> idx)` against a fresh span. Helper for the
+    /// COW value-correctness guards below.
+    fn vec_get(
+        vec_expr: Expr,
+        idx: i64,
+        get_span: Span,
+        resolutions: &mut HashMap<Span, cranelisp_types::ResolvedCall>,
+    ) -> Expr {
+        resolutions.insert(
+            get_span,
+            cranelisp_types::ResolvedCall::BuiltinFn { name: Symbol::from("vec-get") },
+        );
+        Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("vec-get"),
+                span: Span::new(get_span.start + 1, get_span.end - 1),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            args: vec![
+                vec_expr,
+                Expr::IntLit { value: idx, span: Span::new(get_span.end - 1, get_span.end), inferred_type: None },
+            ],
+            span: get_span,
+            resolved_call: None,
+            inferred_type: None,
+        }
+    }
+
+    fn vec_lit(elems: &[i64], base: u32) -> Expr {
+        Expr::VecLit {
+            elements: elems
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| {
+                    let i = i as u32;
+                    Expr::IntLit {
+                        value: v,
+                        span: Span::new(base + i * 3 + 1, base + i * 3 + 3),
+                        inferred_type: None,
+                    }
+                })
+                .collect(),
+            span: Span::new(base, base + elems.len() as u32 * 3 + 1),
+            inferred_type: None,
+        }
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — vec-set on a NON-last-use vec takes
+    //       the COPY path; the ORIGINAL vec is untouched. Backend kernel of the
+    //       legacy `vec_set_cow_preserves_original` reg-guard. The original `v`
+    //       is read AFTER the set (so the set is NOT at last use → copy path),
+    //       and its index-1 value must still be the original 20, not 99.
+    #[test]
+    fn vec_set_copy_path_preserves_original() {
+        use cranelisp_types::ResolvedCall;
+        let mut res = HashMap::new();
+        let set_span = Span::new(2010, 2030);
+        res.insert(set_span, ResolvedCall::BuiltinFn { name: Symbol::from("vec-set") });
+
+        // (let [v [10 20 30]]
+        //   (let [_ (vec-set v 1 99)]   ; copy path: v not at last use
+        //     (vec-get v 1)))            ; original v's index 1 still = 20
+        let set_expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("vec-set"),
+                span: Span::new(2011, 2018),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            args: vec![
+                Expr::Var { name: Symbol::from("v"), span: Span::new(2019, 2020), resolved_call: None, inferred_type: None },
+                Expr::IntLit { value: 1, span: Span::new(2021, 2022), inferred_type: None },
+                Expr::IntLit { value: 99, span: Span::new(2023, 2025), inferred_type: None },
+            ],
+            span: set_span,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let read_original = vec_get(
+            Expr::Var { name: Symbol::from("v"), span: Span::new(2040, 2041), resolved_call: None, inferred_type: None },
+            1,
+            Span::new(2042, 2060),
+            &mut res,
+        );
+        let expr = Expr::Let {
+            bindings: vec![(Symbol::from("v"), vec_lit(&[10, 20, 30], 2001))],
+            body: Box::new(Expr::Let {
+                bindings: vec![(Symbol::from("_unused"), set_expr)],
+                body: Box::new(read_original),
+                span: Span::new(2005, 2061),
+                inferred_type: None,
+            }),
+            span: Span::new(2000, 2062),
+            inferred_type: None,
+        };
+        let check = TestCheckResult {
+            method_resolutions: res,
+            constrained_fn_names: HashSet::new(),
+            mono_defns: Vec::new(),
+            expr_types: HashMap::new(),
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            display: None,
+        };
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert_eq!(
+            result.expect("vec-set copy-path program compiles+runs"),
+            20,
+            "vec-set on a non-last-use vec MUST copy — the original vec's \
+             index-1 value must remain 20 (COW preserves the original)"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — a vec-set preserves the values at
+    //       OTHER positions. Backend kernel of the legacy
+    //       `vec_set_preserves_other_elements` GAP (distinct from the
+    //       length-only `test_compile_vec_set_*`). Read index 2 of the SET
+    //       result — it must still be the original 30 (only index 0 changed).
+    #[test]
+    fn vec_set_preserves_other_elements() {
+        use cranelisp_types::ResolvedCall;
+        let mut res = HashMap::new();
+        let set_span = Span::new(2110, 2130);
+        res.insert(set_span, ResolvedCall::BuiltinFn { name: Symbol::from("vec-set") });
+
+        // (vec-get (vec-set [10 20 30] 0 99) 2)  →  30 (index 2 untouched)
+        let set_expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("vec-set"),
+                span: Span::new(2111, 2118),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            args: vec![
+                vec_lit(&[10, 20, 30], 2101),
+                Expr::IntLit { value: 0, span: Span::new(2121, 2122), inferred_type: None },
+                Expr::IntLit { value: 99, span: Span::new(2123, 2125), inferred_type: None },
+            ],
+            span: set_span,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let expr = vec_get(set_expr, 2, Span::new(2140, 2160), &mut res);
+        let check = TestCheckResult {
+            method_resolutions: res,
+            constrained_fn_names: HashSet::new(),
+            mono_defns: Vec::new(),
+            expr_types: HashMap::new(),
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            display: None,
+        };
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert_eq!(
+            result.expect("vec-set preserves-other program compiles+runs"),
+            30,
+            "vec-set at index 0 MUST leave index 2 holding the original 30"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.3 — RC balance: a complete Vec lifecycle
+    //       (allocate literal, set, drop) returns live bytes to baseline — no
+    //       leak, no double-free. Backend kernel of the legacy
+    //       `assert_rc_balanced` discipline, lifted to the unit layer via the
+    //       `cranelisp_intrinsics::{alloc_count,dealloc_count}` counters (the
+    //       same atomics `/mem` reports). RC-counter tests are process-global,
+    //       so this reads a delta, not an absolute. NOTE: nextest runs each
+    //       test in its own process, so the counter is uncontended here.
+    #[test]
+    fn vec_lifecycle_is_rc_balanced() {
+        use cranelisp_types::ResolvedCall;
+        let allocs_before = cranelisp_intrinsics::alloc_count();
+        let deallocs_before = cranelisp_intrinsics::dealloc_count();
+
+        // (vec-len (vec-set [10 20 30] 0 99))  — temp vec → COW path; the
+        // whole temporary lifecycle (literal alloc, COW copy if any, drop)
+        // must balance. We read length so the result is a scalar.
+        let mut res = HashMap::new();
+        let set_span = Span::new(2210, 2230);
+        let len_span = Span::new(2240, 2260);
+        res.insert(set_span, ResolvedCall::BuiltinFn { name: Symbol::from("vec-set") });
+        res.insert(len_span, ResolvedCall::BuiltinFn { name: Symbol::from("vec-len") });
+        let set_expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("vec-set"),
+                span: Span::new(2211, 2218),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            args: vec![
+                vec_lit(&[10, 20, 30], 2201),
+                Expr::IntLit { value: 0, span: Span::new(2221, 2222), inferred_type: None },
+                Expr::IntLit { value: 99, span: Span::new(2223, 2225), inferred_type: None },
+            ],
+            span: set_span,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let expr = Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("vec-len"),
+                span: Span::new(2241, 2248),
+                resolved_call: None,
+                inferred_type: None,
+            }),
+            args: vec![set_expr],
+            span: len_span,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let check = TestCheckResult {
+            method_resolutions: res,
+            constrained_fn_names: HashSet::new(),
+            mono_defns: Vec::new(),
+            expr_types: HashMap::new(),
+            default_method_defns: Vec::new(),
+            warnings: Vec::new(),
+            display: None,
+        };
+        let result = test_compile_and_run(&expr, &check, &empty_tables());
+        assert_eq!(result.expect("rc-balance program runs"), 3);
+
+        let allocs = cranelisp_intrinsics::alloc_count() - allocs_before;
+        let deallocs = cranelisp_intrinsics::dealloc_count() - deallocs_before;
+        assert_eq!(
+            allocs, deallocs,
+            "Vec lifecycle must be RC-balanced: {allocs} allocs vs {deallocs} \
+             deallocs across the temp-vec set+len+drop. An imbalance means a \
+             leak (allocs>deallocs) or a double-free (deallocs>allocs) in the \
+             vec-set COW codegen."
+        );
+    }
+
     // spec: 04-expressions §4.10 — Vec literal in interactive (REPL) mode
     #[test]
     fn test_compile_vec_literal_interactive_mode() {
@@ -5712,7 +5962,17 @@ mod tests {
             .symbols()
             .find(|s| {
                 s.name()
-                    .map(|n| n.strip_prefix('_').unwrap_or(n) == got_name)
+                    // Platform-agnostic symbol-name match. Mach-O prepends
+                    // exactly one '_' to every symbol (so the .o name is
+                    // `_<got_name>`); ELF prepends nothing (the .o name IS
+                    // `<got_name>`, and `got_name` itself already begins with
+                    // `__cranelisp_got_`). The former `strip_prefix('_')` matcher
+                    // assumed Mach-O and stripped a leading underscore that does
+                    // not exist on ELF, breaking the match on Linux (the symbol
+                    // was present but never found) — a stale test assertion, not
+                    // a GOT-emission defect (S82 W2 /dev triage of the 3
+                    // decision_23_got_data failures).
+                    .map(|n| n == got_name || n == format!("_{got_name}"))
                     .unwrap_or(false)
             })
             .unwrap_or_else(|| {
@@ -5850,7 +6110,17 @@ mod tests {
             .symbols()
             .find(|s| {
                 s.name()
-                    .map(|n| n.strip_prefix('_').unwrap_or(n) == got_name)
+                    // Platform-agnostic symbol-name match. Mach-O prepends
+                    // exactly one '_' to every symbol (so the .o name is
+                    // `_<got_name>`); ELF prepends nothing (the .o name IS
+                    // `<got_name>`, and `got_name` itself already begins with
+                    // `__cranelisp_got_`). The former `strip_prefix('_')` matcher
+                    // assumed Mach-O and stripped a leading underscore that does
+                    // not exist on ELF, breaking the match on Linux (the symbol
+                    // was present but never found) — a stale test assertion, not
+                    // a GOT-emission defect (S82 W2 /dev triage of the 3
+                    // decision_23_got_data failures).
+                    .map(|n| n == got_name || n == format!("_{got_name}"))
                     .unwrap_or(false)
             })
             .expect("GOT data symbol present");
@@ -6031,7 +6301,17 @@ mod tests {
             .symbols()
             .find(|s| {
                 s.name()
-                    .map(|n| n.strip_prefix('_').unwrap_or(n) == got_name)
+                    // Platform-agnostic symbol-name match. Mach-O prepends
+                    // exactly one '_' to every symbol (so the .o name is
+                    // `_<got_name>`); ELF prepends nothing (the .o name IS
+                    // `<got_name>`, and `got_name` itself already begins with
+                    // `__cranelisp_got_`). The former `strip_prefix('_')` matcher
+                    // assumed Mach-O and stripped a leading underscore that does
+                    // not exist on ELF, breaking the match on Linux (the symbol
+                    // was present but never found) — a stale test assertion, not
+                    // a GOT-emission defect (S82 W2 /dev triage of the 3
+                    // decision_23_got_data failures).
+                    .map(|n| n == got_name || n == format!("_{got_name}"))
                     .unwrap_or(false)
             })
             .expect("GOT data symbol must appear in emitted .o");

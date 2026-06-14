@@ -426,7 +426,13 @@ where
 
         // Declare the continuation function.
         // Signature: (env_ptr: i64, results_ptr: i64) -> i64
-        let cont_name = format!("__par_cont_{}_{}__", span.start, span.end);
+        // Mono-discriminated span name (FIXME 0347 defect 1).
+        let cont_name = format!(
+            "__par_cont_{}{}_{}__",
+            self.inner_fn_discriminator(),
+            span.start,
+            span.end
+        );
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64)); // env_ptr
         sig.params.push(AbiParam::new(types::I64)); // results_ptr
@@ -706,9 +712,17 @@ where
 
         // Compile the inner function as a separate function definition.
         // Signature: (env_ptr: i64, param_0: i64, ..., param_n: i64) -> i64
+        //
+        // The name is span-derived AND monomorphisation-discriminated
+        // (FIXME 0347 defect 1): when the enclosing fn is monomorphised, N mono
+        // instances share this lambda's span, so the enclosing-fn discriminator
+        // keeps the N emitted symbols distinct (else the 2nd define_function
+        // collides — `Duplicate definition of identifier: __lambda_…__`).
         let inner_name = format!(
-            "__lambda_{}_{}__",
-            span.start, span.end
+            "__lambda_{}{}_{}__",
+            self.inner_fn_discriminator(),
+            span.start,
+            span.end
         );
 
         let inner_param_count = 1 + params.len(); // env_ptr + user params
@@ -845,9 +859,21 @@ where
         }
 
         // Build the drop glue function.
+        //
+        // The name is span-derived AND monomorphisation-discriminated
+        // (FIXME 0350, follow-on to 0347 defect 1): when the enclosing fn is
+        // monomorphised, N mono instances share this lambda's span, so each
+        // emits its own drop-glue copy. The enclosing-fn discriminator keeps
+        // the N emitted symbols distinct (else the 2nd define_function
+        // collides — `Duplicate definition of identifier:
+        // runtime/closure_drop_glue_…`). This MUST use the same
+        // `inner_fn_discriminator()` scheme as the lambda body name above so
+        // the body+drop-glue symbol pair stay paired per mono instance.
         let glue_name = format!(
-            "runtime/closure_drop_glue_{}_{}",
-            span.start, span.end
+            "runtime/closure_drop_glue_{}{}_{}",
+            self.inner_fn_discriminator(),
+            span.start,
+            span.end
         );
 
         let mut sig = self.module.make_signature();
@@ -1180,8 +1206,15 @@ where
                 }
             })?;
 
-        // Compile the wrapper function.
-        let wrapper_name = format!("__wrap_{name}_{}_{}__", span.start, span.end);
+        // Compile the wrapper function. Span-derived + mono-discriminated name
+        // (FIXME 0347 defect 1) so monomorphic copies of the enclosing fn do not
+        // collide on a shared fn-as-value wrapper symbol.
+        let wrapper_name = format!(
+            "__wrap_{name}_{}{}_{}__",
+            self.inner_fn_discriminator(),
+            span.start,
+            span.end
+        );
         let wrapper_param_count = 1 + arity; // env_ptr + user params
         let mut sig = self.module.make_signature();
         for _ in 0..wrapper_param_count {
@@ -1284,8 +1317,13 @@ where
         };
 
         // Compile the wrapper function: (env_ptr, arg_0..arg_{arity-1}) -> i64.
-        let wrapper_name =
-            format!("__wrap_tmv_{target_name}_{}_{}__", span.start, span.end);
+        // Mono-discriminated span name (FIXME 0347 defect 1).
+        let wrapper_name = format!(
+            "__wrap_tmv_{target_name}_{}{}_{}__",
+            self.inner_fn_discriminator(),
+            span.start,
+            span.end
+        );
         let wrapper_param_count = 1 + arity; // env_ptr + user params
         let mut sig = self.module.make_signature();
         for _ in 0..wrapper_param_count {
@@ -1666,9 +1704,12 @@ where
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
     ) -> Result<cranelift_module::FuncId, CranelispError> {
+        // Mono-discriminated span name (FIXME 0347 defect 1).
         let wrapper_name = format!(
-            "__curry_{target_name}_{}_{}__",
-            span.start, span.end
+            "__curry_{target_name}_{}{}_{}__",
+            self.inner_fn_discriminator(),
+            span.start,
+            span.end
         );
 
         // Signature: (env_ptr, remaining_0..remaining_k) -> i64
@@ -2235,5 +2276,185 @@ mod sparkability_tests {
         let ctors = HashSet::new();
         // a (idx 0) and c (idx 2) are independent + non-trivial → both sparked.
         assert_eq!(find_sparkable_bindings(&bindings, &ctors), vec![0, 2]);
+    }
+}
+
+#[cfg(test)]
+mod par_codegen_tests {
+    // ===== FIXME 0135 harvest (backend IO-scheduling slice): the Par-node
+    // CLIF-emission kernel of the quarantined `tests/legacy/lenient.rs`
+    // `test_io_schedule_*` GAP tests. Those 5 legacy tests assert RUNTIME
+    // scheduling behaviour (commutative pair → concurrent dispatch; Sequential
+    // → ordered; data-dependent → no Par; ResourceSerial same/diff token) which
+    // is **not e2e-witnessable without the test-capture commutative /
+    // ResourceSerial DLL fixture** — that runtime-dispatch slice is the
+    // `cranelisp-platform` co-owner's (per `s82-harvest-trace_lenient_jit.md`).
+    // The BACKEND-portable kernel is the **Par-node CLIF emission**: when an
+    // `Expr::ParBind` reaches codegen, `compile_par_bind` must emit the
+    // documented IO-tree structure (a `IO_TAG_PAR=3` node holding N branch
+    // pointers, wrapped by a `IO_TAG_BIND=2` node). This guard pins that
+    // structure at the CLIF layer — independent of the trampoline / DLL.
+    //
+    // The complementary decision pass — whether a `bind!` chain BECOMES a
+    // `ParBind` (scheduling-class + data-independence analysis) — runs upstream
+    // of backend (frontend/typecheck build the node), so it is not a backend
+    // unit; the backend's contract is "given a ParBind, emit a Par node".
+
+    use crate::jit::Jit;
+    use cranelisp_types::{Defn, DefnVariant, Expr, Span, Symbol, Type, Visibility};
+    use std::collections::HashMap;
+
+    /// Compile a zero-arg `defn` whose body is the given `Expr`, returning the
+    /// emitted CLIF-IR text. Branches need only be structurally valid for
+    /// `compile_expr` (we use int literals as stand-in IO-tree pointers — the
+    /// guard is the emitted Par-node SHAPE, not its runtime IO semantics).
+    fn clif_of_body(body: Expr) -> String {
+        let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
+        jit.declare_intrinsics().expect("intrinsics declare");
+
+        let name = Symbol::from("par_codegen_probe");
+        let defn = Defn {
+            name: name.clone(),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                body,
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+
+        let func_ids = jit.declare_functions(&[&defn]).expect("declare");
+        let func_arities: HashMap<Symbol, usize> = HashMap::new();
+        let symbol_tables: dashmap::DashMap<
+            cranelisp_types::ModuleFullPath,
+            cranelisp_types::SymbolTable,
+        > = dashmap::DashMap::new();
+        let module_path = cranelisp_types::ModuleFullPath::from("user");
+        symbol_tables.insert(
+            module_path.clone(),
+            cranelisp_types::SymbolTable::new(module_path.clone()),
+        );
+        let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
+        let compile_ctx = jit.build_compile_context(
+            &func_ids,
+            &func_arities,
+            &symbol_tables,
+            &module_aliases,
+            module_path,
+        );
+        jit.compile_defn(&defn, compile_ctx)
+            .expect("compile")
+            .clif_ir
+    }
+
+    fn int_lit(v: i64) -> Expr {
+        Expr::IntLit {
+            value: v,
+            span: Span::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        }
+    }
+
+    // spec: spec/10-io.md §10.12.1 + design/backend/io-scheduling.md §4 —
+    //       an `Expr::ParBind` with N independent bindings emits a Par node
+    //       (IO_TAG_PAR=3) carrying N branch pointers, wrapped by a Bind node
+    //       (IO_TAG_BIND=2). Backend kernel of the legacy
+    //       `test_io_schedule_commutative_pair_par` reg-guard.
+    #[test]
+    fn par_bind_emits_par_node_with_branch_count() {
+        let body = Expr::ParBind {
+            bindings: vec![
+                (Symbol::from("a"), int_lit(10)),
+                (Symbol::from("b"), int_lit(20)),
+            ],
+            body: Box::new(int_lit(0)),
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        };
+        let clif = clif_of_body(body);
+
+        // The Par node stores tag=3 and count=2 (two branches). The Bind
+        // wrapper stores tag=2. We assert the structural constants are emitted
+        // (iconst.i64 3 for the Par tag, iconst.i64 2 for the Bind tag /
+        // branch count). The exact CLIF formatting is `v_ = iconst.i64 N`.
+        assert!(
+            clif.contains("iconst.i64 3"),
+            "ParBind codegen must emit the IO_TAG_PAR=3 marker; CLIF:\n{clif}"
+        );
+        assert!(
+            clif.contains("iconst.i64 2"),
+            "ParBind codegen must emit the IO_TAG_BIND=2 / branch-count=2 \
+             marker; CLIF:\n{clif}"
+        );
+        // The Par node allocates payload (tag + count + N branches) and the
+        // continuation closure — at least two heap allocations are emitted.
+        let alloc_calls = clif.matches("call ").count();
+        assert!(
+            alloc_calls >= 2,
+            "ParBind codegen must emit Par-node + continuation allocations \
+             (>=2 calls); found {alloc_calls}. CLIF:\n{clif}"
+        );
+    }
+
+    // spec: spec/10-io.md §10.12.1 + design/backend/io-scheduling.md §4 —
+    //       the Par node's branch count tracks the number of bindings. A
+    //       three-binding ParBind emits count=3. Pins that the count store is
+    //       binding-driven, not a constant — guards against a regression that
+    //       hard-codes a 2-branch Par.
+    #[test]
+    fn par_bind_branch_count_tracks_bindings() {
+        let body = Expr::ParBind {
+            bindings: vec![
+                (Symbol::from("a"), int_lit(1)),
+                (Symbol::from("b"), int_lit(2)),
+                (Symbol::from("c"), int_lit(3)),
+            ],
+            body: Box::new(int_lit(0)),
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        };
+        let clif = clif_of_body(body);
+        // count=3 stored as the Par node's first field.
+        assert!(
+            clif.contains("iconst.i64 3"),
+            "three-binding ParBind must store branch count=3; CLIF:\n{clif}"
+        );
+    }
+
+    // spec: spec/10-io.md §10.12.2 + design/backend/io-scheduling.md §4 —
+    //       NEGATIVE guard. A plain sequential `let` (an `Expr::Let`, NOT an
+    //       `Expr::ParBind`) must NOT emit an IO_TAG_PAR=3 Par node — its
+    //       bindings are evaluated in source order with no concurrent dispatch.
+    //       This is the backend-portable kernel of the legacy
+    //       `test_io_schedule_sequential_no_par` GAP: for a `Sequential`-class
+    //       chain the scheduler builds an ordinary `Let`, and the backend's
+    //       contract is that ordinary `Let` codegen carries no Par marker.
+    //       (The scheduling *decision* — which class becomes a `ParBind` — is
+    //       upstream of backend; this guard pins that the no-Par INPUT yields
+    //       no-Par OUTPUT.) Int-literal bindings are used so the sparkability
+    //       analysis is a no-op (literals are never sparkable) and the path is
+    //       deterministically `compile_let_sequential`.
+    #[test]
+    fn sequential_let_emits_no_par_node() {
+        let body = Expr::Let {
+            bindings: vec![
+                (Symbol::from("a"), int_lit(10)),
+                (Symbol::from("b"), int_lit(20)),
+            ],
+            body: Box::new(int_lit(0)),
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        };
+        let clif = clif_of_body(body);
+        // IO_TAG_PAR=3 is the Par-node tag. A sequential `let` must never
+        // store it. (Other `iconst.i64 3` could in principle arise from an
+        // unrelated constant, but with int-literal bindings of 10/20/0 the
+        // only way `3` appears is a Par tag — none should be emitted.)
+        assert!(
+            !clif.contains("iconst.i64 3"),
+            "a sequential `let` must NOT emit an IO_TAG_PAR=3 Par node; CLIF:\n{clif}"
+        );
     }
 }

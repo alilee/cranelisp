@@ -61,6 +61,23 @@ pub fn resolve_type_expr<C: CodeStore>(
         TypeExpr::Applied(name, args) => {
             resolve_applied(name, args, var_map, resolve_terminal, span)
         }
+
+        // A `Bounds([..])` annotation is NOT a concrete type — it is "an
+        // unspecified type satisfying these trait bounds" (spec §3.9.2/§3.9.3,
+        // FIXME 0346). It resolves to a *fresh constrained type variable*, not
+        // to a `Type`, and the constraint must be accumulated onto the binder's
+        // `Scheme.constraints`. That requires a fresh-var allocator and a
+        // constraint sink (`active_constraints`) — neither of which this pure
+        // `TypeExpr -> Type` resolver owns. The owning consumer
+        // (`program.rs::register_defn_signature`, the try-type-then-trait site)
+        // therefore intercepts `Bounds` *before* delegating here, so a `Bounds`
+        // never reaches this arm in practice. Reaching it is an internal routing
+        // bug; surface it rather than silently fabricating a concrete type.
+        TypeExpr::Bounds(_) => Err(ResolveError::TypeNotFound {
+            name: cranelisp_types::TypeName::from("<trait-bounds>"),
+            from_module: cranelisp_types::ModuleFullPath::from(""),
+            span,
+        }),
     }
 }
 

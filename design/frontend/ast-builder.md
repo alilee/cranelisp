@@ -53,6 +53,50 @@ Annotation consumption uses `try_consume_annotation` which handles:
 - `:Name` -> simple named type or type var
 - `: (compound)` -> compound type via `build_type_expr`
 
+### Stacked param annotations (trait bounds) — FIXME 0341
+
+The param slot is `(Symbol, Option<TypeExpr>)` — **one** optional annotation per
+binder. But spec/07-traits.md §7.8.2 and spec/03-types.md §3.9.2 admit a *run* of
+annotations on a single binder:
+
+```clojure
+(defn f [:Eq :Display a :Eq :Display b] a)   ; a, b each bound by BOTH Eq and Display
+```
+
+`build_annotated_params` (the param-list builder) currently consumes exactly one
+annotation per `try_consume_annotation` call, then treats the **next** item as the
+binder name. So in `:Eq :Display a` the `:Eq` is consumed as the bound and
+`:Display` is mis-read as a *separate binder* — yielding two params (`:Display`,
+`a`) instead of one (`a`). Two such params collide on the repeated `:Display`
+token → `duplicate parameter name ':Display'`.
+
+**Correct shape (the binds-the-following-form rule):** a `:Type`/`:Trait`
+annotation is reader-macro-like — it binds the **immediately-following form**
+(`memory/annotation-reader-macro-binds-following-form.md`). A *run* of such
+annotations therefore all attach to the one binder that terminates the run.
+`build_annotated_params` must loop `try_consume_annotation` (accumulating the run)
+until it hits a non-annotation item — the binder — rather than consuming exactly
+one. The single-bound case `[:Eq a]` is the run-of-length-1 and is unchanged.
+
+**Representation tension.** The param slot holds one `Option<TypeExpr>`; a run of
+N>1 bounds has no single-TypeExpr home today. The `(impl Eq (Pair :Eq a :Eq b))`
+path solved the analogous problem with a **dedicated** `type_constraints:
+Vec<(Symbol, TraitRef)>` field on `TraitImpl` (`build_impl_target`) — that
+precedent pairs each `:Trait` with its *own* following var, which is a different
+grammar from stacking N traits onto one binder. Carrying N param bounds requires
+either a multi-bound TypeExpr variant or a separate per-variant constraints field
+— a `cranelisp-types` boundary-shape decision (`/arch`). See the FIXME for the
+cross-crate split: the **parse-locus** fix (stop emitting bogus binders) is
+frontend; the **N-bound carrier + try-type-then-trait constraint semantics**
+(§3.9.3) is a types/typecheck concern.
+
+**Edge cases the builder must honour:** a run with no terminating binder
+(`[:Eq]`, trailing `:Eq` before `]`) is the existing "annotation missing
+parameter name" error; a single concrete annotation `[:Int x]` is unchanged; a
+mixed run `[:Int :Display a]` (a concrete type plus a trait) is admitted
+syntactically — disambiguation (§3.9.3 try-type-then-trait) is downstream, not the
+parser's job.
+
 ### Deftype Desugaring
 
 `desugar_type_def` handles three syntactic forms:

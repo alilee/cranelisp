@@ -187,6 +187,32 @@ pub fn record_event(tag: IoTraceTag, payload: IoTracePayload) {
 }
 
 // ---------------------------------------------------------------------------
+// Bench accessor (FIXME 0336 — unblocks the 0021 off-path microbench)
+// ---------------------------------------------------------------------------
+
+/// In-process accessor for the **filter-OFF** `record_event` cost, exposed
+/// only under the `bench` cargo feature (FIXME 0336). A release-mode criterion
+/// bench (FIXME 0021, `/qa`) links `src/lib.rs` and calls this in a tight loop
+/// with `CRANELISP_IO_TRACE` unset to measure the per-call early-return cost
+/// against a no-op baseline at nanosecond resolution — establishing the `<1%`
+/// off-path bound (`design/backend/io-trampoline-trace.md` §9 AC 2). A
+/// subprocess-driven measurement cannot reach that resolution (process-spawn +
+/// I/O jitter swamps the signal), so the measurement must be in-process.
+///
+/// This is a thin pass-through to `record_event` — it adds NO measurement
+/// logic of its own (the bench owns timing); it exists solely to give the
+/// bench an in-process handle to the off-path without exposing the wider
+/// session internals. With `CRANELISP_IO_TRACE` unset, `record_event` hits its
+/// `filter().is_none()` early return — exactly the off-path being measured.
+#[cfg(feature = "bench")]
+pub fn bench_record_event_off_path() {
+    record_event(
+        IoTraceTag::TrampolineEnter,
+        IoTracePayload::TrampolineEnter { io_ptr: 0 },
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Observer (registered with cranelisp_intrinsics::register_io_observer)
 // ---------------------------------------------------------------------------
 
@@ -425,6 +451,17 @@ fn reset_panic_hook_installed_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // FIXME 0336 — smoke test: the `bench`-gated off-path accessor is callable
+    // with the filter OFF (no env var) and returns without panic (it hits
+    // `record_event`'s `filter().is_none()` early return — the off-path the
+    // 0021 microbench measures). Only compiled under `--features bench`.
+    #[cfg(feature = "bench")]
+    #[test]
+    fn bench_record_event_off_path_is_callable_off_path() {
+        // CRANELISP_IO_TRACE unset in the test environment ⇒ filter OFF.
+        bench_record_event_off_path();
+    }
 
     // -- parse_filter_string --
 

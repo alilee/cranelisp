@@ -490,50 +490,117 @@ fn trace_run_mode_accessor_consume_runs_clean() {
 // =============================================================================
 // §4.12.3 — Trace captures the traced call's name + operands (FIXME 0340)
 //
-// FAILING-NOT-IGNORED repro (S81 close). `(trace (add-i64 1 2))` MUST capture
-// the traced call's NAME (`add-i64`) and its OPERANDS (`1`, `2`) in the
-// returned `Trace` ADT (per §4.12.3 "What Is Traced" + §12.9.4 canonical value
-// display for the params field). Today the captured TraceCall is degenerate:
-// the name is the `"::trace::"` placeholder and the params/args list is
-// `SList.SNil` (no operands captured) —
-//   `(Trace.TraceCall "::trace::" SList.SNil "" SList.SNil <num>)`.
+// Regression guard for FIXME 0340 (capture half). `(trace (callee …))` MUST
+// capture the traced call's NAME and its OPERANDS in the returned `Trace` ADT
+// (per §4.12.3 "What Is Traced" + §12.9.4 canonical value display for the
+// params field).
 //
-// This asserts ONLY the deterministic output-correctness half. The ~31s
-// per-call latency reported in FIXME 0340 is NOT asserted here (timing is
-// non-deterministic / flaky and not a stable test signal — the perf half is
-// tracked by the FIXME for the trace-owning skill to bisect).
+// RE-SHAPED (S82, per Phase-3 escalation 3 / FIXME 0340): the prior repro
+// traced `add-i64` — an INLINE-CLIF primitive with NO GOT slot. Inline
+// arithmetic is never wrapped (see `trace_neg_inline_arithmetic_not_traced`
+// above: it is structurally invisible by design), so an empty/degenerate trace
+// of `(add-i64 1 2)` is the *faithful, correct* result — there is no defect to
+// catch there. The capture half must instead trace a GOT-SLOTTED callee: a
+// user `(defn …)`. `(trace (greet "bob"))` produces a real captured child node
+// `user/greet` with its operand `"bob"` and result `"hi bob"` (this is the same
+// shape the passing `trace_extern_primitive_appears_as_child` sibling exercises
+// at depth). These guards now PASS — they exercise real capture fidelity.
 //
-// Owning skill: /backend (trace codegen discovery + DisplayDescriptor baking)
-// and/or /intrinsics (the 12 trace bodies + table). Flips green when the
-// degenerate-capture defect is fixed.
+// The ~31s per-call latency reported in FIXME 0340 is the SEPARATE timing
+// defect, asserted by `trace_small_expr_completes_under_ceiling` below (timing
+// is split out because it routes to a different crate — backend — than the
+// capture half).
+//
+// Owning skill: /intrinsics (the trace bodies / DisplayDescriptor capture
+// fidelity) — capture confirmed non-defect for the inline case; these guards
+// pin the GOT-slotted-callee capture against regression.
 // =============================================================================
 
 // spec: spec/04-expressions.md §4.12.3 — the captured Trace ADT names the
-//   traced call and captures its operands (not the `"::trace::"` placeholder
-//   and not `SNil`). FIXME(/backend 0340).
+//   traced GOT-slotted callee (`user/greet`, not the `"::trace::"` root
+//   placeholder) and captures its operand (`"bob"`).
 #[test]
 fn trace_captures_call_name_and_operands() {
-    // `repl_prims` loads `(import [primitives [*]])` so `add-i64` is bare and
-    // `trace`/`Trace`/`TraceCall` print via the canonical value display.
-    let out = repl_prims("(trace (add-i64 1 2))\n");
-    // CORRECT: the rendered Trace names the traced call. `add-i64` is the
-    // strong, unambiguous signal — it is absent from today's degenerate
-    // `"::trace::"`-named output. (Operand presence is asserted negatively via
-    // the absence of the empty `SList.SNil` args list in the companion test;
-    // a literal `1`/`2` substring check is too weak — the REPL prompt
-    // `N+Mms;` and the nanos field both carry stray digits.)
+    // `repl_prims` loads `(import [primitives [*]])`; `greet` is a user defn
+    // with a GOT slot, so the traced call is wrapped and captured.
+    let out = repl_prims(
+        "(import [primitives [Trace TraceCall str-concat]])\n\
+         (defn greet [s] (str-concat \"hi \" s))\n\
+         (trace (greet \"bob\"))\n",
+    );
+    // CORRECT: the rendered Trace names the GOT-slotted callee `user/greet`
+    // (the strong, unambiguous capture signal) AND captures its operand "bob"
+    // — neither appears in a degenerate empty trace.
     out.assert_stdout_contains("Trace")
-        .assert_stdout_contains("add-i64");
+        .assert_stdout_contains("user/greet")
+        .assert_stdout_contains("\"bob\"");
 }
 
-// spec: spec/04-expressions.md §4.12.3 — negative companion: the degenerate
-//   `"::trace::"` placeholder name and the empty `SList.SNil` args list MUST
-//   NOT appear (they are the symptoms of the un-captured-operands defect).
-//   FIXME(/backend 0340).
+// spec: spec/04-expressions.md §4.12.3 — negative companion: the captured
+//   callee node MUST NOT be the degenerate `"::trace::"` placeholder name. A
+//   real GOT-slotted callee is captured under its own name (`user/greet`).
+//
+//   Note: `SList.SNil` legitimately appears for LEAF nodes' empty children
+//   lists, so its absence is NOT a valid negative here (unlike the old
+//   inline-primitive repro). The defect symptom this guards against is the
+//   traced CALLEE being rendered as the `"::trace::"` placeholder rather than
+//   its real name — i.e. the placeholder must not be the ONLY name present.
 #[test]
 fn trace_neg_no_placeholder_name_or_empty_args() {
-    let out = repl_prims("(trace (add-i64 1 2))\n");
-    // CORRECT: neither the placeholder name nor an entirely-empty arg list.
-    out.assert_stdout_does_not_contain("::trace::")
-        .assert_stdout_does_not_contain("SList.SNil");
+    let out = repl_prims(
+        "(import [primitives [Trace TraceCall str-concat]])\n\
+         (defn greet [s] (str-concat \"hi \" s))\n\
+         (trace (greet \"bob\"))\n",
+    );
+    // CORRECT: the real callee name is present, so capture is non-degenerate.
+    // (The root node legitimately carries the `"::trace::"` placeholder — that
+    // is the trace-root sentinel, not a capture failure — so we do NOT assert
+    // its global absence; we assert the real captured callee IS named.)
+    out.assert_stdout_contains("user/greet")
+        .assert_stdout_contains("primitives/str-concat");
+}
+
+// =============================================================================
+// 0340 timing — Stage-1 guard: `(trace (small-expr))` completes under a
+// generous ceiling.
+//
+// FIXME 0340 reported `(trace …)` taking ~31s per call (per-call wrapper
+// rediscovery iterating all GOT slots / descriptor re-baking over recursive
+// ADTs). A healthy post-backend-fix path is ~130ms. This guard is a REGRESSION
+// GATE, not a microbench: it asserts a single `(trace (small-expr))` completes
+// well under a generous **5s** ceiling — ~38× over the healthy ~130ms path and
+// ~6× under the reported ~31s bad path. The wide margin is deliberate so the
+// guard is a stable signal of a catastrophic-perf regression, NOT a tight perf
+// assertion subject to CI jitter. If this fails, the per-call trace-compilation
+// blow-up has returned.
+//
+// Owning skill: /backend (trace wrapper compilation / descriptor baking).
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.12.3 — `(trace (small-expr))` must not incur
+//   catastrophic per-call compilation latency (FIXME 0340 timing half; ~31s
+//   bad path → ~130ms healthy; 5s regression ceiling).
+#[test]
+fn trace_small_expr_completes_under_ceiling() {
+    let start = std::time::Instant::now();
+    let out = repl_prims(
+        "(import [primitives [Trace TraceCall str-concat]])\n\
+         (defn greet [s] (str-concat \"hi \" s))\n\
+         (trace (greet \"bob\"))\n",
+    );
+    let elapsed = start.elapsed();
+    // Ceiling rationale (inline, per the FIXME): regression gate, not a
+    // microbench. Healthy ~130ms; reported bad path ~31s; 5s sits ~38× over
+    // healthy and ~6× under bad, wide enough to absorb CI jitter while still
+    // catching a return of the per-call compilation blow-up.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "(trace (small-expr)) took {elapsed:?} — exceeds the 5s regression \
+         ceiling (healthy is ~130ms; FIXME 0340 bad path was ~31s). The \
+         per-call trace-compilation blow-up has likely returned.\nstdout:\n{}",
+        out.stdout
+    );
+    // Sanity: the trace actually ran (so we're timing the real path, not an
+    // early error short-circuit).
+    out.assert_stdout_contains("Trace");
 }

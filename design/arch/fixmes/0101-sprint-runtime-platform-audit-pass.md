@@ -5,7 +5,10 @@ filed_by: /design (runtime)
 filed_at: 2026-05-02
 sprint_filed: 64
 refers_to: design/runtime/runtime.md §10, crates/cranelisp-runtime/src/, crates/cranelisp-platform/src/, audits/
-status: open
+status: deferred
+deferred_at: 2026-06-14
+deferred_reason: S82 re-scope — `cranelisp-runtime` no longer exists (D43 split into primitives+intrinsics); audit targets are now cranelisp-primitives + cranelisp-intrinsics + cranelisp-platform. Per this FIXME's own framing ("schedule ... in a future sprint"), the three audit passes are SCHEDULED to a dedicated audit sprint, not executed in the S82 decks-clearing sprint.
+target_sprint: dedicated-audit-sprint (post-S82)
 ---
 
 # Schedule runtime + platform audit passes

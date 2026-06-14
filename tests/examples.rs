@@ -232,3 +232,85 @@ fn every_example_runs_with_documented_exit() {
             .join("\n")
     );
 }
+
+// =============================================================================
+// 0337 CI-coverage corrective — multi-file DIRECTORY example
+//
+// The `every_example_runs_with_documented_exit` umbrella above only covers
+// top-level single-file `examples/*.cl`; it explicitly EXCLUDES `16-modules/`
+// ("a directory, not a top-level .cl file"). That exclusion is exactly why the
+// multi-file module-resolution breakage behind FIXME 0337 sailed through every
+// per-crate sweep undetected — there was ZERO CI coverage for a multi-file
+// directory project run end-to-end.
+//
+// This test closes that gap with a self-contained NESTED multi-file project
+// (per §8.2.5 nested-only resolution, ruled by FIXME 0345). It is intentionally
+// NOT coupled to `examples/16-modules/` — that example is not yet relaid out to
+// the nested shape (a Phase-6 /examples task), so coupling to it would make
+// this guard depend on user-proxy churn. A self-contained `tempfile::TempDir`
+// nested fixture is the durable, decoupled regression guard per
+// tests/CLAUDE.md §"Repros live in tests/, not exemplar/ or examples/".
+//
+// It is a real, durable CI extension (green, not a failing defect guard): it
+// runs a directory-entry program through `--run` and asserts its documented
+// exit, so future multi-file-module regressions are caught going forward.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.2.5 — a multi-file directory project whose entry
+//       declares bare `(mod child)` resolves the NESTED child `{stem}/child.cl`
+//       and runs end-to-end. CI coverage corrective for FIXME 0337.
+#[test]
+fn multi_file_nested_directory_example_runs_with_documented_exit() {
+    let binary = binary_path();
+    assert!(
+        binary.exists(),
+        "cranelisp binary not found at {binary:?} — run `cargo build` first"
+    );
+
+    // Self-contained nested project: entry `main.cl` declares `(mod math)` +
+    // `(mod util)`; both resolve to NESTED children under `main/`. main sums
+    // their results: (square 5)=25 + (double 4)=8 + literal 0 = 33 → exit 33.
+    let td = tempfile::tempdir().expect("TempDir creation");
+    let root = td.path();
+    std::fs::create_dir_all(root.join("main")).expect("mkdir main/");
+    std::fs::write(
+        root.join("main.cl"),
+        "(import [primitives [Pure add-i64]])\n\
+         (mod math)\n\
+         (mod util)\n\
+         (defn main [] (Pure (add-i64 (math/square 5) (util/double 4))))\n",
+    )
+    .expect("write main.cl");
+    std::fs::write(
+        root.join("main").join("math.cl"),
+        "(import [primitives [mul-i64]])\n\
+         (defn square [x] (mul-i64 x x))\n",
+    )
+    .expect("write main/math.cl");
+    std::fs::write(
+        root.join("main").join("util.cl"),
+        "(import [primitives [add-i64]])\n\
+         (defn double [x] (add-i64 x x))\n",
+    )
+    .expect("write main/util.cl");
+
+    let out = Command::new(&binary)
+        .args(["--run", root.join("main.cl").to_str().unwrap()])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run cranelisp");
+
+    // 25 + 8 = 33. The exit code is `main`'s Int return per spec/10-io.md §10.
+    let code = out.status.code();
+    assert_eq!(
+        code,
+        Some(33),
+        "multi-file nested-directory project should exit 33 (square(5)=25 + \
+         double(4)=8); got {code:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}

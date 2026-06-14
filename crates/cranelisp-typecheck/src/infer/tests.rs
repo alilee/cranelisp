@@ -41,8 +41,22 @@
 
     /// Create a TypeChecker with builtins for testing.
     /// Uses set_current_module to create a "test" module seeded with primitives.
+    ///
+    /// Narrowed (FIXME 0243) from `TestFixture::new()` (= `full()`) to the
+    /// content the inference tests in this file actually consume: builtin type
+    /// names + the Ring 0/1/3 primitive `Def`s (`add-i64` etc.) + the synthetic
+    /// `macros` module (`macros/sconcat` resolution). The inference tests do
+    /// not consult the IO ADT or special-form symbol-table entries (special
+    /// forms are handled at the AST level, not via name lookup), so `with_io()`
+    /// and `with_special_forms()` are dropped. Bootstrap order: primitives and
+    /// macros both require `with_builtin_type_names()` first.
     fn tc() -> TestFixture {
-        let mut tc = TestFixture::new();
+        let mut tc = TestFixture::with_content(
+            crate::builtins::FixtureBuilder::new()
+                .with_builtin_type_names()
+                .with_primitives()
+                .with_macros_sexp(),
+        );
         tc.set_current_module(ModuleFullPath::from("test"));
         // Import primitives so bare names (add-i64 etc.) resolve.
         seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
@@ -2542,5 +2556,48 @@
             ty,
             trace_type(),
             "a let-bound trace value must retain the Trace type"
+        );
+    }
+
+    // spec: spec/04-expressions.md §4.12.7 — a trace value is an ordinary value
+    // and can be passed as a function argument. The legacy harvest source
+    // (`tests/legacy/ring4_trace_taxonomy.rs::trace_composability_pass_to_function`)
+    // asserted `Type::String` via the `name` accessor, but that accessor's
+    // return-type scheme is seeded in the `int` binary (`src/bootstrap.rs`),
+    // not a typecheck preset — so the String result is an int/runtime fact, not
+    // typecheck-internal. The typecheck-internal fact harvested here is the
+    // unification angle: when a trace value flows into a polymorphic
+    // identity-shaped function parameter, that parameter unifies to Trace and
+    // the call result is Trace. This pins the trace-form's own type as an
+    // ordinary, passable value at the inference seam (the field-accessor
+    // return-type GAPs from the legacy file belong to the int/runtime cluster,
+    // per the block comment above).
+    #[test]
+    fn trace_composability_pass_to_function() {
+        let mut tc = tc();
+        tc.bind_local_self(
+            Symbol::from("fact"),
+            mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+        );
+        // An identity-shaped fn over a single param: forall a. (Fn [a] a).
+        let a_var = tc.fresh_var();
+        let a_id = match &a_var {
+            Type::Var(id) => *id,
+            _ => unreachable!("fresh_var returns Type::Var"),
+        };
+        tc.bind_local_self(
+            Symbol::from("id-trace"),
+            Scheme {
+                type_vars: vec![a_id],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![a_var.clone()], Box::new(a_var)),
+            },
+        );
+        let mut expr = build_expr_from_source("(id-trace (trace (fact 3)))");
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(
+            ty,
+            trace_type(),
+            "passing a trace value through an identity-shaped fn must yield Trace"
         );
     }

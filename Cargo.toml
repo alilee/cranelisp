@@ -74,6 +74,17 @@ version = "0.8"
 version = "1"
 features = ["derive"]
 
+# FIXME 0336: a `bench`-gated, in-process accessor for the IO-trace off-path
+# `record_event` cost (unblocks FIXME 0021 — the release-mode criterion bench
+# that measures the filter-OFF per-call cost at nanosecond resolution). The
+# feature gates `io_trace::bench_record_event_off_path` (and nothing else); it
+# is OFF by default so the normal build/test path is unaffected. No `[lib]`
+# target is added (none is needed — `src/lib.rs` already exposes `pub mod
+# io_trace`, so a `benches/` unit links it via `use cranelisp::io_trace::…`);
+# the accessor is purely additive (Principle 8 — no interim scaffolding).
+[features]
+bench = []
+
 [[bin]]
 name = "cranelisp"
 path = "src/main.rs"
@@ -90,4 +101,15 @@ criterion = "0.5"
 # run via `cargo build --release && cargo bench --bench startup_latency`.
 [[bench]]
 name = "startup_latency"
+harness = false
+
+# IO-trace off-path overhead microbench (FIXME 0021 / 0336). Measures the
+# filter-OFF `record_event` per-call cost in-process at nanosecond resolution
+# against a no-op baseline, establishing the <1% off-path bound
+# (design/backend/archive/io-trampoline-trace.md §9 AC 2). Calls the
+# `bench`-gated `io_trace::bench_record_event_off_path` accessor, so run with:
+#   cargo bench --features bench --bench io_trace_off_path
+# Not part of the nextest suite.
+[[bench]]
+name = "io_trace_off_path"
 harness = false

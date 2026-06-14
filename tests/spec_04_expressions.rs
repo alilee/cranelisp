@@ -311,6 +311,62 @@ fn auto_curry_passed_to_higher_order_fn() {
     .assert_stdout_contains(":primitives/Int 15");
 }
 
+// spec: spec/04-expressions.md §4.6.3 — auto-currying: calling a two-param fn
+// with fewer args returns a closure; applying the closure completes the call.
+// (carry: legacy/io.rs::auto_curry_two_param_partial_apply)
+#[test]
+fn auto_curry_two_param_partial_apply() {
+    repl_prims(
+        "(defn add [x y] (add-i64 x y))\n\
+         (let [f (add 1)] (f 2))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 3");
+}
+
+// spec: spec/04-expressions.md §4.6.3 — auto-currying: a three-param fn applied
+// to two args returns a one-arg closure.
+// (carry: legacy/io.rs::auto_curry_three_param_partial_apply)
+#[test]
+fn auto_curry_three_param_partial_apply() {
+    repl_prims(
+        "(defn add3 [x y z] (add-i64 (add-i64 x y) z))\n\
+         (let [f (add3 10 20)] (f 30))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 60");
+}
+
+// spec: spec/04-expressions.md §4.6 — supplying MORE args than a fn's arity is
+// still an error (auto-curry only handles fewer args).
+// (carry: legacy/io.rs::auto_curry_too_many_args_error)
+#[test]
+fn auto_curry_too_many_args_error_neg() {
+    let out = repl_prims(
+        "(defn add [x y] (add-i64 x y))\n\
+         (add 1 2 3)\n",
+    );
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "too many args MUST be an error per §4.6; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/04-expressions.md §4.6.3 — auto-curry checks argument types: a
+// wrong-typed argument is rejected even at partial application.
+// (carry: legacy/io.rs::auto_curry_wrong_type_error)
+#[test]
+fn auto_curry_wrong_type_error_neg() {
+    let out = repl_prims(
+        "(defn add [x y] (add-i64 x y))\n\
+         (add true)\n",
+    );
+    assert!(
+        out.stdout.to_lowercase().contains("error"),
+        "wrong-typed arg MUST be an error per §4.6.3; got:\n{}",
+        out.stdout
+    );
+}
+
 // =============================================================================
 // §4.10 Vec Literal
 // =============================================================================

@@ -260,7 +260,20 @@ where
     // `defn_type_vars` into Pass 2 — this is the state-threading hole that
     // pre-S66's two-function split exposed, closed here by construction
     // (single call frame).
+    //
+    // FIXME 0354 Bug A: snapshot the post-Pass-1 active_constraints (the
+    // declared bound-param constraints `resolve_bound_param` recorded for every
+    // form's binders) and restore that snapshot before each form's body check.
+    // Without this, body-checking form A instantiates trait methods (e.g.
+    // `show` → a `Display`-only fresh var), and those STALE instantiation
+    // constraints survive into form B's generalize where they `apply`-resolve
+    // onto B's scheme var and corrupt its bound run (`[Eq, Display, Display]`).
+    // Restoring the Pass-1 snapshot keeps every binder's *declared* bounds while
+    // discarding the prior form's body-instantiation residue. (The reset was
+    // previously `#[cfg(test)]`-only; the production path leaked the residue.)
+    let pass1_constraints = state.active_constraints.clone();
     for form in &working_program {
+        state.active_constraints = pass1_constraints.clone();
         let result = env
             .check_form(&current_module, form, CheckPass::CheckBody, &mut state, &mut accumulator)
             .map_err(|e| lift_error(e, &state))?;
@@ -270,6 +283,7 @@ where
     // Check bodies of default method defns too.
     let defaults_for_body: Vec<Defn> = accumulator.default_method_defns.clone();
     for defn in &defaults_for_body {
+        state.active_constraints = pass1_constraints.clone();
         let form = TopLevel::Defn(defn.clone());
         let result = env
             .check_form(&current_module, &form, CheckPass::CheckBody, &mut state, &mut accumulator)
@@ -419,6 +433,11 @@ fn collect_type_var_ids<C, L>(
             }
         }
         TypeExpr::Named(_) | TypeExpr::SelfType => {}
+        // A `Bounds([..])` carries trait references, not type-variable names —
+        // nothing to collect here. The bound binder's fresh constrained var is
+        // allocated by the annotation consumer (`register_defn_signature`), not
+        // by this standalone-sig type-var quantifier. (FIXME 0346.)
+        TypeExpr::Bounds(_) => {}
     }
 }
 

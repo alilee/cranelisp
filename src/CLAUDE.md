@@ -17,6 +17,36 @@ Cross-cutting source conventions for the Cranelisp reimplementation. All compile
 - **One dispatch method per Expr variant.** `infer_expr` and `compile_expr` dispatch to `infer_let`, `infer_apply`, `compile_let`, `compile_apply`, etc.
 - **Named structs for multi-field returns.** No bare tuples `(Vec<Type>, Type, String)` — use `MonoDefn`, `OverloadVariant`, etc.
 
+## Session/REPL module decomposition (FIXME 0109 §3.3, Waves C+D)
+
+The former `session_v4.rs` god-file is decomposed along the `design/int/int.md`
+§3.3 module map. All four are `pub(crate) mod` in `lib.rs`:
+
+| Module | Responsibility |
+|---|---|
+| `session_v4.rs` (residual) | `CompilerSession` struct + lifecycle (`new`, `register_module`/`re_register_module`, `link_by_name`/`register_entry_module`, `trampoline`, watcher reload, `shutdown`/`Drop`); `SharedState` construction; worker-pool spawn/join; symbol-table accessors + `symbol_*` introspection getters; the `discover-tests` extern + `TestRunnerState`. |
+| `eval.rs` | REPL eval form-chain — `eval` (cluster boundary + `:Type` grouping), `eval_one_form`, `process_single_form` / `process_form_cluster` (the eval-thread dep-retry trampoline over `process_form::process_cluster_once`), `codegen_and_execute`, `check_bare_symbol_introspection`, `register_dep_for_eval`. |
+| `repl.rs` | Slash-command dispatch (`process_commands` / `dispatch_command` / `parse_slash_command` / all `handle_*`), prompt/banner/line-editor (`print_banner`, `write_prompt`, `pretty_print`, `parens_balanced`), and the introspection-display helpers (`describe_symbol`/`collect_related[_for]`, `format_eval_result`, `format_def_entry`, `resolve_entry_for_display`, the `format_*` free fns, `ReplCommand`/`ImportClass`). |
+| `process_form.rs` | The shared gap-orchestration form chain (Wave C). |
+
+**Module-scoped field privacy.** The `eval.rs`/`repl.rs` methods are
+`impl CompilerSession` blocks in sibling modules, so the `CompilerSession`
+private fields they reach were widened to `pub(crate)`
+(`worker_pool`, `current_repl_module`, `repl_check_state`, `repl_input_active`,
+`warnings`, `entry_module`) — and the session-resident helpers they call
+(`current_module_path`, `current_symbol_table`, `set_current_module`,
+`get_introspection`, the `discover_*`/`run_test_by_name` test helpers,
+`ReadOnlyMacroResolver`, `TestOutcome`, etc.) are `pub(crate)`. `QUIT_SENTINEL`
+lives in `repl.rs`, re-exported from `session_v4` to preserve its former path.
+
+**Macro-clause single implementation.** `process_form::compile_macro_clause_core`
+is the sole macro-clause compiler; `compile_macro_clause_with_state` (resolver
+path, raw refs) and `compile_macro_clause_inline` (`&mut ModuleCompiler` path)
+are thin adapters that source the references from their callers. The two former
+byte-identical bodies (a post-Decision-44 convergence) are collapsed.
+`inline_jit_codegen_for_module` / `_for_names` is already a thin-wrapper-over-core
+pair (module derives the batch + notifies; names is the shared core), not a mirror.
+
 ## Naming Conventions
 
 - **String newtypes for all identifiers.** `Symbol`, `ModuleFullPath`, `FQSymbol`, `TraitName`, `TypeName`, `ModuleName`, `LinkerSymbol`. Never pass bare `String` or `&str` where a typed identifier is expected.

@@ -1501,63 +1501,77 @@ fn annotation_in_paren_unify_precedes_not_a_function() {
 }
 
 // =============================================================================
-// §8.2 Module Declaration — bare `(mod name)` sibling-file resolution
+// §8.2.5 Module Declaration — bare `(mod name)` NESTED-only resolution
 //
-// FAILING-NOT-IGNORED repro for FIXME 0337 (S81 close). A two-file project
-// whose entry declares a bare `(mod sibling)` MUST resolve the sibling FILE
-// `sibling.cl` (a sibling module of the entry), NOT look for a NESTED
-// submodule `<entry>.sibling`. Today the resolver looks for the nested
-// submodule and errors `submodule '<entry>.sibling' not found`.
+// Regression guard for FIXME 0337 (S81 surfaced; S82 ruled nested-only via
+// FIXME 0345). A bare `(mod child)` (no inline body) in an entry file MUST
+// resolve the NESTED child path `{stem}/{name}.cl` — for `main.cl` declaring
+// `(mod child)` that is `main/child.cl` (loaded module `main.child`). It MUST
+// NOT fall back to a SIBLING `child.cl` in the same directory (that file, if
+// present, is the independent peer module `child`, reachable only via
+// `import`). The implementation already follows §8.2.5; these guards pin it.
 //
-// Owning skill: /int (module resolution). The fix flips this green.
+// Earlier shape (S81): these guards encoded the OLD *sibling* expectation,
+// which the §8.2.5 nested-only ruling (FIXME 0345) made wrong. Rewritten S82
+// to the nested expectation — they PASS against the (correct) implementation.
+//
+// Owning skill: /int (module resolution); the behaviour is normative per
+// §8.2.5 and these guards lock it against regression.
 // =============================================================================
 
-// spec: spec/08-modules.md §8.2 — bare `(mod name)` triggers loading the
-//   sibling FILE `name.cl`; the entry is named `main` (the FIXME-documented
-//   failing case; see the entry-name note below). FIXME(/int 0337).
+// spec: spec/08-modules.md §8.2.5 — bare `(mod child)` resolves the NESTED
+//   child file `{stem}/{name}.cl` (here `main/child.cl`, module `main.child`).
 #[test]
-fn bare_mod_decl_resolves_sibling_file_for_entry_main() {
+fn bare_mod_decl_resolves_nested_child_for_entry_main() {
     Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod sibling)\n(defn main [] (Pure (sibling/answer)))",
+            "(import [primitives [Pure]])\n(mod child)\n(defn main [] (Pure (child/answer)))",
         )
-        .file("sibling.cl", "(defn answer [] 42)")
+        .file("main/child.cl", "(defn answer [] 42)")
         .run("main.cl")
         .output()
-        // CORRECT behaviour: the sibling fn resolves and main exits 42.
-        // Today this FAILS — the resolver errors
-        // `submodule 'main.sibling' not found (declared by 'main')`.
+        // CORRECT (§8.2.5): the nested child fn resolves and main exits 42.
         .assert_exit(42);
 }
 
-// spec: spec/08-modules.md §8.2 — negative companion: the resolver MUST NOT
-//   look for a NESTED submodule `main.sibling`. FIXME(/int 0337).
-//
-// Entry-name specificity note (FIXME 0337 asked /qa to confirm): the defect
-// is NOT specific to the entry being named `main` — it reproduces identically
-// for a non-`main` entry (`entry.cl` declaring `(mod sibling)` errors
-// `submodule 'entry.sibling' not found`). The `main`-named entry is the
-// FIXME-documented case; this repro pins it. The bug is in bare `(mod name)`
-// sibling-file resolution generally, not in the `main` entry name.
+// spec: spec/08-modules.md §8.2.5 — negative companion: a bare `(mod child)`
+//   MUST NOT auto-resolve a SIBLING `child.cl`. Only the nested
+//   `{stem}/child.cl` is sought; a sibling peer is reachable only via
+//   `import`, never `mod`. With no nested `main/child.cl` present, the build
+//   MUST fail (the resolver does not silently fall back to the sibling).
 #[test]
-fn bare_mod_decl_neg_does_not_seek_nested_submodule() {
+fn bare_mod_decl_neg_does_not_resolve_sibling_file() {
     let out = Cranelisp::new()
         .file(
             "main.cl",
-            "(import [primitives [Pure]])\n(mod sibling)\n(defn main [] (Pure (sibling/answer)))",
+            "(import [primitives [Pure]])\n(mod child)\n(defn main [] (Pure (child/answer)))",
         )
-        .file("sibling.cl", "(defn answer [] 42)")
+        // A SIBLING child.cl exists, but no NESTED main/child.cl. Per §8.2.5
+        // the bare `(mod child)` seeks ONLY main/child.cl and must NOT fall
+        // back to this sibling.
+        .file("child.cl", "(defn answer [] 42)")
         .run("main.cl")
         .output();
-    // CORRECT: no nested-submodule lookup error appears (the sibling file is
-    // found). Today this FAILS — `main.sibling` nested-submodule error fires.
+    // CORRECT (§8.2.5): the sibling is NOT considered, so resolution of the
+    // nested `main.child` fails — main must NOT exit 42 (which would mean the
+    // sibling was wrongly resolved). Assert the failure surfaces the
+    // nested-module lookup, not a successful sibling fallback.
+    assert_ne!(
+        out.status.code(),
+        Some(42),
+        "bare `(mod child)` MUST NOT fall back to a SIBLING `child.cl` \
+         (§8.2.5 nested-only); exit 42 would mean the sibling was wrongly \
+         resolved.\nstdout={}\nstderr={}",
+        out.stdout,
+        out.stderr
+    );
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
-        !combined.contains("not found"),
-        "bare `(mod sibling)` MUST resolve the sibling FILE, not seek a nested \
-         submodule `main.sibling` (spec/08-modules.md §8.2); got a not-found \
-         error:\nstdout={}\nstderr={}",
+        combined.contains("main.child"),
+        "the failure MUST name the NESTED module `main.child` (the only path \
+         §8.2.5 seeks), confirming no sibling fallback was attempted.\n\
+         stdout={}\nstderr={}",
         out.stdout,
         out.stderr
     );
@@ -1609,13 +1623,28 @@ fn super_import_resolves_parent_fn() {
 
 // spec: spec/08-modules.md §8.3.8 — non-cyclic child→parent `super` import of
 //   a parent TYPE constructor MUST resolve. FIXME(/typecheck 0342).
+//
+// Fixture corrected (S82): the original repro used a postfix annotation
+// `[b :superp/Box]` which is INVALID — `:Type` is a reader-macro-like
+// annotation that binds the IMMEDIATELY-FOLLOWING form (the prefix form
+// `[:superp/Box b]`), never the preceding binder (per
+// `memory/annotation-reader-macro-binds-following-form.md`). It also used a
+// `box-v` accessor; the spec (§5 — auto-generated accessor = the FIELD name)
+// has no `box-v`, and the field-name accessor (`v`) currently does not resolve
+// as a free callable (a separate pre-existing typecheck issue — see report).
+//
+// This guard's SUBJECT is the `super` import of a parent type constructor, NOT
+// accessor/annotation mechanics. It therefore extracts the field via `match`
+// destructuring (the spec-blessed pattern, see examples/10-adts.cl) and drops
+// the (broken) self-qualified annotation. With the fixture corrected the
+// behaviour-under-test resolves and main exits 9.
 #[test]
 fn super_import_resolves_parent_type_constructor() {
     Cranelisp::new()
         .file(
             "superp.cl",
             "(deftype Box [:primitives/Int v])\n\
-             (defn unbox [b :superp/Box] (box-v b))\n\
+             (defn unbox [b] (match b [(Box x) x]))\n\
              (mod test\n  \
                (import [super [Box]])\n  \
                (defn make [] (Box 3)))",
@@ -1628,7 +1657,35 @@ fn super_import_resolves_parent_type_constructor() {
         )
         .run("entry.cl")
         .output()
-        // CORRECT: the submodule sees the parent's `Box` constructor; main
-        // exits 9. Today this FAILS with `'Box' not found in module 'superp'`.
+        // CORRECT: the submodule sees the parent's `Box` constructor (via the
+        // `super` import) and the project compiles; main exits 9.
+        .assert_exit(9);
+}
+
+// =============================================================================
+// §8.5 Qualified Names — self-qualified type reference (FIXME 0351)
+// =============================================================================
+
+// spec: spec/08-modules.md §8.5 — a module MUST be able to reference its own
+// types by their fully-qualified (module-qualified) name.
+// FAILING-NOT-IGNORED defect repro (FIXME 0351, target /typecheck, S83).
+// Inside `t.cl` (compiled as module `t`), the type `Box` is defined locally;
+// annotating a parameter with the self-qualified name `:t/Box` MUST resolve
+// to that local type. As-built it errors:
+//   `unknown type `t/Box` (from module ``)`.
+// Single-file, no super-import — this is the (a) repro of 0351, isolating the
+// self-qualified resolution defect from the (now-green) 0342 super-import guard.
+#[test]
+fn self_qualified_type_reference_resolves_to_local_type() {
+    Cranelisp::new()
+        .file(
+            "t.cl",
+            "(deftype Box [:primitives/Int v])\n\
+             (defn unbox [:t/Box b] (match b [(Box x) x]))\n\
+             (defn main [] (unbox (Box 9)))",
+        )
+        .run("t.cl")
+        .output()
+        // CORRECT: `:t/Box` resolves to the locally-defined `Box`; main exits 9.
         .assert_exit(9);
 }

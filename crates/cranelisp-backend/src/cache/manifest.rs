@@ -586,6 +586,46 @@ mod tests {
         }
     }
 
+    // spec: design/backend/module-caching.md §3 — unchanged module keeps cache when sibling changes
+    //
+    // Harvest of legacy `watch_unchanged_modules_keep_cache` (the final
+    // `tests/legacy/sprint23.rs` GAP, FIXME 0144). The §14.7 watch invariant
+    // "unchanged modules keep their cached .o" reduces to a cache-manifest
+    // property: with two modules in one manifest, presenting a *changed* hash
+    // for A must make A NOT a cache hit while B, presented with its *unchanged*
+    // hash, must remain a cache hit. This is the paired same-manifest assertion
+    // (the prior `..._unrelated_module_change_does_not_invalidate` harvest only
+    // asserts the unchanged-sibling half; this pins both halves together — the
+    // exact discrimination the watcher relies on to recompile A while reusing
+    // B's cached object).
+    #[test]
+    fn check_manifest_changed_module_misses_unchanged_sibling_hits() {
+        let triple = target_lexicon::Triple::host().to_string();
+        let mut manifest = CacheManifest::new(&triple);
+
+        let mp_a = ModuleFullPath::from("mod_a");
+        let mp_b = ModuleFullPath::from("mod_b");
+        let hash_a = hash_source("(defn val-a [] 1)");
+        let hash_b = hash_source("(defn val-b [] 2)");
+        manifest.upsert_module(&mp_a, hash_a, HashMap::new());
+        manifest.upsert_module(&mp_b, hash_b.clone(), HashMap::new());
+
+        // A "changes" — present a new hash. Must NOT be a cache hit.
+        let new_hash_a = hash_source("(defn val-a [] 999)");
+        let a_valid = check_manifest(&manifest, &mp_a, &new_hash_a, &HashMap::new());
+        assert!(
+            !a_valid.unwrap(),
+            "module A with changed source must NOT be a cache hit"
+        );
+
+        // B is unchanged — present the original hash. Must STILL be a cache hit.
+        let b_valid = check_manifest(&manifest, &mp_b, &hash_b, &HashMap::new());
+        assert!(
+            b_valid.unwrap(),
+            "module B with unchanged source must still be a cache hit"
+        );
+    }
+
     // spec: design/backend/module-caching.md §3 — empty hash is not a wildcard
     //
     // Harvest of legacy `cache_neg_empty_hash_not_wildcard` (negative guard):

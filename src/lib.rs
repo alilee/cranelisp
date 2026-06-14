@@ -70,6 +70,15 @@ pub(crate) mod pretty;
 // `process_regular_form` + their family-private helpers. The permanent home
 // named in `design/int/int.md` §3.3 Wave-D target map.
 pub(crate) mod process_form;
+// eval — REPL eval form-chain extracted from session_v4.rs (FIXME 0109 Wave D).
+// `eval` + `process_form_cluster`/`process_single_form` (eval-thread dep-retry
+// loop) + `codegen_and_execute` + `check_bare_symbol_introspection` +
+// `register_dep_for_eval`. The §3.3 Wave-D target home.
+pub(crate) mod eval;
+// repl — slash-command dispatch, prompt/banner formatting, line-editor entry
+// points, introspection-display helpers; extracted from session_v4.rs
+// (FIXME 0109 Wave D). The §3.3 Wave-D target home.
+pub(crate) mod repl;
 // repl/ module deleted — v4 REPL is driven by CompilerSession in main.rs + session_v4.rs.
 // FileWatcher extracted to watch.rs; remaining features (save, trace, run-tests) are future work.
 pub(crate) mod save;

@@ -38,13 +38,15 @@
 ;; test-discovery.md §4.5 dev-session-only framing). The pure helpers below
 ;; (run-one / present-one / tally / report / passed?) work in every mode.
 ;;
-;; SELF-TESTS are exercised through the REPL (the design-blessed path), not a
-;; `(mod test …)` submodule: on this toolchain a parent→child `super` import does
-;; not resolve the parent's symbols (a pre-existing module-ordering defect), and
-;; loading a module whose source carries a `(mod test …)` body triggers the int
-;; source-regeneration path which rewrites the backing `.cl` WITHOUT the submodule
-;; body. Both are handed off as findings (see the sprint report). The runner is
-;; demoed green over a pass/fail/panic mix in the REPL.
+;; SELF-TESTS now ship as a `(mod test …)` submodule again (S82 Phase 6). Two
+;; defects that S81 had to route around are FIXED: a parent→child `super` import
+;; resolves the parent's symbols (0342, int load-ordering), and loading a module
+;; whose source carries a `(mod test …)` body no longer clobbers the backing
+;; `.cl` on source-regen (0343, entry-module role-gate). The submodule imports
+;; the runner's parent helpers via `super` and asserts with `assert-true`/
+;; `assert-false`. NOTE: it does NOT use `assert-eq` — a cross-module call of a
+;; stacked-trait-bound fn (`assert-eq`'s `[:Eq :Display a :Eq :Display b]`)
+;; currently SIGSEGVs (FIXME 0354, 0341 fix incomplete for the importer path).
 ;;
 ;; Spec: design/arch/test-discovery.md §4.3/§5/§6, plan-stdlib.md §3.3
 
@@ -170,3 +172,31 @@
   [:Tally t] :Bool
   (match t
     [(Tally _ f x) (if (eq-i64 f 0) (eq-i64 x 0) false)]))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; `(mod test …)` submodule (S82 Phase 6): imports the runner's parent symbols
+;; via `super` (0342) and exercises the pure helpers with assert-true/
+;; assert-false (assert-eq is avoided — FIXME 0354). The submodule body now
+;; survives a load without source-regen clobber (0343).
+
+(mod test
+  (import [super [Outcome Passed Failed Panicked
+                  Tally tally passed? present-one]])
+  (import [testing.assertions [assert-true assert-false]])
+  (import [primitives [str-eq]])
+
+  (defn test-passed-tally-is-passed [] :(Option String)
+    ;; A tally of all-passed Outcomes reports passed?=true.
+    (assert-true (passed? (tally [(Passed "a") (Passed "b")]))))
+
+  (defn test-failed-tally-is-not-passed [] :(Option String)
+    ;; Any Failed in the tally flips passed?=false.
+    (assert-false (passed? (tally [(Passed "a") (Failed "b" "why")]))))
+
+  (defn test-panicked-tally-is-not-passed [] :(Option String)
+    ;; Any Panicked in the tally flips passed?=false.
+    (assert-false (passed? (tally [(Panicked "a" "boom")]))))
+
+  (defn test-present-passed-line [] :(Option String)
+    ;; present-one renders a Passed outcome as "name ... ok".
+    (assert-true (str-eq (present-one (Passed "t")) "t ... ok"))))

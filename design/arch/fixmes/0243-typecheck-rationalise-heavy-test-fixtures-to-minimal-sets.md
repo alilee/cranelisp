@@ -5,8 +5,63 @@ filed_by: /sprint
 filed_at: 2026-05-31
 sprint_filed: 73
 refers_to: crates/cranelisp-typecheck/src/builtins.rs (#[cfg(test)] FixtureBuilder + the five presets), crates/cranelisp-typecheck/src/checker.rs (TestFixture::new / with_content), design/arch/fixmes/0241-arch-synthetic-module-assembly-leaves-typecheck-builder-vocabulary.md, design/arch/fixmes/0239-arch-instantiate-module-symbol-table-from-source-facade.md
-status: open
+status: resolved
 ---
+
+> **S82 progress (adt/traits/checker + shared-helper remainder narrowed —
+> COMPLETE; FIXME resolved):** The S81-deferred remainder is now narrowed. All
+> `TestFixture::new()` (= `FixtureBuilder::full()`) call sites in the four
+> remaining files are replaced with minimal per-test presets via local
+> `tf*()` helpers; every affected test module is green under the narrower seeds.
+>
+> - **`adt.rs` (22 tests):** all 20 call sites → `tf()` (empty builder) by
+>   default, since each test registers its OWN ADTs and (where it has typed
+>   builtin fields) seeds the matching `primitives` Import edge inline. Three
+>   internal-constructor tests (`test_is_internal_constructor`,
+>   `test_is_internal_constructor_through_import`,
+>   `test_exhaustiveness_excludes_internal_constructors`) → `tf_io()`
+>   (`with_builtin_type_names().with_io()`) — they read `Bind`'s `internal:true`
+>   discriminator off the seeded `IO` ADT. One product-type test
+>   (`test_register_product_type_with_fields`) → `with_builtin_type_names()`
+>   (its `:Int`/`:Bool` field-type Import edges need the scalar IntrinsicType
+>   entries to exist).
+> - **`traits/tests.rs` (46 tests):** the four startup-negative tests
+>   (`test_no_traits_at_startup`, `test_no_impls_at_startup`,
+>   `test_no_core_traits_at_startup`, `test_no_operators_at_startup`) → `tf()`
+>   (empty — the most honest "nothing seeded" position). The trait-decl /
+>   trait-impl / resolution tests + the shared `tc_with_prims()` helper →
+>   `tf_prims()` (`with_builtin_type_names().with_primitives()` — impl `target`
+>   is `Int`, bodies call `add-i64`).
+> - **`checker/tests.rs` (40 tests):** the bulk → `tf()` (empty) — these build
+>   their own modules and seed exactly what they need. Per-test bumps: the three
+>   trait-impl-resolution / dispatch-fallback tests
+>   (`test_impl_resolution_chain_follows_not_universe_scans`,
+>   `test_trait_impl_write_lands_in_trait_home_not_writer`,
+>   `test_trait_method_dispatch_falls_back_to_prelude_outer_scope`) →
+>   `tf_prims()`; the qualified-sum-ctor test
+>   (`fq_sum_ctor_resolves_in_pattern_from_unimporting_module`) → `tf_macros()`
+>   (`with_builtin_type_names().with_macros_sexp()` — resolves `macros/SCons`);
+>   the internal-ctor-gate test (`prelude_fallback_internal_ctor_gate_rejects_bind`)
+>   → `tf_io()`. **`test_bare_module_has_root_contents_only` LEFT at `full()`**
+>   — it VALIDATES the fully-seeded world (special forms at root, primitives,
+>   IO, macros) while asserting none leak into a bare module; narrowing would
+>   defeat the test's purpose (same rationale as S81's `test_trace_not_auto_imported`).
+> - **Shared helpers (highest-risk, done last, one per test-run):**
+>   `infer/tests.rs::tc()` → `with_builtin_type_names().with_primitives().with_macros_sexp()`
+>   (inference tests reference `macros/sconcat`; no IO/special-form lookups; all
+>   82 green). `program/tests.rs::tc_with_prims()` →
+>   `…with_macros_sexp().with_io()` (program tests reference `Bind`/`Pure`
+>   directly + macros; only `with_special_forms()` dropped — no test probes the
+>   special-form entries; all 84 green).
+>
+> **Order-sensitive preset footgun:** did NOT require the dependency-closure
+> step in `FixtureBuilder::seed()` — the bootstrap order
+> (`with_builtin_type_names()` before `with_primitives()`/`with_macros_sexp()`/
+> `with_io()`) was applied explicitly at each helper. No deferred remainder.
+> Two `full()` sites remain by design (`test_trace_not_auto_imported` in
+> `builtins.rs`, `test_bare_module_has_root_contents_only` in `checker/tests.rs`)
+> — both VALIDATE the fully-seeded world and are correctly left at `full()`.
+> Full `cargo nextest run -p cranelisp-typecheck` green (387 tests).
 
 > **S81 W-A progress (builtins.rs cluster narrowed; remainder OPEN):** The
 > safe, self-evident cluster in `crates/cranelisp-typecheck/src/builtins.rs`

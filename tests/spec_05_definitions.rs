@@ -60,6 +60,17 @@ fn defn_annotated_params() {
     repl_prims("(defn f [:Int x] x)\n(f 42)\n").assert_stdout_contains(":primitives/Int 42");
 }
 
+// spec: spec/05-definitions.md §5.1.1 — the `_` discard parameter is exempt
+// from the duplicate-name check; multiple `_` parameters MAY appear in the
+// same list (each is an independent, unreferenceable discard). Distinct from
+// the duplicate-named-param rejection (`[x x]`), which IS an error.
+// (carry: legacy/sketch_port.rs::sketch_run_tests_pass_fn_called — the sole
+//  sketch_port assertion-shape not otherwise covered by the active suite.)
+#[test]
+fn defn_multiple_discard_params_accepted() {
+    repl_prims("(defn f [_ _] 42)\n(f 1 2)\n").assert_stdout_contains(":primitives/Int 42");
+}
+
 // =============================================================================
 // §5.1.2 Multi-signature defn
 // =============================================================================
@@ -364,6 +375,24 @@ fn data_constructor_arg_from_closure_call_result() {
            (match (Some (f 41)) [(Some x) x None 0]))\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
+}
+
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors.
+// FAILING-NOT-IGNORED defect repro (FIXME 0351, target /typecheck, S83).
+// Spec §5.2.6: "For each named field in a type definition, an accessor
+// function is automatically generated in the enclosing scope. The
+// accessor's name is the field name." Product accessors are total and
+// MUST return the field value: `(v (Box 5))` -> 5. As-built the accessor
+// `v` is not generated as a free callable — the call errors with
+// `undefined variable: v`. Single-file, no module/super-import involved.
+// This is the (b) repro of 0351; spec arbitration confirmed accessors ARE
+// auto-generated free fns (not match-only), so this is a genuine defect.
+#[test]
+fn generated_field_accessor_resolves_as_free_callable() {
+    repl_prims(
+        "(deftype Box [:primitives/Int v])\n(v (Box 5))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
 }
 
 // spec: spec/05-definitions.md §5.2.7 — constructor arity rejection:

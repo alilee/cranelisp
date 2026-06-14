@@ -174,6 +174,54 @@ struct DescriptorBlob {
     buf: Vec<u8>,
 }
 
+/// Per-blob descriptor-bake memo (FIXME 0340 timing fix).
+///
+/// `bake_descriptor` is structurally recursive over `Type`. Without memoization
+/// a recursive or DAG-shaped ADT (e.g. the `Sexp`/`SList` mutual cycle used by
+/// every macro-clause wrapper) is re-baked at every depth up to
+/// `MAX_DESCRIPTOR_DEPTH`, which is **exponential** in the cycle's branching
+/// factor — the dominant cost in `(trace …)` codegen (~1.3s per macro-clause
+/// wrapper × ~170 discovered fns ≈ 30s+). The memo collapses the recursion to
+/// **linear in the number of distinct types**:
+///
+/// - `done` records a fully-baked type → its blob offset. A second occurrence of
+///   the same type reuses the offset (DAG sharing). Sharing is sound: the blob
+///   only grows, so a baked record's offset is stable, and the formatter reads
+///   descriptors immutably (a tree-walker over a shared-subtree DAG visits the
+///   same record from several parents — read-only, no aliasing hazard).
+/// - `in_progress` holds the types currently on the bake stack. A type that
+///   recurses into ITSELF (a true cycle, e.g. `SList → Sexp → SList`) is degraded
+///   to `TypeVar` (bare-value render) at the back-edge — the same termination the
+///   `MAX_DESCRIPTOR_DEPTH` guard provided, but reached at the cycle boundary
+///   rather than after 16 exponential levels.
+///
+/// `Type` is only `PartialEq` (not `Hash`/`Eq` — `Float` blocks `Eq`), so the
+/// memo uses linear-scan `Vec`s; the distinct-type count per wrapper is tiny
+/// (a handful), so the scan is cheaper than the hashing it replaces.
+struct BakeMemo {
+    done: Vec<(Type, usize)>,
+    in_progress: Vec<Type>,
+}
+
+impl BakeMemo {
+    fn new() -> Self {
+        BakeMemo {
+            done: Vec::new(),
+            in_progress: Vec::new(),
+        }
+    }
+
+    /// Offset of an already-fully-baked identical type, if any.
+    fn lookup_done(&self, ty: &Type) -> Option<usize> {
+        self.done.iter().find(|(t, _)| t == ty).map(|(_, off)| *off)
+    }
+
+    /// Is this exact type currently on the bake stack (a back-edge → cycle)?
+    fn is_in_progress(&self, ty: &Type) -> bool {
+        self.in_progress.iter().any(|t| t == ty)
+    }
+}
+
 impl DescriptorBlob {
     fn new() -> Self {
         DescriptorBlob { buf: Vec::new() }
@@ -334,10 +382,20 @@ where
     /// Bake a single type's display descriptor into `blob`, returning the byte
     /// offset of the descriptor record (the blob root for that type).
     ///
-    /// Recursion is bounded by `MAX_DESCRIPTOR_DEPTH`: beyond it, the node is
-    /// degraded to `TypeVar` (rendered as the bare value), which terminates the
-    /// bake for recursive/cyclic ADTs (the intrinsics walker assumes a tree).
-    fn bake_descriptor(&self, blob: &mut DescriptorBlob, ty: &Type, depth: usize) -> usize {
+    /// Termination is by `memo` (FIXME 0340): a type already on the bake stack
+    /// (`in_progress`) is a cycle back-edge and degrades to `TypeVar`; a type
+    /// already fully baked (`done`) reuses its offset (DAG sharing). The
+    /// `MAX_DESCRIPTOR_DEPTH` guard remains as a defensive backstop for any
+    /// non-cyclic-but-pathologically-deep nesting the type-identity memo would
+    /// not catch (it cannot recur forever because compound types are recorded in
+    /// `in_progress` before their fields are visited).
+    fn bake_descriptor(
+        &self,
+        blob: &mut DescriptorBlob,
+        memo: &mut BakeMemo,
+        ty: &Type,
+        depth: usize,
+    ) -> usize {
         if depth >= MAX_DESCRIPTOR_DEPTH {
             let d = blob.reserve_desc();
             blob.set_kind(d, DescriptorKind::TypeVar);
@@ -377,21 +435,42 @@ where
                 d
             }
             Type::ADT(fqtn, type_args) => {
-                if fqtn.name.as_ref() == "Vec" {
-                    self.bake_vec(blob, type_args.first(), depth)
-                } else {
-                    self.bake_adt(blob, fqtn, type_args, depth)
+                // Cycle back-edge: this exact ADT is already being baked higher
+                // on the stack — degrade to TypeVar (bare value) to terminate.
+                if memo.is_in_progress(ty) {
+                    let d = blob.reserve_desc();
+                    blob.set_kind(d, DescriptorKind::TypeVar);
+                    return d;
                 }
+                // DAG sharing: an identical ADT already fully baked — reuse it.
+                if let Some(off) = memo.lookup_done(ty) {
+                    return off;
+                }
+                memo.in_progress.push(ty.clone());
+                let off = if fqtn.name.as_ref() == "Vec" {
+                    self.bake_vec(blob, memo, type_args.first(), depth)
+                } else {
+                    self.bake_adt(blob, memo, fqtn, type_args, depth)
+                };
+                memo.in_progress.retain(|t| t != ty);
+                memo.done.push((ty.clone(), off));
+                off
             }
         }
     }
 
     /// Bake a `Vec` descriptor: kind=Vec with exactly one child (element).
-    fn bake_vec(&self, blob: &mut DescriptorBlob, elem: Option<&Type>, depth: usize) -> usize {
+    fn bake_vec(
+        &self,
+        blob: &mut DescriptorBlob,
+        memo: &mut BakeMemo,
+        elem: Option<&Type>,
+        depth: usize,
+    ) -> usize {
         let root = blob.reserve_desc();
         blob.set_kind(root, DescriptorKind::Vec);
         if let Some(elem_ty) = elem {
-            let child = self.bake_descriptor(blob, elem_ty, depth + 1);
+            let child = self.bake_descriptor(blob, memo, elem_ty, depth + 1);
             blob.set_self_rel(root + OFF_CHILD0, child);
         }
         root
@@ -406,6 +485,7 @@ where
     fn bake_adt(
         &self,
         blob: &mut DescriptorBlob,
+        memo: &mut BakeMemo,
         fqtn: &FQTypeName,
         type_args: &[Type],
         depth: usize,
@@ -444,7 +524,7 @@ where
             let mut field_descs = Vec::with_capacity(meta.fields.len());
             for field in &meta.fields {
                 let concrete = cranelisp_types::apply(&subst, &field.ty);
-                let fd = self.bake_descriptor(blob, &concrete, depth + 1);
+                let fd = self.bake_descriptor(blob, memo, &concrete, depth + 1);
                 field_descs.push(fd);
             }
             ctor_bakes.push(CtorBake {
@@ -526,11 +606,16 @@ where
         span: Span,
     ) -> Result<DescriptorSet, CranelispError> {
         let mut blob = DescriptorBlob::new();
+        // One memo for the whole wrapper's descriptor set: param + result types
+        // that coincide share a single baked record (DAG), and recursive ADTs
+        // terminate at the cycle back-edge (FIXME 0340 — collapses the former
+        // exponential re-bake to linear in distinct types).
+        let mut memo = BakeMemo::new();
         let mut param_roots = Vec::with_capacity(tf.param_types.len());
         for pty in &tf.param_types {
-            param_roots.push(self.bake_descriptor(&mut blob, pty, 0));
+            param_roots.push(self.bake_descriptor(&mut blob, &mut memo, pty, 0));
         }
-        let result_root = self.bake_descriptor(&mut blob, &tf.result_type, 0);
+        let result_root = self.bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0);
 
         // Read-only, non-thread-local anonymous data.
         let data_id = self
@@ -1518,5 +1603,187 @@ mod tests {
             },
             scheme: fn_scheme(vec![Type::Var(0), Type::Var(0)], Type::Var(0)),
         }
+    }
+
+    // ── Descriptor-bake memoization guard (FIXME 0340 timing fix) ─────────────
+    //
+    // The dominant `(trace …)` codegen cost was the EXPONENTIAL re-bake of a
+    // recursive / DAG-shaped ADT descriptor: `bake_descriptor` re-walked the
+    // whole type at every level up to `MAX_DESCRIPTOR_DEPTH`, so a recursive
+    // type (the `IntList = Nil | (Cons Int IntList)` shape below, exactly the
+    // recursion class of the `Sexp`/`SList` types every macro-clause wrapper
+    // carries) produced a blob whose size grew exponentially in depth — ~1.3s
+    // per wrapper × ~170 discovered fns ≈ 30s+ per trace form. The `BakeMemo`
+    // (cycle-break + DAG-share) collapses it to LINEAR in distinct types.
+    //
+    // This is a count-based guard at the bake seam: the recursive type is baked
+    // ONCE (its self-reference degrades to one `TypeVar` back-edge), so the blob
+    // stays small and bounded. Pre-fix the same input produced a blob orders of
+    // magnitude larger (and the bake did not terminate in reasonable time).
+
+    /// Build a recursive ADT `IntList = Nil | (Cons :Int :IntList)` into a
+    /// `<(), ()>` symbol table so `lookup_type_def` / `constructor_metas` can
+    /// resolve it. Returns the tables + the `IntList` ADT `Type`.
+    fn recursive_intlist_tables() -> (DashMap<ModuleFullPath, SymbolTable<(), ()>>, Type) {
+        use cranelisp_types::{DefKind, FQTypeName, TypeDefInfo, TypeName};
+
+        let module = ModuleFullPath::from("user");
+        let intlist_fqtn = FQTypeName {
+            module: module.clone(),
+            name: TypeName::from("IntList"),
+        };
+        let intlist_ty = Type::ADT(intlist_fqtn.clone(), vec![]);
+
+        let mut st = SymbolTable::<(), ()>::new(module.clone());
+
+        // The TypeDef entry (sum type: type name distinct from both ctors).
+        st.insert(
+            Symbol::from("IntList"),
+            ModuleEntry::TypeDef {
+                info: TypeDefInfo {
+                    name: intlist_fqtn.clone(),
+                    type_params: vec![],
+                    constructors: vec![Symbol::from("Nil"), Symbol::from("Cons")],
+                },
+                visibility: Visibility::Public,
+                docstring: None,
+            },
+        );
+
+        // Nil — nullary ctor (tag 0, no fields).
+        st.insert(
+            Symbol::from("Nil"),
+            ModuleEntry::def(
+                fn_scheme(vec![], intlist_ty.clone()),
+                DefKind::Constructor {
+                    type_name: intlist_fqtn.clone(),
+                    tag: 0,
+                    field_count: 0,
+                    internal: false,
+                    type_def: None,
+                },
+            )
+            .visibility(Visibility::Public)
+            .build(),
+        );
+
+        // Cons — data ctor (tag 1): fields [Int, IntList] — the SECOND field is
+        // the recursive self-reference that drove the exponential blow-up.
+        st.insert(
+            Symbol::from("Cons"),
+            ModuleEntry::def(
+                fn_scheme(vec![Type::Int, intlist_ty.clone()], intlist_ty.clone()),
+                DefKind::Constructor {
+                    type_name: intlist_fqtn.clone(),
+                    tag: 1,
+                    field_count: 2,
+                    internal: false,
+                    type_def: None,
+                },
+            )
+            .visibility(Visibility::Public)
+            .build(),
+        );
+
+        let tables = DashMap::new();
+        tables.insert(module, st);
+        (tables, intlist_ty)
+    }
+
+    /// Drive `bake_descriptor_blob` for a `TracedFnInfo` whose param/result is
+    /// the recursive `IntList` ADT through a real (throwaway) `FnCompiler` over
+    /// a JIT module, returning the emitted blob's byte length and descriptor
+    /// record count.
+    fn bake_recursive_intlist_blob_size() -> (usize, usize) {
+        use cranelift::codegen::ir::{Function, UserFuncName};
+        use cranelift::prelude::*;
+        use cranelift_module::Module;
+
+        let (tables, intlist_ty) = recursive_intlist_tables();
+        let module_path = ModuleFullPath::from("user");
+
+        let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
+        let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
+        let module_aliases = cranelisp_types::ModuleAliases::default();
+        let func_ids: std::collections::HashMap<Symbol, cranelift_module::FuncId> =
+            std::collections::HashMap::new();
+        let func_arities: std::collections::HashMap<Symbol, usize> =
+            std::collections::HashMap::new();
+
+        let ctx = crate::compiler::CompileContext {
+            func_ids: &func_ids,
+            func_arities: &func_arities,
+            symbol_tables: &tables,
+            module_aliases: &module_aliases,
+            current_module: module_path.clone(),
+            alloc_func_id: intrinsic_ids.alloc,
+            dealloc_func_id: intrinsic_ids.dealloc.unwrap(),
+            alloc_string_func_id: intrinsic_ids.alloc_string,
+            panic_func_id: intrinsic_ids.panic,
+            vec_new_func_id: intrinsic_ids.vec_new,
+            vec_drop_func_id: intrinsic_ids.vec_drop,
+        };
+
+        let mut sig = jit.jit_module().make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+        let mut fctx = FunctionBuilderContext::new();
+        let builder = FunctionBuilder::new(&mut func, &mut fctx);
+
+        let mut compiler = crate::compiler::FnCompiler::inner(
+            builder,
+            jit.jit_module(),
+            ctx,
+            1,
+            std::collections::HashMap::new(),
+        );
+
+        let tf = TracedFnInfo {
+            name: "user/sum".to_string(),
+            module_path,
+            got_slot: 0,
+            arity: 1,
+            param_types: vec![intlist_ty.clone()],
+            result_type: intlist_ty,
+        };
+
+        // Bake via the production path; then re-bake the same type set into a
+        // standalone blob to count records (the production blob is consumed by
+        // define_data, so re-run bake_descriptor for the count).
+        let _set = compiler
+            .bake_descriptor_blob(&tf, cranelisp_types::Span::SYNTHETIC)
+            .expect("bake_descriptor_blob");
+
+        // Re-bake into a standalone DescriptorBlob to measure size + record count.
+        let mut blob = DescriptorBlob::new();
+        let mut memo = BakeMemo::new();
+        let p = compiler.bake_descriptor(&mut blob, &mut memo, &tf.param_types[0], 0);
+        let _r = compiler.bake_descriptor(&mut blob, &mut memo, &tf.result_type, 0);
+        // `done` records one entry per distinct ADT baked (Int/Bool/etc are not
+        // memoized — only compound ADT/Vec types are). For IntList the distinct
+        // ADT set is {IntList} ⇒ exactly one done-entry, and the param + result
+        // (both IntList) SHARE it (DAG).
+        assert_eq!(memo.done.len(), 1, "exactly one distinct ADT baked (IntList)");
+        assert_eq!(
+            p, _r,
+            "param and result are the same type ⇒ DAG-shared (same blob offset)"
+        );
+        (blob.buf.len(), memo.done.len())
+    }
+
+    #[test]
+    fn recursive_adt_descriptor_bake_is_bounded_not_exponential() {
+        // The recursive IntList descriptor blob must be SMALL — the recursion
+        // terminates at the self-reference back-edge (one TypeVar), not after 16
+        // exponential levels. A pre-fix bake produced a blob of many KB (and ran
+        // for ~1s); the memoized bake is a few hundred bytes.
+        let (blob_len, distinct) = bake_recursive_intlist_blob_size();
+        assert_eq!(distinct, 1, "IntList baked once (linear in distinct types)");
+        assert!(
+            blob_len < 1024,
+            "recursive-ADT descriptor blob must stay bounded (memoized cycle-break); \
+             got {blob_len} bytes — a non-memoized exponential re-bake would be far larger"
+        );
     }
 }

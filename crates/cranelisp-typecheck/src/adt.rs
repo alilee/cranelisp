@@ -522,10 +522,37 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtins::FixtureBuilder;
     use crate::checker::TestFixture;
     use cranelisp_types::{ConstructorDef, ModuleFullPath};
 
-    /// Test helper: create an FQTypeName in the "user" module (default for TestFixture::new()).
+    /// Minimal fixture for the ADT-registration tests (FIXME 0243 narrowing).
+    ///
+    /// These tests register their OWN ADTs via `register_type_def_self` and,
+    /// where a constructor field is a builtin scalar (`:Int`/`:Bool`/…), seed
+    /// the corresponding `primitives` import edge into the user module inline
+    /// (see `test_register_product_type_with_fields`). None of them consult the
+    /// heavy `full()` world (special forms, seeded primitives, the `macros`
+    /// module, the IO ADT). An empty builder is the minimal starting position;
+    /// `user` is the current module exactly as under `TestFixture::new()`.
+    fn tf() -> TestFixture {
+        TestFixture::with_content(FixtureBuilder::new())
+    }
+
+    /// Minimal fixture for the internal-constructor tests (FIXME 0243
+    /// narrowing). These consult the seeded `IO` ADT in `primitives` (whose
+    /// `Bind` constructor carries `internal: true`); `with_io()` seeds it and
+    /// requires `with_builtin_type_names()` first (bootstrap order — IO's field
+    /// types reference builtin scalars). Nothing heavier (special forms, the
+    /// Ring 0/1/3 primitive `Def`s, the `macros` module) is consulted.
+    fn tf_io() -> TestFixture {
+        TestFixture::with_content(
+            FixtureBuilder::new().with_builtin_type_names().with_io(),
+        )
+    }
+
+    /// Test helper: create an FQTypeName in the "user" module (default current
+    /// module for both `TestFixture::new()` and the narrowed `tf()`).
     fn user_fqtn(name: &str) -> FQTypeName {
         FQTypeName::new(ModuleFullPath::from("user"), TypeName::from(name))
     }
@@ -542,7 +569,7 @@ mod tests {
     // spec: 05-definitions §5.2.3 — enum type registers constructors in symbol table
     #[test]
     fn test_register_enum_type() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -571,7 +598,7 @@ mod tests {
     // spec: 05-definitions §5.2.7 — nullary constructor scheme is ADT type
     #[test]
     fn test_constructor_scheme_is_adt_type() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Bool2"),
             &None,
@@ -594,7 +621,7 @@ mod tests {
     // spec: 05-definitions §5.2.2 — polymorphic sum type: None and Some constructors
     #[test]
     fn test_register_polymorphic_option() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Option"),
             &None,
@@ -663,7 +690,12 @@ mod tests {
     // spec: 05-definitions §5.2.1 — product type constructor is function from fields to ADT
     #[test]
     fn test_register_product_type_with_fields() {
-        let mut tc = TestFixture::new();
+        // This test's product ctor has `:Int`/`:Bool` fields and seeds the
+        // matching `primitives` Import edges inline, so the `Int`/`Bool`
+        // IntrinsicType entries must exist in the `primitives` module —
+        // `with_builtin_type_names()` seeds them (FIXME 0243: the one adt.rs
+        // test that genuinely needs builtin scalar field types in scope).
+        let mut tc = TestFixture::with_content(FixtureBuilder::new().with_builtin_type_names());
         // Phase B Part 2b: bare `Int`/`Bool` references in field types
         // require explicit import per Principle 17 (no Tier 2 universe walk).
         // Import registration is no longer a typecheck concern (facade
@@ -758,7 +790,7 @@ mod tests {
     // spec: 06-pattern-matching §6.5.1 — all constructors covered passes exhaustiveness
     #[test]
     fn test_exhaustiveness_all_covered() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -782,7 +814,7 @@ mod tests {
     // spec: 06-pattern-matching §6.5.1 — missing constructor fails exhaustiveness check
     #[test]
     fn test_exhaustiveness_missing_constructor() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -803,7 +835,7 @@ mod tests {
     // spec: 06-pattern-matching §6.5.1 — wildcard pattern covers all constructors
     #[test]
     fn test_exhaustiveness_wildcard_covers_all() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Color"),
             &None,
@@ -823,7 +855,7 @@ mod tests {
     // spec: 05-definitions §5.2.7 — constructors receive sequential integer tags
     #[test]
     fn test_constructor_tags() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Dir"),
             &None,
@@ -887,7 +919,7 @@ mod tests {
     // spec: 05-definitions §5.2.2 — polymorphic type parameters recorded in TypeDefInfo
     #[test]
     fn test_polymorphic_type_params_recorded() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         register_option(&mut tc);
 
         let info = tc.lookup_type_def(&TypeName::from("Option")).unwrap();
@@ -898,7 +930,7 @@ mod tests {
     // spec: 05-definitions §5.2.7 — polymorphic ADT constructors receive sequential tags
     #[test]
     fn test_polymorphic_constructor_tags() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         register_option(&mut tc);
 
         let info = tc.lookup_type_def(&TypeName::from("Option")).unwrap();
@@ -929,7 +961,7 @@ mod tests {
     // (which would leave `None` at `None`) is rejected.
     #[test]
     fn constructors_get_got_slots() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         register_option(&mut tc);
 
         let table = tc.symbol_table();
@@ -962,7 +994,7 @@ mod tests {
     // spec: 03-types §3.3 — polymorphic field type resolves to type variable
     #[test]
     fn test_polymorphic_field_has_var_type() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         register_option(&mut tc);
 
         let info = tc.lookup_type_def(&TypeName::from("Option")).unwrap();
@@ -995,7 +1027,7 @@ mod tests {
     // spec: 06-pattern-matching §6.5.1 — exhaustiveness with mixed nullary and data constructors
     #[test]
     fn test_exhaustiveness_with_mixed_constructors() {
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         register_option(&mut tc);
 
         // Missing None
@@ -1038,7 +1070,7 @@ mod tests {
     #[test]
     fn test_shortcut_product_type() {
         // (deftype Pair [first second]) -- bare field names with type vars
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Pair"),
             &None,
@@ -1095,7 +1127,7 @@ mod tests {
     #[test]
     fn test_register_multi_param_type() {
         // (deftype (Either a b) (Left [:a val]) (Right [:b val]))
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         tc.register_type_def_self(
             &TypeName::from("Either"),
             &None,
@@ -1147,7 +1179,7 @@ mod tests {
     fn test_resolution_validates_registered_arity() {
         use cranelisp_types::{TypeExpr, TypeRef};
 
-        let mut tc = TestFixture::new();
+        let mut tc = tf();
         register_option(&mut tc);
         tc.register_type_def_self(
             &TypeName::from("Color"),
@@ -1252,7 +1284,7 @@ mod tests {
     // spec: 10-io §10.1 — is_internal_constructor returns true for internal ctors
     #[test]
     fn test_is_internal_constructor() {
-        let tc = TestFixture::new();
+        let tc = tf_io();
         let primitives_path = ModuleFullPath::from("primitives");
         let env = tc.env();
         // Bind carries `internal: true` on its `DefKind::Constructor`. Rooted
@@ -1280,7 +1312,7 @@ mod tests {
     #[test]
     fn test_is_internal_constructor_through_import() {
         use cranelisp_types::{ModuleEntry, Symbol, FQSymbol, Visibility};
-        let tc = TestFixture::new();
+        let tc = tf_io();
         let user_path = ModuleFullPath::from("user");
         // Seed user-module Imports of `Bind` and its parent `IO` type from
         // primitives — what a glob import of primitives materialises (both the
@@ -1311,7 +1343,7 @@ mod tests {
     // spec: 10-io §10.1 — exhaustiveness excludes internal constructors
     #[test]
     fn test_exhaustiveness_excludes_internal_constructors() {
-        let tc = TestFixture::new();
+        let tc = tf_io();
         let primitives_path = ModuleFullPath::from("primitives");
         // IO has Pure (tag=0), Effect (tag=1), Bind (tag=2, internal).
         // Exhaustiveness should only require Pure and Effect.

@@ -22,8 +22,9 @@ use std::collections::HashSet;
 
 use cranelisp_types::{ErrorLocation,
     CranelispError, ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm,
-    ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TopLevel, TraitDecl, TraitImpl,
-    TraitMethodSig, TraitName, TraitRef, TypeExpr, TypeName, TypeRef, Visibility,
+    ModuleFullPath, ParsedEntry, Pattern, Sexp, Span, Symbol, SymbolRef, TopLevel,
+    TraitDecl, TraitImpl, TraitMethodSig, TraitName, TraitRef, TypeExpr, TypeName,
+    TypeRef, Visibility,
 };
 
 // `(trace ...)` build is mode-agnostic and works in ALL build modes including
@@ -1548,8 +1549,18 @@ fn build_annotated_params(
 
     while i < items.len() {
         if let Some((te, consumed)) = try_consume_annotation(items, i) {
-            // Next item after annotation is the param name
-            let name_pos = i + consumed;
+            // Accumulate the RUN of consecutive annotations preceding the binder
+            // name. A `:Type`/`:Trait` annotation is reader-macro-like — it binds
+            // the immediately-following form (FIXME 0341,
+            // `memory/annotation-reader-macro-binds-following-form.md`), so a run
+            // of stacked annotations all attach to the one binder that terminates
+            // the run. The single-annotation case is the run-of-length-1.
+            let mut run: Vec<TypeExpr> = vec![te];
+            let mut name_pos = i + consumed;
+            while let Some((te, consumed)) = try_consume_annotation(items, name_pos) {
+                run.push(te);
+                name_pos += consumed;
+            }
             if name_pos >= items.len() {
                 return Err(parse_err(
                     "annotation missing parameter name",
@@ -1558,7 +1569,7 @@ fn build_annotated_params(
             }
             let (name, name_span) = expect_symbol(&items[name_pos])?;
             reject_reserved_binder_name(name, name_span)?;
-            params.push((name.into(), Some(te)));
+            params.push((name.into(), Some(annotation_run_carrier(run))));
             i = name_pos + 1;
         } else {
             let (name, name_span) = expect_symbol(&items[i])?;
@@ -1584,6 +1595,54 @@ fn build_annotated_params(
     }
 
     Ok(params)
+}
+
+/// Choose the carrier `TypeExpr` for an accumulated run of param annotations
+/// (FIXME 0341 / 0346).
+///
+/// A run of length 1 is ambiguous between a concrete-type annotation
+/// (`:Int x`) and a single trait bound (`:Eq a`); it is left as the resolved
+/// `TypeExpr` so the existing concrete-type path is unchanged and typecheck's
+/// try-type-then-trait resolution (spec §3.9.3) disambiguates downstream.
+///
+/// A run of length N>1 (`:Eq :Display a`) can ONLY be a set of trait bounds —
+/// you cannot stack concrete types onto one binder — so it is carried as
+/// `TypeExpr::Bounds([..])`, the shape typecheck's `resolve_bound_param`
+/// consumes (FIXME 0346 ruled the `Bounds` variant the carrier).
+fn annotation_run_carrier(mut run: Vec<TypeExpr>) -> TypeExpr {
+    debug_assert!(!run.is_empty(), "annotation run must be non-empty");
+    if run.len() == 1 {
+        run.pop().expect("run of length 1 has one element")
+    } else {
+        TypeExpr::Bounds(run.into_iter().map(type_expr_to_trait_ref).collect())
+    }
+}
+
+/// Convert a parsed annotation `TypeExpr` to the `TraitRef` carried by
+/// `TypeExpr::Bounds`. Trait annotations parse as `Named`/`Applied` (uppercase
+/// `:Eq`, qualified `:fmt/Display`) or — defensively — `TypeVar`. The
+/// as-written qualification is preserved for typecheck to resolve.
+fn type_expr_to_trait_ref(te: TypeExpr) -> TraitRef {
+    let (module, name): (Option<&str>, &str) = match &te {
+        TypeExpr::Named(r) | TypeExpr::Applied(r, _) => {
+            (r.module.as_deref(), r.name.as_ref())
+        }
+        TypeExpr::TypeVar(s) => (None, s.as_ref()),
+        TypeExpr::SelfType => (None, "Self"),
+        TypeExpr::FnType(..) | TypeExpr::Bounds(_) => (None, ""),
+    };
+    // A name may carry as-written qualification `module/Trait` (parsed into the
+    // `TypeName` whole); split it onto the `TraitRef`'s optional module.
+    match name.rsplit_once('/') {
+        Some((m, n)) if !m.is_empty() && !n.is_empty() => TraitRef::new(
+            Some(ModuleFullPath::from(m)),
+            TraitName::from(n),
+        ),
+        _ => {
+            let module = module.map(ModuleFullPath::from);
+            TraitRef::new(module, TraitName::from(name))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2266,15 +2325,11 @@ mod tests {
         }
     }
 
-    // FIXME(/frontend 0341): stacked trait-bound param annotations
-    // `[:Eq :Display a]` must attach BOTH bounds to the single binder `a`,
-    // yielding ONE param named `a` — not two params (`:Display` mis-read as a
-    // second binder name). Today `build_annotated_params` consumes exactly one
-    // annotation per `try_consume_annotation` call then treats the NEXT item as
-    // the param name, so `:Eq` is consumed as the bound and `:Display` becomes a
-    // bogus param name. Expected: 1 param `a`; actual today: 2 params
-    // (`:Display`, `a`). Failing-not-ignored until the parser stacks the run of
-    // `:Trait` annotations onto the following binder.
+    // 0341 (FIXED): stacked trait-bound param annotations `[:Eq :Display a]`
+    // attach BOTH bounds to the single binder `a`, yielding ONE param named `a`
+    // (not two, with `:Display` mis-read as a second binder name). The run of
+    // `:Trait` annotations preceding a binder all attach to it as a
+    // `TypeExpr::Bounds([..])` carrier (FIXME 0341 frontend half / 0346 carrier).
     //
     // spec: spec/07-traits.md §7.8.2 — explicit constraint param annotations
     #[test]
@@ -2284,9 +2339,8 @@ mod tests {
         match &prog[0] {
             TopLevel::Defn(defn) => {
                 assert_eq!(defn.name, "g");
-                // CORRECT: the stacked `:Eq :Display` bounds belong to `a`, so
-                // there is exactly ONE parameter, named `a` — never a `:Display`
-                // binder. Today this fails (2 params, the second named `:Display`).
+                // The stacked `:Eq :Display` bounds belong to `a`, so there is
+                // exactly ONE parameter, named `a` — never a `:Display` binder.
                 assert_eq!(
                     defn.params().len(),
                     1,
@@ -2301,9 +2355,132 @@ mod tests {
                     "the single param must be named `a`, not a mis-read \
                      `:Display` annotation"
                 );
+                // The accumulated run is carried as `Bounds([Eq, Display])` —
+                // the shape typecheck's `resolve_bound_param` consumes.
+                match &defn.params()[0].1 {
+                    Some(TypeExpr::Bounds(bounds)) => {
+                        let names: Vec<&str> =
+                            bounds.iter().map(|t| t.name.as_ref()).collect();
+                        assert_eq!(names, vec!["Eq", "Display"],
+                            "the stacked bounds must be Bounds([Eq, Display])");
+                        assert!(bounds.iter().all(|t| t.module.is_none()),
+                            "unqualified bounds carry no module");
+                    }
+                    other => panic!(
+                        "expected Some(Bounds([Eq, Display])), got {other:?}"
+                    ),
+                }
             }
             other => panic!("expected Defn, got {other:?}"),
         }
+    }
+
+    // 0341 (FIXED): the `assert-eq`-shaped TWO-param stacked signature
+    // `[:Eq :Display a :Eq :Display b]` must parse — each binder takes the run
+    // of `:Eq :Display` bounds preceding it, NOT a `duplicate parameter name
+    // ':Display'` error from `:Display` being mis-read as a second binder.
+    //
+    // spec: spec/07-traits.md §7.8.2 — explicit constraint param annotations
+    #[test]
+    fn stacked_trait_bounds_two_params_no_duplicate_error() {
+        let prog =
+            parse_and_build_program("(defn f [:Eq :Display a :Eq :Display b] a)")
+                .expect("two stacked-bound params must parse, not duplicate-error");
+        assert_eq!(prog.len(), 1);
+        match &prog[0] {
+            TopLevel::Defn(defn) => {
+                let params = defn.params();
+                assert_eq!(
+                    params.len(),
+                    2,
+                    "exactly two binders `a` and `b`; got {:?}",
+                    params,
+                );
+                assert_eq!(params[0].0, "a");
+                assert_eq!(params[1].0, "b");
+                for (i, name) in [(0usize, "a"), (1usize, "b")] {
+                    match &params[i].1 {
+                        Some(TypeExpr::Bounds(bounds)) => {
+                            let ns: Vec<&str> =
+                                bounds.iter().map(|t| t.name.as_ref()).collect();
+                            assert_eq!(ns, vec!["Eq", "Display"],
+                                "param {name} must carry Bounds([Eq, Display])");
+                        }
+                        other => panic!(
+                            "param {name} expected Bounds([Eq, Display]), got {other:?}"
+                        ),
+                    }
+                }
+            }
+            other => panic!("expected Defn, got {other:?}"),
+        }
+    }
+
+    // Regression: a SINGLE trait-bound `[:Eq a]` is the run-of-length-1 and is
+    // left as the resolved `TypeExpr` (NOT wrapped in `Bounds`), so the existing
+    // single-annotation path is unchanged.
+    //
+    // spec: spec/07-traits.md §7.8.2 — single explicit constraint param annotation
+    #[test]
+    fn single_trait_bound_annotation_unchanged() {
+        let prog = parse_and_build_program("(defn g [:Eq a] a)").unwrap();
+        match &prog[0] {
+            TopLevel::Defn(defn) => {
+                assert_eq!(defn.params().len(), 1);
+                assert_eq!(defn.params()[0].0, "a");
+                // Run-of-1: not promoted to Bounds — stays a Named annotation.
+                assert!(
+                    !matches!(defn.params()[0].1, Some(TypeExpr::Bounds(_))),
+                    "single bound must NOT be wrapped in Bounds: {:?}",
+                    defn.params()[0].1,
+                );
+            }
+            other => panic!("expected Defn, got {other:?}"),
+        }
+    }
+
+    // Regression: a concrete-type annotation `[:Int x]` still emits
+    // `Some(Named(Int))`, NOT `Bounds`.
+    //
+    // spec: spec/03-types.md §3.9.2 — concrete-type param annotation
+    #[test]
+    fn concrete_type_param_annotation_is_named() {
+        let prog = parse_and_build_program("(defn g [:Int x] x)").unwrap();
+        match &prog[0] {
+            TopLevel::Defn(defn) => {
+                assert_eq!(defn.params().len(), 1);
+                match &defn.params()[0].1 {
+                    Some(TypeExpr::Named(r)) => assert_eq!(r.name.as_ref(), "Int"),
+                    other => panic!("expected Some(Named(Int)), got {other:?}"),
+                }
+            }
+            other => panic!("expected Defn, got {other:?}"),
+        }
+    }
+
+    // Regression: a genuine duplicate binder `[x x]` still errors.
+    //
+    // spec: spec/07-traits.md §7.8.2 — distinct param names
+    #[test]
+    fn genuine_duplicate_binder_still_errors() {
+        let err = parse_and_build_program("(defn g [x x] x)").unwrap_err();
+        assert!(
+            format!("{err:?}").contains("duplicate parameter name"),
+            "genuine duplicate binder must still error: {err:?}",
+        );
+    }
+
+    // Edge: a trailing annotation run with no terminating binder `[:Eq]` is the
+    // "annotation missing parameter name" error.
+    //
+    // spec: spec/07-traits.md §7.8.2 — annotation must bind a parameter
+    #[test]
+    fn trailing_annotation_without_binder_errors() {
+        let err = parse_and_build_program("(defn g [:Eq] 0)").unwrap_err();
+        assert!(
+            format!("{err:?}").contains("annotation missing parameter name"),
+            "trailing annotation run must error: {err:?}",
+        );
     }
 
     // -- deftype --

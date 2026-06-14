@@ -47,6 +47,14 @@
 //!   code carrier) and `L: LinkerStore` (per-module linker carrier);
 //!   both default to `()` so crates that don't handle compiled code work
 //!   with `SymbolTable<(), ()>` and never see the parameters.
+//!   The **callable runtime address** of an entry is read through
+//!   [`ModuleEntry::callable_got_slot`], NOT the raw `got_slot` field:
+//!   a constrained-fn template ([`ModuleEntry::is_constrained_template`])
+//!   is never directly callable (only its monomorphised variants are), so
+//!   the accessor returns `None` for it regardless of the stored field.
+//!   [`ModuleEntry::mark_constrained_template`] is the sole writer that
+//!   maintains that correlation (flip `kind` + clear the field together).
+//!   See `design/arch/fixmes/0354-*.md` and Principle 18.
 //! - **Module aliases** ([`ModuleAliasEntry`], [`ModuleAliases`]) — the
 //!   parallel session-level alias table introduced by spec §8.3.4
 //!   (import alias) and §8.4.4 (export mount). Lives at session scope

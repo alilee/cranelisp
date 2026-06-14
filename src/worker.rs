@@ -300,6 +300,35 @@ fn commit_staging_to_live(
     let mut drained: Vec<(Symbol, ModuleEntry<crate::code::Code>)> =
         staging.symbols.into_iter().collect();
 
+    // FIXME 0348 — DETERMINISTIC commit order, keyed on the STAGED got_slot.
+    // `staging.symbols` is a `HashMap`; `into_iter()` yields entries in
+    // hash-bucket order, which is non-deterministic across runs (randomised
+    // seed). The drain
+    // loop below re-allocates a fresh LIVE slot per `Def` *in iteration order*,
+    // so a non-deterministic drain produced a non-deterministic staging→live
+    // slot PERMUTATION (run-to-run: `a→0,b→1` one run, `a→1,b→0` the next). The
+    // body codegen bakes intra-module calls against `resolve_got_target` (which
+    // reads the live got_slot) and the GOT data is stored against the same live
+    // got_slot — but a forward reference compiled in one pass against a slot map
+    // that the OTHER pass reordered makes `main`'s baked call land on the wrong
+    // function (returns the initial accumulator / 0 instead of the fold result).
+    // Draining in staged-slot order makes the live allocation order — and hence
+    // the staging→live slot mapping — STABLE and identity-preserving when live
+    // starts empty (the fresh-build case). Entries with no staged slot
+    // (non-`Def`) sort last, by name, so the whole commit is deterministic.
+    drained.sort_by(|(a_name, a_entry), (b_name, b_entry)| {
+        let slot_of = |e: &ModuleEntry<crate::code::Code>| match e {
+            ModuleEntry::Def { got_slot, .. } => *got_slot,
+            _ => None,
+        };
+        match (slot_of(a_entry), slot_of(b_entry)) {
+            (Some(sa), Some(sb)) => sa.cmp(&sb),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a_name.as_ref().cmp(b_name.as_ref()),
+        }
+    });
+
     let Some(mut live) = symbol_tables.get_mut(module) else {
         // Live module disappeared between dispatch and commit — drop staging
         // silently. This shouldn't happen under normal Wave-3a-α
@@ -2864,5 +2893,64 @@ mod tests {
             result.is_ok(),
             "top-level module 'toplevel' has no parent — privacy check is a no-op"
         );
+    }
+
+    // FIXME 0348 — got_slot stability across the staging→live commit. The
+    // staging table stores symbols in a `HashMap` whose `into_iter()` order is
+    // non-deterministic (randomised seed). `commit_staging_to_live` re-allocates
+    // a fresh live slot per `Def` in drain order, so an unsorted drain produced a
+    // non-deterministic staging→live slot PERMUTATION — a forward-reference call
+    // baked against one pass's slot map could land on the wrong function. The
+    // commit-order sort (keyed on the staged got_slot) makes the mapping STABLE
+    // and identity-preserving when live starts empty (the fresh-build case):
+    // staged slot N → live slot N, regardless of HashMap iteration order. This
+    // pins that contract directly at the commit seam.
+    //
+    // (Note: this stabilises slot ALLOCATION. The `0344` fold e2e wrong-value is
+    // a separate typecheck-monomorphisation defect — see FIXME 0348's /dev
+    // boundary re-attribution; slots are stable yet the mono variant is not
+    // created under forward-ref ordering. That is NOT an int slot bug.)
+    #[test]
+    fn commit_staging_preserves_source_order_slots_into_empty_live() {
+        let module = ModuleFullPath::from("user");
+
+        // Live table starts empty (fresh build).
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+
+        // Staging carries three Defs with source-order staged slots 0/1/2 —
+        // exactly the `reduce@0`, `reduce-loop@1`, `main@2` shape from the 0348
+        // repro. Insert them in a deliberately NON-slot order so the test does
+        // not accidentally pass on insertion order alone.
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        staging.next_got_slot = 3;
+        staging.insert(
+            Symbol::from("main"),
+            mk_def_with_got(DefKind::UserFn { constrained_fn: None }, Some(trivial_variant()), Some(2)),
+        );
+        staging.insert(
+            Symbol::from("reduce"),
+            mk_def_with_got(DefKind::UserFn { constrained_fn: None }, Some(trivial_variant()), Some(0)),
+        );
+        staging.insert(
+            Symbol::from("reduce-loop"),
+            mk_def_with_got(DefKind::UserFn { constrained_fn: None }, Some(trivial_variant()), Some(1)),
+        );
+
+        commit_staging_to_live(&symbol_tables, &module, staging);
+
+        let live = symbol_tables.get(&module).unwrap();
+        let slot_of = |name: &str| match live.get(name) {
+            Some(ModuleEntry::Def { got_slot, .. }) => *got_slot,
+            _ => None,
+        };
+        // Identity-preserving: staged slot N → live slot N for an empty live.
+        assert_eq!(slot_of("reduce"), Some(0), "reduce keeps staged slot 0");
+        assert_eq!(slot_of("reduce-loop"), Some(1), "reduce-loop keeps staged slot 1");
+        assert_eq!(slot_of("main"), Some(2), "main keeps staged slot 2");
     }
 }

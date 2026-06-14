@@ -24,6 +24,38 @@ use dashmap::DashMap;
 use crate::session_v4::Introspection;
 
 // ---------------------------------------------------------------------------
+// Regeneration role gate (FIXME 0343)
+// ---------------------------------------------------------------------------
+
+/// Pure predicate: MAY the entry-module persistence path overwrite this
+/// module's backing `.cl` with regenerated source?
+///
+/// Returns `false` — i.e. PRESERVE the file verbatim, do NOT regenerate —
+/// when the module declares a submodule that still carries an inline body
+/// (`ModDecl.inline_body == Some`). Such a parent's backing file holds an
+/// authored `(mod child form…)` block whose definitions live in the CHILD's
+/// symbol table, NOT the parent's; regenerating from the parent table alone
+/// would emit a bare `(mod child)` and silently DROP the entire submodule body
+/// from disk — a data-corruption defect (FIXME 0343, same class as 0217).
+///
+/// In REPL mode the inline body is deliberately NOT extracted to a bare
+/// reference (`process_form::handle_mod` runs the extraction rewrite only in
+/// batch mode), so the in-memory `ModDecl` keeps its `inline_body` — the signal
+/// this gate keys on. A manually-created / already-extracted submodule carries
+/// `inline_body: None`, so an ordinary `(mod util)`-bearing module regenerates
+/// normally (the child lives in its own file the regen never touches).
+///
+/// Extracted as a pure fn (no `&self`, no FS) so the role gate is unit-testable
+/// (`src/CLAUDE.md` testability discipline; mirrors `splice_inline_mod_to_bare`
+/// / `layout_hash_gate`).
+pub(crate) fn should_regenerate(symbol_table: &crate::code::SessionSymbolTable) -> bool {
+    !symbol_table
+        .submodules
+        .iter()
+        .any(|decl| decl.inline_body.is_some())
+}
+
+// ---------------------------------------------------------------------------
 // Source regeneration — pure function
 // ---------------------------------------------------------------------------
 
@@ -706,6 +738,57 @@ mod tests {
         assert!(sexp_defines_symbol(&p("(defmacro m [x] x)"), "m"));
         assert!(!sexp_defines_symbol(&p("(defn foo [] 1)"), "bar"));
         assert!(!sexp_defines_symbol(&p("(import [core [foo]])"), "foo"));
+    }
+
+    // FIXME 0343: a parent whose backing file holds an authored inline
+    // `(mod child form…)` block (ModDecl retains `inline_body`) MUST NOT be
+    // regenerated — regen from the parent table alone would emit a bare
+    // `(mod child)` and DROP the child body from disk (data corruption). The
+    // role gate `should_regenerate` returns `false` for such a parent.
+    // spec: design/arch/fixmes/0343; repl/spec.md §15.4
+    #[test]
+    fn should_regenerate_false_when_submodule_retains_inline_body() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module);
+        let p = |s: &str| cranelisp_frontend::parse(s).unwrap();
+        st.submodules.push(ModDecl {
+            name: "test".into(),
+            visibility: cranelisp_types::Visibility::Public,
+            inline_body: Some(p("(defn g [] 2)")),
+            span: Span::SYNTHETIC,
+        });
+        assert!(
+            !should_regenerate(&st),
+            "a body-bearing (mod child …) parent MUST NOT regenerate (would drop the body)"
+        );
+    }
+
+    // The gate fires ONLY for inline-body submodules — a manually-created /
+    // already-extracted submodule (bare `(mod util)`, `inline_body: None`) does
+    // NOT suppress regeneration; the child lives in its own file the regen never
+    // touches.
+    // spec: design/arch/fixmes/0343
+    #[test]
+    fn should_regenerate_true_for_bare_submodule_decl() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module);
+        st.submodules.push(ModDecl {
+            name: "util".into(),
+            visibility: cranelisp_types::Visibility::Public,
+            inline_body: None,
+            span: Span::SYNTHETIC,
+        });
+        assert!(
+            should_regenerate(&st),
+            "a bare (mod util) submodule (no inline body) MUST regenerate normally"
+        );
+    }
+
+    // A plain module with no submodules regenerates normally.
+    #[test]
+    fn should_regenerate_true_for_no_submodules() {
+        let st = crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        assert!(should_regenerate(&st));
     }
 
     #[test]

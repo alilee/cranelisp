@@ -706,6 +706,21 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// host promises at JIT-finalize via `Jit::define_symbol`; a call
         /// resolves `Linkage::Import` against that key, never GOT-indirect).
         ///
+        /// **Constrained-fn templates are a special case (FIXME 0354).** A
+        /// template's `got_slot` *should* be `None`, but because the field is
+        /// allocated in typecheck Pass 1 (before constraint status is known)
+        /// and the `kind` is flipped to a template in Pass 2, a template can
+        /// transiently carry a phantom `Some(_)` if a flip site bypassed the
+        /// [`ModuleEntry::mark_constrained_template`] sole-writer. **Never read
+        /// this field directly to decide call-target resolution** — use
+        /// [`ModuleEntry::callable_got_slot`], which returns `None` for a
+        /// constrained template regardless of the stored field value. Reading
+        /// the raw field at a call site was the 0354 SIGSEGV (cross-module the
+        /// phantom slot is NULL → `call_indirect` through null). The accessor
+        /// is the single source of truth for "where to call to invoke this
+        /// entry"; the raw field is for storage/codegen sites that legitimately
+        /// need the allocated index (writing the fn ptr, cache serialization).
+        ///
         /// Direct-call inlining at known call sites does not require a GOT
         /// lookup, but having a slot does not preclude a direct call — the
         /// slot is for the operator-as-value path.
@@ -1144,6 +1159,119 @@ impl<C: CodeStore> ModuleEntry<C> {
             | ModuleEntry::Import { visibility, .. }
             | ModuleEntry::TraitImpl { visibility, .. }
             | ModuleEntry::Ambiguous { visibility } => *visibility == Visibility::Public,
+        }
+    }
+
+    /// Returns `true` iff this entry is a **constrained-fn template** — a
+    /// `Def { kind: DefKind::UserFn { constrained_fn: Some(_) }, .. }`.
+    ///
+    /// A constrained template is the as-defined polymorphic body of a
+    /// trait-bounded function (`(defn cmp [:Eq :Display a …] …)`). It is
+    /// **never directly callable**: it cannot be compiled generically (it
+    /// needs trait dictionaries resolved per call), so `defined_symbols()`
+    /// excludes it from codegen and only its **monomorphised variants**
+    /// (`cmp$Int+Int`, each carrying its own `got_slot`) are emitted and
+    /// callable. See [`Self::callable_got_slot`].
+    pub fn is_constrained_template(&self) -> bool {
+        matches!(
+            self,
+            ModuleEntry::Def { kind, .. }
+                if matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: Some(_) })
+        )
+    }
+
+    /// The GOT slot through which this entry may be **invoked**, or `None`
+    /// when the entry has no directly-callable runtime address.
+    ///
+    /// This is the **single source of truth for "where to call to invoke
+    /// this entry"** at call-target resolution. It is NOT the same question
+    /// as "does this entry hold a `got_slot` field value": a
+    /// **constrained-fn template** ([`Self::is_constrained_template`])
+    /// answers `None` here **even if its `got_slot` field is `Some(_)`** —
+    /// the template is not directly callable (only its monomorphised
+    /// variants are), so it has no callable address.
+    ///
+    /// **Why this accessor exists (the invariant it enforces).** The
+    /// `got_slot` field and the `constrained_fn` discriminator are two
+    /// correlated fields set at different pipeline stages: typecheck Pass 1
+    /// (`register_defn_signature`) allocates a `got_slot` for every defn
+    /// before constraint status is known, and Pass 2 constrained-fn
+    /// detection later flips `kind` to a template **in place**. A template
+    /// that retained its phantom `got_slot` was resolvable as a callable
+    /// target by code that pattern-matched `Def { got_slot: Some(slot), .. }`
+    /// directly — and cross-module that slot is NULL (the template is skipped
+    /// from codegen), so the call lowered to a `call_indirect` through null →
+    /// SIGSEGV (the 0354 defect). Routing call-target resolution through this
+    /// accessor makes the phantom slot unreadable as a callable address,
+    /// regardless of whether the flip-site cleared the field. Resolution sites
+    /// (`cranelisp-backend::compiler::resolve_got_target`) MUST consult this
+    /// accessor rather than reading the raw `got_slot` field, so a
+    /// constrained template can never again lower to a callable target.
+    ///
+    /// Pairs with [`Self::mark_constrained_template`], the sole-writer that
+    /// clears the field at flip time, and [`Self::assert_well_formed`], the
+    /// debug-time correlation guard. See `design/arch/fixmes/0354-*.md` and
+    /// Principle 18 (`design/arch/principles/18-*.md`).
+    pub fn callable_got_slot(&self) -> Option<usize> {
+        match self {
+            ModuleEntry::Def { got_slot, kind, .. }
+                if !matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: Some(_) }) =>
+            {
+                *got_slot
+            }
+            _ => None,
+        }
+    }
+
+    /// Sole writer for the **constrained-fn template** transition (Pass 2
+    /// constrained-fn detection).
+    ///
+    /// Marks this `Def` entry as a constrained template by setting its
+    /// `kind` to `DefKind::UserFn { constrained_fn: Some(cf) }` **and**
+    /// clearing `got_slot` to `None` in one atomic operation — maintaining
+    /// the correlation invariant ("a constrained template has no
+    /// directly-callable GOT slot") at a single named site rather than
+    /// requiring every in-place flip site in typecheck to remember to clear
+    /// the field. The template's phantom slot (allocated in Pass 1 before
+    /// constraint status was known) is reclaimed-by-abandonment — the
+    /// monomorphised variants allocate their own slots at
+    /// `monomorphise_call` time.
+    ///
+    /// No-op (returns `false`) on a non-`Def` entry. Returns `true` on
+    /// success. See [`Self::callable_got_slot`] for the read-side invariant
+    /// and `design/arch/fixmes/0354-*.md` for the motivating defect.
+    pub fn mark_constrained_template(&mut self, cf: ConstrainedFn) -> bool {
+        match self {
+            ModuleEntry::Def { kind, got_slot, .. } => {
+                **kind = DefKind::UserFn {
+                    constrained_fn: Some(Box::new(cf)),
+                };
+                *got_slot = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Debug-time correlation guard for the constrained-template invariant.
+    ///
+    /// Asserts (under `debug_assertions` only) that a constrained-fn template
+    /// does not carry a directly-callable `got_slot` — i.e. the illegal
+    /// state `Def { kind: UserFn { constrained_fn: Some(_) }, got_slot:
+    /// Some(_) }` never escapes a flip site that bypassed
+    /// [`Self::mark_constrained_template`]. No-op in release builds (the
+    /// invariant is enforced behaviorally by routing reads through
+    /// [`Self::callable_got_slot`]; this assert catches a writer that
+    /// forgot the sole-writer). Cheap to call after any `kind` mutation.
+    #[inline]
+    pub fn assert_well_formed(&self) {
+        if let ModuleEntry::Def { got_slot, .. } = self {
+            debug_assert!(
+                !(self.is_constrained_template() && got_slot.is_some()),
+                "constrained-fn template carries a phantom got_slot — \
+                 use ModuleEntry::mark_constrained_template to flip-and-clear \
+                 (see design/arch/fixmes/0354)"
+            );
         }
     }
 }
@@ -2292,6 +2420,61 @@ mod tests {
             "Import must NOT appear; got {:?}",
             names
         );
+    }
+
+    // spec: design/arch/bounded-contexts.md §7 "Callable address is read
+    //       through an accessor" + design/arch/fixmes/0354 — a constrained-fn
+    //       template's callable address is None EVEN IF its got_slot field is
+    //       Some(_) (the 0354 phantom-slot SIGSEGV invariant, Principle 18).
+    #[test]
+    fn callable_got_slot_excludes_constrained_template() {
+        let cf = ConstrainedFn {
+            variant: trivial_variant("cmp"),
+            scheme: Scheme { type_vars: vec![], constraints: HashMap::new(), ty: Type::Int },
+        };
+
+        // A non-template Def with a slot is callable through it.
+        let plain: ModuleEntry =
+            ModuleEntry::def(mono_scheme(Type::Int), DefKind::UserFn { constrained_fn: None })
+                .got_slot(3)
+                .build();
+        assert_eq!(plain.callable_got_slot(), Some(3));
+        assert!(!plain.is_constrained_template());
+        plain.assert_well_formed();
+
+        // A constrained template that STILL carries a phantom got_slot (the
+        // illegal-but-transiently-representable shape the Pass-1/Pass-2 timing
+        // produces) must report NO callable slot — the 0354 fix.
+        let phantom: ModuleEntry = ModuleEntry::def(
+            mono_scheme(Type::Int),
+            DefKind::UserFn { constrained_fn: Some(Box::new(cf.clone())) },
+        )
+        .got_slot(0)
+        .build();
+        assert!(phantom.is_constrained_template());
+        assert_eq!(
+            phantom.callable_got_slot(),
+            None,
+            "constrained template must report no callable slot even with got_slot: Some(0)"
+        );
+
+        // The sole-writer flips kind AND clears the slot in one operation, so
+        // the well-formed invariant holds afterwards.
+        let mut entry: ModuleEntry =
+            ModuleEntry::def(mono_scheme(Type::Int), DefKind::UserFn { constrained_fn: None })
+                .got_slot(5)
+                .build();
+        assert_eq!(entry.callable_got_slot(), Some(5));
+        assert!(entry.mark_constrained_template(cf));
+        assert!(entry.is_constrained_template());
+        assert_eq!(entry.callable_got_slot(), None);
+        // Field is cleared, so assert_well_formed does not panic in debug.
+        entry.assert_well_formed();
+        if let ModuleEntry::Def { got_slot, .. } = &entry {
+            assert_eq!(*got_slot, None, "sole-writer must clear the phantom slot");
+        } else {
+            panic!("expected Def");
+        }
     }
 
     // ---- Sprint 56 Wave 0 §9.8 — GotTable on SymbolTable ----

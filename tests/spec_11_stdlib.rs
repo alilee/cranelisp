@@ -219,6 +219,40 @@ fn macro_do_returns_last() {
     );
 }
 
+// spec: spec/10-io.md §10.5 — bind! macro: single binding desugars to
+// `(bind (Pure 42) (fn [x] (Pure x)))`, body returns the bound value.
+// (harvest: legacy/io.rs::io_bind_bang_single_binding_desugared)
+#[test]
+fn macro_bind_bang_single_binding() {
+    assert_repl_eval_contains(
+        "(import [primitives [Pure]]) (bind! [x (Pure 42)] (Pure x))",
+        ":primitives/Int 42",
+    );
+}
+
+// spec: spec/10-io.md §10.5 — bind! macro: multiple bindings desugar to nested
+// binds; later bindings see earlier ones.
+// (harvest: legacy/io.rs::io_bind_bang_multiple_bindings_desugared
+//  + io_bind_bang_sequential_reference_desugared)
+#[test]
+fn macro_bind_bang_multiple_bindings() {
+    assert_repl_eval_contains(
+        "(import [primitives [Pure add-i64]]) \
+         (bind! [x (Pure 10) y (Pure 20)] (Pure (add-i64 x y)))",
+        ":primitives/Int 30",
+    );
+}
+
+// spec: spec/10-io.md §10.5.2 — bind! later bindings reference earlier bindings.
+#[test]
+fn macro_bind_bang_sequential_reference() {
+    assert_repl_eval_contains(
+        "(import [primitives [Pure add-i64]]) \
+         (bind! [x (Pure 5) y (Pure (add-i64 x x))] (Pure y))",
+        ":primitives/Int 10",
+    );
+}
+
 // spec: spec/09-macros.md §9.5 — when macro with true condition (returns Some)
 #[test]
 fn macro_when_true() {

@@ -803,9 +803,53 @@ impl CompileScheduler {
         // Wake workers — new TypecheckDone module is potential work.
         // Nice workers get object codegen; priority workers may have
         // JitCodegen work (Level 4) or unblocked modules.
+        //
+        // ALSO wake `completion`: the TypecheckWorking → TypecheckDone pool
+        // transition is a settle event a reload caller may be parked on. The
+        // worker sets `inmem_done = true` mid-codegen (before this transition),
+        // so a caller can observe `inmem_done` while the pool is still
+        // TypecheckWorking. `re_register_module` refuses a mid-typecheck module
+        // (returns false), so `reload_module` must be able to wait for this
+        // transition before re-registering — otherwise the reload is silently
+        // dropped (S82 reload-during-compile race). See
+        // `wait_module_typecheck_settled`.
         drop(state);
         self.priority_work_available.notify_all();
         self.object_work_available.notify_all();
+        self.completion.notify_all();
+    }
+
+    /// Block until `module` is NOT in a transient typecheck state
+    /// (`TypecheckWorking` / `TypecheckBlocked`) — i.e. a worker is not
+    /// currently mid-pass on it. Returns when the module has settled into a
+    /// queued (`TypecheckFirst`/`TypecheckNext`) or terminal
+    /// (`TypecheckDone`/`Complete`/`Failed`) pool, or when the module is
+    /// unknown / shutdown is signalled.
+    ///
+    /// S82 reload-during-compile race fix. A worker sets `inmem_done = true`
+    /// partway through codegen, *before* it finishes the pass and calls
+    /// `notify_typecheck_done` (which moves the module out of
+    /// `TypecheckWorking`). A caller that observed `inmem_done` via
+    /// `wait_inmem_complete_blocking` can therefore reach `reload_module` while
+    /// the worker is still mid-pass; `re_register_module` then hits its
+    /// "mid-typecheck — skip" guard and returns `false`, and the reload is
+    /// silently lost. `reload_module` calls this first so the in-flight pass
+    /// settles and the subsequent `re_register_module` reliably succeeds.
+    pub fn wait_module_typecheck_settled(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        loop {
+            if state.shutdown {
+                return;
+            }
+            match state.modules.get(module).map(|ms| ms.pool) {
+                None => return, // Unknown module — nothing to wait on.
+                Some(ModulePool::TypecheckWorking) | Some(ModulePool::TypecheckBlocked) => {
+                    state = self.completion.wait(state)
+                        .unwrap_or_else(|e| e.into_inner());
+                }
+                Some(_) => return, // Settled (queued or terminal).
+            }
+        }
     }
 
     /// A module has failed (parse, type, macro, or codegen error).

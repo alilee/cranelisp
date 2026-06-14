@@ -1293,6 +1293,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(None);
         };
 
+        // FIXME 0349 — propagate the concrete return type back to the CALL SITE.
+        // `instantiate_and_resolve` instantiated a FRESH copy of the callee
+        // scheme and unified only its parameters with the concrete arg types;
+        // the freshly-instantiated return var (now resolved to `concrete_ret_ty`)
+        // is otherwise disconnected from the caller's recorded result type. Under
+        // forward-reference ordering a polymorphic callee (`reduce`) is generalized
+        // before the helper that ties its accumulator-to-result var, so the
+        // caller (`main`) bound its own result var to the callee's *loose*
+        // generalized return var during body-check; that left `main`'s result
+        // un-pinned (`(IO t)`), marking `main` itself spuriously polymorphic.
+        // Unifying the call-site's recorded expr type with the concrete return
+        // pins the caller's result (`t -> Int`), so the subsequent caller
+        // re-generalization yields the correct monomorphic scheme — the caller
+        // then calls the mono variant instead of the polymorphic template (0344).
+        if let Some(call_result_ty) = state.expr_types.get(&call_span).cloned() {
+            self.unify(state, &call_result_ty, &concrete_ret_ty, call_span)?;
+        }
+
         // `defn: DefnVariant` (S70 ConstrainedFn narrowing). Wrap in a
         // temporary single-variant `Defn` for the recheck helpers which
         // still take `&mut Defn`.
@@ -1776,6 +1794,16 @@ fn resolve_trait_type_expr(
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Type::ADT(fqtn, resolved_args))
         }
+        // Stacked trait-bound annotations (`:Eq :Display a`) are a *param-binder*
+        // construct (constrained-fn parameters), not a trait-method-signature
+        // construct: a trait method's parameter types are concrete types or
+        // `Self`/type-vars, never a free constrained binder. Reject rather than
+        // silently accept (FIXME 0346).
+        TypeExpr::Bounds(_) => Err(CranelispError::TypeError {
+            message: "trait bounds are not allowed in a trait-method signature \
+                      type position".to_string(),
+            location: ErrorLocation::from_span(span),
+        }),
     }
 }
 
@@ -1842,6 +1870,13 @@ fn resolve_type_expr_hkt(
             let ret_ty = resolve_type_expr_hkt(ret, con_var_map, type_var_map, next_id, span)?;
             Ok(Type::Fn(param_tys, Box::new(ret_ty)))
         }
+        // Trait bounds are a param-binder construct, not an HKT trait-method
+        // signature construct — reject (FIXME 0346).
+        TypeExpr::Bounds(_) => Err(CranelispError::TypeError {
+            message: "trait bounds are not allowed in an HKT trait-method \
+                      signature type position".to_string(),
+            location: ErrorLocation::from_span(span),
+        }),
     }
 }
 
@@ -1901,6 +1936,13 @@ fn resolve_type_expr_hkt_impl(
             let ret_ty = resolve_type_expr_hkt_impl(ret, con_var_names, target_fqtn, type_var_map, next_id, span)?;
             Ok(Type::Fn(param_tys, Box::new(ret_ty)))
         }
+        // Trait bounds are a param-binder construct, not an HKT impl-method
+        // signature construct — reject (FIXME 0346).
+        TypeExpr::Bounds(_) => Err(CranelispError::TypeError {
+            message: "trait bounds are not allowed in an HKT impl-method \
+                      signature type position".to_string(),
+            location: ErrorLocation::from_span(span),
+        }),
     }
 }
 
