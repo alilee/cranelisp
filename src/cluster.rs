@@ -128,11 +128,11 @@ impl ProcessedCluster {
         &self.introspection_records
     }
 
-    /// Construct a `ProcessedCluster` from its parts. Used internally by
-    /// `process_cluster` after a successful `check_forms` run. Currently
-    /// unused while `process_cluster` returns `empty()` under the Wave 3a-β
-    /// scaffold; held in place for the FIXME 0176 staging pivot.
-    #[allow(dead_code)]
+    /// Construct a `ProcessedCluster` from its parts. Used by
+    /// `process_form::finalize_cluster` to carry the typecheck warning channel
+    /// (FIXME 0365) out of a successful `check_forms` run onto
+    /// `ProcessedCluster.warnings`, where the REPL driver renders each as a
+    /// `; warning: <message>` line.
     pub(crate) fn from_parts(
         entries: Vec<(Symbol, ModuleEntry<Code>)>,
         warnings: Vec<Warning>,
@@ -147,8 +147,10 @@ impl ProcessedCluster {
         }
     }
 
-    /// Construct an empty cluster — used by REPL eval-expression form (temp
-    /// closure has no module commit) and as a unit-test fixture.
+    /// Construct an empty cluster — a unit-test fixture. (The production
+    /// `finalize_cluster` path now builds via `from_parts`, carrying the
+    /// FIXME-0365 warning channel; this helper survives only in tests.)
+    #[cfg(test)]
     pub(crate) fn empty() -> Self {
         ProcessedCluster {
             entries: Vec::new(),

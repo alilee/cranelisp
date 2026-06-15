@@ -1461,8 +1461,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 kind: cranelisp_types::WarningKind::ShadowedName,
                 message: format!(
                     "field accessor `{accessor_name}` for type `{type_name}` \
-                     collides with an existing binding `{accessor_name}`; the \
-                     accessor is suppressed and the existing binding is kept"
+                     conflicts with a name already bound to `{accessor_name}`; \
+                     the accessor is suppressed and the existing binding is kept"
                 ),
                 span: Span::SYNTHETIC,
             });

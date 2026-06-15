@@ -46,7 +46,7 @@ use std::cell::RefCell;
 
 use cranelisp_types::{
     CodeStore, Defn, ErrorLocation, LinkerStore, ModuleAliases, ModuleStrategy, ParsedEntry,
-    Span, SymbolTable, SymbolTables, TopLevel,
+    Span, SymbolTable, SymbolTables, TopLevel, Warning,
 };
 
 use crate::checker::{CheckState, PreludeFallback, TypeCheckEnv};
@@ -69,8 +69,16 @@ use crate::result::CheckError;
 /// `symbol_tables` parameter is the shared-borrow universe of modules used
 /// for cross-module FQ resolution.
 ///
-/// Returns `Ok(())` on success — the staging (or live) table carries
-/// registered entries with Pass 2 annotations on `ModuleEntry::Def` fields.
+/// Returns `Ok(warnings)` on success — the staging (or live) table carries
+/// registered entries with Pass 2 annotations on `ModuleEntry::Def` fields,
+/// and the returned `Vec<Warning>` carries the cluster's non-fatal diagnostics
+/// (drained from the internal `CheckResult`). This is the **warning channel**
+/// (FIXME 0365): the §5.2.6 accessor/binding collision guard records a
+/// [`WarningKind::ShadowedName`] diagnostic during accessor synthesis, and the
+/// int caller threads the returned warnings onto `ProcessedCluster.warnings`
+/// so the REPL can render them as `; warning: <message>` lines. An empty `Vec`
+/// means the cluster produced no diagnostics. (`Warning` is a `cranelisp-types`
+/// boundary type, so the channel is purely additive at the typecheck edge.)
 /// Returns `Err(CheckError::Gap(_))` when an FQ reference cannot be resolved
 /// (orchestrator retries the whole `check_forms` call with the same
 /// `parsed` list). Returns `Err(CheckError::TypeError { .. })` for
@@ -80,13 +88,15 @@ use crate::result::CheckError;
 /// Cluster atomicity: the live table is byte-identical to its pre-cluster
 /// state across any `Err` return. On `Ok`, the orchestrator drains staging
 /// into live atomically.
+///
+/// [`WarningKind::ShadowedName`]: cranelisp_types::WarningKind::ShadowedName
 pub fn check_forms<C, L>(
     parsed: Vec<ParsedEntry>,
     ctx: &mut SymbolTableAccess<'_, C, L>,
     symbol_tables: &SymbolTables<C, L>,
     module_aliases: &ModuleAliases,
     prelude_fallback: &PreludeFallback,
-) -> Result<(), CheckError>
+) -> Result<Vec<Warning>, CheckError>
 where
     C: CodeStore,
     L: LinkerStore,
@@ -295,15 +305,17 @@ where
     // Pass 2.5 multi-sig overloads, Pass 3 detect constrained, Pass 4 mono,
     // Pass 5 auto-curry, cross-defn AST annotation refinement). This writes
     // per-symbol Pass-2 side products onto staging `ModuleEntry::Def` fields
-    // per invariant 3a. The returned `CheckResult` carries only diagnostics
-    // (warnings + display info) which are not part of `check_forms`'s
-    // contract — discarded here.
+    // per invariant 3a. The returned `CheckResult` carries diagnostics
+    // (warnings + display info); FIXME 0365 surfaces its `warnings` out of
+    // this function on the `Ok` path (the warning channel) so int can render
+    // them in the REPL. The `display` half is still not part of the contract
+    // and is dropped.
     //
     // `ModuleStrategy::Additive` matches the cluster-atomic flow: the
     // staging table accumulates new entries beside whatever exists in live;
     // Replace strategy is a session-level concern handled outside
     // `check_forms`.
-    let _result = env
+    let result = env
         .finalize_check_result(
             &current_module,
             &mut state,
@@ -313,7 +325,7 @@ where
         )
         .map_err(|e| lift_error(e, &state))?;
 
-    Ok(())
+    Ok(result.warnings)
 }
 
 /// Typecheck a standalone type expression against a symbol-table view,
@@ -1295,6 +1307,109 @@ mod tests {
                 );
             }
             other => panic!("expected SigDispatch across clusters, got {other:?}"),
+        }
+    }
+
+    /// FIXME 0365 — the warning channel. When a synthesised field accessor
+    /// (§5.2.6, FIXME 0351(a)) collides with a pre-existing NON-accessor
+    /// binding, accessor synthesis records a `ShadowedName` warning and
+    /// suppresses the accessor (the existing binding wins). Before FIXME 0365
+    /// `check_forms` returned `Result<(), CheckError>` and DISCARDED its
+    /// `CheckResult` — so the warning never reached the int caller and the REPL
+    /// never rendered the `; warning:` line. This test pins the surfaced
+    /// channel: `check_forms` now returns `Ok(Vec<Warning>)`, and the colliding
+    /// accessor's `ShadowedName` diagnostic is reachable in that Vec carrying
+    /// the collision message.
+    ///
+    /// Fixture: pre-register `v` as a user `defn`, then submit the **product**
+    /// type `(deftype Box [:Int v])` (single ctor, ctor-name == type-name) in
+    /// the same cluster. Synthesising the `v` accessor finds the pre-existing
+    /// `v` defn (a NON-accessor collision) and defers the diagnostic.
+    ///
+    /// spec: spec/05-data-types.md §5.2.6 — accessor/binding collision safe
+    /// disposition (warn, suppress, keep existing binding).
+    #[test]
+    fn check_forms_surfaces_accessor_collision_warning() {
+        use cranelisp_types::{Type, WarningKind};
+
+        let modules = modules();
+        // Seed `Int` as an intrinsic type so the `:Int` field resolves in the
+        // bare test module (the fixture seeds no scalar type names).
+        {
+            let mut guard = modules.get_mut(&module_path()).expect("module exists");
+            guard.insert(
+                Symbol::from("Int"),
+                ModuleEntry::IntrinsicType {
+                    ty: Type::Int,
+                    visibility: Visibility::Public,
+                    docstring: None,
+                },
+            );
+        }
+
+        // Pre-register a user binding named `v` — the accessor `v` synthesised
+        // for `Box`'s field will collide with it (NON-accessor collision).
+        let v_defn = one_variant_defn("v");
+        // Product type `Box` with a single typed field `v` (ctor name == type
+        // name ⇒ product ⇒ accessors are synthesised).
+        let box_typedef = ParsedEntry::TypeDef {
+            name: TypeName::from("Box"),
+            type_params: vec![],
+            constructors: vec![ConstructorDef {
+                name: Symbol::from("Box"),
+                docstring: None,
+                fields: vec![FieldDef {
+                    name: Symbol::from("v"),
+                    type_expr: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                        None,
+                        TypeName::from("Int"),
+                    )),
+                    span: Span::SYNTHETIC,
+                }],
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Private,
+            docstring: None,
+            span: Span::SYNTHETIC,
+        };
+
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        let warnings = check_forms::<(), ()>(
+            vec![v_defn, box_typedef],
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &no_fallback(),
+        )
+        .expect("cluster with an accessor collision still checks clean");
+
+        // The collision must surface as a ShadowedName warning whose message
+        // names the colliding accessor `v` — this is the channel int threads
+        // onto ProcessedCluster.warnings for the REPL `; warning:` line.
+        let shadow = warnings
+            .iter()
+            .find(|w| w.kind == WarningKind::ShadowedName)
+            .unwrap_or_else(|| {
+                panic!("expected a ShadowedName warning, got {warnings:?}")
+            });
+        assert!(
+            shadow.message.contains("accessor") && shadow.message.contains('v'),
+            "warning message must name the colliding accessor: {:?}",
+            shadow.message
+        );
+
+        // The pre-existing `v` defn is kept; the accessor is suppressed (the
+        // safe disposition the warning records).
+        let guard = modules.get(&module_path()).expect("module exists");
+        match guard.get("v").expect("v binding survives") {
+            ModuleEntry::Def { kind, .. } => {
+                assert!(
+                    matches!(kind.as_ref(), DefKind::UserFn { .. }),
+                    "the original user defn `v` must win, not the accessor"
+                );
+            }
+            other => panic!("expected the user defn for `v`, got {other:?}"),
         }
     }
 }

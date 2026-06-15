@@ -1057,15 +1057,14 @@ fn finalize_cluster(
         final_working.push(TopLevel::Defn(defn.clone()));
     }
 
-    if let Some(gap) =
-        check_program_compat(
-            ctx.symbol_tables,
-            ctx.module_aliases,
-            ctx.prelude_fallback,
-            module,
-            &final_working,
-        )?
-    {
+    let (maybe_gap, cluster_warnings) = check_program_compat(
+        ctx.symbol_tables,
+        ctx.module_aliases,
+        ctx.prelude_fallback,
+        module,
+        &final_working,
+    )?;
+    if let Some(gap) = maybe_gap {
         // Map the gap to its target module and drive it (register + block) if
         // it is a not-yet-loaded module we can act on.
         if let Some(dep) = gap_target_module(&gap)
@@ -1092,10 +1091,17 @@ fn finalize_cluster(
     let program: Vec<TopLevel> = expanded_program.to_vec();
 
     // Cluster-level metadata. The per-symbol staging entries already committed
-    // to live inside `check_program_compat`; introspection/warnings flow back
-    // through the calling driver (REPL) / are empty (worker). The
-    // `ProcessedCluster` carrier is committed via `cluster::insert_cluster`.
-    let processed = crate::cluster::ProcessedCluster::empty();
+    // to live inside `check_program_compat`; the typecheck warning channel
+    // (FIXME 0365) flows back on the `Ok` path and is threaded onto
+    // `ProcessedCluster.warnings` so the REPL driver renders each as a
+    // `; warning: <message>` line. The `ProcessedCluster` carrier is committed
+    // via `cluster::insert_cluster`.
+    let processed = crate::cluster::ProcessedCluster::from_parts(
+        Vec::new(),
+        cluster_warnings,
+        Vec::new(),
+        Vec::new(),
+    );
 
     Ok(ClusterOnce::Done { processed, program })
 }

@@ -497,9 +497,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // pre-existing binding — a user `defn`, a ctor, an import — is a
         // NON-accessor collision (refused). Classifying by `DefKind` alone is
         // insufficient: a user `(defn v ..)` is also a `UserFn`.
+        //
+        // FIXME 0365 — read the UNION view (staging-first, then live) rather
+        // than staging alone. In the REPL each form is its own cluster, so a
+        // pre-existing `(defn v ..)` from an EARLIER cluster is committed to
+        // LIVE, not the current cluster's staging; a staging-only probe missed
+        // it and the §5.2.6 collision warning never fired across cluster
+        // boundaries. `probe_module_entry_owned` checks staging then live, so
+        // the collision is detected whether the colliding binding is in the
+        // same cluster (staging) or a prior one (live).
         let existing_present = self
-            .current_symbol_table_mut(state)
-            .get(accessor_name.as_ref())
+            .probe_module_entry_owned(&state.current_module, accessor_name.as_ref())
             .is_some();
         let existing_kind: Option<AccessorCollision> = if !existing_present {
             None

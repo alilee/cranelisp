@@ -173,7 +173,8 @@ pub(crate) fn check_program_compat(
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
-) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
+) -> Result<(Option<cranelisp_types::ResolutionGap>, Vec<cranelisp_types::Warning>), CranelispError>
+{
     // Wave 3b-2c.3: FIXME 0179 (cluster-mode read-union via View::union) has
     // landed in typecheck. Cluster mode is now activated as the hot path —
     // writes flow to a fresh staging table, reads union staging-first with
@@ -207,6 +208,9 @@ pub(crate) fn check_program_compat_no_gap(
     module: &ModuleFullPath,
     working_program: &[TopLevel],
 ) -> Result<(), CranelispError> {
+    // These call sites (macro-clause compilation, cache-load typecheck,
+    // `/type` introspection) do not participate in the REPL warning surface,
+    // so the FIXME-0365 warning channel is discarded here.
     match check_program_compat(
         symbol_tables,
         module_aliases,
@@ -214,8 +218,8 @@ pub(crate) fn check_program_compat_no_gap(
         module,
         working_program,
     )? {
-        None => Ok(()),
-        Some(gap) => Err(CranelispError::TypeError {
+        (None, _warnings) => Ok(()),
+        (Some(gap), _warnings) => Err(CranelispError::TypeError {
             message: format!("unresolved cross-module reference: {gap:?}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
@@ -242,12 +246,13 @@ pub(crate) fn process_cluster_with_staging(
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
-) -> Result<Option<cranelisp_types::ResolutionGap>, CranelispError> {
+) -> Result<(Option<cranelisp_types::ResolutionGap>, Vec<cranelisp_types::Warning>), CranelispError>
+{
     use cranelisp_typecheck::{check_forms, CheckError, SymbolTableAccess};
 
     let parsed = top_level_to_parsed_entries(working_program);
     if parsed.is_empty() {
-        return Ok(None);
+        return Ok((None, Vec::new()));
     }
 
     let mut staging: crate::code::SessionSymbolTable =
@@ -266,16 +271,20 @@ pub(crate) fn process_cluster_with_staging(
     drop(ctx);
 
     match result {
-        // On Ok: commit staging entries to live.
-        Ok(()) => {
+        // On Ok: commit staging entries to live, carrying the cluster's
+        // non-fatal warnings (FIXME 0365 warning channel) back to the caller
+        // so int can thread them onto `ProcessedCluster.warnings` and the
+        // REPL can render them as `; warning: <message>` lines.
+        Ok(warnings) => {
             commit_staging_to_live(symbol_tables, module, staging);
-            Ok(None)
+            Ok((None, warnings))
         }
         // A recoverable resolution gap (e.g. an FQ reference to a module not
         // yet loaded). Staging drops here (atomic discard, live unchanged);
         // the gap is handed back to `finalize_module` for FQ-auto-load
         // orchestration (FIXME 0268). On retry a fresh staging frame runs.
-        Err(CheckError::Gap(gap)) => Ok(Some(gap)),
+        // No warnings on the gap path — the cluster re-runs from the top.
+        Err(CheckError::Gap(gap)) => Ok((Some(gap), Vec::new())),
         // A genuine type error — staging drops, live unchanged.
         Err(e) => Err(check_error_to_cranelisp_error(e)),
     }
