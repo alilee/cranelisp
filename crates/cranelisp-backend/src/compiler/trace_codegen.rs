@@ -127,7 +127,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_intrinsics::trace::DescriptorKind;
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, Expr, FQTypeName, ModuleEntry, Span, Type, TypeId,
+    CranelispError, ErrorLocation, Expr, FQTypeName, ModuleEntry, Span, Type, TypeId,
 };
 
 use super::{FnCompiler, TracedFnInfo};
@@ -309,31 +309,24 @@ where
         let module_path = module_guard.key();
         let table = module_guard.value();
         for (name, entry) in table.all_symbols() {
-            let ModuleEntry::Def {
-                got_slot: Some(slot),
-                kind,
-                scheme,
-                ..
-            } = entry
-            else {
+            let ModuleEntry::Def { scheme, .. } = entry else {
                 continue;
             };
-            // Skip constrained-poly base names + overloaded base names —
-            // dispatch placeholders, not directly callable; their mono
-            // specialisations / variants are slotted separately and traced on
-            // their own.
-            if matches!(
-                kind.as_ref(),
-                DefKind::UserFn {
-                    constrained_fn: Some(_)
-                } | DefKind::Overloaded { .. }
-            ) {
+            // The GOT slot rides on the callable `DefKind` variant (S83
+            // Option-A reshape); `callable_got_slot()` answers `Some` ONLY for
+            // directly-callable kinds (concrete user fns, primitives,
+            // constructors, platform effects) and `None` for the constrained-poly
+            // base names + overloaded base names (dispatch placeholders, not
+            // directly callable — their mono specialisations / variants are
+            // slotted separately and traced on their own). The former explicit
+            // constrained/overloaded skip is now structural in the accessor.
+            let Some(slot) = entry.callable_got_slot() else {
                 continue;
-            }
+            };
             // Read the callable address from the GOT slot (the single source of
             // truth). 0 = not yet populated / no real code → skip. This includes
             // primitives (code: None) whose ptrs live in the GOT.
-            let code_ptr = table.got.load_slot(*slot) as i64;
+            let code_ptr = table.got.load_slot(slot) as i64;
             if code_ptr == 0 {
                 continue;
             }
@@ -344,7 +337,7 @@ where
             traced.push(TracedFnInfo {
                 name: format!("{module_path}/{name}"),
                 module_path: module_path.clone(),
-                got_slot: *slot,
+                got_slot: slot,
                 arity: params.len(),
                 param_types: params.clone(),
                 result_type: (**ret).clone(),
@@ -1249,7 +1242,8 @@ mod tests {
     use cranelisp_intrinsics::heap_string::{alloc_string, read_string_as_str};
     use cranelisp_intrinsics::trace::cranelisp_trace_format;
     use cranelisp_types::{
-        DefKind, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type, Visibility,
+        DefKind, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type, UserFnState,
+        Visibility,
     };
     use dashmap::DashMap;
     use std::collections::HashMap;
@@ -1441,14 +1435,18 @@ mod tests {
     fn insert_fn(
         table: &mut SymbolTable<(), ()>,
         name: &str,
-        kind: DefKind,
+        // The GOT slot now rides on the callable `DefKind` variant (S83
+        // reshape), so the caller builds the kind from the allocated slot. For
+        // slot-less kinds (constrained base / overloaded base) the closure
+        // ignores the slot — the entry is then slot-less and discovery skips it
+        // via `callable_got_slot()`.
+        make_kind: impl FnOnce(usize) -> DefKind,
         scheme: Scheme,
         fake_ptr: usize,
     ) {
         let slot = table.allocate_got_slot();
-        let entry = ModuleEntry::def(scheme, kind)
+        let entry = ModuleEntry::def(scheme, make_kind(slot))
             .visibility(Visibility::Public)
-            .got_slot(slot)
             .build();
         table.insert(Symbol::from(name), entry);
         table.got.store_slot(slot, fake_ptr as *const u8);
@@ -1462,7 +1460,9 @@ mod tests {
         insert_fn(
             &mut user,
             "fact",
-            DefKind::UserFn { constrained_fn: None },
+            |slot| DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: slot },
+            },
             fn_scheme(vec![Type::Int], Type::Int),
             0x1000,
         );
@@ -1475,7 +1475,7 @@ mod tests {
         insert_fn(
             &mut prims,
             "str-concat",
-            DefKind::Primitive,
+            |slot| DefKind::Primitive { got_slot: slot },
             fn_scheme(vec![Type::String, Type::String], Type::String),
             0x2000,
         );
@@ -1506,7 +1506,9 @@ mod tests {
     ) -> usize {
         let g = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         match g.get("str-concat") {
-            Some(ModuleEntry::Def { got_slot: Some(s), .. }) => *s,
+            Some(entry) => entry
+                .callable_got_slot()
+                .expect("str-concat must be a got-slotted Def"),
             _ => panic!("str-concat must be a got-slotted Def"),
         }
     }
@@ -1520,8 +1522,8 @@ mod tests {
         insert_fn(
             &mut m,
             "add",
-            DefKind::UserFn {
-                constrained_fn: Some(Box::new(make_constrained_fn())),
+            |_slot| DefKind::UserFn {
+                fn_state: UserFnState::Constrained(Box::new(make_constrained_fn())),
             },
             fn_scheme(vec![Type::Var(0), Type::Var(0)], Type::Var(0)),
             0x3000,
@@ -1530,7 +1532,7 @@ mod tests {
         insert_fn(
             &mut m,
             "show",
-            DefKind::Overloaded { variants: vec![] },
+            |_slot| DefKind::Overloaded { variants: vec![] },
             fn_scheme(vec![Type::Int], Type::String),
             0x3100,
         );
@@ -1538,7 +1540,9 @@ mod tests {
         insert_fn(
             &mut m,
             "double",
-            DefKind::UserFn { constrained_fn: None },
+            |slot| DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: slot },
+            },
             fn_scheme(vec![Type::Int], Type::Int),
             0x3200,
         );
@@ -1560,9 +1564,10 @@ mod tests {
         let slot = m.allocate_got_slot();
         let entry = ModuleEntry::def(
             fn_scheme(vec![Type::Int], Type::Int),
-            DefKind::UserFn { constrained_fn: None },
+            DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: slot },
+            },
         )
-        .got_slot(slot)
         .build();
         m.insert(Symbol::from("uncompiled"), entry);
         // (no got.store_slot — slot stays null)
@@ -1572,7 +1577,9 @@ mod tests {
         insert_fn(
             &mut m,
             "konst",
-            DefKind::UserFn { constrained_fn: None },
+            |slot| DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: slot },
+            },
             Scheme {
                 type_vars: vec![],
                 constraints: HashMap::new(),
@@ -1656,6 +1663,7 @@ mod tests {
             ModuleEntry::def(
                 fn_scheme(vec![], intlist_ty.clone()),
                 DefKind::Constructor {
+                    got_slot: 0,
                     type_name: intlist_fqtn.clone(),
                     tag: 0,
                     field_count: 0,
@@ -1674,6 +1682,7 @@ mod tests {
             ModuleEntry::def(
                 fn_scheme(vec![Type::Int, intlist_ty.clone()], intlist_ty.clone()),
                 DefKind::Constructor {
+                    got_slot: 0,
                     type_name: intlist_fqtn.clone(),
                     tag: 1,
                     field_count: 2,

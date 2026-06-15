@@ -14,7 +14,7 @@ use cranelisp_types::{ErrorLocation,
     ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName,
     JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, ResolvedCall, Scheme,
     Span, Symbol, TraitDecl, TraitDeclInfo, TraitImpl, TraitMethodSig, TraitName, Type, TypeId,
-    TypeName, Visibility, apply,
+    TypeName, UserFnState, Visibility, apply,
 };
 
 use crate::checker::{CheckState, TypeCheckEnv};
@@ -227,7 +227,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // inherits the trait's visibility (I-1 — see `register_trait_decl`).
             let mut builder = cranelisp_types::ModuleEntry::def(
                 method_scheme,
-                cranelisp_types::DefKind::UserFn { constrained_fn: None },
+                cranelisp_types::DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::NotDetermined,
+                },
             )
             .visibility(decl.visibility)
             .param_names(method.params.iter().map(|(n, _)| n.clone()).collect())
@@ -290,7 +292,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // inherits the trait's visibility (I-1 — see `register_trait_decl`).
         let mut builder = cranelisp_types::ModuleEntry::def(
             method_scheme,
-            cranelisp_types::DefKind::UserFn { constrained_fn: None },
+            cranelisp_types::DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::NotDetermined,
+            },
         )
         .visibility(visibility)
         .param_names(method.params.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>())
@@ -784,13 +788,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Some(ModuleEntry::Def { ast, .. }) = st.symbols.get_mut(&mangled_sym) {
             *ast = ast_variant;
         } else {
+            // Concrete trait-impl method body (mangled name), born with its slot
+            // (S83 deferred allocation): slot rides inside `Concrete` fn_state.
             let got_slot = st.allocate_got_slot();
             let mut builder = ModuleEntry::def(
                 concrete_scheme,
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } },
             )
-            .param_names(method_defn.params().iter().map(|(n, _)| n.clone()).collect())
-            .got_slot(got_slot);
+            .param_names(method_defn.params().iter().map(|(n, _)| n.clone()).collect());
             if let Some(doc) = method_defn.docstring.clone() {
                 builder = builder.docstring(doc);
             }
@@ -1411,20 +1416,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // time for the same mangled name, so this insertion runs exactly once
         // per specialisation. If an entry already exists (e.g., REPL redefinition),
         // we preserve its `got_slot` to keep call-site GOT indices stable.
+        // A mono specialisation is a concrete callable born with its slot
+        // (S83 deferred allocation, Principle 20). On REPL redefinition reuse
+        // the prior concrete entry's slot (read via `callable_got_slot`) to
+        // keep call-site GOT indices stable; the slot rides inside the
+        // `Concrete` fn_state, not a flat `Def` field.
         let existing_got_slot = st.get(mono.defn.name.as_ref())
-            .and_then(|e| match e {
-                ModuleEntry::Def { got_slot, .. } => *got_slot,
-                _ => None,
-            });
+            .and_then(|e| e.callable_got_slot());
         let got_slot = existing_got_slot.unwrap_or_else(|| st.allocate_got_slot());
 
         let mut builder = ModuleEntry::def(
             scheme,
-            DefKind::UserFn { constrained_fn: None },
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } },
         )
         .visibility(mono.defn.visibility)
-        .param_names(mono.defn.params().iter().map(|(n, _)| n.clone()).collect())
-        .got_slot(got_slot);
+        .param_names(mono.defn.params().iter().map(|(n, _)| n.clone()).collect());
         if let Some(doc) = mono.defn.docstring.clone() {
             builder = builder.docstring(doc);
         }
@@ -1535,7 +1541,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 .iter()
                 .filter_map(|(name, entry)| {
                     if let ModuleEntry::Def { kind, .. } = entry
-                        && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                        && let DefKind::UserFn { fn_state: UserFnState::Constrained(_) } = kind.as_ref()
                     {
                         return Some(name.clone());
                     }
@@ -1573,15 +1579,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state: &CheckState,
         name: &Symbol,
     ) -> Option<ConstrainedFn> {
-        use cranelisp_types::{DefKind, ModuleEntry};
-
         // Staging-aware (FIXME 0179): read through probe so in-cluster
         // constrained-fn registrations are visible.
         let entry = self.probe_module_entry_owned(&state.current_module, name.as_ref())?;
         match &entry {
             ModuleEntry::Def { kind, scheme, ast, .. } => match kind.as_ref() {
                 DefKind::UserFn {
-                    constrained_fn: Some(cf),
+                    fn_state: UserFnState::Constrained(cf),
                 } => Some(cf.as_ref().clone()),
                 // Pure parametric polymorphism: the scheme is still polymorphic
                 // (non-empty `vars`), no trait constraints, but the call site
@@ -1591,8 +1595,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // defn AST is the source of truth for the body — it was
                 // annotated and substitution-applied during the originating
                 // Pass 2 / finalize pass for this defn.
-                DefKind::UserFn { constrained_fn: None }
-                    if !scheme.type_vars.is_empty() && ast.is_some() =>
+                DefKind::UserFn { fn_state }
+                    if !matches!(fn_state, UserFnState::Constrained(_))
+                        && !scheme.type_vars.is_empty()
+                        && ast.is_some() =>
                 {
                     Some(ConstrainedFn {
                         variant: ast.as_ref().unwrap().clone(),

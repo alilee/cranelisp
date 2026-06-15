@@ -235,7 +235,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && let ModuleEntry::Def { kind, .. } = entry
             && matches!(
                 kind.as_ref(),
-                cranelisp_types::DefKind::UserFn { constrained_fn: Some(_) }
+                cranelisp_types::DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Constrained(_)
+                }
             )
         {
             return Err(CranelispError::TypeError {
@@ -581,7 +583,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     self.resolve_terminal_entry_and_home(&module_path, name_part)
                     // Per Decision 48: the symbol-table key IS the JIT linker
                     // name for primitives. Return the bare entry name.
-                    && matches!(kind.as_ref(), DefKind::Primitive)
+                    //
+                    // FIXME 0360 (ruled S83 /arch, Path 1): `PrimitiveExtern`
+                    // is the slot-less, by-name-dispatched (`Linkage::Import`)
+                    // sibling of `Primitive` — `sconcat`, `quote-sexp`, `bind`,
+                    // the trace field accessors. It must ALSO classify as
+                    // `BuiltinFn`; the backend's builtin-dispatch funnel is
+                    // slot-agnostic (handles both GOT-indirect and by-name).
+                    // Omitting it silently drops these callees from lowering.
+                    && matches!(
+                        kind.as_ref(),
+                        DefKind::Primitive { .. } | DefKind::PrimitiveExtern
+                    )
                 {
                     return Some(Symbol::from(name_part));
                 }
@@ -594,7 +607,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let ModuleEntry::Def { kind, .. } = &entry {
             // Per Decision 48: the symbol-table key IS the JIT linker name for
             // primitives. Return the bare entry name.
-            if matches!(kind.as_ref(), DefKind::Primitive) {
+            //
+            // FIXME 0360 (ruled S83 /arch, Path 1): `PrimitiveExtern` callees
+            // (slot-less, by-name `Linkage::Import` dispatch) must classify as
+            // `BuiltinFn` too — see the qualified-arm comment above.
+            if matches!(kind.as_ref(), DefKind::Primitive { .. } | DefKind::PrimitiveExtern) {
                 return Some(Symbol::from(name));
             }
         }

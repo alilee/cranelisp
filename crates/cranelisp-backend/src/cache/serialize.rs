@@ -400,7 +400,7 @@ pub fn write_cached_metadata(
 mod tests {
     use super::*;
     use cranelisp_types::{DefKind, DefnVariant, Expr, FQSymbol, ImportSpec, ModuleEntry, ModuleFullPath,
-        Scheme, Span as TSpan, Symbol, Type, Visibility,
+        Scheme, Span as TSpan, Symbol, Type, UserFnState, Visibility,
     };
     use std::collections::HashMap;
 
@@ -423,9 +423,10 @@ mod tests {
             visibility: Visibility::Public,
             docstring: None,
             param_names: vec![],
-            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            kind: Box::new(DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: 7 },
+            }),
             callees: vec![],
-            got_slot: Some(7),
             trait_origin: None,
             seq: 0,
             ast: Some(variant),
@@ -511,6 +512,53 @@ mod tests {
             matches!(result, Err(CacheStale::SchemaMismatch { found: u32::MAX, .. })),
             "u32::MAX schema_version must produce SchemaMismatch (not Err / not panic)"
         );
+    }
+
+    /// S83 Option-A reshape guard (FIXME 0356/0358): a `.meta.json` stamped at
+    /// the prior schema version 4 — written before the `DefKind`/`ModuleEntry::Def`
+    /// callability reshape — MUST be rejected as `CacheStale::SchemaMismatch`
+    /// against the bumped `CACHE_SCHEMA_VERSION` (now 5), so the caller treats it
+    /// as a cache-miss and recompiles. It must NOT deserialise a callable with a
+    /// missing/defaulted slot (the NULL-GOT-slot regression Principle 20
+    /// forecloses). The bump 4→5 is the no-serde-change-without-bump discipline
+    /// applied to the slot-onto-DefKind move.
+    // spec: design/backend/module-caching.md §"Schema versioning" (Decision 34)
+    #[test]
+    fn cache_v4_meta_rejected_after_callability_reshape() {
+        // The bump must actually have happened — a v4 cache must be stale now.
+        const {
+            assert!(
+                super::super::CACHE_SCHEMA_VERSION >= 5,
+                "S83 reshape requires CACHE_SCHEMA_VERSION bumped past 4"
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join("user.meta.json");
+
+        // Emit a sidecar stamped at the legacy v4 (current build_id, so only the
+        // schema version differs — isolating the schema-mismatch route).
+        let mut table = SymbolTable::new(ModuleFullPath::from("user"));
+        table.insert(Symbol::from("callable"), make_def("callable"));
+        write_meta(&meta_path, &table, 4).unwrap();
+
+        let bytes = std::fs::read(&meta_path).unwrap();
+        let result =
+            deserialise_meta(&bytes, super::super::CACHE_SCHEMA_VERSION, &meta_path);
+        match result {
+            Err(CacheStale::SchemaMismatch { found, expected, .. }) => {
+                assert_eq!(found, 4, "the stale cache was stamped at v4");
+                assert_eq!(
+                    expected,
+                    super::super::CACHE_SCHEMA_VERSION,
+                    "rejected against the current (bumped) schema version"
+                );
+            }
+            // Crucially NOT Ok(table): a v4 cache must never load a callable.
+            other => panic!(
+                "v4 cache must be rejected as SchemaMismatch (cache-miss), got {other:?}"
+            ),
+        }
     }
 
     /// Per task: write-then-read round-trip. Full multi-field SymbolTable

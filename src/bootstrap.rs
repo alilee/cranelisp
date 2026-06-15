@@ -33,8 +33,9 @@
 //!    The `trace` *form* metadata is at root `""` (step 1), not here.
 //! 8. test-discovery primitives in `primitives`: `discover-tests`
 //!    (`DefKind::PrimitiveExtern`, body promised by int at session init) +
-//!    `catch-runtime-error` (`DefKind::Primitive`, body in
-//!    `cranelisp-intrinsics::panic`). `TestResult`/`run-test` RETIRED
+//!    `catch-runtime-error` (`DefKind::PrimitiveExtern` post-S83-reshape —
+//!    ABI-name `Linkage::Import`, slot-less; body in
+//!    `cranelisp-intrinsics::panic`; FIXME 0360). `TestResult`/`run-test` RETIRED
 //!    (test-discovery.md, fourth convergence).
 //!
 //! ## Ordering invariants (legacy body, restated)
@@ -214,9 +215,16 @@ fn register_synth_adt(
             span: body_span,
         };
 
+        // The ctor is a concrete got-callable born with its slot (S83 deferred
+        // allocation, Principle 20): the slot rides on
+        // `DefKind::Constructor.got_slot`, not a flat `Def` field. Mirror
+        // `typecheck::register_type_def_with_ctor_infos` — allocate from the
+        // module's GOT before building.
+        let ctor_slot = module.allocate_got_slot();
         let mut builder = ModuleEntry::def(
             scheme,
             DefKind::Constructor {
+                got_slot: ctor_slot,
                 type_name: fqtn.clone(),
                 tag,
                 field_count: ctor.fields.len(),
@@ -252,7 +260,7 @@ fn register_synth_adt(
     }
 }
 
-/// Insert a `DefKind::Primitive` `Def` entry into `module`.
+/// Insert a slot-less `DefKind::PrimitiveExtern` `Def` entry into `module`.
 fn insert_primitive(
     module: &mut SessionSymbolTable,
     name: &str,
@@ -260,9 +268,24 @@ fn insert_primitive(
     param_names: Vec<&str>,
     docstring: &str,
 ) {
+    // These synthetic-module callables (`sconcat`, `quote-sexp`, the Trace field
+    // accessors) are seeded slot-less as `DefKind::PrimitiveExtern` — the variant
+    // for callees whose body lives outside `cranelisp-primitives` and that
+    // dispatch BY-NAME as a `Linkage::Import`, never GOT-indirect (FIXME 0360,
+    // ruled S83 /arch Path 1). The backend's builtin-dispatch funnel
+    // (`apply.rs`) is slot-agnostic: when `resolve_got_target` finds no slot it
+    // falls through to `compile_extern_call` (a by-name `Linkage::Import` the
+    // catalog resolves identically in JIT, cache-hit, and `--link`). typecheck's
+    // classifier (`infer.rs::resolve_primitive_jit_name`) now accepts
+    // `DefKind::PrimitiveExtern` as `BuiltinFn`, so these lower correctly in all
+    // three modes (`--run`/REPL/`--link`) with no GOT slot to populate. The
+    // interim `Primitive { got_slot }` + dlsym cascade (which broke `--link` —
+    // the synthetic `macros` module has no emitted `__cranelisp_got_macros`) is
+    // reverted. genuine GOT-slotted primitives (`add-i64`, vec/sexp ops in
+    // `cranelisp-primitives`) STAY `Primitive { got_slot }` — unaffected.
     module.insert(
         Symbol::from(name),
-        ModuleEntry::def(scheme, DefKind::Primitive)
+        ModuleEntry::def(scheme, DefKind::PrimitiveExtern)
             .visibility(Visibility::Public)
             .param_names(param_names.into_iter().map(Symbol::from).collect())
             .docstring(docstring)
@@ -802,11 +825,14 @@ fn register_io_type(
     } else {
         unreachable!("invariant: IO type should be registered before adding Bind");
     }
+    // Slot rides on the `Constructor` variant (S83 reshape, FIXME 0356/0357).
+    let bind_ctor_slot = primitives.allocate_got_slot();
     primitives.insert(
         Symbol::from("Bind"),
         ModuleEntry::def(
             bind_ctor_scheme,
             DefKind::Constructor {
+                got_slot: bind_ctor_slot,
                 type_name: io_fqtn.clone(),
                 tag: 2,
                 field_count: 2,
@@ -851,9 +877,18 @@ fn register_bind_primitive(
     let mut primitives = symbol_tables
         .get_mut(&primitives_path)
         .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+    // `bind` is a slot-less `DefKind::PrimitiveExtern` (FIXME 0360, ruled S83
+    // /arch Path 1). It is intercepted inline by backend *by name*
+    // (`apply.rs:153`, `op_name == "bind"`) BEFORE any GOT path is reached, so it
+    // never touches the GOT and needs no slot. typecheck's classifier
+    // (`infer.rs::resolve_primitive_jit_name`) now accepts `PrimitiveExtern` as
+    // `BuiltinFn`, so `bind` resolves as a builtin in all three modes. The
+    // interim `Primitive { got_slot }` + dlsym cascade is reverted (it serviced a
+    // slot that is never read and broke `--link` for the sibling synthetic
+    // externs).
     primitives.insert(
         Symbol::from("bind"),
-        ModuleEntry::def(bind_scheme, DefKind::Primitive)
+        ModuleEntry::def(bind_scheme, DefKind::PrimitiveExtern)
             .visibility(Visibility::Public)
             .docstring(
                 "Chain IO actions: extract value from first IO, pass to continuation",
@@ -950,8 +985,9 @@ fn register_trace_type(
 //
 // test-discovery.md (fourth convergence, SETTLED): `TestResult`/`run-test`
 // RETIRE; `discover-tests` becomes a `DefKind::PrimitiveExtern` returning
-// fn-value pairs; `catch-runtime-error` is a standalone `DefKind::Primitive`
-// combinator backed by the `cranelisp-intrinsics::panic` C-ABI export.
+// fn-value pairs; `catch-runtime-error` is a standalone `DefKind::PrimitiveExtern`
+// combinator (S83 reshape, FIXME 0360 — slot-less ABI-name dispatch) backed by
+// the `cranelisp-intrinsics::panic` C-ABI export.
 
 fn register_test_infrastructure(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
@@ -1016,9 +1052,16 @@ fn register_test_infrastructure(
         constraints: HashMap::new(),
         ty: Type::Fn(vec![thunk_ty], Box::new(result_a_string)),
     };
+    // `catch-runtime-error`'s body is `cranelisp_intrinsics::panic`, resolved
+    // by ABI name (JIT symbol fallback / cache Linker register / `cc` archive
+    // link in `--link`) — slot-less, never GOT-indirect. Under the S83 reshape
+    // a slot-bearing `Primitive` lowered its call GOT-indirect through a slot
+    // that no mode populates (SIGSEGV, observed in `--run` AND `--link`);
+    // `PrimitiveExtern` restores the by-name `Linkage::Import` lowering in all
+    // modes (FIXME 0360).
     primitives.insert(
         Symbol::from("catch-runtime-error"),
-        ModuleEntry::def(cre_scheme, DefKind::Primitive)
+        ModuleEntry::def(cre_scheme, DefKind::PrimitiveExtern)
             .visibility(Visibility::Public)
             .param_names(vec![Symbol::from("thunk")])
             .docstring(
@@ -1148,8 +1191,9 @@ mod tests {
         // discover-tests is now a PrimitiveExtern (host-promised body).
         assert!(matches!(
             prims.get("discover-tests"),
-            Some(ModuleEntry::Def { kind, got_slot: None, .. })
+            Some(entry @ ModuleEntry::Def { kind, .. })
                 if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
+                    && entry.callable_got_slot().is_none()
         ));
     }
 
@@ -1226,14 +1270,24 @@ mod tests {
         mount_synthetic_modules(&tables, &next_id);
         let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
         match prims.get("catch-runtime-error") {
-            Some(ModuleEntry::Def { kind, scheme, .. }) => {
-                assert!(matches!(kind.as_ref(), DefKind::Primitive));
+            Some(entry @ ModuleEntry::Def { kind, scheme, .. }) => {
+                // S83 Wave-1 reshape (FIXME 0360): `catch-runtime-error` is
+                // dispatched by ABI name as a `Linkage::Import` (body
+                // `cranelisp_intrinsics::panic`), never GOT-indirect. It is
+                // therefore a SLOT-LESS `DefKind::PrimitiveExtern`, not a
+                // slot-bearing `DefKind::Primitive` (which post-reshape would
+                // lower the call through an unpopulated GOT slot → SIGSEGV).
+                assert!(matches!(kind.as_ref(), DefKind::PrimitiveExtern));
+                assert!(
+                    entry.callable_got_slot().is_none(),
+                    "an ABI-name-dispatched extern carries no GOT slot"
+                );
                 // forall a. (Fn [(Fn [] a)] (Result a String)) — one quantified
                 // var, empty constraints (plain forall, not constrained-fn).
                 assert_eq!(scheme.type_vars.len(), 1);
                 assert!(scheme.constraints.is_empty());
             }
-            other => panic!("catch-runtime-error should be a Primitive Def, got {other:?}"),
+            other => panic!("catch-runtime-error should be a PrimitiveExtern Def, got {other:?}"),
         }
     }
 

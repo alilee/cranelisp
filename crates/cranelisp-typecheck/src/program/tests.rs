@@ -3760,9 +3760,9 @@
         let table = tc.symbol_table();
         if let Some(ModuleEntry::Def { kind, scheme, .. }) = table.get(mangled_name.as_ref()) {
             match kind.as_ref() {
-                DefKind::UserFn { constrained_fn } => {
+                DefKind::UserFn { fn_state } => {
                     assert!(
-                        constrained_fn.is_none(),
+                        !matches!(fn_state, UserFnState::Constrained(_)),
                         "BUG: trait impl method '{}' was marked as constrained fn \
                         (scheme: {}). This causes codegen to skip it, leaving a null \
                         GOT slot -> SIGSEGV on dispatch.",
@@ -3854,8 +3854,11 @@
         match st.get("add$Int+Int") {
             Some(ModuleEntry::Def { ast: Some(_defn), kind, .. }) => {
                 assert!(
-                    matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }),
-                    "mangled variant kind should be UserFn(None), got {:?}",
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    ),
+                    "mangled variant kind should be UserFn(Concrete), got {:?}",
                     kind
                 );
             }
@@ -3865,7 +3868,10 @@
         // add$Float+Float: same shape.
         match st.get("add$Float+Float") {
             Some(ModuleEntry::Def { ast: Some(_defn), kind, .. }) => {
-                assert!(matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }));
+                assert!(matches!(
+                    kind.as_ref(),
+                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                ));
             }
             other => panic!("add$Float+Float should be Def {{ ast: Some(..), .. }}, got {:?}", other),
         }
@@ -4050,6 +4056,136 @@
             }
             other => panic!("expected Def entry for 'trivial', got {other:?}"),
         }
+    }
+
+    // spec: spec/07-traits.md §7.8 + design/arch/principles/20-model-invariants-by-representation.md
+    //   — deferred GOT-slot allocation: the determination-point redefinition
+    //   slot-reuse seam (S83, FIXME 0356/0357; amends Decision 0035).
+    //
+    // The named non-mechanical seam. Pass-1 registers a user fn slot-less
+    // (`UserFnState::NotDetermined`); the slot is allocated at the Pass-2
+    // determination point. On REPL redefinition of a concrete fn over a prior
+    // concrete entry, the determination arm MUST REUSE the prior slot
+    // (`existing_callable_slot` carry-forward) — reallocating would orphan the
+    // live GOT pointer the prior `Code::Jit` installed (a use-after-free). This
+    // pins all three transitions:
+    //   - concrete → concrete redef: REUSE slot N (the UAF guard).
+    //   - concrete → constrained redef: new entry is slot-less `Constrained`
+    //     (old slot dropped; a constrained template is never call-resolved, so
+    //     no live pointer is orphaned).
+    //   - constrained → concrete redef: allocate FRESH (nothing to reuse).
+    #[test]
+    fn redefine_concrete_fn_reuses_existing_got_slot() {
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+        let ctx = cf_test_ctx();
+
+        // Helper: read a name's concrete callable slot via the single
+        // read-through accessor (None for NotDetermined / Constrained).
+        let slot_of = |tc: &TestFixture, name: &str| -> Option<usize> {
+            tc.symbol_table().get(name).and_then(|e| e.callable_got_slot())
+        };
+        // Helper: is the entry a slot-less constrained template?
+        let is_constrained = |tc: &TestFixture, name: &str| -> bool {
+            matches!(
+                tc.symbol_table().get(name),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                    )
+            )
+        };
+
+        // (defn idf [x] x) — unconstrained → Concrete, slot allocated at the
+        // determination point.
+        let idf = |s: u32| TopLevel::Defn(make_defn(
+            "idf",
+            vec![Symbol::from("x")],
+            vec![None],
+            Expr::var(Symbol::from("x"), span(s, s + 1)),
+            Visibility::Public,
+            span(s, s + 2),
+        ));
+        tc.check(&[idf(10)], &ctx, ModuleStrategy::Additive).unwrap();
+        let slot_n = slot_of(&tc, "idf").expect("concrete idf must carry a slot");
+
+        // Redefine idf with the SAME (concrete) shape — the determination point
+        // must REUSE slot N, not allocate N+1.
+        tc.check(&[idf(20)], &ctx, ModuleStrategy::Additive).unwrap();
+        let slot_after = slot_of(&tc, "idf").expect("redefined concrete idf must carry a slot");
+        assert_eq!(
+            slot_after, slot_n,
+            "concrete→concrete redefinition MUST reuse the existing GOT slot \
+             (use-after-free guard); got {slot_after} expected {slot_n}",
+        );
+
+        // (defn cadd [x y] (+ x y)) — `+` is the Num trait method, so the
+        // inferred scheme carries a Num constraint → Constrained template,
+        // slot-less by construction.
+        let cadd = || TopLevel::Defn(make_defn(
+            "cadd",
+            vec![Symbol::from("x"), Symbol::from("y")],
+            vec![None, None],
+            Expr::Apply {
+                callee: Box::new(Expr::var(Symbol::from("+"), span(31, 32))),
+                args: vec![
+                    Expr::var(Symbol::from("x"), span(33, 34)),
+                    Expr::var(Symbol::from("y"), span(35, 36)),
+                ],
+                span: span(30, 37),
+                resolved_call: None,
+                inferred_type: None,
+            },
+            Visibility::Public,
+            span(29, 38),
+        ));
+        tc.check(&[cadd()], &ctx, ModuleStrategy::Additive).unwrap();
+        assert!(
+            is_constrained(&tc, "cadd"),
+            "cadd '(+ x y)' must be a constrained template",
+        );
+        assert_eq!(
+            slot_of(&tc, "cadd"),
+            None,
+            "a constrained template carries NO slot (slot-less by construction)",
+        );
+
+        // constrained → concrete redef: redefine cadd as `(defn cadd [x y] x)`
+        // (no constraint). Nothing to reuse (the template was slot-less), so a
+        // FRESH slot is allocated and the entry becomes Concrete.
+        let cadd_concrete = TopLevel::Defn(make_defn(
+            "cadd",
+            vec![Symbol::from("x"), Symbol::from("y")],
+            vec![None, None],
+            Expr::var(Symbol::from("x"), span(40, 41)),
+            Visibility::Public,
+            span(39, 42),
+        ));
+        tc.check(&[cadd_concrete], &ctx, ModuleStrategy::Additive).unwrap();
+        assert!(
+            !is_constrained(&tc, "cadd"),
+            "constrained→concrete redef must yield a concrete (callable) entry",
+        );
+        let cadd_concrete_slot =
+            slot_of(&tc, "cadd").expect("constrained→concrete redef must allocate a fresh slot");
+
+        // concrete → constrained redef: redefine cadd back to the constrained
+        // shape. The old slot is dropped; the new entry is slot-less Constrained
+        // (no phantom slot survives — the constrained template is never
+        // call-resolved, so dropping the slot orphans no live pointer).
+        tc.check(&[cadd()], &ctx, ModuleStrategy::Additive).unwrap();
+        assert!(
+            is_constrained(&tc, "cadd"),
+            "concrete→constrained redef must yield a constrained template",
+        );
+        assert_eq!(
+            slot_of(&tc, "cadd"),
+            None,
+            "concrete→constrained redef must be slot-less (no phantom slot survives)",
+        );
+        // Sanity: the dropped concrete slot was a real allocated index.
+        let _ = cadd_concrete_slot;
     }
 
     // spec: spec/03-types.md §3.4 — a polymorphic accumulator threaded through a
@@ -4526,26 +4662,32 @@
     }
 
     // spec: spec/07-traits.md §7.8 — a constrained-fn template is NOT directly
-    // callable (only its monomorphised variants are). FIXME 0354: the Pass-2
-    // constrained-template flip MUST clear the phantom Pass-1 `got_slot` via the
-    // `mark_constrained_template` sole-writer, so call-target resolution
-    // (`callable_got_slot()`) returns `None` and a cross-module constrained
-    // call can never lower to a null `call_indirect` (the SIGSEGV).
+    // callable (only its monomorphised variants are).
+    //
+    // **Re-pointed for the S83 reshape (FIXME 0356/0357, Principle 20).** The
+    // S82 `mark_constrained_template` flip-and-clear sole-writer and the
+    // `assert_well_formed` phantom-slot guard are RETIRED — callability is now a
+    // structural property of `UserFnState`, so the once-illegal pairing (a
+    // constrained template holding a callable slot) is unconstructable rather
+    // than asserted-against. This is now a structural guard: a `Concrete`
+    // UserFn is callable through its slot; a `Constrained` UserFn carries no
+    // slot, so `callable_got_slot()` answers `None` by construction — a
+    // cross-module constrained call can never lower to a null `call_indirect`
+    // (the SIGSEGV) because there is no slot to read.
     #[test]
-    fn constrained_template_flip_clears_callable_slot() {
+    fn constrained_template_carries_no_callable_slot() {
         use cranelisp_types::ConstrainedFn as CF;
-        // Build a plain user-fn Def carrying a Pass-1-allocated got_slot.
-        let mut entry: ModuleEntry = ModuleEntry::def(
+        // A concrete user fn IS callable through its slot.
+        let concrete: ModuleEntry = ModuleEntry::def(
             crate::scheme::mono(Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)))),
-            DefKind::UserFn { constrained_fn: None },
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 7 } },
         )
-        .got_slot(7)
         .build();
-        // Pre-flip: a plain Def is callable through its allocated slot.
-        assert_eq!(entry.callable_got_slot(), Some(7));
-        assert!(!entry.is_constrained_template());
+        assert_eq!(concrete.callable_got_slot(), Some(7));
+        assert!(!concrete.is_constrained_template());
 
-        // Flip to a constrained template via the sole-writer.
+        // A constrained template carries NO slot — structurally unconstructable
+        // to hold one (the `Constrained` variant has no `got_slot` field).
         let cf = CF {
             variant: DefnVariant {
                 params: vec![(Symbol::from("a"), None)],
@@ -4554,11 +4696,11 @@
             },
             scheme: crate::scheme::mono(Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)))),
         };
-        assert!(entry.mark_constrained_template(cf));
-
-        // Post-flip: it IS a template, and is NOT directly callable — the
-        // phantom slot is cleared, so callable_got_slot() is None.
-        assert!(entry.is_constrained_template());
-        assert_eq!(entry.callable_got_slot(), None);
-        entry.assert_well_formed();
+        let template: ModuleEntry = ModuleEntry::def(
+            crate::scheme::mono(Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)))),
+            DefKind::UserFn { fn_state: UserFnState::Constrained(Box::new(cf)) },
+        )
+        .build();
+        assert!(template.is_constrained_template());
+        assert_eq!(template.callable_got_slot(), None);
     }

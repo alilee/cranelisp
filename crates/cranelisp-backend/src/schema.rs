@@ -624,6 +624,7 @@ mod tests {
                 docstring: None,
                 param_names,
                 kind: Box::new(DefKind::Constructor {
+                    got_slot: 0,
                     type_name: fqtn(module, name),
                     tag: 0,
                     field_count: field_types.len(),
@@ -631,7 +632,6 @@ mod tests {
                     type_def: Some(Box::new(type_def)),
                 }),
                 callees: vec![],
-                got_slot: Some(0),
                 trait_origin: None,
                 seq: 0,
                 ast: None,
@@ -748,9 +748,9 @@ mod tests {
                 param_names: vec![Symbol::from("r")],
                 kind: Box::new(DefKind::PlatformEffect {
                     scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+                    got_slot: 0,
                 }),
                 callees: vec![],
-                got_slot: Some(0),
                 trait_origin: None,
                 seq: 0,
                 ast: None,

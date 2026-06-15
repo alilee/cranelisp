@@ -236,9 +236,8 @@ fn insert_primitive_entry(
     };
     table.insert(
         prim.name.clone(),
-        ModuleEntry::def(scheme, DefKind::Primitive)
+        ModuleEntry::def(scheme, DefKind::Primitive { got_slot: slot })
             .param_names(prim.param_names.clone())
-            .got_slot(slot)
             .docstring(prim.docstring)
             .build(),
     );
@@ -326,9 +325,8 @@ fn insert_vec_query_entries(
         };
         table.insert(
             Symbol::from(name),
-            ModuleEntry::def(scheme, DefKind::Primitive)
+            ModuleEntry::def(scheme, DefKind::Primitive { got_slot: slot })
                 .param_names(param_names)
-                .got_slot(slot)
                 .docstring(docstring)
                 .build(),
         );
@@ -470,11 +468,11 @@ mod tests {
     #[test]
     fn every_entry_carries_got_slot() {
         for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
-            let ModuleEntry::Def { got_slot, .. } = entry else {
+            let ModuleEntry::Def { .. } = entry else {
                 panic!("entry {name} should be a Def");
             };
             assert!(
-                got_slot.is_some(),
+                entry.callable_got_slot().is_some(),
                 "entry {name} missing got_slot"
             );
         }
@@ -493,7 +491,7 @@ mod tests {
                 panic!("entry {name} should be a Def");
             };
             assert!(
-                matches!(**kind, DefKind::Primitive),
+                matches!(**kind, DefKind::Primitive { .. }),
                 "entry {name} must carry DefKind::Primitive; got {kind:?}"
             );
             // Belt-and-suspenders: `code` is the builder default `None`
@@ -511,10 +509,10 @@ mod tests {
         // slot must hold the matching fn pointer.
         let shims = extern_shims();
         for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
-            let ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
+            let Some(slot) = entry.callable_got_slot() else {
                 panic!("entry {name} should be a Def with got_slot");
             };
-            let stored = PRIMITIVES_TABLE.got.load_slot(*slot);
+            let stored = PRIMITIVES_TABLE.got.load_slot(slot);
             if let Some(expected) = shims.get(name.as_ref()) {
                 assert_eq!(
                     stored, *expected,
@@ -541,7 +539,6 @@ mod tests {
         let ModuleEntry::Def {
             scheme,
             param_names,
-            got_slot,
             kind,
             ..
         } = entry
@@ -553,10 +550,10 @@ mod tests {
         // param_names match the spec contract.
         let actual: Vec<&str> = param_names.iter().map(|p| p.as_ref()).collect();
         assert_eq!(actual.as_slice(), expected_params, "param_names mismatch for {name}");
-        // got_slot is allocated.
-        assert!(got_slot.is_some(), "entry {name} missing got_slot");
+        // got_slot is allocated (now read through the kind via callable_got_slot).
+        assert!(entry.callable_got_slot().is_some(), "entry {name} missing got_slot");
         // kind is the primitive discriminator.
-        assert!(matches!(**kind, DefKind::Primitive), "entry {name} kind != Primitive");
+        assert!(matches!(**kind, DefKind::Primitive { .. }), "entry {name} kind != Primitive");
         // jit_name IS the symbol-table key (S69 Submission 36) — pinned by the
         // successful `.get(name)` lookup above.
     }
@@ -635,10 +632,10 @@ mod tests {
         let entry = PRIMITIVES_TABLE
             .get(name)
             .unwrap_or_else(|| panic!("missing entry for {name}"));
-        let ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
+        let Some(slot) = entry.callable_got_slot() else {
             panic!("{name} must be a Def with got_slot");
         };
-        let ptr = PRIMITIVES_TABLE.got.load_slot(*slot);
+        let ptr = PRIMITIVES_TABLE.got.load_slot(slot);
         assert!(!ptr.is_null(), "GOT slot for {name} is null");
         ptr
     }
@@ -757,11 +754,11 @@ mod tests {
         let entry = PRIMITIVES_TABLE
             .get("add-i64")
             .expect("add-i64 must be present");
-        let ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
+        let Some(slot) = entry.callable_got_slot() else {
             panic!("add-i64 must be a Def with got_slot");
         };
         let via_slab =
-            PRIMITIVES_GOT_SLAB[*slot].load(std::sync::atomic::Ordering::Acquire) as *const u8;
+            PRIMITIVES_GOT_SLAB[slot].load(std::sync::atomic::Ordering::Acquire) as *const u8;
         assert!(
             !via_slab.is_null(),
             "static slab slot {slot} for add-i64 must hold the extern fn ptr after force"

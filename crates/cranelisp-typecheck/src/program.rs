@@ -25,7 +25,7 @@ use cranelisp_types::{ErrorLocation,
     ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
     Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath,
     ModuleStrategy, MonoDefn, ResolvedCall, Span, Subst, Symbol, SymbolTable, TopLevel, Type,
-    Warning, apply,
+    UserFnState, Warning, apply,
 };
 
 // Test-only imports: used exclusively by the `#[cfg(test)]` `check_via_forms`
@@ -373,6 +373,21 @@ pub(crate) struct ModuleCheckAccumulator {
     /// Type vars from pass 1 registration, keyed by defn name.
     /// Needed by pass 2 to check bodies against registered signatures.
     pub(crate) defn_type_vars: HashMap<Symbol, (Vec<Type>, Type)>,
+    /// **Redefinition slot carry-forward (S83, FIXME 0356/0357, Principle 20).**
+    /// With deferred GOT-slot allocation, Pass-1 `register_defn_signature`
+    /// overwrites a redefined symbol's prior `Concrete` entry with a slot-less
+    /// `UserFnState::NotDetermined` — which would drop the prior callable slot
+    /// before the Pass-2 determination point can reuse it (orphaning the live
+    /// GOT pointer the prior `Code::Jit` installed = a use-after-free). So Pass-1
+    /// captures the prior entry's concrete slot HERE (read via
+    /// `callable_got_slot()`, before the overwrite), keyed by defn name; the
+    /// Pass-2 unconstrained determination arm reuses it instead of allocating
+    /// fresh. A prior `NotDetermined` / `Constrained` / absent entry leaves no
+    /// key here, so the arm allocates a fresh slot (constrained→concrete redef,
+    /// or first definition). Per-`check`-call (each REPL eval threads its own
+    /// accumulator through Pass-1 → Pass-2), which is exactly the redefinition
+    /// granularity. See `UserFnState` rustdoc "Timing-wall resolution".
+    pub(crate) redef_slots: HashMap<Symbol, usize>,
 }
 
 impl Default for ModuleCheckAccumulator {
@@ -394,6 +409,7 @@ impl ModuleCheckAccumulator {
             warnings: Vec::new(),
             call_graph_edges: Vec::new(),
             defn_type_vars: HashMap::new(),
+            redef_slots: HashMap::new(),
         }
     }
 }
@@ -433,6 +449,29 @@ fn is_trait_impl_mangled_name(name: &str) -> bool {
         return !method_part.is_empty() && !type_part.is_empty();
     }
     false
+}
+
+/// Read the GOT slot of a prior **concrete callable** entry named `name` in
+/// the symbol table `st`, if one exists.
+///
+/// **The redefinition slot-reuse seam (S83, FIXME 0356/0357, Principle 20).**
+/// With deferred GOT-slot allocation, Pass-1 no longer carries a slot forward;
+/// the carry-forward moved here, to the Pass-2 determination point. When an
+/// unconstrained (concrete) defn is being redefined over a prior **concrete**
+/// entry, the determination arm must **REUSE** the prior slot rather than
+/// allocate a fresh one — orphaning the live GOT pointer the prior `Code::Jit`
+/// installed would be a use-after-free (the same guard the S82 `existing_slot`
+/// carry-forward provided in Pass-1). The read goes through
+/// `callable_got_slot()` (the single read-through point), so it returns `Some`
+/// only for the slot-bearing callable kinds (`Concrete` `UserFn`, `Primitive`,
+/// `Constructor`) and `None` for a prior `NotDetermined` / `Constrained` /
+/// non-`Def` entry — exactly the cases where there is no live pointer to
+/// preserve and a fresh slot is correct.
+fn existing_callable_slot<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>(
+    st: &SymbolTable<C, L>,
+    name: &str,
+) -> Option<usize> {
+    st.get(name).and_then(|e| e.callable_got_slot())
 }
 
 /// Returns true if `name` is a synthesised macro-clause defn — the
@@ -706,6 +745,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         defn: &Defn,
         accumulator: &mut ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
+        // Capture the prior concrete slot BEFORE register_defn_signature
+        // overwrites the entry with a slot-less NotDetermined (S83 deferred
+        // allocation, Principle 20). The Pass-2 determination point reuses it.
+        // Read through the same `current_symbol_table_mut().get()` path the
+        // overwrite uses, so staging-vs-live matches the write target.
+        if let Some(slot) = self
+            .current_symbol_table_mut(state)
+            .get(defn.name.as_ref())
+            .and_then(|e| e.callable_got_slot())
+        {
+            accumulator.redef_slots.insert(defn.name.clone(), slot);
+        }
         let (param_types, ret_ty) = self.register_defn_signature(state, defn)?;
         accumulator.defn_type_vars.insert(defn.name.clone(), (param_types, ret_ty));
         Ok(FormCheckResult::empty())
@@ -734,6 +785,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 visibility: defn.visibility,
                 span: variant.span,
             };
+            // Capture the prior concrete slot for this `__vN` variant before
+            // register_defn_signature overwrites it (S83 deferred allocation):
+            // the Pass-2 determination point reuses it on REPL redefinition of
+            // the same multi-sig defn.
+            if let Some(slot) = self
+                .current_symbol_table_mut(state)
+                .get(internal_name.as_ref())
+                .and_then(|e| e.callable_got_slot())
+            {
+                accumulator.redef_slots.insert(internal_name.clone(), slot);
+            }
             // Register each variant's signature
             let (param_types, ret_ty) = self.register_defn_signature(state, &internal_defn)?;
             accumulator.defn_type_vars.insert(internal_name, (param_types, ret_ty));
@@ -864,21 +926,67 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Eager constrained-fn detection reads from the trial scheme (regression
         // guard (a): constraint detection still keys off `trial_scheme`, not the
         // entry's scheme field).
+        //
+        // **The determination point (S83, FIXME 0356/0357, Principle 20;
+        // deferred GOT-slot allocation).** Pass-1 registered this fn as
+        // `UserFnState::NotDetermined` (slot-less). Now that body-check has run
+        // and constraints are known, we finalise the `fn_state`:
+        //
+        // - **Unconstrained → `Concrete { got_slot }`.** Allocate the slot HERE,
+        //   reusing a prior concrete entry's slot on REPL redefinition (the
+        //   `existing_callable_slot` carry-forward — orphaning the live GOT
+        //   pointer would be a use-after-free; see the helper rustdoc). A
+        //   constrained→concrete redef reads `None` (the prior constrained
+        //   template carried no slot) and allocates fresh.
+        // - **Constrained → `Constrained(cf)`.** Construct the slot-less template
+        //   directly (replaces the retired `mark_constrained_template` flip +
+        //   `assert_well_formed` phantom-slot guard — there is no sibling slot
+        //   field to clear or assert about now). A concrete→constrained redef
+        //   drops the old slot; the constrained template is never call-resolved
+        //   so there is no live GOT pointer to orphan (no UAF).
         let constrained_fn = if !trial_scheme.constraints.is_empty() {
             if let Some(entry) =
                 self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
+                && let ModuleEntry::Def { kind, .. } = entry
             {
                 let cf = ConstrainedFn {
                     variant: defn.variants[0].clone(),
                     scheme: trial_scheme,
                 };
-                // Sole-writer for the constrained-template flip: sets `kind` AND
-                // clears the phantom `got_slot` in one atomic op (FIXME 0354).
-                entry.mark_constrained_template(cf);
-                entry.assert_well_formed();
+                *kind = Box::new(DefKind::UserFn {
+                    fn_state: UserFnState::Constrained(Box::new(cf)),
+                });
             }
             Some(defn.name.clone())
         } else {
+            // Unconstrained: allocate (or reuse) the slot and pin `Concrete`.
+            // Prefer the Pass-1-captured redefinition slot (the prior concrete
+            // entry's slot, stashed before Pass-1 overwrote it with
+            // NotDetermined). Fall back to a same-call concrete slot if one
+            // somehow already exists, else allocate fresh.
+            let mut st = self.current_symbol_table_mut(state);
+            let reuse = accumulator
+                .redef_slots
+                .get(&defn.name)
+                .copied()
+                .or_else(|| existing_callable_slot(&st, defn.name.as_ref()));
+            let got_slot = reuse.unwrap_or_else(|| st.allocate_got_slot());
+            // Slot-reuse invariant (replaces the retired `assert_well_formed`):
+            // a reused slot is below the high-water mark; a freshly allocated one
+            // equals it minus one. Either way it is a valid allocated index.
+            debug_assert!(
+                got_slot < st.next_got_slot,
+                "determination-point got_slot {got_slot} must be within the \
+                 allocated range (next_got_slot = {})",
+                st.next_got_slot,
+            );
+            if let Some(ModuleEntry::Def { kind, .. }) =
+                st.symbols.get_mut(&defn.name)
+            {
+                *kind = Box::new(DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot },
+                });
+            }
             None
         };
 
@@ -1025,20 +1133,49 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 *scheme = trial_scheme.clone();
             }
 
-            if !trial_scheme.constraints.is_empty()
-                && let Some(entry) =
+            // Determination point for this multi-sig variant's `__vN` entry
+            // (S83, FIXME 0356/0357, Principle 20; deferred GOT-slot
+            // allocation). Mirrors the single-sig site: constrained → slot-less
+            // `Constrained(cf)`; unconstrained → allocate (or reuse) the slot
+            // and pin `Concrete`. The `__vN` internal names are synthesised
+            // fresh per multi-sig form, so `existing_callable_slot` reuse only
+            // fires on REPL redefinition of the same multi-sig defn.
+            if !trial_scheme.constraints.is_empty() {
+                if let Some(entry) =
                     self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
-            {
-                let cf = ConstrainedFn {
-                    variant: internal_defn.variants.into_iter().next().expect(
-                        "internal_defn constructed with exactly one variant above",
-                    ),
-                    scheme: trial_scheme,
-                };
-                // Sole-writer for the constrained-template flip: sets `kind` AND
-                // clears the phantom `got_slot` in one atomic op (FIXME 0354).
-                entry.mark_constrained_template(cf);
-                entry.assert_well_formed();
+                    && let ModuleEntry::Def { kind, .. } = entry
+                {
+                    let cf = ConstrainedFn {
+                        variant: internal_defn.variants.into_iter().next().expect(
+                            "internal_defn constructed with exactly one variant above",
+                        ),
+                        scheme: trial_scheme,
+                    };
+                    *kind = Box::new(DefKind::UserFn {
+                        fn_state: UserFnState::Constrained(Box::new(cf)),
+                    });
+                }
+            } else {
+                let mut st = self.current_symbol_table_mut(state);
+                let reuse = accumulator
+                    .redef_slots
+                    .get(&internal_name)
+                    .copied()
+                    .or_else(|| existing_callable_slot(&st, internal_name.as_ref()));
+                let got_slot = reuse.unwrap_or_else(|| st.allocate_got_slot());
+                debug_assert!(
+                    got_slot < st.next_got_slot,
+                    "multi-sig determination-point got_slot {got_slot} must be \
+                     within the allocated range (next_got_slot = {})",
+                    st.next_got_slot,
+                );
+                if let Some(ModuleEntry::Def { kind, .. }) =
+                    st.symbols.get_mut(&internal_name)
+                {
+                    *kind = Box::new(DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { got_slot },
+                    });
+                }
             }
         }
 
@@ -1166,14 +1303,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Box::new(self.apply_subst(state, ret_ty)),
             );
             let scheme = self.generalize(state, &fn_type);
+            let mut st = self.current_symbol_table_mut(state);
+            // Demoting a false-positive constrained template to a concrete
+            // callable needs a slot (S83 deferred allocation, Principle 20):
+            // reuse the entry's own concrete slot if it somehow already has one,
+            // otherwise allocate fresh. Computed before the `get_mut` borrow so
+            // the `&mut st` allocate doesn't alias the entry borrow.
+            let is_false_positive_constrained = scheme.constraints.is_empty()
+                && matches!(
+                    st.get(name.as_ref()),
+                    Some(ModuleEntry::Def { kind, .. })
+                        if matches!(
+                            kind.as_ref(),
+                            DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                        )
+                );
+            let demoted_slot = if is_false_positive_constrained {
+                Some(existing_callable_slot(&st, name.as_ref())
+                    .unwrap_or_else(|| st.allocate_got_slot()))
+            } else {
+                None
+            };
             if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
-                self.current_symbol_table_mut(state).symbols.get_mut(name)
+                st.symbols.get_mut(name)
             {
                 *s = scheme.clone();
-                if scheme.constraints.is_empty()
-                    && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
-                {
-                    **kind = DefKind::UserFn { constrained_fn: None };
+                if let Some(got_slot) = demoted_slot {
+                    **kind = DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { got_slot },
+                    };
                 }
             }
         }
@@ -1245,7 +1403,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     match kind.as_ref() {
                         // Trait-constrained polymorphism: classic constrained
                         // fn marker.
-                        DefKind::UserFn { constrained_fn: Some(_) } => {
+                        DefKind::UserFn { fn_state: UserFnState::Constrained(_) } => {
                             constrained_fn_names.insert(name.clone());
                         }
                         // Pure parametric polymorphism registered by a previous
@@ -1256,9 +1414,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         // monomorphisation just as if it were constrained —
                         // backend codegen requires concrete CLIF types.
                         // `get_constrained_fn` synthesises a `ConstrainedFn`
-                        // view from `ast + scheme` for this case.
-                        DefKind::UserFn { constrained_fn: None }
-                            if !scheme.type_vars.is_empty() && ast.is_some() =>
+                        // view from `ast + scheme` for this case. Matches the
+                        // non-constrained `UserFn` states (`Concrete` /
+                        // `NotDetermined`) — the slot, if any, is irrelevant here.
+                        DefKind::UserFn { fn_state }
+                            if !matches!(fn_state, UserFnState::Constrained(_))
+                                && !scheme.type_vars.is_empty()
+                                && ast.is_some() =>
                         {
                             constrained_fn_names.insert(name.clone());
                         }
@@ -1717,14 +1879,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Some(ModuleEntry::Def { ast, .. }) => ast,
                 _ => None,
             };
+            // A resolved multi-sig mangled variant is a concrete callable born
+            // with its slot (S83 deferred allocation, Principle 20): the slot
+            // rides inside the `Concrete` `fn_state`, not a flat `Def` field.
             let slot = st.allocate_got_slot();
             let mut builder = ModuleEntry::def(
                 scheme.clone(),
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: slot } },
             )
             .visibility(defn.visibility)
-            .param_names(variant.params.iter().map(|(n, _)| n.clone()).collect())
-            .got_slot(slot);
+            .param_names(variant.params.iter().map(|(n, _)| n.clone()).collect());
             if let Some(doc) = defn.docstring.clone() {
                 builder = builder.docstring(doc);
             }
@@ -1885,13 +2049,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         defns: &[&Defn],
     ) -> HashSet<Symbol> {
         // Constrained functions are eagerly marked in pass2_check_bodies
-        // by checking DefKind::UserFn { constrained_fn: Some(..) }.
+        // by checking DefKind::UserFn { fn_state: UserFnState::Constrained(..) }.
         let mut names = HashSet::new();
 
         for defn in defns {
             let r = self.current_symbol_table(state);
             if let Some(ModuleEntry::Def { kind, .. }) = r.view().lookup(&defn.name)
-                && let DefKind::UserFn { constrained_fn: Some(_) } = kind.as_ref()
+                && let DefKind::UserFn { fn_state: UserFnState::Constrained(_) } = kind.as_ref()
             {
                 names.insert(defn.name.clone());
             }
@@ -2004,11 +2168,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let fn_type = Type::Fn(param_types.clone(), Box::new(ret_ty.clone()));
         let scheme = mono(fn_type);
 
-        // Upsert: preserve existing got_slot, ast, AND code if the symbol is being
+        // Upsert: preserve existing ast AND code if the symbol is being
         // redefined (REPL Additive mode, module reload, or trait impl method
-        // re-registration). New symbols get a fresh slot. Preserving ast prevents
-        // double-checking of trait impl methods that were already type-checked by
-        // check_impl_method.
+        // re-registration). Preserving ast prevents double-checking of trait
+        // impl methods that were already type-checked by check_impl_method.
+        //
+        // **Deferred GOT-slot allocation (S83, FIXME 0356/0357, Principle 20;
+        // amends Decision 0035).** Pass-1 NO LONGER allocates a slot here. With
+        // callability now a `DefKind::UserFn` property (`UserFnState`), Pass-1
+        // cannot yet know whether this fn is `Concrete` (slotted) or
+        // `Constrained` (slot-less) — Pass-2 constraint detection runs later.
+        // So Pass-1 registers `UserFnState::NotDetermined` (slot-less by
+        // construction; nothing may call an as-yet-undetermined fn). The slot is
+        // allocated at the determination point in the unconstrained Pass-2 arm
+        // (`check_form_body` / `check_form_body_multi_sig`), where the
+        // redefinition slot-reuse carry-forward (below) now lives. See the
+        // `UserFnState` rustdoc "Timing-wall resolution".
         //
         // Sprint 58 Wave 3b (Decision 35 / 31): preserving `code` is load-bearing
         // for failed-redefinition recovery. Pre-Wave-3b, `Arc<Jit>` lived in
@@ -2027,13 +2202,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // on failure, restore keeps the carried-forward (original) `code`,
         // and the GOT slot remains valid because the Arc never dropped.
         let mut st = self.current_symbol_table_mut(state);
-        let (existing_slot, existing_ast, existing_code) = st.get(defn.name.as_ref())
+        let (existing_ast, existing_code) = st.get(defn.name.as_ref())
             .map(|e| match e {
-                ModuleEntry::Def { got_slot, ast, code, .. } => (*got_slot, ast.clone(), code.clone()),
-                _ => (None, None, None),
+                ModuleEntry::Def { ast, code, .. } => (ast.clone(), code.clone()),
+                _ => (None, None),
             })
-            .unwrap_or((None, None, None));
-        let got_slot = Some(existing_slot.unwrap_or_else(|| st.allocate_got_slot()));
+            .unwrap_or((None, None));
 
         // NOT converted to `ModuleEntry::def(...)` (FIXME 0241): this site
         // carries `code: existing_code` forward to preserve the existing
@@ -2049,10 +2223,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 docstring: defn.docstring.clone(),
                 param_names: defn.params().iter().map(|(n, _)| n.clone()).collect(),
                 kind: Box::new(DefKind::UserFn {
-                    constrained_fn: None,
+                    fn_state: UserFnState::NotDetermined,
                 }),
                 callees: Vec::new(),
-                got_slot,
                 trait_origin: None,
                 seq: 0,
                 ast: existing_ast,

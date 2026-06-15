@@ -2205,6 +2205,7 @@ mod collect_related_tests {
                 ),
             },
             DefKind::Constructor {
+                got_slot: 0,
                 type_name: FQTypeName::new(user.clone(), TypeName::from("Color")),
                 type_def: None,
                 tag: 0,
@@ -2422,7 +2423,9 @@ mod format_entry_sig_tests {
     ) -> ModuleEntry<Code> {
         let mut builder = ModuleEntry::def(
             Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty },
-            DefKind::UserFn { constrained_fn: None },
+            DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+            },
         )
         .visibility(Visibility::Public);
         if let Some(doc) = docstring {

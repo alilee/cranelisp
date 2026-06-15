@@ -149,7 +149,7 @@
             Symbol::from("user-only"),
             ModuleEntry::def(
                 crate::scheme::mono(Type::Int),
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::NotDetermined },
             )
             .build(),
         );
@@ -172,7 +172,7 @@
                 Symbol::from(name),
                 ModuleEntry::def(
                     crate::scheme::mono(Type::Int),
-                    DefKind::UserFn { constrained_fn: None },
+                    DefKind::UserFn { fn_state: cranelisp_types::UserFnState::NotDetermined },
                 )
                 .visibility(vis)
                 .build(),
@@ -438,7 +438,7 @@
                 Symbol::from("helper-val"),
                 ModuleEntry::def(
                     crate::scheme::mono(Type::Int),
-                    DefKind::UserFn { constrained_fn: None },
+                    DefKind::UserFn { fn_state: cranelisp_types::UserFnState::NotDetermined },
                 )
                 .build(),
             );
@@ -1058,7 +1058,7 @@
             Symbol::from(name),
             ModuleEntry::def(
                 crate::scheme::mono(Type::Int),
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::NotDetermined },
             )
             .visibility(Visibility::Public)
             .build(),
@@ -1279,7 +1279,7 @@
             Symbol::from(name),
             ModuleEntry::def(
                 crate::scheme::mono(Type::Int),
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::NotDetermined },
             )
             .visibility(vis)
             .build(),

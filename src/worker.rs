@@ -317,10 +317,10 @@ fn commit_staging_to_live(
     // starts empty (the fresh-build case). Entries with no staged slot
     // (non-`Def`) sort last, by name, so the whole commit is deterministic.
     drained.sort_by(|(a_name, a_entry), (b_name, b_entry)| {
-        let slot_of = |e: &ModuleEntry<crate::code::Code>| match e {
-            ModuleEntry::Def { got_slot, .. } => *got_slot,
-            _ => None,
-        };
+        // The staged slot now rides on the callable `DefKind` variant (S83
+        // reshape, FIXME 0356/0357) — read it through the single
+        // `callable_got_slot()` chokepoint rather than the retired flat field.
+        let slot_of = |e: &ModuleEntry<crate::code::Code>| e.callable_got_slot();
         match (slot_of(a_entry), slot_of(b_entry)) {
             (Some(sa), Some(sb)) => sa.cmp(&sb),
             (Some(_), None) => std::cmp::Ordering::Less,
@@ -350,14 +350,33 @@ fn commit_staging_to_live(
         // None to decide whether to emit a `Redefinition` event. If we
         // overwrite live's prior entry (and its `code`) here, the detection
         // would always see `None` and miss the redefinition tag.
-        if let ModuleEntry::Def { got_slot: Some(_), .. } = &entry {
+        // The staged slot (read via the `callable_got_slot()` chokepoint —
+        // the slot now rides on the callable `DefKind` variant per the S83
+        // reshape, FIXME 0356/0357) is meaningless in live's GOT (staging
+        // holds a fresh GOT Arc). Re-point every callable `Def` to a live
+        // slot before commit.
+        //
+        // Redefinition: typecheck's Pass-1 already captured the prior live
+        // slot (`redef_slots`, read through the SAME `callable_got_slot()`
+        // chokepoint) and pinned it into the staged `Concrete`/ctor/etc.
+        // variant — so for a redefinition the staged slot *is already* the
+        // reused live slot, and reading the prior live entry's slot here
+        // returns the same value (the two redef-reuse reads agree, no
+        // divergence — cascade-spec invariant). We still re-point explicitly:
+        // it is identity for the redef case (reuse == staged) and the
+        // necessary fresh-live allocation for a brand-new symbol (whose staged
+        // slot was a fresh-from-0 staging index). We must NOT introduce a
+        // *second* allocation policy that could disagree with typecheck's.
+        if entry.callable_got_slot().is_some() {
             let (reuse_slot, prior_code) = match live.symbols.get(&name) {
-                Some(ModuleEntry::Def { got_slot, code, .. }) => (*got_slot, code.clone()),
+                Some(prior @ ModuleEntry::Def { code, .. }) => {
+                    (prior.callable_got_slot(), code.clone())
+                }
                 _ => (None, None),
             };
             let new_slot = reuse_slot.unwrap_or_else(|| live.allocate_got_slot());
-            if let ModuleEntry::Def { got_slot, code, .. } = &mut entry {
-                *got_slot = Some(new_slot);
+            if let ModuleEntry::Def { kind, code, .. } = &mut entry {
+                repoint_callable_slot(kind, new_slot);
                 // Preserve the prior code handle if staging didn't already
                 // write one (staging-side typecheck does not run codegen, so
                 // `code` is normally `None` for staged Def entries; if a
@@ -368,6 +387,25 @@ fn commit_staging_to_live(
             }
         }
         live.insert(name, entry);
+    }
+}
+
+/// Re-point the GOT slot carried on a callable [`DefKind`] variant
+/// (`UserFn { fn_state: Concrete }`, `Primitive`, `Constructor`,
+/// `PlatformEffect`) to `slot`, in place. The mutating peer of the read-only
+/// [`ModuleEntry::callable_got_slot`] chokepoint — used by the staging→live
+/// commit to re-point a staged slot (valid only in staging's fresh GOT) to a
+/// live slot. Non-callable kinds carry no slot and are left untouched
+/// (callers gate this on `callable_got_slot().is_some()`, S83 FIXME 0356/0357).
+fn repoint_callable_slot(kind: &mut cranelisp_types::DefKind, slot: usize) {
+    use cranelisp_types::{DefKind, UserFnState};
+    match kind {
+        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } } => *got_slot = slot,
+        DefKind::Primitive { got_slot } => *got_slot = slot,
+        DefKind::Constructor { got_slot, .. } => *got_slot = slot,
+        DefKind::PlatformEffect { got_slot, .. } => *got_slot = slot,
+        // Non-callable kinds carry no slot — nothing to re-point.
+        _ => {}
     }
 }
 
@@ -573,7 +611,8 @@ pub fn derive_codegen_batch(
         if let ModuleEntry::Def { kind, ast: Some(_), .. } = entry
             && !matches!(
                 kind.as_ref(),
-                DefKind::UserFn { constrained_fn: Some(_) } | DefKind::Overloaded { .. }
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Constrained(_) }
+                    | DefKind::Overloaded { .. }
             )
         {
             names.push(name.clone());
@@ -661,7 +700,7 @@ pub fn derive_codegen_batch(
                     ModuleEntry::Def { kind, ast: Some(_), .. }
                         if matches!(
                             kind.as_ref(),
-                            DefKind::Constructor { .. } | DefKind::Primitive
+                            DefKind::Constructor { .. } | DefKind::Primitive { .. }
                         )
                 ))
                 .unwrap_or(false);
@@ -843,10 +882,13 @@ pub fn inline_jit_codegen_for_names(
             // lifecycle installation for non-local names.
             continue;
         };
-        let cranelisp_types::ModuleEntry::Def { code, got_slot, .. } = entry else {
+        // The callable slot now rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357) — read it through the `callable_got_slot()`
+        // chokepoint before taking the mutable borrow for `code`.
+        let slot = entry.callable_got_slot();
+        let cranelisp_types::ModuleEntry::Def { code, .. } = entry else {
             continue;
         };
-        let slot = *got_slot;
         *code = Some(crate::code::Code::jit(std::sync::Arc::clone(&jit_arc)));
         if let (Some(prior), Some(slot)) = (prior_ptr, slot) {
             let new_ptr = st.got.load_slot(slot);
@@ -938,11 +980,15 @@ fn lookup_got_slot(
             return None;
         }
         let st = tables.get(module)?;
-        match st.get(name)? {
-            ModuleEntry::Def {
-                got_slot: Some(slot),
-                ..
-            } => Some(*slot),
+        let entry = st.get(name)?;
+        // The callable slot rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357); read it through the `callable_got_slot()`
+        // chokepoint. A non-callable / slot-less Def yields `None` and falls
+        // through to the import-chain walk / `None` terminal below.
+        if let Some(slot) = entry.callable_got_slot() {
+            return Some(slot);
+        }
+        match entry {
             ModuleEntry::Import { source, .. } => {
                 let source_module = source.module.clone();
                 let source_symbol = source.symbol.clone();
@@ -962,22 +1008,26 @@ fn lookup_got_slot(
 /// Register user-callable primitive externs that the cache-restore `Linker`
 /// would otherwise be unable to resolve (FIXME 0299).
 ///
-/// `DefKind::Primitive` entries fall into two groups:
-///   1. Ring primitives (`add-i64`, `str-concat`, …) — these live in the
-///      session `primitives` module with a populated GOT slot (copied from
-///      `cranelisp_primitives::PRIMITIVES_TABLE` by `populate_ring0_got_slots`),
-///      and are already registered by the GOT-pointer walk below.
-///   2. Synthetic `macros`-module primitives (`sconcat`, `quote-sexp`) — seeded
-///      by `bootstrap.rs` with `code: None` and NO GOT slot. Their bodies are
-///      binary-exported symbols (`#[unsafe(export_name = "…")]` in
-///      `cranelisp-primitives`, statically linked into the host). The fresh JIT
-///      resolves them through its `symbol_lookup_fn`/exported-symbol fallback;
-///      the cache `Linker` has none, so we resolve them here via the host's own
-///      symbol table (`dlsym(RTLD_DEFAULT, name)`) and register the address.
+/// Primitive-ish entries fall into two groups:
+///   1. Ring primitives (`add-i64`, `str-concat`, …) — `DefKind::Primitive`
+///      entries living in the session `primitives` module with a populated GOT
+///      slot (copied from `cranelisp_primitives::PRIMITIVES_TABLE` by
+///      `populate_ring0_got_slots`), already registered by the GOT-pointer walk
+///      below.
+///   2. Synthetic slot-less externs (`sconcat`, the Trace accessors,
+///      `catch-runtime-error`, …) — `DefKind::PrimitiveExtern` entries seeded by
+///      `bootstrap.rs` with `code: None` and NO GOT slot (S83 reshape, FIXME
+///      0356/0357/0360: these are by-ABI-name `Linkage::Import` callees, not
+///      GOT-indirect). Their bodies are binary-exported symbols
+///      (`#[unsafe(export_name = "…")]` in `cranelisp-primitives` /
+///      `cranelisp-intrinsics`, statically linked into the host). The fresh JIT
+///      resolves them through its exported-symbol fallback; the cache `Linker`
+///      has none, so we resolve them here via the host's own symbol table
+///      (`dlsym(RTLD_DEFAULT, name)`) and register the address.
 ///
-/// We walk every `DefKind::Primitive` with no GOT-stored pointer and attempt a
-/// `dlsym` of its bare name. A miss is silently skipped (the relocation pass
-/// surfaces a clear `unresolved symbol` error if the `.o` actually needs it).
+/// We walk every `DefKind::PrimitiveExtern` and attempt a `dlsym` of its bare
+/// name. A miss is silently skipped (the relocation pass surfaces a clear
+/// `unresolved symbol` error if the `.o` actually needs it).
 fn register_binary_exported_primitives(
     linker: &mut cranelisp_backend::cache::linker::Linker,
     shared_state: &crate::session_v4::SharedState,
@@ -986,18 +1036,14 @@ fn register_binary_exported_primitives(
     for st_entry in shared_state.symbol_tables.iter() {
         let st = st_entry.value();
         for (name, entry) in st.all_symbols() {
-            let ModuleEntry::Def { kind, got_slot, .. } = entry else {
+            let ModuleEntry::Def { kind, .. } = entry else {
                 continue;
             };
-            if !matches!(kind.as_ref(), DefKind::Primitive) {
-                continue;
-            }
-            // Skip primitives whose pointer already lives in a GOT slot — the
-            // GOT-pointer walk registers those. We only need the slot-less
-            // synthetic-module externs here.
-            if let Some(slot) = got_slot
-                && !st.got.load_slot(*slot).is_null()
-            {
+            // Slot-less `PrimitiveExtern` entries are the synthetic externs
+            // resolved by ABI name (S83 reshape, FIXME 0360). Ring
+            // `DefKind::Primitive` entries carry a GOT slot and are registered
+            // by the GOT-pointer walk — skip them here.
+            if !matches!(kind.as_ref(), DefKind::PrimitiveExtern) {
                 continue;
             }
             let bare = name.as_ref();
@@ -1014,7 +1060,7 @@ fn register_binary_exported_primitives(
 /// Resolve a symbol exported by the host binary itself (RTLD_DEFAULT). Returns
 /// `None` when the symbol is not exported. Used to register binary-exported
 /// primitive externs with the cache-restore `Linker` (FIXME 0299).
-fn dlsym_host_symbol(name: &str) -> Option<*const u8> {
+pub(crate) fn dlsym_host_symbol(name: &str) -> Option<*const u8> {
     let c_name = std::ffi::CString::new(name).ok()?;
     // SAFETY: `dlsym(RTLD_DEFAULT, …)` searches the global symbol scope of the
     // running process for `name`. The returned pointer (when non-null) is the
@@ -1091,14 +1137,12 @@ fn load_cached_module_via_linker(
     for st_entry in shared_state.symbol_tables.iter() {
         let st = st_entry.value();
         for (name, entry) in st.all_symbols() {
-            if let ModuleEntry::Def {
-                kind,
-                got_slot: Some(slot),
-                ..
-            } = entry
-                && matches!(kind.as_ref(), DefKind::PlatformEffect { .. })
+            // The platform effect's GOT slot now rides on its variant (S83
+            // reshape, FIXME 0358 — PlatformEffect IS GOT-callable).
+            if let ModuleEntry::Def { kind, .. } = entry
+                && let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref()
             {
-                let ptr = st.got.load_slot(*slot);
+                let ptr = st.got.load_slot(*got_slot);
                 if !ptr.is_null() {
                     linker.register_symbol(name.as_ref(), ptr);
                 }
@@ -1112,8 +1156,10 @@ fn load_cached_module_via_linker(
     for st_entry in shared_state.symbol_tables.iter() {
         let st = st_entry.value();
         for (name, entry) in st.all_symbols() {
-            if let ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } = entry {
-                let ptr = st.got.load_slot(*slot);
+            if let ModuleEntry::Def { code: Some(_), .. } = entry
+                && let Some(slot) = entry.callable_got_slot()
+            {
+                let ptr = st.got.load_slot(slot);
                 if !ptr.is_null() {
                     linker.register_symbol(name.as_ref(), ptr);
                 }
@@ -1153,9 +1199,11 @@ fn load_cached_module_via_linker(
     // resolves to NULL is reachable from the code path that calls it).
     let mut loaded_symbols = Vec::new();
     for (name, entry) in cached.symbol_table().all_symbols() {
-        let slot = match entry {
-            ModuleEntry::Def { got_slot: Some(s), .. } => *s,
-            _ => continue,
+        // The callable slot rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint;
+        // slot-less entries are skipped.
+        let Some(slot) = entry.callable_got_slot() else {
+            continue;
         };
         let Some(ptr) = fn_addrs.get(name.as_ref()).copied() else {
             return Err(CranelispError::ModuleError {
@@ -1468,11 +1516,12 @@ mod tests {
         name: &Symbol,
     ) -> Option<*const u8> {
         symbol_tables.get(module).and_then(|t| {
-            let ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } = t.get(name.as_ref())?
-            else {
+            let entry = t.get(name.as_ref())?;
+            let ModuleEntry::Def { code: Some(_), .. } = entry else {
                 return None;
             };
-            let ptr = t.got.load_slot(*slot);
+            let slot = entry.callable_got_slot()?;
+            let ptr = t.got.load_slot(slot);
             if ptr.is_null() { None } else { Some(ptr) }
         })
     }
@@ -1500,15 +1549,18 @@ mod tests {
     }
 
     fn mk_def_with_got(
-        kind: DefKind,
+        mut kind: DefKind,
         ast: Option<DefnVariant>,
         got_slot: Option<usize>,
     ) -> ModuleEntry<crate::code::Code> {
+        // S83 reshape: the slot rides on the callable `DefKind` variant. Honour
+        // the legacy `got_slot` arg by re-pointing the kind's slot before
+        // building (no-op for non-callable kinds).
+        if let Some(slot) = got_slot {
+            repoint_callable_slot(&mut kind, slot);
+        }
         let mut builder = ModuleEntry::def(synthetic_scheme(), kind)
             .visibility(Visibility::Public);
-        if let Some(slot) = got_slot {
-            builder = builder.got_slot(slot);
-        }
         if let Some(variant) = ast {
             builder = builder.ast(variant);
         }
@@ -1568,7 +1620,7 @@ mod tests {
         st.insert(
             Symbol::from("regular"),
             mk_def_with_got(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
                 Some(trivial_variant()),
                 Some(0),
             ),
@@ -1578,7 +1630,7 @@ mod tests {
         st.insert(
             Symbol::from("add$Int+Int"),
             mk_def_with_got(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
                 Some(trivial_variant()),
                 Some(1),
             ),
@@ -1599,10 +1651,12 @@ mod tests {
             Symbol::from("poly_fn"),
             mk_def_with_got(
                 DefKind::UserFn {
-                    constrained_fn: Some(Box::new(cranelisp_types::ConstrainedFn {
-                        variant: trivial_variant(),
-                        scheme: synthetic_scheme(),
-                    })),
+                    fn_state: cranelisp_types::UserFnState::Constrained(Box::new(
+                        cranelisp_types::ConstrainedFn {
+                            variant: trivial_variant(),
+                            scheme: synthetic_scheme(),
+                        },
+                    )),
                 },
                 Some(trivial_variant()),
                 None,
@@ -1694,7 +1748,7 @@ mod tests {
         st.insert(
             Symbol::from("target"),
             mk_def_with_got(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
                 Some(trivial_variant()),
                 Some(3),
             ),
@@ -1746,7 +1800,7 @@ mod tests {
         st.insert(
             defn_name.clone(),
             mk_def_with_got(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
                 Some(trivial_variant()),
                 Some(slot),
             ),
@@ -1775,8 +1829,11 @@ mod tests {
                 .expect("defn entry present after codegen");
             match entry {
                 // GOT is the address source (D41/D35 — no `Code::ptr`).
-                ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } => {
-                    let ptr = table.got.load_slot(*slot);
+                ModuleEntry::Def { code: Some(_), .. } => {
+                    let slot = entry
+                        .callable_got_slot()
+                        .expect("callable Def carries a GOT slot after codegen");
+                    let ptr = table.got.load_slot(slot);
                     assert!(!ptr.is_null(), "compiled function pointer must be non-null");
                     ptr
                 }
@@ -1836,7 +1893,7 @@ mod tests {
         st.insert(
             defn_name.clone(),
             mk_def_with_got(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
                 Some(trivial_variant()),
                 Some(slot),
             ),
@@ -1855,10 +1912,14 @@ mod tests {
         .expect("worker codegen succeeds for a trivial int-returning defn");
 
         let table = symbol_tables.get(&module).expect("symbol table present");
-        match table.get(defn_name.as_ref()).expect("entry present") {
-            ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } => {
+        let entry = table.get(defn_name.as_ref()).expect("entry present");
+        match entry {
+            ModuleEntry::Def { code: Some(_), .. } => {
+                let slot = entry
+                    .callable_got_slot()
+                    .expect("callable Def carries a GOT slot after codegen");
                 assert!(
-                    !table.got.load_slot(*slot).is_null(),
+                    !table.got.load_slot(slot).is_null(),
                     "code pointer must be non-null after compile"
                 );
             }
@@ -1888,7 +1949,7 @@ mod tests {
         st.insert(
             defn_name.clone(),
             mk_def_with_got(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
                 Some(trivial_variant()),
                 Some(slot),
             ),
@@ -1926,9 +1987,13 @@ mod tests {
             .expect("get_code_ptr returns Some after compile");
         let via_entry = {
             let table = symbol_tables.get(&module).expect("symbol table present");
-            match table.get(defn_name.as_ref()).expect("entry present") {
-                ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } => {
-                    table.got.load_slot(*slot)
+            let entry = table.get(defn_name.as_ref()).expect("entry present");
+            match entry {
+                ModuleEntry::Def { code: Some(_), .. } => {
+                    let slot = entry
+                        .callable_got_slot()
+                        .expect("callable Def carries a GOT slot after codegen");
+                    table.got.load_slot(slot)
                 }
                 other => panic!(
                     "expected ModuleEntry::Def with code: Some(_) + got_slot; got {other:?}"
@@ -1976,7 +2041,7 @@ mod tests {
         st.insert(
             expr_name.clone(),
             mk_def_with_got(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
                 Some(expr_variant.clone()),
                 Some(slot),
             ),
@@ -2003,10 +2068,14 @@ mod tests {
         .expect("__expr compiles through the uniform G6 path");
 
         let table = symbol_tables.get(&module).expect("symbol table present");
-        match table.get(expr_name.as_ref()).expect("__expr entry present") {
-            ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } => {
+        let entry = table.get(expr_name.as_ref()).expect("__expr entry present");
+        match entry {
+            ModuleEntry::Def { code: Some(_), .. } => {
+                let slot = entry
+                    .callable_got_slot()
+                    .expect("callable __expr Def carries a GOT slot after codegen");
                 assert!(
-                    !table.got.load_slot(*slot).is_null(),
+                    !table.got.load_slot(slot).is_null(),
                     "__expr code pointer must be non-null"
                 );
             }
@@ -2029,6 +2098,7 @@ mod tests {
 
         let ctor = mk_def_with_got(
             DefKind::Constructor {
+                got_slot: 0,
                 type_name: FQTypeName::new(module.clone(), cranelisp_types::TypeName::from("Option")),
                 tag: 1,
                 field_count: 1,
@@ -2930,24 +3000,21 @@ mod tests {
         staging.next_got_slot = 3;
         staging.insert(
             Symbol::from("main"),
-            mk_def_with_got(DefKind::UserFn { constrained_fn: None }, Some(trivial_variant()), Some(2)),
+            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } }, Some(trivial_variant()), Some(2)),
         );
         staging.insert(
             Symbol::from("reduce"),
-            mk_def_with_got(DefKind::UserFn { constrained_fn: None }, Some(trivial_variant()), Some(0)),
+            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } }, Some(trivial_variant()), Some(0)),
         );
         staging.insert(
             Symbol::from("reduce-loop"),
-            mk_def_with_got(DefKind::UserFn { constrained_fn: None }, Some(trivial_variant()), Some(1)),
+            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } }, Some(trivial_variant()), Some(1)),
         );
 
         commit_staging_to_live(&symbol_tables, &module, staging);
 
         let live = symbol_tables.get(&module).unwrap();
-        let slot_of = |name: &str| match live.get(name) {
-            Some(ModuleEntry::Def { got_slot, .. }) => *got_slot,
-            _ => None,
-        };
+        let slot_of = |name: &str| live.get(name).and_then(|e| e.callable_got_slot());
         // Identity-preserving: staged slot N → live slot N for an empty live.
         assert_eq!(slot_of("reduce"), Some(0), "reduce keeps staged slot 0");
         assert_eq!(slot_of("reduce-loop"), Some(1), "reduce-loop keeps staged slot 1");

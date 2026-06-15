@@ -71,9 +71,10 @@ mod tests {
                 visibility: Visibility::Public,
                 docstring: None,
                 param_names: vec![],
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                kind: Box::new(DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                }),
                 callees: Vec::new(),
-                got_slot: None,
                 trait_origin: None,
                 seq: 0,
                 ast: Some(trivial_variant()),

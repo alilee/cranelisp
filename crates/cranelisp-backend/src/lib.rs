@@ -831,16 +831,15 @@ where
                     location: ErrorLocation::from_span(defn.span),
                 }
             })?;
-            let ModuleEntry::Def { got_slot, .. } = entry else {
-                continue; // Non-Def entries don't have GOT slots
-            };
-            let Some(slot) = got_slot else {
-                continue; // Slot not allocated (primitive-shaped Def)
+            // The GOT slot now rides on the callable `DefKind` variant
+            // (S83 Option-A reshape); read it through the SSOT accessor.
+            let Some(slot) = entry.callable_got_slot() else {
+                continue; // Non-Def / slot-less Def (primitive-shaped, etc.)
             };
             let Some(&func_id) = func_ids.get(&defn.name) else {
                 continue; // Defensive: can't happen — we declared it above
             };
-            slot_funcs.push((*slot, func_id));
+            slot_funcs.push((slot, func_id));
         }
         let slot_count = table.next_got_slot;
         // Drop the read guard before potentially mutating other tables.
@@ -884,10 +883,9 @@ where
 
         // Resolve the entry's GOT slot and write the finalised ptr.
         let slot_opt = symbol_tables.get(&module_path).and_then(|table| {
-            table.get(defn.name.as_ref()).and_then(|entry| match entry {
-                ModuleEntry::Def { got_slot, .. } => *got_slot,
-                _ => None,
-            })
+            table
+                .get(defn.name.as_ref())
+                .and_then(|entry| entry.callable_got_slot())
         });
         if let Some(slot) = slot_opt {
             if let Some(table) = symbol_tables.get(&module_path) {
@@ -981,10 +979,8 @@ where
         std::collections::HashMap::new();
     if let Some(st) = symbol_tables.get(module) {
         for (name, entry) in st.all_symbols() {
-            if matches!(
-                entry,
-                cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. }
-            ) && let Ok(addr) = linker.get_symbol(name.as_ref())
+            if entry.callable_got_slot().is_some()
+                && let Ok(addr) = linker.get_symbol(name.as_ref())
             {
                 ptrs.insert(name.clone(), addr);
             }
@@ -1053,13 +1049,13 @@ where
             symbol: fq.symbol.clone(),
         }
     })?;
-    let ModuleEntry::Def { got_slot: Some(slot), .. } = entry else {
+    let Some(slot) = entry.callable_got_slot() else {
         return Err(CompilationError::SymbolNotCompilable {
             module: fq.module.clone(),
             symbol: fq.symbol.clone(),
         });
     };
-    let ptr = table.got.load_slot(*slot);
+    let ptr = table.got.load_slot(slot);
     if ptr.is_null() {
         return Err(CompilationError::SymbolNotCompilable {
             module: fq.module.clone(),
@@ -1483,7 +1479,7 @@ mod tests {
     }
 
     fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp_types::ModuleEntry {
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
         let param_count = defn.params().len();
         // `param_names` is `Vec<Symbol>`; the fused `params` tuples carry the
         // optional annotation, so project out the names.
@@ -1508,9 +1504,15 @@ mod tests {
             visibility: Visibility::Public,
             docstring: None,
             param_names,
-            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            // Slot rides on the callable variant (S83 reshape): an explicit slot
+            // → `Concrete`; no slot → the Pass-1 `NotDetermined` interim.
+            kind: Box::new(DefKind::UserFn {
+                fn_state: match slot {
+                    Some(got_slot) => UserFnState::Concrete { got_slot },
+                    None => UserFnState::NotDetermined,
+                },
+            }),
             callees: vec![],
-            got_slot: slot,
             trait_origin: None,
             seq: 0,
             ast: variant,
@@ -1773,6 +1775,7 @@ mod tests {
             docstring: None,
             param_names: (0..field_count).map(|i| Symbol::from(format!("f{i}"))).collect(),
             kind: Box::new(DefKind::Constructor {
+                got_slot: 0,
                 type_name: fqtn.clone(),
                 tag,
                 field_count,
@@ -1780,7 +1783,6 @@ mod tests {
                 type_def: None,
             }),
             callees: vec![],
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast: None,
@@ -4198,9 +4200,12 @@ mod tests {
         // GOT slot (slot 0). Read it back; it must be non-null in JIT mode.
         let guard = tables.get(&module).expect("symbol table present");
         let entry = guard.get(defn.name.as_ref()).expect("entry present");
+        let slot = entry
+            .callable_got_slot()
+            .expect("test inserted a Def entry with a GOT slot");
         match entry {
-            ModuleEntry::Def { got_slot: Some(slot), code, .. } => {
-                let ptr = guard.got.load_slot(*slot);
+            ModuleEntry::Def { code, .. } => {
+                let ptr = guard.got.load_slot(slot);
                 assert!(
                     !ptr.is_null(),
                     "backend must write the finalised code pointer to the GOT slot (D41 #2)"
@@ -4280,13 +4285,18 @@ mod tests {
         // make_def_entry_slot stamps kind = UserFn; override to Constructor so
         // `lookup_constructor` / `data_constructor_info` recognise it AND
         // `resolve_got_target` finds the got slot (slot 0).
-        let ctor_entry = match make_def_entry_slot(ctor_defn.clone(), 0) {
+        let base_entry = make_def_entry_slot(ctor_defn.clone(), 0);
+        // The slot now rides on the callable variant; carry it onto the
+        // Constructor we re-stamp (slot 0).
+        let ctor_slot = base_entry
+            .callable_got_slot()
+            .expect("make_def_entry_slot stamps a slot");
+        let ctor_entry = match base_entry {
             ModuleEntry::Def {
                 visibility,
                 docstring,
                 param_names,
                 callees,
-                got_slot,
                 trait_origin,
                 seq,
                 ast,
@@ -4302,6 +4312,7 @@ mod tests {
                 docstring,
                 param_names,
                 kind: Box::new(DefKind::Constructor {
+                    got_slot: ctor_slot,
                     type_name: fqtn.clone(),
                     tag: 1,
                     field_count: 1,
@@ -4309,7 +4320,6 @@ mod tests {
                     type_def: None,
                 }),
                 callees,
-                got_slot,
                 trait_origin,
                 seq,
                 ast,
@@ -4393,9 +4403,10 @@ mod tests {
         {
             let guard = tables.get(&module).expect("table present");
             match guard.get("Some") {
-                Some(ModuleEntry::Def { got_slot: Some(slot), .. }) => {
+                Some(entry) if entry.callable_got_slot().is_some() => {
+                    let slot = entry.callable_got_slot().unwrap();
                     assert!(
-                        !guard.got.load_slot(*slot).is_null(),
+                        !guard.got.load_slot(slot).is_null(),
                         "constructor body must finalize to a live callable in its GOT slot (Stage 1)"
                     );
                 }
@@ -4701,10 +4712,13 @@ mod tests {
         // GOT slot — it stays null.
         let guard = tables.get(&module).expect("symbol table present");
         let entry = guard.get(defn.name.as_ref()).expect("entry present");
+        let slot = entry
+            .callable_got_slot()
+            .expect("test inserted a Def entry with a GOT slot");
         match entry {
-            ModuleEntry::Def { got_slot: Some(slot), code, .. } => {
+            ModuleEntry::Def { code, .. } => {
                 assert!(
-                    guard.got.load_slot(*slot).is_null(),
+                    guard.got.load_slot(slot).is_null(),
                     "object-mode compile must not populate the GOT slot"
                 );
                 assert!(
@@ -4820,7 +4834,6 @@ mod tests {
                     ],
                 }),
                 callees: vec![],
-                got_slot: None,
                 trait_origin: None,
                 seq: 0,
                 ast: None,
@@ -4927,7 +4940,6 @@ mod tests {
                     ],
                 }),
                 callees: vec![],
-                got_slot: None,
                 trait_origin: None,
                 seq: 0,
                 ast: None,
@@ -5034,9 +5046,8 @@ mod tests {
                 visibility: Visibility::Public,
                 docstring: None,
                 param_names: vec![Symbol::from("a"), Symbol::from("b")],
-                kind: Box::new(DefKind::Primitive),
+                kind: Box::new(DefKind::Primitive { got_slot: slot }),
                 callees: Vec::new(),
-                got_slot: Some(slot),
                 trait_origin: None,
                 seq: 0,
                 ast: None,
@@ -5198,9 +5209,12 @@ mod tests {
         // slot. Entry remains a Def with ast: Some(_) (regression guard).
         let guard = tables.get(&module).unwrap();
         match guard.get(defn.name.as_ref()) {
-            Some(ModuleEntry::Def { ast: Some(_), got_slot: Some(slot), .. }) => {
+            Some(entry @ ModuleEntry::Def { ast: Some(_), .. })
+                if entry.callable_got_slot().is_some() =>
+            {
+                let slot = entry.callable_got_slot().unwrap();
                 assert!(
-                    !guard.got.load_slot(*slot).is_null(),
+                    !guard.got.load_slot(slot).is_null(),
                     "backend must write the finalised code pointer to the GOT slot"
                 );
             }
@@ -5287,7 +5301,7 @@ mod tests {
     // no panic, no silent skip.
     #[test]
     fn sprint56_compile_to_module_ast_none_errors() {
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
         let module = ModuleFullPath::from("user");
         let name = Symbol::from("stub");
         let tables = empty_tables();
@@ -5304,9 +5318,10 @@ mod tests {
                     visibility: Visibility::Public,
                     docstring: None,
                     param_names: vec![],
-                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                    kind: Box::new(DefKind::UserFn {
+                        fn_state: UserFnState::NotDetermined,
+                    }),
                     callees: vec![],
-                    got_slot: None,
                     trait_origin: None,
                     seq: 0,
                     ast: None,
@@ -5405,7 +5420,6 @@ mod tests {
                         }],
                     }),
                     callees: vec![],
-                    got_slot: None,
                     trait_origin: None,
                     seq: 0,
                     ast: None,
@@ -5436,9 +5450,10 @@ mod tests {
         assert!(!artifacts.clif_ir.is_empty(), "variant body must be compiled");
         let guard = tables.get(&module).unwrap();
         match guard.get(variant_name.as_ref()) {
-            Some(ModuleEntry::Def { got_slot: Some(slot), .. }) => {
+            Some(entry) if entry.callable_got_slot().is_some() => {
+                let slot = entry.callable_got_slot().unwrap();
                 assert!(
-                    !guard.got.load_slot(*slot).is_null(),
+                    !guard.got.load_slot(slot).is_null(),
                     "mangled variant's GOT slot must be populated"
                 );
             }
@@ -5457,7 +5472,7 @@ mod tests {
     // backend's vantage point.
     #[test]
     fn sprint56_constrained_template_excluded_by_defined_symbols() {
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
 
         let module = ModuleFullPath::from("user");
         let template_name = Symbol::from("identity");
@@ -5512,18 +5527,20 @@ mod tests {
                     docstring: None,
                     param_names: vec![Symbol::from("x")],
                     kind: Box::new(DefKind::UserFn {
-                        // Sentinel — real typecheck stores a single DefnVariant here.
-                        constrained_fn: Some(Box::new(cranelisp_types::ConstrainedFn {
-                            variant: template_defn.variants[0].clone(),
-                            scheme: Scheme {
-                                type_vars: vec![],
-                                constraints: HashMap::new(),
-                                ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+                        // A constrained template is slot-less by construction
+                        // (S83 reshape) — only its mono variants carry slots.
+                        fn_state: UserFnState::Constrained(Box::new(
+                            cranelisp_types::ConstrainedFn {
+                                variant: template_defn.variants[0].clone(),
+                                scheme: Scheme {
+                                    type_vars: vec![],
+                                    constraints: HashMap::new(),
+                                    ty: Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0))),
+                                },
                             },
-                        })),
+                        )),
                     }),
                     callees: vec![],
-                    got_slot: None,
                     trait_origin: None,
                     seq: 0,
                     ast: Some(template_defn.variants[0].clone()),
@@ -5572,7 +5589,7 @@ mod tests {
         defn: Defn,
         slot: usize,
     ) -> DashMap<ModuleFullPath, SymbolTable> {
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
         let tables = DashMap::new();
         let mut st = SymbolTable::new(module.clone());
         // Match the slot index: typecheck would have called allocate_got_slot
@@ -5601,9 +5618,10 @@ mod tests {
                 visibility: Visibility::Public,
                 docstring: None,
                 param_names,
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                kind: Box::new(DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot: slot },
+                }),
                 callees: vec![],
-                got_slot: Some(slot),
                 trait_origin: None,
                 seq: 0,
                 ast: variant,
@@ -5783,9 +5801,9 @@ mod tests {
                     param_names: vec![],
                     kind: Box::new(DefKind::PlatformEffect {
                         scheduling_class: Default::default(),
+                        got_slot: 0,
                     }),
                     callees: vec![],
-                    got_slot: Some(0),
                     trait_origin: None,
                     seq: 0,
                     ast: None,
@@ -6051,7 +6069,7 @@ mod tests {
         let d2 = make_int_defn("two", 2);
 
         // Build symbol table with both defns at slots 0 and 1.
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
         let tables = DashMap::new();
         let mut st = SymbolTable::new(module.clone());
         let _slot0 = st.allocate_got_slot();
@@ -6068,9 +6086,10 @@ mod tests {
                     visibility: Visibility::Public,
                     docstring: None,
                     param_names: vec![],
-                    kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                    kind: Box::new(DefKind::UserFn {
+                        fn_state: UserFnState::Concrete { got_slot: slot },
+                    }),
                     callees: vec![],
-                    got_slot: Some(slot),
                     trait_origin: None,
                     seq: 0,
                     ast: defn.variants.first().cloned(),
@@ -6163,7 +6182,7 @@ mod tests {
         // entry on user's table records the cross-module dependency.
         let caller = make_int_defn("caller", 7);
 
-        use cranelisp_types::{DefKind, FQSymbol, ModuleEntry, Scheme, Visibility,
+        use cranelisp_types::{DefKind, FQSymbol, ModuleEntry, Scheme, UserFnState, Visibility,
         };
         let tables = DashMap::new();
 
@@ -6181,9 +6200,10 @@ mod tests {
                 visibility: Visibility::Public,
                 docstring: None,
                 param_names: vec![],
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                kind: Box::new(DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot: 0 },
+                }),
                 callees: vec![],
-                got_slot: Some(0),
                 trait_origin: None,
                 seq: 0,
                 ast: helper.variants.first().cloned(),
@@ -6206,9 +6226,10 @@ mod tests {
                 visibility: Visibility::Public,
                 docstring: None,
                 param_names: vec![],
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                kind: Box::new(DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot: 0 },
+                }),
                 callees: vec![],
-                got_slot: Some(0),
                 trait_origin: None,
                 seq: 0,
                 ast: caller.variants.first().cloned(),

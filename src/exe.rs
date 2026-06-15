@@ -574,12 +574,17 @@ pub fn entry_main_got_slot(entry_table: &crate::code::SessionSymbolTable) -> Res
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }
     })?;
+    // The callable slot now rides on the `DefKind` variant (S83 reshape,
+    // FIXME 0356/0357) — read it through the `callable_got_slot()` chokepoint.
+    // `main` is a concrete user fn, so a pinned slot is expected.
     match entry {
-        ModuleEntry::Def { got_slot: Some(slot), .. } => Ok(*slot),
-        ModuleEntry::Def { got_slot: None, .. } => Err(CranelispError::CodegenError {
-            message: "entry module's 'main' has no GOT slot — typecheck did \
-                      not pin a slot index".to_string(),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        ModuleEntry::Def { .. } => entry.callable_got_slot().ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "entry module's 'main' has no GOT slot — typecheck did \
+                          not pin a slot index"
+                    .to_string(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            }
         }),
         _ => Err(CranelispError::CodegenError {
             message: "entry module's 'main' is not a Def entry".to_string(),
@@ -829,7 +834,9 @@ mod tests {
     fn make_main_entry(ty: Type) -> ModuleEntry<crate::code::Code> {
         ModuleEntry::def(
             Scheme { type_vars: vec![], constraints: HashMap::new(), ty },
-            DefKind::UserFn { constrained_fn: None },
+            DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+            },
         )
         .visibility(Visibility::Public)
         .build()

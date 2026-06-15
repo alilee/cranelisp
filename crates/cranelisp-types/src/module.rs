@@ -500,10 +500,10 @@ impl ModuleEntry<()> {
         match self {
             ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                got_slot, trait_origin, seq, ast, code: _,
+                trait_origin, seq, ast, code: _,
             } => ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                got_slot, trait_origin, seq, ast, code: None,
+                trait_origin, seq, ast, code: None,
             },
             ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility } => {
                 ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility }
@@ -615,7 +615,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
 
     /// Iterator over entries that codegen should compile.
     ///
-    /// Filter: `ast.is_some() AND kind != Overloaded AND kind != UserFn { constrained_fn: Some(_) }`.
+    /// Filter: `ast.is_some() AND kind != Overloaded AND kind != UserFn { fn_state: Constrained(_) }`.
     ///
     /// Shared codegen-compilable predicate — see Decision 22 in
     /// `design/arch/CLAUDE.md` and §9.5 of `design/typecheck/ast-annotation.md`.
@@ -632,7 +632,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
             ModuleEntry::Def { ast: Some(_), kind, .. } => !matches!(
                 kind.as_ref(),
                 DefKind::Overloaded { .. }
-                    | DefKind::UserFn { constrained_fn: Some(_) }
+                    | DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
             ),
             _ => false,
         })
@@ -680,52 +680,23 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// Empty for primitives, special forms, and entries not yet body-checked.
         #[serde(default)]
         callees: Vec<FQSymbol>,
-        /// Module-local GOT slot index. The slot is the **single source of
-        /// truth** for the entry's runtime code address: the GOT is owned by
-        /// the module's `SymbolTable.got` and reads/writes go through
-        /// `SymbolTable.got.store_slot(slot, ptr)` / `.load_slot(slot)`. No
-        /// duplicate `fn_ptr` field exists on `ModuleEntry::Def` (Sprint 66
-        /// Wave 0 amendment — the prior `fn_ptr: Option<*const u8>` field was
-        /// redundant with the GOT and has been removed).
-        ///
-        /// A slot is allocated at registration time for any **addressable
-        /// callable** — any entry that may be invoked, including via the
-        /// operator-as-value path (`(let [f +] (f 1 2))` indirects through the
-        /// GOT slot allocated for `+`). This covers user functions, primitives
-        /// (when used as values), and platform DLL fns.
-        ///
-        /// The slot is `None` only for entries that are **never** called or
-        /// referenced as values: special forms (`if`, `let`, `defn` — pure
-        /// syntax, no runtime address), `Overloaded` base entries (the
-        /// mangled variants carry the slots), `TypeDef`/`TraitDecl` and
-        /// `Def { kind: DefKind::Macro }` parent entries (no callable
-        /// position; per-clause variant Defs carry the slots),
-        /// constrained-fn templates whose mono specialisations carry the
-        /// slots, and `Def { kind: DefKind::PrimitiveExtern }` host-promised
-        /// externs (`discover-tests` — the symbol-table key IS the ABI name a
-        /// host promises at JIT-finalize via `Jit::define_symbol`; a call
-        /// resolves `Linkage::Import` against that key, never GOT-indirect).
-        ///
-        /// **Constrained-fn templates are a special case (FIXME 0354).** A
-        /// template's `got_slot` *should* be `None`, but because the field is
-        /// allocated in typecheck Pass 1 (before constraint status is known)
-        /// and the `kind` is flipped to a template in Pass 2, a template can
-        /// transiently carry a phantom `Some(_)` if a flip site bypassed the
-        /// [`ModuleEntry::mark_constrained_template`] sole-writer. **Never read
-        /// this field directly to decide call-target resolution** — use
-        /// [`ModuleEntry::callable_got_slot`], which returns `None` for a
-        /// constrained template regardless of the stored field value. Reading
-        /// the raw field at a call site was the 0354 SIGSEGV (cross-module the
-        /// phantom slot is NULL → `call_indirect` through null). The accessor
-        /// is the single source of truth for "where to call to invoke this
-        /// entry"; the raw field is for storage/codegen sites that legitimately
-        /// need the allocated index (writing the fn ptr, cache serialization).
-        ///
-        /// Direct-call inlining at known call sites does not require a GOT
-        /// lookup, but having a slot does not preclude a direct call — the
-        /// slot is for the operator-as-value path.
-        #[serde(default)]
-        got_slot: Option<usize>,
+        // **No flat `got_slot` field (S83, FIXME 0356/0357, Principle 20;
+        // amends Decision 0035).** The module-local GOT slot through which an
+        // entry is invoked now lives on the callable `DefKind` variants
+        // (`UserFn`'s `Concrete` `fn_state`, `Primitive`, `Constructor`) — not
+        // as a flat `Def` field. This makes the once-illegal pairing (a
+        // constrained-fn template holding a callable slot) structurally
+        // unconstructable: a constrained template is
+        // `kind: DefKind::UserFn { fn_state: UserFnState::Constrained(_) }`,
+        // which carries no slot. Non-callable kinds (`Macro` parent,
+        // `PlatformEffect`, `PrimitiveExtern`, `Overloaded` base) carry no slot
+        // field at all; special forms / type defs / trait decls are separate
+        // `ModuleEntry` variants with no `kind`. Read the callable address via
+        // [`ModuleEntry::callable_got_slot`] (the single read-through point);
+        // the GOT remains the single source of truth for the runtime *address*
+        // (`SymbolTable.got.store_slot`/`.load_slot`), indexed by the slot the
+        // kind variant carries. See BC §7 "Callability is structural" +
+        // `design/arch/principles/20-model-invariants-by-representation.md`.
         /// If this Def is a trait method, which trait it belongs to.
         /// Replaces the `method_to_trait` reverse index on `TraitRegistry`.
         /// `None` for non-trait-method definitions.
@@ -1083,14 +1054,23 @@ impl<C: CodeStore> ModuleEntry<C> {
     /// Begin constructing a [`ModuleEntry::Def`] with the runtime-state
     /// fields defaulted.
     ///
-    /// `ModuleEntry::Def` carries ~11 fields, but six of them are always
+    /// `ModuleEntry::Def` carries ten fields, but five of them are always
     /// construction-time defaults at every static-table / mount call site:
-    /// `callees: Vec::new()`, `got_slot: None`, `trait_origin: None`,
-    /// `seq: 0`, `ast: None`, `code: None`. Enum variants cannot use
-    /// `..Default::default()`, so without a builder every construction spells
-    /// out all 11 fields even though it only cares about three of them
-    /// (`scheme`, `kind`, and usually `visibility`). This builder lets callers
-    /// specify only what they care about.
+    /// `callees: Vec::new()`, `trait_origin: None`, `seq: 0`, `ast: None`,
+    /// `code: None`. Enum variants cannot use `..Default::default()`, so
+    /// without a builder every construction spells out all of them even though
+    /// it only cares about a few (`scheme`, `kind`, and usually `visibility`).
+    /// This builder lets callers specify only what they care about.
+    ///
+    /// **The GOT slot rides on the `kind` (S83, FIXME 0356/0357, Principle
+    /// 20).** There is no `got_slot` builder setter — the slot is no longer a
+    /// flat `Def` field. A caller that wants a got-slotted callable passes the
+    /// slot *inside* the kind it builds with:
+    /// `ModuleEntry::def(scheme, DefKind::Primitive { got_slot })`,
+    /// `… DefKind::Constructor { got_slot, .. }`, or
+    /// `… DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } }`.
+    /// To read a prior entry's concrete slot for REPL-redefinition reuse, call
+    /// [`ModuleEntry::callable_got_slot`] on the existing entry.
     ///
     /// `visibility` defaults to [`Visibility::Public`] — the overwhelmingly
     /// common case for the production consumers (primitives, the int mount).
@@ -1176,102 +1156,50 @@ impl<C: CodeStore> ModuleEntry<C> {
         matches!(
             self,
             ModuleEntry::Def { kind, .. }
-                if matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: Some(_) })
+                if matches!(kind.as_ref(), DefKind::UserFn { fn_state: UserFnState::Constrained(_) })
         )
     }
 
     /// The GOT slot through which this entry may be **invoked**, or `None`
     /// when the entry has no directly-callable runtime address.
     ///
-    /// This is the **single source of truth for "where to call to invoke
-    /// this entry"** at call-target resolution. It is NOT the same question
-    /// as "does this entry hold a `got_slot` field value": a
-    /// **constrained-fn template** ([`Self::is_constrained_template`])
-    /// answers `None` here **even if its `got_slot` field is `Some(_)`** —
-    /// the template is not directly callable (only its monomorphised
-    /// variants are), so it has no callable address.
+    /// This is the **single read-through point for "where to call to invoke
+    /// this entry"** at call-target resolution — callers consult it rather
+    /// than re-pattern-matching the `DefKind` variant set, so the callable /
+    /// non-callable partition lives in exactly one place.
     ///
-    /// **Why this accessor exists (the invariant it enforces).** The
-    /// `got_slot` field and the `constrained_fn` discriminator are two
-    /// correlated fields set at different pipeline stages: typecheck Pass 1
-    /// (`register_defn_signature`) allocates a `got_slot` for every defn
-    /// before constraint status is known, and Pass 2 constrained-fn
-    /// detection later flips `kind` to a template **in place**. A template
-    /// that retained its phantom `got_slot` was resolvable as a callable
-    /// target by code that pattern-matched `Def { got_slot: Some(slot), .. }`
-    /// directly — and cross-module that slot is NULL (the template is skipped
-    /// from codegen), so the call lowered to a `call_indirect` through null →
-    /// SIGSEGV (the 0354 defect). Routing call-target resolution through this
-    /// accessor makes the phantom slot unreadable as a callable address,
-    /// regardless of whether the flip-site cleared the field. Resolution sites
-    /// (`cranelisp-backend::compiler::resolve_got_target`) MUST consult this
-    /// accessor rather than reading the raw `got_slot` field, so a
-    /// constrained template can never again lower to a callable target.
+    /// **Trivial since S83 (FIXME 0356/0357, Principle 20).** With the slot
+    /// carried on the callable `DefKind` variants (`UserFn`'s `Concrete`
+    /// `fn_state`, `Primitive`, `Constructor`) and absent from the
+    /// non-callable kinds, this accessor is a simple variant match — there is
+    /// no longer an illegal `got_slot`+template pairing to "read around" (it
+    /// is unconstructable). A constrained-fn template is
+    /// `UserFnState::Constrained(_)`, which carries no slot, so it answers
+    /// `None` structurally; the Pass-1 interim `UserFnState::NotDetermined`
+    /// also answers `None` (nothing may call an as-yet-undetermined fn). This
+    /// retired the S82 stopgap's `mark_constrained_template()` flip-and-clear
+    /// sole-writer and `assert_well_formed()` phantom-slot guard — there is no
+    /// sibling field to clear or assert about. The GOT remains the single
+    /// source of truth for the runtime *address*, indexed by the slot this
+    /// accessor returns.
     ///
-    /// Pairs with [`Self::mark_constrained_template`], the sole-writer that
-    /// clears the field at flip time, and [`Self::assert_well_formed`], the
-    /// debug-time correlation guard. See `design/arch/fixmes/0354-*.md` and
-    /// Principle 18 (`design/arch/principles/18-*.md`).
+    /// Call-resolution sites (`cranelisp-backend::compiler::resolve_got_target`)
+    /// consult this accessor; storage / serde / codegen sites that need the
+    /// allocated index read it directly off the matched callable kind variant.
+    /// See BC §7 "Callability is structural" and Principle 20
+    /// (`design/arch/principles/20-*.md`).
     pub fn callable_got_slot(&self) -> Option<usize> {
         match self {
-            ModuleEntry::Def { got_slot, kind, .. }
-                if !matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: Some(_) }) =>
-            {
-                *got_slot
-            }
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } } => Some(*got_slot),
+                DefKind::Primitive { got_slot } => Some(*got_slot),
+                DefKind::Constructor { got_slot, .. } => Some(*got_slot),
+                DefKind::PlatformEffect { got_slot, .. } => Some(*got_slot),
+                // NotDetermined / Constrained user fns, Macro parent,
+                // PrimitiveExtern, Overloaded base — no slot.
+                _ => None,
+            },
             _ => None,
-        }
-    }
-
-    /// Sole writer for the **constrained-fn template** transition (Pass 2
-    /// constrained-fn detection).
-    ///
-    /// Marks this `Def` entry as a constrained template by setting its
-    /// `kind` to `DefKind::UserFn { constrained_fn: Some(cf) }` **and**
-    /// clearing `got_slot` to `None` in one atomic operation — maintaining
-    /// the correlation invariant ("a constrained template has no
-    /// directly-callable GOT slot") at a single named site rather than
-    /// requiring every in-place flip site in typecheck to remember to clear
-    /// the field. The template's phantom slot (allocated in Pass 1 before
-    /// constraint status was known) is reclaimed-by-abandonment — the
-    /// monomorphised variants allocate their own slots at
-    /// `monomorphise_call` time.
-    ///
-    /// No-op (returns `false`) on a non-`Def` entry. Returns `true` on
-    /// success. See [`Self::callable_got_slot`] for the read-side invariant
-    /// and `design/arch/fixmes/0354-*.md` for the motivating defect.
-    pub fn mark_constrained_template(&mut self, cf: ConstrainedFn) -> bool {
-        match self {
-            ModuleEntry::Def { kind, got_slot, .. } => {
-                **kind = DefKind::UserFn {
-                    constrained_fn: Some(Box::new(cf)),
-                };
-                *got_slot = None;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Debug-time correlation guard for the constrained-template invariant.
-    ///
-    /// Asserts (under `debug_assertions` only) that a constrained-fn template
-    /// does not carry a directly-callable `got_slot` — i.e. the illegal
-    /// state `Def { kind: UserFn { constrained_fn: Some(_) }, got_slot:
-    /// Some(_) }` never escapes a flip site that bypassed
-    /// [`Self::mark_constrained_template`]. No-op in release builds (the
-    /// invariant is enforced behaviorally by routing reads through
-    /// [`Self::callable_got_slot`]; this assert catches a writer that
-    /// forgot the sole-writer). Cheap to call after any `kind` mutation.
-    #[inline]
-    pub fn assert_well_formed(&self) {
-        if let ModuleEntry::Def { got_slot, .. } = self {
-            debug_assert!(
-                !(self.is_constrained_template() && got_slot.is_some()),
-                "constrained-fn template carries a phantom got_slot — \
-                 use ModuleEntry::mark_constrained_template to flip-and-clear \
-                 (see design/arch/fixmes/0354)"
-            );
         }
     }
 }
@@ -1290,7 +1218,6 @@ impl<C: CodeStore> ModuleEntry<C> {
 /// | `visibility` | [`Visibility::Public`] | [`Self::visibility`] |
 /// | `docstring` | `None` | [`Self::docstring`] |
 /// | `param_names` | `vec![]` | [`Self::param_names`] |
-/// | `got_slot` | `None` | [`Self::got_slot`] |
 /// | `trait_origin` | `None` | [`Self::trait_origin`] |
 /// | `seq` | `0` | [`Self::seq`] |
 /// | `ast` | `None` | [`Self::ast`] |
@@ -1309,7 +1236,6 @@ pub struct DefBuilder<C: CodeStore = ()> {
     visibility: Visibility,
     docstring: Option<String>,
     param_names: Vec<Symbol>,
-    got_slot: Option<usize>,
     trait_origin: Option<FQTraitName>,
     seq: u64,
     ast: Option<DefnVariant>,
@@ -1327,7 +1253,6 @@ impl<C: CodeStore> DefBuilder<C> {
             visibility: Visibility::Public,
             docstring: None,
             param_names: Vec::new(),
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast: None,
@@ -1350,14 +1275,6 @@ impl<C: CodeStore> DefBuilder<C> {
     /// Set the parameter names.
     pub fn param_names(mut self, param_names: Vec<Symbol>) -> Self {
         self.param_names = param_names;
-        self
-    }
-
-    /// Set the module-local GOT slot index (normally defaulted to `None`;
-    /// callers that pre-allocate a slot via
-    /// [`SymbolTable::allocate_got_slot`] set it here).
-    pub fn got_slot(mut self, got_slot: usize) -> Self {
-        self.got_slot = Some(got_slot);
         self
     }
 
@@ -1391,7 +1308,6 @@ impl<C: CodeStore> DefBuilder<C> {
             param_names: self.param_names,
             kind: Box::new(self.kind),
             callees: Vec::new(),
-            got_slot: self.got_slot,
             trait_origin: self.trait_origin,
             seq: self.seq,
             ast: self.ast,
@@ -1452,7 +1368,16 @@ pub enum DefKind {
     ///
     /// See `DefKind::Primitive` rustdoc and
     /// Decision 48 (primitives uniform module + bundled provenance).
-    Primitive,
+    ///
+    /// **Carries its `got_slot` (S83, FIXME 0356/0357, Principle 20).** A
+    /// primitive is an addressable callable — the operator-as-value path
+    /// (`(let [f +] (f 1 2))`) indirects through the GOT slot allocated for
+    /// the primitive at registration. The slot moved here off the retired flat
+    /// `ModuleEntry::Def.got_slot` field; it is **mandatory** (a registered
+    /// primitive always has an address), not `Option`.
+    Primitive {
+        got_slot: usize,
+    },
     /// A DLL-routed platform effect.
     ///
     /// `scheduling_class` is the cross-crate-load-bearing payload — read
@@ -1468,6 +1393,15 @@ pub enum DefKind {
     /// unrepresentable).
     PlatformEffect {
         scheduling_class: SchedulingClass,
+        /// The GOT slot through which this platform effect is invoked
+        /// (manifest index, §5.3). A platform effect is a GOT-addressable
+        /// callable — backend dispatches it GOT-indirect and the platform DLL
+        /// loader writes its runtime pointer into `SymbolTable.got` at this
+        /// slot, so the slot is **mandatory** (not `Option`), same as
+        /// [`DefKind::Primitive`]. (S83, FIXME 0358 — PlatformEffect was
+        /// incorrectly placed in the slot-less set by the Option-A reshape;
+        /// pending `/arch` ratification.)
+        got_slot: usize,
     },
     /// A host-promised extern primitive.
     ///
@@ -1506,8 +1440,20 @@ pub enum DefKind {
     /// `ModuleEntry::Def`.
     PrimitiveExtern,
     /// A user-defined function.
+    ///
+    /// **Callability is structural (S83, FIXME 0356/0357, Principle 20; amends
+    /// Decision 0035).** The GOT slot through which a user fn is invoked lives
+    /// *here*, on the kind's [`UserFnState`] payload — not on a flat
+    /// `ModuleEntry::Def.got_slot` field (which is retired). This makes the
+    /// once-illegal pairing — a constrained *template* (never directly callable;
+    /// only its monomorphised variants are) holding a callable slot —
+    /// **structurally unconstructable**: only the [`UserFnState::Concrete`]
+    /// variant carries a slot, and a constrained fn is [`UserFnState::Constrained`]
+    /// which has no slot field. The three legal states are exactly the three
+    /// `UserFnState` variants; the illegal fourth (constrained + slot) has no
+    /// representation. See [`UserFnState`] and BC §7 "Callability is structural".
     UserFn {
-        constrained_fn: Option<Box<ConstrainedFn>>,
+        fn_state: UserFnState,
     },
     /// Multi-sig overloaded function base name (Ring 2).
     Overloaded {
@@ -1560,6 +1506,14 @@ pub enum DefKind {
     /// function-type signature lives canonically on the `Def`'s own `scheme`.
     /// See `design/arch/bounded-contexts.md` §7 "Multi-legged authoring".
     Constructor {
+        /// Module-local GOT slot through which the constructor is invoked
+        /// (the operator-as-value path `(map Some xs)` indirects through it).
+        ///
+        /// **Carries its `got_slot` (S83, FIXME 0356/0357, Principle 20).** A
+        /// constructor is an addressable callable, born concrete at synthesis
+        /// (it is never constrained), so the slot is **mandatory** — it moved
+        /// here off the retired flat `ModuleEntry::Def.got_slot` field.
+        got_slot: usize,
         type_name: FQTypeName,
         tag: usize,
         field_count: usize,
@@ -1708,6 +1662,63 @@ pub enum DefKind {
         /// table.
         macro_sexp: Sexp,
     },
+}
+
+/// The determined-or-not callability state of a [`DefKind::UserFn`] entry
+/// (S83, FIXME 0356/0357, Principle 20; amends Decision 0035).
+///
+/// This is the structural realisation of the "callability is a kind property"
+/// invariant: a user fn's GOT slot is correlated with whether the fn is a
+/// directly-callable concrete function or a constrained template (only the
+/// former is invokable through a slot). Modelling the correlation as a sum type
+/// — one variant per legal state, each carrying exactly the data valid in that
+/// state — makes the illegal pairing (a constrained template holding a callable
+/// slot) **unconstructable** (Principle 20 "parse, don't validate"). The S82
+/// stopgap (`callable_got_slot()` reading around a flat `got_slot` field +
+/// `mark_constrained_template()` sole-writer) is retired by this shape.
+///
+/// **The three legal states**, and where each is constructed:
+///
+/// 1. [`UserFnState::NotDetermined`] — the **Pass-1 interim**. Typecheck
+///    `register_defn_signature` registers a user fn's scheme/signature *before*
+///    Pass-2 constraint detection runs, so callability is not yet known. The
+///    entry has no slot — which is correct, because nothing may call it before
+///    its callability is determined. This is the absence of a determined
+///    callable payload, **NOT** a separate `Pending` enum arm (gating decision 3):
+///    the `UserFn` discriminator already names the kind; this variant names the
+///    not-yet-determined sub-state without adding `ModuleEntry`-level surface.
+/// 2. [`UserFnState::Concrete`] — a **determined unconstrained callable**.
+///    Carries `got_slot: usize` (mandatory, not `Option`): an unconstrained fn
+///    always has a module-local callable address. Constructed at the
+///    determination point (end of Pass-2 when no constraints were found), and
+///    for every mangled mono / multi-sig / macro-clause variant (`cmp$Int+Int`,
+///    `add$Int+Int`, `m$clause-0`), each owning its own slot.
+/// 3. [`UserFnState::Constrained`] — a **determined constrained template**.
+///    Carries the [`ConstrainedFn`] body and **no slot**: a template is never
+///    directly callable (only its mono variants, which are `Concrete` entries,
+///    are), so it structurally cannot hold a callable address.
+///
+/// **Timing-wall resolution (gating decision 3): defer, don't mark.** The slot
+/// is allocated at the *determination* point (constructing `Concrete`), not in
+/// Pass-1. The interim `NotDetermined` state is honest rather than a flat field
+/// that is "sometimes meaningful". On REPL redefinition the prior concrete
+/// entry's slot is *reused* (read via [`ModuleEntry::callable_got_slot`]) when
+/// the redefinition is again concrete — the use-after-free guard the S82
+/// `existing_slot` carry-forward provided is preserved at the determination
+/// point. See `design/arch/principles/20-model-invariants-by-representation.md`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UserFnState {
+    /// Pass-1 interim — signature registered, callability not yet determined.
+    /// Slot-less by construction (nothing may call an as-yet-undetermined fn).
+    NotDetermined,
+    /// Determined unconstrained concrete callable. Carries the mandatory
+    /// module-local GOT slot through which it is invoked.
+    Concrete {
+        got_slot: usize,
+    },
+    /// Determined constrained-fn template — slot-less. Only the monomorphised
+    /// variants (`Concrete` entries under mangled names) are callable.
+    Constrained(Box<ConstrainedFn>),
 }
 
 // `PrimitiveKind` enum retired (S69 Submission 36).
@@ -2276,7 +2287,6 @@ mod tests {
             param_names: vec![],
             kind: Box::new(kind),
             callees: Vec::new(),
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast,
@@ -2315,7 +2325,7 @@ mod tests {
         st.insert(
             Symbol::from("regular"),
             mk_def(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: UserFnState::NotDetermined },
                 Some(trivial_variant("regular")),
             ),
         );
@@ -2342,7 +2352,7 @@ mod tests {
         st.insert(
             Symbol::from("template"),
             mk_def(
-                DefKind::UserFn { constrained_fn: Some(Box::new(template_cf)) },
+                DefKind::UserFn { fn_state: UserFnState::Constrained(Box::new(template_cf)) },
                 Some(trivial_variant("template")),
             ),
         );
@@ -2380,7 +2390,7 @@ mod tests {
         st.insert(
             Symbol::from("add$Int+Int"),
             mk_def(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: UserFnState::NotDetermined },
                 Some(trivial_variant("add$Int+Int")),
             ),
         );
@@ -2422,59 +2432,75 @@ mod tests {
         );
     }
 
-    // spec: design/arch/bounded-contexts.md §7 "Callable address is read
-    //       through an accessor" + design/arch/fixmes/0354 — a constrained-fn
-    //       template's callable address is None EVEN IF its got_slot field is
-    //       Some(_) (the 0354 phantom-slot SIGSEGV invariant, Principle 18).
+    // spec: design/arch/bounded-contexts.md §7 "Callability is structural" +
+    //       design/arch/principles/20-model-invariants-by-representation.md —
+    //       the slot lives on the callable DefKind variants, so a constrained
+    //       template structurally CANNOT hold a callable slot (the 0356/0357
+    //       representation fix; superseded the S82 0354 accessor stopgap).
+    //       Structural guard (per /qa's S83 re-point): callable_got_slot() is
+    //       Some for a Concrete UserFn / Primitive / Constructor and None for a
+    //       Constrained template, a NotDetermined interim fn, and the slot-less
+    //       kinds — and the illegal "constrained + slot" pairing is now
+    //       unconstructable (no field to set), proven by the type system, not
+    //       by an accessor reading around it.
     #[test]
-    fn callable_got_slot_excludes_constrained_template() {
+    fn callable_got_slot_is_structural() {
         let cf = ConstrainedFn {
             variant: trivial_variant("cmp"),
             scheme: Scheme { type_vars: vec![], constraints: HashMap::new(), ty: Type::Int },
         };
 
-        // A non-template Def with a slot is callable through it.
-        let plain: ModuleEntry =
-            ModuleEntry::def(mono_scheme(Type::Int), DefKind::UserFn { constrained_fn: None })
-                .got_slot(3)
-                .build();
-        assert_eq!(plain.callable_got_slot(), Some(3));
-        assert!(!plain.is_constrained_template());
-        plain.assert_well_formed();
-
-        // A constrained template that STILL carries a phantom got_slot (the
-        // illegal-but-transiently-representable shape the Pass-1/Pass-2 timing
-        // produces) must report NO callable slot — the 0354 fix.
-        let phantom: ModuleEntry = ModuleEntry::def(
+        // A concrete UserFn carries its slot on the kind's Concrete fn_state.
+        let concrete: ModuleEntry = ModuleEntry::def(
             mono_scheme(Type::Int),
-            DefKind::UserFn { constrained_fn: Some(Box::new(cf.clone())) },
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 3 } },
         )
-        .got_slot(0)
         .build();
-        assert!(phantom.is_constrained_template());
+        assert_eq!(concrete.callable_got_slot(), Some(3));
+        assert!(!concrete.is_constrained_template());
+
+        // A constrained template carries NO slot — there is no field to set.
+        // (The once-illegal `Def{got_slot:Some} + constrained` shape from the
+        // 0354 era is now unconstructable: Constrained has no got_slot.)
+        let template: ModuleEntry = ModuleEntry::def(
+            mono_scheme(Type::Int),
+            DefKind::UserFn { fn_state: UserFnState::Constrained(Box::new(cf)) },
+        )
+        .build();
+        assert!(template.is_constrained_template());
         assert_eq!(
-            phantom.callable_got_slot(),
+            template.callable_got_slot(),
             None,
-            "constrained template must report no callable slot even with got_slot: Some(0)"
+            "a constrained template structurally has no callable slot"
         );
 
-        // The sole-writer flips kind AND clears the slot in one operation, so
-        // the well-formed invariant holds afterwards.
-        let mut entry: ModuleEntry =
-            ModuleEntry::def(mono_scheme(Type::Int), DefKind::UserFn { constrained_fn: None })
-                .got_slot(5)
-                .build();
-        assert_eq!(entry.callable_got_slot(), Some(5));
-        assert!(entry.mark_constrained_template(cf));
-        assert!(entry.is_constrained_template());
-        assert_eq!(entry.callable_got_slot(), None);
-        // Field is cleared, so assert_well_formed does not panic in debug.
-        entry.assert_well_formed();
-        if let ModuleEntry::Def { got_slot, .. } = &entry {
-            assert_eq!(*got_slot, None, "sole-writer must clear the phantom slot");
-        } else {
-            panic!("expected Def");
-        }
+        // The Pass-1 interim NotDetermined fn is also slot-less → None.
+        let interim: ModuleEntry = ModuleEntry::def(
+            mono_scheme(Type::Int),
+            DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+        )
+        .build();
+        assert_eq!(interim.callable_got_slot(), None);
+        assert!(!interim.is_constrained_template());
+
+        // Primitive and Constructor carry their (mandatory) slot too.
+        let prim: ModuleEntry =
+            ModuleEntry::def(mono_scheme(Type::Int), DefKind::Primitive { got_slot: 9 }).build();
+        assert_eq!(prim.callable_got_slot(), Some(9));
+
+        let ctor: ModuleEntry = ModuleEntry::def(
+            mono_scheme(Type::Int),
+            DefKind::Constructor {
+                got_slot: 11,
+                type_name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Some")),
+                tag: 0,
+                field_count: 1,
+                internal: false,
+                type_def: None,
+            },
+        )
+        .build();
+        assert_eq!(ctor.callable_got_slot(), Some(11));
     }
 
     // ---- Sprint 56 Wave 0 §9.8 — GotTable on SymbolTable ----
@@ -2506,7 +2532,7 @@ mod tests {
         st.insert(
             Symbol::from("entry"),
             mk_def(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: UserFnState::NotDetermined },
                 Some(trivial_variant("entry")),
             ),
         );
@@ -2562,7 +2588,7 @@ mod tests {
     #[test]
     fn module_entry_def_has_code_field_none_by_default() {
         let entry = mk_def(
-            DefKind::UserFn { constrained_fn: None },
+            DefKind::UserFn { fn_state: UserFnState::NotDetermined },
             Some(trivial_variant("fresh")),
         );
         match entry {
@@ -2595,9 +2621,8 @@ mod tests {
             visibility: Visibility::Public,
             docstring: None,
             param_names: vec![],
-            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            kind: Box::new(DefKind::UserFn { fn_state: UserFnState::NotDetermined }),
             callees: Vec::new(),
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast: Some(trivial_variant("with_code")),
@@ -2633,29 +2658,29 @@ mod tests {
 
     // ---- Sprint 66 Wave 0 amendment — fn_ptr removed; GOT is the single source of truth ----
 
-    // spec: design/arch/CLAUDE.md Sprint 66 Wave 0 amendment — the prior
-    //       `fn_ptr: Option<*const u8>` field on `ModuleEntry::Def` has been
-    //       deleted. The runtime address for an addressable callable lives
-    //       in the module's GOT slot referenced by `got_slot: Option<usize>`.
-    //       A freshly constructed entry has `got_slot: None` (no slot
-    //       allocated yet); registration sites that mark an entry callable
-    //       allocate a slot via `SymbolTable::allocate_got_slot`.
+    // spec: design/arch/bounded-contexts.md §7 "Callability is structural" +
+    //       Principle 20 — the GOT slot lives on the callable DefKind variants,
+    //       not as a flat field. A freshly registered user fn is the Pass-1
+    //       interim `UserFnState::NotDetermined`, which is slot-less by
+    //       construction, so `callable_got_slot()` is None. The slot is
+    //       allocated only at the determination point (constructing
+    //       `UserFnState::Concrete`), per the deferred-allocation timing-wall
+    //       resolution (gating decision 3).
     #[test]
-    fn fresh_module_entry_def_has_no_got_slot() {
+    fn fresh_module_entry_def_has_no_callable_slot() {
         let entry = mk_def(
-            DefKind::UserFn { constrained_fn: None },
+            DefKind::UserFn { fn_state: UserFnState::NotDetermined },
             Some(trivial_variant("fresh")),
         );
-        match entry {
-            ModuleEntry::Def { got_slot, .. } => {
-                assert!(
-                    got_slot.is_none(),
-                    "freshly constructed ModuleEntry::Def must have got_slot: None; got {:?}",
-                    got_slot
-                );
-            }
-            other => panic!("expected ModuleEntry::Def, got {:?}", other),
-        }
+        assert!(
+            matches!(entry, ModuleEntry::Def { .. }),
+            "expected ModuleEntry::Def"
+        );
+        assert_eq!(
+            entry.callable_got_slot(),
+            None,
+            "a freshly registered (NotDetermined) user fn has no callable slot"
+        );
     }
 
     // spec: design/arch/CLAUDE.md Decision 26 (Option B — variant-internal) —
@@ -2671,13 +2696,14 @@ mod tests {
         let entry = mk_def(
             DefKind::PlatformEffect {
                 scheduling_class: crate::SchedulingClass::Commutative,
+                got_slot: 0,
             },
             None,
         );
 
         match entry {
             ModuleEntry::Def { kind, .. } => match *kind {
-                DefKind::PlatformEffect { scheduling_class } => {
+                DefKind::PlatformEffect { scheduling_class, .. } => {
                     assert_eq!(
                         scheduling_class,
                         crate::SchedulingClass::Commutative,
@@ -2713,9 +2739,9 @@ mod tests {
             param_names: vec![],
             kind: Box::new(DefKind::PlatformEffect {
                 scheduling_class: crate::SchedulingClass::ResourceSerial,
+                got_slot: 0,
             }),
             callees: Vec::new(),
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast: None,
@@ -2745,7 +2771,7 @@ mod tests {
                 // scheduling_class (on the variant) MUST round-trip — it is static
                 // manifest data, not a runtime pointer.
                 match *kind {
-                    DefKind::PlatformEffect { scheduling_class } => {
+                    DefKind::PlatformEffect { scheduling_class, .. } => {
                         assert_eq!(
                             scheduling_class,
                             crate::SchedulingClass::ResourceSerial,
@@ -2764,8 +2790,10 @@ mod tests {
 
     // spec: design/arch/test-discovery.md §6/§7 — DefKind::PrimitiveExtern is a
     //       payload-free unit variant (host-promised extern; key IS the ABI
-    //       name; got_slot None; code None). Pins the serde round-trip alongside
-    //       the other DefKind variants.
+    //       name; slot-less; code None). Pins the serde round-trip alongside
+    //       the other DefKind variants. Post-S83 the slot-less invariant is
+    //       structural — PrimitiveExtern carries no slot field — so
+    //       callable_got_slot() is None by representation, not by a field value.
     #[test]
     fn def_kind_primitive_extern_round_trips() {
         // Explicit `<()>` annotation: `code: None` is polymorphic in `C`.
@@ -2780,27 +2808,28 @@ mod tests {
             param_names: vec![],
             kind: Box::new(DefKind::PrimitiveExtern),
             callees: Vec::new(),
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast: None,
             code: None,
         };
 
+        // Slot-less is structural — there is no slot field on PrimitiveExtern.
+        assert_eq!(
+            entry.callable_got_slot(),
+            None,
+            "PrimitiveExtern is slot-less by representation"
+        );
+
         let json = serde_json::to_string(&entry).expect("entry must serialize");
         let rt: ModuleEntry =
             serde_json::from_str(&json).expect("entry must deserialize");
         match rt {
-            ModuleEntry::Def { kind, got_slot, .. } => {
+            ModuleEntry::Def { kind, .. } => {
                 assert!(
                     matches!(*kind, DefKind::PrimitiveExtern),
                     "kind must round-trip as PrimitiveExtern; got {:?}",
                     kind
-                );
-                // The slot-less invariant is structural, not just incidental.
-                assert!(
-                    got_slot.is_none(),
-                    "PrimitiveExtern entries carry got_slot: None"
                 );
             }
             other => panic!("expected ModuleEntry::Def, got {:?}", other),
@@ -3081,7 +3110,7 @@ mod tests {
         st.insert(
             Symbol::from("entry"),
             mk_def(
-                DefKind::UserFn { constrained_fn: None },
+                DefKind::UserFn { fn_state: UserFnState::NotDetermined },
                 Some(trivial_variant("entry")),
             ),
         );
@@ -3311,9 +3340,8 @@ mod tests {
             visibility: Visibility::Public,
             docstring: None,
             param_names: vec![],
-            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            kind: Box::new(DefKind::UserFn { fn_state: UserFnState::NotDetermined }),
             callees: Vec::new(),
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast: Some(trivial_variant("synthetic")),
@@ -3372,20 +3400,24 @@ mod tests {
     // spec: design/arch/fixmes/0241 — Tier-1 Def constructor: defaults
     #[test]
     fn def_builder_defaults() {
+        // Use a slot-less kind so the builder's field defaults (not a kind
+        // slot) are the subject — the GOT slot now rides on the kind (S83), so
+        // there is no flat `got_slot` field to default.
         let entry: ModuleEntry =
-            ModuleEntry::def(mono_scheme(Type::Int), DefKind::Primitive).build();
+            ModuleEntry::def(mono_scheme(Type::Int), DefKind::UserFn { fn_state: UserFnState::NotDetermined }).build();
+        // No callable slot by default (NotDetermined is slot-less).
+        assert_eq!(entry.callable_got_slot(), None, "default builder yields no callable slot");
         match entry {
             ModuleEntry::Def {
-                scheme, visibility, docstring, param_names, kind, callees, got_slot,
+                scheme, visibility, docstring, param_names, kind, callees,
                 trait_origin, seq, ast, code,
             } => {
                 assert_eq!(scheme.ty, Type::Int);
                 assert_eq!(visibility, Visibility::Public, "default visibility is Public");
                 assert!(docstring.is_none());
                 assert!(param_names.is_empty());
-                assert!(matches!(*kind, DefKind::Primitive));
+                assert!(matches!(*kind, DefKind::UserFn { fn_state: UserFnState::NotDetermined }));
                 assert!(callees.is_empty(), "callees defaulted, never settable");
-                assert!(got_slot.is_none());
                 assert!(trait_origin.is_none());
                 assert_eq!(seq, 0);
                 assert!(ast.is_none());
@@ -3399,23 +3431,28 @@ mod tests {
     #[test]
     fn def_builder_overrides() {
         let trait_name = FQTraitName::new(ModuleFullPath::from("core.num"), TraitName::from("Num"));
-        let entry: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Bool), DefKind::UserFn { constrained_fn: None })
+        // The GOT slot rides on the kind (S83): a concrete callable carries it
+        // via `UserFnState::Concrete { got_slot }`. The builder has no
+        // `.got_slot(_)` setter — the slot is part of the `kind` value passed in.
+        let entry: ModuleEntry = ModuleEntry::def(
+            mono_scheme(Type::Bool),
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 7 } },
+        )
             .visibility(Visibility::Private)
             .docstring("doc")
             .param_names(vec![Symbol::from("a"), Symbol::from("b")])
-            .got_slot(7)
             .trait_origin(trait_name.clone())
             .seq(42)
             .ast(trivial_variant("f"))
             .build();
+        assert_eq!(entry.callable_got_slot(), Some(7), "concrete callable slot rides on the kind");
         match entry {
             ModuleEntry::Def {
-                visibility, docstring, param_names, got_slot, trait_origin, seq, ast, ..
+                visibility, docstring, param_names, trait_origin, seq, ast, ..
             } => {
                 assert_eq!(visibility, Visibility::Private);
                 assert_eq!(docstring.as_deref(), Some("doc"));
                 assert_eq!(param_names, vec![Symbol::from("a"), Symbol::from("b")]);
-                assert_eq!(got_slot, Some(7));
                 assert_eq!(trait_origin, Some(trait_name));
                 assert_eq!(seq, 42);
                 assert!(ast.is_some());
@@ -3428,7 +3465,7 @@ mod tests {
     #[test]
     fn def_builder_from_conversion() {
         let entry: ModuleEntry =
-            ModuleEntry::def(mono_scheme(Type::Int), DefKind::Primitive).into();
+            ModuleEntry::def(mono_scheme(Type::Int), DefKind::Primitive { got_slot: 0 }).into();
         assert!(matches!(entry, ModuleEntry::Def { .. }));
     }
 }

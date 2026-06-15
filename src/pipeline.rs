@@ -87,9 +87,17 @@ pub fn execute_compiled_expr(
             message: "no `__expr` entry found in current module".into(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
-        let cranelisp_types::ModuleEntry::Def { ast, got_slot: Some(slot), .. } = entry else {
+        // The callable slot now rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
+        let Some(slot) = entry.callable_got_slot() else {
             return Err(CranelispError::CodegenError {
                 message: "`__expr` entry has no GOT slot (codegen did not run)".into(),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        };
+        let cranelisp_types::ModuleEntry::Def { ast, .. } = entry else {
+            return Err(CranelispError::CodegenError {
+                message: "`__expr` entry is not a Def".into(),
                 location: ErrorLocation::from_span(Span::SYNTHETIC),
             });
         };
@@ -97,7 +105,7 @@ pub fn execute_compiled_expr(
         let inferred = ast
             .as_ref()
             .and_then(|d| d.body.inferred_type().cloned());
-        (table.got.load_slot(*slot), inferred)
+        (table.got.load_slot(slot), inferred)
     };
 
     if got_addr.is_null() {

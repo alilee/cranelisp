@@ -250,7 +250,7 @@ fn collect_member_glob(
                 DefKind::Constructor { type_name, .. } => {
                     type_name.name.as_ref() == parent.as_ref()
                 }
-                DefKind::Primitive | DefKind::UserFn { .. } => trait_origin
+                DefKind::Primitive { .. } | DefKind::UserFn { .. } => trait_origin
                     .as_ref()
                     .is_some_and(|fqtn| fqtn.name == trait_name),
                 _ => false,
@@ -492,7 +492,7 @@ mod tests {
                 constraints: StdHashMap::new(),
                 ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
             },
-            DefKind::Primitive,
+            DefKind::Primitive { got_slot: 0 },
         )
         .visibility(Visibility::Public)
         .build()

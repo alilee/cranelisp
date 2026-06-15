@@ -385,18 +385,20 @@ pub fn register_platform_in_tc(
 
         let param_names: Vec<Symbol> = desc.param_names.iter().map(|n| Symbol::from(n.as_str())).collect();
 
-        // Insert directly into the module's symbol table with `got_slot =
-        // manifest index` (§5.3) — the GOT-indirect dispatch arm in backend
-        // (`apply.rs`) activates on `got_slot: Some(_)`.
+        // Insert directly into the module's symbol table with the GOT slot =
+        // manifest index (§5.3). The slot now rides on the `PlatformEffect`
+        // variant (S83 reshape, FIXME 0358 — PlatformEffect IS GOT-callable);
+        // the GOT-indirect dispatch arm in backend (`apply.rs`) activates on
+        // the variant's `got_slot`.
         if let Some(mut table) = symbol_tables.get_mut(&module_path) {
             let mut builder = ModuleEntry::def(
                 scheme,
                 DefKind::PlatformEffect {
                     scheduling_class: desc.scheduling_class,
+                    got_slot: slot,
                 },
             )
             .visibility(Visibility::Public)
-            .got_slot(slot)
             .param_names(param_names);
             if !desc.docstring.is_empty() {
                 builder = builder.docstring(desc.docstring.clone());
@@ -1121,7 +1123,7 @@ mod tests {
 
         // Verify types are correctly parsed AND `got_slot = manifest index`
         // (platform-interface.md §5.3) — the GOT-indirect dispatch activator.
-        if let Some(ModuleEntry::Def { scheme, kind, docstring, got_slot, .. }) = print_entry {
+        if let Some(entry @ ModuleEntry::Def { scheme, kind, docstring, .. }) = print_entry {
             // print: (Fn [primitives/String] (primitives/IO primitives/Int))
             match &scheme.ty {
                 Type::Fn(params, ret) => {
@@ -1133,12 +1135,14 @@ mod tests {
             }
             assert!(matches!(kind.as_ref(), DefKind::PlatformEffect { .. }));
             assert!(docstring.is_some());
-            assert_eq!(*got_slot, Some(0), "print is manifest index 0");
+            // The slot rides on the `PlatformEffect` variant (S83 reshape,
+            // FIXME 0358); read it via the `callable_got_slot()` chokepoint.
+            assert_eq!(entry.callable_got_slot(), Some(0), "print is manifest index 0");
         } else {
             panic!("expected Def entry for print");
         }
-        if let Some(ModuleEntry::Def { got_slot, .. }) = read_entry {
-            assert_eq!(*got_slot, Some(1), "read-line is manifest index 1");
+        if let Some(entry @ ModuleEntry::Def { .. }) = read_entry {
+            assert_eq!(entry.callable_got_slot(), Some(1), "read-line is manifest index 1");
         }
 
         // The platform module's GOT wraps the DLL's exported slab; slot 0 (print)

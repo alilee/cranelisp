@@ -170,14 +170,19 @@ where
         }
         let st = tables.get(module)?;
         let entry = st.get(bare)?;
-        // Read the callable address through the SSOT accessor, never the raw
-        // `got_slot` field: a constrained-fn template carries a phantom
-        // `got_slot` (allocated Pass 1, never populated — its mono variants
-        // carry the real slots), so reading the field directly resolved the
-        // template's NULL slot cross-module → `call_indirect` through null →
-        // SIGSEGV (FIXME 0354). `callable_got_slot()` returns `None` for a
-        // constrained template, so the call lowers to a clean "no callable
-        // slot / unresolved" typed error instead of a null call.
+        // Read the callable address through `callable_got_slot()`. Post the
+        // S83 Option-A reshape (FIXME 0356/0358, Principle 20) the GOT slot
+        // lives on the callable `DefKind` variant — there is no longer a flat
+        // `got_slot` field to read around. The accessor is now a trivial
+        // variant-present read: it returns `Some` exactly for the kinds that
+        // structurally own a slot (concrete user fns, primitives, constructors,
+        // platform effects) and `None` for the slot-less kinds (constrained
+        // templates, `Macro` parent, `PrimitiveExtern`, `Overloaded` base). The
+        // once-illegal "constrained template holding a callable slot" pairing
+        // that previously read as a NULL phantom slot → `call_indirect` through
+        // null → SIGSEGV (FIXME 0354) is now *unrepresentable* — the constrained
+        // template variant carries no slot field at all, so the read-around
+        // stopgap that guarded it retires.
         if let Some(slot) = entry.callable_got_slot() {
             return Some((module.clone(), slot));
         }
@@ -288,10 +293,15 @@ where
         let st = tables.get(module)?;
         let entry = st.get(bare)?;
         match entry {
-            ModuleEntry::Def { got_slot: Some(slot), kind, .. }
+            ModuleEntry::Def { kind, .. }
                 if matches!(kind.as_ref(), DefKind::PlatformEffect { .. }) =>
             {
-                Some((module.clone(), *slot, Symbol::from(bare)))
+                // The platform effect's GOT slot rides on the variant (S83
+                // reshape, FIXME 0358).
+                let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref() else {
+                    unreachable!("matched PlatformEffect above")
+                };
+                Some((module.clone(), *got_slot, Symbol::from(bare)))
             }
             ModuleEntry::Import { source, .. } => {
                 let source_module = source.module.clone();
@@ -1997,7 +2007,8 @@ mod tests {
 
     use super::*;
     use cranelisp_types::{
-        DefKind, ModuleAliasEntry, ModuleAliases, ModuleEntry, Scheme, Type, Visibility,
+        DefKind, ModuleAliasEntry, ModuleAliases, ModuleEntry, Scheme, Type, UserFnState,
+        Visibility,
     };
 
     fn def_with_slot(slot: usize) -> ModuleEntry {
@@ -2010,9 +2021,10 @@ mod tests {
             visibility: Visibility::Public,
             docstring: None,
             param_names: vec![],
-            kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+            kind: Box::new(DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: slot },
+            }),
             callees: vec![],
-            got_slot: Some(slot),
             trait_origin: None,
             seq: 0,
             ast: None,
@@ -2120,7 +2132,6 @@ mod tests {
             param_names: vec![],
             kind: Box::new(DefKind::PrimitiveExtern),
             callees: vec![],
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast: None,
@@ -2179,9 +2190,10 @@ mod tests {
         );
     }
 
-    /// A `DefKind::PlatformEffect` Def carrying the NEW (TARGET) shape — a
-    /// populated `got_slot` adopted from the DLL's exported GOT (manifest
-    /// index). Contrast the as-built shape which carries `got_slot: None`.
+    /// A `DefKind::PlatformEffect` Def. Post the S83 Option-A reshape (FIXME
+    /// 0358) a platform effect ALWAYS carries its GOT slot on the variant — it
+    /// is a GOT-addressable callable, so there is no longer a slot-less
+    /// "as-built" PlatformEffect shape to contrast against.
     fn platform_effect_def_new_shape(slot: usize) -> ModuleEntry {
         ModuleEntry::Def {
             scheme: Scheme {
@@ -2194,9 +2206,9 @@ mod tests {
             param_names: vec![],
             kind: Box::new(DefKind::PlatformEffect {
                 scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+                got_slot: slot,
             }),
             callees: vec![],
-            got_slot: Some(slot),
             trait_origin: None,
             seq: 0,
             ast: None,
@@ -2206,60 +2218,41 @@ mod tests {
 
     // spec: design/arch/platform-interface.md §6.2/§6.3; BC §3 "the
     //       platform-interface codegen role" — the platform GOT-indirect call
-    //       arm activates exactly when the platform entry carries the NEW shape
-    //       (`got_slot: Some(_)`, adopted from the DLL's exported GOT). The
-    //       transitional discriminator is `resolve_got_target`: it resolves the
-    //       new-shape PlatformEffect entry to (module, slot) — so the dispatch
-    //       arm emits GOT-indirect; the as-built `got_slot: None` shape misses
-    //       it and falls to the direct-extern path (kept live until the flip).
+    //       arm activates for a `DefKind::PlatformEffect` entry, which (post the
+    //       S83 Option-A reshape, FIXME 0358) ALWAYS carries its GOT slot on the
+    //       variant: `resolve_got_target` resolves it to (module, slot) so the
+    //       dispatch arm emits GOT-indirect. A genuinely slot-less kind
+    //       (`PrimitiveExtern`) misses the GOT path and falls to the
+    //       direct-extern (`Linkage::Import`) path.
     #[test]
     fn platform_effect_new_shape_resolves_got_indirect() {
         let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
         let plat = ModuleFullPath::from("platform.shapes");
         {
             let mut st = SymbolTable::new(plat.clone());
-            // NEW shape: a populated got_slot (DLL-exported-GOT adoption).
+            // PlatformEffect: carries its got_slot on the variant (DLL-exported
+            // GOT adoption) → GOT-indirect resolvable.
             st.insert(Symbol::from("rectangle-area"), platform_effect_def_new_shape(2));
-            // AS-BUILT shape: got_slot: None — direct-extern fallback.
-            st.insert(
-                Symbol::from("print"),
-                ModuleEntry::Def {
-                    scheme: Scheme {
-                        type_vars: vec![],
-                        constraints: std::collections::HashMap::new(),
-                        ty: Type::Int,
-                    },
-                    visibility: Visibility::Public,
-                    docstring: None,
-                    param_names: vec![],
-                    kind: Box::new(DefKind::PlatformEffect {
-                        scheduling_class: cranelisp_types::SchedulingClass::Sequential,
-                    }),
-                    callees: vec![],
-                    got_slot: None,
-                    trait_origin: None,
-                    seq: 0,
-                    ast: None,
-                    code: None,
-                },
-            );
+            // A genuinely slot-less host-promised extern — misses the GOT path
+            // and stays on the direct-extern fallback.
+            st.insert(Symbol::from("print"), primitive_extern_def());
             tables.insert(plat.clone(), st);
         }
         let user = ModuleFullPath::from("user");
         tables.insert(user.clone(), SymbolTable::new(user.clone()));
         let aliases: ModuleAliases = DashMap::new();
 
-        // NEW shape resolves to (defining module, slot) → GOT-indirect arm.
+        // PlatformEffect resolves to (defining module, slot) → GOT-indirect arm.
         assert_eq!(
             resolve_got_target(&tables, &aliases, &user, &Symbol::from("rectangle-area")),
             Some((plat.clone(), 2)),
-            "new-shape PlatformEffect resolves GOT-indirect at its adopted slot",
+            "PlatformEffect resolves GOT-indirect at its adopted slot",
         );
-        // AS-BUILT shape misses the GOT path → direct-extern fallback stays live.
+        // The slot-less PrimitiveExtern misses the GOT path → direct-extern stays live.
         assert_eq!(
             resolve_got_target(&tables, &aliases, &user, &Symbol::from("print")),
             None,
-            "as-built got_slot: None PlatformEffect stays on the direct-extern path",
+            "a slot-less PrimitiveExtern stays on the direct-extern path",
         );
     }
 

@@ -139,7 +139,19 @@ pub mod linker;
 /// reconstruct — it would silently mis-load (lost field names; a §4.2.1
 /// violation masked behind a cache hit). Decision 34 mandates the bump so stale
 /// v3 caches are rejected as version-mismatch rather than mis-loaded.
-pub const CACHE_SCHEMA_VERSION: u32 = 4;
+/// **S83 bump 4 → 5 (Option-A callability reshape, FIXME 0356/0358).** The
+/// serialized `DefKind` / `ModuleEntry::Def` shape changed: the flat
+/// `ModuleEntry::Def.got_slot` field was retired and the GOT slot moved onto the
+/// callable `DefKind` variants (`UserFn { fn_state: Concrete { got_slot } }`,
+/// `Primitive { got_slot }`, `Constructor { got_slot, .. }`,
+/// `PlatformEffect { got_slot, .. }`); `UserFn` gained a `fn_state:
+/// UserFnState` payload. A stale v4 `.meta.json` would deserialize a callable
+/// with NO slot (the absent field defaulting to slot-less), so the call would
+/// lower through a NULL GOT slot — the exact NULL-call regression Principle 20
+/// forecloses. The bump invalidates every v4 cache as
+/// `CacheStale::SchemaMismatch` (treated as a cache-miss → recompile) so the
+/// slot-less mis-load can never happen.
+pub const CACHE_SCHEMA_VERSION: u32 = 5;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
@@ -371,7 +383,7 @@ pub fn load_cached_object(
     // Function names with GOT slots are on ModuleEntry::Def in the symbol table.
     let mut fn_addrs = std::collections::HashMap::new();
     for (name, entry) in cached.symbol_table().all_symbols() {
-        if matches!(entry, cranelisp_types::ModuleEntry::Def { got_slot: Some(_), .. })
+        if entry.callable_got_slot().is_some()
             && let Ok(addr) = linker.get_symbol(name.as_ref())
         {
             fn_addrs.insert(name.as_ref().to_string(), addr);
@@ -595,7 +607,7 @@ mod tests {
     #[test]
     fn test_compile_load_and_execute_cached_module() {
         use cranelisp_types::{DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Scheme, Span, Symbol,
-            SymbolTable, Type, Visibility,
+            SymbolTable, Type, UserFnState, Visibility,
         };
         use cranelift_module::default_libcall_names;
         use cranelift_object::{ObjectBuilder, ObjectModule};
@@ -632,9 +644,10 @@ mod tests {
                 visibility: Visibility::Public,
                 docstring: None,
                 param_names: vec![],
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                kind: Box::new(DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                }),
                 callees: vec![],
-                got_slot: None,
                 trait_origin: None,
                 seq: 0,
                 ast: defn.variants.first().cloned(),
@@ -706,9 +719,10 @@ mod tests {
                 visibility: cranelisp_types::Visibility::Public,
                 docstring: None,
                 param_names: vec![],
-                kind: Box::new(cranelisp_types::DefKind::UserFn { constrained_fn: None }),
+                kind: Box::new(cranelisp_types::DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                }),
                 callees: vec![],
-                got_slot: Some(0),
                 trait_origin: None,
                 seq: 0,
                 ast: None,

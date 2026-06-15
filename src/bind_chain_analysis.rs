@@ -225,7 +225,7 @@ fn scheduling_class_from_table(
         let entry = table.get(name)?;
         match entry {
             ModuleEntry::Def { kind, .. } => {
-                if let DefKind::PlatformEffect { scheduling_class } = kind.as_ref() {
+                if let DefKind::PlatformEffect { scheduling_class, .. } = kind.as_ref() {
                     Some(*scheduling_class)
                 } else {
                     None
@@ -579,7 +579,7 @@ mod tests {
                 constraints: std::collections::HashMap::new(),
                 ty: Type::Int,
             },
-            DefKind::PlatformEffect { scheduling_class: sc },
+            DefKind::PlatformEffect { scheduling_class: sc, got_slot: 0 },
         )
         .visibility(Visibility::Public)
         .build()

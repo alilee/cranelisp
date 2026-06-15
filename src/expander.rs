@@ -184,12 +184,14 @@ impl JitMacroExpander<'_> {
     /// slot. Returns `None` if the entry is absent or its GOT slot is empty.
     fn clause_code_ptr(&self, module: &ModuleFullPath, clause_name: &Symbol) -> Option<*const u8> {
         let table = self.symbol_tables.get(module)?;
-        let ModuleEntry::Def { code: Some(_), got_slot: Some(slot), .. } =
-            table.get(clause_name.as_ref())?
-        else {
+        let entry = table.get(clause_name.as_ref())?;
+        let ModuleEntry::Def { code: Some(_), .. } = entry else {
             return None;
         };
-        let ptr = table.got.load_slot(*slot);
+        // The callable slot rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
+        let slot = entry.callable_got_slot()?;
+        let ptr = table.got.load_slot(slot);
         if ptr.is_null() { None } else { Some(ptr) }
     }
 }
@@ -864,7 +866,9 @@ mod tests {
         let mut st = crate::code::SessionSymbolTable::new_with_params(path.clone());
         let entry = ModuleEntry::def(
             empty_scheme(),
-            DefKind::UserFn { constrained_fn: None },
+            DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+            },
         )
         .visibility(Visibility::Public)
         .build();

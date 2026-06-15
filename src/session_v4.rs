@@ -1872,14 +1872,14 @@ impl CompilerSession {
 
         // GOT is the single source of callable addresses (D41/D35); read
         // `main`'s pointer from its GOT slot rather than a `Code::ptr`.
+        // The callable slot now rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
         if let Some(table) = self.shared.symbol_tables.get(&module_path)
-            && let Some(ModuleEntry::Def {
-                code: Some(_),
-                got_slot: Some(slot),
-                ..
-            }) = table.get(main_sym.as_ref())
+            && let Some(entry @ ModuleEntry::Def { code: Some(_), .. }) =
+                table.get(main_sym.as_ref())
+            && let Some(slot) = entry.callable_got_slot()
         {
-            let ptr = table.got.load_slot(*slot);
+            let ptr = table.got.load_slot(slot);
             if !ptr.is_null() {
                 return Ok(ptr);
             }
@@ -2543,13 +2543,18 @@ pub(crate) fn discover_test_names(
         if !name.as_ref().starts_with("test-") {
             continue;
         }
+        // The callable slot rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
         match entry {
             ModuleEntry::Def {
                 param_names,
                 code: Some(_),
-                got_slot: Some(slot),
                 ..
-            } if param_names.is_empty() && !symbols.got.load_slot(*slot).is_null() => {
+            } if param_names.is_empty()
+                && entry
+                    .callable_got_slot()
+                    .is_some_and(|slot| !symbols.got.load_slot(slot).is_null()) =>
+            {
                 names.push(format!("{}/{}", module.as_ref(), name.as_ref()));
             }
             _ => continue,
@@ -2584,15 +2589,14 @@ pub(crate) fn run_test_by_name(
     // Look up the code pointer from the entry's GOT slot (D41/D35 — GOT is
     // the single source of callable addresses; no `Code::ptr`).
     let code_ptr = tc_modules.get(&module).and_then(|t| {
-        let ModuleEntry::Def {
-            code: Some(_),
-            got_slot: Some(slot),
-            ..
-        } = t.get(bare_name)?
-        else {
+        // The callable slot rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
+        let entry = t.get(bare_name)?;
+        let ModuleEntry::Def { code: Some(_), .. } = entry else {
             return None;
         };
-        let ptr = t.got.load_slot(*slot);
+        let slot = entry.callable_got_slot()?;
+        let ptr = t.got.load_slot(slot);
         if ptr.is_null() {
             None
         } else {
@@ -2783,12 +2787,12 @@ fn discover_eligible_tests(
         if !name.as_ref().starts_with("test-") {
             continue;
         }
-        let ModuleEntry::Def {
-            scheme,
-            got_slot: Some(slot),
-            ..
-        } = entry
-        else {
+        // The callable slot rides on the `DefKind` variant (S83 reshape,
+        // FIXME 0356/0357) — read it via the `callable_got_slot()` chokepoint.
+        let ModuleEntry::Def { scheme, .. } = entry else {
+            continue;
+        };
+        let Some(slot) = entry.callable_got_slot() else {
             continue;
         };
         if !test_scheme_is_eligible(scheme) {
@@ -2797,7 +2801,7 @@ fn discover_eligible_tests(
         out.push(EligibleTest {
             fq_name: format!("{}/{}", module.as_ref(), name.as_ref()),
             // slot address = base + slot * size_of::<AtomicPtr<u8>>() (8).
-            slot_addr: got_base + (*slot as i64) * 8,
+            slot_addr: got_base + (slot as i64) * 8,
         });
     }
     out.sort_by(|a, b| a.fq_name.cmp(&b.fq_name));
@@ -3475,7 +3479,7 @@ mod bare_primitive_value_path_tests {
     fn mk_primitive_def(ty: Type, docstring: Option<&str>) -> ModuleEntry<Code> {
         let mut builder = ModuleEntry::def(
             Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty },
-            DefKind::Primitive,
+            DefKind::Primitive { got_slot: 0 },
         )
         .visibility(Visibility::Public);
         if let Some(doc) = docstring {
@@ -3731,7 +3735,7 @@ mod bare_primitive_value_path_tests {
                 ModuleEntry::Def { scheme, kind, .. } => {
                     assert_eq!(&scheme.ty, ty, "{name}: terminal Def carries its own type");
                     assert!(
-                        matches!(kind.as_ref(), DefKind::Primitive),
+                        matches!(kind.as_ref(), DefKind::Primitive { .. }),
                         "{name}: terminal entry must be a Primitive Def, got {kind:?}"
                     );
                 }
@@ -3811,7 +3815,9 @@ mod list_classification_tests {
                 Symbol::from("f"),
                 ModuleEntry::def(
                     mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
-                    DefKind::UserFn { constrained_fn: None },
+                    DefKind::UserFn {
+                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                    },
                 )
                 .visibility(Visibility::Public)
                 .build(),
@@ -3835,6 +3841,7 @@ mod list_classification_tests {
                 ModuleEntry::def(
                     mono(Type::Int),
                     DefKind::Constructor {
+                        got_slot: 0,
                         type_name: FQTypeName {
                             module: user.clone(),
                             name: cranelisp_types::TypeName::from("T"),
@@ -3929,24 +3936,21 @@ pub(crate) fn populate_ring0_got_slots(
     // PRIMITIVES_TABLE: LazyLock<Arc<SymbolTable<Code, ()>>>. Deref the
     // LazyLock to the Arc, then `.as_ref()` to get `&SymbolTable`.
     let static_table = (*cranelisp_primitives::PRIMITIVES_TABLE).as_ref();
+    // The callable slot rides on the `DefKind` variant (S83 reshape, FIXME
+    // 0356/0357) — read both the static-source and session-dest slots via the
+    // `callable_got_slot()` chokepoint.
     for (name, static_entry) in static_table.symbols.iter() {
-        let cranelisp_types::ModuleEntry::Def {
-            got_slot: Some(src_slot), ..
-        } = static_entry
-        else {
+        let Some(src_slot) = static_entry.callable_got_slot() else {
             continue;
         };
-        let ptr = static_table.got.load_slot(*src_slot);
+        let ptr = static_table.got.load_slot(src_slot);
         let Some(session_entry) = table.get(name.as_ref()) else {
             continue;
         };
-        let cranelisp_types::ModuleEntry::Def {
-            got_slot: Some(dst_slot), ..
-        } = session_entry
-        else {
+        let Some(dst_slot) = session_entry.callable_got_slot() else {
             continue;
         };
-        table.got.store_slot(*dst_slot, ptr);
+        table.got.store_slot(dst_slot, ptr);
     }
 }
 

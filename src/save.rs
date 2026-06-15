@@ -700,7 +700,13 @@ mod tests {
         };
         st.insert(
             "answer".into(),
-            ModuleEntry::def(scheme, DefKind::UserFn { constrained_fn: None }).build(),
+            ModuleEntry::def(
+                scheme,
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                },
+            )
+            .build(),
         );
 
         let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();

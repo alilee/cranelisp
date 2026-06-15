@@ -351,11 +351,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // constructors are slotted too — addressability does not depend on
             // arity. The slot is allocated before the entry is built; the
             // `&mut` guard is dropped before the later `.insert` re-acquires it.
+            // The ctor is a concrete callable born with its slot (S83 deferred
+            // allocation, Principle 20): the slot rides on
+            // `DefKind::Constructor.got_slot`, not a flat `Def` field.
             let slot = self.current_symbol_table_mut(state).allocate_got_slot();
             let is_product_ctor = ctor_type_def.is_some();
             let mut builder = ModuleEntry::def(
                 ctor_scheme,
                 DefKind::Constructor {
+                    got_slot: slot,
                     type_name: fqtn.clone(),
                     tag: ctor.tag,
                     field_count: ctor.fields.len(),
@@ -365,8 +369,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             )
             .visibility(visibility)
             .param_names(param_names)
-            .ast(ast)
-            .got_slot(slot);
+            .ast(ast);
             // Ctor docstring wins; for the product ctor (which has no separate
             // `TypeDef` entry) fall back to the deftype-level docstring.
             let doc = ctor.docstring.clone().or_else(|| {
@@ -967,12 +970,14 @@ mod tests {
         let table = tc.symbol_table();
         let slot_of = |name: &str| -> Option<usize> {
             match table.get(name) {
-                Some(ModuleEntry::Def { got_slot, kind, .. }) => {
+                Some(entry @ ModuleEntry::Def { kind, .. }) => {
                     assert!(
                         matches!(kind.as_ref(), DefKind::Constructor { .. }),
                         "{name} should be a Constructor entry"
                     );
-                    *got_slot
+                    // S83 (Principle 20): the ctor's slot rides on
+                    // `DefKind::Constructor.got_slot`, read via the accessor.
+                    entry.callable_got_slot()
                 }
                 _ => panic!("{name} should be a Def(Constructor) entry"),
             }

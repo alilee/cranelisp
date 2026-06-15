@@ -823,10 +823,9 @@ where
     #[allow(dead_code)] // accessor pair; exercised via TestFixture in `#[cfg(test)]`.
     pub(crate) fn get_got_slot(&self, module: &ModuleFullPath, name: &Symbol) -> Option<usize> {
         let guard = self.modules.get(module)?;
-        match guard.get(name.as_ref())? {
-            ModuleEntry::Def { got_slot, .. } => *got_slot,
-            _ => None,
-        }
+        // S83 (Principle 20): the GOT slot rides on the callable `DefKind`
+        // variant, read through the single `callable_got_slot()` accessor.
+        guard.get(name.as_ref())?.callable_got_slot()
     }
 
     /// Get a reference to the underlying modules DashMap.

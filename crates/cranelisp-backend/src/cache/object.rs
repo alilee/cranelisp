@@ -478,7 +478,7 @@ mod tests {
         defn: cranelisp_types::Defn,
         scheme: cranelisp_types::Scheme,
     ) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
-        use cranelisp_types::{DefKind, ModuleEntry, Visibility};
+        use cranelisp_types::{DefKind, ModuleEntry, UserFnState, Visibility};
         let tables = dashmap::DashMap::new();
         let mut st = SymbolTable::new(module.clone());
         let name = defn.name.clone();
@@ -495,9 +495,10 @@ mod tests {
                 visibility: Visibility::Public,
                 docstring: None,
                 param_names,
-                kind: Box::new(DefKind::UserFn { constrained_fn: None }),
+                kind: Box::new(DefKind::UserFn {
+                    fn_state: UserFnState::NotDetermined,
+                }),
                 callees: vec![],
-                got_slot: None,
                 trait_origin: None,
                 seq: 0,
                 ast: variant,

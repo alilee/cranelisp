@@ -53,7 +53,7 @@ use crate::{
 ///
 /// ```ignore
 /// let table: SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("test"))
-///     .def("id", scheme, DefKind::UserFn { constrained_fn: None })
+///     .def("id", scheme, DefKind::UserFn { fn_state: UserFnState::NotDetermined })
 ///     .entry(Symbol::from("Some"), ModuleEntry::def(ctor_scheme, ctor_kind).build())
 ///     .build();
 /// assert!(table.get("id").is_some());
@@ -102,7 +102,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTableBuilder<C, L> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Type;
+    use crate::{Type, UserFnState};
     use std::collections::HashMap;
 
     fn mono_scheme(ty: Type) -> Scheme {
@@ -113,10 +113,10 @@ mod tests {
     #[test]
     fn builder_populates_and_round_trips() {
         let table: SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("test"))
-            .def("id", mono_scheme(Type::Int), DefKind::UserFn { constrained_fn: None })
+            .def("id", mono_scheme(Type::Int), DefKind::UserFn { fn_state: UserFnState::NotDetermined })
             .entry(
                 Symbol::from("k"),
-                ModuleEntry::def(mono_scheme(Type::Bool), DefKind::Primitive)
+                ModuleEntry::def(mono_scheme(Type::Bool), DefKind::Primitive { got_slot: 0 })
                     .docstring("constant")
                     .build(),
             )

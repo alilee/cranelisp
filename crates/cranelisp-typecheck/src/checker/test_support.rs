@@ -465,8 +465,9 @@ impl TestFixture {
             .all_symbols()
             .filter_map(|(name, entry)| {
                 if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
-                    && let cranelisp_types::DefKind::UserFn { constrained_fn: Some(_) } =
-                        kind.as_ref()
+                    && let cranelisp_types::DefKind::UserFn {
+                        fn_state: cranelisp_types::UserFnState::Constrained(_),
+                    } = kind.as_ref()
                 {
                     return Some(name.clone());
                 }
@@ -490,8 +491,8 @@ impl TestFixture {
             .all_symbols()
             .filter_map(|(name, entry)| {
                 if let cranelisp_types::ModuleEntry::Def { kind, .. } = entry
-                    && let cranelisp_types::DefKind::UserFn { constrained_fn: None } =
-                        kind.as_ref()
+                    && let cranelisp_types::DefKind::UserFn { fn_state } = kind.as_ref()
+                    && !matches!(fn_state, cranelisp_types::UserFnState::Constrained(_))
                 {
                     let s = name.as_ref();
                     if let Some(dollar) = s.find('$')

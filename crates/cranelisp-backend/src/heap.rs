@@ -610,6 +610,7 @@ mod heap_category_tests {
                 .map(|i| Symbol::from(format!("f{i}")))
                 .collect(),
             kind: Box::new(DefKind::Constructor {
+                got_slot: 0,
                 type_name: type_fqtn.clone(),
                 tag: spec.tag,
                 field_count: spec.field_count,
@@ -617,7 +618,6 @@ mod heap_category_tests {
                 type_def,
             }),
             callees: vec![],
-            got_slot: None,
             trait_origin: None,
             seq: 0,
             ast: None,

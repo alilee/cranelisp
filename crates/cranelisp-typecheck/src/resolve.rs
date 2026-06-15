@@ -217,6 +217,7 @@ mod tests {
                 ty: Type::ADT(test_fqtn(name), vec![]),
             },
             DefKind::Constructor {
+                got_slot: 0,
                 type_name: test_fqtn(name),
                 tag: 0,
                 field_count: 0,

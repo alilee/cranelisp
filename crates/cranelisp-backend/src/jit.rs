@@ -119,32 +119,32 @@ fn register_platform_effect_symbols<C, L>(
             match entry {
                 // Direct def: a PlatformEffect with a populated slot in this
                 // module's own GOT.
-                ModuleEntry::Def {
-                    kind,
-                    got_slot: Some(slot),
-                    ..
-                } if matches!(kind.as_ref(), DefKind::PlatformEffect { .. }) => {
-                    let ptr = table.value().got.load_slot(*slot);
-                    if !ptr.is_null() {
-                        builder.symbol(name.as_ref().to_string(), ptr);
+                ModuleEntry::Def { kind, .. }
+                    if matches!(kind.as_ref(), DefKind::PlatformEffect { .. }) =>
+                {
+                    // The platform effect's GOT slot now rides on the
+                    // `DefKind::PlatformEffect` variant (S83 reshape, FIXME 0358).
+                    if let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref() {
+                        let ptr = table.value().got.load_slot(*got_slot);
+                        if !ptr.is_null() {
+                            builder.symbol(name.as_ref().to_string(), ptr);
+                        }
                     }
                 }
                 // Imported def: follow the edge to the defining table and
                 // register the platform fn from the source module's GOT.
                 ModuleEntry::Import { source, .. } => {
                     if let Some(source_table) = symbol_tables.get(&source.module)
-                        && let Some(ModuleEntry::Def {
-                            kind,
-                            got_slot: Some(slot),
-                            ..
-                        }) = source_table.get(source.symbol.as_ref())
-                        && matches!(kind.as_ref(), DefKind::PlatformEffect { .. })
+                        && let Some(ModuleEntry::Def { kind, .. }) =
+                            source_table.get(source.symbol.as_ref())
+                        && let DefKind::PlatformEffect { got_slot, .. } = kind.as_ref()
                     {
                         // The JIT linker name is the defining module's symbol
                         // key (the canonical jit-name), not the importing
                         // module's local alias — backend emits the `Import`
-                        // against the source name.
-                        let ptr = source_table.got.load_slot(*slot);
+                        // against the source name. The slot rides on the
+                        // `PlatformEffect` variant (S83 reshape, FIXME 0358).
+                        let ptr = source_table.got.load_slot(*got_slot);
                         if !ptr.is_null() {
                             builder.symbol(source.symbol.as_ref().to_string(), ptr);
                         }
@@ -1381,9 +1381,9 @@ mod tests {
             param_names: vec![],
             kind: Box::new(DefKind::PlatformEffect {
                 scheduling_class: SchedulingClass::Sequential,
+                got_slot: slot,
             }),
             callees: vec![],
-            got_slot: Some(slot),
             trait_origin: None,
             seq: 0,
             ast: None,

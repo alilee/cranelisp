@@ -47,14 +47,20 @@
 //!   code carrier) and `L: LinkerStore` (per-module linker carrier);
 //!   both default to `()` so crates that don't handle compiled code work
 //!   with `SymbolTable<(), ()>` and never see the parameters.
-//!   The **callable runtime address** of an entry is read through
-//!   [`ModuleEntry::callable_got_slot`], NOT the raw `got_slot` field:
-//!   a constrained-fn template ([`ModuleEntry::is_constrained_template`])
-//!   is never directly callable (only its monomorphised variants are), so
-//!   the accessor returns `None` for it regardless of the stored field.
-//!   [`ModuleEntry::mark_constrained_template`] is the sole writer that
-//!   maintains that correlation (flip `kind` + clear the field together).
-//!   See `design/arch/fixmes/0354-*.md` and Principle 18.
+//!   **Callability is structural (S83, FIXME 0356/0357, Principle 20):**
+//!   the GOT slot through which an entry is invoked lives on the callable
+//!   [`DefKind`] variants ([`UserFnState::Concrete`], [`DefKind::Primitive`],
+//!   [`DefKind::Constructor`]) — not as a flat `ModuleEntry::Def` field. A
+//!   constrained-fn template ([`ModuleEntry::is_constrained_template`]) is
+//!   [`UserFnState::Constrained`], which carries no slot, so it
+//!   *structurally cannot* hold a callable address — the once-illegal
+//!   pairing is unconstructable. The **callable runtime address** is read
+//!   through [`ModuleEntry::callable_got_slot`] (the single read-through
+//!   point; trivial since the reshape). The S82 stopgap
+//!   (`mark_constrained_template()` flip-and-clear sole-writer +
+//!   `assert_well_formed()` phantom-slot guard) is retired. See
+//!   `design/arch/bounded-contexts.md` §7 "Callability is structural" and
+//!   Principle 20.
 //! - **Module aliases** ([`ModuleAliasEntry`], [`ModuleAliases`]) — the
 //!   parallel session-level alias table introduced by spec §8.3.4
 //!   (import alias) and §8.4.4 (export mount). Lives at session scope
@@ -230,7 +236,7 @@ pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
     ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, PlatformSpec,
-    StructuralDeclEntry, SymbolTable, SymbolTables, ensure_module_exists, for_each_in_module,
+    StructuralDeclEntry, SymbolTable, SymbolTables, UserFnState, ensure_module_exists, for_each_in_module,
     get_impls_for_type_chain, get_implementing_types_chain, got_data_symbol_name, install_module,
     lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
     resolve_terminal_entry_and_home,

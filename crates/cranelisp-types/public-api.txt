@@ -48,6 +48,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::CranelispError
 pub enum cranelisp_types::DefKind
 pub cranelisp_types::DefKind::Constructor
 pub cranelisp_types::DefKind::Constructor::field_count: usize
+pub cranelisp_types::DefKind::Constructor::got_slot: usize
 pub cranelisp_types::DefKind::Constructor::internal: bool
 pub cranelisp_types::DefKind::Constructor::tag: usize
 pub cranelisp_types::DefKind::Constructor::type_def: core::option::Option<alloc::boxed::Box<cranelisp_types::TypeDefInfo>>
@@ -58,11 +59,13 @@ pub cranelisp_types::DefKind::Macro::macro_sexp: cranelisp_types::Sexp
 pub cranelisp_types::DefKind::Overloaded
 pub cranelisp_types::DefKind::Overloaded::variants: alloc::vec::Vec<cranelisp_types::OverloadVariant>
 pub cranelisp_types::DefKind::PlatformEffect
+pub cranelisp_types::DefKind::PlatformEffect::got_slot: usize
 pub cranelisp_types::DefKind::PlatformEffect::scheduling_class: cranelisp_types::SchedulingClass
 pub cranelisp_types::DefKind::Primitive
+pub cranelisp_types::DefKind::Primitive::got_slot: usize
 pub cranelisp_types::DefKind::PrimitiveExtern
 pub cranelisp_types::DefKind::UserFn
-pub cranelisp_types::DefKind::UserFn::constrained_fn: core::option::Option<alloc::boxed::Box<cranelisp_types::ConstrainedFn>>
+pub cranelisp_types::DefKind::UserFn::fn_state: cranelisp_types::UserFnState
 impl core::marker::Freeze for cranelisp_types::DefKind
 impl core::marker::Send for cranelisp_types::DefKind
 impl core::marker::Sync for cranelisp_types::DefKind
@@ -218,7 +221,6 @@ pub cranelisp_types::ModuleEntry::Def::ast: core::option::Option<cranelisp_types
 pub cranelisp_types::ModuleEntry::Def::callees: alloc::vec::Vec<cranelisp_types::FQSymbol>
 pub cranelisp_types::ModuleEntry::Def::code: core::option::Option<C>
 pub cranelisp_types::ModuleEntry::Def::docstring: core::option::Option<alloc::string::String>
-pub cranelisp_types::ModuleEntry::Def::got_slot: core::option::Option<usize>
 pub cranelisp_types::ModuleEntry::Def::kind: alloc::boxed::Box<cranelisp_types::DefKind>
 pub cranelisp_types::ModuleEntry::Def::param_names: alloc::vec::Vec<cranelisp_types::Symbol>
 pub cranelisp_types::ModuleEntry::Def::scheme: cranelisp_types::Scheme
@@ -254,13 +256,11 @@ pub cranelisp_types::ModuleEntry::TypeDef::visibility: cranelisp_types::Visibili
 impl cranelisp_types::ModuleEntry<()>
 pub fn cranelisp_types::ModuleEntry<()>::into_concrete<C: cranelisp_types::CodeStore>(self) -> cranelisp_types::ModuleEntry<C>
 impl<C: cranelisp_types::CodeStore> cranelisp_types::ModuleEntry<C>
-pub fn cranelisp_types::ModuleEntry<C>::assert_well_formed(&self)
 pub fn cranelisp_types::ModuleEntry<C>::callable_got_slot(&self) -> core::option::Option<usize>
 pub fn cranelisp_types::ModuleEntry<C>::callees(&self) -> &[cranelisp_types::FQSymbol]
 pub fn cranelisp_types::ModuleEntry<C>::def(cranelisp_types::Scheme, cranelisp_types::DefKind) -> cranelisp_types::DefBuilder<C>
 pub fn cranelisp_types::ModuleEntry<C>::is_constrained_template(&self) -> bool
 pub fn cranelisp_types::ModuleEntry<C>::is_public(&self) -> bool
-pub fn cranelisp_types::ModuleEntry<C>::mark_constrained_template(&mut self, cranelisp_types::ConstrainedFn) -> bool
 impl<C: cranelisp_types::CodeStore> core::convert::From<cranelisp_types::DefBuilder<C>> for cranelisp_types::ModuleEntry<C>
 pub fn cranelisp_types::ModuleEntry<C>::from(cranelisp_types::DefBuilder<C>) -> Self
 impl<C: cranelisp_types::CodeStore> core::marker::Send for cranelisp_types::ModuleEntry<C>
@@ -542,6 +542,18 @@ impl core::marker::Unpin for cranelisp_types::TypeExpr
 impl core::marker::UnsafeUnpin for cranelisp_types::TypeExpr
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TypeExpr
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TypeExpr
+pub enum cranelisp_types::UserFnState
+pub cranelisp_types::UserFnState::Concrete
+pub cranelisp_types::UserFnState::Concrete::got_slot: usize
+pub cranelisp_types::UserFnState::Constrained(alloc::boxed::Box<cranelisp_types::ConstrainedFn>)
+pub cranelisp_types::UserFnState::NotDetermined
+impl core::marker::Freeze for cranelisp_types::UserFnState
+impl core::marker::Send for cranelisp_types::UserFnState
+impl core::marker::Sync for cranelisp_types::UserFnState
+impl core::marker::Unpin for cranelisp_types::UserFnState
+impl core::marker::UnsafeUnpin for cranelisp_types::UserFnState
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::UserFnState
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::UserFnState
 pub enum cranelisp_types::Visibility
 pub cranelisp_types::Visibility::Private
 pub cranelisp_types::Visibility::Public
@@ -632,7 +644,6 @@ impl<C: cranelisp_types::CodeStore> cranelisp_types::DefBuilder<C>
 pub fn cranelisp_types::DefBuilder<C>::ast(self, cranelisp_types::DefnVariant) -> Self
 pub fn cranelisp_types::DefBuilder<C>::build(self) -> cranelisp_types::ModuleEntry<C>
 pub fn cranelisp_types::DefBuilder<C>::docstring(self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn cranelisp_types::DefBuilder<C>::got_slot(self, usize) -> Self
 pub fn cranelisp_types::DefBuilder<C>::new(cranelisp_types::Scheme, cranelisp_types::DefKind) -> Self
 pub fn cranelisp_types::DefBuilder<C>::param_names(self, alloc::vec::Vec<cranelisp_types::Symbol>) -> Self
 pub fn cranelisp_types::DefBuilder<C>::seq(self, u64) -> Self

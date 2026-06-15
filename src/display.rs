@@ -943,6 +943,7 @@ mod tests {
         table.insert(
             Symbol::from("Point"),
             ModuleEntry::def(ctor_scheme, DefKind::Constructor {
+                got_slot: 0,
                 type_name: point_fqtn(),
                 tag: 0,
                 field_count: 2,
@@ -992,6 +993,7 @@ mod tests {
         table.insert(
             Symbol::from("Circle"),
             ModuleEntry::def(ctor_scheme, DefKind::Constructor {
+                got_slot: 0,
                 type_name: fqtn.clone(),
                 tag: 0,
                 field_count: 1,

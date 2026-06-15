@@ -626,7 +626,7 @@ fn not_found(name: &str, from_module: &ModuleFullPath, span: Span) -> ResolveErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::module::{DefKind, MacroClauseInfo, SymbolTable};
+    use crate::module::{DefKind, MacroClauseInfo, SymbolTable, UserFnState};
     use crate::types::{Scheme, Type};
     use std::collections::HashMap;
 
@@ -673,7 +673,7 @@ mod tests {
     #[test]
     fn resolves_local_short_name() {
         // spec §8.6.6 — unqualified short name in the current module.
-        let tables = tables_with(&[("user", "foo", def_entry(DefKind::UserFn { constrained_fn: None }, Visibility::Public))]);
+        let tables = tables_with(&[("user", "foo", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public))]);
         let user = tables.get(&ModuleFullPath::from("user")).unwrap();
         let view = View::single(&user);
         let current = ModuleFullPath::from("user");
@@ -687,7 +687,7 @@ mod tests {
     fn chain_follows_import_to_home() {
         // Principle 17 shape 1 — chain-follow an Import edge to the canonical home.
         let tables = tables_with(&[
-            ("dep", "bar", def_entry(DefKind::UserFn { constrained_fn: None }, Visibility::Public)),
+            ("dep", "bar", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public)),
             ("user", "bar", import("dep", "bar", Visibility::Private)),
         ]);
         let user = tables.get(&ModuleFullPath::from("user")).unwrap();
@@ -713,7 +713,7 @@ mod tests {
 
     #[test]
     fn non_macro_head_is_none_not_error() {
-        let tables = tables_with(&[("user", "plain", def_entry(DefKind::UserFn { constrained_fn: None }, Visibility::Public))]);
+        let tables = tables_with(&[("user", "plain", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public))]);
         let user = tables.get(&ModuleFullPath::from("user")).unwrap();
         let view = View::single(&user);
         let current = ModuleFullPath::from("user");
@@ -726,7 +726,7 @@ mod tests {
     fn forward_reference_absent_from_view_is_none() {
         // Locked defmacro-before-use rule: a name not yet in the view is not
         // a macro head — Ok(None), flows on as an ordinary reference.
-        let tables = tables_with(&[("user", "x", def_entry(DefKind::UserFn { constrained_fn: None }, Visibility::Public))]);
+        let tables = tables_with(&[("user", "x", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Public))]);
         let user = tables.get(&ModuleFullPath::from("user")).unwrap();
         let view = View::single(&user);
         let current = ModuleFullPath::from("user");
@@ -739,7 +739,7 @@ mod tests {
     fn private_inaccessible_outside_subtree() {
         // spec §8.7.3 — qualified access to a private name from outside the
         // defining subtree fails with PrivateInaccessible.
-        let tables = tables_with(&[("dep", "secret", def_entry(DefKind::UserFn { constrained_fn: None }, Visibility::Private))]);
+        let tables = tables_with(&[("dep", "secret", def_entry(DefKind::UserFn { fn_state: UserFnState::NotDetermined }, Visibility::Private))]);
         let user = tables.get(&ModuleFullPath::from("dep")).unwrap();
         let view = View::single(&user);
         let current = ModuleFullPath::from("user");

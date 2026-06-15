@@ -405,12 +405,18 @@ fn s68_primitives_entries_carry_code_none_kind_primitive() {
     // with `DefKind::Primitive`, never naming `Code` (FIXME 0244 severance).
     // The builder's `code: None` default is the lifecycle value; primitive-ness
     // is the `kind` fact, not a `code` marker.
+    //
+    // S83 Wave-1 reshape (FIXME 0356/0357/0361): `DefKind::Primitive` now carries
+    // a mandatory `got_slot` field, so the construction is the struct-variant form
+    // `DefKind::Primitive { got_slot }`. The intent is unchanged — primitive-ness
+    // reads from `kind: DefKind::Primitive`; only the grepped spelling updates from
+    // the retired unit-variant literal to the struct-variant prefix.
     assert!(
-        src.contains("ModuleEntry::def(scheme, DefKind::Primitive)"),
+        src.contains("ModuleEntry::def(scheme, DefKind::Primitive {"),
         "crates/cranelisp-primitives/src/lib.rs MUST construct entries via \
-         `ModuleEntry::def(scheme, DefKind::Primitive)...build()` per FIXME 0244 \
-         (S73). The builder default `code: None` is the lifecycle value; \
-         primitive-ness reads from `kind: DefKind::Primitive`."
+         `ModuleEntry::def(scheme, DefKind::Primitive {{ .. }})...build()` per FIXME \
+         0244 (S73) / 0356 (S83). The builder default `code: None` is the lifecycle \
+         value; primitive-ness reads from `kind: DefKind::Primitive`."
     );
 
     // Negative companion: the reverted `Code::Primitive` marker MUST NOT be

@@ -1012,26 +1012,34 @@
         let template_got_slot = {
             let st = tc.symbol_table();
             match st.get("add") {
-                Some(ModuleEntry::Def { kind, got_slot, .. }) => {
+                Some(entry @ ModuleEntry::Def { kind, .. }) => {
                     assert!(
-                        matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: Some(_) }),
-                        "template 'add' kind should be UserFn(Some), got {:?}",
+                        matches!(
+                            kind.as_ref(),
+                            DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                        ),
+                        "template 'add' kind should be UserFn(Constrained), got {:?}",
                         kind
                     );
-                    *got_slot
+                    // S83 (Principle 20): a constrained template carries no slot
+                    // (read via the accessor) — `None` by construction.
+                    entry.callable_got_slot()
                 }
                 other => panic!("'add' template should be Def entry, got {:?}", other),
             }
         };
 
-        // Mono entry: kind UserFn(None), ast: Some(..), has a GOT slot distinct from template.
+        // Mono entry: kind UserFn(Concrete), ast: Some(..), has a GOT slot distinct from template.
         let mono_got_slot = {
             let st = tc.symbol_table();
             match st.get("add$Int+Int") {
-                Some(ModuleEntry::Def { kind, ast, got_slot, .. }) => {
+                Some(entry @ ModuleEntry::Def { kind, ast, .. }) => {
                     assert!(
-                        matches!(kind.as_ref(), DefKind::UserFn { constrained_fn: None }),
-                        "mono 'add$Int+Int' kind should be UserFn(None), got {:?}",
+                        matches!(
+                            kind.as_ref(),
+                            DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                        ),
+                        "mono 'add$Int+Int' kind should be UserFn(Concrete), got {:?}",
                         kind
                     );
                     let defn = ast.as_ref().expect("mono must carry ast: Some(..)");
@@ -1052,7 +1060,7 @@
                         panic!("mono body should be Apply, got {:?}", defn.body);
                     }
 
-                    got_slot.expect("mono must have a GOT slot assigned")
+                    entry.callable_got_slot().expect("mono must have a GOT slot assigned")
                 }
                 other => panic!("'add$Int+Int' mono should be Def entry, got {:?}", other),
             }

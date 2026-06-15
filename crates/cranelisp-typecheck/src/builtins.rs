@@ -414,9 +414,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Box::new(slist_sexp),
         );
 
-        self.current_symbol_table_mut(state).insert(
+        // FIXME 0360 (ruled S83 /arch, Path 1): `sconcat` is dispatched by name
+        // as a `Linkage::Import` (the `is_extern_primitive` arm, never
+        // GOT-indirect), so its correct representation is the slot-less
+        // `DefKind::PrimitiveExtern`. Seeding it as `Primitive { got_slot }`
+        // masked the missing `PrimitiveExtern` classifier arm; the fixture now
+        // exercises the real production representation.
+        let mut st = self.current_symbol_table_mut(state);
+        st.insert(
             Symbol::from("sconcat"),
-            ModuleEntry::def(mono(sconcat_type), DefKind::Primitive)
+            ModuleEntry::def(mono(sconcat_type), DefKind::PrimitiveExtern)
                 .docstring("Concatenate two SList Sexp values")
                 .param_names(vec![Symbol::from("a"), Symbol::from("b")])
                 .build(),
@@ -680,11 +687,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         } else {
             unreachable!("invariant: IO type should be registered before adding Bind");
         }
+        let bind_ctor_slot = primitives_table.allocate_got_slot();
         primitives_table.insert(
             Symbol::from("Bind"),
             ModuleEntry::def(
                 bind_ctor_scheme,
                 DefKind::Constructor {
+                    got_slot: bind_ctor_slot,
                     type_name: io_fqtn,
                     tag: 2,
                     field_count: bind_field_count,
@@ -737,9 +746,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
 
+        // FIXME 0360 (ruled S83 /arch, Path 1): `bind` is intercepted by name
+        // at the backend (`compile_bind_inline`) before any GOT path — it is
+        // never invoked GOT-indirect, so its correct representation is the
+        // slot-less `DefKind::PrimitiveExtern`. The fixture now matches the
+        // production representation (was `Primitive { got_slot }`, which hid the
+        // missing `PrimitiveExtern` classifier arm).
         primitives_table.insert(
             Symbol::from("bind"),
-            ModuleEntry::def(bind_scheme, DefKind::Primitive)
+            ModuleEntry::def(bind_scheme, DefKind::PrimitiveExtern)
                 .docstring("Chain IO actions: extract value from first IO, pass to continuation")
                 .param_names(vec![Symbol::from("io"), Symbol::from("f")])
                 .build(),
@@ -974,8 +989,22 @@ where
             .get_mut(&primitives_path)
             .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
         for (name, ty, param_names) in mono_primitives {
-            let mut builder = ModuleEntry::def(mono(ty), DefKind::Primitive)
-                .param_names(param_names);
+            // A genuine GOT-slotted primitive is an addressable callable — its
+            // slot rides on `DefKind::Primitive.got_slot` (S83 deferred
+            // allocation, Principle 20). Allocate it at registration
+            // (primitives are born concrete).
+            //
+            // FIXME 0360 (ruled S83 /arch, Path 1): `quote-sexp` is the
+            // exception — it dispatches by name as a `Linkage::Import` (the
+            // `is_extern_primitive` arm, never GOT-indirect), so it is slot-less
+            // `DefKind::PrimitiveExtern`. Seeding it `Primitive { got_slot }`
+            // masked the missing `PrimitiveExtern` classifier arm.
+            let kind = if name == "quote-sexp" {
+                DefKind::PrimitiveExtern
+            } else {
+                DefKind::Primitive { got_slot: prims.allocate_got_slot() }
+            };
+            let mut builder = ModuleEntry::def(mono(ty), kind).param_names(param_names);
             if let Some(doc) = builtin_docstring(name) {
                 builder = builder.docstring(doc);
             }
@@ -1050,7 +1079,8 @@ where
                 constraints: HashMap::new(),
                 ty,
             };
-            let mut builder = ModuleEntry::def(scheme, DefKind::Primitive)
+            let got_slot = prims.allocate_got_slot();
+            let mut builder = ModuleEntry::def(scheme, DefKind::Primitive { got_slot })
                 .param_names(param_names);
             if let Some(doc) = builtin_docstring(name) {
                 builder = builder.docstring(doc);
@@ -1108,7 +1138,7 @@ mod tests {
         let table: cranelisp_types::SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("t"))
             .entry(
                 Symbol::from("k"),
-                ModuleEntry::def(crate::scheme::mono(Type::Int), DefKind::Primitive)
+                ModuleEntry::def(crate::scheme::mono(Type::Int), DefKind::Primitive { got_slot: 0 })
                     .docstring("const")
                     .build(),
             )
@@ -1245,7 +1275,7 @@ mod tests {
             assert!(
                 matches!(
                     kind.as_ref(),
-                    DefKind::Primitive
+                    DefKind::Primitive { .. }
                 ),
                 "add-i64 should be Primitive::Inline"
             );
@@ -1337,7 +1367,7 @@ mod tests {
                 panic!("vec-get should be a function type");
             }
             assert!(
-                matches!(kind.as_ref(), DefKind::Primitive),
+                matches!(kind.as_ref(), DefKind::Primitive { .. }),
                 "vec-get should be Primitive::Extern"
             );
         } else {
@@ -1728,12 +1758,12 @@ mod tests {
                 "sconcat :: (Fn [(SList Sexp) (SList Sexp)] (SList Sexp))"
             );
             assert!(scheme.type_vars.is_empty(), "sconcat should be monomorphic");
+            // FIXME 0360 (ruled S83 /arch, Path 1): sconcat is by-name
+            // (`Linkage::Import`) dispatched via the `is_extern_primitive` arm,
+            // so it is slot-less `DefKind::PrimitiveExtern`, not GOT-slotted.
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::Primitive
-                ),
-                "sconcat should be Primitive::Extern"
+                matches!(kind.as_ref(), DefKind::PrimitiveExtern),
+                "sconcat should be PrimitiveExtern (by-name dispatch, slot-less)"
             );
         } else {
             panic!("sconcat should be a Def entry");
@@ -1781,12 +1811,12 @@ mod tests {
                 "quote-sexp :: (Fn [Sexp] Sexp)"
             );
             assert!(scheme.type_vars.is_empty(), "quote-sexp should be monomorphic");
+            // FIXME 0360 (ruled S83 /arch, Path 1): quote-sexp is by-name
+            // (`Linkage::Import`) dispatched, so it is slot-less
+            // `DefKind::PrimitiveExtern`, not GOT-slotted `Primitive`.
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::Primitive
-                ),
-                "quote-sexp should be Primitive::Extern"
+                matches!(kind.as_ref(), DefKind::PrimitiveExtern),
+                "quote-sexp should be PrimitiveExtern (by-name dispatch, slot-less)"
             );
         } else {
             panic!("quote-sexp should be a Def entry");
@@ -2155,12 +2185,13 @@ mod tests {
                 _ => panic!("bind should have Fn type, got {:?}", scheme.ty),
             }
 
+            // FIXME 0360 (ruled S83 /arch, Path 1): `bind` is intercepted by
+            // name at the backend (`compile_bind_inline`) before any GOT path —
+            // it is never invoked GOT-indirect, so its representation is the
+            // slot-less `DefKind::PrimitiveExtern`, not GOT-slotted `Primitive`.
             assert!(
-                matches!(
-                    kind.as_ref(),
-                    DefKind::Primitive
-                ),
-                "bind should be Primitive::Inline"
+                matches!(kind.as_ref(), DefKind::PrimitiveExtern),
+                "bind should be PrimitiveExtern (by-name dispatch, slot-less)"
             );
 
             assert!(docstring.is_some(), "bind should have a docstring");

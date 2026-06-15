@@ -1863,10 +1863,14 @@ fn try_cache_hit_load(
         })
         .collect();
     // Collect names of functions with GOT slots for trait impl restoration.
+    // The callable slot rides on the `DefKind` variant (S83 reshape, FIXME
+    // 0356/0357) — a Def with a callable slot is a got-slotted function.
     let mangled_names: Vec<String> = cached.metadata.symbol_table
         .all_symbols()
         .filter_map(|(name, entry)| match entry {
-            ModuleEntry::Def { got_slot: Some(_), .. } => Some(name.as_ref().to_string()),
+            ModuleEntry::Def { .. } if entry.callable_got_slot().is_some() => {
+                Some(name.as_ref().to_string())
+            }
             _ => None,
         })
         .collect();
@@ -3061,10 +3065,14 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
         if let Some(got_table) = module_got
             && let Some(table) = ctx.symbol_tables.get(&ctx.current_module) {
                 for (_name, entry) in table.all_symbols() {
-                    if let cranelisp_types::ModuleEntry::Def { got_slot: Some(slot), kind, .. } = entry
-                        && !matches!(kind.as_ref(), cranelisp_types::DefKind::Macro { .. }) {
-                            got_table.store_slot(*slot, std::ptr::null());
-                        }
+                    // The callable slot rides on the `DefKind` variant (S83
+                    // reshape, FIXME 0356/0357); read it via the
+                    // `callable_got_slot()` chokepoint. A `Macro` parent is
+                    // non-callable so it answers `None` and is skipped
+                    // structurally (no explicit kind exclusion needed).
+                    if let Some(slot) = entry.callable_got_slot() {
+                        got_table.store_slot(slot, std::ptr::null());
+                    }
                 }
             }
     }

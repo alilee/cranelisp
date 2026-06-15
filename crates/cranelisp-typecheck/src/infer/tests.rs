@@ -1627,6 +1627,67 @@
         assert_eq!(result.as_deref(), Some("quote-sexp"));
     }
 
+    // spec: design/arch/fixmes/0360 (ruled S83 /arch, Path 1) — a slot-less
+    // `DefKind::PrimitiveExtern` callee MUST classify as a builtin (resolve to
+    // its bare JIT name) just like a GOT-slotted `DefKind::Primitive`. This is
+    // the guard the classifier's missing arm lacked: pre-fix
+    // `resolve_primitive_jit_name` matched only `Primitive { .. }`, silently
+    // dropping `PrimitiveExtern` callees (`bind`/`sconcat`/`quote-sexp`/trace
+    // accessors) so they never lowered. Both arms are exercised:
+    //   - `quote-sexp` (unqualified) + `macros/sconcat` (qualified) are seeded
+    //     `PrimitiveExtern` (by-name dispatch)
+    //   - `add-i64` is seeded `Primitive { got_slot }`
+    // and BOTH must classify as builtins.
+    #[test]
+    fn test_resolve_primitive_extern_classifies_as_builtin() {
+        use cranelisp_types::{DefKind, ModuleEntry, ModuleFullPath};
+
+        let tc = tc();
+
+        // Precondition: confirm the fixture seeds these in the representation
+        // the production path uses — `quote-sexp` slot-less `PrimitiveExtern`,
+        // `add-i64` GOT-slotted `Primitive`. If a future fixture change flips
+        // these the guard below would test the wrong shape.
+        let prims = tc.modules.get(&ModuleFullPath::from("primitives")).unwrap();
+        assert!(
+            matches!(
+                prims.get("quote-sexp"),
+                Some(ModuleEntry::Def { kind, .. }) if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
+            ),
+            "fixture precondition: quote-sexp must be slot-less PrimitiveExtern"
+        );
+        assert!(
+            matches!(
+                prims.get("add-i64"),
+                Some(ModuleEntry::Def { kind, .. }) if matches!(kind.as_ref(), DefKind::Primitive { .. })
+            ),
+            "fixture precondition: add-i64 must be GOT-slotted Primitive"
+        );
+        drop(prims);
+
+        // The fix: a PrimitiveExtern callee classifies as a builtin (resolves
+        // to its bare JIT name) — both via the qualified `module/name` arm and
+        // the unqualified arm.
+        assert_eq!(
+            tc.resolve_primitive_jit_name_self("quote-sexp").as_deref(),
+            Some("quote-sexp"),
+            "PrimitiveExtern `quote-sexp` must classify as a builtin (unqualified arm)"
+        );
+        assert_eq!(
+            tc.resolve_primitive_jit_name_self("macros/sconcat").as_deref(),
+            Some("sconcat"),
+            "PrimitiveExtern `macros/sconcat` must classify as a builtin (qualified arm)"
+        );
+
+        // And a genuine GOT-slotted Primitive still classifies — the fix is
+        // additive, not a replacement.
+        assert_eq!(
+            tc.resolve_primitive_jit_name_self("add-i64").as_deref(),
+            Some("add-i64"),
+            "GOT-slotted Primitive `add-i64` must still classify as a builtin"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // B2: in_call_position scoping — args must NOT be in call position
     // -----------------------------------------------------------------------
@@ -1660,7 +1721,7 @@
             ModuleEntry::def(
                 scheme.clone(),
                 cranelisp_types::DefKind::UserFn {
-                    constrained_fn: Some(Box::new(ConstrainedFn {
+                    fn_state: cranelisp_types::UserFnState::Constrained(Box::new(ConstrainedFn {
                         variant: DefnVariant {
                             params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
                             body: Expr::IntLit { value: 0, span: Span::SYNTHETIC, inferred_type: None, },
