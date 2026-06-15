@@ -1675,14 +1675,21 @@ fn super_import_resolves_parent_type_constructor() {
 //   `unknown type `t/Box` (from module ``)`.
 // Single-file, no super-import — this is the (a) repro of 0351, isolating the
 // self-qualified resolution defect from the (now-green) 0342 super-import guard.
+//
+// The behaviour-under-test is the self-qualified `:t/Box` annotation on `unbox`
+// (module `t` referencing its OWN type by qualified name). Post-S80 `main` MUST
+// return `IO _`, so the body is wrapped in `Pure` (importing `[primitives [Pure]]`),
+// mirroring the corrected sibling `super_import_resolves_parent_type_constructor`.
+// The wrap is the `main` envelope only; the self-qualified resolution is unchanged.
 #[test]
 fn self_qualified_type_reference_resolves_to_local_type() {
     Cranelisp::new()
         .file(
             "t.cl",
-            "(deftype Box [:primitives/Int v])\n\
+            "(import [primitives [Pure]])\n\
+             (deftype Box [:primitives/Int v])\n\
              (defn unbox [:t/Box b] (match b [(Box x) x]))\n\
-             (defn main [] (unbox (Box 9)))",
+             (defn main [] (Pure (unbox (Box 9))))",
         )
         .run("t.cl")
         .output()
