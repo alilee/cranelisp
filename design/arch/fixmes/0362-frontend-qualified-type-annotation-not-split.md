@@ -1,12 +1,75 @@
 ---
 number: 0362
-target: /frontend
+target: /typecheck
 filed_by: /dev
 filed_at: 2026-06-15
 sprint_filed: 83
-refers_to: crates/cranelisp-frontend/src/ast_builder.rs (parse_annotation_name ~:1481, build_type_expr ~:1652), tests/spec_08_modules.rs::self_qualified_type_reference_resolves_to_local_type, crates/cranelisp-typecheck/src/checker/tests.rs::self_qualified_type_resolves_to_local_product_type
+refers_to: crates/cranelisp-typecheck/src/{checker,resolve}.rs (cluster-atomic resolution of TYPE annotations against the local module's type table), tests/spec_08_modules.rs::self_qualified_type_reference_resolves_to_local_type, crates/cranelisp-typecheck/src/checker/tests.rs::self_qualified_type_resolves_to_local_product_type
 status: open
 ---
+
+# FRONTEND HALF LANDED (S83 W2, /dev frontend). RESIDUAL is a typecheck integration defect.
+
+## S83 W2 /dev frontend update (layered-bug re-target)
+
+The frontend half of this FIXME is **DONE and committed**: `ast_builder.rs`
+now splits `module/Name` → `TypeRef { module: Some(module), name: Name }` for
+TYPE refs (`parse_annotation_name`, `build_type_expr`, applied-head), mirroring
+the trait-ref `rsplit_once('/')` precedent, guarded on both halves non-empty.
+Four unit tests pin it (`parse_annotation_name_splits_module_qualifier`,
+`_bare_stays_unqualified`, `_deep_qualified_splits_at_last_slash`,
+`parse_type_expr_splits_module_qualifier`).
+
+**But the e2e guard `self_qualified_type_reference_resolves_to_local_type` still
+fails** — the diagnostic CHANGED, proving the split now reaches typecheck:
+
+- BEFORE the frontend fix: `unknown type \`t/Box\` (from module \`\`)` — un-split,
+  empty from-module (the original 0362 tell).
+- AFTER the frontend fix: `unknown type \`Box\` (from module \`t\`)` — correctly
+  split (module=`t`, name=`Box`), but `Box` is NOT found in module `t` during
+  the full pipeline.
+
+This is a **layered bug**. The FIXME's original premise — "frontend-only;
+typecheck + `cranelisp-types::resolve` proven correct via the committed leaf
+unit" — is WRONG. The leaf unit
+`self_qualified_type_resolves_to_local_product_type` PASSES because it registers
+`Box` into module `t` and resolves against `t` immediately, in one frame. The
+e2e fails because, in the actual cluster-atomic typecheck pipeline, `Box` is
+NOT visible in module `t`'s type table at the point the `:t/Box` annotation is
+resolved — a **timing/ordering / cluster-view defect in typecheck integration**,
+NOT in the leaf and NOT in the frontend.
+
+### Minimal repro (exact e2e shape, file MUST be named `t.cl` so the module is `t`)
+
+```
+;; t.cl  →  cranelisp --run t.cl
+(deftype Box [:primitives/Int v])
+(defn unbox [:t/Box b] (match b [(Box x) x]))
+(defn main [] (unbox (Box 9)))
+;; expected: exit 9
+;; actual:   type error: unknown type `Box` (from module `t`)
+```
+
+Contrast (also `--run`): the **bare** `:Box` form of the same program type-checks
+fine (it fails only later at codegen on the test-fixture `main` return shape) —
+so local registration of `Box` in module `t` is sound; only the *self-qualified*
+resolution path misses it. The defect is in how a self-qualified `module/Name`
+TYPE ref is resolved against the still-building local cluster (likely
+`resolve_type_expr_in_module` keying the self-home name against a committed view
+that does not yet contain the in-cluster `Box`, where the bare-name path roots
+at `current_module`'s live staging and DOES see it).
+
+### Ownership: /typecheck
+
+Per `tests/CLAUDE.md §"Isolating Cross-Crate Failures"` Step 4: the leaf unit
+passes, the e2e fails ⇒ the bug is in the typecheck integration / cluster
+resolution wiring, not the leaf and not the frontend. Re-targeted `/frontend` →
+`/typecheck`. The e2e remains the failing-not-ignored guard until /typecheck
+lands the cluster-aware self-qualified type resolution; flip it green there.
+
+---
+
+## ORIGINAL FILING (frontend half — now resolved)
 
 # Qualified type annotation `:t/Box` is not split on `/` in the frontend (root cause of FIXME 0351(b))
 

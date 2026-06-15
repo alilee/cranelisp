@@ -1478,11 +1478,32 @@ fn try_consume_annotation(items: &[Sexp], pos: usize) -> Option<(TypeExpr, usize
     }
 }
 
+/// Split an as-written type name `module/Name` into its `(module, name)`
+/// parts for a `TypeRef`, mirroring the trait-ref split in
+/// [`type_expr_to_trait_ref`] and `split_qualified` in
+/// `cranelisp_types::resolve`.
+///
+/// A qualified name (`t/Box`, `a.b/Box`) splits at the LAST `/` — module is
+/// everything before, name is everything after — only when BOTH halves are
+/// non-empty. A bare `Name` (no `/`), or any name that fails the non-empty
+/// guard, stays `module: None`. This is the frontend half of FIXME 0362: a
+/// self-qualified type reference `:t/Box` written inside module `t` must
+/// arrive at typecheck as `TypeRef { module: Some("t"), name: "Box" }`, not
+/// as the un-split `TypeRef { module: None, name: "t/Box" }`.
+fn type_ref_from_name(name: &str) -> TypeRef {
+    match name.rsplit_once('/') {
+        Some((m, n)) if !m.is_empty() && !n.is_empty() => {
+            TypeRef::new(Some(ModuleFullPath::from(m)), TypeName::from(n))
+        }
+        _ => TypeRef::new(None, TypeName::from(name)),
+    }
+}
+
 fn parse_annotation_name(name: &str) -> TypeExpr {
     if name == "self" {
         TypeExpr::SelfType
     } else if is_uppercase_start(name) {
-        TypeExpr::Named(TypeRef::new(None, TypeName::from(name)))
+        TypeExpr::Named(type_ref_from_name(name))
     } else {
         TypeExpr::TypeVar(name.into())
     }
@@ -1655,7 +1676,7 @@ fn build_type_expr(sexp: &Sexp) -> Result<TypeExpr, CranelispError> {
             if name == "self" {
                 Ok(TypeExpr::SelfType)
             } else if is_uppercase_start(name) {
-                Ok(TypeExpr::Named(TypeRef::new(None, TypeName::from(name.as_str()))))
+                Ok(TypeExpr::Named(type_ref_from_name(name.as_str())))
             } else {
                 Ok(TypeExpr::TypeVar(name.as_str().into()))
             }
@@ -1694,7 +1715,7 @@ fn build_type_expr_from_list(
             .iter()
             .map(build_type_expr)
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(TypeExpr::Applied(TypeRef::new(None, TypeName::from(head.as_str())), args));
+        return Ok(TypeExpr::Applied(type_ref_from_name(head.as_str()), args));
     }
     Err(parse_err("invalid type expression", span))
 }
@@ -3924,5 +3945,68 @@ mod tests {
         let err = parse_type_expr("").unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("single form"), "got: {msg}");
+    }
+
+    // FIXME 0362 — a self-qualified type annotation `:t/Box` must split the
+    // `module/Name` qualifier so it arrives downstream as
+    // `TypeRef { module: Some("t"), name: "Box" }`, not the un-split
+    // `TypeRef { module: None, name: "t/Box" }` (whose empty from-module is the
+    // tell of the original `unknown type 't/Box' (from module '')` defect).
+    #[test]
+    fn parse_annotation_name_splits_module_qualifier() {
+        match parse_annotation_name("t/Box") {
+            TypeExpr::Named(r) => {
+                assert_eq!(r.module.as_deref(), Some("t"));
+                assert_eq!(r.name.as_ref(), "Box");
+            }
+            other => panic!("expected Named, got {other:?}"),
+        }
+    }
+
+    // FIXME 0362 — a bare (unqualified) type name stays `module: None`.
+    #[test]
+    fn parse_annotation_name_bare_stays_unqualified() {
+        match parse_annotation_name("Box") {
+            TypeExpr::Named(r) => {
+                assert_eq!(r.module, None);
+                assert_eq!(r.name.as_ref(), "Box");
+            }
+            other => panic!("expected Named, got {other:?}"),
+        }
+    }
+
+    // FIXME 0362 — a deep-qualified type name `a.b/Box` splits at the LAST `/`
+    // (module = `a.b`, name = `Box`), matching the trait-ref precedent.
+    #[test]
+    fn parse_annotation_name_deep_qualified_splits_at_last_slash() {
+        match parse_annotation_name("a.b/Box") {
+            TypeExpr::Named(r) => {
+                assert_eq!(r.module.as_deref(), Some("a.b"));
+                assert_eq!(r.name.as_ref(), "Box");
+            }
+            other => panic!("expected Named, got {other:?}"),
+        }
+    }
+
+    // FIXME 0362 — the qualifier split also applies in type-expression position
+    // (`parse_type_expr` → `build_type_expr`), both for a bare qualified name
+    // and for the applied `(t/Box arg)` head.
+    #[test]
+    fn parse_type_expr_splits_module_qualifier() {
+        match parse_type_expr("t/Box").unwrap() {
+            TypeExpr::Named(r) => {
+                assert_eq!(r.module.as_deref(), Some("t"));
+                assert_eq!(r.name.as_ref(), "Box");
+            }
+            other => panic!("expected Named, got {other:?}"),
+        }
+        match parse_type_expr("(t/Box Int)").unwrap() {
+            TypeExpr::Applied(r, args) => {
+                assert_eq!(r.module.as_deref(), Some("t"));
+                assert_eq!(r.name.as_ref(), "Box");
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected Applied, got {other:?}"),
+        }
     }
 }
