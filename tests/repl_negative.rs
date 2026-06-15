@@ -803,3 +803,42 @@ fn list_neg_data_constructor_not_in_fns() {
     }
     // (If there's no Fns section at all, the intent — ctors are not Fns — holds.)
 }
+
+// spec: repl/spec.md §1.4 — /list normalizes type variables, no raw tN
+// FIXME 0352: `/list` rendered polymorphic schemes with raw internal
+// type-variable ids (`id : (Fn [t1] t1)`) and unqualified primitive names
+// (`double : (Fn [Int] Int)`) instead of the normalized `(Fn [a] a)` +
+// fully-qualified `primitives/Int` that `/sig` / definition-display produce.
+// Root: `handle_list` formatted `scheme.ty` via the raw `Type::Display`
+// rather than the normalize+qualify renderer. Both the `t1`→`a` and
+// `Int`→`primitives/Int` leaks are closed by routing through the shared
+// `display::format_scheme_type` renderer.
+#[test]
+fn list_neg_no_raw_type_vars() {
+    let out = repl_prims(
+        "(defn id [x] x)\n\
+         (defn twice [x] (add-i64 x x))\n\
+         /list\n",
+    );
+    // No raw internal type variable ids leak into /list output.
+    assert!(
+        !out.stdout.contains("t1"),
+        "/list leaked a raw internal type var `t1` (violates §1.4 \
+         normalization); got:\n{}",
+        out.stdout
+    );
+    // Polymorphic scheme normalized to consecutive lowercase letters.
+    assert!(
+        out.stdout.contains("(Fn [a] a)"),
+        "/list MUST render the polymorphic identity scheme normalized as \
+         `(Fn [a] a)` per §1.4; got:\n{}",
+        out.stdout
+    );
+    // Monomorphic case: primitive type names are fully qualified.
+    assert!(
+        out.stdout.contains("primitives/Int"),
+        "/list MUST render primitive type names fully-qualified as \
+         `primitives/Int` per §1.4, not bare `Int`; got:\n{}",
+        out.stdout
+    );
+}

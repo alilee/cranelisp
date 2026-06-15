@@ -130,7 +130,30 @@ pub fn format_scheme_display(
     scheme: &Scheme,
     module: &ModuleFullPath,
 ) -> String {
+    let type_str = format_scheme_type(scheme);
+    format!(":{type_str} {module}/{name}")
+}
+
+/// Render a `Scheme`'s type as a normalized, fully-qualified REPL type string
+/// (spec §1.4) — WITHOUT the `:` prefix or `module/name` suffix.
+///
+/// This is the single source of truth (Principle 7) for "scheme → type
+/// string" used by both the definition-display path (`format_scheme_display`
+/// / `format_def_entry`) and the `/list` per-symbol line
+/// (`repl.rs::handle_list`). It normalizes type variables to consecutive
+/// lowercase letters (`t1` → `a`) via `type_var_names` and qualifies
+/// primitive/ADT names (`Int` → `primitives/Int`). When the scheme carries
+/// constraints, every constrained var occurrence in parameter position is
+/// shown as `:TraitName var` (spec §3.5.1); an unconstrained scheme renders
+/// as the plain qualified type.
+pub fn format_scheme_type(scheme: &Scheme) -> String {
     let var_names = cranelisp_types::type_var_names(&scheme.ty);
+
+    if scheme.constraints.is_empty() {
+        // No constraints: the plain qualified+normalized type. Reuse the
+        // var_names so normalization is identical to the constrained path.
+        return format_type_qualified_inner(&scheme.ty, &var_names);
+    }
 
     // Build a map from TypeId to the constraint traits for quick lookup.
     // Use sorted trait names for deterministic output.
@@ -142,14 +165,12 @@ pub fn format_scheme_display(
         constraint_map.insert(*type_id, trait_strs);
     }
 
-    let type_str = format_type_with_inline_constraints(
+    format_type_with_inline_constraints(
         &scheme.ty,
         &var_names,
         &constraint_map,
         false,
-    );
-
-    format!(":{type_str} {module}/{name}")
+    )
 }
 
 // ---------------------------------------------------------------------------

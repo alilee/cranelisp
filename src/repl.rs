@@ -667,7 +667,14 @@ impl CompilerSession {
                     // separately.
                     DefKind::Constructor { .. } => {}
                     _ => {
-                        let type_str = format!("{}", scheme.ty);
+                        // FIXME 0352: route through the same normalize +
+                        // qualify renderer the definition-display / `/sig`
+                        // paths use (Principle 7), NOT the raw `Type::Display`
+                        // (which leaked internal `t1` vars and unqualified
+                        // `Int`, violating repl/spec.md §1.4). One renderer
+                        // closes both the `t1`→`a` and `Int`→`primitives/Int`
+                        // leaks.
+                        let type_str = crate::display::format_scheme_type(scheme);
                         fns.push(format!("  {name} : {type_str}"));
                     }
                 },
@@ -1776,12 +1783,11 @@ impl CompilerSession {
                     }
                     _ => {}
                 }
-                let base = if !scheme.constraints.is_empty() {
-                    format_scheme_display(name, scheme, module)
-                } else {
-                    let type_str = format_type_qualified(&scheme.ty);
-                    format!(":{type_str} {module}/{name}")
-                };
+                // FIXME 0352 (Principle 7): both the constrained and
+                // unconstrained arms render the scheme type through the single
+                // `format_scheme_type` renderer (`format_scheme_display` is the
+                // thin `:type module/name` wrapper around it).
+                let base = format_scheme_display(name, scheme, module);
                 let is_primitive = matches!(kind.as_ref(), DefKind::Primitive { .. });
                 let classification = if is_primitive { "primitive" } else { "defn" };
                 let base = format!("{base} ; {classification}");
