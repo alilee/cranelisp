@@ -1712,3 +1712,93 @@
             "a PRIVATE prelude ctor must NOT resolve as a bare pattern ctor (I-1)"
         );
     }
+
+    // spec: spec/08-modules.md §8.5 — self-qualified type reference resolves to
+    // the LOCAL type. Cross-crate-isolation unit for FIXME 0351(b) (per
+    // `tests/CLAUDE.md §"Isolating Cross-Crate Failures"`). The e2e
+    // `self_qualified_type_reference_resolves_to_local_type` fails with
+    // `unknown type `t/Box` (from module ``)`. This unit drives the typecheck
+    // leaf `resolve_type_expr_in_module` directly against a fixture where module
+    // `t` owns a product type `Box`, with a self-qualified
+    // `TypeRef { module: Some("t"), name: "Box" }`, resolved while the current
+    // module IS `t`. It assigns ownership: if this PASSES, the typecheck leaf is
+    // correct and the bug is upstream (frontend TypeRef construction); if it
+    // FAILS, the bug is in typecheck key-composition / the shared
+    // `cranelisp-types::resolve` self-home handling.
+    #[test]
+    fn self_qualified_type_resolves_to_local_product_type() {
+        use cranelisp_types::{ConstructorDef, FieldDef, TypeExpr, TypeName, TypeRef};
+
+        let mut tf = tf();
+        let t = ModuleFullPath::from("t");
+        // Register product type `(deftype (Box a) [:a v])` in module `t`. A
+        // type-var field avoids needing `Int` reachable in `t` (minimal
+        // fixture). It is a product: single ctor, ctor-name == type-name.
+        tf.register_type_def_in_module(
+            &t,
+            &TypeName::from("Box"),
+            &[Symbol::from("a")],
+            &[ConstructorDef {
+                name: Symbol::from("Box"),
+                docstring: None,
+                fields: vec![FieldDef {
+                    name: Symbol::from("v"),
+                    type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                    span: Span::SYNTHETIC,
+                }],
+                span: Span::SYNTHETIC,
+            }],
+        )
+        .expect("Box registers in module t");
+
+        // Self-qualified reference `:t/Box` resolved against module `t` (the
+        // applied form `(t/Box X)` mirrors `:t/Box` with arity 1).
+        let self_qual_applied = TypeExpr::Applied(
+            TypeRef::new(Some(ModuleFullPath::from("t")), TypeName::from("Box")),
+            vec![TypeExpr::Named(TypeRef::new(None, TypeName::from("Box")))],
+        );
+        // The bare reference `Box` against module `t` must resolve (sanity).
+        let bare = TypeExpr::Named(TypeRef::new(None, TypeName::from("Box")));
+        assert!(
+            tf.resolve_type_expr_in_module_for_test(&bare, &t).is_ok(),
+            "bare `Box` must resolve in its own module t"
+        );
+
+        // The self-qualified `t/Box` (nullary applied form aside) must resolve.
+        let self_qual_named = TypeExpr::Named(TypeRef::new(
+            Some(ModuleFullPath::from("t")),
+            TypeName::from("Box"),
+        ));
+        let r = tf.resolve_type_expr_in_module_for_test(&self_qual_named, &t);
+        assert!(
+            r.is_ok(),
+            "self-qualified `t/Box` MUST resolve to the local type when current \
+             module is t; got {r:?}"
+        );
+        // And the applied self-qualified form resolves too (arity 1).
+        let ra = tf.resolve_type_expr_in_module_for_test(&self_qual_applied, &t);
+        assert!(
+            ra.is_ok(),
+            "self-qualified applied `(t/Box X)` MUST resolve; got {ra:?}"
+        );
+
+        // OWNERSHIP-ASSIGNING DIAGNOSTIC (FIXME 0351(b)): the e2e fails with
+        // `unknown type `t/Box` (from module ``)` — name="t/Box", from_module="".
+        // That signature is reproduced ONLY when the `TypeRef` arrives
+        // UN-SPLIT: `module: None, name: "t/Box"` (the whole qualified string as
+        // one bare name). The leaf then composes name `"t/Box"` against
+        // `module_path` t and `cranelisp_types::resolve` DOES split it and
+        // resolve correctly — so even the un-split form RESOLVES here. This
+        // proves the typecheck leaf + shared resolve are BOTH correct; the e2e
+        // defect is upstream (the source `:t/Box` annotation never reaches the
+        // typecheck leaf, OR reaches it after the type table for `t` was torn
+        // down). The empty `from_module` is the un-split tell, NOT a leaf bug.
+        let unsplit = TypeExpr::Named(TypeRef::new(None, TypeName::from("t/Box")));
+        let ru = tf.resolve_type_expr_in_module_for_test(&unsplit, &t);
+        assert!(
+            ru.is_ok(),
+            "even an UN-SPLIT bare `t/Box` resolves at the leaf (the shared \
+             `resolve` splits on `/`), confirming the leaf is not the defect \
+             site; got {ru:?}"
+        );
+    }

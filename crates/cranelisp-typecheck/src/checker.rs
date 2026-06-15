@@ -153,6 +153,18 @@ pub struct CheckState {
     /// Pending overload dispatch resolutions from call sites.
     /// (call_span, base_name, arg_types, ret_type_var)
     pub(crate) pending_overload_resolutions: Vec<(Span, Symbol, Vec<Type>, Type)>,
+    /// Field-accessor synthesis collisions with a NON-accessor binding
+    /// (a user `defn`, a ctor, …) — `(accessor_name, owning_type_name)`.
+    /// Surfaced as a non-fatal `ShadowedName` warning at finalize: the accessor
+    /// is suppressed (the existing binding wins) and the clash is reported so it
+    /// is never silent (FIXME 0351(a), spec §5.2.6 safe disposition).
+    pub(crate) deferred_accessor_collisions: Vec<(Symbol, String)>,
+    /// Names this check synthesised as field accessors (FIXME 0351(a)). Used to
+    /// classify a later accessor collision: a clash with a name in this set is
+    /// a cross-type duplicate field name (fold into the overload mechanism for
+    /// arg-type dispatch); a clash with any OTHER binding is refused. Populated
+    /// per-check; a user `defn`/ctor under the same name is never in this set.
+    pub(crate) synthesised_accessor_names: std::collections::HashSet<Symbol>,
     /// The currently active module path for this check.
     pub(crate) current_module: ModuleFullPath,
 }
@@ -173,6 +185,8 @@ impl CheckState {
             overloads: HashMap::new(),
             resolved_overloads: HashMap::new(),
             pending_overload_resolutions: Vec::new(),
+            deferred_accessor_collisions: Vec::new(),
+            synthesised_accessor_names: std::collections::HashSet::new(),
             current_module: module,
         }
     }

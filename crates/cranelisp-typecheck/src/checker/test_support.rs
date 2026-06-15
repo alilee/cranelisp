@@ -399,6 +399,58 @@ impl TestFixture {
         )
     }
 
+    /// Resolve a `TypeExpr` in an arbitrary module (test convenience). Used by
+    /// the FIXME 0351(b) self-qualified-type isolation unit to drive
+    /// `resolve_type_expr_in_module` against a non-`user` module that owns the
+    /// referenced type.
+    pub fn resolve_type_expr_in_module_for_test(
+        &self,
+        texpr: &cranelisp_types::TypeExpr,
+        module: &ModuleFullPath,
+    ) -> Result<Type, cranelisp_types::ResolveError> {
+        self.env().resolve_type_expr_in_module(
+            texpr,
+            &std::collections::HashMap::new(),
+            module,
+            Span::SYNTHETIC,
+        )
+    }
+
+    /// Register a type def in an arbitrary module (test convenience). Sets the
+    /// `CheckState::current_module` to `module` for the duration of the
+    /// registration, then restores it.
+    pub fn register_type_def_in_module(
+        &mut self,
+        module: &ModuleFullPath,
+        name: &TypeName,
+        type_params: &[Symbol],
+        constructors: &[cranelisp_types::ConstructorDef],
+    ) -> Result<(), cranelisp_types::CranelispError> {
+        if !self.modules.contains_key(module) {
+            self.modules
+                .insert(module.clone(), SymbolTable::new(module.clone()));
+        }
+        let prev = self.state.current_module.clone();
+        self.state.current_module = module.clone();
+        let env = TypeCheckEnv::new(
+            &self.modules,
+            &self.next_id,
+            &self.module_aliases,
+            &self.prelude_fallback,
+        );
+        let result = env.register_type_def(
+            &mut self.state,
+            name,
+            &None,
+            type_params,
+            constructors,
+            cranelisp_types::Visibility::Public,
+            Span::SYNTHETIC,
+        );
+        self.state.current_module = prev;
+        result
+    }
+
     /// Is trait method (test convenience).
     pub fn is_trait_method(&self, name: &Symbol) -> bool {
         self.env().method_to_trait(name).is_some()

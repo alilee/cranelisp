@@ -1451,6 +1451,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.resolve_pending_overloads(state)?;
         self.resolve_auto_curry(state);
 
+        // Surface any field-accessor synthesis collisions with a NON-accessor
+        // binding (FIXME 0351(a), spec §5.2.6 safe disposition): the accessor
+        // was suppressed (the existing binding wins) and the clash is reported
+        // as a non-fatal warning so it is never silent. Drained so a redefining
+        // REPL re-check does not double-report.
+        for (accessor_name, type_name) in std::mem::take(&mut state.deferred_accessor_collisions) {
+            state.warnings.push(cranelisp_types::Warning {
+                kind: cranelisp_types::WarningKind::ShadowedName,
+                message: format!(
+                    "field accessor `{accessor_name}` for type `{type_name}` \
+                     collides with an existing binding `{accessor_name}`; the \
+                     accessor is suppressed and the existing binding is kept"
+                ),
+                span: Span::SYNTHETIC,
+            });
+        }
+
         // Sweep post-pass outputs from self.state into the accumulator.
         // Post-passes (resolve_deferred_trait_calls, pass4_monomorphise,
         // resolve_pending_overloads, resolve_auto_curry) write new method
