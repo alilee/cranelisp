@@ -1802,3 +1802,47 @@
              site; got {ru:?}"
         );
     }
+
+    // spec: spec/08-modules.md §8.5 — a module MUST resolve a self-qualified
+    // reference to its OWN type while that type is still being built in the
+    // current cluster (not yet committed). CLUSTER-ATOMIC unit for FIXME 0362
+    // (the residual after the frontend split landed). The committed-view leaf
+    // `self_qualified_type_resolves_to_local_product_type` already passes
+    // because it registers `Box` into the committed `self.modules["t"]`. This
+    // unit drives the path that leaf does NOT: `Box` lives ONLY in the
+    // in-progress STAGING table for `t` (committed `t` is empty), and a
+    // self-qualified `:t/Box` is resolved against `t` through a staging-aware
+    // env. `cranelisp_types::resolve_qualified` reads only COMMITTED tables, so
+    // before the fix the self-qualified path missed the staged `Box`
+    // (`unknown type `Box` (from module `t`)`), while the bare `:Box` path —
+    // which consults the staging-first first-hop view — resolved. The fix
+    // collapses `module == current_module` to the bare path in
+    // `resolve_type_expr_in_module`'s `resolve_terminal`.
+    #[test]
+    fn self_qualified_type_resolves_against_in_cluster_staging() {
+        use cranelisp_types::{TypeExpr, TypeName, TypeRef};
+
+        let mut tf = tf();
+
+        // Sanity: bare `:Box` resolves against staging (the path that already
+        // worked — proves the staging fixture wires `Box` in correctly).
+        let bare = TypeExpr::Named(TypeRef::new(None, TypeName::from("Box")));
+        assert!(
+            tf.resolve_type_expr_against_staged_box(&bare).is_ok(),
+            "bare `Box` must resolve against the in-cluster staging table"
+        );
+
+        // The fix's subject: self-qualified `:t/Box` resolved against module `t`
+        // while `Box` is in STAGING only (committed `t` is empty). Before the
+        // fix this missed (`resolve_qualified` reads committed tables only).
+        let self_qual = TypeExpr::Named(TypeRef::new(
+            Some(ModuleFullPath::from("t")),
+            TypeName::from("Box"),
+        ));
+        let r = tf.resolve_type_expr_against_staged_box(&self_qual);
+        assert!(
+            r.is_ok(),
+            "self-qualified `:t/Box` MUST resolve to the in-cluster staged local \
+             type when current module is `t` (FIXME 0362); got {r:?}"
+        );
+    }

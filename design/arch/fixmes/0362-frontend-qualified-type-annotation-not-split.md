@@ -1,14 +1,79 @@
 ---
 number: 0362
-target: /typecheck
+target: /qa
 filed_by: /dev
 filed_at: 2026-06-15
 sprint_filed: 83
-refers_to: crates/cranelisp-typecheck/src/{checker,resolve}.rs (cluster-atomic resolution of TYPE annotations against the local module's type table), tests/spec_08_modules.rs::self_qualified_type_reference_resolves_to_local_type, crates/cranelisp-typecheck/src/checker/tests.rs::self_qualified_type_resolves_to_local_product_type
+refers_to: tests/spec_08_modules.rs::self_qualified_type_reference_resolves_to_local_type (the `main` fixture returns bare `Int`, not `IO _`)
 status: open
 ---
 
-# FRONTEND HALF LANDED (S83 W2, /dev frontend). RESIDUAL is a typecheck integration defect.
+# TYPECHECK HALF LANDED (S83 W2, /dev typecheck). RESIDUAL is a /qa e2e FIXTURE defect.
+
+## S83 W2 /dev typecheck update (third layer — fixture `main` shape)
+
+The typecheck half of this FIXME is **DONE and committed**:
+`resolve_type_expr_in_module`'s `resolve_terminal` closure
+(`crates/cranelisp-typecheck/src/checker.rs` ~:2127) now collapses a
+**self-qualified** type ref (`tref.module == Some(current_module)`) to the
+**bare** resolution path — composing the leaf name only and consulting the
+staging-aware first-hop `read` view — so a module resolves `:t/Box` against its
+OWN in-progress cluster staging, exactly as bare `:Box` already did. Root cause:
+`cranelisp_types::resolve` routes a qualified `m/Name` straight to
+`resolve_qualified`, which reads only COMMITTED `symbol_tables` (never the
+staging view), so the in-cluster `Box` (still in staging, not committed) was
+invisible to the self-qualified path. A genuinely cross-module qualified ref is
+unchanged (Principle 17 — only the SELF case collapses to bare). Unit test
+`self_qualified_type_resolves_against_in_cluster_staging`
+(`crates/cranelisp-typecheck/src/checker/tests.rs`) pins the cluster-atomic
+case: `Box` lives in STAGING only (committed `t` empty); `:t/Box` resolves.
+
+**The e2e guard `self_qualified_type_reference_resolves_to_local_type` STILL
+fails — but the error moved PAST typecheck entirely**, proving the type now
+resolves:
+
+- BEFORE the typecheck fix: `type error: unknown type `Box` (from module `t`)`
+  — `Box` not found in committed `t` (the residual after the frontend split).
+- AFTER the typecheck fix: `codegen error: main must return `IO _` (required
+  shape `(Fn [] (IO _))`), found: Int` — `:t/Box` resolves; the program
+  type-checks; codegen then rejects the fixture's `main` because it returns a
+  bare `Int`, not `IO _`.
+
+This is a **third-layer bug — a /qa e2e FIXTURE defect**, NOT a compiler defect.
+The fixture's `(defn main [] (unbox (Box 9)))` returns bare `Int`. Verified
+directly: wrapping it `(defn main [] (Pure (unbox (Box 9))))` (and importing
+`Pure`) makes `--run` exit 9 — confirming the typecheck fix is complete and the
+ONLY remaining blocker is the un-wrapped `main`.
+
+### Proposed resolution (/qa, mechanical — mirror the corrected sibling)
+
+The sibling guard `super_import_resolves_parent_type_constructor`
+(`tests/spec_08_modules.rs` ~:1641) was already corrected (S82) to wrap its
+`main` in `Pure` and import `[primitives [Pure]]`. Apply the identical
+correction to `self_qualified_type_reference_resolves_to_local_type`:
+
+```
+(import [primitives [Pure]])
+(deftype Box [:primitives/Int v])
+(defn unbox [:t/Box b] (match b [(Box x) x]))
+(defn main [] (Pure (unbox (Box 9))))
+;; exits 9
+```
+
+The guard flips green once the fixture's `main` returns `IO _`. The
+self-qualified-type behaviour-under-test is unchanged by the wrap — it is
+exercised by the `:t/Box` annotation on `unbox`, which now resolves.
+
+### Ownership: /qa
+
+Per `tests/CLAUDE.md §"Isolating Cross-Crate Failures"` Step 4: the typecheck
+unit passes, the e2e fails on a non-compiler error (codegen `main`-shape) ⇒ the
+residual is a fixture defect, not a compiler defect. `tests/` is /qa-owned;
+/dev (typecheck) does not edit it. Re-targeted `/typecheck` → `/qa`.
+
+---
+
+## S83 W2 /dev frontend update (layered-bug re-target)
 
 ## S83 W2 /dev frontend update (layered-bug re-target)
 

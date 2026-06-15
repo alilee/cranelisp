@@ -416,6 +416,86 @@ impl TestFixture {
         )
     }
 
+    /// Cluster-atomic resolution of a self-qualified type ref (FIXME 0362).
+    ///
+    /// Registers `(deftype Box [:a v])` into an in-progress **staging** table
+    /// for module `t` — leaving the COMMITTED `self.modules["t"]` empty, exactly
+    /// the mid-cluster state where `Box` is built but not yet committed. Then
+    /// resolves `texpr` against `t` through a staging-aware `TypeCheckEnv`
+    /// (`new_with_staging`), mirroring the real cluster pipeline. This exercises
+    /// the path the already-passing committed-view leaf
+    /// (`self_qualified_type_resolves_to_local_product_type`) does NOT: a
+    /// self-qualified `:t/Box` that must consult staging, not only the committed
+    /// view. Returns the resolution result.
+    pub fn resolve_type_expr_against_staged_box(
+        &mut self,
+        texpr: &cranelisp_types::TypeExpr,
+    ) -> Result<Type, cranelisp_types::ResolveError> {
+        use cranelisp_types::{ConstructorDef, FieldDef, TypeExpr, TypeName};
+
+        let t = ModuleFullPath::from("t");
+        // Committed table for `t` exists but is EMPTY (no `Box`).
+        self.modules
+            .entry(t.clone())
+            .or_insert_with(|| SymbolTable::new(t.clone()));
+
+        // Build `Box` into a freestanding staging table (NOT committed).
+        let mut staging = SymbolTable::new(t.clone());
+        let staging_cell = std::cell::RefCell::new(&mut staging);
+        let prev = self.state.current_module.clone();
+        self.state.current_module = t.clone();
+        {
+            let env = TypeCheckEnv::new_with_staging(
+                &self.modules,
+                &self.next_id,
+                t.clone(),
+                &staging_cell,
+                &self.module_aliases,
+                &self.prelude_fallback,
+            );
+            env.register_type_def(
+                &mut self.state,
+                &TypeName::from("Box"),
+                &None,
+                &[Symbol::from("a")],
+                &[ConstructorDef {
+                    name: Symbol::from("Box"),
+                    docstring: None,
+                    fields: vec![FieldDef {
+                        name: Symbol::from("v"),
+                        type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                        span: Span::SYNTHETIC,
+                    }],
+                    span: Span::SYNTHETIC,
+                }],
+                cranelisp_types::Visibility::Public,
+                Span::SYNTHETIC,
+            )
+            .expect("Box registers into staging for module t");
+        }
+
+        // Now resolve `texpr` against `t` with the SAME staging visible —
+        // `Box` is in staging only, never committed.
+        let result = {
+            let env = TypeCheckEnv::new_with_staging(
+                &self.modules,
+                &self.next_id,
+                t.clone(),
+                &staging_cell,
+                &self.module_aliases,
+                &self.prelude_fallback,
+            );
+            env.resolve_type_expr_in_module(
+                texpr,
+                &std::collections::HashMap::new(),
+                &t,
+                Span::SYNTHETIC,
+            )
+        };
+        self.state.current_module = prev;
+        result
+    }
+
     /// Register a type def in an arbitrary module (test convenience). Sets the
     /// `CheckState::current_module` to `module` for the duration of the
     /// registration, then restores it.

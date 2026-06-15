@@ -2125,10 +2125,23 @@ where
         // The structural `TypeExpr` recursion (arity validation, type-var
         // allocation) stays in `crate::resolve::resolve_type_expr`.
         let resolve_terminal = |tref: &cranelisp_types::TypeRef| -> Option<ModuleEntry<C>> {
-            let is_bare = tref.module.is_none();
+            // A self-qualified ref (`:t/Box` from inside module `t`) names the
+            // requester's OWN module by FQ name. It must resolve against the
+            // in-progress cluster staging exactly as a bare `:Box` does —
+            // `cranelisp_types::resolve_qualified` reads only COMMITTED tables,
+            // so during cluster-atomic typecheck the in-cluster `Box` (still in
+            // staging, not yet committed) is invisible to the qualified path
+            // (FIXME 0362). Collapse `module == current_module` to the bare path:
+            // the composed `name` becomes just the leaf, and the staging-aware
+            // first-hop `read` view below carries the in-progress definition. A
+            // genuinely cross-module qualified ref keeps the `module/name` form
+            // and resolves against the committed home (Principle 17 — only the
+            // SELF case changes).
+            let is_self_qualified = tref.module.as_ref() == Some(module_path);
+            let is_bare = tref.module.is_none() || is_self_qualified;
             let name: String = match &tref.module {
-                Some(m) => format!("{m}/{}", tref.name),
-                None => tref.name.to_string(),
+                Some(m) if !is_self_qualified => format!("{m}/{}", tref.name),
+                _ => tref.name.to_string(),
             };
             // First-hop view over `module_path`. Absent module → no entry
             // (mirrors the prior chain-follow's graceful `None`).
