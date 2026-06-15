@@ -266,7 +266,15 @@ impl CompilerSession {
             };
 
             match result {
-                ClusterOnce::Done { program, .. } => {
+                ClusterOnce::Done { processed, program } => {
+                    // S83 W2 (FIXME 0363): carry the cluster's accumulated
+                    // typecheck warnings out to the `EvalResult`. They are
+                    // committed onto `ProcessedCluster.warnings` by the
+                    // cluster driver (e.g. the §5.2.6 accessor/binding
+                    // `ShadowedName` collision); previously this site dropped
+                    // them with a hardcoded empty `Vec`, so they never reached
+                    // `format_eval_result`.
+                    let cluster_warnings = processed.warnings().to_vec();
                     // If program is empty, the form was handled during expansion
                     // (defmacro, import, platform, mod). Return Def with name
                     // extracted from the original sexp.
@@ -278,13 +286,13 @@ impl CompilerSession {
                                     symbol: Symbol::from(symbol_name),
                                 },
                                 ty: Type::Int,
-                                warnings: Vec::new(),
+                                warnings: cluster_warnings,
                             })),
                             // import/platform/mod — no visible result.
                             None => Ok(None),
                         };
                     }
-                    let check = CheckResult { warnings: Vec::new(), display: None };
+                    let check = CheckResult { warnings: cluster_warnings, display: None };
                     return self.codegen_and_execute(&module, &program, &check).map(Some);
                 }
                 ClusterOnce::Gap { dep } => {

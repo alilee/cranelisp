@@ -1616,6 +1616,34 @@ impl CompilerSession {
     /// Produces the universal output format (spec §1.1):
     ///   `:Type {value|name} ; {classification} - {docstring}`
     pub fn format_eval_result(&self, result: &EvalResult) -> String {
+        // S83 W2 (FIXME 0363): surface accumulated typecheck `Warning`s in the
+        // REPL output. Warnings are DATA accumulated through the eval chain
+        // (`src/CLAUDE.md` §Error Handling: "displayed by the binary crate"),
+        // but no display site existed — so a `ShadowedName` warning (e.g. a
+        // synthesised §5.2.6 accessor colliding with an existing binding) was
+        // invisible. Render each as a `; warning: <message>` comment line
+        // (the §1.1 comment style) ahead of the value/def display. Doing it
+        // here is the single source of truth: every `format_eval_result`
+        // caller (REPL loop + `--run` echo + bare-symbol introspection) gets
+        // warning display uniformly.
+        let body = self.format_eval_result_body(result);
+        if result.warnings().is_empty() {
+            return body;
+        }
+        let mut out = String::new();
+        for w in result.warnings() {
+            out.push_str("; warning: ");
+            out.push_str(&w.message);
+            out.push('\n');
+        }
+        out.push_str(&body);
+        out
+    }
+
+    /// The value/definition rendering for an `EvalResult`, without warning
+    /// surfacing. `format_eval_result` wraps this to prepend `; warning:`
+    /// lines (FIXME 0363).
+    fn format_eval_result_body(&self, result: &EvalResult) -> String {
         match result {
             EvalResult::Def { symbol, .. } => {
                 let name = symbol.symbol.as_ref();

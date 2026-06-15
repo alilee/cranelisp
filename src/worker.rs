@@ -693,6 +693,19 @@ pub fn derive_codegen_batch(
             // (Inline `DefKind::Primitive` entries with `ast: None`, e.g.
             // `bind`/`sconcat`, are excluded — they resolve from the intrinsics
             // archive and carry no body to compile.)
+            //
+            // S83 W2 (FIXME 0363): the spec §5.2.6 product field accessors that
+            // typecheck synthesises in `register_constructors` are concrete
+            // `DefKind::UserFn { fn_state: Concrete { got_slot } }` entries with
+            // a single-arm `match` body (`ast: Some(_)`) born in the symbol
+            // table WITHOUT a `TopLevel::Defn` in `program`. A normal user
+            // `UserFn::Concrete` defn is already batched via the `program` loop
+            // above (it enters `seen` at its `TopLevel::Defn`), so this sibling
+            // arm only catches the body-carrying synthetic accessors — it does
+            // NOT double-compile normal defns (they are skipped by the `seen`
+            // guard at the top of this loop). Without this arm the accessor's
+            // body is never lowered and its GOT slot stays empty, so `(v (Box
+            // 5))` resolves the name but loads an empty slot → no value.
             let is_uncompiled_synth_def = table
                 .get(name.as_ref())
                 .map(|e| matches!(
@@ -700,7 +713,11 @@ pub fn derive_codegen_batch(
                     ModuleEntry::Def { kind, ast: Some(_), .. }
                         if matches!(
                             kind.as_ref(),
-                            DefKind::Constructor { .. } | DefKind::Primitive { .. }
+                            DefKind::Constructor { .. }
+                                | DefKind::Primitive { .. }
+                                | DefKind::UserFn {
+                                    fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                                }
                         )
                 ))
                 .unwrap_or(false);

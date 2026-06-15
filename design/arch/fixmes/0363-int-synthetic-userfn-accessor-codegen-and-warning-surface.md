@@ -8,6 +8,25 @@ refers_to: src/worker.rs (derive_codegen_batch ~:696 is_uncompiled_synth_def pre
 status: open
 ---
 
+> **S83 W2 partial resolution (2026-06-15, /dev int).** Gap A is RESOLVED —
+> `src/worker.rs::derive_codegen_batch`'s sibling-scan predicate now also matches
+> `DefKind::UserFn { fn_state: Concrete { .. } }` with `ast: Some(_)`, so the
+> synthetic accessor body is lowered and its GOT slot populated.
+> `generated_field_accessor_resolves_as_free_callable` and
+> `accessor_is_first_class_value_passable` are GREEN.
+>
+> Gap B is BLOCKED on FIXME 0365 (`target: /typecheck`). The int receiving end is
+> landed (`src/eval.rs::process_form_cluster` threads `ProcessedCluster.warnings`
+> into the `EvalResult`; `src/repl.rs::format_eval_result` renders `; warning:`
+> lines), but `cranelisp_typecheck::check_forms` returns `Result<(), CheckError>`
+> and DISCARDS its `CheckResult` (with warnings) at `form.rs:306` — so the
+> `ShadowedName` collision warning never reaches int.
+> `accessor_neg_synth_does_not_shadow_existing_binding` stays RED until 0365
+> lands the warning across the boundary; then int's `finalize_cluster`
+> (`src/process_form.rs:1098`, currently `ProcessedCluster::empty()`) fills
+> `ProcessedCluster.warnings` from the surfaced set. This file stays OPEN for
+> that final int fill + green flip. See 0365 for the full handoff.
+
 # Synthetic `UserFn` field accessors are not codegen-batched, and typecheck `Warning`s are not surfaced in the REPL (blocks FIXME 0351(a) guards)
 
 ## Issue
