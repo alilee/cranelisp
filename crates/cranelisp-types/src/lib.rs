@@ -181,6 +181,7 @@ pub(crate) mod sexp;
 pub(crate) mod ast;
 pub(crate) mod types;
 pub(crate) mod concrete;
+pub(crate) mod mono_expr;
 pub(crate) mod check;
 pub(crate) mod parsed;
 // `pub mod code` removed in Sprint 58 Wave 3b (Decision 35): the old
@@ -229,6 +230,12 @@ pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, 
 // design/arch/concrete-boundary-type.md). No `Var`/`TyConApp` variant — a
 // generic is structurally unrepresentable at the typecheck→backend boundary.
 pub use concrete::{ConcreteType, NotConcrete};
+// The post-monomorphisation codegen AST (Phase 2a; produces-but-unused).
+// `MonoExpr` mirrors `Expr` with `ty: ConcreteType` (non-optional) — a generic
+// is structurally unrepresentable on a codegen node. `MonoExpr::from_expr` is the
+// fallible builder; its failure is the unified ambiguity / could-not-mono error.
+// design/arch/concrete-boundary-type.md §2.4.
+pub use mono_expr::{MonoDefnVariant, MonoExpr, MonoMatchArm};
 pub use check::{
     DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall, TraitDeclInfo, TypeDefInfo,
 };

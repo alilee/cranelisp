@@ -160,7 +160,15 @@ pub mod linker;
 /// `Concrete`-with-a-`Type::Var` would re-introduce the NULL-slot / unsound-RC
 /// regression. The bump rejects every v5 cache as `CacheStale::SchemaMismatch`
 /// (cache-miss → recompile) so the corrected gate always runs.
-pub const CACHE_SCHEMA_VERSION: u32 = 6;
+/// **S84 bump 6 → 7 (concrete-boundary arc Phase 2a, `MonoExpr` lands).**
+/// `cranelisp-types` gained the `MonoExpr` / `MonoDefnVariant` post-mono codegen
+/// AST (`design/arch/concrete-boundary-type.md` §2.4) — a serde-deriving shape
+/// that participates in the cached `.meta.json` symbol-table/AST surface as the
+/// mono output representation. Phase 2a lands the representation (produces-but-
+/// unused); the bump invalidates every v6 cache as `CacheStale::SchemaMismatch`
+/// (cache-miss → recompile) so no v6 `.meta.json` is round-tripped against the
+/// extended serde surface.
+pub const CACHE_SCHEMA_VERSION: u32 = 7;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
