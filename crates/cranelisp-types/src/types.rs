@@ -102,6 +102,90 @@ impl Type {
             Type::Int | Type::Bool | Type::String | Type::Float => true,
         }
     }
+
+    /// Whether this type, at a codegen/RC site, carries a **representation-
+    /// undetermined free `Type::Var`** — a value whose machine shape (heap
+    /// pointer vs bare scalar/tag) cannot be decided because an unpinned type
+    /// variable rides in a position where the representation depends on it.
+    ///
+    /// **THE single source of truth** for the §3.11.1 codegen-reaching ambiguity
+    /// question, shared by two consumers so that typecheck and backend agree **by
+    /// construction** (Principle 7, Principle 18; FIXME 0379, belt-and-braces
+    /// ruling 2026-06-16):
+    ///
+    /// - **Typecheck (position-complete §3.11.1 check, FIXME 0379).** Calls this
+    ///   on the resolved type at **every** codegen-reaching value position (match
+    ///   scrutinees, fn-call args, vec elements, ctor fields, if-branches, ParBind
+    ///   bindings, returns, nested lets — not just `let` bindings) and raises an
+    ///   "ambiguous type" error when it is `true`. The predicate is **directly**
+    ///   the ambiguity verdict here: under full monomorphisation-from-roots a
+    ///   *genuinely free* var in a codegen-reaching position means **no root pins
+    ///   it** — the program is ambiguous (0373(ii)) regardless of the value's heap
+    ///   category, so the conservative `true` is a *correct* rejection, never a
+    ///   false positive.
+    /// - **Backend (`HeapCategory::classify`/`emit_rc_*` backstop, FIXME 0375).**
+    ///   Gates this **behind its own `classify == Mixed` verdict**: panics at an RC
+    ///   site iff `classify(ty, tables) == Mixed && ty.is_representation_undetermined()`.
+    ///   The `Mixed` gate is what excludes a table-determined `NeverHeap`
+    ///   (all-nullary `(Phantom a)`) or `AlwaysHeap` (all-data) ADT that this
+    ///   table-free predicate cannot itself rule out — so the backend never panics
+    ///   on a representation-*determined* ADT even when it carries a free var, while
+    ///   the typecheck side legitimately rejects it as ambiguous.
+    ///
+    /// **Matches the backend `classify` ground truth** (`crates/cranelisp-backend/
+    /// src/heap.rs`): the two `classify` arms that return `Mixed`-with-an-unpinned-
+    /// representation are `Type::Var`/`Type::TyConApp` (no static knowledge) and a
+    /// `Type::ADT` whose ctor shape is `Mixed` (`(has_nullary, has_data) ==
+    /// (true, true)`) — and the dangerous ADT case is *exactly* a `Mixed`-shaped ADT
+    /// carrying a free var (the `<1024` RC-guard use-after-free, FIXME 0374/0375).
+    /// The structural predicate captures the "carries a free var in a
+    /// representation-bearing position" half table-free; the backend supplies the
+    /// "is `Mixed`-shaped" half from the symbol tables. They agree on the dangerous
+    /// core by construction.
+    ///
+    /// **TRUE** for: a bare `Type::Var`; a `Type::TyConApp` (its `TypeId` head is
+    /// an unpinned HKT var); a non-`Vec` `Type::ADT` carrying a free `Type::Var`
+    /// anywhere in its args (`(Option a)`, `(Box a)` — the case the bare-`Var`
+    /// panic misses, the FIXME-0379 hole).
+    ///
+    /// **FALSE** for: `Type::Fn` (always a heap closure — word-represented, RC
+    /// uniform, sound regardless of any free var); `(Vec a)` (the `Vec` builtin is
+    /// uniformly heap-allocated — RC is element-type-independent); any fully
+    /// concrete type; and a `Type::ADT` with **no** free var (the legitimate
+    /// type-known nullary-tag `Mixed`-discrimination case the `<1024` guard is
+    /// *kept* for).
+    ///
+    /// Note the `Vec`/`Fn` exclusions are the *structurally uniformly-heap* set —
+    /// the same set `classify` routes to `AlwaysHeap` independent of the free var.
+    /// The `Vec` exclusion is keyed on the bare type name (`fqtn.name == "Vec"`),
+    /// mirroring `classify_adt`'s short-circuit; if a second uniformly-heap builtin
+    /// is ever added, both sites update in lockstep (the stringly-typed coupling
+    /// /review flagged under FIXME 0379 — minor, noted, not part of the hole).
+    pub fn is_representation_undetermined(&self) -> bool {
+        match self {
+            // No static representation knowledge — the dangerous bare-var shape.
+            Type::Var(_) => true,
+            // The HKT head is itself an unpinned type variable.
+            Type::TyConApp(_, _) => true,
+            // Always a heap closure — word-represented, RC-uniform: representation
+            // is determined despite any free var in the signature.
+            Type::Fn(_, _) => false,
+            Type::ADT(fqtn, args) => {
+                // `Vec` is uniformly heap-allocated — RC is independent of the
+                // element type, so a polymorphic `(Vec a)` is representation-
+                // DETERMINED (matches `classify_adt`'s `AlwaysHeap` short-circuit).
+                if fqtn.name.as_ref() == "Vec" {
+                    return false;
+                }
+                // A non-`Vec` ADT carrying a free var anywhere in its args is the
+                // representation-undetermined shape (the `(Option a)`/`(Box a)`
+                // family). With NO free var it is representation-determined (the
+                // legitimate type-known nullary-tag `Mixed` case → FALSE).
+                args.iter().any(|a| !free_vars(a).is_empty())
+            }
+            Type::Int | Type::Bool | Type::String | Type::Float => false,
+        }
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -584,6 +668,85 @@ mod tests {
         ] {
             assert_eq!(ty.is_concrete(), !ty.contains_var(), "{ty}");
         }
+    }
+
+    // FIXME 0379 (belt-and-braces, user-ruled 2026-06-16): the shared
+    // `is_representation_undetermined` predicate is THE single source of truth
+    // for "does this type carry a representation-undetermined free `Type::Var` at
+    // a codegen/RC site." Typecheck uses it directly (position-complete §3.11.1
+    // ambiguity check); backend gates it behind `classify == Mixed` (FIXME 0375
+    // backstop). These tests pin the dangerous/safe split named in the ruling:
+    // Option-a TRUE, Box-a TRUE, bare-Var TRUE, Vec-a FALSE, Fn-a FALSE,
+    // Option-Int FALSE, Int FALSE. See design/arch/bounded-contexts.md §3 inv 9.
+    #[test]
+    fn test_repr_undetermined_bare_var_is_true() {
+        // No static representation knowledge — the canonical dangerous shape.
+        assert!(Type::Var(0).is_representation_undetermined());
+    }
+
+    #[test]
+    fn test_repr_undetermined_tyconapp_is_true() {
+        // HKT head is an unpinned type variable.
+        assert!(Type::TyConApp(0, vec![Type::Int]).is_representation_undetermined());
+    }
+
+    #[test]
+    fn test_repr_undetermined_option_a_is_true() {
+        // (Option a) — the Mixed-ADT-with-free-var family the bare-Var panic
+        // misses (the FIXME 0379 hole).
+        let option_a = Type::ADT(test_fqtn("Option"), vec![Type::Var(0)]);
+        assert!(option_a.is_representation_undetermined());
+    }
+
+    #[test]
+    fn test_repr_undetermined_box_a_is_true() {
+        // (Box a) — the HOF-result shape that SIGSEGV'd through the slot gate.
+        let box_a = Type::ADT(test_fqtn("Box"), vec![Type::Var(0)]);
+        assert!(box_a.is_representation_undetermined());
+    }
+
+    #[test]
+    fn test_repr_undetermined_option_int_is_false() {
+        // Fully concrete ADT — representation determined, NOT ambiguous.
+        let option_int = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
+        assert!(!option_int.is_representation_undetermined());
+    }
+
+    #[test]
+    fn test_repr_undetermined_vec_a_is_false() {
+        // (Vec a) — uniformly heap-allocated; RC is element-type-independent,
+        // so a polymorphic Vec is representation-DETERMINED (matches
+        // classify_adt's AlwaysHeap short-circuit).
+        let vec_a = Type::ADT(
+            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
+            vec![Type::Var(0)],
+        );
+        assert!(!vec_a.is_representation_undetermined());
+    }
+
+    #[test]
+    fn test_repr_undetermined_fn_a_is_false() {
+        // (Fn [a] a) — always a heap closure, word-represented, RC-uniform:
+        // representation is determined despite the free var.
+        let fn_a = Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)));
+        assert!(!fn_a.is_representation_undetermined());
+    }
+
+    #[test]
+    fn test_repr_undetermined_int_is_false() {
+        // Primitives are fully concrete — never undetermined.
+        assert!(!Type::Int.is_representation_undetermined());
+        assert!(!Type::Bool.is_representation_undetermined());
+        assert!(!Type::String.is_representation_undetermined());
+        assert!(!Type::Float.is_representation_undetermined());
+    }
+
+    #[test]
+    fn test_repr_undetermined_nested_adt_free_var_is_true() {
+        // (Option (Box a)) — the free var rides nested; still undetermined.
+        let inner = Type::ADT(test_fqtn("Box"), vec![Type::Var(0)]);
+        let nested = Type::ADT(test_fqtn("Option"), vec![inner]);
+        assert!(nested.is_representation_undetermined());
     }
 
     #[test]

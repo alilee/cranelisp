@@ -1,6 +1,6 @@
 # Sprint 84: Full Monomorphisation + Auto-IO Parallelisation
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 1b (TOTAL slot⟺concrete: user ruled 2026-06-16 "display via introspection" — retire the result-only-var carve-out; bare poly value → type-display not error; test-fns as mono roots; FIXME 0378). Wave 1 core landed (`8a66623`). Cluster B (0367) independent.
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 2 (Cluster A close: belt-and-braces for 0379 — user ruled 2026-06-16 — shared `is_representation_undetermined()` predicate + position-complete typecheck check + widened 0375 backend backstop; then 0373(iii) §12.1). Wave 1/1b landed (`8a66623`/`77c634a`, slot⟺concrete TOTAL at def level). Cluster B (0367) Wave 3.
 
 **Goal**: Make full monomorphisation-from-roots total (no `Type::Var` reaches codegen) and retire the unsound polymorphic-path RC guard; and re-wire the dormant §10.12 auto-IO-scheduling pass so independent IO effects actually parallelise.
 
@@ -34,10 +34,13 @@ Spec §10.12 is a MUST: the compiler MUST insert `Par` nodes for data-independen
 
 | FIXME | Target skill | Status | Notes |
 |---|---|---|---|
-| 0374 | /typecheck | open | Cluster A spine — Tier-2 full mono-from-roots; gates 0375 + 0373(iii) |
-| 0375 | /backend | open | Cluster A — retire `<1024` `Type::Var` RC guard; **gated on 0374** |
-| 0373 | /spec | open | Cluster A — rank-1 HM (i) + ambiguity rule (ii) [independent] + §12.1 relax (iii) [gated on 0374] |
-| 0376 | /design | open | Cluster A re-shape — re-ground `monomorphisation.md` on the structural-slot-gate-first model (filed S84 mid-Phase-5; see §"Cluster A re-shape") |
+| 0374 | /typecheck | **RESOLVED** (`8a66623`+`77c634a`) | Structural slot gate TOTAL (slot⟺concrete); `(Box a)`-HOF mono; test-fns as mono roots |
+| 0375 | /backend | open — Wave 2 | Cluster A — `classify(Type::Var)`→panic backstop + retire `<1024` guard from Var path; **coordinate with 0379** (can't catch `Mixed`-with-Var) |
+| 0373 | /spec | open — (i)(ii) landed; **(iii) Wave 2** | §12.1 relax (gated on 0374, now resolved) |
+| 0376 | /design | **RESOLVED** (`54447e7`) | monomorphisation.md re-grounded on slot-gate model |
+| 0377 | /arch | **RESOLVED** (`d55d592`) | `UserFnState::Polymorphic` slot-less variant landed |
+| 0378 | /spec·/repl·/arch | **RESOLVED** (`6d24b72`+`77c634a`) | §3.11 disposition triple + repl §1.5.1 + test-roots seam |
+| 0379 | /arch | **open — MUST CLOSE S84 (soundness)** | §3.11.1 codegen-reaching check positionally incomplete (only `let`); match-scrutinee/call-arg/vec-elem/ctor-field `Mixed`-ADT-with-free-var slips to codegen; 0375 backstop can't catch `Mixed`-with-Var. Wave-2. |
 | 0367 | /int | open | Cluster B spine — re-wire auto-IO scheduling onto live pipeline |
 | 0353 | /platform·/qa | open | Cluster B — closes when `resource_serial_diff_token_parallelizes` green |
 | 0366 | /typecheck | open (out of scope) | REPL accessor poison — carries; failing guard |
@@ -121,6 +124,12 @@ A generic-but-unconstrained def has **empty constraints AND a `Type::Var`**, so 
 **Reshaped 0374 (/typecheck).** Two coupled changes land together: **(1) correct the slot gate to `is_concrete()`** — `Concrete { got_slot }` constructed only when `!trial_scheme.ty.contains_var()`; a determined-but-non-concrete unconstrained generic def gets a **slot-less** `fn_state` (new arm sibling to `Constrained`, working name `Polymorphic`); **(2) systematic mono-from-roots** extending `pass4_monomorphise` (not a parallel pass; Principle 7) so the slot-less set is genuinely the never-used-as-a-value set — coverage forced by the representation, not chased shape-by-shape. The `contains_var` ambiguity check (0373 ii) is named a **secondary backstop**, not the mechanism. Pinned risk unchanged: 0344/0349 fold over-mono.
 
 **Reshaped 0375 (/backend).** Re-evaluated: 0375 **does NOT collapse into the representation invariant — it remains a meaningful change, re-framed from *mechanism* to *backstop*.** With the slot door shut upstream, `classify(Type::Var)→unreachable!` is a structural backstop that can never fire (Principle 18 — the upstream form is strictly stronger; the assert is still the seam-local tripwire that turns any future gate regression into an immediate located panic, not a silent UAF). The `<1024`-guard removal on the `Type::Var` path is still a real edit; keeping the guard for nullary-tag ADT discrimination + splitting off `TyConApp` are unchanged. Still gated on 0374.
+
+**Wave-2 belt-and-braces for 0379 (user-ratified 2026-06-16; /arch design + types predicate LANDED this session, two /dev seams SPECIFIED).** /review (FIXME 0379) found the re-shape's two named backstops are each *positionally incomplete*: the §3.11.1 typecheck check fired only on `let`-binding values, and `classify(Type::Var)→unreachable!` **cannot catch a `Mixed`-shaped ADT carrying a free var** (`(Option a)`/`(Box a)` route to `classify_adt` by ctor shape — the free var rides invisibly in the unused args, never reaching the `Type::Var` arm). So a `Mixed`-ADT-with-free-var in a non-`let` codegen-reaching position (match scrutinee / fn arg / vec element / ctor field / if-branch / ParBind) slipped past BOTH — exit-0-by-luck-of-shape, one field-deref from the `<1024` UAF. The user ruled "belt-and-braces": close it with BOTH sides position-complete, agreeing via ONE shared predicate.
+- **Shared predicate — LANDED (`crates/cranelisp-types/`):** `Type::is_representation_undetermined(&self) -> bool` (`crates/cranelisp-types/src/types.rs`) — THE single source of truth. TRUE for bare `Type::Var`, `Type::TyConApp`, and a non-`Vec` `Type::ADT` carrying a free var; FALSE for `Type::Fn`, `(Vec a)` (uniformly heap → `classify` `AlwaysHeap`), fully concrete types, and a `Type::ADT` with no free var (the type-known nullary-tag case). Table-free/structural — captures the "carries a free var in a representation-bearing position" half; backend supplies the "is `Mixed`-shaped" half from tables → the two crates agree on the dangerous core by construction. 9 unit tests; `public-api.txt` one additive line; **no cache bump** (pure `&self -> bool`, no serde shape).
+- **0375 WIDENED (/dev on backend, Wave 2):** widen the panic so the RC-emit path trips on ANY type satisfying the shared predicate at an RC site, gated behind the existing `Mixed` verdict — `panic iff classify == Mixed && is_representation_undetermined()` (covers bare `Type::Var` AND `Mixed`-ADT-with-free-var). The `Mixed` gate excludes a table-determined `NeverHeap`/`AlwaysHeap` ADT-with-free-var. Retire `<1024` from this path; KEEP it for type-known nullary-tag discrimination (no free var). This supersedes the narrower `classify(Type::Var)→unreachable!`-only spec above.
+- **§3.11.1 typecheck check position-complete (/dev on typecheck, Wave 2):** generalise `find_ambiguous_let_binding`/`is_ambiguous_codegen_reaching_type` (`program.rs`) to call the shared predicate at EVERY codegen-reaching value position `for_each_child_expr` visits (not only `let`); retire the local heuristic. **FIXME 0380 filed `target: /design`** to re-ground `monomorphisation.md` §4 (root-only → position-complete + shared predicate).
+- **Manifestation sites (arch-owned, this session):** BC §3 invariant 9 (belt-and-braces paragraph), BC §2 (position-complete note), `interfaces.md` §"Callability is structural" (predicate as cross-crate item), Principle 20 cross-ref list. **0379 left OPEN (arch-design-complete) for the /dev relay to close when both consumers land green.**
 
 **Cross-crate + baseline + cache impact.**
 - **`cranelisp-types` (mine) — LANDED this session:** `Type::is_concrete()` added (`crates/cranelisp-types/src/types.rs`) as the GOT-slot-eligibility predicate, with 6 unit tests; `cargo check` clean, tests green. `public-api.txt` regenerated — **one additive line** (`pub fn cranelisp_types::Type::is_concrete(&self) -> bool`), no removal, no signature change. The diff is committed alongside the source per the two-update discipline.
@@ -238,6 +247,72 @@ Finalised. Logical dependency below; **execution is serial-relayed** (shared tre
 - Authoritative full-suite gate is `cargo nextest run --workspace` (S83 process correction — root-package-only ≈1369 is NOT the full suite).
 - S62 concurrency design carryover preserved at `design/int/concurrency*` + `design/int/heisenbug-race-closure.md` + `design/int/concurrency/` (diagrams) — Phase-3 input for the 0367 track.
 - **/arch Phase-2 ruling (2026-06-16) — wave structure confirmed, one refinement.** The provisional waves stand. The /arch review ruled that 0367's concurrency surface is **narrower** than the S60–62 scheduler heisenbugs (a single-threaded compile-time AST transform + an already-tested structured-fork-join runtime dispatch over pure IO thunks) and therefore does NOT re-enter that race territory; the concurrency carryover models a *different* (scheduler) surface and needs no refresh for S84. The proof obligation **PO-0367.1/.2/.3** (transform-correctness negatives + mode-uniformity + the structured-fork-join timing-witness pair `resource_serial_diff_token_parallelizes` green / `resource_serial_same_token_serializes` green) replaces "test carefully" and is checkable without a scheduler loom model. **Refinement to Wave 0:** the 0367 failing-first guards /qa authors are PO-0367.1's deterministic AST-property negatives (data-dependent / same-token / Sequential-class MUST-NOT-Par) **in addition to** the existing timing reds — the negatives are the cheapest soundness guard and must exist before wiring. **Recommendation (non-mandatory):** stage 0367's wiring behind an env-gated activation (default on) to bound blast radius; optional if a clean unconditional wiring lands with PO-0367.1–.3 green. **Watch-item:** the 0353 platform test-capture fixture may move `crates/cranelisp-platform/public-api.txt` (assess in-change-set, two-update discipline if so) — the only baseline-regen watch in the sprint. Verdict: **sign-off to Phase 3.** No new `cranelisp-types`/BC/interfaces edit is forced by 0374/0375 (more `MonoDefn` instances through the existing enumeration; backend-internal `classify` change) — the architecture docs already record both directions in prose.
+
+## Wave 1/1b /review (cranelisp-typecheck) — 2026-06-16
+
+Reviewed `8a66623` (W1) + `77c634a` (W1b) against the Cluster-A re-shape invariant,
+spec §3.11, BC §2/§3, Principle 18/20. **Verdict: the change-set is a net improvement
+and internally coherent — it lands. ONE Important Wave-2-design-input finding on the
+soundness story (filed 0379); no Blockers.** Counts: 0 Blocker / 1 Important / 3 Suggestion.
+
+**§3.11.1 heuristic completeness — HAS A HOLE (verdict: sound-only-for-`let`-position +
+pinned-var; positionally incomplete).** `is_ambiguous_codegen_reaching_type` is the SOLE
+typecheck guard for the `Mixed`-ADT-carrying-a-free-var family — confirmed: the Wave-2
+0375 backstop (`classify(Type::Var)→panic`) CANNOT catch it, because `classify`
+(`heap.rs:446`) routes `Type::ADT(fqtn, _)` to `classify_adt` which inspects ONLY ctor
+shape and DROPS the args (`_`), so `(Opt a)` classifies `Mixed`, never the `Type::Var`
+arm. The heuristic's CHECK only fires on `Expr::Let` binding values (`program.rs:1522`);
+recursion (`for_each_child_expr`) reaches all children but the check does not trigger on
+match scrutinees, fn-call args, vec elements, ctor fields, `if` branches, or `ParBind`
+bindings. **Reproduced empirically at HEAD:** `(let [x (id Non)] …)` → correctly rejected
+("ambiguous type"); the SAME `(id Non)` as a **match scrutinee** or a **Vec element** →
+compiles and runs **silently, exit 0** — the free var reaches codegen. These exit 0 only
+because the shapes hit a nullary-tag path; a data-field deref at `≥1024` in the same
+positional bypass is the unsound `<1024` `Mixed`-RC path the re-shape set out to close.
+So "no unsound `Type::Var` reaches codegen" is total only for the `let`-position +
+pinned-var subsets, NOT by construction. `Vec`/`Fn` exclusion confirmed SOUND (both
+`AlwaysHeap`, RC element-type-independent). **Filed FIXME 0379 (`target: /arch`)** — Wave-2
+input: either make the §3.11.1 scan position-complete (preferred) OR widen 0375 to handle
+`Mixed`-with-residual-var; the SPRINT §5 "codegen-side assert is the complement" claim is
+incomplete for the `Mixed` family as written.
+
+**Mono-root placement — SOUND but a flagged ordering hazard (Suggestion).**
+`register_test_fn_mono_roots` correctly runs at `program.rs:1716`, AFTER both
+`regeneralize_defn_schemes` passes (1607, 1705), because regeneralize's unconditional
+scheme-writeback would demote the minted `(Option String)` back to `(Option a)`. It is a
+SEPARATE post-pass OUTSIDE `pass4_monomorphise` (the design prose at §5 line 143 describes
+it as "in `pass4_monomorphise`"). Placement is correct today and the in-place bare-name
+upgrade (Polymorphic→Concrete{slot} on the same entry, `:2718`) is collision-free (single
+entry mutated in place, discovery reads the slot under the same name — no shadowing). But a
+future regeneralize/writeback pass added after :1716 would silently re-demote (the comment
+flags this, no structural guard). Recommend a `debug_assert!` that the minted entry is
+still `Concrete` at the end of `finalize_check_result_inner` to turn a future re-break into
+an immediate located failure.
+
+**Fold protection — HELD (verified).** The gate-leg split is correct: slot-allocation legs
+use `is_concrete()` (`:977`, `:1221`, reslot `:1436`); the 0344 scheme-WRITEBACK legs are
+UNCHANGED `constraints.is_empty()` (`:935`, `:1192`). The change-set did not touch the
+writeback legs. The carve-out `fn_type_is_monomorphisable_from_params` is fully deleted with
+all use sites. Fold canary + 0344/0349 unit tests are genuinely protected by construction,
+not incidentally green.
+
+**General quality.** Principle 7 honoured — no parallel mono pass (extends the enumeration);
+test-fn root pass is a finalisation post-pass, not a second mono entry point (the one
+structural wrinkle, noted above). Principle 18/20 structural slot gate is now TOTAL and
+correctly representation-keyed (`is_concrete()`, not `constraints.is_empty()`). Cache 5→6
+bump present + `SchemaMismatch` route (`cache/mod.rs`). 4 new unit tests at the right seam
+(slot-gate determination + mono-root + ambiguity-admits-named-defn); **gap:** no unit/e2e
+guard pins the §3.11.1 NEGATIVE for a non-`let` position (which is exactly why the 0379 hole
+is invisible to the suite — route to /qa + /dev with the resolution). No new clippy lints on
+the new functions (typecheck 106 pre-existing, none reference the added fns).
+
+**Suggestions:** (S1) `"Vec"` bare-name string is duplicated across the heuristic
+(`program.rs:1590`) and `classify_adt` (`heap.rs:480`) — a stringly-typed cross-crate
+coupling; a second uniformly-heap builtin would need both updated in lockstep. (S2) the
+mono-root debug_assert above. (S3) `register_test_fn_mono_roots` hard-codes the `"Option"` /
+`"test-"` / `(Option String)` discovery contract inline — fine for now, but it re-encodes
+the discovery predicate that `discover_eligible_tests` also owns; if the entry type ever
+generalises, two sites move.
 
 ## Outcome (Phase 7)
 
