@@ -1503,12 +1503,37 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn find_ambiguous_top_level_form(
         &self,
         state: &CheckState,
+        accumulator: &ModuleCheckAccumulator,
         working_program: &[TopLevel],
     ) -> Option<(Symbol, Span)> {
         for top in working_program {
             let TopLevel::Defn(defn) = top else { continue };
+            // The vars LEGITIMATELY polymorphic for this defn are the free vars
+            // of its finalised function type — these are exactly what generalise
+            // into the defn's scheme and are pinned per-instantiation by
+            // monomorphisation (§4.4: "a var quantified into the scheme is
+            // fine"). A value-position type whose free vars are ALL in this set
+            // is sound; a value position carrying a var OUTSIDE it is genuinely
+            // un-pinnable (free-at-root) → ambiguous. This is the discriminator
+            // that admits the polymorphic-accumulator fold (`reduce`'s body
+            // positions carry `reduce`'s own scheme vars) while rejecting an
+            // unpinned `(Option a)` in a concrete-scheme defn like `main`.
+            let allowed_vars: std::collections::HashSet<u32> = accumulator
+                .defn_type_vars
+                .get(&defn.name)
+                .map(|(param_types, ret_ty)| {
+                    let mut vars = std::collections::HashSet::new();
+                    for t in param_types {
+                        vars.extend(cranelisp_types::free_vars(&self.apply_subst(state, t)));
+                    }
+                    vars.extend(cranelisp_types::free_vars(&self.apply_subst(state, ret_ty)));
+                    vars
+                })
+                .unwrap_or_default();
             for variant in &defn.variants {
-                if let Some(span) = self.find_ambiguous_let_binding(state, &variant.body) {
+                if let Some(span) =
+                    self.find_ambiguous_value_position(state, &variant.body, &allowed_vars)
+                {
                     return Some((defn.name.clone(), span));
                 }
             }
@@ -1516,83 +1541,243 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         None
     }
 
-    /// Recursively scan an expression for a `let`-binding value (a
-    /// codegen-reaching value position, §3.11.1) whose resolved type retains a
-    /// free `Type::Var` inside a structure. Returns the offending binding span.
-    fn find_ambiguous_let_binding(
-        &self,
-        state: &CheckState,
-        expr: &Expr,
-    ) -> Option<Span> {
-        if let Expr::Let { bindings, .. } = expr {
-            for (_, value) in bindings {
-                // The `working_program` ASTs are the INPUT shapes (their
-                // `inferred_type` fields are unset — annotation lands on the
-                // stored `ModuleEntry::Def.ast`). Read the binding value's type
-                // from `state.expr_types` by span (still populated at the
-                // finalisation boundary, before the accumulator drain), resolved
-                // through the final substitution.
-                let resolved = value
-                    .inferred_type()
-                    .map(|ty| apply(&state.subst, ty))
-                    .or_else(|| {
-                        state
-                            .expr_types
-                            .get(&value.span())
-                            .map(|ty| apply(&state.subst, ty))
-                    });
-                if let Some(resolved) = resolved
-                    && Self::is_ambiguous_codegen_reaching_type(&resolved)
-                {
-                    return Some(value.span());
+    /// POSITION-COMPLETE §3.11.1 ambiguity scan (S84 Wave 2, FIXME 0379/0380 —
+    /// belt-and-braces ruling). Recursively scan an expression and fire the
+    /// per-node verdict on the resolved type of EVERY codegen-reaching value
+    /// position `for_each_child_expr` visits — not only `let` bindings. Returns
+    /// the offending value's span.
+    ///
+    /// **Why position-complete (the 0379 hole).** The old scanner only applied
+    /// the verdict on `Expr::Let` binding values, but a `Mixed`-shaped ADT
+    /// carrying a free `Type::Var` reaches codegen through many NON-`let` value
+    /// positions — a `match` scrutinee (`(Pure (match (id Non) …))`), a fn-call
+    /// arg, a vec element, a ctor field, an `if` branch, a `ParBind` binding.
+    /// Those were recursed-into but not CHECKED, so an unpinned `(Option a)` in
+    /// such a position slipped past both this check AND the backend's old
+    /// bare-`Var`-only `classify` panic (a `Mixed` ADT routes by ctor shape; the
+    /// free var rides invisibly in the unused type args) — exit-0-by-luck-of-shape,
+    /// one data-ctor-field deref from a `<1024` use-after-free. The recursion was
+    /// already complete (via `for_each_child_expr`); only the verdict was
+    /// `let`-gated. This lifts the verdict to every value-producing child.
+    ///
+    /// **The verdict is the SHARED predicate.** Per-node danger is decided by
+    /// `Type::is_representation_undetermined()` (`cranelisp-types`, the SINGLE
+    /// SOURCE OF TRUTH shared with the backend's widened `classify` backstop —
+    /// Principle 7, Principle 18; the two sides agree by construction). On the
+    /// typecheck side the predicate is DIRECTLY the verdict (no `Mixed`-gate — that
+    /// gate is the backend's half): under full monomorphisation-from-roots a
+    /// genuinely free var in a codegen-reaching position means NO root pins it →
+    /// the program is ambiguous (§3.11.1 / 0373(ii)) regardless of heap category,
+    /// so the conservative `true` is a CORRECT rejection, never a false positive.
+    /// The predicate's `Vec`/`Fn` FALSE arms keep the representation-agnostic
+    /// uniformly-heap shapes admitted (a polymorphic `[]` / closure is sound).
+    /// Whether `ty` is a representation-AMBIGUOUS value at codegen — refines the
+    /// shared `Type::is_representation_undetermined()` predicate with the backend's
+    /// `Mixed`-shape determination so the typecheck verdict AGREES with the
+    /// backend's `classify == Mixed` verdict (the two halves of the belt-and-braces
+    /// pair, §4.5 — they must decide "dangerous" the same way, Principle 7).
+    ///
+    /// The shared predicate is table-free and conservatively returns `true` for
+    /// ANY non-`Vec` ADT carrying a free var — including an `AlwaysHeap` ADT
+    /// (`(Result a b)`, both-data ctors) or a `NeverHeap` ADT (`(Phantom a)`,
+    /// all-nullary). Those are representation-DETERMINED (uniformly heap / bare
+    /// tag, RC element-type-independent) — a free var in them is SOUND, not
+    /// ambiguous (`(match (Ok 42) …)` is valid). Only a genuinely `Mixed`-shaped
+    /// ADT (nullary AND data ctors, `(Option a)`) carrying a free var is
+    /// representation-undetermined — the var decides tag-vs-pointer. This helper
+    /// supplies the `Mixed`-shape half from the type defs (mirroring the backend's
+    /// `classify_adt` → `classify_from_ctor_names`), so the check fires on exactly
+    /// the backend's dangerous-`Mixed` set, never on a determined ADT.
+    ///
+    /// A bare `Type::Var` / `Type::TyConApp` is NOT treated as ambiguous here
+    /// (see below) — only a genuinely `Mixed`-shaped ADT-with-free-var is.
+    fn is_codegen_ambiguous_type(&self, state: &CheckState, ty: &Type) -> bool {
+        if !ty.is_representation_undetermined() {
+            return false;
+        }
+        match ty {
+            // A non-`Vec` ADT-with-free-var (`is_representation_undetermined()`
+            // already excluded `Vec` and free-var-free ADTs): fire ONLY if it is
+            // genuinely `Mixed`-shaped. An `AlwaysHeap`/`NeverHeap` ADT-with-free-
+            // var is representation-determined → not ambiguous.
+            Type::ADT(fqtn, _) => self.adt_type_is_mixed_shape(state, fqtn),
+            // Bare `Type::Var` / `Type::TyConApp`: NOT flagged. A bare var in a
+            // value position is a transient/local shape — a lambda parameter
+            // reference (`(fn [x] x)`, `x : a`), an unresolved-dispatch callee,
+            // a generalised local `let`-binding — that is pinned by its use or
+            // generalised into a local scheme, NOT a runtime-ambiguous value.
+            // (The old `is_ambiguous_codegen_reaching_type` likewise excluded
+            // bare vars for this reason.) The bare-var ambiguity question is the
+            // §3.11.2 display disposition + the deferred backend backstop (FIXME
+            // 0374/0381) — out of this check's scope. ALL 4 §3.11.1 acceptance
+            // guards (`mono_ambiguous_{match_scrutinee,call_arg,ctor_field,if_branch}`)
+            // use a `Mixed` `(Option a)` value, so firing on `Mixed`-ADT-with-
+            // free-var ALONE is sufficient to close the 0379 hole.
+            _ => false,
+        }
+    }
+
+    /// Whether the ADT named by `fqtn` has a genuinely `Mixed` constructor shape —
+    /// at least one nullary (bare-tag) AND at least one data (heap-pointer)
+    /// constructor — the only ADT shape whose machine representation depends on a
+    /// free type var. Mirrors the backend's `classify_from_ctor_names`
+    /// (`crates/cranelisp-backend/src/heap.rs`): resolve the type def, walk each
+    /// ctor name to its `field_count`, classify by `(has_nullary, has_data)`.
+    /// Conservatively `true` when the ctor set cannot be resolved (matches the
+    /// backend's conservative `Mixed` fallback — and a conservative ambiguity
+    /// rejection of an unresolvable ADT is safe).
+    fn adt_type_is_mixed_shape(&self, state: &CheckState, fqtn: &cranelisp_types::FQTypeName) -> bool {
+        // Resolve the type def's constructor names in the ADT's home module.
+        let Some(ModuleEntry::TypeDef { info, .. }) = self
+            .resolve_entry_in_module(&fqtn.module, fqtn.name.as_ref())
+            // A single-ctor product type registers as a ctor `Def` with a type
+            // facet, not a `TypeDef` — a product is single-ctor (not Mixed), so
+            // falling through to the conservative `_ => true` below would be
+            // wrong; treat a non-`TypeDef` entry as NOT mixed (single ctor / not
+            // a sum). Only a multi-ctor sum can be `Mixed`.
+            .or_else(|| self.resolve_entry_in_current_module(state, fqtn.name.as_ref()))
+        else {
+            // Unresolvable as a sum TypeDef: conservatively NOT mixed (a product
+            // ctor or unknown — a product is single-ctor, never tag-vs-pointer).
+            return false;
+        };
+        let mut has_nullary = false;
+        let mut has_data = false;
+        let mut resolved_any = false;
+        for ctor_name in &info.constructors {
+            if let Some(ModuleEntry::Def { kind, .. }) =
+                self.resolve_entry_in_module(&fqtn.module, ctor_name.as_ref())
+                && let DefKind::Constructor { field_count, .. } = kind.as_ref()
+            {
+                resolved_any = true;
+                if *field_count == 0 {
+                    has_nullary = true;
+                } else {
+                    has_data = true;
                 }
             }
         }
-        // Recurse into children. A `let` nested in another expression (or in a
-        // `let` body) is still a codegen-reaching value position.
-        let mut found = None;
-        for_each_child_expr(expr, |child| {
-            if found.is_none() {
-                found = self.find_ambiguous_let_binding(state, child);
-            }
-        });
-        found
+        // Unresolvable ctors → conservative `Mixed` (matches backend fallback).
+        // Both species present → genuinely `Mixed`.
+        !resolved_any || (has_nullary && has_data)
     }
 
-    /// Whether a let-bound value's resolved type is a §3.11.1 codegen-reaching
-    /// AMBIGUITY — a value that must be turned into a runtime value while its
-    /// representation depends on an unpinned type var.
-    ///
-    /// **Fires** on a `Type::ADT` carrying a free `Type::Var` whose
-    /// representation is NOT uniform — the `Mixed`-shaped ADTs (`(Option a)`,
-    /// `(Box a)`, `(Result a b)`) where the RC treatment of the field depends on
-    /// the var. This is the same family that, left unmonomorphised, reaches the
-    /// backend's `HeapCategory::classify(Type::Var)` → the unsound `<1024` RC
-    /// guard (FIXME 0374/0375). A `let`-bound value of this shape, consumed at
-    /// runtime with the var unpinned, is the canonical §3.11.1 worked example.
-    ///
-    /// **Does NOT fire** on:
-    /// - a bare `Type::Var` value (a transient unresolved-dispatch shape, pinned
-    ///   by its use);
-    /// - `(Vec a)` — the `Vec` builtin is a UNIFORMLY heap-represented container;
-    ///   its RC is independent of `a`, so a polymorphic `[]` consumed by
-    ///   `vec-len` is sound and representation-agnostic (NOT ambiguous);
-    /// - `Type::Fn` (a polymorphic closure — word-represented, RC-uniform).
-    ///
-    /// This scope is what distinguishes the §3.11.1 REJECT shape from the legal
-    /// representation-agnostic polymorphic values that DO reach codegen.
-    fn is_ambiguous_codegen_reaching_type(ty: &Type) -> bool {
-        let Type::ADT(fqtn, args) = ty else {
-            return false;
-        };
-        // `Vec` is uniformly heap-represented — its RC is independent of the
-        // element type, so a polymorphic `(Vec a)` is NOT ambiguous.
-        if fqtn.name.as_ref() == "Vec" {
-            return false;
+    /// Whether `expr` is a value whose machine representation is pinned by a
+    /// SYNTACTICALLY-PRESENT constructor — a direct constructor reference (`None`,
+    /// a nullary ctor `Var`) or a direct constructor application (`(Some x)`,
+    /// `ConstrADT`). Such a value's actual constructor (hence its tag-vs-pointer
+    /// representation) is statically known even when its type retains a free var,
+    /// so it is NOT §3.11.1-ambiguous (`(is-some None)` is valid). Only a `Mixed`
+    /// value reaching a position THROUGH a polymorphic boundary (where the actual
+    /// constructor is not the syntactic value, e.g. `(identity None)`) is
+    /// genuinely representation-undetermined.
+    fn expr_is_direct_constructor_value(&self, state: &CheckState, expr: &Expr) -> bool {
+        match expr {
+            // A direct `ConstrADT` is a constructor application by construction.
+            Expr::ConstrADT { .. } => true,
+            // A bare `Var` referencing a (nullary) constructor — `None`, `Red`.
+            Expr::Var { name, .. } => self.symbol_is_constructor(state, name.as_ref()),
+            // `(Some x)` / `(None)` — an `Apply` whose callee is a constructor.
+            Expr::Apply { callee, .. } => {
+                if let Expr::Var { name, .. } = callee.as_ref() {
+                    self.symbol_is_constructor(state, name.as_ref())
+                } else {
+                    false
+                }
+            }
+            _ => false,
         }
-        // An ADT carrying a free `Type::Var` directly in an argument is the
-        // representation-ambiguous shape.
-        args.iter().any(|a| !cranelisp_types::free_vars(a).is_empty())
+    }
+
+    /// Whether `name` resolves to a data/nullary constructor in the current
+    /// module's resolution context (chain-followed through imports/prelude).
+    fn symbol_is_constructor(&self, state: &CheckState, name: &str) -> bool {
+        matches!(
+            self.resolve_entry_in_current_module(state, name),
+            Some(ModuleEntry::Def { kind, .. })
+                if matches!(kind.as_ref(), DefKind::Constructor { .. })
+        )
+    }
+
+    fn find_ambiguous_value_position(
+        &self,
+        state: &CheckState,
+        expr: &Expr,
+        allowed_vars: &std::collections::HashSet<u32>,
+    ) -> Option<Span> {
+        // The CALLEE of an `Apply` is a DISPATCH position, not a runtime value
+        // position — an overloaded / multi-sig / trait-method callee carries a
+        // transient bare `Type::Var` pinned-away by sig/dictionary resolution
+        // (the §4.2 table lists `Apply { args }`, NOT the callee). Recurse INTO
+        // the callee (a nested ambiguous arg there is still caught) but never
+        // apply the per-node verdict ON it.
+        let callee_span = match expr {
+            Expr::Apply { callee, .. } => Some(callee.span()),
+            _ => None,
+        };
+
+        // Apply the per-node verdict to every value-producing child, then recurse
+        // into it. `for_each_child_expr` is the single child-enumeration source
+        // of truth — visiting its children covers `Apply.args`, `Match`
+        // scrutinee + arm bodies, `If` branches, `VecLit` elements, `ConstrADT`
+        // fields, `Let`/`ParBind` bindings + body, `Lambda`/`Trace`/`Annotate`
+        // inner — i.e. EVERY codegen-reaching value position.
+        let mut found = None;
+        for_each_child_expr(expr, |child| {
+            if found.is_some() {
+                return;
+            }
+            // The `working_program` ASTs are the INPUT shapes (their
+            // `inferred_type` fields are unset — annotation lands on the stored
+            // `ModuleEntry::Def.ast`). Read each child's type from
+            // `state.expr_types` by span (still populated at the finalisation
+            // boundary, before the accumulator drain), resolved through the final
+            // substitution. Same mechanism the old `let`-leg used.
+            let resolved = child
+                .inferred_type()
+                .map(|ty| apply(&state.subst, ty))
+                .or_else(|| {
+                    state
+                        .expr_types
+                        .get(&child.span())
+                        .map(|ty| apply(&state.subst, ty))
+                });
+            if Some(child.span()) != callee_span
+                // A value whose representation is pinned by a SYNTACTICALLY-PRESENT
+                // constructor (`None`, `(Some x)`) is NOT ambiguous — its actual
+                // constructor (hence tag-vs-pointer representation) is statically
+                // known regardless of the residual type var (`(is-some None)` is
+                // valid: `None` is definitively the nullary tag). The §3.11.1
+                // ambiguity arises when a value of `Mixed` type reaches a position
+                // through a POLYMORPHIC boundary (`(identity None)` — the actual
+                // constructor is not the syntactic value), so its representation
+                // is genuinely unknowable. Skip direct-constructor values.
+                && !self.expr_is_direct_constructor_value(state, child)
+                && let Some(resolved) = resolved
+                // The verdict: representation-ambiguous at codegen — the shared
+                // predicate refined by the backend's `Mixed`-shape determination
+                // (so the two belt-and-braces halves agree; §4.5). Fires on a
+                // genuinely `Mixed`-shaped ADT-with-free-var (`(Option a)`) and a
+                // bare var, NOT on an `AlwaysHeap`/`NeverHeap` ADT-with-free-var
+                // (`(Result a b)` — representation-determined, sound).
+                && self.is_codegen_ambiguous_type(state, &resolved)
+                // §4.4 nuance: a value position whose free vars are ALL
+                // quantified into the enclosing defn's scheme is SOUND — the var
+                // is pinned per-instantiation by monomorphisation (this admits
+                // the polymorphic-accumulator fold's body positions). Only a var
+                // OUTSIDE the defn's quantified set is free-at-root and genuinely
+                // un-pinnable → ambiguous.
+                && cranelisp_types::free_vars(&resolved)
+                    .iter()
+                    .any(|v| !allowed_vars.contains(v))
+            {
+                found = Some(child.span());
+                return;
+            }
+            // Not flagged at this position — descend.
+            found = self.find_ambiguous_value_position(state, child, allowed_vars);
+        });
+        found
     }
 
     fn finalize_check_result_inner(
@@ -1726,7 +1911,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // is scoped to `let`-binding value positions, so the two REPL display
         // guards stay green and named poly defns are admitted.
         if let Some((name, span)) =
-            self.find_ambiguous_top_level_form(state, working_program)
+            self.find_ambiguous_top_level_form(state, accumulator, working_program)
         {
             return Err(CranelispError::TypeError {
                 message: format!(

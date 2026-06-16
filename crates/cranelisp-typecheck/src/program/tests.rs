@@ -5553,3 +5553,209 @@
             "a named result-only-var defn is slot-less `Polymorphic`, got {entry:?}",
         );
     }
+
+    // =====================================================================
+    // §7(e) POSITION-COMPLETE §3.11.1 (S84 Wave 2, FIXME 0379/0380). A
+    // `Mixed`-ADT-with-free-var (`(Option a)`, `a` unpinned) reaching a
+    // codegen value position in a NON-`let` slot — match scrutinee, fn-call
+    // arg, vec element, ctor field, if-branch — must be REJECTED as ambiguous,
+    // via the shared `Type::is_representation_undetermined()` predicate firing
+    // at that position. The old scanner only checked `let` bindings; the
+    // position-complete scanner checks every value-producing child. The
+    // `let`-position case stays an asserted positive control
+    // (`ambiguity_check_rejects_codegen_reaching_unpinned_let_binding`). A
+    // `(Vec a)`/`(Fn …)` free-var value in these positions MUST NOT error
+    // (the predicate's FALSE arms) — guarded by
+    // `vec_free_var_value_position_is_admitted`.
+    // =====================================================================
+
+    /// `(defn identity [x] x)` — the polymorphic identity, used to produce an
+    /// unpinned `(Option a)` value as `(identity None)` (the call does not pin
+    /// the var; `identity`'s result is `a`, instantiated to `(Option a)`).
+    fn identity_defn() -> TopLevel {
+        TopLevel::Defn(make_defn(
+            "identity",
+            vec![Symbol::from("x")],
+            vec![None],
+            Expr::var(Symbol::from("x"), span(20, 21)),
+            Visibility::Public,
+            span(10, 22),
+        ))
+    }
+
+    /// `(identity None)` — an `Apply` producing the unpinned `(Option a)` value.
+    fn identity_none(call_span: Span) -> Expr {
+        Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("identity"), span(call_span.start, call_span.start + 8))),
+            args: vec![Expr::var(Symbol::from("None"), span(call_span.start + 9, call_span.end))],
+            span: call_span,
+            resolved_call: None,
+            inferred_type: None,
+        }
+    }
+
+    /// `(defn consume [y] 0)` — discards its arg, returns a concrete `Int`. Used
+    /// to bury an ambiguous value in a value position while keeping the enclosing
+    /// defn `m`'s OWN result type concrete (`(Fn [] Int)`, no free var) so the
+    /// offending var is genuinely free-at-root, not quantified into `m`'s scheme.
+    fn consume_defn() -> TopLevel {
+        TopLevel::Defn(make_defn(
+            "consume",
+            vec![Symbol::from("y")],
+            vec![None],
+            Expr::IntLit { value: 0, span: span(30, 31), inferred_type: None },
+            Visibility::Public,
+            span(28, 32),
+        ))
+    }
+
+    /// Wrap `inner` (the value position under test) in `(consume <inner>)` so the
+    /// enclosing `m`'s result is concrete `Int`. Returns the wrapping body.
+    fn consume_wrap(inner: Expr) -> Expr {
+        let inner_span = inner.span();
+        Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("consume"), span(101, 108))),
+            args: vec![inner],
+            span: span(100, inner_span.end + 1),
+            resolved_call: None,
+            inferred_type: None,
+        }
+    }
+
+    /// Assert checking `[Option, identity, consume, defn m with `body`]` rejects
+    /// with an "ambiguous" error (the §3.11.1 position-complete verdict). `m`'s
+    /// own result is kept concrete by `consume_wrap` so the offending var is
+    /// free-at-root (not a quantified scheme var).
+    fn assert_ambiguous(body: Expr, what: &str) {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        let m = TopLevel::Defn(make_defn(
+            "m", vec![], vec![], body, Visibility::Public, span(100, 200),
+        ));
+        let result = tc.check(
+            &[option_typedef(), identity_defn(), consume_defn(), m],
+            &ctx,
+            ModuleStrategy::Additive,
+        );
+        let err = result.err().unwrap_or_else(|| {
+            panic!("an unpinned `(Option a)` value in a {what} must be rejected as ambiguous (§3.11.1)")
+        });
+        let msg = format!("{err}").to_lowercase();
+        assert!(
+            msg.contains("ambiguous"),
+            "the §3.11.1 rejection at a {what} must name 'ambiguous'; got: {msg}",
+        );
+    }
+
+    // spec: spec/03-types.md §3.11.1 — MATCH SCRUTINEE position (non-`let`).
+    #[test]
+    fn mixed_adt_free_var_in_match_scrutinee_is_ambiguous() {
+        // (defn m [] (match (identity None) [None 0 (Some _) 1]))
+        let body = Expr::Match {
+            scrutinee: Box::new(identity_none(span(110, 124))),
+            arms: vec![
+                cranelisp_types::MatchArm {
+                    pattern: cranelisp_types::Pattern::Constructor {
+                        name: cranelisp_types::SymbolRef::new(None, Symbol::from("None")),
+                        bindings: vec![],
+                        span: span(126, 130),
+                    },
+                    body: Expr::IntLit { value: 0, span: span(131, 132), inferred_type: None },
+                    span: span(126, 132),
+                },
+                cranelisp_types::MatchArm {
+                    pattern: cranelisp_types::Pattern::Constructor {
+                        name: cranelisp_types::SymbolRef::new(None, Symbol::from("Some")),
+                        bindings: vec![Symbol::from("_")],
+                        span: span(135, 140),
+                    },
+                    body: Expr::IntLit { value: 1, span: span(141, 142), inferred_type: None },
+                    span: span(135, 142),
+                },
+            ],
+            span: span(105, 145),
+            compiler_generated: false,
+            inferred_type: None,
+        };
+        assert_ambiguous(body, "match scrutinee");
+    }
+
+    // spec: spec/03-types.md §3.11.1 — FUNCTION-CALL ARGUMENT position (non-`let`).
+    #[test]
+    fn mixed_adt_free_var_in_call_arg_is_ambiguous() {
+        // (defn m [] (consume (identity None))) — `(identity None)` : `(Option a)`,
+        // unpinned (the call to `consume` discards its arg, pins nothing). `m`'s
+        // result is concrete `Int` (consume returns 0), so `a` is free-at-root.
+        let body = consume_wrap(identity_none(span(115, 129)));
+        assert_ambiguous(body, "call argument");
+    }
+
+    // spec: spec/03-types.md §3.11.1 — VEC ELEMENT position (non-`let`). The
+    // value INSIDE the vec is `(Option a)`-with-free-var (the vec's own type
+    // `(Vec (Option a))` is admitted, but its element is checked too).
+    #[test]
+    fn mixed_adt_free_var_in_vec_element_is_ambiguous() {
+        // (defn m [] (consume [(identity None)]))
+        let body = consume_wrap(Expr::VecLit {
+            elements: vec![identity_none(span(116, 130))],
+            span: span(115, 131),
+            inferred_type: None,
+        });
+        assert_ambiguous(body, "vec element");
+    }
+
+    // spec: spec/03-types.md §3.11.1 — CONSTRUCTOR FIELD position (non-`let`).
+    #[test]
+    fn mixed_adt_free_var_in_ctor_field_is_ambiguous() {
+        // (defn m [] (consume (Some (identity None)))) — the `Some` field holds an
+        // unpinned `(Option a)`; `consume` keeps `m`'s result concrete `Int`.
+        let body = consume_wrap(Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("Some"), span(116, 120))),
+            args: vec![identity_none(span(121, 135))],
+            span: span(115, 136),
+            resolved_call: None,
+            inferred_type: None,
+        });
+        assert_ambiguous(body, "constructor field");
+    }
+
+    // spec: spec/03-types.md §3.11.1 — IF BRANCH position (non-`let`).
+    #[test]
+    fn mixed_adt_free_var_in_if_branch_is_ambiguous() {
+        // (defn m [] (consume (if true (identity None) (identity None))))
+        let body = consume_wrap(Expr::If {
+            cond: Box::new(Expr::BoolLit { value: true, span: span(118, 122), inferred_type: None }),
+            then_branch: Box::new(identity_none(span(123, 137))),
+            else_branch: Box::new(identity_none(span(138, 152))),
+            span: span(115, 155),
+            inferred_type: None,
+        });
+        assert_ambiguous(body, "if branch");
+    }
+
+    // spec: spec/03-types.md §3.11.1 — NEGATIVE-of-rejection: a `(Vec a)`
+    // free-var value in a NON-`let` value position (here a vec element of a
+    // wrapping vec) is ADMITTED. `Vec` is uniformly heap-allocated
+    // (`is_representation_undetermined()` is FALSE for it), so the
+    // position-complete check MUST NOT over-fire. Mirrors the e2e
+    // `regression::mono_vec_free_var_value_admitted_pos`.
+    #[test]
+    fn vec_free_var_value_position_is_admitted() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        // (defn m [] [[]]) — outer `(Vec (Vec a))`, inner element `(Vec a)` free.
+        let body = Expr::VecLit {
+            elements: vec![Expr::VecLit {
+                elements: vec![],
+                span: span(106, 108),
+                inferred_type: None,
+            }],
+            span: span(105, 109),
+            inferred_type: None,
+        };
+        let m = TopLevel::Defn(make_defn(
+            "m", vec![], vec![], body, Visibility::Public, span(100, 110),
+        ));
+        tc.check(&[m], &ctx, ModuleStrategy::Additive)
+            .expect("a `(Vec a)` free-var value in a codegen position MUST be admitted (§3.11.1)");
+    }

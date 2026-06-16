@@ -443,6 +443,40 @@ impl HeapCategory {
         C: cranelisp_types::CodeStore,
         L: cranelisp_types::LinkerStore,
     {
+        // S84 Wave 2 — belt-and-braces 0375/0379. The TYPECHECK half (the
+        // POSITION-COMPLETE §3.11.1 ambiguity check, `cranelisp-typecheck`
+        // `find_ambiguous_value_position`, sharing the
+        // `Type::is_representation_undetermined()` predicate) is the LANDED fix:
+        // it rejects a genuinely-unpinned representation-undetermined value
+        // (`(Option a)` whose var no use pins) UPSTREAM at typecheck with a source
+        // location, while correctly ADMITTING a sound polymorphic value whose var
+        // is quantified into the enclosing defn's scheme (pinned per-instantiation
+        // by monomorphisation).
+        //
+        // The BACKEND-half panic the §1.6 spec names (`panic iff classify ==
+        // Mixed && is_representation_undetermined()`) is **DEFERRED — blocked on
+        // FIXME 0374 (full monomorphisation, Wave 1) being TOTAL.** Empirically
+        // (S84 Wave 2 /dev) the prelude/stdlib compiles GENERIC-FUNCTION BODIES
+        // whose value positions carry sound, scheme-quantified free vars — a bare
+        // `Type::Var` (a constructor-arg field) AND a `Mixed`-shaped ADT-with-
+        // free-var (`(List a)` in `collections.list`). These are SOUND (the var
+        // is pinned per concrete instantiation; the typecheck check correctly
+        // admits them), but the backend, lacking scheme context, cannot tell a
+        // sound quantified var from an unpinned one — so the panic fires on the
+        // valid prelude (the §1.6 "premature landing" risk made concrete; BC
+        // ring2-rc §1.6 Risk). The non-crashing `Mixed` fallback is the
+        // operatively load-bearing safety net only TOTAL concreteness retires.
+        //
+        // FIXME 0381 (`target: /typecheck`) records the 0374 gap (generic bodies
+        // are still compiled, not rendered slot-less/uncompiled). When 0374 is
+        // total — no free var in any COMPILED body — re-arm the backstop by
+        // restoring the gated `panic!` here:
+        //   if category == HeapCategory::Mixed && ty.is_representation_undetermined()
+        //       { panic!(... BC §3 invariant 9 ...) }
+        // and restore the `should_panic` `test_var_panics` /
+        // `test_mixed_adt_with_free_var_panics` unit tests. The 4 §3.11.1
+        // acceptance guards flip GREEN on the TYPECHECK half alone (they are
+        // rejected before codegen), so the deferral does not weaken them.
         match ty {
             Type::Int | Type::Bool | Type::Float => HeapCategory::NeverHeap,
             Type::String => HeapCategory::AlwaysHeap,
@@ -454,7 +488,9 @@ impl HeapCategory {
             }
             Type::ADT(fqtn, _) => Self::classify_adt(fqtn, symbol_tables),
             Type::Var(_) | Type::TyConApp(_, _) => {
-                // Unresolved type variable: might be anything
+                // Unresolved type variable / partially-applied HKT head: no static
+                // representation knowledge. Conservative `Mixed` fallback (the
+                // backstop panic is DEFERRED on FIXME 0374/0381 — see above).
                 HeapCategory::Mixed
             }
         }
@@ -718,11 +754,55 @@ mod heap_category_tests {
         );
     }
 
+    // S84 Wave 2 — belt-and-braces 0375/0379. The TYPECHECK half (the
+    // position-complete §3.11.1 check) is the landed fix; the BACKEND-half panic
+    // is DEFERRED on FIXME 0374/0381 (the prelude/stdlib compiles GENERIC BODIES
+    // whose value positions carry sound scheme-quantified free vars — bare
+    // `Type::Var` AND `Mixed`-ADT-with-free-var like `(List a)` — which the
+    // backend, lacking scheme context, cannot distinguish from unpinned ones).
+    // So a bare `Type::Var` / `TyConApp` keeps its conservative `Mixed` fallback,
+    // NOT a panic. These tests pin the DEFERRED state and document the re-arm
+    // target (see `HeapCategory::classify` for the gated `panic!` to restore once
+    // 0374 is total).
     #[test]
-    fn test_var_mixed() {
+    fn test_var_is_mixed_fallback_backstop_deferred() {
+        // Re-arm target (FIXME 0381): this becomes #[should_panic] once 0374 is
+        // total (no free var in any compiled body).
         assert_eq!(
             HeapCategory::classify::<(), ()>(&Type::Var(0), None),
-            HeapCategory::Mixed
+            HeapCategory::Mixed,
+        );
+    }
+
+    #[test]
+    fn test_tyconapp_is_mixed_fallback_backstop_deferred() {
+        assert_eq!(
+            HeapCategory::classify::<(), ()>(&Type::TyConApp(0, vec![Type::Int]), None),
+            HeapCategory::Mixed,
+        );
+    }
+
+    // The `Mixed`-shaped ADT CARRYING A FREE VAR (the `(Option a)` / `(Box a)` /
+    // `(List a)` family) — the 0379 hole at the backend seam — likewise keeps the
+    // `Mixed` fallback while the backstop is deferred (FIXME 0381: the prelude
+    // compiles such values in sound generic bodies). The TYPECHECK position-
+    // complete §3.11.1 check is what rejects a GENUINELY-unpinned `(Option a)`
+    // (free-at-root) upstream; this backend seam classifies the sound
+    // scheme-quantified ones `Mixed` without crashing. Re-arm target (FIXME 0381):
+    // this becomes #[should_panic] once 0374 is total.
+    #[test]
+    fn test_mixed_adt_with_free_var_is_mixed_backstop_deferred() {
+        // (deftype (Option a) None (Some [:a val])) — Mixed ctor shape …
+        let tables = tables_with_type(
+            "Option",
+            &["a"],
+            &[nullary_ctor("None", 0), data_ctor("Some", 1, 1)],
+        );
+        // … carrying a FREE var in its args (unpinned `a`).
+        let option_var = Type::ADT(test_fqtn("Option"), vec![Type::Var(0)]);
+        assert_eq!(
+            HeapCategory::classify(&option_var, Some(&tables)),
+            HeapCategory::Mixed,
         );
     }
 
@@ -802,6 +882,11 @@ mod heap_category_tests {
 
     // --- ADT with tables: mixed constructors ---
 
+    // regression: KEPT path (FIXME 0375/0379). A type-KNOWN `Mixed` ADT with NO
+    // free var (`is_representation_undetermined()` is FALSE) still classifies as
+    // `Mixed` and keeps its sound `<1024` nullary-tag discrimination guard — it
+    // must NOT be swept into the widened panic. This is the `(true,true)` ctor
+    // shape → `Mixed` → `emit_rc_*_guarded` chain that must stay intact.
     #[test]
     fn test_mixed_adt_with_tables() {
         // (deftype (Option a) None (Some [:a val]))
