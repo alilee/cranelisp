@@ -3888,3 +3888,249 @@ fn mixed_adt_nullary_and_heap_ctor_roundtrip_after_guard_scope() {
         // discriminates Empty (nullary tag) from Full (heap pointer).
         .assert_exit(3);
 }
+
+// =============================================================================
+// Sprint 84 Wave 2 — §3.11.1 POSITION-COMPLETE negative guards for the 0379
+// codegen-reaching hole.
+//
+// FIXME 0379 (/review → /arch, 2026-06-16): the §3.11.1 codegen-reaching
+// ambiguity check fires ONLY on `let`-binding values
+// (`find_ambiguous_let_binding`, `program.rs:1522`). Recursion reaches every
+// child, but the per-node CHECK does not trigger on the other codegen-reaching
+// value positions — match scrutinee, fn-call argument, constructor field, `if`
+// branch, vec element, `ParBind` binding. So a `Mixed`-ADT-with-free-var value
+// in one of THOSE positions, with NOTHING pinning the var, slips past the
+// typecheck guard AND past the planned 0375 backstop (`classify(Type::Var)`
+// never fires for a `Mixed` ADT — `classify_adt` reads ctor shape and drops the
+// type args, so the free var rides invisibly). Reproduced empirically at HEAD:
+// each shape below compiles and RUNS SILENTLY (exit 0 / a plain non-signal exit
+// code), NOT an ambiguity error — the free var reaches codegen. It exits 0
+// only by luck-of-shape (the nullary tag is discriminated, the field never
+// deref'd at `>=1024`); the SAME positional bypass with a data-ctor value
+// deref'd at `>=1024` is the unsound `Mixed`-RC `<1024` UAF the Cluster-A
+// re-shape set out to close.
+//
+// These pin the hole CLOSED per `is_representation_undetermined()`: the Wave-2
+// /dev relay position-completes the §3.11.1 scan (typecheck) + widens the 0375
+// backstop (backend) using the shared predicate. The shape mirrors the existing
+// `let`-position guard `mono_ambiguous_unconstrained_top_level_var_rejected_neg`
+// (a `(deftype Option None (Some [v]))` + `(defn identity [x] x)` +
+// `(identity None)` unpinned value), differing only in WHERE the unpinned value
+// sits.
+//
+// FAILING-FIRST (RED today): each runs silently / exits cleanly with NO
+// `ambiguous` error. They flip GREEN when /dev position-completes the check
+// (an `error:` naming `ambiguous`, caught at typecheck BEFORE the binary runs).
+// Substring assertion per the error-test convention (do NOT over-pin wording).
+// `Vec`/`Fn` are deliberately KEPT OUT (`AlwaysHeap`, representation-safe — a
+// `(Vec a)`/`(Fn [a] a)` free-var value in these positions MUST NOT error); the
+// companion `mono_vec_free_var_value_admitted_pos` guards against over-firing.
+// Owner: cranelisp-typecheck (check) + cranelisp-backend (0375 backstop).
+// =============================================================================
+
+// spec: spec/03-types.md §3.11.1 — A `Mixed`-ADT value with a free type var in a
+//       codegen-reaching value position (here a MATCH SCRUTINEE), with nothing
+//       pinning the var, MUST be rejected with an "ambiguous type" error. The
+//       `let`-position guard catches the same value when it is `let`-bound; this
+//       guard pins the non-`let` SCRUTINEE position the 0379 hole leaves open.
+// FIXME(0379): the codegen-reaching ambiguity check is positionally incomplete —
+//   it does not fire on a match scrutinee. `(identity None)` is `(Option a)` with
+//   `a` unpinned (the match scrutinises only the tag, never the payload). RED
+//   today (compiles + runs silently, exit 0); GREEN when /dev position-completes
+//   the §3.11.1 scan. Owner: cranelisp-typecheck.
+#[test]
+fn mono_ambiguous_match_scrutinee_rejected_neg() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (deftype Option None (Some [v]))\n\
+             (defn identity [x] x)\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (match (identity None) [None 0 (Some _) 1])))",
+        )
+        .output();
+    assert!(
+        out.status.code().is_some(),
+        "ambiguous codegen-reaching match scrutinee must be caught at typecheck, \
+         NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected an 'ambiguous type' error for an unpinned `(Option a)` value as \
+         a MATCH SCRUTINEE (spec §3.11.1) — the §3.11.1 scan must be position-\
+         complete, not `let`-only (FIXME 0379).\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.11.1 — A `Mixed`-ADT value with a free type var in a
+//       codegen-reaching value position (here a FUNCTION-CALL ARGUMENT to a fn
+//       that does not pin it), with nothing pinning the var, MUST be rejected
+//       with an "ambiguous type" error. Pins the non-`let` call-arg position the
+//       0379 hole leaves open.
+// FIXME(0379): the codegen-reaching ambiguity check does not fire on a fn-call
+//   argument. `consume` has type `(Fn [a] Int)` — it discards its argument, so
+//   passing `(identity None)` does NOT pin the var; the value remains `(Option a)`
+//   with `a` free and reaches codegen. RED today (exits 7, the constant `consume`
+//   returns); GREEN when /dev position-completes the §3.11.1 scan. Owner:
+//   cranelisp-typecheck.
+#[test]
+fn mono_ambiguous_call_arg_rejected_neg() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (deftype Option None (Some [v]))\n\
+             (defn identity [x] x)\n\
+             (defn consume [y] 7)\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (consume (identity None))))",
+        )
+        .output();
+    assert!(
+        out.status.code().is_some(),
+        "ambiguous codegen-reaching call argument must be caught at typecheck, \
+         NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected an 'ambiguous type' error for an unpinned `(Option a)` value \
+         passed as a FUNCTION-CALL ARGUMENT to a fn that discards it (spec \
+         §3.11.1) — the var is not pinned by the call (FIXME 0379).\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.11.1 — A `Mixed`-ADT value with a free type var in a
+//       codegen-reaching value position (here a CONSTRUCTOR FIELD of another ADT,
+//       with the wrapping value consumed at runtime), with nothing pinning the
+//       var, MUST be rejected with an "ambiguous type" error. Pins the non-`let`
+//       constructor-field position the 0379 hole leaves open.
+// FIXME(0379): the codegen-reaching ambiguity check does not fire on a ctor
+//   field. `(Wrap (identity None))` stores an unpinned `(Option a)` directly in
+//   `Box`'s field (no `let`); `consume` discards the `Box`, so nothing pins `a`.
+//   RED today (compiles + runs silently, exit 0); GREEN when /dev position-
+//   completes the §3.11.1 scan. Owner: cranelisp-typecheck.
+#[test]
+fn mono_ambiguous_ctor_field_rejected_neg() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (deftype Option None (Some [v]))\n\
+             (deftype Box (Wrap [w]))\n\
+             (defn identity [x] x)\n\
+             (defn consume [b] 0)\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (consume (Wrap (identity None)))))",
+        )
+        .output();
+    assert!(
+        out.status.code().is_some(),
+        "ambiguous codegen-reaching constructor field must be caught at typecheck, \
+         NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected an 'ambiguous type' error for an unpinned `(Option a)` value \
+         stored directly in a CONSTRUCTOR FIELD (spec §3.11.1) — the wrapping \
+         `Box` does not pin the inner var (FIXME 0379).\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.11.1 — A `Mixed`-ADT value with a free type var in a
+//       codegen-reaching value position (here an IF BRANCH whose result is
+//       consumed), with nothing pinning the var, MUST be rejected with an
+//       "ambiguous type" error. Pins the nested non-`let` if-branch position the
+//       0379 hole leaves open (completeness companion).
+// FIXME(0379): the codegen-reaching ambiguity check does not fire on an `if`
+//   branch. `(if (eq-i64 1 1) (identity None) None)` is `(Option a)` with `a`
+//   free; `use-it` discards it, so nothing pins `a`. RED today (compiles + runs
+//   silently, exit 0); GREEN when /dev position-completes the §3.11.1 scan.
+//   Owner: cranelisp-typecheck.
+#[test]
+fn mono_ambiguous_if_branch_rejected_neg() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int Bool eq-i64]])\n\
+             (deftype Option None (Some [v]))\n\
+             (defn identity [x] x)\n\
+             (defn use-it [y] 0)\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (use-it (if (eq-i64 1 1) (identity None) None))))",
+        )
+        .output();
+    assert!(
+        out.status.code().is_some(),
+        "ambiguous codegen-reaching if branch must be caught at typecheck, NOT \
+         crash at codegen (spec §3.11.1) — got signal termination.\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected an 'ambiguous type' error for an unpinned `(Option a)` value \
+         produced by an IF BRANCH and consumed (spec §3.11.1) — a nested non-\
+         `let` codegen-reaching position (FIXME 0379).\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.11.1 — POSITIVE companion / over-fire guard. A free
+//       type var in a `(Vec a)` value (NOT a `Mixed`-ADT) is REPRESENTATION-SAFE:
+//       `Vec` is uniformly heap-represented (`classify` `AlwaysHeap`), so RC is
+//       element-type-independent and the value never hits the unsound `<1024`
+//       `Mixed` path. `is_representation_undetermined()` is FALSE for `(Vec a)`.
+//       A `(Vec a)` free-var value in a codegen-reaching position MUST be
+//       ADMITTED — the position-complete §3.11.1 check MUST NOT over-fire on it.
+// FIXME(0379): guard against the Wave-2 /dev check rejecting a representation-
+//   safe free-var value. `(identity [])` is `(Vec a)` with `a` free, passed as a
+//   call argument to `use-vec` (which discards it) — nothing pins `a`, yet it is
+//   sound (AlwaysHeap). GREEN today, MUST STAY GREEN after the check lands.
+//   Owner: cranelisp-typecheck.
+#[test]
+fn mono_vec_free_var_value_admitted_pos() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (defn identity [x] x)\n\
+             (defn use-vec [v] 0)\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (use-vec (identity []))))",
+        )
+        .output();
+    // `(Vec a)` is AlwaysHeap — representation-safe even with a free element
+    // var. The check MUST NOT reject it as ambiguous.
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        !combined.contains("ambiguous"),
+        "a `(Vec a)` free-var value in a codegen position MUST be ADMITTED — \
+         `Vec` is AlwaysHeap, RC element-type-independent; the §3.11.1 check \
+         MUST NOT over-fire on it (spec §3.11.1 / FIXME 0379).\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    out.assert_exit(0);
+}
