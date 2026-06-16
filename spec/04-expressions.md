@@ -570,6 +570,15 @@ See [section 6: Pattern Matching](06-pattern-matching.md) for the complete patte
 
 A type annotation constrains the inferred type of an expression. The annotation is checked at compile time by unifying the annotation type with the expression's inferred type. If unification fails, it is a compile-time error. Annotations have no runtime effect -- they produce no code and do not change the value.
 
+**Annotation syntax is `:Type form`.** The `:Type` (or `:(Applied Type)`) introducer is a reader-macro-style prefix that **binds the immediately-following form**, in **all** positions — it is never a standalone atom or variable reference (see [§1.4.5](01-lexical.md#145-colon-prefixed-symbols) and [§2.3.8](02-grammar.md#238-type-annotation)). Worked examples:
+
+```clojure
+:(Option Int) None          ; annotation binds None  → None : (Option Int)
+:(Vec Int) []               ; annotation binds []    → [] : (Vec Int)
+```
+
+**`(: Type form)` is NOT the annotation.** A parenthesised list with a leading bare colon (or any leading `:Type` introducer) is an ordinary **application**, not an annotation of the list. The `:Type` introducer binds only the single following element; the enclosing list is then the application of that element. For a non-`Fn` value such as `None` or `[]`, applying it is ill-formed (not callable) — so the parenthesised forms `(: (Option Int) None)` / `(:(Option Int) None)` do **not** express the annotation and are rejected. Always write the annotation unparenthesised as `:Type form` (e.g. `:(Option Int) None`, `:(Vec Int) []`). See the disambiguation table in [§2.3.8](02-grammar.md#238-type-annotation) for the precise reader behaviour.
+
 ```
 E |- expr => v : T
 unify(T, Annotation) succeeds
@@ -615,7 +624,9 @@ None                        ; : (Option a) -- 'a' is unconstrained
 [e1 e2 ... eN]
 ```
 
-A Vec literal evaluates its elements left-to-right and constructs a `Vec` containing the results. All elements MUST have the same type (enforced at compile time via unification).
+The vec literal `[...]` is a **variadic special form** — it accepts any number of element forms. It is **not** a `Fn` and **not** an overloaded function; it cannot be referenced as a value, partially applied, or passed to a higher-order function, and it is not written in application (callee) position. A Vec literal evaluates its elements left-to-right and constructs a `Vec` containing the results. All elements MUST have the same type (enforced at compile time via unification).
+
+The **zero-element case** `[]` is the empty vec literal, typed `(Vec a)` with `a` unconstrained. Because `[...]` is a special form (not a function), you cannot write `[]` as a function application, and an unpinned `[]` in a codegen-reaching value position is the [§3.11](03-types.md#311-ambiguous-types) ambiguity case — a **type error** — fixed by a concrete annotation `:(Vec Int) []` (see **Empty Vec** below and [§3.11.1](03-types.md#3111-the-ambiguity-rule-is-scoped-to-codegen-reaching-value-positions)).
 
 ```
 E |- e1 => v1 : T;  E |- e2 => v2 : T;  ...;  E |- eN => vN : T
@@ -636,12 +647,13 @@ E |- [e1 e2 ... eN] => <Vec [v1, v2, ..., vN]> : (Vec T)
 [1 "hello"]
 ```
 
-**Empty Vec**: An empty Vec literal `[]` has type `(Vec a)` with `a` unconstrained. A type annotation is needed when the surrounding context does not determine the element type:
+**Empty Vec**: An empty Vec literal `[]` has type `(Vec a)` with `a` unconstrained. The element type MUST be pinned concrete — either by a reachable use site (`(vec-push [] 1)` pins `a = Int` from usage) or by an explicit `:(Vec Int) []` annotation — whenever the `[]` reaches code generation. An unpinned `[]` that reaches codegen with no pinning use site is an **ambiguous-type error** under [§3.11.1](03-types.md#3111-the-ambiguity-rule-is-scoped-to-codegen-reaching-value-positions); there is no representation-based exemption (even though every `Vec` has the same machine shape). A bare `[]` entered at the REPL is **not** an error — the REPL displays its polymorphic `(Vec a)` type by introspection (see [§3.11.2](03-types.md#3112-a-bare-polymorphic-value-at-the-repl-is-not-ambiguous)).
 
 ```clojure
-[]                          ; : (Vec a) -- element type unconstrained
+[]                          ; : (Vec a) -- element type unconstrained (bare REPL display: type shown, not an error)
 :(Vec Int) []               ; : (Vec Int) -- disambiguated by annotation
 (vec-push [] 1)             ; : (Vec Int) -- disambiguated by usage
+(id [])                     ; ERROR: ambiguous element type -- fix: (id :(Vec Int) [])
 ```
 
 **Nested Vecs**:

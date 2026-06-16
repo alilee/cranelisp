@@ -646,6 +646,8 @@ Unification is symmetric: `unify(A, B)` and `unify(B, A)` produce the same resul
 
 ## 3.9 Type Annotations [Tested tests/ring0.rs::annotated_params]
 
+The annotation form is **`:Type form`** — the `:Type` (or `:(Applied Type)`) introducer is a reader-macro-style prefix that **binds the immediately-following form**, in **all** positions, and is never a standalone atom or variable reference (e.g. `:(Option Int) None`, `:(Vec Int) []`). It is **not** written `(: Type form)`: a parenthesised bare-colon (or leading-`:Type`) list is an ordinary application, not an annotation. This is the syntax used both to annotate a value expression (see [§4.9](04-expressions.md#49-type-annotation)) and to pin an otherwise-ambiguous polymorphic form to a concrete type (see [§3.11](#311-ambiguous-types)). The remainder of this section covers annotations in parameter position.
+
 Type annotations constrain the inferred type of a parameter. They appear as colon-prefixed symbols before parameter names in `defn` and `fn` forms:
 
 ```clojure
@@ -691,11 +693,28 @@ Cranelisp has **no defaulting rule.** There is no Haskell-style numeric defaulti
 
 ### 3.11.1 The ambiguity rule is scoped to codegen-reaching value positions [S84]
 
-A free type variable is only **ambiguous** when a value carrying it must be turned into a runtime value — i.e., when it **reaches code generation** — and no reachable use site pins it to a concrete type. Ambiguity is a property of a *use that forces codegen*, not a property of a type or a definition in isolation.
+**Typecheck produces only concrete types.** A residual type variable remaining in a **codegen-reaching value form** after inference is a **type error** (ambiguous). The source MUST disambiguate it with a `:Type form` annotation (see [§3.9](#39-type-annotations) and [§4.9](04-expressions.md#49-type-annotation)) for the program to compile. A free type variable is **ambiguous** exactly when a value carrying it must be turned into a runtime value — i.e., when it **reaches code generation** — and no reachable use site pins it to a concrete type. Ambiguity is a property of a *use that forces codegen*, not a property of a type or a definition in isolation.
 
-**Ambiguity is a type error.** If a polymorphic value with a free type variable must be **monomorphised for code generation** — because it occupies a value position that is actually evaluated to a runtime value (e.g., a value bound by `let` and consumed at runtime, an argument passed to a function that is itself evaluated, the operand of an arithmetic or constructor application that produces a runtime result) — and **no reachable use site pins the variable to a concrete type**, the program MUST be rejected with a type error. There is no concrete instance to compile and no machine representation to choose, and Cranelisp does not default; therefore the form is rejected rather than admitted. [S84]
+**The strictness is full concreteness — no type variable — NOT machine-shape determinacy.** There is **no representation-based exemption.** Cranelisp does **not** admit an unpinned form merely because its runtime representation would be the same whatever the type variable resolves to (e.g. "always a heap pointer", "always a closure"). A form whose finalized type retains a free type variable in a codegen-reaching value position is rejected even when its machine shape is determinate. The following are **all type errors** when their type variable is unpinned in a codegen-reaching position:
 
-The diagnostic intent is to report this as an **ambiguous type** at the site of the unresolved variable and to direct the user to add a type annotation (see [§3.9](#39-type-annotations) and [§4.9](04-expressions.md#49-type-annotation)) that pins the variable. For example, `(identity None)` evaluated as a runtime value, whose result type is `(Option a)` with `a` unconstrained and reaching codegen with no pinning use site, is ambiguous; annotating it `:(Option Int) (identity None)` (or pinning `None` itself, `(identity :(Option Int) None)`) resolves the ambiguity (see [§4.9.2](04-expressions.md#492-applied-type-annotations)).
+- `(Vec a)` — e.g. the empty vec-literal `[]` (see [§4.10](04-expressions.md#410-vec-literal)) used at an unresolved element type;
+- `(Fn [a] a)` — a polymorphic function value at an unresolved type;
+- `(Option a)` — e.g. the bare nullary constructor `None` used at an unresolved payload type;
+- any other type retaining a free variable that reaches codegen.
+
+**Ambiguity is a type error.** If a polymorphic value with a free type variable must be **monomorphised for code generation** — because it occupies a value position that is actually evaluated to a runtime value (e.g., a value bound by `let` and consumed at runtime, an argument passed to a function that is itself evaluated, the operand of an arithmetic or constructor application that produces a runtime result) — and **no reachable use site pins the variable to a concrete type**, the program MUST be rejected with a type error. There is no concrete instance to compile (no machine representation is the point — even a determinate one does not rescue an unpinned variable), and Cranelisp does not default; therefore the form is rejected rather than admitted. [S84]
+
+The diagnostic intent is to report this as an **ambiguous type** at the site of the unresolved variable and to direct the user to add a type annotation (see [§3.9](#39-type-annotations) and [§4.9](04-expressions.md#49-type-annotation)) that pins the variable. Worked examples:
+
+- `(is-some None)` — `None` has type `(Option a)`; if `a` is not pinned by any reachable use and the application reaches codegen, this is **ambiguous → error**. Fix by annotating the constructor concrete: `(is-some :(Option Int) None)`.
+- `(id [])` — `[]` has type `(Vec a)`; if the element type `a` is unpinned and the application reaches codegen, this is **ambiguous → error**. Fix by annotating the literal concrete: `(id :(Vec Int) [])`.
+- `(identity None)` evaluated as a runtime value, whose result type is `(Option a)` with `a` unconstrained and reaching codegen with no pinning use site, is ambiguous; annotating it `:(Option Int) (identity None)` (or pinning `None` itself, `(identity :(Option Int) None)`) resolves the ambiguity (see [§4.9.2](04-expressions.md#492-applied-type-annotations)).
+
+In each case the annotation is the `:Type form` form — the `:Type` reader-macro-style introducer binding the immediately-following form (see [§4.9](04-expressions.md#49-type-annotation)). It is **not** written `(: Type form)` (a parenthesised bare-colon list is an application, not the annotation — see [§4.9](04-expressions.md#49-type-annotation) and [§2.3.8](02-grammar.md#238-type-annotation)).
+
+#### 3.11.1.1 Why import-site restriction cannot resolve this (rationale) [S84]
+
+Restricting *import* ambiguity does **not** avoid the use-site ambiguity rule, and so cannot replace it. An imported polymorphic type — e.g. `Option` imported as `(Option a)` with **no concrete type specified** at the import — can legitimately be used at **two different concrete types within a single module** (`(Option Int)` in one expression, `(Option String)` in another). There is therefore no single concrete type the import could be pinned to: pinning at the import would be wrong for at least one use. The ambiguity is intrinsically a property of each **use site**, not of the import. The only sound resolution is to require the **source to annotate the ambiguous form** at the use site that reaches codegen without pinning. This is why §3.11.1 is a use-site/codegen rule, and why no amount of import-level discipline removes the need for it.
 
 ### 3.11.2 A bare polymorphic value at the REPL is NOT ambiguous [S84]
 
@@ -708,6 +727,14 @@ This does not weaken the no-defaulting rule: the REPL does **not** pick a concre
 A **named top-level definition** whose generalized scheme retains free type variables that appear **only in its result** — `(defn empty [] [])` of type `∀a. (Fn [] (Vec a))`, `(defn ambig [] None)` of type `∀a. (Fn [] (Option a))`, or any `pure`/`empty`-style nullary constructor wrapper — is **admitted, not rejected.** Under rank-1 HM (see [§3.10](#310-rank-1-hindley-milner)), such a definition is a legitimate polymorphic scheme: it is **dead for code generation until instantiated at a concrete use site**, where instantiation-at-use (§3.10) pins the variable and monomorphisation mints a concrete instance for that use. The definition itself emits no specialization; only its concrete uses do. [S84]
 
 The ambiguity error of §3.11.1 is therefore about a **use that forces code generation without pinning the variable** — never about the *definition*. A named polymorphic definition that is never concretely used is sound and simply contributes no code; a named polymorphic definition that *is* concretely used is monomorphised at each pinning use site. Rejecting such definitions would also reject every `empty`/`pure`-style library function, which is not the intent: there is no carve-out needed because there is no rule to carve out — a definition is not a codegen-reaching value position.
+
+**Definitions are mono sources with polymorphic schemes — not ambiguous.** The ambiguity error is a **use-site / codegen property only**. The following are **definitions**, each a single mono source carrying a polymorphic scheme, and **none is ambiguous**:
+
+- A **polymorphic constructor definition** — e.g. `None` declared by `(deftype (Option a) None (Some [:a v]))`. There is **exactly one `None`** (a single polymorphic constructor of scheme `∀a. (Option a)`); there is no definition-site ambiguity because there is nothing to choose between — `None` is one constructor, used at whatever concrete `a` each use site pins. Likewise `Some`, and every other constructor.
+- A **generic `defn`** — e.g. `(defn id [x] x)` of scheme `∀a. (Fn [a] a)`. The definition is one function; its uses are monomorphised at the concrete types they pin.
+- The **vec-literal special form** itself (`[...]`, see [§4.10](04-expressions.md#410-vec-literal)) — a variadic special form whose zero-element case `[]` has scheme `(Vec a)`. The form is one mono source; an individual unpinned `[]` is ambiguous only at a codegen-reaching *use*, never as "the form."
+
+Ambiguity arises only when a **use** of one of these reaches code generation with its instantiated type variable left unpinned (disposition 2, §3.11.4). The same `None` may be used at `(Option Int)` in one place and `(Option String)` in another; each such use is pinned independently — which is exactly why import-site restriction cannot resolve the ambiguity (see [§3.11.1.1](#31111-why-import-site-restriction-cannot-resolve-this-rationale)) and the *source must annotate* the unpinned use.
 
 ### 3.11.4 The three dispositions are exhaustive and consistent [S84]
 

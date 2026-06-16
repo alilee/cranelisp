@@ -637,7 +637,7 @@ vec_lit      = '[' expr* ']'
              | '(' 'vec' expr* ')'
 ```
 
-A bracket form in expression position is a Vec literal. All elements MUST have the same type. An empty bracket `[]` creates an empty Vec (its element type is inferred from context).
+A bracket form in expression position is a Vec literal — a **variadic special form** recognised by the reader/typechecker, **not** a `Fn` and not an overloaded function. It accepts any number of element forms; it cannot be referenced as a value, partially applied, or used as an application callee. All elements MUST have the same type. An empty bracket `[]` is the zero-element case, typed `(Vec a)` with `a` unconstrained (its element type is inferred from context). An unpinned `[]` reaching code generation is the [§3.11](03-types.md#311-ambiguous-types) ambiguity case (a type error, fixed by `:(Vec Int) []`); see [§4.10](04-expressions.md#410-vec-literal).
 
 The `(vec ...)` form is an alternative syntax with identical semantics.
 
