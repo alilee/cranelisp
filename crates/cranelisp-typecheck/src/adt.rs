@@ -404,13 +404,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// concrete (GOT slot at synthesis), registered under the field name in the
     /// type's own module.
     ///
-    /// **Collision policy (FIXME 0351(a), spec §5.2.6 is silent — safe
-    /// disposition).** Before inserting an accessor `f`:
+    /// **Collision policy (spec §5.2.6 "Duplicate field names in the same
+    /// scope" + §8.6.5 bare-name ambiguity; user ruling S83 W2).** Before
+    /// inserting an accessor `f`:
     /// - If `f` already names a **field accessor** for ANOTHER product type in
-    ///   this module (cross-type duplicate field name), the two accessors must
-    ///   coexist and dispatch by argument type — they are folded into the
-    ///   `DefKind::Overloaded` multi-sig mechanism (each as a mangled `f$Type`
-    ///   concrete variant + an `Overloaded` base under `f`).
+    ///   this module (cross-type duplicate field name), the bare name `f` is
+    ///   **ambiguous (poisoned)** under the §8.6.5 distinct-terminal rule: the
+    ///   symbol-table entry is replaced with `ModuleEntry::Ambiguous` (the same
+    ///   sentinel an import collision installs), and any later use of bare `f`
+    ///   is a compile-time error listing the qualified alternatives (`Box.v`,
+    ///   `Cup.v`). The compiler MUST NOT fold the colliding accessors into an
+    ///   argument-type-dispatched overload and MUST NOT silently pick a winner.
+    ///   The field stays reachable via `match` (§6) and module-qualification
+    ///   (§8.5.1).
     /// - If `f` already names a NON-accessor binding (a user `(defn f ..)`, a
     ///   ctor, etc.), the synthesis is **refused with a clear diagnostic** —
     ///   the accessor does not silently shadow or corrupt the existing binding.
@@ -498,6 +504,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // NON-accessor collision (refused). Classifying by `DefKind` alone is
         // insufficient: a user `(defn v ..)` is also a `UserFn`.
         //
+        // An ACCESSOR collision (cross-type duplicate field name) POISONS the
+        // bare name per §5.2.6/§8.6.5 — it does NOT overload (user ruling
+        // S83 W2). Once poisoned, a further accessor of the same name (a third
+        // colliding type) leaves it poisoned and extends the alternatives list.
+        //
         // FIXME 0365 — read the UNION view (staging-first, then live) rather
         // than staging alone. In the REPL each form is its own cluster, so a
         // pre-existing `(defn v ..)` from an EARLIER cluster is committed to
@@ -512,6 +523,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let existing_kind: Option<AccessorCollision> = if !existing_present {
             None
         } else if state.synthesised_accessor_names.contains(&accessor_name) {
+            // Either a single concrete accessor (first collision) or an
+            // already-poisoned name (third+ collision) — both are accessor
+            // collisions and poison.
             Some(AccessorCollision::Accessor)
         } else {
             Some(AccessorCollision::NonAccessor)
@@ -537,14 +551,34 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 self.current_symbol_table_mut(state)
                     .insert(accessor_name.clone(), builder.build());
                 state.synthesised_accessor_names.insert(accessor_name.clone());
+                // Record this name's sole owning type so a later collision can
+                // list all qualified alternatives in the ambiguity error.
+                state
+                    .accessor_owning_types
+                    .entry(accessor_name.clone())
+                    .or_default()
+                    .push(fqtn.clone());
             }
             Some(AccessorCollision::Accessor) => {
-                // Cross-type duplicate field name: fold into the overload
-                // mechanism so `(v (Box ..))` and `(v (Cup ..))` dispatch by
-                // argument type. No duplicate-definition error (spec §5.2.6).
-                self.fold_accessor_into_overload(
-                    state, &accessor_name, scheme, ast, visibility,
+                // Cross-type duplicate field name (spec §5.2.6 + §8.6.5; user
+                // ruling S83 W2): POISON the bare name. Replace the symbol-table
+                // entry with `ModuleEntry::Ambiguous` — the same sentinel an
+                // import collision installs (§8.6.4). No overload, no winner.
+                // Any later use of bare `v` is a compile-time error listing the
+                // qualified alternatives. The field stays reachable via `match`
+                // and module-qualification.
+                self.current_symbol_table_mut(state).insert(
+                    accessor_name.clone(),
+                    ModuleEntry::Ambiguous { visibility },
                 );
+                // Extend the alternatives list with this colliding type. The
+                // name is kept in `synthesised_accessor_names` so a third
+                // colliding type re-enters this same poison arm.
+                state
+                    .accessor_owning_types
+                    .entry(accessor_name.clone())
+                    .or_default()
+                    .push(fqtn.clone());
             }
             Some(AccessorCollision::NonAccessor) => {
                 // Refuse: record a deferred collision diagnostic. The accessor
@@ -560,231 +594,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
 }
 
-impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEnv<'_, C, L> {
-    /// Fold a colliding field accessor into the `DefKind::Overloaded` multi-sig
-    /// mechanism so same-named accessors for distinct product types dispatch by
-    /// argument type (`(v (Box 5))`→Box's v, `(v (Cup 9))`→Cup's v). Spec
-    /// §5.2.6: each accessor is `(Fn [ProductType] FieldType)`; dispatch is by
-    /// the concrete argument type.
-    ///
-    /// On the FIRST collision the pre-existing plain `UserFn` accessor under
-    /// `name` is promoted to a mangled `name$Type` concrete variant and an
-    /// `Overloaded` base replaces it. Each subsequent collision registers
-    /// another mangled variant and extends the base.
-    ///
-    /// The mangled variant entries carry `$` in their key, so int's codegen
-    /// batch (`derive_codegen_batch`) enumerates and compiles their `match`
-    /// bodies and populates their GOT slots — the same path the multi-sig
-    /// `add$Int+Int` variants use.
-    fn fold_accessor_into_overload(
-        &self,
-        state: &mut CheckState,
-        name: &Symbol,
-        new_scheme: Scheme,
-        new_ast: DefnVariant,
-        visibility: Visibility,
-    ) {
-        // Step 1: if the base is still a plain `UserFn` (the first accessor),
-        // promote it to a mangled variant and seed the overload tables.
-        let base_is_plain_userfn = {
-            let table = self.current_symbol_table_mut(state);
-            matches!(
-                table.get(name.as_ref()),
-                Some(ModuleEntry::Def { kind, .. })
-                    if matches!(kind.as_ref(), DefKind::UserFn { .. })
-            )
-        };
-
-        if base_is_plain_userfn {
-            self.promote_plain_accessor_to_overload(state, name, visibility);
-        }
-
-        // Step 2: register the NEW accessor as a mangled variant.
-        self.register_accessor_variant(state, name, new_scheme, new_ast, visibility);
-    }
-
-    /// Re-key the existing plain `UserFn` accessor `name` to its mangled
-    /// `name$Type` form and install an empty `Overloaded` base under `name`,
-    /// seeding `state.overloads` / `state.resolved_overloads`.
-    fn promote_plain_accessor_to_overload(
-        &self,
-        state: &mut CheckState,
-        name: &Symbol,
-        visibility: Visibility,
-    ) {
-        let (scheme, ast, slot) = {
-            let mut table = self.current_symbol_table_mut(state);
-            match table.symbols.remove(name.as_ref()) {
-                Some(ModuleEntry::Def { scheme, ast, kind, .. }) => {
-                    let slot = match kind.as_ref() {
-                        DefKind::UserFn {
-                            fn_state: cranelisp_types::UserFnState::Concrete { got_slot },
-                        } => *got_slot,
-                        _ => unreachable!(
-                            "invariant: promote called only for a concrete UserFn accessor"
-                        ),
-                    };
-                    (scheme, ast, slot)
-                }
-                _ => unreachable!(
-                    "invariant: promote called only when `{name}` is a plain UserFn"
-                ),
-            }
-        };
-        let (params, ret) = match &scheme.ty {
-            Type::Fn(p, r) => (p.clone(), r.as_ref().clone()),
-            _ => unreachable!("invariant: an accessor scheme is always a Fn"),
-        };
-        let mangled = accessor_mangled_name(name, &params);
-
-        // Re-insert the existing accessor under its mangled key, preserving its
-        // already-allocated GOT slot and body.
-        let mut builder = ModuleEntry::def(
-            scheme,
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: slot },
-            },
-        )
-        .visibility(visibility)
-        .param_names(vec![Symbol::from("self$accessor")]);
-        if let Some(ast) = ast {
-            builder = builder.ast(ast);
-        }
-        self.current_symbol_table_mut(state)
-            .insert(mangled.clone(), builder.build());
-
-        // Seed the overload tables and the `Overloaded` base.
-        state
-            .overloads
-            .entry(name.clone())
-            .or_default()
-            .push((mangled.clone(), params.len()));
-        state
-            .resolved_overloads
-            .entry(name.clone())
-            .or_default()
-            .push((params, ret, mangled));
-        self.install_overloaded_base(state, name, visibility);
-    }
-
-    /// Register a fresh accessor as a mangled `name$Type` concrete variant and
-    /// extend the `Overloaded` base + overload tables.
-    fn register_accessor_variant(
-        &self,
-        state: &mut CheckState,
-        name: &Symbol,
-        scheme: Scheme,
-        ast: DefnVariant,
-        visibility: Visibility,
-    ) {
-        let (params, ret) = match &scheme.ty {
-            Type::Fn(p, r) => (p.clone(), r.as_ref().clone()),
-            _ => unreachable!("invariant: an accessor scheme is always a Fn"),
-        };
-        let mangled = accessor_mangled_name(name, &params);
-
-        let slot = self.current_symbol_table_mut(state).allocate_got_slot();
-        let builder = ModuleEntry::def(
-            scheme,
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: slot },
-            },
-        )
-        .visibility(visibility)
-        .param_names(vec![Symbol::from("self$accessor")])
-        .ast(ast);
-        self.current_symbol_table_mut(state)
-            .insert(mangled.clone(), builder.build());
-
-        state
-            .overloads
-            .entry(name.clone())
-            .or_default()
-            .push((mangled.clone(), params.len()));
-        state
-            .resolved_overloads
-            .entry(name.clone())
-            .or_default()
-            .push((params, ret, mangled));
-        self.install_overloaded_base(state, name, visibility);
-    }
-
-    /// Install / refresh the `DefKind::Overloaded` base entry under `name` from
-    /// the accumulated `state.resolved_overloads[name]` variants.
-    fn install_overloaded_base(
-        &self,
-        state: &mut CheckState,
-        name: &Symbol,
-        visibility: Visibility,
-    ) {
-        let resolved = state
-            .resolved_overloads
-            .get(name)
-            .cloned()
-            .unwrap_or_default();
-        let variants: Vec<cranelisp_types::OverloadVariant> = resolved
-            .iter()
-            .map(|(params, ret, mangled)| cranelisp_types::OverloadVariant {
-                param_types: params.clone(),
-                ret_type: ret.clone(),
-                mangled_name: mangled.clone(),
-            })
-            .collect();
-        // Use the first variant's Fn type for the (unused-for-dispatch) base
-        // scheme; the base is detected by kind, not unified at call sites.
-        let base_ty = resolved
-            .first()
-            .map(|(p, r, _)| Type::Fn(p.clone(), Box::new(r.clone())))
-            .unwrap_or(Type::Var(0));
-        let base_scheme = Scheme {
-            type_vars: vec![],
-            constraints: HashMap::new(),
-            ty: base_ty,
-        };
-        let builder = ModuleEntry::def(
-            base_scheme,
-            DefKind::Overloaded { variants },
-        )
-        .visibility(visibility);
-        self.current_symbol_table_mut(state)
-            .insert(name.clone(), builder.build());
-    }
-}
-
-/// Mangle an accessor's name from its single ADT parameter type:
-/// `v` over `Box` → `v$Box`. Mirrors `program.rs::mangle_sig`/`mangle_type`
-/// for the single-arg accessor case (the backend resolves the mangled key
-/// from the symbol table; we control both the key and the `SigDispatch`
-/// target, so any stable mangling works — this matches the multi-sig scheme).
-fn accessor_mangled_name(name: &Symbol, params: &[Type]) -> Symbol {
-    let parts: Vec<String> = params.iter().map(mangle_accessor_type).collect();
-    Symbol::from(format!("{}${}", name, parts.join("+")))
-}
-
-fn mangle_accessor_type(ty: &Type) -> String {
-    match ty {
-        Type::Int => "Int".to_string(),
-        Type::Bool => "Bool".to_string(),
-        Type::String => "String".to_string(),
-        Type::Float => "Float".to_string(),
-        Type::Fn(_, _) => "Fn".to_string(),
-        Type::ADT(name, args) => {
-            if args.is_empty() {
-                name.name.as_ref().to_string()
-            } else {
-                let arg_parts: Vec<String> = args.iter().map(mangle_accessor_type).collect();
-                format!("{}_{}", name.name, arg_parts.join("_"))
-            }
-        }
-        Type::Var(id) => format!("v{id}"),
-        other => format!("{other:?}"),
-    }
-}
-
 /// The kind of pre-existing binding an accessor synthesis collides with.
 enum AccessorCollision {
-    /// Another field accessor (same field name across product types) — fold
-    /// into the overload (multi-sig) mechanism for arg-type dispatch.
+    /// Another field accessor (same field name across product types) — POISON
+    /// the bare name as ambiguous per §5.2.6 + §8.6.5 (no overload, no winner).
     Accessor,
     /// A non-accessor binding (user defn, ctor, …) — refuse the synthesis.
     NonAccessor,
@@ -1330,11 +1143,16 @@ mod tests {
         );
     }
 
-    // spec: 05-definitions §5.2.6 — two product types with the same field name
-    // each synthesise an accessor; they coexist via the overload mechanism
-    // (no duplicate-definition error) and dispatch by argument type.
+    // spec: 05-definitions §5.2.6 "Duplicate field names in the same scope" +
+    // 08-modules §8.6.5 bare-name ambiguity (user ruling S83 W2) — two product
+    // types with the same field name POISON the bare accessor: it becomes
+    // ambiguous (`ModuleEntry::Ambiguous`), NOT an argument-type-dispatched
+    // overload and NOT a silently-picked winner. The second deftype is not
+    // rejected as a duplicate definition; the colliding field's value stays
+    // reachable via `match`. The owning types are recorded as the qualified
+    // alternatives the ambiguity error lists.
     #[test]
-    fn cross_type_duplicate_field_folds_into_overload() {
+    fn cross_type_duplicate_field_poisons_bare_accessor() {
         let mut tc = tf_with_scalar_imports();
         tc.register_type_def_self(
             &TypeName::from("Box"),
@@ -1345,6 +1163,24 @@ mod tests {
             Span::SYNTHETIC,
         )
         .unwrap();
+
+        // Before the collision, `v` is a normal concrete first-class accessor.
+        assert!(
+            matches!(
+                tc.symbol_table().get("v"),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn {
+                            fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                        }
+                    )
+            ),
+            "single-type accessor `v` is a concrete UserFn before any collision"
+        );
+
+        // The SECOND deftype with the same field name MUST NOT be rejected as a
+        // duplicate definition — registration succeeds.
         tc.register_type_def_self(
             &TypeName::from("Cup"),
             &None,
@@ -1355,37 +1191,75 @@ mod tests {
         )
         .unwrap();
 
-        // `v` is now an Overloaded base with two variants dispatching by arg type.
+        // `v` is now POISONED — an `Ambiguous` sentinel, NOT an `Overloaded`
+        // base and NOT a winner-picked concrete UserFn.
         match tc.symbol_table().get("v") {
-            Some(ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
-                DefKind::Overloaded { variants } => {
-                    assert_eq!(variants.len(), 2, "Box + Cup accessors coexist");
-                    let param_types: Vec<&Type> =
-                        variants.iter().map(|v| &v.param_types[0]).collect();
-                    assert!(param_types.contains(&&Type::ADT(user_fqtn("Box"), vec![])));
-                    assert!(param_types.contains(&&Type::ADT(user_fqtn("Cup"), vec![])));
-                }
-                other => panic!("`v` must be Overloaded after the collision, got {other:?}"),
-            },
-            other => panic!("`v` must be a Def, got {other:?}"),
+            Some(ModuleEntry::Ambiguous { .. }) => {}
+            other => panic!(
+                "`v` must be poisoned (Ambiguous) after the cross-type field-name \
+                 collision, got {other:?}"
+            ),
         }
-        // Both mangled variants are registered as concrete UserFns with slots.
-        for mangled in ["v$Box", "v$Cup"] {
-            match tc.symbol_table().get(mangled) {
-                Some(entry @ ModuleEntry::Def { kind, .. }) => {
-                    assert!(
-                        matches!(
-                            kind.as_ref(),
-                            DefKind::UserFn {
-                                fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                            }
-                        ),
-                        "{mangled} must be a concrete UserFn variant"
-                    );
-                    assert!(entry.callable_got_slot().is_some(), "{mangled} needs a slot");
-                }
-                other => panic!("{mangled} must be a registered Def, got {other:?}"),
-            }
+        // It is NOT folded into the overload mechanism: no `Overloaded` base, no
+        // mangled `v$Box`/`v$Cup` variants exist.
+        assert!(
+            tc.symbol_table().get("v$Box").is_none()
+                && tc.symbol_table().get("v$Cup").is_none(),
+            "duplicate-field accessors MUST NOT be folded into mangled overload \
+             variants (no v$Box / v$Cup)"
+        );
+
+        // Both owning types are recorded as the qualified alternatives the
+        // ambiguity error lists (`Box.v` and `Cup.v`).
+        let alts = tc
+            .state
+            .accessor_owning_types
+            .get(&Symbol::from("v"))
+            .expect("poisoned accessor must record its owning-type alternatives");
+        assert_eq!(alts.len(), 2, "Box + Cup are the alternatives");
+        let names: Vec<&str> = alts.iter().map(|t| t.name.as_ref()).collect();
+        assert!(names.contains(&"Box"));
+        assert!(names.contains(&"Cup"));
+
+        // The field stays reachable via `match` to each colliding type: a
+        // single-arm match binding the product's field type-checks for both
+        // Box and Cup (an e2e asserts the runtime values; here we assert the
+        // typechecker accepts the destructuring path the spec promises).
+        for ty in ["Box", "Cup"] {
+            use cranelisp_types::{MatchArm, Pattern, SymbolRef};
+            let scrutinee = Expr::ConstrADT {
+                type_name: user_fqtn(ty),
+                tag: 0,
+                fields: vec![Expr::IntLit {
+                    value: 5,
+                    span: Span::SYNTHETIC,
+                    inferred_type: None,
+                }],
+                span: Span::SYNTHETIC,
+                inferred_type: None,
+            };
+            let mut match_expr = Expr::Match {
+                scrutinee: Box::new(scrutinee),
+                arms: vec![MatchArm {
+                    pattern: Pattern::Constructor {
+                        name: SymbolRef::new(None, Symbol::from(ty)),
+                        bindings: vec![Symbol::from("v")],
+                        span: Span::SYNTHETIC,
+                    },
+                    body: Expr::var(Symbol::from("v"), Span::SYNTHETIC),
+                    span: Span::SYNTHETIC,
+                }],
+                span: Span::SYNTHETIC,
+                compiler_generated: false,
+                inferred_type: None,
+            };
+            let ty_result = tc.infer_expr_for_test(&mut match_expr);
+            assert!(
+                ty_result.is_ok(),
+                "`(match ({ty} 5) [({ty} v) v])` must type-check despite the \
+                 poisoned bare accessor — match access is always available \
+                 (§5.2.6); got {ty_result:?}"
+            );
         }
     }
 

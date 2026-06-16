@@ -197,6 +197,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // not-found error. Always write (Some or None) to match the prior
         // clear-on-attempt / set-on-miss side-slot semantics.
         state.pending_gap = gap;
+        // A bare name that resolves to a poisoned (ambiguous) symbol-table entry
+        // is a compile-time error listing the qualified alternatives (spec
+        // §8.6.5; for field accessors §5.2.6). The `Ambiguous` sentinel yields
+        // no scheme, so without this check it would mis-report as "undefined
+        // variable". Cross-type duplicate field-name accessors record their
+        // owning types in `accessor_owning_types`; surface them as `Type.member`
+        // alternatives.
+        if scheme.is_none()
+            && matches!(
+                self.resolve_entry_in_current_module(state, name),
+                Some(ModuleEntry::Ambiguous { .. })
+            )
+        {
+            let hint = state
+                .accessor_owning_types
+                .get(name)
+                .map(|tys| {
+                    let alts: Vec<String> = tys
+                        .iter()
+                        .map(|t| format!("{}.{}", t.name, name))
+                        .collect();
+                    format!(" — use a qualified accessor ({})", alts.join(" or "))
+                })
+                .unwrap_or_default();
+            return Err(CranelispError::TypeError {
+                message: format!("ambiguous bare name '{name}'{hint}"),
+                location: ErrorLocation::from_span(span),
+            });
+        }
         let scheme = scheme.ok_or_else(|| CranelispError::TypeError {
             message: format!("undefined variable: {name}"),
             location: ErrorLocation::from_span(span),

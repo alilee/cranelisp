@@ -161,10 +161,18 @@ pub struct CheckState {
     pub(crate) deferred_accessor_collisions: Vec<(Symbol, String)>,
     /// Names this check synthesised as field accessors (FIXME 0351(a)). Used to
     /// classify a later accessor collision: a clash with a name in this set is
-    /// a cross-type duplicate field name (fold into the overload mechanism for
-    /// arg-type dispatch); a clash with any OTHER binding is refused. Populated
-    /// per-check; a user `defn`/ctor under the same name is never in this set.
+    /// a cross-type duplicate field name (POISON the bare name as ambiguous per
+    /// §5.2.6 + §8.6.5 — no overload, no winner); a clash with any OTHER
+    /// binding is refused. Populated per-check; a user `defn`/ctor under the
+    /// same name is never in this set.
     pub(crate) synthesised_accessor_names: std::collections::HashSet<Symbol>,
+    /// Per field-accessor name → the owning product types whose accessor
+    /// generation registered (or poisoned) that name. A single entry means a
+    /// normal first-class accessor; two-or-more means the bare name is poisoned
+    /// (§5.2.6) and these are the qualified alternatives (`Box.v`, `Cup.v`)
+    /// listed in the ambiguity error when bare `v` is used.
+    pub(crate) accessor_owning_types:
+        HashMap<Symbol, Vec<cranelisp_types::FQTypeName>>,
     /// The currently active module path for this check.
     pub(crate) current_module: ModuleFullPath,
 }
@@ -187,6 +195,7 @@ impl CheckState {
             pending_overload_resolutions: Vec::new(),
             deferred_accessor_collisions: Vec::new(),
             synthesised_accessor_names: std::collections::HashSet::new(),
+            accessor_owning_types: HashMap::new(),
             current_module: module,
         }
     }
