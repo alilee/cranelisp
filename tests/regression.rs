@@ -3910,22 +3910,35 @@ fn mixed_adt_nullary_and_heap_ctor_roundtrip_after_guard_scope() {
 // deref'd at `>=1024` is the unsound `Mixed`-RC `<1024` UAF the Cluster-A
 // re-shape set out to close.
 //
-// These pin the hole CLOSED per `is_representation_undetermined()`: the Wave-2
-// /dev relay position-completes the §3.11.1 scan (typecheck) + widens the 0375
-// backstop (backend) using the shared predicate. The shape mirrors the existing
-// `let`-position guard `mono_ambiguous_unconstrained_top_level_var_rejected_neg`
-// (a `(deftype Option None (Some [v]))` + `(defn identity [x] x)` +
-// `(identity None)` unpinned value), differing only in WHERE the unpinned value
-// sits.
+// These pin the hole CLOSED: the Wave-2 /dev relay position-completes the
+// §3.11.1 scan (typecheck). The shape mirrors the existing `let`-position guard
+// `mono_ambiguous_unconstrained_top_level_var_rejected_neg` (a
+// `(deftype Option None (Some [v]))` + `(defn identity [x] x)` + `(identity None)`
+// unpinned value), differing only in WHERE the unpinned value sits. The Mixed-ADT
+// position guards (match-scrutinee, call-arg, ctor-field, if-branch) have LANDED
+// (they pass today — /dev position-completed the per-node check).
 //
-// FAILING-FIRST (RED today): each runs silently / exits cleanly with NO
-// `ambiguous` error. They flip GREEN when /dev position-completes the check
-// (an `error:` naming `ambiguous`, caught at typecheck BEFORE the binary runs).
-// Substring assertion per the error-test convention (do NOT over-pin wording).
-// `Vec`/`Fn` are deliberately KEPT OUT (`AlwaysHeap`, representation-safe — a
-// `(Vec a)`/`(Fn [a] a)` free-var value in these positions MUST NOT error); the
-// companion `mono_vec_free_var_value_admitted_pos` guards against over-firing.
-// Owner: cranelisp-typecheck (check) + cranelisp-backend (0375 backstop).
+// SPEC-TIGHTENING (S84, commit 2290aa9 — spec §3.11.1 §3.11.1.1): the
+// representation-based exemption is RETIRED. The strictness is FULL CONCRETENESS
+// — no type variable in a codegen-reaching value position — NOT machine-shape
+// determinacy. There is NO `AlwaysHeap` carve-out: `(Vec a)`, `(Fn [a] a)`,
+// `(Option a)`, bare `None`, and empty `[]` are ALL ambiguity errors when their
+// type variable is unpinned at a codegen-reaching position, even though their
+// machine shape is determinate. The previously-admitted Vec/Fn cases INVERT to
+// rejection guards below (`mono_vec_free_var_value_rejected_neg`,
+// `mono_fn_free_var_value_rejected_neg`) — FAILING-FIRST: the impl still admits
+// them (the old `is_representation_undetermined()` predicate returns FALSE for
+// `(Vec a)`/`(Fn a)`), so they reach codegen silently today. They flip GREEN when
+// /dev drops the representation exemption and the §3.11.1 check rejects ANY free
+// var (not just `Mixed`-positioned ones). Definitions stay polymorphic (§3.11.3 —
+// see `mono_ambiguous_neg_does_not_reach_codegen`); REPL bare-display stays
+// (§3.11.2 — see `display_empty_vec_value` / the prelude-None display guard).
+//
+// FAILING-FIRST (RED for the inverted Vec/Fn guards): each runs silently / exits
+// cleanly with NO `ambiguous` error today. They flip GREEN when /dev tightens the
+// check (an `error:` naming `ambiguous`, caught at typecheck BEFORE the binary
+// runs). Substring assertion per the error-test convention (do NOT over-pin
+// wording). Owner: cranelisp-typecheck.
 // =============================================================================
 
 // spec: spec/03-types.md §3.11.1 — A `Mixed`-ADT value with a free type var in a
@@ -4096,20 +4109,22 @@ fn mono_ambiguous_if_branch_rejected_neg() {
     );
 }
 
-// spec: spec/03-types.md §3.11.1 — POSITIVE companion / over-fire guard. A free
-//       type var in a `(Vec a)` value (NOT a `Mixed`-ADT) is REPRESENTATION-SAFE:
-//       `Vec` is uniformly heap-represented (`classify` `AlwaysHeap`), so RC is
-//       element-type-independent and the value never hits the unsound `<1024`
-//       `Mixed` path. `is_representation_undetermined()` is FALSE for `(Vec a)`.
-//       A `(Vec a)` free-var value in a codegen-reaching position MUST be
-//       ADMITTED — the position-complete §3.11.1 check MUST NOT over-fire on it.
-// FIXME(0379): guard against the Wave-2 /dev check rejecting a representation-
-//   safe free-var value. `(identity [])` is `(Vec a)` with `a` free, passed as a
-//   call argument to `use-vec` (which discards it) — nothing pins `a`, yet it is
-//   sound (AlwaysHeap). GREEN today, MUST STAY GREEN after the check lands.
-//   Owner: cranelisp-typecheck.
+// spec: spec/03-types.md §3.11.1 — INVERTED (was `mono_vec_free_var_value_admitted_pos`).
+//       Under the TIGHTENED spec (commit 2290aa9 §3.11.1: "no representation-based
+//       exemption") a `(Vec a)` free-var value at a codegen-reaching position with
+//       NOTHING pinning the element type is an AMBIGUITY ERROR — NOT admitted. The
+//       strictness is full concreteness (no type variable), NOT machine-shape
+//       determinacy: `Vec` being uniformly heap-represented (`AlwaysHeap`) does NOT
+//       rescue an unpinned element var. The spec's worked example `(id [])` (§3.11.1)
+//       is exactly this shape. Fix is to annotate concrete: `(id :(Vec Int) [])`.
+// FIXME(0379→tightened): the impl still admits this (the old representation
+//   exemption — `is_representation_undetermined()` returns FALSE for `(Vec a)`),
+//   so it reaches codegen silently and exits 0 today. FAILING-FIRST (RED): the
+//   §3.11.1 check must reject it once /dev drops the exemption. GREEN when the
+//   tightened check rejects ANY free var at a codegen-reaching position, not just
+//   `Mixed`-positioned ones. Owner: cranelisp-typecheck.
 #[test]
-fn mono_vec_free_var_value_admitted_pos() {
+fn mono_vec_free_var_value_rejected_neg() {
     let out = Cranelisp::new()
         .run("user.cl")
         .with_prelude(PreludeVariant::None)
@@ -4121,16 +4136,236 @@ fn mono_vec_free_var_value_admitted_pos() {
                (Pure (use-vec (identity []))))",
         )
         .output();
-    // `(Vec a)` is AlwaysHeap — representation-safe even with a free element
-    // var. The check MUST NOT reject it as ambiguous.
-    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
-        !combined.contains("ambiguous"),
-        "a `(Vec a)` free-var value in a codegen position MUST be ADMITTED — \
-         `Vec` is AlwaysHeap, RC element-type-independent; the §3.11.1 check \
-         MUST NOT over-fire on it (spec §3.11.1 / FIXME 0379).\n\
+        out.status.code().is_some(),
+        "ambiguous codegen-reaching `(Vec a)` value must be caught at typecheck, \
+         NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
          stdout:\n{}\nstderr:\n{}",
         out.stdout, out.stderr
     );
+    // TIGHTENED §3.11.1 — no representation exemption. `(identity [])` is `(Vec a)`
+    // with `a` free, passed to `use-vec` (which discards it) — nothing pins `a`.
+    // Even though `Vec` is AlwaysHeap (machine shape determinate), an unpinned
+    // element var at a codegen-reaching position is the ambiguity error. Fix:
+    // annotate `(use-vec (identity :(Vec Int) []))`.
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected an 'ambiguous type' error for an unpinned `(Vec a)` value at a \
+         codegen-reaching position (spec §3.11.1 — NO representation-based \
+         exemption; full concreteness, not machine-shape determinacy). The \
+         worked example `(id [])`.\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.11.1 — companion to the Vec inversion. Under the
+//       TIGHTENED spec (§3.11.1: "no representation-based exemption") a `(Fn [a] a)`
+//       polymorphic-function value at a codegen-reaching position with NOTHING
+//       pinning `a` is an AMBIGUITY ERROR — NOT admitted. A function value being
+//       uniformly represented as a closure (machine shape determinate) does NOT
+//       rescue the unpinned type var. The spec lists `(Fn [a] a)` explicitly among
+//       the all-error forms. Fix is to pin the function value's type concretely.
+// FIXME(0379→tightened): the impl still admits this (the old representation
+//   exemption — `is_representation_undetermined()` returns FALSE for `(Fn a)`), so
+//   it reaches codegen silently and exits 0 today. FAILING-FIRST (RED): the
+//   §3.11.1 check must reject it once /dev drops the exemption. GREEN when the
+//   tightened check rejects ANY free var at a codegen-reaching position. Owner:
+//   cranelisp-typecheck.
+#[test]
+fn mono_fn_free_var_value_rejected_neg() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (defn identity [x] x)\n\
+             (defn use-fn [f] 0)\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (use-fn (identity identity))))",
+        )
+        .output();
+    assert!(
+        out.status.code().is_some(),
+        "ambiguous codegen-reaching `(Fn [a] a)` value must be caught at typecheck, \
+         NOT crash at codegen (spec §3.11.1) — got signal termination.\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    // TIGHTENED §3.11.1 — no representation exemption. `(identity identity)` is a
+    // polymorphic `(Fn [a] a)` value, passed to `use-fn` (which discards it) —
+    // nothing pins `a`. A closure's uniform machine shape does NOT rescue the
+    // unpinned type var.
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected an 'ambiguous type' error for an unpinned `(Fn [a] a)` polymorphic \
+         function value at a codegen-reaching position (spec §3.11.1 — NO \
+         representation-based exemption).\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+}
+
+// =============================================================================
+// Sprint 84 — §3.11.1 annotation-disambiguation POSITIVE guards (the fix path).
+//
+// The tightened §3.11.1 rejects an unpinned free var at a codegen-reaching
+// position; the SOURCE disambiguates with `:Type form` (the reader-macro-style
+// type-unifying annotation that binds the immediately-following form, §3.9 /
+// §4.9). These guards assert the disambiguation path COMPILES + RUNS: the spec's
+// worked examples `(is-some :(Option Int) None)` and `(id :(Vec Int) [])`, plus
+// the bare-annotated forms `:(Option Int) None` / `:(Vec Int) []`.
+//
+// KEY VERIFICATION (the standing-divergence check /sprint asked for): does
+// `:Type form` actually pin `None` and `[]`?
+//   - `:(Option Int) None`  — VERIFIED WORKS (this guard is GREEN today).
+//   - `:(Vec Int) []`       — DOES NOT WORK: the type-annotation resolver reports
+//     `unknown type 'Vec' (from module '')` even with `Vec` imported — the builtin
+//     `Vec` type is not resolvable in annotation type-expression position. This is
+//     a SEPARATE impl gap (FIXME 0385, target /dev frontend/typecheck — type-expr
+//     resolution of the builtin `Vec`). The two Vec-annotation guards below are
+//     FAILING-FIRST against that gap; the Option-annotation guards are GREEN.
+// =============================================================================
+
+// spec: spec/03-types.md §3.11.1 — annotation disambiguation. The worked example
+//       `(is-some :(Option Int) None)`: `:Type form` pins the otherwise-ambiguous
+//       `None` to `(Option Int)`, so the codegen-reaching application is concrete
+//       and compiles. VERIFIED: `:(Option Int) None` pins correctly today.
+#[test]
+fn mono_option_none_annotation_pins_and_compiles_pos() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int add-i64]])\n\
+             (deftype Option None (Some [v]))\n\
+             (defn is-some [o] (match o [None 0 (Some _) 1]))\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (add-i64 (is-some :(Option Int) None)\n\
+                              (is-some :(Option Int) (Some 9)))))",
+        )
+        .output()
+        // None → 0, (Some 9) → 1 ; 0 + 1 = 1. The annotation pins the var; the
+        // codegen-reaching application is concrete and compiles + runs.
+        .assert_exit(1);
+}
+
+// spec: spec/03-types.md §3.11.1 / §4.9 — annotation disambiguation, worked
+//       example `(id :(Vec Int) [])`: `:Type form` pins the empty vec-literal's
+//       element type to `Int`, so the codegen-reaching application is concrete.
+// FIXME(0385): FAILING-FIRST. The annotation form is correct per spec, but the
+//   type-expr resolver does NOT resolve the builtin `Vec` in annotation position
+//   (`unknown type 'Vec' (from module '')`, even with `Vec` imported). GREEN when
+//   /dev resolves builtin `Vec` as an annotation type. Owner: /dev (frontend /
+//   typecheck — type-expr resolution).
+#[test]
+fn mono_vec_empty_annotation_pins_and_compiles_pos() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int Vec vec-len]])\n\
+             (defn id [x] x)\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (vec-len (id :(Vec Int) []))))",
+        )
+        .output();
+    // The empty vec annotated `(Vec Int)` has length 0; the program must compile
+    // and run (exit 0). RED today: `Vec` is not resolvable in annotation position
+    // (FIXME 0385) so the program is a TYPE error, not a clean run.
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        !combined.contains("unknown type"),
+        "`:(Vec Int) []` MUST pin the empty-vec element type and compile (spec \
+         §3.11.1 worked example `(id :(Vec Int) [])`) — got an 'unknown type' \
+         resolver error (FIXME 0385: builtin `Vec` unresolvable in annotation \
+         position).\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
     out.assert_exit(0);
+}
+
+// spec: spec/03-types.md §3.11.1 — bare-annotated standalone forms. `:(Option Int) None`
+//       and `:(Vec Int) []` as the value directly (not as a call argument) pin the
+//       polymorphic form to a concrete type at a codegen-reaching position.
+//       The Option leg is VERIFIED green; the Vec leg is FAILING-FIRST (FIXME 0385).
+// FIXME(0385): the `:(Vec Int) []` standalone form fails on the same builtin-`Vec`
+//   resolver gap. Owner: /dev (type-expr resolution).
+#[test]
+fn mono_bare_annotated_value_pins_and_compiles_pos() {
+    // Option leg (verified green): a bare `:(Option Int) None` consumed at runtime.
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (deftype Option None (Some [v]))\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (match :(Option Int) None [None 0 (Some _) 1])))",
+        )
+        .output()
+        // bare-annotated None → match → 0. Compiles + runs (the annotation pins).
+        .assert_exit(0);
+
+    // Vec leg (FAILING-FIRST, FIXME 0385): a bare `:(Vec Int) []` consumed at runtime.
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int Vec vec-len]])\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (vec-len :(Vec Int) [])))",
+        )
+        .output();
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        !combined.contains("unknown type"),
+        "bare `:(Vec Int) []` MUST pin the element type and compile (spec §3.11.1) \
+         — got an 'unknown type' resolver error (FIXME 0385: builtin `Vec` \
+         unresolvable in annotation position).\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    out.assert_exit(0);
+}
+
+// spec: spec/03-types.md §3.11.1 — the worked-example REJECTION. `(is-some None)`
+//       (UNannotated) reaches codegen with `None`'s type `(Option a)` unpinned by
+//       any reachable use → ambiguity error. This is the negative complement of
+//       `mono_option_none_annotation_pins_and_compiles_pos`: same program WITHOUT
+//       the `:(Option Int)` annotation must be REJECTED.
+// FIXME(0379→tightened): RED today — the impl currently fails this codegen-reaching
+//   form with a downstream codegen error ("undefined function: is-some"), NOT a
+//   clean "ambiguous type" typecheck error. GREEN when /dev rejects the unpinned
+//   codegen-reaching application with the §3.11.1 ambiguity error. Owner:
+//   cranelisp-typecheck.
+#[test]
+fn mono_is_some_unannotated_none_rejected_neg() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (deftype Option None (Some [v]))\n\
+             (defn is-some [o] (match o [None 0 (Some _) 1]))\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (is-some None)))",
+        )
+        .output();
+    assert!(
+        out.status.code().is_some(),
+        "ambiguous `(is-some None)` must be caught at typecheck, NOT crash at \
+         codegen (spec §3.11.1) — got signal termination.\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected an 'ambiguous type' error for the worked example `(is-some None)` \
+         (spec §3.11.1) — `None` is `(Option a)` with `a` unpinned at a codegen-\
+         reaching position. Fix is `(is-some :(Option Int) None)`. The impl must \
+         report a clean typecheck ambiguity error, NOT a downstream codegen error.\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
 }

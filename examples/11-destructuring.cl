@@ -57,7 +57,11 @@
      _        0]))
 
 (defn test-is-some []
-  (add-i64 (is-some (Some 42)) (is-some None)))
+  ;; `(is-some (Some 42))` pins the Option element type via the `(Some 42)` value.
+  ;; A bare `(is-some None)` would reach codegen with `None`'s `(Option a)` element
+  ;; type unpinned — an ambiguity error under spec §3.11.1 (no representation-based
+  ;; exemption). Disambiguate the bare nullary constructor with `:(Option Int) None`.
+  (add-i64 (is-some (Some 42)) (is-some :(Option Int) None)))
 
 ;; Provide a default for None
 (defn get-or-default [opt default]

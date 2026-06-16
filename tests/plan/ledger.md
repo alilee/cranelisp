@@ -36,6 +36,53 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 84 — tightened §3.11.1 realignment: invert Vec/Fn admission + annotate example (/qa, 2026-06-16)
+
+The user tightened spec §3.11.1 (commit `2290aa9` — §3.11.1 "no representation-based
+exemption", §3.11.1.1 rationale, §3.11.3 definition-vs-use). **Acceptance rule now:**
+typecheck produces only concrete types; a residual type variable in a codegen-reaching
+value form is a type error — `(Vec a)`, `(Fn a→a)`, `(Option a)`, bare `None`, empty `[]`
+are ALL errors when unpinned at a codegen-reaching position (the previous `AlwaysHeap`
+representation exemption is RETIRED). Definitions stay polymorphic (§3.11.3); REPL
+bare-display stays (§3.11.2). The source disambiguates with `:Type form`.
+
+QA-first realignment per the user's explicit recheck directive. `tests/regression.rs` +
+`examples/11-destructuring.cl`. **+5 NEW failing-first acceptance guards** (the tightened
+rejections + the annotation-fix path the impl doesn't yet satisfy); the 5 baseline reds
+are unchanged.
+
+**INVERTED:**
+- **`mono_vec_free_var_value_admitted_pos` → `mono_vec_free_var_value_rejected_neg`** (RED) — Owner: `/dev` cranelisp-typecheck. Premise INVERTED by the tightening: an unpinned `(Vec a)` value at a codegen-reaching position (`(use-vec (identity []))`) was ADMITTED (exit 0) under the old representation exemption; now it MUST be an ambiguity error. Substring assertion (`error`+`ambiguous`). Flips green when /dev drops the `is_representation_undetermined()` Vec/Fn exemption and the §3.11.1 check rejects ANY free var (not just `Mixed`-positioned). The impl admits it silently (exit 0) today.
+
+**NEW failing-first acceptance guards (all RED, `tests/regression.rs`, Owner `/dev` cranelisp-typecheck unless noted):**
+- **`mono_fn_free_var_value_rejected_neg`** (RED) — companion to the Vec inversion: an unpinned `(Fn [a] a)` polymorphic-function value (`(use-fn (identity identity))`) at a codegen-reaching position MUST be rejected. A closure's uniform machine shape does NOT rescue the unpinned var. Admitted silently (exit 0) today.
+- **`mono_is_some_unannotated_none_rejected_neg`** (RED) — the spec's worked example `(is-some None)` (UNannotated): `None` is `(Option a)` unpinned (is-some ignores the payload). MUST be the §3.11.1 ambiguity error. Today the impl fails it with a DOWNSTREAM codegen error ("undefined function: is-some"), NOT a clean typecheck ambiguity error — and note `(is-some None)`'s direct-`None`-constructor form is currently SKIPPED by the §3.11.1 `expr_is_direct_constructor_value` carve-out (see FIXME 0382 context). Flips green when /dev removes the direct-constructor skip + reports a clean ambiguity error.
+- **`mono_vec_empty_annotation_pins_and_compiles_pos`** (RED, **owner /dev per FIXME 0385**) — the ANNOTATION-FIX path: the spec's worked example `(id :(Vec Int) [])` MUST compile + run. RED because the type-annotation resolver reports `unknown type 'Vec' (from module '')` — the builtin `Vec` is unresolvable in annotation type-expr position (FIXME 0385). This is a SEPARATE impl gap from the rejection work.
+- **`mono_bare_annotated_value_pins_and_compiles_pos`** (RED, Option leg green / Vec leg blocked by 0385) — bare standalone `:(Option Int) None` (VERIFIED green) AND `:(Vec Int) []` (RED, FIXME 0385). The single test fails on the Vec leg.
+
+**KEY VERIFICATION (the `:Type form` divergence check /sprint asked for):**
+- `:(Option Int) None` — **VERIFIED WORKS** (pins correctly; `mono_option_none_annotation_pins_and_compiles_pos` GREEN). `:(Box Int) (Wrap 7)`, `:Int`, `:(IO Int)` also work.
+- `:(Vec Int) []` — **DOES NOT WORK** — `unknown type 'Vec' (from module '')` even with `Vec` imported, in EVERY annotation position (value, bare, param). Filed **FIXME 0385** (`target: /dev`). This means the spec's directed `Vec` remedy currently has NO working annotation — must be fixed alongside the rejection work for the tightened spec to be coherent.
+
+**STAY-GREEN (verified, unchanged by the tightening):**
+- `mono_ambiguous_{match_scrutinee,call_arg,ctor_field,if_branch}_rejected_neg` — the Mixed-ADT codegen-rejection guards (already pass — /dev position-completed the per-node check). Confirmed codegen-reaching + aligned with tightened wording.
+- `mono_ambiguous_unconstrained_top_level_var_rejected_neg` (the `let`-position guard) — GREEN.
+- `mono_ambiguous_neg_does_not_reach_codegen` (§3.11.3 definition-admit — `(defn ambig [] None)` ADMITTED) — GREEN. Definitions are NOT ambiguous.
+- `display_empty_vec_value` + `prelude_option_none_value_display_neg_definition_metadata` (§3.11.2 REPL bare-display) — GREEN. Disposition 3 unchanged.
+- `mixed_adt_nullary_and_heap_ctor_roundtrip_after_guard_scope` (0375 kept-path) — GREEN.
+
+**EXAMPLE annotated:** `examples/11-destructuring.cl` line ~60: `(is-some None)` → `(is-some :(Option Int) None)`. The bare `None` reaches codegen with `(Option a)` unpinned (is-some ignores the payload) — an ambiguity error under the tightened spec. The annotation makes it forward-compatible. Example still exits **69** (the annotation pins the var; `is-some` returns 0 for None regardless of `a`). Swept ALL `examples/*.cl` — this is the ONLY genuinely-unpinned codegen-reaching `None`/`[]` value; all others (`get-or-default None 5`, `vec-push ... []`, `seq-take-acc ... []`, functor `unwrap-or None 99`) are pinned by a reachable concrete argument.
+
+**COVERAGE READOUT (the user's explicit ask).** The tightened §3.11 is now comprehensively covered:
+- **Rejection (negative), codegen-reaching positions:** `let`-bind (✓ existing), match-scrutinee/call-arg/ctor-field/if-branch (✓ existing, Mixed-ADT), `(Vec a)` (✓ inverted), `(Fn a)` (✓ new), bare-`None`-through-fn `(is-some None)` (✓ new). Covers the spec's worked examples `(is-some None)` + `(id [])`.
+- **Annotation fix (positive):** `:(Option Int) None` (✓ green), `(id :(Vec Int) [])` + bare `:(Vec Int) []` (✓ authored, RED via FIXME 0385), `:(Option Int) None` bare (✓ green).
+- **Definitions admitted (§3.11.3):** `(defn ambig [] None)` (✓ green).
+- **REPL display preserved (§3.11.2):** empty `[]` + bare `None` (✓ green).
+- **Vec-literal-as-special-form (§3.11.3):** non-empty `[1 2 3]` compiles (✓ via example 14 + `mono_vec_empty_annotation` non-empty companion implicit; vec literal inference covered by `tests/ring1.rs::vec_literal_int`).
+- **GAPS NAMED:** (1) `:(Vec Int)` / builtin-`Vec` annotation resolution (FIXME 0385) — the rejection path's fix is broken; (2) the `(is-some None)` direct-constructor skip (FIXME 0382 / §3.11.1 carve-out) must be removed for the worked example to reject cleanly — currently surfaces a downstream codegen error, not the ambiguity error.
+
+**`--workspace` count after this commit: 2713 tests / 2703 pass / 10 fail / 0 skip** (26.7s). The 10 reds: **(a) 5 pre-existing carries** — `repl_cross_cluster_duplicate_field_accessor_is_ambiguous` (0366), `auto_io_independent_diff_token_parallelizes_e2e` + `auto_io_par_grouping_uniform_across_modes` + `resource_serial_diff_token_parallelizes` (0367 auto-IO), `trace_adt_value_render_overflows_defect` (0382); **(b) 5 NEW failing-first acceptance guards** — `mono_vec_free_var_value_rejected_neg`, `mono_fn_free_var_value_rejected_neg`, `mono_is_some_unannotated_none_rejected_neg`, `mono_vec_empty_annotation_pins_and_compiles_pos`, `mono_bare_annotated_value_pins_and_compiles_pos`. **(c) ZERO unexpected reds.** Baseline was 5 reds (all preserved); exactly +5 intended.
+
 ### Sprint 84 Wave 0 — full-monomorphisation (0374) + ambiguity (0373) + auto-IO (0367) failing-first guards (/qa, 2026-06-16)
 
 QA-first Wave-0 authoring per `tests/plan/sprint84-test-plan.md`. Six NEW failing-first e2e guards land RED (un-ignored, failing-not-ignored discipline), plus seven GREEN-stay regression guards. Plan source: SPRINT.md §Scope Clusters A+B + PO-0367.1/.2/.3.
