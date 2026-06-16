@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ErrorLocation,
     ConstrainedFn, CranelispError, Defn, DefKind, DefnVariant,
-    Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath,
+    Expr, FQSymbol, JitSymbol, ModuleEntry, ModuleFullPath, ParametricFn,
     ModuleStrategy, MonoDefn, ResolvedCall, Span, Subst, Symbol, SymbolTable, TopLevel, Type,
     UserFnState, Warning, apply,
 };
@@ -142,6 +142,58 @@ pub(crate) fn for_each_child_expr_mut(expr: &mut Expr, mut f: impl FnMut(&mut Ex
         | Expr::BoolLit { .. }
         | Expr::StringLit { .. }
         | Expr::Var { .. } => {}
+    }
+}
+
+/// Rename the bare `Expr::Var` at exactly `target_span` to `new_name`
+/// (FIXME 0374 — fn-value-argument monomorphisation). Used to redirect a
+/// polymorphic fn-value reference (`mk`) to its minted concrete mono instance
+/// (`mk$Int`) in a stored AST so the backend's `compile_fn_as_value` takes the
+/// concrete (slotted) instance's GOT slot. Matches on span identity so only the
+/// exact fn-value occurrence is renamed, never another use of the same name.
+pub(crate) fn rename_var_at_span(expr: &mut Expr, target_span: Span, new_name: &Symbol) {
+    if let Expr::Var { name, span, .. } = expr
+        && *span == target_span
+    {
+        *name = new_name.clone();
+        return;
+    }
+    for_each_child_expr_mut(expr, |child| rename_var_at_span(child, target_span, new_name));
+}
+
+/// Whether a function type's non-concreteness is monomorphisable FROM A CALL
+/// SITE — i.e. every free `Type::Var` in the type appears in some PARAMETER
+/// position (so a concrete call pins it), with at least one var present.
+///
+/// This refines the S84 slot gate (FIXME 0374, Principle 20). A def is routed
+/// to the slot-less `Polymorphic` arm only when it is monomorphisable this way:
+///   - `mk : (Fn [a] (Box a))`, `id : ∀a. a→a`, `thru : (Fn [(Fn [a] b) a] b)`
+///     — vars in parameters ⇒ a concrete call mints a concrete instance. These
+///     are the SIGSEGV shapes the gate must make slot-less (only the concrete
+///     mono instance carries a slot).
+/// A def whose vars are RESULT-ONLY (`(Fn [] (Option a))` — a nullary
+/// `None`-returning fn, or a transient multi-sig-dispatch result var) is NOT
+/// monomorphisable from a call site (no arg pins the var) and must stay
+/// `Concrete` with a slot: it is either a callable ENTRY (a `test-*` discovery
+/// root, like `main`) or a top-level value (handled by the `__expr` exclusion +
+/// the §3.11 ambiguity check). Making such a def slot-less would strand it (no
+/// concrete instance is ever minted, yet it has no slot to call through).
+fn fn_type_is_monomorphisable_from_params(ty: &Type) -> bool {
+    if let Type::Fn(params, ret) = ty {
+        let param_vars: std::collections::HashSet<_> = params
+            .iter()
+            .flat_map(cranelisp_types::free_vars)
+            .collect();
+        if param_vars.is_empty() {
+            return false; // no param vars to pin ⇒ not monomorphisable from a call
+        }
+        // Every var anywhere in the type (params + result) must be coverable by
+        // a parameter — a result-only var cannot be pinned by an argument.
+        let all_vars = cranelisp_types::free_vars(ty);
+        let _ = ret;
+        all_vars.iter().all(|v| param_vars.contains(v))
+    } else {
+        false
     }
 }
 
@@ -958,8 +1010,48 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 });
             }
             Some(defn.name.clone())
+        } else if !trial_scheme.ty.is_concrete()
+            && defn.name.as_ref() != "__expr"
+            && fn_type_is_monomorphisable_from_params(&trial_scheme.ty)
+        {
+            // S84 (FIXME 0374, Principle 20): unconstrained BUT non-concrete
+            // (a plain parametric / generic def — `id : ∀a. a→a`, a `(Box a)`-
+            // result HOF). The slot-eligibility gate is `is_concrete()`, NOT
+            //
+            // **`__expr` is excluded.** A synthetic top-level-expression defn is
+            // a VALUE to evaluate, never a reusable polymorphic template, and the
+            // REPL/`--run` driver requires its GOT slot to invoke it. A residual
+            // `Type::Var` in an `__expr` result is either a transient
+            // unresolved-multi-sig-dispatch shape (concrete at runtime — keep the
+            // slot) or a genuine ambiguity (rejected by the §3.11 ambiguity
+            // check, never reaching codegen). Either way it stays `Concrete` here.
+            // `constraints.is_empty()`: a def carrying a residual `Type::Var`
+            // is NOT directly callable as a value (only its concrete mono
+            // instances are), so it is slot-less by construction — the
+            // `Polymorphic` arm, a sibling to `Constrained`. This forecloses
+            // the leak where a generic-unconstrained def took a `Concrete`
+            // slot while carrying a `Type::Var`, reaching `classify(Type::Var)`
+            // → the unsound `<1024` RC guard → the `(Box a)`-through-HOF
+            // SIGSEGV. Only `pass4_monomorphise` instances (concrete) are
+            // slotted. Drops any prior concrete slot (the redef carry-forward
+            // is moot — a `Polymorphic` template is never call-resolved, so no
+            // live GOT pointer is orphaned).
+            if let Some(entry) =
+                self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
+                && let ModuleEntry::Def { kind, .. } = entry
+            {
+                let pf = ParametricFn {
+                    variant: defn.variants[0].clone(),
+                    scheme: trial_scheme,
+                };
+                *kind = Box::new(DefKind::UserFn {
+                    fn_state: UserFnState::Polymorphic(Box::new(pf)),
+                });
+            }
+            None
         } else {
-            // Unconstrained: allocate (or reuse) the slot and pin `Concrete`.
+            // Unconstrained AND concrete: allocate (or reuse) the slot and pin
+            // `Concrete`.
             // Prefer the Pass-1-captured redefinition slot (the prior concrete
             // entry's slot, stashed before Pass-1 overwrote it with
             // NotDetermined). Fall back to a same-call concrete slot if one
@@ -1155,6 +1247,30 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         fn_state: UserFnState::Constrained(Box::new(cf)),
                     });
                 }
+            } else if !trial_scheme.ty.is_concrete()
+                && fn_type_is_monomorphisable_from_params(&trial_scheme.ty)
+            {
+                // S84 (FIXME 0374, Principle 20): a multi-sig *variant* whose
+                // finalised type still carries a PARAMETER-position `Type::Var`
+                // is non-concrete, trait-unconstrained, AND monomorphisable from
+                // a call → slot-less `Polymorphic`, NOT `Concrete{slot}`. Same
+                // structural gate as the single-sig site: slot ⟺ concrete, but
+                // only for the call-site-monomorphisable shapes (a result-only
+                // var stays `Concrete` — it cannot be pinned by an arg).
+                if let Some(entry) =
+                    self.current_symbol_table_mut(state).symbols.get_mut(&internal_name)
+                    && let ModuleEntry::Def { kind, .. } = entry
+                {
+                    let pf = ParametricFn {
+                        variant: internal_defn.variants.into_iter().next().expect(
+                            "internal_defn constructed with exactly one variant above",
+                        ),
+                        scheme: trial_scheme,
+                    };
+                    *kind = Box::new(DefKind::UserFn {
+                        fn_state: UserFnState::Polymorphic(Box::new(pf)),
+                    });
+                }
             } else {
                 let mut st = self.current_symbol_table_mut(state);
                 let reuse = accumulator
@@ -1304,37 +1420,148 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
             let scheme = self.generalize(state, &fn_type);
             let mut st = self.current_symbol_table_mut(state);
-            // Demoting a false-positive constrained template to a concrete
-            // callable needs a slot (S83 deferred allocation, Principle 20):
-            // reuse the entry's own concrete slot if it somehow already has one,
-            // otherwise allocate fresh. Computed before the `get_mut` borrow so
-            // the `&mut st` allocate doesn't alias the entry borrow.
-            let is_false_positive_constrained = scheme.constraints.is_empty()
+            // Demoting a false-positive constrained template (its constraints
+            // vanished after final substitution) — the re-slotting decision is
+            // the SAME structural gate as the determination point (FIXME 0374,
+            // Principle 20): slot ⟺ concrete.
+            //   - constraints vanished AND scheme concrete → `Concrete{slot}`
+            //     (reuse the entry's own concrete slot if any, else allocate).
+            //   - constraints vanished BUT scheme still generic (`Type::Var`)
+            //     → `Polymorphic` (slot-less); only its mono instances slot.
+            // A constrained template that generalised to a still-generic
+            // unconstrained type must NOT be re-slotted `Concrete` — that would
+            // re-introduce the non-concrete-def-with-slot leak.
+            // A `Constrained` OR `Polymorphic` template whose regeneralized
+            // scheme is now constraint-free is a re-slotting candidate (both are
+            // slot-less templates that may have become concrete). The
+            // re-slotting follows the SAME structural gate as the determination
+            // point (FIXME 0374, Principle 20): slot ⟺ concrete.
+            let is_reslot_candidate = scheme.constraints.is_empty()
                 && matches!(
                     st.get(name.as_ref()),
                     Some(ModuleEntry::Def { kind, .. })
                         if matches!(
                             kind.as_ref(),
-                            DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                            DefKind::UserFn {
+                                fn_state: UserFnState::Constrained(_)
+                                    | UserFnState::Polymorphic(_)
+                            }
                         )
                 );
-            let demoted_slot = if is_false_positive_constrained {
+            // Compute the demoted slot before the `get_mut` borrow so the
+            // `&mut st` allocate doesn't alias the entry borrow. Only the
+            // concrete branch needs a slot. A `Polymorphic` def whose scheme
+            // collapsed to a concrete type (e.g. `g : ∀a.a→a` pinned to
+            // `(Fn [Int] Int)` by a direct concrete call `(g 1)` + the post-mono
+            // regeneralisation) MUST become `Concrete{slot}` — otherwise it is a
+            // slot-less `Polymorphic` arm carrying a concrete scheme, an
+            // inconsistent state where a same-program caller cannot resolve it
+            // through a slot (the REPL mutual-forward-ref `undefined function`
+            // symptom).
+            // Keep `Polymorphic` (slot-less) ONLY when the def is still
+            // non-concrete AND monomorphisable from a call site (param-position
+            // vars). Otherwise allocate a slot: a concrete scheme is a plain
+            // `Concrete`; a result-only-var scheme stays slot-bearing (it cannot
+            // be monomorphised from a call, so it needs a callable slot — same
+            // refinement as the determination-point gate).
+            let stay_polymorphic = is_reslot_candidate
+                && !scheme.ty.is_concrete()
+                && fn_type_is_monomorphisable_from_params(&scheme.ty);
+            let demoted_slot = if is_reslot_candidate && !stay_polymorphic {
                 Some(existing_callable_slot(&st, name.as_ref())
                     .unwrap_or_else(|| st.allocate_got_slot()))
             } else {
                 None
             };
-            if let Some(ModuleEntry::Def { scheme: s, kind, .. }) =
+            if let Some(ModuleEntry::Def { scheme: s, kind, ast, .. }) =
                 st.symbols.get_mut(name)
             {
                 *s = scheme.clone();
-                if let Some(got_slot) = demoted_slot {
-                    **kind = DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { got_slot },
-                    };
+                if is_reslot_candidate {
+                    if let Some(got_slot) = demoted_slot {
+                        **kind = DefKind::UserFn {
+                            fn_state: UserFnState::Concrete { got_slot },
+                        };
+                    } else if let Some(variant) = ast.clone() {
+                        // Still non-concrete: slot-less `Polymorphic`, carrying
+                        // the stored annotated body + new scheme for later
+                        // monomorphisation. (For a `Constrained` false-positive
+                        // that stays generic-unconstrained this is the correct
+                        // demotion; for a `Polymorphic` that stayed generic this
+                        // is idempotent.)
+                        **kind = DefKind::UserFn {
+                            fn_state: UserFnState::Polymorphic(Box::new(ParametricFn {
+                                variant,
+                                scheme: scheme.clone(),
+                            })),
+                        };
+                    }
                 }
             }
         }
+    }
+
+    /// Find a top-level VALUE whose finalised type retains an unconstrained
+    /// `Type::Var` that no reachable instantiation can pin (spec §3.11 — the
+    /// ambiguity rule; FIXME 0373 ii / 0374 secondary backstop). Returns the
+    /// offending `(name, span)` so the caller raises the located `TypeError`
+    /// (kept `Result`-free here to avoid an extra large-`Err` boundary).
+    ///
+    /// **Scope: only synthetic top-level-EXPRESSION (`__expr`) forms.** A
+    /// top-level value expression is evaluated immediately with no later use to
+    /// pin its type, so a residual `Type::Var` in its result is genuinely
+    /// ambiguous (the canonical §3.11 shape: a bare `None` / empty literal at
+    /// the REPL or `--run` top level). A NAMED defn whose result carries a free
+    /// var (`(defn empty [] [])` → `(Fn [] (Vec a))`, `(defn ambig [] None)` →
+    /// `(Fn [] (Option a))`) is a SOUND polymorphic definition, NOT ambiguous —
+    /// it is `Polymorphic` (slot-less), pinned per use-site via monomorphisation
+    /// (or dead for codegen if never used concretely, the rank-1 HM property).
+    /// Rejecting named polymorphic defns would reject every legitimate
+    /// polymorphic library function (`empty`, `pure`, a nullary constructor
+    /// wrapper). The ambiguity is a property of a top-level *value*, not a
+    /// *definition*.
+    ///
+    /// A bare result `Type::Var` (`__expr : (Fn [] b)` from a multi-sig `(f 5)`
+    /// dispatch) is a transient unresolved-dispatch shape, NOT ambiguity — the
+    /// dispatch pins it to a concrete return. The genuinely-ambiguous shapes
+    /// carry the free var INSIDE a structure (`(Option a)`, `(Vec a)`), so a
+    /// bare-`Var` result is skipped.
+    fn find_ambiguous_top_level_form(
+        &self,
+        state: &CheckState,
+        working_program: &[TopLevel],
+    ) -> Option<(Symbol, Span)> {
+        for top in working_program {
+            if let TopLevel::Defn(defn) = top
+                && defn.name.as_ref() == "__expr"
+                && !defn.is_multi_sig()
+                && let Some(ModuleEntry::Def { scheme, .. }) =
+                    self.current_symbol_table(state).view().lookup(&defn.name)
+                && let Type::Fn(params, ret) = &scheme.ty
+            {
+                // A BARE result `Type::Var` (`caller : (Fn [] b)` from a
+                // multi-sig `(f 5)` dispatch) is a transient unresolved-dispatch
+                // shape, NOT genuine ambiguity — the dispatch pins it to a
+                // concrete variant return even when the stored scheme has not
+                // collapsed. The genuinely-ambiguous canonical shapes (spec
+                // §3.11) carry the free var INSIDE a structure: `(Option a)`
+                // from a nullary ctor, `(Vec a)` from an empty literal — a
+                // `Type::ADT`/`Type::Fn` over a free var that no use can pin.
+                // So skip a bare-`Var` result and flag only a structured one.
+                if matches!(ret.as_ref(), Type::Var(_)) {
+                    continue;
+                }
+                let param_vars: std::collections::HashSet<_> = params
+                    .iter()
+                    .flat_map(cranelisp_types::free_vars)
+                    .collect();
+                let ret_vars = cranelisp_types::free_vars(ret);
+                if ret_vars.iter().any(|v| !param_vars.contains(v)) {
+                    return Some((defn.name.clone(), defn.span));
+                }
+            }
+        }
+        None
     }
 
     fn finalize_check_result_inner(
@@ -1445,6 +1672,27 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // collapses to its true monomorphic scheme and the backend emits a
         // direct call to the mono variant rather than the polymorphic template.
         self.regeneralize_defn_schemes(state, accumulator);
+
+        // FIXME 0373(ii) / 0374 — ambiguity backstop (SECONDARY; the structural
+        // slot gate above is the PRIMARY SIGSEGV-prevention mechanism, and it
+        // works without this check). The §3.11 ambiguity rule (reject a
+        // top-level VALUE whose finalised type retains an unconstrained
+        // `Type::Var` no use pins) is implemented in
+        // `find_ambiguous_top_level_form`, but its ENFORCEMENT is **deferred**:
+        // spec §3.11 mandates rejecting a bare `None` / `[]` at the REPL, which
+        // DIRECTLY CONTRADICTS pre-existing self-documenting-REPL tests that
+        // assert those forms DISPLAY their polymorphic type (`:(Option a)
+        // Option.None`, `:(Vec a) []`). That spec-vs-established-REPL-behaviour
+        // tension needs /spec + /repl + /qa arbitration before the check can
+        // fire without breaking the suite. The slot gate already makes a
+        // residual `Type::Var` structurally unconstructable at codegen, so
+        // deferring this secondary backstop does NOT re-open the SIGSEGV. See
+        // FIXME `design/arch/fixmes/0378-*.md`.
+        //
+        // The check is wired-but-dormant (call it to keep the helper exercised
+        // + ready to enable in one line once the tension is resolved); it does
+        // not raise yet.
+        let _ambiguous = self.find_ambiguous_top_level_form(state, working_program);
 
         // Pass 5: overloads and auto-curry already resolved per-defn.
         // Drain any remaining entries (e.g., from mono defn generation).
@@ -2382,9 +2630,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
         }
 
+        // FIXME 0374 (Tier 2 — the `(Box a)`-field-through-HOF gap). Collect
+        // bare-`Var` ARGUMENTS that pass a monomorphisable polymorphic fn as a
+        // VALUE into a higher-order call. These are not callees (so the
+        // call-site collectors above miss them) but they still need a concrete
+        // mono instance — see `collect_parametric_fn_value_args`. Recorded
+        // per enclosing defn so the fn-value `Var` can be rewritten to the
+        // mangled name in that defn's stored AST after minting.
+        let mut fn_value_arg_sites: Vec<(Symbol, Symbol, Span, Vec<Type>)> = Vec::new();
+        for defn in defns {
+            let mut sites = Vec::new();
+            self.collect_parametric_fn_value_args(state, defn.body(), &mut sites);
+            for (arg_name, arg_span, param_types) in sites {
+                fn_value_arg_sites.push((defn.name.clone(), arg_name, arg_span, param_types));
+            }
+        }
+
         // Nothing to monomorphise (neither local constrained fns nor imported
-        // constrained call sites) — bail before resolving expr_types.
-        if call_sites.is_empty() {
+        // constrained call sites nor polymorphic fn-value arguments) — bail
+        // before resolving expr_types.
+        if call_sites.is_empty() && fn_value_arg_sites.is_empty() {
             return Ok(Vec::new());
         }
 
@@ -2436,6 +2701,55 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
+        // FIXME 0374 (Tier 2 — fn-value-argument monomorphisation). For each
+        // polymorphic fn passed as a value into a HOF, mint its concrete mono
+        // instance (`mk$Int`) and rewrite the fn-value `Var` in the enclosing
+        // defn's stored AST to the mangled name, so the backend's
+        // `compile_fn_as_value` takes the concrete (slotted) instance's GOT slot
+        // rather than the slot-less `Polymorphic` template. The mono instance's
+        // body re-checks at the concrete param types, so its `(Box a)` field
+        // becomes `(Box Int)` — concrete, classifying cleanly, no RC guard.
+        let mut fn_value_rewrites: Vec<(Symbol, Span, Symbol)> = Vec::new();
+        for (enclosing, arg_name, arg_span, param_types) in &fn_value_arg_sites {
+            let key = crate::traits::build_mangled_name(arg_name, param_types);
+            let mangled_sym = if let Some(existing) = seen.get(&key) {
+                Symbol::from(existing.as_ref())
+            } else if let Some(mono) =
+                // Pass `Span::SYNTHETIC` as the call-span: a fn-VALUE argument is
+                // not a call site, so the FIXME-0349 call-result propagation
+                // inside `monomorphise_call` (which unifies the call-span's
+                // expr-type with the mono's RETURN type) must NOT fire — the
+                // arg-span's type is the fn's FULL `(Fn ..)` type, not its
+                // return. A synthetic span misses the `expr_types` lookup and
+                // skips that unify cleanly.
+                self.monomorphise_call(state, arg_name, param_types, Span::SYNTHETIC, None)?
+            {
+                let mangled = JitSymbol::from(mono.defn.name.as_ref());
+                seen.insert(key, mangled.clone());
+                let sym = Symbol::from(mangled.as_ref());
+                mono_defns.push(mono);
+                sym
+            } else {
+                continue;
+            };
+            fn_value_rewrites.push((enclosing.clone(), *arg_span, mangled_sym));
+        }
+
+        // Apply the fn-value `Var` renames to the stored ASTs. A later
+        // re-annotation pass (in `finalize_check_result_inner`) only writes
+        // `inferred_type` / `resolved_call` by span — it does not touch the
+        // `Var` name — so this rename survives.
+        if !fn_value_rewrites.is_empty() {
+            let mut st = self.current_symbol_table_mut(state);
+            for (enclosing, arg_span, mangled_sym) in &fn_value_rewrites {
+                if let Some(ModuleEntry::Def { ast: Some(variant), .. }) =
+                    st.symbols.get_mut(enclosing)
+                {
+                    rename_var_at_span(&mut variant.body, *arg_span, mangled_sym);
+                }
+            }
+        }
+
         Ok(mono_defns)
     }
 
@@ -2474,6 +2788,55 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         });
     }
 
+    /// Whether a call site to a LOCAL polymorphic callee should be collected for
+    /// monomorphisation (FIXME 0373 Tier 1 + 0374 Tier 2). TWO triggers:
+    ///
+    /// 1. **Bare-`Var` result (the 0373 polymorphic-result hop).** The call
+    ///    site's result type resolves to a bare unbound `Type::Var` — the exact
+    ///    shape that leaves the generic hop compiled with a `Type::Var` result
+    ///    and trips the RC-classification SIGSEGV.
+    /// 2. **All arg types concrete (the 0374 direct-concrete-call case).** A
+    ///    direct call to a now-slot-less `Polymorphic` callee with FULLY
+    ///    CONCRETE arguments (`(g 1)` — `g : ∀a. a→a`, arg `Int`) MUST mint the
+    ///    concrete `g$Int` instance: with the structural slot gate, `g` has no
+    ///    slot of its own, so an un-monomorphised call would lower through a
+    ///    missing slot. Its result may be concrete (`Int`) — the bare-`Var`
+    ///    trigger misses it.
+    ///
+    /// **The 0344 fold is preserved by trigger 2's all-args-concrete guard.**
+    /// The fold call `(reduce vec-push [] vv)` has args `vec-push` (a
+    /// polymorphic fn-VALUE), `[]` (`(Vec a)`), `vv` — NOT all concrete — so it
+    /// is excluded, exactly as the bare-`Var` gate excluded its `(Vec a)`
+    /// result before. Monomorphising it would pin `reduce`'s accumulator var
+    /// through the post-mono regeneralisation, re-collapsing the polymorphic
+    /// scheme 0344 deliberately keeps; the all-concrete guard keeps it out.
+    fn local_parametric_call_triggers(
+        state: &CheckState,
+        call_span: &Span,
+        args: &[Expr],
+    ) -> bool {
+        let result_is_bare_var = state
+            .expr_types
+            .get(call_span)
+            .map(|ty| matches!(apply(&state.subst, ty), Type::Var(_)))
+            .unwrap_or(false);
+        if result_is_bare_var {
+            return true;
+        }
+        // Trigger 2: every argument has a fully-concrete type. An empty-arg call
+        // does NOT trigger here (a nullary polymorphic call cannot be pinned by
+        // its args — if its result is also concrete it needs no mono; if its
+        // result is a free var it is the ambiguity case, not a mono site).
+        !args.is_empty()
+            && args.iter().all(|a| {
+                state
+                    .expr_types
+                    .get(&a.span())
+                    .map(|ty| apply(&state.subst, ty).is_concrete())
+                    .unwrap_or(false)
+            })
+    }
+
     /// Walk a defn body collecting calls to LOCAL (same-module) pure-parametric
     /// polymorphic callees that need a concrete monomorphisation (FIXME 0373,
     /// Tier 1 — the polymorphic-result-hop fix; /arch ruling (A)).
@@ -2500,24 +2863,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && let Expr::Var { name, .. } = callee.as_ref()
             && name != self_name
             && !constrained_fn_names.contains(name)
-            // The result-var gate (narrows to the 0373 signature, preserves
-            // 0344): collect ONLY when the call site's result type resolves to a
-            // bare unbound `Type::Var` — the exact shape that leaves the generic
-            // hop compiled with a `Type::Var` result and triggers the
-            // RC-classification SIGSEGV. A pure-parametric local fn whose
-            // call-site result is concrete (`Int`) or a type-constructor
-            // application (`(Vec a)` — the 0344 `(reduce vec-push [] vv)` fold
-            // shape) is NOT a polymorphic-result hop: its result classifies
-            // cleanly, and monomorphising it here would pin the original defn's
-            // accumulator var through the post-mono regeneralization pass,
-            // re-collapsing the polymorphic scheme that 0344 deliberately keeps
-            // (the §919 generalize-and-keep writeback). The bare-`Var` gate
-            // excludes that case while still catching the residual-var hop.
-            && state
-                .expr_types
-                .get(span)
-                .map(|ty| matches!(apply(&state.subst, ty), Type::Var(_)))
-                .unwrap_or(false)
+            && Self::local_parametric_call_triggers(state, span, args)
             && let Some((entry, home)) =
                 self.resolve_terminal_entry_and_home(&state.current_module, name.as_ref())
             && home == state.current_module
@@ -2530,6 +2876,57 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             self.collect_local_parametric_calls(
                 state, child, self_name, constrained_fn_names, out,
             )
+        });
+    }
+
+    /// Walk a defn body collecting bare-`Var` ARGUMENTS that pass a
+    /// monomorphisable polymorphic fn as a *value* into a higher-order call
+    /// (FIXME 0374 — the `(Box a)`-field-carrying-`Type::Var`-through-HOF gap).
+    ///
+    /// The result-hop collectors ([`Self::collect_local_parametric_calls`] +
+    /// [`Self::monomorphise_inner_parametric_hops`]) trigger on a bare-`Var`
+    /// *call result* or an `Apply`-of-bare-`Var`. They do NOT cover a polymorphic
+    /// fn passed as an argument value (`(thru mk x)` — `mk` is a fn-value
+    /// argument, never a callee here, and the HOF call's result `(Box Int)` is
+    /// concrete so the result-var gate skips it). That fn-value still needs a
+    /// concrete mono instance: `mk`'s body constructs `(Box a)` with a `Type::Var`
+    /// field that reaches the RC boundary as a non-concrete `Box` field →
+    /// `classify(Type::Var)` → the unsound `<1024` guard → SIGSEGV.
+    ///
+    /// For each `Apply` whose bare-`Var` argument resolves (chain-follow) to a
+    /// LOCAL monomorphisable polymorphic def AND whose resolved expr-type at the
+    /// argument span is a FULLY CONCRETE `(Fn [..] ..)`, record
+    /// `(arg_var_name, arg_span, concrete_param_types)`. The caller mints
+    /// `arg_var$T..` and rewrites the fn-value `Var` in the enclosing defn's
+    /// stored AST to the mangled name so the backend takes the concrete mono
+    /// instance's GOT slot.
+    fn collect_parametric_fn_value_args(
+        &self,
+        state: &CheckState,
+        expr: &Expr,
+        out: &mut Vec<(Symbol, Span, Vec<Type>)>,
+    ) {
+        if let Expr::Apply { args, .. } = expr {
+            for arg in args {
+                if let Expr::Var { name, span, .. } = arg
+                    && let Some(ty) = state.expr_types.get(span)
+                    && let Type::Fn(param_types, ret_ty) = apply(&state.subst, ty)
+                    // The fn-value's full signature must be concrete — that is the
+                    // instantiation the HOF demands and the shape that pins any
+                    // residual ADT-field `Type::Var`.
+                    && param_types.iter().all(|p| p.is_concrete())
+                    && ret_ty.is_concrete()
+                    && let Some((entry, home)) = self
+                        .resolve_terminal_entry_and_home(&state.current_module, name.as_ref())
+                    && home == state.current_module
+                    && Self::entry_is_monomorphisable_polymorphic(&entry)
+                {
+                    out.push((name.clone(), *span, param_types));
+                }
+            }
+        }
+        for_each_child_expr(expr, |child| {
+            self.collect_parametric_fn_value_args(state, child, out)
         });
     }
 

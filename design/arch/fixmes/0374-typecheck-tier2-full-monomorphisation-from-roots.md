@@ -8,6 +8,54 @@ refers_to: design/arch/bounded-contexts.md §2 (monomorphisation-from-roots note
 status: open
 ---
 
+## S84 Wave 1 — PARTIALLY DELIVERED (/dev, 2026-06-16)
+
+The SIGSEGV-prevention core landed (clean, zero regressions); the ambiguity
+backstop is deferred. Disposition:
+
+- **DELIVERED — the structural slot gate (`slot ⟺ concrete`).** Single-sig
+  (`program.rs` determination point) + multi-sig variant + the
+  `regeneralize_defn_schemes` demotion now route a non-concrete unconstrained
+  def to the slot-less `UserFnState::Polymorphic` arm. **Refinement:** the gate
+  fires only when the def is monomorphisable FROM A CALL SITE
+  (`fn_type_is_monomorphisable_from_params` — param-position vars). A
+  result-only-var def (`(Fn [] (Option a))` — a `test-*` discovery root, a
+  `None`-returning fn) stays `Concrete`-with-a-slot: it cannot be monomorphised
+  by args and is an entry point, not a polymorphic template. `__expr` is
+  likewise excluded (a top-level value to evaluate). This refinement avoided
+  ~30 regressions (test discovery, REPL display, multi-sig `__expr`).
+- **DELIVERED — systematic mono-from-roots for the Wave-0 `(Box a)` gap.** Three
+  collectors extend `pass4_monomorphise`: (a) the broadened
+  `collect_local_parametric_calls` (now also triggers on an all-concrete-args
+  direct call `(g 1)` to a `Polymorphic` callee, not only a bare-`Var` result —
+  the 0344 fold is preserved by the all-args-concrete guard); (b)
+  `collect_parametric_fn_value_args` (a polymorphic fn passed as a HOF argument
+  value — the `(thru mk …)` shape — mints `mk$Int` and rewrites the fn-value
+  `Var` in the enclosing stored AST to the mangled name so the backend takes the
+  concrete slot); (c) monomorphic self-recursion dispatch in `monomorphise_call`
+  (`collect_self_apply_calls` — a `Polymorphic` fn's self-call redirects to its
+  own mono instance, since the original is slot-less). Both Wave-0 box guards
+  flipped GREEN; all bare-Int GREEN-stay guards + the 0344/0349 fold canary held.
+- **DELIVERED — cache 5→6 bump** (`crates/cranelisp-backend/src/cache/mod.rs`,
+  the `Polymorphic` serde arm; the single backend touch).
+- **DEFERRED — the 0373(ii) ambiguity backstop.** Implemented
+  (`find_ambiguous_top_level_form`) but wired-but-dormant: enabling it regresses
+  pre-existing self-documenting-REPL display tests that assert spec-§3.11-
+  forbidden behaviour (bare `None`/`[]` display). Blocked on /spec + /repl + /qa
+  arbitration — **FIXME 0378**. The slot gate already makes a residual
+  `Type::Var` structurally unconstructable at codegen, so the deferral does NOT
+  re-open the SIGSEGV; the ambiguity check is the design's named SECONDARY
+  backstop. Its two Wave-0 guards
+  (`mono_ambiguous_unconstrained_top_level_var_rejected_neg`,
+  `mono_ambiguous_neg_does_not_reach_codegen`) carry RED until 0378 is ruled.
+
+This FIXME stays OPEN: the gate + box-mono core is done, but the ambiguity-rule
+half of the reshaped resolution is deferred to 0378. 0375 (/backend) is now
+unblocked for the SIGSEGV-prevention purpose (a `Type::Var` no longer reaches
+`classify` as a callable for the monomorphisable-from-params shapes), but the
+result-only-var carve-out means concreteness is not yet TOTAL — see 0378 issue 3
+(test-fns-as-roots) before 0375's `classify(Type::Var)→unreachable!` lands.
+
 # Typecheck: Tier 2 — systematic full monomorphisation from the roots (no Type::Var reaches codegen)
 
 ## Issue

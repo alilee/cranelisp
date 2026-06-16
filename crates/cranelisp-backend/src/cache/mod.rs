@@ -151,7 +151,16 @@ pub mod linker;
 /// forecloses. The bump invalidates every v4 cache as
 /// `CacheStale::SchemaMismatch` (treated as a cache-miss → recompile) so the
 /// slot-less mis-load can never happen.
-pub const CACHE_SCHEMA_VERSION: u32 = 5;
+/// **S84 bump 5 → 6 (structural slot gate, FIXME 0374/0377).** `UserFnState`
+/// gained a new slot-less `Polymorphic(Box<ParametricFn>)` variant (the
+/// generic-unconstrained-def arm — slot ⟺ concrete). The serialized
+/// `DefKind::UserFn { fn_state }` shape therefore changed: a stale v5
+/// `.meta.json` predates the variant and cannot round-trip a `Polymorphic`
+/// entry, and a v5-shaped generic def that the old gate mis-slotted as
+/// `Concrete`-with-a-`Type::Var` would re-introduce the NULL-slot / unsound-RC
+/// regression. The bump rejects every v5 cache as `CacheStale::SchemaMismatch`
+/// (cache-miss → recompile) so the corrected gate always runs.
+pub const CACHE_SCHEMA_VERSION: u32 = 6;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

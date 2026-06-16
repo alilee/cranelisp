@@ -1393,6 +1393,44 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             home,
         )?;
 
+        // FIXME 0374 — monomorphic self-recursion. A polymorphic fn that recurses
+        // on itself at its OWN generic vars (`(repeat-fn f (sub-i64 n 1) (f x))`)
+        // is monomorphic recursion (rank-1 HM): the self-call instantiates the
+        // SAME `(Def, type-args)` as this mono, so it dispatches to THIS mono
+        // (`mangled_name`). With the structural slot gate the original
+        // `fn_name` def is slot-less `Polymorphic`, so the self-call MUST be
+        // redirected to the slotted mono instance or it lowers through a missing
+        // slot ("undefined function"). `collect_apply_var_calls` deliberately
+        // skips self-calls (they are not a DISTINCT instance to mint), so record
+        // their dispatch here. Only the same-arg-type self-recursion is the same
+        // mono; a self-call at different concrete types would have been a
+        // distinct hop already minted above.
+        {
+            let mut self_calls = Vec::new();
+            collect_self_apply_calls(wrap_defn.body(), fn_name, &mut self_calls);
+            for (arg_spans, self_span) in &self_calls {
+                if resolutions.resolved_calls.contains_key(self_span) {
+                    continue;
+                }
+                let self_arg_types: Vec<Type> = arg_spans
+                    .iter()
+                    .filter_map(|span| mono_expr_types.get(span).cloned())
+                    .collect();
+                if self_arg_types.len() != arg_spans.len() {
+                    continue;
+                }
+                // Same concrete param types ⇒ same mono instance (`mangled_name`).
+                if build_mangled_name(fn_name, &self_arg_types) == mangled_name {
+                    resolutions.resolved_calls.insert(
+                        *self_span,
+                        ResolvedCall::SigDispatch {
+                            mangled_name: JitSymbol::from(mangled_name.as_str()),
+                        },
+                    );
+                }
+            }
+        }
+
         // Build annotated mono defn: annotate from side maps, apply subst.
         // `defn: DefnVariant` (S70 ConstrainedFn narrowing) — name/docstring/
         // visibility no longer ride on the payload; recover them from
@@ -1902,7 +1940,29 @@ fn collect_apply_var_calls(
     });
 }
 
-fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
+/// Collect every `Apply`-of-bare-`Var` call to `self_name` (the OPPOSITE of
+/// [`collect_apply_var_calls`], which excludes self-calls). Used by
+/// `monomorphise_call` (FIXME 0374) to redirect a polymorphic fn's monomorphic
+/// self-recursion to its own mono instance — the original `Polymorphic` def is
+/// slot-less, so a by-name self-call would lower through a missing slot.
+fn collect_self_apply_calls(
+    expr: &Expr,
+    self_name: &Symbol,
+    out: &mut Vec<(Vec<Span>, Span)>,
+) {
+    if let Expr::Apply { callee, args, span, .. } = expr
+        && let Expr::Var { name, .. } = callee.as_ref()
+        && name == self_name
+    {
+        let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
+        out.push((arg_spans, *span));
+    }
+    crate::program::for_each_child_expr(expr, |child| {
+        collect_self_apply_calls(child, self_name, out)
+    });
+}
+
+pub(crate) fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
     let type_names: Vec<String> = param_types
         .iter()
         .filter_map(|t| concrete_type_name(t).map(|tn| tn.to_string()))

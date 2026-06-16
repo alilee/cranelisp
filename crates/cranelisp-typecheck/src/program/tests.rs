@@ -4114,12 +4114,19 @@
             )
         };
 
-        // (defn idf [x] x) — unconstrained → Concrete, slot allocated at the
-        // determination point.
+        // (defn idf [:Int x] x) — unconstrained AND fully concrete → Concrete,
+        // slot allocated at the determination point. The `:Int` annotation is
+        // load-bearing: an UNANNOTATED `(defn idf [x] x)` is `∀a. a→a` —
+        // unconstrained but NON-concrete (a residual `Type::Var`), which the
+        // S84 slot gate (FIXME 0374, slot ⟺ concrete) routes to the slot-less
+        // `Polymorphic` arm, NOT `Concrete`. This test pins the concrete→concrete
+        // redef slot-reuse, so the example must be genuinely concrete.
         let idf = |s: u32| TopLevel::Defn(make_defn(
             "idf",
             vec![Symbol::from("x")],
-            vec![None],
+            vec![Some(cranelisp_types::TypeExpr::Named(
+                cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+            ))],
             Expr::var(Symbol::from("x"), span(s, s + 1)),
             Visibility::Public,
             span(s, s + 2),
@@ -4168,13 +4175,21 @@
             "a constrained template carries NO slot (slot-less by construction)",
         );
 
-        // constrained → concrete redef: redefine cadd as `(defn cadd [x y] x)`
-        // (no constraint). Nothing to reuse (the template was slot-less), so a
-        // FRESH slot is allocated and the entry becomes Concrete.
+        // constrained → concrete redef: redefine cadd as
+        // `(defn cadd [:Int x :Int y] x)` (no constraint, fully concrete).
+        // Nothing to reuse (the template was slot-less), so a FRESH slot is
+        // allocated and the entry becomes Concrete. The `:Int` annotations are
+        // load-bearing under the S84 slot gate (slot ⟺ concrete, FIXME 0374):
+        // an unannotated `(defn cadd [x y] x)` is `∀a b. (Fn [a b] a)` —
+        // unconstrained but NON-concrete → slot-less `Polymorphic`, not
+        // `Concrete`.
+        let int_ann = || Some(cranelisp_types::TypeExpr::Named(
+            cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+        ));
         let cadd_concrete = TopLevel::Defn(make_defn(
             "cadd",
             vec![Symbol::from("x"), Symbol::from("y")],
-            vec![None, None],
+            vec![int_ann(), int_ann()],
             Expr::var(Symbol::from("x"), span(40, 41)),
             Visibility::Public,
             span(39, 42),
@@ -4203,6 +4218,215 @@
         );
         // Sanity: the dropped concrete slot was a real allocated index.
         let _ = cadd_concrete_slot;
+    }
+
+    // spec: spec/03-types.md §3.10 — Rank-1 HM: a GOT slot is the value-
+    //   capability of a CONCRETE callable (slot ⟺ `is_concrete()`). A generic-
+    //   unconstrained def (`id : ∀a. a→a`) is NON-concrete → slot-less
+    //   `UserFnState::Polymorphic`, NOT `Concrete` with a slot.
+    //
+    // FIXME(/typecheck 0374): the structural slot gate — test seam (a). Pins
+    //   that the unannotated identity def lands in the slot-less `Polymorphic`
+    //   arm (`callable_got_slot()` → `None`) so a residual `Type::Var` can never
+    //   reach `classify(Type::Var)` as a callable address. Only its concrete
+    //   mono instances are slotted (test seam (b) below).
+    #[test]
+    fn generic_unconstrained_def_is_slotless() {
+        let mut tc = tc_with_prims();
+        // (defn id [x] x) — unconstrained but NON-concrete (∀a. a→a).
+        let sexps = cranelisp_frontend::parse("(defn id [x] x)").expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).unwrap();
+
+        match tc.symbol_table().get("id") {
+            Some(ModuleEntry::Def { kind, scheme, .. }) => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    ),
+                    "a generic-unconstrained def must be slot-less Polymorphic, \
+                     got {kind:?}",
+                );
+                assert!(
+                    !scheme.ty.is_concrete(),
+                    "id's scheme must be non-concrete (carries a Type::Var)",
+                );
+            }
+            other => panic!("id not a Def: {other:?}"),
+        }
+        assert_eq!(
+            tc.symbol_table().get("id").and_then(|e| e.callable_got_slot()),
+            None,
+            "a Polymorphic def carries NO callable slot (slot ⟺ concrete)",
+        );
+    }
+
+    // spec: spec/03-types.md §3.10 — the concrete monomorphised instance of a
+    //   generic def DOES carry a slot and IS concrete (the slot ⟺ concrete
+    //   invariant's positive half).
+    //
+    // FIXME(/typecheck 0374): test seam (a)/(b) — a generic def used at a
+    //   concrete type mints a `Concrete { got_slot: Some(_) }` mono instance
+    //   whose stored scheme `is_concrete()`. The generic template stays
+    //   slot-less `Polymorphic`; only the instance is callable.
+    #[test]
+    fn concrete_instance_of_generic_def_is_slotted() {
+        let mut tc = tc_with_prims();
+        // `id` used at Int through `neg` (an annotated concrete helper). The
+        // call `(id (neg 5))` instantiates `id` at Int → `id$Int` mono.
+        let src = "\
+            (defn id [x] x)\n\
+            (defn neg [:primitives/Int x] :primitives/Int (sub-i64 0 x))\n\
+            (defn use-id [] :primitives/Int (id (neg 5)))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).unwrap();
+
+        // The generic template stays slot-less Polymorphic.
+        assert!(
+            matches!(
+                tc.symbol_table().get("id"),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    )
+            ),
+            "the generic `id` template must stay slot-less Polymorphic",
+        );
+
+        // The mono instance `id$Int` is Concrete, slotted, and concrete-typed.
+        match tc.symbol_table().get("id$Int") {
+            Some(ModuleEntry::Def { kind, scheme, .. }) => {
+                let slot = match kind.as_ref() {
+                    DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } } => {
+                        Some(*got_slot)
+                    }
+                    other => panic!("id$Int must be Concrete, got {other:?}"),
+                };
+                assert!(slot.is_some(), "id$Int must carry a GOT slot");
+                assert!(
+                    scheme.ty.is_concrete(),
+                    "id$Int's stored type must be fully concrete, got {:?}",
+                    scheme.ty,
+                );
+            }
+            other => panic!("id$Int mono instance not registered: {other:?}"),
+        }
+    }
+
+    // spec: spec/12-runtime.md §12.1 — no unresolved type variable reaches code
+    //   generation: a polymorphic fn passed THROUGH a HOF whose result is a
+    //   generic ADT carrying a `Type::Var` field is monomorphised to a concrete
+    //   instance (the `(Box a)`-field-through-HOF gap).
+    //
+    // FIXME(/typecheck 0374): test seam (b) — the unit counterpart of the
+    //   Wave-0 e2e `mono_tier2_generic_adt_field_through_hof_no_crash`. `mk`
+    //   (returns `(Box a)`) is passed as a fn-value through the HOF `thru`. The
+    //   `(Box a)` field must be pinned to `(Box Int)` at the reachable instance:
+    //   the worklist mints `mk$Int` (concrete params, concrete `(Box Int)`
+    //   result), so its body's `Box` field classifies cleanly — no residual
+    //   `Type::Var` at the RC boundary.
+    #[test]
+    fn box_field_through_hof_monomorphises_concrete() {
+        let mut tc = tc_with_prims();
+        let src = "\
+            (deftype (Box a) (Box [:a val]))\n\
+            (defn mk [x] (Box x))\n\
+            (defn thru [g x] (g x))\n\
+            (defn get [b] (match b [(Box v) v]))\n\
+            (defn use-box [] :primitives/Int (get (thru mk (sub-i64 0 5))))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).unwrap();
+
+        // The generic `mk` template is slot-less Polymorphic.
+        assert!(
+            matches!(
+                tc.symbol_table().get("mk"),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    )
+            ),
+            "the generic `mk` template must be slot-less Polymorphic",
+        );
+
+        // The fn-value-argument worklist minted `mk$Int` (mangled by `mk`'s
+        // own concrete param type `Int`) — a concrete, slotted mono instance
+        // with a fully-concrete `(Fn [Int] (Box Int))` stored type (no residual
+        // `Type::Var` ADT field).
+        match tc.symbol_table().get("mk$Int") {
+            Some(ModuleEntry::Def { kind, scheme, .. }) => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    ),
+                    "mk$Int must be a Concrete (slotted) mono instance, got {kind:?}",
+                );
+                assert!(
+                    scheme.ty.is_concrete(),
+                    "mk$Int's stored type must be fully concrete (no Type::Var \
+                     ADT field), got {:?}",
+                    scheme.ty,
+                );
+                // The result type must be a concrete `(Box Int)`, not `(Box a)`.
+                if let Type::Fn(_, ret) = &scheme.ty {
+                    assert!(
+                        matches!(
+                            ret.as_ref(),
+                            Type::ADT(name, args)
+                                if name.name.as_ref() == "Box"
+                                    && args.len() == 1
+                                    && args[0] == Type::Int
+                        ),
+                        "mk$Int's result must be (Box Int), got {ret:?}",
+                    );
+                }
+            }
+            other => panic!("mk$Int mono instance not registered: {other:?}"),
+        }
+    }
+
+    // spec: spec/03-types.md §3.11 — Ambiguous Types: a generic *definition*
+    //   (`(defn id [x] x)`) is NOT ambiguous — its scheme vars are quantified,
+    //   not free-at-root — so it lands in the sound slot-less `Polymorphic` arm.
+    //
+    // FIXME(/typecheck 0374): the slot-gate companion of the §3.11 rule. The
+    //   POSITIVE ambiguity-rejection test (an unannotated top-level value
+    //   literal being rejected) is DEFERRED with the ambiguity-check enforcement
+    //   — spec §3.11's "reject bare `None`/`[]` at the REPL" conflicts with the
+    //   pre-existing self-documenting-REPL display of those forms, pending /spec
+    //   + /repl arbitration (FIXME 0378). This negative companion stays: a
+    //   generic defn must NEVER be an ambiguity error.
+
+    // spec: spec/03-types.md §3.11 — NEGATIVE companion: a generic top-level
+    //   defn is a sound `Polymorphic` template, NOT an ambiguity error. This
+    //   distinguishes a quantified scheme variable (fine) from a free-at-root
+    //   un-generalisable var (ambiguous).
+    #[test]
+    fn generic_defn_is_polymorphic_not_ambiguous() {
+        let mut tc = tc_with_prims();
+        let sexps = cranelisp_frontend::parse("(defn id [x] x)").expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        // A generic defn must check cleanly (no ambiguity error) and land in the
+        // slot-less Polymorphic arm.
+        tc.check_program_self(&program)
+            .expect("a generic defn must NOT be rejected as ambiguous");
+        assert!(
+            matches!(
+                tc.symbol_table().get("id"),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    )
+            ),
+            "a generic defn is a sound Polymorphic template, not an error",
+        );
     }
 
     // spec: spec/03-types.md §3.4 — a polymorphic accumulator threaded through a
