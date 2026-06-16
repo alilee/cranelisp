@@ -10,6 +10,23 @@ impl core::marker::Unpin for cranelisp_types::CodegenBehaviour
 impl core::marker::UnsafeUnpin for cranelisp_types::CodegenBehaviour
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::CodegenBehaviour
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::CodegenBehaviour
+pub enum cranelisp_types::ConcreteType
+pub cranelisp_types::ConcreteType::ADT(cranelisp_types::FQTypeName, alloc::vec::Vec<cranelisp_types::ConcreteType>)
+pub cranelisp_types::ConcreteType::Bool
+pub cranelisp_types::ConcreteType::Float
+pub cranelisp_types::ConcreteType::Fn(alloc::vec::Vec<cranelisp_types::ConcreteType>, alloc::boxed::Box<cranelisp_types::ConcreteType>)
+pub cranelisp_types::ConcreteType::Int
+pub cranelisp_types::ConcreteType::String
+impl cranelisp_types::ConcreteType
+pub fn cranelisp_types::ConcreteType::from_type(&cranelisp_types::Type) -> core::result::Result<cranelisp_types::ConcreteType, cranelisp_types::NotConcrete>
+pub fn cranelisp_types::ConcreteType::to_type(&self) -> cranelisp_types::Type
+impl core::marker::Freeze for cranelisp_types::ConcreteType
+impl core::marker::Send for cranelisp_types::ConcreteType
+impl core::marker::Sync for cranelisp_types::ConcreteType
+impl core::marker::Unpin for cranelisp_types::ConcreteType
+impl core::marker::UnsafeUnpin for cranelisp_types::ConcreteType
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ConcreteType
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ConcreteType
 #[non_exhaustive] pub enum cranelisp_types::CranelispError
 pub cranelisp_types::CranelispError::CodegenError
 pub cranelisp_types::CranelispError::CodegenError::location: cranelisp_types::ErrorLocation
@@ -280,6 +297,16 @@ impl core::marker::Unpin for cranelisp_types::ModuleStrategy
 impl core::marker::UnsafeUnpin for cranelisp_types::ModuleStrategy
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ModuleStrategy
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ModuleStrategy
+pub enum cranelisp_types::NotConcrete
+pub cranelisp_types::NotConcrete::HktHead(cranelisp_types::TypeId)
+pub cranelisp_types::NotConcrete::Var(cranelisp_types::TypeId)
+impl core::marker::Freeze for cranelisp_types::NotConcrete
+impl core::marker::Send for cranelisp_types::NotConcrete
+impl core::marker::Sync for cranelisp_types::NotConcrete
+impl core::marker::Unpin for cranelisp_types::NotConcrete
+impl core::marker::UnsafeUnpin for cranelisp_types::NotConcrete
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::NotConcrete
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::NotConcrete
 #[non_exhaustive] pub enum cranelisp_types::ParsedEntry
 pub cranelisp_types::ParsedEntry::Constructor
 pub cranelisp_types::ParsedEntry::Constructor::fields: alloc::vec::Vec<cranelisp_types::FieldDef>

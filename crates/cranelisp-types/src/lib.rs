@@ -180,6 +180,7 @@ pub(crate) mod error;
 pub(crate) mod sexp;
 pub(crate) mod ast;
 pub(crate) mod types;
+pub(crate) mod concrete;
 pub(crate) mod check;
 pub(crate) mod parsed;
 // `pub mod code` removed in Sprint 58 Wave 3b (Decision 35): the old
@@ -224,6 +225,10 @@ pub use ast::{
     TopLevel, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility, free_vars_expr,
 };
 pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, format_type_display, format_type_with_vars, type_var_names};
+// The concrete-only codegen-boundary type (Phase 1 scaffold;
+// design/arch/concrete-boundary-type.md). No `Var`/`TyConApp` variant — a
+// generic is structurally unrepresentable at the typecheck→backend boundary.
+pub use concrete::{ConcreteType, NotConcrete};
 pub use check::{
     DisplayInfo, FieldInfo, MethodResolutions, MonoDefn, ResolvedCall, TraitDeclInfo, TypeDefInfo,
 };

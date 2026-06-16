@@ -10,6 +10,8 @@ status: open
 
 # The 0375 backend backstop is blocked on 0374 — the prelude compiles GENERIC bodies whose value positions carry sound, scheme-quantified free vars (bare `Type::Var` AND `Mixed`-ADT-with-free-var)
 
+> **SUBSUMED BY THE CONCRETE-BOUNDARY-TYPE ARC (S84 user ruling 2026-06-16; /arch design `design/arch/concrete-boundary-type.md`; tracked by FIXME 0383).** This FIXME's "Proposed resolution" — *"a slot-less `Polymorphic` generic def's body is NOT emitted to codegen at all … compiled only as concrete monomorphised instances"* — IS Phase 4 of that arc (generic-body-codegen elimination). The 317× fire this FIXME records is the **critical finding** that forced the re-direction: it proved the compiler does uniform-word generic-body compilation, not per-instance mono, for unconstrained generics. Under the arc the backend backstop is **not re-armed — it is DELETED** (Phase 3 makes `classify` take `ConcreteType`, so a `Type::Var` is *inexpressible* at the seam; there is nothing to backstop). The interim disposition below — **backstop stays DEFERRED, the position-complete §3.11.1 typecheck check carries the soundness alone** — remains CORRECT until the arc's Phase 3/4 land. This FIXME closes when Phase 4 lands (generic bodies no longer emitted). Do NOT re-arm the backstop per the §"Proposed resolution" re-arm recipe below — that recipe is superseded; the arc deletes the backstop instead.
+
 ## Issue
 
 While landing the S84 Wave 2 belt-and-braces backend backstop (the widened
