@@ -627,6 +627,16 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     /// primitives, special forms, `Overloaded` base entries whose mangled
     /// variants carry the bodies, and constrained-fn templates whose mono
     /// specialisations carry the bodies).
+    ///
+    /// **`Polymorphic` is a mono target, NOT skipped like `Constrained`
+    /// (S84, FIXME 0377).** A generic-unconstrained def
+    /// ([`UserFnState::Polymorphic`]) is exactly the thing the monomorphisation
+    /// pass must specialise at every reachable concrete use, so — unlike
+    /// `Constrained`, whose mono instances carry the bodies and whose template is
+    /// excluded here — a `Polymorphic` entry with `ast: Some(_)` is **included**
+    /// (the filter excludes only `Overloaded` and `Constrained`). It is treated
+    /// the same way a pure-parametric `Concrete`-with-`ast` was before the
+    /// slot-gate correction moved that species into its own slot-less arm.
     pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> {
         self.symbols.iter().filter(|(_, entry)| match entry {
             ModuleEntry::Def { ast: Some(_), kind, .. } => !matches!(
@@ -1175,7 +1185,9 @@ impl<C: CodeStore> ModuleEntry<C> {
     /// no longer an illegal `got_slot`+template pairing to "read around" (it
     /// is unconstructable). A constrained-fn template is
     /// `UserFnState::Constrained(_)`, which carries no slot, so it answers
-    /// `None` structurally; the Pass-1 interim `UserFnState::NotDetermined`
+    /// `None` structurally; the determined-parametric `UserFnState::Polymorphic`
+    /// (S84 — non-concrete-but-unconstrained generic) likewise carries no slot
+    /// and answers `None`; the Pass-1 interim `UserFnState::NotDetermined`
     /// also answers `None` (nothing may call an as-yet-undetermined fn). This
     /// retired the S82 stopgap's `mark_constrained_template()` flip-and-clear
     /// sole-writer and `assert_well_formed()` phantom-slot guard — there is no
@@ -1195,8 +1207,8 @@ impl<C: CodeStore> ModuleEntry<C> {
                 DefKind::Primitive { got_slot } => Some(*got_slot),
                 DefKind::Constructor { got_slot, .. } => Some(*got_slot),
                 DefKind::PlatformEffect { got_slot, .. } => Some(*got_slot),
-                // NotDetermined / Constrained user fns, Macro parent,
-                // PrimitiveExtern, Overloaded base — no slot.
+                // NotDetermined / Constrained / Polymorphic user fns, Macro
+                // parent, PrimitiveExtern, Overloaded base — no slot.
                 _ => None,
             },
             _ => None,
@@ -1677,7 +1689,19 @@ pub enum DefKind {
 /// stopgap (`callable_got_slot()` reading around a flat `got_slot` field +
 /// `mark_constrained_template()` sole-writer) is retired by this shape.
 ///
-/// **The three legal states**, and where each is constructed:
+/// **The S84 generalisation (FIXME 0377, user-ratified 2026-06-16).** The
+/// correlated invariant the sum type encodes is the GENERAL one: **a def has a
+/// GOT slot ⟺ its type is fully concrete (`Type::is_concrete()` — no
+/// `Type::Var`), NOT merely ⟺ it is unconstrained.** A constrained template is
+/// one species of non-concrete def (vars pinned per-call by trait dictionaries);
+/// a plain generic def (`id : ∀a. a→a`, a `(Box a)`-result HOF) is *equally*
+/// non-concrete and *equally* slot-less, yet carries no trait constraints. The
+/// slot-eligibility gate is therefore `is_concrete()`, not
+/// `constraints.is_empty()`; the determined-but-non-concrete unconstrained def
+/// gets its own slot-less [`UserFnState::Polymorphic`] arm so that
+/// `Concrete { got_slot } ∧ non-concrete-type` stays unconstructable.
+///
+/// **The four legal states**, and where each is constructed:
 ///
 /// 1. [`UserFnState::NotDetermined`] — the **Pass-1 interim**. Typecheck
 ///    `register_defn_signature` registers a user fn's scheme/signature *before*
@@ -1697,6 +1721,12 @@ pub enum DefKind {
 ///    Carries the [`ConstrainedFn`] body and **no slot**: a template is never
 ///    directly callable (only its mono variants, which are `Concrete` entries,
 ///    are), so it structurally cannot hold a callable address.
+/// 4. [`UserFnState::Polymorphic`] — a **determined generic / parametric
+///    template** (S84). Carries the [`ParametricFn`] body and **no slot**:
+///    non-concrete (residual `Type::Var`) but trait-unconstrained. Slot-less for
+///    the same reason as `Constrained` (only its concrete mono instances are
+///    callable); a *sibling* to it, differing only in *why* the vars are
+///    unpinned (no constraints vs trait dictionaries).
 ///
 /// **Timing-wall resolution (gating decision 3): defer, don't mark.** The slot
 /// is allocated at the *determination* point (constructing `Concrete`), not in
@@ -1719,6 +1749,38 @@ pub enum UserFnState {
     /// Determined constrained-fn template — slot-less. Only the monomorphised
     /// variants (`Concrete` entries under mangled names) are callable.
     Constrained(Box<ConstrainedFn>),
+    /// Determined **generic / parametric** template — slot-less. A def whose
+    /// finalised type is **non-concrete** (carries a `Type::Var`) yet has **no
+    /// trait constraints** (`id : ∀a. a→a`, or a HOF whose result is `(Box a)`).
+    ///
+    /// **The S84 generalisation of Principle 20 (user-ratified 2026-06-16).** A
+    /// GOT slot is the value-capability of a CONCRETE callable: a def has a slot
+    /// ⟺ its type is fully concrete (`Type::is_concrete()`). Both `Constrained`
+    /// and `Polymorphic` are slot-less; they differ only in *why* their vars are
+    /// unpinned — trait dictionaries (`Constrained`) vs nothing at all
+    /// (`Polymorphic`). Reusing `NotDetermined` (which means "Pass-2 has not run")
+    /// would conflate interim with determined; reusing `Constrained` would force
+    /// a misleading empty-constraint `ConstrainedFn` and collapse the *why*
+    /// distinction BC §7 + Principle 20 make explicit. So a third determined,
+    /// slot-less state.
+    ///
+    /// **Slot-less ⇒ a mono target, NOT skipped like `Constrained`.** Only the
+    /// monomorphised concrete instances (`id$Int`, `(Box Int)`) are slotted and
+    /// callable. The instance-minting pass (`pass4_monomorphise`) MUST specialise
+    /// a `Polymorphic` def at every reachable concrete use — so the eligible-for-
+    /// mono filter ([`SymbolTable::defined_symbols`]) treats `Polymorphic` as a
+    /// **mono target**, unlike `Constrained` (whose mono instances carry the
+    /// bodies). A `Polymorphic` def that is never instantiated concretely is dead
+    /// for codegen and correctly emits no instance.
+    ///
+    /// Carries a [`ParametricFn`] body — the `DefnVariant` + `Scheme`
+    /// `monomorphise_call` needs to re-check the body at concrete types,
+    /// mirroring [`ConstrainedFn`] minus the trait-dictionary semantics.
+    /// `callable_got_slot()` answers `None` for this arm structurally (same
+    /// fall-through as `Constrained` / `NotDetermined`). See
+    /// `design/arch/principles/20-model-invariants-by-representation.md`,
+    /// `design/typecheck/monomorphisation.md` §2.3, and BC §7.
+    Polymorphic(Box<ParametricFn>),
 }
 
 // `PrimitiveKind` enum retired (S69 Submission 36).
@@ -1787,6 +1849,32 @@ pub struct OverloadVariant {
 /// pointer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstrainedFn {
+    pub variant: DefnVariant,
+    pub scheme: Scheme,
+}
+
+/// A **generic / parametric** (trait-unconstrained but non-concrete) function
+/// awaiting monomorphisation (S84, FIXME 0377).
+///
+/// The body payload of [`UserFnState::Polymorphic`]. Mirrors [`ConstrainedFn`]'s
+/// shape — `variant: DefnVariant` (the single-signature body) + `scheme: Scheme`
+/// (the generalised polymorphic type) — because the monomorphisation core
+/// (`cranelisp-typecheck::traits::monomorphise_call`) reads exactly those two
+/// fields to instantiate at concrete arg-types, re-check the body in the right
+/// scope, and register a concrete (slotted) mono instance.
+///
+/// **Why a distinct struct from `ConstrainedFn` rather than a reuse.** A
+/// separate, accurately-named payload keeps the *why*-distinction legible at
+/// every reader: `ConstrainedFn` names a trait-bounded body whose vars are
+/// pinned per-call by dictionaries; `ParametricFn` names a body whose vars carry
+/// **no** trait bounds at all (`scheme.constraints` is empty). Reusing the
+/// `Constrained`-named struct as the `Polymorphic` payload would re-conflate the
+/// distinction the new variant exists to make explicit (Principle 20; BC §7).
+/// The single-variant invariant `ConstrainedFn` documents holds here for the
+/// same reason: multi-sig defns are filtered before this construction path
+/// (`program.rs` `collect_defns`), so `variant` is the one `DefnVariant`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParametricFn {
     pub variant: DefnVariant,
     pub scheme: Scheme,
 }

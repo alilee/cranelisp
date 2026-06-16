@@ -54,7 +54,12 @@
 //!   constrained-fn template ([`ModuleEntry::is_constrained_template`]) is
 //!   [`UserFnState::Constrained`], which carries no slot, so it
 //!   *structurally cannot* hold a callable address — the once-illegal
-//!   pairing is unconstructable. The **callable runtime address** is read
+//!   pairing is unconstructable. **Generalised in S84 (FIXME 0377):** a slot
+//!   ⟺ the def's type is fully concrete (`Type::is_concrete()`), not merely
+//!   ⟺ it is unconstrained; a determined-but-non-concrete generic def
+//!   ([`UserFnState::Polymorphic`], carrying [`ParametricFn`]) is *also*
+//!   slot-less — only its concrete mono instances are callable. The
+//!   **callable runtime address** is read
 //!   through [`ModuleEntry::callable_got_slot`] (the single read-through
 //!   point; trivial since the reshape). The S82 stopgap
 //!   (`mark_constrained_template()` flip-and-clear sole-writer +
@@ -235,7 +240,7 @@ pub use scheduling::SchedulingClass;
 pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
-    ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, PlatformSpec,
+    ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, ParametricFn, PlatformSpec,
     StructuralDeclEntry, SymbolTable, SymbolTables, UserFnState, ensure_module_exists, for_each_in_module,
     get_impls_for_type_chain, get_implementing_types_chain, got_data_symbol_name, install_module,
     lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,

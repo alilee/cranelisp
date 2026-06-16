@@ -548,6 +548,7 @@ pub cranelisp_types::UserFnState::Concrete
 pub cranelisp_types::UserFnState::Concrete::got_slot: usize
 pub cranelisp_types::UserFnState::Constrained(alloc::boxed::Box<cranelisp_types::ConstrainedFn>)
 pub cranelisp_types::UserFnState::NotDetermined
+pub cranelisp_types::UserFnState::Polymorphic(alloc::boxed::Box<cranelisp_types::ParametricFn>)
 impl core::marker::Freeze for cranelisp_types::UserFnState
 impl core::marker::Send for cranelisp_types::UserFnState
 impl core::marker::Sync for cranelisp_types::UserFnState
@@ -1072,6 +1073,16 @@ impl core::marker::Unpin for cranelisp_types::OverloadVariant
 impl core::marker::UnsafeUnpin for cranelisp_types::OverloadVariant
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::OverloadVariant
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::OverloadVariant
+pub struct cranelisp_types::ParametricFn
+pub cranelisp_types::ParametricFn::scheme: cranelisp_types::Scheme
+pub cranelisp_types::ParametricFn::variant: cranelisp_types::DefnVariant
+impl core::marker::Freeze for cranelisp_types::ParametricFn
+impl core::marker::Send for cranelisp_types::ParametricFn
+impl core::marker::Sync for cranelisp_types::ParametricFn
+impl core::marker::Unpin for cranelisp_types::ParametricFn
+impl core::marker::UnsafeUnpin for cranelisp_types::ParametricFn
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ParametricFn
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ParametricFn
 pub struct cranelisp_types::PlatformSpec
 pub cranelisp_types::PlatformSpec::name: alloc::string::String
 pub cranelisp_types::PlatformSpec::span: cranelisp_types::Span
