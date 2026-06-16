@@ -4,7 +4,10 @@ Owner: `/design` (typecheck triad). Subordinate to `design/typecheck/typecheck.m
 Companion: `design/typecheck/traits.md` §7 (the as-built batch pipeline this doc
 *completes*, not replaces). Sprint 84 Cluster A — **re-grounded mid-Phase-5 on the
 structural slot-gate-first model** (user architectural ruling 2026-06-16; resolves
-FIXME 0376).
+FIXME 0376). **Wave 2 — §4 re-grounded again to make the §3.11.1 ambiguity check
+POSITION-COMPLETE and built on the shared `Type::is_representation_undetermined()`
+predicate** (belt-and-braces ruling 2026-06-16; resolves FIXME 0380, closes the 0379
+positional hole).
 
 Contract this designs against:
 
@@ -65,12 +68,16 @@ primacy**, and a leak was pinpointed:
   longer enumerates a list of shapes; it follows reachability and the representation
   tells it what is still missing (anything reached but slot-less-and-non-concrete).
 
-- **The ambiguity check is demoted to a backstop.** It still fires — for a genuinely
-  unconstrained-AND-unpinnable top-level var — but it is no longer *the mechanism*
-  that prevents the SIGSEGV (the slot gate is). Likewise the `contains_var()`
-  pre-codegen debug-assert and 0375's `classify(Type::Var)→unreachable!` are
-  backstops over a door already shut upstream (Principle 18 — the structural form is
-  strictly stronger than the assert).
+- **The ambiguity check is demoted to a backstop.** It still fires — now
+  **position-complete** (every codegen-reaching value position, §4.2) and built on the
+  shared `Type::is_representation_undetermined()` predicate (§4.3) — for a value whose
+  type is representation-undetermined at codegen and that no reachable instantiation
+  pins. But it is no longer *the mechanism* that prevents the SIGSEGV (the slot gate
+  is). Likewise the `contains_var()` pre-codegen debug-assert and 0375's WIDENED
+  RC-site backstop (§4.5) are backstops over a door already shut upstream (Principle 18
+  — the structural form is strictly stronger than the assert). The typecheck check and
+  the backend backstop share ONE predicate, so they agree by construction (belt-and-
+  braces, FIXME 0379/0380).
 
 - **Scope refinement (Wave 0).** The genuine residual mono gap is **narrow**: the
   `(Box a)`-field-carrying-`Type::Var`-through-HOF instance. /arch + /qa confirmed the
@@ -113,10 +120,14 @@ representation rather than from a downstream check — and it is *total by
 construction* (Principle 18), not contingent on the ambiguity check catching every
 case.
 
-The `Type::contains_var()` debug-assert before codegen and 0375's
-`classify(Type::Var)→unreachable!` are the **backstops** — seam-local tripwires that
-turn any *future* regression of the slot gate into an immediate, located panic
-rather than a silent use-after-free. They are not the prevention mechanism.
+The `Type::contains_var()` debug-assert before codegen and 0375's RC-site backstop
+(WIDENED S84 Wave 2 — `panic iff classify == Mixed && ty.is_representation_undetermined()`,
+§4.5) are the **backstops** — seam-local tripwires that turn any *future* regression
+of the slot gate into an immediate, located panic rather than a silent use-after-free.
+They are not the prevention mechanism. The backend backstop shares the same
+`Type::is_representation_undetermined()` predicate the typecheck position-complete
+ambiguity check (§4) uses, so the two sides agree by construction (Principle 7,
+Principle 18; FIXME 0379/0380).
 
 ---
 
@@ -370,7 +381,7 @@ not. **The one `cranelisp-types` shape change is the `Polymorphic` *input* arm (
 
 ---
 
-## 4. The ambiguity check (0373 ii) — SECONDARY backstop
+## 4. The §3.11.1 ambiguity check (0373 ii) — SECONDARY backstop, POSITION-COMPLETE, predicate-shared
 
 ### 4.1 Role — demoted from mechanism to backstop
 
@@ -378,17 +389,109 @@ The Phase-3 doc made the `contains_var()` ambiguity check the *primary* concrete
 enforcement. **It is now a secondary backstop.** The slot gate (§2) is what makes a
 residual `Type::Var` at codegen structurally impossible; the systematic mono (§3) is
 what makes the slot-less set genuinely the never-used-as-a-value set. The ambiguity
-check catches only the residue both leave: a **genuinely unconstrained-AND-unpinnable
-top-level var** — a var that is free at a top-level root, not a quantifiable scheme
-variable, and that *no reachable instantiation pins*. The canonical shape: an
-unannotated empty-collection literal at the top level with no use that pins the
-element type.
+check catches only the residue both leave: a value whose type is
+**representation-undetermined at a codegen-reaching position** — carrying a free
+`Type::Var` in a position where the machine representation depends on it, that *no
+reachable instantiation pins*. Two canonical shapes: an unannotated empty-collection
+literal at the top level with no use that pins the element type; and a `Mixed`-shaped
+ADT (`(Option a)`, `(Box a)`) carrying a free var reaching a value position.
 
 It is a real, retained check — it produces the user-facing diagnostic for an
-ambiguous program — but it is no longer the thing standing between a `Type::Var` and
-the SIGSEGV. That role belongs to the representation.
+ambiguous program — but it is no longer the thing standing between a
+representation-undetermined value and the SIGSEGV. That role belongs to the
+representation (the slot gate) plus the belt-and-braces backend backstop (§4.5).
 
-### 4.2 Where it fires (unchanged seam, demoted prose)
+### 4.2 Position-complete traversal — EVERY codegen-reaching value position
+
+**Re-grounding (FIXME 0380, belt-and-braces ruling 2026-06-16).** The Phase-3/0376
+prose framed the check as a **root-type-only** / `let`-binding-only scan. /review
+(FIXME 0379) found that framing **positionally incomplete**: a `Mixed`-shaped ADT
+carrying a free `Type::Var` reaches codegen through *non-`let`* value positions — a
+match scrutinee (`(Pure (match (id Non) …))`), a fn-call arg, a vec element
+(`(first-tag [(id Non)])`), a ctor field, an if-branch, a `ParBind` binding — and is
+**reached-but-not-checked** by the `let`-only scanner. (The backend
+`classify(Type::Var)→unreachable!` backstop cannot catch it either — a `Mixed` ADT
+routes to `classify_adt` by ctor shape, and the free var rides invisibly in the
+unused args, never reaching the `Type::Var` arm. So both guards miss it:
+exit-0-by-luck-of-shape, one data-ctor-field deref from a `<1024` use-after-free.)
+
+The corrected check is **position-complete**: it fires the per-node verdict on the
+resolved type at **every codegen-reaching value position** the recursion already
+visits — not only `let` bindings.
+
+**The recursion was already complete; only the per-node *check* was `let`-gated.**
+`find_ambiguous_let_binding` (`program.rs:1522`) already recurses into all children
+via `for_each_child_expr` (`program.rs:52`); it just only *applied the verdict* on
+`Expr::Let { bindings }` binding values. The correction lifts the verdict out of the
+`Expr::Let`-only guard and applies it at every value-producing child:
+
+| Value position | `Expr` node | Today | Corrected |
+|---|---|---|---|
+| `let` binding value | `Expr::Let { bindings }` | checked | checked (unchanged) |
+| fn-call argument | `Expr::Apply { args }` | recursed-not-checked | **checked** |
+| match scrutinee + arm bodies | `Expr::Match { scrutinee, arms }` | recursed-not-checked | **checked** |
+| `if` branches | `Expr::If { then, else_ }` | recursed-not-checked | **checked** |
+| vec literal elements | `Expr::VecLit { elements }` | recursed-not-checked | **checked** |
+| constructor fields | `Expr::ConstrADT { args }` | recursed-not-checked | **checked** |
+| parallel-let binding | `Expr::ParBind { bindings }` | recursed-not-checked (the check matched `Expr::Let`, not `ParBind`) | **checked** |
+| nested `let` / return positions | (any) | recursed-not-checked | **checked** |
+
+**Functions to add/extend (`crates/cranelisp-typecheck/src/program.rs`).** /design
+names the seam; /dev lands it:
+
+- **Rename + generalise `find_ambiguous_let_binding` → `find_ambiguous_value_position`**
+  (or keep the name and widen the body — /dev's call; the design intent is that it is
+  **no longer `let`-gated**). The per-node verdict is applied to the resolved type of
+  *every* value-producing child `for_each_child_expr` visits, by reading each child's
+  type from `child.inferred_type()` / `state.expr_types.get(&child.span())` resolved
+  through `state.subst` (the exact mechanism the `let`-leg already uses,
+  `program.rs:1535`–`1543`).
+- **`find_ambiguous_top_level_form`** (`program.rs:1503`) is unchanged in shape — it
+  walks each `defn.variants[].body` through the now-position-complete scanner, so the
+  generalisation is transparent to it.
+- **The local heuristic `is_ambiguous_codegen_reaching_type` (`program.rs:1584`) is
+  RETIRED** (§4.3) — its body is replaced by a call to the shared predicate.
+
+### 4.3 Shared predicate — `Type::is_representation_undetermined()`, NOT a local heuristic
+
+The per-node verdict — *"is this value representation-undetermined at codegen?"* —
+comes from the **shared `cranelisp-types` predicate
+`Type::is_representation_undetermined()`** (`crates/cranelisp-types/src/types.rs`,
+landed S84 Wave 2 by /arch, commit `ec219e2`), **not** a typecheck-local heuristic.
+
+The old local `is_ambiguous_codegen_reaching_type` (`program.rs:1584`) — the
+`Vec`-excluding, ADT-arg-free-var inline approximation — is **retired**: its body is
+replaced by a call to the shared predicate. The two crates (typecheck error +
+backend panic) thereby decide "dangerous" by the **same predicate** and cannot drift
+(Principle 7 single-source-of-truth; Principle 18 enforce-invariants-structurally;
+Principle 20 model-invariants-by-representation). The anti-drift rationale is the
+whole point of the belt-and-braces ruling: a typecheck-side heuristic that
+approximates the backend `Mixed` verdict but cannot *call* it WILL diverge (it did —
+/review found it both too narrow on the dangerous direction and `Vec`-keyed on a bare
+string coupled across the crate boundary). A single predicate consumed by both sides
+makes "the typecheck error and the backend panic agree" true **by construction**, not
+by parallel maintenance.
+
+The predicate's verdict (per the `cranelisp-types` rustdoc, the source of truth):
+
+- **TRUE** for a bare `Type::Var`; a `Type::TyConApp` (HKT head var); and a non-`Vec`
+  `Type::ADT` carrying a free `Type::Var` anywhere in its args (`(Option a)`,
+  `(Box a)` — the `Mixed`-family case the bare-`Var` panic missed, the 0379 hole).
+- **FALSE** for `Type::Fn` (always a heap closure — RC-uniform), `(Vec a)`
+  (uniformly heap, RC element-type-independent), any fully concrete type, and a
+  `Type::ADT` with **no** free var (the legitimate type-known nullary-tag `Mixed`
+  case).
+
+**On the typecheck side the predicate is DIRECTLY the verdict** — there is no
+`Mixed`-gating step here (that gate is the *backend's* half, §4.5). Under full
+monomorphisation-from-roots (§3), a *genuinely free* var in a codegen-reaching value
+position means **no root pins it** → the program is ambiguous (0373(ii)) regardless of
+the value's heap category, so the conservative `true` is a **correct rejection, never
+a false positive**. (The `Vec`/`Fn` FALSE arms are not false-negatives either: those
+are structurally uniformly-heap, RC element-type-independent — sound to leave
+polymorphic.)
+
+### 4.4 Where it fires (the seam, unchanged ordering)
 
 **At the post-inference generalisation/finalisation boundary of each top-level form,
 BEFORE `pass4_monomorphise` runs.** Inside `finalize_check_result_inner`
@@ -396,20 +499,57 @@ BEFORE `pass4_monomorphise` runs.** Inside `finalize_check_result_inner`
 and before the Pass-4 call (`program.rs:1438`). Ordering rationale unchanged:
 generalisation must have run (to distinguish a quantified scheme var — fine — from a
 free-at-root un-generaliseable var — ambiguous); it must run before Pass 4 so an
-ambiguous form is rejected rather than seeding an unpinnable worklist instance.
+ambiguous form is rejected rather than seeding an unpinnable worklist instance. The
+*site* is unchanged by the re-grounding; only the *coverage at that site* widens from
+`let`-binding values to every value position.
 
 > **Generic-defn nuance (retained).** A *generic* top-level defn legitimately has
 > `Type::Var`s in its finalised scheme (`type_vars` non-empty) — that is the point of
 > a polymorphic definition, and it is `Polymorphic` (slot-less, §2) and NOT compiled
-> on its own (§3.4). The ambiguity check fires only on a var **free at the root and
-> not quantified into the scheme** — a var that survives generalisation *unquantified*
-> because it is neither bound by a use-site instantiation nor closed over by the
-> scheme. A var quantified into the scheme is fine. **The slot-less `Polymorphic`
-> state and the ambiguity error are NOT the same thing**: `Polymorphic` is the
-> normal, sound state of a usable generic def (its vars are quantified, pinned per
-> use); the ambiguity error is the *unusable* case (a free var no use can pin).
+> on its own (§3.4). The position-complete check fires only on a var **free at the
+> root and not quantified into the scheme** — a var that survives generalisation
+> *unquantified* because it is neither bound by a use-site instantiation nor closed
+> over by the scheme. A var quantified into the scheme is fine — and a value position
+> whose resolved type still mentions a quantified scheme var inside the generic
+> template's *own* body is sound (it is pinned at each concrete instantiation by mono;
+> the check reads the *resolved-through-`state.subst`* type, so within a concrete mono
+> instance the var is already substituted away). **The slot-less `Polymorphic` state
+> and the ambiguity error are NOT the same thing**: `Polymorphic` is the normal, sound
+> state of a usable generic def (its vars are quantified, pinned per use); the
+> ambiguity error is the *unusable* case (a free var no use can pin).
 
-### 4.3 Error variant + diagnostic wording (unchanged)
+### 4.5 The belt-and-braces split — typecheck diagnostic + backend backstop
+
+The position-complete check is **one of two position-complete sides** that, together,
+make "no representation-undetermined value reaches an RC site" **total** (BC §3
+invariant 9, belt-and-braces ruling 2026-06-16):
+
+- **Typecheck side (this check) — the user-facing diagnostic.** A clean type error
+  with a source location at the offending value position. It is the program-author's
+  signal: "this value is ambiguous; pin it." Position-complete across every value
+  position `for_each_child_expr` visits.
+- **Backend side (FIXME 0375, /design(backend)'s `ring2-rc.md` §1.6) — the
+  position-complete backstop.** The 0375 panic is WIDENED to trip on **any** type
+  satisfying the shared predicate at an RC site, gated behind the backend's own
+  `classify == Mixed` verdict: `panic iff classify(ty, tables) == Mixed &&
+  ty.is_representation_undetermined()`. This covers both the bare `Type::Var` AND the
+  `Mixed`-ADT-with-free-var family the as-specified `classify(Type::Var)→unreachable!`
+  missed. The `Mixed` gate excludes a table-determined `NeverHeap`/`AlwaysHeap` ADT
+  carrying a free var (so the backend never panics on a representation-*determined*
+  ADT). Codegen visits every value, so the backstop is position-complete by
+  construction — the ground-truth tripwire that turns any future gate/check regression
+  into a located compiler-bug panic, not a silent UAF (Principle 18).
+
+Both sides decide "dangerous" by the **same** `Type::is_representation_undetermined()`
+predicate, so they cannot drift. The three-layer story (slot gate primary §2 →
+typecheck position-complete check §4 → backend RC backstop §4.5, all sharing the
+predicate) is the belt-and-braces statement of BC §3 invariant 9. The
+position-completeness is what makes the *secondary* typecheck backstop actually total:
+a non-`let`-position `Mixed`-ADT-with-free-var that the slot gate did not catch
+upstream is rejected here cleanly, before it reaches the backend's own
+position-complete backstop.
+
+### 4.6 Error variant + diagnostic wording (unchanged)
 
 - **Today (this sprint):** raise `CranelispError::TypeError { message, location }`
   (the existing variant typecheck constructs, `program.rs:2032`/`:2041`). No new
@@ -558,13 +698,32 @@ distinct slotted instances. Names: the existing 0344/0349 tests +
 Seam: `check_via_forms` over a top-level form whose finalised type leaves an
 un-generalisable free `Type::Var` (unannotated empty-collection literal at top level,
 no pinning use), asserting `Err(CranelispError::TypeError { message, .. })` matching
-the §4.3 wording (post-0098: `Err(CheckError::AmbiguousType { .. })`). **NEGATIVE
+the §4.6 wording (post-0098: `Err(CheckError::AmbiguousType { .. })`). **NEGATIVE
 companion:** a generic top-level defn (`(defn id [x] x)`) is `Polymorphic`, NOT an
 ambiguity error — its scheme vars are quantified, not free-at-root. This negative is
 the guard distinguishing "quantified scheme variable / sound `Polymorphic`" from
 "un-generalisable free root var / ambiguous". Names:
 `monomorphisation::tests::unconstrained_toplevel_var_is_ambiguous` +
 `…::generic_defn_is_polymorphic_not_ambiguous`.
+
+**(e) Position-complete: a `Mixed`-ADT-with-free-var in a NON-`let` value position is
+rejected (FIXME 0379/0380 hole closed).** This is the unit seam /dev should add
+alongside the retirement of the `let`-only gate, paired with /qa's position-complete
+e2e negative guards. Seam: `check_via_forms` over a bare-prelude cluster with an inline
+`Mixed` ADT (`(deftype (Opt a) (Non []) (Som [:a v]))`) + `(defn id [x] x)`, with the
+ambiguous value `(id Non)` placed in each non-`let` codegen-reaching position in turn
+— **match scrutinee** (`(Pure (match (id Non) [Non 0 (Som v) 1]))`), **fn-call arg**,
+**vec element** (`(first-tag [(id Non)])`), **ctor field**, **if-branch** — and assert
+EACH yields the ambiguity error (`Err(CranelispError::TypeError { message, location })`
+with the offending value's span), via the shared `Type::is_representation_undetermined()`
+predicate firing at that position. **The `let`-position case (already caught today)
+stays an asserted positive control.** Names:
+`monomorphisation::tests::mixed_adt_free_var_in_match_scrutinee_is_ambiguous` +
+`…_in_call_arg_…` + `…_in_vec_element_…` + `…_in_ctor_field_…` + `…_in_if_branch_…`.
+The e2e counterparts are /qa's position-complete negative guards (an unpinned
+`Mixed`-ADT-free-var in each non-`let` position must error rather than compile-and-run
+exit-0) — authored this wave, coordinated. This (e) seam + /qa's e2e are the regression
+guard that the position-complete traversal stays total against future refactors.
 
 The e2e tier (cross-mode SIGSEGV-class repros + the all-modes-concreteness-equivalence
 guard) is /qa's Wave-0 sprint-wide authoring per `sprints/SPRINT.md` §Waves — out of
@@ -592,12 +751,21 @@ this doc's seam scope, noted for coordination.
   pipeline this doc completes; the termination Invariant (§8) lands there with the code.
 - `design/arch/principles/20-model-invariants-by-representation.md` — the S84
   generalisation (slot ⟺ `is_concrete()`); the spine of §1–§2.
-- `design/arch/bounded-contexts.md` §2 (structural-gate-primary) + §7 ("Callability
-  is structural") + §3 invariant 9.
+- `design/arch/bounded-contexts.md` §2 (structural-gate-primary + position-complete
+  note) + §7 ("Callability is structural") + §3 invariant 9 (belt-and-braces: shared
+  predicate + typecheck position-complete check + widened backend backstop).
 - `design/arch/fixmes/0374-…` (re-shaped — corrected gate + systematic mono together),
-  `0375-…` (backend assert as backstop), `0373-…` (rank-1 HM + ambiguity rule).
+  `0375-…` (backend assert as backstop, WIDENED), `0373-…` (rank-1 HM + ambiguity
+  rule), `0379-…` (the positional hole) + `0380-…` (this §4 re-ground).
+- `design/backend/ring2-rc.md` §1.6 — the parallel backend grounding for the WIDENED
+  0375 RC-site backstop (the other half of the belt-and-braces split, §4.5).
 - `crates/cranelisp-types/src/types.rs` — `Type::is_concrete()` (gate predicate) +
-  `Type::contains_var()` (debug-tripwire backstop).
+  `Type::is_representation_undetermined()` (the SHARED ambiguity/backstop predicate,
+  §4.3) + `Type::contains_var()` (debug-tripwire backstop).
+- `crates/cranelisp-typecheck/src/program.rs` — `find_ambiguous_top_level_form`
+  (`:1503`) + the position-complete value-position scanner (was
+  `find_ambiguous_let_binding` `:1522`); the retired local heuristic
+  `is_ambiguous_codegen_reaching_type` (`:1584`).
 - `crates/cranelisp-types/src/module.rs:1710` — `UserFnState` (the `Polymorphic` arm
   lands here, /arch-owned, §6).
 - `crates/cranelisp-typecheck/src/{program,traits}.rs` — the gate sites (§2.2) + the
