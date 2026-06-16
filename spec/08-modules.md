@@ -645,6 +645,8 @@ When two **distinct terminal sources** (per the terminal-source comparison in §
 
 [Tested+Neg tests/modules::glob_and_reexport_of_same_terminal_dedup, tests/modules::distinct_terminal_overlap_collides]
 
+**Duplicate field-name accessors are a source of bare-name ambiguity governed by this rule.** When two type definitions in the same module generate accessors with the same field name (§5.2.6), the bare accessor is poisoned exactly as any other distinct-terminal collision — using it is a compile-time error listing the qualified alternatives; the field stays reachable via `match` (§6) and module-qualification (§8.5.1).
+
 ```clojure
 ;; If both Display and Debug define a 'show' method:
 (show x)              ; error: ambiguous bare name 'show'

@@ -184,7 +184,7 @@ An optional docstring MAY appear after the type head (before the body) and after
   (Some "Wraps a present value" [:a val]))
 ```
 
-### 5.2.6 Generated Accessors [Tested tests/ring1::adt_product_get_y]
+### 5.2.6 Generated Accessors [Tested tests/ring1::adt_product_get_y] [S83 — tests/spec_05_definitions::accessor_cross_type_duplicate_field_name]
 
 For each named field in a type definition, an accessor function is automatically generated in the enclosing scope. The accessor's name is the field name.
 
@@ -210,6 +210,16 @@ For each named field in a type definition, an accessor function is automatically
 ```
 
 Accessor functions are first-class values and can be passed as arguments or bound to variables.
+
+**Duplicate field names in the same scope.** Two type definitions in the same module MAY use the same field name (e.g. `(deftype Box [:Int v])` and `(deftype Cup [:Int v])` both generate an accessor named `v`). When this happens, the bare accessor name is **ambiguous** (poisoned) and MUST be treated under the §8.6.5 bare-name ambiguity rule: any use of the bare accessor is a **compile-time error that lists the qualified alternatives**. The compiler MUST NOT silently fold the colliding accessors into a single argument-type-dispatched overload, and MUST NOT silently pick a winner — both are footgun-prone surprises that §8.6.5 exists to prevent.
+
+The field itself stays reachable:
+- via `match` (§6) — pattern destructuring is unaffected by accessor-name collision and is always available;
+- cross-module, via module-qualified names (§8.5.1) — `m/v` resolves directly, bypassing the ambiguity.
+
+A **planned extension** (see `design/arch/fixmes/0365-spec-type-member-accessor-qualification.md`) will extend the `Type.member` dotted syntax (§8.5.2) to also resolve field accessors — e.g. `Box.v` and `Cup.v` — giving a per-type accessor-qualification escape hatch that disambiguates same-module collisions directly. Until that lands, `match` and module-qualification are the means of reaching a poisoned field's value.
+
+This poisoning is scoped to the colliding name only: accessors whose names are **not** in collision remain unaffected and stay first-class values. An overloaded accessor name has no single first-class denotation (which is the coherence reason it cannot silently become an overload); a non-colliding accessor name still denotes exactly one function and remains passable as an argument or bound to a variable, as above.
 
 ### 5.2.7 Constructor Semantics [Tested tests/ring1::error_adt_constructor_wrong_arg_count, tests/ring1::error_adt_constructor_wrong_type]
 
