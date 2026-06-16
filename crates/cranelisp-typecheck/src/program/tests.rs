@@ -27,6 +27,23 @@
         }
     }
 
+    /// Seed specific-import edges for `names` from `source` into the fixture's
+    /// CURRENT module, mirroring `(import [source [a b]])`. See `seed_glob_import`.
+    fn seed_specific_import(tc: &mut TestFixture, source: &ModuleFullPath, names: &[&str]) {
+        for name in names {
+            tc.symbol_table_mut().insert(
+                Symbol::from(*name),
+                ModuleEntry::Import {
+                    source: FQSymbol {
+                        module: source.clone(),
+                        symbol: Symbol::from(*name),
+                    },
+                    visibility: Visibility::Public,
+                },
+            );
+        }
+    }
+
     /// Test helper: create an FQTypeName in the "test" module (used by tc_with_prims()).
     fn test_fqtn(name: &str) -> FQTypeName {
         FQTypeName::new(ModuleFullPath::from("test"), TypeName::from(name))
@@ -4449,6 +4466,209 @@
             }
             other => panic!("main scheme is not a function type: {other:?}"),
         }
+    }
+
+    /// Register a single-method trait `name` whose method `method` takes a
+    /// `Self`-typed param and returns `Int`, plus an `impl name for Int` whose
+    /// method body is `(add-i64 self self)` — into the fixture's CURRENT module.
+    /// Used by the cross-module mono test so an imported constrained fn's body
+    /// has a trait method to dispatch (FIXME 0355). `add-i64` is a Ring-0
+    /// primitive (`(Fn [Int Int] Int)`); applying it to `self` twice keeps the
+    /// impl body trivially `(Fn [Int] Int)`-typed.
+    fn register_int_returning_trait(tc: &mut TestFixture, name: &str, method: &str) {
+        let decl = TraitDecl {
+            name: TraitName::from(name),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from(method),
+                docstring: None,
+                params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
+                ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                    None,
+                    TypeName::from("Int"),
+                )),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl_self(&decl).unwrap();
+
+        let impl_ = TraitImpl {
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from(name)),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from(method),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![(Symbol::from("self"), None)],
+                    body: Expr::Apply {
+                        callee: Box::new(Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
+                        args: vec![
+                            Expr::var(Symbol::from("self"), Span::SYNTHETIC),
+                            Expr::var(Symbol::from("self"), Span::SYNTHETIC),
+                        ],
+                        span: Span::SYNTHETIC,
+                        resolved_call: None,
+                        inferred_type: None,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl_self(&impl_).unwrap();
+        tc.clear_transient_state();
+    }
+
+    // spec: spec/03-types.md §3.9 + spec/08-modules.md §8.6 — a constrained
+    //   (trait-bound) function DEFINED in an imported module and CALLED from
+    //   another module must produce a cross-module monomorphisation variant
+    //   whose body is re-checked in the DEFINING module's import context.
+    //
+    // FIXME 0355 (the feature half of the resolved 0354 SIGSEGV). Today the
+    //   call is cleanly rejected: `pass4_monomorphise` collects call sites only
+    //   for the cluster's OWN constrained defns, so an imported `cmp` (a
+    //   `ModuleEntry::Import` in the caller) is never seen → no `cmp$Int`
+    //   variant is created. This pins BOTH crux points at the typecheck seam:
+    //   (1) the imported constrained call site IS collected (a `cmp$Int` mono
+    //   entry appears in the CALLER's module), and (2) the mono body re-checks
+    //   in the DEFINING module's scope — its inner `show` resolves to `helper`'s
+    //   `Display.show$Int` impl, NOT a caller-scope `no impl of Display`
+    //   error (which is exactly the wall 0354's isolation hit). The companion
+    //   e2e `tests/spec_07_traits.rs::cross_module_stacked_trait_bound_call_runs_to_clean_exit`
+    //   upgrades to "runs to exit 2" once /backend wires the GOT.
+    #[test]
+    fn cross_module_imported_constrained_fn_monomorphises_in_defining_scope() {
+        let mut tc = tc_with_prims();
+        let helper = ModuleFullPath::from("helper");
+        let caller = ModuleFullPath::from("caller");
+
+        // --- Build the DEFINING module `helper` --------------------------------
+        // A trait `Display` (method `show`: `(Fn [Self] Int)`) + an Int impl, and
+        // a constrained fn `cmp` whose body dispatches the trait method:
+        //   (defn cmp [:Display a] (show a))
+        // `cmp` generalizes to `forall a where Display a. (Fn [a] Int)` — a
+        // genuine constrained `Def` living in `helper`.
+        tc.set_current_module(helper.clone());
+        // `helper` needs the primitives (`int-id`, used by the impl body) in scope.
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        register_int_returning_trait(&mut tc, "Display", "show");
+
+        let cmp = Defn {
+            name: Symbol::from("cmp"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(
+                    Symbol::from("a"),
+                    Some(TypeExpr::Bounds(vec![cranelisp_types::TraitRef::new(
+                        None,
+                        TraitName::from("Display"),
+                    )])),
+                )],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::var(Symbol::from("show"), Span::new(20, 24))),
+                    args: vec![Expr::var(Symbol::from("a"), Span::new(25, 26))],
+                    span: Span::new(19, 27),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::new(0, 28),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 28),
+        };
+        tc.check_program_self(&[TopLevel::Defn(cmp)])
+            .expect("constrained `cmp` must type-check in its defining module");
+
+        // Sanity: `cmp` is registered as a CONSTRAINED UserFn in `helper`.
+        match tc.modules.get(&helper).unwrap().get("cmp") {
+            Some(ModuleEntry::Def { kind, .. }) => assert!(
+                matches!(
+                    kind.as_ref(),
+                    DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                ),
+                "cmp must be a constrained UserFn in `helper`, got {kind:?}",
+            ),
+            other => panic!("cmp not a Def in helper: {other:?}"),
+        }
+
+        // --- Build the CALLER module `caller` ----------------------------------
+        // Import `cmp` (and `show`, mirroring the real import surface), then call
+        // it with a concrete Int: (defn run [] (cmp 5)).
+        tc.set_current_module(caller.clone());
+        seed_specific_import(&mut tc, &helper, &["cmp", "show"]);
+
+        let run = Defn {
+            name: Symbol::from("run"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::var(Symbol::from("cmp"), Span::new(120, 123))),
+                    args: vec![Expr::IntLit {
+                        value: 5,
+                        span: Span::new(124, 125),
+                        inferred_type: None,
+                    }],
+                    span: Span::new(119, 126),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::new(100, 127),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(100, 127),
+        };
+
+        // CRUX 2: this MUST type-check. If the mono body were re-checked in the
+        // caller's scope (the as-built bug), `show` would mis-resolve and the
+        // check would fail (`no impl of trait Display ...`). It succeeds only
+        // because the body is re-checked in `helper`'s import context.
+        tc.check_program_self(&[TopLevel::Defn(run)]).expect(
+            "imported constrained call must type-check; the mono body re-checks \
+             in the DEFINING module's scope so `show` resolves there (FIXME 0355)",
+        );
+
+        // CRUX 1: a `cmp$Int` mono variant was COLLECTED and registered in the
+        // CALLER's module (`caller`), as a concrete `UserFn` owning its own GOT
+        // slot — exactly what /backend wires into the caller's GOT.
+        let monos: Vec<(String, bool)> = tc
+            .modules
+            .get(&caller)
+            .unwrap()
+            .all_symbols()
+            .filter(|(name, _)| name.as_ref().starts_with("cmp$"))
+            .map(|(name, entry)| {
+                let concrete = matches!(
+                    entry,
+                    ModuleEntry::Def {
+                        kind,
+                        ..
+                    } if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    )
+                );
+                (name.as_ref().to_string(), concrete)
+            })
+            .collect();
+        assert!(
+            monos.iter().any(|(n, _)| n == "cmp$Int"),
+            "a `cmp$Int` mono variant must be created in the CALLER module for \
+             the imported constrained call (FIXME 0355); found: {monos:?}",
+        );
+        assert!(
+            monos.iter().find(|(n, _)| n == "cmp$Int").map(|(_, c)| *c).unwrap_or(false),
+            "the `cmp$Int` mono entry must be a concrete UserFn owning its own \
+             GOT slot (Option-A concrete-shape-owns-the-slot); found: {monos:?}",
+        );
     }
 
     // Vec has no dedicated `Type` variant; it is encoded as

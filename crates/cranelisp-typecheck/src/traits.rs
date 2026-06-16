@@ -1261,15 +1261,23 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ///
     /// Called when a constrained function is applied with concrete argument types.
     #[allow(dead_code)]
+    ///
+    /// `home` is `Some(defining_module)` when `fn_name` is an IMPORTED
+    /// constrained fn whose body must be re-checked in its DEFINING module's
+    /// import context (FIXME 0355) — `show`/`str-concat`/trait-method references
+    /// inside the body resolve there, not in the caller's scope. It is `None` for
+    /// a locally-defined constrained fn (the as-built same-module path), in which
+    /// case the lookup + re-check use `state.current_module` unchanged.
     pub(crate) fn monomorphise_call(
         &self,
         state: &mut CheckState,
         fn_name: &Symbol,
         arg_types: &[Type],
         call_span: Span,
+        home: Option<&ModuleFullPath>,
     ) -> Result<Option<MonoDefn>, CranelispError> {
-        // Look up the constrained fn
-        let constrained_fn = match self.get_constrained_fn(state, fn_name) {
+        // Look up the constrained fn (in its defining module when imported).
+        let constrained_fn = match self.get_constrained_fn(state, fn_name, home) {
             Some(cf) => cf,
             None => return Ok(None),
         };
@@ -1277,8 +1285,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let scheme = constrained_fn.scheme.clone();
         let defn = constrained_fn.variant.clone();
 
-        // Instantiate, unify with arg types, and resolve concrete types
-        let resolved = self.instantiate_and_resolve(state, &scheme, arg_types, call_span)?;
+        // Instantiate, unify with arg types, and resolve concrete types. Keep
+        // the original→fresh var-id mapping so constraint verification resolves
+        // through the instantiated vars (FIXME 0355).
+        let (resolved, var_mapping) =
+            self.instantiate_and_resolve(state, &scheme, arg_types, call_span)?;
 
         let concrete_param_types = if let Type::Fn(pts, _) = &resolved {
             pts.clone()
@@ -1288,8 +1299,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let mangled_name = build_mangled_name(fn_name, &concrete_param_types);
 
-        // Check constraints are satisfied
-        self.verify_constraints(state, &scheme, call_span)?;
+        // Check constraints are satisfied. For an IMPORTED callee (FIXME 0355),
+        // the trait + impl referenced by the constraint live in the DEFINING
+        // module's scope, so switch `current_module` to `home` for the impl
+        // lookup (mirrors `recheck_body_for_mono`'s module switch). Restored
+        // unconditionally. Without this, `has_impl_with_state` roots the trait
+        // resolution in the caller's scope and a home-local (non-prelude) impl
+        // is invisible — a spurious "no impl of trait T for type Int".
+        let saved_module = home.map(|h| {
+            std::mem::replace(&mut state.current_module, h.clone())
+        });
+        let verify_result = self.verify_constraints(state, &scheme, &var_mapping, call_span);
+        if let Some(prev) = saved_module {
+            state.current_module = prev;
+        }
+        verify_result?;
 
         // Re-check the body with concrete types and harvest resolutions
         let concrete_ret_ty = if let Type::Fn(_, ret) = &resolved {
@@ -1327,29 +1351,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             span: defn.span,
         };
         let (mut resolutions, mono_expr_types) =
-            self.recheck_body_for_mono(state, &mut wrap_defn, &concrete_param_types, &concrete_ret_ty)?;
+            self.recheck_body_for_mono(state, &mut wrap_defn, &concrete_param_types, &concrete_ret_ty, home)?;
 
-        // Add SigDispatch entries for inner constrained fn calls
+        // Add SigDispatch entries for inner constrained fn calls. For an
+        // imported callee, inner constrained calls (e.g. self-recursion) are
+        // named in the DEFINING module's scope, so scope this in `home` too
+        // (FIXME 0355).
         self.resolve_inner_constrained_calls(
             state,
             &wrap_defn,
             &mono_expr_types,
             &mut resolutions,
+            home,
         );
 
         // Build annotated mono defn: annotate from side maps, apply subst.
         // `defn: DefnVariant` (S70 ConstrainedFn narrowing) — name/docstring/
         // visibility no longer ride on the payload; recover them from
-        // the parent Def's ModuleEntry which is keyed by `fn_name`.
+        // the parent Def's ModuleEntry which is keyed by `fn_name`. For an
+        // imported callee the parent `Def` lives in `home`, not the caller's
+        // current module, so probe there (FIXME 0355).
         let parent_metadata: Option<(Option<String>, Visibility)> = {
-            let r = self.current_symbol_table(state);
-            let v = r.view();
-            v.lookup(fn_name).and_then(|e| match e {
-                ModuleEntry::Def { docstring, visibility, .. } => {
-                    Some((docstring.clone(), *visibility))
-                }
-                _ => None,
-            })
+            let lookup_module = home.unwrap_or(&state.current_module);
+            self.resolve_terminal_entry_and_home(lookup_module, fn_name.as_ref())
+                .and_then(|(e, _)| match e {
+                    ModuleEntry::Def { docstring, visibility, .. } => {
+                        Some((docstring.clone(), visibility))
+                    }
+                    _ => None,
+                })
         };
         let (docstring, visibility) = parent_metadata.unwrap_or((None, Visibility::Public));
         let mut mono_defn_ast = Defn {
@@ -1450,8 +1480,36 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         scheme: &Scheme,
         arg_types: &[Type],
         call_span: Span,
-    ) -> Result<Type, CranelispError> {
-        let inst_type = self.instantiate_scheme(scheme);
+    ) -> Result<(Type, HashMap<cranelisp_types::TypeId, cranelisp_types::TypeId>), CranelispError>
+    {
+        // Instantiate the scheme with fresh vars, KEEPING the original→fresh
+        // var-id mapping. The mapping is needed by `verify_constraints`:
+        // `scheme.constraints` are keyed by the scheme's ORIGINAL var_ids, but
+        // only the FRESH vars are unified into `state.subst` here. Cross-module
+        // (FIXME 0355) the scheme comes from another module's check, so its
+        // original var_ids are stale in the caller's `state.subst` — and may
+        // COLLIDE with a caller var (observed: `cmp`'s constraint var_id
+        // resolving to the caller's `IO` from `main`'s `Pure`, producing a
+        // spurious "no impl of Eq/Display for IO"). Resolving constraints
+        // through the instantiation map fixes this. Re-rolls fresh ids on
+        // collision with the scheme's own bound vars (FIXME 0279/0295), like
+        // the sibling instantiator above.
+        let bound: std::collections::HashSet<cranelisp_types::TypeId> =
+            scheme.type_vars.iter().copied().collect();
+        let mut inst_subst = cranelisp_types::Subst::new();
+        let mut var_mapping: HashMap<cranelisp_types::TypeId, cranelisp_types::TypeId> =
+            HashMap::new();
+        for &var_id in &scheme.type_vars {
+            let (fresh_ty, fresh_id) = loop {
+                let (fresh_ty, fresh_id) = self.fresh_var_id();
+                if !bound.contains(&fresh_id) {
+                    break (fresh_ty, fresh_id);
+                }
+            };
+            inst_subst.insert(var_id, fresh_ty);
+            var_mapping.insert(var_id, fresh_id);
+        }
+        let inst_type = apply(&inst_subst, &scheme.ty);
 
         if let Type::Fn(param_types, _) = &inst_type {
             for (pt, at) in param_types.iter().zip(arg_types.iter()) {
@@ -1459,7 +1517,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        Ok(self.apply_subst(state, &inst_type))
+        Ok((self.apply_subst(state, &inst_type), var_mapping))
     }
 
     /// Verify that all trait constraints in the scheme are satisfied by
@@ -1468,10 +1526,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &CheckState,
         scheme: &Scheme,
+        var_mapping: &HashMap<cranelisp_types::TypeId, cranelisp_types::TypeId>,
         call_span: Span,
     ) -> Result<(), CranelispError> {
         for (var_id, traits) in &scheme.constraints {
-            let resolved_var = apply(&state.subst, &Type::Var(*var_id));
+            // `scheme.constraints` are keyed by the scheme's ORIGINAL quantified
+            // var_ids. Only the FRESH vars from instantiation were unified into
+            // `state.subst`, so resolve each constraint var through the
+            // instantiation map first (FIXME 0355 — cross-module the original
+            // var_id is stale/colliding in the caller's subst). A var absent
+            // from the map (defensive) falls back to its original id.
+            let effective_id = var_mapping.get(var_id).copied().unwrap_or(*var_id);
+            let resolved_var = apply(&state.subst, &Type::Var(effective_id));
             let impl_type = match concrete_type_name(&resolved_var) {
                 Some(tn) => tn,
                 None => continue,
@@ -1495,23 +1561,41 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// the typechecker's resolution/expr_types state around the check.
     ///
     /// Returns the per-specialization method resolutions and expression types.
+    ///
+    /// `home` is `Some(defining_module)` for an IMPORTED constrained fn
+    /// (FIXME 0355): `state.current_module` is saved and switched to `home`
+    /// around the body re-check, so the body's bare references
+    /// (`show`/`str-concat`/trait methods) resolve in the DEFINING module's
+    /// import context — re-checking them in the caller's scope mis-resolves them
+    /// (`no impl of trait Display for type IO`). The home is a COMMITTED import
+    /// → the live view suffices (no staging shadow). It is restored unconditionally
+    /// alongside the resolution/expr-type/auto-curry side state. `None` leaves the
+    /// current module unchanged (the as-built same-module path).
     fn recheck_body_for_mono(
         &self,
         state: &mut CheckState,
         defn: &mut Defn,
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
+        home: Option<&ModuleFullPath>,
     ) -> Result<(MethodResolutions, HashMap<Span, Type>), CranelispError> {
         let saved_resolutions = std::mem::take(&mut state.method_resolutions);
         let saved_expr_types = std::mem::take(&mut state.expr_types);
         let saved_pending_auto_curry = std::mem::take(&mut state.pending_auto_curry);
+        // Switch into the defining module for an imported callee so the body's
+        // bare-name references resolve in its import context (FIXME 0355).
+        let saved_current_module = home.map(|h| {
+            std::mem::replace(&mut state.current_module, h.clone())
+        });
 
-        self.check_defn_body_with_types(state, defn, concrete_param_types, concrete_ret_ty)?;
+        let result = self.check_defn_body_with_types(state, defn, concrete_param_types, concrete_ret_ty);
 
         // Drain pending auto-curry entries into method_resolutions before
         // capturing. During re-check, auto-curry sites push to
         // pending_auto_curry but aren't yet in method_resolutions.
-        self.resolve_auto_curry(state);
+        if result.is_ok() {
+            self.resolve_auto_curry(state);
+        }
 
         let resolutions = std::mem::take(&mut state.method_resolutions);
         let mono_expr_types: HashMap<Span, Type> = state.expr_types
@@ -1522,7 +1606,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         state.method_resolutions = saved_resolutions;
         state.expr_types = saved_expr_types;
         state.pending_auto_curry = saved_pending_auto_curry;
+        // Restore the caller's module unconditionally (mirrors the side-state
+        // save/restore discipline above).
+        if let Some(prev) = saved_current_module {
+            state.current_module = prev;
+        }
 
+        result?;
         Ok((resolutions, mono_expr_types))
     }
 
@@ -1534,20 +1624,37 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         defn: &Defn,
         mono_expr_types: &HashMap<Span, Type>,
         resolutions: &mut MethodResolutions,
+        home: Option<&ModuleFullPath>,
     ) {
-        let constrained_fn_names: HashSet<Symbol> = {
-            let r = self.current_symbol_table(state);
-            r.view()
-                .iter()
-                .filter_map(|(name, entry)| {
+        // For an imported callee, inner constrained-fn names live in the
+        // DEFINING module's scope (FIXME 0355). Read constrained fns from there
+        // rather than the caller's current module.
+        let constrained_fn_names: HashSet<Symbol> = match home {
+            Some(h) => {
+                let mut names = HashSet::new();
+                self.for_each_in_module(h, |name, entry| {
                     if let ModuleEntry::Def { kind, .. } = entry
                         && let DefKind::UserFn { fn_state: UserFnState::Constrained(_) } = kind.as_ref()
                     {
-                        return Some(name.clone());
+                        names.insert(name.clone());
                     }
-                    None
-                })
-                .collect()
+                });
+                names
+            }
+            None => {
+                let r = self.current_symbol_table(state);
+                r.view()
+                    .iter()
+                    .filter_map(|(name, entry)| {
+                        if let ModuleEntry::Def { kind, .. } = entry
+                            && let DefKind::UserFn { fn_state: UserFnState::Constrained(_) } = kind.as_ref()
+                        {
+                            return Some(name.clone());
+                        }
+                        None
+                    })
+                    .collect()
+            }
         };
         let mut inner_calls = Vec::new();
         Self::collect_constrained_calls(defn.body(), &constrained_fn_names, &mut inner_calls);
@@ -1578,10 +1685,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &CheckState,
         name: &Symbol,
+        home: Option<&ModuleFullPath>,
     ) -> Option<ConstrainedFn> {
-        // Staging-aware (FIXME 0179): read through probe so in-cluster
-        // constrained-fn registrations are visible.
-        let entry = self.probe_module_entry_owned(&state.current_module, name.as_ref())?;
+        // For an IMPORTED callee (FIXME 0355), the constrained `Def` lives in its
+        // DEFINING module — chain-follow to the terminal entry there. The home is
+        // a committed import → live view suffices. For a local callee, read the
+        // current module directly. Staging-aware (FIXME 0179): the local probe
+        // reads through staging so in-cluster constrained-fn registrations are
+        // visible.
+        let entry = match home {
+            Some(h) => self.resolve_terminal_entry_and_home(h, name.as_ref()).map(|(e, _)| e)?,
+            None => self.probe_module_entry_owned(&state.current_module, name.as_ref())?,
+        };
         match &entry {
             ModuleEntry::Def { kind, scheme, ast, .. } => match kind.as_ref() {
                 DefKind::UserFn {

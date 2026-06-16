@@ -633,33 +633,34 @@ fn stacked_trait_bounds_two_params_compiles() {
 // (FIXME 0354)
 // =============================================================================
 
-// spec: spec/07-traits.md §7.8 — a stacked-trait-bound function
-//   (`[:Eq :Display a :Eq :Display b]`, constrained polymorphism) defined in an
-//   IMPORTED module and called from another module MUST NOT crash the process.
-//   The cross-module monomorphisation feature that makes such a call *run* is
-//   not yet implemented (FIXME 0355, target S83); until it lands, the call is
-//   CLEANLY REJECTED with a deterministic type/compile error — never a SIGSEGV.
+// spec: spec/07-traits.md §7.8 + spec/08-modules.md §8.5 — a stacked-trait-bound
+//   function (`[:Eq :Display a :Eq :Display b]`, constrained polymorphism)
+//   defined in an IMPORTED module and called from another module RUNS: the
+//   cross-module monomorphisation feature (FIXME 0355, landed S83) produces a
+//   `cmp$Int+Int` mono variant in the caller's module whose body is re-checked
+//   in the DEFINING module's import context, and the backend wires it (and its
+//   trait-method callees `Display.show$Int`) into the GOT via the existing
+//   concrete-mono codegen path — no new backend path. `(cmp 1 1)` = "11";
+//   `str-len` = 2 ⇒ the program exits 2.
 //
-// History (FIXME 0354, now RESOLVED): S82 fixed the same-module define-and-call
-// path (`stacked_trait_bounds_*_compiles` above, both green). But a stacked-bound
-// fn defined in an imported `helper.cl` and called at a monomorphisation site in
-// `entry.cl` used to crash with a SIGSEGV (exit 139): the constrained-fn template
-// carried a phantom Pass-1 `got_slot`, `resolve_got_target` read it blindly, and
-// cross-module that slot is NULL → `call_indirect` through null → segfault.
+// History (FIXMEs 0354 + 0355, now both RESOLVED): S82 fixed the same-module
+// define-and-call path. A stacked-bound fn defined in an imported `helper.cl`
+// and called from `entry.cl` used to crash with a SIGSEGV (exit 139): the
+// constrained-fn template carried a phantom Pass-1 `got_slot`, `resolve_got_target`
+// read it blindly, and cross-module that slot was NULL → null `call_indirect` →
+// segfault. 0354's structural fix removed the crash (clean rejection); 0355 then
+// made the call RUN. The typecheck half collects the imported constrained call
+// site, re-checks the mono body in the defining module's scope, and verifies the
+// trait constraints against the INSTANTIATED vars (fixing a cross-module var-id
+// collision that bound the constraint var to the caller's `IO`) with the trait
+// impl resolved in the defining module's scope.
 //
-// The structural fix (S82/S83): a constrained template is never directly callable
-// — call-target resolution reads `ModuleEntry::callable_got_slot()` (which returns
-// `None` for a template), the Pass-2 flip clears the slot via the sole-writer
-// `mark_constrained_template`, and the un-monomorphised cross-module call now
-// lowers to a clean "no callable slot / unresolved" error instead of a null call.
-//
-// This test pins the SAFE behavior: the program does NOT segfault (exit != 139).
-// It flips to "runs to exit 2" once FIXME 0355 (cross-module monomorphisation of
-// constrained fns) lands — at which point this test is replaced by a
-// run-to-clean-exit assertion. Until then, a clean rejection is the contract.
+// This guard pins the RUN behaviour (exit 2) in `--run` (JIT). The `--link`
+// companion below pins the static-relocation path — cross-module mono GOT-wiring
+// is exactly what can diverge between JIT and static linking.
 #[test]
 fn cross_module_stacked_trait_bound_call_runs_to_clean_exit() {
-    let out = Cranelisp::new()
+    Cranelisp::new()
         .with_prelude(PreludeVariant::TestStandard)
         .file(
             "helper.cl",
@@ -674,28 +675,34 @@ fn cross_module_stacked_trait_bound_call_runs_to_clean_exit() {
              (defn main [] (Pure (str-len (cmp 1 1))))",
         )
         .run("entry.cl")
-        .output();
-    // The cross-module constrained call is cleanly rejected (cross-module
-    // monomorphisation is not yet implemented — FIXME 0355). The defining
-    // contract of this guard is NO SIGSEGV: the child must terminate with a
-    // deterministic exit CODE (clean compile/type error), not by signal. A
-    // SIGSEGV leaves `status.code() == None` (signal termination), so a present
-    // exit code proves the null `call_indirect` crash is gone.
-    assert!(
-        out.status.code().is_some(),
-        "cross-module stacked-bound call must NOT crash by signal (FIXME 0354 \
-         resolved — no null call_indirect); got signal termination.\n\
-         status={:?}\nstdout={}\nstderr={}",
-        out.status,
-        out.stdout,
-        out.stderr,
-    );
-    assert_ne!(
-        out.status.code(),
-        Some(139),
-        "cross-module stacked-bound call must NOT exit 139 (SIGSEGV).\n\
-         stdout={}\nstderr={}",
-        out.stdout,
-        out.stderr,
-    );
+        .output()
+        // (cmp 1 1) = "11"; (str-len "11") = 2 ⇒ exit 2 (FIXME 0355 landed).
+        .assert_exit(2);
+}
+
+// spec: spec/07-traits.md §7.8 + spec/08-modules.md §8.5 — `--link` companion to
+//   the run-mode guard above. Cross-module monomorphisation GOT-wiring is the
+//   precise behaviour that diverges between `--run` (JIT, GOT populated in
+//   memory) and `--link` (static relocations emitted into the object), so the
+//   exit-2 contract must hold in BOTH modes. The same two-file fixture, linked to
+//   a native executable and then run, must exit 2 (FIXME 0355).
+#[test]
+fn cross_module_stacked_trait_bound_call_links_to_exit_2() {
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .file(
+            "helper.cl",
+            "(import [primitives [String str-concat]])\n\
+             (defn cmp [:Eq :Display a :Eq :Display b] :String \
+               (str-concat (show a) (show b)))",
+        )
+        .file(
+            "entry.cl",
+            "(import [primitives [Pure str-len]])\n\
+             (import [helper [cmp]])\n\
+             (defn main [] (Pure (str-len (cmp 1 1))))",
+        )
+        .link_then_run("entry.cl")
+        .output()
+        .assert_exit(2);
 }

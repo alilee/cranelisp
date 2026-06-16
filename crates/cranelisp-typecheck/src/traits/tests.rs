@@ -1131,6 +1131,7 @@
                 &Symbol::from("add"),
                 &[Type::Int, Type::Int],
                 Span::new(199, 208),
+                None,
             )
             .unwrap()
             .expect("(add 1 2) must monomorphise")

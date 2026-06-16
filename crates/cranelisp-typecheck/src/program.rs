@@ -2303,11 +2303,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         defns: &[&Defn],
         constrained_fn_names: &HashSet<Symbol>,
     ) -> Result<Vec<MonoDefn>, CranelispError> {
-        if constrained_fn_names.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Collect call sites: (fn_name, arg_spans, call_span).
+        // Collect call sites: (fn_name, arg_spans, call_span, home_module).
+        //
+        // `home_module` is `None` for a call to a LOCALLY-defined constrained fn
+        // (`monomorphise_call` re-checks its body in the current module's scope,
+        // the as-built path). It is `Some(home)` for a call to an IMPORTED
+        // constrained fn that chain-resolves to a constrained `Def` in another
+        // module — the mono body must be re-checked in that DEFINING module's
+        // import context, where its trait-method + helper references resolve
+        // (FIXME 0355; the feature half of the resolved 0354 SIGSEGV).
         //
         // FIXME 0349 — scan EVERY defn body, including those that are themselves
         // in `constrained_fn_names`. A constrained/polymorphic defn can still
@@ -2322,14 +2326,37 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // We must NOT skip such bodies; we only skip a call from a fn to ITSELF
         // (the generic self-recursion of a constrained defn is not a concrete
         // call site — its arg types are the defn's own generic vars).
-        let mut call_sites = Vec::new();
+        let mut local_calls = Vec::new();
         for defn in defns {
             Self::collect_constrained_calls_excluding_self(
                 defn.body(),
                 &defn.name,
                 constrained_fn_names,
+                &mut local_calls,
+            );
+        }
+        let mut call_sites: Vec<(Symbol, Vec<Span>, Span, Option<ModuleFullPath>)> = local_calls
+            .into_iter()
+            .map(|(name, spans, span)| (name, spans, span, None))
+            .collect();
+
+        // FIXME 0355 — collect call sites for IMPORTED callees that
+        // chain-resolve to a constrained (or pure-parametric) `Def` in another
+        // module. These are NOT in `constrained_fn_names` (their local name is a
+        // `ModuleEntry::Import`), so the local collection above never sees them.
+        for defn in defns {
+            self.collect_imported_constrained_calls(
+                state,
+                defn.body(),
+                constrained_fn_names,
                 &mut call_sites,
             );
+        }
+
+        // Nothing to monomorphise (neither local constrained fns nor imported
+        // constrained call sites) — bail before resolving expr_types.
+        if call_sites.is_empty() {
+            return Ok(Vec::new());
         }
 
         // Resolve expr_types so we can look up concrete arg types
@@ -2339,7 +2366,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mut mono_defns = Vec::new();
         let mut seen: HashMap<String, JitSymbol> = HashMap::new();
 
-        for (fn_name, arg_spans, call_span) in &call_sites {
+        for (fn_name, arg_spans, call_span, home_module) in &call_sites {
             // Look up concrete arg types from resolved expr_types
             let arg_types: Vec<Type> = arg_spans
                 .iter()
@@ -2366,7 +2393,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
 
-            if let Some(mono) = self.monomorphise_call(state, fn_name, &arg_types, *call_span)? {
+            if let Some(mono) = self.monomorphise_call(
+                state, fn_name, &arg_types, *call_span, home_module.as_ref(),
+            )? {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 // Record dispatch for this call site
                 state.method_resolutions.resolved_calls.insert(
@@ -2379,6 +2408,63 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
 
         Ok(mono_defns)
+    }
+
+    /// Walk a defn body collecting calls to IMPORTED callees that chain-resolve
+    /// to a constrained (trait-bound) or pure-parametric polymorphic `Def` in
+    /// another module (FIXME 0355).
+    ///
+    /// A locally-defined constrained fn is named in `constrained_fn_names` and is
+    /// already collected by [`Self::collect_constrained_calls_excluding_self`];
+    /// here we skip those and look only at bare `Var` callees whose local name
+    /// chain-resolves (via [`Self::resolve_terminal_entry_and_home`]) to a
+    /// terminal in a DIFFERENT module. When that terminal is a constrained or
+    /// still-polymorphic `UserFn` `Def`, the call needs a cross-module mono
+    /// variant re-checked in the terminal's HOME scope, so we record the call
+    /// site with `Some(home)`.
+    fn collect_imported_constrained_calls(
+        &self,
+        state: &CheckState,
+        expr: &Expr,
+        constrained_fn_names: &HashSet<Symbol>,
+        out: &mut Vec<(Symbol, Vec<Span>, Span, Option<ModuleFullPath>)>,
+    ) {
+        if let Expr::Apply { callee, args, span, .. } = expr
+            && let Expr::Var { name, .. } = callee.as_ref()
+            && !constrained_fn_names.contains(name)
+            && let Some((entry, home)) =
+                self.resolve_terminal_entry_and_home(&state.current_module, name.as_ref())
+            && home != state.current_module
+            && Self::entry_is_monomorphisable_polymorphic(&entry)
+        {
+            let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
+            out.push((name.clone(), arg_spans, *span, Some(home)));
+        }
+        for_each_child_expr(expr, |child| {
+            self.collect_imported_constrained_calls(state, child, constrained_fn_names, out)
+        });
+    }
+
+    /// Does this terminal entry need a monomorphised specialisation when called
+    /// with concrete arg types? (FIXME 0355 — mirrors `get_constrained_fn`'s two
+    /// accepted shapes: a trait-constrained `UserFn`, or a pure-parametric
+    /// polymorphic `UserFn` carrying a stored annotated `ast`.)
+    fn entry_is_monomorphisable_polymorphic(entry: &ModuleEntry<C>) -> bool {
+        if let ModuleEntry::Def { kind, scheme, ast, .. } = entry {
+            match kind.as_ref() {
+                DefKind::UserFn { fn_state: UserFnState::Constrained(_) } => true,
+                DefKind::UserFn { fn_state }
+                    if !matches!(fn_state, UserFnState::Constrained(_))
+                        && !scheme.type_vars.is_empty()
+                        && ast.is_some() =>
+                {
+                    true
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
     }
 
     /// Recursively walk an expression tree collecting calls to constrained fns.

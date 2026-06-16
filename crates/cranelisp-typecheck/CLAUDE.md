@@ -59,6 +59,41 @@ fallback (the §2 structural-not-skip guarantee).
   (The fix lives in `cranelisp-types::resolve`, `/arch`-owned — file a FIXME, don't
   add a checker-side literal-lookup short-circuit that re-fragments the chokepoints.)
 
+## Cross-module monomorphisation of constrained fns (S83, FIXME 0355)
+
+A constrained (trait-bound) fn defined in an imported module and called
+cross-module is monomorphised by `pass4_monomorphise`
+(`program.rs::collect_imported_constrained_calls`) → `monomorphise_call`
+(`traits.rs`). The mono variant (`cmp$Int+Int`) is an ordinary concrete
+`UserFn` `Def` registered in the **caller's** module with its own GOT slot; the
+backend's existing concrete-mono codegen path wires it (and its trait-method
+callees) — **no backend special-case**.
+
+The mono path threads `home: Option<&ModuleFullPath>` (the DEFINING module) into
+`get_constrained_fn`, `recheck_body_for_mono`, `resolve_inner_constrained_calls`,
+and `verify_constraints`. Three scoping facts are load-bearing — get any one wrong
+and the call mis-typechecks (the symptom is a spurious `no impl of trait T for
+type X`):
+
+1. **Body re-check switches `state.current_module` to `home`** so the body's bare
+   references (`show`, `str-concat`, trait methods) resolve in the defining
+   module's import context, not the caller's.
+2. **Constraint verification resolves through the instantiation map, not the raw
+   scheme var_ids.** `scheme.constraints` are keyed by the scheme's ORIGINAL
+   quantified var_ids; only the FRESH instantiated vars are unified into
+   `state.subst`. Cross-module the original var_ids are stale **and may COLLIDE**
+   with a caller var (observed: `cmp`'s constraint var resolving to the caller's
+   `IO` from `main`'s `Pure` → "no impl of Eq/Display for IO"). `instantiate_and_resolve`
+   returns the original→fresh `var_mapping`; `verify_constraints` resolves each
+   constrained var through it first. The local same-module path masked this — the
+   original var_id happened to stay live in `state.subst`.
+3. **Impl lookup for verification roots in `home` too.** `verify_constraints`
+   runs with `current_module` switched to `home`, so `has_impl_with_state` finds a
+   defining-module-local (non-prelude) trait impl. The exit-2 e2e passed via the
+   prelude outer scope before this was added; a `helper`-local trait/impl exposes
+   the gap (the unit test
+   `program::tests::cross_module_imported_constrained_fn_monomorphises_in_defining_scope`).
+
 ## Product-ctor dual facet (S79 Option 3a, FIXME 0319)
 
 A **single-ctor product** type (`(deftype Rectangle [:Int w :Int h])`) has
