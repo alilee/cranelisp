@@ -25,23 +25,53 @@ status: open
 > now exits 251 (= neg(5) = -5). Unit guard:
 > `cranelisp-typecheck program::tests::polymorphic_result_hops_monomorphise_with_concrete_result_type`.
 >
-> **RESIDUAL — STILL OPEN, RE-POINTED /backend.** The ORIGINAL /stdlib
-> manifestation (`(vec-map my-abs xs)` where `my-abs` wraps a cross-module
-> CONSTRAINED `abs`) still SIGSEGVs. This is a DISTINCT bug from the
-> polymorphic-result hop: `my-abs` is already CONCRETE (`:Int → :Int`), so there
-> is nothing to monomorphise on it. The crash is that the GENERIC `my-abs`
-> closure (the fn-value passed to the imported HOF) calls the constrained `abs`
-> through a GOT slot that is not wired to `abs$Int` in the cross-module-HOF
-> dispatch context. Isolation (this phase): N8 (local HOF + `my-abs` fn-value)
-> exit 9 ✓; lambda / named-non-constrained through `vec-map` ✓; only
-> `my-abs`(constrained-callee) through a CROSS-MODULE HOF ✗. The crash fires even
-> when the `vec-map` result is bound-and-dropped (so it is the constrained-callee
-> GOT wiring, not result classification). This is the FIXME's original
-> hypothesis — a GOT-slot / mono-variant wiring gap for an indirectly-reached
-> constrained mono Def — and is a backend concern (`cranelisp-typecheck` cannot
-> fix a GOT-wiring gap; `my-abs` is concrete and the typecheck-side mono of
-> `abs$Int` is already created). **0373 stays OPEN for this residual; target
-> /backend.**
+> **RESIDUAL — STILL OPEN, target /backend. Guard:
+> `tests/regression.rs::fixme_0373_residual_polymorphic_result_cross_module_hops_no_crash`
+> (failing-not-ignored, S83 P6 /qa).** The ORIGINAL /stdlib manifestation
+> (`(vec-map my-abs xs)` where `my-abs` wraps a cross-module CONSTRAINED `abs`)
+> still SIGSEGVs.
+>
+> **CHARACTERISATION REFINED (S83 P6 /qa free-standing reduction, binary at
+> `5634dd3`).** The FIXME originally framed this residual as a "constrained
+> (trait-bound) callee reached via a fn-value through a cross-module HOF — a
+> GOT-slot / mono-variant wiring gap" distinct from the polymorphic-result hop.
+> The free-standing reduction shows that framing is WRONG on the load-bearing
+> condition: the trait, the constraint, the concrete `my-abs` wrapper, and the
+> Vec are ALL incidental. **This residual is the SAME backend RC-classification
+> bug as Tier-1 — polymorphic-result hops + a `>= 1024`-unsigned value driving
+> the `HeapCategory::Mixed` guarded-RC misfire — for the case Tier-1's
+> monomorphisation fix does not reach: the intervening hops live in a DIFFERENT
+> (imported) module.** Tier-1's `collect_local_parametric_calls` gathers only
+> SAME-MODULE parametric calls, so a cross-module hop template is never
+> monomorphised to a concrete-`Int`-result specialisation; it keeps its unbound
+> `Type::Var` result → `Mixed` → `emit_rc_inc_guarded` → `atomic_rmw add
+> [<v> + 8]` dereferences a large-unsigned non-pointer → SIGSEGV.
+>
+> **Cleanest distinguishing evidence** — the ONLY change between the two rows is
+> local-vs-cross-module placement of the two hops `h1`/`h2`:
+>
+> | Shape | Result |
+> |---|---|
+> | `neg` + `h1` + `h2` ALL in one file (Tier-1 guard) | exit 251 ✓ (Tier-1 fix) |
+> | `h1`/`h2` moved to imported `hop.cl` (residual guard) | **SIGSEGV** ✗ |
+>
+> Supporting cross-checks (same binary): single cross-module hop
+> `(app1 my-abs (sub 0 5))` → exit 5 ✓ (single hop monomorphises even
+> cross-module); two cross-module hops, NO trait `(app2 inc1 (sub 0 4))`,
+> result -3 → SIGSEGV ✗; two cross-module hops, all-positive-small
+> `(app2 my-abs 2)` → exit 2 ✓ (value-dependent, not constraint-dependent).
+> So it is value-dependent (large-unsigned through a cross-module
+> polymorphic-result hop), NOT constraint-/trait-/GOT-wiring-specific. The
+> "GOT slot not wired to `abs$Int`" hypothesis in the prior box is RETRACTED —
+> `my-abs` concrete-or-not is immaterial; plain `neg` through plain cross-module
+> hops reproduces it identically.
+>
+> **Owner: /backend.** Two candidate resolutions, either closes the crash:
+> (1) extend the Tier-1 monomorphisation to reach CROSS-MODULE polymorphic-result
+> hops (the durable fix — the cross-module analogue of `5634dd3`); or (2) the
+> backend soundness fix to the `Mixed` `< 1024` guard (see Root cause §"Owning
+> crate" — not cleanly available leak-free with the current untagged
+> representation). **0373 stays OPEN for this residual; target /backend.**
 >
 > ---
 >
@@ -303,9 +333,17 @@ There are two candidate resolutions; either closes the crash:
   (`tests/regression.rs::fixme_0373_polymorphic_result_fn_value_two_hops_no_crash`)
   guards it either way.
 
-### Test (durable repro)
+### Test (durable repros)
 
-`tests/regression.rs::fixme_0373_polymorphic_result_fn_value_two_hops_no_crash`
-— failing-not-ignored e2e. Asserts the 5-line free-standing repro exits 251
-(= neg(5) = -5 as u8); currently fails with "expected exit 251, got None"
-(signal-killed). `// spec: spec/07-traits.md §7.8`.
+Two free-standing failing-not-ignored e2e guards, both `// spec:
+spec/07-traits.md §7.8`, both asserting exit 251 (= neg(5) = -5 as u8):
+
+- **Tier-1 (LOCAL hops) — GREEN since `5634dd3`:**
+  `tests/regression.rs::fixme_0373_polymorphic_result_fn_value_two_hops_no_crash`.
+  `neg`/`h1`/`h2` all in one file; monomorphised by the Tier-1 fix.
+
+- **RESIDUAL (CROSS-MODULE hops) — RED, OPEN /backend (S83 P6 /qa):**
+  `tests/regression.rs::fixme_0373_residual_polymorphic_result_cross_module_hops_no_crash`.
+  Same shape with `h1`/`h2` in an imported `hop.cl`; currently SIGSEGVs
+  ("expected exit 251, got None"). Flips green when the cross-module-hop
+  monomorphisation (or the `Mixed`-guard soundness fix) lands.

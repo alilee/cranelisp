@@ -3321,3 +3321,90 @@ fn fixme_0373_polymorphic_result_fn_value_two_hops_no_crash() {
         // Post-fix: neg(5) = -5, exit code 251 (= -5 & 0xFF).
         .assert_exit(251);
 }
+
+// =============================================================================
+// FIXME 0373 RESIDUAL — polymorphic-result fn-value hops through a CROSS-MODULE
+//          function SIGSEGV. DISTINCT from the now-GREEN Tier-1 guard above.
+// =============================================================================
+//
+// Background. FIXME 0373 was two conflated bugs. The Tier-1 half (above) — the
+// RC-classification misfire on polymorphic-result hops where ALL the hops are
+// LOCAL (same module) — was FIXED at `5634dd3` by extending monomorphisation to
+// collect LOCAL (same-module) pure-parametric polymorphic-result callees
+// (`collect_local_parametric_calls` + `monomorphise_inner_parametric_hops`).
+// `fixme_0373_polymorphic_result_fn_value_two_hops_no_crash` (above) is now
+// GREEN: the same-module `h1`/`h2` hop chain exits 251.
+//
+// This RESIDUAL is the SAME RC-classification crash for the case the Tier-1
+// LOCAL-only monomorphisation does NOT reach: the intervening hops live in a
+// DIFFERENT (imported) module. A cross-module hop function is compiled once,
+// generically, with an unbound `Type::Var` result; the Tier-1 collector only
+// gathers same-module parametric calls, so the cross-module hop template is
+// never monomorphised to a concrete-`Int`-result specialisation. Its `Mixed`
+// result classification (`HeapCategory::classify`, heap.rs:456-459) emits the
+// guarded RC inc (`emit_rc_inc_guarded`, heap.rs:191-219): `icmp ult <v>, 1024`
+// → if NOT-less-than, `atomic_rmw add [<v> + 8]`. A value `>= 1024` unsigned
+// (every negative Int — here `neg(5) = -5 = 0xFFFF…FFFB`) is misread as a heap
+// pointer and dereferenced → SIGSEGV.
+//
+// Distinguishing evidence (this /qa reduction, target/debug/cranelisp at
+// 5634dd3) — the ONLY change between the two rows is local-vs-cross-module:
+//   - `neg`+`h1`+`h2` ALL in one file (the Tier-1 guard above) → exit 251 ✓
+//   - `h1`/`h2` moved to an imported `hop.cl` (this test)         → SIGSEGV ✗
+//
+// Refinement vs the FIXME's original title. The FIXME framed the residual as a
+// "constrained (trait-bound) callee reached via a fn-value through a
+// cross-module HOF — a GOT-wiring gap". This reduction shows the trait, the
+// constraint, the concrete wrapper (`my-abs`), and the Vec are ALL incidental:
+// stripping every one of them (plain `neg` through plain cross-module hops)
+// still SIGSEGVs, and the crash is value-dependent (a large-unsigned value
+// flowing through the hop). The load-bearing condition is exactly the Tier-1
+// condition — polymorphic-result hops + a `>= 1024`-unsigned value — with the
+// hops CROSS-MODULE instead of local. It is therefore the same backend
+// RC-classification bug as Tier-1, NOT a separate GOT-wiring defect; the fix is
+// to extend the Tier-1 monomorphisation to reach cross-module hops (or the
+// soundness fix to the `Mixed` guard). Confirmed cross-checks:
+//   - `app1 my-abs (sub 0 5)`  (single cross-module hop)        → exit 5 ✓
+//     (single hop monomorphises correctly even cross-module)
+//   - `app2 inc1 (sub 0 4)`    (two cross-module hops, NO trait, result -3) → SIGSEGV ✗
+//   - `app2 my-abs 2`          (two cross-module hops, all-positive small)  → exit 2 ✓
+// Owning crate: cranelisp-backend (re-pointed /typecheck → /backend in the
+// FIXME — `cranelisp-typecheck` cannot fix a backend RC-classification gap; the
+// alternative typecheck resolution is to monomorphise cross-module hops too).
+
+// spec: spec/07-traits.md §7.8 — Constrained Polymorphism Interaction
+//       (the original report's framing; the reduced repro shows the residual is
+//       the broader polymorphic-result RC-classification bug for CROSS-MODULE
+//       hops, not trait-specific — see FIXME 0373 residual section).
+// FIXME(0373): RESIDUAL — polymorphic-result fn-value through CROSS-MODULE hops
+//              SIGSEGVs. Distinct from the GREEN Tier-1 guard above (which
+//              covers LOCAL hops). Same HeapCategory::Mixed guarded-RC misfire
+//              (heap.rs) on a >= 1024-unsigned value; Tier-1's monomorphisation
+//              fix only reaches same-module hops, so cross-module hops still
+//              carry an unbound Type::Var result. Owner: cranelisp-backend.
+#[test]
+fn fixme_0373_residual_polymorphic_result_cross_module_hops_no_crash() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        // Cross-module hop chain: h1 -> h2 -> (f 5), both hops in an imported
+        // module so the Tier-1 LOCAL-only monomorphisation does not reach them.
+        .file(
+            "hop.cl",
+            "(import [primitives [Int]])\n\
+             (defn h1 [f] (h2 f))\n\
+             (defn h2 [f] (f 5))",
+        )
+        .user(
+            "(import [primitives [IO Pure Int sub-i64]])\n\
+             (import [hop [h1]])\n\
+             (defn neg [:Int x] :Int (sub-i64 0 x))\n\
+             (defn main [] :(IO Int) (Pure (h1 neg)))",
+        )
+        .output()
+        // Currently SIGSEGVs (status.code() == None) — this assertion FAILS
+        // until the cross-module-hop monomorphisation / RC-classification fix
+        // lands. Post-fix: neg(5) = -5, exit code 251 (= -5 & 0xFF), exactly
+        // like the GREEN local-hop Tier-1 guard.
+        .assert_exit(251);
+}
