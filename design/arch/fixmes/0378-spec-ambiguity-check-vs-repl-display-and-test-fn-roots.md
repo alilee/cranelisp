@@ -92,6 +92,27 @@ concrete `(Option String)` instance), rather than relying on the result-only-var
 stranding test fns. Out of Wave-1 (typecheck) scope; flagged for the broader
 mono-from-roots completion.
 
+> **ISSUE 3 — ARCH-RESOLVED-DESIGN (S84 Wave 1b, /arch, 2026-06-16).** YES: test
+> functions become explicit monomorphisation roots; the carve-out
+> (`fn_type_is_monomorphisable_from_params`, `program.rs:181`) retires and the
+> slot gate is unconditional `slot ⟺ is_concrete()`. Full design at **BC §2**
+> ("The slot gate is TOTAL" + the mono-root rule + the discovery-seam paragraphs),
+> **`interfaces.md` §"Callability is structural"** ("gate is TOTAL — test fns are
+> mono roots"), and **`sprints/SPRINT.md` §"Cluster A re-shape" → "Wave 1b"**.
+> Summary: the root carries the discovery contract's expected entry type
+> `(Fn [] (Option String))` and mints a concrete `Concrete{slot}` instance from
+> the polymorphic original; only the degenerate `(defn test-x [] None)` shape needs
+> it (a well-formed test body already pins `(Option String)` and is already
+> `Concrete`). NO `cranelisp-types` change, NO `public-api.txt` move, NO cache bump
+> — `UserFnState::Polymorphic` (FIXME 0377) already supplies the slot-less state.
+> The seam is mechanism-only (typecheck registers the root; int's names-only
+> `discover_test_names` reader resolves the concrete instance — byte-identical if
+> the instance registers under the bare name). Implementation handed to the
+> Wave-1b /dev relay (typecheck: delete the carve-out + register roots; int:
+> point the reader at the concrete instance). **Leave this file for /sprint to
+> verify-and-remove at wave close** — issues 1+2 are /spec's (in parallel; their
+> portion may be uncommitted).
+
 ## Proposed resolution
 
 1. **/spec** rules on issues 1 + 2 (REPL ambiguity-vs-display precedence; named-

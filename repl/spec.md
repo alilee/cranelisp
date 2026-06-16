@@ -341,6 +341,23 @@ Values are runtime results and have no module scope. They are displayed bare.
 
 ADT fields MUST be recursively formatted according to this table.
 
+### 1.5.1 Bare Polymorphic Values — Type Display via Introspection [S84]
+
+A **result-only-polymorphic value** is a value whose finalised type is polymorphic with no concrete instantiation forced by the surrounding context — e.g. a bare `None` (type `∀a. (Option a)`) or a bare empty literal `[]` (type `∀a. (Vec a)`) entered alone at the prompt. Such a value has **no concrete runtime representation** to show: under the slot⟺concrete model it is *slot-less* (`UserFnState::Polymorphic`) — it has no GOT slot and is not compiled as a runtime value.
+
+| Requirement | Test |
+|---|---|
+| A bare/unpinned polymorphic value entered at the REPL MUST display its **polymorphic type** in `:Type value` form — fully-qualified type, constructor/value form. It MUST NEVER be an opaque error. | [Tested tests/repl_introspection::prelude_option_none_value_display_neg_definition_metadata, tests/repl_introspection::display_empty_vec_value] |
+| Bare `None` MUST display `:(prelude/Option a) Option.None` form — the `Option.None` value form prefixed by the polymorphic `(…/Option a)` type. | [Tested tests/repl_introspection::prelude_option_none_value_display_neg_definition_metadata] |
+| Bare `[]` MUST display the `(primitives/Vec a)` type prefix and the `[]` value form. | [Tested tests/repl_introspection::display_empty_vec_value] |
+| The display MUST NOT render the symbol's *definition* drawer (e.g. `; deftype`, a module-qualified constructor path `fn.option/…`) — this is a value-display, not a definition lookup. | [Tested tests/repl_introspection::prelude_option_none_value_display_neg_definition_metadata] |
+
+This is the **self-documenting-REPL principle applied to polymorphic values** (root `CLAUDE.md` §"Design Principles": "No valid language construct should produce an opaque error"). Because there is no concrete runtime value to show, the useful feedback the REPL gives back is the **type** — read from the symbol-table scheme via introspection — in the same `:Type value` notation every other result uses.
+
+**Served from introspection, never from a slot.** The display MUST be served by reading the polymorphic scheme from the symbol table (introspection over the type), NOT by compiling, slotting, or evaluating the value to a concrete runtime representation. This is the architectural reason the disposition works for a slot-less `UserFnState::Polymorphic` def: a result-only-polymorphic value has no GOT slot and never reaches codegen, so the REPL cannot read a runtime value — it reads the *scheme* instead and renders the polymorphic type. An implementation that tries to compile/slot the bare value to display it would either fail (no slot) or force a spurious concretisation; the conforming path is type-display-by-introspection.
+
+**Distinct from the §3.11 codegen-forced ambiguity error.** The language spec (`spec/03-types.md` §3.11) rejects an *ambiguous* polymorphic type — an unconstrained type variable that remains after inference — as a **type error**. That rejection applies only to a polymorphic value in a position that **actually reaches codegen** and must be monomorphised (e.g. a top-level value expression whose concrete instance the program demands but cannot determine). It does **not** apply to this REPL bare-display path: displaying a bare `None`/`[]` is pure introspection over the symbol-table scheme and never requires the value to have a GOT slot or to be compiled. The two dispositions are complementary, not contradictory — §3.11 governs *codegen* (where a residual `Type::Var` is a bug); §1.5.1 governs *REPL display* (where a residual `Type::Var` is exactly the useful feedback to show).
+
 ## 2. Prompt [Tested]
 
 ### 2.1 Primary Prompt [Tested tests/e2e::e2e_s2_1_prompt_format]
