@@ -36,6 +36,32 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 83 Wave 3 — FIXME 0353 ResourceSerial token-serialization timing e2e + scheduling-not-wired defect surfaced (/qa, 2026-06-16)
+
+The second half of FIXME 0353 (the timing e2e witness; the `resource-serial-sleep-ms`
+test-capture fixture landed first half at `8b499c9`). Authoring the §10.12.4 witness
+surfaced that automatic IO scheduling (spec §10.12) is **not wired into the live
+pipeline** — the int-side `apply_bind_chain_analysis` / `auto_schedule_defn` pass that
+inserts `Expr::ParBind` from `bind` chains is dead code (`#[allow(dead_code)]`, zero
+live callers), so NO `Par` node is emitted and two data-independent ResourceSerial calls
+run sequentially regardless of token. Measured (200 ms/call): same-token ~420 ms,
+diff-token ~415–437 ms (`--run`), ~409 ms / ~409–417 ms (`--link`) — indistinguishable.
+A Commutative-pair control also runs sequentially, confirming the defect is the missing
+wiring, not ResourceSerial-specific.
+
+**Two tests added — `tests/spec_10_io.rs`, `// spec: spec/10-io.md §10.12.4`:**
+
+| Test | FIXME | Owner | SHA | Disposition + rationale |
+|---|---|---|---|---|
+| `spec_10_io::resource_serial_same_token_serializes` | — | n/a | (this change-set) | GREEN both modes. Positive serialization witness: two same-token (1,1) 200 ms ResourceSerial calls → serialised → `--run` + `--link` wall-clock > 1.5×single (300 ms midpoint). Passes whether or not Par-grouping is wired (sequential also satisfies > 1.5×); guards against a future change wrongly parallelising same-token calls. Robust margin (~420 ms vs 300 ms), stable across re-runs. |
+| `spec_10_io::resource_serial_diff_token_parallelizes` | 0367 | /int | (this change-set) | **RED (failing-not-ignored defect guard).** Two diff-token (1,2) 200 ms calls MUST run concurrently → `--run` + `--link` wall-clock < 1.5×single (300 ms). Today measures ~415–437 ms (sequential, ~2×) because no `Par` node is emitted. Flips green when the ParBind-insertion pass is re-wired onto the hot path. Stderr signature: `--run diff-token: expected concurrent wall-clock < 300ms (~= 1*200ms), got <N>ms`. |
+
+**Margins/modes:** 200 ms/call; structural inequality at the 1.5×-single midpoint (300 ms) — 50% slack each side; NOT a tight ratio (timing-flakiness banned). `--run` times `out.elapsed` (compile ~21 ms, negligible); `--link` links via `.link()` then execs the produced standalone binary and times only that (the link compile ~225 ms is NOT timed; `link_then_run` is unusable for timing). Both modes asserted in each test.
+
+**Disposition:** FIXME 0353 is NOT closed — its closure condition ("timing e2e is the witness") is met only when `resource_serial_diff_token_parallelizes` is green. The fixture + the failing guard are the durable record. Filed FIXME `0367` (`target: /int`) for the un-wired §10.12 scheduling — a real spec-conformance defect (§10.12 MUST), surfaced not introduced by the witness. After 0367 lands, 0353 closes.
+
+**Workspace after this work:** 2 reds — `0366` REPL-divergence guard (pre-existing) + `0353/0367` `resource_serial_diff_token_parallelizes` (new, named known-defect guard). A genuine regression is any RED beyond these two named guards.
+
 ### Sprint 82 full-clear COMPLETE — `sprint23.rs` (0144) harvested + DELETED; FIXME 0144 CLOSED; quarantine empty (/dev backend, 2026-06-14)
 
 The final file. The one remaining GAP from `tests/legacy/sprint23.rs` —

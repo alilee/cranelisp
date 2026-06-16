@@ -818,3 +818,213 @@ fn io_observer_registration_lives_in_intrinsics() {
         );
     }
 }
+
+// =============================================================================
+// §10.12.4 — Runtime Resource Tokens: ResourceSerial token serialization
+// (FIXME 0353 — the end-to-end witness the two legacy GAP stubs always owed:
+//  `test_io_schedule_resource_serial_same_token_sequential` /
+//  `..._diff_token_parallel`, harvested from `tests/legacy/lenient.rs` at S82
+//  close. The `cranelisp-test-capture` `resource-serial-sleep-ms (token, ms)`
+//  fixture — `SchedulingClass::ResourceSerial`, places `token` on the Effect
+//  node via `CLIO::effect_on_resource`, sleeps `ms` — landed first half.)
+//
+// Spec §10.12.4: within a `Par` group the trampoline groups Effect nodes by
+// resource token; branches with the SAME non-zero token are serialised
+// regardless of data independence; branches with DIFFERENT tokens run
+// concurrently. This is observable by timing two data-independent ResourceSerial
+// calls (each sleeping `D` ms) in one program:
+//   - same token  -> serialised -> wall-clock ~= 2*D (> 1.5*D)
+//   - diff tokens -> concurrent -> wall-clock ~= 1*D (< 1.5*D)
+//
+// Both programs are TWO data-independent bindings in a `bind` chain (`a` not
+// free in the second effect, `b` not free in the first) so the independence
+// analysis can Par-group them (spec §10.12.1; ResourceSerial groups identically
+// to the Commutative pair whose Par emission is pinned by
+// `control_flow.rs::par_codegen_tests`). The terminal `Pure (add-i64 a b)`
+// makes `main : IO Int`, and the summed sleep durations become the exit code
+// (§10.6.1) — `2*200 = 400 -> 400 mod 256 = 144` (Unix exit byte).
+//
+// TIMING DISCIPLINE (robust margins, NOT tight ratios — timing-flakiness is
+// banned as a disposition): D = 200 ms per call so OS jitter is swamped, and the
+// structural inequality is asserted at the 1.5*D midpoint (300 ms), giving 50%
+// slack each side. Measured around the program run only:
+//   - `--run`: `out.elapsed` is compile(~21ms) + program — clean separation
+//     against the 300 ms midpoint (serial ~= 421 ms; parallel ~= 221 ms).
+//   - `--link`: the link COMPILE (~225 ms) must NOT be timed. We link with
+//     `.link()` (produce only), then exec the produced standalone binary
+//     ourselves and time THAT (binary startup ~= 5 ms; serial ~= 409 ms;
+//     parallel ~= 205 ms). `link_then_run` folds link+run into one `elapsed`
+//     and is therefore unusable for timing.
+//
+// KNOWN-DEFECT GUARD (failing-not-ignored): as of S83, automatic IO scheduling
+// (spec §10.12) is NOT wired into the live source->AST pipeline — the int-side
+// `apply_bind_chain_analysis` / `auto_schedule_defn` pass that inserts
+// `Expr::ParBind` from `bind` chains is dead code (`#[allow(dead_code)]`, zero
+// live callers), so NO `Par` node is ever emitted and BOTH same- and diff-token
+// chains run sequentially (~2*D). The backend can codegen + dispatch `Par`
+// nodes (`par_codegen_tests`, `dispatch_par_branches`) but nothing constructs
+// them from user source. The `..._diff_token_parallelizes` assertion therefore
+// FAILS today (diff-token measures ~2*D, not <1.5*D) — it is the spec-correct
+// regression guard that flips green when scheduling is wired in. See FIXME
+// 0367-int-resource-serial-scheduling-not-wired (target: /int; the
+// runtime-dispatch remainder of FIXME 0353, surfaced by this witness). The
+// `..._same_token_serializes` companion passes in both states (sequential
+// satisfies "> 1.5*D"); it is the positive serialization witness.
+
+/// Per-call sleep duration. >=100 ms swamps OS jitter; 200 ms gives a wide
+/// margin against the 1.5x midpoint in both directions.
+const RS_SLEEP_MS: u64 = 200;
+/// Structural inequality boundary: 1.5 x single-call duration.
+const RS_MIDPOINT_MS: u128 = (RS_SLEEP_MS as u128 * 3) / 2; // 300 ms
+
+/// Source for a two-binding ResourceSerial `bind` chain. `(t1, t2)` are the
+/// resource tokens on the two data-independent 200 ms calls.
+fn rs_program(t1: i64, t2: i64) -> String {
+    format!(
+        "(platform test-capture)\n\
+         (import [platform.test-capture [resource-serial-sleep-ms]])\n\
+         (import [primitives [bind Pure]])\n\
+         (defn main []\n\
+           (bind (resource-serial-sleep-ms {t1} {RS_SLEEP_MS}) (fn [a]\n\
+             (bind (resource-serial-sleep-ms {t2} {RS_SLEEP_MS}) (fn [b]\n\
+               (Pure (primitives/add-i64 a b)))))))\n"
+    )
+}
+
+/// Wall-clock the program under `--run` (compile + JIT-run; compile overhead is
+/// ~21 ms, negligible against the 300 ms midpoint). Asserts the value-bearing
+/// exit code so a silent mis-run can't masquerade as a timing pass.
+fn rs_run_elapsed_ms(t1: i64, t2: i64) -> u128 {
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", &rs_program(t1, t2))
+        .run("main.cl")
+        .output();
+    // 2*200 = 400 -> 400 mod 256 = 144 (Unix exit byte). Proves both effects ran.
+    let code = out.status.code();
+    assert_eq!(
+        code,
+        Some(144),
+        "--run: expected exit 144 (both 200ms sleeps ran, summed=400 mod 256)\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    out.elapsed.as_millis()
+}
+
+/// Wall-clock the program under `--link`: link (produce the binary, NOT timed),
+/// then exec the produced standalone binary and time only that run. The produced
+/// binary resolves the test-capture platform DLL at runtime via dlopen, so it
+/// needs `CRANELISP_PLATFORM_PATH` in its env.
+fn rs_link_elapsed_ms(t1: i64, t2: i64) -> u128 {
+    use std::process::Command;
+    use std::time::Instant;
+
+    let platform_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug");
+
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", &rs_program(t1, t2))
+        .link("main.cl")
+        .output();
+    assert!(
+        out.status.success(),
+        "--link: link step failed\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+
+    // The linker emits the produced binary as `<stem>` next to the source.
+    let produced = out.tmpdir.join("main");
+    assert!(
+        produced.exists(),
+        "--link: produced binary missing at {}\nstdout:\n{}\nstderr:\n{}",
+        produced.display(),
+        out.stdout,
+        out.stderr
+    );
+
+    let start = Instant::now();
+    let run = Command::new(&produced)
+        .current_dir(&out.tmpdir)
+        .env("CRANELISP_PLATFORM_PATH", &platform_path)
+        .output()
+        .expect("exec produced --link binary");
+    let elapsed = start.elapsed();
+
+    assert_eq!(
+        run.status.code(),
+        Some(144),
+        "--link produced binary: expected exit 144 (both 200ms sleeps ran)\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    elapsed.as_millis()
+}
+
+// spec: spec/10-io.md §10.12.4 — two data-independent ResourceSerial calls with
+// the SAME non-zero resource token are SERIALISED (run one after the other)
+// regardless of data independence. Wall-clock witness: each call sleeps 200 ms,
+// so the serialised total exceeds the 1.5x midpoint (300 ms). Positive
+// serialization witness — passes whether or not Par-grouping is wired (a
+// sequential run also exceeds 1.5x a single call). Asserted in BOTH `--run`
+// (JIT trampoline) and `--link` (static-relocation trampoline) — serialization
+// is mode-independent.
+#[test]
+fn resource_serial_same_token_serializes() {
+    // Same token = 1 on both calls.
+    let run_ms = rs_run_elapsed_ms(1, 1);
+    assert!(
+        run_ms > RS_MIDPOINT_MS,
+        "--run same-token: expected serialised wall-clock > {RS_MIDPOINT_MS}ms \
+         (~= 2*{RS_SLEEP_MS}ms), got {run_ms}ms — the two same-token \
+         ResourceSerial calls did not serialise (spec §10.12.4)"
+    );
+
+    let link_ms = rs_link_elapsed_ms(1, 1);
+    assert!(
+        link_ms > RS_MIDPOINT_MS,
+        "--link same-token: expected serialised wall-clock > {RS_MIDPOINT_MS}ms \
+         (~= 2*{RS_SLEEP_MS}ms), got {link_ms}ms — the two same-token \
+         ResourceSerial calls did not serialise in the linked binary (spec §10.12.4)"
+    );
+}
+
+// spec: spec/10-io.md §10.12.4 — two data-independent ResourceSerial calls with
+// DIFFERENT resource tokens run CONCURRENTLY (different token groups dispatch in
+// parallel on the thread pool). Wall-clock witness: each call sleeps 200 ms, so
+// the concurrent total stays below the 1.5x midpoint (300 ms). Asserted in BOTH
+// `--run` and `--link`.
+//
+// FAILING-NOT-IGNORED DEFECT GUARD (S83): this currently FAILS — automatic IO
+// scheduling (spec §10.12) is not wired into the live pipeline
+// (`apply_bind_chain_analysis` is dead code), so no `Par` node is emitted and
+// the diff-token calls run SEQUENTIALLY (~2*200 = ~400 ms, not <300 ms). It is
+// the spec-correct regression guard for FIXME
+// 0367-int-resource-serial-scheduling-not-wired (target: /int; the
+// runtime-dispatch remainder of FIXME 0353); it flips green
+// when the ParBind-insertion pass is reactivated on the hot path. Do NOT relax
+// this to a tight ratio or weaken the inequality to make it pass — the failure
+// IS the defect signal.
+#[test]
+fn resource_serial_diff_token_parallelizes() {
+    // Different tokens: 1 and 2.
+    let run_ms = rs_run_elapsed_ms(1, 2);
+    assert!(
+        run_ms < RS_MIDPOINT_MS,
+        "--run diff-token: expected concurrent wall-clock < {RS_MIDPOINT_MS}ms \
+         (~= 1*{RS_SLEEP_MS}ms), got {run_ms}ms — the two different-token \
+         ResourceSerial calls did not run concurrently (spec §10.12.4). \
+         If grouping is genuinely not happening, this is the FIXME-0353 \
+         scheduling-not-wired defect, not a margin to relax."
+    );
+
+    let link_ms = rs_link_elapsed_ms(1, 2);
+    assert!(
+        link_ms < RS_MIDPOINT_MS,
+        "--link diff-token: expected concurrent wall-clock < {RS_MIDPOINT_MS}ms \
+         (~= 1*{RS_SLEEP_MS}ms), got {link_ms}ms — the two different-token \
+         ResourceSerial calls did not run concurrently in the linked binary \
+         (spec §10.12.4)."
+    );
+}
