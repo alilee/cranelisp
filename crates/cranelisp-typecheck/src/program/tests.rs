@@ -5319,3 +5319,237 @@
         assert_concrete_int_result(&tc, "h1$");
         assert_concrete_int_result(&tc, "h2$");
     }
+
+    // =====================================================================
+    // S84 Wave 1b (FIXME 0374/0378) — TOTAL slot⟺concrete: retire the
+    // result-only-var carve-out; test-fns as mono roots; scoped §3.11.1.
+    // =====================================================================
+
+    /// Register an `Option` ADT (`None` | `(Some [v])`) in the current `test`
+    /// module — the result-only-var shape needs `None`. Returns the TopLevel.
+    fn option_typedef() -> TopLevel {
+        TopLevel::TypeDef {
+            name: TypeName::from("Option"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            constructors: vec![
+                cranelisp_types::ConstructorDef {
+                    name: Symbol::from("None"),
+                    docstring: None,
+                    fields: vec![],
+                    span: Span::SYNTHETIC,
+                },
+                cranelisp_types::ConstructorDef {
+                    name: Symbol::from("Some"),
+                    docstring: None,
+                    fields: vec![cranelisp_types::FieldDef {
+                        name: Symbol::from("v"),
+                        type_expr: TypeExpr::TypeVar(Symbol::from("a")),
+                        span: Span::SYNTHETIC,
+                    }],
+                    span: Span::SYNTHETIC,
+                },
+            ],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    // spec: spec/03-types.md §3.11 / FIXME 0374/0378 — the slot gate is TOTAL
+    //       (slot ⟺ is_concrete()). A RESULT-ONLY-var def (`(defn empty [] [])`
+    //       → `(Fn [] (Vec a))`) is now slot-less `Polymorphic`, NOT
+    //       `Concrete`-with-a-slot. This pins the carve-out retirement: the
+    //       former `fn_type_is_monomorphisable_from_params` kept such defs
+    //       `Concrete`; the TOTAL gate routes them to `Polymorphic`.
+    #[test]
+    fn result_only_var_def_is_polymorphic_not_concrete() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        // (defn empty [] []) — `[]` is `(Vec a)`, `a` is result-only and free.
+        // Under the TOTAL slot gate this is slot-less `Polymorphic`.
+        let empty = TopLevel::Defn(make_defn(
+            "empty",
+            vec![],
+            vec![],
+            Expr::VecLit { elements: vec![], span: span(10, 12), inferred_type: None },
+            Visibility::Public,
+            span(8, 13),
+        ));
+        tc.check(&[empty], &ctx, ModuleStrategy::Additive).unwrap();
+        let table = tc.symbol_table();
+        let entry = table.get("empty").expect("empty registered");
+        assert!(
+            matches!(
+                entry,
+                ModuleEntry::Def { kind, .. }
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    )
+            ),
+            "a result-only-var def `(defn empty [] [])` must be slot-less \
+             `Polymorphic` under the TOTAL slot gate (carve-out retired), got {entry:?}",
+        );
+        assert_eq!(
+            entry.callable_got_slot(),
+            None,
+            "a `Polymorphic` (non-concrete) def carries NO slot (slot ⟺ concrete)",
+        );
+    }
+
+    // spec: spec/03-types.md §3.11.3 / FIXME 0378 issue 3 — a `test-*` fn is
+    //       registered as a monomorphisation ROOT. The degenerate
+    //       `(defn test-x [] None)` (type `(Fn [] (Option a))`) is slot-less
+    //       `Polymorphic`, but the test-fn-root pass mints a concrete
+    //       `(Fn [] (Option String))` instance UNDER THE BARE NAME with a slot
+    //       — so discovery (which reads `callable_got_slot()`) still finds it.
+    #[test]
+    fn test_fn_registered_as_mono_root_gets_concrete_instance() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        // (deftype Option None (Some [v])) + (defn test-x [] None)
+        let test_x = TopLevel::Defn(make_defn(
+            "test-x",
+            vec![],
+            vec![],
+            Expr::var(Symbol::from("None"), span(40, 44)),
+            Visibility::Public,
+            span(38, 45),
+        ));
+        tc.check(&[option_typedef(), test_x], &ctx, ModuleStrategy::Additive)
+            .unwrap();
+        let table = tc.symbol_table();
+        let entry = table.get("test-x").expect("test-x registered");
+        // After the mono-root pass the BARE-name entry is `Concrete{slot}` with
+        // a concrete `(Fn [] (Option String))` scheme.
+        entry
+            .callable_got_slot()
+            .expect("test-x must carry a concrete callable slot after mono-root minting");
+        match entry {
+            ModuleEntry::Def { scheme, kind, .. } => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    ),
+                    "test-x must be `Concrete{{slot}}` after mono-root minting, got {kind:?}",
+                );
+                // Scheme is the concrete `(Fn [] (Option String))`.
+                match &scheme.ty {
+                    Type::Fn(params, ret) => {
+                        assert!(params.is_empty(), "test-x is nullary");
+                        match ret.as_ref() {
+                            Type::ADT(fqtn, args) => {
+                                assert_eq!(fqtn.name.as_ref(), "Option");
+                                assert_eq!(args.len(), 1);
+                                assert!(
+                                    matches!(args[0], Type::String),
+                                    "the minted instance pins the result var to \
+                                     String — got {:?}",
+                                    args[0],
+                                );
+                            }
+                            other => panic!("test-x result not (Option …): {other:?}"),
+                        }
+                    }
+                    other => panic!("test-x scheme not a Fn: {other:?}"),
+                }
+            }
+            other => panic!("test-x entry not a Def: {other:?}"),
+        }
+    }
+
+    // spec: spec/03-types.md §3.11.1 — a CODEGEN-REACHING unpinned polymorphic
+    //       value is an ambiguity error. A `let`-bound `None` whose type stays
+    //       `(Option a)` (the `match` scrutinises only the tag) must be
+    //       REJECTED. Mirrors the e2e
+    //       `regression::mono_ambiguous_unconstrained_top_level_var_rejected_neg`.
+    #[test]
+    fn ambiguity_check_rejects_codegen_reaching_unpinned_let_binding() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        // (defn m [] (let [x None] (match x [None 0 (Some _) 1])))
+        // `x : (Option a)`, `a` unpinned (match reads only the tag) — §3.11.1.
+        let body = Expr::Let {
+            bindings: vec![(
+                Symbol::from("x"),
+                Expr::var(Symbol::from("None"), span(60, 64)),
+            )],
+            body: Box::new(Expr::Match {
+                scrutinee: Box::new(Expr::var(Symbol::from("x"), span(70, 71))),
+                arms: vec![
+                    cranelisp_types::MatchArm {
+                        pattern: cranelisp_types::Pattern::Constructor {
+                            name: cranelisp_types::SymbolRef::new(None, Symbol::from("None")),
+                            bindings: vec![],
+                            span: span(73, 77),
+                        },
+                        body: Expr::IntLit { value: 0, span: span(78, 79), inferred_type: None },
+                        span: span(73, 79),
+                    },
+                    cranelisp_types::MatchArm {
+                        pattern: cranelisp_types::Pattern::Constructor {
+                            name: cranelisp_types::SymbolRef::new(None, Symbol::from("Some")),
+                            bindings: vec![Symbol::from("_")],
+                            span: span(82, 87),
+                        },
+                        body: Expr::IntLit { value: 1, span: span(88, 89), inferred_type: None },
+                        span: span(82, 89),
+                    },
+                ],
+                span: span(66, 90),
+                compiler_generated: false,
+                inferred_type: None,
+            }),
+            span: span(55, 91),
+            inferred_type: None,
+        };
+        let m = TopLevel::Defn(make_defn(
+            "m", vec![], vec![], body, Visibility::Public, span(50, 92),
+        ));
+        let result = tc.check(&[option_typedef(), m], &ctx, ModuleStrategy::Additive);
+        let err = result.expect_err(
+            "a codegen-reaching unpinned `let`-bound `(Option a)` value must be \
+             rejected as ambiguous (§3.11.1)",
+        );
+        let msg = format!("{err}").to_lowercase();
+        assert!(
+            msg.contains("ambiguous"),
+            "the §3.11.1 rejection must name 'ambiguous'; got: {msg}",
+        );
+    }
+
+    // spec: spec/03-types.md §3.11.3 — a NAMED polymorphic defn with
+    //       result-only free vars is ADMITTED (sound, dead-for-codegen). The
+    //       §3.11.1 check MUST NOT fire on `(defn ambig [] None)`. Mirrors the
+    //       e2e `regression::mono_ambiguous_neg_does_not_reach_codegen`.
+    #[test]
+    fn ambiguity_check_admits_named_polymorphic_defn() {
+        let mut tc = tc_with_prims();
+        let ctx = cf_test_ctx();
+        // (defn ambig [] None) — `(Fn [] (Option a))`, result-only var. ADMIT.
+        let ambig = TopLevel::Defn(make_defn(
+            "ambig",
+            vec![],
+            vec![],
+            Expr::var(Symbol::from("None"), span(40, 44)),
+            Visibility::Public,
+            span(38, 45),
+        ));
+        tc.check(&[option_typedef(), ambig], &ctx, ModuleStrategy::Additive)
+            .expect("a named result-only-var defn is sound and must be admitted (§3.11.3)");
+        // It is slot-less `Polymorphic` (NOT a `test-*` fn, so no mono root).
+        let table = tc.symbol_table();
+        let entry = table.get("ambig").expect("ambig registered");
+        assert!(
+            matches!(
+                entry,
+                ModuleEntry::Def { kind, .. }
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    )
+            ),
+            "a named result-only-var defn is slot-less `Polymorphic`, got {entry:?}",
+        );
+    }

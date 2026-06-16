@@ -1637,7 +1637,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// → the live view suffices (no staging shadow). It is restored unconditionally
     /// alongside the resolution/expr-type/auto-curry side state. `None` leaves the
     /// current module unchanged (the as-built same-module path).
-    fn recheck_body_for_mono(
+    pub(crate) fn recheck_body_for_mono(
         &self,
         state: &mut CheckState,
         defn: &mut Defn,
