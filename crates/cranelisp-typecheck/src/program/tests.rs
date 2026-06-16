@@ -5001,3 +5001,97 @@
         assert_concrete_int_result(&tc, "h1$");
         assert_concrete_int_result(&tc, "h2$");
     }
+
+    // spec: spec/07-traits.md §7.8 — CROSS-MODULE polymorphic-result hop mono
+    //
+    // FIXME 0373 (Tier 1.5) + /arch ruling (A): the cross-module analogue of the
+    // Tier-1 fix above. When the intervening hops `h1`/`h2` live in an IMPORTED
+    // module, the top-level pass (`collect_imported_constrained_calls`) collects
+    // `(h1 neg)` and monomorphises `h1` re-checking its body in `h1`'s DEFINING
+    // module (`hop`). The inner hop `(h2 f)` only becomes concrete during that
+    // recheck, so `monomorphise_inner_parametric_hops` must follow the import
+    // chain and re-monomorphise `h2` IN ITS DEFINING SCOPE (`hop`) — NOT in the
+    // caller's module, where `h2` is not even imported.
+    //
+    // The bug this guards: `recheck_body_for_mono` restores `state.current_module`
+    // to the caller (`caller`) BEFORE `monomorphise_inner_parametric_hops` runs.
+    // The pre-fix gate computed `inner_home` against `recheck_module` (`hop`), so
+    // a same-`recheck_module` inner hop got `None`, which made the recursive
+    // `monomorphise_call` look `h2` up in the (restored) caller module — where it
+    // does not exist → `None` → `h2` keeps a `Type::Var` result → RC-guard
+    // SIGSEGV one hop deeper. The fix gates on `state.current_module` so a hop in
+    // a different (defining) module is rooted at `Some(callee_home)`.
+    //
+    // This asserts BOTH cross-module hops monomorphise with a concrete `Int`
+    // result, the mono entries living in the CALLER's module (their codegen home).
+    #[test]
+    fn cross_module_polymorphic_result_hops_monomorphise_with_concrete_result_type() {
+        let mut tc = tc_with_prims();
+        let hop = ModuleFullPath::from("hop");
+        let caller = ModuleFullPath::from("caller");
+
+        // --- DEFINING module `hop`: the two polymorphic-result hops ------------
+        // (defn h1 [f] (h2 f)) ; result type generalizes to an unbound var
+        // (defn h2 [f] (f 5))  ; result type generalizes to an unbound var
+        tc.set_current_module(hop.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        let hop_src = "\
+            (defn h1 [f] (h2 f))\n\
+            (defn h2 [f] (f 5))";
+        let hop_sexps = cranelisp_frontend::parse(hop_src).expect("parse hop");
+        let hop_program = cranelisp_frontend::build_forms(&hop_sexps).expect("build hop");
+        tc.check_program_self(&hop_program)
+            .expect("hop module must type-check");
+
+        // --- CALLER module: imports `h1`, defines `neg`, calls `(h1 neg)` ------
+        tc.set_current_module(caller.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        seed_specific_import(&mut tc, &hop, &["h1"]);
+        let caller_src = "\
+            (defn neg [:primitives/Int x] :primitives/Int (sub-i64 0 x))\n\
+            (defn main [] (h1 neg))";
+        let caller_sexps = cranelisp_frontend::parse(caller_src).expect("parse caller");
+        let caller_program = cranelisp_frontend::build_forms(&caller_sexps).expect("build caller");
+        tc.check_program_self(&caller_program)
+            .expect("cross-module two-hop polymorphic-result program must type-check");
+
+        // Both cross-module hops must be monomorphised, with their mono entries
+        // registered in the CALLER's module (the 0355 caller-GOT-slot home).
+        let assert_concrete_int_result = |tc: &TestFixture, prefix: &str| {
+            let module = tc.modules.get(&caller).unwrap();
+            let (name, entry) = module
+                .all_symbols()
+                .find(|(n, _)| n.as_ref().starts_with(prefix))
+                .unwrap_or_else(|| {
+                    let all: Vec<String> = module
+                        .all_symbols()
+                        .map(|(n, _)| n.as_ref().to_string())
+                        .collect();
+                    panic!("no mono entry for {prefix} in caller; symbols: {all:?}")
+                });
+            match entry {
+                ModuleEntry::Def { scheme, kind, .. } => {
+                    assert!(
+                        matches!(
+                            kind.as_ref(),
+                            DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                        ),
+                        "{name} mono must be a Concrete UserFn (its own GOT slot), got {kind:?}",
+                    );
+                    match &scheme.ty {
+                        Type::Fn(_, ret) => assert_eq!(
+                            ret.as_ref(),
+                            &Type::Int,
+                            "{name}'s CROSS-MODULE mono result must be concrete Int, \
+                             not {ret:?} (FIXME 0373 Tier 1.5 — a Type::Var result \
+                             reproduces the cross-module RC-classification SIGSEGV)",
+                        ),
+                        other => panic!("{name} mono scheme not a Fn: {other:?}"),
+                    }
+                }
+                other => panic!("{name} mono entry not a Def: {other:?}"),
+            }
+        };
+        assert_concrete_int_result(&tc, "h1$");
+        assert_concrete_int_result(&tc, "h2$");
+    }

@@ -1767,9 +1767,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if inner_arg_types.len() != arg_spans.len() {
                 continue;
             }
-            // An inner hop in a different module than the recheck scope re-checks
-            // in its own home (0355 module switch); a same-module hop passes None.
-            let inner_home = if callee_home == recheck_module {
+            // FIXME 0373 (Tier 1.5 — CROSS-MODULE hops). `monomorphise_call`
+            // roots its callee lookup + body re-check at `home`, falling back to
+            // `state.current_module` when `home` is `None`. Crucially,
+            // `recheck_body_for_mono` has ALREADY RESTORED `state.current_module`
+            // to the caller's module by the time this runs — so the gate must be
+            // "is the inner callee in a different module than `state.current_module`
+            // NOW", not "than `recheck_module`". For a CROSS-MODULE parent hop
+            // (`h1` imported from `hop`, re-checked with `recheck_module = hop` but
+            // `state.current_module = user`), the inner hop `h2` lives in `hop`,
+            // which differs from the current `user`; passing `None` here would make
+            // `get_constrained_fn` look `h2` up in `user` (where it does not exist)
+            // → `None` → `h2` never re-monomorphised at the concrete
+            // `(Fn [Int] Int)` instantiation → its result stays `Type::Var` → the
+            // RC-guard SIGSEGV one hop deeper (the 0373 residual). Rooting at
+            // `Some(callee_home)` whenever the callee is not in the current module
+            // re-checks `h2`'s body in its defining (`hop`) scope (the 0355 module
+            // switch), yielding a concrete-`Int`-result `h2$` mono. A genuinely
+            // same-(current-)module inner hop still passes `None` (the as-built
+            // local path).
+            let inner_home = if callee_home == state.current_module {
                 None
             } else {
                 Some(callee_home.clone())
