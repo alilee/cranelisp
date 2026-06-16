@@ -64,6 +64,44 @@ impl Type {
             Type::Int | Type::Bool | Type::String | Type::Float => false,
         }
     }
+
+    /// Returns true if this type is **fully concrete** — no `Type::Var` (and no
+    /// `Type::TyConApp`, whose head is itself a type variable) anywhere in its
+    /// structure.
+    ///
+    /// **This is the GOT-slot eligibility predicate** (Principle 20, BC §7
+    /// "Callability is structural"). The architectural invariant is: a def has a
+    /// GOT slot **iff** its type is fully concrete. "Concrete" is *strictly
+    /// stronger* than "unconstrained" (no trait bounds): a generic-but-
+    /// unconstrained def (`id : ∀a. a→a`, or a HOF whose result is `(Box a)`)
+    /// carries **zero** trait constraints yet is **not** concrete. Gating GOT-slot
+    /// allocation on constraint-emptiness instead of concreteness was the leak that
+    /// let a non-concrete def reach codegen as a value (S84 — the `(Box a)`-through-
+    /// HOF SIGSEGV). The slot-allocation gate MUST test `is_concrete()`, not
+    /// `constraints.is_empty()`.
+    ///
+    /// `TyConApp` is treated as non-concrete because its `TypeId` head is an
+    /// unresolved higher-kinded type variable; a `TyConApp` reaching the slot gate
+    /// is by construction not a monomorphised concrete callable.
+    ///
+    /// Equivalent today to `!self.contains_var()` for the first-order fragment;
+    /// named separately because it expresses the *eligibility* intent at the gate
+    /// (the inverse `contains_var` expresses the *debug-tripwire* intent at
+    /// codegen), and because the `TyConApp`-head case is part of "concrete" but is
+    /// not a bare `Var`.
+    pub fn is_concrete(&self) -> bool {
+        match self {
+            Type::Var(_) => false,
+            // A type-constructor application's head is an unresolved HKT variable;
+            // a concrete callable never carries one at the slot gate.
+            Type::TyConApp(_, _) => false,
+            Type::Fn(params, ret) => {
+                params.iter().all(|p| p.is_concrete()) && ret.is_concrete()
+            }
+            Type::ADT(_, args) => args.iter().all(|a| a.is_concrete()),
+            Type::Int | Type::Bool | Type::String | Type::Float => true,
+        }
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -488,6 +526,64 @@ mod tests {
 
         let ty2 = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
         assert!(!ty2.contains_var());
+    }
+
+    // Principle 20 / BC §7 "Callability is structural": `is_concrete` is the
+    // GOT-slot-eligibility predicate. "Concrete" is strictly stronger than
+    // "unconstrained" — a generic-but-unconstrained type is NOT concrete.
+    #[test]
+    fn test_is_concrete_primitive() {
+        assert!(Type::Int.is_concrete());
+        assert!(Type::Bool.is_concrete());
+        assert!(Type::String.is_concrete());
+        assert!(Type::Float.is_concrete());
+    }
+
+    #[test]
+    fn test_is_concrete_var_is_not() {
+        // The leak case: a bare type var is not concrete (no slot).
+        assert!(!Type::Var(0).is_concrete());
+        // ∀a. a→a (the `id` shape): unconstrained, but NOT concrete.
+        let id = Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)));
+        assert!(!id.is_concrete());
+    }
+
+    #[test]
+    fn test_is_concrete_adt_field_var_is_not() {
+        // The S84 SIGSEGV shape: a HOF result `(Box a)` carries a Type::Var
+        // field — non-concrete, must NOT be slotted.
+        let box_a = Type::ADT(test_fqtn("Box"), vec![Type::Var(0)]);
+        assert!(!box_a.is_concrete());
+        // Its monomorphised instance `(Box Int)` IS concrete (gets a slot).
+        let box_int = Type::ADT(test_fqtn("Box"), vec![Type::Int]);
+        assert!(box_int.is_concrete());
+    }
+
+    #[test]
+    fn test_is_concrete_nested_fn() {
+        let concrete = Type::Fn(vec![Type::Int, Type::Bool], Box::new(Type::String));
+        assert!(concrete.is_concrete());
+        let leaky = Type::Fn(vec![Type::Int], Box::new(Type::Var(7)));
+        assert!(!leaky.is_concrete());
+    }
+
+    #[test]
+    fn test_is_concrete_tyconapp_is_not() {
+        // A type-constructor application's head is an unresolved HKT var.
+        assert!(!Type::TyConApp(0, vec![Type::Int]).is_concrete());
+    }
+
+    #[test]
+    fn test_is_concrete_is_inverse_of_contains_var_first_order() {
+        // For the first-order fragment, is_concrete == !contains_var.
+        for ty in [
+            Type::Int,
+            Type::Fn(vec![Type::Int], Box::new(Type::Bool)),
+            Type::Fn(vec![Type::Var(0)], Box::new(Type::Bool)),
+            Type::ADT(test_fqtn("Box"), vec![Type::Var(1)]),
+        ] {
+            assert_eq!(ty.is_concrete(), !ty.contains_var(), "{ty}");
+        }
     }
 
     #[test]

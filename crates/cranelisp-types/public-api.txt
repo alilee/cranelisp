@@ -515,6 +515,7 @@ pub cranelisp_types::Type::Var(cranelisp_types::TypeId)
 impl cranelisp_types::Type
 pub fn cranelisp_types::Type::adt(cranelisp_types::ModuleFullPath, cranelisp_types::TypeName, alloc::vec::Vec<cranelisp_types::Type>) -> cranelisp_types::Type
 pub fn cranelisp_types::Type::contains_var(&self) -> bool
+pub fn cranelisp_types::Type::is_concrete(&self) -> bool
 pub fn cranelisp_types::Type::is_io(&self) -> bool
 pub fn cranelisp_types::Type::unwrap_io(&self) -> &cranelisp_types::Type
 impl core::fmt::Display for cranelisp_types::Type
