@@ -190,85 +190,282 @@ This matches the sketch's `classify_expr` approach. The function strips module q
 
 ---
 
-## 5. Pipeline Insertion Point
+## 5. Pipeline Insertion Point (S84 — live wiring against the post-S78 cluster core)
 
-The pass runs **after AST building** and **before typechecking**, transforming `Defn` bodies in-place.
+> **Status (S84, FIXME 0367).** This section is REWRITTEN to specify the live
+> wiring seam against the post-S78 in-call-stack cluster orchestration. The
+> prior batch-mode / simple-batch / REPL three-flow design below (`compile_single_module`,
+> `compile_and_run`, the `ReplInput::Defn` hook) is **stale** — those entry
+> points were retired by the S78 restructure (`design/int/s77-int-restructure.md`,
+> `s78-entry-module.md`). The pass was left `#[allow(dead_code)]` through the
+> restructure (`apply_bind_chain_analysis`, `src/session_setup.rs:327`, zero live
+> callers; `src/lib.rs:20–26` "FIXME 0176 … bind_chain_analysis re-wires into the
+> worker"). S84 wires it onto the single live core. §5.3 below is the binding
+> design; §5.4–§5.5 (older prose) are retained as historical context only.
 
-### Batch Mode (`compile_single_module`)
+### 5.1 The single live seam — inside `process_cluster_once`, before `check_program_compat`
 
-In `src/pipeline.rs`, `compile_single_module()` currently has this flow:
+The post-S78 pipeline has **one** orchestration core that ALL three modes drive:
+`process_form::process_cluster_once` (`src/process_form.rs:852`). Both the worker
+entry (`cluster::process_cluster`, `ModuleStrategy::Replace` — `--run` / `--link`)
+and the REPL eval entry (`eval.rs::process_form_cluster` → `process_cluster_once`,
+`ModuleStrategy::Additive`) flow through it. This single-core property is what makes
+PO-0367.2 (mode uniformity) **structural**: wiring the pass at one point in
+`process_cluster_once` covers `--run`, `--link`, and REPL eval by construction —
+there is no second path to keep in sync, and no mode can silently skip it (the
+current dormant state is exactly a mode-uniformity hole; the fix closes it at the
+one place that all modes share).
+
+**The correct seam is `finalize_cluster`, immediately BEFORE `check_program_compat`
+(`src/process_form.rs:1060`), operating on the post-Pass-2-expansion
+`expanded_program`** — NOT the pre-expansion `program` built at line 947.
+
+**Why `expanded_program`, not `program`.** `bind!` is a macro. The bind-chain
+shape the pass recognises (`Apply(Var("bind"), [io_expr, Lambda([name], body)])`,
+§3.1) does not exist in source — it is produced by `bind!` macro expansion. In the
+post-S78 pipeline, **macro expansion happens in Pass 2**
+(`pass2_check_bodies_with_expansion`, `src/process_form.rs:961`), which populates
+`expanded_program` (extended at `:1402`). The pre-expansion `program` at line 947 is
+the *regular non-macro* forms only, with `bind!` still unexpanded — so transforming
+it would see no bind chains. The algorithm's stated requirement ("after AST build /
+macro expansion, before typecheck") maps, post-S78, to: **after Pass 2 builds
+`expanded_program`, before `finalize_cluster` calls `check_program_compat`.** This is
+the load-bearing correction over the stale §5.4 design, which assumed a
+`build_program` flow where `bind!` was already expanded at build time.
+
+### 5.2 Exact call-order constraint
+
+In `finalize_cluster` (`src/process_form.rs:1043`) the current order is:
 
 ```
-Phase 3: process_forms_sequentially (macro expansion)
-Phase 4: build_program (AST building)           ← program: Vec<TopLevel>
-Phase 5: tc.check_program(&program)              ← typechecking
-Phase 6: compile_program                          ← codegen
+1049  let mut final_working = wrap_exprs_as_defns(expanded_program);
+1056  for defn in &accumulator.default_method_defns { final_working.push(...) }
+1060  let (maybe_gap, cluster_warnings) = check_program_compat(.., &final_working)?;
 ```
 
-Insert bind chain analysis between Phase 4 and Phase 5:
+The pass is invoked **between line 1058 and line 1060** — over `final_working`
+(the wrapped `expanded_program` plus appended default-method defns), after the
+defaults are appended and BEFORE `check_program_compat`. Rationale for "over
+`final_working`, after defaults appended":
 
-```rust
-// Phase 4: Build program AST from accumulated sexps.
-let mut program = cranelisp_frontend::build_program(
-    &accumulated,
-    &mut session.expander,
-)?;
+- The pass MUST run before typecheck because `ParBind` is a distinct `Expr`
+  variant the typechecker must see (it infers the bindings' types and the body).
+  Transforming after typecheck would leave the inferred types stale.
+- Running over `final_working` (rather than `expanded_program` directly) folds the
+  default-method defns into the same transform sweep — a default method body may
+  itself contain a `bind!` chain. `wrap_exprs_as_defns` has already lifted bare
+  top-level exprs into defns, so a single `for defn in &mut final_working` sweep
+  (the `apply_bind_chain_analysis` shape, §5.3) covers every body uniformly.
 
-// Phase 4b: Bind chain independence analysis (auto IO scheduling).
-// Transform eligible bind chains into ParBind nodes.
-if !session.scheduling_registry.is_empty() {
-    for item in &mut program {
-        if let TopLevel::Defn(defn) = item {
-            bind_chain_analysis::auto_schedule_defn(defn, &session.scheduling_registry);
-        }
-    }
-}
+**Idempotency under retry-from-top.** `finalize_cluster` can run MULTIPLE times for
+one cluster: an FQ-auto-load gap (`:1067`) returns `ClusterOnce::Gap` and the cluster
+**retries from the top** against larger live state (`s78-entry-module.md` §3). Each
+retry rebuilds `expanded_program` fresh from `sexps` (Pass 2 re-runs) and calls
+`finalize_cluster` again. The pass MUST therefore be **idempotent** — running it on
+an already-`ParBind`-transformed tree must produce the same tree. This holds: the
+pass rebuilds `expanded_program` from scratch each pass (it is never mutated in place
+across retries — `expanded_program` is a fresh `Vec` per `process_cluster_once`
+invocation, `:862`), and `recurse_children` already handles a pre-existing
+`Expr::ParBind` node (`bind_chain_analysis.rs:467`) by recursing its children without
+re-grouping. The §2 "idempotent" invariant is thus preserved by construction — no new
+work is required, but the retry-from-top property makes it a **hard correctness
+requirement**, not a nicety. Flag: this is the one interaction the wiring must not
+break; the unit tests in §8.1 must include an "apply twice = apply once" assertion.
 
-// Phase 5: Typecheck
-let check = session.tc.check_program(&program)?;
-```
+### 5.3 The entry function and dropping `#[allow(dead_code)]`
 
-The `session.scheduling_registry.is_empty()` guard skips the pass entirely when no platform DLLs are loaded (the common case for pure programs, Ring 0-3 tests, etc.). This ensures zero overhead for programs that don't use IO.
+`apply_bind_chain_analysis` (`src/session_setup.rs:327`) is the correct entry shape —
+it already iterates `Defn` and `TraitImpl` method bodies, calling
+`auto_schedule_defn` per body. The wiring:
 
-### Simple Batch Mode (`compile_and_run`)
+1. **Drop `#[allow(dead_code)]`** on `apply_bind_chain_analysis` (`:328`). Once it
+   has a live caller the lint is satisfied; keeping the attribute would mask a future
+   accidental disconnection. (The three `auto_schedule_expr*` helpers and
+   `scheduling_of` in `bind_chain_analysis.rs` stay `#[allow(dead_code)]` — they are
+   not on this path; `auto_schedule_defn` is the only live entry and is already
+   un-attributed.)
+2. **Call it from `finalize_cluster`**, between `:1058` and `:1060`:
+   `crate::session_setup::apply_bind_chain_analysis(&mut final_working, ctx.symbol_tables, module)`
+   (subject to the flag gate, §7). `final_working: Vec<TopLevel>` is already `mut`-able
+   at that point; `ctx.symbol_tables` (the `&DashMap<ModuleFullPath, SessionSymbolTable>`)
+   and `module: &ModuleFullPath` are both in scope.
+3. **Type note.** `apply_bind_chain_analysis` currently takes
+   `&DashMap<ModuleFullPath, cranelisp_types::SymbolTable>` but `ctx.symbol_tables`
+   is `&DashMap<ModuleFullPath, crate::code::SessionSymbolTable>` (the `<Code, ()>`
+   concretisation). The signature must be reconciled to the session table type —
+   `auto_schedule_defn`'s `SymbolTables` alias (`bind_chain_analysis.rs:31`) is
+   `DashMap<ModuleFullPath, SymbolTable>` (the generic `()/()` form). Whether
+   scheduling-class lookup needs `SessionSymbolTable` or the plain `SymbolTable`
+   is a `/dev`(int) reconciliation detail: the lookup reads only
+   `ModuleEntry::Def { kind: DefKind::PlatformEffect { scheduling_class } }` and
+   `ModuleEntry::Import` (`bind_chain_analysis.rs:210`), both of which are present in
+   both table concretisations. If a generic-parameter mismatch surfaces, the entry
+   fn is genericised over the table's `Code`/`Linker` params or `auto_schedule_defn`
+   is read through a `&SymbolTable` view — `/dev`(int)'s call; flag to `/design` if it
+   forces a `cranelisp-types` change (it should not — the read is over fields that
+   exist at the `()/()` boundary).
 
-The same insertion applies to `compile_and_run()`:
+### 5.4 Cheap-skip guard (replaces the stale `scheduling_registry.is_empty()`)
 
-```rust
-let mut program = session.process_and_build_program(sexps)?;
+The stale design guarded on `session.scheduling_registry.is_empty()`. That field no
+longer exists (the registry was deleted in S57 Wave 3 G8 — scheduling class now lives
+on `DefKind::PlatformEffect`, `bind_chain_analysis.rs:6–7`). The post-S78 cheap skip:
+the pass walks `final_working` and, for each `bind!`-derived chain, looks up the
+callee's class via the symbol tables; a module with **no** loaded platform DLL has no
+`PlatformEffect` entries, so every `classify_expr` returns `Sequential` and no
+`ParBind` is ever emitted — the pass is already a near-no-op for pure programs (one
+AST walk, no allocation of `ParBind` nodes). The remaining cost is the single
+recursive `transform_expr` walk per body. If profiling shows that walk is material
+for pure Ring-0..3 programs (it should not be — it is one pass over already-built
+ASTs), a cheap presence guard can be added: skip the call when the module's own table
++ its transitive imports contain zero `PlatformEffect` entries. **This guard is
+optional and NOT part of the soundness contract** — recommend landing without it and
+adding only if a measured regression appears. (Do NOT resurrect a syntactic
+program-scan gate — the `program_uses_*` family was deleted in S66 Wave 3a-γ for the
+reasons in FIXME 0178; gate on table contents, never on a source scan.)
 
-// Bind chain analysis (auto IO scheduling).
-if !session.scheduling_registry.is_empty() {
-    for item in &mut program {
-        if let TopLevel::Defn(defn) = item {
-            bind_chain_analysis::auto_schedule_defn(defn, &session.scheduling_registry);
-        }
-    }
-}
+### 5.5 Module Location (unchanged)
 
-let check = session.tc.check_program(&program)?;
-```
+The pass lives in `src/bind_chain_analysis.rs` in the binary crate, since it requires
+platform scheduling data (read from the session symbol tables) that is only available
+at the pipeline integration level. It is not suitable for the backend crate (needs the
+live tables) or the frontend crate (not a parsing concern). The `apply_bind_chain_analysis`
+driver lives in `src/session_setup.rs`; the algorithm in `src/bind_chain_analysis.rs`.
 
-### REPL Mode
+### 5.6 Historical: the stale pre-S78 three-flow design (retained for context)
 
-In the REPL eval path, individual forms are processed one at a time. When a `defn` is evaluated:
-
-```rust
-// After AST building, before typechecking:
-if let ReplInput::Defn(ref mut defn) = input {
-    if !self.scheduling_registry.is_empty() {
-        bind_chain_analysis::auto_schedule_defn(defn, &self.scheduling_registry);
-    }
-}
-```
-
-This mirrors the sketch's approach at `sketch/src/repl/input.rs:303`.
-
-### Module Location
-
-The pass lives in a new module `src/bind_chain_analysis.rs` in the binary crate, since it requires platform scheduling data that is only available at the pipeline integration level. It is not suitable for the backend crate (needs platform data) or the frontend crate (not a parsing concern).
+The original §5 specified three separate insertion points (`compile_single_module`,
+`compile_and_run`, and a `ReplInput::Defn` REPL hook mirroring
+`sketch/src/repl/input.rs:303`). All three entry points were retired by the S78
+in-call-stack restructure, which collapsed the per-mode flows into the single
+`process_cluster_once` core (`src/CLAUDE.md` §"Cluster-Atomic Orchestration",
+S78 status). The single-seam design in §5.1 supersedes the three-flow design: one
+seam, mode-uniform by construction, is strictly better than three hooks that must be
+kept in sync (the three-hook shape was itself a mode-uniformity hazard of exactly the
+kind Principle 11 — single pipeline, mode parameters — warns against).
 
 ---
+
+## 5b. Transform-correctness contract (PO-0367.1) — case → enforcing-function map
+
+The S84 architecture review (`sprints/SPRINT.md` §2, PO-0367.1) pins the Par-emission
+contract as the cheapest soundness guard, checkable as **pure deterministic
+AST-property assertions** (no concurrency in the test). Each MUST-emit / MUST-NOT-emit
+case below maps to the grouping-logic function that enforces it, with a gap flag where
+the live wiring could expose a weakness the unit tests must pin.
+
+| # | Case | Required outcome | Enforcing function (`bind_chain_analysis.rs`) | Gap flag |
+|---|---|---|---|---|
+| C1 | Data-independent + different-resource-token (or token-0 / `Commutative`) pair | **MUST emit** `ParBind` (≥2 bindings) | `rebuild_chain` `:314` — `sc != Sequential && is_independent(...)` accumulates into `current_par`; `flush_par_group` `:283` emits `Parallel` when `len() >= 2` | — |
+| C2 | Data-dependent binding (later binding refs an earlier-bound name) | **MUST NOT** Par-group (stays sequential) | `is_independent` `:247` over `free_vars_expr` `:252` — disjointness of the io_expr's free vars vs `all_bound` (committed + current group, `:309`) | **G1** (below) |
+| C3 | Same non-zero resource token pair | **MUST NOT** be hoisted to independent branches (serial group at most, never independent) | — see **G2** | **G2** (below) |
+| C4 | `Sequential`-class pair (e.g. `read-line`/`print` ordering) | **MUST NOT** Par-group | `rebuild_chain` `:314` — `sc != Sequential` is the gate; a `Sequential` callee fails it and is flushed as `Segment::Sequential` `:324` | — |
+| C5 | Single eligible binding (1-element group) | demote to sequential bind (no `ParBind` overhead) | `flush_par_group` `:287` — `len()==1` arm demotes to `Segment::Sequential` | — |
+| C6 | Non-platform-call io_expr (wrapper fn, nested bind, let) | conservatively `Sequential` | `classify_expr` `:179` — only `Apply(Var(name), ..)` resolving to a `PlatformEffect` entry is classified; everything else → `Sequential` `:202` | — |
+
+### Gap G1 — `free_vars_expr` correctness is the C2 soundness load-bearer
+
+C2 (the data-dependency negative) reduces entirely to `free_vars_expr` (`cranelisp-types`)
+computing the *complete* free-variable set of an `io_expr`. If `free_vars_expr` under-reports
+a free var (misses a capture in some `Expr` variant), a dependent binding would be wrongly
+classified independent and hoisted into a `ParBind` — a **soundness violation** (reordering
+a data-dependent effect). This is not int-owned code (it is `cranelisp-types`), but the
+*reliance* is int's. **The §8.1 unit tests MUST include the dependency negative over every
+`Expr` variant that can carry a free var** (`Apply` arg, `Let` binding RHS, `If` branches,
+`Match` scrutinee+arms, `Lambda` body minus its own params, `VecLit`, `Annotate`, `ConstrADT`
+field, nested `ParBind`). If a variant is found under-reported, file FIXME `target: /arch`
+(the type lives in `cranelisp-types`, `/arch`-owned) — NOT a local int patch. The current
+tests cover only the `Apply`-arg case (`test_dependent_expression` `:696`); the gap is the
+remaining variants.
+
+### Gap G2 — same-non-zero-token serial grouping is NOT enforced at the int seam (it is the trampoline's job)
+
+This is the most important gap to record correctly, because it determines what the int-seam
+unit tests can and cannot prove. **The bind-chain analysis pass does NOT distinguish "same
+non-zero token" from "different token" — it groups by `SchedulingClass` (`Sequential` vs
+non-`Sequential`) and data-independence ONLY** (`rebuild_chain` `:314`). Two
+`ResourceSerial` calls with the **same** token that are data-independent WILL be grouped
+into one `ParBind` by this pass. C3's "MUST NOT be hoisted to independent branches" is
+**not** enforced here — it is enforced **at runtime by the trampoline's token grouping**:
+`dispatch_par_branches` groups branches by resource token into
+`WorkItem::SerialGroup` (same non-zero token → run sequentially) vs `WorkItem::Single`
+(token-0 / independent → run concurrently) (per FIXME 0367 / `design/backend/io-scheduling.md`
+§5.2). So a `ParBind` over two same-token `ResourceSerial` calls is *correct*: the compile
+pass emits the `ParBind`, and the trampoline serialises the same-token branches **inside** it.
+
+**Implication for the contract.** C3 at the *AST seam* is therefore satisfied vacuously —
+the pass never produces "independent branches" as a runtime concept; it produces a `ParBind`,
+and "independent vs serial" is a runtime token decision. The int-seam unit tests (§8.1)
+assert the AST-property facts they CAN: C1 (independent diff-class → `ParBind`), C2
+(data-dependent → no `ParBind`), C4 (Sequential → no `ParBind`), C5/C6. The same-token
+serialisation guarantee (C3 proper) is witnessed by the **runtime timing pair** in PO-0367.3
+(`resource_serial_same_token_serializes` staying green), NOT by an int-seam unit test. This
+is the correct division: the int pass is a single-threaded AST transform whose contract is
+"emit `ParBind` for independent non-Sequential pairs"; the token-serialisation contract lives
+in the already-tested trampoline dispatch (which 0367 does NOT modify — `sprints/SPRINT.md`
+§2 point (b)). **No gap in the wiring** — but the test plan must place each guard at the
+layer that can actually witness it (§8). Record: do NOT attempt to assert same-token
+serialisation at the int unit-test seam; it is structurally not observable there.
+
+### Disjointness from the scheduler surface (confirming the /arch read)
+
+Source-read confirmation of `sprints/SPRINT.md` §2 point (a)/(b): the wired pass
+(`auto_schedule_defn` → `transform_expr`) takes `&mut Defn` + `&SymbolTables` (read-only)
++ `&ModuleFullPath`, spawns no threads, takes no locks, and touches no scheduler state — it
+runs inside `finalize_cluster`, the worker's own sequential per-cluster phase. The only shared
+structure it reads is `ctx.symbol_tables` (a `DashMap`, already thread-safe, read during this
+worker's own phase). **No contradiction with the /arch read was found** — the Par *dispatch*
+path (`dispatch_par_branches`) is not touched by this wiring and shares no state with the
+scheduler. (If `/dev`(int) finds otherwise during implementation, that is a FIXME `target: /arch`
++ Phase-5 escalation per the review, not a Phase-3 design change.)
+
+## 5c. Flag-staging the live activation (S84 — RECOMMENDED, non-mandatory)
+
+Per the /arch review (`sprints/SPRINT.md` §2, "Staging behind a flag — RECOMMENDED"),
+the wiring flips a previously-inert feature ON across all three modes at once. The
+review *recommends* (does not mandate) an env-gated activation defaulting **ON**, so
+that (a) if an unforeseen interaction surfaces the pass can be disabled at the seam
+without reverting the change-set, and (b) the PO-0367.1 negatives can be checked with
+the pass forced on.
+
+### Flag design
+
+| Property | Value |
+|---|---|
+| Flag name | `CRANELISP_NO_IO_SCHEDULE` |
+| Semantics | **Presence disables** the pass (default = absent = pass ON). Matches the existing src/ convention: boolean flags are presence-checked via `std::env::var("CRANELISP_*").is_ok()` (see `CRANELISP_CODEGEN_TRACE`, `CRANELISP_IO_TRACE`). |
+| Default | **ON** (pass runs). The feature is a §10.12 MUST — default-on is correct; the flag is an escape hatch, not an opt-in. |
+| Check location | **Once**, at the call site in `finalize_cluster` (`src/process_form.rs`, §5.3 step 2) — NOT per-defn. Reading the env var once per cluster is cheap; reading per-body is wasteful. |
+
+```rust
+// In finalize_cluster, between :1058 and :1060 (the §5.3 seam):
+if std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err() {
+    crate::session_setup::apply_bind_chain_analysis(
+        &mut final_working, ctx.symbol_tables, module,
+    );
+}
+```
+
+### Naming rationale
+
+- `CRANELISP_NO_IO_SCHEDULE` (not `CRANELISP_NO_PARALLEL`) keeps IO scheduling
+  (§10.12) **separate** from lenient eval (§12.4.3) — the two are independent features
+  with different safety profiles (§6). A debugger isolating an IO-ordering anomaly
+  disables *this* pass without also disabling pure-let parallelism, and vice versa.
+- The `NO_`-prefix presence-disables convention means the common path (no env var)
+  gets the pass — no env read changes the default-on behaviour.
+
+### Optionality (per /arch)
+
+The flag is a **convenience, not a soundness precondition** — the blast radius is one
+compile-time pass + one already-tested runtime dispatch path, not the scheduler. **If a
+clean unconditional wiring lands with PO-0367.1–.3 all green, the flag is optional and
+MAY be dropped.** Recommend landing WITH the flag for the first cut (it costs one
+`env::var` check and bounds the blast radius during the sprint), then a follow-up may
+remove it once the timing witnesses are stably green. The PO-0367.1 unit tests call
+`apply_bind_chain_analysis` (or `auto_schedule_defn`) **directly**, bypassing the env
+gate — so the negatives are always checked with the pass forced on regardless of the
+flag state (the flag gates only the pipeline call site, not the function).
 
 ## 6. CRANELISP_NO_LENIENT Interaction
 
@@ -284,22 +481,11 @@ Automatic IO scheduling (spec §10.12) is a **different feature**: it parallelis
 2. **Debugging needs differ**: A user debugging IO ordering issues needs to disable IO parallelism specifically. A user debugging a performance regression in pure code needs to disable lenient eval specifically.
 3. **Safety profiles differ**: Lenient eval is semantically transparent for pure expressions. IO scheduling is semantically transparent only for Commutative effects. The correctness arguments are different.
 
-If a separate env var is desired for IO scheduling, use `CRANELISP_NO_IO_SCHEDULE=1`. Implementation:
-
-```rust
-// In the pipeline, before calling auto_schedule_defn:
-let io_schedule_enabled = std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err();
-
-if io_schedule_enabled && !session.scheduling_registry.is_empty() {
-    for item in &mut program {
-        if let TopLevel::Defn(defn) = item {
-            bind_chain_analysis::auto_schedule_defn(defn, &session.scheduling_registry);
-        }
-    }
-}
-```
-
-The env var check is done once at the pipeline entry point, not per-defn.
+The IO-scheduling kill switch is `CRANELISP_NO_IO_SCHEDULE` — its full design (name,
+default-on semantics, single check at the `finalize_cluster` seam) is specified in
+**§5c**. The stale code snippet that previously lived here (guarding on the deleted
+`session.scheduling_registry` field and the retired `compile_single_module` flow) is
+removed; see §5c for the live snippet against the post-S78 seam.
 
 ### Alternative: Single Kill Switch
 
@@ -352,22 +538,92 @@ The body-swap technique (`std::mem::replace` with a dummy expression) is necessa
 
 ---
 
-## 8. Testing Strategy
+## 8. Testing Strategy (S84 — mapped to PO-0367.1/.2/.3)
 
-### Unit Tests (in `src/bind_chain_analysis.rs`)
+The proof obligation has three parts, each placed at the layer that can witness it
+(§5b Gap G2 is the load-bearing reason the layers differ). `/dev`(int) owns §8.1
+(unit, alongside the wiring); `/qa` owns §8.2–§8.3 (e2e).
 
-- **Pattern recognition**: `is_bind_chain_start` correctly identifies bind patterns and rejects non-bind forms.
-- **Chain collection**: `collect_bind_chain` flattens 1, 2, 3+ deep chains correctly.
-- **Classification**: `scheduling_of` returns correct class for bare names, qualified names, and unknown names.
-- **Independence**: `is_independent` correctly detects free variable overlap.
-- **Grouping**: 2 commutative independent → 1 ParBind; 2 sequential → 2 sequential binds; mixed chains group correctly; single-element groups demote.
+### 8.1 PO-0367.1 — int-seam unit tests (deterministic AST-property assertions; `/dev` on int)
 
-### Integration Tests (owned by `/qa`)
+These are pure AST-property assertions — **fully deterministic, no concurrency in the
+test** — that call `auto_schedule_defn` / `transform_expr` directly (bypassing the env
+gate, §5c). Several already exist in `src/bind_chain_analysis.rs::tests`; the S84
+additions pin the negatives the contract requires (§5b). The seam is the test module
+in `src/bind_chain_analysis.rs`:
 
-- Commutative + data-independent bind pairs produce `ParBind` AST nodes.
-- Sequential bind pairs remain as sequential bind calls.
-- Mixed chains: commutative pair followed by sequential step correctly segments.
-- Dependent commutative pair (one uses other's binding) stays sequential.
-- Nested bind chains inside lambdas are also transformed.
-- `CRANELISP_NO_IO_SCHEDULE=1` disables the pass entirely.
-- Programs without platform declarations skip the pass (zero overhead).
+**MUST-emit positives:**
+- C1 — `test_two_commutative_independent_become_par_bind` (`:704`, EXISTS) — independent
+  non-`Sequential` pair → one `ParBind` with 2 bindings.
+
+**MUST-NOT-emit negatives (the cheapest soundness guard — these are the S84 additions):**
+- C2 — data-dependent binding stays sequential. `test_dependent_commutative_stays_sequential`
+  (`:751`, EXISTS) covers the `Apply`-arg case. **ADD** the dependency-negative over the
+  remaining `Expr` variants that can carry a free var (Gap G1): `Let`-RHS, `If`-branch,
+  `Match`-scrutinee/arm, `Lambda`-body, `VecLit`-elem, `Annotate`, `ConstrADT`-field,
+  nested `ParBind`. Each asserts: a later io_expr referencing an earlier bound name via
+  that variant → result is NOT `ParBind`.
+- C4 — `test_sequential_stays_sequential` (`:731`, EXISTS) — `Sequential`-class pair
+  (two `print`s) → no `ParBind`.
+- C5 — `test_single_element_demoted` (`:771`, EXISTS) — 1-element group → no `ParBind`.
+- C6 — `test_classify_sequential_default` (`:663`, EXISTS) — non-platform call → `Sequential`.
+
+**Idempotency (the retry-from-top requirement, §5.2):**
+- **ADD** `test_transform_idempotent` — `transform_expr(transform_expr(e)) == transform_expr(e)`
+  for an independent-pair chain (the result already contains a `ParBind`; re-running must
+  not change it). This pins the §5.2 hard correctness requirement that `finalize_cluster`
+  may run the pass multiple times on retries.
+
+**Mixed segmentation:**
+- **ADD** `test_mixed_chain_segments` — a `[independent, independent, dependent, independent]`
+  chain produces `ParBind(2) → Sequential → Sequential` (the dependent step flushes the
+  group, then stands alone). Pins `flush_par_group` boundary behaviour at the seam.
+
+All §8.1 tests carry `// spec: 10-io.md §10.12.1` annotations. They are the Wave-0
+failing-first guards the /arch refinement calls for ("the negatives are the cheapest
+soundness guard and must exist before wiring") — authored before the §5.3 call site
+lands.
+
+### 8.2 PO-0367.2 — mode-uniformity e2e (`/qa`)
+
+A guard showing the **same source emits the same Par-grouping decision in all three
+modes** (`--run`, `--link`, REPL eval) — there must be NO mode that silently skips the
+pass. Because §5.1 establishes the wiring is at the single shared `process_cluster_once`
+core, this is structurally guaranteed; the e2e is the *witness* that the structural
+property holds end-to-end. Candidate instrument: a program with one independent
+`Commutative`/`ResourceSerial`-pair `bind!` chain, run under all three modes, asserting
+identical observable scheduling (the timing witness of §8.3 under `--run` + `--link`,
+plus a REPL-eval path that reaches the same `finalize_cluster` seam). `/qa` owns the
+exact harness shape; the design point of record is **the seam is mode-uniform by
+construction (single core)** — the e2e confirms it, it does not have to engineer it.
+
+### 8.3 PO-0367.3 — the structured-fork-join timing witness (`/qa` + `/platform`)
+
+The only genuinely-concurrent obligation, and it is narrow (§5b Gap G2; `sprints/SPRINT.md`
+§2 PO-0367.3). The witness is the existing failing-not-ignored guard pair in
+`tests/spec_10_io.rs`:
+
+- `resource_serial_diff_token_parallelizes` — currently **RED** (diff-token wall-clock
+  ~2× single-call because no `ParBind` is emitted). **Flips GREEN** when this wiring
+  lands (diff-token concurrent wall-clock < 1.5× single-call duration, `--run` + `--link`).
+  This is FIXME 0353's closure condition.
+- `resource_serial_same_token_serializes` — currently GREEN; **MUST stay GREEN**. The
+  regression guard that same-token branches still serialise (witnesses C3 proper, §5b
+  Gap G2 — the trampoline's token-serialisation decision, which this wiring does NOT
+  perturb).
+
+The diff-token-parallelises + same-token-serialises pair together witness the
+token-serialisation decision AND the fork-join join semantics — a sound proof for this
+structured-fork-join surface (the S62 "timing/stress insufficient" caveat applies to the
+*unstructured scheduler* surface, not this one; `sprints/SPRINT.md` §2).
+
+### 8.4 Coverage of the older integration-test list
+
+The pre-S84 integration list (commutative pairs → `ParBind`; sequential stays sequential;
+mixed-chain segmentation; dependent-pair sequential; nested-in-lambda; flag disables;
+zero-overhead skip) is **subsumed**: the AST-property facts are now §8.1 unit tests (the
+right layer — deterministic, no e2e needed for AST shape); the runtime-observable facts
+are §8.2–§8.3. The flag-disables case is a §8.1 call-site test (set `CRANELISP_NO_IO_SCHEDULE`,
+assert the pipeline produces no `ParBind`) — but note the unit tests of the *function*
+bypass the flag by design (§5c). Nested-in-lambda is a §8.1 case (`recurse_children`
+descends into `Lambda` bodies, `bind_chain_analysis.rs:423`).

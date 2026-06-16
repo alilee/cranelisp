@@ -1,0 +1,194 @@
+# Sprint 84: Full Monomorphisation + Auto-IO Parallelisation
+
+**Status**: PHASE 3 DESIGN
+
+**Goal**: Make full monomorphisation-from-roots total (no `Type::Var` reaches codegen) and retire the unsound polymorphic-path RC guard; and re-wire the dormant §10.12 auto-IO-scheduling pass so independent IO effects actually parallelise.
+
+## Scope
+
+Two technically-independent clusters (disjoint crates), both **committed to ship** this sprint (user direction, S84 planning — "both, fully committed"). This is the largest sprint in the post-S62 arc; there is **no cut-hatch** for either cluster, so Phase 2 must front-load the risk read (especially the concurrency-testing methodology — see §Architecture review gate).
+
+### Cluster A — Full Monomorphisation (the codegen-concreteness guarantee)
+
+Settled architecture: `bounded-contexts.md` §2 (typecheck monomorphisation-from-roots) + §3 invariant 9 (backend RC soundness). The 0373 investigation (user-ratified 2026-06-14) established that Cranelisp is rank-1 HM ⇒ full monomorphisation from the roots is **complete**, and is the only fix that keeps representation backend-internal. S83 landed Tier 1 + 1.5 (`5634dd3`, `9e57330`) — the polymorphic-**result-hop** subset. S84 delivers the systematic remainder + the gated downstream payoffs.
+
+- **`0374` (/typecheck) — Tier 2 full mono-from-roots.** Generalise the per-`(Def, type-args)` instance model beyond the result-hop / 0355-constrained / cross-module subsets so that **every reachable fn instance** has fully concrete parameter and result types under any reachable instantiation — NO `Type::Var` reaches the codegen boundary. Builds on the landed `collect_local_parametric_calls` / `monomorphise_inner_parametric_hops` machinery (`crates/cranelisp-typecheck/src/{program,traits}.rs`), not a parallel pass. **The spine; gates 0375 and 0373(iii).**
+- **`0375` (/backend) — retire the unsound `<1024` guard from the `Type::Var` path.** Once 0374 guarantees concreteness: make the `Type::Var` arm of `HeapCategory::classify` an assert/panic (a `Type::Var` at codegen is now a compiler bug), and retire `emit_rc_inc_guarded` from that path — **keeping it ONLY** for nullary-tag ADT discrimination within `Mixed` ADTs (its sound origin). **Gated on 0374.**
+- **`0373` (/spec) — rank-1 HM statement + ambiguity rule + §12.1 relaxation.** (i) Normative §3.x: Cranelisp is rank-1 HM (no quantified types in value position; instantiation at every use; monomorphic recursion enforced). (ii) Defaulting/ambiguity rule: an unconstrained top-level type var remaining after inference is a **type error** (no Haskell-style defaulting). (iii) Relax §12.1 from uniform-machine-word mandate to backend-chooses-representation. **(i)+(ii) land independently; (iii) is gated on 0374.**
+
+### Cluster B — Auto-IO Parallelisation (re-wire §10.12)
+
+Spec §10.12 is a MUST: the compiler MUST insert `Par` nodes for data-independent effect pairs, and the trampoline MUST serialise same-resource-token branches while running different-token branches concurrently. The grouping algorithm + backend `Par` codegen + trampoline dispatch all exist and are unit-tested; the pass that feeds them is dead code.
+
+- **`0367` (/int) — re-wire the live pipeline.** `apply_bind_chain_analysis` / `auto_schedule_defn` is `#[allow(dead_code)]` with zero live callers — no `Par` node is ever emitted from user source. Re-wire the bind-chain independence analysis onto the live `--run` / `--link` / REPL compile path (candidate seam: invoke it from the worker's build/check form chain, mode-uniform), then verify the data-dependency and Sequential-class negatives still hold (a dependent binding or a `read-line`/`print` Sequential pair MUST NOT Par-group). **Re-enters the S60–62 heisenbug-race territory** — see §Architecture review gate; this is why the cluster carries methodology risk despite being "just wiring."
+- **`0353` (/platform + /qa) — close.** The ResourceSerial fixture landed S83; closure condition is the failing guard `tests/spec_10_io.rs::resource_serial_diff_token_parallelizes` flipping green (diff-token concurrent wall-clock < 1.5× single-call duration, `--run` + `--link`). 0353 is NOT closed until 0367 lands and that guard is green.
+
+### Out of scope (forward-flow / future sprints)
+
+- `0366` (REPL cross-cluster accessor poisoning) — niche; long-term answer is the `Type.member` escape. Failing guard carries.
+- `0365` (`Type.member` accessor qualification) — future capability.
+- `0368`–`0372` (post-D43 audit remediation: primitives heap-offset single-source, intrinsics BC reconcile + monolith decomposition, platform schema round-trip pin + platform.md §3 refresh) — forward-flow; `0371` is a latent-correctness risk and should be re-considered for S85.
+- `0050` / `0052` (display protocol, `/learn`) — Phase H.
+
+## FIXME debt
+
+| FIXME | Target skill | Status | Notes |
+|---|---|---|---|
+| 0374 | /typecheck | open | Cluster A spine — Tier-2 full mono-from-roots; gates 0375 + 0373(iii) |
+| 0375 | /backend | open | Cluster A — retire `<1024` `Type::Var` RC guard; **gated on 0374** |
+| 0373 | /spec | open | Cluster A — rank-1 HM (i) + ambiguity rule (ii) [independent] + §12.1 relax (iii) [gated on 0374] |
+| 0367 | /int | open | Cluster B spine — re-wire auto-IO scheduling onto live pipeline |
+| 0353 | /platform·/qa | open | Cluster B — closes when `resource_serial_diff_token_parallelizes` green |
+| 0366 | /typecheck | open (out of scope) | REPL accessor poison — carries; failing guard |
+| 0365 | /spec | open (out of scope) | `Type.member` escape — future |
+| 0368–0372 | /dev·/arch·/design | open (out of scope) | Audit remediation — forward-flow (re-consider 0371 for S85) |
+| 0050, 0052 | /design·/docs | open (out of scope) | Phase H |
+
+## Architecture review (Phase 2)
+
+**Reviewer:** /arch. **Verdict:** SIGN-OFF to advance to Phase 3 — with one mandatory proof obligation pinned for Cluster B (point 2 below) and one wave-structure refinement (Notes). No required revisions to scope. Both clusters are architecturally coherent and cross-cluster independent. The methodology gate is **resolvable in Phase 2** (it does not require new /spec or /int design input) — the ruling is below.
+
+### 1. Cluster A coherence — CONFIRMED
+
+**Tier-2 extends, does not fork.** The Tier-1/1.5 machinery is live and present at the cited seams (`collect_local_parametric_calls` at `crates/cranelisp-typecheck/src/program.rs:2491`; `monomorphise_inner_parametric_hops` at `crates/cranelisp-typecheck/src/traits.rs:1731`; commits `5634dd3`/`9e57330`). The architecture (BC §2 closing note + §3 invariant 9) states the target as the **per-`(Def, type-args)` instance model generalised**, not a new pass. 0374's "Proposed resolution" explicitly mandates building on this machinery. Confirmed: Tier-2 is the **systematic completion** of the result-hop subset to the full reachable-instance set, same `MonoDefn`-per-instance shape, same enumeration spine. A parallel pass would violate Principle 7 (single source of truth) — the review rejects any Tier-2 implementation that introduces a second monomorphisation entry point. /design (typecheck) and /dev (typecheck) must extend the existing enumeration, not add a sibling.
+
+**Gating 0374→0375 and 0374→0373(iii) is sound and correctly directional.** Both downstream payoffs are predicated on the *total* concreteness invariant ("no `Type::Var` reaches codegen under any reachable instantiation"), which only the systematic Tier-2 remainder delivers — the result-hop subset does not. 0375 (retire the `<1024` guard from the `Type::Var` path; make `classify(Type::Var)` an assert) is **unsound to land before** 0374, because until concreteness is total a residual `Type::Var` would hit the new panic at runtime instead of the (unsound-but-non-crashing) `Mixed` fallback — strictly worse. 0373(iii) (relax §12.1) is likewise unsound to land early: §12.1's uniform-word mandate is *operatively load-bearing* exactly as long as any `Type::Var` can reach codegen. The gating is correct; the waves enforce it (0375 + 0373(iii) in a strictly later wave than 0374).
+
+**No new `cranelisp-types` boundary item — CONFIRMED for the systematic case.** Verified directly: `Type` (incl. `Type::Var`) lives at `crates/cranelisp-types/src/types.rs:15`; `MonoDefn` is already a `cranelisp-types` public item (`lib.rs:223`, a single-field wrapper over `Defn` per BC §2). Tier-2 produces **more instances of the existing `MonoDefn`/`Defn` shape** under the existing enumeration — it adds no new cross-crate DTO and changes no boundary signature. The S83 Phase-3 finding (0355-class mono needs no boundary item) holds for the systematic remainder by the same structural argument: the instance model's output type is unchanged; only the *coverage* of the enumeration grows. **No `cranelisp-types` edit, no `interfaces.md` edit, no facade/BC shape change is required by 0374.** (BC §2 + §3 invariant 9 already record the direction in prose; they need no amendment this sprint.)
+
+**Unconstrained-top-level-var ambiguity rule (0373 part ii) — typecheck-side enforcement seam SPECIFIED.** The rule ("an unconstrained type var remaining in a top-level type after inference is a type error; no defaulting") is enforced **in typecheck, at the post-inference generalisation/finalisation boundary of each top-level form — before monomorphisation enumeration runs**, NOT at the codegen boundary. The detector already exists and is **already wired into a pre-codegen assertion**: `Type::contains_var()` (`crates/cranelisp-types/src/types.rs:55`), whose doc-comment states it is "Used in `debug_assert!` to verify all types are fully resolved before codegen" — i.e. the "no `Type::Var` reaches codegen" invariant already has a structural check; Tier-2 + the ambiguity rule are what make that check *unconditionally* satisfiable rather than a debug-only tripwire. The seam: after a top-level form's type is inferred and generalised, if its finalised type still contains a `Type::Var` that no reachable instantiation pins (i.e., a free var at the root that is not a generaliseable scheme variable bound by a use site), typecheck raises a `CheckError` ("ambiguous type; add an annotation") rather than admitting the form. This keeps the "no `Type::Var` reaches codegen" invariant **total by construction**: the ambiguity error is the typecheck-side complement to 0375's codegen-side assert — together they make a residual `Type::Var` at codegen structurally impossible (Principle 18, enforce invariants structurally). This is a /spec-authored *rule* (0373 ii, independent of Tier-2) realised by a /typecheck *check*; both can proceed without a `cranelisp-types` change. The exact `CheckError` variant + diagnostic wording is /design(typecheck)'s to land with a unit test.
+
+### 2. Cluster B methodology gate (PRIMARY RISK) — RULED
+
+**Finding: 0367 introduces a NARROWER concurrency surface than the S60–62 scheduler heisenbugs — it does NOT re-enter that race territory.** This is the decisive determination of the review and it materially shrinks the proof obligation. The reasoning, verified against the carryover docs and source:
+
+The S60–62 heisenbug surface was an **unstructured cross-thread coordinator race** over *compiler* shared-mutable state: the scheduler's `typecheck_first` queue, concurrent `symbol_tables[module]` reads during import resolution, and the eval-thread-vs-persistent-worker contention over module claim/retry (`design/int/heisenbug-race-closure.md` H5 taxonomy; `design/int/concurrency-architecture.md`/`-risks.md`). That race is over the **pipeline's** coordination state and is fully owned inside int's scheduler.
+
+0367 wires up two surfaces, BOTH disjoint from that:
+
+- **(a) The bind-chain analysis pass itself is a single-threaded, compile-time, pure AST→AST transform.** `apply_bind_chain_analysis` (`src/session_setup.rs:328`, `#[allow(dead_code)]`) / `auto_schedule_defn` (`src/bind_chain_analysis.rs`) run *within one worker's own per-form processing phase*, between AST build and typecheck. It takes `&mut Vec<TopLevel>` and reads `&SymbolTables` **read-only**. It spawns no threads, takes no new locks, introduces no new shared-mutable state. Wiring it adds **zero** new compile-time concurrency. The only shared structure it touches (the `symbol_tables` DashMap) is already thread-safe and is read during the worker's own sequential phase — not a cross-worker boundary.
+
+- **(b) The runtime `Par`/`ParBind` dispatch is structured fork-join over pure IO-effect thunks.** Verified at `crates/cranelisp-intrinsics/src/io.rs`: `dispatch_par_branches[_with_trace]` groups branch IO-tree pointers by resource token into `WorkItem::Single` (token=0, independent) / `WorkItem::SerialGroup` (same non-zero token, sequential), then runs them via `rayon` `par_iter`, and **all branches join before the call returns** (structured fork-join; BC fork-join ferry obligation, `design/backend/io-scheduling.md` §5.2). The branches touch **no scheduler, no symbol tables, no GOT** — they are closed IO-effect thunks; the only shared mutation is atomic RC (already sound Ring-1-onward). This dispatch code path *already exists and is already unit-tested*; 0367 does not modify it. The resource-token mechanism serialises same-token branches (the guard a platform declares via `SchedulingClass::ResourceSerial`) and parallelises different-token / token-0 branches — the token is inline Effect-node payload, read-only, not compiler state.
+
+**Therefore the S62 lesson ("stress-run verification is insufficient proof; pivot to loom + structured-interleaving") applies to the SCHEDULER surface, which 0367 does not perturb.** Requiring a loom model of the *scheduler* as a precondition for 0367 would be mis-targeted — 0367 changes neither the scheduler nor any compiler shared-mutable state. The carryover (`concurrency-architecture.md`, `-risks.md`, `-test-strategy.md`, `heisenbug-race-closure.md`, `design/int/concurrency/` diagrams) remains the correct model for the scheduler surface and needs **no refresh for this sprint** — but it is the model of a *different* surface and 0367 must not be gated on its open items (the H5 fix-plan state described in those docs is a separate, pre-existing scheduler concern, out of S84 scope).
+
+**The concrete, checkable proof obligation 0367 carries (this is the ruling — not "test carefully"):**
+
+> **PO-0367.** Before the wiring lands, /qa must commit failing-first tests; after it lands, all must be green. The obligation has three parts, each checkable, none requiring a scheduler loom model:
+>
+> **PO-0367.1 — Transform correctness (the Par-emission contract).** Unit tests at the bind-chain-analysis seam (`/dev` on int, alongside the wiring) pinning, over representative `bind`-chain defn bodies: (i) a data-independent, different-resource-token (or token-0/Commutative) pair **emits** a `ParBind`/`Par` node; (ii) **NEGATIVES that must hold** — a data-dependent binding (later binding references an earlier-bound name) MUST NOT Par-group; a same-non-zero-resource-token pair MUST NOT be hoisted to independent branches (it may be a serial group, never independent); a `Sequential`-class pair (e.g. `read-line`/`print` ordering) MUST NOT Par-group. These negatives are the data-dependency and scheduling-class soundness guards — they are pure AST-property assertions, fully deterministic, no concurrency in the test.
+>
+> **PO-0367.2 — Mode uniformity.** The pass must be wired **mode-uniform** across `--run`, `--link`, and REPL eval (the candidate seam is the worker's build/check form chain, before typecheck, per 0367). A guard (e2e, /qa) must show that the same source emits the same Par-grouping decision in all three modes — there must be NO mode that silently skips the pass (the current dormant state is exactly a mode-uniformity hole). The REPL-eval path note in `bind_chain_analysis.rs` ("does not invoke auto-scheduling") is the specific gap to close.
+>
+> **PO-0367.3 — The structured-fork-join interleaving witness (the ONLY genuinely-concurrent obligation, and it is narrow).** Because the Par dispatch is structured fork-join over pure IO thunks, the interleaving space that must be covered is NOT the scheduler's; it is the **fork-join boundary**: every spawned branch must join before the expression returns, and a fault in any branch must propagate (the fork-join error-slot ferry, `test-discovery.md` §6 / BC §4b invariant 13). The checkable witness is the existing failing guard `tests/spec_10_io.rs::resource_serial_diff_token_parallelizes` (diff-token wall-clock < 1.5× single-call, `--run` + `--link`) flipping green, **plus** its companion `resource_serial_same_token_serializes` staying green (same-token must serialise — the regression guard against wrongly parallelising same-token branches). These two together witness the token-serialisation decision *and* the join semantics. A timing e2e is the right instrument **here** specifically because this surface is structured fork-join with a deterministic join point — the S62 "timing/stress is insufficient" caveat was about the *unstructured scheduler* surface where a passing stress run does not prove the absence of a coordinator race; it does not transfer to a structured-fork-join surface whose correctness is the *presence* of a join, not the absence of an unbounded interleaving. The diff-token-parallelises + same-token-serialises pair is a sound proof for THIS surface.
+
+**Staging behind a flag — RECOMMENDED, to bound blast radius.** Even though the surface is narrow, the wiring flips a previously-inert feature on across all three modes at once. The review recommends (does not mandate) that 0367 land the wiring behind an env-gated activation (e.g. honour an existing/added `CRANELISP_*` flag) defaulting **on**, so that if an unforeseen interaction surfaces, the pass can be disabled at the seam without reverting the change-set — and so PO-0367.1's negatives can be checked with the pass forced on. This is a /dev(int) implementation detail, not an architectural mandate; if a clean unconditional wiring lands with PO-0367.1–.3 all green, the flag is optional. The point of record: the blast radius is *one compile-time pass + one already-tested runtime dispatch path*, not the scheduler — staging is a convenience, not a soundness precondition.
+
+**Does the gate need /spec or /int design input to resolve? NO.** The ruling is complete on the existing carryover + source. PO-0367 is fully specified above; /qa can author the failing-first tests in Wave 0 and /dev(int) can wire against PO-0367.1–.3 in a later wave without further architectural input. (If, during wiring, /dev(int) discovers that the Par dispatch path it assumed inert actually shares state with the scheduler — contradicting this review's source read — that is a FIXME `target: /arch` and a Phase-5 escalation, not a Phase-2 blocker.)
+
+### 3. Cross-cluster independence — CONFIRMED
+
+The clusters touch disjoint crates:
+
+- **Cluster A:** `crates/cranelisp-typecheck/` (0374), `crates/cranelisp-backend/src/heap.rs` (0375), `spec/` (0373). No `src/` (int) source.
+- **Cluster B:** `src/bind_chain_analysis.rs` + `src/session_setup.rs` + the worker build/check seam (0367), `crates/cranelisp-platform/` test-capture fixture + `tests/spec_10_io.rs` (0353). No `crates/cranelisp-typecheck/` or `crates/cranelisp-backend/src/heap.rs` source.
+
+The only shared file surface is `tests/` (both clusters add /qa tests) and `cranelisp-types` (neither cluster edits it — confirmed in point 1). Under the serial-source-editing constraint (worktree isolation broken; one source-editing agent at a time), A and B sequence as **independent waves** with no source-file contention between them. They can be ordered either way; the provisional intent (A's spine first, then A's gated payoffs, then B) is sound and is the safest under the serial constraint because A's internal gating (0374 before 0375/0373iii) is the only hard ordering edge in the sprint. B has one internal edge (0367 before 0353 closes).
+
+### 4. Public-API / baseline impact — ASSESSED
+
+- **0374 (typecheck):** No baseline move. Verified: it produces more `MonoDefn`/`Defn` instances through the existing enumeration; no new public item, no signature change. `crates/cranelisp-typecheck/public-api.txt` is **not** expected to change. If the implementation surprisingly adds a `pub` item (it should not — the enumeration is `pub(crate)`/internal), that triggers the two-update discipline (regen `public-api.txt` + name it in BC §2 prose) — flag to /arch if it arises.
+- **0375 (backend):** Internal codegen change (`HeapCategory::classify` arm → assert; `emit_rc_inc_guarded` call-site removal on the `Type::Var` path). `classify`/`emit_rc_inc_guarded` are backend-internal (`crates/cranelisp-backend/src/heap.rs`, not boundary surface). **No `crates/cranelisp-backend/public-api.txt` move expected.** No BC §3 *shape* change — invariant 9 already states the retire-the-guard direction in prose; it needs no edit (the prose already anticipates the landing). No `interfaces.md` edit.
+- **0373 (spec):** Spec text only — `spec/` has no `public-api.txt` boundary. BC §2/§3 already carry the §12.1-relaxation *intent*; when (iii) lands in spec, no BC edit is forced (the BC prose says "/spec's to author"). Parts (i)/(ii) are normative spec statements with no code-baseline impact; (ii)'s typecheck enforcement (point 1) may add a `CheckError` variant — that is a `cranelisp-typecheck`-internal error enum, not a `cranelisp-types` boundary item, so no `cranelisp-types` baseline move (confirm the variant is not surfaced cross-crate; if it is, two-update discipline applies).
+- **0367 (int):** Confirmed **int-internal**. `src/` is a binary surface with no `public-api.txt` (BC §6; a binary's conformance gate is the e2e suite). Dropping `#[allow(dead_code)]` and adding a call seam moves no library baseline. The 0353 fixture in `crates/cranelisp-platform/` **does** add a test-capture function (e.g. `test-resource-sleep-ms`) — assess whether that touches `crates/cranelisp-platform/public-api.txt`: a test-capture platform fn is typically a DLL-exported C-ABI symbol, not a Rust `pub` item, so likely no Rust-baseline move; **/dev(platform) + /design(platform) must confirm and, if it moves, apply the two-update discipline in the same change-set** (this is the one baseline-regen to watch in Cluster B).
+
+**Baseline regen sequencing:** No regen is *required* by this review's reading. The single watch-item is the 0353 platform fixture (above). No two clusters force a regen of the same baseline, so there is no cross-cluster regen ordering constraint.
+
+## Skill plans (Phase 3)
+
+Phase-3 design fan-out complete (5 agents, disjoint paths, no `.rs` edits). Detail lives in the cited design docs; summaries below.
+
+### /spec — 0373 (i)+(ii) LANDED; (iii) staged
+
+- **Landed in `spec/03-types.md`:** new **§3.10 "Rank-1 Hindley–Milner"** (3 MUST rows `[S84]` — no quantified types in value position; instantiation at every use; monomorphic recursion enforced; + §3.6.6 constrained-value corollary) and **§3.11 "Ambiguous Types"** (`[S84]` — residual unconstrained top-level type var is a **type error**, NO defaulting; diagnostic intent; informative "Enforcement seam" blockquote recording /arch's ruling: rule is /spec's, check is /typecheck's).
+- **(iii) §12.1 relaxation — STAGED for Wave 2 (NOT landed):** exact replacement wording authored (uniform-machine-word mandate → backend-chooses-representation; §12.1.1–.5 relabelled "current reference representation"). Lands only after 0374 is green.
+- **Expects /qa:** §3.11 ambiguity negative + annotated-positive; §3.10 monomorphic-recursion negative.
+
+### /design (cranelisp-typecheck) — 0374 + 0373(ii) check
+
+- **Docs:** new `design/typecheck/monomorphisation.md` + `typecheck.md` §9.3/§10/§13.
+- **Tier-2 (0374):** a **cluster-level worklist/fixpoint over reachable `(Def, concrete-type-args)` instances** EXTENDING the existing `pass4_monomorphise` spine (NOT a second pass — Principle 7). Roots = concrete instantiations the cluster's top-level forms demand; successors = every reachable polymorphic instance re-checked at concrete types (widened past result-hops to let/match-bound + parameter positions); dedup on the existing mangled name `name$T1+T2` promoted to a cluster-level `done` set. **Functions to extend:** `pass4_monomorphise` (`program.rs:2300`), `collect_local_parametric_calls` (`program.rs:2491` — drop the bare-`Var`-result gate as *sole* trigger, **highest-risk edit**), `monomorphise_inner_parametric_hops` (`traits.rs:1731`), `collect_apply_var_calls` (`traits.rs:1888`). **No new `cranelisp-types` item** (MonoDefn already public — confirmed).
+- **Ambiguity check (0373 ii):** fires in `finalize_check_result_inner` between `regeneralize_defn_schemes` (`program.rs:1349`) and `pass4_monomorphise` (`program.rs:1438`); variant `CranelispError::TypeError` today → `CheckError::AmbiguousType` post-0098; crate-internal (no cross-crate surface).
+- **Risk:** **0344/0349 fold-accumulator over-monomorphisation** if the gate removal is too aggressive — the existing 0344/0349 unit tests are the guard; termination bounded by monomorphic-recursion enforcement + the `done` set.
+
+### /design (cranelisp-backend) — 0375 (gated on 0374)
+
+- **Docs:** `design/backend/ring2-rc.md` §1.5/§1.6 + `backend.md` index.
+- **Change 1:** `Type::Var(_)` arm of `HeapCategory::classify` (`heap.rs:456`) → `unreachable!` naming the invariant + upstream owner (release-mode structural backstop; the existing `contains_var()` debug-assert is debug-only).
+- **Key finding (the crux):** the two `Mixed` reasons are **separable at `classify`, NOT at the 15 guarded-RC call sites** (7× `emit_rc_inc_guarded` + 8× `emit_rc_dec_guarded`) — so the fix is `classify`-local, **no call-site refactor, no new `HeapCategory` variant**. KEEP the guard for `Type::ADT` `(has_nullary, has_data)==(true,true)` (type-known, tags-bounded — `Type::Var` can never reach it). **`TyConApp` must split off** — keep its `Mixed` fallback (separate HKT question; folding into the panic would crash valid HKT codegen).
+- **Tests:** keep `test_mixed_adt_with_tables` (kept path); `test_var_mixed` → `#[should_panic]`; new `TyConApp→Mixed`. E2e = /qa's cross-mode SIGSEGV repros. **No baseline move.** Strict Wave-2-after-Wave-1 gating.
+
+### /design (src / int) — 0367 (against PO-0367)
+
+- **Docs:** `design/int/bind-chain-analysis.md` §5/§5b/§5c/§8 + `int.md`.
+- **Seam (PO-0367.2 by construction):** wire `apply_bind_chain_analysis` (`session_setup.rs:327`, drop `#[allow(dead_code)]`) into `process_form::finalize_cluster` (`process_form.rs:1043`, before `check_program_compat`) — the **single live core** both the worker (`--run`/`--link`) and REPL drive via `process_cluster_once`→`finalize_cluster`, so one wiring point is mode-uniform and closes the REPL-skip gap automatically.
+- **Load-bearing correction:** must transform the **post-Pass-2 `expanded_program`** (not pre-expansion) — `bind!` is a macro expanded in Pass 2; the recognizable bind-chain AST only exists after expansion. Old §5 three-flow design (transforming pre-expansion `program`) demoted to historical.
+- **Flag (§5c, recommended-optional):** `CRANELISP_NO_IO_SCHEDULE` (presence-disables, default ON); unit tests call the fn directly, bypassing the gate.
+- **G2 finding (recorded so /dev+/qa don't mis-test):** the AST pass does NOT (and must not) enforce same-non-zero-token serialisation — same-token `ResourceSerial` calls ARE grouped into one `ParBind`, and the **trampoline** (`io.rs:501/522`, spec §10.12.4) serialises them inside it (`WorkItem::SerialGroup`). So PO-0367's "same-token MUST-NOT-be-independent" is witnessed by the runtime timing pair, NOT a unit assertion.
+- **G1 flagged:** PO-0367.1's data-dependence soundness reduces to `free_vars_expr`; unit tests must cover the dependency-negative over every free-var-carrying `Expr` variant (an under-reporting variant → FIXME `target: /arch`). Source read **confirmed** the /arch disjointness ruling (no scheduler state touched).
+
+### /qa — sprint-wide test plan
+
+- **Doc:** `tests/plan/sprint84-test-plan.md`. **10 Wave-0 failing-first guards (★).**
+- **Cluster A:** 3 Tier-2 gap-shape SIGSEGV-class e2e (`mono_tier2_hof_polymorphic_fn_arg_no_crash`, `..._nested_generic_concrete_parent_...`, `..._polymorphic_in_arg_position_...`) + 1 ambiguity negative (`mono_ambiguous_unconstrained_top_level_var_rejected_neg`); plus 0375 kept-path Mixed-ADT e2e + the **0344 fold over-mono canary** (`mono_tier2_fold_accumulator_not_over_monomorphised`).
+- **Cluster B:** `auto_io_independent_diff_token_parallelizes_e2e`, `..._data_dependent_stays_serial_e2e`, `..._sequential_class_stays_serial_e2e`, `..._uniform_across_modes` + the 2 EXISTING guards `resource_serial_diff_token_parallelizes` (RED→GREEN) / `resource_serial_same_token_serializes` (GREEN-stay).
+- **Tier-2 coverage gap identified (the deliverable):** Tier-1/1.5 enumerate *backward* from result-`Type::Var`; Tier-2 = everything reachable *forward from roots* the backward gate skips — (1) polymorphic fn-values as HOF args, (2) generic instances reached only via a concrete-result parent, (3) polymorphic argument positions, (4) one def at multiple concrete instantiations.
+- **Verified existing-guard states:** `resource_serial_diff_token_parallelizes` RED (`spec_10_io.rs:1010`); same-token GREEN (`:974`); both 0373 Tier-1/1.5 result-hop guards GREEN; `resource-serial-sleep-ms` fixture present (`platforms/test-capture/src/lib.rs:92`). No platform baseline move expected.
+
+### Convergent finding (two agents, independent)
+
+Both /design(typecheck) and /qa independently flagged **0344/0349 fold-accumulator over-monomorphisation** as the primary Tier-2 hazard: the `collect_local_parametric_calls` result-var gate deliberately preserves the fold accumulator's shape, and Tier-2's gate-relaxation must not re-collapse it. The 0344/0349 unit tests + the `mono_tier2_fold_accumulator_not_over_monomorphised` canary are the guards. **This is the sprint's pinned implementation risk.**
+
+## Waves (Phase 4)
+
+Finalised. Logical dependency below; **execution is serial-relayed** (shared tree, worktree isolation broken — one source-editing agent at a time). The only hard ordering edges are Cluster A's internal gate (0374 → 0375/0373iii) and Cluster B's (0367 → 0353 close). Clusters A and B touch disjoint crates (confirmed Phase 2 §3) and may interleave, but source editing never overlaps.
+
+### Wave 0 — QA-first (Phase 5 Stage 1)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /qa | tests/ | Author the 10 failing-first Wave-0 guards (★) per `tests/plan/sprint84-test-plan.md` — un-ignored, failing-not-ignored. Cluster A: 3 Tier-2 gap-shape SIGSEGV e2e + ambiguity-negative + 0344 fold canary + 0375 kept-path. Cluster B: 4 auto-IO e2e (incl. mode-uniformity) alongside the 2 existing timing guards. | pending |
+
+*(/spec 0373(i)(ii) already landed in Phase 3 — `spec/03-types.md` §3.10/§3.11; committed at the Phase-3→5 checkpoint.)*
+
+### Wave 1 — Cluster A spine
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /design→/dev→/review | cranelisp-typecheck | 0374 Tier-2 full mono-from-roots — extend the `pass4_monomorphise` worklist per `design/typecheck/monomorphisation.md`; + 0373(ii) ambiguity check. **Guard the 0344/0349 fold canary throughout.** Tier-2 e2e + ambiguity-negative flip green. | pending |
+
+### Wave 2 — Cluster A gated payoffs (after Wave 1 green)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /design→/dev→/review | cranelisp-backend | 0375 — `classify(Type::Var)`→`unreachable!`; retire `<1024` guard from the Var path (classify-local, split off `TyConApp`) per `design/backend/ring2-rc.md` §1.6. | pending |
+| /spec | spec/ | 0373(iii) — land the staged §12.1 representation relaxation (wording authored Phase 3). | pending |
+
+### Wave 3 — Cluster B
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /design→/dev→/review | src/ (int) | 0367 — wire `apply_bind_chain_analysis` into `finalize_cluster` (post-Pass-2, mode-uniform) per `design/int/bind-chain-analysis.md` §5; flag `CRANELISP_NO_IO_SCHEDULE`. PO-0367.1 unit negatives + .2 mode-uniformity + .3 timing pair green. | pending |
+| /qa·/platform | tests/, platform | 0353 close — `resource_serial_diff_token_parallelizes` flips green; confirm fixture/baseline. | pending |
+
+## Notes
+
+- S84 opened from a clean between-sprints state (S83 closed: `--workspace` 2635 tests / 2633 pass / 2 fail / 0 skip — the 2 fails are the intentional carried guards `0366` + `0367`).
+- **User direction (S84 planning):** focus = monomorphisation + parallelisation; **both clusters fully committed** (no cut-hatch). Acknowledged risk: 0367 re-enters S60–62 race territory and may run long.
+- Authoritative full-suite gate is `cargo nextest run --workspace` (S83 process correction — root-package-only ≈1369 is NOT the full suite).
+- S62 concurrency design carryover preserved at `design/int/concurrency*` + `design/int/heisenbug-race-closure.md` + `design/int/concurrency/` (diagrams) — Phase-3 input for the 0367 track.
+- **/arch Phase-2 ruling (2026-06-16) — wave structure confirmed, one refinement.** The provisional waves stand. The /arch review ruled that 0367's concurrency surface is **narrower** than the S60–62 scheduler heisenbugs (a single-threaded compile-time AST transform + an already-tested structured-fork-join runtime dispatch over pure IO thunks) and therefore does NOT re-enter that race territory; the concurrency carryover models a *different* (scheduler) surface and needs no refresh for S84. The proof obligation **PO-0367.1/.2/.3** (transform-correctness negatives + mode-uniformity + the structured-fork-join timing-witness pair `resource_serial_diff_token_parallelizes` green / `resource_serial_same_token_serializes` green) replaces "test carefully" and is checkable without a scheduler loom model. **Refinement to Wave 0:** the 0367 failing-first guards /qa authors are PO-0367.1's deterministic AST-property negatives (data-dependent / same-token / Sequential-class MUST-NOT-Par) **in addition to** the existing timing reds — the negatives are the cheapest soundness guard and must exist before wiring. **Recommendation (non-mandatory):** stage 0367's wiring behind an env-gated activation (default on) to bound blast radius; optional if a clean unconditional wiring lands with PO-0367.1–.3 green. **Watch-item:** the 0353 platform test-capture fixture may move `crates/cranelisp-platform/public-api.txt` (assess in-change-set, two-update discipline if so) — the only baseline-regen watch in the sprint. Verdict: **sign-off to Phase 3.** No new `cranelisp-types`/BC/interfaces edit is forced by 0374/0375 (more `MonoDefn` instances through the existing enumeration; backend-internal `classify` change) — the architecture docs already record both directions in prose.
+
+## Outcome (Phase 7)
+
+{To be filled at close.}

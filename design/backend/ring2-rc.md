@@ -85,9 +85,75 @@ The `HeapCategory` enum classifies types for RC decisions:
 |---|---|---|
 | `NeverHeap` | Int, Bool, Float, pure-enum ADTs | No RC ops |
 | `AlwaysHeap` | String, Fn, ADTs with only data constructors, Vec | Unconditional inc/dec |
-| `Mixed` | ADTs with both nullary and data constructors (e.g., Option), unresolved type vars | Guarded inc/dec: skip if value < `NULLARY_TAG_THRESHOLD` |
+| `Mixed` | ADTs with both nullary and data constructors (e.g., Option) | Guarded inc/dec: skip if value < `NULLARY_TAG_THRESHOLD` |
 
 `HeapCategory::classify(ty, type_defs)` is the single source of truth. When `type_defs` is available (after typechecking), classification is exact. Without it, ADTs conservatively classify as Mixed.
+
+#### The two historical sources of `Mixed` — and their post-S84 disposition
+
+`classify` has, historically, returned `Mixed` for **two structurally distinct reasons**, collapsed into one verdict (the enum carries no discriminator):
+
+1. **Legitimate, type-known nullary-tag discrimination.** A `Type::ADT(fqtn, _)` whose constructor set is genuinely mixed — some nullary (bare-tag), some data (heap pointer), e.g. `Option`. Here the `<1024` guard is **sound**: the type is known, the tags are bounded (`tag < NULLARY_TAG_THRESHOLD` by construction — nullary constructors get small sequential tags), and the runtime value really is *either* a bare tag *or* a heap pointer. The guard is the correct discriminator. (`classify_from_ctor_names` → `(true, true) => Mixed`, heap.rs ~552.)
+
+2. **Unsound fallback from a non-concrete type.** The `Type::Var(_) | Type::TyConApp(_, _)` arm (heap.rs ~456), plus the conservative `Type::ADT`-without-tables / ADT-not-in-tables fallbacks (heap.rs ~485, ~491). Here `classify` has **no static knowledge** and guesses `Mixed`. On the `Type::Var` path the `<1024` guard is **unsound** (BC §3 invariant 9): a negative or `≥ 1024` `Int` flowing through a polymorphic position is misread as a heap pointer, and the dec path frees it — use-after-free. The guard's tag-vs-pointer dichotomy does not hold for an arbitrary monomorphic instantiation.
+
+**The reasons are NOT separable at the RC-emission call sites.** Every guarded-RC site (7 `emit_rc_inc_guarded`, 8 `emit_rc_dec_guarded(guard_nullary=true)` — inventory in §1.6) follows the identical shape `match classify(ty, …) { … Mixed => guarded … }` and never re-inspects `ty` to ask *why* it was `Mixed`. The collapse is in the **verdict**, not in the inputs: the call sites all still hold the original `&Type`, so the distinction is **recoverable at `classify` itself** — reason (1) is exactly `matches!(ty, Type::ADT(..))` reaching the `(true,true)` arm; reason (2) is every other path that yields `Mixed`. This recoverability is what makes the S84 change a `classify`-local change, not a call-site rewrite (see §1.6).
+
+**Post-S84 invariant (gated on FIXME 0374).** Once typecheck's Tier-2 full-monomorphisation-from-roots guarantees that **no `Type::Var` reaches codegen** (BC §2 + §3 invariant 9), reason (2)'s `Type::Var` path is *unreachable by construction*. The only surviving producer of `Mixed` is reason (1) — the type-known mixed ADT — for which the `<1024` guard is sound. `Mixed` then means exactly "a known ADT with both nullary and data constructors," nothing more. The table row above is already written to that target state (the "unresolved type vars" entry is struck).
+
+### 1.6 S84 / FIXME 0375 — retire the unsound guard from the `Type::Var` path
+
+**Gating (hard, directional — restated from BC §3 invariant 9 and /arch Phase-2 point 1).** This change is a **strict downstream of FIXME 0374** (typecheck Tier-2). It MUST NOT land before 0374 is green. Landing the panic (below) while a residual `Type::Var` can still reach codegen is **strictly worse** than today: today a residual `Type::Var` falls through to the (unsound-but-non-crashing) `Mixed` fallback; with the panic in place it would crash at codegen instead. The non-crashing fallback is the *operatively load-bearing* safety net that only total concreteness retires. In the S84 wave plan this is **Wave 2**, after Wave 1's 0374. The typecheck-side complement (the unconstrained-top-level-var **ambiguity error**, 0373 part ii, raised at the post-inference generalisation boundary) and this codegen-side assert together make a residual `Type::Var` at codegen structurally impossible (Principle 18 — enforce invariants structurally).
+
+#### Change 1 — `classify(Type::Var)` becomes an assert/panic
+
+The `Type::Var(_)` arm of `HeapCategory::classify` is no longer a silent `Mixed` fallback. A `Type::Var` reaching codegen classification is, post-0374, a **compiler bug** (concreteness is an upstream guarantee), so it must fail loud, not silently emit an unsound guard.
+
+**Assert form (specification for /dev).** A bare `panic!` with a diagnostic that names the invariant, the violating type, and the upstream owner of the guarantee — so a future regression points the reader straight at typecheck, not at the backend:
+
+```rust
+Type::Var(_) => unreachable!(
+    "HeapCategory::classify: Type::Var reached codegen heap-classification — \
+     full monomorphisation (typecheck Tier-2, FIXME 0374 / BC §2) must make all \
+     types concrete before the codegen boundary; a Type::Var here is a compiler \
+     bug, not a fallback (BC §3 invariant 9). ty = {ty:?}"
+);
+```
+
+Rationale for `unreachable!` over `debug_assert!`: the existing pre-codegen tripwire `Type::contains_var()` (cranelisp-types, used in `debug_assert!`) is *debug-only*; this arm is the **release-mode** structural backstop at the exact point where the unsound guard would otherwise be emitted. It must hold in release builds too (the use-after-free it guards against is a release-mode hazard). `unreachable!` panics in all build profiles and documents the "cannot happen" intent at the type level. Cost is nil on the hot path — it replaces an arm that is, post-0374, never taken.
+
+**`Type::TyConApp` disposition.** The current arm is `Type::Var(_) | Type::TyConApp(_, _) => Mixed`. **Split the arm.** `TyConApp` is a separate question (a partially-applied type constructor at the HKT boundary; not a free var) and is NOT covered by 0374's concreteness guarantee in the same way. `/dev` must split: `Type::Var` → the `unreachable!` above; `Type::TyConApp(_, _)` → **keep** its current `Mixed` fallback for now, with a `// FIXME(0375): TyConApp concreteness is a separate question from Var; revisit if HKT codegen monomorphises through it` note. Folding `TyConApp` into the panic would be an over-reach beyond 0374's guarantee — flag this explicitly so /dev does not collapse both into the panic. If, during implementation, /dev finds `TyConApp` also cannot reach codegen post-0374, that is a follow-up (file `target: /typecheck` or `target: /arch`), not part of 0375.
+
+#### Change 2 — retire the `<1024` guard from the `Type::Var`-originated path; KEEP it for nullary-tag ADT discrimination
+
+The crux of 0375 is the **retire-vs-keep** split. State of the code (verified S84 Phase 3):
+
+- **KEEP** — the guard's sound origin. The 15 guarded-RC call sites that fire on a `classify` verdict of `Mixed` derived from **reason (1)** — a `Type::ADT` that is genuinely mixed (`(has_nullary, has_data) == (true, true)`). These are the within-known-`Mixed`-ADT nullary-tag discriminators. They MUST keep the guard: at these sites the runtime value really is tag-or-pointer and the `<1024` test is the correct discriminator. The kept path is genuinely the **type-known / tags-bounded** case — confirmed: the `(true,true)` arm is only reachable from `classify_adt` → `classify_from_ctor_names`, both of which require a `Type::ADT(fqtn, _)` *and* a resolvable constructor set in the symbol tables; a `Type::Var` can never reach that arm.
+
+- **RETIRE** — the guard on the `Type::Var`-originated path. Post-Change-1, this path **no longer produces a `Mixed` verdict at all** — it panics. Therefore the unsound guard is retired **by construction at its source**: with no `Mixed` flowing from `Type::Var`, no guarded-RC op is ever emitted for a `Type::Var`-originated value. There is no separate call-site edit required to "remove" the unsound guard — making `classify(Type::Var)` unreachable removes every downstream unsound `emit_rc_inc_guarded` / `emit_rc_dec_guarded` it would have fed.
+
+**Are the two paths cleanly separable in the current code? YES — at `classify`, NOT at the call sites.** This is the key design finding. The call sites cannot tell the two `Mixed` reasons apart (they never re-inspect `ty`), but they do not need to: the separation lives entirely in `classify`'s arms. Reason (1) flows from the `Type::ADT` arms; reason (2)'s `Type::Var` sub-path is severed by Change 1. **No call-site refactor is required, and no new `HeapCategory` discriminator variant is needed.** The 15 guarded sites are unchanged — they keep firing for reason (1), and simply never receive a reason-(2) `Mixed` anymore. This is the minimal, containment-respecting form (Principle 6 — complexity has a budget; Principle 7 — single source of truth: the retire/keep decision stays inside the one `classify` SSOT, not scattered across 15 call sites).
+
+**The remaining `Type::ADT`-without-tables / ADT-not-in-tables fallbacks (heap.rs ~485, ~491) stay `Mixed` — and that is correct.** They are reason-(2)-flavoured (conservative, no static knowledge), but they are NOT on the `Type::Var` path and are NOT made unsound by 0374: an ADT-without-tables `Mixed` value is still genuinely tag-or-pointer (it IS an ADT, just one whose ctor set we could not resolve at this call), so the `<1024` guard remains sound for it. 0375 does **not** touch these. (If a future audit shows tables are *always* present at codegen heap-classification — making these fallbacks themselves dead — that is a separate cleanup, not 0375.) Be exact: 0375 retires the guard from the **`Type::Var`** sub-path only, by making that sub-path panic; it does not touch the conservative-ADT fallbacks.
+
+#### Testability — backend-seam unit tests (per the per-fix discipline)
+
+Two backend unit tests in `heap.rs`'s `heap_category_tests` module pin the change at the seam where the bug lived (mandatory per `memory/feedback_unit_test_per_fix.md` — write failing-first, fix flips green, same change-set):
+
+- **(a) The kept path still works — `Mixed` ADT still discriminates nullary tags.** The existing `test_mixed_adt_with_tables` already pins `classify(Option<Int>, Some(&tables)) == Mixed` (the `(true,true)` arm). Keep it; it is the regression guard that the *sound* `Mixed` path is intact after the `Type::Var` arm changes. No new positive test is strictly required, but /dev should add an explicit `// regression: kept path (0375)` annotation so the guard's role is legible. The `(true,true)`→`Mixed`→`emit_rc_*_guarded` chain is what must NOT break.
+
+- **(b) The `Type::Var` arm now panics — the assert is the structural guard.** Replace the existing `test_var_mixed` (which asserts `classify(Type::Var(0), None) == Mixed`) with a `#[should_panic(expected = "Type::Var reached codegen")]` test asserting `classify::<(), ()>(&Type::Var(0), None)` panics. This is the negative/structural guard: it pins that a `Type::Var` is now rejected at the seam, not silently mis-classified. (Note: this test is **gated** — it must land in the same Wave-2 change-set as Change 1, after 0374; before 0374 it would be a true statement of an unsound behaviour and must not be asserted as desired. /qa and /dev coordinate the wave timing.)
+- **`TyConApp` arm** — add/keep a test pinning `classify(Type::TyConApp(..), None) == Mixed` so the split (Change 1) is explicit and the `TyConApp` fallback is not accidentally swept into the panic.
+
+#### Testability — e2e (coordinate with /qa)
+
+An e2e is **warranted**. The original 0373 defect was a `--run` SIGSEGV (use-after-free on the unsound guard). The durable guard is the cross-mode concreteness e2e /qa authors sprint-wide in Wave 0 (Tier-2 mono concreteness + SIGSEGV-class repros across `--run`/`--link`/REPL — SPRINT.md §Waves Wave 0). 0375's specific e2e expectation: the previously-SIGSEGV-ing polymorphic-`Int`-through-a-`Mixed`-position repro **runs clean** under `--run` and `--link` once 0374 + 0375 land. This is /qa's to author (cross-skill: /backend names the expectation, /qa writes the test per the user-proxy/defect protocol). The unit test (b) is the backend-seam guard; the e2e is the end-to-end witness — they answer different questions (the panic-reachability at the seam vs. the absence of the runtime crash), so both are needed.
+
+#### Risk
+
+- **Premature landing (the gating risk).** If 0375 lands before 0374 is *fully* green, a residual `Type::Var` crashes at codegen. Mitigation: the wave ordering (Wave 2 strictly after Wave 1) plus the typecheck-side ambiguity error (0373 ii). /dev(backend) must confirm 0374's concreteness guard is green before merging Change 1 — the cheapest confirmation is that /qa's Wave-0 concreteness e2e (and the `Type::contains_var()` debug-assert) pass with Tier-2 in place.
+- **Over-reach on `TyConApp`.** Folding `TyConApp` into the panic exceeds 0374's guarantee and would crash valid HKT codegen. Mitigation: the explicit arm-split instruction in Change 1.
+- **No baseline move.** `classify` / `emit_rc_inc_guarded` / `emit_rc_dec_guarded` are backend-internal (`pub(crate)` / `pub` for in-crate intrinsics consumers, not boundary surface). No `crates/cranelisp-backend/public-api.txt` move expected, no BC §3 *shape* change (invariant 9 already states the retire direction in prose). Confirmed against /arch Phase-2 point 4.
 
 ## 2. Reference Counting Protocol
 
@@ -113,6 +179,8 @@ else:
 
 - `emit_rc_inc_guarded`: branches around the inc.
 - `emit_rc_dec_guarded(guard_nullary=true)`: branches around the dec.
+
+Post-S84 / FIXME 0375 (gated on Tier-2 monomorphisation), the guarded variants fire **only** for the type-known mixed-ADT path — reason (1) in §1.5. The unsound `Type::Var`-originated guard is retired at its source by making `classify(Type::Var)` panic (§1.6); guarded RC is no longer emitted for any value whose `Mixed` verdict came from a non-concrete type. The `<1024` discriminator is therefore sound everywhere it still fires: the value is provably tag-or-pointer.
 
 ### 2.3 When Inc Happens
 
