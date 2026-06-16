@@ -132,6 +132,34 @@ fn resolve_applied<C: CodeStore>(
         // both answer as a type via `type_def_view_of`.
         Some(entry) => match type_def_view_of(&entry) {
             Some(info) => {
+                // FIXME 0385: the builtin `Vec` (`primitives/Vec`) is genuinely
+                // arity-1 (`(Vec a)`, spec §3.2.7) but is seeded with empty
+                // `type_params` (no surface ctor / declared params — see
+                // `src/bootstrap.rs` + `builtins.rs`). Its element type is carried
+                // structurally in inference (`infer_vec_lit` builds
+                // `Type::ADT(primitives/Vec, [elem])`), not via a declared param.
+                // Without this carve-out `:(Vec Int)` fails the arity gate below
+                // ("unknown type `Vec`"), leaving the §3.11.1 worked-example
+                // disambiguation `(id :(Vec Int) [])` unfixable. Accept exactly one
+                // type argument for the builtin `Vec` regardless of its (empty)
+                // declared arity, resolving to `Type::ADT(primitives/Vec, [arg])`.
+                if info.name.module.as_ref() == "primitives"
+                    && info.name.name.as_ref() == "Vec"
+                    && info.type_params.is_empty()
+                {
+                    if args.len() != 1 {
+                        return Err(ResolveError::TypeNotFound {
+                            name: name.name.clone(),
+                            from_module: name
+                                .module
+                                .clone()
+                                .unwrap_or_else(|| cranelisp_types::ModuleFullPath::from("")),
+                            span,
+                        });
+                    }
+                    let elem = resolve_type_expr(&args[0], var_map, resolve_terminal, span)?;
+                    return Ok(Type::ADT(info.name.clone(), vec![elem]));
+                }
                 let expected_arity = info.type_params.len();
                 if args.len() != expected_arity {
                     return Err(ResolveError::TypeNotFound {
@@ -500,6 +528,67 @@ mod tests {
         );
         assert!(matches!(
             resolve_type_expr(&bad, &var_map, &r, Span::SYNTHETIC).unwrap_err(),
+            ResolveError::TypeNotFound { .. }
+        ));
+    }
+
+    /// Build the builtin `Vec` entry as it is seeded in production
+    /// (`src/bootstrap.rs`) and the test fixture (`builtins.rs`): a
+    /// `primitives/Vec` `TypeDef` with EMPTY `type_params` (no declared arity),
+    /// even though `Vec` is genuinely arity-1 (`(Vec a)`, spec §3.2.7).
+    fn builtin_vec_entry() -> Entry {
+        ModuleEntry::TypeDef {
+            info: TypeDefInfo {
+                name: prim_fqtn("Vec"),
+                type_params: vec![],
+                constructors: vec![],
+            },
+            visibility: Visibility::Public,
+            docstring: Some("builtin vector type".to_string()),
+        }
+    }
+
+    // spec: 03-types §3.11.1 / §3.2.7 — the builtin `Vec` resolves as an applied
+    // type constructor `:(Vec Int)` in annotation position even though it is
+    // seeded with empty `type_params`. This is the FIXME-0385 carve-out: without
+    // it `(id :(Vec Int) [])` (the §3.11.1 worked-example disambiguation) is
+    // unfixable ("unknown type `Vec`").
+    #[test]
+    fn test_resolve_applied_builtin_vec_one_arg() {
+        let var_map = HashMap::new();
+        let mut map = intrinsics_map();
+        map.insert("Vec", builtin_vec_entry());
+        let r = resolver(&map);
+
+        let texpr = TypeExpr::Applied(
+            TypeRef::new(None, TypeName::from("Vec")),
+            vec![named("Int")],
+        );
+        let ty = resolve_type_expr(&texpr, &var_map, &r, Span::SYNTHETIC).unwrap();
+        assert_eq!(ty, Type::ADT(prim_fqtn("Vec"), vec![Type::Int]));
+    }
+
+    // spec: 03-types §3.2.7 — the builtin `Vec` carve-out still requires exactly
+    // one type argument. Zero or two args is rejected (`:Vec`/`(Vec Int Bool)`).
+    #[test]
+    fn test_resolve_applied_builtin_vec_wrong_arity() {
+        let var_map = HashMap::new();
+        let mut map = intrinsics_map();
+        map.insert("Vec", builtin_vec_entry());
+        let r = resolver(&map);
+
+        let too_many = TypeExpr::Applied(
+            TypeRef::new(None, TypeName::from("Vec")),
+            vec![named("Int"), named("Bool")],
+        );
+        assert!(matches!(
+            resolve_type_expr(&too_many, &var_map, &r, Span::SYNTHETIC).unwrap_err(),
+            ResolveError::TypeNotFound { .. }
+        ));
+
+        let zero = TypeExpr::Applied(TypeRef::new(None, TypeName::from("Vec")), vec![]);
+        assert!(matches!(
+            resolve_type_expr(&zero, &var_map, &r, Span::SYNTHETIC).unwrap_err(),
             ResolveError::TypeNotFound { .. }
         ));
     }
