@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ErrorLocation,
-    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName,
+    ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, Expr, FQTraitName, FQTypeName,
     JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, ResolvedCall, Scheme,
     Span, Symbol, TraitDecl, TraitDeclInfo, TraitImpl, TraitMethodSig, TraitName, Type, TypeId,
     TypeName, UserFnState, Visibility, apply,
@@ -1365,6 +1365,34 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             home,
         );
 
+        // FIXME 0373 (Tier 1, /arch ruling (A)) — propagate the concrete
+        // instantiation through the CHAIN OF HOPS. The repro `(h1 neg)` reaches
+        // its invocation through two hops: `h1` calls `h2` calls `f`. The
+        // top-level pass4 scan collected `(h1 neg)` and monomorphised `h1` here,
+        // re-checking its body `(h2 f)` with `f: (Fn [Int] Int)` concrete — but
+        // the inner `(h2 f)` call only became concrete DURING this recheck, so
+        // pass4's outer scan (where `f` was still `h1`'s generic param var) never
+        // saw it with concrete types. Without monomorphising `h2` HERE, `h2`'s
+        // result stays `Type::Var` → the same RC-guard SIGSEGV one hop deeper.
+        //
+        // So after re-checking this hop's body we recursively monomorphise the
+        // inner polymorphic-result hops it reached, using the concrete types now
+        // pinned in `mono_expr_types`. `resolve_inner_constrained_calls` above
+        // already records the SigDispatch for inner CONSTRAINED self-recursion;
+        // this step additionally CREATES the mono entries for distinct inner
+        // hops (constrained or pure-parametric) and records their dispatch. The
+        // `seen`-style de-dup that guards the outer pass lives in
+        // `register_mono_entry` (it preserves an existing entry's slot) and in
+        // the `resolved_calls` contains-key guard inside the recursion, so a
+        // diamond of hops converging on one specialisation is created once.
+        self.monomorphise_inner_parametric_hops(
+            state,
+            &wrap_defn,
+            &mono_expr_types,
+            &mut resolutions,
+            home,
+        )?;
+
         // Build annotated mono defn: annotate from side maps, apply subst.
         // `defn: DefnVariant` (S70 ConstrainedFn narrowing) — name/docstring/
         // visibility no longer ride on the payload; recover them from
@@ -1679,6 +1707,106 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
+    /// Recursively monomorphise the polymorphic-result hops a just-rechecked
+    /// mono body reached (FIXME 0373, Tier 1 — multi-hop concrete-type
+    /// propagation; /arch ruling (A)).
+    ///
+    /// `resolve_inner_constrained_calls` (called just before this) records the
+    /// SigDispatch for inner CONSTRAINED self-recursion, but does not CREATE a
+    /// mono entry for a *distinct* inner hop. A chain `h1 → h2 → f` needs `h2`
+    /// monomorphised at the concrete `(Fn [Int] Int)` instantiation that only
+    /// became visible during `h1`'s recheck — otherwise `h2`'s result stays
+    /// `Type::Var` and the RC-guard SIGSEGV fires one hop deeper.
+    ///
+    /// For each inner `Apply`-of-bare-`Var` call whose callee chain-resolves to a
+    /// monomorphisable polymorphic `Def` (constrained OR pure-parametric), with
+    /// all argument types now concrete in `mono_expr_types`, this recursively
+    /// invokes [`Self::monomorphise_call`] (which itself recurses into deeper
+    /// hops and registers the inner mono entry + slot via `register_mono_entry`),
+    /// then records the inner call site's SigDispatch. The recheck module is the
+    /// callee's HOME: an inner hop reached from an imported hop lives in `home`;
+    /// a local hop lives in `current_module`. A callee that resolves to a
+    /// different module than the recheck scope is handed `Some(its_home)` so its
+    /// own body re-checks in the right import context (the 0355 module switch).
+    fn monomorphise_inner_parametric_hops(
+        &self,
+        state: &mut CheckState,
+        defn: &Defn,
+        mono_expr_types: &HashMap<Span, Type>,
+        resolutions: &mut MethodResolutions,
+        home: Option<&ModuleFullPath>,
+    ) -> Result<(), CranelispError> {
+        // The scope the body was re-checked in: `home` for an imported hop, else
+        // the caller's current module.
+        let recheck_module = home.cloned().unwrap_or_else(|| state.current_module.clone());
+
+        // Collect inner Apply-of-bare-Var call sites first (immutable walk), then
+        // monomorphise (mutable) — avoids borrowing `self`/`state` across the walk.
+        let mut inner_sites: Vec<(Symbol, Vec<Span>, Span)> = Vec::new();
+        collect_apply_var_calls(defn.body(), &defn.name, &mut inner_sites);
+
+        for (inner_name, arg_spans, inner_span) in &inner_sites {
+            if resolutions.resolved_calls.contains_key(inner_span) {
+                continue; // already resolved (trait method / inner constrained self-rec)
+            }
+            // Resolve the inner callee's terminal entry + its home, rooted in the
+            // module the body was re-checked in.
+            let resolved = self.resolve_terminal_entry_and_home(&recheck_module, inner_name.as_ref());
+            let (entry, callee_home) = match resolved {
+                Some(r) => r,
+                None => continue,
+            };
+            if !Self::entry_is_monomorphisable_polymorphic(&entry) {
+                continue;
+            }
+            // All arg types must be concrete (pinned during the parent recheck).
+            let inner_arg_types: Vec<Type> = arg_spans
+                .iter()
+                .filter_map(|span| mono_expr_types.get(span).cloned())
+                .collect();
+            if inner_arg_types.len() != arg_spans.len() {
+                continue;
+            }
+            // An inner hop in a different module than the recheck scope re-checks
+            // in its own home (0355 module switch); a same-module hop passes None.
+            let inner_home = if callee_home == recheck_module {
+                None
+            } else {
+                Some(callee_home.clone())
+            };
+            // Isolate `state.subst` around the inner-mono recursion (FIXME 0373,
+            // preserves 0344). The sole obligation of this recursion is to CREATE
+            // the inner hop's concrete mono entry (`register_mono_entry`, with its
+            // own GOT slot) so its result type is concrete at codegen. We must NOT
+            // let the recursion's call-result unification (the FIXME 0349
+            // propagation in `monomorphise_call` ~line 1339) leak back into the
+            // PARENT's substitution: when the inner callee is a recursive helper
+            // sharing the parent's accumulator var (the 0344 `reduce`/`reduce-loop`
+            // fold), that leak pins the accumulator and re-collapses the
+            // polymorphic scheme 0344 deliberately keeps. The inner entry is built
+            // from `inner_arg_types` (already concrete, captured before this) +
+            // the isolated subst, so isolation does not affect what gets created.
+            let saved_subst = state.subst.clone();
+            let inner_mono = self.monomorphise_call(
+                state,
+                inner_name,
+                &inner_arg_types,
+                *inner_span,
+                inner_home.as_ref(),
+            );
+            state.subst = saved_subst;
+            if let Some(mono) = inner_mono? {
+                resolutions.resolved_calls.insert(
+                    *inner_span,
+                    ResolvedCall::SigDispatch {
+                        mangled_name: JitSymbol::from(mono.defn.name.as_ref()),
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Look up a constrained function by name.
     #[allow(dead_code)]
     fn get_constrained_fn(
@@ -1734,6 +1862,29 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 /// Build a mangled name from a function name and its concrete parameter types.
 ///
 /// Format: `name$Type1+Type2`
+/// Collect every `Apply`-of-bare-`Var` call site in an expression tree, except
+/// calls a fn makes to ITSELF (generic self-recursion is not a concrete mono
+/// site — its arg types are the defn's own generic vars). Records
+/// `(callee_name, arg_spans, call_span)`. Used by
+/// `monomorphise_inner_parametric_hops` (FIXME 0373) to find inner hops to
+/// recursively monomorphise after a parent hop's body re-check.
+fn collect_apply_var_calls(
+    expr: &Expr,
+    self_name: &Symbol,
+    out: &mut Vec<(Symbol, Vec<Span>, Span)>,
+) {
+    if let Expr::Apply { callee, args, span, .. } = expr
+        && let Expr::Var { name, .. } = callee.as_ref()
+        && name != self_name
+    {
+        let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
+        out.push((name.clone(), arg_spans, *span));
+    }
+    crate::program::for_each_child_expr(expr, |child| {
+        collect_apply_var_calls(child, self_name, out)
+    });
+}
+
 fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
     let type_names: Vec<String> = param_types
         .iter()

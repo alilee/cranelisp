@@ -4924,3 +4924,80 @@
         assert!(template.is_constrained_template());
         assert_eq!(template.callable_got_slot(), None);
     }
+
+    // spec: spec/07-traits.md §7.8 — polymorphic-result hop monomorphisation
+    //
+    // FIXME 0373 (Tier 1) + /arch ruling (A): the durable correct fix for the
+    // polymorphic-result-hop SIGSEGV is MONOMORPHISATION (not a runtime tag).
+    // A polymorphic-result hop reached at a concrete instantiation must produce
+    // a mono instance whose RESULT type is CONCRETE (`Int`), so the backend's RC
+    // classifier sees `NeverHeap` instead of `Type::Var -> Mixed` and never emits
+    // the unsound `< 1024` guarded RC-inc that dereferences a negative/large Int.
+    //
+    // The repro is a two-hop chain: `main` calls `(h1 neg)`; `h1` calls `(h2 f)`;
+    // `h2` calls `(f 5)`. Both `h1` and `h2` have polymorphic (unbound type var)
+    // result types when compiled generically. This test asserts that, after
+    // checking the program, the symbol table carries mono instances for BOTH
+    // hops (the concrete-instantiation propagation through the chain), and that
+    // each mono instance's result type is concrete `Int`, NOT a `Type::Var`.
+    #[test]
+    fn polymorphic_result_hops_monomorphise_with_concrete_result_type() {
+        let mut tc = tc_with_prims();
+        // tc_with_prims glob-imports `primitives`, so `sub-i64` is a bare name —
+        // no stdlib dependency, no (import ...) form needed.
+        let src = "\
+            (defn neg [:primitives/Int x] :primitives/Int (sub-i64 0 x))\n\
+            (defn h1 [f] (h2 f))\n\
+            (defn h2 [f] (f 5))\n\
+            (defn main [] (h1 neg))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+
+        tc.check_program_self(&program)
+            .expect("two-hop polymorphic-result program must type-check");
+
+        // Both hops must have a monomorphised instance. `build_mangled_name`
+        // collapses fn-value args (their `concrete_type_name` is None) to an
+        // empty type-list, so the mono names are `h1$` and `h2$` — distinct
+        // names, one instantiation each. The presence of `h2$` is the multi-hop
+        // propagation guarantee: `h2` only became concrete during `h1`'s recheck.
+        let mono = tc.mono_defn_names();
+        let mono_strs: Vec<String> = mono.iter().map(|s| s.as_ref().to_string()).collect();
+        assert!(
+            mono_strs.iter().any(|n| n.starts_with("h1$")),
+            "h1 must be monomorphised (FIXME 0373 Tier 1); mono entries: {mono_strs:?}",
+        );
+        assert!(
+            mono_strs.iter().any(|n| n.starts_with("h2$")),
+            "h2 must ALSO be monomorphised — the concrete instantiation must \
+             propagate through the hop chain (FIXME 0373 Tier 1, multi-hop); \
+             mono entries: {mono_strs:?}",
+        );
+
+        // Each hop's mono instance must carry a CONCRETE `Int` result type — the
+        // whole point of the fix. A `Type::Var` result here would reproduce the
+        // RC-guard SIGSEGV at codegen.
+        let assert_concrete_int_result = |tc: &TestFixture, prefix: &str| {
+            let st = tc.symbol_table();
+            let (name, entry) = st
+                .all_symbols()
+                .find(|(n, _)| n.as_ref().starts_with(prefix))
+                .unwrap_or_else(|| panic!("no mono entry for {prefix}"));
+            match entry {
+                ModuleEntry::Def { scheme, .. } => match &scheme.ty {
+                    Type::Fn(_, ret) => assert_eq!(
+                        ret.as_ref(),
+                        &Type::Int,
+                        "{name}'s mono result must be concrete Int, not {:?} \
+                         (FIXME 0373 Tier 1 — a Type::Var result reproduces the \
+                         RC-classification SIGSEGV)",
+                        ret,
+                    ),
+                    other => panic!("{name} mono scheme not a Fn: {other:?}"),
+                },
+                other => panic!("{name} mono entry not a Def: {other:?}"),
+            }
+        };
+        assert_concrete_int_result(&tc, "h1$");
+        assert_concrete_int_result(&tc, "h2$");
+    }

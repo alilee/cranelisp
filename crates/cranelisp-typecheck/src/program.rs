@@ -2353,6 +2353,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
         }
 
+        // FIXME 0373 (Tier 1, /arch ruling (A) — monomorphise polymorphic-result
+        // hops) — collect call sites for LOCAL (same-module) pure-parametric
+        // polymorphic callees. These are NOT in `constrained_fn_names` (that set
+        // holds only trait-constrained fns — `detect_constrained_fns` keys on
+        // `UserFnState::Constrained`), and they live in the current module so the
+        // imported-call pass above (which requires `home != current_module`)
+        // skips them too. Yet a hop like `(defn h1 [f] (h2 f))` whose RESULT type
+        // generalizes to an unbound `Type::Var` is compiled ONCE generically
+        // (program.rs §919 "generalize-and-keep-a-single-generic Concrete slot"),
+        // leaving its result `Type::Var` at codegen. The backend's RC classifier
+        // (`HeapCategory::classify(Type::Var) -> Mixed`) then emits a guarded
+        // RC-inc whose `< 1024` immediate-vs-pointer heuristic mis-reads a
+        // negative / large Int result as a heap pointer and dereferences it →
+        // SIGSEGV (FIXME 0373 root-cause). Monomorphising the hop at the concrete
+        // instantiation reached from its call site gives the mono instance a
+        // CONCRETE result type (`Int`) → `classify` sees `NeverHeap` → no guard →
+        // no crash. This reuses the same 0355 collection + `monomorphise_call` +
+        // caller-GOT-slot mechanism, widening the trigger from "constrained /
+        // imported callee" to "polymorphic-result hop reached at a concrete type".
+        for defn in defns {
+            self.collect_local_parametric_calls(
+                state,
+                defn.body(),
+                &defn.name,
+                constrained_fn_names,
+                &mut call_sites,
+            );
+        }
+
         // Nothing to monomorphise (neither local constrained fns nor imported
         // constrained call sites) — bail before resolving expr_types.
         if call_sites.is_empty() {
@@ -2445,11 +2474,70 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         });
     }
 
+    /// Walk a defn body collecting calls to LOCAL (same-module) pure-parametric
+    /// polymorphic callees that need a concrete monomorphisation (FIXME 0373,
+    /// Tier 1 — the polymorphic-result-hop fix; /arch ruling (A)).
+    ///
+    /// Mirrors [`Self::collect_imported_constrained_calls`] for the *local* case:
+    /// a trait-constrained local fn is already in `constrained_fn_names` and is
+    /// collected by [`Self::collect_constrained_calls_excluding_self`]; here we
+    /// pick up bare `Var` callees whose local name resolves (chain-follow) to a
+    /// terminal in the SAME module that is a pure-parametric polymorphic `UserFn`
+    /// `Def` (the `entry_is_monomorphisable_polymorphic` shape, excluding the
+    /// already-collected constrained set). The call site is recorded with
+    /// `home: None` (the same-module `monomorphise_call` path — recheck the body
+    /// in the current module's scope). A call from a fn to ITSELF is skipped:
+    /// generic self-recursion is the defn's own generic vars, not a concrete site.
+    fn collect_local_parametric_calls(
+        &self,
+        state: &CheckState,
+        expr: &Expr,
+        self_name: &Symbol,
+        constrained_fn_names: &HashSet<Symbol>,
+        out: &mut Vec<(Symbol, Vec<Span>, Span, Option<ModuleFullPath>)>,
+    ) {
+        if let Expr::Apply { callee, args, span, .. } = expr
+            && let Expr::Var { name, .. } = callee.as_ref()
+            && name != self_name
+            && !constrained_fn_names.contains(name)
+            // The result-var gate (narrows to the 0373 signature, preserves
+            // 0344): collect ONLY when the call site's result type resolves to a
+            // bare unbound `Type::Var` — the exact shape that leaves the generic
+            // hop compiled with a `Type::Var` result and triggers the
+            // RC-classification SIGSEGV. A pure-parametric local fn whose
+            // call-site result is concrete (`Int`) or a type-constructor
+            // application (`(Vec a)` — the 0344 `(reduce vec-push [] vv)` fold
+            // shape) is NOT a polymorphic-result hop: its result classifies
+            // cleanly, and monomorphising it here would pin the original defn's
+            // accumulator var through the post-mono regeneralization pass,
+            // re-collapsing the polymorphic scheme that 0344 deliberately keeps
+            // (the §919 generalize-and-keep writeback). The bare-`Var` gate
+            // excludes that case while still catching the residual-var hop.
+            && state
+                .expr_types
+                .get(span)
+                .map(|ty| matches!(apply(&state.subst, ty), Type::Var(_)))
+                .unwrap_or(false)
+            && let Some((entry, home)) =
+                self.resolve_terminal_entry_and_home(&state.current_module, name.as_ref())
+            && home == state.current_module
+            && Self::entry_is_monomorphisable_polymorphic(&entry)
+        {
+            let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
+            out.push((name.clone(), arg_spans, *span, None));
+        }
+        for_each_child_expr(expr, |child| {
+            self.collect_local_parametric_calls(
+                state, child, self_name, constrained_fn_names, out,
+            )
+        });
+    }
+
     /// Does this terminal entry need a monomorphised specialisation when called
     /// with concrete arg types? (FIXME 0355 — mirrors `get_constrained_fn`'s two
     /// accepted shapes: a trait-constrained `UserFn`, or a pure-parametric
     /// polymorphic `UserFn` carrying a stored annotated `ast`.)
-    fn entry_is_monomorphisable_polymorphic(entry: &ModuleEntry<C>) -> bool {
+    pub(crate) fn entry_is_monomorphisable_polymorphic(entry: &ModuleEntry<C>) -> bool {
         if let ModuleEntry::Def { kind, scheme, ast, .. } = entry {
             match kind.as_ref() {
                 DefKind::UserFn { fn_state: UserFnState::Constrained(_) } => true,

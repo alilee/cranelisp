@@ -8,6 +8,43 @@ refers_to: crates/cranelisp-backend/src/heap.rs (HeapCategory::classify, emit_rc
 status: open
 ---
 
+> **TIER-1 PARTIAL RESOLUTION LANDED (S83 /dev typecheck, 2026-06-16).**
+> The /arch-ruled (A) monomorphisation fix for the **polymorphic-result-hop**
+> half is DONE. `pass4_monomorphise` now also collects LOCAL (same-module)
+> pure-parametric polymorphic callees whose call-site result resolves to a bare
+> unbound `Type::Var` (`collect_local_parametric_calls`, gated to that signature
+> to preserve the 0344 generalize-and-keep fold), and `monomorphise_call`
+> recursively monomorphises inner polymorphic-result hops
+> (`monomorphise_inner_parametric_hops`, with the inner recursion's `state.subst`
+> isolated so the 0349 call-result unification cannot re-collapse a parent's
+> accumulator var). This propagates the concrete instantiation through a CHAIN of
+> hops (2- and 3-hop chains verified), so each hop's mono instance carries a
+> CONCRETE result type → `classify` sees `NeverHeap` → no RC guard → no crash.
+> **GREEN:** the /qa free-standing repro
+> `tests/regression.rs::fixme_0373_polymorphic_result_fn_value_two_hops_no_crash`
+> now exits 251 (= neg(5) = -5). Unit guard:
+> `cranelisp-typecheck program::tests::polymorphic_result_hops_monomorphise_with_concrete_result_type`.
+>
+> **RESIDUAL — STILL OPEN, RE-POINTED /backend.** The ORIGINAL /stdlib
+> manifestation (`(vec-map my-abs xs)` where `my-abs` wraps a cross-module
+> CONSTRAINED `abs`) still SIGSEGVs. This is a DISTINCT bug from the
+> polymorphic-result hop: `my-abs` is already CONCRETE (`:Int → :Int`), so there
+> is nothing to monomorphise on it. The crash is that the GENERIC `my-abs`
+> closure (the fn-value passed to the imported HOF) calls the constrained `abs`
+> through a GOT slot that is not wired to `abs$Int` in the cross-module-HOF
+> dispatch context. Isolation (this phase): N8 (local HOF + `my-abs` fn-value)
+> exit 9 ✓; lambda / named-non-constrained through `vec-map` ✓; only
+> `my-abs`(constrained-callee) through a CROSS-MODULE HOF ✗. The crash fires even
+> when the `vec-map` result is bound-and-dropped (so it is the constrained-callee
+> GOT wiring, not result classification). This is the FIXME's original
+> hypothesis — a GOT-slot / mono-variant wiring gap for an indirectly-reached
+> constrained mono Def — and is a backend concern (`cranelisp-typecheck` cannot
+> fix a GOT-wiring gap; `my-abs` is concrete and the typecheck-side mono of
+> `abs$Int` is already created). **0373 stays OPEN for this residual; target
+> /backend.**
+>
+> ---
+>
 > **TARGET RE-POINTED /typecheck → /backend (S83 /qa investigation, 2026-06-16).**
 > The root cause is a backend RC-classification misfire, NOT a typecheck
 > monomorphisation gap (though a typecheck-side monomorphise-the-hops fix is a
