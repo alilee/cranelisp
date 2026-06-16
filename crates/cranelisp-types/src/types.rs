@@ -108,10 +108,36 @@ impl Type {
     /// pointer vs bare scalar/tag) cannot be decided because an unpinned type
     /// variable rides in a position where the representation depends on it.
     ///
-    /// **THE single source of truth** for the §3.11.1 codegen-reaching ambiguity
-    /// question, shared by two consumers so that typecheck and backend agree **by
-    /// construction** (Principle 7, Principle 18; FIXME 0379, belt-and-braces
-    /// ruling 2026-06-16):
+    /// **RETIRING — this is the WRONG predicate under the tightened §3.11.1
+    /// (commit `2290aa9`, 2026-06-16). DO NOT use it for new code.** It embodies
+    /// the now-REJECTED *representation-determinacy* notion: it returns `false`
+    /// for `(Vec a)` and `Type::Fn` ("uniformly heap, RC-uniform — admit the
+    /// unpinned var"). The tightened spec has **no representation-based exemption**
+    /// — the strictness is **full concreteness** (no `Type::Var` at all), so
+    /// `(Vec a)`/`(Fn a)`/`(Option a)`/`[]` are **all** §3.11.1 errors when
+    /// unpinned at a codegen-reaching position. The correct §3.11.1 verdict is
+    /// therefore **`!is_concrete()`** (equivalently `ConcreteType::from_type(ty)
+    /// .is_err()` — see [`crate::ConcreteType`]), which rejects ANY residual free
+    /// var, not the representation-undetermined subset this predicate flags.
+    ///
+    /// **Retirement is gated on the §3.11.1 check (`cranelisp-typecheck::program::
+    /// find_ambiguous_value_position` / `is_codegen_ambiguous_type`) switching its
+    /// verdict from `is_representation_undetermined()` to a full-concreteness
+    /// check.** That switch is /dev's (FIXME 0386). The predicate is KEPT (not
+    /// deleted) until then so the typecheck build does not break; once /dev flips
+    /// the call site, this method + its `public-api.txt` line are removed (a
+    /// removal-line baseline move). The backend `heap.rs` references are comments
+    /// only (the FIXME-0375/0381 backstop is deferred, never armed) — they retire
+    /// with the concrete-boundary arc's Phase 3.
+    ///
+    /// Historical rationale (the now-superseded belt-and-braces framing) follows;
+    /// it documents *why* this predicate was shaped the way it was, not current
+    /// guidance:
+    ///
+    /// **(SUPERSEDED) THE single source of truth** for the §3.11.1 codegen-reaching
+    /// ambiguity question, shared by two consumers so that typecheck and backend
+    /// agree **by construction** (Principle 7, Principle 18; FIXME 0379,
+    /// belt-and-braces ruling 2026-06-16):
     ///
     /// - **Typecheck (position-complete §3.11.1 check, FIXME 0379).** Calls this
     ///   on the resolved type at **every** codegen-reaching value position (match
