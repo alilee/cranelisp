@@ -1,6 +1,6 @@
 # Sprint 84 Test Plan — Full Monomorphisation + Auto-IO Parallelisation
 
-**Author:** `/qa` (Phase 3 Design). **Status:** Wave-0 draft-ready.
+**Author:** `/qa` (Phase 3 Design). **Status:** Wave-0 AUTHORED (`.rs` committed; states verified).
 **Scope source:** `sprints/SPRINT.md` §Scope (Clusters A + B) + §Architecture review (Phase 2) PO-0367.1/.2/.3.
 **FIXMEs:** `0374` (typecheck Tier-2), `0375` (backend guard retire), `0373`+`0373-spec` (spec rank-1 HM / ambiguity / §12.1), `0367` (int re-wire), `0353` (platform/qa close).
 
@@ -26,6 +26,8 @@ The Tier-2 mono repros reuse the established 0373 repro shape (`tests/regression
 The existing two 0373 guards (`fixme_0373_polymorphic_result_fn_value_two_hops_no_crash`, `fixme_0373_residual_polymorphic_result_cross_module_hops_no_crash`) cover the **result-hop** subset — a chain whose intervening hop's *result type* is a bare `Type::Var`. **Tier-1/1.5 deliberately does NOT collect** instances whose call-site result is concrete, and never enumerates polymorphic *values flowing as fn-arguments through HOFs* nor *nested-generic* instances reached only from a non-collected parent (machinery confirmed: `collect_local_parametric_calls` result-var gate `program.rs:2516-2520`; HOF case explicitly named non-covered at `infer.rs:691`; `collect_apply_var_calls` reaches inner hops only when the parent was top-level-collected). **These are the Tier-2 remainder and the coverage gap this sprint must witness.**
 
 Each repro below is RED at Wave-0 (SIGSEGV or `Type::Var`-at-codegen panic), GREEN when 0374 makes every reachable instance concrete. All run through `--run`, `--link`, and REPL (use `run_through_all_modes` where the shape permits; the `:(IO Int)` `main` shape runs cleanly in all three). `// spec: spec/12-runtime.md §12.1` (representation) + cross-ref `spec/03-types.md` rank-1 HM once 0373(i) lands.
+
+> **WAVE-0 AUTHORING CORRECTION (2026-06-16, /qa).** The "RED (SIGSEGV)" predictions for A.1.a/b/c (bare-Int HOF / nested-generic / arg-position) were STALE against HEAD — those shapes already monomorphise correctly (each exits 251/249 cleanly today). They are committed as GREEN-STAY *regression guards* instead. The GENUINE surviving residual gap, witnessed RED 5/5 at HEAD, is NARROWER: a polymorphic fn-value passed THROUGH A HOF whose result is a GENERIC ADT carrying a `Type::Var` FIELD (the field type survives as the residual `Type::Var` at the RC boundary). Committed as `mono_tier2_generic_adt_field_through_hof_no_crash` (the actual failing-first guard) + `mono_tier2_all_modes_concreteness_equivalence` (mode-uniformity on that shape). The mode-equivalence rollup does NOT use `run_through_all_modes::assert_all_equivalent` — that helper false-diverges on negative-Int results (REPL parses `-5`, --run/--link observe exit `251`); it drives --run/--link/REPL legs explicitly instead. The A.2 ambiguity rows landed as authored (RED — REPL echoes `:(user/Option a)`; `--run` `(defn ambig [] None)` compiles silently). See `tests/plan/ledger.md` Sprint-84-Wave-0 entry for the full disposition + the flag to /design(typecheck) that 0374's scope is the ADT-field instance.
 
 | # | Test name | Tier | Instance-shape (the gap) | W0-state | Green-on-landing |
 |---|---|---|---|---|---|

@@ -36,6 +36,31 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 84 Wave 0 — full-monomorphisation (0374) + ambiguity (0373) + auto-IO (0367) failing-first guards (/qa, 2026-06-16)
+
+QA-first Wave-0 authoring per `tests/plan/sprint84-test-plan.md`. Six NEW failing-first e2e guards land RED (un-ignored, failing-not-ignored discipline), plus seven GREEN-stay regression guards. Plan source: SPRINT.md §Scope Clusters A+B + PO-0367.1/.2/.3.
+
+**Cluster A — full monomorphisation (FIXME 0374) + ambiguity (FIXME 0373).** `tests/regression.rs`.
+
+- **`mono_tier2_generic_adt_field_through_hof_no_crash`** (RED, SHA pre-commit) — the GENUINE residual Tier-2 gap. Owner: `/dev` cranelisp-typecheck (enumeration) + cranelisp-backend (`Mixed` RC-guard backstop). Signature: SIGSEGV (`status.code()==None`, `.assert_exit(251)` fails). A polymorphic fn-value passed through a HOF whose result is a generic ADT carrying a `Type::Var` field (`(Box a)`); a >=1024-unsigned value (-5) in that field trips the unsound `<1024` RC guard. Value-dependence confirmed during authoring (small positive value exits cleanly). Flips green when 0374 pins the ADT field type at every reachable instance.
+- **`mono_tier2_all_modes_concreteness_equivalence`** (RED) — same shape, mode-uniformity (--run + --link SIGSEGV; REPL `:primitives/Int -5` echo). Owner: as above. Flips green when 0374 is mode-uniform.
+- **`mono_ambiguous_unconstrained_top_level_var_rejected_neg`** (RED) — Owner: `/dev` cranelisp-typecheck (0373(ii) ambiguity check). Signature: REPL ECHOES `:(user/Option a) Option.None` (the unconstrained `a` survives) instead of an ambiguity error. Substring assertion (`error`+`ambiguous`) per the wording-sync coordination note — NOT exact text. Flips green when the post-inference ambiguity check (spec §3.11) rejects it.
+- **`mono_ambiguous_neg_does_not_reach_codegen`** (RED) — Owner: as above. `(defn ambig [] None)` ((Fn [] (Option a)), `a` unconstrained) compiles SILENTLY (exit 0, no error) today. The "no crash" half already holds (exit 0 is non-signal); the "ambiguity error" half fails RED. Flips green with 0373(ii).
+
+GREEN-STAY regression guards (Cluster A, all PASS at W0): `mono_tier2_hof_polymorphic_fn_arg_no_crash`, `mono_tier2_nested_generic_concrete_parent_no_crash`, `mono_tier2_polymorphic_in_arg_position_no_crash`, `mono_tier2_same_def_two_instantiations_no_crash`, `mono_tier2_cross_module_hof_arg_no_crash`, `mono_tier2_fold_accumulator_not_over_monomorphised` (the 0344/0349 over-mono CANARY), `mixed_adt_nullary_and_heap_ctor_roundtrip_after_guard_scope` (0375 kept-path guard).
+
+> **W0-STATE SURPRISE (plan correction).** The plan predicted the bare-Int A.1.a/b/c shapes (HOF / nested-generic / arg-position) would SIGSEGV at HEAD. They DO NOT — the current monomorphisation already reaches them (each exits 251/249 cleanly). The Phase-2/3 analysis that wrote "RED (SIGSEGV)" for A.1.a–c was stale against HEAD. Those shapes are kept as GREEN-STAY regression guards. The genuine surviving residual gap is NARROWER (generic-ADT-field-carrying-a-`Type::Var`-through-a-HOF, witnessed RED 5/5 by `mono_tier2_generic_adt_field_through_hof_no_crash`). Reduction was done in-session via a forward-from-roots reachability investigation; the load-bearing trinity (HOF + generic-ADT result + >=1024 value) was confirmed by removal (each removal makes the crash disappear). Flagged to `/sprint`/`/design(typecheck)`: 0374's deliverable scope is the ADT-field instance, not the bare-Int HOF instance (already covered).
+
+**Cluster B — auto-IO parallelisation (FIXME 0367 / 0353).** `tests/spec_10_io.rs`.
+
+- **`auto_io_independent_diff_token_parallelizes_e2e`** (RED) — Owner: `/dev` int (0367 wiring). Signature: data-independent Commutative pair (`commutative-sleep-ms`) measures ~442ms (serial), fails the <300ms (1.5*D) parallelize assertion. Flips green when the ParBind-insertion pass is reactivated.
+- **`auto_io_par_grouping_uniform_across_modes`** (RED) — Owner: as above. Mode-uniformity (--run + --link must both parallelise). RED in all modes (pass dormant everywhere). Flips green when 0367 wires mode-uniform.
+- **`resource_serial_diff_token_parallelizes`** (RED, EXISTING — S83 0367 guard, `tests/spec_10_io.rs`) — unchanged; the canonical 0367/0353 witness. NOT duplicated.
+
+GREEN-STAY regression guards (Cluster B, all PASS at W0): `auto_io_data_dependent_stays_serial_e2e` (a data-dependent ResourceSerial chain — second token derives from first result — MUST stay serial), `auto_io_sequential_class_stays_serial_e2e` (Sequential `stdio` print pair — ordered stdout "first" before "second"; note: uses `stdio` print, NOT `test-capture` print, because `test-capture` routes into an FFI buffer invisible to process stdout), `resource_serial_same_token_serializes` (EXISTING — same-token serialise guard, unchanged).
+
+**Full `--workspace` count after this commit: 2650 tests / 2642 pass / 8 fail / 0 skip.** The 8 fails = the 6 new Cluster-A/B failing-first guards above + 2 pre-existing (`repl_cross_cluster_duplicate_field_accessor_is_ambiguous` [0366, REPL cross-cluster accessor ambiguity, /dev typecheck] + `resource_serial_diff_token_parallelizes` [0367]). No unintended new reds. Suite runtime 39.4s for `--workspace --no-fail-fast` (full unit+e2e; per-test times all healthy; e2e subset alone is well under cap).
+
 ### Sprint 83 Wave 3 — FIXME 0353 ResourceSerial token-serialization timing e2e + scheduling-not-wired defect surfaced (/qa, 2026-06-16)
 
 The second half of FIXME 0353 (the timing e2e witness; the `resource-serial-sleep-ms`

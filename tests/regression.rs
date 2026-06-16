@@ -3408,3 +3408,445 @@ fn fixme_0373_residual_polymorphic_result_cross_module_hops_no_crash() {
         // like the GREEN local-hop Tier-1 guard.
         .assert_exit(251);
 }
+
+// =============================================================================
+// Sprint 84 Cluster A — FULL MONOMORPHISATION (Tier-2 instance-shape gap).
+//
+// Plan: tests/plan/sprint84-test-plan.md §A.1 (FIXME 0374). Tier-1/1.5 (landed
+// S83 — the two GREEN guards above) covers exactly the *polymorphic-result-hop*
+// set, enumerated BACKWARD from result-var detection. The Tier-2 remainder is
+// everything reachable FORWARD from the roots that the backward result-var gate
+// skips.
+//
+// W0-STATE SURPRISE (recorded by /qa at Wave-0 authoring, 2026-06-16). The plan
+// predicted the bare-Int HOF / nested-generic / arg-position shapes (A.1.a–c)
+// would SIGSEGV at HEAD. They DO NOT — the current monomorphisation already
+// reaches them (each exits 251 cleanly today). The Phase-2/3 analysis that
+// wrote "RED (SIGSEGV)" for A.1.a–c was stale against HEAD: those shapes are
+// already covered. They are kept below as GREEN-STAY *regression guards* (a
+// regression that re-narrows the reachable set would re-break them) per the
+// "repros join the suite for eternity" + "validate against spec" discipline.
+//
+// The GENUINE surviving residual gap (witnessed RED at HEAD, deterministic
+// SIGSEGV 5/5) is NARROWER: a polymorphic fn-value passed THROUGH A HOF whose
+// result is a GENERIC ADT carrying a `Type::Var` FIELD. The field type is what
+// survives as the residual `Type::Var` at the RC-classification boundary; the
+// >= 1024-unsigned value in that field trips the unsound `< 1024` RC guard
+// (heap.rs `emit_rc_inc_guarded`) → misread as a heap pointer → SIGSEGV. That
+// shape is the FAILING-FIRST Wave-0 guard
+// (`mono_tier2_generic_adt_field_through_hof_no_crash`, below) — RED today,
+// GREEN when 0374 pins the ADT field type at every reachable instance. Owner:
+// cranelisp-typecheck (enumeration), with the soundness backstop in
+// cranelisp-backend (the `Mixed` guard).
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.1 — Value Representation (no unresolved type
+//       variable reaches code generation; every reachable instance carries a
+//       concrete representation). Cross-ref spec/03-types.md §3.10 (Rank-1
+//       Hindley-Milner — every reachable function instance has fully concrete
+//       parameter and result types once monomorphised from the roots).
+// FIXME(0374): Tier-2 — POLYMORPHIC fn-value THROUGH A HOF whose RESULT is a
+//   GENERIC ADT carrying a `Type::Var` FIELD. `mk` (returns `(Box a)`) is passed
+//   as a fn-value through the HOF `thru`; the `(Box a)` result keeps an unpinned
+//   `Type::Var` field that reaches the RC boundary. The >= 1024-unsigned value
+//   (-5) in that field trips the unsound `< 1024` RC guard → it is misread as a
+//   heap pointer and dereferenced → SIGSEGV (`status.code() == None`, so
+//   `.assert_exit(251)` FAILS). Value-dependence confirmed during authoring:
+//   the same shape with a small positive value (5, < 1024) exits cleanly,
+//   proving the crash is the RC guard, not an unrelated fault.
+//   THIS IS THE FAILING-FIRST WAVE-0 GUARD (RED today, deterministic SIGSEGV).
+#[test]
+fn mono_tier2_generic_adt_field_through_hof_no_crash() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int sub-i64]])\n\
+             (deftype (Box a) (Box [:a val]))\n\
+             (defn mk [x] (Box x))\n\
+             (defn thru [g x] (g x))\n\
+             (defn get [b] (match b [(Box v) v]))\n\
+             (defn main [] :(IO Int) (Pure (get (thru mk (sub-i64 0 5)))))",
+        )
+        .output()
+        // RED today (SIGSEGV): `mk`'s `(Box a)` result through the HOF `thru`
+        // keeps an unpinned `Type::Var` field; -5 (>= 1024 unsigned) in that
+        // field trips the `Mixed` RC guard → dereferenced → SIGSEGV.
+        // GREEN on 0374: the ADT field type is pinned at every reachable
+        // instance; -5 classifies NeverHeap, no guarded RC fires, exit 251.
+        .assert_exit(251);
+}
+
+// spec: spec/12-runtime.md §12.1 — Value Representation. Cross-ref
+//       spec/03-types.md §3.10 (Rank-1 HM — every reachable function instance
+//       has fully concrete parameter and result types once monomorphised).
+// REGRESSION GUARD (GREEN-STAY): polymorphic fn-value as a HOF argument with a
+//   bare-Int result. The plan predicted this RED; it is GREEN at HEAD (the
+//   current monomorphisation already reaches the `g = (Fn [Int] Int)` instance).
+//   Kept as a regression guard against a future change re-narrowing the
+//   reachable HOF-instance set. neg(5) = -5, exit 251.
+#[test]
+fn mono_tier2_hof_polymorphic_fn_arg_no_crash() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int sub-i64]])\n\
+             (defn neg [:Int x] :Int (sub-i64 0 x))\n\
+             (defn apply2 [g x] (g x))\n\
+             (defn main [] :(IO Int) (Pure (apply2 neg 5)))",
+        )
+        .output()
+        // GREEN today AND after 0374: the bare-Int HOF instance is enumerated;
+        // -5 classifies NeverHeap, exit 251. (Regression guard, not failing-first.)
+        .assert_exit(251);
+}
+
+// spec: spec/12-runtime.md §12.1 — Value Representation. Cross-ref
+//       spec/03-types.md §3.10 (full monomorphisation-from-roots reaches every
+//       instance regardless of a parent's result type).
+// REGRESSION GUARD (GREEN-STAY): nested-generic via a concrete-result parent.
+//   The outer hop's call-site result is CONCRETE (`:Int`); the inner generic hop
+//   it calls carries the polymorphic -5 result. The plan predicted this RED; it
+//   is GREEN at HEAD (the current enumeration reaches `inner`). Kept as a
+//   regression guard AND as the over-mono CANARY pairing with the fold guard:
+//   reaching `inner` must not require re-collapsing a deliberately-kept scheme
+//   (see `mono_tier2_fold_accumulator_not_over_monomorphised`). neg(5) = -5,
+//   exit 251.
+#[test]
+fn mono_tier2_nested_generic_concrete_parent_no_crash() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int sub-i64 add-i64]])\n\
+             (defn neg [:Int x] :Int (sub-i64 0 x))\n\
+             (defn inner [f] (f 5))\n\
+             (defn outer [f] :Int (add-i64 (inner f) 0))\n\
+             (defn main [] :(IO Int) (Pure (outer neg)))",
+        )
+        .output()
+        // GREEN today AND after 0374: roots-forward enumeration reaches `inner`
+        // regardless of `outer`'s concrete result; -5 classifies NeverHeap,
+        // exit 251. (Regression guard, not failing-first.)
+        .assert_exit(251);
+}
+
+// spec: spec/12-runtime.md §12.1 — Value Representation. Cross-ref
+//       spec/03-types.md §3.10 (every reachable instance has fully concrete
+//       PARAMETER and result types — arg-position, not only result-position).
+// REGRESSION GUARD (GREEN-STAY): polymorphic ARGUMENT (not result) position.
+//   `consume`'s parameter passes -5 through to `id`. The plan predicted this
+//   RED; it is GREEN at HEAD. Kept as a regression guard for arg-position
+//   coverage. neg-style -5 via sub-i64, exit 251.
+#[test]
+fn mono_tier2_polymorphic_in_arg_position_no_crash() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int sub-i64]])\n\
+             (defn consume [x] (id x))\n\
+             (defn id [y] y)\n\
+             (defn main [] :(IO Int) (Pure (consume (sub-i64 0 5))))",
+        )
+        .output()
+        // RED today: `consume`'s parameter is polymorphic at the reachable
+        // instantiation; -5 flows through it un-monomorphised → SIGSEGV.
+        // GREEN on 0374: the parameter type is pinned at the reachable
+        // instantiation; -5 classifies NeverHeap, exit 251.
+        .assert_exit(251);
+}
+
+// spec: spec/12-runtime.md §12.1 — Value Representation. Cross-ref
+//       spec/03-types.md §3.10 (definition-driven enumeration: one def, two
+//       reachable concrete instances, each a distinct specialization).
+// REGRESSION GUARD (GREEN-STAY): ONE DEF, TWO REACHABLE INSTANCES.
+//   `id` is used at `Int` (through `neg`'s -5, the >= 1024 path) AND at `String`
+//   — the `String` instance is AlwaysHeap, the `Int` instance is NeverHeap. A
+//   mis-shared single generic template would mis-RC one of them; 0374 emits a
+//   distinct `MonoDefn` per `(Def, type-args)`. The plan predicted this RED; it
+//   is GREEN at HEAD (the two-instance enumeration already happens). Kept as a
+//   regression guard against a future mis-share. neg(5)=-5, str-len("hi")=2,
+//   -5 - 2 = -7, exit 249.
+#[test]
+fn mono_tier2_same_def_two_instantiations_no_crash() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int String sub-i64 str-len]])\n\
+             (defn id [y] y)\n\
+             (defn neg [:Int x] :Int (sub-i64 0 x))\n\
+             (defn use-str [:String s] :Int (str-len (id s)))\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (sub-i64 (id (neg 5)) (use-str \"hi\"))))",
+        )
+        .output()
+        // GREEN today AND after 0374: `id` is enumerated as two distinct
+        // MonoDefns (Int + String); the Int instance classifies NeverHeap.
+        // neg(5)=-5, str-len("hi")=2, -5 - 2 = -7, exit 249 (= -7 & 0xFF).
+        .assert_exit(249);
+}
+
+// spec: spec/12-runtime.md §12.1 — Value Representation. Cross-ref
+//       spec/03-types.md §3.10 (cross-module monomorphisation reaches HOF
+//       instances in imported modules).
+// REGRESSION GUARD (GREEN-STAY): HOF + CROSS-MODULE composite. The
+//   polymorphic-fn-value-as-arg case where the HOF lives in an imported module
+//   (the union of the two gaps Tier-1.5 split). The plan predicted this RED; it
+//   is GREEN at HEAD (cross-module HOF instances are already enumerated). Kept
+//   as a regression guard. neg(5) = -5, exit 251.
+#[test]
+fn mono_tier2_cross_module_hof_arg_no_crash() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .file(
+            "hof.cl",
+            "(import [primitives [Int]])\n\
+             (defn apply2 [g x] (g x))",
+        )
+        .user(
+            "(import [primitives [IO Pure Int sub-i64]])\n\
+             (import [hof [apply2]])\n\
+             (defn neg [:Int x] :Int (sub-i64 0 x))\n\
+             (defn main [] :(IO Int) (Pure (apply2 neg 5)))",
+        )
+        .output()
+        // GREEN today AND after 0374: cross-module HOF instances are enumerated;
+        // -5 classifies NeverHeap, exit 251.
+        .assert_exit(251);
+}
+
+// spec: spec/12-runtime.md §12.1 — Value Representation. Cross-ref
+//       spec/03-types.md §3.10 (mode-uniform monomorphisation: --run / --link /
+//       REPL must agree on the enumerated instance set — no mode may skip an
+//       enumeration).
+// FIXME(0374): Tier-2 MODE-EQUIVALENCE rollup, on the GENUINE residual shape
+//   (generic-ADT-field-through-HOF — same shape as
+//   `mono_tier2_generic_adt_field_through_hof_no_crash`). The instance
+//   enumeration must be identical across --run, --link, and REPL: a mode that
+//   monomorphises differently (e.g. the REPL incremental path skipping the ADT
+//   field instance) would crash where another mode does not.
+//
+//   NOTE on the witness: `run_through_all_modes::assert_all_equivalent` compares
+//   the REPL's parsed Int (`-5`) against --run/--link EXIT CODES (`251` = -5 &
+//   0xFF) and reports a false divergence for negative-Int results (a known
+//   helper limitation). So this test drives the value-bearing modes (--run,
+//   --link) directly and asserts BOTH exit 251 (mode-uniform clean run); the
+//   REPL leg is asserted separately on its `:primitives/Int -5` echo. RED today:
+//   --run AND --link both SIGSEGV (status.code()==None → assert_exit(251) FAILS).
+//   GREEN on 0374: all three modes agree the value is -5.
+#[test]
+fn mono_tier2_all_modes_concreteness_equivalence() {
+    const PROGRAM: &str = "(import [primitives [IO Pure Int sub-i64]])\n\
+             (deftype (Box a) (Box [:a val]))\n\
+             (defn mk [x] (Box x))\n\
+             (defn thru [g x] (g x))\n\
+             (defn get [b] (match b [(Box v) v]))\n\
+             (defn main [] :(IO Int) (Pure (get (thru mk (sub-i64 0 5)))))";
+
+    // --run leg: value-bearing exit code. RED today (SIGSEGV); GREEN → 251.
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(PROGRAM)
+        .output()
+        .assert_exit(251);
+
+    // --link leg: produced binary must agree (mode-uniform). RED today; GREEN → 251.
+    Cranelisp::new()
+        .link_then_run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(PROGRAM)
+        .output()
+        .assert_exit(251);
+
+    // REPL leg: the incremental path must monomorphise identically — the value
+    // echoes as `:primitives/Int -5`. RED today (REPL eval SIGSEGVs or omits the
+    // echo); GREEN → the echo is present.
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin(&format!("{PROGRAM}\n(main)\n"))
+        .output()
+        .assert_stdout_contains(":primitives/Int -5");
+}
+
+// spec: spec/03-types.md §3.10 — Rank-1 Hindley-Milner (monomorphic recursion /
+//       full monomorphisation must NOT pin a deliberately-generalised-and-kept
+//       scheme variable — the over-monomorphisation NEGATIVE).
+// FIXME(0374): NEGATIVE / regression canary for the PRIMARY Cluster-A risk.
+//   The Tier-1 result-var gate exists SPECIFICALLY to avoid pinning a
+//   deliberately-kept polymorphic fold accumulator (0344/0349, program.rs:2503-2515).
+//   Tier-2's roots-forward enumeration MUST NOT re-collapse it: it must
+//   distinguish "instance reachable at a concrete type" (monomorphise) from
+//   "scheme deliberately generalised-and-kept" (leave generic). This fold's
+//   accumulator is generalised-and-kept; it compiles and runs correctly today
+//   and MUST STAY GREEN through 0374. If Tier-2 over-monomorphises, this row
+//   (and the existing 0344 fold guards) regresses.
+#[test]
+fn mono_tier2_fold_accumulator_not_over_monomorphised() {
+    // A right-fold whose accumulator stays polymorphic across the recursion
+    // (the 0344 preservation shape, reduced). The body uses the accumulator at
+    // a concrete Int instantiation at the call site, but the `fold-r` scheme
+    // itself is generalised-and-kept over the accumulator/element type. Summing
+    // [1 2 3] with add-i64 and seed 0 yields 6 → main : (IO Int) exits 6.
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int add-i64]])\n\
+             (deftype (Lst a) Nil (Cons [:a head :(Lst a) tail]))\n\
+             (defn fold-r [f acc xs]\n\
+               (match xs [Nil acc (Cons h t) (f h (fold-r f acc t))]))\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (fold-r add-i64 0 (Cons 1 (Cons 2 (Cons 3 Nil))))))",
+        )
+        .output()
+        // GREEN today AND after 0374: the kept accumulator scheme is not
+        // over-monomorphised; the fold runs and 1+2+3 = 6, exit 6.
+        .assert_exit(6);
+}
+
+// =============================================================================
+// Sprint 84 Cluster A — §A.2: 0373(ii) AMBIGUOUS-TYPE rule (NEGATIVE).
+//
+// Plan: tests/plan/sprint84-test-plan.md §A.2 (FIXME 0373). An unconstrained
+// top-level type var remaining after inference is a TYPE ERROR ("ambiguous
+// type"), NOT compiled and NOT defaulted (spec §3.11 — no defaulting rule).
+// Enforced at the typecheck post-inference generalization/finalisation boundary
+// (spec §3.11 enforcement-seam note). The exact `CheckError` variant + wording
+// is /design(typecheck)'s seam; per the plan's coordination note these rows
+// assert on the GENERIC `error:` + `ambiguous` substrings (error-test
+// convention — substring, not exact text), NOT the exact diagnostic.
+//
+// FAILING-FIRST Wave-0 guards: RED today (the check does not yet exist — the
+// ambiguous form currently either compiles silently or behaves undefined);
+// GREEN when 0373(ii) + the /typecheck ambiguity check rejects it.
+// Owner: cranelisp-typecheck.
+// =============================================================================
+
+// spec: spec/03-types.md §3.11 — Ambiguous Types (a finalised top-level type
+//       retaining an unconstrained type var that no reachable use site pins MUST
+//       be rejected as an "ambiguous type" error; no defaulting).
+// FIXME(0373): ambiguity rule (ii) — a top-level form whose finalised type
+//   retains an unconstrained `Type::Var` that no reachable instantiation pins
+//   MUST produce an "ambiguous type" CheckError on stdout, exit non-zero, NO
+//   crash, NO silent compile. Substring assertion per the coordination note.
+#[test]
+fn mono_ambiguous_unconstrained_top_level_var_rejected_neg() {
+    // `None` at the top level (REPL-input cluster) has type `(Option a)` with
+    // `a` unconstrained and pinned by no reachable use site → ambiguous per
+    // §3.11. Bare ADT defined inline (no prelude). MUST be rejected, not
+    // compiled or defaulted. (W0 behaviour confirmed during authoring: the REPL
+    // currently ECHOES `:(user/Option a) Option.None` — the unconstrained `a`
+    // survives and is displayed rather than rejected, so this fails RED.)
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin(
+            "(deftype Option None (Some [v]))\n\
+             None\n",
+        )
+        .output();
+    // RED today: the ambiguity check does not exist, so `None`'s `(Option a)`
+    // either echoes (silent accept) or behaves undefined — neither contains an
+    // ambiguity error. GREEN on 0373(ii): an `error:` naming `ambiguous`.
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected an 'ambiguous type' error for an unconstrained top-level var \
+         (spec §3.11) — got neither.\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+}
+
+// spec: spec/03-types.md §3.11 — Ambiguous Types (the check is performed at the
+//       typecheck post-inference boundary — BEFORE monomorphisation enumeration
+//       / code generation — so an ambiguous form is a clean typecheck rejection,
+//       never a downstream `Type::Var`-at-codegen crash).
+// FIXME(0373): ambiguity rule (ii) — NEGATIVE companion. The ambiguous form
+//   must NOT reach codegen: no SIGSEGV, no signal termination. The rejection is
+//   a clean typecheck error, not a backend crash. (--run path: the ambiguous
+//   top-level form is rejected before any binary runs.) W0 behaviour confirmed
+//   during authoring: `(defn ambig [] None)` — type `(Fn [] (Option a))`, `a`
+//   unconstrained — currently COMPILES SILENTLY (exit 0, no error). So the
+//   "no crash" assertion already holds (exit 0 is non-signal); the "ambiguity
+//   error" assertion fails RED (no error emitted today).
+#[test]
+fn mono_ambiguous_neg_does_not_reach_codegen() {
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (deftype Option None (Some [v]))\n\
+             (defn ambig [] None)\n\
+             (defn main [] :(IO Int) (Pure 0))",
+        )
+        .output();
+    // The ambiguous `(defn ambig [] None)` ((Fn [] (Option a)), `a` unconstrained)
+    // must be a CLEAN typecheck rejection: a real exit code (NOT signal
+    // termination). This half ALREADY holds (no crash) and must STAY holding.
+    assert!(
+        out.status.code().is_some(),
+        "ambiguous form must be caught at typecheck, NOT crash at codegen \
+         (spec §3.11) — got signal termination (status.code()==None).\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    // RED today: compiles silently (exit 0, no error). GREEN on 0373(ii): a
+    // non-signal, non-zero exit with an ambiguity error on stdout.
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("error") && combined.contains("ambiguous"),
+        "expected a clean 'ambiguous type' typecheck rejection (spec §3.11) — \
+         the form compiled silently instead.\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+}
+
+// =============================================================================
+// Sprint 84 Cluster A — §A.3.a: 0375 KEPT-path guard (Mixed-ADT nullary-tag
+// discrimination still correct after the guard is scoped down).
+//
+// Plan: tests/plan/sprint84-test-plan.md §A.3 (FIXME 0375). 0375 makes
+// `classify(Type::Var)` an assert and retires `emit_rc_inc_guarded` from the
+// `Type::Var` path, but KEEPS the guard for nullary-tag discrimination within a
+// known `Mixed` ADT (a nullary tag `< 1024` vs a heap pointer). This guards the
+// KEPT path: a `Mixed` ADT with >=1 nullary ctor + >=1 heap-carrying ctor must
+// still round-trip correctly after the guard-removal edit. GREEN today, MUST
+// STAY GREEN — a regression guard against over-scoping the guard removal.
+// Owner: cranelisp-backend (the unit-tier seam pins are /dev-authored).
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.1 — Value Representation (Mixed-ADT layout: a
+//       nullary tag is discriminated from a heap pointer; both arms RC-managed).
+//       Cross-ref spec/12-runtime.md §12.1.4 (Algebraic Data Types).
+// FIXME(0375): KEPT-guard regression guard. A `Mixed` ADT (`Bag` here: nullary
+//   `Empty` + heap-carrying `Full [v]`) constructed, matched on both arms,
+//   RC-managed and dropped — the kept nullary-tag guard must still discriminate
+//   the `< 1024` nullary tag from a heap pointer. GREEN now and after 0375.
+#[test]
+fn mixed_adt_nullary_and_heap_ctor_roundtrip_after_guard_scope() {
+    // `Bag` is Mixed: `Empty` is a nullary tag, `Full` carries a heap value (a
+    // String). Build one of each, match both arms, sum the observable lengths.
+    // Empty → 0, Full "abc" → 3. main : (IO Int) exits 3.
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int String add-i64 str-len]])\n\
+             (deftype Bag Empty (Full [v]))\n\
+             (defn bag-len [b]\n\
+               (match b [Empty 0 (Full v) (str-len v)]))\n\
+             (defn main [] :(IO Int)\n\
+               (Pure (add-i64 (bag-len Empty) (bag-len (Full \"abc\")))))",
+        )
+        .output()
+        // GREEN now AND after 0375: 0 + 3 = 3. The kept nullary-tag guard still
+        // discriminates Empty (nullary tag) from Full (heap pointer).
+        .assert_exit(3);
+}

@@ -1028,3 +1028,313 @@ fn resource_serial_diff_token_parallelizes() {
          (spec §10.12.4)."
     );
 }
+
+// =============================================================================
+// Sprint 84 Cluster B — AUTOMATIC IO PARALLELISATION (PO-0367 checklist).
+//
+// Plan: tests/plan/sprint84-test-plan.md §B (FIXMEs 0367 / 0353). The
+// independence-analysis pass that inserts `Par` nodes from `bind` chains is
+// dead code today (`apply_bind_chain_analysis`, zero live callers), so NO `Par`
+// node is emitted and every chain runs sequentially. These e2e proxies are the
+// Wave-0 failing-first guards /qa owns for PO-0367.1 / .2 (the deterministic
+// AST-property contract is pinned by /dev unit tests in the wiring change-set;
+// these e2e proxies CAN be RED at Wave-0 and ARE the failing-first signal).
+//
+// TIMING DISCIPLINE: identical to the §10.12.4 ResourceSerial pair above —
+// D = 200 ms per call, structural inequality at the 1.5*D = 300 ms midpoint
+// (50% slack each side), the link COMPILE excluded from the timing window
+// (produce-only `.link()` then exec + time the produced binary). Robust margins,
+// NOT tight ratios — timing-flakiness is a banned disposition.
+//
+// SCHEDULING-CLASS COVERAGE (per spec §10.12.2):
+//   - Commutative  (`commutative-sleep-ms`)        → MUST parallelise when
+//     data-independent (the POSITIVE proxy, RED today).
+//   - ResourceSerial (`resource-serial-sleep-ms`)  → MUST stay serial when
+//     data-DEPENDENT regardless of token (the NEGATIVE proxy, GREEN-stay).
+//   - Sequential   (`print`)                       → MUST stay ordered/serial
+//     always (the NEGATIVE proxy, GREEN-stay).
+// =============================================================================
+
+/// A two-binding Commutative `bind` chain. Both `commutative-sleep-ms` calls
+/// are data-independent (`a` not free in the second, `b` not free in the first)
+/// and Commutative → spec §10.12.1 REQUIRES a `Par` node. The terminal
+/// `Pure (add-i64 a b)` makes `main : IO Int`; summed sleeps = exit code.
+/// `2*200 = 400 -> 400 mod 256 = 144`.
+fn commutative_indep_program() -> String {
+    format!(
+        "(platform test-capture)\n\
+         (import [platform.test-capture [commutative-sleep-ms]])\n\
+         (import [primitives [bind Pure]])\n\
+         (defn main []\n\
+           (bind (commutative-sleep-ms {RS_SLEEP_MS}) (fn [a]\n\
+             (bind (commutative-sleep-ms {RS_SLEEP_MS}) (fn [b]\n\
+               (Pure (primitives/add-i64 a b)))))))\n"
+    )
+}
+
+/// A two-binding ResourceSerial `bind` chain that is DATA-DEPENDENT: the second
+/// call's token derives from the first call's result (`a`), so `a` IS free in
+/// the second effect → independence analysis MUST NOT Par-group it (spec
+/// §10.12.1). Even after wiring this stays serial (~2*D). Both calls use token
+/// derived so they sleep `RS_SLEEP_MS`; summed = 400 -> exit 144.
+fn resource_dependent_program() -> String {
+    // The second token is `(add-i64 a 1)` — derived from the first result `a`,
+    // making the second effect data-dependent on the first. Independence
+    // analysis sees `a` free in the second binding and must keep it serial.
+    format!(
+        "(platform test-capture)\n\
+         (import [platform.test-capture [resource-serial-sleep-ms]])\n\
+         (import [primitives [bind Pure]])\n\
+         (defn main []\n\
+           (bind (resource-serial-sleep-ms 1 {RS_SLEEP_MS}) (fn [a]\n\
+             (bind (resource-serial-sleep-ms (primitives/add-i64 a 1) {RS_SLEEP_MS}) (fn [b]\n\
+               (Pure (primitives/add-i64 a b)))))))\n"
+    )
+}
+
+/// A two-binding Sequential `bind` chain (`stdio`'s `print`,
+/// SchedulingClass::Sequential — which writes to REAL stdout, so ordering is
+/// observable in the captured process stdout; the `test-capture` `print` routes
+/// into an internal FFI buffer and is NOT visible in process stdout). Sequential
+/// effects MUST execute in source order and MUST NOT be Par-grouped (spec
+/// §10.12.1 / §10.12.2). Terminal `Pure 0` → exit 0; the witness is ORDERED
+/// stdout ("first" before "second").
+fn sequential_class_program() -> String {
+    "(platform stdio)\n\
+     (import [platform.stdio [print]])\n\
+     (import [primitives [bind Pure]])\n\
+     (defn main []\n\
+       (bind (print \"first\") (fn [a]\n\
+         (bind (print \"second\") (fn [b]\n\
+           (Pure 0))))))\n"
+        .to_string()
+}
+
+/// Wall-clock an arbitrary IO program under `--run`, asserting `expected_exit`
+/// so a silent mis-run can't masquerade as a timing pass. Mirrors
+/// `rs_run_elapsed_ms` but parameterised on source + expected exit.
+fn prog_run_elapsed_ms(source: &str, expected_exit: i32) -> u128 {
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", source)
+        .run("main.cl")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(expected_exit),
+        "--run: expected exit {expected_exit} (both effects ran)\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    out.elapsed.as_millis()
+}
+
+/// Wall-clock an arbitrary IO program under `--link`: link (produce only, NOT
+/// timed), then exec the produced standalone binary and time only that run.
+/// Mirrors `rs_link_elapsed_ms` but parameterised on source + expected exit.
+fn prog_link_elapsed_ms(source: &str, expected_exit: i32) -> u128 {
+    use std::process::Command;
+    use std::time::Instant;
+
+    let platform_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug");
+
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", source)
+        .link("main.cl")
+        .output();
+    assert!(
+        out.status.success(),
+        "--link: link step failed\nstdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+
+    let produced = out.tmpdir.join("main");
+    assert!(
+        produced.exists(),
+        "--link: produced binary missing at {}\nstdout:\n{}\nstderr:\n{}",
+        produced.display(),
+        out.stdout,
+        out.stderr
+    );
+
+    let start = Instant::now();
+    let run = Command::new(&produced)
+        .current_dir(&out.tmpdir)
+        .env("CRANELISP_PLATFORM_PATH", &platform_path)
+        .output()
+        .expect("exec produced --link binary");
+    let elapsed = start.elapsed();
+    assert_eq!(
+        run.status.code(),
+        Some(expected_exit),
+        "--link produced binary: expected exit {expected_exit} (both effects ran)\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+    elapsed.as_millis()
+}
+
+// spec: spec/10-io.md §10.12.1 — Automatic IO Scheduling: a data-independent,
+// Commutative pair MUST be parallelised (the compiler MUST insert a `Par`
+// node). Wall-clock witness: two data-independent 200ms Commutative calls run
+// concurrently → < 1.5*D midpoint in BOTH `--run` and `--link`.
+//
+// FAILING-NOT-IGNORED DEFECT GUARD (S84, PO-0367.1 positive proxy): RED today —
+// the independence-analysis pass is not wired into the live pipeline, so no
+// `Par` node is emitted and the two Commutative calls run SEQUENTIALLY
+// (~2*200 = ~400 ms, not < 300 ms). It is the spec-correct guard for FIXME 0367
+// (target: /int); it flips GREEN when the ParBind-insertion pass is reactivated.
+// Distinct from `resource_serial_diff_token_parallelizes` (which proxies the
+// ResourceSerial token path); this one proxies the Commutative independence
+// path. Do NOT relax the inequality to make it pass — the failure IS the defect.
+#[test]
+fn auto_io_independent_diff_token_parallelizes_e2e() {
+    let src = commutative_indep_program();
+    let run_ms = prog_run_elapsed_ms(&src, 144);
+    assert!(
+        run_ms < RS_MIDPOINT_MS,
+        "--run independent-Commutative: expected concurrent wall-clock < \
+         {RS_MIDPOINT_MS}ms (~= 1*{RS_SLEEP_MS}ms), got {run_ms}ms — the two \
+         data-independent Commutative calls did not run concurrently (spec \
+         §10.12.1). If grouping is genuinely not happening, this is the FIXME-0367 \
+         scheduling-not-wired defect, not a margin to relax."
+    );
+
+    let link_ms = prog_link_elapsed_ms(&src, 144);
+    assert!(
+        link_ms < RS_MIDPOINT_MS,
+        "--link independent-Commutative: expected concurrent wall-clock < \
+         {RS_MIDPOINT_MS}ms (~= 1*{RS_SLEEP_MS}ms), got {link_ms}ms — the two \
+         data-independent Commutative calls did not run concurrently in the \
+         linked binary (spec §10.12.1)."
+    );
+}
+
+// spec: spec/10-io.md §10.12.1 — Automatic IO Scheduling: independence analysis.
+// A DATA-DEPENDENT pair (the second binding references an earlier-bound name)
+// MUST NOT be Par-grouped — it MUST stay serial. Wall-clock witness: two 200ms
+// calls where the second's token derives from the first's result run
+// SEQUENTIALLY → > 1.5*D midpoint in BOTH `--run` and `--link`.
+//
+// NEGATIVE / GREEN-STAY GUARD (S84, PO-0367.1 data-dependent proxy): serial
+// today (nothing parallelises) AND must STAY serial after wiring — it proves the
+// independence analysis is REAL ("not parallelise all diff-token pairs"). Catches
+// a wiring that over-parallelises a data-dependent chain (a correctness bug).
+#[test]
+fn auto_io_data_dependent_stays_serial_e2e() {
+    let src = resource_dependent_program();
+    let run_ms = prog_run_elapsed_ms(&src, 144);
+    assert!(
+        run_ms > RS_MIDPOINT_MS,
+        "--run data-dependent: expected serial wall-clock > {RS_MIDPOINT_MS}ms \
+         (~= 2*{RS_SLEEP_MS}ms), got {run_ms}ms — a data-dependent chain was \
+         wrongly parallelised (the second effect's token derives from the first \
+         result; spec §10.12.1 forbids Par-grouping it)."
+    );
+
+    let link_ms = prog_link_elapsed_ms(&src, 144);
+    assert!(
+        link_ms > RS_MIDPOINT_MS,
+        "--link data-dependent: expected serial wall-clock > {RS_MIDPOINT_MS}ms \
+         (~= 2*{RS_SLEEP_MS}ms), got {link_ms}ms — a data-dependent chain was \
+         wrongly parallelised in the linked binary (spec §10.12.1)."
+    );
+}
+
+// spec: spec/10-io.md §10.12.1 — Automatic IO Scheduling: Sequential-class
+// effects are always executed in source order and MUST NOT be Par-grouped (spec
+// §10.12.1 / §10.12.2 — `print` is SchedulingClass::Sequential). Observable
+// witness: two `print` effects emit in source order ("first" before "second").
+//
+// NEGATIVE / GREEN-STAY GUARD (S84, PO-0367.1 Sequential-class proxy): ordered
+// today AND must STAY ordered after wiring. Catches a wiring that parallelises a
+// Sequential pair (an ordering bug). Asserted in `--run` and `--link` (where the
+// produced binary's stdout is the program's print output directly).
+#[test]
+fn auto_io_sequential_class_stays_serial_e2e() {
+    let src = sequential_class_program();
+
+    // --run: the two prints must appear in source order.
+    let run_out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", &src)
+        .run("main.cl")
+        .output();
+    assert_eq!(
+        run_out.status.code(),
+        Some(0),
+        "--run Sequential: expected exit 0\nstdout:\n{}\nstderr:\n{}",
+        run_out.stdout, run_out.stderr
+    );
+    let first_idx = run_out.stdout.find("first");
+    let second_idx = run_out.stdout.find("second");
+    assert!(
+        first_idx.is_some()
+            && second_idx.is_some()
+            && first_idx < second_idx,
+        "--run Sequential: expected 'first' to precede 'second' (source order; \
+         spec §10.12.1) — Sequential effects must NOT be reordered.\nstdout:\n{}",
+        run_out.stdout
+    );
+
+    // --link: same ordering in the produced standalone binary.
+    let link_out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", &src)
+        .link_then_run("main.cl")
+        .output();
+    assert_eq!(
+        link_out.status.code(),
+        Some(0),
+        "--link Sequential: expected exit 0\nstdout:\n{}\nstderr:\n{}",
+        link_out.stdout, link_out.stderr
+    );
+    let lfirst = link_out.stdout.find("first");
+    let lsecond = link_out.stdout.find("second");
+    assert!(
+        lfirst.is_some() && lsecond.is_some() && lfirst < lsecond,
+        "--link Sequential: expected 'first' to precede 'second' (source order; \
+         spec §10.12.1) in the linked binary.\nstdout:\n{}",
+        link_out.stdout
+    );
+}
+
+// spec: spec/10-io.md §10.12 — Automatic IO Scheduling MODE-UNIFORMITY
+// (PO-0367.2): the same source MUST yield the same Par-grouping decision in
+// `--run`, `--link`, AND the REPL — no mode silently skips the pass. The current
+// dormant state IS a mode-uniformity hole (the REPL-eval path "does not invoke
+// auto-scheduling"). Witnessed by the timing decision in each mode: a
+// data-independent Commutative program parallelises (< 1.5*D) in every mode.
+//
+// FAILING-NOT-IGNORED DEFECT GUARD (S84, PO-0367.2): RED in ALL modes today (the
+// pass is dormant everywhere → all serial). Flips GREEN when 0367 wires the
+// grouping decision mode-uniformly (including the REPL-eval seam). Asserts the
+// grouping DECISION is identical across `--run` and `--link` via the timing
+// witness in each. (The REPL timing witness is intentionally folded into the
+// per-mode `--run`/`--link` assertions here; a REPL-specific eval-path proxy is
+// the companion B.2.b, deferred to /dev's wiring change-set.)
+#[test]
+fn auto_io_par_grouping_uniform_across_modes() {
+    let src = commutative_indep_program();
+
+    // The grouping decision must be the SAME (parallelise) in --run and --link.
+    // Both timing windows must fall below the 1.5*D midpoint — if any mode skips
+    // the pass, that mode measures ~2*D and this fails for that mode.
+    let run_ms = prog_run_elapsed_ms(&src, 144);
+    assert!(
+        run_ms < RS_MIDPOINT_MS,
+        "--run mode: data-independent Commutative program did not parallelise \
+         (wall-clock {run_ms}ms >= {RS_MIDPOINT_MS}ms) — the auto-scheduling pass \
+         is dormant in --run (mode-uniformity hole; spec §10.12)."
+    );
+
+    let link_ms = prog_link_elapsed_ms(&src, 144);
+    assert!(
+        link_ms < RS_MIDPOINT_MS,
+        "--link mode: data-independent Commutative program did not parallelise \
+         (wall-clock {link_ms}ms >= {RS_MIDPOINT_MS}ms) — the auto-scheduling pass \
+         is dormant in --link (mode-uniformity hole; spec §10.12)."
+    );
+}
