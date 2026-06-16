@@ -44,9 +44,15 @@
 ;; whose source carries a `(mod test …)` body no longer clobbers the backing
 ;; `.cl` on source-regen (0343, entry-module role-gate). The submodule imports
 ;; the runner's parent helpers via `super` and asserts with `assert-true`/
-;; `assert-false`. NOTE: it does NOT use `assert-eq` — a cross-module call of a
-;; stacked-trait-bound fn (`assert-eq`'s `[:Eq :Display a :Eq :Display b]`)
-;; currently SIGSEGVs (FIXME 0354, 0341 fix incomplete for the importer path).
+;; `assert-false` AND `assert-eq`.
+;;
+;; S83 Phase 6 (0355): `assert-eq` is RESTORED here. A cross-module call of a
+;; stacked-trait-bound fn (`assert-eq`'s `[:Eq :Display a :Eq :Display b]`,
+;; imported from `testing.assertions` and called from this `test` submodule)
+;; now monomorphises in the defining module's scope and RUNS to completion —
+;; where it previously SIGSEGV'd (the resolved FIXME 0354/0355). These
+;; assert-eq self-tests are the durable stdlib-side regression guard for that
+;; cross-module constrained-call path.
 ;;
 ;; Spec: design/arch/test-discovery.md §4.3/§5/§6, plan-stdlib.md §3.3
 
@@ -176,14 +182,14 @@
 ;; ── Self-tests ───────────────────────────────────────────────────────
 ;; `(mod test …)` submodule (S82 Phase 6): imports the runner's parent symbols
 ;; via `super` (0342) and exercises the pure helpers with assert-true/
-;; assert-false (assert-eq is avoided — FIXME 0354). The submodule body now
-;; survives a load without source-regen clobber (0343).
+;; assert-false AND assert-eq (S83 Phase 6 — assert-eq RESTORED, FIXME
+;; 0354/0355 resolved). The submodule body survives a load without
+;; source-regen clobber (0343).
 
 (mod test
   (import [super [Outcome Passed Failed Panicked
                   Tally tally passed? present-one]])
-  (import [testing.assertions [assert-true assert-false]])
-  (import [primitives [str-eq]])
+  (import [testing.assertions [assert-true assert-false assert-eq]])
 
   (defn test-passed-tally-is-passed [] :(Option String)
     ;; A tally of all-passed Outcomes reports passed?=true.
@@ -199,4 +205,6 @@
 
   (defn test-present-passed-line [] :(Option String)
     ;; present-one renders a Passed outcome as "name ... ok".
-    (assert-true (str-eq (present-one (Passed "t")) "t ... ok"))))
+    ;; assert-eq is a CROSS-MODULE call of the stacked-trait-bound assert-eq
+    ;; (imported from testing.assertions) — the S83/0355 regression guard.
+    (assert-eq "t ... ok" (present-one (Passed "t")))))
