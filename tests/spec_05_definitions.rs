@@ -569,6 +569,68 @@ fn accessor_cross_type_duplicate_field_name() {
         .assert_exit(9);
 }
 
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors, cross-type
+// spec: spec/08-modules.md §8.6.5 — bare-name ambiguity (poisoning)
+//
+// FAILING-NOT-IGNORED defect guard for the REPL/`--run` divergence in the
+// same-module duplicate-field accessor ruling. See FIXME 0366
+// (design/arch/fixmes/0366-typecheck-repl-cross-cluster-accessor-collision-rehydration.md).
+//
+// The single-cluster `--run`/`--link` path (asserted green in
+// `accessor_cross_type_duplicate_field_name` above) poisons the bare
+// accessor `v` correctly. The REPL processes each input as a SEPARATE
+// cluster, and the duplicate-field poison classifier keys on the per-
+// `CheckState` `synthesised_accessor_names` set (adt.rs) — which is empty on
+// the cluster that defines `Cup` (the first accessor `v` from `Box` was
+// committed in a PRIOR cluster, not in this `CheckState`). The collision is
+// therefore missed and the REPL falls into the still-live suppress-and-
+// first-wins path (program.rs `deferred_accessor_collisions`), emitting the
+// warning "the accessor is suppressed and the existing binding is kept" and
+// then resolving `(v (Box 5))` to `5`.
+//
+// The spec gives the REPL no exemption from §5.2.6 + §8.6.5: a bare use of a
+// duplicate-field accessor MUST be a compile-time ambiguity error in EVERY
+// mode. This test asserts the SPEC-CORRECT behaviour and therefore FAILS
+// today (the REPL returns `:primitives/Int 5` + a warning, not the error).
+// It flips green when the cross-cluster rehydration gap is fixed in
+// cranelisp-typecheck (re-derive the accessor collision from the COMMITTED
+// live symbol-table entry when synthesising in a later cluster — analogous
+// to the staging+live union probe in commit b612532 for the non-accessor
+// collision). Severity: low (REPL-only, niche), but a genuine
+// spec-conformance divergence between modes.
+#[test]
+fn repl_cross_cluster_duplicate_field_accessor_is_ambiguous() {
+    // SEPARATE REPL inputs => separate clusters: `Box` and `Cup` are defined
+    // on distinct lines, then the bare poisoned accessor is used on a third.
+    let out = repl_prims(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftype Cup [:primitives/Int v])\n\
+         (v (Box 5))\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+
+    // The bare use of the duplicate-field accessor MUST be a compile-time
+    // ambiguity error in the REPL, exactly as in `--run`/`--link`.
+    assert!(
+        combined.contains("ambiguous bare name 'v'"),
+        "REPL bare use of the cross-cluster duplicate-field accessor `v` MUST \
+         be a compile-time ambiguity error naming `ambiguous bare name 'v'` \
+         per §5.2.6 + §8.6.5 (no REPL exemption); got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // It MUST NOT silently first-wins: the poisoned bare use does not resolve
+    // to a value. Today the REPL prints `:primitives/Int 5` here — the red.
+    assert!(
+        !combined.contains(":primitives/Int 5"),
+        "the REPL MUST NOT silently first-wins-resolve the poisoned bare \
+         accessor to `5` per §5.2.6; the cross-cluster collision must poison \
+         `v` just as the single-cluster path does; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
 // spec: spec/05-definitions.md §5.2.7 — constructor arity rejection:
 // `(Point 1)` where Point expects two args. No prior spec_05 test
 // isolated ADT-constructor arity rejection; `defn_multi_clause_arity`
