@@ -730,11 +730,14 @@ fn prelude_option_some_display_neg_raw_pointer() {
     );
 }
 
-// spec: repl/spec.md §1.5 — prelude-Option `None` value displays as
-// `Option.None`; MUST NOT render the *definition* drawer (`; deftype` /
-// `fn.option/` qualified path) when bare `None` is evaluated as a value.
-// REGRESSION-GUARD: legacy test marked "BUG"; current implementation shows
-// the value-display correctly.
+// spec: repl/spec.md §1.5.1 — Bare Polymorphic Values — Type Display via
+// Introspection. A bare `None` (type `∀a. (Option a)`) entered at the REPL
+// DISPLAYS its polymorphic type/value (`Option.None`); it is a type-display
+// disposition (spec §3.11.2), NOT an ambiguity error (§3.11.1 fires only when
+// the same value reaches codegen). MUST NOT render the *definition* drawer
+// (`; deftype` / `fn.option/` qualified path) when bare `None` is a value.
+// SPEC-CORRECT under the §3.11 ruling (FIXME 0378) — MUST stay GREEN; the
+// /dev relay keeps it green via introspection after the slot-less reshape.
 // (carry: legacy/e2e.rs::e2e_s1_5_prelude_option_none_display)
 #[test]
 fn prelude_option_none_value_display_neg_definition_metadata() {
@@ -2219,8 +2222,12 @@ fn sig_resolves_trace_special_form() {
 // the inferred type AND the value in one shape).
 // =============================================================================
 
-// spec: repl/spec.md §1.5 — empty Vec value displays as `[]` (with the
-// `(primitives/Vec a)` type prefix), not a raw pointer.
+// spec: repl/spec.md §1.5.1 — Bare Polymorphic Values — Type Display via
+// Introspection. A bare empty `[]` (type `∀a. (Vec a)`) entered at the REPL
+// DISPLAYS the `(primitives/Vec a)` type prefix + `[]` value, not a raw pointer.
+// This is a type-display disposition (spec §3.11.2), NOT an ambiguity error.
+// SPEC-CORRECT under the §3.11 ruling (FIXME 0378) — MUST stay GREEN; the
+// /dev relay keeps it green via introspection after the slot-less reshape.
 // (harvest: legacy/repl_experience.rs::display_vec_empty)
 #[test]
 fn display_empty_vec_value() {

@@ -3711,70 +3711,107 @@ fn mono_tier2_fold_accumulator_not_over_monomorphised() {
 }
 
 // =============================================================================
-// Sprint 84 Cluster A — §A.2: 0373(ii) AMBIGUOUS-TYPE rule (NEGATIVE).
+// Sprint 84 Cluster A — §A.2: 0373(ii) AMBIGUOUS-TYPE rule, RESHAPED to the
+// ruled §3.11 DISPOSITION TRIPLE (user ruling 2026-06-16; FIXME 0378).
 //
-// Plan: tests/plan/sprint84-test-plan.md §A.2 (FIXME 0373). An unconstrained
-// top-level type var remaining after inference is a TYPE ERROR ("ambiguous
-// type"), NOT compiled and NOT defaulted (spec §3.11 — no defaulting rule).
-// Enforced at the typecheck post-inference generalization/finalisation boundary
-// (spec §3.11 enforcement-seam note). The exact `CheckError` variant + wording
-// is /design(typecheck)'s seam; per the plan's coordination note these rows
-// assert on the GENERIC `error:` + `ambiguous` substrings (error-test
-// convention — substring, not exact text), NOT the exact diagnostic.
+// Plan: tests/plan/sprint84-test-plan.md §A.2 (FIXME 0373/0378). §3.11 was
+// refined into three exhaustive dispositions for a form whose finalised type
+// retains a free type variable:
+//   • §3.11.1 — a use in a CODEGEN-REACHING value position with the var
+//     unpinned → AMBIGUITY TYPE ERROR (no defaulting). Scoped to "a use that
+//     forces codegen", NOT a type/definition in isolation.
+//   • §3.11.2 — a BARE polymorphic value entered at the REPL → TYPE-DISPLAY via
+//     introspection (`:Type value`), NOT an error. (Guarded by the two
+//     repl_introspection display tests — they MUST stay GREEN.)
+//   • §3.11.3 — a NAMED polymorphic definition with result-only free vars →
+//     ADMITTED, sound, dead-for-codegen until instantiated at a concrete use.
+//     Structurally identical to a legitimate `(defn empty [] [])` library fn.
 //
-// FAILING-FIRST Wave-0 guards: RED today (the check does not yet exist — the
-// ambiguous form currently either compiles silently or behaves undefined);
-// GREEN when 0373(ii) + the /typecheck ambiguity check rejects it.
-// Owner: cranelisp-typecheck.
+// The exact `CheckError` variant + wording is /design(typecheck)'s seam; per
+// the plan's coordination note the rejection row asserts on the GENERIC
+// `error:` + `ambiguous` substrings (error-test convention — substring, not
+// exact text), NOT the exact diagnostic.
+//
+// FAILING-FIRST: the §3.11.1 rejection guard is RED today (the codegen-forced
+// ambiguity check is wired-but-dormant per FIXME 0378) → GREEN when the
+// Wave-1b /dev relay enables the scoped check + retires the result-only-var
+// carve-out. The §3.11.3 admit guard is a POSITIVE regression guard and is
+// expected GREEN immediately (the named defn already admits — the dormant
+// check does not touch it). Owner: cranelisp-typecheck.
 // =============================================================================
 
-// spec: spec/03-types.md §3.11 — Ambiguous Types (a finalised top-level type
-//       retaining an unconstrained type var that no reachable use site pins MUST
-//       be rejected as an "ambiguous type" error; no defaulting).
-// FIXME(0373): ambiguity rule (ii) — a top-level form whose finalised type
-//   retains an unconstrained `Type::Var` that no reachable instantiation pins
-//   MUST produce an "ambiguous type" CheckError on stdout, exit non-zero, NO
-//   crash, NO silent compile. Substring assertion per the coordination note.
+// spec: spec/03-types.md §3.11.1 — The ambiguity rule is scoped to
+//       codegen-reaching value positions. A polymorphic value with a free type
+//       var that MUST be monomorphised for code generation — because it occupies
+//       a value position actually evaluated to a runtime value (here: a `let`-
+//       bound value consumed at runtime) — and that NO reachable use site pins,
+//       MUST be rejected with an "ambiguous type" error. No defaulting.
+// FIXME(0378): the §3.11.1 codegen-forced ambiguity check is wired-but-dormant.
+//   This is the CODEGEN-REACHING repro built from §3.11.1's worked example
+//   (`(identity None)` evaluated as a runtime value, here let-bound and consumed
+//   by a runtime branch). It MUST produce an `error:` naming `ambiguous` on
+//   stdout, a real (non-signal) exit code, NO crash, NO silent compile.
+//   Substring assertion per the coordination note. GREEN when /dev enables the
+//   scoped check. Owner: cranelisp-typecheck.
 #[test]
 fn mono_ambiguous_unconstrained_top_level_var_rejected_neg() {
-    // `None` at the top level (REPL-input cluster) has type `(Option a)` with
-    // `a` unconstrained and pinned by no reachable use site → ambiguous per
-    // §3.11. Bare ADT defined inline (no prelude). MUST be rejected, not
-    // compiled or defaulted. (W0 behaviour confirmed during authoring: the REPL
-    // currently ECHOES `:(user/Option a) Option.None` — the unconstrained `a`
-    // survives and is displayed rather than rejected, so this fails RED.)
+    // CODEGEN-REACHING (§3.11.1): `(identity None)` is bound by `let` and
+    // CONSUMED at runtime (matched, its arms producing a runtime Int). The
+    // let-bound value must become a runtime value of type `(Option a)` with `a`
+    // unpinned by any reachable use site — the match scrutinises the tag, never
+    // the payload, so nothing pins `a`. This is disposition §3.11.1: a runtime
+    // value must be produced at an unresolved type → ambiguity error. (Contrast
+    // §3.11.2: a BARE `None` at the REPL is DISPLAYED, not rejected, because it
+    // never reaches codegen as a runtime value — see the two repl_introspection
+    // display guards. The shape that triggers §3.11.1 rejection is the
+    // codegen-FORCING consumption, NOT the bare value.) `identity` and the ADT
+    // are defined inline (no prelude). Runs via `--run` so it actually reaches
+    // codegen; the rejection must fire at typecheck BEFORE the binary runs.
     let out = Cranelisp::new()
-        .repl()
+        .run("user.cl")
         .with_prelude(PreludeVariant::None)
-        .stdin(
-            "(deftype Option None (Some [v]))\n\
-             None\n",
+        .user(
+            "(import [primitives [IO Pure Int]])\n\
+             (deftype Option None (Some [v]))\n\
+             (defn identity [x] x)\n\
+             (defn main [] :(IO Int)\n\
+               (let [x (identity None)]\n\
+                 (Pure (match x [None 0 (Some _) 1]))))",
         )
         .output();
-    // RED today: the ambiguity check does not exist, so `None`'s `(Option a)`
-    // either echoes (silent accept) or behaves undefined — neither contains an
-    // ambiguity error. GREEN on 0373(ii): an `error:` naming `ambiguous`.
+    // RED today: the codegen-forced ambiguity check is dormant, so the
+    // let-bound `(Option a)` either compiles silently (defaulting/undefined) or
+    // reaches codegen. GREEN when /dev enables the §3.11.1 check: an `error:`
+    // naming `ambiguous`, caught at typecheck (real exit code, no signal).
+    assert!(
+        out.status.code().is_some(),
+        "ambiguous codegen-reaching form must be caught at typecheck, NOT crash \
+         at codegen (spec §3.11.1) — got signal termination (status.code()==None).\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
         combined.contains("error") && combined.contains("ambiguous"),
-        "expected an 'ambiguous type' error for an unconstrained top-level var \
-         (spec §3.11) — got neither.\nstdout:\n{}\nstderr:\n{}",
+        "expected an 'ambiguous type' error for a codegen-reaching unpinned var \
+         (spec §3.11.1) — a `let`-bound `(identity None)` consumed at runtime.\n\
+         stdout:\n{}\nstderr:\n{}",
         out.stdout, out.stderr
     );
 }
 
-// spec: spec/03-types.md §3.11 — Ambiguous Types (the check is performed at the
-//       typecheck post-inference boundary — BEFORE monomorphisation enumeration
-//       / code generation — so an ambiguous form is a clean typecheck rejection,
-//       never a downstream `Type::Var`-at-codegen crash).
-// FIXME(0373): ambiguity rule (ii) — NEGATIVE companion. The ambiguous form
-//   must NOT reach codegen: no SIGSEGV, no signal termination. The rejection is
-//   a clean typecheck error, not a backend crash. (--run path: the ambiguous
-//   top-level form is rejected before any binary runs.) W0 behaviour confirmed
-//   during authoring: `(defn ambig [] None)` — type `(Fn [] (Option a))`, `a`
-//   unconstrained — currently COMPILES SILENTLY (exit 0, no error). So the
-//   "no crash" assertion already holds (exit 0 is non-signal); the "ambiguity
-//   error" assertion fails RED (no error emitted today).
+// spec: spec/03-types.md §3.11.3 — A named polymorphic definition with
+//       result-only free variables is SOUND, not ambiguous. `(defn ambig [] None)`
+//       of type `(Fn [] (Option a))` (`a` result-only) is a legitimate rank-1 HM
+//       scheme — dead for codegen until instantiated at a concrete use site.
+//       Structurally identical to a legitimate `(defn empty [] [])`; rejecting it
+//       would reject every `empty`/`pure`-style library fn. It MUST be ADMITTED.
+// FIXME(0378): RESHAPED from the Wave-0 ambiguity-REJECTION expectation to the
+//   ruled ADMIT expectation (§3.11.3). The named defn is never concretely used,
+//   so it emits no specialisation and contributes no code; the program is
+//   well-formed and exits cleanly. This is a POSITIVE regression guard for
+//   disposition 1 — the dormant §3.11.1 codegen-forced check MUST NOT fire on a
+//   named defn. Owner: cranelisp-typecheck.
 #[test]
 fn mono_ambiguous_neg_does_not_reach_codegen() {
     let out = Cranelisp::new()
@@ -3787,25 +3824,26 @@ fn mono_ambiguous_neg_does_not_reach_codegen() {
              (defn main [] :(IO Int) (Pure 0))",
         )
         .output();
-    // The ambiguous `(defn ambig [] None)` ((Fn [] (Option a)), `a` unconstrained)
-    // must be a CLEAN typecheck rejection: a real exit code (NOT signal
-    // termination). This half ALREADY holds (no crash) and must STAY holding.
+    // §3.11.3: `(defn ambig [] None)` ((Fn [] (Option a)), `a` result-only) is
+    // ADMITTED — sound, dead-for-codegen until instantiated. It is never used
+    // concretely here, so it contributes no code; `main` runs and exits 0.
+    // The program MUST type-check clean (no `ambiguous` error) and exit 0.
     assert!(
         out.status.code().is_some(),
-        "ambiguous form must be caught at typecheck, NOT crash at codegen \
-         (spec §3.11) — got signal termination (status.code()==None).\n\
+        "a named result-only-var defn must be admitted at typecheck, NOT crash \
+         (spec §3.11.3) — got signal termination (status.code()==None).\n\
          stdout:\n{}\nstderr:\n{}",
         out.stdout, out.stderr
     );
-    // RED today: compiles silently (exit 0, no error). GREEN on 0373(ii): a
-    // non-signal, non-zero exit with an ambiguity error on stdout.
     let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
     assert!(
-        combined.contains("error") && combined.contains("ambiguous"),
-        "expected a clean 'ambiguous type' typecheck rejection (spec §3.11) — \
-         the form compiled silently instead.\nstdout:\n{}\nstderr:\n{}",
+        !combined.contains("ambiguous"),
+        "a named polymorphic defn with result-only free vars MUST be ADMITTED, \
+         not rejected as ambiguous (spec §3.11.3) — it is structurally identical \
+         to a legitimate `(defn empty [] [])` library fn.\nstdout:\n{}\nstderr:\n{}",
         out.stdout, out.stderr
     );
+    out.assert_exit(0);
 }
 
 // =============================================================================
