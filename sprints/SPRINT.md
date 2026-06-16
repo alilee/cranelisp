@@ -249,12 +249,24 @@ Finalised. Logical dependency below; **execution is serial-relayed** (shared tre
 | /design→/dev→/review | cranelisp-backend | 0375 — `classify(Type::Var)`→`unreachable!`; retire `<1024` guard from the Var path (classify-local, split off `TyConApp`) per `design/backend/ring2-rc.md` §1.6. | pending |
 | /spec | spec/ | 0373(iii) — land the staged §12.1 representation relaxation (wording authored Phase 3). | pending |
 
-### Wave 3 — Cluster B
+### ConcreteType arc — Phases 2–5 (user directed 2026-06-16: "run the ConcreteType sequence")
+
+The full realization of "generics not representable at the backend" per `design/arch/concrete-boundary-type.md`. User ruled to run it within S84 (Cluster B `0367` slips to a later sprint). Each phase: design (where needed) → /dev → /review, serial.
+
+| Phase | Skill chain | Crate(s) | Task | Status |
+|---|---|---|---|---|
+| **P1** | /arch | cranelisp-types | `ConcreteType` + `from_type`/`to_type` + `NotConcrete` scaffold | **DONE** (`5b3319c`) |
+| **P2** | /arch→/dev→/review | cranelisp-types, cranelisp-typecheck | Settle §2.4 (codegen_type field vs `MonoExpr`); mono produces `ConcreteType`; AST carries it; cache bump | pending |
+| **P3** | /design→/dev→/review | cranelisp-backend | `classify`/`compile_to_module` consume `ConcreteType`; drop `Var` arm; retire §3.11.1 scan + `is_representation_undetermined` + 0375 backstop | pending |
+| **P4** | /design→/dev→/review | cranelisp-typecheck, src/ | Eliminate generic-body codegen: `defined_symbols()` stops yielding `Polymorphic` as codegen target; prelude generics on-demand mono roots (closes 0381) | pending |
+| **P5** | /spec | spec/ | Relax §12.1 (land staged 0373(iii)) | pending |
+
+### Wave 3 — Cluster B (DEFERRED to a later sprint per the ConcreteType-arc redirection)
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /design→/dev→/review | src/ (int) | 0367 — wire `apply_bind_chain_analysis` into `finalize_cluster` (post-Pass-2, mode-uniform) per `design/int/bind-chain-analysis.md` §5; flag `CRANELISP_NO_IO_SCHEDULE`. PO-0367.1 unit negatives + .2 mode-uniformity + .3 timing pair green. | pending |
-| /qa·/platform | tests/, platform | 0353 close — `resource_serial_diff_token_parallelizes` flips green; confirm fixture/baseline. | pending |
+| /design→/dev→/review | src/ (int) | 0367 — wire `apply_bind_chain_analysis` into `finalize_cluster` (post-Pass-2, mode-uniform) per `design/int/bind-chain-analysis.md` §5; flag `CRANELISP_NO_IO_SCHEDULE`. PO-0367.1 unit negatives + .2 mode-uniformity + .3 timing pair green. | **DEFERRED** |
+| /qa·/platform | tests/, platform | 0353 close — `resource_serial_diff_token_parallelizes` flips green; confirm fixture/baseline. | **DEFERRED** |
 
 ## Notes
 
