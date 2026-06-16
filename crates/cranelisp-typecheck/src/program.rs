@@ -3070,6 +3070,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
 
+            // ALL-ARGS-CONCRETE GUARD (Phase-4 part A, concrete-boundary-type.md
+            // §4-A). The collection-time trigger (`local_parametric_call_triggers`)
+            // gates on `state.subst`-resolved `expr_types`, but the actual arg
+            // types are re-derived HERE from the FINAL `resolved_expr_types` — and
+            // a call collected from a GENERIC caller's body (the
+            // `(reduce-loop f init v (vec-len v) 0)` call inside `reduce`'s body,
+            // while `reduce` is still generic) resolves here to the parent's OWN
+            // free scheme vars (`[Fn[Var,Var]→Var, Var, (Vec Var), Int, Int]`).
+            // Monomorphising that mints the SPURIOUS partial `reduce-loop$Vec+Int+Int`
+            // (lossy name, residual body vars). The genuine concrete instance is
+            // minted via the parent's CONCRETE re-check chain
+            // (`reduce$Int+Vec → reduce-loop$Int+Vec+Int+Int`) — its args ARE all
+            // concrete. Skip any site whose final arg types are not all concrete:
+            // every minted instance is then fully concrete (the carve-out is dead,
+            // `from_expr` succeeds on each — the completeness proof).
+            if !arg_types.iter().all(|t| t.is_concrete()) {
+                continue;
+            }
+
             // Deduplicate: same fn + same arg types = same specialization
             let key = format!("{}${}", fn_name, arg_types.iter()
                 .map(|t| format!("{}", t))
@@ -3193,44 +3212,48 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     }
 
     /// Whether a call site to a LOCAL polymorphic callee should be collected for
-    /// monomorphisation (FIXME 0373 Tier 1 + 0374 Tier 2). TWO triggers:
+    /// monomorphisation. ONE predicate: **every argument is fully concrete**
+    /// (Phase-4 part A, Option 1, concrete-boundary-type.md §4-A — collapsing the
+    /// former two triggers).
     ///
-    /// 1. **Bare-`Var` result (the 0373 polymorphic-result hop).** The call
-    ///    site's result type resolves to a bare unbound `Type::Var` — the exact
-    ///    shape that leaves the generic hop compiled with a `Type::Var` result
-    ///    and trips the RC-classification SIGSEGV.
-    /// 2. **All arg types concrete (the 0374 direct-concrete-call case).** A
-    ///    direct call to a now-slot-less `Polymorphic` callee with FULLY
-    ///    CONCRETE arguments (`(g 1)` — `g : ∀a. a→a`, arg `Int`) MUST mint the
-    ///    concrete `g$Int` instance: with the structural slot gate, `g` has no
-    ///    slot of its own, so an un-monomorphised call would lower through a
-    ///    missing slot. Its result may be concrete (`Int`) — the bare-`Var`
-    ///    trigger misses it.
+    /// A mono instance is minted **iff every argument type is concrete**; its
+    /// result is then concrete by the per-instance re-check (the body re-check +
+    /// `unify(body_ty, ret_ty)` pins the result). This subsumes BOTH the old
+    /// 0373 result-hop trigger (`result_is_bare_var`) and the 0374
+    /// direct-concrete-call trigger:
     ///
-    /// **The 0344 fold is preserved by trigger 2's all-args-concrete guard.**
-    /// The fold call `(reduce vec-push [] vv)` has args `vec-push` (a
-    /// polymorphic fn-VALUE), `[]` (`(Vec a)`), `vv` — NOT all concrete — so it
-    /// is excluded, exactly as the bare-`Var` gate excluded its `(Vec a)`
-    /// result before. Monomorphising it would pin `reduce`'s accumulator var
-    /// through the post-mono regeneralisation, re-collapsing the polymorphic
-    /// scheme 0344 deliberately keeps; the all-concrete guard keeps it out.
+    /// - **Genuine result hops (0373) are still minted** — a result-bare-var hop
+    ///   whose ARGS are concrete (`(g 1)`, `(h2 x)` with `x: Int`) passes this
+    ///   predicate; the body re-check pins the result. The genuine concrete
+    ///   result-hop arrives here through the parent's concrete re-check chain
+    ///   with every arg already pinned.
+    /// - **Direct concrete calls (0374)** — `(g 1)` with `g : ∀a. a→a` passes:
+    ///   all args concrete, so the `g$Int` instance is minted (`g` is slot-less
+    ///   under the structural slot gate; an un-monomorphised call would lower
+    ///   through a missing slot).
+    /// - **The SPURIOUS partial result-hop is EXCLUDED** — a result-bare-var hop
+    ///   whose args are still the parent's free scheme vars (the `reduce →
+    ///   reduce-loop` 0344 fold inner call, where `f`/`acc`/element are
+    ///   `reduce`'s OWN `Var34`/`Var31`) fails the all-args-concrete predicate,
+    ///   so no partial `reduce-loop$Vec+Int+Int` is minted. The genuine concrete
+    ///   `reduce-loop$Int+Vec+Int+Int` is minted via the concrete `reduce$Int+Vec`
+    ///   chain (where the args ARE pinned), unaffected.
+    ///
+    /// **The 0344 fold is preserved by the all-args-concrete guard.** The fold
+    /// call `(reduce vec-push [] vv)` has args `vec-push` (a polymorphic
+    /// fn-VALUE), `[]` (`(Vec a)`), `vv` — NOT all concrete — so it is excluded.
+    /// Monomorphising it would pin `reduce`'s accumulator var through the
+    /// post-mono regeneralisation, re-collapsing the polymorphic scheme 0344
+    /// deliberately keeps; the all-concrete guard keeps it out.
+    ///
+    /// An empty-arg call does NOT trigger (a nullary polymorphic call cannot be
+    /// pinned by its args — if its result is concrete it needs no mono; if its
+    /// result is a free var it is the ambiguity case, §2.6, not a mono site).
     fn local_parametric_call_triggers(
         state: &CheckState,
-        call_span: &Span,
+        _call_span: &Span,
         args: &[Expr],
     ) -> bool {
-        let result_is_bare_var = state
-            .expr_types
-            .get(call_span)
-            .map(|ty| matches!(apply(&state.subst, ty), Type::Var(_)))
-            .unwrap_or(false);
-        if result_is_bare_var {
-            return true;
-        }
-        // Trigger 2: every argument has a fully-concrete type. An empty-arg call
-        // does NOT trigger here (a nullary polymorphic call cannot be pinned by
-        // its args — if its result is also concrete it needs no mono; if its
-        // result is a free var it is the ambiguity case, not a mono site).
         !args.is_empty()
             && args.iter().all(|a| {
                 state

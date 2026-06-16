@@ -4769,6 +4769,65 @@
         }
     }
 
+    // spec: design/arch/concrete-boundary-type.md §4-A — Phase-4 part A
+    //   mono-completeness: the fold helper mints ONLY the genuine concrete
+    //   `reduce-loop$Int+Vec+Int+Int` instance, NOT the spurious partial
+    //   `reduce-loop$Vec+Int+Int`. The spurious partial was minted by
+    //   `monomorphise_inner_parametric_hops` recursing into `reduce`'s body
+    //   while `reduce` is still generic (`f`/`acc`/element are `reduce`'s own
+    //   scheme vars), bypassing the all-args-concrete gate via the bare-var-
+    //   result trigger. After part A's all-args-concrete guard + trigger collapse,
+    //   no partial is minted; every minted instance is fully concrete, so
+    //   `MonoExpr::from_expr` succeeds on each (the carve-out deletion's
+    //   completeness proof — the check below returning Ok IS that proof for the
+    //   fold shape, since an instance with a residual var would now raise the
+    //   ambiguity TypeError instead of being swallowed).
+    #[test]
+    fn fold_helper_mints_only_concrete_instance_no_partial() {
+        let mut tc = tc_with_prims();
+        // The 0344 fold shape with a CONCRETE caller `main` (Int accumulator).
+        let src = "\
+            (defn reduce [f init v] (reduce-loop f init v (vec-len v) 0))\n\
+            (defn reduce-loop [f acc v :primitives/Int len :primitives/Int i]\n  \
+              (if (ge-i64 i len) acc\n    \
+                (reduce-loop f (f acc (vec-get v i)) v len (add-i64 i 1))))\n\
+            (defn main [] (reduce add-i64 0 [1 2 3]))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+
+        // The check must SUCCEED — with the `allowed_vars` carve-out deleted, a
+        // surviving residual var in any minted instance would now surface as the
+        // ambiguity / could-not-monomorphise TypeError at the mono seam. Success
+        // is the completeness proof for the fold shape.
+        let result = tc.check_program_self(&program);
+        assert!(
+            result.is_ok(),
+            "fold must type-check AND every minted instance must be fully \
+             concrete (Phase-4 part A — `from_expr` succeeds on every instance); \
+             got error: {:?}",
+            result.as_ref().err().map(|e| e.message().to_string()),
+        );
+
+        // The genuine concrete instance MUST be minted; the SPURIOUS partial
+        // (Var-dropping lossy name) MUST NOT.
+        let mono_names: Vec<String> = tc
+            .mono_variants()
+            .iter()
+            .map(|v| v.name.as_ref().to_string())
+            .collect();
+        assert!(
+            mono_names.iter().any(|n| n == "reduce-loop$Int+Vec+Int+Int"),
+            "the genuine concrete `reduce-loop$Int+Vec+Int+Int` must be minted; \
+             mono variants: {mono_names:?}",
+        );
+        assert!(
+            !mono_names.iter().any(|n| n == "reduce-loop$Vec+Int+Int"),
+            "the SPURIOUS partial `reduce-loop$Vec+Int+Int` must NOT be minted \
+             (Phase-4 part A suppresses the generic-caller-recursion mint); \
+             mono variants: {mono_names:?}",
+        );
+    }
+
     /// Register a single-method trait `name` whose method `method` takes a
     /// `Self`-typed param and returns `Int`, plus an `impl name for Int` whose
     /// method body is `(add-i64 self self)` — into the fixture's CURRENT module.

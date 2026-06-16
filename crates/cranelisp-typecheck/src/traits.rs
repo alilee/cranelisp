@@ -1491,36 +1491,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // backend's read-path is intact. `from_expr` is non-destructive over the
         // source `Defn`.
         //
-        // **Phase-2b interim discriminator — the §3.11.1 `allowed_vars` carve-out.**
-        // BEFORE Phase 4 (generic-body-codegen elimination) the mono pass does NOT
-        // produce a fully-concrete body for every instance: the 0344/0349
-        // polymorphic-accumulator fold deliberately keeps `reduce-loop` polymorphic
-        // in its accumulator var, so `reduce-loop$Vec+Int+Int`'s body retains its
-        // scheme-quantified `acc`/element vars (the uniform-word template body that
-        // survives by the backend's `<1024` RC guard until Phase 4 eliminates it).
-        // The §3.11.1 position-complete scan ADMITS exactly these — a value-position
-        // var that is quantified into the enclosing defn's scheme is sound (pinned
-        // per-TRUE-instantiation). To honour "no regression in rejection coverage",
-        // the seam must mirror that carve-out: a `from_expr` failure on a
-        // scheme-quantified var is the sound interim case (no `MonoExpr` produced,
-        // NO error); a failure on a var OUTSIDE the scheme — a genuinely free,
-        // un-pinnable residual — is the unified ambiguity / could-not-monomorphise
-        // error. Post-Phase-4 every instance is concrete and this carve-out is dead.
-        //
-        // `allowed_vars` = free vars of the mono's resolved param+return types
-        // (the same computation `find_ambiguous_top_level_form` does from
-        // `defn_type_vars`). After `apply_subst`, an unpinned scheme var survives
-        // here exactly when the call did not concretise it.
-        let allowed_vars: std::collections::HashSet<u32> = {
-            let mut vs = std::collections::HashSet::new();
-            for t in &concrete_param_types {
-                vs.extend(cranelisp_types::free_vars(&apply(&state.subst, t)));
-            }
-            if let Type::Fn(_, ret) = &resolved {
-                vs.extend(cranelisp_types::free_vars(&apply(&state.subst, ret)));
-            }
-            vs
-        };
+        // **Phase-4 part A — the carve-out is DELETED; every minted instance is
+        // concrete.** Before Phase 4, the mono pass minted a SPURIOUS partial
+        // instance (`reduce-loop$Vec+Int+Int`, the 0344 fold) whose body retained
+        // scheme-quantified vars, and an `allowed_vars` carve-out admitted it with
+        // no `MonoExpr`. Part A suppresses that mint at the collection gate
+        // (`local_parametric_call_triggers` + `monomorphise_inner_parametric_hops`
+        // now require ALL ARGS CONCRETE). With no partial instance minted, every
+        // instance reaching this seam is fully concrete ⇒ `from_expr` succeeds on
+        // EVERY one ⇒ the carve-out is dead code, deleted. The deletion IS the
+        // completeness proof: an `Err` here now means a GENUINELY-free residual
+        // (the real ambiguity case, §1.3 / §2.6) — for a valid program it must
+        // not happen, and if it does the suite goes red at that instance
+        // (Principle 20: completeness forced by representation, not chased by
+        // hand).
         match MonoExpr::from_expr(mono_defn_ast.body()) {
             Ok(mono_body) => {
                 // Genuinely concrete instance — carry the concrete-boundary view.
@@ -1532,14 +1516,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 };
                 state.mono_variants.push(mono_variant);
             }
-            // A residual var that is QUANTIFIED into this instance's scheme is the
-            // sound Phase-2b interim (the uniform-word fold body) — admitted by
-            // §3.11.1, so admitted here: produce no `MonoExpr`, no error.
-            Err(NotConcrete::Var(id)) if allowed_vars.contains(&id) => {}
-            // A genuinely-free residual (var outside the scheme, or an un-annotated
-            // node — `Var(0)` sentinel) reaching a codegen position is the unified
-            // ambiguity / could-not-monomorphise error (§1.3 / §2.6), reusing the
-            // §3.11.1 diagnostic wording (no rejection-coverage regression).
+            // A genuinely-free residual (an unbound type variable, or an
+            // un-annotated node — `Var(0)` sentinel — reaching a codegen
+            // position) is the unified ambiguity / could-not-monomorphise error
+            // (§1.3 / §2.6), reusing the §3.11.1 diagnostic wording (no
+            // rejection-coverage regression). Post-part-A this arm fires ONLY for
+            // genuinely-ambiguous code, never for a valid program.
             Err(nc) => {
                 let detail = match nc {
                     NotConcrete::Var(_) => "a residual unbound type variable",
@@ -1896,6 +1878,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if inner_arg_types.len() != arg_spans.len() {
                 continue;
             }
+            // ALL-ARGS-CONCRETE GUARD (Phase-4 part A, concrete-boundary-type.md
+            // §4-A). A hop reached from a GENERIC caller's body is collected with
+            // the parent's OWN free scheme vars in its arg positions (the
+            // `reduce → reduce-loop` 0344 fold: `f`/`acc`/element are still
+            // `reduce`'s `Var34`/`Var31`). Minting on that is a SPURIOUS partial
+            // instance — a re-spelling of the generic template under a lossy
+            // name, not a concrete specialisation. The GENUINE concrete instance
+            // is minted by the parent's CONCRETE re-check chain (e.g.
+            // `reduce$Int+Vec → reduce-loop$Int+Vec+Int+Int`), which arrives here
+            // with every arg pinned. Skip the hop unless every arg is concrete
+            // after substitution — suppressing the spurious mint so the
+            // `allowed_vars` carve-out at the mono-population seam is dead and
+            // `from_expr` succeeds on every minted instance (the completeness
+            // proof).
+            if !inner_arg_types
+                .iter()
+                .all(|t| apply(&state.subst, t).is_concrete())
+            {
+                continue;
+            }
             // FIXME 0373 (Tier 1.5 — CROSS-MODULE hops). `monomorphise_call`
             // roots its callee lookup + body re-check at `home`, falling back to
             // `state.current_module` when `home` is `None`. Crucially,
@@ -2054,6 +2056,23 @@ fn collect_self_apply_calls(
 }
 
 pub(crate) fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
+    // TRIPWIRE (Phase-4 part A, concrete-boundary-type.md §4-A "secondary
+    // hardening", Principle 18). After the all-args-concrete collection gate,
+    // every minted instance has all-CONCRETE params (`is_concrete()`). The
+    // mangler intentionally NAMES only the head-typed params (`Int`, `Vec`, …)
+    // and drops `Fn`-typed params (`concrete_type_name` returns `None` for
+    // `Type::Fn` — a concrete-but-unnameable shape: `reduce$Int+Vec` legitimately
+    // omits its `(Fn ..)` first param). The hazard the spurious mint exhibited
+    // was a `Type::Var` param being dropped — producing a LOSSY name where two
+    // distinct partial instantiations collide. Trip on a non-`is_concrete()`
+    // param (a residual `Var`/`TyConApp`), NOT on the legitimate `Fn`-param drop,
+    // so a future spurious-mint site is caught here.
+    debug_assert!(
+        param_types.iter().all(|t| t.is_concrete()),
+        "build_mangled_name({fn_name}) saw a non-concrete param type \
+         (lossy-name hazard — a spurious partial mono instance reached the \
+         mangler): {param_types:?}"
+    );
     let type_names: Vec<String> = param_types
         .iter()
         .filter_map(|t| concrete_type_name(t).map(|tn| tn.to_string()))
