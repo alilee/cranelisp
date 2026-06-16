@@ -1,12 +1,22 @@
 ---
 number: 0373
-target: /typecheck
+target: /backend
 filed_by: /stdlib
 filed_at: 2026-06-16
 sprint_filed: 83
-refers_to: crates/cranelisp-typecheck/src/program.rs (pass4_monomorphise / collect_imported_constrained_calls), spec/07-traits.md §7.8.2, design/arch/test-discovery.md
+refers_to: crates/cranelisp-backend/src/heap.rs (HeapCategory::classify, emit_rc_inc_guarded), crates/cranelisp-backend/src/compiler/apply.rs (result-RC after indirect call), spec/07-traits.md §7.8, tests/regression.rs::fixme_0373_polymorphic_result_fn_value_two_hops_no_crash
 status: open
 ---
+
+> **TARGET RE-POINTED /typecheck → /backend (S83 /qa investigation, 2026-06-16).**
+> The root cause is a backend RC-classification misfire, NOT a typecheck
+> monomorphisation gap (though a typecheck-side monomorphise-the-hops fix is a
+> valid alternative resolution — see the root-cause section). The defect is also
+> far broader than the FIXME title: it is NOT trait-specific, NOT
+> constraint-specific, and NOT cross-module-specific. See
+> `## Root cause (S83 /qa investigation)` below. Original /stdlib report (the
+> trait + cross-module-HOF composite) retained verbatim as one *instance* of the
+> defect.
 
 # Constrained-fn callee reached through a CROSS-MODULE higher-order fn SIGSEGVs (0355-adjacent)
 
@@ -91,3 +101,174 @@ way the direct call site already is. Confirm both `--run` and `--link`.
   writes the natural `(vec-map abs xs)` against the stdlib. No stdlib code change
   is warranted until the compiler fix lands; this is a language defect surfaced by
   composing stdlib at scale.
+
+---
+
+## Root cause (S83 /qa investigation, 2026-06-16)
+
+### Minimal repro (free-standing, 5 lines, single file, NO trait / NO constraint / NO cross-module / NO Vec)
+
+```clojure
+(import [primitives [IO Pure Int sub-i64]])
+(defn neg [:Int x] :Int (sub-i64 0 x))
+(defn h1 [f] (h2 f))     ; hop 1 — result type is unbound type var `a`
+(defn h2 [f] (f 5))      ; hop 2 — result type is unbound type var `a`
+(defn main [] :(IO Int) (Pure (h1 neg)))   ; SIGSEGV (exit None / signal)
+```
+
+`--run` SIGSEGVs. The original /stdlib report's three-part precondition
+(cross-module HOF + constrained callee + Vec) is **none of them load-bearing**.
+The actual load-bearing condition is much narrower and broader at once:
+
+> **A function value reaching its invocation site through TWO function hops,
+> where the intervening function(s) have a POLYMORPHIC (unbound-type-variable)
+> RESULT type, SIGSEGVs whenever the returned value is `>= 1024` unsigned —
+> which is EVERY negative Int, and every positive Int `>= 1024`.**
+
+### The mechanism (codegen — confirmed by CLIF + value-sweep)
+
+The intervening hops `h1`/`h2` are compiled **once, generically** (template
+`%h1$` with NO type arguments — `/clif` confirms there is no `h1$Int`
+monomorphised specialisation). Their result type stays the unbound `Type::Var`
+`a` (REPL `/sig h2` → `(Fn [(Fn [Int] a)] a)`).
+
+For a result of type `Type::Var`, **`HeapCategory::classify`**
+(`crates/cranelisp-backend/src/heap.rs:456-459`) returns **`Mixed`**:
+
+```rust
+Type::Var(_) | Type::TyConApp(_, _) => {
+    // Unresolved type variable: might be anything
+    HeapCategory::Mixed
+}
+```
+
+`Mixed` causes the result-RC site after the indirect call
+(`crates/cranelisp-backend/src/compiler/apply.rs:112-118`) to emit the guarded
+inc **`emit_rc_inc_guarded`** (`heap.rs:191-219`):
+
+```
+v4 = call_indirect ...        ; (f 5) = neg(5) = -5
+v5 = iconst.i64 1024          ; NULLARY_THRESHOLD_I64 (= NULLARY_TAG_THRESHOLD)
+v6 = icmp ult v4, v5          ; is result < 1024 unsigned?
+brif v6, <skip>, <rc>
+<rc>:
+v7 = iadd_imm.i64 v4, 8       ; HeapHeader::RC_OFFSET — treat result AS A POINTER
+v9 = atomic_rmw.i64 add v7    ; RC-increment at [result + 8]  <-- SIGSEGV
+```
+
+The `< 1024` guard is the immediate-vs-pointer heuristic: values below the
+nullary-tag threshold are treated as small immediates (RC skipped), everything
+else as a heap pointer (RC'd). **A negative Int `neg(5) = -5 = 0xFFFF…FFFB` is
+`>= 1024` unsigned, so the guard fires and `atomic_rmw add` dereferences
+`0xFFFF…FFFB + 8` → SIGSEGV.** A concrete `Type::Int` classifies as `NeverHeap`
+(heap.rs:447) → no RC, no guard, no crash.
+
+### Why it's value-dependent (the smoking gun)
+
+Sweeping the returned value against the SAME source confirms the threshold
+exactly (binary at HEAD 7de2254):
+
+| Returned value | `>= 1024` unsigned? | Result |
+|---|---|---|
+| `neg(0) = 0` | no | exit 0, clean |
+| `neg(1..8) = -1..-8` | yes (huge) | SIGSEGV |
+| `add3(1000) = 1003` | no | exit 235, clean |
+| `add3(2000) = 2003` | yes | SIGBUS |
+
+Source control flow is identical across all rows — a value-dependent crash is
+the signature of a non-pointer being dereferenced as a pointer.
+
+### Reduction ladder (each rung confirmed)
+
+| Shape | Result |
+|---|---|
+| ONE hop `(defn h [f] (f 5))`, neg result | exit 251 (= -5), **clean** |
+| TWO hops, neg(5) = -5 | **SIGSEGV** |
+| TWO hops, neg(0) = 0 | exit 0, clean (0 < 1024) |
+| TWO hops, EITHER hop result annotated `:Int` | exit 251, **clean** |
+| TWO hops, NO trait / NO constraint (plain `(sub-i64 0 x)`) | **SIGSEGV** |
+| TWO hops, ALL in one file (no cross-module) | **SIGSEGV** |
+| TWO hops, non-constrained `plain` fn | **SIGSEGV** |
+| Original stdlib `vec-map`+`abs`+`Num` composite | **SIGSEGV** |
+
+So: the constraint, the trait, the cross-module split, the Vec, and the wrapper
+fn are all **incidental** — they merely happen to produce a polymorphic-result
+intervening hop and a negative/large return value. Annotating any hop's result
+`:Int` resolves the type var → `NeverHeap` → no crash, which is the cleanest
+confirmation of the root cause.
+
+### Is the /stdlib "second layered bug" real?
+
+The /stdlib free-standing reduction surfaced "no impl of trait Doubler for type
+Int" — a cross-module trait-impl-resolution error from the wrapper's scope.
+**That is a separate trait-resolution issue and is NOT on the critical path to
+the SIGSEGV.** This /qa reduction removed the trait entirely and still
+reproduces the crash, so the SIGSEGV and the trait-resolution wrinkle are
+indeed distinct, as /stdlib suspected. The trait-resolution error is NOT
+reproduced here (it would need its own repro if it is to be tracked as a
+defect); it is plausibly the ordinary "impl must be in the trait's defining
+module or chain-reachable" rule (Decision 0045) biting an ad-hoc reduction,
+rather than a compiler bug. Recommend /stdlib re-confirm whether the
+trait-resolution error survives a *correct* impl placement before filing it
+separately.
+
+### Owning crate(s) — one bug, one owner
+
+**ONE bug. Owner: `/backend` (`cranelisp-backend`).** The crash is entirely in
+backend RC codegen (`heap.rs` + `apply.rs`). Re-pointed from `/typecheck`.
+
+There are two candidate resolutions; either closes the crash:
+
+1. **Backend (the no-crash / soundness fix):** the `Mixed` guard's
+   `< 1024`-means-immediate heuristic is **unsound for unboxed `Int`** — a
+   negative or large Int is a valid immediate that exceeds the threshold and is
+   misread as a pointer. The clean structural fix is to never emit a
+   maybe-pointer RC for a value whose unboxed representation can collide with
+   the pointer range. With the current untagged i64 representation, an unboxed
+   `Int` is genuinely indistinguishable from a pointer at runtime, so the guard
+   CANNOT be made sound by inspecting the value — the type must be known. That
+   pushes the real fix to (2), OR to a representation change (tagging
+   immediates), which is a large feature, out of scope for a no-crash fix.
+
+2. **Typecheck (the monomorphise-the-hops fix):** ensure that a polymorphic
+   function reached as / containing a fn-value whose concrete instantiation is
+   known at the outer call site is **monomorphised** so the result type is
+   concrete (`Int`) at codegen, classifying as `NeverHeap`. This is the same
+   mono-wiring the FIXME originally hypothesised, but generalised beyond
+   constrained/trait fns to *all* polymorphic-result hops. This is the correct
+   long-term fix and matches how single-hop already behaves correctly when the
+   call monomorphises.
+
+### Fix-shape estimate (for the user's fix-depth decision)
+
+- **Bounded no-crash-now (0354-style structural → clean behaviour):**
+  **NOT cleanly available at the backend layer with the current untagged
+  representation.** Unlike 0354 (a null GOT slot → emit a friendly error
+  instead of calling null), here the corrupted value IS the legitimate result;
+  there is no null sentinel to gate on. A backend-only mitigation would have to
+  suppress the `Mixed` guarded-RC entirely for any value that *could* be an
+  unboxed scalar — i.e. treat `Mixed` results conservatively as NeverHeap —
+  which would **leak memory** for genuinely-heap polymorphic results (the RC
+  inc that balances a later dec would be dropped). That is a correctness
+  trade, not a clean no-crash. So the honest read: there is **no bounded
+  no-crash backend fix** that is also leak-free.
+
+- **Deep fix (monomorphise polymorphic-result hops — typecheck + backend
+  mono-wiring):** the durable correct fix. Medium-to-large depth: it extends
+  monomorphisation to fire for fn-value-carried polymorphic functions reached
+  through HOF hops (the call site's concrete instantiation must propagate to
+  the intervening template). This is the "deep mono-wiring feature" the FIXME
+  anticipated, generalised. Estimated multi-day.
+
+- **Carry recommendation:** because neither a clean no-crash nor a small fix
+  exists, this is a genuine "carry as a known-defect guard" candidate unless
+  the user wants the mono-wiring feature now. The failing-not-ignored repro
+  (`tests/regression.rs::fixme_0373_polymorphic_result_fn_value_two_hops_no_crash`)
+  guards it either way.
+
+### Test (durable repro)
+
+`tests/regression.rs::fixme_0373_polymorphic_result_fn_value_two_hops_no_crash`
+— failing-not-ignored e2e. Asserts the 5-line free-standing repro exits 251
+(= neg(5) = -5 as u8); currently fails with "expected exit 251, got None"
+(signal-killed). `// spec: spec/07-traits.md §7.8`.

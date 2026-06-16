@@ -3249,3 +3249,75 @@ fn s79_fq_field_type_primitives_int_resolves_without_import() {
         .output()
         .assert_exit(7);
 }
+
+// =============================================================================
+// FIXME 0373 — a fn-value reaching an invocation site through TWO function
+//              hops, when the intervening functions have a POLYMORPHIC
+//              (type-variable) RESULT type, SIGSEGVs at run time on any
+//              returned value >= 1024 (unsigned) — which includes every
+//              negative Int.
+// =============================================================================
+//
+// Root cause (S83 /qa investigation — see the FIXME 0373 file for full
+// detail): when a function's result type is an unbound `Type::Var`,
+// `HeapCategory::classify` (crates/cranelisp-backend/src/heap.rs:456-459)
+// returns `Mixed`, which emits the guarded reference-count path
+// `emit_rc_inc_guarded` (heap.rs:191-219): `icmp ult <result>, 1024` →
+// if NOT-less-than, `atomic_rmw add [<result> + 8]`. That guard treats the
+// `< 1024` threshold (NULLARY_TAG_THRESHOLD) as "small immediate, skip RC"
+// and everything else as "heap pointer, RC it". A negative Int (e.g.
+// `neg(5) = -5 = 0xFFFF…FFFB`) is `>= 1024` unsigned, so the guard fires
+// and dereferences a non-pointer → SIGSEGV/SIGBUS. The intervening
+// functions are compiled ONCE generically (template `h1$` with no type
+// args) — NOT monomorphised to a concrete-`Int`-result specialisation — so
+// `classify` never sees the concrete `Type::Int` (which would be
+// `NeverHeap`, no RC, no crash).
+//
+// This reduction strips the FIXME's stdlib `vec-map`/`abs`/`Num`-trait
+// framing entirely: NO trait, NO constraint, NO cross-module structure, NO
+// Vec — a single file with two plain polymorphic-result hops reproduces the
+// crash. The trait/cross-module composite in the original report is one
+// *instance* of the broader defect; the load-bearing condition is
+// "polymorphic-result function between a fn-value and its invocation,
+// returning a value >= 1024 unsigned". Owning crate: cranelisp-backend
+// (NOT typecheck — re-pointed with evidence in the FIXME file). The
+// alternative root (monomorphise the hops to concrete Int) is a typecheck
+// concern; either resolution closes the crash.
+//
+// Diagnostic data points (all confirmed against target/debug/cranelisp at
+// HEAD 7de2254):
+//   - ONE hop `(defn h [f] (f 5))` returning neg(5)=-5 → exit 251, NO crash.
+//   - TWO hops `(defn h1 [f] (h2 f)) (defn h2 [f] (f 5))` → SIGSEGV.
+//   - TWO hops returning neg(0)=0 → exit 0, NO crash (0 < 1024 skips guard).
+//   - TWO hops returning add3(2000)=2003 → SIGBUS (2003 >= 1024).
+//   - TWO hops with EITHER hop's result annotated `:Int` → exit 251, NO
+//     crash (concrete Int classifies NeverHeap).
+//
+// Post-fix contract: `(h1 neg)` with `(h2 f) = (f 5)` and `neg(5) = -5`
+// exits cleanly with code 251 (= -5 as u8), no signal crash.
+
+// spec: spec/07-traits.md §7.8 — Constrained Polymorphism Interaction
+//       (the original report's framing; the reduced repro shows the defect
+//       is the broader polymorphic-result RC-classification bug, not
+//       trait-specific — see the FIXME 0373 root-cause section).
+// FIXME(0373): polymorphic-result fn-value-through-two-hops SIGSEGV — root
+//              cause is HeapCategory::Mixed guarded-RC misfire in
+//              cranelisp-backend/src/heap.rs on values >= 1024 unsigned.
+#[test]
+fn fixme_0373_polymorphic_result_fn_value_two_hops_no_crash() {
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::None)
+        .user(
+            "(import [primitives [IO Pure Int sub-i64]])\n\
+             (defn neg [:Int x] :Int (sub-i64 0 x))\n\
+             (defn h1 [f] (h2 f))\n\
+             (defn h2 [f] (f 5))\n\
+             (defn main [] :(IO Int) (Pure (h1 neg)))",
+        )
+        .output()
+        // Currently SIGSEGVs (status.code() == None) — this assertion FAILS
+        // until the backend RC-classification / monomorphisation fix lands.
+        // Post-fix: neg(5) = -5, exit code 251 (= -5 & 0xFF).
+        .assert_exit(251);
+}
