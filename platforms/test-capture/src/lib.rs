@@ -8,6 +8,8 @@
 //! - `commutative-noop`: Commutative, takes no args, returns `(IO Int)` with `Pure 0`
 //! - `commutative-sleep-ms`: Commutative, takes Int ms, sleeps then returns the duration
 //! - `resource-serial-noop`: ResourceSerial, takes Int token, sets resource token, returns 0
+//! - `resource-serial-sleep-ms`: ResourceSerial, takes Int token + Int ms, sets resource token,
+//!   sleeps then returns the duration (witnesses same-token serialization vs diff-token concurrency)
 //!
 //! Also exports test utility functions (NOT platform functions) for setup/teardown:
 //! - `test_capture_set_input`: queue input lines for read-line
@@ -80,6 +82,22 @@ pub extern "C" fn resource_serial_noop(token: CLInt) -> CLIO<CLInt> {
     CLIO::effect_on_resource(resource_token, || CLInt::from(0i64))
 }
 
+/// Resource-serial sleep: places the resource token on the Effect node AND sleeps
+/// `ms` milliseconds before returning the duration. The union of
+/// `resource_serial_noop`'s token mechanism and `commutative_sleep_ms`'s timing
+/// observability: same non-zero token ⇒ the trampoline serializes data-independent
+/// calls (witnessable as ~2× wall-clock); different tokens ⇒ concurrent (~1×).
+/// Marked ResourceSerial for end-to-end token-serialization verification
+/// (spec §10.12.4).
+pub extern "C" fn resource_serial_sleep_ms(token: CLInt, ms: CLInt) -> CLIO<CLInt> {
+    let resource_token = i64::from(token);
+    let duration = i64::from(ms);
+    CLIO::effect_on_resource(resource_token, move || {
+        std::thread::sleep(std::time::Duration::from_millis(duration as u64));
+        CLInt::from(duration)
+    })
+}
+
 declare_platform! {
     name: "test-capture",
     version: "0.1.0",
@@ -118,6 +136,13 @@ declare_platform! {
             sig: "(Fn [primitives/Int] (primitives/IO primitives/Int))",
             doc: "No-op with resource token (ResourceSerial scheduling class, for testing)",
             params: [token],
+            scheduling: SchedulingClass::ResourceSerial,
+        },
+        resource_serial_sleep_ms {
+            cl_name: "resource-serial-sleep-ms",
+            sig: "(Fn [primitives/Int primitives/Int] (primitives/IO primitives/Int))",
+            doc: "Sleep for ms milliseconds with a resource token, returning the duration (ResourceSerial scheduling class, for testing token serialization)",
+            params: [token, ms],
             scheduling: SchedulingClass::ResourceSerial,
         },
     ]
