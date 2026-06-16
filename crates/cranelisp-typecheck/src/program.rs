@@ -1878,7 +1878,16 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `register_mono_entry` inside `monomorphise_call`. The returned
         // Vec<MonoDefn> was carried on CheckResult.mono_defns pre-slim; no
         // longer needed — mono entries live on SymbolTable.
-        let _mono_defns = self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
+        // S84 Phase 2b: `pass4_monomorphise` now returns a parallel
+        // `Vec<MonoDefnVariant>` (the concrete-boundary `MonoExpr` view of each
+        // instance) alongside the `Vec<MonoDefn>`. Both are produced-but-unused
+        // here in Phase 2 — the backend reads mono bodies via the symbol-table
+        // `ModuleEntry::Def.ast` (`Defn`), registered by `register_mono_entry`.
+        // The `MonoExpr` half is the validation payoff (every instance's body was
+        // run through `MonoExpr::from_expr` at the seam); Phase 3 flips the
+        // consumer onto it.
+        let (_mono_defns, _mono_variants) =
+            self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
 
         // FIXME 0349 — re-generalize after monomorphisation. pass4's call-site
         // result propagation (`monomorphise_call`) can pin a caller's
@@ -2913,12 +2922,33 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(())
     }
 
+    /// Monomorphise every reachable polymorphic / constrained call site into
+    /// concrete instances.
+    ///
+    /// Returns the existing `Vec<MonoDefn>` (each carrying a `Defn` body the
+    /// backend still reads in Phase 2) PLUS — S84 Phase 2b — a parallel
+    /// `Vec<MonoDefnVariant>` carrying the concrete-boundary `MonoExpr` view of
+    /// every instance (`concrete-boundary-type.md` §2.4 "mono-population seam").
+    /// The two Vecs are dual-carried transitionally: the backend reads the `Defn`
+    /// half (Phase 2), the `MonoExpr` half is produced-but-unused for codegen
+    /// until Phase 3. The `MonoExpr` half's construction (`MonoExpr::from_expr` at
+    /// the `monomorphise_call` seam) is the validation payoff — a residual `Var`
+    /// in any instance surfaces as a §3.11.1 could-not-monomorphise error.
     fn pass4_monomorphise(
         &self,
         state: &mut CheckState,
         defns: &[&Defn],
         constrained_fn_names: &HashSet<Symbol>,
-    ) -> Result<Vec<MonoDefn>, CranelispError> {
+    ) -> Result<(Vec<MonoDefn>, Vec<cranelisp_types::MonoDefnVariant>), CranelispError> {
+        // S84 Phase 2b: reset the per-pass `MonoExpr`-view accumulator. Each
+        // `monomorphise_call` pushes one `MonoDefnVariant` (built + validated at
+        // the seam); we clear at the start so a REPL re-check does not carry
+        // stale variants from the previous input. The accumulator is RETAINED on
+        // `state` after the pass (cloned, not drained, at the return points) so
+        // the produced variants are observable — produces-but-unused for codegen,
+        // but readable by the seam unit test.
+        state.mono_variants.clear();
+
         // Collect call sites: (fn_name, arg_spans, call_span, home_module).
         //
         // `home_module` is `None` for a call to a LOCALLY-defined constrained fn
@@ -3018,7 +3048,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // constrained call sites nor polymorphic fn-value arguments) — bail
         // before resolving expr_types.
         if call_sites.is_empty() && fn_value_arg_sites.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), state.mono_variants.clone()));
         }
 
         // Resolve expr_types so we can look up concrete arg types
@@ -3118,7 +3148,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        Ok(mono_defns)
+        // S84 Phase 2b: drain the concrete-boundary `MonoExpr` views accumulated
+        // at the `monomorphise_call` seam (one per minted instance). Parallel to
+        // `mono_defns` — same instances, the `MonoExpr` body view. Produced-but-
+        // unused for codegen in Phase 2. Cloned (not drained) so `state` retains
+        // the variants for seam-unit-test introspection; cleared at the next
+        // pass's start.
+        Ok((mono_defns, state.mono_variants.clone()))
     }
 
     /// Walk a defn body collecting calls to IMPORTED callees that chain-resolve

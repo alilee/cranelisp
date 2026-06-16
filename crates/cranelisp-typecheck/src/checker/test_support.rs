@@ -637,6 +637,16 @@ impl TestFixture {
             })
             .collect()
     }
+
+    /// The concrete-boundary `MonoExpr` views (`MonoDefnVariant`) produced at the
+    /// `monomorphise_call` seam during the most recent check (S84 Phase 2b —
+    /// `concrete-boundary-type.md` §2.4). Retained on `CheckState.mono_variants`
+    /// (cleared+repopulated each `pass4_monomorphise`). Produces-but-unused for
+    /// codegen; exposed for the seam unit test to assert each instance carries a
+    /// fully-`ConcreteType`-annotated body.
+    pub fn mono_variants(&self) -> &[cranelisp_types::MonoDefnVariant] {
+        &self.state.mono_variants
+    }
 }
 
 /// Test helper: walk an `Expr` tree, collecting `resolved_call` annotations

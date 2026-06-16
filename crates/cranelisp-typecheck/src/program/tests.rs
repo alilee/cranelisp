@@ -1348,6 +1348,83 @@
         );
     }
 
+    // spec: design/arch/concrete-boundary-type.md §2.4 — Phase 2b mono-population
+    // seam. A monomorphised instance (`add$Int+Int` from a generic `add`) now
+    // carries a concrete-boundary `MonoDefnVariant` whose `MonoExpr` body is
+    // fully `ConcreteType`-annotated. `MonoExpr::from_expr` runs at the seam for
+    // every instance (the validation payoff) and the produced variant is retained
+    // on `CheckState.mono_variants` (produces-but-unused for codegen in Phase 2).
+    #[test]
+    fn mono_instance_carries_concrete_boundary_monoexpr_body() {
+        use cranelisp_types::ConcreteType;
+
+        let mut tc = tc_with_prims();
+        register_num_trait_inline(&mut tc);
+
+        // (defn add [x y] (+ x y)) — a generic, trait-constrained fn.
+        let defn_input = TopLevel::Defn(Defn {
+            name: Symbol::from("add"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("x"), None), (Symbol::from("y"), None)],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::var(Symbol::from("+"), span(18, 19))),
+                    args: vec![
+                        Expr::var(Symbol::from("x"), span(20, 21)),
+                        Expr::var(Symbol::from("y"), span(22, 23)),
+                    ],
+                    span: span(17, 24),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: span(0, 25),
+            }],
+            visibility: Visibility::Public,
+            span: span(0, 25),
+        });
+        let _ = tc.check_repl_input_self(&defn_input).unwrap();
+
+        // (add 3 4) — pins `add` to `Int`, minting `add$Int+Int`.
+        let expr_input = TopLevel::Expr(Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("add"), span(100, 103))),
+            args: vec![
+                Expr::IntLit { value: 3, span: span(104, 105), inferred_type: None },
+                Expr::IntLit { value: 4, span: span(106, 107), inferred_type: None },
+            ],
+            span: span(99, 108),
+            resolved_call: None,
+            inferred_type: None,
+        });
+        let _ = tc.check_repl_input_self(&expr_input).unwrap();
+
+        // The seam produced a `MonoDefnVariant` for the instance, with a concrete
+        // `MonoExpr` body. `from_expr` succeeded (no error returned above), which
+        // is itself the validation payoff; assert the variant is observable and
+        // its body's root type is a `ConcreteType`.
+        let variants = tc.mono_variants();
+        let v = variants
+            .iter()
+            .find(|v| v.name.as_ref() == "add$Int+Int")
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a MonoDefnVariant for add$Int+Int, got {:?}",
+                    variants.iter().map(|v| v.name.as_ref()).collect::<Vec<_>>()
+                )
+            });
+        // The body's root concrete type is Int (the `(+ x y)` result at Int).
+        assert_eq!(
+            v.body.ty(),
+            &ConcreteType::Int,
+            "mono body root must be a ConcreteType (Int)"
+        );
+        // Params survive (names only; TypeExprs erased).
+        assert_eq!(
+            v.params,
+            vec![Symbol::from("x"), Symbol::from("y")],
+            "mono variant params preserved"
+        );
+    }
+
     // spec: 03-types §3.6 — REPL defn body triggers monomorphisation of constrained calls
     #[test]
     fn test_repl_defn_body_monomorphise() {

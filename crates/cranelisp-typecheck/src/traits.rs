@@ -12,7 +12,8 @@ use std::collections::{HashMap, HashSet};
 
 use cranelisp_types::{ErrorLocation,
     ConstrainedFn, CranelispError, DefKind, Defn, DefnVariant, Expr, FQTraitName, FQTypeName,
-    JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, ResolvedCall, Scheme,
+    JitSymbol, MethodResolutions, ModuleEntry, ModuleFullPath, MonoDefn, MonoDefnVariant, MonoExpr,
+    NotConcrete, ResolvedCall, Scheme,
     Span, Symbol, TraitDecl, TraitDeclInfo, TraitImpl, TraitMethodSig, TraitName, Type, TypeId,
     TypeName, UserFnState, Visibility, apply,
 };
@@ -1465,6 +1466,96 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &resolutions.resolved_calls,
         );
         crate::program::apply_subst_to_defn(&state.subst, &mut mono_defn_ast);
+
+        // S84 Phase 2b (concrete-boundary-type.md §2.4 "mono-population seam"):
+        // build the concrete-boundary AST view (`MonoExpr`) of this instance at
+        // the seam, IMMEDIATELY after `apply_subst_to_defn` resolved every node's
+        // `inferred_type` through the substitution. `MonoExpr::from_expr` walks the
+        // fully-annotated, subst-resolved body and converts each node's
+        // `inferred_type` to a `ConcreteType` — failing at the first node whose
+        // type is absent or a residual `Type::Var` / unresolved HKT head.
+        //
+        // The validation payoff: `from_expr` runs on EVERY monomorphised instance.
+        // A correctly-monomorphised instance MUST succeed (every node concrete). A
+        // failure means this mono instance retains a residual `Var` (a genuine
+        // incompleteness) — surfaced HERE as the unified §3.11.1 ambiguity /
+        // could-not-monomorphise error (reusing the same diagnostic wording the
+        // position-complete scan in `find_ambiguous_top_level_form` produces, so no
+        // regression in rejection coverage), NOT silently swallowed.
+        //
+        // TRANSITIONAL (produces-but-unused for codegen): the backend still reads
+        // `Expr.inferred_type` off `MonoDefn.defn` in Phase 2; it does NOT yet
+        // consume `MonoExpr` (Phase 3). The `MonoDefnVariant` is accumulated on
+        // `state.mono_variants` (drained by `pass4_monomorphise` into the parallel
+        // `Vec<MonoDefnVariant>`), dual-carried ALONGSIDE the `Defn` body so the
+        // backend's read-path is intact. `from_expr` is non-destructive over the
+        // source `Defn`.
+        //
+        // **Phase-2b interim discriminator — the §3.11.1 `allowed_vars` carve-out.**
+        // BEFORE Phase 4 (generic-body-codegen elimination) the mono pass does NOT
+        // produce a fully-concrete body for every instance: the 0344/0349
+        // polymorphic-accumulator fold deliberately keeps `reduce-loop` polymorphic
+        // in its accumulator var, so `reduce-loop$Vec+Int+Int`'s body retains its
+        // scheme-quantified `acc`/element vars (the uniform-word template body that
+        // survives by the backend's `<1024` RC guard until Phase 4 eliminates it).
+        // The §3.11.1 position-complete scan ADMITS exactly these — a value-position
+        // var that is quantified into the enclosing defn's scheme is sound (pinned
+        // per-TRUE-instantiation). To honour "no regression in rejection coverage",
+        // the seam must mirror that carve-out: a `from_expr` failure on a
+        // scheme-quantified var is the sound interim case (no `MonoExpr` produced,
+        // NO error); a failure on a var OUTSIDE the scheme — a genuinely free,
+        // un-pinnable residual — is the unified ambiguity / could-not-monomorphise
+        // error. Post-Phase-4 every instance is concrete and this carve-out is dead.
+        //
+        // `allowed_vars` = free vars of the mono's resolved param+return types
+        // (the same computation `find_ambiguous_top_level_form` does from
+        // `defn_type_vars`). After `apply_subst`, an unpinned scheme var survives
+        // here exactly when the call did not concretise it.
+        let allowed_vars: std::collections::HashSet<u32> = {
+            let mut vs = std::collections::HashSet::new();
+            for t in &concrete_param_types {
+                vs.extend(cranelisp_types::free_vars(&apply(&state.subst, t)));
+            }
+            if let Type::Fn(_, ret) = &resolved {
+                vs.extend(cranelisp_types::free_vars(&apply(&state.subst, ret)));
+            }
+            vs
+        };
+        match MonoExpr::from_expr(mono_defn_ast.body()) {
+            Ok(mono_body) => {
+                // Genuinely concrete instance — carry the concrete-boundary view.
+                let mono_variant = MonoDefnVariant {
+                    name: Symbol::from(mangled_name.as_str()),
+                    params: mono_defn_ast.params().iter().map(|(n, _)| n.clone()).collect(),
+                    body: mono_body,
+                    span: defn.span,
+                };
+                state.mono_variants.push(mono_variant);
+            }
+            // A residual var that is QUANTIFIED into this instance's scheme is the
+            // sound Phase-2b interim (the uniform-word fold body) — admitted by
+            // §3.11.1, so admitted here: produce no `MonoExpr`, no error.
+            Err(NotConcrete::Var(id)) if allowed_vars.contains(&id) => {}
+            // A genuinely-free residual (var outside the scheme, or an un-annotated
+            // node — `Var(0)` sentinel) reaching a codegen position is the unified
+            // ambiguity / could-not-monomorphise error (§1.3 / §2.6), reusing the
+            // §3.11.1 diagnostic wording (no rejection-coverage regression).
+            Err(nc) => {
+                let detail = match nc {
+                    NotConcrete::Var(_) => "a residual unbound type variable",
+                    NotConcrete::HktHead(_) => "an unresolved higher-kinded type head",
+                };
+                return Err(CranelispError::TypeError {
+                    message: format!(
+                        "ambiguous type; add an annotation to pin the type of \
+                         the polymorphic value monomorphised in `{}` ({detail} \
+                         reached a codegen position)",
+                        mangled_name
+                    ),
+                    location: ErrorLocation::from_span(defn.span),
+                });
+            }
+        }
 
         // FIXME 0033 (S81 W-G): `MonoDefn` no longer carries per-mono side
         // maps. The `mono_defn_ast` was just annotated by

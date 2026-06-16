@@ -175,6 +175,24 @@ pub struct CheckState {
         HashMap<Symbol, Vec<cranelisp_types::FQTypeName>>,
     /// The currently active module path for this check.
     pub(crate) current_module: ModuleFullPath,
+    /// Concrete-boundary AST views (`MonoExpr`) of every monomorphised instance
+    /// minted in this check (S84 Phase 2b — `concrete-boundary-type.md` §2.4
+    /// "mono-population seam"). Each `monomorphise_call` builds a
+    /// [`MonoDefnVariant`](cranelisp_types::MonoDefnVariant) at the seam
+    /// (immediately after `apply_subst_to_defn`) via
+    /// [`MonoExpr::from_expr`](cranelisp_types::MonoExpr::from_expr) and pushes it
+    /// here; `pass4_monomorphise` returns it (cloned) alongside the
+    /// `Vec<MonoDefn>`. It is CLEARED at the start of each `pass4_monomorphise`
+    /// (so a REPL re-check does not carry stale variants) and RETAINED after the
+    /// pass for seam-unit-test introspection.
+    ///
+    /// **TRANSITIONAL (produces-but-unused for codegen).** In Phase 2 the backend
+    /// still reads `Expr.inferred_type` off `MonoDefn.defn` (a `Defn` body); it
+    /// does NOT yet consume `MonoExpr` (Phase 3). This accumulator is the
+    /// validation payoff: `from_expr` runs on every instance, so a residual `Var`
+    /// in a monomorphised body surfaces as the §3.11.1 could-not-monomorphise
+    /// error at the seam rather than reaching codegen.
+    pub(crate) mono_variants: Vec<cranelisp_types::MonoDefnVariant>,
 }
 
 impl CheckState {
@@ -197,6 +215,7 @@ impl CheckState {
             synthesised_accessor_names: std::collections::HashSet::new(),
             accessor_owning_types: HashMap::new(),
             current_module: module,
+            mono_variants: Vec::new(),
         }
     }
 
