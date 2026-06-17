@@ -635,6 +635,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: None,
+                codegen_view: None,
                 code: None,
             },
         );
@@ -754,6 +755,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: None,
+                codegen_view: None,
                 code: None,
             },
         );

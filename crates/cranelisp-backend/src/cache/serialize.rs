@@ -430,6 +430,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast: Some(variant),
+            codegen_view: None,
             code: None,
         }
     }

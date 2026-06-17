@@ -3,8 +3,8 @@ use std::collections::HashMap;
 
 use crate::{
     DefnVariant, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
-    ModuleName, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDeclInfo, TraitName, Type,
-    TypeDefInfo, TypeName, Visibility,
+    ModuleName, MonoDefnVariant, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDeclInfo,
+    TraitName, Type, TypeDefInfo, TypeName, Visibility,
 };
 
 // --- CodeStore / LinkerStore marker traits (Sprint 58 Wave 3a; Decision 32) ---
@@ -500,10 +500,10 @@ impl ModuleEntry<()> {
         match self {
             ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                trait_origin, seq, ast, code: _,
+                trait_origin, seq, ast, codegen_view, code: _,
             } => ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                trait_origin, seq, ast, code: None,
+                trait_origin, seq, ast, codegen_view, code: None,
             },
             ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility } => {
                 ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility }
@@ -769,6 +769,47 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// payload type. See `defined_symbols()` above for the call-site.
         #[serde(default)]
         ast: Option<DefnVariant>,
+        /// The **concrete-boundary codegen view** of this entry's body — a
+        /// [`MonoDefnVariant`] whose [`MonoExpr`](crate::MonoExpr) nodes carry
+        /// [`ConcreteType`](crate::ConcreteType) **non-optionally**. This is the
+        /// view the backend consumes for codegen (Phase 3 of the
+        /// `design/arch/concrete-boundary-type.md` arc): it has **no `Type` on
+        /// its read path and therefore no `Var`** — a representation-undetermined
+        /// type is structurally unrepresentable here (Principle 18 / Principle 20).
+        ///
+        /// Populated alongside `ast` for every **codegen-bound** entry:
+        /// - **Monomorphised instances** (the `name$Args` mangled concrete
+        ///   instances) — built by the mono pass at the mono-population seam via
+        ///   [`MonoExpr::from_expr`](crate::MonoExpr::from_expr) over the
+        ///   fully-annotated, subst-resolved instance body (moving off the
+        ///   transitional `CheckState.mono_variants` parallel `Vec`).
+        /// - **Ordinary concrete (`is_concrete()`) defns** — every
+        ///   `UserFnState::Concrete { got_slot }` entry — built by the same
+        ///   `from_expr` over its annotated `Defn` body at body-check.
+        ///
+        /// `None` for entries that are NOT codegen targets: `ast: None` entries
+        /// (primitives, special forms, pre-body-check), and the slot-less
+        /// **template** kinds (`Constrained`/`Polymorphic` `UserFn`, `Overloaded`
+        /// base) which are mono *sources*, never `compile_to_module` targets (see
+        /// `defined_symbols()`). A codegen-bound entry whose `codegen_view` is
+        /// `None` at the moment the backend reaches it is the single relocated
+        /// backstop (a located `expect`) — the only guard replacing the four
+        /// behavioural `Var`-guards the arc retires.
+        ///
+        /// **Transitional (Phase 2→3).** Carried ALONGSIDE `ast` rather than
+        /// replacing it: the backend reads `ast` (the `inferred_type`-annotated
+        /// `DefnVariant`) until /dev(backend) flips `compile_to_module` to consume
+        /// `codegen_view`. Once the flip lands and the suite is green, `ast`'s
+        /// codegen role retires (it may stay as the introspection/regen body
+        /// source — that disposition is a follow-up, not part of this field's
+        /// landing). Both fields are subst-resolved views of the same body;
+        /// `from_expr` is non-destructive over `ast`.
+        ///
+        /// Serde: a plain `#[serde(default)]` participant in the cached
+        /// `.meta.json` shape (it carries no `C`/pointer state) — its addition is
+        /// the `CACHE_SCHEMA_VERSION` 7 → 8 bump.
+        #[serde(default)]
+        codegen_view: Option<MonoDefnVariant>,
         /// Compiled-code handle written by the backend after `compile_to_module`
         /// returns. Runtime-only state (Decision 25 in `design/arch/CLAUDE.md`):
         /// `#[serde(skip)]` so cache manifests stay pointer-free, and the field
@@ -1157,6 +1198,28 @@ impl<C: CodeStore> ModuleEntry<C> {
         }
     }
 
+    /// The **concrete-boundary codegen view** of this entry's body, or `None`
+    /// when the entry carries no codegen view.
+    ///
+    /// This is the backend's read-through for the body it codegens (Phase 3 of
+    /// the `design/arch/concrete-boundary-type.md` arc): the returned
+    /// [`MonoDefnVariant`] carries [`MonoExpr`](crate::MonoExpr) nodes whose
+    /// `ty` is a [`ConcreteType`](crate::ConcreteType) — **no `Type`, no `Var`**
+    /// on the read path. `compile_to_module` consults this rather than
+    /// reconstructing a `Defn` from `ast` + reading `inferred_type` off `Expr`.
+    ///
+    /// `Some` for codegen-bound entries (concrete defns + mono instances) once
+    /// the typecheck seam has populated it; `None` for non-codegen entries
+    /// (template kinds, primitives, special forms, pre-body-check). A `None`
+    /// here at a codegen-reached entry is the single relocated backstop (the
+    /// backend's located `expect`). See the field rustdoc on `ModuleEntry::Def`.
+    pub fn codegen_view(&self) -> Option<&MonoDefnVariant> {
+        match self {
+            ModuleEntry::Def { codegen_view, .. } => codegen_view.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Returns `true` iff this entry is a **constrained-fn template** — a
     /// `Def { kind: DefKind::UserFn { constrained_fn: Some(_) }, .. }`.
     ///
@@ -1256,6 +1319,7 @@ pub struct DefBuilder<C: CodeStore = ()> {
     trait_origin: Option<FQTraitName>,
     seq: u64,
     ast: Option<DefnVariant>,
+    codegen_view: Option<MonoDefnVariant>,
     _code: std::marker::PhantomData<C>,
 }
 
@@ -1273,6 +1337,7 @@ impl<C: CodeStore> DefBuilder<C> {
             trait_origin: None,
             seq: 0,
             ast: None,
+            codegen_view: None,
             _code: std::marker::PhantomData,
         }
     }
@@ -1315,6 +1380,16 @@ impl<C: CodeStore> DefBuilder<C> {
         self
     }
 
+    /// Set the concrete-boundary codegen view (the [`MonoDefnVariant`] whose
+    /// nodes carry [`ConcreteType`](crate::ConcreteType)). Normally defaulted to
+    /// `None`; populated for codegen-bound entries (concrete defns + mono
+    /// instances) at the typecheck mono/body-check seam. See the
+    /// `ModuleEntry::Def.codegen_view` field rustdoc.
+    pub fn codegen_view(mut self, codegen_view: MonoDefnVariant) -> Self {
+        self.codegen_view = Some(codegen_view);
+        self
+    }
+
     /// Materialize the [`ModuleEntry::Def`]. `callees` and `code` are always
     /// the construction-time defaults (`Vec::new()` / `None`).
     pub fn build(self) -> ModuleEntry<C> {
@@ -1328,6 +1403,7 @@ impl<C: CodeStore> DefBuilder<C> {
             trait_origin: self.trait_origin,
             seq: self.seq,
             ast: self.ast,
+            codegen_view: self.codegen_view,
             code: None,
         }
     }
@@ -2387,6 +2463,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast,
+            codegen_view: None,
             code: None,
         }
     }
@@ -2780,6 +2857,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast: Some(trivial_variant("with_code")),
+            codegen_view: None,
             // `()` flavour — Some/None of the unit type. Serde discipline
             // is the same regardless of `C`.
             code: Some(()),
@@ -2899,6 +2977,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast: None,
+            codegen_view: None,
             code: None,
         };
 
@@ -2965,6 +3044,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast: None,
+            codegen_view: None,
             code: None,
         };
 
@@ -3499,6 +3579,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast: Some(trivial_variant("synthetic")),
+            codegen_view: None,
             code: Some(42i64),
         };
 
@@ -3564,7 +3645,7 @@ mod tests {
         match entry {
             ModuleEntry::Def {
                 scheme, visibility, docstring, param_names, kind, callees,
-                trait_origin, seq, ast, code,
+                trait_origin, seq, ast, codegen_view, code,
             } => {
                 assert_eq!(scheme.ty, Type::Int);
                 assert_eq!(visibility, Visibility::Public, "default visibility is Public");
@@ -3575,6 +3656,7 @@ mod tests {
                 assert!(trait_origin.is_none());
                 assert_eq!(seq, 0);
                 assert!(ast.is_none());
+                assert!(codegen_view.is_none(), "codegen_view defaulted, never settable via build()");
                 assert!(code.is_none(), "code defaulted, never settable");
             }
             other => panic!("expected Def, got {:?}", other),

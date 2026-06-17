@@ -1516,6 +1516,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast: variant,
+            codegen_view: None,
             code: None,
         }
     }
@@ -1786,6 +1787,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast: None,
+            codegen_view: None,
             code: None,
         };
 
@@ -4323,6 +4325,7 @@ mod tests {
                 trait_origin,
                 seq,
                 ast,
+                codegen_view: None,
                 code,
             },
             _ => unreachable!("make_def_entry_slot builds a Def"),
@@ -4837,6 +4840,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: None,
+                codegen_view: None,
                 code: None,
             },
         );
@@ -4943,6 +4947,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: None,
+                codegen_view: None,
                 code: None,
             },
         );
@@ -5051,6 +5056,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: None,
+                codegen_view: None,
                 code: None,
             },
         );
@@ -5325,6 +5331,7 @@ mod tests {
                     trait_origin: None,
                     seq: 0,
                     ast: None,
+                    codegen_view: None,
                     code: None,
                 },
             );
@@ -5423,6 +5430,7 @@ mod tests {
                     trait_origin: None,
                     seq: 0,
                     ast: None,
+                    codegen_view: None,
                     code: None,
                 },
             );
@@ -5544,6 +5552,7 @@ mod tests {
                     trait_origin: None,
                     seq: 0,
                     ast: Some(template_defn.variants[0].clone()),
+                    codegen_view: None,
                     code: None,
                 },
             );
@@ -5625,6 +5634,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: variant,
+                codegen_view: None,
                 code: None,
             },
         );
@@ -5807,6 +5817,7 @@ mod tests {
                     trait_origin: None,
                     seq: 0,
                     ast: None,
+                    codegen_view: None,
                     code: None,
                 },
             );
@@ -6093,6 +6104,7 @@ mod tests {
                     trait_origin: None,
                     seq: 0,
                     ast: defn.variants.first().cloned(),
+                    codegen_view: None,
                     code: None,
                 },
             );
@@ -6207,6 +6219,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: helper.variants.first().cloned(),
+                codegen_view: None,
                 code: None,
             },
         );
@@ -6233,6 +6246,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: caller.variants.first().cloned(),
+                codegen_view: None,
                 code: None,
             },
         );

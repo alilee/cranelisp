@@ -2631,6 +2631,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 trait_origin: None,
                 seq: 0,
                 ast: existing_ast,
+                // Pass-1 `NotDetermined` entry (pre-body-check) — never a codegen
+                // target, so no concrete-boundary view yet. The mono/body-check
+                // seam populates `codegen_view` once the body is concrete (S84
+                // concrete-boundary arc, Phase 2b/3 — /dev(typecheck)).
+                codegen_view: None,
                 code: existing_code,
             },
         );

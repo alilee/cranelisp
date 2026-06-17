@@ -168,7 +168,19 @@ pub mod linker;
 /// unused); the bump invalidates every v6 cache as `CacheStale::SchemaMismatch`
 /// (cache-miss → recompile) so no v6 `.meta.json` is round-tripped against the
 /// extended serde surface.
-pub const CACHE_SCHEMA_VERSION: u32 = 7;
+/// **S84 bump 7 → 8 (concrete-boundary arc Phase 3 threading, `codegen_view`
+/// lands).** `ModuleEntry::Def` gained the additive `codegen_view:
+/// Option<MonoDefnVariant>` field — the concrete-boundary codegen view the
+/// backend consumes (`design/arch/concrete-boundary-type.md` §2.4 / §4 Phase 3,
+/// threading option (a)). It is a `#[serde(default)]` participant in the cached
+/// `.meta.json` symbol-table shape (it carries no pointer/`C` state), so its
+/// addition changes the serialized `ModuleEntry::Def` surface. The bump rejects
+/// every v7 cache as `CacheStale::SchemaMismatch` (cache-miss → recompile) so no
+/// v7 `.meta.json` is round-tripped against the extended serde surface. The
+/// field defaults `None` on a v8 cold-load — the typecheck seam (Phase 2b/3,
+/// /dev) repopulates it, and the backend's relocated backstop (a `None` at a
+/// codegen-reached entry) is the single structural guard.
+pub const CACHE_SCHEMA_VERSION: u32 = 8;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
@@ -668,6 +680,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: defn.variants.first().cloned(),
+                codegen_view: None,
                 code: None,
             },
         );
@@ -743,6 +756,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: None,
+                codegen_view: None,
                 code: None,
             },
         );

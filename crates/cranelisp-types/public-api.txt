@@ -237,6 +237,7 @@ pub cranelisp_types::ModuleEntry::Def
 pub cranelisp_types::ModuleEntry::Def::ast: core::option::Option<cranelisp_types::DefnVariant>
 pub cranelisp_types::ModuleEntry::Def::callees: alloc::vec::Vec<cranelisp_types::FQSymbol>
 pub cranelisp_types::ModuleEntry::Def::code: core::option::Option<C>
+pub cranelisp_types::ModuleEntry::Def::codegen_view: core::option::Option<cranelisp_types::MonoDefnVariant>
 pub cranelisp_types::ModuleEntry::Def::docstring: core::option::Option<alloc::string::String>
 pub cranelisp_types::ModuleEntry::Def::kind: alloc::boxed::Box<cranelisp_types::DefKind>
 pub cranelisp_types::ModuleEntry::Def::param_names: alloc::vec::Vec<cranelisp_types::Symbol>
@@ -275,6 +276,7 @@ pub fn cranelisp_types::ModuleEntry<()>::into_concrete<C: cranelisp_types::CodeS
 impl<C: cranelisp_types::CodeStore> cranelisp_types::ModuleEntry<C>
 pub fn cranelisp_types::ModuleEntry<C>::callable_got_slot(&self) -> core::option::Option<usize>
 pub fn cranelisp_types::ModuleEntry<C>::callees(&self) -> &[cranelisp_types::FQSymbol]
+pub fn cranelisp_types::ModuleEntry<C>::codegen_view(&self) -> core::option::Option<&cranelisp_types::MonoDefnVariant>
 pub fn cranelisp_types::ModuleEntry<C>::def(cranelisp_types::Scheme, cranelisp_types::DefKind) -> cranelisp_types::DefBuilder<C>
 pub fn cranelisp_types::ModuleEntry<C>::is_constrained_template(&self) -> bool
 pub fn cranelisp_types::ModuleEntry<C>::is_public(&self) -> bool
@@ -753,6 +755,7 @@ pub struct cranelisp_types::DefBuilder<C: cranelisp_types::CodeStore>
 impl<C: cranelisp_types::CodeStore> cranelisp_types::DefBuilder<C>
 pub fn cranelisp_types::DefBuilder<C>::ast(self, cranelisp_types::DefnVariant) -> Self
 pub fn cranelisp_types::DefBuilder<C>::build(self) -> cranelisp_types::ModuleEntry<C>
+pub fn cranelisp_types::DefBuilder<C>::codegen_view(self, cranelisp_types::MonoDefnVariant) -> Self
 pub fn cranelisp_types::DefBuilder<C>::docstring(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn cranelisp_types::DefBuilder<C>::new(cranelisp_types::Scheme, cranelisp_types::DefKind) -> Self
 pub fn cranelisp_types::DefBuilder<C>::param_names(self, alloc::vec::Vec<cranelisp_types::Symbol>) -> Self

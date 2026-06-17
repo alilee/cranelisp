@@ -657,6 +657,7 @@ mod heap_category_tests {
             trait_origin: None,
             seq: 0,
             ast: None,
+            codegen_view: None,
             code: None,
         }
     }

@@ -78,6 +78,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: Some(trivial_variant()),
+                codegen_view: None,
                 code,
             }
         }
