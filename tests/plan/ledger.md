@@ -101,6 +101,43 @@ the 3 realigned `Result` tests, which double as the positive annotation-fix path
 phantom case. The negative (rejection) path for phantom vars is asserted by the §3.11
 acceptance guards in `regression.rs`.
 
+### Sprint 84 — FIXME 0382: realign `trace_adt_value_render_overflows_defect` to tightened §3.11.1 (/qa, 2026-06-17)
+
+The S84 Wave 2 position-complete §3.11.1 full-concreteness check (FIXME 0382) made
+`tests/trace.rs::trace_adt_value_render_overflows_defect` fail EARLIER at typecheck:
+its `(defn mk [] None)` returns an UNPINNED `(Option a)`, and flowing that through
+`mk`'s fn boundary into `(trace (mk))` reaches a codegen value position with a residual
+free type var — correctly rejected by the tightened rule (`ambiguous type … in mk$`),
+BEFORE the trace-render path the test actually guards. This was the FIXME-0382 "owed a
+realign" carry (the ONLY 0382-attributable red).
+
+**REALIGNMENT (annotation):** `(defn mk [] None)` → `(defn mk [] :(Option Int) None)`
+— the verified-working bare-annotation idiom (analogous to `:(Option Int) None` /
+`:(Vec Int) []` already worked in `regression.rs`; the Option form is GREEN today).
+This pins `mk`'s result concrete so the program type-checks and reaches its intended
+assertion. The annotation does not change WHAT renders — only that the value is
+statically concrete at codegen, as a real program resolves it.
+
+**DISPOSITION DETERMINED — GREEN-passing (NOT a defect carry).** With the value pinned,
+the original ADT-render overflow defect is GONE (it was already resolved S81 / FIXME
+0258): the trace renders `:primitives/String ""` cleanly, no overflow, no abort. The
+test therefore FLIPS GREEN and is updated to a coherent POSITIVE regression guard (it
+guards against recurrence of the render overflow, no longer a failing-not-ignored defect
+repro). Function name retained (`…overflows_defect`) to avoid ledger/PLAN drift; the
+comment block documents both fixes (S81 overflow resolution + S84 §3.11.1 annotation
+realignment). FIXME 0382 fully discharged → `git rm`'d.
+
+**`--workspace` count after this realignment: 2714 tests / 2710 pass / 4 fail / 0 skip**
+(21.7s). The 4 reds, every one classified — **all pre-existing carries, `0382` is GONE**:
+- `repl_cross_cluster_duplicate_field_accessor_is_ambiguous` (0366)
+- `auto_io_independent_diff_token_parallelizes_e2e` + `auto_io_par_grouping_uniform_across_modes`
+  + `resource_serial_diff_token_parallelizes` (0367 auto-IO)
+
+Going-in (per /sprint): 5 reds incl. `0382`; the +5 §3.11 acceptance guards from the
+prior `73cf79c`/realignment work had already flipped green by this commit's baseline
+(`09d9171`), leaving the 5-red baseline of which `0382` was one. **ZERO unexpected reds;
+`0382` flipped GREEN → 4 reds remain (all the OTHER carries, unchanged).**
+
 ### Sprint 84 — tightened §3.11.1 realignment: invert Vec/Fn admission + annotate example (/qa, 2026-06-16)
 
 The user tightened spec §3.11.1 (commit `2290aa9` — §3.11.1 "no representation-based

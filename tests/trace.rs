@@ -303,19 +303,34 @@ fn trace_polymorphic_adt_result_renders() {
 // spec: spec/04-expressions.md §4.12.3 — (same anchor) the minimal witness for
 // the ADT-render overflow: tracing a fn that returns a NULLARY constructor
 // (None). This is the 1-constructor reduction of
-// `trace_polymorphic_adt_result_renders`. Resolved S81 (FIXME 0258); the nullary
-// value now renders without overflowing the descriptor formatter.
+// `trace_polymorphic_adt_result_renders`.
+//
+// POSITIVE regression guard (was a failing-not-ignored defect repro through S83).
+// Two distinct fixes converge here:
+//   1. The ADT-render overflow itself was resolved S81 (FIXME 0258) — the nullary
+//      value now renders without overflowing the descriptor formatter.
+//   2. S84 Wave 2 landed the position-complete §3.11.1 full-concreteness check
+//      (FIXME 0382). `(defn mk [] None)` returns an UNPINNED `(Option a)`; flowing
+//      that through `mk`'s fn boundary into `(trace (mk))` reaches a codegen value
+//      position with a residual free type var — which the tightened §3.11.1 rule
+//      now correctly rejects BEFORE the trace-render path. The realignment pins
+//      `mk`'s result concrete with `:(Option Int) None` (the verified-working bare
+//      annotation idiom, analogous to `:(Option Int) None` / `:(Vec Int) []` in
+//      regression.rs), so the program type-checks and reaches its intended
+//      assertion. The annotation does not change WHAT is rendered — only that the
+//      value is statically concrete at codegen, as a real program would resolve it.
+//
+// With the value concrete the trace renders cleanly (`:primitives/String ""`); a
+// stack overflow would leave stdout without the matched result line. GREEN as of
+// S84 — the original render defect is gone; this guards against its recurrence.
 #[test]
 fn trace_adt_value_render_overflows_defect() {
     repl_prims(
         "(import [primitives [Trace TraceCall]])\n\
          (deftype (Option a) None (Some [:a val]))\n\
-         (defn mk [] None)\n\
+         (defn mk [] :(Option Int) None)\n\
          (match (trace (mk)) [(TraceCall n p r c ns) r])\n",
     )
-    // Once the overflow is fixed, the result renders the nullary value. The
-    // assertion is "ran to a result without aborting" — a stack overflow leaves
-    // stdout without the matched result line.
     .assert_stdout_contains(":primitives/String");
 }
 
