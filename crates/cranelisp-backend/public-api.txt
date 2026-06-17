@@ -395,7 +395,7 @@ pub cranelisp_backend::heap::HeapCategory::AlwaysHeap
 pub cranelisp_backend::heap::HeapCategory::Mixed
 pub cranelisp_backend::heap::HeapCategory::NeverHeap
 impl cranelisp_backend::heap::HeapCategory
-pub fn cranelisp_backend::heap::HeapCategory::classify<C, L>(&cranelisp_types::types::Type, core::option::Option<&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>>) -> cranelisp_backend::heap::HeapCategory where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::heap::HeapCategory::classify<C, L>(&cranelisp_types::concrete::ConcreteType, core::option::Option<&dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>>) -> cranelisp_backend::heap::HeapCategory where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 impl core::marker::Freeze for cranelisp_backend::heap::HeapCategory
 impl core::marker::Send for cranelisp_backend::heap::HeapCategory
 impl core::marker::Sync for cranelisp_backend::heap::HeapCategory

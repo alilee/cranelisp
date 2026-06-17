@@ -37,7 +37,7 @@ use cranelift_module::{FuncId, Module};
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    CranelispError, DefKind, Defn, Expr, FQTypeName,
+    ConcreteType, CranelispError, DefKind, Defn, MonoExpr, FQTypeName,
     ModuleEntry, ModuleFullPath, Span, Symbol, SymbolTable,
     Type, TypeDefInfo,
 };
@@ -1004,6 +1004,7 @@ where
     /// compiles the body, and finalizes.
     pub fn compile_body(
         defn: &Defn,
+        body: &MonoExpr,
         func: &mut cranelift::codegen::ir::Function,
         func_ctx: &mut FunctionBuilderContext,
         module: &'a mut M,
@@ -1032,7 +1033,7 @@ where
         builder.switch_to_block(loop_header);
 
         // Compute last-use info for the body.
-        let last_uses = heap::compute_last_uses(defn.body());
+        let last_uses = heap::compute_last_uses(body);
 
         let mut compiler = FnCompiler {
             builder,
@@ -1094,7 +1095,7 @@ where
             // defn type isn't available.
             if let Some(Some(ty)) = defn_param_types.get(i) {
                 compiler.variable_types.insert(param_name.clone(), ty.clone());
-            } else if let Some(ty) = Self::derive_param_type_from_body(defn.body(), param_name) {
+            } else if let Some(ty) = Self::derive_param_type_from_body(body, param_name) {
                 compiler.variable_types.insert(param_name.clone(), ty);
             }
         }
@@ -1103,9 +1104,9 @@ where
         // This implements the consuming calling convention: the callee owns
         // heap-typed parameters and dec's them at exit. The caller inc's
         // variable arguments before the call.
-        let skip_var = Self::return_var_in_scope(defn.body(), compiler.scope_stack.last());
-        let result = compiler.compile_expr(defn.body())?;
-        compiler.protect_return_value(&skip_var, result, defn.body());
+        let skip_var = Self::return_var_in_scope(body, compiler.scope_stack.last());
+        let result = compiler.compile_expr(body)?;
+        compiler.protect_return_value(&skip_var, result, body);
         compiler.pop_scope_with_cleanup(skip_var.as_ref());
 
         // Return the result.
@@ -1120,72 +1121,86 @@ where
 
     // --- Expression dispatch ---
 
-    /// Compile an expression, dispatching to the appropriate handler.
-    pub fn compile_expr(&mut self, expr: &Expr) -> Result<Value, CranelispError> {
+    /// Compile a monomorphised expression, dispatching to the appropriate
+    /// handler.
+    ///
+    /// The codegen walk is over [`MonoExpr`] (concrete-boundary-type.md §3.1,
+    /// FIXME 0391): every node carries a `ty: ConcreteType` non-optionally, so a
+    /// `Type::Var` is *unrepresentable* at every codegen-reaching position. The
+    /// `Annotate` variant is erased at the `MonoExpr::from_expr` build, so it has
+    /// no arm here.
+    pub fn compile_expr(&mut self, expr: &MonoExpr) -> Result<Value, CranelispError> {
         match expr {
-            Expr::IntLit { value, .. } => self.compile_int_lit(*value),
-            Expr::FloatLit { value, .. } => self.compile_float_lit(*value),
-            Expr::BoolLit { value, .. } => self.compile_bool_lit(*value),
-            Expr::StringLit { value, span, .. } => self.compile_string_lit(value, *span),
-            Expr::Var {
+            MonoExpr::IntLit { value, .. } => self.compile_int_lit(*value),
+            MonoExpr::FloatLit { value, .. } => self.compile_float_lit(*value),
+            MonoExpr::BoolLit { value, .. } => self.compile_bool_lit(*value),
+            MonoExpr::StringLit { value, span, .. } => self.compile_string_lit(value, *span),
+            MonoExpr::Var {
                 name,
                 span,
                 resolved_call,
-                inferred_type,
-            } => self.compile_var(
-                name,
-                *span,
-                resolved_call.as_deref(),
-                inferred_type.as_deref(),
-            ),
-            Expr::Let {
+                ty,
+            } => {
+                // The signature-path bridge: `compile_var` reads the variable's
+                // type as a `&Type` (for the value-position trait-method arity).
+                // The node's `ConcreteType` embeds losslessly into a `Type`.
+                let inferred = ty.to_type();
+                self.compile_var(name, *span, resolved_call.as_deref(), Some(&inferred))
+            }
+            MonoExpr::Let {
                 bindings,
                 body,
                 span,
                 ..
             } => self.compile_let(bindings, body, *span),
-            Expr::If {
+            MonoExpr::If {
                 cond,
                 then_branch,
                 else_branch,
                 ..
             } => self.compile_if(cond, then_branch, else_branch),
-            Expr::Lambda {
-                params, body, span, inferred_type, ..
+            MonoExpr::Lambda {
+                params, body, span, ty,
             } => {
-                let param_names: Vec<Symbol> =
-                    params.iter().map(|(n, _)| n.clone()).collect();
-                self.compile_lambda(&param_names, body, *span, inferred_type.as_deref())
+                let lambda_type = ty.to_type();
+                self.compile_lambda(params, body, *span, Some(&lambda_type))
             }
-            Expr::Apply {
+            MonoExpr::Apply {
                 callee,
                 args,
                 span,
                 resolved_call,
-                inferred_type,
-                ..
-            } => self.compile_apply(callee, args, *span, resolved_call.as_deref(), inferred_type.as_deref()),
-            Expr::Match {
+                ty,
+            } => {
+                let apply_type = ty.to_type();
+                self.compile_apply(
+                    callee,
+                    args,
+                    *span,
+                    resolved_call.as_deref(),
+                    Some(&apply_type),
+                )
+            }
+            MonoExpr::Match {
                 scrutinee,
                 arms,
                 span,
                 ..
             } => self.compile_match(scrutinee, arms, *span),
-            Expr::Annotate { expr, .. } => self.compile_expr(expr),
-            Expr::VecLit { elements, span, .. } => self.compile_vec_lit(elements, *span),
-            Expr::Trace {
+            MonoExpr::VecLit { elements, span, .. } => self.compile_vec_lit(elements, *span),
+            MonoExpr::Trace {
                 modules,
                 body,
                 span,
                 ..
             } => self.compile_trace(modules, body, *span),
-            Expr::ParBind {
+            MonoExpr::ParBind {
                 bindings,
                 body,
                 span,
                 ..
             } => self.compile_par_bind(bindings, body, *span),
-            Expr::ConstrADT {
+            MonoExpr::ConstrADT {
                 tag,
                 fields,
                 span,
@@ -1264,7 +1279,7 @@ where
                     let ty = self.variable_types.get(name).cloned()
                         .unwrap_or(Type::Int); // fallback, should not happen
                     let needs_guard = matches!(
-                        HeapCategory::classify(&ty, Some(self.ctx.symbol_tables)),
+                        signature_heap_category(&ty, Some(self.ctx.symbol_tables)),
                         HeapCategory::Mixed
                     );
                     (name.clone(), ty, needs_guard)
@@ -1358,7 +1373,7 @@ where
             ctor.fields.iter().any(|f| {
                 let resolved = substitute_type_inline(&f.ty, &subst);
                 matches!(
-                    HeapCategory::classify(&resolved, Some(self.ctx.symbol_tables)),
+                    signature_heap_category(&resolved, Some(self.ctx.symbol_tables)),
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed
                 )
             })
@@ -1491,7 +1506,7 @@ where
 
         for (i, field) in ctor.fields.iter().enumerate() {
             let resolved_ty = substitute_type_inline(&field.ty, subst);
-            let category = HeapCategory::classify(&resolved_ty, Some(self.ctx.symbol_tables));
+            let category = signature_heap_category(&resolved_ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     let field_val = heap::heap_load(
@@ -1561,10 +1576,10 @@ where
     /// If `body` is a direct variable reference to a name in the current scope
     /// frame, return that name. Used to skip rc_dec for the return value.
     pub(crate) fn return_var_in_scope(
-        body: &Expr,
+        body: &MonoExpr,
         scope_frame: Option<&Vec<Symbol>>,
     ) -> Option<Symbol> {
-        if let Expr::Var { name, .. } = body
+        if let MonoExpr::Var { name, .. } = body
             && let Some(frame) = scope_frame
                 && frame.contains(name) {
                     return Some(name.clone());
@@ -1582,14 +1597,14 @@ where
         &mut self,
         skip_var: &Option<Symbol>,
         body_val: Value,
-        body: &Expr,
+        body: &MonoExpr,
     ) {
         if skip_var.is_some() {
             return; // The skip_var mechanism already protects the return value.
         }
         // Fresh allocations (Lambda, StringLit) cannot be the same as any
         // scope binding, so scope cleanup cannot affect them. Skip protect.
-        if matches!(body, Expr::Lambda { .. } | Expr::StringLit { .. }) {
+        if matches!(body, MonoExpr::Lambda { .. } | MonoExpr::StringLit { .. }) {
             return;
         }
         // Only protect if the current scope has heap-typed bindings that
@@ -1608,17 +1623,15 @@ where
         if !has_cleanup_targets {
             return;
         }
-        if let Some(ty) = body.inferred_type() {
-            let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut self.builder, body_val);
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_inc_guarded(&mut self.builder, body_val);
-                }
-                HeapCategory::NeverHeap => {}
+        let category = HeapCategory::classify(body.ty(), Some(self.ctx.symbol_tables));
+        match category {
+            HeapCategory::AlwaysHeap => {
+                heap::emit_rc_inc(&mut self.builder, body_val);
             }
+            HeapCategory::Mixed => {
+                heap::emit_rc_inc_guarded(&mut self.builder, body_val);
+            }
+            HeapCategory::NeverHeap => {}
         }
     }
 
@@ -1627,7 +1640,7 @@ where
     /// Check if a type is heap-allocated and needs RC management.
     pub(crate) fn is_heap_type(&self, ty: &Type) -> bool {
         matches!(
-            HeapCategory::classify(ty, Some(self.ctx.symbol_tables)),
+            signature_heap_category(ty, Some(self.ctx.symbol_tables)),
             HeapCategory::AlwaysHeap | HeapCategory::Mixed
         )
     }
@@ -1638,7 +1651,7 @@ where
     /// Function parameters don't have their own `inferred_type`, but every
     /// Var reference to the parameter in the body does. We walk the body AST
     /// to find the first Var node matching the name.
-    pub(crate) fn derive_param_type_from_body(body: &Expr, name: &Symbol) -> Option<Type> {
+    pub(crate) fn derive_param_type_from_body(body: &MonoExpr, name: &Symbol) -> Option<Type> {
         find_var_type_in_expr(body, name)
     }
 
@@ -1954,12 +1967,12 @@ pub(crate) fn substitute_type_inline(
 /// Walks the AST recursively and returns the first Var node's `inferred_type()`
 /// that matches the name. Used by `derive_param_type_from_body` to find parameter
 /// types from use sites when the defn-level type is not available.
-fn find_var_type_in_expr(expr: &Expr, name: &Symbol) -> Option<Type> {
+fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Type> {
     match expr {
-        Expr::Var { name: var_name, inferred_type, .. } if var_name == name => {
-            inferred_type.as_deref().cloned()
+        MonoExpr::Var { name: var_name, ty, .. } if var_name == name => {
+            Some(ty.to_type())
         }
-        Expr::Let { bindings, body, .. } => {
+        MonoExpr::Let { bindings, body, .. } => {
             for (_, val) in bindings {
                 if let Some(ty) = find_var_type_in_expr(val, name) {
                     return Some(ty);
@@ -1967,26 +1980,25 @@ fn find_var_type_in_expr(expr: &Expr, name: &Symbol) -> Option<Type> {
             }
             find_var_type_in_expr(body, name)
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If { cond, then_branch, else_branch, .. } => {
             find_var_type_in_expr(cond, name)
                 .or_else(|| find_var_type_in_expr(then_branch, name))
                 .or_else(|| find_var_type_in_expr(else_branch, name))
         }
-        Expr::Lambda { body, .. } => find_var_type_in_expr(body, name),
-        Expr::Apply { callee, args, .. } => {
+        MonoExpr::Lambda { body, .. } => find_var_type_in_expr(body, name),
+        MonoExpr::Apply { callee, args, .. } => {
             find_var_type_in_expr(callee, name)
                 .or_else(|| args.iter().find_map(|a| find_var_type_in_expr(a, name)))
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match { scrutinee, arms, .. } => {
             find_var_type_in_expr(scrutinee, name)
                 .or_else(|| arms.iter().find_map(|arm| find_var_type_in_expr(&arm.body, name)))
         }
-        Expr::Annotate { expr, .. } => find_var_type_in_expr(expr, name),
-        Expr::VecLit { elements, .. } => {
+        MonoExpr::VecLit { elements, .. } => {
             elements.iter().find_map(|e| find_var_type_in_expr(e, name))
         }
-        Expr::Trace { body, .. } => find_var_type_in_expr(body, name),
-        Expr::ParBind { bindings, body, .. } => {
+        MonoExpr::Trace { body, .. } => find_var_type_in_expr(body, name),
+        MonoExpr::ParBind { bindings, body, .. } => {
             for (_, val) in bindings {
                 if let Some(ty) = find_var_type_in_expr(val, name) {
                     return Some(ty);
@@ -1995,6 +2007,41 @@ fn find_var_type_in_expr(expr: &Expr, name: &Symbol) -> Option<Type> {
             find_var_type_in_expr(body, name)
         }
         _ => None,
+    }
+}
+
+/// Heap-classify a SIGNATURE-PATH field/binding `Type` (concrete-boundary-type.md
+/// §3.1.1, FIXME 0391/0394). The body-AST codegen walk classifies a `ConcreteType`
+/// off each `MonoExpr` node directly — no `Var` by construction. But the
+/// `Type`-typed RC machinery (`variable_types`, `CtorField`, `resolve_field_types`)
+/// reads field/binding types from the **signature** (the `scheme`, `Type::Fn`
+/// params), and a `Var` legitimately survives there in ONE case: the **generic
+/// constructor `Def`'s own codegen**. A `(deftype (Option a) … (Some [:a val]))`
+/// ctor `Def` is codegen'd ONCE as a generic template whose field param is
+/// `Type::Var a` — its runtime representation is uniform (i64 tag-or-pointer), the
+/// `Mixed` heap category. (§3.1.1's "ctor field types are always concrete at
+/// codegen" holds for ctor USE sites — a `(Some 1)` instance pins `a := Int` — but
+/// NOT for the generic ctor `Def`'s own template body; that gap is FIXME 0394.)
+///
+/// So this helper classifies a concrete field type via the total
+/// `HeapCategory::classify(&ConcreteType, …)`, and maps a residual `Var`/`TyConApp`
+/// (a generic-ctor-template field param) to `Mixed` — the uniform-representation
+/// category, restoring the pre-Phase-3 generic-ctor-`Def` behaviour. This does NOT
+/// widen the `ConcreteType` `classify` (which stays total, no `Var` arm) and does
+/// NOT affect the body-AST path (still 100% `Var`-free by construction).
+pub(crate) fn signature_heap_category<C, L>(
+    ty: &Type,
+    symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
+) -> HeapCategory
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    match ConcreteType::from_type(ty) {
+        Ok(ct) => HeapCategory::classify(&ct, symbol_tables),
+        // A generic-ctor-template field param (`Type::Var`) / unresolved HKT head:
+        // uniform i64 representation → `Mixed` (the guarded RC path). FIXME 0394.
+        Err(_) => HeapCategory::Mixed,
     }
 }
 

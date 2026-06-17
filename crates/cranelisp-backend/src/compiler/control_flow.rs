@@ -7,13 +7,13 @@ use std::collections::HashSet;
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{ErrorLocation, CranelispError, Expr, ResolvedCall, Span, Symbol, Type};
+use cranelisp_types::{ErrorLocation, ConcreteType, CranelispError, MonoExpr, ResolvedCall, Span, Symbol, Type};
 use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
 
-use super::FnCompiler;
+use super::{signature_heap_category, FnCompiler};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -24,8 +24,8 @@ where
 
     pub(crate) fn compile_let(
         &mut self,
-        bindings: &[(Symbol, Expr)],
-        body: &Expr,
+        bindings: &[(Symbol, MonoExpr)],
+        body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
         // Check if lenient evaluation applies.
@@ -62,8 +62,8 @@ where
     /// Compile a let expression sequentially (no lenient evaluation).
     fn compile_let_sequential(
         &mut self,
-        bindings: &[(Symbol, Expr)],
-        body: &Expr,
+        bindings: &[(Symbol, MonoExpr)],
+        body: &MonoExpr,
         _span: Span,
     ) -> Result<Value, CranelispError> {
         // Push a new scope frame.
@@ -74,10 +74,9 @@ where
         self.in_tail_position = false;
 
         for (name, val_expr) in bindings {
-            // Record the binding's type from the expression's inferred_type.
-            if let Some(ty) = val_expr.inferred_type() {
-                self.variable_types.insert(name.clone(), ty.clone());
-            }
+            // Record the binding's concrete type (embedded as a `Type` for the
+            // `Type`-keyed RC machinery).
+            self.variable_types.insert(name.clone(), val_expr.ty().to_type());
 
             let val = self.compile_expr(val_expr)?;
 
@@ -121,8 +120,8 @@ where
     /// See design/backend/lenient-eval.md §4.2 for the algorithm.
     fn compile_let_lenient(
         &mut self,
-        bindings: &[(Symbol, Expr)],
-        body: &Expr,
+        bindings: &[(Symbol, MonoExpr)],
+        body: &MonoExpr,
         sparkable: &[usize],
         span: Span,
     ) -> Result<Value, CranelispError> {
@@ -138,12 +137,13 @@ where
         for &idx in sparkable {
             let (_name, val_expr) = &bindings[idx];
 
-            // Wrap the value expression in a zero-arg lambda (thunk).
-            let thunk_expr = Expr::Lambda {
+            // Wrap the value expression in a zero-arg lambda (thunk). The thunk's
+            // concrete type is `(Fn [] T)` where `T` is the binding value's type.
+            let thunk_expr = MonoExpr::Lambda {
                 params: vec![],
                 body: Box::new(val_expr.clone()),
                 span: val_expr.span(),
-                inferred_type: None,
+                ty: ConcreteType::Fn(vec![], Box::new(val_expr.ty().clone())),
             };
             let thunk_val = self.compile_expr(&thunk_expr)?;
 
@@ -162,9 +162,7 @@ where
 
         // Phase 2: Process all bindings in order.
         for (i, (name, val_expr)) in bindings.iter().enumerate() {
-            if let Some(ty) = val_expr.inferred_type() {
-                self.variable_types.insert(name.clone(), ty.clone());
-            }
+            self.variable_types.insert(name.clone(), val_expr.ty().to_type());
 
             let val = if sparkable_set.contains(&i) {
                 // Force the IVar and dec our reference.
@@ -307,8 +305,8 @@ where
     /// See design/backend/io-scheduling.md §4 for the full algorithm.
     pub(crate) fn compile_par_bind(
         &mut self,
-        bindings: &[(Symbol, Expr)],
-        body: &Expr,
+        bindings: &[(Symbol, MonoExpr)],
+        body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
@@ -402,8 +400,8 @@ where
     /// Returns the closure base pointer (rc=1).
     fn compile_par_bind_continuation(
         &mut self,
-        bindings: &[(Symbol, Expr)],
-        body: &Expr,
+        bindings: &[(Symbol, MonoExpr)],
+        body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
@@ -522,15 +520,15 @@ where
                     .push(name.clone());
 
                 // Track type for RC — unwrap IO(T) to get inner T.
-                if let Some(ty) = val_expr.inferred_type() {
-                    let inner_ty = match ty {
-                        Type::ADT(fqtn, args) if fqtn.name.as_ref() == "IO" && !args.is_empty() => {
-                            args[0].clone()
-                        }
-                        _ => ty.clone(),
-                    };
-                    inner.variable_types.insert(name.clone(), inner_ty);
-                }
+                let inner_ty = match val_expr.ty() {
+                    ConcreteType::ADT(fqtn, args)
+                        if fqtn.name.as_ref() == "IO" && !args.is_empty() =>
+                    {
+                        args[0].to_type()
+                    }
+                    other => other.to_type(),
+                };
+                inner.variable_types.insert(name.clone(), inner_ty);
             }
 
             // Compile the body.
@@ -614,7 +612,7 @@ where
 
                 // Inc heap-typed captures: the closure env needs its own reference.
                 if let Some(ty) = self.variable_types.get(cap_name) {
-                    let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+                    let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
                     match category {
                         HeapCategory::AlwaysHeap => {
                             heap::emit_rc_inc(&mut self.builder, cap_val);
@@ -635,9 +633,9 @@ where
 
     pub(crate) fn compile_if(
         &mut self,
-        cond: &Expr,
-        then_branch: &Expr,
-        else_branch: &Expr,
+        cond: &MonoExpr,
+        then_branch: &MonoExpr,
+        else_branch: &MonoExpr,
     ) -> Result<Value, CranelispError> {
         let saved_tail = self.in_tail_position;
 
@@ -688,7 +686,7 @@ where
     pub(crate) fn compile_lambda(
         &mut self,
         params: &[Symbol],
-        body: &Expr,
+        body: &MonoExpr,
         span: Span,
         lambda_type: Option<&Type>,
     ) -> Result<Value, CranelispError> {
@@ -809,7 +807,7 @@ where
 
                 // Inc heap-typed captures: the closure env needs its own reference.
                 if let Some(ty) = self.variable_types.get(cap_name) {
-                    let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+                    let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
                     match category {
                         HeapCategory::AlwaysHeap => {
                             heap::emit_rc_inc(&mut self.builder, cap_val);
@@ -844,7 +842,7 @@ where
             .enumerate()
             .filter_map(|(i, cap_name)| {
                 let ty = self.variable_types.get(cap_name)?;
-                let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+                let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
                         Some((i, ty.clone(), category))
@@ -981,9 +979,9 @@ where
     /// is unchanged for all other callers and all other return paths
     /// within lambda bodies. Only the `Var{captured_heap}` shape triggers
     /// this new inc.
-    fn emit_capture_return_inc(&mut self, body: &Expr, body_val: Value) {
+    fn emit_capture_return_inc(&mut self, body: &MonoExpr, body_val: Value) {
         // Only trigger for a direct reference to a captured variable.
-        let Expr::Var { name, .. } = body else {
+        let MonoExpr::Var { name, .. } = body else {
             return;
         };
         if !self.captured_vars.contains(name) {
@@ -994,7 +992,7 @@ where
         let Some(ty) = self.variable_types.get(name).cloned() else {
             return;
         };
-        let category = HeapCategory::classify(&ty, Some(self.ctx.symbol_tables));
+        let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
         match category {
             HeapCategory::AlwaysHeap => {
                 heap::emit_rc_inc(&mut self.builder, body_val);
@@ -1015,7 +1013,7 @@ where
         func_id: cranelift_module::FuncId,
         params: &[Symbol],
         captures: &[Symbol],
-        body: &Expr,
+        body: &MonoExpr,
         span: Span,
         lambda_type: Option<&Type>,
     ) -> Result<(), CranelispError> {
@@ -1590,7 +1588,7 @@ where
         applied_vals: &[Value],
         applied_count: usize,
         total_count: usize,
-        args: &[Expr],
+        args: &[MonoExpr],
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
     ) -> Result<Value, CranelispError> {
@@ -1607,11 +1605,7 @@ where
         // Classify each applied arg's heap category for RC management.
         let arg_categories: Vec<HeapCategory> = args
             .iter()
-            .map(|arg| {
-                arg.inferred_type()
-                    .map(|ty| HeapCategory::classify(ty, Some(self.ctx.symbol_tables)))
-                    .unwrap_or(HeapCategory::NeverHeap)
-            })
+            .map(|arg| HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables)))
             .collect();
 
         // 1. Compile the wrapper function.
@@ -1893,7 +1887,7 @@ where
 }
 
 /// Find free variables in an expression (variables not bound by local let/lambda/match).
-fn find_free_vars(expr: &Expr, bound: &[Symbol]) -> Vec<Symbol> {
+fn find_free_vars(expr: &MonoExpr, bound: &[Symbol]) -> Vec<Symbol> {
     let mut free = Vec::new();
     let mut seen = HashSet::new();
     let bound_set: HashSet<_> = bound.iter().cloned().collect();
@@ -1903,19 +1897,19 @@ fn find_free_vars(expr: &Expr, bound: &[Symbol]) -> Vec<Symbol> {
 
 /// Recursive helper for free variable collection.
 fn collect_free_vars(
-    expr: &Expr,
+    expr: &MonoExpr,
     bound: &HashSet<Symbol>,
     free: &mut Vec<Symbol>,
     seen: &mut HashSet<Symbol>,
 ) {
     match expr {
-        Expr::Var { name, .. } => {
+        MonoExpr::Var { name, .. } => {
             if !bound.contains(name) && !seen.contains(name) {
                 seen.insert(name.clone());
                 free.push(name.clone());
             }
         }
-        Expr::Let { bindings, body, .. } => {
+        MonoExpr::Let { bindings, body, .. } => {
             let mut extended = bound.clone();
             for (name, val_expr) in bindings {
                 collect_free_vars(val_expr, &extended, free, seen);
@@ -1923,25 +1917,25 @@ fn collect_free_vars(
             }
             collect_free_vars(body, &extended, free, seen);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If { cond, then_branch, else_branch, .. } => {
             collect_free_vars(cond, bound, free, seen);
             collect_free_vars(then_branch, bound, free, seen);
             collect_free_vars(else_branch, bound, free, seen);
         }
-        Expr::Lambda { params, body, .. } => {
+        MonoExpr::Lambda { params, body, .. } => {
             let mut extended = bound.clone();
-            for (p, _) in params {
+            for p in params {
                 extended.insert(p.clone());
             }
             collect_free_vars(body, &extended, free, seen);
         }
-        Expr::Apply { callee, args, .. } => {
+        MonoExpr::Apply { callee, args, .. } => {
             collect_free_vars(callee, bound, free, seen);
             for arg in args {
                 collect_free_vars(arg, bound, free, seen);
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match { scrutinee, arms, .. } => {
             collect_free_vars(scrutinee, bound, free, seen);
             for arm in arms {
                 let mut arm_bound = bound.clone();
@@ -1959,18 +1953,15 @@ fn collect_free_vars(
                 collect_free_vars(&arm.body, &arm_bound, free, seen);
             }
         }
-        Expr::Annotate { expr, .. } => {
-            collect_free_vars(expr, bound, free, seen);
-        }
-        Expr::VecLit { elements, .. } => {
+        MonoExpr::VecLit { elements, .. } => {
             for e in elements {
                 collect_free_vars(e, bound, free, seen);
             }
         }
-        Expr::Trace { body, .. } => {
+        MonoExpr::Trace { body, .. } => {
             collect_free_vars(body, bound, free, seen);
         }
-        Expr::ParBind { bindings, body, .. } => {
+        MonoExpr::ParBind { bindings, body, .. } => {
             // Same as Let: each binding may reference earlier ones
             let mut extended = bound.clone();
             for (name, val_expr) in bindings {
@@ -1979,15 +1970,15 @@ fn collect_free_vars(
             }
             collect_free_vars(body, &extended, free, seen);
         }
-        Expr::ConstrADT { fields, .. } => {
+        MonoExpr::ConstrADT { fields, .. } => {
             for f in fields {
                 collect_free_vars(f, bound, free, seen);
             }
         }
-        Expr::StringLit { .. }
-        | Expr::IntLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::BoolLit { .. } => {}
+        MonoExpr::StringLit { .. }
+        | MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. } => {}
     }
 }
 
@@ -2081,17 +2072,16 @@ const CHEAP_BUILTINS: &[&str] = &[
 ///
 /// Returns an empty vec if fewer than 2 sparkable bindings are found.
 pub(crate) fn find_sparkable_bindings(
-    bindings: &[(Symbol, Expr)],
+    bindings: &[(Symbol, MonoExpr)],
     constructors: &HashSet<Symbol>,
 ) -> Vec<usize> {
     let mut bound_names: HashSet<Symbol> = HashSet::new();
     let mut sparkable: Vec<usize> = Vec::new();
 
-    // Use the canonical free_vars_expr from cranelisp-types (I4 review finding:
-    // eliminates duplicate free-variable traversal).
-    let empty_globals = HashSet::new();
+    // Free-variable traversal over `MonoExpr` (the in-crate `find_free_vars`,
+    // mirroring `cranelisp_types::free_vars_expr` over the post-mono AST).
     for (i, (name, val_expr)) in bindings.iter().enumerate() {
-        let fv = cranelisp_types::free_vars_expr(val_expr, &empty_globals);
+        let fv = find_free_vars(val_expr, &[]);
         // Filter to only those free vars that are bound by earlier bindings
         // in this let block (not globals or outer scope).
         let depends_on_earlier = fv.iter().any(|v| bound_names.contains(v));
@@ -2114,10 +2104,10 @@ pub(crate) fn find_sparkable_bindings(
 ///
 /// Excludes: cheap builtins (+, -, etc.), data constructors (Some, Cons),
 /// literals, variable references.
-fn is_worth_sparking(expr: &Expr, constructors: &HashSet<Symbol>) -> bool {
+fn is_worth_sparking(expr: &MonoExpr, constructors: &HashSet<Symbol>) -> bool {
     match expr {
-        Expr::Apply { callee, .. } => {
-            if let Expr::Var { name, .. } = callee.as_ref() {
+        MonoExpr::Apply { callee, .. } => {
+            if let MonoExpr::Var { name, .. } = callee.as_ref() {
                 // Cheap builtins and constructors are not worth sparking.
                 !CHEAP_BUILTINS.contains(&name.as_ref())
                     && !constructors.contains(name)
@@ -2143,7 +2133,7 @@ mod sparkability_tests {
     // runtime, no env-var — per `memory/project_test_strategy.md`. =====
 
     use super::find_sparkable_bindings;
-    use cranelisp_types::{Expr, Span, Symbol};
+    use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
     use std::collections::HashSet;
 
     fn sym(s: &str) -> Symbol {
@@ -2154,26 +2144,30 @@ mod sparkability_tests {
         Span::new(0, 0)
     }
 
+    fn var(name: Symbol) -> MonoExpr {
+        MonoExpr::Var { name, span: span(), resolved_call: None, ty: ConcreteType::Int }
+    }
+
     /// A function-call binding `(f arg)` against a named callee.
-    fn call(callee: &str) -> Expr {
-        Expr::Apply {
-            callee: Box::new(Expr::var(sym(callee), span())),
+    fn call(callee: &str) -> MonoExpr {
+        MonoExpr::Apply {
+            callee: Box::new(var(sym(callee))),
             args: vec![],
             span: span(),
             resolved_call: None,
-            inferred_type: None,
+            ty: ConcreteType::Int,
         }
     }
 
     /// A function-call binding that references `dep_var` as an argument, so
     /// it depends on any earlier binding named `dep_var`.
-    fn call_with_arg(callee: &str, dep_var: &str) -> Expr {
-        Expr::Apply {
-            callee: Box::new(Expr::var(sym(callee), span())),
-            args: vec![Expr::var(sym(dep_var), span())],
+    fn call_with_arg(callee: &str, dep_var: &str) -> MonoExpr {
+        MonoExpr::Apply {
+            callee: Box::new(var(sym(callee))),
+            args: vec![var(sym(dep_var))],
             span: span(),
             resolved_call: None,
-            inferred_type: None,
+            ty: ConcreteType::Int,
         }
     }
 
@@ -2254,8 +2248,8 @@ mod sparkability_tests {
     #[test]
     fn literals_and_var_refs_are_not_sparkable() {
         let bindings = vec![
-            (sym("a"), Expr::IntLit { value: 1, span: span(), inferred_type: None }),
-            (sym("b"), Expr::var(sym("x"), span())),
+            (sym("a"), MonoExpr::IntLit { value: 1, span: span(), ty: ConcreteType::Int }),
+            (sym("b"), var(sym("x"))),
         ];
         let ctors = HashSet::new();
         assert!(find_sparkable_bindings(&bindings, &ctors).is_empty());
@@ -2371,7 +2365,7 @@ mod par_codegen_tests {
             ],
             body: Box::new(int_lit(0)),
             span: Span::SYNTHETIC,
-            inferred_type: None,
+            inferred_type: Some(Box::new(Type::Int)),
         };
         let clif = clif_of_body(body);
 
@@ -2413,7 +2407,7 @@ mod par_codegen_tests {
             ],
             body: Box::new(int_lit(0)),
             span: Span::SYNTHETIC,
-            inferred_type: None,
+            inferred_type: Some(Box::new(Type::Int)),
         };
         let clif = clif_of_body(body);
         // count=3 stored as the Par node's first field.
@@ -2445,7 +2439,7 @@ mod par_codegen_tests {
             ],
             body: Box::new(int_lit(0)),
             span: Span::SYNTHETIC,
-            inferred_type: None,
+            inferred_type: Some(Box::new(Type::Int)),
         };
         let clif = clif_of_body(body);
         // IO_TAG_PAR=3 is the Par-node tag. A sequential `let` must never

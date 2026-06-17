@@ -127,7 +127,7 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use cranelisp_intrinsics::trace::DescriptorKind;
 use cranelisp_types::{
-    CranelispError, ErrorLocation, Expr, FQTypeName, ModuleEntry, Span, Type, TypeId,
+    CranelispError, ErrorLocation, FQTypeName, ModuleEntry, MonoExpr, Span, Type, TypeId,
 };
 
 use super::{FnCompiler, TracedFnInfo};
@@ -660,11 +660,8 @@ where
     /// makes the unguarded `atomic_rmw Sub [0+8]` fault at address 0x8 (the
     /// RC offset on a null base) — the trace ADT-render crash, FIXME 0284.
     /// `AlwaysHeap` is always a real pointer so the plain dec is sound.
-    fn emit_body_discard(&mut self, body_val: Value, body: &Expr) {
-        let Some(ty) = body.inferred_type().cloned() else {
-            return;
-        };
-        match crate::heap::HeapCategory::classify(&ty, Some(self.ctx.symbol_tables)) {
+    fn emit_body_discard(&mut self, body_val: Value, body: &MonoExpr) {
+        match crate::heap::HeapCategory::classify(body.ty(), Some(self.ctx.symbol_tables)) {
             crate::heap::HeapCategory::AlwaysHeap => {
                 crate::heap::emit_rc_dec(
                     &mut self.builder,
@@ -694,7 +691,7 @@ where
     pub(crate) fn compile_trace(
         &mut self,
         _modules: &[cranelisp_types::Symbol],
-        body: &Expr,
+        body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
         // Discovery is internal now (S76 §5): iterate all symbol tables.
@@ -908,7 +905,7 @@ where
     /// minimal TraceCall with the root "::trace::" name.
     fn compile_trace_no_swap(
         &mut self,
-        body: &Expr,
+        body: &MonoExpr,
         span: Span,
     ) -> Result<Value, CranelispError> {
         let saved_tail = self.in_tail_position;

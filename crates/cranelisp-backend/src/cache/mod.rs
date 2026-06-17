@@ -650,7 +650,7 @@ mod tests {
                 body: Expr::IntLit {
                     value: 42,
                     span: Span::new(10, 12),
-                    inferred_type: None,
+                    inferred_type: Some(Box::new(Type::Int)),
                 },
                 span: Span::new(0, 20),
             }],

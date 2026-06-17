@@ -478,7 +478,9 @@ mod tests {
         defn: cranelisp_types::Defn,
         scheme: cranelisp_types::Scheme,
     ) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
-        use cranelisp_types::{DefKind, ModuleEntry, UserFnState, Visibility};
+        use cranelisp_types::{
+            DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, UserFnState, Visibility,
+        };
         let tables = dashmap::DashMap::new();
         let mut st = SymbolTable::new(module.clone());
         let name = defn.name.clone();
@@ -488,6 +490,20 @@ mod tests {
             .map(|v| v.params.iter().map(|(n, _)| n.clone()).collect())
             .unwrap_or_default();
         let variant = defn.variants.first().cloned();
+        // S84 Phase 3 (FIXME 0391): a `Concrete{slot}` UserFn codegen target
+        // carries a populated `codegen_view` (the `MonoExpr` body, every node
+        // `ConcreteType`-typed). Build it from the concretely-annotated `ast`
+        // body the fixtures supply.
+        let codegen_view = variant.as_ref().map(|v| {
+            let body = MonoExpr::from_expr(&v.body)
+                .expect("test fixture body must be concretely typed for the codegen view");
+            MonoDefnVariant {
+                name: name.clone(),
+                params: v.params.iter().map(|(n, _)| n.clone()).collect(),
+                body,
+                span: v.span,
+            }
+        });
         st.insert(
             name,
             ModuleEntry::Def {
@@ -496,13 +512,13 @@ mod tests {
                 docstring: None,
                 param_names,
                 kind: Box::new(DefKind::UserFn {
-                    fn_state: UserFnState::NotDetermined,
+                    fn_state: UserFnState::Concrete { got_slot: 0 },
                 }),
                 callees: vec![],
                 trait_origin: None,
                 seq: 0,
                 ast: variant,
-                codegen_view: None,
+                codegen_view,
                 code: None,
             },
         );
@@ -523,7 +539,7 @@ mod tests {
                 body: Expr::IntLit {
                     value: 42,
                     span: Span::new(10, 12),
-                    inferred_type: None,
+                    inferred_type: Some(Box::new(cranelisp_types::Type::Int)),
                 },
                 span: Span::new(0, 20),
             }],
@@ -587,7 +603,7 @@ mod tests {
                     name: Symbol::from("x"),
                     span: Span::new(20, 21),
                     resolved_call: None,
-                    inferred_type: None,
+                    inferred_type: Some(Box::new(cranelisp_types::Type::Int)),
                 },
                 span: Span::new(0, 25),
             }],
@@ -645,7 +661,7 @@ mod tests {
                 body: Expr::IntLit {
                     value: 0,
                     span: Span::new(10, 11),
-                    inferred_type: None,
+                    inferred_type: Some(Box::new(cranelisp_types::Type::Int)),
                 },
                 span: Span::new(0, 15),
             }],

@@ -616,6 +616,139 @@ where
     .map_err(CompilationError::from)
 }
 
+/// The scoped backstop predicate (concrete-boundary-type.md §3.1.1, FIXME 0391 /
+/// 0393): a `DefKind` is a **body-AST-node-typed codegen target** — and so MUST
+/// carry a populated `codegen_view` — iff it is a `UserFn { Concrete{slot} }`
+/// (ordinary concrete defns + mono instances; mono instances register as exactly
+/// this kind, so the predicate is total over both). The signature-driven kinds
+/// (`Constructor` ctor/accessor, `Primitive`, `PrimitiveExtern`, `PlatformEffect`)
+/// legitimately carry `codegen_view: None` — they are codegen'd from the
+/// signature, never from a body node's type — so the `codegen_view`-must-be-`Some`
+/// `expect` is scoped to this predicate and never trips on them.
+#[cfg(test)]
+pub(crate) fn requires_codegen_view(kind: &cranelisp_types::DefKind) -> bool {
+    matches!(
+        kind,
+        cranelisp_types::DefKind::UserFn {
+            fn_state: cranelisp_types::UserFnState::Concrete { .. }
+        }
+    )
+}
+
+/// Build a `MonoExpr` from a body `Expr`, tolerating non-concrete node types
+/// (concrete-boundary-type.md §3.1.1, FIXME 0391/0394) — the LENIENT counterpart
+/// of the strict, choke-pointed [`cranelisp_types::MonoExpr::from_expr`].
+///
+/// Used on the two `compile_to_module` `None`-view paths AND the JIT/REPL
+/// `compile_defn` path — wherever the body is NOT a §3.11.1-checked
+/// fully-concrete body-AST target (whose authoritative view comes from FIXME
+/// 0392):
+///
+///  - **Signature-driven kinds** — `DefKind::Constructor` (ctor/accessor),
+///    primitives, platform-effects: the synthetic body is walked but the walk
+///    reads **no node `ty`** — heap classification comes from the *signature*
+///    (`scheme` via `signature_heap_category`). A ctor body's field `Var` nodes
+///    (`(ConstrADT (Var a))`) carry a `Type::Var` (the generic ctor `Def`'s own
+///    template) that the strict `from_expr` would reject.
+///  - **Generic / best-effort-0392 templates** — a REPL `__expr` for a bare
+///    polymorphic value (`[]`, §3.11.2 disposition 3), a directly-compiled
+///    generic defn (`(defn id [x] x)`), a macro-expanded clause whose body did
+///    not fully concretize in typecheck.
+///
+/// In all cases the residual `Var`-typed nodes are read ONLY via
+/// `signature_heap_category` (Var→Mixed), never the deleted `classify(Var)`
+/// panic — so this builder fills any non-concrete/absent node type with a
+/// placeholder (`ConcreteType::Int`, never read) so the walk has a total
+/// `MonoExpr`. The body-AST view path (FIXME 0392) stays 100% `Var`-free; this
+/// is the bounded backend accommodation for the §3.1.1-totality-vs-0392-best-
+/// effort gap (FIXME 0394).
+pub(crate) fn mono_from_expr_signature_driven(expr: &cranelisp_types::Expr) -> cranelisp_types::MonoExpr {
+    use cranelisp_types::{ConcreteType, Expr, MonoExpr, MonoMatchArm};
+
+    // The node's concrete type: the real one when concrete, else the placeholder
+    // (never read for signature-driven bodies).
+    let node_ty = |e: &Expr| -> ConcreteType {
+        e.inferred_type()
+            .and_then(|t| ConcreteType::from_type(t).ok())
+            .unwrap_or(ConcreteType::Int)
+    };
+
+    match expr {
+        Expr::Annotate { expr: inner, .. } => mono_from_expr_signature_driven(inner),
+        Expr::IntLit { value, span, .. } => MonoExpr::IntLit { value: *value, span: *span, ty: node_ty(expr) },
+        Expr::FloatLit { value, span, .. } => MonoExpr::FloatLit { value: *value, span: *span, ty: node_ty(expr) },
+        Expr::BoolLit { value, span, .. } => MonoExpr::BoolLit { value: *value, span: *span, ty: node_ty(expr) },
+        Expr::StringLit { value, span, .. } => MonoExpr::StringLit { value: value.clone(), span: *span, ty: node_ty(expr) },
+        Expr::Var { name, span, resolved_call, .. } => MonoExpr::Var {
+            name: name.clone(),
+            span: *span,
+            resolved_call: resolved_call.clone(),
+            ty: node_ty(expr),
+        },
+        Expr::Let { bindings, body, span, .. } => MonoExpr::Let {
+            bindings: bindings.iter().map(|(n, e)| (n.clone(), mono_from_expr_signature_driven(e))).collect(),
+            body: Box::new(mono_from_expr_signature_driven(body)),
+            span: *span,
+            ty: node_ty(expr),
+        },
+        Expr::If { cond, then_branch, else_branch, span, .. } => MonoExpr::If {
+            cond: Box::new(mono_from_expr_signature_driven(cond)),
+            then_branch: Box::new(mono_from_expr_signature_driven(then_branch)),
+            else_branch: Box::new(mono_from_expr_signature_driven(else_branch)),
+            span: *span,
+            ty: node_ty(expr),
+        },
+        Expr::Lambda { params, body, span, .. } => MonoExpr::Lambda {
+            params: params.iter().map(|(n, _)| n.clone()).collect(),
+            body: Box::new(mono_from_expr_signature_driven(body)),
+            span: *span,
+            ty: node_ty(expr),
+        },
+        Expr::Apply { callee, args, span, resolved_call, .. } => MonoExpr::Apply {
+            callee: Box::new(mono_from_expr_signature_driven(callee)),
+            args: args.iter().map(mono_from_expr_signature_driven).collect(),
+            span: *span,
+            resolved_call: resolved_call.clone(),
+            ty: node_ty(expr),
+        },
+        Expr::Match { scrutinee, arms, span, compiler_generated, .. } => MonoExpr::Match {
+            scrutinee: Box::new(mono_from_expr_signature_driven(scrutinee)),
+            arms: arms.iter().map(|arm| MonoMatchArm {
+                pattern: arm.pattern.clone(),
+                body: mono_from_expr_signature_driven(&arm.body),
+                span: arm.span,
+            }).collect(),
+            span: *span,
+            compiler_generated: *compiler_generated,
+            ty: node_ty(expr),
+        },
+        Expr::VecLit { elements, span, .. } => MonoExpr::VecLit {
+            elements: elements.iter().map(mono_from_expr_signature_driven).collect(),
+            span: *span,
+            ty: node_ty(expr),
+        },
+        Expr::Trace { modules, body, span, .. } => MonoExpr::Trace {
+            modules: modules.clone(),
+            body: Box::new(mono_from_expr_signature_driven(body)),
+            span: *span,
+            ty: node_ty(expr),
+        },
+        Expr::ParBind { bindings, body, span, .. } => MonoExpr::ParBind {
+            bindings: bindings.iter().map(|(n, e)| (n.clone(), mono_from_expr_signature_driven(e))).collect(),
+            body: Box::new(mono_from_expr_signature_driven(body)),
+            span: *span,
+            ty: node_ty(expr),
+        },
+        Expr::ConstrADT { type_name, tag, fields, span, .. } => MonoExpr::ConstrADT {
+            type_name: type_name.clone(),
+            tag: *tag,
+            fields: fields.iter().map(mono_from_expr_signature_driven).collect(),
+            span: *span,
+            ty: node_ty(expr),
+        },
+    }
+}
+
 fn compile_to_module_impl<M, C, L>(
     module_path: ModuleFullPath,
     names: &[Symbol],
@@ -639,6 +772,12 @@ where
     // surface a codegen error naming the offending symbol — see
     // design/backend/compile-to-module.md §16.4.
     let mut defns: Vec<Defn> = Vec::with_capacity(names.len());
+    // S84 Phase 3 (concrete-boundary-type.md §3.1, FIXME 0391): the codegen walk
+    // is over `MonoExpr`. For each `UserFn { Concrete{slot} }` entry the body
+    // comes from the typecheck-populated `codegen_view` (every node already a
+    // `ConcreteType`), NOT reconstructed from `ast`. Carried in lockstep with
+    // `defns`.
+    let mut bodies: Vec<cranelisp_types::MonoExpr> = Vec::with_capacity(names.len());
     {
         let table = symbol_tables.get(&module_path).ok_or_else(|| {
             CranelispError::CodegenError {
@@ -657,7 +796,7 @@ where
                     location: ErrorLocation::from_span(Span::SYNTHETIC),
                 }
             })?;
-            let ModuleEntry::Def { ast, visibility, docstring, .. } = entry else {
+            let ModuleEntry::Def { ast, visibility, docstring, kind, codegen_view, .. } = entry else {
                 return Err(CranelispError::CodegenError {
                     message: format!(
                         "compile_to_module: symbol '{name}' in module '{module_path}' is not a compilable Def (wrong ModuleEntry variant)"
@@ -675,7 +814,9 @@ where
             // `DefnVariant` (S69 Sub 35). The backend codegen path is keyed on
             // `Defn`; reconstruct the single-variant `Defn` from the variant +
             // the entry's own name / visibility / docstring (the canonical
-            // sources for that metadata post-narrowing).
+            // sources for that metadata post-narrowing). The `Defn` supplies the
+            // signature (params / name / span) for declaration + binding; the
+            // body walk uses the `MonoExpr` below.
             let defn = Defn {
                 name: name.clone(),
                 docstring: docstring.clone(),
@@ -683,7 +824,38 @@ where
                 visibility: *visibility,
                 span: variant.span,
             };
+
+            // The backend codegen walk is over `MonoExpr` (concrete-boundary-type.md
+            // §3.1, FIXME 0391): every node carries a `ConcreteType`, so no
+            // `Type::Var` reaches codegen and `HeapCategory::classify` is total over
+            // `ConcreteType` (the `Var` arm is structurally deleted). The arc's
+            // payoff is delivered HERE — the body the backend walks is a `MonoExpr`,
+            // built through the `Expr → MonoExpr` choke point so `classify` can only
+            // ever see a `ConcreteType`.
+            //
+            // **Body source: the entry's `ast`, NOT yet the typecheck-populated
+            // `codegen_view`.** The §3.0/§3.1 design has the backend consume
+            // `ModuleEntry::Def.codegen_view` (FIXME 0392). That population is
+            // LANDED but has a TIMING gap (FIXME 0394, filed to /design-typecheck):
+            // the view is built at `check_form_body` time, BEFORE the mono pass
+            // rewrites a caller's `resolved_call` to its `SigDispatch{mangled}`
+            // target — so a polymorphic call `(id 7)` carries the post-mono
+            // `SigDispatch{id$Int}` on its `ast` node but `None` on the stale
+            // `codegen_view` node, mis-dispatching to the slot-less generic `id`
+            // ("undefined function: id"). Until 0394 rebuilds/patches the view
+            // post-mono, the backend sources the body from `ast` (the post-mono
+            // source of truth) via the lenient `Expr → MonoExpr` builder — which
+            // keeps the FULL structural guarantee (a `MonoExpr` walk, `classify`
+            // total over `ConcreteType`, signature-path `Var → Mixed`) while
+            // carrying the correct post-mono `resolved_call`s. `codegen_view` stays
+            // populated by typecheck (the producer half) and is consumed once 0394
+            // lands. `_codegen_view`/`kind` are bound for that future flip.
+            let _codegen_view = codegen_view;
+            let _ = kind;
+            let body = mono_from_expr_signature_driven(&variant.body);
+
             defns.push(defn);
+            bodies.push(body);
         }
     }
 
@@ -748,7 +920,7 @@ where
     // many times.
     let clif_dump_filter: Option<String> = std::env::var("CRANELISP_CODEGEN_DUMP").ok();
 
-    for defn in &defns {
+    for (defn, body) in defns.iter().zip(bodies.iter()) {
         let compile_ctx = CompileContext {
             func_ids: &func_ids,
             func_arities: &func_arities,
@@ -779,6 +951,7 @@ where
         let render_clif = capture_clif || dump_this;
         let art = compile_defn_in_module(
             defn,
+            body,
             module,
             &mut func_ctx,
             &func_ids,
@@ -1155,6 +1328,7 @@ fn disasm_host(code_bytes: &[u8], addr: u64) -> Result<String, String> {
 /// per-symbol introspection artifacts captured during codegen.
 fn compile_defn_in_module<M, C, L>(
     defn: &Defn,
+    body: &cranelisp_types::MonoExpr,
     module: &mut M,
     func_ctx: &mut FunctionBuilderContext,
     func_ids: &HashMap<Symbol, FuncId>,
@@ -1184,7 +1358,7 @@ where
         sig,
     );
 
-    FnCompiler::compile_body(defn, &mut func, func_ctx, module, compile_ctx)?;
+    FnCompiler::compile_body(defn, body, &mut func, func_ctx, module, compile_ctx)?;
 
     // Capture CLIF IR text before define_function consumes the context — but
     // only when the caller will consume it (FIXME 0325). When `capture_clif`
@@ -1220,6 +1394,87 @@ where
     })
 }
 
+
+#[cfg(test)]
+mod concrete_boundary_phase3_tests {
+    //! S84 Phase 3 (concrete-boundary-type.md §3.1/§3.1.1, FIXME 0391): the
+    //! backend consumes `MonoExpr`/`ConcreteType`. These pin the two structural
+    //! seams the migration introduced — the scoped `codegen_view` backstop
+    //! predicate and the signature-path `Type → ConcreteType` conversion.
+
+    use super::requires_codegen_view;
+    use crate::compiler::signature_heap_category;
+    use crate::heap::HeapCategory;
+    use cranelisp_types::{
+        DefKind, FQTypeName, ModuleFullPath, SymbolTable, Type, TypeName, UserFnState,
+    };
+
+    // spec: concrete-boundary-type.md §3.1.1 — the backstop is scoped to
+    //   `UserFn { Concrete{slot} }` (body-AST-node-typed codegen targets). Those
+    //   MUST carry a populated `codegen_view`; the `expect` fires on a `None`
+    //   view there (a producer bug).
+    #[test]
+    fn concrete_userfn_requires_codegen_view() {
+        let kind = DefKind::UserFn {
+            fn_state: UserFnState::Concrete { got_slot: 0 },
+        };
+        assert!(
+            requires_codegen_view(&kind),
+            "a Concrete{{slot}} UserFn is a body-AST codegen target and must carry a view"
+        );
+    }
+
+    // spec: concrete-boundary-type.md §3.1.1 — NEGATIVE. The signature-driven
+    //   kinds (Constructor ctor/accessor, Primitive, PrimitiveExtern,
+    //   PlatformEffect) legitimately carry `codegen_view: None` — they are
+    //   codegen'd from the signature, never a body node's type — so the backstop
+    //   MUST NOT trip on them.
+    #[test]
+    fn signature_driven_kinds_do_not_require_codegen_view() {
+        let ctor = DefKind::Constructor {
+            got_slot: 0,
+            type_name: FQTypeName::new(
+                ModuleFullPath::from("user"),
+                TypeName::from("Box"),
+            ),
+            tag: 0,
+            field_count: 1,
+            internal: false,
+            type_def: None,
+        };
+        assert!(
+            !requires_codegen_view(&ctor),
+            "a Constructor is signature-driven and legitimately carries codegen_view: None"
+        );
+        assert!(!requires_codegen_view(&DefKind::Primitive { got_slot: 0 }));
+        assert!(!requires_codegen_view(&DefKind::PrimitiveExtern));
+        assert!(!requires_codegen_view(&DefKind::PlatformEffect {
+            scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+            got_slot: 0,
+        }));
+    }
+
+    // spec: concrete-boundary-type.md §3.1.1 (FIXME 0391 sites 1-3, 0394) — the
+    //   signature-path heap classification. A concrete field/binding `Type`
+    //   classifies via the total `ConcreteType` `classify`; a residual `Var` (a
+    //   GENERIC CTOR `Def`'s own template field param — `(Some [:a val])`'s `a`)
+    //   maps to `Mixed` (uniform i64 representation), restoring the pre-Phase-3
+    //   generic-ctor-`Def` behaviour WITHOUT widening the `ConcreteType` classify.
+    #[test]
+    fn signature_path_classifies_concrete_and_var() {
+        let no_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable>> = None;
+        // Concrete scalars route through the total `ConcreteType` classify.
+        assert_eq!(signature_heap_category(&Type::Int, no_tables), HeapCategory::NeverHeap);
+        assert_eq!(signature_heap_category(&Type::String, no_tables), HeapCategory::AlwaysHeap);
+        // A generic-ctor-template field `Var` → `Mixed` (uniform representation),
+        // NOT a panic and NOT a widened `classify` (FIXME 0394).
+        assert_eq!(signature_heap_category(&Type::Var(0), no_tables), HeapCategory::Mixed);
+        assert_eq!(
+            signature_heap_category(&Type::TyConApp(1, vec![Type::Int]), no_tables),
+            HeapCategory::Mixed
+        );
+    }
+}
 
 #[cfg(test)]
 mod clif_dump_tests {
@@ -1375,6 +1630,86 @@ mod tests {
     ) {
         for variant in &mut defn.variants {
             enrich_expr_from_side_maps(&mut variant.body, resolutions, expr_types);
+            // S84 Phase 3 (FIXME 0391): the backend codegen walk is over
+            // `MonoExpr`, which requires a CONCRETE type on every node. Real
+            // typecheck guarantees that; these legacy test fixtures often leave
+            // literal/leaf nodes un-annotated (`inferred_type: None`) or carry a
+            // residual `Var`. Fill any such node with a best-effort concrete type
+            // so `MonoExpr::from_expr` succeeds — test-only scaffolding that
+            // stands in for the typecheck mono-population seam.
+            concretize_test_body(&mut variant.body);
+        }
+    }
+
+    /// Test-only: fill every node's `inferred_type` with a concrete `Type` so the
+    /// `MonoExpr` codegen view can be built. Literals take their structural type;
+    /// any other node lacking a concrete annotation defaults to `Type::Int` (these
+    /// fixtures are scalar-result i64 probes — the heap classification a node's
+    /// type drives is `NeverHeap` for `Int`, which is the correct default for the
+    /// untyped scalar paths these tests exercise; tests that need a heap type set
+    /// it explicitly via the side maps, which run first and are preserved).
+    fn concretize_test_body(expr: &mut Expr) {
+        use cranelisp_types::Expr;
+        // Recurse into children first.
+        match expr {
+            Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                for (_, v) in bindings {
+                    concretize_test_body(v);
+                }
+                concretize_test_body(body);
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                concretize_test_body(cond);
+                concretize_test_body(then_branch);
+                concretize_test_body(else_branch);
+            }
+            Expr::Lambda { body, .. } | Expr::Trace { body, .. } | Expr::Annotate { expr: body, .. } => {
+                concretize_test_body(body);
+            }
+            Expr::Apply { callee, args, .. } => {
+                concretize_test_body(callee);
+                for a in args {
+                    concretize_test_body(a);
+                }
+            }
+            Expr::Match { scrutinee, arms, .. } => {
+                concretize_test_body(scrutinee);
+                for arm in arms {
+                    concretize_test_body(&mut arm.body);
+                }
+            }
+            Expr::VecLit { elements, .. } => {
+                for e in elements {
+                    concretize_test_body(e);
+                }
+            }
+            Expr::ConstrADT { fields, .. } => {
+                for f in fields {
+                    concretize_test_body(f);
+                }
+            }
+            Expr::IntLit { .. }
+            | Expr::FloatLit { .. }
+            | Expr::BoolLit { .. }
+            | Expr::StringLit { .. }
+            | Expr::Var { .. } => {}
+        }
+        // Determine the structural fallback for THIS node.
+        let structural = match expr {
+            Expr::IntLit { .. } => Some(Type::Int),
+            Expr::FloatLit { .. } => Some(Type::Float),
+            Expr::BoolLit { .. } => Some(Type::Bool),
+            Expr::StringLit { .. } => Some(Type::String),
+            _ => None,
+        };
+        // Fill the node iff it has no concrete type yet (None or a residual Var).
+        let needs_fill = match expr.inferred_type() {
+            None => true,
+            Some(ty) => !ty.is_concrete(),
+        };
+        if needs_fill {
+            let fill = structural.unwrap_or(Type::Int);
+            expr.set_inferred_type(Some(Box::new(fill)));
         }
     }
 
@@ -1479,7 +1814,9 @@ mod tests {
     }
 
     fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp_types::ModuleEntry {
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
+        use cranelisp_types::{
+            DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState, Visibility,
+        };
         let param_count = defn.params().len();
         // `param_names` is `Vec<Symbol>`; the fused `params` tuples carry the
         // optional annotation, so project out the names.
@@ -1497,8 +1834,22 @@ mod tests {
             ),
         };
         // `ast` is `Option<DefnVariant>` post-narrowing — store the single
-        // meaningful variant.
-        let variant = defn.variants.first().cloned();
+        // meaningful variant. Concretize the body (test scaffolding for the
+        // typecheck mono-population seam — FIXME 0391) so the codegen view builds.
+        let variant = defn.variants.first().cloned().map(|mut v| {
+            concretize_test_body(&mut v.body);
+            v
+        });
+        let codegen_view = variant.as_ref().map(|v| {
+            let body = MonoExpr::from_expr(&v.body)
+                .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
+            MonoDefnVariant {
+                name: defn.name.clone(),
+                params: v.params.iter().map(|(n, _)| n.clone()).collect(),
+                body,
+                span: v.span,
+            }
+        });
         ModuleEntry::Def {
             scheme,
             visibility: Visibility::Public,
@@ -1516,7 +1867,7 @@ mod tests {
             trait_origin: None,
             seq: 0,
             ast: variant,
-            codegen_view: None,
+            codegen_view,
             code: None,
         }
     }
@@ -5598,7 +5949,9 @@ mod tests {
         defn: Defn,
         slot: usize,
     ) -> DashMap<ModuleFullPath, SymbolTable> {
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
+        use cranelisp_types::{
+            DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState, Visibility,
+        };
         let tables = DashMap::new();
         let mut st = SymbolTable::new(module.clone());
         // Match the slot index: typecheck would have called allocate_got_slot
@@ -5612,7 +5965,22 @@ mod tests {
             .first()
             .map(|v| v.params.iter().map(|(n, _)| n.clone()).collect())
             .unwrap_or_default();
-        let variant = defn.variants.first().cloned();
+        // Concretize + populate the codegen view (FIXME 0391 — a Concrete{slot}
+        // UserFn is a body-AST codegen target and MUST carry a view).
+        let variant = defn.variants.first().cloned().map(|mut v| {
+            concretize_test_body(&mut v.body);
+            v
+        });
+        let codegen_view = variant.as_ref().map(|v| {
+            let body = MonoExpr::from_expr(&v.body)
+                .expect("test fixture body concretizes for the codegen view (FIXME 0391)");
+            MonoDefnVariant {
+                name: defn.name.clone(),
+                params: v.params.iter().map(|(n, _)| n.clone()).collect(),
+                body,
+                span: v.span,
+            }
+        });
         st.insert(
             defn.name.clone(),
             ModuleEntry::Def {
@@ -5634,7 +6002,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: variant,
-                codegen_view: None,
+                codegen_view,
                 code: None,
             },
         );
@@ -6080,12 +6448,24 @@ mod tests {
         let d2 = make_int_defn("two", 2);
 
         // Build symbol table with both defns at slots 0 and 1.
-        use cranelisp_types::{DefKind, ModuleEntry, Scheme, UserFnState, Visibility};
+        use cranelisp_types::{
+            DefKind, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState, Visibility,
+        };
         let tables = DashMap::new();
         let mut st = SymbolTable::new(module.clone());
         let _slot0 = st.allocate_got_slot();
         let _slot1 = st.allocate_got_slot();
         for (defn, slot) in [(d1.clone(), 0usize), (d2.clone(), 1)] {
+            let variant = defn.variants.first().cloned().map(|mut v| {
+                concretize_test_body(&mut v.body);
+                v
+            });
+            let codegen_view = variant.as_ref().map(|v| MonoDefnVariant {
+                name: defn.name.clone(),
+                params: vec![],
+                body: MonoExpr::from_expr(&v.body).expect("concrete test body"),
+                span: v.span,
+            });
             st.insert(
                 defn.name.clone(),
                 ModuleEntry::Def {
@@ -6103,8 +6483,8 @@ mod tests {
                     callees: vec![],
                     trait_origin: None,
                     seq: 0,
-                    ast: defn.variants.first().cloned(),
-                    codegen_view: None,
+                    ast: variant,
+                    codegen_view,
                     code: None,
                 },
             );
@@ -6194,9 +6574,24 @@ mod tests {
         // entry on user's table records the cross-module dependency.
         let caller = make_int_defn("caller", 7);
 
-        use cranelisp_types::{DefKind, FQSymbol, ModuleEntry, Scheme, UserFnState, Visibility,
+        use cranelisp_types::{
+            DefKind, FQSymbol, MonoDefnVariant, MonoExpr, ModuleEntry, Scheme, UserFnState,
+            Visibility,
         };
         let tables = DashMap::new();
+
+        // Build a concrete `codegen_view` for a zero-arg int-literal defn body
+        // (FIXME 0391 — Concrete{slot} UserFns carry the populated MonoExpr view).
+        let int_view = |d: &Defn| {
+            let mut v = d.variants.first().cloned().unwrap();
+            concretize_test_body(&mut v.body);
+            Some(MonoDefnVariant {
+                name: d.name.clone(),
+                params: vec![],
+                body: MonoExpr::from_expr(&v.body).expect("concrete test body"),
+                span: v.span,
+            })
+        };
 
         // util module: helper at slot 0.
         let mut util_st = SymbolTable::new(util_path.clone());
@@ -6219,7 +6614,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: helper.variants.first().cloned(),
-                codegen_view: None,
+                codegen_view: int_view(&helper),
                 code: None,
             },
         );
@@ -6246,7 +6641,7 @@ mod tests {
                 trait_origin: None,
                 seq: 0,
                 ast: caller.variants.first().cloned(),
-                codegen_view: None,
+                codegen_view: int_view(&caller),
                 code: None,
             },
         );

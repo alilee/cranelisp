@@ -12,12 +12,12 @@ use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, Expr, HeapHeader, Span, Type,
+    ConcreteType, CranelispError, HeapHeader, MonoExpr, Span, Type,
 };
 
 use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64};
 
-use super::{collect_var_ids_from_type, substitute_type_inline, CtorMeta, FnCompiler};
+use super::{collect_var_ids_from_type, signature_heap_category, substitute_type_inline, CtorMeta, FnCompiler};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -27,7 +27,7 @@ where
     /// Compile a Vec literal: `[e1 e2 e3]` → allocate Vec, store elements.
     pub(crate) fn compile_vec_lit(
         &mut self,
-        elements: &[Expr],
+        elements: &[MonoExpr],
         span: Span,
     ) -> Result<Value, CranelispError> {
         let vec_new_id = self.ctx.vec_new_func_id.ok_or_else(|| {
@@ -81,7 +81,7 @@ where
     pub(crate) fn compile_vec_op(
         &mut self,
         name: &str,
-        args: &[Expr],
+        args: &[MonoExpr],
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Option<Value>, CranelispError> {
@@ -130,7 +130,7 @@ where
     /// 3. If element type is heap, call emit_rc_inc on loaded value
     fn compile_vec_get(
         &mut self,
-        vec_expr: &Expr,
+        vec_expr: &MonoExpr,
         vec_val: Value,
         idx_val: Value,
         span: Span,
@@ -193,7 +193,7 @@ where
 
         // If element type is heap, emit RC inc on the loaded value.
         if let Some(elem_type) = self.vec_elem_type(vec_expr) {
-            let category = HeapCategory::classify(&elem_type, Some(self.ctx.symbol_tables));
+            let category = signature_heap_category(&elem_type, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut self.builder, elem);
@@ -213,7 +213,7 @@ where
     /// arg_vals: [vec_val, idx_val, new_val]
     fn compile_vec_set(
         &mut self,
-        vec_expr: &Expr,
+        vec_expr: &MonoExpr,
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
@@ -286,7 +286,7 @@ where
 
         // Dec the old element (if heap type).
         if let Some(ty) = &elem_type {
-            let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+            let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_dec(
@@ -314,7 +314,7 @@ where
         // Inc the new value (if heap type) — the vec needs its own reference.
         // The caller retains its reference; the vec is gaining one.
         if let Some(ty) = &elem_type {
-            let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+            let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut self.builder, new_val);
@@ -364,7 +364,7 @@ where
     /// arg_vals: [vec_val, new_val]
     fn compile_vec_push(
         &mut self,
-        vec_expr: &Expr,
+        vec_expr: &MonoExpr,
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
@@ -480,18 +480,18 @@ where
 
     // --- Helpers ---
 
-    /// Extract the element type from a Vec expression's inferred type.
-    fn vec_elem_type(&self, vec_expr: &Expr) -> Option<Type> {
-        if let Some(Type::ADT(fqtn, args)) = vec_expr.inferred_type()
+    /// Extract the element type from a Vec expression's concrete type.
+    fn vec_elem_type(&self, vec_expr: &MonoExpr) -> Option<Type> {
+        if let ConcreteType::ADT(fqtn, args) = vec_expr.ty()
             && fqtn.name.as_ref() == "Vec" && args.len() == 1 {
-                return Some(args[0].clone());
+                return Some(args[0].to_type());
             }
         None
     }
 
     /// Check if a Vec expression is at its last use (for COW eligibility).
-    fn is_vec_last_use(&self, vec_expr: &Expr) -> bool {
-        if let Expr::Var { name, span, .. } = vec_expr {
+    fn is_vec_last_use(&self, vec_expr: &MonoExpr) -> bool {
+        if let MonoExpr::Var { name, span, .. } = vec_expr {
             self.is_last_use(name, *span)
         } else {
             // Temporary expression: ownership transfers, treat as unique.
@@ -504,12 +504,12 @@ where
     /// scope exit; temporaries have no scope entry and would leak.
     fn emit_vec_drop_if_temporary(
         &mut self,
-        vec_expr: &Expr,
+        vec_expr: &MonoExpr,
         vec_val: Value,
         span: Span,
     ) -> Result<(), CranelispError> {
         // Named variables are handled by scope cleanup — skip.
-        if matches!(vec_expr, Expr::Var { .. }) {
+        if matches!(vec_expr, MonoExpr::Var { .. }) {
             return Ok(());
         }
 
@@ -545,7 +545,7 @@ where
             return Ok(self.builder.ins().iconst(types::I64, 0));
         };
 
-        let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
             HeapCategory::NeverHeap => Ok(self.builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
@@ -575,7 +575,7 @@ where
             return Ok(self.builder.ins().iconst(types::I64, 0));
         };
 
-        let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
             HeapCategory::NeverHeap => Ok(self.builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
@@ -844,7 +844,7 @@ where
             ctor.fields.iter().any(|f| {
                 let resolved = substitute_type_inline(&f.ty, &subst);
                 matches!(
-                    HeapCategory::classify(&resolved, Some(self.ctx.symbol_tables)),
+                    signature_heap_category(&resolved, Some(self.ctx.symbol_tables)),
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed
                 )
             })
@@ -984,7 +984,7 @@ where
         let vec_drop_id = self.ctx.vec_drop_func_id;
         for (i, field) in ctor.fields.iter().enumerate() {
             let resolved_ty = substitute_type_inline(&field.ty, subst);
-            let category = HeapCategory::classify(&resolved_ty, Some(self.ctx.symbol_tables));
+            let category = signature_heap_category(&resolved_ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     let field_val =
@@ -1074,7 +1074,7 @@ where
             return Ok(builder.ins().iconst(types::I64, 0));
         };
 
-        let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
             HeapCategory::NeverHeap => Ok(builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {

@@ -7,13 +7,13 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{ErrorLocation, CranelispError, Expr, HeapHeader, ResolvedCall, Span, Symbol, Type};
+use cranelisp_types::{ErrorLocation, ConcreteType, CranelispError, HeapHeader, MonoExpr, ResolvedCall, Span, Symbol};
 use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
 
-use super::FnCompiler;
+use super::{signature_heap_category, FnCompiler};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
 /// (field-3) from the node **base** pointer.
@@ -40,15 +40,15 @@ where
 
     pub(crate) fn compile_apply(
         &mut self,
-        callee: &Expr,
-        args: &[Expr],
+        callee: &MonoExpr,
+        args: &[MonoExpr],
         span: Span,
         resolved_call: Option<&ResolvedCall>,
         apply_type: Option<&cranelisp_types::Type>,
     ) -> Result<Value, CranelispError> {
         // TCO check: self-recursive call in tail position -> jump to loop header.
         if self.in_tail_position
-            && let Expr::Var { name, .. } = callee
+            && let MonoExpr::Var { name, .. } = callee
             && let Some(ref fn_name) = self.current_fn_name
             && *name == *fn_name
             && self.tail_loop_block.is_some()
@@ -86,7 +86,7 @@ where
 
         // Regular function call: callee must be a Var referring to a known function,
         // a data constructor, or a local variable holding a closure.
-        if let Expr::Var {
+        if let MonoExpr::Var {
             name,
             span: var_span,
             ..
@@ -109,7 +109,8 @@ where
         // the inc prevents premature deallocation. The caller's later
         // dec (scope cleanup or parent expression) restores balance.
         if let Some(ty) = apply_type {
-            let category = HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+            let category =
+                signature_heap_category(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc(&mut self.builder, result);
@@ -135,7 +136,7 @@ where
     fn compile_resolved_call(
         &mut self,
         resolved: ResolvedCall,
-        args: &[Expr],
+        args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
     ) -> Result<Value, CranelispError> {
@@ -407,8 +408,8 @@ where
         &mut self,
         name: &Symbol,
         var_span: Span,
-        callee: &Expr,
-        args: &[Expr],
+        callee: &MonoExpr,
+        args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
     ) -> Result<Value, CranelispError> {
@@ -458,7 +459,7 @@ where
     /// `compile_consuming_arg_list` (which this method backs). Under
     /// Decision 24 (uniform consuming) the plain form has a narrow role:
     /// pure-value builtins where RC does not apply.
-    fn compile_arg_list(&mut self, args: &[Expr]) -> Result<Vec<Value>, CranelispError> {
+    fn compile_arg_list(&mut self, args: &[MonoExpr]) -> Result<Vec<Value>, CranelispError> {
         args.iter()
             .map(|arg| self.compile_expr(arg))
             .collect()
@@ -472,17 +473,17 @@ where
     /// the callee's dec frees them — no caller action needed.
     fn compile_consuming_arg_list(
         &mut self,
-        args: &[Expr],
+        args: &[MonoExpr],
     ) -> Result<Vec<Value>, CranelispError> {
         let mut vals = Vec::with_capacity(args.len());
         for arg in args {
             let val = self.compile_expr(arg)?;
 
             // Inc heap-typed variable arguments for consuming convention.
-            if let Expr::Var { name, .. } = arg
+            if let MonoExpr::Var { name, .. } = arg
                 && let Some(ty) = self.variable_types.get(name) {
                     let category =
-                        HeapCategory::classify(ty, Some(self.ctx.symbol_tables));
+                        signature_heap_category(ty, Some(self.ctx.symbol_tables));
                     match category {
                         HeapCategory::AlwaysHeap => {
                             heap::emit_rc_inc(&mut self.builder, val);
@@ -729,7 +730,7 @@ where
     }
 
     /// Compile a tail self-recursive call as a jump to the loop header.
-    fn compile_tail_self_call(&mut self, args: &[Expr]) -> Result<Value, CranelispError> {
+    fn compile_tail_self_call(&mut self, args: &[MonoExpr]) -> Result<Value, CranelispError> {
         // CRITICAL: Args are not in tail position.
         self.in_tail_position = false;
 
@@ -784,7 +785,7 @@ where
     pub(crate) fn compile_constr_adt(
         &mut self,
         tag: usize,
-        fields: &[Expr],
+        fields: &[MonoExpr],
         span: Span,
     ) -> Result<Value, CranelispError> {
         // Consuming-compile fields (nullary → empty), then route through the
@@ -869,12 +870,12 @@ where
     /// field on an unrelated ADT is not hijacked. `first_child_nanos` is NOT in
     /// this set: it is not a seeded field accessor (it is the `/run-tests`
     /// internal reader) and never reaches a `BuiltinFn` call site.
-    fn trace_accessor_intrinsic(&self, name: &str, args: &[Expr]) -> Option<&'static str> {
+    fn trace_accessor_intrinsic(&self, name: &str, args: &[MonoExpr]) -> Option<&'static str> {
         let intrinsic = trace_accessor_abi_name(name)?;
-        // Scope to a Trace-typed receiver: exactly one arg, inferred type is the
-        // `primitives/Trace` ADT.
+        // Scope to a Trace-typed receiver: exactly one arg whose concrete type is
+        // the `primitives/Trace` ADT.
         let [arg] = args else { return None };
-        is_trace_typed(arg.inferred_type()).then_some(intrinsic)
+        is_trace_typed_concrete(arg.ty()).then_some(intrinsic)
     }
 
     fn compile_extern_call(
@@ -1097,18 +1098,21 @@ fn trace_accessor_abi_name(name: &str) -> Option<&'static str> {
 /// Whether an inferred type is the synthetic `primitives/Trace` ADT — the
 /// receiver-scope gate for the Trace accessor rewrite (so a user `nanos`/`name`
 /// field on an unrelated ADT is not hijacked).
-fn is_trace_typed(ty: Option<&Type>) -> bool {
+/// The receiver-scope gate for the Trace accessor rewrite over a `MonoExpr`
+/// node's concrete type — a `primitives/Trace` ADT (so a user `nanos`/`name`
+/// field on an unrelated ADT is not hijacked).
+fn is_trace_typed_concrete(ty: &ConcreteType) -> bool {
     matches!(
         ty,
-        Some(Type::ADT(fqtn, _))
+        ConcreteType::ADT(fqtn, _)
             if fqtn.module.as_ref() == "primitives" && fqtn.name.as_ref() == "Trace"
     )
 }
 
 #[cfg(test)]
 mod trace_accessor_tests {
-    use super::{is_trace_typed, trace_accessor_abi_name};
-    use cranelisp_types::{FQTypeName, ModuleFullPath, Type, TypeName};
+    use super::{is_trace_typed_concrete, trace_accessor_abi_name};
+    use cranelisp_types::{ConcreteType, FQTypeName, ModuleFullPath, TypeName};
 
     #[test]
     fn accessor_names_map_to_intrinsics() {
@@ -1132,8 +1136,8 @@ mod trace_accessor_tests {
         assert_eq!(trace_accessor_abi_name(""), None);
     }
 
-    fn trace_adt() -> Type {
-        Type::ADT(
+    fn trace_adt() -> ConcreteType {
+        ConcreteType::ADT(
             FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Trace")),
             vec![],
         )
@@ -1141,25 +1145,24 @@ mod trace_accessor_tests {
 
     #[test]
     fn trace_receiver_is_scoped() {
-        assert!(is_trace_typed(Some(&trace_adt())));
+        assert!(is_trace_typed_concrete(&trace_adt()));
     }
 
     #[test]
     fn non_trace_receiver_is_rejected() {
         // A user ADT named Trace in a different module must not be hijacked.
-        let user_trace = Type::ADT(
+        let user_trace = ConcreteType::ADT(
             FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Trace")),
             vec![],
         );
-        assert!(!is_trace_typed(Some(&user_trace)));
+        assert!(!is_trace_typed_concrete(&user_trace));
         // A same-name field on an unrelated primitives ADT.
-        let other = Type::ADT(
+        let other = ConcreteType::ADT(
             FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Option")),
-            vec![Type::Int],
+            vec![ConcreteType::Int],
         );
-        assert!(!is_trace_typed(Some(&other)));
-        assert!(!is_trace_typed(Some(&Type::Int)));
-        assert!(!is_trace_typed(None));
+        assert!(!is_trace_typed_concrete(&other));
+        assert!(!is_trace_typed_concrete(&ConcreteType::Int));
     }
 }
 

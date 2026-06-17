@@ -34,7 +34,7 @@ use cranelift_module::{FuncId, Module};
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    FQTypeName, HeapHeader, ModuleEntry, ModuleFullPath, Symbol, SymbolTable, Type,
+    ConcreteType, FQTypeName, HeapHeader, ModuleEntry, ModuleFullPath, Symbol, SymbolTable,
 };
 
 use crate::codegen_types::NULLARY_TAG_THRESHOLD;
@@ -436,63 +436,37 @@ impl HeapCategory {
     /// - All constructors have fields -> `AlwaysHeap` (always heap-allocated)
     /// - Mix of nullary and data constructors -> `Mixed`
     pub fn classify<C, L>(
-        ty: &Type,
+        ty: &ConcreteType,
         symbol_tables: Option<&dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>>,
     ) -> HeapCategory
     where
         C: cranelisp_types::CodeStore,
         L: cranelisp_types::LinkerStore,
     {
-        // S84 Wave 2 — belt-and-braces 0375/0379. The TYPECHECK half (the
-        // POSITION-COMPLETE §3.11.1 ambiguity check, `cranelisp-typecheck`
-        // `find_ambiguous_value_position`, sharing the
-        // `Type::is_representation_undetermined()` predicate) is the LANDED fix:
-        // it rejects a genuinely-unpinned representation-undetermined value
-        // (`(Option a)` whose var no use pins) UPSTREAM at typecheck with a source
-        // location, while correctly ADMITTING a sound polymorphic value whose var
-        // is quantified into the enclosing defn's scheme (pinned per-instantiation
-        // by monomorphisation).
-        //
-        // The BACKEND-half panic the §1.6 spec names (`panic iff classify ==
-        // Mixed && is_representation_undetermined()`) is **DEFERRED — blocked on
-        // FIXME 0374 (full monomorphisation, Wave 1) being TOTAL.** Empirically
-        // (S84 Wave 2 /dev) the prelude/stdlib compiles GENERIC-FUNCTION BODIES
-        // whose value positions carry sound, scheme-quantified free vars — a bare
-        // `Type::Var` (a constructor-arg field) AND a `Mixed`-shaped ADT-with-
-        // free-var (`(List a)` in `collections.list`). These are SOUND (the var
-        // is pinned per concrete instantiation; the typecheck check correctly
-        // admits them), but the backend, lacking scheme context, cannot tell a
-        // sound quantified var from an unpinned one — so the panic fires on the
-        // valid prelude (the §1.6 "premature landing" risk made concrete; BC
-        // ring2-rc §1.6 Risk). The non-crashing `Mixed` fallback is the
-        // operatively load-bearing safety net only TOTAL concreteness retires.
-        //
-        // FIXME 0381 (`target: /typecheck`) records the 0374 gap (generic bodies
-        // are still compiled, not rendered slot-less/uncompiled). When 0374 is
-        // total — no free var in any COMPILED body — re-arm the backstop by
-        // restoring the gated `panic!` here:
-        //   if category == HeapCategory::Mixed && ty.is_representation_undetermined()
-        //       { panic!(... BC §3 invariant 9 ...) }
-        // and restore the `should_panic` `test_var_panics` /
-        // `test_mixed_adt_with_free_var_panics` unit tests. The 4 §3.11.1
-        // acceptance guards flip GREEN on the TYPECHECK half alone (they are
-        // rejected before codegen), so the deferral does not weaken them.
+        // S84 Phase 3 (concrete-boundary-type.md §3.1, FIXME 0391). `classify`
+        // takes a `ConcreteType` — a boundary type with NO `Var` and NO
+        // `TyConApp` variant. The two non-total arms of the old `Type`-keyed
+        // `classify` (`Type::Var => Mixed`, `Type::TyConApp => Mixed`) are
+        // **inexpressible** here, so they are DELETED: a representation-
+        // undetermined type can no longer be HANDED to `classify` (Principle 18 —
+        // the illegal state is unconstructable). The match is exhaustive over the
+        // six `ConcreteType` variants with NO catch-all and NO panic case;
+        // `classify` is now **total**. The four behavioural `Var`-guards the
+        // belt-and-braces 0375/0379 era carried collapse to this one structural
+        // property — the §3.11.1 ambiguity is caught upstream at the typecheck
+        // check + the `MonoExpr::from_expr` conversion choke point, never here.
         match ty {
-            Type::Int | Type::Bool | Type::Float => HeapCategory::NeverHeap,
-            Type::String => HeapCategory::AlwaysHeap,
-            Type::Fn(_, _) => {
+            ConcreteType::Int | ConcreteType::Bool | ConcreteType::Float => {
+                HeapCategory::NeverHeap
+            }
+            ConcreteType::String => HeapCategory::AlwaysHeap,
+            ConcreteType::Fn(_, _) => {
                 // In Ring 0, functions are bare pointers (NeverHeap).
                 // In Ring 1+, closures are heap-allocated.
                 // Conservative: AlwaysHeap (closures are the common case after Ring 0).
                 HeapCategory::AlwaysHeap
             }
-            Type::ADT(fqtn, _) => Self::classify_adt(fqtn, symbol_tables),
-            Type::Var(_) | Type::TyConApp(_, _) => {
-                // Unresolved type variable / partially-applied HKT head: no static
-                // representation knowledge. Conservative `Mixed` fallback (the
-                // backstop panic is DEFERRED on FIXME 0374/0381 — see above).
-                HeapCategory::Mixed
-            }
+            ConcreteType::ADT(fqtn, _) => Self::classify_adt(fqtn, symbol_tables),
         }
     }
 
@@ -599,7 +573,7 @@ impl HeapCategory {
 #[cfg(test)]
 mod heap_category_tests {
     use super::*;
-    use cranelisp_types::{DefKind, FQTypeName, Scheme, TypeDefInfo, TypeName, Visibility};
+    use cranelisp_types::{DefKind, FQTypeName, Scheme, Type, TypeDefInfo, TypeName, Visibility};
 
     const TEST_MOD: &str = "test";
 
@@ -722,18 +696,23 @@ mod heap_category_tests {
 
     // --- Primitive types (no tables needed) ---
 
+    // Build a concrete ADT `ConcreteType` from a test type name + concrete args.
+    fn cadt(name: &str, args: Vec<ConcreteType>) -> ConcreteType {
+        ConcreteType::ADT(test_fqtn(name), args)
+    }
+
     #[test]
     fn test_primitives_never_heap() {
         assert_eq!(
-            HeapCategory::classify::<(), ()>(&Type::Int, None),
+            HeapCategory::classify::<(), ()>(&ConcreteType::Int, None),
             HeapCategory::NeverHeap
         );
         assert_eq!(
-            HeapCategory::classify::<(), ()>(&Type::Bool, None),
+            HeapCategory::classify::<(), ()>(&ConcreteType::Bool, None),
             HeapCategory::NeverHeap
         );
         assert_eq!(
-            HeapCategory::classify::<(), ()>(&Type::Float, None),
+            HeapCategory::classify::<(), ()>(&ConcreteType::Float, None),
             HeapCategory::NeverHeap
         );
     }
@@ -741,77 +720,35 @@ mod heap_category_tests {
     #[test]
     fn test_string_always_heap() {
         assert_eq!(
-            HeapCategory::classify::<(), ()>(&Type::String, None),
+            HeapCategory::classify::<(), ()>(&ConcreteType::String, None),
             HeapCategory::AlwaysHeap
         );
     }
 
     #[test]
     fn test_fn_always_heap() {
-        let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+        let fn_ty = ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int));
         assert_eq!(
             HeapCategory::classify::<(), ()>(&fn_ty, None),
             HeapCategory::AlwaysHeap
         );
     }
 
-    // S84 Wave 2 — belt-and-braces 0375/0379. The TYPECHECK half (the
-    // position-complete §3.11.1 check) is the landed fix; the BACKEND-half panic
-    // is DEFERRED on FIXME 0374/0381 (the prelude/stdlib compiles GENERIC BODIES
-    // whose value positions carry sound scheme-quantified free vars — bare
-    // `Type::Var` AND `Mixed`-ADT-with-free-var like `(List a)` — which the
-    // backend, lacking scheme context, cannot distinguish from unpinned ones).
-    // So a bare `Type::Var` / `TyConApp` keeps its conservative `Mixed` fallback,
-    // NOT a panic. These tests pin the DEFERRED state and document the re-arm
-    // target (see `HeapCategory::classify` for the gated `panic!` to restore once
-    // 0374 is total).
-    #[test]
-    fn test_var_is_mixed_fallback_backstop_deferred() {
-        // Re-arm target (FIXME 0381): this becomes #[should_panic] once 0374 is
-        // total (no free var in any compiled body).
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&Type::Var(0), None),
-            HeapCategory::Mixed,
-        );
-    }
-
-    #[test]
-    fn test_tyconapp_is_mixed_fallback_backstop_deferred() {
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&Type::TyConApp(0, vec![Type::Int]), None),
-            HeapCategory::Mixed,
-        );
-    }
-
-    // The `Mixed`-shaped ADT CARRYING A FREE VAR (the `(Option a)` / `(Box a)` /
-    // `(List a)` family) — the 0379 hole at the backend seam — likewise keeps the
-    // `Mixed` fallback while the backstop is deferred (FIXME 0381: the prelude
-    // compiles such values in sound generic bodies). The TYPECHECK position-
-    // complete §3.11.1 check is what rejects a GENUINELY-unpinned `(Option a)`
-    // (free-at-root) upstream; this backend seam classifies the sound
-    // scheme-quantified ones `Mixed` without crashing. Re-arm target (FIXME 0381):
-    // this becomes #[should_panic] once 0374 is total.
-    #[test]
-    fn test_mixed_adt_with_free_var_is_mixed_backstop_deferred() {
-        // (deftype (Option a) None (Some [:a val])) — Mixed ctor shape …
-        let tables = tables_with_type(
-            "Option",
-            &["a"],
-            &[nullary_ctor("None", 0), data_ctor("Some", 1, 1)],
-        );
-        // … carrying a FREE var in its args (unpinned `a`).
-        let option_var = Type::ADT(test_fqtn("Option"), vec![Type::Var(0)]);
-        assert_eq!(
-            HeapCategory::classify(&option_var, Some(&tables)),
-            HeapCategory::Mixed,
-        );
-    }
+    // S84 Phase 3 (concrete-boundary-type.md §3.1, FIXME 0391). `classify` now
+    // takes a `ConcreteType` — there is NO `Var` and NO `TyConApp` variant, so
+    // the old `test_var_*` / `test_tyconapp_*` / `(Option Var)` / `(Vec Var)`
+    // backstop-deferred cases are **structurally inexpressible**: you cannot
+    // construct a `ConcreteType::Var` to hand to `classify` (the migration's
+    // whole proof — `cargo check` rejects `ConcreteType::Var(0)` at compile time).
+    // The four behavioural `Var`-guards collapsed to that one structural property;
+    // §3.11.1 ambiguity is caught upstream at typecheck + `MonoExpr::from_expr`,
+    // never at this seam.
 
     // --- ADT without tables (conservative fallback) ---
 
     #[test]
     fn test_adt_without_tables_is_mixed() {
-        let color = Type::ADT(test_fqtn("Color"), vec![]);
+        let color = cadt("Color", vec![]);
         assert_eq!(
             HeapCategory::classify::<(), ()>(&color, None),
             HeapCategory::Mixed,
@@ -820,7 +757,7 @@ mod heap_category_tests {
 
     #[test]
     fn test_parameterized_adt_without_tables_is_mixed() {
-        let option_int = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
+        let option_int = cadt("Option", vec![ConcreteType::Int]);
         assert_eq!(
             HeapCategory::classify::<(), ()>(&option_int, None),
             HeapCategory::Mixed,
@@ -841,7 +778,7 @@ mod heap_category_tests {
                 nullary_ctor("Blue", 2),
             ],
         );
-        let color = Type::ADT(test_fqtn("Color"), vec![]);
+        let color = cadt("Color", vec![]);
         assert_eq!(
             HeapCategory::classify(&color, Some(&tables)),
             HeapCategory::NeverHeap,
@@ -859,7 +796,7 @@ mod heap_category_tests {
             &[],
             &[data_ctor("Wrapper", 0, 1)],
         );
-        let wrapper = Type::ADT(test_fqtn("Wrapper"), vec![]);
+        let wrapper = cadt("Wrapper", vec![]);
         assert_eq!(
             HeapCategory::classify(&wrapper, Some(&tables)),
             HeapCategory::AlwaysHeap,
@@ -874,7 +811,7 @@ mod heap_category_tests {
             &[],
             &[data_ctor("IPoint", 0, 2)],
         );
-        let point = Type::ADT(test_fqtn("IPoint"), vec![]);
+        let point = cadt("IPoint", vec![]);
         assert_eq!(
             HeapCategory::classify(&point, Some(&tables)),
             HeapCategory::AlwaysHeap,
@@ -896,7 +833,7 @@ mod heap_category_tests {
             &["a"],
             &[nullary_ctor("None", 0), data_ctor("Some", 1, 1)],
         );
-        let option_int = Type::ADT(test_fqtn("Option"), vec![Type::Int]);
+        let option_int = cadt("Option", vec![ConcreteType::Int]);
         assert_eq!(
             HeapCategory::classify(&option_int, Some(&tables)),
             HeapCategory::Mixed,
@@ -914,7 +851,7 @@ mod heap_category_tests {
             &["a"],
             &[nullary_ctor("PhantomVal", 0)],
         );
-        let phantom = Type::ADT(test_fqtn("Phantom"), vec![Type::Int]);
+        let phantom = cadt("Phantom", vec![ConcreteType::Int]);
         assert_eq!(
             HeapCategory::classify(&phantom, Some(&tables)),
             HeapCategory::NeverHeap,
@@ -926,7 +863,7 @@ mod heap_category_tests {
     #[test]
     fn test_unknown_adt_with_empty_tables_is_mixed() {
         let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
-        let unknown = Type::ADT(test_fqtn("Unknown"), vec![]);
+        let unknown = cadt("Unknown", vec![]);
         assert_eq!(
             HeapCategory::classify(&unknown, Some(&tables)),
             HeapCategory::Mixed,
@@ -937,9 +874,9 @@ mod heap_category_tests {
 
     #[test]
     fn test_vec_always_heap_without_tables() {
-        let vec_int = Type::ADT(
+        let vec_int = ConcreteType::ADT(
             FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
-            vec![Type::Int],
+            vec![ConcreteType::Int],
         );
         assert_eq!(
             HeapCategory::classify::<(), ()>(&vec_int, None),
@@ -950,24 +887,12 @@ mod heap_category_tests {
     #[test]
     fn test_vec_always_heap_with_tables() {
         let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
-        let vec_str = Type::ADT(
+        let vec_str = ConcreteType::ADT(
             FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
-            vec![Type::String],
+            vec![ConcreteType::String],
         );
         assert_eq!(
             HeapCategory::classify(&vec_str, Some(&tables)),
-            HeapCategory::AlwaysHeap,
-        );
-    }
-
-    #[test]
-    fn test_vec_polymorphic_always_heap() {
-        let vec_var = Type::ADT(
-            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
-            vec![Type::Var(0)],
-        );
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&vec_var, None),
             HeapCategory::AlwaysHeap,
         );
     }
@@ -985,7 +910,7 @@ mod heap_category_tests {
 /// Ring 1 simplified approach: walk the expression tree and for each variable,
 /// record all use sites. The last one in a pre-order traversal is the last use.
 pub(crate) fn compute_last_uses(
-    expr: &cranelisp_types::Expr,
+    expr: &cranelisp_types::MonoExpr,
 ) -> HashMap<(cranelisp_types::Symbol, cranelisp_types::Span), bool> {
     use cranelisp_types::{Symbol, Span};
 
@@ -1004,68 +929,65 @@ pub(crate) fn compute_last_uses(
 
 /// Collect all variable references in pre-order traversal.
 fn collect_var_uses(
-    expr: &cranelisp_types::Expr,
+    expr: &cranelisp_types::MonoExpr,
     uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
 ) {
-    use cranelisp_types::Expr;
+    use cranelisp_types::MonoExpr;
 
     match expr {
-        Expr::Var { name, span, .. } => {
+        MonoExpr::Var { name, span, .. } => {
             uses.entry(name.clone()).or_default().push(*span);
         }
-        Expr::Let { bindings, body, .. } => {
+        MonoExpr::Let { bindings, body, .. } => {
             for (_, val) in bindings {
                 collect_var_uses(val, uses);
             }
             collect_var_uses(body, uses);
         }
-        Expr::If { cond, then_branch, else_branch, .. } => {
+        MonoExpr::If { cond, then_branch, else_branch, .. } => {
             collect_var_uses(cond, uses);
             collect_var_uses(then_branch, uses);
             collect_var_uses(else_branch, uses);
         }
-        Expr::Lambda { body, .. } => {
+        MonoExpr::Lambda { body, .. } => {
             collect_var_uses(body, uses);
         }
-        Expr::Apply { callee, args, .. } => {
+        MonoExpr::Apply { callee, args, .. } => {
             collect_var_uses(callee, uses);
             for arg in args {
                 collect_var_uses(arg, uses);
             }
         }
-        Expr::Match { scrutinee, arms, .. } => {
+        MonoExpr::Match { scrutinee, arms, .. } => {
             collect_var_uses(scrutinee, uses);
             for arm in arms {
                 collect_var_uses(&arm.body, uses);
             }
         }
-        Expr::Annotate { expr, .. } => {
-            collect_var_uses(expr, uses);
-        }
-        Expr::VecLit { elements, .. } => {
+        MonoExpr::VecLit { elements, .. } => {
             for e in elements {
                 collect_var_uses(e, uses);
             }
         }
-        Expr::Trace { body, .. } => {
+        MonoExpr::Trace { body, .. } => {
             collect_var_uses(body, uses);
         }
-        Expr::ParBind { bindings, body, .. } => {
+        MonoExpr::ParBind { bindings, body, .. } => {
             for (_, val_expr) in bindings {
                 collect_var_uses(val_expr, uses);
             }
             collect_var_uses(body, uses);
         }
-        Expr::ConstrADT { fields, .. } => {
+        MonoExpr::ConstrADT { fields, .. } => {
             for f in fields {
                 collect_var_uses(f, uses);
             }
         }
         // Literals have no variable references.
-        Expr::IntLit { .. }
-        | Expr::FloatLit { .. }
-        | Expr::BoolLit { .. }
-        | Expr::StringLit { .. } => {}
+        MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::StringLit { .. } => {}
     }
 }
 
@@ -1109,18 +1031,24 @@ mod tests {
     // spec: 12-runtime §12.3 — last-use analysis for RC consuming calling convention
     #[test]
     fn test_compute_last_uses() {
-        use cranelisp_types::{Expr, Span, Symbol};
+        use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
 
         let x = Symbol::from("x");
-        let expr = Expr::Apply {
-            callee: Box::new(Expr::Var { name: Symbol::from("f"), span: Span::new(0, 1), resolved_call: None, inferred_type: None }),
+        let var = |name: Symbol, span: Span| MonoExpr::Var {
+            name,
+            span,
+            resolved_call: None,
+            ty: ConcreteType::Int,
+        };
+        let expr = MonoExpr::Apply {
+            callee: Box::new(var(Symbol::from("f"), Span::new(0, 1))),
             args: vec![
-                Expr::Var { name: x.clone(), span: Span::new(2, 3), resolved_call: None, inferred_type: None },
-                Expr::Var { name: x.clone(), span: Span::new(4, 5), resolved_call: None, inferred_type: None },
+                var(x.clone(), Span::new(2, 3)),
+                var(x.clone(), Span::new(4, 5)),
             ],
             span: Span::new(0, 6),
             resolved_call: None,
-            inferred_type: None,
+            ty: ConcreteType::Int,
         };
 
         let last_uses = compute_last_uses(&expr);

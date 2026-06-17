@@ -8,12 +8,12 @@
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
-use cranelisp_types::{ErrorLocation, CranelispError, Expr, MatchArm, Pattern, Span, Symbol};
+use cranelisp_types::{ErrorLocation, CranelispError, MonoExpr, MonoMatchArm, Pattern, Span, Symbol};
 use crate::heap::HeapCategory;
 
 use crate::heap::{self, HeapAdt};
 
-use super::{FnCompiler, MatchContext, collect_var_ids_from_type, substitute_type_inline};
+use super::{FnCompiler, MatchContext, collect_var_ids_from_type, signature_heap_category, substitute_type_inline};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
@@ -24,8 +24,8 @@ where
 
     pub(crate) fn compile_match(
         &mut self,
-        scrutinee: &Expr,
-        arms: &[MatchArm],
+        scrutinee: &MonoExpr,
+        arms: &[MonoMatchArm],
         span: Span,
     ) -> Result<Value, CranelispError> {
         let saved_tail = self.in_tail_position;
@@ -79,7 +79,7 @@ where
                 Pattern::Constructor { name, bindings, .. } => {
                     let match_ctx = MatchContext {
                         scrut_val,
-                        scrut_type: scrutinee.inferred_type().cloned(),
+                        scrut_type: Some(scrutinee.ty().to_type()),
                         next_block,
                         merge_block,
                         saved_tail,
@@ -117,8 +117,8 @@ where
         &mut self,
         name: &Symbol,
         scrut_val: Value,
-        scrutinee: &Expr,
-        body: &Expr,
+        scrutinee: &MonoExpr,
+        body: &MonoExpr,
         saved_tail: bool,
         merge_block: Block,
     ) -> Result<(), CranelispError> {
@@ -129,16 +129,14 @@ where
         self.builder.def_var(var, scrut_val);
         self.variables.insert(name.clone(), var);
         // Record type for RC management.
-        if let Some(ty) = scrutinee.inferred_type() {
-            self.variable_types.insert(name.clone(), ty.clone());
-        }
+        self.variable_types.insert(name.clone(), scrutinee.ty().to_type());
 
         // P7 fix: Only register the alias in scope_stack for RC cleanup
         // when the scrutinee is NOT an existing variable. When the scrutinee
         // IS a variable, the original variable's owning scope will dec it.
         // Registering the alias would cause a double-dec: once for the
         // alias's scope exit, and once for the original variable's scope exit.
-        let is_alias = matches!(scrutinee, Expr::Var { .. });
+        let is_alias = matches!(scrutinee, MonoExpr::Var { .. });
         if !is_alias {
             self.scope_stack
                 .last_mut()
@@ -166,11 +164,11 @@ where
     /// ADT field cleanup is done inside the dealloc path (RC=0) via
     /// `emit_rc_dec_with_inline_drop_glue`, not unconditionally.
     /// This prevents double-free when fields are borrowed by pattern bindings.
-    fn dec_temporary_scrutinee(&mut self, scrutinee: &Expr, scrut_val: Value) {
-        let is_temp = !matches!(scrutinee, Expr::Var { .. });
-        if is_temp
-            && let Some(scrut_ty) = scrutinee.inferred_type().cloned() {
-                let category = HeapCategory::classify(&scrut_ty, Some(self.ctx.symbol_tables));
+    fn dec_temporary_scrutinee(&mut self, scrutinee: &MonoExpr, scrut_val: Value) {
+        let is_temp = !matches!(scrutinee, MonoExpr::Var { .. });
+        if is_temp {
+                let scrut_ty = scrutinee.ty().to_type();
+                let category = HeapCategory::classify(scrutinee.ty(), Some(self.ctx.symbol_tables));
                 if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
                     // Vec-typed scrutinee: route through vec_drop so element
                     // RCs and the data buffer are released on rc=0.
@@ -199,7 +197,7 @@ where
         name: &Symbol,
         bindings: &[Symbol],
         match_ctx: &MatchContext,
-        body: &Expr,
+        body: &MonoExpr,
         span: Span,
     ) -> Result<(), CranelispError> {
         // Look up constructor info. lookup_constructor handles both
@@ -249,7 +247,7 @@ where
         tag: usize,
         is_mixed: bool,
         match_ctx: &MatchContext,
-        body: &Expr,
+        body: &MonoExpr,
     ) -> Result<(), CranelispError> {
         let body_block = self.builder.create_block();
 
@@ -314,7 +312,7 @@ where
         is_mixed: bool,
         bindings: &[Symbol],
         match_ctx: &MatchContext,
-        body: &Expr,
+        body: &MonoExpr,
     ) -> Result<(), CranelispError> {
         let body_block = self.emit_data_pattern_tag_check(
             tag, is_mixed, match_ctx,
@@ -344,7 +342,7 @@ where
             && self.borrowed_vars.contains(sv)
         {
             if let Some(ty) = self.variable_types.get(sv).cloned() {
-                let category = HeapCategory::classify(&ty, Some(self.ctx.symbol_tables));
+                let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap => {
                         heap::emit_rc_inc(&mut self.builder, body_val);
@@ -447,9 +445,12 @@ where
             ); // field_i: i64
 
             // Record the field type for RC classification (needed by
-            // protect_return_value and consuming arg lists).
+            // protect_return_value and consuming arg lists). Ctor/accessor field
+            // types come from the SIGNATURE (concrete-boundary-type.md §3.1.1,
+            // FIXME 0391 site 3): convert the field `Type` → `ConcreteType` here
+            // (must succeed — §3.11.1 guarantees concreteness upstream).
             if let Some(ft) = field_types.get(i) {
-                let category = HeapCategory::classify(ft, Some(self.ctx.symbol_tables));
+                let category = signature_heap_category(ft, Some(self.ctx.symbol_tables));
                 if matches!(category, HeapCategory::AlwaysHeap | HeapCategory::Mixed) {
                     self.variable_types.insert(binding_name.clone(), ft.clone());
                     // Mark as borrowed: skip scope-exit dec (owner handles cleanup).
