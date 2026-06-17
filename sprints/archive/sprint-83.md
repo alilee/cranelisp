@@ -207,6 +207,15 @@ Layered work, each layer isolated + routed (S82 pattern). Commits:
 - **`0353`** — `/platform` added the `resource-serial-sleep-ms` test-capture fixture (`8b499c9`); `/qa` authored the timing e2e (`f28af42`): same-token-serializes GREEN, **diff-token-parallelizes RED (failing-not-ignored guard)**. The witness surfaced **`0367` — automatic IO scheduling (§10.12, DONE-in-S25) is UNWIRED in the v4 pipeline** (`apply_bind_chain_analysis` / `auto_schedule_defn` is dead code; zero `Par` nodes emitted; independent IO runs sequentially — correct results, no parallelism). **User-ruled: DEFER `0367` to the dedicated concurrency sprint** (re-wiring re-enters the S60–62 heisenbug-race territory the roadmap deferred behind the migration arc). `0353` carries with `0367`.
 - **`0101`** — three post-D43 audits committed (`db7ed91`: primitives 1H/3M/2L, intrinsics 3H/2M/3L, platform 0H/4M/3L); remediation FIXMEs filed (`2162283`: **0368** /dev-primitives heap-offset single-source + RC dedup; **0369** /arch-intrinsics BC count+stale reconcile; **0370** /dev-intrinsics monolith decomposition; **0371** /arch-platform schema round-trip pin [latent correctness risk]; **0372** /design-platform platform.md §3 refresh). MED/LOW recorded in the audit docs. **`0101` closed.**
 
+### Phase 6 — user-facing (in progress)
+- **/stdlib (`7de2254`)** validated the marquee `0355`: cross-module `assert-eq` now RUNS (runner self-tests 4/4, `--run`+`--link`); accessor-ruling regression check clean. **Surfaced `0373`** (SIGSEGV).
+- **`0373` — investigated deeply (user-engaged architectural decision).** /qa reduced it to a 5-line free-standing repro → root cause = the backend `<1024` RC guard for `HeapCategory::Mixed`/`Type::Var` is **unsound** (a polymorphic-positioned scalar ≥1024/negative is misread as a heap pointer → SIGSEGV; ~30 sites; dec path = UAF). **/arch first recommended a per-type RC witness (C); the USER challenged it** ("why not monomorphise? representation should be a backend detail; I doubt the language has first-class polymorphic values") → /arch **re-examined against the type system, confirmed Cranelisp is rank-1 HM (full monomorphisation is COMPLETE), and REVERSED to (A) full monomorphisation** — the only fix that keeps representation backend-internal (B/C export it to the ABI/calling-convention) and lets spec §12.1 relax for future char/u16/f32. **User ruled: Tier 1 now + record Tier 2.**
+- **`0373` Tier 1 LANDED (`5634dd3`)** — generalized the `0355` partial-mono machinery to **polymorphic-result hops** (new `collect_local_parametric_calls` + `monomorphise_inner_parametric_hops`, multi-hop concrete-type propagation with subst snapshot/restore). The RC-classification SIGSEGV is fixed; free-standing repro green; workspace 2631/2. Stayed bounded (no Tier-2 symbol-model change).
+- **`0373` RESIDUAL (distinct bug, carries):** the original /stdlib case — a constrained fn reached via a **fn-value through a cross-module HOF** — still SIGSEGVs (backend GOT-wiring: `abs$Int` unwired in that dispatch context; NOT result-classification). `0373` kept OPEN, re-pointed `/backend`; /qa owes a free-standing repro (in progress).
+- **`0373` Tier 1.5 LANDED (`9e57330`) — `0373` FULLY CLOSED.** The residual (cross-module hops) was the SAME RC-classification bug, cross-module variant (NOT GOT-wiring — /qa retracted that framing); fixed by a **one-line home-gate change** (`monomorphise_inner_parametric_hops` gates on `state.current_module` not `recheck_module`), reusing 0355 cross-module collection + Tier-1 recursion. Both guards green; **workspace 2633 pass / 2 fail** (only carried `0366`+`0367`); typecheck 399/399. The polymorphic-result-hop SIGSEGV (same- + cross-module) is eliminated.
+- **Tier 2 (deferred to a dedicated typecheck-led mono sprint):** systematic full mono-from-roots + spec §12.1 relaxation + `classify(Type::Var)`→unreachable + an unconstrained-var ambiguity rule. /arch records the design + files /spec//typecheck//backend follow-ups.
+- **Architectural outcome (user-driven):** the deep 0373 investigation — user challenge → /arch reversal from RC-witness (C) to full-monomorphisation (A) — settled the direction for the deferred mono sprint AND opened spec §12.1 to relax (representation becomes backend-internal, enabling future char/u16/f32). A genuinely better architecture than the first pass; the user's "representation is a backend detail" + "monomorphise all functions" instincts were both validated against the rank-1 type system.
+
 ## Phase 5 — COMPLETE
 **Authoritative `--workspace` baseline: 2631 tests / 2629 pass / 2 fail** (unchanged by the doc-only commits since `f28af42`). The 2 fails are both intentional failing-not-ignored carried guards: `0366` (REPL cross-cluster accessor poisoning) + `0367` (auto IO scheduling unwired). No unintended reds. Workspace `cargo check`/clippy clean.
 
@@ -215,11 +224,30 @@ The fixmes dir carries **orphaned-resolved** files whose work landed but were ne
 
 ## Outcome (Phase 7)
 
+**Final baseline: `cargo nextest run --workspace` → 2635 tests / 2633 pass / 2 fail / 0 skip.** Both fails are intentional failing-not-ignored carried guards (`0366`, `0367`). Workspace `cargo check`/clippy clean. (Note: the authoritative count is `--workspace`; a plain `cargo nextest run` is root-package-only ≈1369 — a measurement artifact the user caught mid-sprint, now corrected in process.)
+
 ### Delivered
-- {what shipped}
+- **Representation-first data model (Wave 1, `b78e9d2`)** — Option A: `got_slot` moved onto callable `DefKind` variants via `UserFnState` (illegal "constrained-template-with-slot" now unconstructable, Principle 20); deferred Pass-1→Pass-2 slot allocation + the redefinition carry-forward seam; cache `CACHE_SCHEMA_VERSION` 4→5; `PlatformEffect` slotted (0358); synthetic externs slot-less `PrimitiveExtern` + classifier completion (0360). The serial cascade caught two reshape gaps before they shipped.
+- **`0355` cross-module monomorphisation of constrained fns RUNS** (`b40929a`, exit 2 in `--run`+`--link`) — the marquee capability; `assert-eq` now callable cross-module (validated by `/stdlib`, `7de2254`).
+- **Accessor semantics ruled + delivered** — same-module duplicate field-name accessors are **ambiguous** (§8.6.5 poison), not arg-type-overloaded (`843f17f` spec + `1e1d0a3` impl, −200 LOC); `0352` `/list` renderer; `0362` self-qualified types (3 layers); `0363`/`0365` REPL warning channel restored.
+- **`0373` polymorphic-result-hop SIGSEGV ELIMINATED** (Tier 1 `5634dd3` + Tier 1.5 `9e57330`) — same- and cross-module; via the `0355`-machinery generalization. The deeper architectural decision (full monomorphisation, representation-backend-internal) settled + recorded (`5dcb01b`).
+- **`0353` ResourceSerial fixture** (`8b499c9`); **`0101` post-D43 audits** (3 docs `db7ed91` + remediation FIXMEs 0368–0372).
 
-### Deferred (with rationale)
-- {item — why deferred, target sprint, escalation count}
+### Deferred (with rationale, all with failing guards or FIXMEs)
+- **`0367` — auto IO scheduling (§10.12) unwired in v4** → dedicated concurrency sprint (user-ruled; re-wiring re-enters S60–62 race territory; correct results, no parallelism). Failing guard `resource_serial_diff_token_parallelizes`. `0353` carries with it.
+- **`0366` — REPL cross-cluster accessor poisoning** → niche; long-term answer is the `Type.member` escape (`0365`). Failing guard committed.
+- **Tier 2 full monomorphisation** (`0374` /typecheck) + spec §12.1 representation-relaxation & rank-1/ambiguity rules (`0373→0376` /spec) + `classify(Type::Var)` retirement (`0375` /backend) → dedicated mono sprint (multi-day; Tier 1/1.5 landed the polymorphic-result-hop subset).
+- **`0101` audit remediation** (0368–0372) → forward-flow (HIGH/latent-risk items; MED/LOW in the audit docs).
+- **`0050`/`0052`** → Phase H.
 
-### Findings (record in FIXMEs if not already)
-- {unexpected observations, methodology lessons, skill feedback}
+### Findings
+- **Layered bugs dominated again** (S82 pattern): `0351` spanned 4 crates (typecheck synth → frontend split → typecheck staging → /qa fixture); `0362` was 3 layers; `0373` was 2 conflated bugs (RC-classification + cross-module variant). The repro-before-handoff + isolate-then-route discipline routed each correctly without forcing wrong-crate fixes.
+- **The user's architectural challenge reversed a wrong first-pass design.** /arch initially recommended a per-type RC witness (C) for `0373`; the user's "why not monomorphise? representation is a backend detail" pushed a re-examination that confirmed rank-1 HM ⇒ full monomorphisation is complete AND keeps representation backend-internal — a better target that also opens spec §12.1 to relax for future `char`/`u16`/`f32`. Investigate-against-the-type-system beat the first analysis.
+- **Measurement-scope bug caught by the user** — agents reported `cargo nextest run` (root-package-only ≈1369) as "the full suite"; the real `--workspace` count is ≈2633. No tests lost; process corrected to `--workspace` gating.
+- **Phase 6 earned its keep** — `/stdlib` validated the marquee feature AND surfaced `0373` (a SIGSEGV), exactly the real-composite-program coverage the reinstated Phase 6 exists for.
+- **FIXME-ledger hygiene debt surfaced** — S82-resolved FIXMEs (0337–0350, 0109, 0243) + S83-resolved (0351, 0356, 0357, 0363) were never `git rm`'d; cleaned at this close (verify-and-remove). Process note: resolving skills must delete the FIXME in the resolving commit.
+
+### Close actions (on user approval)
+1. FIXME hygiene: verify-and-remove the ~18 orphaned-resolved files (S82: 0337–0350/0109/0243; S83: 0351/0356/0357/0363 — all verified resolved, suite green); renumber the new `/spec` FIXME `0373`→`0376` (collides with the same-sprint-closed SIGSEGV `0373`).
+2. `git mv sprints/SPRINT.md sprints/archive/sprint-83.md`; update `sprints/ROADMAP.md` (S83 row COMPLETE + carries); commit to `main` (no push).
+3. Arch-principles reflection: Principle 20 (representation-first) was authored AND immediately load-bearing (drove the 0373 reversal). Manifestation-site + repro-before-handoff + investigate-first all held. No principle gap; the 0373 episode validated Principle 20 end-to-end.

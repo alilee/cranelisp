@@ -1,6 +1,6 @@
 # Sprint 84: Full Monomorphisation + Auto-IO Parallelisation
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Cluster A architecture RE-DIRECTED (user ruling 2026-06-16): **the goal is that generics are NOT REPRESENTABLE at the backend boundary** — a concrete-only codegen-boundary type (no `Var` variant), not a check+backstop. Wave-2 typecheck position-complete check landed (`9569536`); backend backstop DEFERRED (`0381`) — arming it revealed the prelude/stdlib still compiles GENERIC BODIES with free vars (uniform-word generic compilation). /arch now designing the concrete-only boundary type + generic-body-codegen elimination (likely a dedicated arc). Cluster B (0367) Wave 3. `0382` = small /qa test-pin.
+**Status**: READY FOR PHASE 7 CLOSE — **ConcreteType arc COMPLETE** (`531d8e5`): generics are structurally not representable at the backend boundary (`classify` `Var` arm DELETED). **Decks cleared:** `0382` (green), `0366` defect fixed (`c1ac0f6`), audit FIXMEs `0368`/`0369`/`0370`/`0371`/`0372` + `0396` done, FIXME-ledger hygiene (`0375`/`0383`/`0384` removed as arc-resolved; `0374`→`0396` renumber). `--workspace` **2722 pass / 3 fail = ONLY the deferred Cluster-B auto-IO guards** (`0367`/`0353`). Arc phases: spec full-concreteness+phantom-strict (`2290aa9`); §3.11.1 `!is_concrete()` (`73cf79c`); annotation all positions (`0385`/`0389`); P1 `ConcreteType` (`5b3319c`); P2 `MonoExpr` (`36fa009`/`f037b68`); P4A (`719f2e9`); P4B closes `0381` (`3279b1a`); P3 backend consumes `ConcreteType` (`5e0d489`/`cc94909`/`62a0734`); P5 §12.1 relax closes `0373` (`fc4f7e6`); `codegen_view` SSOT closes `0394`/`0395` (`531d8e5`). /review: 0 Blocker. **DEFERRED:** Cluster B `0367`+`0353` (dedicated concurrency sprint); Phase H `0050`/`0052`; future `0365` (Type.member); `0397` (intrinsics rc_inc, /arch ruling owed).
 
 **Goal**: Make full monomorphisation-from-roots total (no `Type::Var` reaches codegen) and retire the unsound polymorphic-path RC guard; and re-wire the dormant §10.12 auto-IO-scheduling pass so independent IO effects actually parallelise.
 
@@ -347,4 +347,30 @@ generalises, two sites move.
 
 ## Outcome (Phase 7)
 
-{To be filled at close.}
+**Final baseline: `cargo nextest run --workspace` → 2725 tests / 2722 pass / 3 fail / 0 skip.** The 3 fails are the failing-not-ignored Cluster-B auto-IO guards (`auto_io_independent_diff_token_parallelizes_e2e`, `auto_io_par_grouping_uniform_across_modes`, `resource_serial_diff_token_parallelizes` — `0367`/`0353`), deferred with the cluster. Workspace `cargo check`/clippy clean. ~41 commits. (S83 close was 2633 pass / 2 fail; the net is +89 tests, `0366` fixed, and the carried-fail set is now exactly the deferred Cluster-B guards.)
+
+### What S84 became
+Planned as "Full Monomorphisation + Auto-IO Parallelisation (both committed, no cut-hatch)." It became **the full-monomorphisation architecture sprint**: a user-directed series of architectural challenges turned Cluster A from a Tier-2 mono increment into a representation-first rebuild — **generics are now structurally not representable at the backend codegen boundary**. Cluster B (auto-IO) was deferred when the user directed running the ConcreteType arc to completion; it carries forward as the next sprint's spine.
+
+### Delivered
+- **Representation-first slot gate (early S84):** `slot ⟺ is_concrete()` made structural — a non-concrete def is slot-less `UserFnState::Polymorphic` (the gate predicate corrected from `constraints.is_empty()` to `is_concrete()`); the original `(Box a)`-through-HOF SIGSEGV fixed. Resolved `0356`/`0357`-lineage + `0374`/`0376`/`0377`.
+- **The ConcreteType arc — the marquee (full monomorphisation, realized as representation):**
+  - **Spec** tightened: §3.11 "typecheck produces only concrete types" — any residual type var (occurring *or* phantom) in a codegen-reaching value is a type error, disambiguated by a `:Type form` annotation; no representation-based exemption; vec-literal-as-variadic-special-form; the import-can't-resolve rationale; §12.1 relaxed to backend-chooses-representation. (`0373`, `0378`.)
+  - **`ConcreteType`** boundary type (no `Var`) + **`MonoExpr`** parallel codegen AST + the `from_expr` choke point.
+  - **Monomorphisation** produces fully-concrete bodies (P4A suppressed a spurious partial instance, deleted the carve-out); **generic templates are no longer emitted** (P4B — the FIXME-`0381` 317× root, closed).
+  - **Backend** consumes `MonoExpr`/`ConcreteType`; **`HeapCategory::classify`'s `Var` arm is deleted** — a `Type::Var` is structurally unable to reach codegen, no backstop needed. `codegen_view` is the live post-mono SSOT.
+  - Closed `0379`/`0380`/`0381`/`0383`/`0384`/`0385`/`0386`/`0387`/`0389`/`0391`/`0392`/`0393`/`0394`/`0395`; `0375` superseded (the backstop became unnecessary). `/review`: 0 Blocker, invariant HOLDS.
+- **`0366` — REPL cross-cluster duplicate-field accessor collision fixed** (now errors like `--run`/`--link`; the S83-carried defect guard flips green).
+- **Audit-carry sweep (post-D43 `0101`):** `0368` (primitives heap-offset single-source), `0369` (intrinsics catalog-count reconcile), `0370` (intrinsics `trace.rs`/`io.rs` monolith decomposition), `0371` (platform schema generator↔parser round-trip corpus — a latent-correctness pin), `0372` (platform.md §3 refresh + R1-gate/`t25`/`declare_platform!` residue), `0396` (BC §5 phrasing). **FIXME-ledger hygiene:** removed arc-resolved `0375`/`0383`/`0384`; renumbered a misfiled `0374`→`0396`.
+
+### Deferred (with rationale)
+- **Cluster B — auto-IO parallelisation (`0367` + `0353`)** → a dedicated concurrency sprint (the sprint's other committed half; deferred when the user directed running the ConcreteType arc, which consumed S84's capacity). The 3 failing-not-ignored guards remain RED as the durable record + the next sprint's acceptance criteria. `/arch`'s Phase-2 PO-0367 proof obligation + the int design (`design/int/bind-chain-analysis.md`) carry forward ready.
+- **`0397` — intrinsics `rc_inc` entry point + atomicity policy** (filed during `0368`; needs an `/arch` ruling under lenient-eval sparks).
+- **`0365` (`Type.member` accessor escape), `0050`/`0052` (Phase H).**
+
+### Findings
+- **The user's representation-first challenges drove the architecture, repeatedly overturning a wrong first pass.** The thread: slot⟺concrete → "not just *checked* but *unrepresentable*" → "typecheck produces *only concrete types*" → phantom-strict. Each ruling was validated against the rank-1 type system and produced a better target than the iterative-check approach. The `concrete-boundary-type.md` arc is the durable record.
+- **"Spec first" paid off concretely.** Tightening §3.11 before implementation made the high-risk P4B (generic-body elimination — the 317× phase) land *transparently*: the cases that made an earlier attempt systemic (`(id [])`, `(is-some None)`) became type errors upstream, not unresolved-symbol gaps.
+- **QA-first/failing-first earned its keep:** it corrected a stale Tier-2 prediction (the bare-`Int` shapes already worked) and surfaced the phantom-var edge (`(Ok 42)` : `(Result Int b)`) for a user ruling (strict).
+- **Two API socket-drops on heavy agents** were absorbed without corruption by the drop-resilient discipline (commit-when-green / manual-revert-and-report; never leave `main` red).
+- **Principle 18 (enforce invariants structurally) + Principle 20 (representation-first) were load-bearing and validated end-to-end** — the concrete-boundary type is their fullest expression. No principle gap surfaced; the arc is now a standing architectural reference (`design/arch/concrete-boundary-type.md`).
