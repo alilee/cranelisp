@@ -586,8 +586,9 @@ pub(crate) fn ensure_typecheck_product(
 ///
 /// The batch includes:
 /// - each `TopLevel::Defn`'s `name` (when the symbol-table entry has
-///   `ast: Some(_)` and is not a constrained template or an `Overloaded`
-///   base);
+///   `ast: Some(_)` and is not a constrained template, a `Polymorphic`
+///   generic template (S84 Phase 4B, FIXME 0381 — its concrete mono
+///   instances carry the bodies that codegen), or an `Overloaded` base);
 /// - every mangled multi-sig variant whose base name appears in `program`;
 /// - `__expr` when `program` contains a `TopLevel::Expr`;
 /// - each trait-impl method's mangled name;
@@ -621,6 +622,7 @@ pub fn derive_codegen_batch(
             && !matches!(
                 kind.as_ref(),
                 DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Constrained(_) }
+                    | DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Polymorphic(_) }
                     | DefKind::Overloaded { .. }
             )
         {

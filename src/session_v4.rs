@@ -2382,8 +2382,48 @@ fn compile_module_object(
 ) {
     use cranelisp_backend::cache;
 
+    // Resolve cache paths up front — `.meta.json` persistence is DECOUPLED from
+    // `.o` output (S84 Phase 4B, FIXME 0387). A module that type-checked but
+    // codegens nothing (a generic-only module whose sole defn is a slot-less
+    // `Polymorphic` template — excluded from `defined_symbols()` since Phase 4B)
+    // still persists its scheme/symbol-table snapshot so a downstream module can
+    // monomorphise it on a later cold-load.
+    let (meta_path, o_path) = cache::module_cache_path(cache_dir, module);
+
+    // Ensure parent directory exists (used by both the `.meta.json` and `.o`
+    // writes below).
+    if let Some(parent) = meta_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("nice-worker: cannot create cache dir '{}': {}", parent.display(), e);
+        return;
+    }
+
+    // Write .meta.json for cache-hit restoration via the unified
+    // `cache::write_meta` API (Sprint 58 Step 5b / Decision 33+34). This is
+    // TYPECHECK-DRIVEN: it persists whenever the module type-checked, independent
+    // of whether codegen produces an `.o` (FIXME 0387). The .meta.json IS a
+    // serialised SymbolTable; `write_meta` stamps `schema_version =
+    // CACHE_SCHEMA_VERSION` on the cloned table before serialising. Per Decision
+    // 33, structural decls (imports/exports/platforms/submodules) are fields on
+    // the SymbolTable itself, so the serialised table carries the user-authored
+    // structural specifications inline (cache-hit derives transitive deps from
+    // `imports` directly).
+    let symbol_table = shared.symbol_tables
+        .get(module)
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|| crate::code::SessionSymbolTable::new_with_params(module.clone()));
+
+    if let Err(e) = cache::serialize::write_meta(&meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION) {
+        eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());
+        // Continue — the meta failure does not block `.o` codegen below.
+    }
+
     // Enumerate codegen-compilable symbols via the shared predicate (Decision 22).
-    // Empty result → no compilable defns (types-only, imports-only) → skip.
+    // Empty result → no compilable defns (types-only, imports-only, OR a
+    // generic-only `Polymorphic` module post-Phase-4B) → no `.o`, which is the
+    // correct new state (FIXME 0387). The `.meta.json` above has already
+    // persisted; we just emit no object.
     let names: Vec<cranelisp_types::Symbol> = shared
         .symbol_tables
         .get(module)
@@ -2394,6 +2434,15 @@ fn compile_module_object(
         })
         .unwrap_or_default();
     if names.is_empty() {
+        // Generic-only / types-only / imports-only module: no `.o` is emitted,
+        // but the module MUST still be recorded in the manifest so the next
+        // session recognises it as a cache hit (FIXME 0387). Without this the
+        // module is absent from the manifest, `is_cache_valid` returns false on
+        // the next run, and the module is needlessly recompiled — rewriting its
+        // `.meta.json`. The cache-hit loader (`try_cache_hit_load`) tolerates the
+        // absent `.o` for a module whose codegen batch is empty.
+        let source_hash = shared.cache.source_hash(module).unwrap_or_default();
+        shared.cache.record_compiled(module, source_hash, std::collections::HashMap::new());
         return;
     }
 
@@ -2456,41 +2505,11 @@ fn compile_module_object(
         }
     };
 
-    // Write .o and .meta.json files to cache directory.
-    let (meta_path, o_path) = cache::module_cache_path(cache_dir, module);
-
-    // Ensure parent directory exists.
-    if let Some(parent) = o_path.parent()
-        && let Err(e) = std::fs::create_dir_all(parent)
-    {
-        eprintln!("nice-worker: cannot create cache dir '{}': {}", parent.display(), e);
-        return;
-    }
-
+    // Write the .o file to cache directory (the parent dir was ensured above for
+    // the `.meta.json` write, which shares the same parent).
     if let Err(e) = std::fs::write(&o_path, &obj_bytes) {
         eprintln!("nice-worker: cannot write '{}': {}", o_path.display(), e);
         return;
-    }
-
-    // Write .meta.json for cache-hit restoration via the unified
-    // `cache::write_meta` API (Sprint 58 Step 5b / Decision 33+34).
-    // The .meta.json IS a serialised SymbolTable; `write_meta` stamps
-    // `schema_version = CACHE_SCHEMA_VERSION` on the cloned table before
-    // serialising. Per Decision 33, structural decls
-    // (imports/exports/platforms/submodules) are now fields on the
-    // SymbolTable itself — the worker form-handlers populate them in
-    // `process_module_forms`, so the serialised table carries the
-    // user-authored structural specifications inline (no separate
-    // `dependencies` envelope needed; cache-hit derives transitive deps from
-    // `imports` directly).
-    let symbol_table = shared.symbol_tables
-        .get(module)
-        .map(|guard| guard.clone())
-        .unwrap_or_else(|| crate::code::SessionSymbolTable::new_with_params(module.clone()));
-
-    if let Err(e) = cache::serialize::write_meta(&meta_path, &symbol_table, cache::CACHE_SCHEMA_VERSION) {
-        eprintln!("nice-worker: .meta.json write failed for {}: {}", module, e.message());
-        // Continue — the .o file was written successfully.
     }
 
     // Record module in manifest for cache-hit detection on next session.

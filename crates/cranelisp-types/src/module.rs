@@ -628,21 +628,26 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     /// variants carry the bodies, and constrained-fn templates whose mono
     /// specialisations carry the bodies).
     ///
-    /// **`Polymorphic` is a mono target, NOT skipped like `Constrained`
-    /// (S84, FIXME 0377).** A generic-unconstrained def
-    /// ([`UserFnState::Polymorphic`]) is exactly the thing the monomorphisation
-    /// pass must specialise at every reachable concrete use, so — unlike
-    /// `Constrained`, whose mono instances carry the bodies and whose template is
-    /// excluded here — a `Polymorphic` entry with `ast: Some(_)` is **included**
-    /// (the filter excludes only `Overloaded` and `Constrained`). It is treated
-    /// the same way a pure-parametric `Concrete`-with-`ast` was before the
-    /// slot-gate correction moved that species into its own slot-less arm.
+    /// **`Polymorphic` is a mono SOURCE, NOT a codegen target — EXCLUDED like
+    /// `Constrained` (S84 Phase 4B, FIXME 0381).** A generic-unconstrained def
+    /// ([`UserFnState::Polymorphic`]) is a slot-less template body that must
+    /// NEVER be a `compile_to_module` codegen target: the monomorphisation pass
+    /// specialises it at every reachable concrete use, and those concrete
+    /// instances (mangled `name$Args` entries) carry the bodies that codegen.
+    /// Emitting the template body itself reached `HeapCategory::classify` at RC
+    /// sites with scheme-quantified free vars (the 317× backstop fire,
+    /// FIXME 0381). So — symmetric with `Constrained`, whose mono instances carry
+    /// the bodies and whose template is excluded here — a `Polymorphic` entry is
+    /// EXCLUDED (the filter excludes `Overloaded`, `Constrained`, and
+    /// `Polymorphic`). Concrete (`is_concrete()`) generic instances retain their
+    /// slot and codegen normally.
     pub fn defined_symbols(&self) -> impl Iterator<Item = (&Symbol, &ModuleEntry<C>)> {
         self.symbols.iter().filter(|(_, entry)| match entry {
             ModuleEntry::Def { ast: Some(_), kind, .. } => !matches!(
                 kind.as_ref(),
                 DefKind::Overloaded { .. }
                     | DefKind::UserFn { fn_state: UserFnState::Constrained(_) }
+                    | DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
             ),
             _ => false,
         })
@@ -1764,14 +1769,18 @@ pub enum UserFnState {
     /// distinction BC §7 + Principle 20 make explicit. So a third determined,
     /// slot-less state.
     ///
-    /// **Slot-less ⇒ a mono target, NOT skipped like `Constrained`.** Only the
-    /// monomorphised concrete instances (`id$Int`, `(Box Int)`) are slotted and
-    /// callable. The instance-minting pass (`pass4_monomorphise`) MUST specialise
-    /// a `Polymorphic` def at every reachable concrete use — so the eligible-for-
-    /// mono filter ([`SymbolTable::defined_symbols`]) treats `Polymorphic` as a
-    /// **mono target**, unlike `Constrained` (whose mono instances carry the
-    /// bodies). A `Polymorphic` def that is never instantiated concretely is dead
-    /// for codegen and correctly emits no instance.
+    /// **Slot-less ⇒ a mono SOURCE, EXCLUDED from codegen like `Constrained`
+    /// (S84 Phase 4B, FIXME 0381).** Only the monomorphised concrete instances
+    /// (`id$Int`, `(Box Int)`) are slotted and callable. The instance-minting pass
+    /// (`pass4_monomorphise`) MUST specialise a `Polymorphic` def at every
+    /// reachable concrete use — and those concrete instances carry the bodies that
+    /// codegen. The template body itself is NEVER a codegen target: emitting it
+    /// reached `HeapCategory::classify` with scheme-quantified free vars (the
+    /// FIXME-0381 backstop fire), so the eligible-for-codegen filter
+    /// ([`SymbolTable::defined_symbols`]) EXCLUDES `Polymorphic`, symmetric with
+    /// `Constrained` (whose mono instances likewise carry the bodies). A
+    /// `Polymorphic` def that is never instantiated concretely is dead for codegen
+    /// and correctly emits no instance.
     ///
     /// Carries a [`ParametricFn`] body — the `DefnVariant` + `Scheme`
     /// `monomorphise_call` needs to re-check the body at concrete types,
@@ -2516,6 +2525,63 @@ mod tests {
         assert!(
             !names.contains("imported"),
             "Import must NOT appear; got {:?}",
+            names
+        );
+    }
+
+    // spec: design/arch/concrete-boundary-type.md §4 Phase 4(B) —
+    //       a slot-less `UserFnState::Polymorphic` generic template is a mono
+    //       SOURCE, never a codegen target (FIXME 0381). It MUST NOT appear in
+    //       `defined_symbols()` (symmetric with `Constrained`); only its
+    //       concrete monomorphised instances codegen.
+    #[test]
+    fn polymorphic_template_excluded_from_defined_symbols() {
+        let mut st = SymbolTable::new(ModuleFullPath::from("user"));
+
+        // The slot-less Polymorphic generic template (e.g. `(defn id [x] x)`).
+        let parametric = ParametricFn {
+            variant: trivial_variant("id"),
+            scheme: Scheme {
+                type_vars: vec![0],
+                constraints: HashMap::new(),
+                ty: Type::Var(0),
+            },
+        };
+        st.insert(
+            Symbol::from("id"),
+            mk_def(
+                DefKind::UserFn {
+                    fn_state: UserFnState::Polymorphic(Box::new(parametric)),
+                },
+                // Even though the template body is present (ast: Some), it MUST
+                // NOT be a codegen target.
+                Some(trivial_variant("id")),
+            ),
+        );
+
+        // Its concrete monomorphised instance (`id$Int`) — a `Concrete` UserFn
+        // — IS a codegen target and SHOULD appear.
+        st.insert(
+            Symbol::from("id$Int"),
+            mk_def(
+                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0 } },
+                Some(trivial_variant("id$Int")),
+            ),
+        );
+
+        let names: std::collections::HashSet<String> = st
+            .defined_symbols()
+            .map(|(s, _)| s.as_ref().to_string())
+            .collect();
+
+        assert!(
+            !names.contains("id"),
+            "Polymorphic generic template must NOT be a codegen target; got {:?}",
+            names
+        );
+        assert!(
+            names.contains("id$Int"),
+            "concrete mono instance id$Int must appear; got {:?}",
             names
         );
     }

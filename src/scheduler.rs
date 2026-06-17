@@ -155,6 +155,29 @@ impl ModuleState {
             blocked_on: None,
         }
     }
+
+    /// Cache-hit constructor for a module that has NO codegen object to load
+    /// (S84 Phase 4B, FIXME 0387 — a generic-only module whose sole defn is a
+    /// slot-less `Polymorphic` template produces no `.o`). It enters
+    /// TypecheckDone with **`inmem_done = true`** so the Level-4 `JitCodegen`
+    /// scan never picks it up — there is nothing to mmap or wire (its schemes,
+    /// available as mono SOURCES, are already installed into the symbol table).
+    fn new_cached_no_object(symbols: HashSet<Symbol>) -> Self {
+        let _ = symbols;
+        Self {
+            pool: ModulePool::TypecheckDone,
+            waiters: HashMap::new(),
+            jit_reserved: HashSet::new(),
+            inmem_done: true,
+            inmem_claimed: false,
+            object_working: false,
+            object_done: true,
+            error: None,
+            sexps: None,
+            eval_owned: false,
+            blocked_on: None,
+        }
+    }
 }
 
 /// A module waiting on a symbol from another module.
@@ -432,6 +455,49 @@ impl CompileScheduler {
         drop(state);
         self.priority_work_available.notify_all();
         self.object_work_available.notify_all();
+    }
+
+    /// Register a cache-hit module that has NO codegen object (S84 Phase 4B,
+    /// FIXME 0387). Mirrors [`Self::register_module_cached`] but installs the
+    /// module with `inmem_done = true` (via [`ModuleState::new_cached_no_object`])
+    /// so the Level-4 `JitCodegen` scan never tries to mmap a non-existent `.o`.
+    /// A generic-only module's schemes are already installed into the symbol
+    /// table by the caller (`try_cache_hit_load`); they are mono SOURCES with no
+    /// callable code to load.
+    pub fn register_module_cached_no_object(
+        &self,
+        module: ModuleFullPath,
+        symbols: HashSet<Symbol>,
+    ) {
+        observability::record_module_event(
+            SchedulerTraceTag::RegisterModuleCached,
+            module.as_ref(),
+        );
+        let mut state = self.lock();
+
+        // Idempotency guard (F-1): mirror register_module_cached.
+        if state.modules.contains_key(&module) {
+            return;
+        }
+
+        let ms = ModuleState::new_cached_no_object(symbols.clone());
+        state.modules.insert(module.clone(), ms);
+        state.typecheck_done.push_back(module.clone());
+        state.cached_modules.insert(module.clone());
+
+        // Satisfy pending typecheck waiters on this module's symbols.
+        Self::satisfy_typecheck_waiters_for_all_symbols_locked(
+            &mut state, &module, &symbols,
+        );
+        // The module is already inmem_done; satisfy any codegen waiters and run
+        // the completion transition so a `wait_*_inmem_complete` caller wakes.
+        Self::satisfy_codegen_waiters_batch_locked(&mut state, &module, &[]);
+        Self::try_complete_locked(&mut state, &module);
+
+        drop(state);
+        self.priority_work_available.notify_all();
+        self.object_work_available.notify_all();
+        self.completion.notify_all();
     }
 
     /// Re-register a module after its source file has changed.
@@ -2010,6 +2076,39 @@ mod tests {
                 "completion releases the claim atomically with setting done"
             );
         }
+    }
+
+    // spec: design/arch/concrete-boundary-type.md §2.5 (Cache-schemes-without-
+    //       codegen) + §4-B (FIXME 0387) — a generic-only cached module has NO
+    //       `.o` to load. It enters inmem_done=true and produces NO Level-4
+    //       JitCodegen work (nothing to mmap), so wait_inmem_complete passes
+    //       immediately without a worker ever touching a (non-existent) object.
+    #[test]
+    fn register_module_cached_no_object_enters_inmem_done_no_jitcodegen() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("generic.only");
+        sched.register_module_cached_no_object(m.clone(), HashSet::new());
+        {
+            let state = sched.lock();
+            let ms = state.modules.get(&m).unwrap();
+            assert!(
+                ms.inmem_done,
+                "generic-only cached module (no .o) enters inmem_done=true"
+            );
+            assert!(ms.object_done, "object_done=true (nothing to compile)");
+        }
+        // No Level-4 JitCodegen work item should be produced — there is no .o.
+        let work = sched.take_priority_work();
+        assert!(
+            work.is_none(),
+            "generic-only cached module must NOT produce JitCodegen work (no .o \
+             to mmap); got {work:?}"
+        );
+        // wait_inmem_complete passes immediately.
+        assert!(
+            sched.wait_inmem_complete().is_ok(),
+            "wait_inmem_complete must pass for an already-inmem-done module"
+        );
     }
 
     // spec: design/int/symbol-table-cache.md §3.2 — wait_inmem_complete

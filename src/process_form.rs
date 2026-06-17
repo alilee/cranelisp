@@ -1855,10 +1855,21 @@ fn try_cache_hit_load(
         _ => return false,
     };
 
-    // 3. Check .o exists.
-    if !cached.has_object {
+    // 3. Check .o exists — UNLESS this is a generic-only module that codegens
+    //    nothing (S84 Phase 4B, FIXME 0387). The `.meta.json` persists
+    //    independently of the `.o` now: a module whose only defs are slot-less
+    //    `Polymorphic` templates produces no codegen object (its
+    //    `defined_symbols()` batch is empty), yet its schemes still cache so a
+    //    downstream module can monomorphise it on cold-load. For such a module a
+    //    missing `.o` is the CORRECT cached state, not a miss; we install its
+    //    schemes and register it WITHOUT scheduling an `.o` load. A non-empty
+    //    codegen batch with a missing `.o` is still a genuine cache miss
+    //    (recompile).
+    let has_codegen_targets = cached.metadata.symbol_table.defined_symbols().next().is_some();
+    if !cached.has_object && has_codegen_targets {
         return false;
     }
+    let needs_inmem_load = cached.has_object;
 
     // 4. Extract all data from cached BEFORE moving symbol_table (avoids clone).
     let symbols: StdHashSet<Symbol> = cached.metadata.symbol_table
@@ -1895,6 +1906,28 @@ fn try_cache_hit_load(
     // is installed before this dep's codegen worker tries to load its `.o`.
     let cached_imports: Vec<ImportSpec> =
         cached.metadata.symbol_table.imports.clone();
+
+    // S84 Phase 4B / FIXME 0387 — a re-export edge (`(export [mod [names]])`) is
+    // ALSO a transitive dependency: the re-exported target module must be
+    // installed on cache-restore so a downstream consumer can chain-follow the
+    // re-export to the canonical entry. The prelude is the motivating case — it
+    // re-exports `text.string`'s `str` macro etc. via `exports` (NOT `imports`),
+    // and once the prelude's own `.meta.json` caches (0387) its cache-restore
+    // must load those targets or a bare `str` resolves to nothing
+    // (`undefined variable: str`). Capture the exports as `ImportSpec`-shaped
+    // specs (drop the missing `alias`) so the same transitive walk handles them.
+    let cached_reexport_deps: Vec<ImportSpec> = cached
+        .metadata
+        .symbol_table
+        .exports
+        .iter()
+        .map(|e| ImportSpec {
+            module_path: e.module_path.clone(),
+            alias: None,
+            names: e.names.clone(),
+            span: e.span,
+        })
+        .collect();
 
     // Restore type info into TC (consumes symbol_table by value).
     // Sprint 58 Wave 3b: cached `<()>` table is converted to `<Code, ()>`
@@ -1969,8 +2002,15 @@ fn try_cache_hit_load(
         }
     }
 
-    // 5. Register with scheduler at TypecheckDone.
-    ctx.scheduler.register_module_cached(dep.clone(), symbols);
+    // 5. Register with scheduler at TypecheckDone. A generic-only module with no
+    //    `.o` (FIXME 0387) registers as already-inmem-done (no codegen load to
+    //    schedule); any other cached module registers normally and its `.o` is
+    //    loaded by the Level-4 `JitCodegen` worker.
+    if needs_inmem_load {
+        ctx.scheduler.register_module_cached(dep.clone(), symbols);
+    } else {
+        ctx.scheduler.register_module_cached_no_object(dep.clone(), symbols);
+    }
 
     // 6. Create typecheck product with GOT table for cached module.
     ensure_typecheck_product(ctx.typecheck_products, dep);
@@ -1999,6 +2039,9 @@ fn try_cache_hit_load(
     //    resolved against `__cranelisp_got_C`, producing the
     //    `cache_multi_module_transitive_imports` failure mode.
     register_transitive_cached_imports(ctx, &cached_imports);
+    // Re-export targets are transitive deps too (FIXME 0387 — prelude's
+    // `(export [text.string [str]])` etc.). Walk them through the same path.
+    register_transitive_cached_imports(ctx, &cached_reexport_deps);
 
     true
 }
