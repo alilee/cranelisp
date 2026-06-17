@@ -5,7 +5,8 @@ Post-expansion, pre-typecheck pass that transforms `bind!`-expanded AST trees in
 ## References
 
 - `spec/10-io.md` §10.12 — Automatic IO Scheduling
-- `sprints/SPRINT.md` — Sprint 25 plan (/int task)
+- `sprints/SPRINT.md` — Sprint 85 plan (the wiring sprint; §Scope item 1, §"Architecture review (Phase 2)" (a))
+- `design/arch/fixmes/0367-int-resource-serial-scheduling-not-wired.md` — the driving FIXME
 - `sketch/src/schedule.rs` — prototype independence analysis (367 lines)
 - `crates/cranelisp-platform/src/lib.rs` — `SchedulingClass` enum, `PlatformFn.scheduling_class`
 - `design/int/io-integration.md` — platform DLL loading and registration
@@ -190,17 +191,25 @@ This matches the sketch's `classify_expr` approach. The function strips module q
 
 ---
 
-## 5. Pipeline Insertion Point (S84 — live wiring against the post-S78 cluster core)
+## 5. Pipeline Insertion Point (S84 design → S85 implementation-ready)
 
-> **Status (S84, FIXME 0367).** This section is REWRITTEN to specify the live
-> wiring seam against the post-S78 in-call-stack cluster orchestration. The
-> prior batch-mode / simple-batch / REPL three-flow design below (`compile_single_module`,
+> **Status (S85 Phase 3, FIXME 0367 — implementation-ready).** The S84 rewrite
+> below specified the live wiring seam against the post-S78 in-call-stack cluster
+> orchestration. **S85 is the implementation sprint.** The S85 `/arch` Phase-2
+> review (`sprints/SPRINT.md` §"Architecture review (Phase 2)" (a), 2026-06-17,
+> APPROVE-WITH-REVISIONS) **confirmed** this seam verbatim and **closed the one
+> open `/dev` choice the S84 draft left hedged** — the `SymbolTable` generic
+> reconciliation (§5.3 step 3) is now a *decided* design point, not a "/dev's
+> call": **genericize the entry fn over `<C, L>`** (the `&SymbolTable`-view
+> alternative is retained only as a fallback if genericization snags). `/arch`
+> further confirmed **no `cranelisp-types` / cross-crate change** is required
+> anywhere in S85 — the reconciliation is entirely int-side. The prior batch-mode
+> / simple-batch / REPL three-flow design (`compile_single_module`,
 > `compile_and_run`, the `ReplInput::Defn` hook) is **stale** — those entry
 > points were retired by the S78 restructure (`design/int/s77-int-restructure.md`,
-> `s78-entry-module.md`). The pass was left `#[allow(dead_code)]` through the
-> restructure (`apply_bind_chain_analysis`, `src/session_setup.rs:327`, zero live
-> callers; `src/lib.rs:20–26` "FIXME 0176 … bind_chain_analysis re-wires into the
-> worker"). S84 wires it onto the single live core. §5.3 below is the binding
+> `s78-entry-module.md`). The pass is `#[allow(dead_code)]`
+> (`apply_bind_chain_analysis`, `src/session_setup.rs:328`, zero live callers;
+> `auto_schedule_defn`, `src/bind_chain_analysis.rs:41`). §5.3 below is the binding
 > design; §5.4–§5.5 (older prose) are retained as historical context only.
 
 ### 5.1 The single live seam — inside `process_cluster_once`, before `check_program_compat`
@@ -258,7 +267,8 @@ defaults are appended and BEFORE `check_program_compat`. Rationale for "over
   (the `apply_bind_chain_analysis` shape, §5.3) covers every body uniformly.
 
 **Idempotency under retry-from-top.** `finalize_cluster` can run MULTIPLE times for
-one cluster: an FQ-auto-load gap (`:1067`) returns `ClusterOnce::Gap` and the cluster
+one cluster: an FQ-auto-load gap (`check_program_compat` returns `Some(gap)` at `:1067`,
+`finalize_cluster` returns `ClusterOnce::Gap { dep }` at `:1074`) and the cluster
 **retries from the top** against larger live state (`s78-entry-module.md` §3). Each
 retry rebuilds `expanded_program` fresh from `sexps` (Pass 2 re-runs) and calls
 `finalize_cluster` again. The pass MUST therefore be **idempotent** — running it on
@@ -272,11 +282,25 @@ work is required, but the retry-from-top property makes it a **hard correctness
 requirement**, not a nicety. Flag: this is the one interaction the wiring must not
 break; the unit tests in §8.1 must include an "apply twice = apply once" assertion.
 
+**Seam ordering — the pass never double-applies in practice.** Note the precise
+ordering at the seam: (1) `finalize_cluster` builds `final_working`; (2) **the pass
+runs on `final_working`**; (3) `check_program_compat` runs and MAY return a gap; (4) on
+a gap, `finalize_cluster` returns `ClusterOnce::Gap` and **`final_working` is dropped
+unread** — it is a stack local, never stored. The next retry enters a *new*
+`process_cluster_once` frame with a *new* `expanded_program` and a *new* `final_working`,
+on which the pass runs once. So across the whole retry sequence the pass is applied
+**once per surviving `final_working`**, never to its own prior output — the transformed
+tree from a gapped attempt is discarded, not fed back in. The idempotency requirement is
+therefore a *defence-in-depth* guarantee (and a contract for any future caller that
+might reuse a transformed tree), not a property the current retry path actually
+exercises. Either way the `:467` `recurse_children` ParBind arm makes re-application a
+no-op, so even an accidental double-apply at the seam would be sound.
+
 ### 5.3 The entry function and dropping `#[allow(dead_code)]`
 
-`apply_bind_chain_analysis` (`src/session_setup.rs:327`) is the correct entry shape —
-it already iterates `Defn` and `TraitImpl` method bodies, calling
-`auto_schedule_defn` per body. The wiring:
+`apply_bind_chain_analysis` (doc-comment `src/session_setup.rs:327`; `#[allow(dead_code)]`
+at `:328`; `pub(crate) fn` at `:329`) is the correct entry shape — it already iterates
+`Defn` and `TraitImpl` method bodies, calling `auto_schedule_defn` per body. The wiring:
 
 1. **Drop `#[allow(dead_code)]`** on `apply_bind_chain_analysis` (`:328`). Once it
    has a live caller the lint is satisfied; keeping the attribute would mask a future
@@ -284,26 +308,61 @@ it already iterates `Defn` and `TraitImpl` method bodies, calling
    `scheduling_of` in `bind_chain_analysis.rs` stay `#[allow(dead_code)]` — they are
    not on this path; `auto_schedule_defn` is the only live entry and is already
    un-attributed.)
-2. **Call it from `finalize_cluster`**, between `:1058` and `:1060`:
-   `crate::session_setup::apply_bind_chain_analysis(&mut final_working, ctx.symbol_tables, module)`
-   (subject to the flag gate, §7). `final_working: Vec<TopLevel>` is already `mut`-able
-   at that point; `ctx.symbol_tables` (the `&DashMap<ModuleFullPath, SessionSymbolTable>`)
-   and `module: &ModuleFullPath` are both in scope.
-3. **Type note.** `apply_bind_chain_analysis` currently takes
-   `&DashMap<ModuleFullPath, cranelisp_types::SymbolTable>` but `ctx.symbol_tables`
-   is `&DashMap<ModuleFullPath, crate::code::SessionSymbolTable>` (the `<Code, ()>`
-   concretisation). The signature must be reconciled to the session table type —
-   `auto_schedule_defn`'s `SymbolTables` alias (`bind_chain_analysis.rs:31`) is
-   `DashMap<ModuleFullPath, SymbolTable>` (the generic `()/()` form). Whether
-   scheduling-class lookup needs `SessionSymbolTable` or the plain `SymbolTable`
-   is a `/dev`(int) reconciliation detail: the lookup reads only
-   `ModuleEntry::Def { kind: DefKind::PlatformEffect { scheduling_class } }` and
-   `ModuleEntry::Import` (`bind_chain_analysis.rs:210`), both of which are present in
-   both table concretisations. If a generic-parameter mismatch surfaces, the entry
-   fn is genericised over the table's `Code`/`Linker` params or `auto_schedule_defn`
-   is read through a `&SymbolTable` view — `/dev`(int)'s call; flag to `/design` if it
-   forces a `cranelisp-types` change (it should not — the read is over fields that
-   exist at the `()/()` boundary).
+2. **Call it from `finalize_cluster`** (`src/process_form.rs:1043`), between the
+   default-method append loop (ends `:1058`) and `check_program_compat` (`:1060`),
+   inside the env-flag gate (§5c):
+   `crate::session_setup::apply_bind_chain_analysis(&mut final_working, ctx.symbol_tables, module)`.
+   `final_working` is already a `let mut` at `:1049`; `ctx: &mut ModuleCompiler` exposes
+   `ctx.symbol_tables` (the `&DashMap<ModuleFullPath, SessionSymbolTable>`, the same value
+   passed to `check_program_compat` at `:1061`); `module: &ModuleFullPath` is the
+   second `finalize_cluster` param. No new value needs to be plumbed into
+   `finalize_cluster` — all three arguments are already in scope at the seam.
+3. **Generic reconciliation (S85 /arch DECIDED — genericize over `<C, L>`).** The
+   type mismatch is real and must be resolved in the change-set: `apply_bind_chain_analysis`
+   (`src/session_setup.rs:329`) and the whole `bind_chain_analysis.rs` lookup chain are
+   pinned to the **default `<(), ()>`** `SymbolTable`, but `ctx.symbol_tables` is
+   `&DashMap<ModuleFullPath, crate::code::SessionSymbolTable>` where
+   `SessionSymbolTable = SymbolTable<Code, ()>` (`src/code.rs:19`). The compiler will
+   NOT coerce `DashMap<_, SymbolTable<Code, ()>>` to `&DashMap<_, SymbolTable<(), ()>>`
+   (invariant in `C`). **Resolution (decided): genericize the lookup chain over the
+   table's store params.** This is sound because the pass reads ONLY `C`-independent
+   fields:
+
+   - `ModuleEntry::Def { kind, .. }` → matches `DefKind::PlatformEffect { scheduling_class, .. }`
+     (`bind_chain_analysis.rs:227`). `DefKind` is **not** parameterised by `C`; the
+     `code: Option<C>` field on the `Def` variant is never touched.
+   - `ModuleEntry::Import { source, .. }` → follows `source.module` / `source.symbol`
+     (`bind_chain_analysis.rs:234`). `ImportSource` is `C`-independent.
+
+   **Precise signature change** (the `SymbolTables` alias at `bind_chain_analysis.rs:31`
+   is the single chokepoint — every read fn threads `&SymbolTables`):
+
+   ```rust
+   // bind_chain_analysis.rs — generic alias replacing the `<(),()>`-pinned one.
+   // CodeStore / LinkerStore are re-exported at the cranelisp_types crate root.
+   use cranelisp_types::{CodeStore, LinkerStore};
+   pub type SymbolTables<C = (), L = ()> =
+       dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>;
+   ```
+
+   Then add `<C: CodeStore, L: LinkerStore>` to the fns that take `&SymbolTables`:
+   `auto_schedule_defn`, `transform_expr`, `classify_expr`, `scheduling_class_from_table`
+   (incl. its inner `walk`), `rebuild_chain`, `recurse_children`, and the live-but-
+   `#[allow(dead_code)]` `scheduling_of` (genericize it too so the test module compiles
+   uniformly; the `auto_schedule_expr*` helpers similarly). The body of each is
+   **unchanged** — `table.get(name)` returns `&ModuleEntry<C>` and the two match arms
+   above already ignore `C`. `apply_bind_chain_analysis` (`session_setup.rs:329`) then
+   takes `&dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>` directly
+   (or the generic `&SymbolTables<C, L>`), so `ctx.symbol_tables` passes with no
+   `into_concrete` / view construction.
+
+   **Fallback (only if genericization snags):** read `auto_schedule_defn` through a
+   `&SymbolTable<(), ()>` *view* — but this needs a per-module re-projection of a
+   `DashMap` and is strictly more code than the generic-param change; prefer the
+   generic form. Either way **no `cranelisp-types` change** (`/arch` confirmed: both
+   read fields exist at the `()/()` boundary and `SymbolTable<C, L>` is already
+   maximally generic). If implementation somehow forces a `cranelisp-types` edit,
+   STOP and file FIXME `target: /arch` — do not edit the types crate from int.
 
 ### 5.4 Cheap-skip guard (replaces the stale `scheduling_registry.is_empty()`)
 
@@ -362,6 +421,35 @@ the live wiring could expose a weakness the unit tests must pin.
 | C4 | `Sequential`-class pair (e.g. `read-line`/`print` ordering) | **MUST NOT** Par-group | `rebuild_chain` `:314` — `sc != Sequential` is the gate; a `Sequential` callee fails it and is flushed as `Segment::Sequential` `:324` | — |
 | C5 | Single eligible binding (1-element group) | demote to sequential bind (no `ParBind` overhead) | `flush_par_group` `:287` — `len()==1` arm demotes to `Segment::Sequential` | — |
 | C6 | Non-platform-call io_expr (wrapper fn, nested bind, let) | conservatively `Sequential` | `classify_expr` `:179` — only `Apply(Var(name), ..)` resolving to a `PlatformEffect` entry is classified; everything else → `Sequential` `:202` | — |
+
+### Negatives preservation — the green-on-arrival guard set (FIXME 0367, S85 item 4)
+
+The wiring change-set MUST NOT regress the two AST-shape negatives the spec demands —
+**a data-dependent binding** and **a `read-line`/`print` `Sequential`-class pair** MUST
+NOT par-group. These are *already* enforced by the grouping logic (C2/C4 above) and
+*already* guarded by EXISTING unit tests in `src/bind_chain_analysis.rs::tests`. The
+wiring (genericizing the alias + adding the call site + dropping `#[allow(dead_code)]`)
+touches the *plumbing*, not the grouping logic, so these tests must stay **green from the
+first compile** — a red here means the genericization accidentally changed behaviour and
+is a stop-the-line signal for `/dev`:
+
+| Negative | Existing guard (`bind_chain_analysis.rs::tests`) | Asserts |
+|---|---|---|
+| C2 — data-dependent stays sequential | `test_dependent_commutative_stays_sequential` (`:751`) | a later io_expr referencing an earlier-bound name (the `Apply`-arg case) → result is NOT `ParBind` |
+| C2 — independence predicate | `test_dependent_expression` (`:696`) | `is_independent` returns `false` when the bound name appears free |
+| C4 — Sequential-class pair stays sequential | `test_sequential_stays_sequential` (`:731`) | two `print`s (`Sequential` class) → no `ParBind` |
+| C4 — Sequential is the classification default | `test_classify_sequential_default` (`:663`) | a non-platform / `Sequential` callee classifies `Sequential` |
+| C5 — single eligible binding demoted | `test_single_element_demoted` (`:771`) | a 1-element eligible group → no `ParBind` (sequential bind, no overhead) |
+| C6 — non-platform call conservatively sequential | `test_classify_sequential_default` (`:663`) | wrapper/nested-bind/let io_exprs are not classified parallel |
+| (positive control) C1 — independent pair groups | `test_two_commutative_independent_become_par_bind` (`:704`) | independent non-`Sequential` pair → one `ParBind` (2 bindings) |
+
+The §8.1 ADD list (data-dependency negative over the remaining `Expr` variants;
+idempotency; mixed-segmentation) extends these — but the seven above are the **regression
+guards that exist today and must remain green** as the literal embodiment of S85 Scope
+item 1's "Verify negatives still hold." These are unit tests in the `cranelisp` lib
+target (`src/bind_chain_analysis.rs::tests`); after genericizing the `SymbolTables` alias,
+`cargo nextest run -p cranelisp -E 'test(bind_chain)'` is the fastest confirmation the
+plumbing change preserved the grouping contract before running the full suite.
 
 ### Gap G1 — `free_vars_expr` correctness is the C2 soundness load-bearer
 

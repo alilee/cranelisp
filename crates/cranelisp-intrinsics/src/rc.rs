@@ -96,6 +96,46 @@ pub fn consume_shallow(ptr: i64) {
     }
 }
 
+/// Increment the reference count of a heap value (shallow).
+///
+/// The blessed extern-Rust RC-inc entry point — the inc-half mirror of
+/// [`consume_shallow`]. Use this anywhere a Rust-implemented extern creates a
+/// new reference to a heap value it received or is sharing (e.g. an item
+/// copied into a fresh ADT cell, or an identity-share that returns its arg
+/// with a fresh count). Single owner for the shallow-inc discipline
+/// (Principle 7) — open-coded `fetch_add` / `*rc_ptr += 1` at extern call
+/// sites must route through here.
+///
+/// No-op for values below `NULLARY_TAG_THRESHOLD` (bare nullary tags of
+/// Mixed-category ADTs — not heap pointers).
+///
+/// # Ordering
+///
+/// Uses `fetch_add(1, Ordering::Release)`. Release is the NFR C.4.1 floor
+/// ("RC increment MUST use at least Release ordering"; `spec/appendix-c-nfr.md`
+/// §C.4.1) and matches the backend's inline `atomic_rmw` inc (SeqCst ≥ Release)
+/// and the existing atomic share path. An inc creates a new reference; the
+/// Release publishes any writes that established the new reference before the
+/// count is observed by another thread (the symmetric counterpart to the dec's
+/// Release + free-path Acquire fence in `consume_shallow`).
+///
+/// # Safety
+///
+/// `ptr` must be either a valid heap base pointer whose RC is > 0, or a bare
+/// nullary tag (< `NULLARY_TAG_THRESHOLD`).
+#[inline]
+pub fn rc_inc(ptr: i64) {
+    if ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
+        return; // bare tag — no heap alloc to inc
+    }
+    // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
+    let rc_ptr = unsafe {
+        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+    };
+    let old_rc = rc_ptr.fetch_add(1, Ordering::Release);
+    rc_trace("inc", ptr, old_rc + 1);
+}
+
 /// RC underflow check — called from JIT-generated inline dec code.
 ///
 /// The backend emits `atomic_rmw(Sub, ...)` inline. After the sub, if the
@@ -197,5 +237,53 @@ mod tests {
         assert_eq!(alloc::dealloc_count() - deallocs_before, 0, "must not free when other refs exist");
         // Clean up.
         unsafe { alloc::dealloc(base as *mut u8) };
+    }
+
+    // spec: spec/appendix-c-nfr.md §C.4.1 — RC increment atomic, ≥ Release
+    #[test]
+    fn rc_inc_increments_canonical_rc_field() {
+        let allocs_before = alloc::alloc_count();
+        let deallocs_before = alloc::dealloc_count();
+        // Allocate a heap value with rc=1.
+        let base = alloc::alloc_with_rc(16) as i64;
+        // rc_inc: 1 -> 2 (lands on the canonical RC field, observed by the dec).
+        rc_inc(base);
+        // First dec: 2 -> 1, must NOT free.
+        consume_shallow(base);
+        assert_eq!(alloc::alloc_count() - allocs_before, 1);
+        assert_eq!(
+            alloc::dealloc_count() - deallocs_before,
+            0,
+            "must not free after rc_inc raised the count"
+        );
+        // Second dec: 1 -> 0, frees.
+        consume_shallow(base);
+        assert_eq!(alloc::dealloc_count() - deallocs_before, 1);
+    }
+
+    // spec: spec/appendix-c-nfr.md §C.4.1 — RC increment atomic, ≥ Release
+    #[test]
+    fn rc_inc_skips_nullary_tags() {
+        // Bare nullary tags (< NULLARY_TAG_THRESHOLD) must be skipped — they are
+        // not heap pointers, and a non-skipped inc would corrupt the tag value.
+        let allocs_before = alloc::alloc_count();
+        let deallocs_before = alloc::dealloc_count();
+        rc_inc(0);
+        rc_inc(1);
+        rc_inc(100);
+        rc_inc(cranelisp_types::NULLARY_TAG_THRESHOLD as i64 - 1);
+        assert_eq!(alloc::alloc_count() - allocs_before, 0);
+        assert_eq!(alloc::dealloc_count() - deallocs_before, 0);
+    }
+
+    // spec: 12-runtime §12.3.2 — RC trace logging does not panic
+    #[test]
+    fn rc_inc_traces_without_panic() {
+        // rc_inc on a valid cell emits the "inc" trace op and must not panic.
+        let base = alloc::alloc_with_rc(16) as i64;
+        rc_inc(base); // rc: 1 -> 2, traces "inc"
+        // Clean up both references.
+        consume_shallow(base);
+        consume_shallow(base);
     }
 }

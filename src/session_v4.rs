@@ -1807,57 +1807,67 @@ impl CompilerSession {
         let code_ptr = self.lookup_main_code_ptr(module_name, &main_sym)?;
         let result_type = self.lookup_main_return_type(module_name);
 
-        // Clear any stale runtime error.
-        let _ = cranelisp_intrinsics::panic::take_runtime_error();
-
-        // Call main.
+        // Run the program via the unified C-ABI driver (FIXME 0366). The driver
+        // owns the WHOLE clear→call→pre-IO-peek→trampoline→post-IO-peek sequence
+        // — the same body the `--link` startup stub drives — and returns a
+        // `ProgramOutcome` WITHOUT exiting (REPL-safe) and WITHOUT clearing the
+        // error slots (we drain them below to build the structured error). This
+        // is the single owner of the three former lockstep slot-check points;
+        // the host no longer transcribes them.
+        //
         // SAFETY: `code_ptr` is non-null — returned from `lookup_main_code_ptr`
         // which errors on None. It points to finalized JIT code compiled by
-        // Cranelift via `compile_and_register_defn`. The compiled function uses
-        // the `extern "C" fn() -> i64` calling convention (zero-arg defn with
-        // i64 return), matching the transmute target type.
-        let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code_ptr) };
-        let raw_value = func();
+        // Cranelift via `compile_and_register_defn`, with the
+        // `extern "C" fn() -> i64` calling convention (zero-arg defn, i64
+        // return) the driver transmutes to.
+        let outcome = cranelisp_intrinsics::panic::cranelisp_run_program(
+            code_ptr,
+            result_type.is_io(),
+        );
 
-        // Check for runtime panics.
-        if let Some(err) = cranelisp_intrinsics::panic::take_runtime_error() {
-            return Err(CranelispError::CodegenError {
-                message: format!("runtime panic: {}", err),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            });
-        }
-
-        // IO trampoline.
-        if result_type.is_io() {
-            let inner_value = cranelisp_intrinsics::run_io_trampoline(raw_value);
-            // Decision 24 (consuming convention): `run_io_trampoline` is
-            // non-consuming of its input tree. The caller-tree outer nodes
-            // (Bind/Pure + continuation closures) must be released via
-            // `drop::consume_io_tree` — without this, every batch-mode
-            // `(defn main ...)` that returns IO leaks its outer IO nodes.
-            // Mirrors the pipeline path's `unwrap_io_inline` in pipeline.rs
-            // and the extern `cranelisp_run_io` entry in runtime::io.
-            cranelisp_intrinsics::drop::consume_io_tree(raw_value);
-
-            // A platform Effect forced during the trampoline may have faulted
-            // under the intrinsics fault guard (FIXME 0327, the dispatch
-            // funnel). int composes the structured `PlatformError::DispatchError`
-            // from the intrinsics-captured `(fn_name, cause)` slot (BC §4b
-            // invariant 14 / §5 invariant 9 — two-layer split).
-            if let Some(fault) = cranelisp_intrinsics::panic::take_dispatch_fault() {
-                return Err(CranelispError::Platform(
+        // Translate the outcome → structured error / (value, Type) for
+        // `main.rs::run`. The host (NOT the driver) drains the SET slot to
+        // compose the message — `error.rs`'s `PlatformError::DispatchError`
+        // Display stays the host-side single source for the dispatch-fault text.
+        match outcome.error_kind {
+            // 1 = runtime error: the runtime-error slot is SET (drain for text).
+            1 => {
+                let err = cranelisp_intrinsics::panic::take_runtime_error()
+                    .unwrap_or_else(|| "runtime panic".to_string());
+                Err(CranelispError::CodegenError {
+                    message: format!("runtime panic: {}", err),
+                    location: ErrorLocation::from_span(Span::SYNTHETIC),
+                })
+            }
+            // 2 = dispatch fault: the dispatch-fault slot is SET. int composes
+            // the structured `PlatformError::DispatchError` from the
+            // intrinsics-captured `(fn_name, cause)` (BC §4b invariant 14 / §5
+            // invariant 9 — two-layer split).
+            2 => {
+                let fault = cranelisp_intrinsics::panic::take_dispatch_fault()
+                    .unwrap_or_else(|| cranelisp_intrinsics::panic::DispatchFault {
+                        fn_name: "<unknown>".to_string(),
+                        cause: "platform dispatch fault".to_string(),
+                    });
+                Err(CranelispError::Platform(
                     cranelisp_types::PlatformError::DispatchError {
                         fn_name: cranelisp_types::Symbol::from(fault.fn_name),
                         cause: fault.cause,
                         location: ErrorLocation::from_span(Span::SYNTHETIC),
                     },
-                ));
+                ))
             }
-
-            let inner_type = result_type.unwrap_io().clone();
-            Ok((inner_value, inner_type))
-        } else {
-            Ok((raw_value, result_type))
+            // 0 = clean: `outcome.exit_code` is the inner IO value (or main's own
+            // result for a non-IO main). The host applies its own type-driven
+            // exit-code reduction in `main.rs::run`.
+            _ => {
+                if result_type.is_io() {
+                    let inner_type = result_type.unwrap_io().clone();
+                    Ok((outcome.exit_code, inner_type))
+                } else {
+                    Ok((outcome.exit_code, result_type))
+                }
+            }
         }
     }
 

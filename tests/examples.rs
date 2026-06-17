@@ -152,6 +152,9 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // 29: type annotations (:Type binds the following form). Sum of
         // sub-test pass counts = 42 + 42 + 11 + 7 + 17 = 119.
         ("29-annotations.cl", &[119]),
+        // 30: self-parallelising map-reduce (lenient eval). main returns
+        // 8 * fib(38) / 1_000_000 = 312; process exit truncates to u8 => 56.
+        ("30-parallel-map-reduce.cl", &[56]),
     ]
 }
 

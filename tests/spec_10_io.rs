@@ -1338,3 +1338,149 @@ fn auto_io_par_grouping_uniform_across_modes() {
          is dormant in --link (mode-uniformity hole; spec §10.12)."
     );
 }
+
+// =============================================================================
+// Sprint 85 Item 4 — 0398 Par-boundary FORK-JOIN ERROR FERRY (NEW e2e guards).
+//
+// Plan: tests/plan/sprint85-test-plan.md §Item 4 (FIXME 0398). The Par/IO
+// analogue of `tests/spec_12_runtime.rs::lenient_binding_panic_not_swallowed_neg`
+// (the IVar/lenient boundary), extending the witness to the Par boundary that
+// 0367's wiring newly activates on user effects.
+//
+// CONSTRUCTION (mechanism 1 from the plan — no new fixture): a data-independent
+// two-effect `bind` chain over `commutative-sleep-ms`, where ONE branch's
+// argument raises a runtime panic via `(div-i64 N 0)`. The div-by-zero fires
+// inside the branch's argument-computation dynamic extent. Pre-0367 the chain
+// runs sequentially; post-0367 the same chain is Par-grouped and the panic
+// fires inside a spark — the ferry (already landed S76, io.rs:527-564) must
+// re-raise it on the joining thread.
+//
+// EMPIRICAL W0-STATE (verified 2026-06-17, PRE-0367-wiring): both guards are
+// GREEN now (the bind chain still runs sequentially, so the panic surfaces
+// trivially on the own thread). They are therefore MUST-STAY-GREEN regression
+// guards — analogous to `resource_serial_same_token_serializes` — that prove
+// the ferry keeps surfacing the first error once Par grouping activates. They
+// MUST NOT regress to a swallowed panic (exit 0 / spurious slot pollution) when
+// 0367 wires Par emission. (Were the panic ever swallowed across the Par fork,
+// these flip RED — exactly the 0398 defect signal.)
+//
+// LINK-MODE NOTE: a div-by-zero panic in a `--link` produced binary currently
+// terminates by SIGSEGV (exit 139), not a clean "division by zero" message —
+// a PRE-EXISTING `--link` panic-surfacing gap independent of Par and of 0367
+// (reproduces with a plain non-bind div-by-zero `--run`/`--link` program). To
+// avoid entangling 0398's ferry guard with that separate gap, the `--link` leg
+// asserts only the spec-load-bearing property — the panic is NOT silently
+// swallowed (exit non-zero, never a clean exit 0) — while the `--run` leg
+// asserts the full "division by zero" surfacing. The message-in-`--link` gap is
+// a separate concern, not this guard's subject.
+
+/// A two-binding Commutative `bind` chain where the FIRST branch's argument
+/// raises a div-by-zero runtime panic: `(commutative-sleep-ms (div-i64 200 0))`.
+/// The other branch is a clean 200ms sleep. Data-independent (`a` not free in
+/// the second binding) → 0367 Par-groups it; the panic fires inside the first
+/// branch's spark. The terminal `Pure (add-i64 a b)` would make `main : IO Int`
+/// were both branches to complete — but the panic must abort first.
+fn par_branch_panic_program() -> String {
+    format!(
+        "(platform test-capture)\n\
+         (import [platform.test-capture [commutative-sleep-ms]])\n\
+         (import [primitives [bind Pure]])\n\
+         (defn main []\n\
+           (bind (commutative-sleep-ms (primitives/div-i64 {RS_SLEEP_MS} 0)) (fn [a]\n\
+             (bind (commutative-sleep-ms {RS_SLEEP_MS}) (fn [b]\n\
+               (Pure (primitives/add-i64 a b)))))))\n"
+    )
+}
+
+// spec: spec/12-runtime.md §12.4.3 — a runtime panic inside one branch of a
+// fork-join (the §10.12 automatic-IO scheduling case) MUST surface on the
+// joining thread; it MUST NOT be silently discarded. The Par/IO analogue of
+// `lenient_binding_panic_not_swallowed_neg`.
+//
+// MUST-STAY-GREEN regression guard (S85, 0398; gated-on-0367 by construction):
+// GREEN today (sequential — panic surfaces on own thread) AND must STAY green
+// after 0367 wires Par emission (the landed ferry re-raises the first error on
+// join). A regression to a swallowed panic flips this RED — the 0398 signal.
+#[test]
+fn auto_io_par_branch_panic_surfaces_on_join_neg() {
+    let src = par_branch_panic_program();
+
+    // --run: the panic MUST surface with the "division by zero" message and a
+    // non-zero exit — NOT a swallowed sentinel that lets main exit 0.
+    let run_out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", &src)
+        .run("main.cl")
+        .output();
+    assert_ne!(
+        run_out.status.code(),
+        Some(0),
+        "--run Par-branch panic: expected non-zero exit (panic surfaced), got \
+         exit 0 — the div-by-zero in a Par branch was silently swallowed \
+         (spec §12.4.3 fork-join error propagation).\nstdout:\n{}\nstderr:\n{}",
+        run_out.stdout, run_out.stderr
+    );
+    assert!(
+        run_out.stderr.contains("division by zero")
+            || run_out.stdout.contains("division by zero"),
+        "--run Par-branch panic: expected the 'division by zero' panic message to \
+         surface on the joining thread (spec §12.4.3) — it MUST NOT be silently \
+         discarded.\nstdout:\n{}\nstderr:\n{}",
+        run_out.stdout, run_out.stderr
+    );
+
+    // --link: the produced binary MUST also not silently swallow the panic
+    // (exit non-zero). The full message-surfacing in --link is gated on a
+    // separate pre-existing --link panic gap (see the LINK-MODE NOTE above), so
+    // this leg asserts only the spec-load-bearing non-swallow property.
+    let link_out = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("main.cl", &src)
+        .link_then_run("main.cl")
+        .output();
+    assert_ne!(
+        link_out.status.code(),
+        Some(0),
+        "--link Par-branch panic: produced binary exited 0 — the div-by-zero in \
+         a Par branch was silently swallowed in the linked binary (spec §12.4.3 \
+         fork-join error propagation MUST NOT discard a branch panic).\n\
+         stdout:\n{}\nstderr:\n{}",
+        link_out.stdout, link_out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — after a fork-join branch panic surfaces,
+// the runtime-error slot MUST be clean for a subsequent read in the same
+// process — the first-error-wins + slot-clear half of the ferry. Witnessed at
+// the REPL: a Par-grouped bind chain whose first branch panics, then a clean
+// independent expression in the SAME session, which MUST evaluate correctly
+// (not spuriously inherit the prior error).
+//
+// MUST-STAY-GREEN regression guard (S85, 0398 companion; gated-on-0367 by
+// construction): GREEN today (sequential — the slot is cleared on read, the
+// next expression is clean) AND must STAY green after 0367 wires Par emission.
+// A slot left polluted across the Par fork flips this RED.
+#[test]
+fn auto_io_par_branch_panic_no_slot_pollution_neg() {
+    // Line 1-3: load the platform + primitives. Line 4: a Par-eligible
+    // (data-independent) two-effect bind chain whose first branch panics
+    // (div-by-zero). Line 5: a clean independent expression — MUST yield 42,
+    // proving the error slot was not left polluted by the prior panic.
+    let session = "(platform test-capture)\n\
+                   (import [platform.test-capture [commutative-sleep-ms]])\n\
+                   (import [primitives [bind Pure add-i64 div-i64]])\n\
+                   (bind (commutative-sleep-ms (div-i64 200 0)) (fn [a]\n\
+                     (bind (commutative-sleep-ms 200) (fn [b]\n\
+                       (Pure (add-i64 a b))))))\n\
+                   (add-i64 40 2)\n";
+
+    Cranelisp::new()
+        .use_workspace_platforms()
+        .repl()
+        .stdin(session)
+        .output()
+        // The panic from the first (Par) branch must surface, AND the
+        // subsequent clean expression must NOT inherit the error slot — it
+        // evaluates to 42 (no spurious error attached to it).
+        .assert_stdout_contains_all(&["division by zero", ":primitives/Int 42"]);
+}

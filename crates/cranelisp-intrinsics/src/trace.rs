@@ -714,16 +714,16 @@ const TRACE_TRESULT_OFFSET: usize = FIELD0_OFFSET + 16;     // 40
 const TRACE_TCHILDREN_OFFSET: usize = FIELD0_OFFSET + 24;   // 48
 const TRACE_TNANOS_OFFSET: usize = FIELD0_OFFSET + 32;      // 56
 
-/// RC-inc a heap value (atomic, matching the compiler's `emit_rc_inc`).
-/// No-op for nullary tags (bare integers below NULLARY_TAG_THRESHOLD).
+/// RC-inc a heap value via the blessed `rc::rc_inc` entry point.
+///
+/// Thin delegate to [`crate::rc::rc_inc`] — the single owner of the shallow-inc
+/// discipline (Principle 7). The nullary-tag skip lives inside `rc_inc`. This
+/// is the SeqCst→Release downgrade ruled by `/arch` (FIXME 0397; BC §4b
+/// invariant 3, table row `trace.rs::rc_inc_if_heap`): the field-accessor inc
+/// carries no cross-variable ordering obligation, so the formerly open-coded
+/// SeqCst `fetch_add` was gratuitous; Release is the correct NFR C.4.1 floor.
 fn rc_inc_if_heap(val: i64) {
-    if (val as usize) >= cranelisp_types::NULLARY_TAG_THRESHOLD {
-        // SAFETY: val is a heap pointer; RC field is at offset 8 from base.
-        unsafe {
-            let rc_ptr = (val as *mut u8).add(8) as *mut AtomicI64;
-            (*rc_ptr).fetch_add(1, Ordering::SeqCst);
-        }
-    }
+    crate::rc::rc_inc(val);
 }
 
 /// Return the `tname` field (String heap ptr) of a TraceCall ADT.

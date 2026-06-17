@@ -325,28 +325,47 @@ pub(crate) fn determine_exit_code(value: i64, inner_ty: &Type) -> i32 {
 // the same predicate the priority worker uses (Decision 22). Helper deleted.
 
 /// Apply bind chain independence analysis to all defn bodies in a program.
-#[allow(dead_code)]
-pub(crate) fn apply_bind_chain_analysis(
+///
+/// Wired live at the `finalize_cluster` seam (S85, FIXME 0367) — runs over the
+/// post-Pass-2 `final_working` program (wrapped exprs + appended default-method
+/// defns), after macro expansion and before `check_program_compat`. Genericized
+/// over the symbol table's store params so it accepts the session's live
+/// `SymbolTable<Code, ()>` directly (no `into_concrete` / view projection).
+pub(crate) fn apply_bind_chain_analysis<
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+>(
     program: &mut Program,
-    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable<C, L>>,
     current_module: &ModuleFullPath,
 ) {
     use cranelisp_types::TopLevel;
+    // Multi-sig (overloaded / multi-clause) defns are NOT auto-scheduled —
+    // `auto_schedule_defn` asserts single-sig (each clause body would need its
+    // own transform sweep, and the bind-chain analysis is defined over a single
+    // body). Skipping them keeps the assert an invariant rather than a crash on
+    // the live path: a `(defn f ([a] ..) ([a b] ..))` form is a `Defn` with
+    // `is_multi_sig() == true` and must be left untouched.
     for item in program.iter_mut() {
         match item {
-            TopLevel::Defn(defn) => {
+            TopLevel::Defn(defn) if !defn.is_multi_sig() => {
                 crate::bind_chain_analysis::auto_schedule_defn(
                     defn, symbol_tables, current_module,
                 );
             }
             TopLevel::TraitImpl(impl_) => {
                 for method in impl_.methods.iter_mut() {
-                    crate::bind_chain_analysis::auto_schedule_defn(
-                        method, symbol_tables, current_module,
-                    );
+                    if !method.is_multi_sig() {
+                        crate::bind_chain_analysis::auto_schedule_defn(
+                            method, symbol_tables, current_module,
+                        );
+                    }
                 }
             }
-            TopLevel::TraitDecl(_) | TopLevel::TypeDef { .. } | TopLevel::Expr(_) => {}
+            TopLevel::Defn(_)
+            | TopLevel::TraitDecl(_)
+            | TopLevel::TypeDef { .. }
+            | TopLevel::Expr(_) => {}
         }
     }
 }

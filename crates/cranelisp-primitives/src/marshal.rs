@@ -145,27 +145,14 @@ unsafe fn write_i64(base: i64, offset: usize, value: i64) {
 /// Used by `sconcat` to keep items alive when they are copied from `xs`
 /// into a new SList (the original `xs` SCons chain may be freed by the
 /// caller's drop glue after the call).
+///
+/// Routes through the blessed `cranelisp_intrinsics::rc::rc_inc` entry point —
+/// the single owner of the shallow-inc discipline (Principle 7). The
+/// nullary-tag skip lives inside `rc_inc`. This replaces the former *non-atomic*
+/// `*rc_ptr += 1` (audit MED-1), which became a genuine data race once the S85
+/// auto-IO wiring let a spark fork a callee sharing a value inc'd here.
 fn shallow_rc_inc(val: i64) {
-    if val >= NULLARY_THRESHOLD {
-        // SAFETY: val is a heap pointer; RC field is at HeapHeader::RC_OFFSET
-        // (single-sourced from cranelisp-types, Principle 7).
-        //
-        // NOTE (MED-1, audit 2026-06-14): this is a *non-atomic* increment,
-        // diverging from `string.rs::string_identity`'s atomic `fetch_add`.
-        // The blessed `cranelisp_intrinsics::rc` module exposes a dec
-        // (`consume_shallow`) but NO public RC-inc entry point, so this path
-        // cannot yet be unified there without a cross-crate addition to the
-        // intrinsics RC surface. Filed as FIXME `target: /arch` (intrinsics
-        // RC-inc entry point + atomicity policy under live lenient-eval
-        // sparks). Until that lands, both `sconcat`/`quote-sexp` callees run
-        // on the calling thread (no spark forks an `sconcat` mid-flight), so
-        // the non-atomic inc is sound today; the divergence is the hazard the
-        // FIXME tracks, not a present bug.
-        unsafe {
-            let rc_ptr = (val as *mut u8).add(HeapHeader::RC_OFFSET as usize) as *mut i64;
-            *rc_ptr += 1;
-        }
-    }
+    cranelisp_intrinsics::rc::rc_inc(val);
 }
 
 /// Deeply increment the reference count of a runtime SList and all its

@@ -29,8 +29,10 @@ use cranelisp_types::{ErrorLocation,
 /// # Arguments
 /// * `platform_manifest_names` — symbol names for platform manifest functions
 ///   (e.g., `["cranelisp_platform_manifest"]`). Empty if no platforms.
-/// * `main_returns_io` — if true, inserts a `cranelisp_run_io` call to force
-///   the IO task tree before extracting the exit code.
+/// * `main_returns_io` — passed to `cranelisp_run_program` as the flag that
+///   decides whether the unified driver forces the IO task tree before
+///   producing the exit code (FIXME 0366 — the stub no longer emits a direct
+///   `cranelisp_run_io` call).
 /// * `entry_fn_name` — the user-main symbol the stub imports and calls. macOS
 ///   `"main"`; Linux `"cranelisp_user_main"` (the alias `.o`'s Export). Read
 ///   from `host_entry_symbols()` at the call site (design §11.3).
@@ -103,22 +105,48 @@ pub fn generate_startup_object(
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         })?;
 
-    // Declare `cranelisp_run_io` as imported (IO trampoline).
-    let run_io_func_id = if main_returns_io {
-        let mut run_io_sig = obj_module.make_signature();
-        run_io_sig.params.push(AbiParam::new(types::I64));
-        run_io_sig.returns.push(AbiParam::new(types::I64));
-        Some(
-            obj_module
-                .declare_function("cranelisp_run_io", Linkage::Import, &run_io_sig)
-                .map_err(|e| CranelispError::CodegenError {
-                    message: format!("failed to declare cranelisp_run_io: {e}"),
-                    location: ErrorLocation::from_span(Span::SYNTHETIC),
-                })?,
+    // Declare `cranelisp_run_program` as imported — the unified program driver
+    // (FIXME 0366). It owns the WHOLE drive-main → pre-IO-drain → IO-trampoline →
+    // post-IO-drain sequence that the `--run` host also calls; the stub shrinks
+    // to one call + an outcome branch. Signature:
+    //   `(main_ptr: i64, main_returns_io: i8) -> ProgramOutcome { i64, i32 }`.
+    // The `ProgramOutcome` `#[repr(C)]` carrier (i64 exit_code + i32 error_kind)
+    // returns in the AArch64 AAPCS / SysV integer return registers (x0:x1 /
+    // rax:rdx), matched here by the two scalar return AbiParams. `main_returns_io`
+    // is passed as an i8 bool (the C-ABI `bool` width).
+    let mut run_program_sig = obj_module.make_signature();
+    run_program_sig.params.push(AbiParam::new(types::I64)); // main_ptr
+    run_program_sig.params.push(AbiParam::new(types::I8)); // main_returns_io (bool)
+    run_program_sig.returns.push(AbiParam::new(types::I64)); // exit_code
+    run_program_sig.returns.push(AbiParam::new(types::I32)); // error_kind
+    let run_program_func_id = obj_module
+        .declare_function("cranelisp_run_program", Linkage::Import, &run_program_sig)
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare cranelisp_run_program: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
+
+    // Declare `cranelisp_check_runtime_error` as imported (zero-arg). Since the
+    // FIXME 0366 unification the stub calls this at ONE site — on a non-zero
+    // `ProgramOutcome::error_kind` after `cranelisp_run_program`. The driver
+    // left the relevant slot SET; this gate drains it, prints the message to
+    // stderr, and `exit(1)`s — a clean batch-mode exit mirroring the `--run`
+    // host (spec §12.7.4.2). It drains BOTH the runtime-error and dispatch-fault
+    // slots, so it surfaces the pre-IO (FIXME 0399) and during-IO (FIXME 0401)
+    // cases with one body. Resolved by the system linker against
+    // `cranelisp-intrinsics` (force-linked via `cranelisp-exe-bundle`'s
+    // `pub use …::panic`).
+    let check_runtime_error_sig = obj_module.make_signature();
+    let check_runtime_error_func_id = obj_module
+        .declare_function(
+            "cranelisp_check_runtime_error",
+            Linkage::Import,
+            &check_runtime_error_sig,
         )
-    } else {
-        None
-    };
+        .map_err(|e| CranelispError::CodegenError {
+            message: format!("failed to declare cranelisp_check_runtime_error: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        })?;
 
     // Declare `exit` as imported (libc, takes i32).
     let mut exit_sig = obj_module.make_signature();
@@ -290,28 +318,56 @@ pub fn generate_startup_object(
             }
         }
 
-        // 2. Call main().
+        // 2. Run the program via the unified driver (FIXME 0366). Take main's
+        // address (it is imported `Linkage::Import` and never called directly
+        // now) + the `main_returns_io` flag, and hand the whole
+        // drive-main → drain → trampoline → drain sequence to
+        // `cranelisp_run_program`. It returns `ProgramOutcome { exit_code,
+        // error_kind }` in the two integer return registers.
         let main_ref = obj_module.declare_func_in_func(main_func_id, builder.func);
-        let call_inst = builder.ins().call(main_ref, &[]);
-        let main_result = builder.inst_results(call_inst)[0];
+        let main_addr = builder.ins().func_addr(types::I64, main_ref);
+        let returns_io_flag = builder
+            .ins()
+            .iconst(types::I8, if main_returns_io { 1 } else { 0 });
+        let run_program_ref =
+            obj_module.declare_func_in_func(run_program_func_id, builder.func);
+        let run_inst = builder
+            .ins()
+            .call(run_program_ref, &[main_addr, returns_io_flag]);
+        let results = builder.inst_results(run_inst);
+        let exit_code_i64 = results[0];
+        let error_kind = results[1];
 
-        // 3. If main returns IO, force the task tree via trampoline.
-        let ret_val = if let Some(run_io_fid) = run_io_func_id {
-            let run_io_ref = obj_module.declare_func_in_func(run_io_fid, builder.func);
-            let run_inst = builder.ins().call(run_io_ref, &[main_result]);
-            builder.inst_results(run_inst)[0]
-        } else {
-            main_result
-        };
+        // 3. Outcome branch: on a non-zero `error_kind` the driver left the
+        // relevant slot SET — drain+print+exit(1) via `cranelisp_check_runtime_error`
+        // (it prints from whichever slot is set and exits). Otherwise exit with
+        // the reduced exit_code. This is the stub's whole error-surfacing
+        // responsibility (the three former lockstep slot-check points now live
+        // once inside `cranelisp_run_program`).
+        let error_block = builder.create_block();
+        let clean_block = builder.create_block();
+        let zero = builder.ins().iconst(types::I32, 0);
+        let is_error = builder
+            .ins()
+            .icmp(IntCC::NotEqual, error_kind, zero);
+        builder.ins().brif(is_error, error_block, &[], clean_block, &[]);
 
-        // 4. Truncate i64 -> i32 for exit code.
-        let exit_code = builder.ins().ireduce(types::I32, ret_val);
+        // Error path: drain the SET slot, print, and exit(1) inside the export.
+        builder.switch_to_block(error_block);
+        builder.seal_block(error_block);
+        let check_re_ref =
+            obj_module.declare_func_in_func(check_runtime_error_func_id, builder.func);
+        builder.ins().call(check_re_ref, &[]);
+        // `cranelisp_check_runtime_error` exits on a set slot; defensively trap
+        // if control returns (it won't on a genuine error_kind != 0).
+        builder.ins().trap(TrapCode::user(1).unwrap());
 
-        // 5. Call exit(code).
+        // Clean path: exit(exit_code).
+        builder.switch_to_block(clean_block);
+        builder.seal_block(clean_block);
+        let exit_code = builder.ins().ireduce(types::I32, exit_code_i64);
         let exit_ref = obj_module.declare_func_in_func(exit_func_id, builder.func);
         builder.ins().call(exit_ref, &[exit_code]);
-
-        // Unreachable after exit, but Cranelift needs a block terminator.
         builder.ins().trap(TrapCode::user(1).unwrap());
 
         builder.finalize();

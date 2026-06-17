@@ -2,14 +2,18 @@
 
 **Status.** Subsystem design. §TARGET is the current design statement
 (user-converged 2026-06-06, **fourth convergence** — the user answered every open
-question of the third convergence; the design is now SETTLED, with one item carried as
-*owed implementation* rather than an open question: the fork-join error-slot ferry
-obligation, decided in design below, pending implementation + a defect filing).
+question of the third convergence; the design is now SETTLED). The fork-join
+error-slot ferry obligation decided in this document **landed in S76** and is recorded
+**closed** in `bounded-contexts.md` §4b invariant 13 (both join paths ferry; the prior
+"pre-existing defect / neither boundary ferries" reading is closed, the ferry is the
+regression guard). The design rationale below (the correctness argument for why
+ferrying makes `catch-runtime-error` sound under lenient/Par evaluation) is retained as
+the record of *why* the mechanism is shaped as it is — read it as the rationale for a
+landed mechanism, not as outstanding work. **The only residual is the Par-boundary e2e
+witness**, gated on the S85 0367 wiring (FIXME 0398).
 Supersedes the names-only / macro-runner §TARGET of the same day's PM (now §8d).
-**PENDING USER GREEN-LIGHT to action** — nothing here is cascaded, no FIXME is filed,
-no spec/facade/BC/source is edited. Owner `/arch`; companion to `tracing.md` (the two
-features share a runtime shape and the same S76 collapse that created the defect this
-document resolves).
+Owner `/arch`; companion to `tracing.md` (the two features share a runtime shape and
+the same S76 collapse that created the defect this mechanism resolves).
 
 ---
 
@@ -111,7 +115,7 @@ layering at the source level.
 | Section | Contents |
 |---|---|
 | §1 Overview | The feature, the minimal surface, the two rulings, the document map. |
-| §2 Settled rulings + owed work | The fourth-convergence rulings (recorded as decided) and the single owed-implementation item (the fork-join ferry obligation). |
+| §2 Settled rulings + the fork-join ferry | The fourth-convergence rulings (recorded as decided) and the fork-join ferry obligation — its correctness argument, now landed S76 (BC §4b invariant 13, closed). |
 | §3 The requirement | Why discovery exists; tests as ordinary fns; minimal-surface center of gravity; D30 deadlock; spec promises. |
 | §4 The user experience | Defining tests; a REPL session; the three-way folding runner over discovered pairs; the protection-placement payoff; what `--link` users see. |
 | §5 The language constructs | `discover-tests` (signature + overloads + eligibility + module arg + the closure wrapper); `catch-runtime-error` (combinator signature + capture scope + lenient/Par soundness + the ferry obligation + caveats); visibility; what retires. |
@@ -123,13 +127,14 @@ layering at the source level.
 
 ---
 
-## 2. Settled rulings + the one owed item
+## 2. Settled rulings + the fork-join ferry
 
 The fourth convergence (2026-06-06) answered every open question of the third. They are
-recorded here **as decided**, not as questions. One item carries forward — not as an
-open question but as **settled design owed implementation**: the fork-join error-slot
-ferry obligation (q-rte-purity's "how does it work for lenient eval?" — the worked
-answer is below and in §5).
+recorded here **as decided**, not as questions. The fork-join error-slot ferry
+obligation (q-rte-purity's "how does it work for lenient eval?" — the worked answer is
+below and in §5) was the one item that carried as design-ahead-of-implementation; it
+**landed in S76** and is recorded **closed** in `bounded-contexts.md` §4b invariant 13.
+The correctness argument below is retained as the rationale for the landed mechanism.
 
 ### Settled rulings
 
@@ -174,7 +179,7 @@ answer is below and in §5).
   mechanism that makes §12.4.3's "non-determinism is not observable" promise hold for
   panics.
 
-### The one owed item — the fork-join error-slot ferry obligation (q-rte-purity, answered)
+### The fork-join error-slot ferry obligation (q-rte-purity, answered; landed S76, closed)
 
 **The question.** The user stated `catch-runtime-error` "only works for pure functions"
 — which the thunk type `(Fn [] a)` already enforces — and asked "how does it work for
@@ -191,7 +196,10 @@ wrong — struck).** `compile_let` checks sparkability and routes to `compile_le
 `design/backend/lenient-eval.md`. So a pure thunk's body genuinely can fork pure work
 onto rayon workers.
 
-**As-built, no fork-join boundary ferries the error slot — a pre-existing defect.**
+**At the time of this design pass (pre-S76), no fork-join boundary ferried the error
+slot — a pre-existing defect. This was fixed in S76: both join paths now ferry (BC §4b
+invariant 13, closed). The pre-S76 as-built is recorded below as the motivation for the
+ferry mechanism.**
 
 - **Lenient-let spark/join (IVars).** `ivar_spark` (`ivar.rs:84`) does `rayon::spawn`
   running `ivar_force`; `ivar_force` (`ivar.rs:115`) loads the thunk's `code_ptr`, calls
@@ -206,12 +214,13 @@ onto rayon workers.
   i64 result; **no `take_runtime_error()` check on the worker**. Same swallow + slot
   pollution.
 
-This is a **pre-existing defect independent of the combinator**. Spec §12.4.3 requires
+This was a **pre-existing defect independent of the combinator**. Spec §12.4.3 requires
 lenient evaluation to be observationally equivalent to sequential — "the non-determinism
 in evaluation order is not observable" and "Lenient evaluation is semantically
 transparent." Sequential evaluation panics the whole expression; parallel silently
-yields the sentinel — an observational divergence. **Flag it as a defect to file when
-this design is actioned** (do not file the FIXME from this pass).
+yielded the sentinel — an observational divergence. **This defect was resolved in S76 by
+landing the ferry on both join paths** (BC §4b invariant 13, closed); the only residual
+is the Par-boundary e2e witness, gated on the S85 0367 wiring (FIXME 0398).
 
 **The design obligation that makes `catch-runtime-error` sound under lenient eval.**
 Every fork-join boundary MUST ferry the error slot:
@@ -512,17 +521,19 @@ worker threads whose panics land in a *different* thread-local slot than the one
 combinator reads. (The doc's previous claim that lenient `let` "does not move work
 off-thread" was WRONG and is struck.)
 
-*As-built, no fork-join boundary ferries the error slot — a pre-existing defect (§2).*
-`ivar_spark`/`ivar_force` (`ivar.rs:84/115/137`) and
-`dispatch_par_branches_with_trace` (`io.rs:405–484`, the rayon map at :456–473) both run
-the work item and return a bare `i64` with **no `take_runtime_error()` check on the
-worker** — so a panic in a sparked binding or a Par branch sets the worker's slot,
-returns sentinel `0`, and the join collects `0` with no slot check: the error is silently
-swallowed on the caller's thread and the worker's slot is left polluted. This violates
-spec §12.4.3 (lenient evaluation MUST be observationally equivalent to sequential — "the
-non-determinism in evaluation order is not observable"; sequential would panic the whole
-expression, parallel silently yields a sentinel). **Defect to file when this design is
-actioned** (not filed from the design pass).
+*Pre-S76, no fork-join boundary ferried the error slot — a pre-existing defect (§2),
+since fixed: both join paths ferry as of S76 (BC §4b invariant 13, closed).* At the time
+of the design pass, `ivar_spark`/`ivar_force` (`ivar.rs:84/115/137`) and
+`dispatch_par_branches_with_trace` (`io.rs:405–484`, the rayon map at :456–473) both ran
+the work item and returned a bare `i64` with **no `take_runtime_error()` check on the
+worker** — so a panic in a sparked binding or a Par branch set the worker's slot,
+returned sentinel `0`, and the join collected `0` with no slot check: the error was
+silently swallowed on the caller's thread and the worker's slot left polluted. This
+violated spec §12.4.3 (lenient evaluation MUST be observationally equivalent to
+sequential — "the non-determinism in evaluation order is not observable"; sequential
+would panic the whole expression, parallel silently yielded a sentinel). **Resolved in
+S76 by landing the ferry on both join paths** (BC §4b invariant 13); the only residual is
+the Par-boundary e2e witness, gated on the S85 0367 wiring (FIXME 0398).
 
 *The obligation that makes `catch-runtime-error` sound.* Every fork-join boundary MUST
 ferry the slot:
@@ -752,33 +763,36 @@ self-contained intrinsic, no live session. The combinator needs **nothing
 session-side**: it calls a closure already in the linked program and constructs a heap
 value, so all modes (Run / REPL / `--link`) are covered.
 
-#### The fork-join error-slot ferry requirement (intrinsics-owned)
+#### The fork-join error-slot ferry requirement (intrinsics-owned; landed S76, closed)
 
-This is the **named implementation requirement** that makes `catch-runtime-error` sound
-under live lenient/Par evaluation (the soundness argument is §2 / §5). It is owed work on
-the **join paths**, NOT on the combinator (which stays a plain slot-reader on its own
-thread):
+This is the mechanism that makes `catch-runtime-error` sound under live lenient/Par
+evaluation (the soundness argument is §2 / §5). It lives on the **join paths**, NOT on
+the combinator (which stays a plain slot-reader on its own thread). **It landed in S76
+and is recorded closed in `bounded-contexts.md` §4b invariant 13** — both shapes below
+now ferry; the description is retained as the design record of how the mechanism is
+shaped:
 
 - **Lenient-let spark/join (IVars).** `ivar_spark` (`ivar.rs:84`, `rayon::spawn` →
   `ivar_force`) and `ivar_force` (`ivar.rs:115`, calls thunk `code_ptr` at :137, stores
-  bare i64) MUST be extended so the worker calls `take_runtime_error()` after running the
+  bare i64) are extended so the worker calls `take_runtime_error()` after running the
   thunk and ferries any `Some(err)` back to the joining thread; the joining
   `ivar_force`/spin-wait re-raises the **first** error via `set_runtime_error` and yields
   the sentinel.
 - **Par fork-join.** `dispatch_par_branches_with_trace` (`io.rs:405–484`; rayon map at
-  :456–473 returns bare i64 from `run_io_trampoline`) MUST ferry likewise: worker-side
+  :456–473 returns bare i64 from `run_io_trampoline`) ferries likewise: worker-side
   `take_runtime_error()` → `(result, Option<err>)`; join-side first-error re-raise via
   `set_runtime_error`.
-- **New internal mechanism owed.** `panic.rs` needs a `set_runtime_error(msg)` companion
+- **Internal mechanism.** `panic.rs` carries the `set_runtime_error(msg)` companion
   to the existing `take_runtime_error()` slot-reader (the join-side re-raise primitive).
   Both are internal Rust, not C-ABI exports, not language names.
 
-As-built, neither path ferries (the pre-existing defect, §2). **First-error-wins**
-matches sequential semantics (the first panic aborts the whole expression); aggregation
-is rejected. Because both forms are structured fork-join, the ferry guarantees any worker
-error is back in the joining thread's slot before control leaves the spark's dynamic
-extent — so an enclosing `catch-runtime-error` observes it with zero combinator
-special-casing. **File the swallowed-error defect when this design is actioned.**
+The pre-S76 as-built (neither path ferried — the pre-existing defect, §2) is now closed.
+**First-error-wins** matches sequential semantics (the first panic aborts the whole
+expression); aggregation is rejected. Because both forms are structured fork-join, the
+ferry guarantees any worker error is back in the joining thread's slot before control
+leaves the spark's dynamic extent — so an enclosing `catch-runtime-error` observes it
+with zero combinator special-casing. The only residual is the Par-boundary e2e witness,
+gated on the S85 0367 wiring (FIXME 0398).
 
 #### Pair + Result seeding delta (ruling 1's accepted tradeoff + the combinator's return)
 
@@ -904,8 +918,9 @@ in-language runner — int's call; not a spec concern.
   > implementation that evaluates bindings on separate threads MUST therefore convey a
   > worker-thread error back to the joining thread; a parallelised binding's panic MUST
   > NOT be silently discarded.
-  This is the spec-side counterpart of the §6 ferry requirement; it also grounds the
-  swallowed-error defect (§2) as a §12.4.3 conformance failure. (The same property already
+  This is the spec-side counterpart of the §6 ferry requirement; it pins as a §12.4.3
+  conformance rule the property the S76 ferry now upholds (the swallowed-error defect of
+  §2, since closed — BC §4b invariant 13). (The same property already
   holds structurally for §10.12 Par, which §10 may want to cross-reference, but the
   observational-equivalence claim that this sentence repairs lives in §12.4.3.)
 - **FIXME 0266 stays trace-only** — it does not widen to the test names.
@@ -1223,6 +1238,11 @@ seeds) + the new combinator intrinsic + spec + the stdlib runner + two test rewr
   earlier "Par-internal panic is the trampoline's boundary, leave it" position is
   superseded. The ferry is a named §6 implementation requirement on the Par/lenient join
   paths (intrinsics-owned). Everything else from the third convergence stands.
+  *(Status update, not part of the dated record: the ferry obligation decided here
+  **landed in S76** and is recorded **closed** in `bounded-contexts.md` §4b invariant 13
+  — both join paths ferry; the §2 "pre-existing defect" is closed. The only residual is
+  the Par-boundary e2e witness, gated on S85 0367 wiring, FIXME 0398. The "flag to file
+  when actioned" above is satisfied.)*
 - **2026-06-06 — editorial restructure preserved.** Keeps the solution-first house shape
   (overview + doc map + settled rulings; requirement → UX → constructs → implementation →
   data/sequence; appendices + change history) and updates content to the fourth

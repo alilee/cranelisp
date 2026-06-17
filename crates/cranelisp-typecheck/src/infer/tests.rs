@@ -2662,3 +2662,84 @@
             "passing a trace value through an identity-shaped fn must yield Trace"
         );
     }
+
+    // --- ParBind tests (FIXME 0400, spec/10-io.md §10.12 transparency) ---
+
+    /// The `(IO inner)` ADT type — what a `ParBind` binding value carries and
+    /// what its body / result are.
+    fn io_type(inner: Type) -> Type {
+        Type::ADT(prims_fqtn("IO"), vec![inner])
+    }
+
+    /// Build a `ParBind` node by hand. `ParBind` has no surface syntax (it is
+    /// synthesised by S85 auto-IO scheduling from a `bind` chain), so it cannot
+    /// go through `build_expr_from_source`.
+    fn par_bind(bindings: Vec<(Symbol, Expr)>, body: Expr) -> Expr {
+        Expr::ParBind {
+            bindings,
+            body: Box::new(body),
+            span: span(0, 80),
+            inferred_type: None,
+        }
+    }
+
+    // spec: 10-io §10.12 — a ParBind unwraps each binding's `IO aᵢ` and binds
+    // the name to the inner type `aᵢ` (NOT `IO aᵢ`), exactly as the sequential
+    // bind chain would; the body is `IO U` and the ParBind result is `IO U`.
+    #[test]
+    fn par_bind_unwraps_io_bindings_body_uses_names_unwrapped() {
+        let mut tc = tc();
+        // Two binding values typed `IO Int` (the actions the bind chain wraps).
+        tc.bind_local_self(Symbol::from("act1"), mono(io_type(Type::Int)));
+        tc.bind_local_self(Symbol::from("act2"), mono(io_type(Type::Int)));
+        // A continuation-shaped helper `(Fn [Int] (IO Int))` so the body is
+        // itself an `IO` action that consumes the (unwrapped) names at Int.
+        tc.bind_local_self(
+            Symbol::from("mk-io"),
+            mono(Type::Fn(vec![Type::Int], Box::new(io_type(Type::Int)))),
+        );
+
+        // ParBind { a <- act1, b <- act2 } in (mk-io (add-i64 a b))
+        // — `a` and `b` are used at Int via add-i64; the body is `IO Int`.
+        let body = build_expr_from_source("(mk-io (add-i64 a b))");
+        let mut expr = par_bind(
+            vec![
+                (Symbol::from("a"), Expr::var(Symbol::from("act1"), span(10, 14))),
+                (Symbol::from("b"), Expr::var(Symbol::from("act2"), span(15, 19))),
+            ],
+            body,
+        );
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(
+            ty,
+            io_type(Type::Int),
+            "ParBind over two `IO Int` bindings whose body is `IO Int` must infer `IO Int`"
+        );
+    }
+
+    // spec: 10-io §10.12 — a body that misuses a bound name as `IO Int` (not the
+    // unwrapped `Int`) is a type error: the ParBind rule binds the name to the
+    // UNWRAPPED inner type, so feeding it where an `IO Int` is expected fails.
+    #[test]
+    fn par_bind_body_misusing_name_as_io_is_type_error() {
+        let mut tc = tc();
+        tc.bind_local_self(Symbol::from("act1"), mono(io_type(Type::Int)));
+        // `consume-io` expects an `(IO Int)`, not an `Int`.
+        tc.bind_local_self(
+            Symbol::from("consume-io"),
+            mono(Type::Fn(vec![io_type(Type::Int)], Box::new(io_type(Type::Int)))),
+        );
+
+        // ParBind { a <- act1 } in (consume-io a)
+        // — `a` is bound to `Int` (unwrapped), but used where `(IO Int)` is
+        // expected → unification failure.
+        let body = build_expr_from_source("(consume-io a)");
+        let mut expr = par_bind(
+            vec![(Symbol::from("a"), Expr::var(Symbol::from("act1"), span(10, 14)))],
+            body,
+        );
+        assert!(
+            tc.infer_expr_for_test(&mut expr).is_err(),
+            "using a ParBind-bound name as `IO Int` (not unwrapped `Int`) must be a type error"
+        );
+    }

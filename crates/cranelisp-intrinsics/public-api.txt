@@ -142,7 +142,19 @@ impl core::marker::Unpin for cranelisp_intrinsics::panic::DispatchFault
 impl core::marker::UnsafeUnpin for cranelisp_intrinsics::panic::DispatchFault
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::panic::DispatchFault
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::panic::DispatchFault
+#[repr(C)] pub struct cranelisp_intrinsics::panic::ProgramOutcome
+pub cranelisp_intrinsics::panic::ProgramOutcome::error_kind: i32
+pub cranelisp_intrinsics::panic::ProgramOutcome::exit_code: i64
+impl core::marker::Freeze for cranelisp_intrinsics::panic::ProgramOutcome
+impl core::marker::Send for cranelisp_intrinsics::panic::ProgramOutcome
+impl core::marker::Sync for cranelisp_intrinsics::panic::ProgramOutcome
+impl core::marker::Unpin for cranelisp_intrinsics::panic::ProgramOutcome
+impl core::marker::UnsafeUnpin for cranelisp_intrinsics::panic::ProgramOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_intrinsics::panic::ProgramOutcome
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_intrinsics::panic::ProgramOutcome
 #[export_name = "catch-runtime-error"] pub c fn cranelisp_intrinsics::panic::catch_runtime_error(i64) -> i64
+#[export_name = "cranelisp_check_runtime_error"] pub c fn cranelisp_intrinsics::panic::cranelisp_check_runtime_error()
+#[export_name = "cranelisp_run_program"] pub c fn cranelisp_intrinsics::panic::cranelisp_run_program(*const u8, bool) -> cranelisp_intrinsics::panic::ProgramOutcome
 #[export_name = "runtime/panic"] pub c fn cranelisp_intrinsics::panic::runtime_panic(*const u8, usize)
 pub fn cranelisp_intrinsics::panic::set_dispatch_fault(cranelisp_intrinsics::panic::DispatchFault)
 pub fn cranelisp_intrinsics::panic::set_runtime_error(alloc::string::String)
@@ -151,6 +163,7 @@ pub fn cranelisp_intrinsics::panic::take_runtime_error() -> core::option::Option
 pub mod cranelisp_intrinsics::rc
 pub fn cranelisp_intrinsics::rc::consume_shallow(i64)
 pub fn cranelisp_intrinsics::rc::is_rc_trace_enabled() -> bool
+pub fn cranelisp_intrinsics::rc::rc_inc(i64)
 pub fn cranelisp_intrinsics::rc::rc_trace(&str, i64, i64)
 #[export_name = "runtime/rc_underflow_check"] pub c fn cranelisp_intrinsics::rc::rc_underflow_check(i64, i64) -> i64
 pub mod cranelisp_intrinsics::trace

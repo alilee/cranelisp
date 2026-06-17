@@ -1057,6 +1057,24 @@ fn finalize_cluster(
         final_working.push(TopLevel::Defn(defn.clone()));
     }
 
+    // Automatic IO scheduling (spec §10.12, FIXME 0367): transform `bind!`-derived
+    // bind chains into `Expr::ParBind` nodes for data-independent, non-Sequential
+    // platform effects. Runs over the post-Pass-2 `final_working` (after macro
+    // expansion built the bind-chain shape), before typecheck sees the tree. This
+    // is the single mode-uniform seam — all three modes (`--run`/`--link`/REPL)
+    // flow through `process_cluster_once` → `finalize_cluster`.
+    //
+    // `CRANELISP_NO_IO_SCHEDULE` (presence-disables; default ON) is the escape
+    // hatch — checked ONCE here, not per-defn (§5c). Unit tests call
+    // `auto_schedule_defn` directly, bypassing this gate.
+    if std::env::var("CRANELISP_NO_IO_SCHEDULE").is_err() {
+        crate::session_setup::apply_bind_chain_analysis(
+            &mut final_working,
+            ctx.symbol_tables,
+            module,
+        );
+    }
+
     let (maybe_gap, cluster_warnings) = check_program_compat(
         ctx.symbol_tables,
         ctx.module_aliases,

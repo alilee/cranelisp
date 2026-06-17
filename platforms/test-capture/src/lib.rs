@@ -10,6 +10,8 @@
 //! - `resource-serial-noop`: ResourceSerial, takes Int token, sets resource token, returns 0
 //! - `resource-serial-sleep-ms`: ResourceSerial, takes Int token + Int ms, sets resource token,
 //!   sleeps then returns the duration (witnesses same-token serialization vs diff-token concurrency)
+//! - `fault-now`: Sequential, takes no args, panics inside the IO Effect body when forced
+//!   (raises a dispatch fault DURING the trampoline; witnesses the S81 fault funnel end-to-end)
 //!
 //! Also exports test utility functions (NOT platform functions) for setup/teardown:
 //! - `test_capture_set_input`: queue input lines for read-line
@@ -75,6 +77,23 @@ pub extern "C" fn commutative_sleep_ms(ms: CLInt) -> CLIO<CLInt> {
     })
 }
 
+/// Faulting Effect: panics inside the deferred Effect body when forced. The S81
+/// fault funnel (`CLIO::effect`'s DLL-local `catch_unwind`) converts the panic
+/// into an `EffectOutcome` carrying a `fault_cause`, which the IO trampoline
+/// surfaces as a `PlatformError::DispatchError { fn_name: "fault-now" }` in the
+/// host. The signature is `(Fn [] (IO Int))` so a free-standing program can call
+/// it directly. Sequential + IO Effect ⇒ the fault is raised DURING the
+/// trampoline (not at thunk-construction), witnessing the during-IO
+/// dispatch-fault path end-to-end (FIXME 0401). Returns `(IO Int)` only on the
+/// (unreachable) clean path — the body always panics.
+pub extern "C" fn fault_now() -> CLIO<CLInt> {
+    CLIO::effect(|| {
+        panic!("test-capture fault-now: deliberate dispatch fault");
+        #[allow(unreachable_code)]
+        CLInt::from(0i64)
+    })
+}
+
 /// Resource-serial no-op: sets the resource token on the Effect node and returns 0.
 /// Marked ResourceSerial for testing resource token serialization.
 pub extern "C" fn resource_serial_noop(token: CLInt) -> CLIO<CLInt> {
@@ -130,6 +149,13 @@ declare_platform! {
             doc: "Sleep for ms milliseconds and return the duration (Commutative, for testing)",
             params: [ms],
             scheduling: SchedulingClass::Commutative,
+        },
+        fault_now {
+            cl_name: "fault-now",
+            sig: "(Fn [] (primitives/IO primitives/Int))",
+            doc: "Panic inside the IO Effect body when forced (raises a dispatch fault during the trampoline, for testing fault surfacing)",
+            params: [],
+            scheduling: SchedulingClass::Sequential,
         },
         resource_serial_noop {
             cl_name: "resource-serial-noop",

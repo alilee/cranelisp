@@ -142,6 +142,239 @@ pub fn take_dispatch_fault() -> Option<DispatchFault> {
     DISPATCH_FAULT.with(|cell| cell.borrow_mut().take())
 }
 
+/// Non-clearing PEEK of the runtime-error slot (FIXME 0401).
+///
+/// Returns `true` when [`runtime_panic`] (or the fork-join ferry via
+/// [`set_runtime_error`]) populated the slot, WITHOUT taking it. The IO
+/// trampoline (`crate::io`) calls this after running a continuation's user code:
+/// when a runtime error is pending it stops the walk and returns the sentinel,
+/// leaving the slot SET so the **host** (`--run`'s `session_v4::trampoline` /
+/// `--link`'s `cranelisp_check_runtime_error`) is the single surfacing point.
+/// If the trampoline took the slot here it would trade the SIGSEGV for a silent
+/// swallow (clean exit, no message) — the peek is non-clearing by design.
+pub(crate) fn has_runtime_error() -> bool {
+    RUNTIME_ERROR.with(|cell| cell.borrow().is_some())
+}
+
+/// Non-clearing PEEK of the dispatch-fault slot (FIXME 0401).
+///
+/// The companion to [`has_runtime_error`] for the platform-dispatch-fault slot.
+/// The trampoline stops the walk on a pending fault, leaving it SET for the host
+/// to compose into `PlatformError::DispatchError`. Non-clearing for the same
+/// reason: the host is the surfacing point, not the trampoline.
+pub(crate) fn has_dispatch_fault() -> bool {
+    DISPATCH_FAULT.with(|cell| cell.borrow().is_some())
+}
+
+/// Drain the runtime-error slot and format the message the `--link` startup
+/// stub prints, if any (the testable half of [`cranelisp_check_runtime_error`]).
+///
+/// Returns `Some(message)` when [`runtime_panic`] (or the fork-join ferry via
+/// [`set_runtime_error`]) populated the slot during `main`, clearing it; `None`
+/// when no runtime error occurred. The slot already carries the `"runtime
+/// panic: …"` prefix (set by [`runtime_panic`]), so the returned string matches
+/// the `--run` host's slot read (`src/pipeline.rs` / `src/session_v4.rs`) —
+/// keeping the two run modes' surfaced text identical.
+///
+/// Factored out of the export so it is unit-testable without the
+/// `std::process::exit` in the thin wrapper. `pub(crate)` — the testable seam
+/// of the startup gate, not a cross-crate surface item (the export is the only
+/// public surface; int/backend reach it by `Linkage::Import` symbol name).
+pub(crate) fn drain_runtime_error_message() -> Option<String> {
+    take_runtime_error()
+}
+
+/// The terminal outcome of running a program's `main` (+ optional IO
+/// trampoline) — the single C-ABI carrier both run modes read (FIXME 0366).
+///
+/// `cranelisp_run_program` returns this; it does NOT `exit` and does NOT clear
+/// the error slots. Callers drain the slots themselves (the `--link` stub via
+/// [`cranelisp_check_runtime_error`], the `--run` host via [`take_runtime_error`]
+/// / [`take_dispatch_fault`]) and decide how to surface the error and what exit
+/// code to use. This keeps the host REPL-safe (no `process::exit` inside the
+/// driver) and keeps the error TEXT in the thread-local slots (no string
+/// marshalling across the C-ABI).
+///
+/// `#[repr(C)]` carrier (Principle 14 — FFI layout discipline): an
+/// intrinsics-local boundary type, named only by the `--link` startup stub
+/// (`src/exe.rs`) and the `--run` host (`src/session_v4.rs`). NOT a
+/// `cranelisp-types` boundary type.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProgramOutcome {
+    /// The reduced terminal result — the inner IO value when `main` returns IO,
+    /// or `main`'s own result otherwise. The `--link` stub `exit()`s with the
+    /// `i32`-truncation of this; the `--run` host reads it as the inner value
+    /// and applies its own type-driven exit-code reduction.
+    pub exit_code: i64,
+    /// `0` = clean run (no error; slots empty).
+    /// `1` = runtime error (the runtime-error slot is SET — drain it for text).
+    /// `2` = platform-dispatch fault (the dispatch-fault slot is SET — drain it
+    /// for the `(fn_name, cause)` the host composes into
+    /// `PlatformError::DispatchError`).
+    ///
+    /// On a non-zero kind the relevant slot is left SET (the driver peeks, never
+    /// takes) so the caller is the single surfacing point.
+    pub error_kind: i32,
+}
+
+/// `error_kind` values for [`ProgramOutcome`].
+const OUTCOME_CLEAN: i32 = 0;
+const OUTCOME_RUNTIME_ERROR: i32 = 1;
+const OUTCOME_DISPATCH_FAULT: i32 = 2;
+
+/// The single program driver both run modes call (FIXME 0366).
+///
+/// Owns the whole shareable core — *everything between "main is callable" and
+/// "the program's terminal result is known"*:
+///
+/// 1. clear any stale runtime error (`take_runtime_error()` discard);
+/// 2. transmute `main_ptr` to `extern "C" fn() -> i64` and call it;
+/// 3. **pre-IO** slot peek: if `main` raised a runtime error or dispatch fault,
+///    stop here and return the outcome with the slot left SET (forcing the
+///    panic-path sentinel `0` through the IO trampoline would null-deref —
+///    FIXME 0399);
+/// 4. if `main_returns_io`, force the IO task tree via the shared
+///    [`crate::io::run_io_trampoline`] and release the caller's tree via
+///    [`crate::drop::consume_io_tree`] (Decision 24 — the trampoline is
+///    non-consuming of its input);
+/// 5. **post-IO** slot peek: a runtime error or dispatch fault raised *during*
+///    the trampoline (inside a `bind` continuation, or a faulting platform
+///    Effect) leaves its slot SET and the trampoline returns the sentinel `0` —
+///    return the outcome with the slot still SET (FIXME 0401).
+///
+/// Returns [`ProgramOutcome`] WITHOUT exiting and WITHOUT clearing the slots —
+/// the caller drains and surfaces. This collapses the three former lockstep
+/// slot-check points (pre-IO runtime-error, post-IO runtime-error, post-IO
+/// dispatch-fault) — which were transcribed independently into the `--run` host
+/// and the `--link` stub — into THIS one site (FIXME 0366).
+///
+/// # Safety
+///
+/// `main_ptr` must be a valid non-null pointer to a finalized zero-arg
+/// `extern "C" fn() -> i64` (the compiled entry `main`). When `main_returns_io`
+/// is true, `main`'s returned `i64` must be a valid IO-tree base pointer (rc > 0)
+/// — or the panic-path sentinel `0`, which is caught by the pre-IO peek before
+/// the trampoline dereferences it.
+#[unsafe(export_name = "cranelisp_run_program")]
+#[allow(clippy::not_unsafe_ptr_arg_deref)] // Called from the JIT host / link stub.
+pub extern "C" fn cranelisp_run_program(
+    main_ptr: *const u8,
+    main_returns_io: bool,
+) -> ProgramOutcome {
+    // 1. Clear any stale runtime error so we observe only this run's panic.
+    let _ = take_runtime_error();
+
+    // 2. Call main.
+    // SAFETY: caller guarantees `main_ptr` is a valid finalized zero-arg
+    // `extern "C" fn() -> i64` (the contract of this fn's `# Safety`).
+    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(main_ptr) };
+    let main_result = func();
+
+    // 3. Pre-IO peek: a panic during `main` evaluation leaves the slot SET and
+    //    makes `main` return the panic-path sentinel `0`. Stop BEFORE the IO
+    //    trampoline (forcing `0` through it would null-deref — FIXME 0399).
+    if let Some(kind) = peek_error_kind() {
+        return ProgramOutcome { exit_code: main_result, error_kind: kind };
+    }
+
+    // 4. IO trampoline (if main returns IO).
+    let exit_code = if main_returns_io {
+        let inner = crate::io::run_io_trampoline(main_result);
+        // Decision 24: release the caller's tree (non-consuming trampoline).
+        crate::drop::consume_io_tree(main_result);
+        inner
+    } else {
+        main_result
+    };
+
+    // 5. Post-IO peek: a panic or dispatch fault raised DURING the trampoline
+    //    (a `bind` continuation, or a faulting platform Effect) leaves its slot
+    //    SET and the trampoline returns the sentinel `0` (FIXME 0401).
+    if let Some(kind) = peek_error_kind() {
+        return ProgramOutcome { exit_code, error_kind: kind };
+    }
+
+    ProgramOutcome { exit_code, error_kind: OUTCOME_CLEAN }
+}
+
+/// Non-clearing classification of the error slots for [`cranelisp_run_program`].
+///
+/// Returns the [`ProgramOutcome::error_kind`] discriminant for whichever slot is
+/// SET (runtime-error wins over dispatch-fault, matching the host's former
+/// check order), leaving the slot SET for the caller to drain; `None` when both
+/// slots are empty (clean).
+fn peek_error_kind() -> Option<i32> {
+    if has_runtime_error() {
+        Some(OUTCOME_RUNTIME_ERROR)
+    } else if has_dispatch_fault() {
+        Some(OUTCOME_DISPATCH_FAULT)
+    } else {
+        None
+    }
+}
+
+/// `--link` startup-stub error-surfacing gate (FIXME 0399 / 0401 / 0366).
+///
+/// Since the FIXME 0366 program-driver unification, the linked startup stub
+/// (`src/exe.rs::generate_startup_object`) calls this export at exactly ONE site
+/// — immediately after the single `cranelisp_run_program` call, on a non-zero
+/// `ProgramOutcome::error_kind`. `cranelisp_run_program` owns the whole
+/// clear→call→drain-peek→trampoline→drain-peek sequence and leaves the SET slot
+/// for this drain; this export is the stub's slot-printer + `exit(1)`.
+///
+/// On a runtime error this prints the slot message to stderr and `exit(1)`s — a
+/// clean batch-mode exit matching `--run` (spec §12.7.4.2). It also drains the
+/// platform-dispatch-fault slot ([`take_dispatch_fault`]): the linked binary has
+/// no int runtime to compose a structured `PlatformError::DispatchError`, so it
+/// surfaces the carried `(fn_name, cause)` directly. Because it drains BOTH slots
+/// it surfaces the pre-IO case (panic during `main` evaluation, FIXME 0399) and
+/// the during-IO case (panic/fault inside the trampoline, FIXME 0401) with the
+/// same body — the driver already classified which slot is SET.
+///
+/// On a clean outcome the stub does NOT call this (it `exit()`s with the
+/// `ProgramOutcome::exit_code` directly), so a clean run never reaches the drain.
+///
+/// It is force-linked into the produced binary via `cranelisp-exe-bundle`'s
+/// `pub use cranelisp_intrinsics::panic` re-export, exactly like
+/// `cranelisp_check_layout_hash`; backend/int declare it `Linkage::Import` and
+/// never reference the Rust symbol directly. It is NOT in `intrinsics_table()`
+/// (that catalog publishes user-code dispatch targets, not startup-stub calls).
+#[unsafe(export_name = "cranelisp_check_runtime_error")]
+pub extern "C" fn cranelisp_check_runtime_error() {
+    if let Some(msg) = drain_runtime_error_message() {
+        eprintln!("{msg}");
+        std::process::exit(1);
+    }
+    // Adjacent twin: a platform-dispatch fault left SET by `cranelisp_run_program`
+    // (the driver classified `error_kind == 2`) surfaces here rather than
+    // null-deref through the trampoline.
+    if let Some(fault) = take_dispatch_fault() {
+        // The dispatch-fault TEXT format lives in TWO inherently-distinct
+        // printers because intrinsics is diagnostics-free by charter (BC §4b)
+        // and must not depend on `cranelisp-types`:
+        //   - the `--run`/REPL host composes `PlatformError::DispatchError` and
+        //     surfaces it through that enum's `Display` (`cranelisp-types`, the
+        //     authoritative structured-error source);
+        //   - this `--link` slot-printer, the ONLY copy of the format string in
+        //     intrinsics, surfaces the carried `(fn_name, cause)` directly (the
+        //     linked binary has no int runtime to inflate the structured error).
+        // The FIXME 0366 unification removed every OTHER duplicate of the
+        // surfacing SEQUENCE (the three lockstep slot-check points now live once
+        // in `cranelisp_run_program`); this single format-string copy is the
+        // irreducible residue of the diagnostics-free charter — it is kept here,
+        // documented as the sole intrinsics-side copy, deliberately matching
+        // `PlatformError::DispatchError`'s `Display` template so both run modes
+        // surface identical text. A single source would require an
+        // intrinsics→types dependency the charter forbids.
+        eprintln!(
+            "platform fn `{}` dispatch failed: {}",
+            fault.fn_name, fault.cause
+        );
+        std::process::exit(1);
+    }
+}
+
 /// `catch-runtime-error` — the language-level protected-call combinator
 /// (`design/arch/test-discovery.md` §5/§6).
 ///
@@ -307,6 +540,38 @@ mod tests {
         assert_eq!(fault.cause, "first");
     }
 
+    // spec: spec/12-runtime.md §12.7.4.2 — the `--link` runtime-error gate
+    // (FIXME 0399) drains the slot message the startup stub prints. The thin
+    // export wraps this with an `exit(1)`; the helper is the testable half.
+    #[test]
+    fn test_drain_runtime_error_message_surfaces_and_clears() {
+        let _ = take_runtime_error(); // clear
+        let msg = "division by zero";
+        runtime_panic(msg.as_ptr(), msg.len());
+        let drained = drain_runtime_error_message();
+        assert!(
+            drained.as_deref().is_some_and(|m| m.contains("division by zero")),
+            "the --link gate must surface the panic message (got {drained:?})"
+        );
+        // Draining clears the slot — the stub exits, but a clean re-read is None.
+        assert!(
+            drain_runtime_error_message().is_none(),
+            "the gate must clear the slot after surfacing the message"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.7.4.2 — a clean run leaves nothing to drain,
+    // so the `--link` gate returns and `main`'s result proceeds (no spurious
+    // exit). The negative half of the FIXME 0399 gate.
+    #[test]
+    fn test_drain_runtime_error_message_none_on_clean_run() {
+        let _ = take_runtime_error(); // clear
+        assert!(
+            drain_runtime_error_message().is_none(),
+            "no runtime error => the gate must not surface anything"
+        );
+    }
+
     // spec: 12-runtime §12.4.3 — set_runtime_error is first-error-wins
     #[test]
     fn test_set_runtime_error_first_error_wins() {
@@ -390,6 +655,167 @@ mod tests {
             crate::alloc::dealloc(res as *mut u8);
             crate::alloc::dealloc(thunk as *mut u8);
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // FIXME 0366 — the unified program driver `cranelisp_run_program`. The
+    // driver owns the clear→call→pre-IO-peek→trampoline→post-IO-peek sequence
+    // and returns a `ProgramOutcome` WITHOUT exiting and WITHOUT clearing the
+    // slots. These tests assert the four outcome cases + the "slot left SET, no
+    // exit" contract the callers depend on.
+    // ---------------------------------------------------------------------
+
+    /// A clean non-IO `main` returning a constant. `extern "C" fn() -> i64`.
+    extern "C" fn main_returns_7() -> i64 {
+        7
+    }
+
+    /// A non-IO `main` that raises a runtime panic and returns the panic-path
+    /// sentinel `0` (the `emit_panic_return` shape — set slot, return 0).
+    extern "C" fn main_panics() -> i64 {
+        let msg = "boom in main";
+        runtime_panic(msg.as_ptr(), msg.len());
+        0
+    }
+
+    /// A non-IO `main` that captures a platform-dispatch fault (modelling a
+    /// fault captured during `main` evaluation) and returns the sentinel `0`.
+    extern "C" fn main_dispatch_faults() -> i64 {
+        set_dispatch_fault(DispatchFault {
+            fn_name: "stdio/read-line".to_string(),
+            cause: "device unavailable".to_string(),
+        });
+        0
+    }
+
+    /// A `main` returning an IO `Pure(42)` node base pointer. Layout
+    /// `[header(16) | tag=PURE(8) | value(8)]`; the driver forces it via the IO
+    /// trampoline and reduces to the inner value.
+    extern "C" fn main_returns_io_pure() -> i64 {
+        let base = crate::alloc::alloc_with_rc(16);
+        unsafe {
+            // tag at offset 16 = IO_TAG_PURE (0); value at offset 24.
+            *((base as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_PURE;
+            *((base as isize + 24) as *mut i64) = 42;
+        }
+        base as i64
+    }
+
+    /// A `main` returning an IO `bind (Pure 1) (fn [_] <panic; sentinel 0>)`
+    /// tree — the panic fires INSIDE the trampoline (during-IO case, FIXME 0401).
+    extern "C" fn main_returns_io_bind_panic() -> i64 {
+        // Inner Pure(1).
+        let inner = {
+            let b = crate::alloc::alloc_with_rc(16);
+            unsafe {
+                *((b as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_PURE;
+                *((b as isize + 24) as *mut i64) = 1;
+            }
+            b as i64
+        };
+        // Panicking continuation closure.
+        extern "C" fn panic_cont(_env: i64, _val: i64) -> i64 {
+            let msg = "division by zero";
+            runtime_panic(msg.as_ptr(), msg.len());
+            0 // panic-path sentinel — NOT a valid IO node
+        }
+        let cont = {
+            let b = crate::alloc::alloc_with_rc(16);
+            unsafe {
+                *((b as isize + 16) as *mut i64) = panic_cont as *const () as i64;
+                *((b as isize + 24) as *mut i64) = 0; // drop glue
+            }
+            b as i64
+        };
+        // Bind node [header | tag=BIND | inner | cont].
+        let bind = crate::alloc::alloc_with_rc(24);
+        unsafe {
+            *((bind as isize + 16) as *mut i64) = cranelisp_platform::IO_TAG_BIND;
+            *((bind as isize + 24) as *mut i64) = inner;
+            *((bind as isize + 32) as *mut i64) = cont;
+        }
+        bind as i64
+    }
+
+    // spec: spec/12-runtime.md §12.7.4.2 — a clean non-IO main yields a clean
+    // outcome carrying main's result; no slot is touched.
+    #[test]
+    fn run_program_clean_non_io() {
+        let _ = take_runtime_error();
+        let _ = take_dispatch_fault();
+        let outcome = cranelisp_run_program(main_returns_7 as *const u8, false);
+        assert_eq!(outcome.error_kind, OUTCOME_CLEAN, "clean run");
+        assert_eq!(outcome.exit_code, 7, "exit_code is main's result");
+        assert!(take_runtime_error().is_none(), "no runtime error slot set");
+        assert!(take_dispatch_fault().is_none(), "no dispatch fault slot set");
+    }
+
+    // spec: spec/12-runtime.md §12.7.4.2 — a clean IO main is forced through the
+    // trampoline and the outcome carries the inner IO value.
+    #[test]
+    fn run_program_clean_io_reduces_to_inner_value() {
+        let _ = take_runtime_error();
+        let _ = take_dispatch_fault();
+        let outcome = cranelisp_run_program(main_returns_io_pure as *const u8, true);
+        assert_eq!(outcome.error_kind, OUTCOME_CLEAN, "clean IO run");
+        assert_eq!(outcome.exit_code, 42, "exit_code is the inner Pure value");
+        assert!(take_runtime_error().is_none());
+        assert!(take_dispatch_fault().is_none());
+    }
+
+    // spec: spec/12-runtime.md §12.7.4.2 — a panic during `main` evaluation
+    // (pre-IO, FIXME 0399) yields error_kind=1 and LEAVES the runtime-error slot
+    // SET (the driver peeks, never takes; the caller drains). The driver does NOT
+    // exit and does NOT reach the trampoline.
+    #[test]
+    fn run_program_pre_io_panic_leaves_slot_set() {
+        let _ = take_runtime_error();
+        let _ = take_dispatch_fault();
+        // main_returns_io=true so we also prove the pre-IO peek stops BEFORE the
+        // trampoline (forcing sentinel 0 would null-deref).
+        let outcome = cranelisp_run_program(main_panics as *const u8, true);
+        assert_eq!(outcome.error_kind, OUTCOME_RUNTIME_ERROR, "pre-IO runtime error");
+        // The slot is left SET — the caller is the surfacing point.
+        let drained = take_runtime_error();
+        assert!(
+            drained.as_deref().is_some_and(|m| m.contains("boom in main")),
+            "runtime-error slot left SET with the panic message (got {drained:?})"
+        );
+        assert!(take_dispatch_fault().is_none());
+    }
+
+    // spec: spec/12-runtime.md §12.7.4.2 — a panic raised DURING the IO
+    // trampoline (inside a `bind` continuation, FIXME 0401) yields error_kind=1
+    // and LEAVES the runtime-error slot SET. The driver must NOT SIGSEGV.
+    #[test]
+    fn run_program_during_io_panic_leaves_slot_set() {
+        let _ = take_runtime_error();
+        let _ = take_dispatch_fault();
+        let outcome = cranelisp_run_program(main_returns_io_bind_panic as *const u8, true);
+        assert_eq!(outcome.error_kind, OUTCOME_RUNTIME_ERROR, "during-IO runtime error");
+        let drained = take_runtime_error();
+        assert!(
+            drained.as_deref().is_some_and(|m| m.contains("division by zero")),
+            "runtime-error slot left SET with the continuation panic (got {drained:?})"
+        );
+        assert!(take_dispatch_fault().is_none());
+    }
+
+    // spec: design/arch/bounded-contexts.md §4b invariant 14 — a platform
+    // dispatch fault captured during `main` yields error_kind=2 and LEAVES the
+    // dispatch-fault slot SET for the caller to compose into
+    // `PlatformError::DispatchError`. No exit; the runtime-error slot is clean.
+    #[test]
+    fn run_program_dispatch_fault_leaves_slot_set() {
+        let _ = take_runtime_error();
+        let _ = take_dispatch_fault();
+        let outcome = cranelisp_run_program(main_dispatch_faults as *const u8, false);
+        assert_eq!(outcome.error_kind, OUTCOME_DISPATCH_FAULT, "dispatch fault");
+        // The dispatch-fault slot is left SET; the runtime-error slot is empty.
+        assert!(take_runtime_error().is_none(), "no runtime-error slot set");
+        let fault = take_dispatch_fault().expect("dispatch-fault slot left SET");
+        assert_eq!(fault.fn_name, "stdio/read-line");
+        assert_eq!(fault.cause, "device unavailable");
     }
 
     // spec: 12-runtime §12.7.2 — the combinator clears a stale error before

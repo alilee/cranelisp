@@ -92,6 +92,18 @@ pub extern "C" fn ivar_create(thunk: i64) -> i64 {
 #[unsafe(export_name = "cranelisp_ivar_spark")]
 pub extern "C" fn ivar_spark(ivar: i64) -> i64 {
     // Inc RC — the spark task holds a reference.
+    //
+    // Deliberate, owned divergence from the blessed `rc::rc_inc` entry point
+    // (which is Release). This inc KEEPS SeqCst: it is load-bearing — paired
+    // with the spark's later `fetch_sub(1, SeqCst)` on the same RC field and
+    // interleaved with the IVar state-machine's SeqCst atomics (STATE_OFFSET
+    // CAS, the value/error publish-stores). The module discipline is "all
+    // atomics use SeqCst (Decision 13)" (see module `//!`), a single uniform
+    // total order the fork-join correctness argument is verified against.
+    // Demoting this one atomic to Release would break that invariant for no
+    // benefit (one inc per spark, not a hot path). Per `/arch` ruling:
+    // FIXME 0397; `design/arch/bounded-contexts.md` §4b invariant 3 (table row
+    // `ivar.rs::ivar_spark` — KEEP SeqCst). Do NOT route this through `rc_inc`.
     // SAFETY: ivar is a valid base pointer; RC at offset 8 is an aligned i64.
     unsafe {
         let rc_ptr = (ivar as isize + RC_OFFSET) as *const AtomicI64;

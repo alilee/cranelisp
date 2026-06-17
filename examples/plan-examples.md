@@ -95,6 +95,7 @@ Examples are numbered `01` through `30` (approximately). Each maps to one ring a
 | 27 | `27-lazy-seq.cl` | 2 | Lazy sequences (take, filter, iterate) | delivered |
 | 28 | `28-parallel.cl` | 4 | Parallel evaluation (par-let, bind!) | delivered |
 | 29 | `29-annotations.cl` | 0/1 | `:Type` annotation — unifies the following form's type | delivered |
+| 30 | `30-parallel-map-reduce.cl` | 4 | Self-parallelising Vec map-reduce via divide-and-conquer `let` (lenient eval, ~3.6x) | delivered |
 | -- | Trace | 4 | Execution tracing | deferred (REPL-only; batch mode lacks formatted trace fields) |
 | 26 | Multi-Signature | 2 | Function overloading by type | planned (batch mode blocked) |
 | 27 | Auto-Currying | 2 | Partial application | planned (batch mode blocked) |

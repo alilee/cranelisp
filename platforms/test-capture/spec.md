@@ -26,6 +26,7 @@ These are registered with the JIT via `declare_platform!` and are visible to Cra
 | `commutative-noop` | `(Fn [] (IO Int))` | Commutative | `cranelisp_commutative_noop` | No-op that returns 0. Enables testing that the compiler correctly identifies commutative pairs and inserts Par nodes. |
 | `commutative-sleep-ms` | `(Fn [Int] (IO Int))` | Commutative | `cranelisp_commutative_sleep_ms` | Sleep for the specified milliseconds and return the duration. Enables timing-based parallelism verification. |
 | `resource-serial-noop` | `(Fn [Int] (IO Int))` | ResourceSerial | `cranelisp_resource_serial_noop` | No-op that sets the resource token on its Effect node. Enables testing resource token serialization. |
+| `fault-now` | `(Fn [] (IO Int))` | Sequential | `cranelisp_fault_now` | Panics inside the deferred IO Effect body when forced, so the S81 fault funnel raises a `PlatformError::DispatchError { fn_name: "platform.test-capture/fault-now" }` DURING the IO trampoline. Enables witnessing the during-IO dispatch-fault path end-to-end (FIXME 0401). Never returns the clean `(IO Int)` value — the body always faults. |
 
 ### Heap Parameter Ownership
 
@@ -79,4 +80,4 @@ test-capture conforms to the stdio platform interface for core IO:
 4. Respects the capture-RC protocol for heap parameters
 5. Substitutable for stdio in any program that does not depend on console I/O behavior
 
-Additionally, test-capture provides scheduling-class test functions (`commutative-noop`, `commutative-sleep-ms`, `resource-serial-noop`) that are not part of the stdio interface. These exist solely for testing auto IO scheduling and are not expected to be present in other platforms.
+Additionally, test-capture provides scheduling-class test functions (`commutative-noop`, `commutative-sleep-ms`, `resource-serial-noop`) and a fault-injection function (`fault-now`) that are not part of the stdio interface. These exist solely for testing auto IO scheduling and dispatch-fault surfacing, and are not expected to be present in other platforms.

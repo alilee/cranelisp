@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use cranelisp_platform::SchedulingClass;
 use cranelisp_types::{
-    DefKind, Defn, Expr, MatchArm, ModuleEntry, ModuleFullPath, Span,
+    CodeStore, DefKind, Defn, Expr, LinkerStore, MatchArm, ModuleEntry, ModuleFullPath, Span,
     Symbol, SymbolTable, TypeExpr, free_vars_expr,
 };
 
@@ -28,7 +28,14 @@ use cranelisp_types::{
 /// `ModuleEntry::Def` and destructuring `DefKind::Primitive {
 /// primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class }, .. }`
 /// to get the class. This replaces the previous `PlatformRegistry` side map.
-pub type SymbolTables = dashmap::DashMap<ModuleFullPath, SymbolTable>;
+///
+/// Generic over the symbol table's store params (`C`, `L`) so the pass can run
+/// against the session's live `SymbolTable<Code, ()>` directly (S85, FIXME 0367
+/// — `apply_bind_chain_analysis` call site). The pass reads only `C`-independent
+/// fields (`DefKind::PlatformEffect { scheduling_class }` and
+/// `ModuleEntry::Import { source }`), so genericizing imposes no behavioural
+/// change — the body never touches `Code`.
+pub type SymbolTables<C = (), L = ()> = dashmap::DashMap<ModuleFullPath, SymbolTable<C, L>>;
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -38,13 +45,19 @@ pub type SymbolTables = dashmap::DashMap<ModuleFullPath, SymbolTable>;
 ///
 /// Takes ownership of the body via `std::mem::replace` with a dummy expression,
 /// transforms it, and puts the result back. The dummy is never observed.
-pub fn auto_schedule_defn(
+pub fn auto_schedule_defn<C: CodeStore, L: LinkerStore>(
     defn: &mut Defn,
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
 ) {
-    // Single-sig only (multi-sig functions are not auto-scheduled)
-    assert!(!defn.is_multi_sig(), "auto_schedule_defn called on multi-sig defn");
+    // Single-sig only (multi-sig functions are not auto-scheduled). This is a
+    // caller-defended invariant: `apply_bind_chain_analysis`'s multi-sig guard
+    // guarantees this function is never reached for a multi-sig defn — so a
+    // violation is a programmer logic bug, never user input (src/CLAUDE.md
+    // §Error Handling — `unreachable!`, never `panic!`/`assert!` on user input).
+    if defn.is_multi_sig() {
+        unreachable!("invariant: auto_schedule_defn called on multi-sig defn");
+    }
     let body = std::mem::replace(
         &mut defn.variants[0].body,
         Expr::BoolLit { value: false, span: defn.span, inferred_type: None },
@@ -58,9 +71,9 @@ pub fn auto_schedule_defn(
 /// auto-scheduling (only `auto_schedule_defn` runs in `session.rs`). Retained
 /// for future activation; narrowed + `#[allow(dead_code)]`.
 #[allow(dead_code)]
-pub(crate) fn auto_schedule_expr(
+pub(crate) fn auto_schedule_expr<C: CodeStore, L: LinkerStore>(
     expr: &mut Expr,
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
 ) {
     let owned = std::mem::replace(
@@ -75,9 +88,9 @@ pub(crate) fn auto_schedule_expr(
 /// Sprint 67 hack-back: no current consumer. Retained as a primitive; narrowed
 /// + `#[allow(dead_code)]`.
 #[allow(dead_code)]
-pub(crate) fn auto_schedule_expr_owned(
+pub(crate) fn auto_schedule_expr_owned<C: CodeStore, L: LinkerStore>(
     expr: Expr,
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
 ) -> Expr {
     transform_expr(expr, symbol_tables, current_module)
@@ -88,9 +101,9 @@ pub(crate) fn auto_schedule_expr_owned(
 // ---------------------------------------------------------------------------
 
 /// Recursively transform an expression, optimizing bind chains into ParBind.
-fn transform_expr(
+fn transform_expr<C: CodeStore, L: LinkerStore>(
     expr: Expr,
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
 ) -> Expr {
     if is_bind_chain_start(&expr) {
@@ -121,17 +134,35 @@ fn is_bind_var(expr: &Expr) -> bool {
 // Chain collection
 // ---------------------------------------------------------------------------
 
-/// A single step in a bind chain: (bound_name, io_expr, annotation, span).
-type BindStep = (Symbol, Expr, Option<TypeExpr>, Span);
+/// A single step in a bind chain:
+/// `(bound_name, io_expr, annotation, span, bind_callee)`.
+///
+/// `bind_callee` is the ORIGINAL `bind` callee name as it appeared in the
+/// expanded AST (e.g. `primitives/bind` — the `bind!` macro expands to a
+/// qualified `primitives/bind` reference, stdlib/io/monad.cl). Sequential
+/// reconstruction (`make_bind`) MUST re-emit this exact name; emitting a bare
+/// `bind` would not resolve in a module that only imports `Pure`/the qualified
+/// `primitives/bind` and silently breaks the chain (S85 wiring defect — the
+/// sketch's `make_bind` hardcoded bare `"bind"`, valid only for its own
+/// bare-`bind` expansion, not the reimpl's qualified one).
+type BindStep = (Symbol, Expr, Option<TypeExpr>, Span, Symbol);
 
 /// Collect a complete bind chain into a flat vec of steps plus the final body.
 ///
 /// The chain must be non-empty (caller checks via `is_bind_chain_start`).
 /// The `annotation` field preserves the Lambda parameter's optional type
-/// annotation for round-tripping.
+/// annotation for round-tripping. The `bind_callee` field preserves the
+/// original (possibly qualified) `bind` name so reconstruction is faithful.
 fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
-    let Expr::Apply { mut args, span, .. } = expr else {
+    let Expr::Apply { callee, mut args, span, .. } = expr else {
         unreachable!("invariant: collect_bind_chain called on non-bind expr")
+    };
+
+    // Preserve the original bind callee name (e.g. `primitives/bind`).
+    let bind_callee = match callee.as_ref() {
+        Expr::Var { name, .. } => name.clone(),
+        // `is_bind_chain_start` guarantees the callee is a `Var`.
+        _ => unreachable!("invariant: bind callee is not a Var"),
     };
 
     // args[1] is the Lambda; extract it first to avoid borrow conflicts.
@@ -155,10 +186,10 @@ fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
 
     if is_bind_chain_start(&inner) {
         let (mut rest, final_body) = collect_bind_chain(inner);
-        rest.insert(0, (name, io_expr, annotation, binding_span));
+        rest.insert(0, (name, io_expr, annotation, binding_span, bind_callee));
         (rest, final_body)
     } else {
-        (vec![(name, io_expr, annotation, binding_span)], inner)
+        (vec![(name, io_expr, annotation, binding_span, bind_callee)], inner)
     }
 }
 
@@ -176,9 +207,9 @@ fn collect_bind_chain(expr: Expr) -> (Vec<BindStep>, Expr) {
 /// resolves the callee's name in `current_module`, follows Import chains to the
 /// defining `ModuleEntry::Def`, and destructures
 /// `DefKind::Primitive { primitive_kind: PrimitiveKind::PlatformEffect { scheduling_class }, .. }`.
-fn classify_expr(
+fn classify_expr<C: CodeStore, L: LinkerStore>(
     expr: &Expr,
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
 ) -> SchedulingClass {
     if let Expr::Apply { callee, .. } = expr
@@ -207,13 +238,13 @@ fn classify_expr(
 ///
 /// Returns `None` if the name is absent, resolves to a non-`PlatformEffect`
 /// entry, or the Import chain does not terminate in a `Def`.
-fn scheduling_class_from_table(
-    symbol_tables: &SymbolTables,
+fn scheduling_class_from_table<C: CodeStore, L: LinkerStore>(
+    symbol_tables: &SymbolTables<C, L>,
     module: &ModuleFullPath,
     name: &str,
 ) -> Option<SchedulingClass> {
-    fn walk(
-        tables: &SymbolTables,
+    fn walk<C: CodeStore, L: LinkerStore>(
+        tables: &SymbolTables<C, L>,
         module: &ModuleFullPath,
         name: &str,
         depth: usize,
@@ -258,8 +289,10 @@ fn is_independent(expr: &Expr, bound_names: &HashSet<Symbol>) -> bool {
 
 /// A segment in the rebuilt chain.
 enum Segment {
-    /// A single sequential bind step.
-    Sequential(Symbol, Expr, Option<TypeExpr>, Span),
+    /// A single sequential bind step: (name, io_expr, annotation, span, bind_callee).
+    /// `io_expr` is boxed to keep the variant size balanced against `Parallel`
+    /// (the `Expr` payload is large; boxing avoids a `large_enum_variant` lint).
+    Sequential(Symbol, Box<Expr>, Option<TypeExpr>, Span, Symbol),
     /// A group of data-independent non-Sequential steps to run in parallel.
     Parallel(Vec<(Symbol, Expr, Span)>),
 }
@@ -277,42 +310,42 @@ fn flush_par_group(
     if group.is_empty() {
         return;
     }
-    for (name, _, _, _) in &group {
+    for (name, _, _, _, _) in &group {
         bound_so_far.insert(name.clone());
     }
     if group.len() >= 2 {
         let par_bindings: Vec<(Symbol, Expr, Span)> =
-            group.into_iter().map(|(n, e, _, s)| (n, e, s)).collect();
+            group.into_iter().map(|(n, e, _, s, _)| (n, e, s)).collect();
         segments.push(Segment::Parallel(par_bindings));
     } else {
-        let (name, io_expr, annotation, span) = group.into_iter().next()
+        let (name, io_expr, annotation, span, bind_callee) = group.into_iter().next()
             .expect("invariant: group is non-empty");
-        segments.push(Segment::Sequential(name, io_expr, annotation, span));
+        segments.push(Segment::Sequential(name, Box::new(io_expr), annotation, span, bind_callee));
     }
 }
 
 /// Group a flat bind chain and rebuild it into an optimised nested expression.
-fn rebuild_chain(
+fn rebuild_chain<C: CodeStore, L: LinkerStore>(
     chain: Vec<BindStep>,
     final_body: Expr,
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
 ) -> Expr {
     let mut segments: Vec<Segment> = Vec::new();
     let mut current_par: Vec<BindStep> = Vec::new();
     let mut bound_so_far: HashSet<Symbol> = HashSet::new();
 
-    for (name, io_expr, annotation, span) in chain {
+    for (name, io_expr, annotation, span, bind_callee) in chain {
         let sc = classify_expr(&io_expr, symbol_tables, current_module);
 
         // Names already committed + names in the current parallel group.
         let mut all_bound = bound_so_far.clone();
-        for (n, _, _, _) in &current_par {
+        for (n, _, _, _, _) in &current_par {
             all_bound.insert(n.clone());
         }
 
         if sc != SchedulingClass::Sequential && is_independent(&io_expr, &all_bound) {
-            current_par.push((name, io_expr, annotation, span));
+            current_par.push((name, io_expr, annotation, span, bind_callee));
         } else {
             // This entry can't join the parallel group — flush first.
             flush_par_group(
@@ -321,7 +354,7 @@ fn rebuild_chain(
                 std::mem::take(&mut current_par),
             );
             bound_so_far.insert(name.clone());
-            segments.push(Segment::Sequential(name, io_expr, annotation, span));
+            segments.push(Segment::Sequential(name, Box::new(io_expr), annotation, span, bind_callee));
         }
     }
     // Flush any remaining parallel group.
@@ -335,9 +368,9 @@ fn rebuild_chain(
     let mut result = transform_expr(final_body, symbol_tables, current_module);
     for segment in segments.into_iter().rev() {
         result = match segment {
-            Segment::Sequential(name, io_expr, annotation, span) => {
-                let io_expr = transform_expr(io_expr, symbol_tables, current_module);
-                make_bind(name, io_expr, annotation, result, span)
+            Segment::Sequential(name, io_expr, annotation, span, bind_callee) => {
+                let io_expr = transform_expr(*io_expr, symbol_tables, current_module);
+                make_bind(bind_callee, name, io_expr, annotation, result, span)
             }
             Segment::Parallel(bindings_with_span) => {
                 let span = bindings_with_span[0].2;
@@ -359,8 +392,13 @@ fn rebuild_chain(
     result
 }
 
-/// Reconstruct a sequential `(bind io_expr (fn [name] body))` expression.
+/// Reconstruct a sequential `(<bind_callee> io_expr (fn [name] body))` expr.
+///
+/// `bind_callee` is the original (possibly qualified, e.g. `primitives/bind`)
+/// callee name captured during chain collection — it MUST be re-emitted exactly
+/// so the reconstructed call resolves the same way the unexpanded chain did.
 fn make_bind(
+    bind_callee: Symbol,
     name: Symbol,
     io_expr: Expr,
     annotation: Option<TypeExpr>,
@@ -371,7 +409,7 @@ fn make_bind(
     // Option<TypeExpr>)>` — the annotation rides on the param tuple.
     Expr::Apply {
         callee: Box::new(Expr::Var {
-            name: Symbol::from("bind"),
+            name: bind_callee,
             span,
             resolved_call: None,
             inferred_type: None,
@@ -398,9 +436,9 @@ fn make_bind(
 /// Recurse into sub-expressions without touching this node's structure.
 ///
 /// Called for any expression that is not itself a bind chain start.
-fn recurse_children(
+fn recurse_children<C: CodeStore, L: LinkerStore>(
     expr: Expr,
-    symbol_tables: &SymbolTables,
+    symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
 ) -> Expr {
     match expr {
@@ -511,8 +549,8 @@ fn recurse_children(
 /// Sprint 67 hack-back: no current external consumer (used only by tests in
 /// this module). Narrowed + `#[allow(dead_code)]`.
 #[allow(dead_code)]
-pub(crate) fn scheduling_of(
-    symbol_tables: &SymbolTables,
+pub(crate) fn scheduling_of<C: CodeStore, L: LinkerStore>(
+    symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
     name: &str,
 ) -> SchedulingClass {
@@ -555,8 +593,15 @@ mod tests {
     }
 
     fn make_bind_expr(io_expr: Expr, name: &str, body: Expr) -> Expr {
+        make_bind_expr_with_callee("bind", io_expr, name, body)
+    }
+
+    /// Like `make_bind_expr` but with an explicit (possibly qualified) `bind`
+    /// callee name — used to verify the original callee is threaded faithfully
+    /// through chain collection → segment reconstruction → `make_bind`.
+    fn make_bind_expr_with_callee(callee: &str, io_expr: Expr, name: &str, body: Expr) -> Expr {
         Expr::Apply {
-            callee: Box::new(make_var("bind")),
+            callee: Box::new(make_var(callee)),
             args: vec![
                 io_expr,
                 Expr::Lambda {
@@ -780,6 +825,46 @@ mod tests {
         assert!(!matches!(result, Expr::ParBind { .. }));
     }
 
+    // spec: 10-io.md §10.12.1 — qualified `bind` callee is preserved through
+    // Sequential reconstruction (S85 wiring defect). The `bind!` macro expands
+    // to a *qualified* `primitives/bind` callee; the sketch's `make_bind`
+    // hardcoded a bare `"bind"`, which would not resolve in a module that only
+    // imports the qualified name. This pins that the original callee is threaded
+    // BindStep → Segment::Sequential → make_bind verbatim.
+    //
+    // Path exercised: a single eligible (Commutative, independent) step enters
+    // the parallel group, then `flush_par_group` demotes the 1-element group to
+    // `Segment::Sequential`, and `make_bind` re-emits `bind_callee`. Under the
+    // old hardcoded bare-`"bind"` code the reconstructed callee would be `bind`,
+    // failing this assertion.
+    #[test]
+    fn test_qualified_bind_callee_preserved_through_sequential() {
+        let (tables, m) = commutative_tables();
+        // (primitives/bind (get-time) (fn [t1] 0)) — single step, demoted to
+        // Sequential during rebuild.
+        let expr = make_bind_expr_with_callee(
+            "primitives/bind",
+            make_apply("get-time", vec![]),
+            "t1",
+            make_int(0),
+        );
+        let result = transform_expr(expr, &tables, &m);
+        // A single step never becomes a ParBind — it round-trips as a Sequential
+        // bind Apply.
+        let Expr::Apply { callee, .. } = &result else {
+            panic!("expected a reconstructed bind Apply, got {result:?}");
+        };
+        let Expr::Var { name, .. } = callee.as_ref() else {
+            panic!("expected a Var callee, got {callee:?}");
+        };
+        assert_eq!(
+            name.as_ref(),
+            "primitives/bind",
+            "reconstructed bind callee must preserve the qualified name, \
+             not collapse to a bare `bind`"
+        );
+    }
+
     // spec: 10-io §10.12 — empty tables skips analysis
     #[test]
     fn test_empty_tables_no_transform() {
@@ -816,6 +901,107 @@ mod tests {
         assert_eq!(
             scheduling_of(&tables, &m, "platform.test/get-time"),
             SchedulingClass::Commutative,
+        );
+    }
+
+    // spec: design/int/platform-registry-removal.md §9.1 —
+    // bind_chain_analysis reads scheduling_class from ModuleEntry::Def
+    // (post-G8 migration: no PlatformRegistry).
+    // spec: 10-io.md §10.12.1 — idempotency (the retry-from-top requirement, §5.2).
+    // `finalize_cluster` may run the pass multiple times against larger live state;
+    // re-running on an already-ParBind-transformed tree must be a no-op.
+    #[test]
+    fn test_transform_idempotent() {
+        let (tables, m) = commutative_tables();
+        // (bind (get-time) (fn [t1] (bind (http-get "url") (fn [t2] body))))
+        let inner = make_bind_expr(
+            make_apply("http-get", vec![make_var("url")]),
+            "t2",
+            make_int(99),
+        );
+        let expr = make_bind_expr(make_apply("get-time", vec![]), "t1", inner);
+
+        let once = transform_expr(expr, &tables, &m);
+        // First pass produced a ParBind.
+        assert!(matches!(once, Expr::ParBind { .. }), "first pass should ParBind");
+        let twice = transform_expr(once.clone(), &tables, &m);
+        // Re-running must produce the identical tree (recurse_children's ParBind
+        // arm recurses children without re-grouping). `Expr` does not derive
+        // `PartialEq` (only Debug/Clone/Serialize/Deserialize, ast.rs:147), so
+        // structural `assert_eq!` is unavailable here — Debug-string equality is
+        // the available structural comparison (S-2: PartialEq is NOT added just
+        // for this test).
+        assert_eq!(
+            format!("{once:?}"),
+            format!("{twice:?}"),
+            "transform must be idempotent: apply-twice == apply-once"
+        );
+    }
+
+    // spec: 10-io.md §10.12.1 — mixed segmentation. A
+    // [independent, independent, dependent, independent] chain produces
+    // ParBind(2) → Sequential → Sequential (the dependent step flushes the
+    // group, then stands alone). Pins flush_par_group boundary behaviour.
+    #[test]
+    fn test_mixed_chain_segments() {
+        let (tables, m) = commutative_tables();
+        // (bind (get-time)           (fn [a]
+        //   (bind (http-get "u")     (fn [b]
+        //     (bind (http-get b)     (fn [c]      ; depends on b → flush
+        //       (bind (get-time)     (fn [d] 0))))))))
+        let l4 = make_bind_expr(make_apply("get-time", vec![]), "d", make_int(0));
+        let l3 = make_bind_expr(make_apply("http-get", vec![make_var("b")]), "c", l4);
+        let l2 = make_bind_expr(make_apply("http-get", vec![make_var("u")]), "b", l3);
+        let l1 = make_bind_expr(make_apply("get-time", vec![]), "a", l2);
+
+        let result = transform_expr(l1, &tables, &m);
+        // Outermost: a ParBind grouping a + b (both independent, non-Sequential).
+        let Expr::ParBind { bindings, body, .. } = &result else {
+            panic!("expected outer ParBind, got {result:?}");
+        };
+        assert_eq!(bindings.len(), 2, "first group is a + b");
+        assert_eq!(bindings[0].0.as_ref(), "a");
+        assert_eq!(bindings[1].0.as_ref(), "b");
+        // Next: c is dependent on b → sequential bind, NOT another ParBind.
+        let Expr::Apply { callee, args, .. } = body.as_ref() else {
+            panic!("expected sequential bind for c, got {body:?}");
+        };
+        assert!(is_bind_var(callee), "c must be a sequential bind");
+        // Inside c's lambda body: d is a single eligible step → demoted to
+        // sequential (1-element group), never a ParBind.
+        let Expr::Lambda { body: c_body, .. } = &args[1] else {
+            panic!("expected lambda for c");
+        };
+        assert!(
+            !matches!(c_body.as_ref(), Expr::ParBind { .. }),
+            "trailing single eligible step d must be demoted to sequential, got {c_body:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.1 — data-dependency negative via a Let-RHS free var
+    // (Gap G1: free_vars_expr must see the var captured inside a Let binding RHS).
+    // A later io_expr that references an earlier-bound name through a Let → the
+    // binding is dependent → no ParBind.
+    #[test]
+    fn test_dependent_via_let_rhs_stays_sequential() {
+        let (tables, m) = commutative_tables();
+        // second io_expr: (http-get (let [y t1] y)) — t1 is free via the Let RHS.
+        let let_expr = Expr::Let {
+            bindings: vec![(Symbol::from("y"), make_var("t1"))],
+            body: Box::new(make_var("y")),
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        };
+        let inner = make_bind_expr(
+            make_apply("http-get", vec![let_expr]),
+            "t2",
+            make_int(0),
+        );
+        let expr = make_bind_expr(make_apply("get-time", vec![]), "t1", inner);
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::ParBind { .. }),
+            "data-dependency through a Let RHS must keep the chain sequential"
         );
     }
 

@@ -381,6 +381,114 @@ fn platform_dispatch_error_carries_fn_name() {
 }
 
 // =============================================================================
+// FIXME 0401 — dispatch-fault raised DURING the IO trampoline surfaces cleanly
+// in BOTH `--run` and `--link`.
+// =============================================================================
+//
+// The `boom`/`crash` test above (`platform_dispatch_error_carries_fn_name`)
+// exercises a dispatch fault under `--run`. THIS pair pins the *during-IO*
+// dispatch-fault path across BOTH modes — the load-bearing new guard is the
+// `--link` leg.
+//
+// FIXTURE (S85 W-Platform): `platforms/test-capture` provides `fault-now ::
+// (Fn [] (IO Int))` — its IO Effect body `panic!`s when forced. Returning the
+// `(IO Int)` Effect from `main` makes the trampoline FORCE it, so the panic is
+// raised DURING IO execution (not before, like `0399`'s pre-`run_io` slot, and
+// not as a bare `panic!` slot like `crash` returns a faulting non-IO path).
+//
+// The S81 DLL-local fault funnel converts the panic to a
+// `PlatformError::DispatchError { fn_name: "platform.test-capture/fault-now" }`;
+// int composes the structured carrier whose Display is
+// `platform fn `platform.test-capture/fault-now` dispatch failed: <cause>`
+// (`crates/cranelisp-types/src/error.rs:332`).
+//
+// `--run` reads the dispatch-fault slot *after* `run_io_trampoline`
+// (`src/session_v4.rs` ~:1858) so it has surfaced during-IO faults since S81.
+// `--link` previously drained ONLY the pre-`run_io` runtime-error slot
+// (0399), so a fault raised DURING the linked trampoline was not surfaced; the
+// post-`run_io` drain gate that landed this sprint (0401 resolution) is what
+// makes the `--link` leg below GREEN. That `--link` leg is the new guard.
+
+// The free-standing program both legs share: declare the test-capture platform,
+// import the faulting fn, and return its `(IO Int)` Effect from `main` so the
+// trampoline forces (and faults) it during IO execution. No prelude/stdlib —
+// `bind`/`Pure` are stdlib; returning the bare Effect is enough to force it.
+const FAULT_DURING_IO_PROGRAM: &str = "(platform test-capture)\n\
+     (import [platform.test-capture [fault-now]])\n\
+     (defn main [] (fault-now))\n";
+
+// Assert the structured dispatch-fault carrier surfaced cleanly: clean non-zero
+// exit (NOT a signal kill / SIGSEGV / abort), and the parity substrings `/dev`
+// reconciled across modes — the FQ fn-name and the `dispatch failed` shape.
+fn assert_dispatch_fault_surfaced(out: &helpers::e2e::CrOutput, mode: &str) {
+    // (1) Clean exit — not a signal kill. A signal-terminated process has no
+    //     exit code (`status.code()` is None on Unix); a clean structured error
+    //     exits with a code.
+    assert!(
+        out.status.code().is_some(),
+        "[{mode}] a during-IO dispatch fault MUST surface as a clean process \
+         exit, NOT a signal kill (SIGSEGV/SIGABRT); status: {:?}\nstderr:\n{}",
+        out.status, out.stderr
+    );
+    // (2) Non-zero exit (1) — the fault is a failure, not success.
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "[{mode}] a during-IO dispatch fault MUST exit non-zero (1); \
+         status: {:?}\nstderr:\n{}",
+        out.status, out.stderr
+    );
+    // (3) The structured carrier reaches stderr — robust substrings present in
+    //     BOTH modes (the parity `/dev` reconciled): the baked FQ fn-name and
+    //     the `dispatch failed` shape.
+    assert!(
+        out.stderr.contains("platform.test-capture/fault-now"),
+        "[{mode}] dispatch-fault carrier MUST name the offending fn by its baked \
+         FQ name `platform.test-capture/fault-now`; got stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("dispatch failed"),
+        "[{mode}] dispatch-fault carrier MUST surface the `dispatch failed` shape \
+         (Display: `platform fn \\`<name>\\` dispatch failed: …`); got stderr:\n{}",
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.8 Platform ABI
+// FIXME 0401 — `--run` leg: a dispatch fault raised DURING the IO trampoline
+// (an `(IO Int)` Effect forced by the trampoline) surfaces the structured
+// `DispatchError` carrier with a clean non-zero exit. `--run` has drained the
+// post-`run_io` dispatch-fault slot since S81; this pins that behaviour.
+#[test]
+fn dispatch_fault_during_io_surfaces_run() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .use_workspace_platforms()
+        .user(FAULT_DURING_IO_PROGRAM)
+        .run("user.cl")
+        .output();
+    assert_dispatch_fault_surfaced(&out, "--run");
+}
+
+// spec: spec/12-runtime.md §12.8 Platform ABI
+// FIXME 0401 — `--link` leg (the load-bearing new guard): the SAME during-IO
+// dispatch fault, raised inside the LINKED IO trampoline, must be drained by
+// the post-`run_io` gate that landed this sprint and surface the SAME carrier
+// + clean non-zero exit as `--run`. Before this sprint the linked stub drained
+// only the pre-`run_io` slot, so this fault escaped unsurfaced.
+#[test]
+fn dispatch_fault_during_io_surfaces_link() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .use_workspace_platforms()
+        .user(FAULT_DURING_IO_PROGRAM)
+        .link_then_run("user.cl")
+        .output();
+    assert_dispatch_fault_surfaced(&out, "--link");
+}
+
+// =============================================================================
 // Linux PLATFORM_EXT fold-in (S80 Pillar A, item 5) — platform-DLL discovery
 // on the current platform.
 // =============================================================================

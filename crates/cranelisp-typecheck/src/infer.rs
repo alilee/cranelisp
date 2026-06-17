@@ -62,14 +62,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             Expr::StringLit { span, .. } => self.infer_string_lit(state, *span),
             Expr::VecLit { elements, span, .. } => self.infer_vec_lit(state, elements, *span),
             Expr::Trace { body, span, .. } => self.infer_trace(state, body, *span),
-            // ParBind is semantically identical to Let for type-checking;
-            // parallel execution is a codegen concern.
             Expr::ParBind {
                 bindings,
                 body,
                 span,
                 ..
-            } => self.infer_let(state, bindings, body, *span),
+            } => self.infer_par_bind(state, bindings, body, *span),
             // Trigger 2 (S70 shared `instantiate_ctor` helper): the typing rule
             // for synthesised `Expr::ConstrADT` nodes inside constructor Def
             // bodies. Resolves the (type_name, tag) identity to the ctor's
@@ -323,6 +321,64 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let resolved = self.apply_subst(state, &body_ty);
         self.record_expr_type(state, span, resolved.clone());
         Ok(resolved)
+    }
+
+    /// Typing rule for `Expr::ParBind` (spec/10-io.md §10.12 transparency).
+    ///
+    /// A `ParBind` is produced by auto-IO scheduling (FIXME 0367) from a monadic
+    /// `bind` chain over data-independent, non-`Sequential` effects. It is NOT a
+    /// plain `Let`: each binding value `vᵢ` is an `IO aᵢ` action, and the bound
+    /// name must be `aᵢ` (the UNWRAPPED inner type) — exactly as the sequential
+    /// `(bind (IO a) (fn [name] ...))` form binds `name : a` through `bind`'s
+    /// `(IO a) -> (a -> IO b) -> IO b` scheme. The body is itself an `IO U`
+    /// action and the whole `ParBind` types as `IO U`. Routing through
+    /// `infer_let` (which would bind `name : IO a`) is wrong — see FIXME 0400.
+    ///
+    /// Because this mirrors the sequential bind chain's typing exactly, the
+    /// §10.12 transparency invariant holds: a chain types identically whether or
+    /// not auto-scheduling grouped it into a `ParBind`.
+    fn infer_par_bind(
+        &self, state: &mut CheckState,
+        bindings: &[(Symbol, Expr)],
+        body: &Expr,
+        span: Span,
+    ) -> Result<Type, CranelispError> {
+        self.push_scope(state);
+
+        for (name, binding_expr) in bindings {
+            // Each binding value is an `IO aᵢ` action. Unify against `IO ?aᵢ`
+            // to unwrap the `IO` constructor — the same unification the
+            // sequential `bind` primitive performs via its scheme — and bind the
+            // name to the inner type `aᵢ` (monomorphic, spec §3.5.3).
+            let binding_ty = self.infer_expr(state, binding_expr)?;
+            let inner_ty = self.fresh_var();
+            let io_inner = Self::io_type(inner_ty.clone());
+            self.unify(state, &binding_ty, &io_inner, binding_expr.span())?;
+            let resolved_inner = self.apply_subst(state, &inner_ty);
+            self.bind_local(state, name.clone(), mono(resolved_inner));
+        }
+
+        // The body is itself an `IO U` action; the ParBind result is that `IO U`.
+        let body_ty = self.infer_expr(state, body)?;
+        let result_inner = self.fresh_var();
+        let io_result = Self::io_type(result_inner);
+        self.unify(state, &body_ty, &io_result, body.span())?;
+        self.pop_scope(state);
+
+        let resolved = self.apply_subst(state, &io_result);
+        self.record_expr_type(state, span, resolved.clone());
+        Ok(resolved)
+    }
+
+    /// Construct the `primitives/IO` ADT applied to one inner type argument.
+    fn io_type(inner: Type) -> Type {
+        Type::ADT(
+            cranelisp_types::FQTypeName::new(
+                cranelisp_types::ModuleFullPath::from("primitives"),
+                cranelisp_types::TypeName::from("IO"),
+            ),
+            vec![inner],
+        )
     }
 
     fn infer_if(

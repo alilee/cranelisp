@@ -36,6 +36,86 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 85 — FIXME 0401 runtime-error-during-IO (bind continuation) SIGSEGV repro (/qa, 2026-06-17)
+
+Authored the narrow failing-not-ignored repro for FIXME 0401 — the GENERAL case of
+FIXME 0399. 0399 covered a panic in `main`'s body BEFORE any IO (now surfaces cleanly
+in both modes after the /dev fix this sprint). 0401 covers a runtime error raised
+INSIDE an IO `bind` continuation, which SIGSEGVs in BOTH `--run` and `--link`
+(exit 139): the continuation returns the panic-path sentinel `0`, the IO trampoline
+reads it back and dereferences it (`read_node_tag(0)` → `0x10`), and neither host
+checks the panic slot after the trampoline returns. Two tests added to
+`tests/spec_12_runtime.rs`, sharing one free-standing entry (`UNCAUGHT_PANIC_IN_IO_PROGRAM`:
+`(import [primitives [Pure bind div-i64 Int]]) (defn main [] (bind (Pure 1) (fn [x] (Pure (div-i64 x 0)))))`
+— zero stdlib, explicit `primitives` imports; the `div-i64` runs in the `bind`
+continuation, during the IO trampoline, not in `main`'s body before IO).
+
+- **`spec_12_runtime.rs::runtime_panic_in_io_continuation_surfaces_run`** (RED, failing-not-ignored 0401 guard)
+  — `// spec: spec/12-runtime.md §12.7.4.2`. The `--run` leg: a panic in the `bind`
+  continuation MUST exit non-zero (clean code, not a signal) + "division by zero" on stderr,
+  same as a panic in `main`'s body (the 0399 control). RED today (SIGSEGV).
+- **`spec_12_runtime.rs::runtime_panic_in_io_continuation_surfaces_link`** (RED, failing-not-ignored 0401 guard)
+  — `// spec: spec/12-runtime.md §12.7.4.2`. The `--link` produced binary: same assertions.
+  RED today (SIGSEGV).
+
+Owner `/dev` (IO trampoline panic boundary — `src/` run host + `--link` startup stub
+and/or `cranelisp-backend` panic path), target S85 (the /dev fix immediately follows
+these tests). Disposition: `under-investigation`. **Observed RED signature (both, both modes):**
+`status=ExitStatus(unix_wait_status(139))` (SIGSEGV); stdout empty; stderr empty
+(`--run`) / only the link command echo (`--link`) — no "division by zero". `status.code()`
+is `None` (signal kill), so the clean-exit assertion (assertion 1) fires first. Both flip
+GREEN when the IO trampoline panic boundary surfaces the runtime-error slot message + exits
+cleanly, mirroring the 0399 fix. FIXME 0401 closes on that fix.
+
+`cargo nextest run --workspace --no-fail-fast`: 2744 run, 2742 pass / 2 fail (the two new
+0401 guards) — the only new reds; no regression (baseline was 2742 pass / 0 fail after the
+0399 fix landed). spec_link_check clean (65/65 OK in spec_12_runtime.rs). Suite ~24.5s.
+
+### Sprint 85 — FIXME 0399 `--link` runtime-panic surfacing parity repro (/qa, 2026-06-17)
+
+Authored the narrow failing-not-ignored repro for FIXME 0399 (the `--run`/`--link`
+divergence in runtime-panic surfacing, surfaced during S85 Stage-1 while authoring
+the 0398 Par-boundary ferry guard). Two tests added to `tests/spec_12_runtime.rs`,
+sharing one free-standing div-by-zero entry (`UNCAUGHT_PANIC_PROGRAM`:
+`(import [primitives [Pure div-i64]]) (defn main [] (Pure (div-i64 1 0)))` — zero
+stdlib, explicit `primitives` imports).
+
+- **`spec_12_runtime.rs::uncaught_runtime_panic_surfaces_message_and_clean_exit_run`** (GREEN control)
+  — `// spec: spec/12-runtime.md §12.7.4.2`. The `--run` leg: uncaught div-by-zero in
+  `main` exits non-zero (clean code, not a signal) + "division by zero" on stderr.
+  Passes today — proves the cross-mode divergence is the `--link` defect, not the program.
+- **`spec_12_runtime.rs::uncaught_runtime_panic_surfaces_message_and_clean_exit_link`** (RED, failing-not-ignored 0399 guard)
+  — `// spec: spec/12-runtime.md §12.7.4.2`. The `--link` produced binary is a batch-mode
+  process and MUST mirror `--run`: clean non-zero exit + "division by zero" on stderr.
+  Owner `/dev` (`src/` `--link` startup trampoline and/or `cranelisp-backend` panic path),
+  target S85 (the /dev fix immediately follows this test). Disposition: `under-investigation`.
+  **Observed RED signature:** `status=ExitStatus(unix_wait_status(139))` (SIGSEGV); stdout
+  empty; stderr only the link command echo (no "division by zero"). `status.code()` is
+  `None` (signal kill), so the clean-exit assertion (assertion 1) fires first. Flips GREEN
+  when the linked-binary panic boundary is wired to surface the runtime-error slot message
+  + exit cleanly, mirroring the `--run` trampoline. FIXME 0399 closes on that fix.
+
+`cargo nextest run --workspace`: 2739 pass / 1 fail (the new 0399 `--link` guard) — the
+only new red; no regression. spec_link_check clean (63/63 OK in spec_12_runtime.rs).
+
+### Sprint 85 Phase 3 — concurrency test plan authored (auto-IO wiring + RC-inc atomicity + Par-boundary error ferry) (/qa, 2026-06-17)
+
+Phase-3 planning entry. Full plan: `tests/plan/sprint85-test-plan.md`. No `.rs` authored this phase (Phase-5 Stage-1 writes the one NEW guard). Records the open S85 reds + the planned NEW guard, all with dispositions, per the failure-ledger discipline. Plan source: SPRINT.md §Scope items 1–4 + Architecture review (a)–(d). FIXMEs 0367 (int wiring, CORE) / 0397 (arch RULED → /dev intrinsics+primitives, RC-inc atomicity) / 0398 (qa Par-boundary panic guard, gated on 0367) / 0353 (closes on 0367 diff-token guard).
+
+**Open reds at S85 open (all auto-IO; all flip on the 0367 wiring):**
+
+- **`spec_10_io.rs::resource_serial_diff_token_parallelizes`** (RED, `tests/spec_10_io.rs:1010`) — owner `/dev` int (0367 wiring). Signature: diff-token ResourceSerial pair measures ~2×D (serial) and fails the `<300ms` (1.5×D) parallelise assertion in `--run`+`--link`. Disposition: `under-investigation` (owner=/int, target S85). Canonical 0367/0353 witness; closes 0353 when green.
+- **`spec_10_io.rs::auto_io_independent_diff_token_parallelizes_e2e`** (RED, `tests/spec_10_io.rs:1193`) — owner `/dev` int (0367). Signature: data-independent Commutative pair (`commutative-sleep-ms`) measures ~2×D, fails `<300ms`. Disposition: `under-investigation` (owner=/int, target S85). Commutative independence path.
+- **`spec_10_io.rs::auto_io_par_grouping_uniform_across_modes`** (RED in all modes, `tests/spec_10_io.rs:1319`) — owner `/dev` int (0367). Signature: pass dormant everywhere → both `--run`+`--link` measure ~2×D. Disposition: `under-investigation` (owner=/int, target S85). Mode-uniformity (PO-0367.2).
+
+**NEW guard to author in Phase-5 Stage-1 (RED-on-author, gated on 0367):**
+
+- **`spec_12_runtime.rs::auto_io_par_branch_panic_surfaces_on_join_neg`** (planned NEW-RED) + companion **`auto_io_par_branch_panic_no_slot_pollution_neg`** — owner `/qa` to author / `/dev` int to flip via 0367. `// spec: spec/12-runtime.md §12.4.3` (fork-join sentence, line 157). Disposition: `under-investigation` (owner=/qa author, /int flips, target S85). 0398 remainder: a panic inside one branch of an auto-scheduled Par group MUST surface on the joining thread + MUST NOT pollute the error slot. RED until 0367 emits Par nodes from user source (no Par-branch panic is witnessable until then). The ferry MECHANISM is already landed+unit-tested S76 W4 (Phase-2 (c)); only the e2e witness remains. Construction-mechanism (div-by-zero-in-branch vs panicking fixture) decided at authoring — see plan §Item-4 note.
+
+**GREEN-STAY soundness guards (must NOT regress through the wiring):** `resource_serial_same_token_serializes` (:974), `auto_io_data_dependent_stays_serial_e2e` (:1226), `auto_io_sequential_class_stays_serial_e2e` (:1256), `lenient_binding_panic_not_swallowed_neg` (`spec_12_runtime.rs:626`, the IVar/lenient ferry already passing). The first three are the over-parallelisation guards (data-dependent / Sequential MUST stay serial); their AST-shape /dev unit complements (1.4.b–d) land in the wiring change-set.
+
+**Definition of done:** `cargo nextest run --workspace` fully green (0 fail). Baseline = 3 reds above; all flip on 0367; the NEW 0398 guard flips on the same wiring. /dev units (1.4.a–d Par-emission AST contract; 2.a–d `rc_inc`) land per unit-test-per-fix in their change-sets; /qa confirms existence at wave gate, does not author. `cranelisp-intrinsics/public-api.txt` moves for the new `rc_inc pub fn` (two-update discipline; /qa confirms at gate). No `cranelisp-types`/BC/interfaces edit implied (Phase-2 (d)).
+
 ### Sprint 84 — realign the 7 tightening-rejected e2e tests to strict §3.11 (annotate Vec/Fn/phantom-Result) (/qa, 2026-06-17)
 
 The §3.11.1 full-concreteness verdict landed (`73cf79c`; spec `2290aa9`); the

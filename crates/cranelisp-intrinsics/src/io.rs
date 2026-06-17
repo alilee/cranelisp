@@ -368,6 +368,19 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
 
         match feed_continuation(&mut cont_stack, current, current_is_fresh, produced) {
             Step::Advance(new_io) => {
+                // The continuation just ran user code (`call_continuation`). If
+                // that user code raised a runtime error (e.g. div-by-zero via
+                // `runtime_panic`) or a platform-dispatch fault, the closure
+                // returned the panic-path sentinel `0` — `new_io` is NOT a valid
+                // IO node. Stop the walk and return the sentinel WITHOUT
+                // dereferencing `new_io` (which would `read_node_tag(0)` →
+                // null-deref → SIGSEGV). The slot is left SET (peeked, not
+                // taken) so the HOST surfaces it — the trampoline is not the
+                // surfacing point (FIXME 0401). Mirrors the
+                // `EffectStep::Aborted => return 0` convention above.
+                if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
+                    return 0;
+                }
                 current = new_io;
                 current_is_fresh = true;
             }
@@ -1074,6 +1087,61 @@ mod tests {
         crate::drop::consume_closure(cont_b);
         crate::drop::dec_shallow_io(result_b);
         assert_eq!(crate::alloc::dealloc_count() - deallocs_b_before, 2);
+    }
+
+    /// Helper: allocate a continuation closure `(fn [x] (runtime_panic …) 0)`
+    /// that sets the runtime-error slot and returns the panic-path sentinel `0`
+    /// — modelling the inline div-by-zero codegen (`emit_panic_return`) inside an
+    /// IO `bind` continuation: it sets the slot then `return_(&[0])` from the
+    /// enclosing continuation lambda.
+    fn make_panicking_cont_closure() -> i64 {
+        extern "C" fn panic_cont(_env_ptr: i64, _val: i64) -> i64 {
+            let msg = "division by zero";
+            crate::panic::runtime_panic(msg.as_ptr(), msg.len());
+            0 // panic-path sentinel — NOT a valid IO node pointer
+        }
+        let base = alloc_with_rc(16); // code_ptr + drop_glue_ptr, no captures
+        unsafe {
+            *((base as isize + 16) as *mut i64) = panic_cont as *const () as i64;
+            *((base as isize + 24) as *mut i64) = 0;
+        }
+        base as i64
+    }
+
+    // spec: spec/12-runtime.md §12.7.4.2 — a runtime panic raised inside an IO
+    // `bind` continuation makes the continuation return the sentinel `0`. The
+    // trampoline must PEEK the runtime-error slot, STOP the walk, and return `0`
+    // WITHOUT dereferencing the sentinel (which would null-deref → SIGSEGV), and
+    // must LEAVE the slot SET so the host surfaces it (FIXME 0401 — peek, not
+    // take).
+    #[test]
+    fn trampoline_runtime_panic_in_continuation_stops_and_leaves_slot_set() {
+        let _ = crate::panic::take_runtime_error(); // clear
+        // bind (Pure 1) (fn [_] <panic; return sentinel 0>)
+        let inner = make_pure_node(1);
+        let cont = make_panicking_cont_closure();
+        let io = make_bind_node(inner, cont);
+
+        // Drive the trampoline (NOT the extern wrapper). It must NOT SIGSEGV.
+        let result = run_io_trampoline(io);
+        assert_eq!(result, 0, "panicking continuation aborts the walk with the sentinel");
+
+        // The slot is left SET — the trampoline peeked, did not take. The host
+        // is the surfacing point; if the slot were cleared here the SIGSEGV would
+        // be traded for a silent swallow.
+        assert!(
+            crate::panic::has_runtime_error(),
+            "trampoline must leave the runtime-error slot SET for the host"
+        );
+        // Cleanup: take the slot so it does not pollute later tests on this
+        // thread, then release the caller's tree (consume_io_tree walks the
+        // Bind/Pure/closure spine the trampoline left untouched on the abort).
+        let drained = crate::panic::take_runtime_error();
+        assert!(
+            drained.as_deref().is_some_and(|m| m.contains("division by zero")),
+            "the surfaced message must carry the panic cause (got {drained:?})"
+        );
+        crate::drop::consume_io_tree(io);
     }
 
     // spec: 10-io §10.12 — read_resource_token returns 0 for non-Effect nodes

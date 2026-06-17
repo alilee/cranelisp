@@ -114,15 +114,12 @@ pub(crate) extern "C" fn str_len(s: i64) -> i64 {
 /// Used when a string value needs to be shared (creates a new reference).
 #[unsafe(export_name = "string-identity")]
 pub(crate) extern "C" fn string_identity(s: i64) -> i64 {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    use cranelisp_types::HeapHeader;
-    // Atomically increment RC at base + HeapHeader::RC_OFFSET.
-    // SAFETY: `s` is a valid HeapString base pointer; RC field is at offset 8.
-    let rc_ptr = unsafe {
-        &*((s as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
-    };
-    let new_rc = rc_ptr.fetch_add(1, Ordering::Release) + 1;
-    rc::rc_trace("inc", s, new_rc);
+    // Atomically increment RC via the blessed `rc::rc_inc` entry point (the
+    // single owner of the shallow-inc discipline, Principle 7). Behaviour is
+    // identical to the former inline `fetch_add(Release)` + `rc_trace("inc")`:
+    // a HeapString is always a heap pointer, so `rc_inc`'s nullary-tag branch
+    // is never taken.
+    rc::rc_inc(s);
     s
 }
 
