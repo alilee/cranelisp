@@ -517,9 +517,40 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // boundaries. `probe_module_entry_owned` checks staging then live, so
         // the collision is detected whether the colliding binding is in the
         // same cluster (staging) or a prior one (live).
-        let existing_present = self
-            .probe_module_entry_owned(&state.current_module, accessor_name.as_ref())
-            .is_some();
+        //
+        // FIXME 0366 — re-derive the accessor collision from the COMMITTED LIVE
+        // entry, not solely the per-`CheckState` `synthesised_accessor_names`
+        // set. At the REPL each input is a separate cluster, so the FIRST
+        // accessor `v` (from `Box`) is committed to LIVE in a PRIOR cluster and
+        // is therefore absent from THIS cluster's `synthesised_accessor_names`.
+        // A set-only probe mis-classifies the collision as `NonAccessor`
+        // (suppress-and-first-wins) instead of the spec'd cross-type ambiguity
+        // (§5.2.6 + §8.6.5). The fix: structurally recognise a committed
+        // synthesised accessor in the probed entry (its `self$accessor` param +
+        // `Fn [ADT] _` scheme name the owning type) and, when that owning type
+        // DIFFERS from the type now being synthesised, treat it as the same
+        // `Accessor` poison the same-cluster path produces. A committed accessor
+        // for the SAME type (a redefinition of that one deftype) is NOT a
+        // cross-type collision and must NOT poison.
+        let probed = self
+            .probe_module_entry_owned(&state.current_module, accessor_name.as_ref());
+        let existing_present = probed.is_some();
+        // Structurally classify a COMMITTED (prior-cluster) entry under this name
+        // as a synthesised accessor (FIXME 0366). `CommittedAccessor::Concrete`
+        // carries the owning product type (read off the accessor's `Fn [ADT] _`
+        // scheme + `self$accessor` param marker); `Poisoned` is an already-
+        // ambiguous accessor name (a third colliding type — stays poisoned, no
+        // single owner to read); `None` is a non-accessor / absent entry.
+        let committed = probed
+            .as_ref()
+            .map(committed_accessor_kind)
+            .unwrap_or(CommittedAccessor::NotAccessor);
+        // The prior owning type when the committed entry is a single concrete
+        // accessor — used to keep the cross-cluster ambiguity hint complete.
+        let committed_accessor_owner: Option<FQTypeName> = match &committed {
+            CommittedAccessor::Concrete(owner) => Some(owner.clone()),
+            _ => None,
+        };
         let existing_kind: Option<AccessorCollision> = if !existing_present {
             None
         } else if state.synthesised_accessor_names.contains(&accessor_name) {
@@ -528,7 +559,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             // collisions and poison.
             Some(AccessorCollision::Accessor)
         } else {
-            Some(AccessorCollision::NonAccessor)
+            // The set is per-cluster, so a committed accessor from a PRIOR
+            // cluster is absent from it. Re-derive the collision from the
+            // committed LIVE entry instead (FIXME 0366) so the REPL behaves like
+            // `--run`/`--link` (one cluster).
+            match &committed {
+                // Same-type redefinition (the one deftype re-run): overwrite the
+                // accessor afresh — NOT a cross-type duplicate-field clash.
+                CommittedAccessor::Concrete(owner) if owner == fqtn => None,
+                // Cross-type committed accessor, or an already-poisoned accessor
+                // name: poison the bare name as ambiguous.
+                CommittedAccessor::Concrete(_) | CommittedAccessor::Poisoned => {
+                    Some(AccessorCollision::Accessor)
+                }
+                // A non-accessor binding (user defn, ctor, import, …): refuse.
+                CommittedAccessor::NotAccessor => Some(AccessorCollision::NonAccessor),
+            }
         };
 
         match existing_kind {
@@ -574,11 +620,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // Extend the alternatives list with this colliding type. The
                 // name is kept in `synthesised_accessor_names` so a third
                 // colliding type re-enters this same poison arm.
-                state
+                let alts = state
                     .accessor_owning_types
                     .entry(accessor_name.clone())
-                    .or_default()
-                    .push(fqtn.clone());
+                    .or_default();
+                // FIXME 0366 — cross-cluster case: the FIRST owning type was
+                // recorded in a now-discarded prior cluster's state, so seed it
+                // from the committed accessor we just probed before appending
+                // this one, keeping the ambiguity hint's alternatives complete.
+                if let Some(prior) = &committed_accessor_owner
+                    && !alts.contains(prior)
+                {
+                    alts.push(prior.clone());
+                }
+                alts.push(fqtn.clone());
             }
             Some(AccessorCollision::NonAccessor) => {
                 // Refuse: record a deferred collision diagnostic. The accessor
@@ -592,6 +647,57 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
+}
+
+/// Classification of a COMMITTED (live, prior-cluster) symbol-table entry as a
+/// synthesised field accessor (FIXME 0366). The same-cluster path keys off the
+/// per-`CheckState` `synthesised_accessor_names` set; cross-cluster (the REPL)
+/// must instead re-derive the accessor identity structurally from the committed
+/// entry, since the prior accessor was committed in a now-discarded cluster.
+enum CommittedAccessor {
+    /// A single concrete synthesised accessor; carries its owning product type
+    /// (read from the accessor's `(Fn [ADT] _)` scheme).
+    Concrete(FQTypeName),
+    /// An already-poisoned (`Ambiguous`) accessor name — a third colliding type
+    /// re-poisons it; no single owning type to read.
+    Poisoned,
+    /// Not a synthesised accessor (a user `defn`, a ctor, an import, …).
+    NotAccessor,
+}
+
+/// Recognise a committed entry as a synthesised field accessor and read its
+/// owning product type (FIXME 0366).
+///
+/// A synthesised accessor is registered (in `synthesise_one_accessor`) as a
+/// concrete `DefKind::UserFn` whose sole parameter is the `self$accessor`
+/// sentinel and whose scheme is `(Fn [ProductType] FieldType)`. The
+/// `self$accessor` param + the `Fn [ADT] _` scheme shape together uniquely mark
+/// an accessor and name its owning type — no user `(defn …)` mints that
+/// signature. A poisoned accessor name surfaces as `ModuleEntry::Ambiguous`.
+fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
+    entry: &ModuleEntry<C>,
+) -> CommittedAccessor {
+    match entry {
+        ModuleEntry::Ambiguous { .. } => CommittedAccessor::Poisoned,
+        ModuleEntry::Def { kind, scheme, param_names, .. }
+            if matches!(
+                kind.as_ref(),
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                }
+            ) && param_names.len() == 1
+                && param_names[0].as_ref() == "self$accessor" =>
+        {
+            match &scheme.ty {
+                Type::Fn(params, _) if params.len() == 1 => match &params[0] {
+                    Type::ADT(fqtn, _) => CommittedAccessor::Concrete(fqtn.clone()),
+                    _ => CommittedAccessor::NotAccessor,
+                },
+                _ => CommittedAccessor::NotAccessor,
+            }
+        }
+        _ => CommittedAccessor::NotAccessor,
+    }
 }
 
 /// The kind of pre-existing binding an accessor synthesis collides with.
@@ -1260,6 +1366,191 @@ mod tests {
                  poisoned bare accessor — match access is always available \
                  (§5.2.6); got {ty_result:?}"
             );
+        }
+    }
+
+    /// Simulate the REPL's per-input cluster boundary: each input line is a
+    /// SEPARATE cluster with a FRESH per-`CheckState` accessor-tracking state,
+    /// while the live symbol table (committed entries) persists. Clearing the
+    /// two per-cluster sets reproduces exactly the condition FIXME 0366 closes —
+    /// the second deftype's accessor synthesis cannot see the first accessor in
+    /// `synthesised_accessor_names`, only in the committed live table.
+    fn new_cluster(tc: &mut TestFixture) {
+        tc.state.synthesised_accessor_names.clear();
+        tc.state.accessor_owning_types.clear();
+        tc.state.deferred_accessor_collisions.clear();
+    }
+
+    // spec: 05-definitions §5.2.6 + 08-modules §8.6.5 (FIXME 0366) — at the REPL
+    // each input is its own cluster, so a duplicate field-name accessor defined
+    // in a LATER cluster must still POISON the bare name (ambiguous), re-deriving
+    // the collision from the COMMITTED live accessor entry — NOT silently
+    // first-wins. This pins the typecheck seam the e2e
+    // `repl_cross_cluster_duplicate_field_accessor_is_ambiguous` exercises.
+    #[test]
+    fn cross_cluster_duplicate_field_poisons_bare_accessor() {
+        let mut tc = tf_with_scalar_imports();
+        // Cluster 1: `Box` — `v` is a normal concrete accessor.
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                tc.symbol_table().get("v"),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn {
+                            fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                        }
+                    )
+            ),
+            "single-type accessor `v` is a concrete UserFn after cluster 1"
+        );
+
+        // Cluster boundary: fresh per-`CheckState` accessor tracking; the live
+        // `v` accessor entry from cluster 1 stays committed.
+        new_cluster(&mut tc);
+
+        // Cluster 2: `Cup` with the SAME field name `v`. The set-only classifier
+        // would mis-read this as a non-accessor collision (suppress-and-first-
+        // wins); the committed-live re-derivation poisons it instead.
+        tc.register_type_def_self(
+            &TypeName::from("Cup"),
+            &None,
+            &[],
+            &[product_int_field("Cup", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        // `v` is POISONED (`Ambiguous`), exactly as in the single-cluster
+        // (`--run`/`--link`) path — NOT first-wins-suppressed.
+        match tc.symbol_table().get("v") {
+            Some(ModuleEntry::Ambiguous { .. }) => {}
+            other => panic!(
+                "cross-cluster duplicate-field accessor `v` must be poisoned \
+                 (Ambiguous), got {other:?}"
+            ),
+        }
+        // It was NOT routed down the suppress-and-first-wins (non-accessor)
+        // refusal path: no deferred collision recorded for `v`.
+        assert!(
+            !tc.state
+                .deferred_accessor_collisions
+                .iter()
+                .any(|(n, _)| n.as_ref() == "v"),
+            "cross-cluster duplicate field must poison, not record a \
+             suppress-and-first-wins refusal"
+        );
+        // The cross-cluster ambiguity hint lists BOTH owning types even though
+        // `Box` was recorded in the now-discarded cluster-1 state — the prior
+        // owner is re-seeded from the committed accessor.
+        let alts = tc
+            .state
+            .accessor_owning_types
+            .get(&Symbol::from("v"))
+            .expect("poisoned accessor must record its owning-type alternatives");
+        let names: Vec<&str> = alts.iter().map(|t| t.name.as_ref()).collect();
+        assert!(names.contains(&"Box"), "Box must be an alternative, got {names:?}");
+        assert!(names.contains(&"Cup"), "Cup must be an alternative, got {names:?}");
+    }
+
+    // spec: 05-definitions §5.2.6 (FIXME 0366) — NEGATIVE: a SINGLE product
+    // type's accessor synthesised in its own cluster, with no duplicate field
+    // name across types, must remain a normal concrete accessor across cluster
+    // boundaries (the legitimate case must not be wrongly poisoned).
+    #[test]
+    fn cross_cluster_single_type_accessor_not_poisoned() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        // A LATER cluster with an UNRELATED type/field — no collision on `v`.
+        new_cluster(&mut tc);
+        tc.register_type_def_self(
+            &TypeName::from("Cup"),
+            &None,
+            &[],
+            &[product_int_field("Cup", "w")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        // `v` stays a concrete accessor; `w` is a fresh concrete accessor.
+        for name in ["v", "w"] {
+            assert!(
+                matches!(
+                    tc.symbol_table().get(name),
+                    Some(ModuleEntry::Def { kind, .. })
+                        if matches!(
+                            kind.as_ref(),
+                            DefKind::UserFn {
+                                fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                            }
+                        )
+                ),
+                "distinct-field accessor `{name}` must remain a concrete UserFn \
+                 across clusters (no spurious poison), got {:?}",
+                tc.symbol_table().get(name)
+            );
+        }
+    }
+
+    // spec: 05-definitions §5.2.6 (FIXME 0366) — NEGATIVE: re-running the SAME
+    // deftype in a later cluster (a redefinition, NOT two distinct types sharing
+    // a field name) must NOT poison its accessor — the committed accessor's
+    // owning type equals the type being re-synthesised, so it overwrites afresh.
+    #[test]
+    fn cross_cluster_same_type_redefinition_not_poisoned() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        // Cluster boundary, then RE-DEFINE the same `Box` type.
+        new_cluster(&mut tc);
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        // `v` is still a normal concrete accessor — a same-type redefinition is
+        // not a cross-type duplicate-field collision.
+        match tc.symbol_table().get("v") {
+            Some(ModuleEntry::Def { kind, .. })
+                if matches!(
+                    kind.as_ref(),
+                    DefKind::UserFn {
+                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                    }
+                ) => {}
+            other => panic!(
+                "`v` after a same-type Box redefinition must stay a concrete \
+                 accessor, not be poisoned, got {other:?}"
+            ),
         }
     }
 
