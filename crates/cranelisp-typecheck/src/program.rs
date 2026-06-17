@@ -228,6 +228,44 @@ fn annotate_expr_from_maps(
     });
 }
 
+/// Build the concrete-boundary `MonoExpr` codegen view (`MonoDefnVariant`) for a
+/// codegen-bound `Concrete` entry from its fully-annotated, subst-resolved
+/// `DefnVariant` body (S84 Phase-3, FIXME 0392 / `concrete-boundary-type.md`
+/// §3.0). Shared by the single-sig, multi-sig-mangled, and trait-impl-method
+/// concrete-defn population sites.
+///
+/// Returns `Some(view)` when `MonoExpr::from_expr` succeeds (every body node
+/// fully concrete) — the expected case for a body-checked concrete defn.
+///
+/// **Returns `None` when `from_expr` fails** (a residual `Var` / un-annotated
+/// node reached a value position). Unlike the *mono-instance* seam — which hard-
+/// errors with the §3.11.1 ambiguity message because a minted mono instance MUST
+/// be concrete (Phase-4 part A) — an ordinary concrete defn's `ast` body can
+/// legitimately carry a residual `Var` at a node the **current `ast`-path
+/// codegen never reads its `inferred_type` for** (e.g. a multi-sig variant with
+/// an unconstrained param mangled `f$Var`, or the result var of a forward-
+/// reference Apply that the backend resolves via the symbol table, not the
+/// node). Hard-erroring here would reject programs the `ast` path compiles
+/// today. So the view is best-effort: `Some` populates the codegen-bound entry
+/// (the produces-but-unread Phase-3 input); `None` is the populate-gap signal
+/// the backend read-flip (FIXME 0391) handles via its single relocated backstop.
+/// **This `None`-vs-hard-error asymmetry between concrete defns and mono
+/// instances is a recorded finding — see FIXME 0393.**
+pub(crate) fn build_concrete_codegen_view(
+    name: &Symbol,
+    variant: &DefnVariant,
+) -> Option<cranelisp_types::MonoDefnVariant> {
+    match cranelisp_types::MonoExpr::from_expr(&variant.body) {
+        Ok(mono_body) => Some(cranelisp_types::MonoDefnVariant {
+            name: name.clone(),
+            params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
+            body: mono_body,
+            span: variant.span,
+        }),
+        Err(_) => None,
+    }
+}
+
 /// Annotate a `Defn` with types and resolved calls from side maps.
 pub(crate) fn annotate_defn_from_maps(
     defn: &mut Defn,
@@ -1077,13 +1115,49 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let mut annotated = defn.clone();
             annotate_defn_from_maps(&mut annotated, &resolved_et, &form_mr);
             apply_subst_to_defn(&state.subst, &mut annotated);
-            if let Some(ModuleEntry::Def { ast, .. }) =
+
+            // S84 Phase-3 (FIXME 0392): populate the concrete-boundary
+            // `codegen_view` for an ordinary CONCRETE single-sig defn (e.g.
+            // `main`, `(defn f [x] (+ x 1))` at a concrete instantiation). Only
+            // a `Concrete` entry is a `compile_to_module` codegen target —
+            // `Polymorphic`/`Constrained` templates (and any non-`Def`) get no
+            // view (they are mono SOURCES, excluded by `defined_symbols()`). The
+            // view is built from the SAME fully-annotated, subst-resolved body
+            // the `ast` carries, via `MonoExpr::from_expr`.
+            //
+            // **The validation payoff (FIXME 0392 §VALIDATION):** a
+            // `Concrete{slot}` defn that passed body-check (§3.11.1) has a fully
+            // concrete body ⇒ `from_expr` MUST succeed. A failure on a
+            // legitimate concrete defn is a real §3.11.1-position gap — surfaced
+            // HERE as the unified ambiguity / could-not-monomorphise error
+            // (NOT silently set to `None`, which would later trip the Phase-3
+            // backend backstop).
+            let is_concrete_codegen_target = matches!(
+                self.current_symbol_table(state).view().lookup(&defn.name),
+                Some(ModuleEntry::Def {
+                    kind,
+                    ..
+                }) if matches!(
+                    kind.as_ref(),
+                    DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                )
+            );
+            let codegen_view = if is_concrete_codegen_target {
+                annotated.variants.first().and_then(|variant| {
+                    build_concrete_codegen_view(&defn.name, variant)
+                })
+            } else {
+                None
+            };
+
+            if let Some(ModuleEntry::Def { ast, codegen_view: cv, .. }) =
                 self.current_symbol_table_mut(state).symbols.get_mut(&defn.name)
             {
                 // S69 Submission 35: `ast: Option<DefnVariant>` (the single
                 // meaningful payload; multi-sig decomposition already split
                 // into per-mangled-name Defs upstream of this point).
                 *ast = annotated.variants.into_iter().next();
+                *cv = codegen_view;
             }
         }
 
@@ -1778,15 +1852,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // `register_mono_entry` inside `monomorphise_call`. The returned
         // Vec<MonoDefn> was carried on CheckResult.mono_defns pre-slim; no
         // longer needed — mono entries live on SymbolTable.
-        // S84 Phase 2b: `pass4_monomorphise` now returns a parallel
-        // `Vec<MonoDefnVariant>` (the concrete-boundary `MonoExpr` view of each
-        // instance) alongside the `Vec<MonoDefn>`. Both are produced-but-unused
-        // here in Phase 2 — the backend reads mono bodies via the symbol-table
-        // `ModuleEntry::Def.ast` (`Defn`), registered by `register_mono_entry`.
-        // The `MonoExpr` half is the validation payoff (every instance's body was
-        // run through `MonoExpr::from_expr` at the seam); Phase 3 flips the
-        // consumer onto it.
-        let (_mono_defns, _mono_variants) =
+        // S84 Phase-3 (FIXME 0392): each instance's concrete-boundary `MonoExpr`
+        // view is set ON its `ModuleEntry::Def.codegen_view` at
+        // `register_mono_entry` (produces-but-unread until the backend read-flip,
+        // FIXME 0391). The validation payoff (every instance's body run through
+        // `MonoExpr::from_expr` at the seam) is unchanged; the transitional
+        // parallel `Vec<MonoDefnVariant>` return is retired.
+        let _mono_defns =
             self.pass4_monomorphise(state, &single_sig_defns, &constrained_fn_names)?;
 
         // FIXME 0349 — re-generalize after monomorphisation. pass4's call-site
@@ -2295,6 +2367,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 builder = builder.docstring(doc);
             }
             if let Some(ast) = annotated_ast {
+                // S84 Phase-3 (FIXME 0392): a resolved multi-sig mangled variant
+                // is a codegen-bound `Concrete` entry — build its
+                // concrete-boundary `MonoExpr` view from the same annotated,
+                // subst-resolved variant body the `ast` carries (best-effort; a
+                // `$Var`-param variant body legitimately stays non-concrete — see
+                // `build_concrete_codegen_view`).
+                if let Some(view) = build_concrete_codegen_view(&mangled, &ast) {
+                    builder = builder.codegen_view(view);
+                }
                 builder = builder.ast(ast);
             }
             st.insert(mangled.clone(), builder.build());
@@ -2808,13 +2889,24 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             );
             apply_subst_to_defn(&state.subst, &mut concrete_defn);
 
+            // S84 Phase-3 (FIXME 0392): this minted test-fn root is a
+            // codegen-bound `Concrete` entry — build its concrete-boundary
+            // `MonoExpr` view from the fully-annotated, subst-resolved body. The
+            // discovery contract pins it to `(Fn [] (Option String))`, so the
+            // body (`None`) is concrete and `from_expr` succeeds (best-effort
+            // per `build_concrete_codegen_view`).
+            let codegen_view = concrete_defn
+                .variants
+                .first()
+                .and_then(|v| build_concrete_codegen_view(&name, v));
+
             // Re-register the entry under the BARE name as `Concrete{slot}`,
             // carrying the concrete scheme + annotated body. Allocate a fresh
             // slot (the `Polymorphic` original had none).
             let concrete_scheme = mono(Type::Fn(vec![], Box::new(option_string.clone())));
             let mut st = self.current_symbol_table_mut(state);
             let got_slot = st.allocate_got_slot();
-            if let Some(ModuleEntry::Def { scheme, kind, ast, .. }) =
+            if let Some(ModuleEntry::Def { scheme, kind, ast, codegen_view: cv, .. }) =
                 st.symbols.get_mut(&name)
             {
                 *scheme = concrete_scheme;
@@ -2822,6 +2914,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     fn_state: UserFnState::Concrete { got_slot },
                 };
                 *ast = concrete_defn.variants.into_iter().next();
+                *cv = codegen_view;
             }
         }
         Ok(())
@@ -2830,30 +2923,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// Monomorphise every reachable polymorphic / constrained call site into
     /// concrete instances.
     ///
-    /// Returns the existing `Vec<MonoDefn>` (each carrying a `Defn` body the
-    /// backend still reads in Phase 2) PLUS — S84 Phase 2b — a parallel
-    /// `Vec<MonoDefnVariant>` carrying the concrete-boundary `MonoExpr` view of
-    /// every instance (`concrete-boundary-type.md` §2.4 "mono-population seam").
-    /// The two Vecs are dual-carried transitionally: the backend reads the `Defn`
-    /// half (Phase 2), the `MonoExpr` half is produced-but-unused for codegen
-    /// until Phase 3. The `MonoExpr` half's construction (`MonoExpr::from_expr` at
-    /// the `monomorphise_call` seam) is the validation payoff — a residual `Var`
-    /// in any instance surfaces as a §3.11.1 could-not-monomorphise error.
+    /// Returns the `Vec<MonoDefn>` (each carrying a `Defn` body the backend
+    /// still reads pre-Phase-3). S84 Phase-3 (FIXME 0392): the concrete-boundary
+    /// `MonoExpr` view of every instance is now set ON the instance's
+    /// `ModuleEntry::Def.codegen_view` at `register_mono_entry` (the single
+    /// source of truth, Principle 7) — the transitional parallel
+    /// `CheckState.mono_variants` `Vec` that carried it is retired. The
+    /// `MonoExpr::from_expr` validation (a residual `Var` in any instance
+    /// surfaces as a §3.11.1 could-not-monomorphise error) runs at the
+    /// `monomorphise_call` seam, unchanged.
     fn pass4_monomorphise(
         &self,
         state: &mut CheckState,
         defns: &[&Defn],
         constrained_fn_names: &HashSet<Symbol>,
-    ) -> Result<(Vec<MonoDefn>, Vec<cranelisp_types::MonoDefnVariant>), CranelispError> {
-        // S84 Phase 2b: reset the per-pass `MonoExpr`-view accumulator. Each
-        // `monomorphise_call` pushes one `MonoDefnVariant` (built + validated at
-        // the seam); we clear at the start so a REPL re-check does not carry
-        // stale variants from the previous input. The accumulator is RETAINED on
-        // `state` after the pass (cloned, not drained, at the return points) so
-        // the produced variants are observable — produces-but-unused for codegen,
-        // but readable by the seam unit test.
-        state.mono_variants.clear();
-
+    ) -> Result<Vec<MonoDefn>, CranelispError> {
         // Collect call sites: (fn_name, arg_spans, call_span, home_module).
         //
         // `home_module` is `None` for a call to a LOCALLY-defined constrained fn
@@ -2953,7 +3037,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // constrained call sites nor polymorphic fn-value arguments) — bail
         // before resolving expr_types.
         if call_sites.is_empty() && fn_value_arg_sites.is_empty() {
-            return Ok((Vec::new(), state.mono_variants.clone()));
+            return Ok(Vec::new());
         }
 
         // Resolve expr_types so we can look up concrete arg types
@@ -3072,13 +3156,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        // S84 Phase 2b: drain the concrete-boundary `MonoExpr` views accumulated
-        // at the `monomorphise_call` seam (one per minted instance). Parallel to
-        // `mono_defns` — same instances, the `MonoExpr` body view. Produced-but-
-        // unused for codegen in Phase 2. Cloned (not drained) so `state` retains
-        // the variants for seam-unit-test introspection; cleared at the next
-        // pass's start.
-        Ok((mono_defns, state.mono_variants.clone()))
+        // S84 Phase-3 (FIXME 0392): the concrete-boundary `MonoExpr` view of
+        // each minted instance is now set ON its `ModuleEntry::Def.codegen_view`
+        // at `register_mono_entry` — no parallel `Vec` to drain.
+        Ok(mono_defns)
     }
 
     /// Walk a defn body collecting calls to IMPORTED callees that chain-resolve

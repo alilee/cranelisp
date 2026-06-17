@@ -4828,6 +4828,74 @@
         );
     }
 
+    // spec: design/arch/concrete-boundary-type.md §3.0 — Phase-3 (FIXME 0392)
+    // codegen_view population. EVERY codegen-bound entry — an ordinary concrete
+    // defn AND a monomorphised instance — ends with `Some(codegen_view)` whose
+    // `MonoExpr` body is fully `ConcreteType`-annotated; a `Polymorphic`
+    // template (a mono SOURCE, never a codegen target) ends with `None`.
+    #[test]
+    fn codegen_view_populated_for_concrete_and_mono_none_for_template() {
+        use cranelisp_types::ConcreteType;
+
+        let mut tc = tc_with_prims();
+        // `id` is a pure-parametric generic (slot-less `Polymorphic` template).
+        // `f` is an ordinary concrete defn. `main` calls `(id 5)`, minting the
+        // concrete `id$Int` instance.
+        let src = "\
+            (defn id [x] x)\n\
+            (defn f [x] (add-i64 x 1))\n\
+            (defn main [] (id 5))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).expect("check");
+
+        // 1. The ordinary concrete defn `f` carries a concrete-boundary view
+        //    whose body root type is concrete (`Int` — the `(add-i64 x 1)`
+        //    result).
+        let table = tc.symbol_table();
+        let f_view = table
+            .get("f")
+            .and_then(|e| e.codegen_view().cloned())
+            .expect("concrete defn `f` must carry Some(codegen_view)");
+        assert_eq!(
+            f_view.body.ty(),
+            &ConcreteType::Int,
+            "concrete defn body root must be a ConcreteType (Int)"
+        );
+
+        // 2. The minted mono instance `id$Int` carries a view whose body root is
+        //    `Int` (the identity body `x` at `Int`).
+        let id_int_view = table
+            .get("id$Int")
+            .and_then(|e| e.codegen_view().cloned())
+            .expect("mono instance `id$Int` must carry Some(codegen_view)");
+        assert_eq!(
+            id_int_view.body.ty(),
+            &ConcreteType::Int,
+            "mono instance body root must be a ConcreteType (Int)"
+        );
+
+        // 3. The `Polymorphic` template `id` is a mono SOURCE, not a codegen
+        //    target — it carries NO view.
+        let id_entry = table.get("id").expect("`id` template must be registered");
+        assert!(
+            matches!(
+                id_entry,
+                ModuleEntry::Def { kind, .. }
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    )
+            ),
+            "`id` must be a slot-less Polymorphic template"
+        );
+        assert!(
+            id_entry.codegen_view().is_none(),
+            "a Polymorphic template must carry NO codegen_view (it is a mono \
+             source, never a compile_to_module target)"
+        );
+    }
+
     /// Register a single-method trait `name` whose method `method` takes a
     /// `Self`-typed param and returns `Int`, plus an `impl name for Int` whose
     /// method body is `(add-i64 self self)` — into the fixture's CURRENT module.

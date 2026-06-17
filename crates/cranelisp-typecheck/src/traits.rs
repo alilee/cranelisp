@@ -784,10 +784,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Write the fully annotated defn to ModuleEntry::Def.ast.
         let fn_type = Type::Fn(param_types.to_vec(), Box::new(ret_ty.clone()));
         let concrete_scheme = crate::scheme::mono(fn_type);
-        let mut st = self.current_symbol_table_mut(state);
         let ast_variant: Option<DefnVariant> = annotated.variants.first().cloned();
-        if let Some(ModuleEntry::Def { ast, .. }) = st.symbols.get_mut(&mangled_sym) {
+        // S84 Phase-3 (FIXME 0392): a trait-impl method (mangled `Trait.method$Type`)
+        // is a codegen-bound `Concrete` entry — build its concrete-boundary
+        // `MonoExpr` view from the same annotated, subst-resolved body the `ast`
+        // carries (best-effort per `build_concrete_codegen_view`; a `Self`-typed
+        // impl-method body checked against a contrived synthetic-span fixture can
+        // legitimately leave a residual var the `ast`-path codegen never reads).
+        let codegen_view: Option<MonoDefnVariant> = ast_variant
+            .as_ref()
+            .and_then(|v| crate::program::build_concrete_codegen_view(&mangled_sym, v));
+        let mut st = self.current_symbol_table_mut(state);
+        if let Some(ModuleEntry::Def { ast, codegen_view: cv, .. }) =
+            st.symbols.get_mut(&mangled_sym)
+        {
             *ast = ast_variant;
+            *cv = codegen_view;
         } else {
             // Concrete trait-impl method body (mangled name), born with its slot
             // (S83 deferred allocation): slot rides inside `Concrete` fn_state.
@@ -802,6 +814,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
             if let Some(ast) = ast_variant {
                 builder = builder.ast(ast);
+            }
+            if let Some(view) = codegen_view {
+                builder = builder.codegen_view(view);
             }
             st.insert(mangled_sym.clone(), builder.build());
         }
@@ -1505,16 +1520,20 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // not happen, and if it does the suite goes red at that instance
         // (Principle 20: completeness forced by representation, not chased by
         // hand).
-        match MonoExpr::from_expr(mono_defn_ast.body()) {
+        // S84 Phase-3 (FIXME 0392): the `MonoDefnVariant` built here is the
+        // entry's `codegen_view` — set ON the mono instance's `ModuleEntry::Def`
+        // at `register_mono_entry` (single source of truth, Principle 7). The
+        // P2b transitional `CheckState.mono_variants` parallel `Vec` is retired:
+        // the view lives on the entry, not a side `Vec`.
+        let codegen_view = match MonoExpr::from_expr(mono_defn_ast.body()) {
             Ok(mono_body) => {
                 // Genuinely concrete instance — carry the concrete-boundary view.
-                let mono_variant = MonoDefnVariant {
+                MonoDefnVariant {
                     name: Symbol::from(mangled_name.as_str()),
                     params: mono_defn_ast.params().iter().map(|(n, _)| n.clone()).collect(),
                     body: mono_body,
                     span: defn.span,
-                };
-                state.mono_variants.push(mono_variant);
+                }
             }
             // A genuinely-free residual (an unbound type variable, or an
             // un-annotated node — `Var(0)` sentinel — reaching a codegen
@@ -1537,7 +1556,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     location: ErrorLocation::from_span(defn.span),
                 });
             }
-        }
+        };
 
         // FIXME 0033 (S81 W-G): `MonoDefn` no longer carries per-mono side
         // maps. The `mono_defn_ast` was just annotated by
@@ -1559,7 +1578,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // enrichment needed. Backend codegen reads the body via
         // `ModuleEntry::Def.ast`. This is additive to `CheckResult.mono_defns`;
         // /int removes the `finalize_module` inlining loop in Wave 2.
-        self.register_mono_entry(state, &mono_defn, &concrete_param_types, &concrete_ret_ty);
+        self.register_mono_entry(
+            state,
+            &mono_defn,
+            &concrete_param_types,
+            &concrete_ret_ty,
+            codegen_view,
+        );
 
         Ok(Some(mono_defn))
     }
@@ -1572,6 +1597,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         mono: &MonoDefn,
         concrete_param_types: &[Type],
         concrete_ret_ty: &Type,
+        codegen_view: MonoDefnVariant,
     ) {
         let fn_ty = Type::Fn(
             concrete_param_types.to_vec(),
@@ -1608,6 +1634,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Some(ast) = mono.defn.variants.first().cloned() {
             builder = builder.ast(ast);
         }
+        // S84 Phase-3 (FIXME 0392): a mono instance is a codegen-bound
+        // `Concrete` entry — carry its concrete-boundary `MonoExpr` view, built
+        // + validated at the `monomorphise_call` seam. Produces-but-unread until
+        // the backend read-flip (FIXME 0391); the backend still reads `ast`.
+        builder = builder.codegen_view(codegen_view);
         st.insert(mono.defn.name.clone(), builder.build());
     }
 

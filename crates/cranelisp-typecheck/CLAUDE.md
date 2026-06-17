@@ -4,6 +4,40 @@ The voice of the code: API gotchas, data-structure invariants, debugging hooks
 for the inference engine, traits, monomorphisation, and module-locality
 resolution. Owned by `/dev` when narrow-deployed to this crate.
 
+## Concrete-boundary `codegen_view` population (S84 Phase-3, FIXME 0392)
+
+Every codegen-bound `ModuleEntry::Def` carries a `codegen_view:
+Option<MonoDefnVariant>` — the concrete-boundary `MonoExpr` body view the backend
+will consume (`design/arch/concrete-boundary-type.md` §3.0). It is populated at
+the symbol-table registration sites, NOT a side `Vec` (the transitional
+`CheckState.mono_variants` was retired — the entry is the single source of truth,
+Principle 7):
+
+- **Mono instances** — built at the `monomorphise_call` seam (`traits.rs:~1508`,
+  `MonoExpr::from_expr` over the subst-resolved instance body) and set via
+  `builder.codegen_view(..)` at `register_mono_entry`. **Hard-errors** on a
+  non-concrete body (a minted mono instance MUST be concrete post-Phase-4-A) —
+  the §3.11.1 ambiguity message.
+- **Ordinary concrete defns** — single-sig (`program.rs` `check_form_body_single_defn`,
+  next to the `ast` writeback), multi-sig mangled variants (`register_mangled_variants`),
+  trait-impl methods (`traits.rs::check_impl_method`), test-fn mono roots
+  (`register_test_fn_mono_roots`). All route through the shared
+  `program::build_concrete_codegen_view(name, variant)` helper. It is
+  **best-effort**: `Some` on `from_expr` success (the universal real-program
+  case), `None` on failure. Only a `UserFnState::Concrete` entry gets a view —
+  guard on the kind before calling the helper.
+
+**Why best-effort (NOT hard-error) for concrete defns.** `defined_symbols()` also
+yields `DefKind::Constructor` (ctor + accessor) entries whose synthetic bodies are
+`inferred_type: None` (`adt.rs`), and `f$Var` multi-sig variants whose param is a
+genuine `Type::Var` — neither converts via `from_expr`, yet the current `ast`-path
+codegen compiles them fine (ctor codegen reads field types from the signature, not
+node `inferred_type`). Hard-erroring would reject valid programs. The
+`None`-vs-hard-error asymmetry + the ctor/accessor gap is recorded in **FIXME 0393**
+(the Phase-3/0391 backend backstop must scope its `expect` to `Concrete` entries,
+not the whole `defined_symbols()` set). The `--workspace` e2e suite produced ZERO
+`from_expr`-fail on a real concrete defn — the validation payoff holds.
+
 ## Bare-name resolution & the implicit-prelude OUTER SCOPE (S78 §2)
 
 The prelude is an **outer scope**, not flattened into each module's table

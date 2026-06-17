@@ -638,14 +638,20 @@ impl TestFixture {
             .collect()
     }
 
-    /// The concrete-boundary `MonoExpr` views (`MonoDefnVariant`) produced at the
-    /// `monomorphise_call` seam during the most recent check (S84 Phase 2b —
-    /// `concrete-boundary-type.md` §2.4). Retained on `CheckState.mono_variants`
-    /// (cleared+repopulated each `pass4_monomorphise`). Produces-but-unused for
-    /// codegen; exposed for the seam unit test to assert each instance carries a
-    /// fully-`ConcreteType`-annotated body.
-    pub fn mono_variants(&self) -> &[cranelisp_types::MonoDefnVariant] {
-        &self.state.mono_variants
+    /// The concrete-boundary `MonoExpr` views (`MonoDefnVariant`) carried on the
+    /// current module's codegen-bound `ModuleEntry::Def.codegen_view` entries
+    /// (S84 Phase-3 — `concrete-boundary-type.md` §3.0, FIXME 0392). Reads the
+    /// view OFF the entries (the single source of truth, replacing the retired
+    /// transitional `CheckState.mono_variants` parallel `Vec`). Mono instances
+    /// AND ordinary concrete defns carry a view; template / primitive /
+    /// non-codegen entries carry `None`. Cloned out for the seam unit tests to
+    /// assert each codegen-bound entry carries a fully-`ConcreteType`-annotated
+    /// body.
+    pub fn mono_variants(&self) -> Vec<cranelisp_types::MonoDefnVariant> {
+        self.symbol_table()
+            .all_symbols()
+            .filter_map(|(_, entry)| entry.codegen_view().cloned())
+            .collect()
     }
 }
 
