@@ -7,27 +7,50 @@
 //! Tag constants are imported from `cranelisp_types::marshal` (single source
 //! of truth). See that module for constructor order documentation.
 //!
+//! ## Heap-layout offsets — single source of truth
+//!
+//! The payload base and the RC offset derive from
+//! [`cranelisp_types::HeapHeader`] (`SIZE` / `RC_OFFSET`, whose const rustdoc
+//! +static asserts are the canonical statement) — never local copies (single
+//! source of truth, Principle 7). The ADT field offsets (`FIELD0`/`FIELD1`)
+//! are derived from `HeapHeader::SIZE` plus the local i64 field stride, so the
+//! payload base stays single-sourced and only the stride is local. This is the
+//! pattern `string.rs`/`vec.rs`/`int.rs` already follow; a `HeapHeader` layout
+//! change is now caught here at compile time (the `const _` asserts below)
+//! rather than silently corrupting the raw `read_i64`/`write_i64` accesses.
+//!
 //! Per Decision 43 (see the crate-root `//!` and `bounded-contexts.md` §4a):
 //! these are user-callable primitives (kebab-case JIT names `sconcat` /
 //! `quote-sexp`, registered in the synthetic `primitives` module's symbol
-//! table). Wave
-//! 3b-2d.2b lifted the bodies from `cranelisp-runtime/src/marshal.rs` into
-//! this crate; `cranelisp-runtime` keeps a thin re-export shim until that
-//! crate retires per FIXME 0150 Phase 5.
+//! table). The bodies were lifted from the pre-D43 runtime crate.
 
 use cranelisp_intrinsics::alloc::alloc_with_rc;
 use cranelisp_intrinsics::drop::{consume_sexp, consume_slist};
 use cranelisp_intrinsics::heap_string::alloc_string;
+use cranelisp_types::HeapHeader;
 use cranelisp_types::{
     TAG_SNIL, TAG_SCONS,
     TAG_SEXP_INT, TAG_SEXP_FLOAT, TAG_SEXP_BOOL, TAG_SEXP_STR,
     TAG_SEXP_SYM, TAG_SEXP_LIST, TAG_SEXP_BRACKET,
 };
 
-// Heap layout constants (base-pointer convention, Decision 10)
-const PAYLOAD_OFFSET: usize = 16;
-const FIELD0_OFFSET: usize = 24;
-const FIELD1_OFFSET: usize = 32;
+// Heap-layout offsets (base-pointer convention, Decision 10), single-sourced
+// from `cranelisp_types::HeapHeader` (Principle 7). The payload (first ADT
+// slot, the tag) sits immediately after the header; subsequent i64 fields are
+// strided by `FIELD_STRIDE`.
+const FIELD_STRIDE: usize = core::mem::size_of::<i64>(); // 8
+/// Offset of the ADT payload (tag) — first slot after the heap header.
+const PAYLOAD_OFFSET: usize = HeapHeader::SIZE; // 16
+/// Offset of ADT field 0 (one i64 past the tag).
+const FIELD0_OFFSET: usize = PAYLOAD_OFFSET + FIELD_STRIDE; // 24
+/// Offset of ADT field 1 (two i64s past the tag).
+const FIELD1_OFFSET: usize = PAYLOAD_OFFSET + 2 * FIELD_STRIDE; // 32
+
+// Compile-time assertions mirroring the sibling files — fail the build if the
+// derived offsets ever diverge from the layout these bodies were written for.
+const _: () = assert!(PAYLOAD_OFFSET == 16);
+const _: () = assert!(FIELD0_OFFSET == 24);
+const _: () = assert!(FIELD1_OFFSET == 32);
 
 /// Threshold below which values are bare nullary tags, not heap pointers.
 const NULLARY_THRESHOLD: i64 = cranelisp_types::NULLARY_TAG_THRESHOLD as i64;
@@ -124,9 +147,22 @@ unsafe fn write_i64(base: i64, offset: usize, value: i64) {
 /// caller's drop glue after the call).
 fn shallow_rc_inc(val: i64) {
     if val >= NULLARY_THRESHOLD {
-        // SAFETY: val is a heap pointer; RC field is at offset 8 from base.
+        // SAFETY: val is a heap pointer; RC field is at HeapHeader::RC_OFFSET
+        // (single-sourced from cranelisp-types, Principle 7).
+        //
+        // NOTE (MED-1, audit 2026-06-14): this is a *non-atomic* increment,
+        // diverging from `string.rs::string_identity`'s atomic `fetch_add`.
+        // The blessed `cranelisp_intrinsics::rc` module exposes a dec
+        // (`consume_shallow`) but NO public RC-inc entry point, so this path
+        // cannot yet be unified there without a cross-crate addition to the
+        // intrinsics RC surface. Filed as FIXME `target: /arch` (intrinsics
+        // RC-inc entry point + atomicity policy under live lenient-eval
+        // sparks). Until that lands, both `sconcat`/`quote-sexp` callees run
+        // on the calling thread (no spark forks an `sconcat` mid-flight), so
+        // the non-atomic inc is sound today; the divergence is the hazard the
+        // FIXME tracks, not a present bug.
         unsafe {
-            let rc_ptr = (val as *mut u8).add(8) as *mut i64; // rc: i64
+            let rc_ptr = (val as *mut u8).add(HeapHeader::RC_OFFSET as usize) as *mut i64;
             *rc_ptr += 1;
         }
     }
@@ -316,6 +352,56 @@ fn quote_slist(slist: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // spec: bounded-contexts.md §4a — heap-layout offsets single-sourced from
+    // HeapHeader (Principle 7). Guards the HIGH-1 remediation (audit
+    // 2026-06-14): the derived offsets MUST equal the canonical layout and the
+    // RC offset MUST equal HeapHeader::RC_OFFSET. A future HeapHeader change
+    // that shifts these breaks this test (and the `const _` asserts) rather
+    // than silently corrupting the raw heap reads/writes.
+    #[test]
+    fn heap_offsets_derive_from_heap_header() {
+        // Payload base is the header size; fields are i64-strided past it.
+        assert_eq!(PAYLOAD_OFFSET, HeapHeader::SIZE);
+        assert_eq!(FIELD0_OFFSET, HeapHeader::SIZE + core::mem::size_of::<i64>());
+        assert_eq!(FIELD1_OFFSET, HeapHeader::SIZE + 2 * core::mem::size_of::<i64>());
+        // Behaviour-preserving: identical to the pre-remediation literals.
+        assert_eq!(PAYLOAD_OFFSET, 16);
+        assert_eq!(FIELD0_OFFSET, 24);
+        assert_eq!(FIELD1_OFFSET, 32);
+        // shallow_rc_inc writes the RC field at HeapHeader::RC_OFFSET (was a
+        // magic `.add(8)`); pin it to the canonical RC location.
+        assert_eq!(HeapHeader::RC_OFFSET as usize, 8);
+    }
+
+    // spec: design/arch/CLAUDE.md Decision 24 — shallow_rc_inc increments the
+    // RC field the marshal bodies share. Behaviour-preserving guard for the
+    // HIGH-1 single-source change: an inc at the derived RC offset is observed
+    // by consume_shallow (which reads the same canonical offset).
+    #[test]
+    fn shallow_rc_inc_targets_canonical_rc_field() {
+        let allocs_before = cranelisp_intrinsics::alloc::alloc_count();
+        let deallocs_before = cranelisp_intrinsics::alloc::dealloc_count();
+        // Fresh heap cell, rc=1.
+        let base = alloc_adt_2(TAG_SEXP_INT, 7);
+        // Inc via the marshal helper (rc 1 -> 2).
+        shallow_rc_inc(base);
+        // First consume: rc 2 -> 1, NOT freed (the inc landed at the RC field).
+        cranelisp_intrinsics::drop::consume_sexp(base);
+        assert_eq!(
+            cranelisp_intrinsics::alloc::dealloc_count() - deallocs_before,
+            0,
+            "inc must land on the RC field so the first dec does not free"
+        );
+        // Second consume: rc 1 -> 0, freed.
+        cranelisp_intrinsics::drop::consume_sexp(base);
+        assert_eq!(cranelisp_intrinsics::alloc::alloc_count() - allocs_before, 1);
+        assert_eq!(
+            cranelisp_intrinsics::alloc::dealloc_count() - deallocs_before,
+            1,
+            "value freed only after the inc'd reference is also released"
+        );
+    }
 
     #[test]
     fn test_sconcat_empty_empty() {
