@@ -1,5 +1,5 @@
 ---
-number: 0374
+number: 0396
 target: /arch
 filed_by: /design
 filed_at: 2026-06-16
