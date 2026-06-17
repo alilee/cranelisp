@@ -379,11 +379,14 @@ fn vec_literal_int() {
 }
 
 // spec: spec/04-expressions.md §4.10 — empty vec literal
+// spec: spec/03-types.md §3.11.1 — `[]` is `(Vec a)`; under the tightened
+// full-concreteness verdict the unpinned element type at a codegen-reaching
+// position is a type error. The source MUST pin it with the directed remedy
+// `:(Vec Int) []` (the worked example of §3.11.1, "Fix by annotating the
+// literal concrete"). With the annotation the program type-checks and runs.
 #[test]
 fn vec_literal_empty() {
-    // Empty vec inference may need a binding to anchor the type variable;
-    // pin via vec-len which always returns Int.
-    repl_prims("(vec-len [])\n").assert_stdout_contains(":primitives/Int 0");
+    repl_prims("(vec-len :(Vec Int) [])\n").assert_stdout_contains(":primitives/Int 0");
 }
 
 // =============================================================================

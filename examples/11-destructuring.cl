@@ -83,7 +83,10 @@
     (add-i64 ca (add-i64 cb cc))))
 
 (defn test-count-some []
-  (count-some (Some 1) None (Some 3)))
+  ;; The bare `None` is `(Option a)` with the element type unpinned; under the
+  ;; tightened §3.11.1 (full-concreteness) it must be annotated concrete at the
+  ;; codegen-reaching call site. `(Some 1)`/`(Some 3)` are already `(Option Int)`.
+  (count-some (Some 1) :(Option Int) None (Some 3)))
 
 ;; --- Nested match ---
 

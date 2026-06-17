@@ -36,6 +36,71 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 84 — realign the 7 tightening-rejected e2e tests to strict §3.11 (annotate Vec/Fn/phantom-Result) (/qa, 2026-06-17)
+
+The §3.11.1 full-concreteness verdict landed (`73cf79c`; spec `2290aa9`); the
+representation exemption + the Mixed-shape gate + the direct-ctor skip are gone. The
+USER RULED phantom type vars ARE ambiguous (strict — no phantom-position exemption,
+so FIXME 0388's escalation question is resolved strict, no carve-out). Seven
+previously-passing e2e tests that encoded the OLD lenient behaviour now correctly
+reject; these are tests of **legitimate programs**, so the realignment is to ANNOTATE
+(restore green), not to invert.
+
+**The 7 realignments (the smallest correct `:Type form` pin for each):**
+
+| Test (file) | Old program | Realigned with | Residual var pinned |
+|---|---|---|---|
+| `spec_04_expressions::vec_literal_empty` | `(vec-len [])` | `(vec-len :(Vec Int) [])` | `[]` : `(Vec a)` |
+| `spec_12_runtime::empty_vec_let_bound_freed` | `(let [xs []] (vec-len xs))` | `(let [xs :(Vec Int) []] (vec-len xs))` | `xs` : `(Vec a)` |
+| `spec_12_runtime::closure_capturing_closure_balanced` | `(let [f (fn [x] x)] …)` | `(let [f :(Fn [Int] Int) (fn [x] x)] …)` | `f` : `(Fn [a] a)` |
+| `spec_11_stdlib::result_ok_constructs` | `(match (Ok 42) …)` | `(let [r :(Result Int String) (Ok 42)] (match r …))` | phantom `b` of `(Result Int b)` |
+| `spec_11_stdlib::result_err_constructs` | `(match (Err "oops") …)` | `(let [r :(Result Int String) (Err "oops")] (match r …))` | phantom `a` of `(Result a String)` |
+| `build_confidence::mode_equiv_pattern_match_nested` | `(Pure (match (Ok 42) …))` | `(Pure (let [r :(Result Int String) (Ok 42)] (match r …)))` | phantom `b` of `(Result Int b)` |
+| `examples::every_example_runs_with_documented_exit` | `examples/11-destructuring.cl` `test-count-some` bare `None` | `(count-some (Some 1) :(Option Int) None (Some 3))` | `None` : `(Option a)` |
+
+All 7 now GREEN. The example still exits **69** (documented `&[69]` unchanged).
+
+**KEY VERIFICATION — the `(Result Int String)` 2-arg annotation (the /sprint ask):**
+- `:(Result Int String) (Ok 42)` and `:(Result Int String) (Err "oops")` in VALUE
+  position **VERIFIED WORK** (the `let`-bound forms run to `:primitives/Bool true`;
+  the `--run` Result form exits as expected). The 2-arg type resolves correctly in
+  annotation position — NO Vec-arity-style gap here, NO new FIXME needed.
+- `:(Vec Int) []`, `:(Fn [Int] Int) (fn …)` VERIFIED WORK (0385 already landed).
+- **0389 sidestep:** the phantom-`Result` cases were originally `(match (Ok 42) …)`
+  with the value as the match SCRUTINEE. Annotating the scrutinee directly
+  (`(match :(Result Int String) (Ok 42) …)`) hits FIXME 0389 (`parse error: match
+  requires scrutinee and arms`). All three were instead pinned in VALUE position via
+  a `let` binding and matched on the bound var — the annotation parses, the
+  pattern-dispatch semantics are unchanged. None of the 7 was forced into a broken
+  scrutinee-position annotation.
+
+**SPEC ADDITION (user-approved coordinate):** `spec/03-types.md` §3.11.1 gains a
+worked example that `(Ok 42)` : `(Result Int b)` is ambiguous (phantom `b` unpinned)
+and fixed by `:(Result Int String) (Ok 42)`, plus the symmetric `(Err "oops")`
+case — stating phantom vars are NOT exempt (any free var, occurring or phantom, is
+ambiguous). `[S84]`, consistent with existing §3.11.1 text.
+
+**`--workspace` count after this realignment: 2709 tests / 2703 pass / 6 fail / 0 skip**
+(26.8s). The 6 reds, every one classified:
+- **5 pre-existing carries** — `repl_cross_cluster_duplicate_field_accessor_is_ambiguous`
+  (0366), `auto_io_independent_diff_token_parallelizes_e2e` +
+  `auto_io_par_grouping_uniform_across_modes` + `resource_serial_diff_token_parallelizes`
+  (0367 auto-IO), `trace_adt_value_render_overflows_defect` (0382).
+- **1 0389-blocked acceptance guard** — `mono_bare_annotated_value_pins_and_compiles_pos`
+  (the 5th §3.11 acceptance guard; its Option/Vec legs pass but the match-scrutinee
+  `:Type` leg is FIXME-0389-blocked). STAYS RED with the 0389 note.
+- **ZERO unexpected reds.** The 7 tightening-rejections all flipped GREEN; the +5 NEW
+  acceptance guards from the prior `3fedb6b`/`73cf79c` work are now all GREEN except the
+  0389-blocked one (4 of the 5 landed green when `73cf79c` shipped the verdict + Vec
+  resolution). Net: going-in 13 reds (`73cf79c`) → 6 reds.
+
+**COVERAGE — strict-rule (incl. phantom) confirmed.** Codegen-reaching residual-var
+ambiguity is now covered across: occurring vars (`(Vec a)`, `(Fn a)`, `None`/`(Option a)`)
+AND phantom vars (`(Result Int b)`, `(Result a String)`) — the latter newly exercised by
+the 3 realigned `Result` tests, which double as the positive annotation-fix path for the
+phantom case. The negative (rejection) path for phantom vars is asserted by the §3.11
+acceptance guards in `regression.rs`.
+
 ### Sprint 84 — tightened §3.11.1 realignment: invert Vec/Fn admission + annotate example (/qa, 2026-06-16)
 
 The user tightened spec §3.11.1 (commit `2290aa9` — §3.11.1 "no representation-based

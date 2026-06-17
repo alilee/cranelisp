@@ -279,23 +279,35 @@ fn macro_cond_fallthrough() {
 // k. Result type
 // =============================================================================
 
-// spec: spec/05-definitions.md §5.2 (deftype) + spec/06-pattern-matching.md §6.1 — Result Ok constructor (Err arm with `_`
-// disambiguates the b type).
+// spec: spec/05-definitions.md §5.2 (deftype) + spec/06-pattern-matching.md §6.1 — Result Ok constructor.
+// spec: spec/03-types.md §3.11.1 — `(Ok 42)` has type `(Result Int b)`: the
+// `Int` is determined by the payload, but the `Err`-arm payload var `b` is a
+// PHANTOM (unused-ctor-position) free var. Under the tightened
+// full-concreteness verdict any residual free var — occurring OR phantom — at a
+// codegen-reaching value position is ambiguous (USER RULED strict, phantom not
+// exempt), so the construction MUST be pinned `:(Result Int String) (Ok 42)`.
+// The annotation is pinned in value position (a `let` binding) rather than the
+// `match` scrutinee, which has a separate frontend parse bug (FIXME 0389);
+// matching on the bound var keeps the test's pattern-dispatch semantics.
 #[test]
 fn result_ok_constructs() {
     assert_repl_eval_contains(
-        r#"(match (Ok 42) [(Ok x) (= x 42) (Err _) false])"#,
+        r#"(let [r :(Result Int String) (Ok 42)] (match r [(Ok x) (= x 42) (Err _) false]))"#,
         ":primitives/Bool true",
     );
 }
 
-// spec: spec/05-definitions.md §5.2 (deftype) + spec/06-pattern-matching.md §6.1 — Result Err constructor (an Ok arm with `_`
-// disambiguates the a type via the body's Bool result; the actual
-// scrutinee is Err).
+// spec: spec/05-definitions.md §5.2 (deftype) + spec/06-pattern-matching.md §6.1 — Result Err constructor.
+// spec: spec/03-types.md §3.11.1 — `(Err "oops")` has type `(Result a String)`:
+// the `String` is determined by the payload, but the `Ok`-arm payload var `a`
+// is a PHANTOM free var. The strict verdict rejects it unpinned, so the
+// construction is pinned `:(Result Int String) (Err "oops")` (value position,
+// then matched on the bound var — sidestepping the FIXME-0389 scrutinee parse
+// bug).
 #[test]
 fn result_err_constructs() {
     assert_repl_eval_contains(
-        r#"(match (Err "oops") [(Ok _) false (Err _) true])"#,
+        r#"(let [r :(Result Int String) (Err "oops")] (match r [(Ok _) false (Err _) true]))"#,
         ":primitives/Bool true",
     );
 }

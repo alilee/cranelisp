@@ -163,10 +163,16 @@ fn mode_equiv_adt_option_match() {
 
 // spec: spec/06-pattern-matching.md — nested pattern match (Result wrapping
 // Int — exercises constructor dispatch within match).
+// spec: spec/03-types.md §3.11.1 — `(Ok 42)` is `(Result Int b)` with phantom
+// `Err`-payload var `b`; under the tightened full-concreteness verdict the
+// unpinned phantom is ambiguous (strict, no phantom exemption). Pinned in value
+// position via a `let` binding `:(Result Int String) (Ok 42)` (the match
+// scrutinee position has a separate parse bug, FIXME 0389), then matched on the
+// bound var. Mode-equivalence across REPL/--run/--link is preserved.
 #[test]
 fn mode_equiv_pattern_match_nested() {
     run_through_all_modes(
-        "(defn main [] (Pure (match (Ok 42) [(Ok x) x (Err _) -1])))",
+        "(defn main [] (Pure (let [r :(Result Int String) (Ok 42)] (match r [(Ok x) x (Err _) -1]))))",
         PreludeVariant::TestStandard,
     )
     .assert_all_equal(42);

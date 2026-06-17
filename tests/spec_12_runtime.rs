@@ -216,10 +216,15 @@ fn vec_of_int_let_bound_freed() {
 // spec: spec/12-runtime.md §12.1.5 / §12.3.1 — empty vec literal is still
 // heap-allocated (boundary case: zero-element vec) and must be freed when
 // its binding goes out of scope.
+// spec: spec/03-types.md §3.11.1 — the let-bound `[]` is `(Vec a)` at a
+// codegen-reaching position; under the tightened full-concreteness verdict the
+// unpinned element type is a type error, pinned with `:(Vec Int) []` (the
+// directed remedy). The RC-balance property under test is unchanged — the
+// binding is still heap-allocated and freed at scope exit.
 // (carry: legacy/sketch_port.rs::sketch_rc_vec_empty_freed)
 #[test]
 fn empty_vec_let_bound_freed() {
-    repl_prims("(let [xs []] (vec-len xs))\n")
+    repl_prims("(let [xs :(Vec Int) []] (vec-len xs))\n")
         .assert_stdout_contains(":primitives/Int 0");
 }
 
@@ -242,11 +247,16 @@ fn match_temporary_scrutinee_freed_on_exit() {
 // Per `memory/feedback_repros_join_suite.md` this shape stays in the suite
 // as a regression guard. The outer body returning Int (=42) means a
 // double-free during the chained closure cleanup would terminate the process.
+// spec: spec/03-types.md §3.11.1 — the captured `f` is `(Fn [a] a)`, a
+// polymorphic function value at an unresolved type reaching codegen; under the
+// tightened full-concreteness verdict the unpinned `a` is a type error, pinned
+// with `:(Fn [Int] Int) (fn [x] x)`. The chained-closure RC-balance property
+// under test is unchanged.
 // (carry: legacy/sketch_port.rs::sketch_rc_closure_capturing_closure)
 #[test]
 fn closure_capturing_closure_balanced() {
     repl_prims(
-        "(let [f (fn [x] x)] (let [g (fn [] f)] 42))\n",
+        "(let [f :(Fn [Int] Int) (fn [x] x)] (let [g (fn [] f)] 42))\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
