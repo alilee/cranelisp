@@ -1340,11 +1340,26 @@ fn build_match(
     span: Span,
 ) -> Result<Expr, CranelispError> {
     // (match scrutinee [pattern body pattern body ...])
-    if children.len() != 3 {
+    //
+    // The scrutinee may carry a `:Type form` annotation (BC §1 invariant 9;
+    // spec §2.3.8 — `:Type` is reader-macro-like, binding the immediately
+    // following form in ALL positions, including a match scrutinee). Consume
+    // it through the same annotation-pairing primitive (`build_one_expr_at`)
+    // used for call arguments and vec literals so the annotated scrutinee
+    // groups into ONE `Expr::Annotate` rather than presenting as extra
+    // children that defeat a positional arity guard (FIXME 0389).
+    //
+    // Minimum shape: `(match <scrutinee...> [arms])` — at least the `match`
+    // head, one scrutinee token, and the arms bracket.
+    if children.len() < 3 {
         return Err(parse_err("match requires scrutinee and arms", span));
     }
-    let scrutinee = build_expr(&children[1])?;
-    let (bracket_items, bracket_span) = expect_bracket(&children[2])?;
+    let (scrutinee, consumed) = build_one_expr_at(children, 1)?;
+    let arms_pos = 1 + consumed;
+    if arms_pos + 1 != children.len() {
+        return Err(parse_err("match requires scrutinee and arms", span));
+    }
+    let (bracket_items, bracket_span) = expect_bracket(&children[arms_pos])?;
     if bracket_items.len() % 2 != 0 {
         return Err(parse_err(
             "match arms must have an even number of elements (pattern body pairs)",
@@ -2283,6 +2298,56 @@ mod tests {
                     }
                     other => panic!("expected Constructor, got {other:?}"),
                 }
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.3.8 — `:Type form` annotation groups with the match
+    // scrutinee (FIXME 0389): the simple colon-prefixed-symbol annotation
+    // `:Bool` binds the following form `x`, yielding an annotated scrutinee +
+    // intact arms.
+    #[test]
+    fn test_build_match_scrutinee_simple_annotation() {
+        match parse_and_build_expr("(match :Bool x [True 1 False 0])").unwrap() {
+            Expr::Match { scrutinee, arms, .. } => {
+                assert!(
+                    matches!(scrutinee.as_ref(), Expr::Annotate { annotation: TypeExpr::Named(_), .. }),
+                    "scrutinee should be an annotated expr, got {scrutinee:?}"
+                );
+                assert_eq!(arms.len(), 2, "both arms survive the grouping");
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    // spec: 02-grammar §2.3.8 — compound applied-type annotation `:(Option Int)`
+    // groups with the match scrutinee (FIXME 0389): the bare-colon + following
+    // list form `(Option Int)` binds the next form `None`, yielding an
+    // annotated scrutinee whose annotation is the applied type + intact arms.
+    #[test]
+    fn test_build_match_scrutinee_compound_annotation() {
+        match parse_and_build_expr("(match :(Option Int) None [None 0 (Some _) 1])").unwrap() {
+            Expr::Match { scrutinee, arms, .. } => {
+                match scrutinee.as_ref() {
+                    Expr::Annotate { annotation, expr, .. } => {
+                        match annotation {
+                            TypeExpr::Applied(head, args) => {
+                                assert_eq!(head.name.as_ref(), "Option");
+                                assert_eq!(args.len(), 1, "(Option Int) has one type arg");
+                            }
+                            other => panic!("annotation should be an applied type, got {other:?}"),
+                        }
+                        // A bare uppercase `None` builds to `Expr::Var` at the
+                        // frontend stage (constructor resolution is typecheck's).
+                        assert!(
+                            matches!(expr.as_ref(), Expr::Var { .. }),
+                            "inner scrutinee is the bare `None` form, got {expr:?}"
+                        );
+                    }
+                    other => panic!("scrutinee should be an annotated expr, got {other:?}"),
+                }
+                assert_eq!(arms.len(), 2, "both arms survive the grouping");
             }
             other => panic!("expected Match, got {other:?}"),
         }
