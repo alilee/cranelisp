@@ -143,6 +143,13 @@ pub use schema::{Ctor, Field, FieldType, ParseLoc, Schema, SchemaParseError, Typ
 mod adt;
 pub use adt::{set_global_schema, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType};
 
+// The `declare_platform!` three-exports emitter + its compile-time
+// `extract_layout_hash` helper. The macros are `#[macro_export]` (crate-root
+// resolution); `extract_layout_hash` is re-exported here so the macro's
+// `$crate::extract_layout_hash` path and in-crate callers resolve identically.
+mod declare;
+pub use declare::extract_layout_hash;
+
 /// GOT table size — re-exported from `cranelisp-types` so the
 /// [`declare_platform!`] macro can size the exported platform GOT
 /// (`__cranelisp_got_platform_<name>`) without the caller crate depending on
@@ -421,11 +428,13 @@ pub struct HostCallbacks {
     /// 5. Returns the **alloc base pointer** as i64 (matching `CLString`'s
     ///    base-pointer convention — `CLAdt<T>::from_raw` expects alloc base).
     ///
-    /// **Wired-or-panic** (R1 gate): until populated by the host-wiring
-    /// sprint (FIXME 0229), this field points at `null_alloc_with_tag`,
-    /// which panics with the R1-gate message naming FIXME 0229. The R1
-    /// gate is removed in the host-wiring sprint by replacing the
-    /// null-callback pointer with the wired host implementation.
+    /// The host wires this to the real intrinsic at DLL load
+    /// ([`HostContext::init`]); it has been wired since Sprint 76. When no
+    /// host has called `init` — e.g. a `cranelisp-platform` unit test
+    /// exercising a construction path directly — this field is left at its
+    /// uninitialized-host fallback [`null_alloc_with_tag`], which panics on
+    /// call. Install a synthetic callback via `HostContext::init` to exercise
+    /// construction without a real host.
     pub alloc_with_tag: extern "C" fn(
         tag: u32,
         field_count: u32,
@@ -433,25 +442,24 @@ pub struct HostCallbacks {
     ) -> i64,
 }
 
-/// Panic-emitting placeholder for `HostCallbacks::alloc_with_tag`.
+/// Permanent uninitialized-host fallback for `HostCallbacks::alloc_with_tag`.
 ///
-/// `HostCallbacks` initialized by the host this sprint sets this as the
-/// `alloc_with_tag` field value (until the host-wiring sprint populates
-/// the real callback per FIXME 0229). Calling this panics under the R1
-/// gate; the message names FIXME 0229 explicitly.
-///
-/// **Will be removed** in the host-wiring sprint: the host's
-/// `HostCallbacks` initializer site (in `int`) switches from
-/// `cranelisp_platform::null_alloc_with_tag` to the wired callback.
+/// The host wires the real `alloc_with_tag` intrinsic at DLL load via
+/// [`HostContext::init`] (wired since Sprint 76). This fallback is what the
+/// `alloc_with_tag` slot reads **before any host has called `init`** — the
+/// legitimate uninitialized-host path. It is a permanent safety gate, not a
+/// migration scaffold: it fires only when `CLAdt::construct` runs without a
+/// wired host, which in practice means a `cranelisp-platform` unit test
+/// exercising a construction path directly. Such a test installs a synthetic
+/// `alloc_with_tag` callback via `HostContext::init` before constructing.
 pub extern "C" fn null_alloc_with_tag(
     _tag: u32,
     _field_count: u32,
     _fields_ptr: *const i64,
 ) -> i64 {
     panic!(
-        "CLAdt construction requires HostCallbacks::alloc_with_tag, which is not \
-         yet wired by the host. See FIXME 0229 (host-side ADT marshaling — \
-         host-wiring sprint scope).\n\
+        "CLAdt construction requires HostCallbacks::alloc_with_tag, but no host \
+         has called HostContext::init to wire it (uninitialized-host fallback).\n\
          \n\
          If you are running tests inside cranelisp-platform, install a synthetic \
          callback via HostContext::init in test setup."
@@ -1237,9 +1245,10 @@ impl HostContext {
         GLOBAL_ALLOC.store(alloc_fn as *mut (), Ordering::SeqCst);
 
         // Sprint 71: also set the global tagged-ADT allocator used by
-        // CLAdt::<T>::construct(...). Until the host wires this
-        // (FIXME 0229), the value is `null_alloc_with_tag` which panics
-        // under the R1 gate.
+        // CLAdt::<T>::construct(...). The host passes the real intrinsic
+        // here (wired since Sprint 76); the `null_alloc_with_tag`
+        // uninitialized-host fallback only stands in before any host has
+        // called init.
         let alloc_with_tag_fn = unsafe { (*raw).alloc_with_tag };
         GLOBAL_ALLOC_WITH_TAG.store(alloc_with_tag_fn as *mut (), Ordering::SeqCst);
     }
@@ -1395,387 +1404,6 @@ pub unsafe fn manifest_to_descriptors(
     }
 
     Ok((name, version, descriptors))
-}
-
-// -- declare_platform! macro --
-
-/// Extract the `<hex>` from a generated schema artifact's `;; layout-hash:
-/// <hex>` header line, at compile time, so the [`declare_platform!`] `schema:`
-/// embed arm can export it as `__cranelisp_layout_hash_<name>`
-/// (platform-interface.md §5.5.4).
-///
-/// `const fn` so the macro can use the result to initialise a `&'static str`
-/// data symbol with no runtime work. Scans for the `;; layout-hash:` marker and
-/// returns the trimmed remainder of that line; returns `""` if absent (a
-/// first-build artifact may carry no header — the absence is tolerated, the
-/// layout-hash gate simply compares against an empty hash and the REPL warns).
-pub const fn extract_layout_hash(artifact: &str) -> &str {
-    const MARKER: &[u8] = b";; layout-hash:";
-    let bytes = artifact.as_bytes();
-    let n = bytes.len();
-    let m = MARKER.len();
-    let mut i = 0;
-    while i + m <= n {
-        // Match MARKER at position i.
-        let mut k = 0;
-        while k < m && bytes[i + k] == MARKER[k] {
-            k += 1;
-        }
-        if k == m {
-            // Skip leading spaces after the marker.
-            let mut start = i + m;
-            while start < n && (bytes[start] == b' ' || bytes[start] == b'\t') {
-                start += 1;
-            }
-            // Find end of line.
-            let mut end = start;
-            while end < n && bytes[end] != b'\n' && bytes[end] != b'\r' {
-                end += 1;
-            }
-            // Trim trailing spaces.
-            while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t') {
-                end -= 1;
-            }
-            // SAFETY: start/end fall on ASCII boundaries (the hash is hex; the
-            // marker + spaces are ASCII), so the slice is valid UTF-8.
-            let slice = unsafe {
-                std::str::from_utf8_unchecked(
-                    std::slice::from_raw_parts(bytes.as_ptr().add(start), end - start),
-                )
-            };
-            return slice;
-        }
-        i += 1;
-    }
-    ""
-}
-
-/// Declare a platform DLL with metadata and function registrations —
-/// the DLL-author entry point.
-///
-/// Every platform DLL invokes `declare_platform!` exactly once. The macro
-/// implements the **three-exports model** (`design/arch/platform-interface.md`
-/// §1/§6.1, user-ratified 2026-06-07; FIXME 0286) — a platform exports its GOT,
-/// its manifest, and (optionally) its embedded generated schema + layout hash:
-///
-/// 1. **The exported GOT** — `__cranelisp_got_platform_<name>`, a
-///    `[AtomicPtr<u8>; GOT_TABLE_SIZE]` static (the `__cranelisp_got_primitives`
-///    precedent, FIXME 0280). Slot *i* holds the fn pointer of `functions[i]`
-///    — **manifest order IS GOT slot order** (§5.1). The macro populates the
-///    used slots inside `cranelisp_platform_manifest` at DLL load; the host
-///    wraps the GOT in place (`GotTable::with_static_backing`) and dispatches
-///    GOT-indirect at `got_slot = manifest index`.
-/// 2. **The manifest** — the `cranelisp_platform_manifest` extern fn returning
-///    a [`PlatformManifest`] of [`PlatformFn`] descriptors (name, FQ type_sig,
-///    scheduling class, docstring, param-names). The host builds its
-///    `SymbolTable` from this.
-/// 3. **The embedded schema + layout hash** (optional `schema:` arm) — the
-///    `/platform-schema`-generated artifact text, embedded via `include_str!`,
-///    parsed once into the per-DLL [`Schema`] (`CLAdt::read_field` reads it by
-///    name); the artifact's `;; layout-hash:` header is exported as the data
-///    symbol `__cranelisp_layout_hash_<name>` (§5.5.4). The arm is optional —
-///    an absent schema is tolerated for first builds (the layout-hash gate then
-///    compares against an empty hash; the REPL warns).
-///
-/// Platform functions are normal `extern "C"` Rust functions over the `CL*`
-/// wrapper family — defined outside the macro. **Platforms no longer declare
-/// ADTs:** a platform's data types are ordinary `.cl` modules; the macro's
-/// signatures reference them by fully-qualified name
-/// (`(Fn [shapes/Rectangle] primitives/Int)`). The Sprint 71 schema
-/// *declaration* dialect (the `LazyLock<Schema>`-as-DSL static, the marker-type
-/// auto-emission, `GetSchema`, `schema_types:`) is **retired** (§6.6).
-///
-/// # Macro keys
-///
-/// | Key | Required | Shape | Purpose |
-/// |---|---|---|---|
-/// | `name:` | yes | `&'static str` literal | Platform name; the GOT/hash export suffix |
-/// | `version:` | yes | `&'static str` literal | Platform version |
-/// | `host:` | yes | identifier of a `static HOST: HostContext` | Where the macro calls `init(callbacks)` |
-/// | `schema:` | optional | `&'static str` (the embedded `/platform-schema` artifact, typically `include_str!(...)`) | Embedded generated schema; absent ⇒ no ADT marshaling |
-/// | `functions:` | yes | `[ fn { ... }, ... ]` array | Per-fn descriptors |
-///
-/// Each per-fn block has five required fields — `cl_name:` (kebab-case
-/// user-visible name), `sig:` (FQ type-signature S-expression), `doc:`
-/// (docstring), `params:` (named-parameter ident list), `scheduling:`
-/// ([`SchedulingClass`] expression).
-///
-/// # Example — no schema (scalar-only platform)
-///
-/// ```ignore
-/// use cranelisp_platform::*;
-///
-/// static HOST: HostContext = HostContext::new();
-///
-/// pub extern "C" fn print_string(s: CLString) -> CLIO<CLInt> {
-///     let owned = s.into_owned_consuming();
-///     CLIO::effect(move || { println!("{}", owned.as_str()); CLInt::from(0i64) })
-/// }
-///
-/// declare_platform! {
-///     name: "stdio",
-///     version: "0.1.0",
-///     host: HOST,
-///     functions: [
-///         print_string {
-///             cl_name: "print",
-///             sig: "(Fn [primitives/String] (IO primitives/Int))",
-///             doc: "Print a string followed by a newline",
-///             params: [s],
-///             scheduling: SchedulingClass::Sequential,
-///         },
-///     ]
-/// }
-/// ```
-///
-/// # Example — with the `schema:` embed arm
-///
-/// ```ignore
-/// declare_platform! {
-///     name: "shapes",
-///     version: "0.1.0",
-///     host: HOST,
-///     schema: include_str!("shapes.platform-schema"), // GENERATED — never hand-edited
-///     functions: [
-///         rectangle_area {
-///             cl_name: "rectangle-area",
-///             sig: "(Fn [shapes/Rectangle] primitives/Int)", // fully qualified
-///             doc: "Compute the area of a rectangle",
-///             params: [r],
-///             scheduling: SchedulingClass::Commutative,
-///         },
-///     ]
-/// }
-/// ```
-#[macro_export]
-macro_rules! declare_platform {
-    // Arm 1: with the `schema:` EMBED arm (the generated artifact text — the
-    // schema *declaration* dialect is retired, §6.6). Installs the parsed
-    // schema for name-based field access and exports the layout-hash.
-    (
-        name: $platform_name:literal,
-        version: $platform_version:literal,
-        host: $host:ident,
-        schema: $schema_text:expr,
-        functions: [
-            $(
-                $fn_ident:ident {
-                    cl_name: $cl_name:literal,
-                    sig: $sig:literal,
-                    doc: $doc:literal,
-                    params: [$($param:ident),* $(,)?],
-                    scheduling: $scheduling:expr,
-                }
-            ),* $(,)?
-        ]
-    ) => {
-        // The embedded generated schema artifact text (typically
-        // `include_str!("<name>.platform-schema")`).
-        const __CRANELISP_PLATFORM_SCHEMA_TEXT: &str = $schema_text;
-
-        // Export the layout hash (extracted from the artifact's
-        // `;; layout-hash:` header at compile time) as a data symbol the host
-        // compares against its live-tables regeneration (§5.5.4). Carried as a
-        // `&'static str` — a `(ptr, len)` fat reference into the schema rodata.
-        // BOTH run-mode readers dereference this fat reference and use its `len`,
-        // so neither depends on a NUL terminator (the D2 fix lives in the reader,
-        // `cranelisp-intrinsics::layout` — see its doc):
-        //   - `--run` reads `library.get::<*const &str>` → `**sym` (`src/platform.rs`).
-        //   - `--link`'s startup stub passes THIS symbol's address to
-        //     `cranelisp_check_layout_hash`, which reads it as `*const &str` —
-        //     the same (ptr, len) view, so the two modes read identically.
-        // Platform-agnostic: an ordinary Rust static, correct on Mach-O / ELF / PE.
-        #[unsafe(export_name = concat!("__cranelisp_layout_hash_", $platform_name))]
-        pub static __CRANELISP_LAYOUT_HASH: &str =
-            $crate::extract_layout_hash(__CRANELISP_PLATFORM_SCHEMA_TEXT);
-
-        $crate::__declare_platform_body!(
-            name: $platform_name,
-            version: $platform_version,
-            host: $host,
-            schema_text: ::core::option::Option::Some(__CRANELISP_PLATFORM_SCHEMA_TEXT),
-            functions: [
-                $(
-                    $fn_ident {
-                        cl_name: $cl_name,
-                        sig: $sig,
-                        doc: $doc,
-                        params: [$($param),*],
-                        scheduling: $scheduling,
-                    }
-                ),*
-            ]
-        );
-    };
-
-    // Arm 2: no schema — a scalar-only platform that marshals no ADTs.
-    (
-        name: $platform_name:literal,
-        version: $platform_version:literal,
-        host: $host:ident,
-        functions: [
-            $(
-                $fn_ident:ident {
-                    cl_name: $cl_name:literal,
-                    sig: $sig:literal,
-                    doc: $doc:literal,
-                    params: [$($param:ident),* $(,)?],
-                    scheduling: $scheduling:expr,
-                }
-            ),* $(,)?
-        ]
-    ) => {
-        $crate::__declare_platform_body!(
-            name: $platform_name,
-            version: $platform_version,
-            host: $host,
-            schema_text: ::core::option::Option::<&str>::None,
-            functions: [
-                $(
-                    $fn_ident {
-                        cl_name: $cl_name,
-                        sig: $sig,
-                        doc: $doc,
-                        params: [$($param),*],
-                        scheduling: $scheduling,
-                    }
-                ),*
-            ]
-        );
-    };
-}
-
-/// Shared body of `declare_platform!` — emits the `cranelisp_platform_manifest`
-/// extern fn. Internal; do not invoke directly.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __declare_platform_body {
-    (
-        name: $platform_name:literal,
-        version: $platform_version:literal,
-        host: $host:ident,
-        schema_text: $schema_text:expr,
-        functions: [
-            $(
-                $fn_ident:ident {
-                    cl_name: $cl_name:literal,
-                    sig: $sig:literal,
-                    doc: $doc:literal,
-                    params: [$($param:ident),* $(,)?],
-                    scheduling: $scheduling:expr,
-                }
-            ),* $(,)?
-        ]
-    ) => {
-        // The exported platform GOT (§5.1) — modelled on
-        // `cranelisp-primitives::PRIMITIVES_GOT_SLAB` (FIXME 0280). Slot i holds
-        // the fn pointer of the i-th declared function (manifest order IS GOT
-        // slot order); the rest stay null. Lives in writable `__DATA` so the
-        // `(trace …)` GOT copy-swap can reach platform slots. The host wraps
-        // this in place via `GotTable::with_static_backing` — no copy.
-        #[unsafe(export_name = concat!("__cranelisp_got_platform_", $platform_name))]
-        pub static __CRANELISP_PLATFORM_GOT:
-            [$crate::MacroAtomicPtr<u8>; $crate::GOT_TABLE_SIZE] =
-            [const { $crate::MacroAtomicPtr::new(::std::ptr::null_mut()) };
-                $crate::GOT_TABLE_SIZE];
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn cranelisp_platform_manifest(
-            callbacks: *const $crate::HostCallbacks,
-        ) -> $crate::PlatformManifest {
-            // Initialize the host context (stores callbacks, sets global alloc).
-            unsafe { $host.init(callbacks); }
-
-            // Install the embedded generated schema (if this platform marshals
-            // ADTs) so `CLAdt::read_field` resolves field offsets by name
-            // (§5.5). A parse failure is a generator/parser grammar drift — a
-            // `/dev` bug — and aborts loudly.
-            if let ::core::option::Option::Some(schema_text) = $schema_text {
-                let schema = $crate::Schema::parse(schema_text).expect(
-                    "embedded platform schema artifact failed to parse — \
-                     regenerate it with /platform-schema and rebuild",
-                );
-                $crate::set_global_schema(schema);
-            }
-
-            // Populate the exported GOT: slot i ← fn pointer of functions[i].
-            // Manifest order IS GOT slot order (§5.1, answer 1). Done here at
-            // DLL load so a session/`--link` finds the slots resolved; the host
-            // never populates the platform GOT.
-            {
-                let mut __got_slot: usize = 0;
-                $(
-                    __CRANELISP_PLATFORM_GOT[__got_slot].store(
-                        $fn_ident as *const u8 as *mut u8,
-                        ::std::sync::atomic::Ordering::Release,
-                    );
-                    __got_slot += 1;
-                )*
-                let _ = __got_slot;
-            }
-
-            // Build function descriptors.
-            // Phase 1: Capture each function pointer, param info, and scheduling class
-            // before shadowing the identifier.
-            $(
-                #[allow(unused)]
-                let $fn_ident = {
-                    let fn_ptr = $fn_ident as *const u8;
-                    let param_names_vec: Vec<&'static [u8]> = vec![
-                        $( stringify!($param).as_bytes(), )*
-                    ];
-                    let param_count = param_names_vec.len();
-                    let (name_ptrs_ptr, name_lens_ptr) = if param_count > 0 {
-                        let name_ptrs: Vec<*const u8> =
-                            param_names_vec.iter().map(|b| b.as_ptr()).collect();
-                        let name_lens: Vec<usize> =
-                            param_names_vec.iter().map(|b| b.len()).collect();
-                        let ptrs = Box::leak(name_ptrs.into_boxed_slice());
-                        let lens = Box::leak(name_lens.into_boxed_slice());
-                        (ptrs.as_ptr(), lens.as_ptr())
-                    } else {
-                        (std::ptr::null::<*const u8>(), std::ptr::null::<usize>())
-                    };
-                    let scheduling_class = ($scheduling) as u32;
-                    (fn_ptr, name_ptrs_ptr, name_lens_ptr, param_count, scheduling_class)
-                };
-            )*
-
-            // Phase 2: Build PlatformFn descriptors array. Platform fns carry no
-            // exported linker name (the former jit_name mangled-name dispatch
-            // retired, FIXME 0288) — dispatch is GOT-indirect at the manifest
-            // index. The fn pointer in `ptr` is the only address coordinate; the
-            // exported GOT (populated above) carries it for code dispatch.
-            let functions: &'static [$crate::PlatformFn] = Box::leak(vec![
-                $(
-                    $crate::PlatformFn {
-                        name: $cl_name.as_ptr(),
-                        name_len: $cl_name.len(),
-                        ptr: ($fn_ident).0,
-                        param_count: ($fn_ident).3 as u32,
-                        type_sig: $sig.as_ptr(),
-                        type_sig_len: $sig.len(),
-                        docstring: $doc.as_ptr(),
-                        docstring_len: $doc.len(),
-                        param_names: ($fn_ident).1,
-                        param_name_lens: ($fn_ident).2,
-                        param_name_count: ($fn_ident).3,
-                        scheduling_class: ($fn_ident).4,
-                    },
-                )*
-            ].into_boxed_slice());
-
-            $crate::PlatformManifest {
-                abi_version: $crate::ABI_VERSION,
-                name: $platform_name.as_ptr(),
-                name_len: $platform_name.len(),
-                version: $platform_version.as_ptr(),
-                version_len: $platform_version.len(),
-                functions: functions.as_ptr(),
-                function_count: functions.len(),
-            }
-        }
-    };
 }
 
 // ---------------------------------------------------------------------
@@ -2317,23 +1945,28 @@ mod tests {
     }
 
     // T25 — R1 wired-or-panic — construction path panics with explicit message
-    // spec: design/platform/sprint71-redesign.md §9 (R1 wired-or-panic gate)
+    // spec: design/platform/sprint71-redesign.md §9 (R1 uninitialized-host gate)
     //
     // We cannot use `#[should_panic]` directly: `null_alloc_with_tag` is
     // `extern "C" fn`, and modern Rust aborts on panics across the
     // extern-C boundary (which a #[should_panic] harness cannot catch
     // because the process exits). Instead, T25 asserts the panic-message
-    // content is present in the source — the R1 gate fires at runtime,
-    // visibly, when a host has not wired alloc_with_tag, and the message
-    // names FIXME 0229 + HostCallbacks::alloc_with_tag + the synthetic
-    // callback workaround. The actual panic-and-abort behaviour is
-    // verified in integration / observed at DLL load when a CLAdt::construct
-    // call lands without a wired host. This split keeps T25 as a
-    // failing-first regression guard against accidental message dilution.
+    // content is present in the source — the fallback fires at runtime,
+    // visibly, when a host has not called HostContext::init to wire
+    // alloc_with_tag, and the message names the uninitialized-host
+    // condition + HostCallbacks::alloc_with_tag + the synthetic callback
+    // workaround. The actual panic-and-abort behaviour is verified in
+    // integration / observed at DLL load when a CLAdt::construct call lands
+    // without a wired host. This split keeps T25 as a failing-first
+    // regression guard against accidental message dilution.
+    //
+    // The gate is a PERMANENT uninitialized-host fallback (alloc_with_tag
+    // has been wired by the host since Sprint 76), not a migration scaffold
+    // — the message no longer names a now-resolved FIXME.
     #[test]
     fn t25_null_alloc_with_tag_panic_message_contract() {
         // Read this source file and verify the panic message contains the
-        // three required substrings from design §9.3.
+        // required substrings from the reframed fallback contract.
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/lib.rs");
         let src = std::fs::read_to_string(&path)
@@ -2344,15 +1977,15 @@ mod tests {
         let body_start = src.find("pub extern \"C\" fn null_alloc_with_tag(")
             .expect("null_alloc_with_tag fn declared in lib.rs");
         let body = &src[body_start..(body_start + 1500).min(src.len())];
-        assert!(body.contains("FIXME 0229"),
-                "R1 panic message must name FIXME 0229 (host-side ADT marshaling)");
         assert!(body.contains("alloc_with_tag"),
-                "R1 panic message must name HostCallbacks::alloc_with_tag");
+                "fallback panic message must name HostCallbacks::alloc_with_tag");
+        assert!(body.contains("HostContext::init"),
+                "fallback panic message must name the uninitialized-host condition (no HostContext::init call)");
         // The source-text concatenation wraps "synthetic" and "callback"
         // across a line-continuation backslash; check for "synthetic"
         // alone as the trigger word for the workaround instruction.
         assert!(body.contains("synthetic"),
-                "R1 panic message must instruct on the test-side workaround (synthetic callback via HostContext::init)");
+                "fallback panic message must instruct on the test-side workaround (synthetic callback via HostContext::init)");
     }
 
     // T27 — HostCallbacks carries the two fn-pointer fields (ABI v3, FIXME

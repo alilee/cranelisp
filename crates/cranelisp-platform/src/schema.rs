@@ -286,7 +286,11 @@ impl Schema {
         if !parser.at_eof() {
             let at = parser.loc();
             return Err(SchemaParseError::UnexpectedToken {
-                found: (parser.peek().unwrap() as char).to_string(),
+                found: (parser
+                    .peek()
+                    .expect("byte present — guarded by the !at_eof() check above")
+                    as char)
+                    .to_string(),
                 expected: "end of schema after the outer list",
                 at,
             });
@@ -460,7 +464,11 @@ impl<'a> Parser<'a> {
             None => return Err(SchemaParseError::UnexpectedEof { expected, at }),
             Some(b'(') | Some(b')') => {
                 return Err(SchemaParseError::UnexpectedToken {
-                    found: (self.peek().unwrap() as char).to_string(),
+                    found: (self
+                        .peek()
+                        .expect("byte present — matched Some(b'(')|Some(b')') above")
+                        as char)
+                        .to_string(),
                     expected,
                     at,
                 });
