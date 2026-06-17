@@ -2,9 +2,13 @@
 
 This section defines the abstract runtime semantics of Cranelisp. It specifies observable behavior without prescribing a particular implementation strategy. A conforming implementation MAY use JIT compilation, ahead-of-time compilation, interpretation, or any hybrid approach.
 
-## 12.1 Value Representation [Tested]
+## 12.1 Value Representation [Tested] [S84]
 
-All Cranelisp values are represented at runtime as machine-word-sized quantities (64-bit on all supported platforms). The interpretation of a word depends on its type, which is always known statically.
+**The runtime representation of each concrete type is a backend-internal detail; no language-level or ABI-level uniformity across types is required or guaranteed.** Because every value's concrete type is known statically at every code-generation site — a consequence of rank-1 Hindley-Milner (see [§3.10](03-types.md#310-rank-1-hindley-milner)) together with full monomorphisation-from-roots (see [§3.6.3](03-types.md#363-monomorphisation)), made total by the concreteness rule that rejects any residual free type variable in a codegen-reaching position (see [§3.11](03-types.md#311-ambiguous-types)) — the implementation MAY choose each concrete type's runtime representation independently. It MAY use a narrower-than-word encoding (e.g. a packed scalar, a `u16` for a small character type, an `f32`), an unboxed small ADT, or any other layout, provided the **observable semantics** of [§12.3](#123-memory-management) (memory management) and [§12.4](#124-evaluation) (evaluation) are preserved. There is no requirement that distinct types share a representation, and there is no guarantee that any particular type is machine-word-sized. Representation is not part of the language definition or any stable ABI — it is chosen per concrete type by the backend.
+
+### 12.1.1 — 12.1.5: Current reference representation (descriptive, not prescriptive) [S84]
+
+The layout tables and diagrams in §12.1.1–§12.1.5 below document the **current reference representation** chosen by the present backend: a uniform machine-word (64-bit) encoding in which the interpretation of each word depends on its statically-known type. They are **descriptive of the current backend choice, not a normative uniform-word mandate.** A conforming implementation is free to deviate from any of them for any concrete type, subject only to preserving the observable semantics of §12.3 and §12.4. Where other sections of this specification reference these layouts (e.g. the i64 element/field/capture descriptions), read them as describing the current reference representation, not as imposing a uniform-word requirement.
 
 ### 12.1.1 Scalar Types [Tested tests/ring0.rs::dual_mode_simple_int]
 
