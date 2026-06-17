@@ -176,6 +176,10 @@
 pub mod alloc;
 pub mod catalog;
 pub mod drop;
+/// Single-source heap-cell `i64` read/write accessors over a base+offset (MED-1,
+/// FIXME 0370). `pub(crate)` — an internal layout-access helper, not a public
+/// surface item.
+pub(crate) mod heap_access;
 pub mod heap_string;
 pub mod io;
 /// Fault guard for the platform-Effect force site (FIXME 0327). `pub(crate)` —
@@ -187,6 +191,11 @@ pub mod layout;
 pub mod panic;
 pub mod rc;
 pub mod trace;
+/// The pure `(trace ...)` value formatter — the `DisplayDescriptor` ABI + the
+/// `cranelisp_trace_format` intrinsic. Split out of `trace` (HIGH-3, FIXME 0370);
+/// its public types are re-exported under the `trace::` path for cross-crate
+/// path stability.
+pub mod trace_format;
 pub mod vec_runtime;
 
 // Root re-exports — only the names with a verified root-form Rust consumer.

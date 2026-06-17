@@ -15,7 +15,8 @@
 //! ## Threading
 //!
 //! `register_io_observer` is thread-safe. The slot is an
-//! `AtomicPtr<()>`; readers use `Ordering::Acquire` so any observer state
+//! `AtomicUsize` holding the observer fn's integer address; readers use
+//! `Ordering::Acquire` so any observer state
 //! published before registration is visible to the reading thread. Writers
 //! use `Ordering::Release`. Last write wins under happens-before order.
 //!
@@ -23,7 +24,7 @@
 //! path until another observer registers.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -124,13 +125,18 @@ pub type IoObserver = fn(IoEventTag, &IoEvent);
 // Observer slot
 // ---------------------------------------------------------------------------
 
-/// Atomic pointer to the currently-registered observer. Null = unregistered.
+/// Address of the currently-registered observer fn, or `0` = unregistered.
 ///
-/// Stored as `AtomicPtr<()>` carrying a transmuted fn pointer because
-/// `AtomicPtr<fn(_,_)>` is not directly representable. The transmute is
-/// sound: function pointers are `*const ()` on every supported platform
-/// (Decision 11 ABI assumes pointer-sized fn pointers).
-static OBSERVER_SLOT: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+/// Stored as the `usize` numeric address of the [`IoObserver`] fn pointer
+/// (`AtomicPtr<fn(_,_)>` is not directly representable). LOW-2 / FIXME 0370: this
+/// holds the fn pointer's *integer address* via the guaranteed `fn as usize` /
+/// `usize as fn` cast pair — NOT a data↔fn `transmute` (which Rust does not
+/// bless even though it works on every current target). The cast round-trips
+/// losslessly: `fn as usize` is a well-defined fn-pointer-to-integer cast, and
+/// `addr as IoObserver` is its inverse for a value originally produced from a
+/// valid `IoObserver`. Decision 11's ABI already assumes pointer-sized fn
+/// pointers, so the `usize` slot is wide enough.
+static OBSERVER_SLOT: AtomicUsize = AtomicUsize::new(0);
 
 /// Replace the registered observer atomically.
 ///
@@ -145,11 +151,13 @@ static OBSERVER_SLOT: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
 /// Cost when unregistered: one relaxed `AtomicPtr` load + null check
 /// per emit site (one conditional branch after optimisation).
 pub fn register_io_observer(observer: Option<IoObserver>) {
-    let ptr: *mut () = match observer {
-        Some(f) => f as *mut (),
-        None => std::ptr::null_mut(),
+    // `f as usize` is a guaranteed fn-pointer-to-integer cast; `0` marks the
+    // unregistered slot (a valid fn pointer is never address 0). No transmute.
+    let addr: usize = match observer {
+        Some(f) => f as usize,
+        None => 0,
     };
-    OBSERVER_SLOT.store(ptr, Ordering::Release);
+    OBSERVER_SLOT.store(addr, Ordering::Release);
 }
 
 /// Internal hot-path emit. Called by the IO trampoline at every
@@ -161,14 +169,18 @@ pub fn register_io_observer(observer: Option<IoObserver>) {
 /// going through any indirection.
 #[inline]
 pub fn emit(tag: IoEventTag, event: &IoEvent) {
-    let raw = OBSERVER_SLOT.load(Ordering::Acquire);
-    if raw.is_null() {
+    let addr = OBSERVER_SLOT.load(Ordering::Acquire);
+    if addr == 0 {
         return;
     }
-    // SAFETY: `raw` was written by `register_io_observer` from a valid
-    // `IoObserver` fn pointer. Function pointers are pointer-sized on every
-    // supported platform; transmute round-trips losslessly.
-    let observer: IoObserver = unsafe { std::mem::transmute::<*mut (), IoObserver>(raw) };
+    // SAFETY: `addr` was written by `register_io_observer` as `f as usize` from a
+    // valid `IoObserver`. LOW-2 / FIXME 0370: this is an *integer*→fn-pointer
+    // transmute, which the Rust reference explicitly blesses (the canonical way
+    // to reconstitute a fn pointer stored as an integer), unlike the prior
+    // *data-pointer* (`*mut ()`)→fn-pointer transmute that sat on the boundary of
+    // what the reference guarantees. `usize` is pointer-sized (Decision 11), so
+    // the widths match and the round-trip is lossless.
+    let observer: IoObserver = unsafe { std::mem::transmute::<usize, IoObserver>(addr) };
     observer(tag, event);
 }
 

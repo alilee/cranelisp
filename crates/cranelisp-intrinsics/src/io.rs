@@ -126,142 +126,211 @@ pub fn run_io_trampoline(io_ptr: i64) -> i64 {
     result
 }
 
+/// The walk position after a `Pure`/`Effect`/`Par` arm has produced a result
+/// value and consulted the continuation stack.
+enum Step {
+    /// The result was fed to a popped continuation; resume the loop on the
+    /// continuation-produced node (always a fresh subtree).
+    Advance(i64),
+    /// The continuation stack was empty; the walk is complete with this value.
+    Finish(i64),
+}
+
+/// Read the `i64` tag field of an IO node at `node`.
+///
+/// # Safety
+/// `node` must be a valid IO-node base pointer (rc > 0).
+#[inline]
+unsafe fn read_node_tag(node: i64) -> i64 {
+    unsafe { crate::heap_access::read_i64(node, TAG_OFFSET) }
+}
+
+/// Read the `i64` field at `field_offset` of an IO node at `node`.
+///
+/// # Safety
+/// `node` must be a valid IO-node base pointer with the given field present.
+#[inline]
+unsafe fn read_node_field(node: i64, field_offset: isize) -> i64 {
+    unsafe { crate::heap_access::read_i64(node, field_offset) }
+}
+
+/// Feed `value` (the result a `Pure`/`Effect`/`Par` arm just produced) to the
+/// next continuation, or finish the walk.
+///
+/// Shared by the three value-producing arms — the "pop a continuation; release
+/// the just-finished node if it was fresh; either invoke the continuation or
+/// return" sequence that was open-coded identically three times. Returns
+/// [`Step::Advance`] with the continuation-produced node (now a fresh subtree)
+/// or [`Step::Finish`] with `value` when no continuation remains.
+fn feed_continuation(
+    cont_stack: &mut Vec<(i64, bool)>,
+    current: i64,
+    current_is_fresh: bool,
+    value: i64,
+) -> Step {
+    match cont_stack.pop() {
+        Some((cont_ptr, cont_is_fresh)) => {
+            io_observer::emit(
+                IoEventTag::ContPop,
+                &IoEvent::Cont {
+                    cont_ptr,
+                    is_fresh: cont_is_fresh,
+                    new_depth: cont_stack.len() as u32,
+                },
+            );
+            // Releasing the just-finished node: shallow-dec it if we produced
+            // it ourselves (fresh subtree). A caller-tree node is left for the
+            // caller's post-return `consume_io_tree`.
+            if current_is_fresh {
+                crate::drop::dec_shallow_io(current);
+            }
+            // Same rule for the closure we're about to invoke: consume it only
+            // if it was part of a fresh Bind.
+            let new_io = call_continuation(cont_ptr, value, cont_is_fresh);
+            io_observer::emit(
+                IoEventTag::BindExit,
+                &IoEvent::BindExit { new_current: new_io },
+            );
+            Step::Advance(new_io)
+        }
+        None => {
+            // Final node; shallow-dec only if fresh.
+            if current_is_fresh {
+                crate::drop::dec_shallow_io(current);
+            }
+            Step::Finish(value)
+        }
+    }
+}
+
+/// Outcome of forcing an `IO_TAG_EFFECT` node under the fault guard.
+enum EffectStep {
+    /// The thunk produced this value; proceed to the continuation.
+    Value(i64),
+    /// A fault was captured in the dispatch-fault slot; abort the trampoline
+    /// with the sentinel (int reads the slot, not the return value).
+    Aborted,
+}
+
+/// Force an `IO_TAG_EFFECT` node's thunk under the platform fault guard
+/// (FIXME 0327, step 3 — the dispatch funnel).
+///
+/// Reads the thunk + resource token + baked fn-name from the node, emits the
+/// `PlatformEffect` event, then forces the thunk via
+/// `io_guard::force_effect_thunk_protected`. A fault in foreign platform code
+/// (Rust panic or SIGFPE/SIGILL/SIGBUS/SIGSEGV) is captured into the
+/// dispatch-fault slot (paired with the fn-name) for int to compose into
+/// `PlatformError::DispatchError`. The happy path is identical to the former
+/// unguarded `call_effect_thunk(thunk_ptr)`.
+fn force_effect_node(node: i64) -> EffectStep {
+    // SAFETY: `node` is the live `current` Effect node base pointer; its
+    // thunk/token fields are within its payload.
+    let thunk_ptr = unsafe { read_node_field(node, FIELD_0_OFFSET) };
+    let resource_token = unsafe { read_node_field(node, FIELD_1_OFFSET) };
+    // Scheduling class is not currently stored on Effect nodes at runtime — the
+    // class attaches to platform symbols at registration time (see
+    // `cranelisp-platform::SchedulingClass` and `PlatformFn.scheduling_class`).
+    // At the trampoline site we do not have a back-reference to the symbol. Emit
+    // 0 as a placeholder; Slice 4 can either plumb the class through Effect
+    // construction or consume it via /int's scheduler trace.
+    //
+    // FIXME(/backend): consider threading SchedulingClass into the Effect node
+    // payload (extra field) so trampoline events carry the real class without
+    // needing a cross-trace correlation. Deferred pending Slice 4 evidence.
+    io_observer::emit(
+        IoEventTag::PlatformEffect,
+        &IoEvent::PlatformEffect {
+            thunk_ptr,
+            resource_token,
+            scheduling_class: 0,
+        },
+    );
+    let fn_name = read_effect_fn_name(node);
+    // SAFETY: `thunk_ptr` is the Effect node's field-0 — a valid not-yet-forced
+    // double-boxed thunk produced by `CLIO::effect*`.
+    match unsafe { crate::io_guard::force_effect_thunk_protected(thunk_ptr, &fn_name) } {
+        crate::io_guard::ForceOutcome::Value(v) => EffectStep::Value(v),
+        crate::io_guard::ForceOutcome::Faulted => EffectStep::Aborted,
+    }
+}
+
+/// Read a `Par` node's `count` and branch IO pointers.
+///
+/// Par node layout: `[header(16) | tag(8) | count(8) | branch_0(8) | …]`.
+///
+/// # Safety
+/// `node` must be a valid `IO_TAG_PAR` node base pointer.
+unsafe fn read_par_branches(node: i64) -> Vec<i64> {
+    let count = unsafe { read_node_field(node, FIELD_0_OFFSET) } as usize;
+    (0..count)
+        .map(|i| unsafe { read_node_field(node, FIELD_1_OFFSET + (i as isize) * 8) })
+        .collect()
+}
+
+/// Run a `Par` node's branches, marshal their results into a fresh heap results
+/// buffer, and return its base pointer (the value fed to the continuation).
+///
+/// Each branch recursion is itself a non-consuming trampoline run on a
+/// caller-tree or fresh-tree branch — it dec's only its own fresh intermediates.
+/// The branches themselves are left live for later `consume_io_tree` (caller
+/// tree) or shallow-dec'd at the enclosing Par level (§3.5.6 detail unchanged).
+fn run_par_node(parent_ptr: i64) -> i64 {
+    // SAFETY: `parent_ptr` is the live `current` Par node base pointer.
+    let branch_ptrs = unsafe { read_par_branches(parent_ptr) };
+    let count = branch_ptrs.len();
+    let results = dispatch_par_branches_with_trace(&branch_ptrs, parent_ptr);
+    io_observer::emit(
+        IoEventTag::ParJoin,
+        &IoEvent::ParJoin {
+            parent_ptr,
+            count: count as u32,
+        },
+    );
+
+    // Allocate results buffer via alloc_with_rc so the continuation can dec it
+    // when done. Results stored at FIELD_0_OFFSET + i*8 (offsets 24, 32, 40, …)
+    // matching HeapAdt::field_offset(i).
+    let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
+    for (i, &val) in results.iter().enumerate() {
+        // SAFETY: `results_buf` was just allocated with `count` field slots.
+        unsafe { crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val) };
+    }
+    results_buf
+}
+
 /// Inner loop — all state-machine instrumentation lives here; the outer
-/// `run_io_trampoline` wraps it solely to emit enter/exit bookends.
+/// `run_io_trampoline` wraps it solely to emit enter/exit bookends. Each node
+/// arm delegates to a named helper (`force_effect_node`, `run_par_node`) and the
+/// shared `feed_continuation` step; the loop body is the dispatcher.
 fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
     let mut cont_stack: Vec<(i64, bool)> = Vec::new(); // (cont_ptr, is_fresh)
     let mut current: i64 = io_ptr;
     let mut current_is_fresh: bool = false;
 
     loop {
-        let tag = unsafe { *((current as isize + TAG_OFFSET) as *const i64) };
+        let tag = unsafe { read_node_tag(current) };
 
-        match tag {
+        // The value a Pure/Effect/Par arm produces, ready to feed to the next
+        // continuation via the shared `feed_continuation` step. Bind descends
+        // in-place and `continue`s without producing a value.
+        let produced: i64 = match tag {
             t if t == IO_TAG_PURE => {
-                let val = unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
+                let val = unsafe { read_node_field(current, FIELD_0_OFFSET) };
                 io_observer::emit(
                     IoEventTag::PureStep,
                     &IoEvent::PureStep { value: val, is_fresh: current_is_fresh },
                 );
-                match cont_stack.pop() {
-                    Some((cont_ptr, cont_is_fresh)) => {
-                        io_observer::emit(
-                            IoEventTag::ContPop,
-                            &IoEvent::Cont {
-                                cont_ptr,
-                                is_fresh: cont_is_fresh,
-                                new_depth: cont_stack.len() as u32,
-                            },
-                        );
-                        // Releasing this Pure node: shallow-dec it if we
-                        // produced it ourselves (fresh subtree). If it was
-                        // part of the caller's tree, leave it to the
-                        // caller's post-return `consume_io_tree`.
-                        if current_is_fresh {
-                            crate::drop::dec_shallow_io(current);
-                        }
-                        // Same rule for the closure we're about to invoke:
-                        // consume it only if it was part of a fresh Bind.
-                        let new_io = call_continuation(cont_ptr, val, cont_is_fresh);
-                        io_observer::emit(
-                            IoEventTag::BindExit,
-                            &IoEvent::BindExit { new_current: new_io },
-                        );
-                        current = new_io;
-                        current_is_fresh = true;
-                    }
-                    None => {
-                        // Final node; shallow-dec only if fresh.
-                        if current_is_fresh {
-                            crate::drop::dec_shallow_io(current);
-                        }
-                        return val;
-                    }
-                }
+                val
             }
-            t if t == IO_TAG_EFFECT => {
-                let thunk_ptr =
-                    unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
-                let resource_token =
-                    unsafe { *((current as isize + FIELD_1_OFFSET) as *const i64) };
-                // Scheduling class is not currently stored on Effect
-                // nodes at runtime — the class attaches to platform
-                // symbols at registration time (see
-                // `cranelisp-platform::SchedulingClass` and
-                // `PlatformFn.scheduling_class`). At the trampoline site
-                // we do not have a back-reference to the symbol. Emit 0
-                // as a placeholder; Slice 4 can either plumb the class
-                // through Effect construction or consume it via /int's
-                // scheduler trace.
-                //
-                // FIXME(/backend): consider threading SchedulingClass
-                // into the Effect node payload (extra field) so trampoline
-                // events carry the real class without needing a
-                // cross-trace correlation. Deferred pending Slice 4
-                // evidence.
-                io_observer::emit(
-                    IoEventTag::PlatformEffect,
-                    &IoEvent::PlatformEffect {
-                        thunk_ptr,
-                        resource_token,
-                        scheduling_class: 0,
-                    },
-                );
-                // Force the platform Effect thunk under the fault guard
-                // (FIXME 0327, step 3 — the dispatch funnel). A fault in
-                // foreign platform code (Rust panic or SIGFPE/SIGILL/SIGBUS/
-                // SIGSEGV) is captured into the dispatch-fault slot (paired
-                // with the fn-name read from field-3) for int to compose into
-                // `PlatformError::DispatchError`. The happy path is identical
-                // to the former unguarded `call_effect_thunk(thunk_ptr)`.
-                let fn_name = read_effect_fn_name(current);
-                // SAFETY: `thunk_ptr` is the Effect node's field-0 — a valid
-                // not-yet-forced double-boxed thunk produced by `CLIO::effect*`.
-                let result = match unsafe {
-                    crate::io_guard::force_effect_thunk_protected(thunk_ptr, &fn_name)
-                } {
-                    crate::io_guard::ForceOutcome::Value(v) => v,
-                    crate::io_guard::ForceOutcome::Faulted => {
-                        // The fault is captured in the dispatch-fault slot. Abort
-                        // the trampoline; int reads the slot at its runtime-error
-                        // surface and composes the structured error. Return the
-                        // sentinel (0), mirroring the `runtime_panic` convention
-                        // — int checks the slot, not the return value.
-                        return 0;
-                    }
-                };
-                match cont_stack.pop() {
-                    Some((cont_ptr, cont_is_fresh)) => {
-                        io_observer::emit(
-                            IoEventTag::ContPop,
-                            &IoEvent::Cont {
-                                cont_ptr,
-                                is_fresh: cont_is_fresh,
-                                new_depth: cont_stack.len() as u32,
-                            },
-                        );
-                        if current_is_fresh {
-                            crate::drop::dec_shallow_io(current);
-                        }
-                        let new_io = call_continuation(cont_ptr, result, cont_is_fresh);
-                        io_observer::emit(
-                            IoEventTag::BindExit,
-                            &IoEvent::BindExit { new_current: new_io },
-                        );
-                        current = new_io;
-                        current_is_fresh = true;
-                    }
-                    None => {
-                        if current_is_fresh {
-                            crate::drop::dec_shallow_io(current);
-                        }
-                        return result;
-                    }
-                }
-            }
+            t if t == IO_TAG_EFFECT => match force_effect_node(current) {
+                EffectStep::Value(v) => v,
+                // Abort: the fault is in the dispatch-fault slot. Return the
+                // sentinel (0), mirroring the `runtime_panic` convention.
+                EffectStep::Aborted => return 0,
+            },
             t if t == IO_TAG_BIND => {
-                let inner = unsafe { *((current as isize + FIELD_0_OFFSET) as *const i64) };
-                let cont = unsafe { *((current as isize + FIELD_1_OFFSET) as *const i64) };
+                let inner = unsafe { read_node_field(current, FIELD_0_OFFSET) };
+                let cont = unsafe { read_node_field(current, FIELD_1_OFFSET) };
                 io_observer::emit(
                     IoEventTag::BindEnter,
                     &IoEvent::BindEnter {
@@ -270,10 +339,9 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                         is_fresh: current_is_fresh,
                     },
                 );
-                // The Bind's cont pointer inherits the freshness of the
-                // Bind node: caller-tree Binds hold caller-tree conts;
-                // fresh Binds (produced by an outer continuation) hold
-                // fresh conts.
+                // The Bind's cont pointer inherits the freshness of the Bind
+                // node: caller-tree Binds hold caller-tree conts; fresh Binds
+                // (produced by an outer continuation) hold fresh conts.
                 cont_stack.push((cont, current_is_fresh));
                 io_observer::emit(
                     IoEventTag::ContPush,
@@ -289,88 +357,21 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
                     crate::drop::dec_shallow_io(current);
                 }
                 // current_is_fresh stays as-is: if we were fresh, the inner
-                // (allocated by the same continuation) is also fresh;
-                // if we were not fresh, we're still descending the caller's
-                // tree.
+                // (allocated by the same continuation) is also fresh; if we
+                // were not, we're still descending the caller's tree.
                 current = inner;
+                continue;
             }
-            t if t == IO_TAG_PAR => {
-                // Par node layout: [header(16) | tag(8) | count(8) | branch_0(8) | ...]
-                let count = unsafe {
-                    *((current as isize + FIELD_0_OFFSET) as *const i64)
-                } as usize;
+            t if t == IO_TAG_PAR => run_par_node(current),
+            _ => panic!("cranelisp_run_io: unknown IO tag {tag}"),
+        };
 
-                // Read branch IO pointers (at offsets 32, 40, 48, ...)
-                let branch_ptrs: Vec<i64> = (0..count)
-                    .map(|i| unsafe {
-                        *((current as isize + FIELD_1_OFFSET + (i as isize) * 8) as *const i64)
-                    })
-                    .collect();
-
-                // Dispatch branches. Each branch recursion is itself a
-                // non-consuming trampoline run on a caller-tree or
-                // fresh-tree branch — it dec's only its own fresh
-                // intermediates. The branches themselves are left live for
-                // later `consume_io_tree` (caller tree) or shallow-dec'd
-                // here (fresh tree) — but §3.5.6 leaves that detail to
-                // post-fix refinement; for now we treat branches as owned
-                // by their enclosing Par node and let consume_io_tree or
-                // the fresh-Par dec at this level release them.
-                let parent_ptr = current;
-                let results = dispatch_par_branches_with_trace(&branch_ptrs, parent_ptr);
-                io_observer::emit(
-                    IoEventTag::ParJoin,
-                    &IoEvent::ParJoin {
-                        parent_ptr,
-                        count: count as u32,
-                    },
-                );
-
-                // Allocate results buffer via alloc_with_rc so the continuation
-                // can dec it when done. Results stored at FIELD_0_OFFSET + i*8
-                // (offsets 24, 32, 40, ...) matching HeapAdt::field_offset(i).
-                let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
-                for (i, &val) in results.iter().enumerate() {
-                    unsafe {
-                        *((results_buf as isize + FIELD_0_OFFSET + (i as isize) * 8) as *mut i64) =
-                            val;
-                    }
-                }
-                let results_ptr = results_buf;
-
-                // Pop continuation and call with results array pointer
-                match cont_stack.pop() {
-                    Some((cont_ptr, cont_is_fresh)) => {
-                        io_observer::emit(
-                            IoEventTag::ContPop,
-                            &IoEvent::Cont {
-                                cont_ptr,
-                                is_fresh: cont_is_fresh,
-                                new_depth: cont_stack.len() as u32,
-                            },
-                        );
-                        if current_is_fresh {
-                            crate::drop::dec_shallow_io(current);
-                        }
-                        let new_io = call_continuation(cont_ptr, results_ptr, cont_is_fresh);
-                        io_observer::emit(
-                            IoEventTag::BindExit,
-                            &IoEvent::BindExit { new_current: new_io },
-                        );
-                        current = new_io;
-                        current_is_fresh = true;
-                    }
-                    None => {
-                        if current_is_fresh {
-                            crate::drop::dec_shallow_io(current);
-                        }
-                        return results_ptr;
-                    }
-                }
+        match feed_continuation(&mut cont_stack, current, current_is_fresh, produced) {
+            Step::Advance(new_io) => {
+                current = new_io;
+                current_is_fresh = true;
             }
-            _ => {
-                panic!("cranelisp_run_io: unknown IO tag {tag}");
-            }
+            Step::Finish(value) => return value,
         }
     }
 }
@@ -389,7 +390,7 @@ fn run_io_trampoline_inner(io_ptr: i64) -> i64 {
 /// not leak. If false, the closure is part of the caller's tree and left
 /// alone — the caller's post-return `consume_io_tree` walk will release it.
 fn call_continuation(cont_ptr: i64, val: i64, cont_is_fresh: bool) -> i64 {
-    let code_ptr = unsafe { *((cont_ptr as isize + CLOSURE_CODE_PTR_OFFSET) as *const i64) };
+    let code_ptr = unsafe { crate::heap_access::read_i64(cont_ptr, CLOSURE_CODE_PTR_OFFSET) };
     let call: extern "C" fn(i64, i64) -> i64 =
         unsafe { std::mem::transmute(code_ptr as *const ()) };
     let new_io = call(cont_ptr, val);
@@ -408,9 +409,9 @@ fn call_continuation(cont_ptr: i64, val: i64, cont_is_fresh: bool) -> i64 {
 /// Effect nodes store the token at FIELD_1_OFFSET (offset 32).
 /// Non-Effect nodes (Pure, Bind, Par) return 0 (unrestricted).
 fn read_resource_token(io_ptr: i64) -> i64 {
-    let tag = unsafe { *((io_ptr as isize + TAG_OFFSET) as *const i64) };
+    let tag = unsafe { crate::heap_access::read_i64(io_ptr, TAG_OFFSET) };
     if tag == IO_TAG_EFFECT {
-        unsafe { *((io_ptr as isize + FIELD_1_OFFSET) as *const i64) }
+        unsafe { crate::heap_access::read_i64(io_ptr, FIELD_1_OFFSET) }
     } else {
         0
     }
@@ -427,7 +428,7 @@ fn read_resource_token(io_ptr: i64) -> i64 {
 fn read_effect_fn_name(io_ptr: i64) -> String {
     // SAFETY: `io_ptr` is the live `current` Effect node base pointer; field-3
     // is within its 32-byte payload (ABI v4).
-    let handle = unsafe { *((io_ptr as isize + FIELD_2_OFFSET) as *const i64) };
+    let handle = unsafe { crate::heap_access::read_i64(io_ptr, FIELD_2_OFFSET) };
     if handle == 0 {
         return "<unknown>".to_string();
     }
@@ -463,16 +464,11 @@ enum WorkItem {
 ///
 /// See design/backend/io-scheduling.md §5.2 for the algorithm.
 ///
-/// The `_with_trace` variant used by the trampoline emits `ParSpark` /
-/// `ParSerialGroupEnter` events at dispatch time. The original
-/// `dispatch_par_branches` remains for any direct callers who prefer not
-/// to correlate with a parent node (currently unused in production
-/// code).
-#[allow(dead_code)]
-fn dispatch_par_branches(branch_ptrs: &[i64]) -> Vec<i64> {
-    dispatch_par_branches_with_trace(branch_ptrs, 0)
-}
-
+/// This `_with_trace` variant — used by the trampoline — emits `ParSpark` /
+/// `ParSerialGroupEnter` events at dispatch time. (A no-trace
+/// `dispatch_par_branches` wrapper forwarding `parent_ptr = 0` existed but was
+/// dead — zero callers — and was deleted; LOW-1, FIXME 0370. Pass `0` directly
+/// if an untraced dispatch is ever needed.)
 fn dispatch_par_branches_with_trace(branch_ptrs: &[i64], parent_ptr: i64) -> Vec<i64> {
     use rayon::prelude::*;
     use std::collections::HashMap;
