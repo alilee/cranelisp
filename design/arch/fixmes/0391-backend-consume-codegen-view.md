@@ -4,7 +4,7 @@ target: /dev
 filed_by: /arch
 filed_at: 2026-06-17
 sprint_filed: 84
-refers_to: design/arch/concrete-boundary-type.md §3.0/§3.1 (Phase 3), design/arch/bounded-contexts.md §3 invariant 9, crates/cranelisp-backend/src/heap.rs, crates/cranelisp-backend/src/lib.rs, crates/cranelisp-backend/src/compiler/
+refers_to: design/arch/concrete-boundary-type.md §3.0/§3.1/§3.1.1 (Phase 3 + backstop scope), design/arch/bounded-contexts.md §3 invariant 9, crates/cranelisp-backend/src/heap.rs, crates/cranelisp-backend/src/lib.rs, crates/cranelisp-backend/src/compiler/
 status: open
 ---
 
@@ -50,16 +50,49 @@ Per `design/arch/concrete-boundary-type.md` §3.0/§3.1 (the per-site map is the
    `MonoExpr`-variant match (no `Annotate` arm — erased at build). Stop
    reconstructing a `Defn` from `ast` + reading `Expr`.
 
-4. **The single relocated backstop.** A codegen-reached entry whose
+4. **The single relocated backstop — SCOPED to `DefKind::UserFn { Concrete{slot} }`
+   (FIXME 0393 resolution, `concrete-boundary-type.md` §3.1.1).** A codegen-reached
+   **body-AST-node-typed** entry — `DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }`
+   (ordinary concrete defns + mono instances; mono instances ARE this kind) — whose
    `codegen_view()` is `None` is a **located `expect`/`unreachable`** at the
-   `compile_to_module` entry — the ONE backstop replacing the four deleted
-   behavioural guards. It fires only on a producer bug (a `Concrete` entry reached
-   codegen without a populated view), never on user input.
+   `compile_to_module` entry: the ONE backstop replacing the four deleted behavioural
+   guards. It fires only on a producer bug (a `Concrete{slot}` entry reached codegen
+   without a populated view), never on user input. **The `expect` MUST NOT apply to
+   the signature-driven kinds**: `DefKind::Constructor` (ctor/accessor), `Primitive`,
+   `PrimitiveExtern`, `PlatformEffect` legitimately carry `codegen_view: None` — they
+   are codegen'd by signature/extern mechanisms that never read a body node's type.
+   Put the `expect` INSIDE the `Concrete{slot}` `UserFn` arm of `compile_to_module`,
+   not at the entry destructure (so a `None` on a `Constructor` is never tested
+   against it).
 
-5. **Unit tests** per CLAUDE.md §Testing: `classify` total over `ConcreteType`
-   (exhaustive, no panic case); `compile_to_module` reads `codegen_view`; the
-   `None`-codegen-view backstop fires on a synthesised codegen-target entry with no
-   view. The `#[should_panic]` 0375-backstop tests retire.
+5. **Ctor/accessor codegen sources field types from the signature via `from_type`
+   (FIXME 0393 resolution, §3.1.1).** `classify` now takes `&ConcreteType`. At the
+   THREE signature-read sites (the ctor/accessor codegen's only type reads), convert
+   the field `Type` → `ConcreteType` via `ConcreteType::from_type(ty).expect("ctor/
+   accessor field type concrete by §3.11.1 — compiler bug if not")` AT the `classify`
+   call site (do NOT retype `CtorField`/`variable_types` wholesale — that wider
+   retype is optional, out of this FIXME's minimum):
+   - `compiler/mod.rs:1066–1098` — function-entry param binding (feeds
+     `compile_consuming_arg_list`'s `classify`, `apply.rs:~484`).
+   - `compiler/mod.rs:756–769` — `extract_constructor` (`scheme` → `CtorField.ty`).
+   - `compiler/match_codegen.rs:452` — `bind_data_pattern_fields` (`classify(ft, …)`).
+   This keeps "no `Var` reaches `classify`" TOTAL across BOTH the body-AST path
+   (`MonoExpr.ty()` is already `ConcreteType`) AND the signature path (field `Type`
+   → `from_type` before `classify`). The `from_type` failure here is the relocated
+   compiler-bug `expect`, NOT a user error (§3.11.1 guarantees concreteness upstream).
+   **`$Var` free-var multi-sig variants** are excluded from the codegen batch by
+   Phase-4 part B (effectively polymorphic — mono sources, not codegen targets); if
+   one reaches Phase-3 codegen as `Concrete{slot}` with a free var, the backstop (4)
+   firing on it is CORRECT — it has caught a slot-gate/mono bug, not a
+   `None`-tolerated case (§3.1.1 disposition 3).
+
+6. **Unit tests** per CLAUDE.md §Testing: `classify` total over `ConcreteType`
+   (exhaustive, no panic case); `compile_to_module` reads `codegen_view` for a
+   `Concrete{slot}` `UserFn`; the `None`-codegen-view backstop fires on a synthesised
+   `Concrete{slot}` `UserFn` target with no view; **the backstop does NOT fire on a
+   `DefKind::Constructor` entry with `codegen_view: None`** (the scope guard);
+   ctor/accessor field-type `from_type` conversion succeeds on a concrete ctor. The
+   `#[should_panic]` 0375-backstop tests retire.
 
 ## Operational implication / Context
 
@@ -69,3 +102,14 @@ before Phase 3 (FIXME 0386). `CACHE_SCHEMA_VERSION` already bumped 7 → 8 (/arc
 the field landing) — no further bump. `classify` is backend-internal — no
 `public-api.txt` move. Coordinate with FIXME 0392 (population): 0392 lands first
 (or in the same wave, populating before the read flip).
+
+**Backstop scope SETTLED (FIXME 0393 RESOLVED + `git rm`'d by /arch, 2026-06-17).**
+0393 raised that `codegen_view` is NOT total over the `defined_symbols()` set —
+`DefKind::Constructor` ctor/accessor bodies, `$Var` free-var multi-sig variants, and
+primitives get `None`. The resolution (steps 4+5 above + `concrete-boundary-type.md`
+§3.1.1): the view is total over `DefKind::UserFn { Concrete{slot} }` ONLY (the
+body-AST-node-typed targets); ctors/accessors are signature-driven (read field
+`Type`s from the `scheme`, convert via `from_type` → `classify`, never a body node's
+type) and legitimately carry `None`; the backstop scopes to the `Concrete{slot}`
+`UserFn` arm and never trips on them. This brief is now COMPLETE for /dev(backend) —
+no open design question remains on the Phase-3 read flip.
