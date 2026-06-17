@@ -15,7 +15,8 @@ status: operative
 >   `pub use` line **returns** (it had been deleted as the D40 ladder step); spec §4.12.9's link-time
 >   rejection is REPLACED with all-modes availability.
 > - **RETRACTED — "the 12 `cranelisp_trace_*` bodies + registration relocate to int."** The 12 bodies
->   relocate **back to `cranelisp-intrinsics`** and publish through `intrinsics_table()` (15→27 entries;
+>   relocate **back to `cranelisp-intrinsics`** and publish through `intrinsics_table()` (joining the
+>   catalog's as-built 29 entries — authoritative count in BC §4b inv 11 / the catalog test constant;
 >   the catalog "trace deliberately ABSENT" scope text flips). `TRACE_STACK` / `TRACE_THREAD_ID` /
 >   `consume_trace_call` move with them. `src/trace.rs`, `build_traced_fns`, `repl_trace_format`,
 >   `TRACE_DISPLAY`, and the trace half of `int_intrinsics()` **delete** (`tracing.md` §4.3). The S76
