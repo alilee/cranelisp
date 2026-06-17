@@ -604,19 +604,22 @@ impl Jit {
         // unresolved type variables from the dual-write and lacks post-pass
         // enrichment (resolve_deferred_trait_calls, final substitution).
         //
-        // S84 Phase 3 (concrete-boundary-type.md §3.1/§3.1.1, FIXME 0391/0394):
+        // S84 Phase 3 (concrete-boundary-type.md §3.1/§3.1.1, FIXME 0391):
         // the codegen walk is over `MonoExpr` (every node `ConcreteType`-typed).
-        // The JIT/REPL/dev-session path compiles ENRICHED `Defn`s directly —
-        // including the GENERIC defn template (`(defn id [x] x)` with `x: Var a`)
-        // that the REPL calls directly (`(id 7)` → bare `id`, no mono instance is
-        // minted for an interactive call). Such a body carries a residual `Var` at
-        // nodes whose type the codegen reads ONLY via `signature_heap_category`
-        // (Var→Mixed), so it is built LENIENTLY (the same builder the
-        // `compile_to_module` signature-driven / best-effort-0392 fallback uses).
-        // `classify` stays total over `ConcreteType` (no `Var` arm); a genuine
-        // user-input ambiguity at a body-AST value position is caught upstream at
-        // the typecheck §3.11.1 check, not here.
-        let body = crate::mono_from_expr_signature_driven(defn.body());
+        // This JIT/REPL/dev-session path takes a bare enriched `&Defn` (NOT a
+        // `ModuleEntry`), so there is NO `codegen_view` to consume — it is exactly
+        // a "signature-driven path that legitimately has no codegen_view" per the
+        // S84 FIXME 0394/0395 close (the live `codegen_view` read lives on the
+        // `compile_to_module` `UserFn { Concrete{slot} }` path). It compiles
+        // ENRICHED `Defn`s directly — including the GENERIC defn template
+        // (`(defn id [x] x)` with `x: Var a`) that the REPL calls directly
+        // (`(id 7)` → bare `id`, no mono instance is minted for an interactive
+        // call). Such a body carries a residual `Var` at nodes whose type the
+        // codegen reads ONLY via `signature_heap_category` (Var→Mixed), so it is
+        // built LENIENTLY. `classify` stays total over `ConcreteType` (no `Var`
+        // arm); a genuine user-input ambiguity at a body-AST value position is
+        // caught upstream at the typecheck §3.11.1 check, not here.
+        let body = crate::lenient_mono_from_expr(defn.body());
         // Split-borrow: `compile_body` needs `&mut self.ctx.func`,
         // `&mut self.func_ctx`, and `&mut JITModule` simultaneously. Borrowing
         // the module through a method (`self.module_mut()`) would re-borrow

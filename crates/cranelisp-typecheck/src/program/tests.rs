@@ -1425,6 +1425,112 @@
         );
     }
 
+    // spec: design/arch/concrete-boundary-type.md §3.0/§3.1 + FIXME 0394/0395 —
+    // the CALLER's `codegen_view` is built POST-mono. A concrete defn `main`
+    // calling a generic `id` (`(id 7)`) has its `(id 7)` call rewritten by the
+    // mono pass to `SigDispatch{id$Int}`. The fix (Part A) rebuilds `main`'s
+    // `codegen_view` from the post-mono-annotated `ast` at the finalize
+    // re-annotation seam, so the view's call node carries the correct
+    // `SigDispatch` dispatch — NOT the stale pre-mono `resolved_call: None` that
+    // would mis-dispatch to the slot-less generic `id` ("undefined function: id").
+    // This is the SSOT proof the backend reads `codegen_view` on the live path.
+    #[test]
+    fn caller_codegen_view_carries_post_mono_sigdispatch() {
+        use cranelisp_types::{MonoExpr, ResolvedCall};
+
+        let mut tc = tc_with_prims();
+
+        // (defn id [x] x) — pure-parametric generic.
+        let id_defn = TopLevel::Defn(Defn {
+            name: Symbol::from("id"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("x"), None)],
+                body: Expr::var(Symbol::from("x"), span(10, 11)),
+                span: span(0, 12),
+            }],
+            visibility: Visibility::Public,
+            span: span(0, 12),
+        });
+
+        // (defn main [] (id 7)) — concrete caller; the call pins `id` to Int,
+        // minting `id$Int` and rewriting the call to `SigDispatch{id$Int}`.
+        let main_defn = TopLevel::Defn(Defn {
+            name: Symbol::from("main"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![],
+                body: Expr::Apply {
+                    callee: Box::new(Expr::var(Symbol::from("id"), span(40, 42))),
+                    args: vec![Expr::IntLit { value: 7, span: span(43, 44), inferred_type: None }],
+                    span: span(39, 45),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: span(26, 46),
+            }],
+            visibility: Visibility::Public,
+            span: span(26, 46),
+        });
+
+        tc.check_program_self(&[id_defn, main_defn]).unwrap();
+
+        // The mono instance `id$Int` is minted.
+        let mono_names = tc.mono_defn_names();
+        assert!(
+            mono_names.iter().any(|n| n.as_ref() == "id$Int"),
+            "expected id$Int mono instance, got {mono_names:?}"
+        );
+
+        // `main` is a Concrete{slot} codegen target carrying a POST-mono
+        // `codegen_view`. Walk its MonoExpr body for the `(id 7)` Apply's
+        // resolved_call — it MUST be SigDispatch{id$Int}, proving the view was
+        // rebuilt AFTER the mono pass rewrote the dispatch.
+        let st = tc.symbol_table();
+        let main_view = match st.get("main") {
+            Some(ModuleEntry::Def { codegen_view: Some(v), .. }) => v.clone(),
+            other => panic!("main has no codegen_view: {other:?}"),
+        };
+
+        fn collect_sig_dispatch(e: &MonoExpr, out: &mut Vec<String>) {
+            let rc = match e {
+                MonoExpr::Apply { callee, args, resolved_call, .. } => {
+                    collect_sig_dispatch(callee, out);
+                    for a in args {
+                        collect_sig_dispatch(a, out);
+                    }
+                    resolved_call.as_deref()
+                }
+                MonoExpr::Var { resolved_call, .. } => resolved_call.as_deref(),
+                MonoExpr::Let { bindings, body, .. } => {
+                    for (_, b) in bindings {
+                        collect_sig_dispatch(b, out);
+                    }
+                    collect_sig_dispatch(body, out);
+                    None
+                }
+                MonoExpr::If { cond, then_branch, else_branch, .. } => {
+                    collect_sig_dispatch(cond, out);
+                    collect_sig_dispatch(then_branch, out);
+                    collect_sig_dispatch(else_branch, out);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(ResolvedCall::SigDispatch { mangled_name }) = rc {
+                out.push(mangled_name.as_ref().to_string());
+            }
+        }
+
+        let mut dispatches = Vec::new();
+        collect_sig_dispatch(&main_view.body, &mut dispatches);
+        assert!(
+            dispatches.iter().any(|d| d == "id$Int"),
+            "main's codegen_view must carry the post-mono SigDispatch{{id$Int}} \
+             for the (id 7) call; found dispatches: {dispatches:?}"
+        );
+    }
+
     // spec: 03-types §3.6 — REPL defn body triggers monomorphisation of constrained calls
     #[test]
     fn test_repl_defn_body_monomorphise() {

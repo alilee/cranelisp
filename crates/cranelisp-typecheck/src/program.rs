@@ -1961,35 +1961,75 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // constrained fns pinned by call sites) and batch post-passes (Phase 3
         // re-resolve, Pass 5 overloads/auto-curry) may add new resolutions after
         // per-defn annotation. Re-annotate ASTs that have new information.
+        //
+        // S84 ConcreteType arc (FIXME 0394/0395): rebuild each `Concrete{slot}`
+        // entry's `codegen_view` HERE, from the now-post-mono-annotated `ast`.
+        // The single-sig population at `check_form_body_single_defn` ran at body-
+        // check time — BEFORE `pass4_monomorphise` rewrote this caller's call-node
+        // `resolved_call` to its `SigDispatch{mangled}` target (`(id 7)`'s `id`
+        // call → `SigDispatch{id$Int}`). That early view carried a stale
+        // `resolved_call: None` on the polymorphic call, so the backend could not
+        // consume it (it rebuilt from `ast` instead — the dual-source FIXME 0395
+        // forecloses). This re-annotation block has just refreshed `existing`
+        // (the `ast`) from `accumulator.method_resolutions` (now carrying the
+        // post-mono `SigDispatch`s) — so rebuilding the view from `existing` HERE
+        // makes `codegen_view` POST-mono-correct. The backend reads it on the live
+        // path; the dual-source collapses to one (Principle 7).
+        //
+        // Scope: only a `UserFn { Concrete{slot} }` entry is a body-AST-node-typed
+        // codegen target (§3.1.1) — its view is the one the backend backstop
+        // guards. Mono-instance entries already populated their post-mono view at
+        // the `register_mono_entry` seam (their bodies are built post-subst with
+        // the dispatch already resolved); they are not re-walked here.
         {
             let sym_table = &mut self.current_symbol_table_mut(state);
+            // Reannotate `existing` from the final side maps + subst, then, for a
+            // `Concrete{slot}` codegen target, rebuild `codegen_view` from the
+            // refreshed (post-mono) variant.
+            let reannotate_and_refresh_view =
+                |name: &Symbol,
+                 entry: &mut ModuleEntry<C>,
+                 resolved_expr_types: &HashMap<Span, Type>,
+                 method_resolutions: &HashMap<Span, ResolvedCall>,
+                 subst: &Subst| {
+                    if let ModuleEntry::Def { ast: Some(existing), kind, codegen_view: cv, .. } =
+                        entry
+                    {
+                        annotate_variant_from_maps(existing, resolved_expr_types, method_resolutions);
+                        apply_subst_to_variant(subst, existing);
+                        if matches!(
+                            kind.as_ref(),
+                            DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                        ) {
+                            *cv = build_concrete_codegen_view(name, existing);
+                        }
+                    }
+                };
             for top in working_program {
                 match top {
                     TopLevel::Defn(defn) if defn.is_multi_sig() => {
                         for (i, _variant) in defn.variants.iter().enumerate() {
                             let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-                            if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
-                                sym_table.symbols.get_mut(&internal_name)
-                            {
-                                annotate_variant_from_maps(
-                                    existing,
+                            if let Some(entry) = sym_table.symbols.get_mut(&internal_name) {
+                                reannotate_and_refresh_view(
+                                    &internal_name,
+                                    entry,
                                     &resolved_expr_types,
                                     &accumulator.method_resolutions,
+                                    &state.subst,
                                 );
-                                apply_subst_to_variant(&state.subst, existing);
                             }
                         }
                     }
                     TopLevel::Defn(defn) => {
-                        if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
-                            sym_table.symbols.get_mut(&defn.name)
-                        {
-                            annotate_variant_from_maps(
-                                existing,
+                        if let Some(entry) = sym_table.symbols.get_mut(&defn.name) {
+                            reannotate_and_refresh_view(
+                                &defn.name,
+                                entry,
                                 &resolved_expr_types,
                                 &accumulator.method_resolutions,
+                                &state.subst,
                             );
-                            apply_subst_to_variant(&state.subst, existing);
                         }
                     }
                     TopLevel::TraitImpl(ti) => {
@@ -1997,15 +2037,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                             let target_name = ti.target.head_ref().map(|r| r.name.as_ref()).unwrap_or("");
                             let mangled = format!("{}.{}${}", ti.trait_name, method.name, target_name);
                             let mangled_sym = Symbol::from(mangled.as_str());
-                            if let Some(ModuleEntry::Def { ast: Some(existing), .. }) =
-                                sym_table.symbols.get_mut(&mangled_sym)
-                            {
-                                annotate_variant_from_maps(
-                                    existing,
+                            if let Some(entry) = sym_table.symbols.get_mut(&mangled_sym) {
+                                reannotate_and_refresh_view(
+                                    &mangled_sym,
+                                    entry,
                                     &resolved_expr_types,
                                     &accumulator.method_resolutions,
+                                    &state.subst,
                                 );
-                                apply_subst_to_variant(&state.subst, existing);
                             }
                         }
                     }

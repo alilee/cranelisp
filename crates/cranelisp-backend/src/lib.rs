@@ -625,7 +625,10 @@ where
 /// legitimately carry `codegen_view: None` — they are codegen'd from the
 /// signature, never from a body node's type — so the `codegen_view`-must-be-`Some`
 /// `expect` is scoped to this predicate and never trips on them.
-#[cfg(test)]
+///
+/// LIVE (S84, FIXME 0394/0395): `compile_to_module_impl` reads `codegen_view` on
+/// the live concrete-defn path for entries this predicate selects, with a located
+/// `expect` backstop. Non-selected entries fall through to the lenient builder.
 pub(crate) fn requires_codegen_view(kind: &cranelisp_types::DefKind) -> bool {
     matches!(
         kind,
@@ -636,13 +639,15 @@ pub(crate) fn requires_codegen_view(kind: &cranelisp_types::DefKind) -> bool {
 }
 
 /// Build a `MonoExpr` from a body `Expr`, tolerating non-concrete node types
-/// (concrete-boundary-type.md §3.1.1, FIXME 0391/0394) — the LENIENT counterpart
-/// of the strict, choke-pointed [`cranelisp_types::MonoExpr::from_expr`].
+/// (concrete-boundary-type.md §3.1.1) — the LENIENT counterpart of the strict,
+/// choke-pointed [`cranelisp_types::MonoExpr::from_expr`].
 ///
-/// Used on the two `compile_to_module` `None`-view paths AND the JIT/REPL
-/// `compile_defn` path — wherever the body is NOT a §3.11.1-checked
-/// fully-concrete body-AST target (whose authoritative view comes from FIXME
-/// 0392):
+/// **Remaining role (S84, FIXME 0394/0395 — formerly `mono_from_expr_signature_driven`).**
+/// Since the backend now consumes the typecheck-populated `codegen_view` on the
+/// live `UserFn { Concrete{slot} }` path, this builder is NO LONGER the universal
+/// body source. It is the fallback for entries that legitimately have NO
+/// `codegen_view` — the signature-driven / generic / REPL-`__expr` paths — where
+/// the body is NOT a §3.11.1-checked fully-concrete body-AST target:
 ///
 ///  - **Signature-driven kinds** — `DefKind::Constructor` (ctor/accessor),
 ///    primitives, platform-effects: the synthetic body is walked but the walk
@@ -659,10 +664,8 @@ pub(crate) fn requires_codegen_view(kind: &cranelisp_types::DefKind) -> bool {
 /// `signature_heap_category` (Var→Mixed), never the deleted `classify(Var)`
 /// panic — so this builder fills any non-concrete/absent node type with a
 /// placeholder (`ConcreteType::Int`, never read) so the walk has a total
-/// `MonoExpr`. The body-AST view path (FIXME 0392) stays 100% `Var`-free; this
-/// is the bounded backend accommodation for the §3.1.1-totality-vs-0392-best-
-/// effort gap (FIXME 0394).
-pub(crate) fn mono_from_expr_signature_driven(expr: &cranelisp_types::Expr) -> cranelisp_types::MonoExpr {
+/// `MonoExpr`. The live `codegen_view` body-AST path stays 100% `Var`-free.
+pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_types::MonoExpr {
     use cranelisp_types::{ConcreteType, Expr, MonoExpr, MonoMatchArm};
 
     // The node's concrete type: the real one when concrete, else the placeholder
@@ -674,7 +677,7 @@ pub(crate) fn mono_from_expr_signature_driven(expr: &cranelisp_types::Expr) -> c
     };
 
     match expr {
-        Expr::Annotate { expr: inner, .. } => mono_from_expr_signature_driven(inner),
+        Expr::Annotate { expr: inner, .. } => lenient_mono_from_expr(inner),
         Expr::IntLit { value, span, .. } => MonoExpr::IntLit { value: *value, span: *span, ty: node_ty(expr) },
         Expr::FloatLit { value, span, .. } => MonoExpr::FloatLit { value: *value, span: *span, ty: node_ty(expr) },
         Expr::BoolLit { value, span, .. } => MonoExpr::BoolLit { value: *value, span: *span, ty: node_ty(expr) },
@@ -686,36 +689,36 @@ pub(crate) fn mono_from_expr_signature_driven(expr: &cranelisp_types::Expr) -> c
             ty: node_ty(expr),
         },
         Expr::Let { bindings, body, span, .. } => MonoExpr::Let {
-            bindings: bindings.iter().map(|(n, e)| (n.clone(), mono_from_expr_signature_driven(e))).collect(),
-            body: Box::new(mono_from_expr_signature_driven(body)),
+            bindings: bindings.iter().map(|(n, e)| (n.clone(), lenient_mono_from_expr(e))).collect(),
+            body: Box::new(lenient_mono_from_expr(body)),
             span: *span,
             ty: node_ty(expr),
         },
         Expr::If { cond, then_branch, else_branch, span, .. } => MonoExpr::If {
-            cond: Box::new(mono_from_expr_signature_driven(cond)),
-            then_branch: Box::new(mono_from_expr_signature_driven(then_branch)),
-            else_branch: Box::new(mono_from_expr_signature_driven(else_branch)),
+            cond: Box::new(lenient_mono_from_expr(cond)),
+            then_branch: Box::new(lenient_mono_from_expr(then_branch)),
+            else_branch: Box::new(lenient_mono_from_expr(else_branch)),
             span: *span,
             ty: node_ty(expr),
         },
         Expr::Lambda { params, body, span, .. } => MonoExpr::Lambda {
             params: params.iter().map(|(n, _)| n.clone()).collect(),
-            body: Box::new(mono_from_expr_signature_driven(body)),
+            body: Box::new(lenient_mono_from_expr(body)),
             span: *span,
             ty: node_ty(expr),
         },
         Expr::Apply { callee, args, span, resolved_call, .. } => MonoExpr::Apply {
-            callee: Box::new(mono_from_expr_signature_driven(callee)),
-            args: args.iter().map(mono_from_expr_signature_driven).collect(),
+            callee: Box::new(lenient_mono_from_expr(callee)),
+            args: args.iter().map(lenient_mono_from_expr).collect(),
             span: *span,
             resolved_call: resolved_call.clone(),
             ty: node_ty(expr),
         },
         Expr::Match { scrutinee, arms, span, compiler_generated, .. } => MonoExpr::Match {
-            scrutinee: Box::new(mono_from_expr_signature_driven(scrutinee)),
+            scrutinee: Box::new(lenient_mono_from_expr(scrutinee)),
             arms: arms.iter().map(|arm| MonoMatchArm {
                 pattern: arm.pattern.clone(),
-                body: mono_from_expr_signature_driven(&arm.body),
+                body: lenient_mono_from_expr(&arm.body),
                 span: arm.span,
             }).collect(),
             span: *span,
@@ -723,26 +726,26 @@ pub(crate) fn mono_from_expr_signature_driven(expr: &cranelisp_types::Expr) -> c
             ty: node_ty(expr),
         },
         Expr::VecLit { elements, span, .. } => MonoExpr::VecLit {
-            elements: elements.iter().map(mono_from_expr_signature_driven).collect(),
+            elements: elements.iter().map(lenient_mono_from_expr).collect(),
             span: *span,
             ty: node_ty(expr),
         },
         Expr::Trace { modules, body, span, .. } => MonoExpr::Trace {
             modules: modules.clone(),
-            body: Box::new(mono_from_expr_signature_driven(body)),
+            body: Box::new(lenient_mono_from_expr(body)),
             span: *span,
             ty: node_ty(expr),
         },
         Expr::ParBind { bindings, body, span, .. } => MonoExpr::ParBind {
-            bindings: bindings.iter().map(|(n, e)| (n.clone(), mono_from_expr_signature_driven(e))).collect(),
-            body: Box::new(mono_from_expr_signature_driven(body)),
+            bindings: bindings.iter().map(|(n, e)| (n.clone(), lenient_mono_from_expr(e))).collect(),
+            body: Box::new(lenient_mono_from_expr(body)),
             span: *span,
             ty: node_ty(expr),
         },
         Expr::ConstrADT { type_name, tag, fields, span, .. } => MonoExpr::ConstrADT {
             type_name: type_name.clone(),
             tag: *tag,
-            fields: fields.iter().map(mono_from_expr_signature_driven).collect(),
+            fields: fields.iter().map(lenient_mono_from_expr).collect(),
             span: *span,
             ty: node_ty(expr),
         },
@@ -833,26 +836,35 @@ where
             // built through the `Expr → MonoExpr` choke point so `classify` can only
             // ever see a `ConcreteType`.
             //
-            // **Body source: the entry's `ast`, NOT yet the typecheck-populated
-            // `codegen_view`.** The §3.0/§3.1 design has the backend consume
-            // `ModuleEntry::Def.codegen_view` (FIXME 0392). That population is
-            // LANDED but has a TIMING gap (FIXME 0394, filed to /design-typecheck):
-            // the view is built at `check_form_body` time, BEFORE the mono pass
-            // rewrites a caller's `resolved_call` to its `SigDispatch{mangled}`
-            // target — so a polymorphic call `(id 7)` carries the post-mono
-            // `SigDispatch{id$Int}` on its `ast` node but `None` on the stale
-            // `codegen_view` node, mis-dispatching to the slot-less generic `id`
-            // ("undefined function: id"). Until 0394 rebuilds/patches the view
-            // post-mono, the backend sources the body from `ast` (the post-mono
-            // source of truth) via the lenient `Expr → MonoExpr` builder — which
-            // keeps the FULL structural guarantee (a `MonoExpr` walk, `classify`
-            // total over `ConcreteType`, signature-path `Var → Mixed`) while
-            // carrying the correct post-mono `resolved_call`s. `codegen_view` stays
-            // populated by typecheck (the producer half) and is consumed once 0394
-            // lands. `_codegen_view`/`kind` are bound for that future flip.
-            let _codegen_view = codegen_view;
-            let _ = kind;
-            let body = mono_from_expr_signature_driven(&variant.body);
+            // **Body source: the typecheck-populated `codegen_view` on the live
+            // concrete-defn path (S84, FIXME 0394/0395 — closed).** When the entry
+            // carries a populated view (ordinary concrete defns + mono instances —
+            // the body-AST-node-typed codegen targets), the body is the
+            // `MonoDefnVariant.body: MonoExpr` typecheck built POST-mono: FIXME 0394
+            // moved the `codegen_view` rebuild into the post-mono re-annotation seam
+            // (`program.rs` finalize Step-1b), so the view's call nodes carry the
+            // correct `SigDispatch{mangled}` dispatch (e.g. `(id 7)`'s `id` call →
+            // `SigDispatch{id$Int}`). The dual-source FIXME 0395 forecloses
+            // (populated-but-unread view + `ast`-rebuild) collapses to ONE source
+            // here for every entry that HAS a view (Principle 7) — the SSOT.
+            //
+            // **Lenient fallback when the view is `None`.** A small set of
+            // `Concrete{slot}` entries are body-AST-walked but legitimately carry
+            // NO view: synthesised field accessors (`(match self [(Point _ y) y])`
+            // — a synthetic `Match` whose nodes are `inferred_type: None`; the
+            // backend reads field types from the ctor signature, not body node
+            // types), and the §3.11.1-best-effort concrete-defn cases. These — plus
+            // the signature-driven / generic / REPL-`__expr` entries
+            // (`requires_codegen_view == false`) — fall through to the lenient
+            // builder, whose residual `Var`/un-annotated nodes are read only via
+            // `signature_heap_category` (Var→Mixed), never `classify`. Because the
+            // lenient builder shares the `ConcreteType::from_type` choke point with
+            // the strict view, the structural guarantee (no `Type::Var` reaches
+            // `classify`) holds on BOTH paths.
+            let body = match codegen_view {
+                Some(view) if requires_codegen_view(kind.as_ref()) => view.body.clone(),
+                _ => lenient_mono_from_expr(&variant.body),
+            };
 
             defns.push(defn);
             bodies.push(body);
