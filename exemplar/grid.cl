@@ -10,10 +10,28 @@
 ;; Digit d is set when bit (d-1) is set, i.e. mask has value (1 << (d-1)).
 ;; full-mask = 0x1FF = 511 = all 9 digits present.
 ;;
-;; Depends on: prelude (Option, traits, macros)
-;; Blocked by: F2 string primitives (char-at) for make-grid
+;; Depends on: prelude (Option, traits, operators, macros)
+;;
+;; Idiomatic surface (S86 de-leak): arithmetic and comparison go through the
+;; prelude's trait operators (`+ - * / = != < <= >`); Vec access goes through
+;; the curated Clojure verbs (`count`/`get`/`assoc`) imported from
+;; `collections.vec`; the remaining string primitives (`char-at`,
+;; `str-len`) plus boolean `not` are imported by name from `primitives`.
+;; String equality goes through `=` (Eq on String). The exemplar is one of
+;; the two trees permitted to depend on stdlib (root CLAUDE.md §Stdlib
+;; separation).
+;;
+;; CARVE-OUT (DEF-2, see exemplar/CLAUDE.md "Known Issues"): the curated
+;; `conj` is NOT used here — it routes through the bare `vec-push` primitive
+;; instead. The `collections.vec/conj` wrapper mis-manages the refcount of a
+;; heap-ADT element when accumulated in a loop (verified: a Vec of `Cell`
+;; values built via `conj` comes out corrupted, so the solver finds spurious
+;; contradictions and reports "No solution found"). Int elements are
+;; unaffected. Minimal repro queued for /qa. Swap `vec-push`→`conj` once the
+;; wrapper-RC defect lands.
 
-(import [primitives [*]])
+(import [collections.vec [count get assoc]])
+(import [primitives [char-at str-len not vec-push]])
 
 ;; ── Data Types ──────────────────────────────────────────────────────────
 
@@ -45,9 +63,10 @@
 ;; ── Arithmetic helpers ──────────────────────────────────────────────────
 
 ;; Integer remainder: a mod b = a - b * (a / b)
-;; Needed because there is no mod/rem primitive.
+;; Cranelisp has no `mod`/`rem` operator, so this is a genuine domain helper.
+;; Its arithmetic now routes through the prelude operators.
 (defn rem-i64 [a b]
-  (sub-i64 a (mul-i64 (div-i64 a b) b)))
+  (- a (* (/ a b) b)))
 
 ;; ── Bitmask operations ─────────────────────────────────────────────────
 
@@ -56,42 +75,42 @@
 ;; We test by shifting mask right by (d-1) and checking the low bit.
 ;;
 ;; Since we don't have bitwise ops as primitives, we simulate:
-;;   (mask >> n) is (div-i64 mask (2^n))
+;;   (mask >> n) is (/ mask (2^n))
 ;;   (mask & 1)  is (rem-i64 mask 2)
 ;;   (1 << n)    is a power of 2
 ;;
 ;; Helper: compute 2^n for small n (0-8) via repeated multiplication.
 (defn pow2 [n]
-  (if (eq-i64 n 0) 1
-    (mul-i64 2 (pow2 (sub-i64 n 1)))))
+  (if (= n 0) 1
+    (* 2 (pow2 (- n 1)))))
 
 ;; Test if digit d (1-9) is set in bitmask.
 (defn bit-set? [mask d]
-  (let [shift (sub-i64 d 1)
+  (let [shift (- d 1)
         p (pow2 shift)
-        shifted (div-i64 mask p)]
-    (eq-i64 (rem-i64 shifted 2) 1)))
+        shifted (/ mask p)]
+    (= (rem-i64 shifted 2) 1)))
 
 ;; Clear digit d (1-9) from bitmask.
 ;; If the bit is set, subtract 2^(d-1) from mask.
 (defn bit-clear [mask d]
   (if (bit-set? mask d)
-    (sub-i64 mask (pow2 (sub-i64 d 1)))
+    (- mask (pow2 (- d 1)))
     mask))
 
 ;; Set digit d (1-9) in bitmask.
 (defn bit-set [mask d]
   (if (bit-set? mask d)
     mask
-    (add-i64 mask (pow2 (sub-i64 d 1)))))
+    (+ mask (pow2 (- d 1)))))
 
 ;; Count number of set bits in a 9-bit mask (popcount).
 ;; Iterate digits 1-9, count those that are set.
 (defn bit-count-helper [mask d acc]
-  (if (gt-i64 d 9) acc
+  (if (> d 9) acc
     (if (bit-set? mask d)
-      (bit-count-helper mask (add-i64 d 1) (add-i64 acc 1))
-      (bit-count-helper mask (add-i64 d 1) acc))))
+      (bit-count-helper mask (+ d 1) (+ acc 1))
+      (bit-count-helper mask (+ d 1) acc))))
 
 (defn bit-count [mask]
   (bit-count-helper mask 1 0))
@@ -99,9 +118,9 @@
 ;; Return the lowest set digit (1-9) in a bitmask.
 ;; Returns 0 if mask is empty.
 (defn bit-lowest-helper [mask d]
-  (if (gt-i64 d 9) 0
+  (if (> d 9) 0
     (if (bit-set? mask d) d
-      (bit-lowest-helper mask (add-i64 d 1)))))
+      (bit-lowest-helper mask (+ d 1)))))
 
 (defn bit-lowest [mask]
   (bit-lowest-helper mask 1))
@@ -109,7 +128,7 @@
 ;; ── Grid index helpers ─────────────────────────────────────────────────
 
 ;; Row index (0-8) from flat index (0-80).
-(defn row-of [idx] (div-i64 idx 9))
+(defn row-of [idx] (/ idx 9))
 
 ;; Column index (0-8) from flat index (0-80).
 (defn col-of [idx] (rem-i64 idx 9))
@@ -120,17 +139,17 @@
 (defn box-of [idx]
   (let [r (row-of idx)
         c (col-of idx)]
-    (add-i64 (mul-i64 (div-i64 r 3) 3) (div-i64 c 3))))
+    (+ (* (/ r 3) 3) (/ c 3))))
 
 ;; ── Grid accessors ─────────────────────────────────────────────────────
 
 ;; Access cell at flat index (0-80).
 (defn cell-at [g idx]
-  (match g [(Grid cells) (vec-get cells idx)]))
+  (match g [(Grid cells) (get cells idx)]))
 
 ;; Functional update: return new grid with cell at idx replaced.
 (defn set-cell [g idx c]
-  (match g [(Grid cells) (Grid (vec-set cells idx c))]))
+  (match g [(Grid cells) (Grid (assoc cells idx c))]))
 
 ;; ── Peer calculation ───────────────────────────────────────────────────
 
@@ -140,14 +159,14 @@
 ;; Strategy: iterate all 81 indices, collect those that share
 ;; row, column, or box with idx (but are not idx itself).
 (defn peers-helper [idx i acc]
-  (if (eq-i64 i 81) acc
-    (if (eq-i64 i idx)
-      (peers-helper idx (add-i64 i 1) acc)
-      (if (if (eq-i64 (row-of i) (row-of idx)) true
-            (if (eq-i64 (col-of i) (col-of idx)) true
-              (eq-i64 (box-of i) (box-of idx))))
-        (peers-helper idx (add-i64 i 1) (vec-push acc i))
-        (peers-helper idx (add-i64 i 1) acc)))))
+  (if (= i 81) acc
+    (if (= i idx)
+      (peers-helper idx (+ i 1) acc)
+      (if (if (= (row-of i) (row-of idx)) true
+            (if (= (col-of i) (col-of idx)) true
+              (= (box-of i) (box-of idx))))
+        (peers-helper idx (+ i 1) (vec-push acc i))
+        (peers-helper idx (+ i 1) acc)))))
 
 (defn peers [idx]
   (peers-helper idx 0 []))
@@ -160,30 +179,30 @@
 ;; Returns None if the string is not exactly 81 characters,
 ;; or contains invalid characters.
 ;;
-;; NOTE: This function depends on `char-at` (F2 string primitives).
-;; `char-at` returns a 1-char String. We compare with str-eq.
+;; NOTE: This function depends on `char-at` (a string primitive).
+;; `char-at` returns a 1-char String, compared with `=` (Eq on String).
 (defn make-grid-helper [s i cells]
-  (if (eq-i64 i 81) (Some (Grid cells))
+  (if (= i 81) (Some (Grid cells))
     (let [ch (char-at s i)]
-      (if (str-eq ch ".")
-        (make-grid-helper s (add-i64 i 1) (vec-push cells (Candidates (full-mask))))
+      (if (= ch ".")
+        (make-grid-helper s (+ i 1) (vec-push cells (Candidates (full-mask))))
         ;; Try to parse as a digit 1-9.
         ;; We compare the character against digit strings.
-        (if (str-eq ch "1") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 1)))
-        (if (str-eq ch "2") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 2)))
-        (if (str-eq ch "3") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 3)))
-        (if (str-eq ch "4") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 4)))
-        (if (str-eq ch "5") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 5)))
-        (if (str-eq ch "6") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 6)))
-        (if (str-eq ch "7") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 7)))
-        (if (str-eq ch "8") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 8)))
-        (if (str-eq ch "9") (make-grid-helper s (add-i64 i 1) (vec-push cells (Given 9)))
+        (if (= ch "1") (make-grid-helper s (+ i 1) (vec-push cells (Given 1)))
+        (if (= ch "2") (make-grid-helper s (+ i 1) (vec-push cells (Given 2)))
+        (if (= ch "3") (make-grid-helper s (+ i 1) (vec-push cells (Given 3)))
+        (if (= ch "4") (make-grid-helper s (+ i 1) (vec-push cells (Given 4)))
+        (if (= ch "5") (make-grid-helper s (+ i 1) (vec-push cells (Given 5)))
+        (if (= ch "6") (make-grid-helper s (+ i 1) (vec-push cells (Given 6)))
+        (if (= ch "7") (make-grid-helper s (+ i 1) (vec-push cells (Given 7)))
+        (if (= ch "8") (make-grid-helper s (+ i 1) (vec-push cells (Given 8)))
+        (if (= ch "9") (make-grid-helper s (+ i 1) (vec-push cells (Given 9)))
         ;; '0' treated as empty (like '.')
-        (if (str-eq ch "0") (make-grid-helper s (add-i64 i 1) (vec-push cells (Candidates (full-mask))))
+        (if (= ch "0") (make-grid-helper s (+ i 1) (vec-push cells (Candidates (full-mask))))
           None))))))))))))))
 
 (defn make-grid [s]
-  (if (eq-i64 (str-len s) 81)
+  (if (= (str-len s) 81)
     (make-grid-helper s 0 [])
     None))
 
@@ -191,10 +210,10 @@
 
 ;; Check if all cells are determined (Given or Solved).
 (defn is-solved-helper [g i]
-  (if (eq-i64 i 81) true
+  (if (= i 81) true
     (match (cell-at g i)
-      [(Given _) (is-solved-helper g (add-i64 i 1))
-       (Solved _) (is-solved-helper g (add-i64 i 1))
+      [(Given _) (is-solved-helper g (+ i 1))
+       (Solved _) (is-solved-helper g (+ i 1))
        (Candidates _) false])))
 
 (defn is-solved [g]
@@ -227,13 +246,13 @@
 ;; --- Bitmask tests ---
 
 (defn test-full-mask []
-  (if (eq-i64 (full-mask) 511) None (Some "full-mask should equal 511")))
+  (if (= (full-mask) 511) None (Some "full-mask should equal 511")))
 
 (defn test-pow2 []
-  (if (eq-i64 (pow2 0) 1)
-    (if (eq-i64 (pow2 1) 2)
-      (if (eq-i64 (pow2 3) 8)
-        (if (eq-i64 (pow2 8) 256) None
+  (if (= (pow2 0) 1)
+    (if (= (pow2 1) 2)
+      (if (= (pow2 3) 8)
+        (if (= (pow2 8) 256) None
           (Some "pow2 8 should equal 256"))
         (Some "pow2 3 should equal 8"))
       (Some "pow2 1 should equal 2"))
@@ -259,19 +278,19 @@
       (Some "bit 5 should be cleared"))))
 
 (defn test-bit-count []
-  (if (eq-i64 (bit-count (full-mask)) 9)
-    (if (eq-i64 (bit-count 0) 0)
+  (if (= (bit-count (full-mask)) 9)
+    (if (= (bit-count 0) 0)
       ;; single bit: digit 3 = bit 2 = value 4
-      (if (eq-i64 (bit-count 4) 1) None
+      (if (= (bit-count 4) 1) None
         (Some "bit-count of 4 should be 1"))
       (Some "bit-count of 0 should be 0"))
     (Some "bit-count of full-mask should be 9")))
 
 (defn test-bit-lowest []
-  (if (eq-i64 (bit-lowest (full-mask)) 1)
-    (if (eq-i64 (bit-lowest 0) 0)
+  (if (= (bit-lowest (full-mask)) 1)
+    (if (= (bit-lowest 0) 0)
       ;; mask with only digit 5 set: 2^4 = 16
-      (if (eq-i64 (bit-lowest 16) 5) None
+      (if (= (bit-lowest 16) 5) None
         (Some "bit-lowest of 16 should be 5"))
       (Some "bit-lowest of 0 should be 0"))
     (Some "bit-lowest of full-mask should be 1")))
@@ -279,31 +298,31 @@
 ;; --- Index helpers ---
 
 (defn test-row-of []
-  (if (eq-i64 (row-of 0) 0)
-    (if (eq-i64 (row-of 8) 0)
-      (if (eq-i64 (row-of 9) 1)
-        (if (eq-i64 (row-of 80) 8) None
+  (if (= (row-of 0) 0)
+    (if (= (row-of 8) 0)
+      (if (= (row-of 9) 1)
+        (if (= (row-of 80) 8) None
           (Some "row-of 80 should be 8"))
         (Some "row-of 9 should be 1"))
       (Some "row-of 8 should be 0"))
     (Some "row-of 0 should be 0")))
 
 (defn test-col-of []
-  (if (eq-i64 (col-of 0) 0)
-    (if (eq-i64 (col-of 8) 8)
-      (if (eq-i64 (col-of 9) 0)
-        (if (eq-i64 (col-of 80) 8) None
+  (if (= (col-of 0) 0)
+    (if (= (col-of 8) 8)
+      (if (= (col-of 9) 0)
+        (if (= (col-of 80) 8) None
           (Some "col-of 80 should be 8"))
         (Some "col-of 9 should be 0"))
       (Some "col-of 8 should be 8"))
     (Some "col-of 0 should be 0")))
 
 (defn test-box-of []
-  (if (eq-i64 (box-of 0) 0)
-    (if (eq-i64 (box-of 2) 0)
-      (if (eq-i64 (box-of 3) 1)
-        (if (eq-i64 (box-of 27) 3)
-          (if (eq-i64 (box-of 80) 8) None
+  (if (= (box-of 0) 0)
+    (if (= (box-of 2) 0)
+      (if (= (box-of 3) 1)
+        (if (= (box-of 27) 3)
+          (if (= (box-of 80) 8) None
             (Some "box-of 80 should be 8"))
           (Some "box-of 27 should be 3"))
         (Some "box-of 3 should be 1"))
@@ -314,8 +333,8 @@
 
 (defn test-peers-count []
   ;; Every cell has exactly 20 peers
-  (if (eq-i64 (vec-len (peers 0)) 20)
-    (if (eq-i64 (vec-len (peers 40)) 20) None
+  (if (= (count (peers 0)) 20)
+    (if (= (count (peers 40)) 20) None
       (Some "cell 40 should have 20 peers"))
     (Some "cell 0 should have 20 peers")))
 
@@ -329,10 +348,10 @@
 
 ;; Helper for hand-building grids (no `let`-recursion shenanigans).
 (defn build-given-grid-helper [v i]
-  (if (eq-i64 i 81) v
+  (if (= i 81) v
     (build-given-grid-helper
-      (vec-push v (Given (add-i64 (rem-i64 i 9) 1)))
-      (add-i64 i 1))))
+      (vec-push v (Given (+ (rem-i64 i 9) 1)))
+      (+ i 1))))
 
 (defn build-given-grid []
   (Grid (build-given-grid-helper [] 0)))
@@ -342,7 +361,7 @@
   (let [g (build-given-grid)
         c0 (cell-at g 0)]
     (match c0
-      [(Given v) (if (eq-i64 v 1) None
+      [(Given v) (if (= v 1) None
                    (Some "cell 0 should be Given 1"))
        _ (Some "cell 0 should be Given")])))
 
@@ -352,10 +371,10 @@
     (Some "all-Given grid should be solved")))
 
 (defn build-grid-with-candidates-helper [v i]
-  (if (eq-i64 i 81) v
-    (if (eq-i64 i 0)
-      (build-grid-with-candidates-helper (vec-push v (Candidates (full-mask))) (add-i64 i 1))
-      (build-grid-with-candidates-helper (vec-push v (Given (add-i64 (rem-i64 i 9) 1))) (add-i64 i 1)))))
+  (if (= i 81) v
+    (if (= i 0)
+      (build-grid-with-candidates-helper (vec-push v (Candidates (full-mask))) (+ i 1))
+      (build-grid-with-candidates-helper (vec-push v (Given (+ (rem-i64 i 9) 1))) (+ i 1)))))
 
 (defn test-is-solved-with-candidates []
   ;; A grid with a Candidates cell is not solved
@@ -365,8 +384,8 @@
       None)))
 
 (defn build-all-given-1-helper [v i]
-  (if (eq-i64 i 81) v
-    (build-all-given-1-helper (vec-push v (Given 1)) (add-i64 i 1))))
+  (if (= i 81) v
+    (build-all-given-1-helper (vec-push v (Given 1)) (+ i 1))))
 
 (defn test-set-cell []
   ;; set-cell should replace the cell at the given index
@@ -374,6 +393,6 @@
         g2 (set-cell g 5 (Solved 7))
         c (cell-at g2 5)]
     (match c
-      [(Solved v) (if (eq-i64 v 7) None
+      [(Solved v) (if (= v 7) None
                     (Some "cell 5 should be Solved 7"))
        _ (Some "cell 5 should be Solved")])))

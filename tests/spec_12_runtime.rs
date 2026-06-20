@@ -1611,3 +1611,318 @@ fn integer_div_min_by_neg_one_panics_neg() {
         out.stderr
     );
 }
+
+// =============================================================================
+// §12.3.3 Vec copy-on-write — heap-ADT element RC corrupted through a
+//         user-defined `vec-push` wrapper — DEFECT DEF-2 (S86)
+// =============================================================================
+//
+// DEF-2 — a user-defined wrapper `(defn push2 [v x] (vec-push v x))` corrupts
+// the refcount of a HEAP-ADT element when accumulated in a loop. Calling the
+// primitive `vec-push` DIRECTLY does not. The corruption is observable as a
+// WRONG derived value: summing the unboxed elements of the wrapper-built
+// `(Vec Box)` over-counts versus the direct-built vec (and versus the true sum).
+//
+// §12.3.3 promises Vec COW is "semantically invisible — the caller observes
+// pure functional behavior regardless." DEF-2 violates that: routing `vec-push`
+// through a one-line wrapper makes COW NOT semantically invisible for heap-ADT
+// elements.
+//
+// ISOLATION (this session, /qa S86 step 1.5a):
+//   - Divergence appears at N=2 already: wrapper-built sum = 2, direct-built
+//     sum = 1 (true sum 0+1 = 1). The wrapper path consistently OVER-counts.
+//   - Int (scalar) elements are UNAFFECTED: the same wrapper over a `(Vec Int)`
+//     yields the correct sum (the Int-control test below). Only heap-allocated
+//     ADT elements corrupt — pinning the defect to RC handling of a heap arg
+//     passed through the wrapper call boundary, not to the wrapper or COW per se.
+//   - CRANELISP_RC_TRACE=1 on the N=2 wrapper path shows an asymmetric
+//     alloc/free sequence vs the direct path: the direct path allocs 5 / frees
+//     cleanly with a COW reuse at refcount=1; the wrapper path frees-then-
+//     re-allocs a backing store and leaves one Box object without the matching
+//     RC bookkeeping — i.e. the wrapper call boundary drops an RC inc (or makes
+//     the COW single-owner decision against a stale refcount). The over-count
+//     is the corrupted vec reading a stale/aliased element.
+//
+// TRUE OWNER: /backend (RC mis-count at the wrapper call boundary — the heap
+// arg passed into the user-defined wrapper is not inc'd the way the direct
+// primitive-call codegen inc's it, so the COW single-owner test fires
+// incorrectly). FIXME(/backend). Inspect the arg-passing RC inc/dec symmetry
+// at a `defn` call that forwards a heap ADT to a vec primitive.
+//
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md: asserts the
+// CORRECT behaviour (the wrapper-built sum equals the true sum, exit 1 at N=2),
+// RED today (wrapper over-counts to exit 2), GREEN when the RC asymmetry closes.
+
+// Builds a `(Vec Box)` of N boxed indices via `bw` (which forwards each `(Box i)`
+// through the given push function), then sums the unboxed elements. `$BUILDER` is
+// either `push2` (the wrapper) or `vec-push` (direct). True sum for N=2 is 1.
+const DEF2_BOX_VEC_TEMPLATE: &str = "\
+(import [primitives [*]])
+(deftype Box [:Int v])
+(defn unbox [b] (match b [(Box v) v]))
+(defn push2 [v x] (vec-push v x))
+(defn bw [v i n] (if (lt-i64 i n) (bw ($BUILDER v (Box i)) (add-i64 i 1) n) v))
+(defn sv [v i n acc] (if (lt-i64 i n) (sv v (add-i64 i 1) n (add-i64 acc (unbox (vec-get v i)))) acc))
+(defn main [] (Pure (sv (bw [] 0 2) 0 2 0)))
+";
+
+// spec: spec/12-runtime.md §12.3.3 — Vec COW is semantically invisible; routing
+// `vec-push` through a user-defined wrapper MUST yield the same result as the
+// direct primitive. DEF-2: the wrapper over-counts heap-ADT elements (exit 2,
+// should be 1) — the heap element's RC is corrupted at the wrapper call boundary.
+#[test]
+fn def2_vec_push_wrapper_preserves_heap_adt_element_rc() {
+    // WRAPPER path: each `(Box i)` is appended via `push2` (wraps `vec-push`).
+    // True sum 0+1 = 1 ⇒ exit 1 when GREEN; today over-counts to exit 2.
+    let src = DEF2_BOX_VEC_TEMPLATE.replace("$BUILDER", "push2");
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .user(&src)
+        .run("user.cl")
+        .output()
+        .assert_exit(1);
+}
+
+// spec: spec/12-runtime.md §12.3.3 — CONTROL: the DIRECT `vec-push` path yields
+// the correct sum (exit 1). Pins that the user-defined wrapper — not the loop,
+// the ADT, or COW itself — is the DEF-2 trigger. GREEN today.
+#[test]
+fn def2_vec_push_direct_heap_adt_element_correct_control() {
+    let src = DEF2_BOX_VEC_TEMPLATE.replace("$BUILDER", "vec-push");
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .user(&src)
+        .run("user.cl")
+        .output()
+        .assert_exit(1);
+}
+
+// spec: spec/12-runtime.md §12.3.3 — CONTROL: the SAME wrapper over `(Vec Int)`
+// (scalar elements) yields the correct sum (exit 1). Pins that only HEAP-ADT
+// elements corrupt through the wrapper — scalars are unaffected. GREEN today.
+#[test]
+fn def2_vec_push_wrapper_scalar_element_unaffected_control() {
+    // Int elements, wrapper path, N=2. True sum 0+1 = 1 ⇒ exit 1.
+    let src = "\
+(import [primitives [*]])
+(defn push2 [v x] (vec-push v x))
+(defn bw [v i n] (if (lt-i64 i n) (bw (push2 v i) (add-i64 i 1) n) v))
+(defn sv [v i n acc] (if (lt-i64 i n) (sv v (add-i64 i 1) n (add-i64 acc (vec-get v i))) acc))
+(defn main [] (Pure (sv (bw [] 0 2) 0 2 0)))
+";
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .user(src)
+        .run("user.cl")
+        .output()
+        .assert_exit(1);
+}
+
+// =============================================================================
+// §12.3.3 Vec copy-on-write — TEMPORARY heap-ADT element RC LEAK through
+//         `vec-set` — DEFECT DEF-3 (S86), the opposite-direction mirror of DEF-2
+// =============================================================================
+//
+// DEF-3 — `vec-set`'s inline copy-on-write path (and the `vec_set_copy` runtime
+// helper) inc the NEW element UNCONDITIONALLY. That is correct only for a Var
+// element that stays live (two owners ⇒ inc needed). For a TEMPORARY heap
+// element — `(vec-set v i (Box 7))` — the temporary arrives at rc=1 and its sole
+// reference must TRANSFER into the Vec (no inc), per the uniform consuming
+// convention (Decision 24). The unconditional inc gives the element a permanent
+// extra reference the Vec never drops, so the heap object LEAKS.
+//
+// This is the OPPOSITE-DIRECTION mirror of DEF-2: DEF-2 UNDER-counted a Var
+// forwarded through a `vec-push` wrapper; DEF-3 OVER-counts a temporary handed
+// straight to `vec-set`. The fix (next step, /backend) aligns `vec-set` to the
+// same consuming-Var rule that DEF-2 aligns `vec-push` to — Var→inc,
+// temp→transfer (ring2-rc.md §"Decision 24" / "Algorithm" steps 1–2).
+//
+// ISOLATION (this session, /qa S86):
+//   - A single `vec-set` with a TEMPORARY heap element allocs 5, frees 4 —
+//     one heap object leaks. The leaked object is the temporary new element
+//     (rc bumped to 2 by the unconditional inc, only ever dec'd once).
+//   - SCALAR (Int) elements are UNAFFECTED: `vec-set` over a `(Vec Int)` is
+//     alloc/free balanced (no heap element to inc) — the scalar control below.
+//   - The leak scales with repeated vec-sets (an N=3 loop leaks 9), confirming
+//     the per-call extra reference, but a single call is the minimal pin.
+//
+// OBSERVABILITY LIMITATION (why this parses RC_TRACE rather than asserting exit
+// code, unlike DEF-2): a pure leak does NOT corrupt the read-back value — the
+// element is still the correct `(Box 7)`, the program exits 0 with the right
+// answer. There is no value-level or exit-code witness; the ONLY observable is
+// the allocation imbalance. So — as the S86 brief anticipated for the
+// allocation-imbalance case, and exceptionally vs. the file-header note that
+// counter-parsing migrates to legacy — this repro parses the
+// `CRANELISP_RC_TRACE=1` stderr alloc/free counters directly. The scalar
+// control pins that the imbalance is specific to a TEMPORARY HEAP element.
+//
+// TRUE OWNER: /backend (RC inc on the new `vec-set` element — inline COW codegen
+// + the `vec_set_copy` runtime helper — must follow the Var/temp distinction,
+// not inc unconditionally). FIXME(/backend). Mirror the DEF-2 vec-push fix.
+//
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md: asserts the
+// CORRECT behaviour (alloc count == free count for the temporary-element case),
+// RED today (5 allocs / 4 frees ⇒ leak), GREEN when the unconditional inc is
+// gated to the live-Var case.
+
+// Count `[RC] alloc` / `[RC]  free` lines in the RC trace stderr. The trace
+// formats these as `[RC] alloc 0x…` and `[RC]  free 0x…` (note the alignment
+// space before `free`), so match on the bare `alloc`/`free` event token, scoped
+// to RC lines, and exclude `dec`/`inc` events.
+fn rc_alloc_free_counts(stderr: &str) -> (usize, usize) {
+    let allocs = stderr
+        .lines()
+        .filter(|l| l.contains("[RC]") && l.contains(" alloc "))
+        .count();
+    let frees = stderr
+        .lines()
+        .filter(|l| l.contains("[RC]") && l.contains(" free "))
+        .count();
+    (allocs, frees)
+}
+
+// spec: spec/12-runtime.md §12.3.3 — Vec COW is semantically invisible; a
+// `vec-set` with a TEMPORARY heap element must transfer the temporary's sole
+// reference into the Vec (consuming convention, ring2-rc.md Decision 24), NOT
+// inc it. DEF-3: the unconditional inc leaks the temporary heap element
+// (5 allocs / 4 frees today; must be balanced when GREEN).
+#[test]
+fn def3_vec_set_temporary_heap_element_rc_balanced() {
+    let src = "\
+(import [primitives [*]])
+(deftype Box [:Int v])
+(defn unbox [b] (match b [(Box v) v]))
+(defn main [] (Pure (unbox (vec-get (vec-set [(Box 0) (Box 0)] 1 (Box 7)) 1))))
+";
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .env("CRANELISP_RC_TRACE", "1")
+        .user(src)
+        .run("user.cl")
+        .output();
+    // Value/exit are correct even under the leak (the observability limitation):
+    // the read-back element is the right `(Box 7)`, exit 0. The only witness is
+    // the allocation balance.
+    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
+    assert_eq!(
+        allocs, frees,
+        "vec-set of a TEMPORARY heap element must be alloc/free balanced \
+         (consuming-temp transfer, no unconditional inc); got {allocs} allocs / \
+         {frees} frees — DEF-3 leak.\nstderr:\n{}",
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.3 — CONTROL: `vec-set` over a `(Vec Int)`
+// (scalar element, no heap object to inc) is alloc/free balanced. Pins that the
+// DEF-3 leak is specific to a TEMPORARY HEAP element, not to `vec-set` per se.
+// GREEN today.
+#[test]
+fn def3_vec_set_scalar_element_rc_balanced_control() {
+    let src = "\
+(import [primitives [*]])
+(defn main [] (Pure (vec-get (vec-set [10 20] 1 99) 1)))
+";
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .env("CRANELISP_RC_TRACE", "1")
+        .user(src)
+        .run("user.cl")
+        .output();
+    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
+    assert_eq!(
+        allocs, frees,
+        "vec-set of a SCALAR element must be alloc/free balanced; \
+         got {allocs} allocs / {frees} frees.\nstderr:\n{}",
+        out.stderr
+    );
+}
+
+// spec: spec/12-runtime.md §12.3.3 — CONTROL: a literal `(Vec Box)` read WITHOUT
+// any `vec-set` is alloc/free balanced (4/4). Pins that the heap-element machinery
+// itself is sound — the leak is introduced specifically by `vec-set`'s
+// unconditional new-element inc, not by constructing or reading a heap-element
+// Vec. GREEN today.
+#[test]
+fn def3_heap_element_vec_no_vecset_rc_balanced_control() {
+    let src = "\
+(import [primitives [*]])
+(deftype Box [:Int v])
+(defn unbox [b] (match b [(Box v) v]))
+(defn main [] (Pure (unbox (vec-get [(Box 5) (Box 7)] 1))))
+";
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .env("CRANELISP_RC_TRACE", "1")
+        .user(src)
+        .run("user.cl")
+        .output();
+    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
+    assert_eq!(
+        allocs, frees,
+        "literal (Vec Box) read with no vec-set must be alloc/free balanced; \
+         got {allocs} allocs / {frees} frees.\nstderr:\n{}",
+        out.stderr
+    );
+}
+
+// =============================================================================
+// §12.4.2 — Lazy Sequences (thunks / zero-arg closures)
+// =============================================================================
+//
+// `Seq` is NOT a compiler-seeded type — §12.4.2 specifies that laziness is
+// "explicit and user-controlled … through thunks (zero-argument closures)",
+// NOT a property of the evaluation model. So these tests build a lazy stream
+// free-standing: an ADT cell `(SCons head tail-thunk)` whose tail is a
+// `(Fn [] Stream)` thunk that is only invoked (`(tf)`) on demand. The exit
+// code carries the witnessed Int (per `(defn main [] (Pure N))` → exit N).
+
+// A free-standing lazy stream over Int: SCons holds a head and a tail THUNK
+// (zero-arg closure). `from` is infinite — each `(tf)` lazily produces the next
+// cell. `take-nth k` forces exactly k tail thunks.
+const LAZY_STREAM_PROGRAM: &str = "\
+(import [primitives [*]])
+(deftype Stream (SNil) (SCons [:Int h :(Fn [] Stream) tailf]))
+(defn from [n] (SCons n (fn [] (from (add-i64 n 1)))))
+(defn take-nth [k s]
+  (match s [(SNil) 0
+            (SCons h tf) (if (eq-i64 k 0) h (take-nth (sub-i64 k 1) (tf)))]))
+(defn main [] (Pure (take-nth 5 (from 37))))
+";
+
+// spec: spec/12-runtime.md §12.4.2 — take-from-infinite: a lazy stream `(from
+// 37)` is conceptually infinite, yet `(take-nth 5 …)` forces exactly five tail
+// thunks and terminates with the 5th element (37+5 = 42). If the tail were eager
+// rather than a thunk, constructing `(from 37)` would loop forever and the
+// program would never reach `main`. Exit 42 witnesses both: laziness works AND
+// the demanded element is correct.
+#[test]
+fn lazy_stream_take_from_infinite_terminates_with_demanded_element() {
+    Cranelisp::new()
+        .file("user.cl", LAZY_STREAM_PROGRAM)
+        .run("user.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/12-runtime.md §12.4.2 — construction-does-not-force-tail: merely
+// CONSTRUCTING an infinite lazy stream and reading ONLY its head (never forcing
+// the tail thunk) must terminate. `(SCons n tail-thunk)` does not evaluate
+// `tail-thunk`; pattern-matching the head out without calling `(tf)` leaves the
+// infinite tail unforced. Exit 37 (the head of `(from 37)`) witnesses that
+// construction is non-strict in the tail.
+#[test]
+fn lazy_stream_construction_does_not_force_tail() {
+    let src = "\
+(import [primitives [*]])
+(deftype Stream (SNil) (SCons [:Int h :(Fn [] Stream) tailf]))
+(defn from [n] (SCons n (fn [] (from (add-i64 n 1)))))
+(defn head [s] (match s [(SNil) 0 (SCons h tf) h]))
+(defn main [] (Pure (head (from 37))))
+";
+    Cranelisp::new()
+        .file("user.cl", src)
+        .run("user.cl")
+        .output()
+        .assert_exit(37);
+}

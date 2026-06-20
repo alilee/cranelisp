@@ -165,6 +165,39 @@ fn annotated_params_int() {
     repl_prims("(defn f [:Int x] x)\n(f 7)\n").assert_stdout_contains(":primitives/Int 7");
 }
 
+// spec: spec/04-expressions.md §4.9.3 — function type annotations: annotating
+// MULTIPLE parameters simultaneously. `(defn f [:Int x :Int y] ...)` constrains
+// both `x` and `y` to Int at once; the inferred scheme must be
+// `(Fn [Int Int] Int)`, a call with matching arg types succeeds, and a call
+// with a mismatched arg is rejected. Positive+negative companion to the
+// single-param `annotated_params_int`.
+#[test]
+fn annotated_multiple_params_simultaneously_constrains_each() {
+    let out = repl_prims(
+        "(defn f [:Int x :Int y] (add-i64 x y))\n\
+         (f 1 2)\n\
+         (f 1 \"bad\")\n",
+    );
+    assert!(
+        out.stdout
+            .contains("(Fn [primitives/Int primitives/Int] primitives/Int)"),
+        "both annotated params MUST be reflected in the inferred function type \
+         `(Fn [Int Int] Int)`; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "a call matching both annotated param types MUST succeed; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("type error") || out.stdout.contains("type mismatch"),
+        "a call violating the second annotated param type MUST be rejected; \
+         got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: spec/03-types.md §3.9 — annotated return type accepted
 #[test]
 fn annotated_return_type_int() {

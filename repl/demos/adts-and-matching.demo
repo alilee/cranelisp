@@ -1,0 +1,45 @@
+; Cranelisp — algebraic data types and pattern matching
+; Model a domain with deftype, take it apart with match.
+
+; An enum is a type with several nullary variants:
+
+(deftype Color (Red) (Green) (Blue))
+Red
+
+; Variants can carry fields. match binds the fields and dispatches:
+
+(deftype Shape (Circle [:Int r]) (Rect [:Int w :Int h]))
+(Circle 5)
+(Rect 3 4)
+(defn area [s] (match s [(Circle r) (* 3 (* r r)) (Rect w h) (* w h)]))
+(area (Circle 5))
+(area (Rect 3 4))
+
+; Option models "maybe a value" — the prelude gives you Some and None:
+
+(Some 7)
+None
+(defn describe-opt [o] (match o [(Some x) (str "got " x) None "nothing"]))
+(describe-opt (Some 7))
+; bare None can't pin its element type — a :Type annotation does it:
+(describe-opt :(Option Int) None)
+
+; Result models "value or error" — Ok and Err carry the two cases:
+
+(defn safe-div [a b] (if (= b 0) (Err "divide by zero") (Ok (/ a b))))
+(safe-div 10 2)
+(safe-div 10 0)
+(match (safe-div 10 0) [(Ok v) (str "= " v) (Err why) (str "error: " why)])
+
+; Recursive types describe themselves — a Tree is Leaf or Node-of-Trees:
+
+(deftype Tree (Leaf [:Int v]) (Node [:Tree l :Tree r]))
+(defn tree-sum [t] (match t [(Leaf v) v (Node l r) (+ (tree-sum l) (tree-sum r))]))
+(tree-sum (Node (Leaf 1) (Node (Leaf 2) (Leaf 3))))
+
+; This is exactly how the Sudoku solver models a cell: Given, Solved, or
+; Candidates — see the `sudoku` demo for the full domain.
+(deftype Cell (Given [:Int value]) (Solved [:Int value]) (Candidates [:Int mask]))
+(defn cell-value [c] (match c [(Given v) v (Solved v) v (Candidates _) 0]))
+(cell-value (Given 5))
+(cell-value (Candidates 30))

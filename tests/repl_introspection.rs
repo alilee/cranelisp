@@ -1104,6 +1104,39 @@ fn doc_macro_with_docstring() {
     );
 }
 
+// spec: repl/spec.md §11.2.2 — `/info <macro>` on a MULTI-CLAUSE macro MUST
+// display the clause COUNT. The §11.2.2 worked example shows `/info cond`
+// emitting all clause signatures followed by `  2 clauses`. This test asserts
+// the count line is present alongside the clause signatures and docstring.
+//
+// FAILING-NOT-IGNORED defect guard (resolver: /repl): the current `/info` output
+// lists clause signatures + docstring but does NOT emit the `N clauses` count
+// line. This is a spec↔impl divergence in REPL introspection formatting (owner
+// /repl resolves the spec/format question; /int wires the count into the
+// `/info` macro card). Flips GREEN when the count line is emitted. Also covers
+// the §11.2.2 table-row gap (no `/info`-multi-clause-macro test).
+#[test]
+fn info_multi_clause_macro_shows_clause_count() {
+    let out = repl_prims(
+        "(defmacro cond \"Multi-way conditional\" ([x] x) ([x body & rest] x))\n\
+         /info cond\n",
+    );
+    let display = &out.stdout;
+    // Precondition: the clause signatures and classification are present (the
+    // parts that already work — keeps the failure attributable to the count).
+    assert!(
+        display.contains("defmacro") && display.contains("[x] -> Sexp"),
+        "/info on a macro MUST show classification + clause signatures; \
+         got:\n{display}"
+    );
+    // The defect: the clause COUNT line MUST appear per §11.2.2.
+    assert!(
+        display.contains("2 clauses"),
+        "/info on a multi-clause macro MUST display the clause count \
+         (`2 clauses`) per repl/spec.md §11.2.2; got:\n{display}"
+    );
+}
+
 // spec: repl/spec.md §3.4 — `/imports <module>` filters listed imports by
 // source module. With an explicit primitive import, `/imports primitives`
 // MUST show the imported primitive name. Distinct from
@@ -1546,6 +1579,52 @@ fn disasm_user_fn_recognized_command() {
     );
 }
 
+// spec: repl/spec.md §3.1 — `/disasm <name>` MUST "Show disassembled native
+// code" for a compiled function. This is the stronger sibling to the weak
+// recognised-command guard above: it asserts /disasm actually emits the
+// disassembly (the `; disasm for <name>` header from
+// CompilerSession::handle_disasm + at least one capstone instruction line),
+// and NOT the dead-path "no disassembly available" error.
+//
+// DEFECT (S86): /disasm is DEAD. handle_disasm reads intr.disasm from the
+// introspection record, but that field is NEVER populated — native disasm is
+// re-derived on demand via cranelisp_backend::produce_disasm, which has ZERO
+// call sites in src/. So /disasm <name> returns
+// "no disassembly available for '<name>'" for every name, even a freshly
+// JIT-compiled fn. (Contrast: /clif works because intr.clif_ir IS captured.)
+// resolver: /int. This test is failing-not-ignored per
+// memory/feedback_failing_not_ignored.md; it flips green when /int wires
+// produce_disasm into the /disasm handler.
+#[test]
+fn disasm_command_shows_native_code_for_compiled_fn() {
+    // `sq` actually JIT-compiles, so native code (hence disassembly) exists.
+    let out = repl_prims("(defn sq [x] (mul-i64 x x))
+(sq 7)
+/disasm sq
+");
+    let s = &out.stdout;
+    assert!(
+        !s.contains("no disassembly available"),
+        "/disasm MUST NOT hit the dead 'no disassembly available' path for a \
+         compiled fn; got:\n{}",
+        s
+    );
+    assert!(
+        s.contains("disasm for sq"),
+        "/disasm output MUST contain the `; disasm for sq` header; got:\n{}",
+        s
+    );
+    // produce_disasm emits one `0xADDR\tmnemonic\toperands` line per
+    // instruction — a hex address prefix is the portable cross-arch marker
+    // that real native code was disassembled.
+    assert!(
+        s.contains("0x"),
+        "/disasm output MUST contain at least one disassembled instruction \
+         line (hex address prefix); got:\n{}",
+        s
+    );
+}
+
 // spec: repl/spec.md §3.7 — bare `/mem` snapshot emits two lines:
 // `; live: <bytes> bytes (<live-allocs> allocations)` and
 // `; allocs: <allocs>  deallocs: <deallocs>`. Negative companion: the
@@ -1884,6 +1963,36 @@ fn bare_primitive_add_i64_at_prompt_displays_type_and_fqn() {
         display.contains("; primitive - "),
         "output MUST carry `; primitive - <docstring>` per the universal \
          format (repl/spec.md §1.1); got:\n{display}"
+    );
+}
+
+// spec: repl/spec.md §4.1.7 — negative: a primitive lookup MUST NOT be empty
+// and MUST NOT be misclassified. Looking up the primitive `add-i64` must
+// produce a populated card — it must NOT surface "undefined", must NOT be a
+// blank line, and must NOT classify the builtin as a user `defn` (the
+// classification distinguishes builtins from user-defined functions per the
+// §4.1.7 "Classification `primitive` (distinguishes builtins from user-defined
+// `defn`)" requirement). Negative companion to
+// `bare_primitive_add_i64_at_prompt_displays_type_and_fqn`.
+#[test]
+fn bare_primitive_lookup_not_empty_neg() {
+    let out = repl_prims("add-i64\n");
+    let display = &out.stdout;
+    assert!(
+        !display.contains("undefined"),
+        "a primitive lookup MUST NOT report `undefined` — the primitive is \
+         resolvable per repl/spec.md §4.1.7; got:\n{display}"
+    );
+    assert!(
+        display.contains(":(Fn ["),
+        "a primitive lookup MUST NOT be empty — it MUST emit a populated \
+         `:Type name` card per repl/spec.md §4.1.7; got:\n{display}"
+    );
+    assert!(
+        !display.contains("primitives/add-i64 ; defn"),
+        "a primitive MUST NOT be classified as a user `defn` — classification \
+         `primitive` distinguishes builtins per repl/spec.md §4.1.7; \
+         got:\n{display}"
     );
 }
 

@@ -2,7 +2,7 @@
 
 This section defines the compile-time macro system in Cranelisp. Macros are ordinary Cranelisp functions that transform S-expression values before type checking. They are compiled with the same code generation pipeline as user functions and called during expansion — no separate interpreter is required.
 
-## 9.1 Sexp Data Model [Tested tests/macros.rs::macro_basic_repl, tests/macros.rs::macro_quasiquote_repl]
+## 9.1 Sexp Data Model [Tested crates/cranelisp-typecheck/src/builtins.rs::test_macros_module_exists]
 
 The macro system operates on S-expression values. Two algebraic data types are provided by the compiler in a synthetic `macros` module. These types are immutable and not user-modifiable.
 
@@ -61,7 +61,7 @@ At macro expansion time, the implementation MUST convert between its internal S-
 
 The heap layout of marshalled values follows the standard ADT representation defined in Section 12.1.4. The details of the marshalling functions are implementation-defined.
 
-## 9.2 Macro Definition [Tested tests/macros.rs::macro_basic_repl, tests/macros.rs::macro_quasiquote_repl, tests/macros.rs::macro_multi_clause_repl, tests/macros.rs::macro_basic_batch]
+## 9.2 Macro Definition [Tested tests/spec_09_macros::macro_body_calls_helper_function_in_run_mode]
 
 ### 9.2.1 Syntax
 
@@ -212,7 +212,7 @@ Bracket destructuring composes with multi-clause dispatch. The `derive` macro us
   ...)  ; traits is a bracket pattern, dt is a plain Sexp
 ```
 
-## 9.3 Macro Expansion [Tested tests/macros.rs::macro_if_form, tests/macros.rs::macro_let_form, tests/ring3_repl.rs::r3_macro_defined_before_use, tests/ring3_repl.rs::r3_macro_expansion_fixed_point]
+## 9.3 Macro Expansion [Tested tests/spec_09_macros::macro_used_before_defmacro_is_unresolved]
 
 ### 9.3.1 Pipeline Position
 
@@ -275,7 +275,7 @@ Macros MAY be invoked through qualified names (`module/macro-name`) without an e
 
 Qualified macro references are **not** constrained by source order within the referring module — they target a dependency module, which is always typechecked before the referring module (the dependency graph is acyclic, §9.3.4). This asymmetry is intentional: in-module macro availability follows the defmacro-before-use rule (§9.3.4), while cross-module macro references are available as soon as their defining module can be loaded and typechecked.
 
-## 9.4 Quasiquote [Tested tests/macros.rs::macro_quasiquote_repl, tests/macros.rs::macro_quasiquote_batch]
+## 9.4 Quasiquote [Tested tests/spec_09_macros::quasiquote_with_unquote]
 
 Quasiquote is reader syntax for template-based S-expression construction. It avoids the verbosity of manually calling `Sexp` constructors.
 
@@ -341,7 +341,7 @@ Nested quasiquote with symbol construction:
 ;; Expands to: (if (> x 0) (print "positive") 0)
 ```
 
-## 9.5 Bare-Symbol Expansion [Tested tests/stdlib.rs::prelude_const_int, tests/stdlib.rs::prelude_const_string, tests/stdlib.rs::prelude_def_basic]
+## 9.5 Bare-Symbol Expansion [Tested tests/spec_11_stdlib::prelude_loads_without_errors]
 
 Zero-argument macros expand when referenced as bare symbols, without parentheses. This enables named constants and value aliases.
 
@@ -360,7 +360,7 @@ An implementation MUST check for zero-argument macros during expansion whenever 
 
 This mechanism can be used to implement named constants. For example, the reference implementation provides `const` and `def` macros (Section 9.10.1, 9.10.2) built on bare-symbol expansion.
 
-## 9.6 Multi-Form Expansion (`begin`) [Tested tests/macros.rs::macro_begin_splicing, tests/macros.rs::macro_begin_batch]
+## 9.6 Multi-Form Expansion (`begin`) [Tested tests/spec_09_macros::macro_begin_two_forms]
 
 A macro MAY return a form whose head symbol is `begin`. The `begin` form causes the expander to splice multiple top-level forms into the surrounding context:
 
@@ -477,7 +477,7 @@ The field accessors `shead` and `stail` are auto-generated from the `SCons` cons
 
 Calling `shead` or `stail` on `SNil` is a runtime error (match failure).
 
-## 9.8 Hygiene [Tested tests/ring3_repl.rs::r3_auto_gensym_hygiene]
+## 9.8 Hygiene [Tested tests/spec_09_macros::auto_gensym_introduced_binding_does_not_capture_outer]
 
 Cranelisp macros are **unhygienic** by default. Names introduced by macro expansion are subject to capture by the expansion context, and names from the expansion context are visible inside macro-generated code.
 
@@ -511,7 +511,7 @@ For cases where auto-gensym is not sufficient, macro authors MAY also use:
       (SCons (case-fold "__case__" clauses) SNil)))))
 ```
 
-## 9.9 Macro Errors [Tested tests/macros.rs::macro_malformed_error, tests/macros.rs::macro_bad_body_session, tests/ring3_repl.rs::r3_malformed_macro_clear_error, tests/ring3_repl.rs::r3_macro_wrong_arity_error, tests/e2e.rs::e2e_macro_runtime_error_in_expansion]
+## 9.9 Macro Errors [Tested tests/spec_09_macros::defmacro_malformed_no_params]
 
 ### 9.9.1 Return Type Mismatch
 
@@ -553,7 +553,7 @@ If a macro function raises a runtime error during expansion (e.g., pattern match
 
 Calling a macro with the wrong number of arguments is a compile-time error. For non-variadic macros, the number of arguments MUST exactly match the number of parameters. For variadic macros, the number of arguments MUST be at least the number of fixed parameters.
 
-## 9.10 Example Prelude Macros [Tested tests/stdlib.rs::prelude_when_true, tests/stdlib.rs::prelude_cond_first, tests/stdlib.rs::prelude_thread_first_single, tests/stdlib.rs::prelude_vec_elements]
+## 9.10 Example Prelude Macros [Tested tests/spec_11_stdlib::macro_when_true, tests/spec_11_stdlib::macro_cond_first_match, tests/spec_11_stdlib::macro_thread_first_single, tests/spec_11_stdlib::macro_vec_elements]
 
 The following macros illustrate the capabilities of the macro system. They are provided by the reference implementation's standard prelude (`stdlib/core/syntax.cl`) and are available in all modules that import the prelude (which is the default). Full details of the reference standard library are in Section 11 (non-normative); brief descriptions and expansion examples are given here.
 
@@ -853,7 +853,7 @@ With zero arguments, returns the empty string `""`.
        (str-fold (SexpList (SCons (SexpSym "show") (SCons x SNil))) rest)]))
 ```
 
-## 9.11 Primitives for Macro Authors [Tested tests/macros.rs::macro_quasiquote_repl]
+## 9.11 Primitives for Macro Authors [Tested tests/spec_09_macros::quasiquote_with_unquote]
 
 ### 9.11.1 `quote-sexp`
 
@@ -900,7 +900,7 @@ This ordering ensures that:
 
 A `defmacro` MAY appear at any point in a source file, interleaved with other definitions. It is available to the forms that **follow** it in the same file (§9.3.4) and to any module that imports it.
 
-## 9.13 REPL Integration [Tested tests/macros.rs::macro_visible_in_symbol_table, tests/macros.rs::macro_persists_across_evals, tests/ring3_repl.rs::r3_defmacro_display_single_clause]
+## 9.13 REPL Integration [Tested tests/spec_09_macros::defmacro_display_clause_signature, tests/spec_09_macros::macro_persists_across_evals, tests/repl_introspection::defmacro_display_single_clause]
 
 In a REPL session:
 
@@ -917,7 +917,7 @@ user> (double 21)
 42 :: Int
 ```
 
-## 9.14 Limitations [Tested tests/macros.rs::macro_malformed_error, tests/macros.rs::macro_non_symbol_name, tests/macros.rs::macro_error_no_corrupt, tests/ring3_repl.rs::r3_malformed_defmacro_missing_params, tests/ring3_repl.rs::r3_malformed_defmacro_non_symbol_name]
+## 9.14 Limitations [Tested tests/spec_09_macros::repl_error_recovery_no_partial_macro]
 
 The following features are NOT supported by the macro system:
 

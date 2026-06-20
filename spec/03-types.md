@@ -4,7 +4,7 @@ This section defines the type system of Cranelisp: the set of types, the type in
 
 Cranelisp uses Hindley-Milner type inference extended with traits, constrained polymorphism (monomorphisation), and higher-kinded types. All types can be inferred without annotations, but optional type annotations are available to constrain types or add trait requirements (see [Section 2](02-grammar.md) for annotation syntax).
 
-## 3.1 Primitive Types [Tested tests/ring0.rs::float_arithmetic]
+## 3.1 Primitive Types [Tested tests/spec_03_types::primitive_int_display]
 
 Cranelisp has four primitive types. All are immutable and unboxed at runtime.
 
@@ -21,7 +21,7 @@ Primitive types follow the same import rules as other names in the `primitives` 
 
 ## 3.2 Compound Types [S10]
 
-### 3.2.1 Function Types [Tested tests/repl_experience.rs::defn_with_let_infers_return_type]
+### 3.2.1 Function Types [Tested crates/cranelisp-typecheck/src/resolve.rs::test_resolve_fn_type]
 
 ```
 Fn([T1, T2, ..., Tn], R)
@@ -36,7 +36,7 @@ A function type describes a callable value taking parameters of types `T1` throu
 
 All functions are first-class values. At runtime, function values are represented as closures (see [Section 12](12-runtime.md)).
 
-### 3.2.2 Algebraic Data Types [Tested tests/ring1.rs::adt_polymorphic_type]
+### 3.2.2 Algebraic Data Types [Tested crates/cranelisp-typecheck/src/adt.rs::test_resolution_validates_registered_arity]
 
 ```
 ADT(Name, [A1, A2, ..., An])
@@ -72,7 +72,7 @@ IO(A)
 
 Operations such as `pure` and `bind` can be defined as ordinary library functions to compose IO values (see [Section 10](10-io.md) for details).
 
-### 3.2.4 Trace Type [Tested tests/ring4_trace.rs::trace_returns_trace_type_int]
+### 3.2.4 Trace Type [Tested crates/cranelisp-typecheck/src/builtins.rs::test_vec_primitives_registered]
 
 ```
 Trace
@@ -140,7 +140,7 @@ Pair(A, B)
 
 A test function is any zero-argument function whose name begins with `test-` and whose type is exactly `(Fn [] (Option String))`. `None` indicates pass; `Some(reason)` indicates failure with a human-readable reason. Test discovery and execution are composed from ordinary library code over `discover-tests` and `catch-runtime-error` (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture) and [repl/spec.md §16](../repl/spec.md#16-test-discovery-and-execution)); there is no dedicated test-result type.
 
-### 3.2.7 Vec Type [Tested tests/ring1.rs::vec_literal_int]
+### 3.2.7 Vec Type [Tested crates/cranelisp-typecheck/src/resolve.rs::test_resolve_applied_builtin_vec_wrong_arity]
 
 ```
 Vec(A)
@@ -155,7 +155,7 @@ Vec(A)
 
 `Vec` is registered as a built-in type in the `primitives` module. It supports indexed access and functional update operations.
 
-## 3.3 Type Variables [Tested tests/ring1.rs::adt_polymorphic_type]
+## 3.3 Type Variables [Tested tests/spec_03_types::polymorphic_identity_at_int]
 
 Type variables are lowercase identifiers that stand for unknown or universally quantified types:
 
@@ -171,7 +171,7 @@ Type variables are created in two contexts:
 
 Type variables are implicitly universally quantified at function definition boundaries. There is no explicit `forall` syntax in the source language -- quantification is determined by the inference algorithm.
 
-## 3.4 Type Schemes [Tested tests/ring0.rs::let_polymorphism_identity]
+## 3.4 Type Schemes [Tested tests/spec_03_types::let_polymorphism_identity_two_types]
 
 A **type scheme** (or **polytype**) is a type with universally quantified variables and optional trait constraints:
 
@@ -211,7 +211,7 @@ show     :: forall [a]. {a: [Display]} => (Fn [a] String)
 fmap     :: forall [f, a, b]. {f: [Functor]} => (Fn [(Fn [a] b) (f a)] (f b))
 ```
 
-## 3.5 Type Inference (Algorithm W) [Tested tests/repl_experience.rs::defn_with_let_infers_return_type]
+## 3.5 Type Inference (Algorithm W) [Tested tests/spec_03_types::defn_return_type_inferred_from_body]
 
 Cranelisp implements Algorithm W, the classic Hindley-Milner type inference algorithm. The typechecker maintains a mutable substitution map that accumulates type equalities as expressions are checked.
 
@@ -412,7 +412,7 @@ Consider the factorial function:
 
 3. Result after substitution: `fact :: (Fn [Int] Int)`
 
-## 3.6 Constrained Polymorphism [Tested tests/ring2.rs::constrained_add_int]
+## 3.6 Constrained Polymorphism [Tested tests/spec_03_types::constrained_add_int]
 
 When a function uses trait methods on type variables and multiple trait implementations exist (e.g., `+` is implemented for both `Num Int` and `Num Float`), the function becomes **constrained polymorphic**. Rather than producing an ambiguity error, the typechecker records the constraints and defers compilation.
 
@@ -446,7 +446,7 @@ Constraints propagate through three mechanisms:
 - **Instantiation**: When a constrained scheme is instantiated, constraints are copied to the fresh type variables.
 - **Generalization**: Constraints on variables that are being quantified are preserved in the resulting scheme.
 
-### 3.6.3 Monomorphisation [Tested tests/ring2::constrained_add_int, tests/ring2::constrained_add_float, tests/ring2::constrained_add_both_types]
+### 3.6.3 Monomorphisation [Tested tests/spec_03_types::constrained_add_int, tests/spec_03_types::constrained_add_float, tests/spec_07_traits::constrained_polymorphism_int_then_float]
 
 Constrained functions are compiled by **monomorphisation** at call sites. Each distinct combination of concrete type arguments generates a specialized version of the function:
 
@@ -486,7 +486,7 @@ If a constrained function calls another constrained function, the inner call gen
 
 - **No constrained closures**: Closures that capture constrained functions are not supported.
 
-## 3.7 Higher-Kinded Types [Tested+Neg tests/ring2.rs::hkt_trait_declaration, tests/ring2.rs::neg_hkt_impl_primitive_type_rejected]
+## 3.7 Higher-Kinded Types [Tested+Neg tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds, tests/spec_07_traits::hkt_impl_on_primitive_type_is_rejected_neg]
 
 Cranelisp supports **type constructor parameters** in trait declarations. This enables abstractions over type constructors -- types that take type arguments to produce concrete types (e.g., `Option`, `List`).
 
@@ -566,7 +566,7 @@ HKT methods are **not** constrained polymorphic functions. Although the scheme c
 (fmap (fn [x] (* x 2)) (Some 3)) ; => (Some 6)
 ```
 
-## 3.8 Unification Rules [Tested tests/ring1.rs::error_type_mismatch_names_both_types]
+## 3.8 Unification Rules [Tested tests/spec_03_types::unification_int_vs_string_errors]
 
 Unification asserts that two types are equal, extending the substitution map as needed. The following table defines all unification cases. Both input types have the current substitution applied before matching.
 
@@ -644,7 +644,7 @@ unify(Int, Fn(..)):     ERROR "type mismatch"
 
 Unification is symmetric: `unify(A, B)` and `unify(B, A)` produce the same result.
 
-## 3.9 Type Annotations [Tested tests/ring0.rs::annotated_params]
+## 3.9 Type Annotations [Tested tests/spec_03_types::annotated_params_int]
 
 The annotation form is **`:Type form`** — the `:Type` (or `:(Applied Type)`) introducer is a reader-macro-style prefix that **binds the immediately-following form**, in **all** positions, and is never a standalone atom or variable reference (e.g. `:(Option Int) None`, `:(Vec Int) []`). It is **not** written `(: Type form)`: a parenthesised bare-colon (or leading-`:Type`) list is an ordinary application, not an annotation. This is the syntax used both to annotate a value expression (see [§4.9](04-expressions.md#49-type-annotation)) and to pin an otherwise-ambiguous polymorphic form to a concrete type (see [§3.11](#311-ambiguous-types)). The remainder of this section covers annotations in parameter position.
 

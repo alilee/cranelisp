@@ -29,7 +29,7 @@ In batch mode (`--run`), the program MUST define a function named `main` that ta
   (print "hello world"))
 ```
 
-### Interactive Mode [Tested tests/ring0.rs::repl_eval_expression]
+### Interactive Mode [Tested tests/repl_introspection::display_int_result]
 
 In interactive mode (REPL), top-level expressions are permitted in addition to definitions:
 
@@ -39,7 +39,7 @@ top_level   += expr                    (* interactive mode only *)
 
 A top-level expression routes through the full `expr` production of §2.3 — which **includes `annotate_expr`**. A leading `:Type` at top level is therefore the annotation introducer of an `annotate_expr` binding the following form (§2.3.8); it is NOT parsed as a `var_ref`. Each expression is evaluated and its type and value are displayed. See [12. Runtime Model](12-runtime.md) for REPL semantics.
 
-## 2.2 Top-Level Forms [Tested tests/ring0.rs::hello, tests/ring1.rs::adt_sum_nested_match, tests/ring2.rs::trait_plus_int, tests/macros.rs::macro_basic_repl]
+## 2.2 Top-Level Forms [Tested tests/spec_platforms::platform_print_via_test_capture, tests/spec_06_pattern_matching::nested_match_in_arm_body, tests/spec_05_definitions::deftrait_impl_and_dispatch]
 
 ```ebnf
 top_level    = defn_form
@@ -55,7 +55,7 @@ top_level    = defn_form
 
 Note: `const`, `const-`, `def`, and `def-` are library macros defined in the prelude. They are not primitive syntactic forms and are not described here. See [Section 11.7](11-stdlib.md#117-prelude-macros) for their definition and expansion.
 
-### 2.2.1 `defn` -- Function Definition [Tested tests/ring0.rs::hello]
+### 2.2.1 `defn` -- Function Definition [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_defn]
 
 ```ebnf
 defn_form    = '(' defn_kw name docstring? single_sig ')'
@@ -99,7 +99,7 @@ An optional docstring MAY appear between the name and the parameter list (single
   ([x y z] (+ (+ x y) z)))
 ```
 
-### 2.2.2 `deftype` -- Algebraic Data Type Definition [Tested tests/ring1.rs::adt_product_construct_and_match]
+### 2.2.2 `deftype` -- Algebraic Data Type Definition [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_deftype_enum]
 
 ```ebnf
 deftype_form = '(' deftype_kw type_head docstring? type_body ')'
@@ -183,7 +183,7 @@ Constructors in a sum type MAY also have docstrings:
   (Err "The error case" [:b err]))
 ```
 
-### 2.2.3 `deftrait` -- Trait Declaration [Tested tests/ring2.rs::user_trait_simple]
+### 2.2.3 `deftrait` -- Trait Declaration [Tested tests/spec_07_traits::user_trait_simple]
 
 ```ebnf
 deftrait_form   = '(' deftrait_kw trait_head docstring? method_sig* ')'
@@ -237,7 +237,7 @@ An optional docstring MAY appear between the trait head and the method signature
   (show "Return the string form of a value" [x] String))
 ```
 
-### 2.2.4 `impl` -- Trait Implementation [Tested tests/ring2.rs::user_trait_simple]
+### 2.2.4 `impl` -- Trait Implementation [Tested tests/spec_07_traits::user_trait_simple]
 
 ```ebnf
 impl_form    = '(' 'impl' TRAIT_NAME impl_target impl_method* ')'
@@ -289,7 +289,7 @@ The `impl` form provides method bodies for a trait on a specific type. There is 
 
 Methods within an `impl` block MUST use the `defn` keyword (not `defn-`). They are always public. Each method's name MUST correspond to a method declared in the trait being implemented.
 
-### 2.2.5 `defmacro` -- Macro Definition [Tested tests/macros.rs::macro_basic_repl, tests/macros.rs::macro_multi_clause_repl, tests/macros.rs::macro_basic_batch]
+### 2.2.5 `defmacro` -- Macro Definition [Tested tests/spec_09_macros::defmacro_identity_expands, tests/spec_09_macros::defmacro_multi_clause_dispatch, tests/spec_09_macros::batch_defmacro_begin_splicing]
 
 ```ebnf
 defmacro_form = '(' defmacro_kw name docstring? macro_params expr ')'
@@ -342,7 +342,7 @@ An optional docstring MAY appear between the name and the parameter list:
 
 Macros are expanded iteratively to a fixed point before AST construction. The body MAY use quasiquote (`` ` ``), unquote (`~`), and unquote-splicing (`~@`) as described in [1. Lexical Structure](01-lexical.md), Section 1.6.
 
-### 2.2.6 `mod` -- Module Declaration [Tested tests/ring2.rs::single_file_via_run_project]
+### 2.2.6 `mod` -- Module Declaration [Tested tests/spec_08_modules::synthetic_primitives_module_available]
 
 ```ebnf
 mod_form     = '(' 'mod' MODULE_NAME ')'
@@ -356,7 +356,7 @@ The `mod` form declares a child module. `MODULE_NAME` MUST be a simple symbol (n
 (mod- internal)   ; declares private child module 'internal'
 ```
 
-### 2.2.7 `import` -- Module Import [Tested tests/ring2.rs::import_specific_names]
+### 2.2.7 `import` -- Module Import [Tested tests/spec_08_modules::import_specific_name_compiles_and_runs]
 
 ```ebnf
 import_form  = '(' 'import' '[' import_spec+ ']' ')'
@@ -451,7 +451,7 @@ expr         = literal
              | apply_expr
 ```
 
-### 2.3.1 Literals [Tested tests/ring0.rs::hello]
+### 2.3.1 Literals [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_integer_literal]
 
 ```ebnf
 literal      = INTEGER
@@ -469,7 +469,7 @@ true          ; Bool
 "hello"       ; String
 ```
 
-### 2.3.2 Variable Reference [Tested tests/ring0.rs::nested_let]
+### 2.3.2 Variable Reference [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_variable]
 
 ```ebnf
 var_ref      = SYMBOL
@@ -484,7 +484,7 @@ Option.Some   ; constructor reference
 math/sin      ; qualified reference
 ```
 
-### 2.3.3 `let` -- Local Bindings [Tested tests/ring0.rs::nested_let]
+### 2.3.3 `let` -- Local Bindings [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_let]
 
 ```ebnf
 let_expr     = '(' 'let' '[' binding+ ']' expr ')'
@@ -510,7 +510,7 @@ Binding values MAY include type annotations:
   x)
 ```
 
-### 2.3.4 `if` -- Conditional [Tested tests/ring0.rs::nested_if]
+### 2.3.4 `if` -- Conditional [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_if]
 
 ```ebnf
 if_expr      = '(' 'if' expr expr expr ')'
@@ -524,7 +524,7 @@ The `if` form evaluates a condition, then evaluates exactly one of the two branc
   "non-positive")
 ```
 
-### 2.3.5 `fn` -- Lambda Expression [Tested tests/ring0.rs::lambda_immediate_call]
+### 2.3.5 `fn` -- Lambda Expression [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_lambda]
 
 ```ebnf
 fn_expr      = '(' 'fn' param_list expr ')'
@@ -541,7 +541,7 @@ The `fn` form creates an anonymous function (lambda). The parameter list uses th
   (fn [x] (+ x n)))      ; closure capturing n
 ```
 
-### 2.3.6 Function Application [Tested tests/ring0.rs::chained_function_calls]
+### 2.3.6 Function Application [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_apply]
 
 ```ebnf
 apply_expr   = '(' expr expr* ')'
@@ -565,7 +565,7 @@ If the callee is a keyword (`let`, `if`, `fn`, `match`, `vec`, `trace`), the for
   (inc 5))                    ; -> 6
 ```
 
-### 2.3.7 `match` -- Pattern Matching [Tested tests/ring0.rs::adt_enum_match]
+### 2.3.7 `match` -- Pattern Matching [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_match]
 
 ```ebnf
 match_expr   = '(' 'match' expr '[' match_arm+ ']' ')'
@@ -630,7 +630,7 @@ The annotation is checked at compile time -- the expression's inferred type MUST
 | `(:Int 42)` | not-a-function (Int not callable) | the list is the application of the annotated element `(:Int 42)`; the annotation unifies (`Int` ✓) first, then the application fails because an `Int` value is not callable |
 | `(:Float 42)` | unify error preceding the not-a-function error | the annotation's unify check (`Int` vs `Float`) is performed during typechecking before the application's not-a-function check |
 
-### 2.3.9 Vec Literal [Tested tests/ring1.rs::vec_literal_int]
+### 2.3.9 Vec Literal [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_vec_parses_as_call]
 
 ```ebnf
 vec_lit      = '[' expr* ']'
@@ -665,7 +665,7 @@ The `trace` form evaluates `expr` with function call instrumentation active and 
 
 See [Section 4.12](04-expressions.md#412-trace-expression) for the full evaluation semantics.
 
-## 2.4 Type Expressions [Tested tests/ring2.rs::annotation_concrete_type_int]
+## 2.4 Type Expressions [Tested tests/spec_03_types::annotation_expression_standalone]
 
 Type expressions appear in annotations, parameter lists, field definitions, and trait method signatures.
 
@@ -805,7 +805,7 @@ A symbol in pattern position is interpreted as follows:
 
 There is no nested pattern matching -- constructor patterns bind field values to variables but do not recursively match on those fields.
 
-## 2.6 Visibility [Tested tests/ring2.rs::visibility_private_defn_not_importable, tests/ring2.rs::visibility_public_defn_importable]
+## 2.6 Visibility [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_defn_private]
 
 Definitions may be public (visible to importing modules) or private (visible only within the defining module). The visibility is indicated by a `-` suffix on the definition keyword:
 
@@ -830,7 +830,7 @@ Library macros such as `const`/`const-` and `def`/`def-` follow `defmacro` visib
 
 By default (without the `-` suffix), all definitions are public. Private definitions MUST NOT be accessible to importing modules through `import` or `export`.
 
-## 2.7 Docstrings [Tested tests/ring2.rs::docstring_on_defn, tests/ring2.rs::docstring_on_deftype, tests/ring2.rs::docstring_on_deftrait]
+## 2.7 Docstrings [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_build_defn_with_docstring]
 
 An optional docstring (a string literal) MAY appear between the name and the parameter list or body of a definition. Docstrings are preserved by the implementation and are available for introspection.
 

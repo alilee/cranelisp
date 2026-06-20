@@ -15,6 +15,31 @@
 (defmacro vec "Construct a vec from elements" [&elems]
   (macros/SexpBracket elems))
 
+;; ── Curated Clojure-aligned Vec verbs ────────────────────────────────
+;; These wrap the raw `vec-*` primitives behind Clojure names so callers
+;; never need the bare primitive. `count`/`get`/`conj` are PROMOTED to the
+;; bare prelude (S86 de-leak — the curated surface needs a bare collection
+;; path now that the raw `vec-*` re-exports are gone). `assoc` stays
+;; module-qualified (reserved for a future Map `assoc`; FIXME 0402). The
+;; Phase-H collection trait will subsume `count`/`get`/`conj` under the
+;; same bare names.
+
+(defn count "Number of elements in a Vec"
+  [v] :Int
+  (vec-len v))
+
+(defn get "Element at index i (0-indexed)"
+  [v :Int i]
+  (vec-get v i))
+
+(defn conj "Return a Vec with x appended (Clojure conj, Vec end)"
+  [v x]
+  (vec-push v x))
+
+(defn assoc "Return a Vec with index i set to x"
+  [v :Int i x]
+  (vec-set v i x))
+
 (defn vec-map "Apply a function to each element of a Vec"
   [f v]
   (vec-map-loop f v (vec-len v) 0 []))

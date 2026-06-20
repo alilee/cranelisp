@@ -7,20 +7,29 @@
 ;; - solve: main solver combining propagation and backtracking
 ;;
 ;; Depends on: grid.cl (Cell, Grid, SolveResult, bitmask ops, peers)
-;; Depends on: prelude (Option, macros)
+;; Depends on: prelude (Option, traits, operators, macros)
 ;;
-;; NOTE: This file depends on F2 string primitives (char-at) indirectly
-;; through grid.cl's make-grid. The solver logic itself only uses Int
-;; and Vec operations.
+;; The solver logic itself uses only Int and Vec operations; string handling
+;; (via grid.cl's make-grid char-at and the board formatters) is confined to
+;; parsing/rendering.
 
 (platform stdio)
-(import [primitives [*]])
+
+;; Idiomatic surface (S86 de-leak): arithmetic/comparison via prelude trait
+;; operators; Vec access via the curated `count`/`get`/`assoc`; the string +
+;; IO primitives imported by name. Solver logic is pure Int/Vec; only `main`
+;; and `build-output` touch strings and IO.
+;;
+;; CARVE-OUT (DEF-2): `conj` routes through the bare `vec-push` primitive, not
+;; the `collections.vec/conj` wrapper — the wrapper corrupts heap-ADT element
+;; refcounts when accumulated in a loop (see grid.cl header + CLAUDE.md).
+(import [collections.vec [count get assoc]])
+(import [primitives [char-at str-concat str-len not bind Pure vec-push]])
 
 (import [grid [Grid Cell Given Solved Candidates SolveResult Success Unsolvable
                full-mask bit-set? bit-clear bit-count bit-lowest
                cell-at set-cell peers is-solved cell-determined? cell-value make-grid]])
 (import [platform.stdio [print]])
-(import [primitives [bind Pure]])
 
 ;; ── Constraint Propagation ─────────────────────────────────────────────
 
@@ -36,17 +45,17 @@
 (defn eliminate [g idx d]
   (let [cell (cell-at g idx)]
     (match cell
-      [(Given v)  (if (eq-i64 v d) None (Some g))
-       (Solved v) (if (eq-i64 v d) None (Some g))
+      [(Given v)  (if (= v d) None (Some g))
+       (Solved v) (if (= v d) None (Some g))
        (Candidates mask)
          (if (not (bit-set? mask d))
            ;; Digit not in candidates, no change
            (Some g)
            (let [new-mask (bit-clear mask d)]
-             (if (eq-i64 new-mask 0)
+             (if (= new-mask 0)
                ;; Contradiction: no candidates left
                None
-               (if (eq-i64 (bit-count new-mask) 1)
+               (if (= (bit-count new-mask) 1)
                  ;; Determined: exactly one candidate remains
                  (Some (set-cell g idx (Solved (bit-lowest new-mask))))
                  ;; Reduced: still multiple candidates
@@ -56,11 +65,11 @@
 ;; Used when a cell becomes determined (Given or Solved with value d).
 ;; Returns (Some grid) on success, None if any elimination causes contradiction.
 (defn eliminate-from-peers-helper [g peer-list d i]
-  (if (eq-i64 i (vec-len peer-list)) (Some g)
-    (let [peer-idx (vec-get peer-list i)]
+  (if (= i (count peer-list)) (Some g)
+    (let [peer-idx (get peer-list i)]
       (match (eliminate g peer-idx d)
         [None None
-         (Some g2) (eliminate-from-peers-helper g2 peer-list d (add-i64 i 1))]))))
+         (Some g2) (eliminate-from-peers-helper g2 peer-list d (+ i 1))]))))
 
 (defn eliminate-from-peers [g idx d]
   (eliminate-from-peers-helper g (peers idx) d 0))
@@ -71,41 +80,41 @@
 ;;
 ;; Returns (Some grid) with propagated constraints, or None on contradiction.
 (defn propagate-pass-helper [g i]
-  (if (eq-i64 i 81) (Some g)
+  (if (= i 81) (Some g)
     (let [cell (cell-at g i)]
       (match cell
         [(Given v)
            (match (eliminate-from-peers g i v)
              [None None
-              (Some g2) (propagate-pass-helper g2 (add-i64 i 1))])
+              (Some g2) (propagate-pass-helper g2 (+ i 1))])
          (Solved v)
            (match (eliminate-from-peers g i v)
              [None None
-              (Some g2) (propagate-pass-helper g2 (add-i64 i 1))])
+              (Some g2) (propagate-pass-helper g2 (+ i 1))])
          (Candidates _)
-           (propagate-pass-helper g (add-i64 i 1))]))))
+           (propagate-pass-helper g (+ i 1))]))))
 
 ;; Check if any cell was changed during propagation by comparing
 ;; candidate masks. Returns true if grids differ.
 (defn grids-differ-helper [g1 g2 i]
-  (if (eq-i64 i 81) false
+  (if (= i 81) false
     (let [c1 (cell-at g1 i)
           c2 (cell-at g2 i)]
       ;; Compare cells: if both are Candidates, compare masks
       (match c1
         [(Candidates m1)
            (match c2
-             [(Candidates m2) (if (eq-i64 m1 m2)
-                                (grids-differ-helper g1 g2 (add-i64 i 1))
+             [(Candidates m2) (if (= m1 m2)
+                                (grids-differ-helper g1 g2 (+ i 1))
                                 true)
               _ true])
          (Given _)
            (match c2
-             [(Given _) (grids-differ-helper g1 g2 (add-i64 i 1))
+             [(Given _) (grids-differ-helper g1 g2 (+ i 1))
               _ true])
          (Solved _)
            (match c2
-             [(Solved _) (grids-differ-helper g1 g2 (add-i64 i 1))
+             [(Solved _) (grids-differ-helper g1 g2 (+ i 1))
               _ true])]))))
 
 ;; Propagate constraints to fixpoint.
@@ -126,17 +135,17 @@
 ;; This is the Minimum Remaining Values (MRV) heuristic.
 ;; Returns (Some idx) or None if all cells are determined.
 (defn find-min-helper [g i best-idx best-count]
-  (if (eq-i64 i 81)
-    (if (eq-i64 best-idx -1) None (Some best-idx))
+  (if (= i 81)
+    (if (= best-idx -1) None (Some best-idx))
     (let [cell (cell-at g i)]
       (match cell
         [(Candidates mask)
            (let [cnt (bit-count mask)]
-             (if (if (eq-i64 best-idx -1) true (lt-i64 cnt best-count))
-               (find-min-helper g (add-i64 i 1) i cnt)
-               (find-min-helper g (add-i64 i 1) best-idx best-count)))
-         (Given _) (find-min-helper g (add-i64 i 1) best-idx best-count)
-         (Solved _) (find-min-helper g (add-i64 i 1) best-idx best-count)]))))
+             (if (if (= best-idx -1) true (< cnt best-count))
+               (find-min-helper g (+ i 1) i cnt)
+               (find-min-helper g (+ i 1) best-idx best-count)))
+         (Given _) (find-min-helper g (+ i 1) best-idx best-count)
+         (Solved _) (find-min-helper g (+ i 1) best-idx best-count)]))))
 
 (defn find-min-candidates [g]
   (find-min-helper g 0 -1 10))
@@ -146,15 +155,15 @@
 ;; Try each digit d from lo to 9 at the given cell index.
 ;; Returns the first successful solution or Unsolvable.
 (defn try-digits [g idx mask d]
-  (if (gt-i64 d 9) Unsolvable
+  (if (> d 9) Unsolvable
     (if (not (bit-set? mask d))
       ;; Digit not a candidate, skip
-      (try-digits g idx mask (add-i64 d 1))
+      (try-digits g idx mask (+ d 1))
       ;; Try setting this cell to d and solving
       (let [g2 (set-cell g idx (Solved d))]
         (match (solve g2)
           [(Success solution) (Success solution)
-           Unsolvable (try-digits g idx mask (add-i64 d 1))])))))
+           Unsolvable (try-digits g idx mask (+ d 1))])))))
 
 ;; Main solver: propagate, then backtrack if needed.
 ;;
@@ -186,15 +195,15 @@
 
 ;; Convert a cell value (1-9) to its string digit, or "." for 0.
 (defn digit-string [v]
-  (if (eq-i64 v 1) "1"
-  (if (eq-i64 v 2) "2"
-  (if (eq-i64 v 3) "3"
-  (if (eq-i64 v 4) "4"
-  (if (eq-i64 v 5) "5"
-  (if (eq-i64 v 6) "6"
-  (if (eq-i64 v 7) "7"
-  (if (eq-i64 v 8) "8"
-  (if (eq-i64 v 9) "9"
+  (if (= v 1) "1"
+  (if (= v 2) "2"
+  (if (= v 3) "3"
+  (if (= v 4) "4"
+  (if (= v 5) "5"
+  (if (= v 6) "6"
+  (if (= v 7) "7"
+  (if (= v 8) "8"
+  (if (= v 9) "9"
     "."))))))))))
 
 ;; Format a puzzle string (81 chars) as a readable board.
@@ -208,26 +217,26 @@
   ;; Convert a single character from the puzzle string to display form.
   ;; '0' and '.' show as '.', digits show as themselves.
   (let [ch (char-at s i)]
-    (if (str-eq ch "0") "." ch)))
+    (if (= ch "0") "." ch)))
 
 (defn format-row-from-str [s row col acc]
-  (if (eq-i64 col 9) acc
-    (let [idx (add-i64 (mul-i64 row 9) col)
+  (if (= col 9) acc
+    (let [idx (+ (* row 9) col)
           ch (format-cell-char s idx)
-          sep (if (eq-i64 col 0) ""
-                (if (if (eq-i64 col 3) true (eq-i64 col 6))
+          sep (if (= col 0) ""
+                (if (if (= col 3) true (= col 6))
                   " | "
                   " "))]
-      (format-row-from-str s row (add-i64 col 1) (str-concat acc (str-concat sep ch))))))
+      (format-row-from-str s row (+ col 1) (str-concat acc (str-concat sep ch))))))
 
 (defn format-board-from-str [s row acc]
-  (if (eq-i64 row 9) acc
+  (if (= row 9) acc
     (let [row-str (format-row-from-str s row 0 "")
-          sep (if (eq-i64 row 0) ""
-                (if (if (eq-i64 row 3) true (eq-i64 row 6))
+          sep (if (= row 0) ""
+                (if (if (= row 3) true (= row 6))
                   "\n------+-------+------\n"
                   "\n"))]
-      (format-board-from-str s (add-i64 row 1) (str-concat acc (str-concat sep row-str))))))
+      (format-board-from-str s (+ row 1) (str-concat acc (str-concat sep row-str))))))
 
 (defn format-board-str [s]
   (format-board-from-str s 0 ""))
@@ -235,27 +244,27 @@
 ;; Format a solved Grid as a board string.
 ;; Extracts cell values and builds the display.
 (defn format-row-helper [g r col acc]
-  (if (eq-i64 col 9) acc
-    (let [idx (add-i64 (mul-i64 r 9) col)
+  (if (= col 9) acc
+    (let [idx (+ (* r 9) col)
           v (cell-value (cell-at g idx))
           ds (digit-string v)
-          sep (if (eq-i64 col 0) ""
-                (if (if (eq-i64 col 3) true (eq-i64 col 6))
+          sep (if (= col 0) ""
+                (if (if (= col 3) true (= col 6))
                   " | "
                   " "))]
-      (format-row-helper g r (add-i64 col 1) (str-concat acc (str-concat sep ds))))))
+      (format-row-helper g r (+ col 1) (str-concat acc (str-concat sep ds))))))
 
 (defn format-row [g r]
   (format-row-helper g r 0 ""))
 
 (defn format-board-helper [g r acc]
-  (if (eq-i64 r 9) acc
+  (if (= r 9) acc
     (let [row-str (format-row g r)
-          sep (if (eq-i64 r 0) ""
-                (if (if (eq-i64 r 3) true (eq-i64 r 6))
+          sep (if (= r 0) ""
+                (if (if (= r 3) true (= r 6))
                   "\n------+-------+------\n"
                   "\n"))]
-      (format-board-helper g (add-i64 r 1) (str-concat acc (str-concat sep row-str))))))
+      (format-board-helper g (+ r 1) (str-concat acc (str-concat sep row-str))))))
 
 (defn format-board [g]
   (format-board-helper g 0 ""))
@@ -279,12 +288,11 @@
         (str-concat input-board
           (str-concat "\n\nSolution:\n" solution-str))))))
 
-;; Main: solve a puzzle and print the formatted board.
-;;
-;; NOTE: The solver (propagate/solve) currently segfaults on full 81-cell
-;; grids due to deep recursion causing stack overflow. This is a known
-;; runtime issue. The IO and formatting code works correctly — once the
-;; runtime issue is resolved, this will print both puzzle and solution.
+;; Main: solve a hard-coded puzzle and print the input board followed by the
+;; full solution. The whole 81-cell grid solves end-to-end (exit 0, valid
+;; solution); the earlier deep-recursion segfault is resolved. For the full
+;; story (parse-form-body → make-grid → solve → ASCII + HTML render) see the
+;; headline entry in `user.cl`.
 (defn main []
   (let [puzzle "003020600900305001001806400008102900700000008006708200002609500800203009005010300"]
     (bind (print (str-concat "=== Sudoku Solver ===\n\nPuzzle:\n"
@@ -309,10 +317,10 @@
 ;; --- Helper to count determined cells ---
 
 (defn count-determined-helper [g i acc]
-  (if (eq-i64 i 81) acc
+  (if (= i 81) acc
     (if (cell-determined? (cell-at g i))
-      (count-determined-helper g (add-i64 i 1) (add-i64 acc 1))
-      (count-determined-helper g (add-i64 i 1) acc))))
+      (count-determined-helper g (+ i 1) (+ acc 1))
+      (count-determined-helper g (+ i 1) acc))))
 
 (defn count-determined [g]
   (count-determined-helper g 0 0))
@@ -321,10 +329,10 @@
 
 ;; Build a grid: cell 0 has the given mask as Candidates, the rest are Given 1.
 (defn build-mask-then-givens-helper [v i mask]
-  (if (eq-i64 i 81) v
-    (if (eq-i64 i 0)
-      (build-mask-then-givens-helper (vec-push v (Candidates mask)) (add-i64 i 1) mask)
-      (build-mask-then-givens-helper (vec-push v (Given 1)) (add-i64 i 1) mask))))
+  (if (= i 81) v
+    (if (= i 0)
+      (build-mask-then-givens-helper (vec-push v (Candidates mask)) (+ i 1) mask)
+      (build-mask-then-givens-helper (vec-push v (Given 1)) (+ i 1) mask))))
 
 (defn make-test-grid-with-mask [mask]
   (Grid (build-mask-then-givens-helper [] 0 mask)))
@@ -356,7 +364,7 @@
     (match (eliminate g 0 7)
       [(Some g2)
          (match (cell-at g2 0)
-           [(Solved v) (if (eq-i64 v 3) None
+           [(Solved v) (if (= v 3) None
                          (Some "cell 0 should be Solved 3 after eliminating 7"))
             _ (Some "cell 0 should be Solved after eliminating 7 from {3,7}")])
        None (Some "eliminate of valid digit should not return None")])))
@@ -418,7 +426,7 @@
     [(Some g)
        (match (solve g)
          [(Success solution)
-            (if (eq-i64 (count-determined solution) 81) None
+            (if (= (count-determined solution) 81) None
               (Some "easy puzzle should be fully determined"))
           Unsolvable (Some "easy puzzle should be solvable")])
      None (Some "make-grid should accept the easy puzzle string")]))
@@ -428,7 +436,7 @@
     [(Some g)
        (match (solve g)
          [(Success solution)
-            (if (eq-i64 (count-determined solution) 81) None
+            (if (= (count-determined solution) 81) None
               (Some "hard puzzle should be fully determined"))
           Unsolvable (Some "hard puzzle should be solvable")])
      None (Some "make-grid should accept the hard puzzle string")]))

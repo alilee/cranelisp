@@ -1,0 +1,49 @@
+; Cranelisp — a five-minute tour
+; The REPL describes everything you type. Lean on it.
+
+/help
+
+; Every value answers with its type. Type a literal:
+
+3
+3.0
+true
+"hello"
+
+; Arithmetic and comparison operators are bare from the prelude:
+
+(+ 1 2)
+(* 6 7)
+(+ 1.5 2.5)
+(< 1 2)
+(= "lisp" "lisp")
+
+; The REPL explains special forms when you name one:
+
+if
+(if (< 1 2) "yes" "no")
+
+let
+(let [x 10 y 20] (+ x y))
+
+; Define a function with defn. The REPL echoes its inferred type:
+
+(defn double [x] (* x 2))
+(double 21)
+
+; Type errors are caught before anything runs:
+
+(double "oops")
+
+; Recursion just works:
+
+(defn factorial [n] (if (= n 0) 1 (* n (factorial (- n 1)))))
+(factorial 10)
+
+; show turns any displayable value into a String, str builds strings:
+
+(show 42)
+(str "factorial 5 = " (factorial 5))
+
+; That is the whole loop: type a form, read its type and value, build up.
+; The demos that follow each take one capability deeper, ending at Sudoku.

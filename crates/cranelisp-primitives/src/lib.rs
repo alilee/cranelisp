@@ -382,6 +382,7 @@ fn extern_shims() -> HashMap<&'static str, *const u8> {
     // String — full set.
     m.insert("str-concat", string::str_concat as *const u8);
     m.insert("str-eq", string::str_eq as *const u8);
+    m.insert("neq-string", string::neq_string as *const u8);
     m.insert("str-len", string::str_len as *const u8);
     m.insert("string-identity", string::string_identity as *const u8);
     m.insert("substring", string::str_substring as *const u8);
@@ -828,9 +829,9 @@ mod tests {
         // population from other modules, but not registered in
         // `PRIMITIVES_TABLE` itself):
         //
-        // - `neq-i64` / `neq-f64` / `neq-bool` — reachable through
-        //   trait-method resolution (`Eq.!=`), not surfaced as entries
-        //   in the typecheck-side `ring0_primitives()` table.
+        // - `neq-i64` / `neq-f64` / `neq-bool` / `neq-string` — reachable
+        //   through trait-method resolution (`Eq.!=`), not surfaced as
+        //   entries in the typecheck-side `ring0_primitives()` table.
         // - `sconcat` — registered in the synthetic `macros` module per
         //   `spec/09-macros.md`, not in `primitives`.
         for name in extern_shims().keys() {
@@ -838,7 +839,7 @@ mod tests {
                 PRIMITIVES_TABLE.get(name).is_some()
                     || matches!(
                         *name,
-                        "neq-i64" | "neq-f64" | "neq-bool" | "sconcat"
+                        "neq-i64" | "neq-f64" | "neq-bool" | "neq-string" | "sconcat"
                     ),
                 "shim {name} has no PRIMITIVES_TABLE entry"
             );

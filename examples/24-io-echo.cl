@@ -1,7 +1,7 @@
 ;; 24-io-echo.cl -- Reading input with read-line
 ;;
-;; Example 22 showed print (output). This example introduces read-line
-;; (input) and combines both for an echo program.
+;; Examples 21-23 showed print (output). This example introduces
+;; read-line (input) and combines both for an echo program.
 ;;
 ;;   read-line :: (Fn [] (IO String))
 ;;
@@ -19,7 +19,9 @@
 ;;     ... use input ...))
 ;;
 ;; Running:
-;;   just run-example examples/24-io-echo.cl
+;;   ./target/debug/cranelisp --run examples/24-io-echo.cl
+;;   (examples/lib/platforms/ ships host-correct symlinks for the
+;;    test-capture DLL, so no environment variable is required.)
 
 (platform test-capture)
 (import [primitives [Pure bind]])

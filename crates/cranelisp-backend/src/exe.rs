@@ -44,7 +44,9 @@ pub struct PlatformLayoutCheck {
 ///
 /// # Arguments
 /// * `platform_manifest_names` — symbol names for platform manifest functions
-///   (e.g., `["cranelisp_platform_manifest"]`). Empty if no platforms.
+///   (e.g., `["cranelisp_platform_manifest_shapes"]` — per-platform namespaced
+///   per platform-interface.md §5.5.5). Empty if no platforms. The loop is
+///   naming-agnostic: it imports whatever names the slice carries.
 /// * `main_returns_io` — if true, inserts a `cranelisp_run_io` call to force
 ///   the IO task tree before extracting the exit code.
 ///
@@ -437,7 +439,7 @@ mod tests {
     // spec: design/backend/executable-generation.md §4 — startup stub with platform init
     #[test]
     fn generate_startup_object_with_platform() {
-        let manifest_names = vec!["cranelisp_platform_manifest".to_string()];
+        let manifest_names = vec!["cranelisp_platform_manifest_shapes".to_string()];
         let bytes = generate_startup_object(&manifest_names, false, "main").unwrap();
         assert!(!bytes.is_empty(), "startup .o should not be empty");
     }
@@ -445,7 +447,7 @@ mod tests {
     // spec: design/backend/executable-generation.md §4 — startup stub with platform + IO
     #[test]
     fn generate_startup_object_with_platform_and_io() {
-        let manifest_names = vec!["cranelisp_platform_manifest".to_string()];
+        let manifest_names = vec!["cranelisp_platform_manifest_shapes".to_string()];
         let bytes = generate_startup_object(&manifest_names, true, "main").unwrap();
         assert!(!bytes.is_empty(), "startup .o should not be empty");
     }
@@ -464,7 +466,7 @@ mod tests {
     //       baseline (the baked data + compare call add bytes).
     #[test]
     fn generate_startup_object_bakes_layout_check() {
-        let manifest_names = vec!["cranelisp_platform_manifest".to_string()];
+        let manifest_names = vec!["cranelisp_platform_manifest_shapes".to_string()];
         let baseline = generate_startup_object(&manifest_names, false, "main").unwrap();
 
         let checks = vec![PlatformLayoutCheck {

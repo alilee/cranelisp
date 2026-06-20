@@ -1,118 +1,85 @@
-;; 22-io-hello.cl -- Hello, world with the IO system
+;; 22-io-hello.cl -- Testable IO with the test-capture platform
 ;;
-;; Cranelisp tracks side effects through the IO type. A function that
-;; performs IO returns (IO a) instead of plain a, making effects visible
-;; in the type system.
+;; Example 21 introduced the IO model (Pure, bind, combinators) and used
+;; the `stdio` platform to write to the console. This example does NOT
+;; re-teach those primitives -- it introduces ONE new idea: a *different
+;; platform* that captures `print` output in memory instead of writing it
+;; to the terminal.
 ;;
-;; This example introduces the core IO primitives:
+;; A "platform" supplies the concrete implementation of effectful
+;; functions like `print`. The IO model is platform-agnostic: the same
+;; `(print ...)` call means "write a string" regardless of where the
+;; bytes actually go. Swapping `(platform stdio)` for
+;; `(platform test-capture)` redirects every `print` into an in-memory
+;; buffer -- which is exactly what you want when running a program under
+;; test, where interactive console IO is unavailable or undesirable.
 ;;
-;;   Pure  -- wrap a value in IO without performing any effect
-;;   bind  -- chain IO actions, threading the result of one into the next
-;;   print -- a platform function that writes a string to output
-;;
-;; When main returns (IO a), the runtime trampoline forces the IO tree
-;; and extracts the inner value. Effect nodes execute their side effects
-;; during forcing. So (Pure 42) as main's return produces 42.
+;; This is the same separation the test suite relies on: examples 21-24
+;; run unattended in CI, so an IO example that needs a human to read the
+;; console would be unverifiable. test-capture makes IO programs
+;; deterministic and self-checking.
 ;;
 ;; Running:
-;;   just run-example examples/22-io-hello.cl
-;;   (builds the platform cdylibs and puts target/debug on the platform
-;;    search path so the test-capture DLL resolves — no symlinks.)
-;;
-;; Note: This example uses the test-capture platform, which captures
-;; print output in memory instead of writing to the console. This makes
-;; the example verifiable without interactive IO. Replace test-capture
-;; with stdio for actual console output.
+;;   ./target/debug/cranelisp --run examples/22-io-hello.cl
+;;   (examples/lib/platforms/ ships host-correct symlinks for the
+;;    test-capture DLL, so no environment variable is required.)
 
-;; Load the test-capture platform DLL.
+;; Load the test-capture platform DLL instead of stdio. `print` now
+;; writes into an in-memory buffer rather than the console.
 (platform test-capture)
 
-;; IO constructors live in `primitives`; print lives in the platform module.
+;; The IO constructors are unchanged -- only the platform differs.
 (import [primitives [Pure bind]])
 (import [platform.test-capture [print]])
 
 
-;; === Part 1: Pure -- lifting a value into IO ===
+;; === Capturing a single effect ===
 
-;; Pure wraps any value in IO. No effect occurs.
-;; Type: Pure :: (Fn [a] (IO a))
-
-(defn test-pure-value []
-  ;; (Pure 42) creates an (IO Int). The trampoline extracts 42.
-  (Pure 42))                                         ;; -> 42
-
-
-;; === Part 2: bind -- chaining IO actions ===
-
-;; bind sequences two IO actions. It takes an IO action and a
-;; continuation function. The continuation receives the result of
-;; the first action and returns a new IO action.
-;; Type: bind :: (Fn [(IO a) (Fn [a] (IO b))] (IO b))
-
-(defn test-bind-pure []
-  ;; Extract 10 from Pure, add 5, wrap in Pure again.
-  (bind (Pure 10) (fn [x] (Pure (add-i64 x 5)))))   ;; -> 15
-
-(defn test-bind-chain []
-  ;; Chain three steps: start with 1, add 10, add 100.
-  (bind (Pure 1)
-    (fn [a]
-      (bind (Pure (add-i64 a 10))
-        (fn [b]
-          (Pure (add-i64 b 100)))))))                 ;; -> 111
+;; Under test-capture, `print` still has type (Fn [String] (IO Int)) and
+;; still returns 0. The difference is purely in *where* the bytes go.
+(defn test-captured-hello []
+  ;; Effect: appends "hello, world" to the capture buffer (not the console).
+  (print "hello, world"))                            ;; -> 0
 
 
-;; === Part 3: print -- a real side effect ===
+;; === Sequencing captured effects ===
 
-;; print takes a String and returns (IO Int). When the trampoline
-;; forces the Effect node, the string is written to output.
-;; Type: print :: (Fn [String] (IO Int))
-
-(defn test-hello []
-  ;; The simplest IO program: print a string.
-  ;; Side effect: writes "hello, world" to output.
-  (print "hello, world"))                             ;; -> 0
-
-(defn test-print-then-result []
-  ;; Print a message, then return a computed value.
-  ;; bind sequences the effect and the continuation.
-  (bind (print "computing...")
-    (fn [_] (Pure 99))))                              ;; -> 99
-
-
-;; === Part 4: Sequencing two prints ===
-
-;; To print two strings in order, bind the first print's result
-;; (which we ignore with _) to a continuation that performs
-;; the second print.
-
-(defn test-two-prints []
-  ;; Side effects: writes "hello," then "world!" to output.
+;; bind sequences captured prints exactly as it does console prints --
+;; the platform swap is invisible to the IO plumbing.
+(defn test-captured-sequence []
+  ;; Effects: appends "hello," then "world!" to the capture buffer.
   (bind (print "hello,")
     (fn [_] (print "world!"))))                       ;; -> 0
 
 
+;; === Mixing captured IO with a computed result ===
+
+;; A program can perform captured effects and still thread a pure value
+;; out through the IO chain. This is the shape every testable IO program
+;; takes: do some effects, then report a checkable result.
+(defn test-effect-then-result []
+  ;; Effect: captures "computing...". Result: 99.
+  (bind (print "computing...")
+    (fn [_] (Pure 99))))                              ;; -> 99
+
+
 ;; --- Expected results ---
 ;;
-;; test-pure-value:       42
-;; test-bind-pure:        15
-;; test-bind-chain:       111
-;; test-hello:            0
-;; test-print-then-result: 99
-;; test-two-prints:       0
+;; test-captured-hello:     0
+;; test-captured-sequence:  0
+;; test-effect-then-result: 99
 ;;
-;; Total: 42 + 15 + 111 + 0 + 99 + 0 = 267
+;; Total: 0 + 0 + 99 = 99
+;;
+;; Captured output (in execution order, held in memory -- not printed):
+;;   hello, world
+;;   hello,
+;;   world!
+;;   computing...
 
 (defn main []
-  (bind (test-pure-value) (fn [r1]
-  (bind (test-bind-pure) (fn [r2]
-  (bind (test-bind-chain) (fn [r3]
-  (bind (test-hello) (fn [r4]
-  (bind (test-print-then-result) (fn [r5]
-  (bind (test-two-prints) (fn [r6]
-    (Pure (add-i64 r1
-      (add-i64 r2
-        (add-i64 r3
-          (add-i64 r4
-            (add-i64 r5 r6))))))
-  )))))))))))))
+  (bind (test-captured-hello) (fn [r1]
+  (bind (test-captured-sequence) (fn [r2]
+  (bind (test-effect-then-result) (fn [r3]
+    (Pure (add-i64 r1 (add-i64 r2 r3)))
+  )))))))

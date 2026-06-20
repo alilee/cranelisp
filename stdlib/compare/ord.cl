@@ -25,3 +25,20 @@
   (defn > [a b] (gt-f64 a b))
   (defn <= [a b] (le-f64 a b))
   (defn >= [a b] (ge-f64 a b)))
+
+;; Bool ordering: false < true (the conventional total order on Bool).
+(impl Ord Bool
+  (defn < [a b] (if a false b))
+  (defn > [a b] (if b false a))
+  (defn <= [a b] (if a b true))
+  (defn >= [a b] (if b a true)))
+
+;; NOTE: `Ord String` is intentionally NOT implemented. Lexicographic
+;; string ordering needs a code-point comparison primitive (a `char→int`
+;; or `str-lt` style code-unit test). The string primitive surface
+;; (`char-at`/`substring`/`str-eq`/`str-len`/`starts-with?`/`contains?` …)
+;; can test character EQUALITY but has no way to order two differing
+;; characters. `Eq String` (in compare/eq.cl) covers equality; ordering of
+;; strings is blocked on a missing primitive — tracked as a usability
+;; finding (see plan-stdlib.md §"Known blockers"). Adding a bogus
+;; substring-based order would be silently wrong, so it is omitted.

@@ -20,6 +20,7 @@ Risk assessment for quality assurance in the Cranelisp reimplementation. Based o
 | 8 | Performance regression invisible | **MEDIUM** | 0–4 | No perf baselines yet; prototype runs ~2min for 978 tests |
 | 9 | REPL slash command coverage thin | **LOW-MEDIUM** | 4 | 8 of 16 commands tested; rest deferred to /repl experience suite |
 | 10 | Error message quality untested | **LOW-MEDIUM** | 0–4 | Only ~20 error tests; no golden-master error output tests |
+| 11 | Slow-accumulating FFI/platform-ABI memory corruption | **HIGH** | (post-ring) | Sustained-repetition crossings + link-then-RUN-under-load + checking allocator (ASAN/heap-header debug-assert) + JIT/link callback parity. DEF-6 root cause. |
 
 ## Detailed Analysis
 
@@ -135,6 +136,89 @@ The prototype runs 978 tests in ~2 minutes. No performance baselines exist for i
 Only ~20 dedicated error tests exist. No golden-master tests for error formatting.
 
 **Mitigation**: Each ring adds error tests for its features. Error message testing uses substring matching, not exact comparison.
+
+### Risk 11: Slow-Accumulating FFI/Platform-ABI Memory Corruption (HIGH)
+
+The platform/FFI ADT-marshaling boundary is a C-ABI seam between the host
+process and platform DLLs. When the two sides disagree on a pointer-base or
+layout contract — a payload pointer where a base pointer is expected, a
+header-size offset omitted, a struct field reordered — each crossing
+overruns adjacent heap metadata by a *fixed small amount*. The damage is
+**invisible below a threshold and catastrophic above it**: a few bytes per
+crossing accumulate silently until enough chunk headers are clobbered to
+trip the allocator's consistency check (glibc `double free or corruption`,
+`corrupted size vs. prev_size`, SIGABRT / exit 134). This is a distinct
+failure class from RC miscounts (Risks 1) — RC bugs leak or double-free a
+*correctly-located* object; this class corrupts the *metadata around*
+correctly-RC'd objects, so every RC-driven free hits `rc=0` cleanly right up
+to the abort.
+
+**Instance (DEF-6, root-caused S86)**: the `--link` host wiring
+(`crates/cranelisp-exe-bundle/src/lib.rs`) handed platforms a **base
+pointer** where the contract requires a **payload pointer** — `alloc`
+returned `base` instead of `base + HEAP_HEADER_SIZE` (16 bytes). Every
+host↔platform-DLL ADT crossing overran the previous chunk's heap metadata by
+16 bytes. Invisible below ~40 crossings; glibc-aborts at ~40+. The
+`--run`/JIT path (`src/platform.rs`) used the correct `heap_alloc_payload`,
+so the bug was **`--link`-ONLY** — a divergence between two separately
+hand-rolled host-callback wirings. See `ledger.md` S86 DEF-6 entry for the
+full bisection.
+
+**Impact**: A platform/FFI program that passes every conformance test and
+links cleanly aborts in production once a server loop, batch job, or any
+sustained workload crosses the corruption threshold. Catastrophic, mode-
+specific (`--link` only here), and undetectable by the existing suite.
+
+**Why the 2808-green suite missed it — four detection gaps to record:**
+
+1. **Per-call-correctness, never sustained-repetition.** Every platform test
+   asserts a *handful* of crossings return correct values; none loops past
+   the ~40-crossing corruption threshold. Slow accumulators are invisible to
+   per-call assertions — they need sustained-repetition coverage.
+2. **Link-success guarded, run-the-binary-under-load NOT.** The DEF-5 guard
+   asserted the binary *links*; nothing *ran* it under load. "Builds/links ≠
+   runs," and "runs once ≠ runs N times."
+3. **No checking allocator.** A few-bytes-per-crossing overrun under the
+   normal system allocator is silent until the threshold. ASAN/valgrind, or a
+   heap-header-integrity debug-assert fired on each crossing, would have
+   caught it on the *first* crossing.
+4. **JIT-vs-link host-callback divergence.** The `--run` (JIT,
+   `src/platform.rs`) and `--link` (`cranelisp-exe-bundle`) paths hand-roll
+   the host callbacks SEPARATELY; they diverged (one correct, one off-by-16).
+   This is a Principle-8/11 mode-divergence risk distinct from the S85
+   program-driver unification — S85 unified the *driver*, not the
+   *host-callback wiring*.
+
+**Mitigation / diagnostic requirements** (obligations on compiler skills +
+`/qa`, per `tests/CLAUDE.md §Diagnostic Requirements`):
+
+- **Sustained-repetition coverage for the platform/FFI marshaling boundary.**
+  Every host↔DLL ADT crossing kind (construct/produce AND consume) gets a
+  test that drives ≥N crossings — N well above the observed ~40 threshold;
+  use 200–2000 — and asserts no abort (exit 0). A handful of crossings is not
+  coverage for an accumulator. First such guard is now committed:
+  `tests/link.rs::link_repeated_platform_adt_marshal_does_not_corrupt_heap`
+  (200× `(Rectangle 3 4)` → platform `area`; generic shapes fixture, no
+  exemplar coupling; RED until the off-by-16 is fixed).
+- **Link-then-RUN-under-load guards for every platform/`--link` capability**,
+  not link-success-only. The `--link` binary must be executed, and executed
+  *repeatedly* / under load, not merely produced. Pair every "it links" guard
+  with an "it runs N times without aborting" guard.
+- **Checking-allocator / heap-header-integrity debug-asserts in the platform
+  marshaling path.** A `debug_assert!` that an allocated chunk's header is
+  intact after each construct/consume crossing (fires in debug test runs,
+  compiled out in release) turns a threshold-delayed abort into a first-
+  crossing failure at the exact seam. PLUS a CI recommendation to run the
+  platform/`--link` e2e tests under ASAN or valgrind so a fresh overrun is
+  caught immediately rather than after N iterations.
+- **JIT/link host-callback parity.** The `--run` (JIT) and `--link` host
+  callbacks must SHARE the wiring — one source of truth for `alloc`,
+  RC-header, and tag callbacks — OR a parity test must assert the two paths
+  install byte-identical callbacks, so they cannot diverge again. This is the
+  root enabler of DEF-6 and is flagged as an **`/arch`/structural follow-up**:
+  the two hand-rolled wirings (`src/platform.rs` vs
+  `crates/cranelisp-exe-bundle/src/lib.rs`) are a standing Principle-8/11
+  mode-divergence hazard until unified.
 
 ## Spec Coverage Gaps
 

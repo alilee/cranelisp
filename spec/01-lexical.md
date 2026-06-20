@@ -2,7 +2,7 @@
 
 This section defines the lexical grammar of Cranelisp — the rules for converting source text into tokens.
 
-## 1.1 Source Encoding [Tested tests/ring0.rs::source_encoding_utf8]
+## 1.1 Source Encoding [Tested tests/spec_12_runtime::string_utf8_source_encoding_accepted]
 
 Source text MUST be valid UTF-8.
 

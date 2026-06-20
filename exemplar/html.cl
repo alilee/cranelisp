@@ -6,9 +6,15 @@
 ;; - Error page: error message with link back to form
 ;;
 ;; Depends on: grid.cl (Grid, Cell, Given, Solved, Candidates, cell-at, cell-value)
-;; Depends on: prelude (str macro, cond, do, when, int-to-string, show)
+;; Depends on: prelude (traits, operators, macros)
+;;
+;; Idiomatic surface (S86 de-leak): arithmetic/comparison via prelude trait
+;; operators (`=` on String is Eq dispatch, not a primitive); string helpers
+;; (`str-concat`, `int-to-string`, `contains?`) imported by name. Test-only
+;; grid builders use the bare `vec-push` primitive (DEF-2 carve-out — the
+;; curated `conj` wrapper corrupts heap-ADT elements; see grid.cl header).
 
-(import [primitives [*]])
+(import [primitives [str-concat int-to-string contains? vec-push]])
 (import [grid [Grid Cell Given Solved Candidates cell-at cell-value]])
 
 ;; ── CSS ──────────────────────────────────────────────────────────────
@@ -66,8 +72,8 @@
 
 ;; Build one row of input fields (9 cells).
 (defn form-row-helper [row col acc]
-  (if (eq-i64 col 9) acc
-    (form-row-helper row (add-i64 col 1)
+  (if (= col 9) acc
+    (form-row-helper row (+ col 1)
       (str-concat acc (input-field row col)))))
 
 (defn form-row [row]
@@ -75,8 +81,8 @@
 
 ;; Build all 9 rows of the input grid.
 (defn form-rows-helper [row acc]
-  (if (eq-i64 row 9) acc
-    (form-rows-helper (add-i64 row 1)
+  (if (= row 9) acc
+    (form-rows-helper (+ row 1)
       (str-concat acc (form-row row)))))
 
 (defn form-rows []
@@ -107,9 +113,9 @@
 
 ;; Build one row of the solution table (9 cells).
 (defn solution-row-helper [original solved row col acc]
-  (if (eq-i64 col 9) acc
-    (let [idx (add-i64 (mul-i64 row 9) col)]
-      (solution-row-helper original solved row (add-i64 col 1)
+  (if (= col 9) acc
+    (let [idx (+ (* row 9) col)]
+      (solution-row-helper original solved row (+ col 1)
         (str-concat acc (solution-cell original solved idx))))))
 
 (defn solution-row [original solved row]
@@ -117,8 +123,8 @@
 
 ;; Build all 9 rows of the solution table.
 (defn solution-rows-helper [original solved row acc]
-  (if (eq-i64 row 9) acc
-    (solution-rows-helper original solved (add-i64 row 1)
+  (if (= row 9) acc
+    (solution-rows-helper original solved (+ row 1)
       (str-concat acc (solution-row original solved row)))))
 
 (defn solution-rows [original solved]
@@ -147,6 +153,18 @@
           (str-concat message
             "</p><br><a href=\"/\">Try again</a></body></html>"))))))
 
+;; ── Not-found page ───────────────────────────────────────────────────
+;;
+;; The 404 page for an unrecognised method/path. `path` is echoed so the
+;; caller sees which route missed; the link returns to the puzzle form.
+(defn not-found-page [path]
+  (str-concat "<!DOCTYPE html><html><head><style>"
+    (str-concat (css)
+      (str-concat "</style><title>Not Found</title></head><body>"
+        (str-concat "<h1>404 Not Found</h1><p>No route for <code>"
+          (str-concat path
+            "</code></p><br><a href=\"/\">Back to the solver</a></body></html>"))))))
+
 ;; ── Tests ─────────────────────────────────────────────────────────────
 ;;
 ;; Test functions are top-level `test-*` defns returning `(Option String)`
@@ -171,7 +189,7 @@
 
 ;; Test that wrap-tag works correctly
 (defn test-wrap-tag []
-  (if (str-eq (wrap-tag "b" "hello") "<b>hello</b>") None
+  (if (= (wrap-tag "b" "hello") "<b>hello</b>") None
     (Some "wrap-tag should produce <b>hello</b>")))
 
 ;; Test that td produces a cell with class
@@ -192,10 +210,20 @@
   (if (contains? (error-page "oops") "Try again") None
     (Some "error-page should contain a 'Try again' link")))
 
+;; Test that not-found-page echoes the missed path
+(defn test-not-found-page-has-path []
+  (if (contains? (not-found-page "/nope") "/nope") None
+    (Some "not-found-page should echo the missed path")))
+
+;; Test that not-found-page links back to the solver
+(defn test-not-found-page-has-link []
+  (if (contains? (not-found-page "/x") "Back to the solver") None
+    (Some "not-found-page should contain a back link")))
+
 ;; Helpers for hand-built grids (avoid `let`-recursion patterns).
 (defn build-all-ones-helper [v i]
-  (if (eq-i64 i 81) v
-    (build-all-ones-helper (vec-push v (Given 1)) (add-i64 i 1))))
+  (if (= i 81) v
+    (build-all-ones-helper (vec-push v (Given 1)) (+ i 1))))
 
 (defn make-all-ones-grid []
   (Grid (build-all-ones-helper [] 0)))
@@ -214,12 +242,12 @@
 
 ;; Build a grid where cell 0 is Given(5), cell 1 is Solved(3), the rest are Given(1).
 (defn build-mixed-helper [v i]
-  (if (eq-i64 i 81) v
-    (if (eq-i64 i 0)
-      (build-mixed-helper (vec-push v (Given 5)) (add-i64 i 1))
-      (if (eq-i64 i 1)
-        (build-mixed-helper (vec-push v (Solved 3)) (add-i64 i 1))
-        (build-mixed-helper (vec-push v (Given 1)) (add-i64 i 1))))))
+  (if (= i 81) v
+    (if (= i 0)
+      (build-mixed-helper (vec-push v (Given 5)) (+ i 1))
+      (if (= i 1)
+        (build-mixed-helper (vec-push v (Solved 3)) (+ i 1))
+        (build-mixed-helper (vec-push v (Given 1)) (+ i 1))))))
 
 (defn make-mixed-grid []
   (Grid (build-mixed-helper [] 0)))

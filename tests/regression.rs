@@ -2614,7 +2614,9 @@ fn s60_run_tests_reduction_1_exemplar_batched_failing() {
     let exit = out.status.code();
     let combined = combined_out(&out);
 
-    let tests_all_ran = combined.contains("10 passed in");
+    // Wave-E `html.cl` additions raised the exemplar's in-language test count
+    // from 10 to 12 (re-measured /qa 2026-06-18 — `12 passed in`).
+    let tests_all_ran = combined.contains("12 passed in");
     let load_err = combined.contains("no parsed sexps for module 'user'");
     let clean_exit = exit == Some(0);
 

@@ -1,6 +1,30 @@
-# Exemplar Project: Sudoku Solver with Web Platform
+# Exemplar Project: Sudoku Solver
 
 Selected exemplar project for the Cranelisp reimplementation. This document is owned by the `/port` skill, updated from the Sprint 0 candidate evaluation.
+
+## Showcase target (S86 Phase 6b rebaseline)
+
+> **The committed showcase is the stdio CLI.** `exemplar/user.cl` is the
+> headline entry: it drives the full pipeline — `form/parse-form-body` →
+> `grid/make-grid` → `solver/solve` → ASCII board (`solver/format-board`) +
+> HTML page (`html/solution-page`) — end-to-end through `(platform stdio)`,
+> exit 0. The four pure modules (`grid`, `solver`, `html`, `form`) are complete
+> and idiomatic (S86 curated-surface idiom pass), and `tests.cl` runs 39/39
+> green as a free-standing runner.
+>
+> **The web platform below is a designed-but-unbuilt future stretch**, NOT the
+> committed target. The pure handler, HTML generation, and form parsing it
+> needs are already implemented and tested — only the Rust platform DLL
+> (`exemplar/platforms/web/`) and the IO wiring (`exemplar/main.cl`, routing)
+> are missing. Building it needs `/platform` to author a `cdylib`; it is
+> preserved as **FIXME 0405** (`target: /platform`). Everything in the
+> "Web Platform DLL", "Two IO Models", and "Request Routing" sections is the
+> design for that stretch — read it as the spec for 0405, not as shipped work.
+>
+> The original title was "Sudoku Solver with Web Platform"; the web half is now
+> explicitly future. The rest of this document (architecture, data types,
+> algorithms, test strategy, ring assessments) remains the authoritative design
+> record for the pure core, which is built.
 
 ## Wave 4 Parallelism Opportunities Assessment
 
@@ -162,11 +186,12 @@ the first adoption target.
 
 ## Decision
 
-**Selected**: Sudoku Solver with a custom web platform (HTTP server).
+**Selected**: Sudoku Solver. **Committed IO layer: stdio CLI** (`user.cl`).
+**Future stretch: custom web platform** (HTTP server) — FIXME 0405.
 
-**Rationale**: The Sudoku solver hits the best balance across all nine selection criteria: algorithm-rich (constraint propagation + backtracking), universally familiar domain, clean pure/IO split, moderate and predictable scope. The web platform replaces stdio as the IO layer, adding a compelling demo experience (browser-based puzzle input and solution display) and deeply validating the platform model.
+**Rationale**: The Sudoku solver hits the best balance across all nine selection criteria: algorithm-rich (constraint propagation + backtracking), universally familiar domain, clean pure/IO split, moderate and predictable scope. The pure core is deployed today over stdio; the web platform would replace stdio as the IO layer, adding a compelling demo experience (browser-based puzzle input and solution display) and deeply validating the platform model. That stretch is preserved for `/platform` (the pure core already supplies everything it needs to wire).
 
-**Key insight**: The platform DLL is part of the exemplar, not separate infrastructure. Writing a platform is something application developers do — the exemplar demonstrates that this is not an impossible ask.
+**Key insight**: The platform DLL is part of the exemplar, not separate infrastructure. Writing a platform is something application developers do — the web stretch would demonstrate that this is not an impossible ask. (Until then, the stdio CLI already validates the platform model via `(platform stdio)`.)
 
 ## What It Demonstrates
 

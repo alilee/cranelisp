@@ -67,6 +67,79 @@ fn type_error_if_branches_mismatch() {
 }
 
 // =============================================================================
+// §5.3 Type Error Quality — type errors MUST name expected + actual types
+// (fully qualified) AND carry a source location.
+// =============================================================================
+
+// spec: repl/spec.md §5.3 — a type error MUST carry the SOURCE LOCATION of the
+// mismatch. The REPL emits `type error at START..END: ...` — the span pins the
+// offending form. Positive companion to the FQ-type guards below (location is
+// the part that already works). Distinct from `parse_error_has_location` which
+// only covers PARSE errors.
+#[test]
+fn type_error_has_source_location() {
+    let out = repl_prims("(add-i64 1 \"hello\")\n");
+    assert!(
+        out.stdout.contains("type error at") && out.stdout.contains(".."),
+        "a type error MUST include an `at START..END` source location per \
+         repl/spec.md §5.3; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §5.3 — a type error MUST name the ACTUAL (inferred) type,
+// FULLY QUALIFIED. Passing a String where Int is expected must report the
+// actual type as `primitives/String` (not the bare `String`). The §5.3
+// requirement is explicit: "The actual (inferred) type (fully qualified)".
+//
+// FAILING-NOT-IGNORED defect guard (resolver: /typecheck): the current REPL emits
+// `type mismatch: expected Int, got String` — the actual type IS named but is
+// NOT fully qualified (`String`, not `primitives/String`). Spec↔impl divergence
+// in type-error formatting (owner /int — the error renderer; cross-ref /repl
+// for the §5.3 contract). Flips GREEN when error types are rendered FQ.
+#[test]
+fn type_error_names_actual_type_fully_qualified() {
+    let out = repl_prims("(add-i64 1 \"hello\")\n");
+    // Precondition: an error with the actual type bare-named already surfaces.
+    assert!(
+        out.stdout.contains("String"),
+        "type error must at least name the actual type `String`; got:\n{}",
+        out.stdout
+    );
+    // The defect: it MUST be fully qualified.
+    assert!(
+        out.stdout.contains("primitives/String"),
+        "the ACTUAL type in a type error MUST be fully qualified \
+         (`primitives/String`) per repl/spec.md §5.3; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §5.3 — a type error MUST name the EXPECTED type, FULLY
+// QUALIFIED. The §5.3 requirement: "The expected type (fully qualified)".
+//
+// FAILING-NOT-IGNORED defect guard (resolver: /typecheck): the current REPL emits
+// `expected Int` (bare), not `expected primitives/Int`. Same divergence as the
+// actual-type guard above. Flips GREEN when error types are rendered FQ.
+#[test]
+fn type_error_names_expected_type_fully_qualified() {
+    let out = repl_prims("(add-i64 1 \"hello\")\n");
+    // Precondition: the expected type is named (bare) today.
+    assert!(
+        out.stdout.contains("Int"),
+        "type error must at least name the expected type `Int`; got:\n{}",
+        out.stdout
+    );
+    // The defect: it MUST be fully qualified.
+    assert!(
+        out.stdout.contains("primitives/Int"),
+        "the EXPECTED type in a type error MUST be fully qualified \
+         (`primitives/Int`) per repl/spec.md §5.3; got:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
 // Parse errors — repl/spec.md §5.1
 // =============================================================================
 

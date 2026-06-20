@@ -45,6 +45,146 @@ The standard library is the vocabulary Cranelisp gives you to think with. The pr
 
 ---
 
+## 1.5 Managed-surface model (S86 Phase 6b)
+
+The stdlib presents a **managed, curated surface** rather than exposing raw
+compiler primitives. The user thinks in Clojure-aligned vocabulary —
+`(+ a b)`, `(= a b)`, `(< a b)`, `(show x)`, `(str …)`, `(count v)`,
+`(get v i)`, `(conj v x)` — never in raw primitive names like `add-i64`,
+`eq-i64`, `vec-get`. This is a **bare-name-curation concern only**
+(S86 `/arch` sign-off): it governs which names the prelude/curated shell
+re-export as *bare* names; it MUST NOT touch reachability.
+
+**The three invariants that keep curation safe** (all pre-existing
+normative text — spec §8.9.1 / §8.11.4 / §3.1 / §8.8.1):
+
+1. **FQ always reachable.** `primitives/<name>` works regardless of
+   imports and regardless of prelude content. The escape hatch is
+   constitutionally guaranteed and never removed.
+2. **Empty prelude valid.** The core language — primitives, special
+   forms, inference — works with zero prelude content.
+3. **Never load-bearing.** Nothing the curated surface re-exports may be
+   the *only* way to reach a capability. Every capability stays
+   expressible via the FQ form with an empty prelude.
+
+**The three tiers of the surface:**
+
+| Tier | What | How reached |
+|---|---|---|
+| **Bare prelude** | trait operators (`+ - * / = != < > <= >= show`), core types (`Int Bool Float String Option Some None Result Ok Err List Nil Cons Pair`), macros (`list vec str when unless cond case -> ->> def def- const const- do bind! pure`) | bare, no import |
+| **Curated, module-qualified** | Clojure verbs `count`/`get`/`conj`/`assoc` (`collections.vec`) — bare-promotion of `count`/`get`/`conj` BLOCKED on DEF-1 (see §"de-leak status"); `first`/`rest` (`collections.list`); the `vec-*`/`*-list`/`seq-*` families, string verbs, num helpers | `(import [module [name]])` or `module/name` |
+| **Raw primitives** | `add-i64`, `vec-get`, `str-concat`, … — **de-leaked from the prelude (S86); no longer bare** | `(import [primitives [name]])` or `primitives/name` |
+
+**Naming reservation (FIXME 0402, `target: /spec`).** The bare names
+`first`/`rest`/`get`/`count`/`map`/`filter`/`reduce` are **reserved** for
+the future Phase-H trait-dispatched (Functor/Foldable) unified forms.
+S86 does NOT promote them to bare prelude names — they stay
+module-qualified — so the Phase-H trait method can own the bare name
+without a §8.6.4 collision. (List `first`/`rest` and pair `first` already
+coexist FQ-distinct; promoting either bare would collide.)
+
+### S86 de-leak status — LANDED (the raw-primitive half) + one carried defect
+
+**The de-leak LANDED (S86 step 1.5d).** The ~31 raw-primitive bare
+re-exports were **removed** from `prelude.cl`:
+
+```
+add-i64 sub-i64 mul-i64 div-i64 eq-i64 lt-i64 gt-i64 le-i64 ge-i64 not eq-bool
+add-f64 sub-f64 mul-f64 div-f64 eq-f64 lt-f64 gt-f64 le-f64 ge-f64
+str-concat str-eq str-len char-at int-to-string float-to-string bool-to-string
+vec-len vec-get vec-set vec-push
+```
+
+Bare `add-i64`/`vec-get`/`str-eq`/… no longer resolve through the prelude
+(REPL + `--run`: "undefined variable"). The user sees only the curated
+surface: `(+ a b)`, `(- a b)`, `(* a b)`, `(/ a b)`, `(= a b)`, `(!= a b)`,
+`(< a b)`, `(<= a b)`, `(show x)`. The **4 bare type re-exports**
+(`Int Bool Float String`) are KEPT (needed for bare `:Int`-style
+annotations; spec §3.1).
+
+**Unblocked by two S86 compiler fixes:**
+- **D1 (/typecheck):** trait DEFAULT-method bodies (`Eq`'s `!=`, `Ord`'s
+  `<=`/`>=`) now resolve their free symbols in the trait's DEFINING module,
+  not the call-site scope. Before the fix, dropping the bare `add-i64`
+  re-export made `(!= 1 2)` / `(<= 2 2)` fail because the default-method
+  body resolved at the call site. (Mirror of `recheck_body_for_mono`,
+  FIXME 0355.) Verified: `(!= 1 2)` ⇒ true, `(<= 2 2)` ⇒ true,
+  `(< false true)` ⇒ true — all de-leaked.
+- **D2 (/backend + primitives):** the `neq-string` primitive now exists.
+  Verified: `(!= "a" "b")` ⇒ true, `(= "a" "a")` ⇒ true — de-leaked.
+
+**Curation invariants verified intact** (spec §8.9.1/§8.11.4/§3.1/§8.8.1):
+FQ `(primitives/add-i64 3 4)` ⇒ 7, `(primitives/vec-get [10 20] 1)` ⇒ 20
+work in REPL; a null-prelude module (`(import [prelude []])` +
+`(import [primitives [add-i64 Int]])`) typechecks (only the `--run` IO-main
+shape check fires, which is unrelated to resolution). No prelude leak is
+load-bearing. **No existing code broke:** the exemplar (`exemplar/*.cl`)
+uses bare primitives only via its own `(import [primitives [*]])` — the
+de-leak removes prelude re-exports, not explicit imports.
+
+**One carried defect — the collection-verb bare half (DEF-1).** The de-leak
+also TARGETED promoting curated Vec verbs `count`/`get`/`conj` to BARE
+prelude (so collection access needs no raw primitive). That half is BLOCKED
+by a **pipeline defect, not a curation problem:** a plain `defn` that the
+prelude only RE-EXPORTS (or imports-then-re-exports) is resolved by
+typecheck but its body is never pulled into the *consuming program's*
+codegen batch — `(count [1 2 3])` typechecks then fails at codegen with
+"undefined function: count" (REPL and `--run` alike). The same defect
+already affected the long-re-exported bare `pure` (`io.monad`), so it is a
+PRE-EXISTING gap, not introduced by the de-leak. Root cause (per src survey):
+`derive_codegen_batch` (`src/worker.rs:621`) emits only local
+`ModuleEntry::Def` symbols; re-export/import installs `ModuleEntry::Import`,
+which is codegen-skipped, and the prelude's import does not cascade the body
+into the consuming module's batch. Trait methods (`+`/`show`) and macros
+(`vec`) are unaffected (they materialise on demand at the call site — which
+is exactly why the raw-primitive de-leak above succeeds). DEF-1 is routed to
+`/qa` → `/int`. **Workaround that fully reaches the capability today:**
+`(import [collections.vec [count get conj]])` then `(count [1 2 3])` ⇒ 3
+(verified). So `count`/`get`/`conj`/`assoc` remain **module-qualified /
+import-on-demand** (the "Curated, module-qualified" tier) until DEF-1 lands;
+when it does, `count`/`get`/`conj` promote to bare prelude (the
+`(export [collections.vec [count get conj]])` line, currently commented in
+`prelude.cl`, un-comments). `assoc`/`first`/`rest`/`map`/`filter`/`reduce`
+stay reserved for Phase-H trait dispatch (FIXME 0402) regardless.
+
+### S86 self-test rollout — BLOCKED-and-carried on D3/D4/D5 (carried)
+
+The TARGET was `(mod test …)` submodules across all modules, run via the
+0273 in-language runner. BLOCKED this sprint by carried compiler defects in
+the `(mod test …)`/cross-module path (committed RED guards; owned by
+`/typecheck`+`/backend`, carried to pre-H). **`/stdlib` did NOT author any
+`(mod test …)` submodules this step** — they would hit D3/D4 and
+SIGSEGV/fail:
+
+- **D3 — `(mod test)` re-defines parent trait.** A `(mod test …)` inside a
+  trait-defining module re-enters the parent through the
+  `testing.assertions` import chain (`compare.eq → compare.eq.test →
+  testing.assertions → compare.eq`) and errors "trait Eq already defined".
+  RED guard: `tests/spec_08_modules.rs::mod_test_child_in_trait_module_does_not_redefine_parent_trait`.
+- **D4 — super-imported parent trait not in child scope.** A test submodule
+  importing the parent trait via `super` resolves it in the wrong scope
+  ("unknown trait Eq from module user"). RED guard:
+  `tests/spec_08_modules.rs::mod_test_child_super_imported_parent_trait_resolves_as_constraint`.
+- **D5 — cross-module/runner SIGSEGV.** Calling any `testing.runner`-defined
+  fn cross-module SIGSEGVs (unresolved `__cranelisp_got_testing_runner`),
+  blocking the runner path even for trait-free tests; the AOT-link path also
+  fails (`undefined reference to discover-tests` — pre-existing Linux
+  link-baseline). The S82/S83 "runner 4/4 pass" note does not reproduce on
+  the current binary.
+
+(The earlier `neq-string` blocker in this list was **D2**, now FIXED — String
+`!=` works; it no longer blocks the self-test rollout. The remaining
+blockers are the submodule-scope D3/D4 and the runner D5.)
+
+Direct-call validation of trait-free `assert-true`/`assert-false` tests in
+non-trait modules is the only path that partially works, but the circular
+re-definition defect blocks adding `(mod test …)` to the trait-defining
+foundation modules at all. Rollout resumes once `/qa`+owning skills clear
+these. The intended test bodies are documented inline (see `compare/eq.cl`
+§Self-tests) as the durable record of the planned coverage.
+
+---
+
 ## 2. Lessons from Other Languages
 
 **Clojure** — Sequence abstraction is genius: `map`/`filter`/`reduce` work on everything. Cranelisp achieves this through Functor and Foldable traits. Naming style (kebab-case, `?` for predicates, `!` for effects) adopted throughout. Warning: `clojure.core` at ~600 vars is what happens without modular discipline.
@@ -133,13 +273,13 @@ stdlib/
 
 **`eq.cl`** — The Eq trait: `(deftrait Eq (= [self self] Bool))`. Impls for Int, Float, Bool, String. At Ring 3, adds `derive-Eq` macro for ADTs. The foundation everything else compares against.
 
-**`ord.cl`** — The Ord trait: `<`, `>`, `<=`, `>=` methods. Impls for Int, Float, String. Functions: `min`, `max`, `clamp`. At Ring 3, adds `derive-Ord`. Depends on Eq.
+**`ord.cl`** — The Ord trait: `<`, `>`, `<=`, `>=` methods. Impls for Int, Float, **Bool** (S86: false < true), String. Functions: `min`, `max`, `clamp`. At Ring 3, adds `derive-Ord`. Depends on Eq. **S86 blocker:** `Ord String` is NOT implemented — lexicographic ordering needs a code-point comparison primitive (`char→int`/`str-lt`); the string primitive surface can test character equality but cannot order two differing characters. Tracked as a usability finding for a future `/platform`/`/spec` primitive addition; `Eq String` covers equality in the meantime.
 
 **`hash.cl`** — The Hash trait: `(deftrait Hash (hash [self] Int))`. Impls for Int, String, Bool. Required by Map and Set. No derive initially — manual impls.
 
 #### num/ — Arithmetic and Numerics
 
-> **FIXME**: Should the Num trait be in num rather than num.num? Also, there should be a num/Unchecked trait next to it (definitely not in the prelude).
+> **Decision (S86)**: Keep `Num` in `num.num` (re-exported bare through the prelude). The shell-module-plus-submodule shape (`num.cl` shell → `num/num.cl`, `num/int.cl`, `num/float.cl`) is the realised structure and matches the other domains (`compare`, `text`, `fn`, `collections`); promoting `Num` to a bare `num` module would make `num` both a leaf and a package. The `num/Unchecked` trait remains aspirational (not yet built; explicitly never in the prelude when it lands).
 
 **`num.cl`** — The Num trait: `(deftrait Num (+ [self self] self) (- [self self] self) (* [self self] self) (/ [self self] self))`. Impls for Int, Float. Functions: `inc`, `dec`. This is where the builtin-to-trait transition happens — Ring 0 hardwired operators yield to trait dispatch.
 
@@ -151,7 +291,7 @@ stdlib/
 
 #### text/ — Display and String Operations
 
-> **FIXME**: This too could be promoted to text rather than text.display
+> **Decision (S86)**: Keep `Display` in `text.display` (re-exported bare through the prelude), consistent with the §1.5 shell-plus-submodule structure used everywhere else. No promotion to a bare `text` module.
 
 **`display.cl`** — The Display trait: `(deftrait Display (show [self] String))`. Impls for Int, Float, Bool, String. At Ring 3, adds `derive-Display` for ADTs. Every type that wants human-readable output implements this.
 
@@ -207,7 +347,7 @@ Lazy computation streams. Collections can be viewed as sequences, but sequences 
 
 IO combinators for the platform model. Platform operations produce `(IO a)` values; these modules provide ways to compose them.
 
-> **FIXME**: io.monad could be lifted to just io
+> **Decision (S86)**: Keep `pure`/`do`/`bind!` in `io.monad` (re-exported bare through the prelude), with `io.cl` as the shell. Consistent with the §1.5 structure; no promotion to a bare `io` module.
 
 **`monad.cl`** — `pure` (lift value into IO), `bind!` macro (monadic bind sugar), `do` macro (monadic sequencing). Ring 4 — requires IO trampoline.
 
@@ -217,17 +357,25 @@ IO combinators for the platform model. Platform operations produce `(IO a)` valu
 
 The stdlib's own test infrastructure. Also available to user programs.
 
-> **FIXME**: Why aren't these assert=, assert, assert-not, assert-some, assert-none, assert-ok, assert-err?
+> **Decision (S86)**: Keep the realised names `assert-eq`/`assert-true`/
+> `assert-false`. They read as full English verbs (Clojure `is`-style
+> brevity is not the house idiom here), and each returns `(Option String)`
+> for the runner's None/Some fold. The shorter `assert=`/`assert`/`assert-some`/
+> `assert-ok` family is deferred — it can be added as thin aliases later
+> without breaking the current surface.
 
 **`assertions.cl`** — `assert-eq` (needs Eq + Display), `assert-true`, `assert-false`. Each returns `(Option String)` — `None` on success, `(Some "reason")` on failure. Written using only functions and primitives (no macros), so it lights up at Ring 2.
 
-**`runner.cl`** — `check` macro (chains assertions, Ring 3). `run-tests-pass-default`, `run-tests-fail-default`, `run-tests-report` (Ring 4 — need Trace type and `run-tests` special form).
+**`runner.cl`** — `check` macro (chains assertions). The realised runner (FIXME 0273, S81) is an ordinary `vec-map`/`vec-filter` over the `discover-tests` pairs: `run-one`, `run-all`, `run-matching`, `report`, `tally`, `tally-line`, `passed?`, `present-one`, the `Outcome`/`Tally` ADTs, `discover-here`. The old `run-tests-*` special-form fold helpers were retired. **S86 note:** cross-module CALLS into `testing.runner`-defined fns currently SIGSEGV (unresolved `__cranelisp_got_testing_runner`) — see §1.5 "self-test rollout — blocked".
 
 **`trace.cl`** — Accessors for the compiler-seeded Trace ADT: `trace-name`, `trace-params`, `trace-result`, `trace-children`, `trace-nanos`. Display functions: `trace-depth`, `trace-flatten`, `trace-show-tree`. Ring 4 — requires `trace` special form.
 
 #### Depth-1 Singles
 
-> **FIXME**: would (or Bool*) and (and Bool*) go in control? maybe they are more aligned to boolean logic?
+> **Decision (S86)**: When variadic `(or …)`/`(and …)` land, they go in
+> `control` (alongside `cond`/`case`/`when`/`unless`) — they are
+> short-circuiting control-flow macros, not `Eq`/`Ord`-style value
+> operators. (Not yet built.)
 
 **`control.cl`** — Branching macros: `cond` (multi-way if-else), `case` (equality dispatch), `when` (one-sided if), `unless` (negated when). Ring 3.
 

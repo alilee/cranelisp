@@ -36,6 +36,481 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 86 — dead `/disasm` REPL command repro (RED) (/qa, 2026-06-20)
+
+- **`tests/repl_introspection.rs::disasm_command_shows_native_code_for_compiled_fn`** (RED) — `/disasm <name>` is DEAD: `src/repl.rs::handle_disasm` reads `intr.disasm`, which is never populated; native disassembly via `cranelisp_backend::produce_disasm` has ZERO call sites in `src/`, so `/disasm sq` returns `Error: no disassembly available for 'sq'` even for a freshly JIT-compiled fn (`(sq 7)` → `49`). Asserts the `; disasm for sq` header + a `0x` instruction line are present and the dead-path string is absent. Resolver: **/int** (resolver; failing test is the record). Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; flips green when /int wires `produce_disasm` into the handler. spec: repl/spec.md §3.1.
+
+### Sprint 86 — coverage-gap closing: 2 latent defects as failing-not-ignored guards (/qa, 2026-06-20)
+
+Closing the `[Gap(S86)]` coverage gaps surfaced 2 real defects (the `/disasm` pattern — a "gap" that is a bug). Per the no-FIXME-with-failing-test rule (`memory/feedback_no_fixme_with_failing_test`), the failing tests ARE the record + trigger — no paired numbered FIXME.
+
+- **`tests/repl_introspection.rs::info_multi_clause_macro_shows_clause_count`** (RED) — `/info` on a multi-clause macro omits the required `N clauses` count line (spec §11.2.2); clause signatures are present, the count is not. Resolver: **/repl** (the `/info` macro-card renderer). Flips green when `/info` emits the clause-count line. spec: repl/spec.md §11.2.2.
+- **`tests/repl_negative.rs::type_error_names_expected_type_fully_qualified`** (RED) and **`::type_error_names_actual_type_fully_qualified`** (RED) — type-error messages name expected/actual types **bare** (`Int`) not fully-qualified (`primitives/Int`) as spec §5.3 requires; the value-display path qualifies, the error renderer (`crates/cranelisp-typecheck/src/unify.rs:117`) does not (the two diverge). The §5.3 source-location requirement is already met. Resolver: **/typecheck**. Flips green when the error renderer qualifies type names. spec: repl/spec.md §5.3.
+
+**Canonical run carries 4 intentional failing-not-ignored guards total** (these 3 + `disasm_command_shows_native_code_for_compiled_fn`). A genuine regression is any RED beyond these 4.
+
+### Sprint 86 — DEF-6 repeated platform-ADT marshaling corrupts the heap in a `--link` binary (RED) (/qa, 2026-06-18)
+
+One test action. **1 RED defect repro.**
+
+**DEF-6 — the standalone `--link` binary of `exemplar/main.cl` (the Sudoku web
+server) ABORTS with `double free or corruption (!prev)`, SIGABRT (exit 134),
+while the SAME program under `--run` serves correctly.** The crash was reported
+as "double-free at STARTUP before bind". Isolation REJECTED that framing: it is
+NOT a startup / two-platform / multi-module / startup-stub bug. It is heap
+corruption that ACCUMULATES over iterations of any loop that marshals a heap ADT
+across the host↔platform-DLL boundary. The exemplar only tripped it because, with
+:8080 already taken, `listen` failed → the serve loop spun fast (accept on a
+never-bound listener returns immediately) → the per-iteration corruption reached
+the glibc heap-consistency abort.
+
+**Bisection (verified /qa, 2026-06-18):**
+- web platform ALONE + trivial non-serving main on a FREE port → CLEAN (exit 0).
+- TWO platforms (web + stdio) + trivial main → CLEAN. NOT the DEF-5 shape.
+- all 5 exemplar modules linked + trivial `(defn main [] (Pure 0))` → CLEAN.
+- bounded loop calling a heap-ADT-marshaling platform effect N times → CLEAN at
+  N≤30, ABORTS (exit 134) at N≥40. Threshold scales with iteration count →
+  slow per-iteration corruption, not a one-shot startup bug.
+- web `accept` (PRODUCES Request ADT) loop → `double free or corruption (!prev)`
+  (the exemplar's exact signature); web `send` (CONSUMES Response) loop →
+  `corrupted size vs. prev_size`; shapes `area` (CONSUMES Rectangle) loop →
+  `double free or corruption (!prev)`. CONTROL: a PURE-cranelisp construct+match
+  of the SAME ADT in a 500-iter loop (no platform effect) → CLEAN. So cranelisp's
+  own ADT alloc/free is fine; the corruption is in the SHARED platform-ABI
+  ADT-marshaling path, and is NOT web-specific.
+- RC trace at the abort shows a freshly-allocated value's RC header reading
+  garbage (`dec … rc=64`) → heap-chunk metadata (incl. the host RC header)
+  overwritten — allocator-mismatch / buffer-overrun in the consuming/producing
+  convention, NOT an RC-counter miscount (every RC-driven free hits rc=0 cleanly
+  before glibc aborts).
+
+- **`link.rs::link_repeated_platform_adt_marshal_does_not_corrupt_heap`**
+  (RED, DEF-6 guard) — `// spec: spec/10-io.md §10.10`. Free-standing: `shapes.cl`
+  (`Rectangle` deftype, inline), `user.cl` = `(platform shapes)` + a bounded
+  `srv-loop` that passes `(Rectangle 3 4)` to `area` 200× then `(Pure 0)`.
+  `use_workspace_platforms()`; `PreludeVariant::None` (`bind`/`Pure`/`sub-i64`/
+  `eq-i64` are primitives). GENERIC shape chosen over the web-specific shape:
+  no exemplar coupling, reproduces the exact `double free or corruption (!prev)`
+  signature. FAILING-NOT-IGNORED: asserts the CORRECT outcome (`link_then_run` →
+  `assert_exit(0)`) so it is RED today (SIGABRT, `assert_exit` reports
+  `expected exit 0, got None`) and flips GREEN when the corruption is fixed.
+  Owner **/platform** (the shared `cranelisp-platform` crate's ADT-marshaling ABI
+  — `CLAdt::construct` / `CLOwned` / `CLHeap::into_owned_consuming` + the host
+  RC/alloc callbacks `alloc_with_tag`; `crates/cranelisp-platform/src/`), with
+  /backend consult on the host RC-header / GOT-baked alloc callbacks the
+  consuming convention (Decision 24) drives across the boundary. Target: S86.
+
+**Risk-class captured (docs, /qa, 2026-06-18):** the DEF-6 defect CLASS —
+slow-accumulating FFI/platform-ABI memory corruption (fixed small overrun per
+crossing, silent below a threshold, catastrophic above) — is now recorded as
+**Risk 11** in `plan/risks.md`, with the four detection gaps (per-call vs
+sustained; link vs run; no checking allocator; JIT/link callback divergence)
+and concrete mitigations (sustained-repetition ≥200 crossings; link-then-RUN-
+under-load; heap-header debug-assert + ASAN/valgrind CI; JIT/link callback
+parity as an /arch follow-up). Cross-refs: `plan/coverage-gaps.md` §2.4
+(behavioural gap note) and `tests/CLAUDE.md §Diagnostic Requirements`
+(heap-header-integrity debug-assert + sustained-load convention). No code or
+test changes in this action — risk-analysis docs only.
+
+---
+
+### Sprint 86 Wave E — DEF-5 two-distinct-platform `--link` manifest collision repro (RED) + s60 exemplar test-count correction (GREEN) (/qa, 2026-06-18, SHA `d619186`)
+
+Two test actions. **1 RED defect repro + 1 stale-assertion correction (GREEN).**
+
+**DEF-5 — linking TWO DISTINCT platforms into one `--link` binary fails: the
+manifest entry point `cranelisp_platform_manifest` is exported UN-NAMESPACED by
+every platform DLL → `cc: multiple definition of cranelisp_platform_manifest`.**
+Root settled by `/arch` (platform-interface.md §6.7 GO, 2026-06-17): the
+`declare_platform!` macro exports the manifest fn with a bare
+`#[unsafe(no_mangle)]` name (`declare.rs:303-304`); it is the lone holdout — the
+GOT (`__cranelisp_got_platform_<name>`) and layout-hash
+(`__cranelisp_layout_hash_<name>`) exports are ALREADY namespaced per §5.5.5.
+A single-platform `--link` is fine (one definition); two distinct platforms drag
+both manifest objects onto the `cc` link line → duplicate-definition link
+failure. Blessed fix: rename `cranelisp_platform_manifest` →
+`cranelisp_platform_manifest_<name>` (the §6.7 coupled ABI rename, `/dev` to
+implement).
+
+- **`link.rs::link_two_distinct_platforms_namespaced_manifest_coexist`**
+  (RED, DEF-5 guard) — `// spec: design/arch/platform-interface.md §5.5.5`.
+  Free-standing: `shapes.cl` (`Rectangle` deftype, inline), `user.cl` =
+  `(platform stdio)` + `(platform shapes)` + import `print` (stdio) and `area`
+  (shapes) so BOTH manifests force-load + reach the link line + a `main` that
+  sequences both IOs. Uses `use_workspace_platforms()` (workspace stdio + shapes
+  DLLs); `PreludeVariant::None`. FAILING-NOT-IGNORED: asserts the CORRECT outcome
+  (link succeeds, both manifests coexist) so it is RED today and flips GREEN when
+  the manifest export is namespaced. **Observed RED stderr (verbatim):**
+  `…/cranelisp_shapes.<hash>.rcgu.o: in function `cranelisp_platform_manifest':`
+  `…/crates/cranelisp-platform/src/declare.rs:304: multiple definition of`
+  `` `cranelisp_platform_manifest'; …/cranelisp_stdio.<hash>.rcgu.o: ``
+  `…/declare.rs:304: first defined here` / `collect2: error: ld returned 1 exit status`.
+  (Verified: any two distinct workspace platforms collide on the same bare
+  symbol; stdio + shapes are the pair most reliably co-occurring from the e2e
+  harness.) Owner **/platform** (the `declare_platform!` export name +
+  `declare.rs:303-304` + the §5.5.5 shared emit/consume helper in `lib.rs`), with
+  **/backend** consult on the dispatch/import-side manifest reader
+  (`exe.rs`/`platform.rs`) that must follow the same `_<name>` rule. Target: S86.
+  Disposition: `out-of-scope (owner=/platform)`.
+
+**s60 exemplar test-count correction (GREEN — stale assertion, not a defect).**
+`regression.rs::s60_run_tests_reduction_1_exemplar_batched_failing` hard-coded
+`combined.contains("10 passed in")` for the exemplar `/run-tests html` count.
+The Wave-E `html.cl` additions raised the exemplar's in-language test count from
+10 to **12** (re-measured /qa 2026-06-18: the test driver itself prints
+`12 passed in 16.27ms`). Updated the hard-coded expectation `"10 passed in"` →
+`"12 passed in"` (with a comment recording the re-measure). The test now PASSES.
+This is a stale-truth fix, not a defect — the assertion pins the current
+exemplar reality. Disposition: GREEN.
+
+spec_link_check clean on `link.rs` (18/18 OK). `regression.rs` carries 2
+pre-existing MIS-CITED findings (lines 2976/3006, `§"ClusterContext (Approach B
+is canonical)"` in 0044-decision doc) UNRELATED to the s60 line-2617 assertion
+edit (which touched no `// spec:` annotation).
+
+### Sprint 86 Wave E — web front-end: DEF-4 multi-module `--link` duplicate-hash repro (RED) + durable web-serve e2e (GREEN) (/qa, 2026-06-18, SHA `d619186`)
+
+Two test actions for the new `cranelisp-web` platform front-end (exemplar
+Sudoku web server). **1 RED defect repro + 1 GREEN durable e2e.**
+
+**DEF-4 — multi-module `(platform <P>)` + `--link` emits the per-platform
+startup-stub hash symbol `__cranelisp_expected_hash_<plat>` MORE THAN ONCE.**
+Discovered by `/port` building the web exemplar. A minimal SINGLE-`.cl`-module
+`(platform web)` / `(platform shapes)` program `--link`s fine; adding ONE extra
+`.cl` module import triggers the duplicate. Traced root: the per-platform
+layout-hash gate symbols are baked once per `layout_checks` entry in
+`crates/cranelisp-backend/src/exe.rs` (~:221/:236); that vector is built in
+`src/session_v4.rs` (~:2227) by iterating `shared.kept_dlls`, which enumerates
+the SAME platform once per `.cl` module the program spans → duplicate entries →
+`exe.rs` tries to `define_data` the same symbol twice. The `--run` path
+(dlopen, no startup-stub hash bake) is unaffected. The enumeration must be
+deduplicated by platform name before it reaches the backend.
+
+- **`link.rs::link_multi_module_platform_emits_single_layout_hash_gate_symbol`**
+  (RED, DEF-4 guard) — `// spec: design/arch/platform-interface.md §7.3`.
+  Free-standing: `web.cl` (Request/Response deftypes, dropped inline),
+  `helper.cl` (pure `add-one`), `user.cl` = `(platform web)` + import helper +
+  `main`. Uses `use_workspace_platforms()` (workspace `web` DLL); no stdlib.
+  FAILING-NOT-IGNORED: asserts the CORRECT outcome (link succeeds) so it is RED
+  today and flips GREEN when the enumeration is deduped. **Observed RED stderr:**
+  `user.cl:1:1: error: codegen error at 0..0: failed to define`
+  `__cranelisp_expected_hash_web: Duplicate definition of identifier:`
+  `__cranelisp_expected_hash_web`. (Verified `shapes` reproduces the same with
+  `__cranelisp_expected_hash_shapes`; `stdio` — no layout hash — shows the
+  related "multiple definition of <rust alloc symbols>" duplicate-`.rcgu.o`
+  variant, confirming the shared `kept_dlls` enumeration root.) Owner **/int**
+  (dedup the `kept_dlls`→`layout_checks` enumeration in `src/session_v4.rs`
+  ~:2227), with **/backend** consult on the `exe.rs` symbol-emission loop
+  (~:221/:236) which trusts its input is deduped. Target: S86.
+  Disposition: `out-of-scope (owner=/int)`.
+
+**Web-serve durable e2e (GREEN — the front-end actually serves).** Proves
+`--run exemplar/main.cl` serves a real HTTP server: spawns the process (raw
+`std::process::Child`, since the `Cranelisp` builder runs children to
+completion and the server is infinite), polls port 8080 until listening,
+exercises GET `/` → form page, POST `/solve` (known easy puzzle, URL-encoded
+form body) → solution page with a VALID completed 81-cell sudoku grid (30
+given + 51 solved cells, rows/cols/boxes all permutations of 1..9), GET
+`/missing` → 404 page, then kills the child via an RAII Drop guard.
+
+- **`exemplar_web.rs::exemplar_web_server_serves_form_solution_and_not_found_over_http`**
+  (GREEN) — `// spec: design/arch/platform-interface.md §3a`. Asserted
+  substrings: form = `<form` + `action="/solve"` + `<title>Sudoku Solver</title>`;
+  solution = `<title>Solution</title>` + valid 81-cell grid + 30 `class="given"`
+  / 51 `class="solved"`; 404 = `<title>Not Found</title>`. Runtime ~3.2 s
+  (server spawn + full sudoku solve + 3 HTTP round-trips — a single heavyweight
+  server-lifecycle e2e; intentionally above the 100 ms flag). **Limitations:**
+  fixed port 8080 (hard-coded in `exemplar/main.cl`); if 8080 is held the spawn
+  fails to bind and the readiness poll fails loudly (no hang). FIXME(/qa —
+  DEF-4): extend with a `--link`-then-run variant once DEF-4 lands (the linked
+  server should serve identically; `--link` is blocked today by DEF-4).
+  Disposition: GREEN durable guard.
+
+spec_link_check clean on both files (`link.rs` 17/17 OK, `exemplar_web.rs`
+1/1 OK).
+
+### Sprint 86 — auto-IO wall-clock parallelism witnesses hardened best-of-N against full-workspace saturation (/qa, 2026-06-17)
+
+**Not a code defect — a test-robustness fix.** The close gate (`cargo nextest run --workspace`, 16 processes) exposed two contention-fragile wall-clock parallelism witnesses in `tests/spec_10_io.rs`:
+
+- `auto_io_independent_diff_token_parallelizes_e2e`
+- `auto_io_par_grouping_uniform_across_modes`
+
+Both assert independent Commutative IO parallelizes via `run_ms < RS_MIDPOINT_MS` (300 ms = 1.5×D) using the single-shot `prog_run_elapsed_ms`/`prog_link_elapsed_ms` helpers. They are GREEN-with-cores since S85's 0367 wiring (auto-IO scheduling parallelizes correctly when given cores) and PASS 3/3 in isolation (`-j2`), but FAILED under a saturated full-workspace run: the parallel sparks were starved of cores → wall-clock exceeded 300 ms → false failure. This is timing-test fragility, NOT a scheduling regression — the S85 map-reduce parallelism test (`spec_12_runtime.rs::lenient_vec_map_reduce_*`) was best-of-N hardened at authoring; these two were never hardened.
+
+**Fix (best-of-N on the POSITIVE witnesses only).** Added `RS_BEST_OF_N: usize = 5` and `best_of_n_ms(impl FnMut() -> u128) -> u128` (returns the MIN over N attempts) at `tests/spec_10_io.rs` (just after `RS_SLEEP_MS`). CPU contention can only make a wall-clock measurement SLOWER than the true parallel time, never faster, so `min` over N filters contention noise while preserving the spec semantics — if parallelism is actually broken, all N runs measure ~2×D (~400 ms) and the `< 300 ms` assertion still fails. The 300 ms midpoint and the inequality are UNCHANGED; only the measurement became best-of-N.
+
+Applied to ALL FIVE positive `< RS_MIDPOINT_MS` assertions across THREE tests (both `--run` and `--link` legs each):
+
+- `auto_io_independent_diff_token_parallelizes_e2e` (`--run` + `--link`)
+- `auto_io_par_grouping_uniform_across_modes` (`--run` + `--link`)
+- `resource_serial_diff_token_parallelizes` (`--run` + `--link`) — audited for consistency per the S86 brief; same fragility class (ResourceSerial diff-token path), hardened identically.
+
+**Negative / serial guards left single-shot (UNTOUCHED):** `auto_io_data_dependent_stays_serial_e2e`, `auto_io_sequential_class_stays_serial_e2e`, `resource_serial_same_token_serializes`, and the 0398 ferry guards. Contention only makes a `> RS_MIDPOINT_MS` (or ordering) guard MORE serial, so they are already robust; best-of-N (`min`) there could WEAKEN them.
+
+**Verification:** full-workspace `cargo nextest run --workspace --no-fail-fast` run TWICE under saturation — 2785 passed / 0 failed both times (27.6 s, then 31.8 s). `python3 tests/plan/spec_link_check.py --scope spec_10_io.rs` clean for the touched code (the 2 MIS-CITED/MALFORMED findings at lines 726/776 pre-date this change and are unrelated — no `// spec:` annotation was added or altered). N=5 was sufficient; no tuning needed. Each hardened test now runs ~3.4 s (5×~0.65 s). Precedent: the S85 map-reduce best-of-N witness.
+
+### Sprint 86 — D1–D5 + ring2a defect isolation: narrow failing-not-ignored repros (/qa, 2026-06-17, SHA `d619186`)
+
+Step 1.5a of the S86 Phase-5+6b interleave: isolate the five Wave-1-surfaced
+defects (D1–D5 in `sprints/SPRINT.md`) blocking the hide-primitives de-leak +
+`(mod test …)` self-test rollout, plus the `ring2a` deftrait-param behavior-pin,
+into narrow failing-not-ignored repros. **7 defect-test RED rows across 6 defects
++ 2 behavior-pin tests GREEN** added; all RED tests reproduce on pristine HEAD.
+Reductions are fully stdlib-free. Targets: S86 step 1.5b–1.5e
+(assess-then-fix-or-carry per the "bounce sensibly" interleave). Disposition:
+`under-investigation`.
+
+**D1 — impl-body (synthesized DEFAULT method) resolves in caller scope, not the
+trait's defining module.** The concrete-call `(+ 1 2)` form did NOT reproduce (it
+goes through monomorphisation, which already switches into the defining module);
+the failing path is a trait DEFAULT method whose impl is in a module other than
+the trait decl. `generate_default_methods` synthesizes a `Defn` from the default
+body and checks it via `check_impl_method_with_sig` (`traits.rs:595`), which calls
+`check_defn_body_with_types` WITHOUT switching `state.current_module` to the
+trait's home — the switch `recheck_body_for_mono` (`traits.rs:1757-1759`) has.
+
+- **`spec_07_traits.rs::default_method_body_resolves_in_trait_defining_module`**
+  (RED, D1 guard) — `// spec: spec/07-traits.md §7.1.5 + spec/08-modules.md §8.6`.
+  Two sibling modules: trait `Foo` with default `bar`-body `(add-i64 a b)` in
+  `trait_mod` (globs primitives); `(impl Foo Int)` in `user` (no `add-i64`).
+  **Observed RED:** `expected exit 42, got Some(1)` / `type error at 81..88:
+  undefined variable: add-i64`. GREEN-on-fix exits 42. Owner **/typecheck**
+  (mirror the defining-module switch into `check_impl_method_with_sig`). The
+  hide-primitives DE-LEAK blocker. **LOCALIZED** (one mirrored switch).
+
+**D2 — String `!=` codegen panic (`neq-string`).** Typecheck primitive-dispatch
+maps `("Eq","!=","String")` → `neq-string` (`traits.rs:1183`), but no such
+primitive is registered (`cranelisp-primitives` has only `neq-i64/-f64/-bool`)
+and no backend inline emits it. Asymmetry: `=` String → `str-eq` (EXISTS) but
+`!=` String → phantom `neq-string`.
+
+- **`spec_07_traits.rs::eq_string_neq_evaluates_run`** (RED, D2 guard) —
+  `// spec: spec/07-traits.md §7.7.2`. `(if (!= "a" "b") 42 0)` via `--run`.
+  **Observed RED:** `expected exit 42, got Some(1)` + worker-thread panic
+  `can't resolve symbol neq-string`. (Exit value 42 chosen distinct from the
+  codegen-error exit 1.) GREEN-on-fix exits 42.
+- **`spec_07_traits.rs::eq_string_neq_evaluates_repl`** (RED, D2 guard) —
+  `// spec: spec/07-traits.md §7.7.2`. REPL `(!= "a" "b")` MUST display `true`.
+  **Observed RED:** `stdout missing expected substring 'true'` (JIT panics).
+  Owner **/backend** (+ `cranelisp-primitives`: register/emit `neq-string`, or
+  route String `!=` through the default `(not (str-eq a b))` body). **LOCALIZED**
+  (register one primitive). NOT covered by the S85 2752-green suite (composite-
+  coverage gap).
+
+**D3 — `(mod test)` in a trait-defining module re-defines the parent trait.**
+A trait-defining module that declares a `(mod test)` child (even a trivial child
+importing nothing from the parent) re-processes the parent's `(deftrait …)`.
+
+- **`spec_08_modules.rs::mod_test_child_in_trait_module_does_not_redefine_parent_trait`**
+  (RED, D3 guard) — `// spec: spec/08-modules.md §8.2`. **Observed RED:**
+  `expected exit 0, got Some(1)` / `type error at 40..68: trait Eq already
+  defined` (parent deftrait span). Control: dropping the `(mod test)` decl loads
+  clean. Owner **/typecheck** (submodule load re-runs parent top-level forms;
+  /int co-owns the module-load-ordering angle). Possibly **DEEP** (module-load
+  orchestration) — carry candidate.
+
+**D4 — super-imported parent trait not resolvable as a constraint in the child.**
+A `(mod test)` child that `(import [super [Eq]])` and uses `:Eq` as a parameter
+constraint fails to resolve the trait in the child scope. Single-annotation
+`:Eq a` → `unknown type Eq (from module '')` (read as a TYPE annotation, the
+smallest deterministic form, pinned here); a STACK `:Eq :Eq a` under a `user`
+entry yields the sprint-reported `unknown trait Eq (from module user)` — same
+root cause (super-imported trait not seeded into the child's
+constraint-resolution scope).
+
+- **`spec_08_modules.rs::mod_test_child_super_imported_parent_trait_resolves_as_constraint`**
+  (RED, D4 guard) — `// spec: spec/08-modules.md §8.3.8`. **Observed RED:**
+  `expected exit 0, got Some(1)` / `dependency 'eqmod.test' failed: type error at
+  51..83: unknown type `Eq` (from module ``)`. Distinct from D3: super-import
+  reorders load so the parent is NOT re-processed. Owner **/typecheck** (same
+  family as D1; bound-resolver roots in current_module, no chain-follow for a
+  trait whose method was imported). Possibly **DEEP** — carry candidate. NB a
+  single trait-bound annotation mis-parses as a type — a separate /frontend or
+  /spec call noted in the test comment.
+
+**D5 — cross-module unresolved `__cranelisp_got_<module>` — TWO distinct
+findings.** The reported `__cranelisp_got_testing_runner` / SIGSEGV symptom did
+NOT reproduce via the `testing.runner` path as stated. Isolation found two
+separate root causes, each pinned:
+
+- **`link.rs::link_module_referencing_discover_tests_extern_fails_with_named_link_error`**
+  (GREEN interim guard — RETARGETED S86 D5a ruling, /arch 2026-06-17) —
+  `// spec: design/arch/test-discovery.md §4.5`. A module referencing the
+  DEV-SESSION-ONLY host extern `discover-tests` (resolved only in a live
+  session, per `test-discovery.md §4.5`) has no symbol at AOT link; `--link`ing
+  any project that pulls it in fails at `cc`. Importing even a PURE helper from
+  such a module drags the unresolved extern in (whole module → one object).
+  `catch-runtime-error` AOT-links fine; `discover-tests` is the sole culprit.
+  **This is the SETTLED INTERIM, not a defect.** /arch's D5a ruling rejected the
+  earlier `assert_exit(0)` oracle (it would reopen the dev-session-only ruling +
+  erase the deliberate capture/discovery asymmetry). The test now asserts the
+  documented interim: NON-ZERO exit + an output substring naming `discover-tests`
+  + an unresolved-symbol marker (`undefined reference` / `Symbol not found`).
+  **Now GREEN** — pins the interim as a regression guard. The friendly
+  compile-time rejection is the destination, deferred to **FIXME 0406
+  (→/int)**; when it lands, /qa retargets the substring from the raw linker
+  message to the friendly message (still non-zero, still names `discover-tests`).
+- **`link.rs::link_after_run_reuses_cache_and_resolves_cross_module_got`**
+  (RED, D5b guard, the LITERAL `__cranelisp_got_<module>` symptom) —
+  `// spec: design/backend/executable-generation.md §9`. CROSS-MODE CACHE-REUSE:
+  a `--run` pass caches `helper.o` tagged for the JIT path; a later `--link` in
+  the same dir reuses the cache but OMITS `helper.o` from the link command, so
+  `user.o`'s `__cranelisp_got_helper` GOT-base ref (Decision 23) is undefined.
+  Control: `--link` from a clean cache links + runs fine. **Observed RED:**
+  `expected exit 42, got Some(1)` / `linker (cc) failed: …
+  cranelisp_user:(.text+0x10): undefined reference to `__cranelisp_got_helper'`.
+  Owner **/backend** (cache/object GOT emission + link-set assembly —
+  `cache/{object.rs,linker.rs}`) + /int (cache-mode tagging). Same symbol family
+  as FIXME 0144 (S58). Possibly **DEEP** (cache-mode invariant) — carry candidate.
+
+**ring2a — deftrait param annotation form behavior-pin (NOT a bug — GREEN guards).**
+`(size [:a x] :Int)` binds param `x` with type-var `a` (ACCEPTED); `(size [:a]
+:Int)` is an annotation with no param name → clean parse error (NOT a panic).
+The compiler behaviour is CORRECT; these pin it for the /repl demo fix.
+
+- **`spec_07_traits.rs::deftrait_method_annotated_named_param_accepted`** (GREEN
+  positive pin) — `// spec: spec/07-traits.md §7.1.4`. Named annotated param
+  accepted; trait declared; stderr empty.
+- **`spec_07_traits.rs::deftrait_method_nameless_annotation_param_rejected_neg`**
+  (GREEN negative pin) — `// spec: spec/07-traits.md §7.1.4`. Nameless annotation
+  rejected with `parse error … annotation missing parameter name`; trait NOT
+  declared. Owner /frontend ONLY if the message degrades; today it is clear.
+
+spec_link_check clean (spec_07_traits.rs 40/40, spec_08_modules.rs 60/60,
+link.rs 16/16). NEW reds vs. the S85 baseline: 7 RED rows across 6 defects (D1,
+D2×2, D3, D4, D5a, D5b) + 2 GREEN ring2a pins. **Localized/cheap:** D1 (mirror
+one switch), D2 (register one primitive). **Deep/carry candidates:** D3, D4
+(module-load + trait-scope orchestration), D5a/D5b (AOT host-extern + cross-mode
+cache invariant).
+
+> **S86 D5a update (2026-06-17, post /arch ruling):** D5a was NOT a defect.
+> `/arch`'s D5a ruling (test-discovery.md §4.5) settled that the unresolved
+> `discover-tests` link failure is the DOCUMENTED INTERIM (dev-session-only
+> extern; friendly diagnostic deferred to FIXME 0406 →/int). The repro was
+> retargeted + renamed to
+> `link_module_referencing_discover_tests_extern_fails_with_named_link_error`
+> and now asserts the interim (non-zero exit + names `discover-tests`) — **GREEN**.
+> So D5a is no longer one of the carried RED guards; the running count is one
+> fewer RED than the row above states.
+
+### Sprint 86 — DEF-1 + DEF-2 defect isolation: narrow failing-not-ignored repros (/qa, 2026-06-17, SHA `d619186`)
+
+Step 1.5a continuation: isolate the two further Wave-2-surfaced defects (DEF-1,
+DEF-2 in `sprints/SPRINT.md`) into narrow failing-not-ignored repros. **2 RED
+rows across 2 defects + 3 GREEN controls** added; all RED reproduce on pristine
+HEAD; reductions are fully stdlib-free (custom per-test prelude / inline
+primitives). Targets: S86 (DEF-1 → /int, DEF-2 → /backend). Disposition:
+`out-of-scope (owner=/int)` / `out-of-scope (owner=/backend)` — both **CARRY** per
+the SPRINT.md defect table.
+
+**DEF-1 — re-export-only / prelude-provided `defn` body dropped from the
+consuming program's codegen batch.** A plain `defn` reached ONLY through the
+implicit-prelude glob (a bare call, no explicit import) typechecks (the §8.8.1
+prelude-resolution fallback surfaces the name into bare scope) but its BODY never
+enters the user program's codegen batch → `codegen error … undefined function:
+<name>`. ISOLATION: the bare call FAILS but an EXPLICIT `(import [prelude
+[name]])` of the SAME name WORKS — the implicit-glob/re-export path is the
+trigger, not the function. The body must wrap a GOT-dispatched primitive
+(`vec-len`, `vec-push`, `Pure`) to surface the drop; a wrapper of an
+inline-emitted primitive (`add-i64`) masks it (inline materialises at the call
+site). `count` (wraps `vec-len`) is representative — matches the carried
+`count`/`get`/`conj` prelude-promotion blocker in `stdlib/prelude.cl`. The
+long-re-exported bare `pure` (io.monad) is the pre-existing instance.
+
+- **`spec_08_modules.rs::def1_prelude_provided_defn_called_bare_enters_codegen_batch`**
+  (RED, DEF-1 guard) — `// spec: spec/08-modules.md §8.8.1`. Custom prelude
+  `(export [primitives [*]]) (defn count [v] (vec-len v))`; user calls `count`
+  BARE inside `(Pure …)`. **Observed RED:** `expected exit 3, got Some(1)` +
+  `codegen error … undefined function: count`. GREEN-on-fix exits 3. Owner
+  **/int** (`derive_codegen_batch` `src/worker.rs:621` emits only
+  `ModuleEntry::Def`; glob-surfaced names install as `Import`/`Reexport`,
+  codegen-skipped, and the prelude provision does not cascade the body into the
+  consuming module's batch). **LOCALIZED** at the batch-derivation seam.
+- **`spec_08_modules.rs::def1_prelude_provided_defn_explicit_import_works_control`**
+  (GREEN control) — `// spec: spec/08-modules.md §8.8.1`. SAME prelude, but user
+  does `(import [prelude [count]])` → exits 3. Pins the implicit-glob path (not
+  the function) as the trigger.
+
+**DEF-2 — heap-ADT element RC corrupted through a user-defined `vec-push`
+wrapper.** `(defn push2 [v x] (vec-push v x))` corrupts the refcount of a
+HEAP-ADT element accumulated in a loop; the DIRECT primitive `vec-push` does not.
+Observable as a WRONG derived value: the wrapper-built `(Vec Box)` over-counts
+when its unboxed elements are summed. §12.3.3 promises Vec COW is "semantically
+invisible … pure functional behavior regardless" — DEF-2 violates that for
+heap-ADT elements. ISOLATION: divergence at N=2 (wrapper sum=2, direct sum=1,
+true sum=1); Int (scalar) elements are UNAFFECTED (only heap ADTs corrupt);
+CRANELISP_RC_TRACE=1 shows the wrapper path frees-then-re-allocs a backing store
+and leaves one Box without matching RC bookkeeping vs the direct path's clean
+COW-at-refcount-1 reuse — an RC inc dropped (or a stale-refcount COW
+single-owner decision) at the wrapper call boundary.
+
+- **`spec_12_runtime.rs::def2_vec_push_wrapper_preserves_heap_adt_element_rc`**
+  (RED, DEF-2 guard) — `// spec: spec/12-runtime.md §12.3.3`. `(Vec Box)` built
+  via the `push2` wrapper, N=2, summed. **Observed RED:** `expected exit 1, got
+  Some(2)` (over-counts). GREEN-on-fix exits 1. Owner **/backend** (RC mis-count
+  at the wrapper call boundary — heap arg not inc'd the way direct primitive-call
+  codegen inc's it; COW single-owner test fires on a stale refcount). **DEEP**
+  (codegen RC at the `defn` arg-forwarding boundary).
+- **`spec_12_runtime.rs::def2_vec_push_direct_heap_adt_element_correct_control`**
+  (GREEN control) — `// spec: spec/12-runtime.md §12.3.3`. DIRECT `vec-push`
+  path, same shape → exits 1. Pins the wrapper (not loop/ADT/COW) as the trigger.
+- **`spec_12_runtime.rs::def2_vec_push_wrapper_scalar_element_unaffected_control`**
+  (GREEN control) — `// spec: spec/12-runtime.md §12.3.3`. SAME wrapper over
+  `(Vec Int)` → exits 1. Pins that only HEAP-ADT elements corrupt.
+
+spec_link_check clean. NEW reds vs the S86 D1–D5 baseline: 2 RED rows (DEF-1,
+DEF-2) + 3 GREEN controls. **Localized:** DEF-1 (one batch-derivation seam,
+owner /int). **Deep:** DEF-2 (codegen RC at the wrapper arg boundary, owner
+/backend).
+
+### Sprint 86 — DEF-3 defect isolation: vec-set temporary-element RC leak (the DEF-2 mirror) (/qa, 2026-06-17)
+
+Discovered while fixing DEF-2. **1 RED row + 2 GREEN controls** added; the RED
+reproduces on pristine HEAD; reduction is fully stdlib-free (inline primitives).
+Target: S86 (DEF-3 → /backend). Disposition: `out-of-scope (owner=/backend)` —
+the campaign's last open item before close.
+
+**DEF-3 — TEMPORARY heap-ADT element leaked through `vec-set`.** `vec-set`'s
+inline copy-on-write codegen + the `vec_set_copy` runtime helper inc the NEW
+element UNCONDITIONALLY. That is correct only for a Var element that stays live
+(two owners ⇒ inc needed); for a TEMPORARY heap element (`(vec-set v i (Box 7))`)
+the temporary arrives at rc=1 and its sole reference must TRANSFER into the Vec
+(no inc) per the uniform consuming convention (Decision 24, `ring2-rc.md`
+§"Algorithm" steps 1–2). The unconditional inc leaves the element a permanent
+extra reference the Vec never drops → the heap object LEAKS. This is the
+**OPPOSITE-DIRECTION MIRROR of DEF-2**: DEF-2 UNDER-counts a Var forwarded
+through a `vec-push` wrapper; DEF-3 OVER-counts a temporary handed straight to
+`vec-set`. The fix aligns `vec-set` to the same Var→inc / temp→transfer rule
+DEF-2 aligns `vec-push` to. ISOLATION: a single `vec-set` with a temporary heap
+element allocs 5 / frees 4 (one leak); scalar elements are unaffected (balanced);
+the leak scales (an N=3 loop leaks 9). **Observability limitation:** a pure leak
+does NOT corrupt the read-back value or exit code (the element is the right
+`(Box 7)`, exit 0) — the ONLY witness is the allocation imbalance, so this repro
+parses the `CRANELISP_RC_TRACE=1` stderr alloc/free counters directly
+(exceptionally vs. the spec_12_runtime.rs header note that counter-parsing
+migrates to legacy; a single targeted defect repro with no other observable
+justifies the exception).
+
+- **`spec_12_runtime.rs::def3_vec_set_temporary_heap_element_rc_balanced`**
+  (RED, DEF-3 guard) — `// spec: spec/12-runtime.md §12.3.3`. `(vec-set [(Box 0)
+  (Box 0)] 1 (Box 7))`, RC_TRACE alloc/free parsed. **Observed RED:**
+  `assertion left == right failed … got 5 allocs / 4 frees — DEF-3 leak. left: 5,
+  right: 4`. GREEN-on-fix is balanced (allocs == frees). Owner **/backend** (the
+  unconditional new-element inc in inline COW codegen + `vec_set_copy` must follow
+  the Var/temp distinction). Mirror of the DEF-2 vec-push fix.
+- **`spec_12_runtime.rs::def3_vec_set_scalar_element_rc_balanced_control`**
+  (GREEN control) — `// spec: spec/12-runtime.md §12.3.3`. `vec-set` over a
+  `(Vec Int)` is balanced. Pins the leak as specific to a TEMPORARY HEAP element.
+- **`spec_12_runtime.rs::def3_heap_element_vec_no_vecset_rc_balanced_control`**
+  (GREEN control) — `// spec: spec/12-runtime.md §12.3.3`. A literal `(Vec Box)`
+  read with NO `vec-set` is balanced (4/4). Pins the heap-element machinery as
+  sound — the leak is introduced specifically by `vec-set`'s new-element inc.
+
+spec_link_check clean. NEW red vs the DEF-1/DEF-2 baseline: 1 RED row (DEF-3) +
+2 GREEN controls. **Deep:** DEF-3 (codegen/runtime RC on the vec-set new element,
+owner /backend) — but a directly-mirrored fix of the DEF-2 alignment.
+
 ### Sprint 85 — FIXME 0401 runtime-error-during-IO (bind continuation) SIGSEGV repro (/qa, 2026-06-17)
 
 Authored the narrow failing-not-ignored repro for FIXME 0401 — the GENERAL case of

@@ -1,9 +1,16 @@
-;; 29-annotations.cl -- Type annotations with :Type
+;; 29-annotations.cl -- The :Type annotation model (capstone)
 ;;
-;; `:Type` is a type-unifying annotation. It is a reader-level prefix that
-;; binds the IMMEDIATELY-FOLLOWING form -- in EVERY position -- and unifies
-;; that form's inferred type with the named type. It is never a standalone
-;; atom; it always attaches to the next form.
+;; You have been reading `:Type` since the very first typed examples:
+;; `:Int` on deftype fields (example 10), `:Int` on defn parameters
+;; (from example 03 onward), `:primitives/Int` in every REPL result line.
+;; This example does NOT introduce a new feature -- it names the single
+;; model those scattered appearances all share, so the construct stops
+;; looking like several unrelated notations and becomes one rule.
+;;
+;; The rule: `:Type` is a type-unifying annotation. It is a reader-level
+;; prefix that binds the IMMEDIATELY-FOLLOWING form -- in EVERY position --
+;; and unifies that form's inferred type with the named type. It is never a
+;; standalone atom; it always attaches to the next form.
 ;;
 ;;   :Int 42      ;; annotates the literal 42 with Int -> :primitives/Int 42
 ;;   :Int x       ;; annotates the name x with Int

@@ -849,34 +849,33 @@ pub fn find_bundle_lib() -> Result<PathBuf, CranelispError> {
 
 // ── Platform manifest name collection ───────────────────────────────────
 
-/// The C-ABI symbol every platform DLL/rlib exports for its manifest entry
-/// point (`declare_platform!` emits it `#[unsafe(no_mangle)]`, so it is the same
-/// link name for every platform — `cranelisp-platform/src/lib.rs`).
+/// Collect the per-platform-namespaced manifest symbol names the startup stub
+/// must call (one per linked platform, to force each platform's GOT-population
+/// code in).
 ///
-/// Calling it populates that platform's exported GOT (manifest order IS GOT slot
-/// order) and returns the descriptor block. The startup stub declares it as an
-/// imported zero-arg fn and passes its address to `cranelisp_init_platform`
-/// (`generate_startup_object`).
-const PLATFORM_MANIFEST_SYMBOL: &str = "cranelisp_platform_manifest";
-
-/// Collect the platform manifest symbol names the startup stub must call
-/// (one per linked platform, to force each platform's GOT-population code in).
+/// Each platform DLL/rlib exports its manifest entry point as
+/// `cranelisp_platform_manifest_<name>` (`declare_platform!` emits it via
+/// `#[unsafe(export_name = …)]`; the suffix matches the GOT and layout-hash
+/// exports — platform-interface.md §5.5.5). Calling it populates that platform's
+/// exported GOT (manifest order IS GOT slot order) and returns the descriptor
+/// block. The startup stub declares each as an imported zero-arg fn and passes
+/// its address to `cranelisp_init_platform` (`generate_startup_object`).
 ///
-/// Sourced from the loaded-platform registry (`SharedState::kept_dlls`) by the
-/// caller, which passes the platform count.
-///
-/// **Single-platform `--link` is fully supported.** Because `declare_platform!`
-/// exports the manifest entry point `#[unsafe(no_mangle)]`, every platform
-/// shares the link name `cranelisp_platform_manifest`; `-force_load`ing two
-/// platform rlibs would collide on that symbol (and on `__cranelisp_init_*`
-/// helpers). Multi-platform `--link` therefore needs per-platform mangled
-/// manifest names — out of scope for S79 (no program links more than one
-/// platform). With one linked platform the shared name resolves unambiguously.
-pub fn collect_platform_manifest_names(platform_count: usize) -> Vec<String> {
-    // One manifest call per linked platform (each populates its own GOT). With
-    // the shared no_mangle symbol this is correct for the single-platform case;
-    // see the doc comment for the multi-platform limitation.
-    vec![PLATFORM_MANIFEST_SYMBOL.to_string(); platform_count]
+/// **Multi-platform `--link` is supported (DEF-5 fix).** Because the manifest
+/// export is now namespaced per platform name, `-force_load`ing two platform
+/// rlibs no longer collides on a shared `cranelisp_platform_manifest` symbol.
+/// The names are sourced from the loaded-platform registry
+/// (`SharedState::kept_dlls`) by the caller, which passes the deduped platform
+/// **names** (not the count). The symbol string is computed via the shared
+/// `cranelisp_platform::platform_manifest_symbol` helper — never an inline
+/// `format!` — so emit and consume agree by construction (Principle 7).
+pub fn collect_platform_manifest_names(platform_names: &[String]) -> Vec<String> {
+    // One manifest call per linked platform (each populates its own GOT),
+    // namespaced by the platform's raw `name:` literal.
+    platform_names
+        .iter()
+        .map(|name| cranelisp_platform::platform_manifest_symbol(name))
+        .collect()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -1083,14 +1082,25 @@ mod tests {
         assert_eq!(rlibs, vec![rlib]);
     }
 
-    // spec: platform-interface.md §7.3 — manifest symbol per linked platform;
-    // none linked ⇒ none collected.
+    // spec: platform-interface.md §7.3 / §5.5.5 / §6.7 — the manifest symbol is
+    // per-platform namespaced (`cranelisp_platform_manifest_<name>`, DEF-5), one
+    // per linked platform name; none linked ⇒ none collected. Two distinct
+    // platforms produce two distinct manifest symbols (the collision DEF-5
+    // fixes).
     #[test]
-    fn collect_platform_manifest_names_counts() {
-        assert!(collect_platform_manifest_names(0).is_empty());
+    fn collect_platform_manifest_names_namespaced_per_platform() {
+        assert!(collect_platform_manifest_names(&[]).is_empty());
         assert_eq!(
-            collect_platform_manifest_names(1),
-            vec!["cranelisp_platform_manifest".to_string()]
+            collect_platform_manifest_names(&["shapes".to_string()]),
+            vec!["cranelisp_platform_manifest_shapes".to_string()]
+        );
+        // Two distinct platforms → two distinct manifest symbols (no collision).
+        assert_eq!(
+            collect_platform_manifest_names(&["web".to_string(), "stdio".to_string()]),
+            vec![
+                "cranelisp_platform_manifest_web".to_string(),
+                "cranelisp_platform_manifest_stdio".to_string()
+            ]
         );
     }
 

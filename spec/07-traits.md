@@ -87,7 +87,7 @@ A trait MAY declare multiple methods. An implementation of the trait MUST provid
   (/ "Divide two values" [a b] self))
 ```
 
-### 7.1.5 Default Method Implementations [Tested tests/ring2::default_method_gt_int, tests/ring2::repl_default_neq, tests/ring2::repl_default_ge, tests/ring2::repl_default_le]
+### 7.1.5 Default Method Implementations [Tested tests/spec_07_traits::default_method_used_when_not_overridden]
 
 A method signature MAY include a default body. Default methods have a body expression as the last element (rather than a return type). The return type of a default method is inferred from its body.
 
@@ -144,7 +144,7 @@ Bare (unannotated) parameter names always have the implementing type. To give a 
   (convert [:String s] Int))        ;; s is String, not self
 ```
 
-## 7.2 Higher-Kinded Traits [Tested tests/ring2.rs::hkt_trait_declaration]
+## 7.2 Higher-Kinded Traits [Tested tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds]
 
 A higher-kinded trait abstracts over type constructors (kind `* -> *`) rather than concrete types (kind `*`).
 
@@ -195,7 +195,7 @@ An implementation MUST validate that the impl target's type parameter count matc
 
 Primitive types (`Int`, `Bool`, `String`, `Float`) MUST be rejected as HKT impl targets.
 
-## 7.3 Trait Implementation [Tested tests/ring2.rs::trait_impl_concrete_type, tests/ring2.rs::user_trait_simple, tests/ring2.rs::user_trait_multiple_impls]
+## 7.3 Trait Implementation [Tested tests/spec_07_traits::trait_impl_concrete_type, tests/spec_07_traits::user_trait_simple, tests/spec_07_traits::trait_multiple_impls]
 
 The `impl` form provides method bodies for a trait applied to a specific type.
 
@@ -211,7 +211,7 @@ constraint   = ':' trait_name
 
 There are three forms of trait implementation.
 
-### 7.3.1 Concrete Implementation [Tested tests/ring2::user_trait_simple, tests/ring2::user_trait_adt, tests/ring2::user_trait_multiple_impls, tests/ring2::repl_user_trait]
+### 7.3.1 Concrete Implementation [Tested tests/spec_07_traits::user_trait_simple, crates/cranelisp-typecheck/src/traits/tests.rs::test_register_trait_impl, tests/spec_05_definitions::deftrait_impl_and_dispatch]
 
 The simplest form targets a specific concrete type.
 
@@ -273,7 +273,7 @@ The implementation MUST search for matching impls in the following order:
 1. Concrete impls (exact type match)
 2. Polymorphic impls (with constraint satisfaction)
 
-### 7.3.4 Higher-Kinded Implementation [Tested tests/ring2.rs::hkt_impl_bare_constructor]
+### 7.3.4 Higher-Kinded Implementation [Tested tests/spec_07_traits::hkt_impl_targets_bare_type_constructor_not_applied_form]
 
 An HKT impl targets a bare type constructor name:
 
@@ -299,7 +299,7 @@ An HKT impl targets a bare type constructor name:
 
 The target is the type constructor name alone (e.g., `Option`, not `(Option a)`). The implementation MUST validate that the target is a type constructor whose arity matches the trait's constructor variable.
 
-## 7.4 Method Resolution (Static Dispatch) [Tested tests/ring2::trait_plus_int]
+## 7.4 Method Resolution (Static Dispatch) [Tested tests/spec_05_definitions::deftrait_impl_and_dispatch]
 
 ALL trait method calls MUST be resolved at compile time. There is no runtime dispatch mechanism. Every call to a trait method resolves to a specific implementation based on the concrete type at the call site.
 
@@ -371,7 +371,7 @@ Resolution happens in phases after type inference, in a specific order:
 
 This ordering is critical. Method resolution must accommodate the possibility that some types are not yet concrete during early passes.
 
-## 7.5 Operators as Trait Methods [Tested tests/ring2::trait_plus_int]
+## 7.5 Operators as Trait Methods [Tested tests/spec_05_definitions::deftrait_impl_and_dispatch]
 
 Operator symbols (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`) have no special syntactic status. `(+ 1 2)` is parsed as a regular function application `Apply(Var("+"), [1, 2])`. When defined as trait methods by a library, they dispatch like any other method call through the standard trait resolution mechanism.
 
@@ -399,7 +399,7 @@ Operator symbols (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`) have no special
 
 An implementation SHOULD compile operator trait methods for `Int` and `Float` to inline machine instructions (integer add, float multiply, etc.) rather than function calls, so that the trait system imposes zero overhead for primitive arithmetic and comparisons.
 
-## 7.6 Operators as First-Class Values [Tested tests/ring2.rs::trait_method_as_value_operator]
+## 7.6 Operators as First-Class Values [Tested tests/spec_07_traits::operator_as_first_class_value]
 
 Trait method names, including operators, are ordinary symbols. They MAY be bound to variables and passed as arguments to higher-order functions.
 
@@ -574,7 +574,7 @@ String conversion for human-readable output.
 (show 3.14)     ; → "3.14"
 ```
 
-### 7.7.5 Functor [Tested tests/ring2.rs::hkt_trait_declaration]
+### 7.7.5 Functor [Tested tests/spec_07_traits::hkt_deftrait_declaration_with_type_constructor_parameter_succeeds]
 
 Maps a function over a type constructor. This is a higher-kinded trait (see 7.2).
 
@@ -612,7 +612,7 @@ Maps a function over a type constructor. This is a higher-kinded trait (see 7.2)
 1. **Identity**: `(fmap identity x)` is equivalent to `x`
 2. **Composition**: `(fmap (comp g f) x)` is equivalent to `(fmap g (fmap f x))`
 
-## 7.8 Constrained Polymorphism Interaction [Tested tests/ring2::constrained_add_int]
+## 7.8 Constrained Polymorphism Interaction [Tested tests/spec_07_traits::constrained_polymorphism_int_then_float]
 
 When a trait method is called on a type that is still an unresolved type variable during inference, and multiple implementations exist for that trait, the enclosing function becomes a **constrained polymorphic function**. Rather than producing a type error, the type variable acquires a trait constraint.
 
@@ -651,7 +651,7 @@ Explicit annotations and inferred constraints produce identical results. Explici
 - Constrained polymorphic functions MUST NOT be used as first-class values. `(let [f add] ...)` where `add` is constrained polymorphic produces a compile-time error -- the concrete type must be known at the call site.
 - HKT trait methods are NOT constrained polymorphic functions. They dispatch through the trait resolution mechanism, not through monomorphisation. Writing a generic function like `(defn map-inc [xs] (fmap inc xs))` that is polymorphic over all Functors is not supported.
 
-## 7.9 User-Defined Traits [Tested tests/ring2::user_trait_simple]
+## 7.9 User-Defined Traits [Tested tests/spec_07_traits::user_trait_simple]
 
 Users MAY define their own traits using the same `deftrait` and `impl` forms. User-defined traits are first-class citizens of the trait system and participate in the same dispatch mechanism as built-in traits.
 
@@ -694,7 +694,7 @@ User traits MAY have polymorphic implementations for algebraic data types, using
        (Some x) (describe x)])))
 ```
 
-## 7.10 REPL Introspection [Tested tests/ring2::repl_deftrait_display_shows_trait_name]
+## 7.10 REPL Introspection [Tested tests/spec_07_traits::deftrait_display_shows_classification]
 
 Implementations that provide a REPL SHOULD support introspection of traits, methods, and operators.
 
@@ -735,7 +735,7 @@ cranelisp> fmap
 Functor.fmap :: (Fn [(Fn [a] b) (:Functor f a)] (f b))
 ```
 
-## 7.11 Scope and Visibility [Tested tests/ring2.rs::trait_method_accessible_across_modules]
+## 7.11 Scope and Visibility [Tested tests/spec_07_traits::trait_deftrait_impl_in_child_module_imported_dispatch_from_parent]
 
 Trait declarations and implementations participate in the module system (see section 8).
 

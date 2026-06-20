@@ -35,7 +35,7 @@
 (defn test-lt [] (bool-to-int (lt-f64 1.0 2.0)))
 (defn test-gt [] (bool-to-int (gt-f64 3.0 2.0)))
 (defn test-le [] (bool-to-int (le-f64 2.0 2.0)))
-(defn test-ge [] (bool-to-int (ge-f64 1.0 2.0)))
+(defn test-ge [] (bool-to-int (ge-f64 2.0 1.0)))
 
 ;; Negation via subtraction from zero (no float-neg primitive)
 (defn test-neg []
@@ -49,7 +49,10 @@
 (defn test-area []
   (bool-to-int (gt-f64 (circle-area 1.0) 3.0)))
 
-;; Expected: 1+1+1+1+1+1+1+0+1+1 = 9
+;; Every sub-test asserts a TRUE proposition, so each correct result
+;; contributes 1. A regression that breaks any float op or comparison
+;; drops a 1 to 0, lowering the exit code below the expected total.
+;; Expected: 1+1+1+1+1+1+1+1+1+1 = 10
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).

@@ -38,13 +38,19 @@
     [Nil acc
      (Cons _ t) (length-acc t (add-i64 acc 1))]))
 
-(defn head-of "Get the first element of a list, or None if empty"
+;; `first`/`rest` are the Clojure-aligned list accessors (renamed from the
+;; S82 `head-of`/`tail-of`, per FIXME 0402). They are reached as
+;; `collections.list/first` / `collections.list/rest` or via explicit
+;; import — NOT bare prelude (the bare names are reserved for the Phase-H
+;; seq trait, and pair `first` coexists in `collections.pair`; FIXME 0402).
+
+(defn first "Get the first element of a list, or None if empty"
   [xs]
   (match xs
     [Nil None
      (Cons h _) (Some h)]))
 
-(defn tail-of "Get all but the first element, or None if empty"
+(defn rest "Get all but the first element, or None if empty"
   [xs]
   (match xs
     [Nil None

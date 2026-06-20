@@ -1275,6 +1275,18 @@ fn load_cached_module_via_linker(
     // No session-level push needed.
     drop(linker_arc);
 
+    // S86 D5b: register the cache-restored `.o` into the `--link` set. The
+    // only writer of `compiled_o_paths` was `compile_module_object` (the
+    // freshly-compiled / cache-MISS path), so a module restored from a prior
+    // `--run`'s cache (cache-HIT) was absent from `all_paths()` at `--link`
+    // time — `cc` linked without it and `user.o`'s cross-module
+    // `__cranelisp_got_{dep}` reference was undefined. The `.o` we just
+    // mmap+relocated is `cached.object_path` (`has_object` is asserted above,
+    // so this is the genuine on-disk object, not a generic-only no-codegen
+    // module). `append_o_path` dedups, so a module that is both cache-restored
+    // and later freshly recompiled is listed once.
+    shared_state.cache.append_o_path(cached.object_path.clone());
+
     Ok(loaded_symbols)
 }
 

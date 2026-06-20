@@ -25,8 +25,8 @@ spec wins and the user doc is the bug.
 |---|---|---|
 | `CLAUDE.md` | This file — ownership and writing conventions | live |
 | `cli-reference.md` | The `cranelisp` command-line reference: modes, options, target resolution | live |
-| `getting-started.md` | Install, first program, REPL basics | stub |
-| `tutorial/` | Progressive introduction paralleling `examples/` | not yet authored (blocked on `/learn`, FIXME 0052) |
+| `getting-started.md` | Install, REPL basics, first program (pure + IO), platforms/IO model, showcase pointer | live |
+| `tutorial/` | Progressive introduction paralleling `examples/`; target surface for the forthcoming `/learn` tutorial | not yet authored (forward input for `/learn`, FIXME 0052) |
 | `guide/` | Feature-by-feature user-facing reference paralleling `spec/` | not yet authored |
 | `errors/` | Error-message catalogue, written as each error is confirmed | not yet authored |
 

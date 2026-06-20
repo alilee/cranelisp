@@ -1,8 +1,9 @@
 ;; 23-io-sequence.cl -- IO sequencing with bind
 ;;
-;; Example 22 introduced Pure, bind, and print. This example focuses
-;; on sequencing patterns -- how to chain multiple IO actions together
-;; when you care about the order of effects.
+;; Example 21 introduced Pure, bind, and print; example 22 showed the
+;; test-capture platform. This example focuses on sequencing patterns --
+;; how to chain multiple IO actions together when you care about the
+;; order of effects.
 ;;
 ;; Without a `do` macro (which lives in the standard library), we
 ;; build sequences using explicit bind calls. This reveals the
@@ -16,7 +17,9 @@
 ;; closures, so all intermediate values are available at the end.
 ;;
 ;; Running:
-;;   just run-example examples/23-io-sequence.cl
+;;   ./target/debug/cranelisp --run examples/23-io-sequence.cl
+;;   (examples/lib/platforms/ ships host-correct symlinks for the
+;;    test-capture DLL, so no environment variable is required.)
 
 (platform test-capture)
 (import [primitives [Pure bind]])

@@ -170,11 +170,25 @@ impl ObjectCache {
         }
     }
 
-    /// Append a `.o` path produced by a nice worker to the linker collection.
+    /// Append a `.o` path to the linker collection (idempotent).
+    ///
+    /// Two distinct writers feed this set and can name the SAME module's
+    /// `.o`: `compile_module_object` (the nice worker, for a freshly
+    /// compiled module — `session_v4.rs`) and `load_cached_module_via_linker`
+    /// (the cache-hit restore path, registering `cached.object_path` so a
+    /// later `--link` includes cross-module objects that were restored from a
+    /// prior `--run`'s cache — `worker.rs`, S86 D5b). A module that is first
+    /// cache-restored and later re-appended (or any double-call) must not
+    /// double-list in `all_paths()` — a duplicated `.o` on the `cc` link line
+    /// risks duplicate-symbol link errors. Dedup at this single chokepoint
+    /// keeps `all_paths()` clean for both writers (Principle 18 — enforce the
+    /// no-duplicate invariant structurally at the one mutation site).
     pub fn append_o_path(&self, path: PathBuf) {
-        self.compiled_o_paths.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(path);
+        let mut guard = self.compiled_o_paths.lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !guard.contains(&path) {
+            guard.push(path);
+        }
     }
 
     /// Snapshot the collected `.o` paths for `--link`. Returns a clone.
@@ -263,6 +277,42 @@ mod tests {
         let cache = ObjectCache::new(None, None);
         // Should not panic.
         cache.flush_manifest();
+    }
+
+    // S86 D5b: the cache-HIT restore path (`load_cached_module_via_linker`)
+    // registers its `cached.object_path` via `append_o_path` so a later
+    // `--link` includes cross-module objects restored from a prior `--run`'s
+    // cache. Before the fix, only `compile_module_object` (the cache-MISS
+    // path) appended, so a restored dep `.o` was missing from `all_paths()`
+    // and `cc` linked without it (undefined `__cranelisp_got_{dep}`). This
+    // test asserts a restore-path append shows up in the link set, and that
+    // the same `.o` named by BOTH the cache-restore and a later fresh
+    // recompile is listed exactly once (dedup — no duplicate-symbol risk on
+    // the `cc` line).
+    #[test]
+    fn cache_restored_o_path_joins_link_set_and_dedups() {
+        let cache = ObjectCache::new(None, None);
+        let dep_o = PathBuf::from("/tmp/.cache/helper.o");
+        let user_o = PathBuf::from("/tmp/.cache/user.o");
+
+        // Cache-HIT restore of `helper` registers its restored object.
+        cache.append_o_path(dep_o.clone());
+        // Fresh compile of `user` (cache-MISS) appends its object.
+        cache.append_o_path(user_o.clone());
+
+        let paths = cache.all_paths();
+        assert!(paths.contains(&dep_o),
+            "cache-restored dep .o must be in the --link set, got {paths:?}");
+        assert!(paths.contains(&user_o));
+
+        // A module that is both cache-restored AND later freshly recompiled
+        // (or any double-append) must not double-list.
+        cache.append_o_path(dep_o.clone());
+        let after = cache.all_paths();
+        assert_eq!(after.iter().filter(|p| **p == dep_o).count(), 1,
+            "append_o_path must dedup — a duplicated .o on the cc line risks \
+             duplicate-symbol link errors; got {after:?}");
+        assert_eq!(after.len(), 2, "exactly two distinct objects, got {after:?}");
     }
 
     #[test]

@@ -505,6 +505,25 @@ fn is_trait_impl_mangled_name(name: &str) -> bool {
     false
 }
 
+/// Convert a single param annotation `TypeExpr` into the `TraitRef` it would
+/// denote as a trait bound, for the try-type-then-trait fallback (spec §3.9.3,
+/// S86 D4). A trait bound is a bare or qualified trait NAME with no type
+/// arguments (spec §3.9.2), so only `TypeExpr::Named` qualifies — `Applied`
+/// (e.g. `(Option Int)`) carries type arguments and is a concrete type, never a
+/// single trait bound; `TypeVar`/`SelfType`/`FnType`/`Bounds` are not bare
+/// names. The as-written module qualification is preserved (`:fmt/Display`).
+fn single_trait_bound_from_annotation(
+    ann: &cranelisp_types::TypeExpr,
+) -> Option<cranelisp_types::TraitRef> {
+    match ann {
+        cranelisp_types::TypeExpr::Named(tref) => Some(cranelisp_types::TraitRef::new(
+            tref.module.clone(),
+            cranelisp_types::TraitName::from(tref.name.as_ref()),
+        )),
+        _ => None,
+    }
+}
+
 /// Read the GOT slot of a prior **concrete callable** entry named `name` in
 /// the symbol table `st`, if one exists.
 ///
@@ -2677,9 +2696,38 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 }
                 Some(ann) => {
                     let var_map = HashMap::new();
-                    self.resolve_type_expr_in_module(
+                    match self.resolve_type_expr_in_module(
                         ann, &var_map, &state.current_module, defn.span,
-                    )?
+                    ) {
+                        Ok(ty) => ty,
+                        // Try-type-then-trait (spec §3.9.3, S86 D4). A SINGLE
+                        // annotation `:Eq a` is ambiguous between a concrete-type
+                        // annotation and a single trait bound. The frontend leaves
+                        // a run-of-length-1 as the resolved `TypeExpr::Named`
+                        // (`annotation_run_carrier`), delegating disambiguation to
+                        // here: when no TYPE with that name exists, resolve it as a
+                        // trait constraint. We funnel it through `resolve_bound_param`
+                        // (the same single-trait → fresh constrained var path as a
+                        // `Bounds([..])` of length 1) iff the annotation's head
+                        // resolves as a trait; otherwise the original type error
+                        // (the genuine "neither type nor trait" case) propagates.
+                        Err(type_err) => {
+                            match single_trait_bound_from_annotation(ann) {
+                                Some(tref)
+                                    if self
+                                        .resolve_trait(state, tref.name.as_ref(), defn.span)
+                                        .is_ok() =>
+                                {
+                                    self.resolve_bound_param(
+                                        state,
+                                        std::slice::from_ref(&tref),
+                                        defn.span,
+                                    )?
+                                }
+                                _ => return Err(type_err.into()),
+                            }
+                        }
+                    }
                 }
                 None => self.fresh_var(),
             };
@@ -3220,11 +3268,22 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         constrained_fn_names: &HashSet<Symbol>,
         out: &mut Vec<(Symbol, Vec<Span>, Span, Option<ModuleFullPath>)>,
     ) {
+        // DEF-1 (S86): resolve the bare callee through the **prelude-fallback**
+        // chokepoint (`resolve_terminal_entry_or_prelude`), NOT the
+        // current-module-only `resolve_terminal_entry_and_home`. A polymorphic fn
+        // provided ONLY via the implicit-prelude outer scope (no explicit import)
+        // is invisible to a current-module-rooted lookup, so its concrete mono
+        // was never minted in the consuming module → codegen `undefined function`.
+        // The fallback-aware resolver applies the same I-1 public-only filter the
+        // value/type/ctor/trait chokepoints use, and reports the terminal `home`
+        // (the prelude — `!= current_module`), so the cross-module mono path fires
+        // exactly as it does for the explicit-import control (S78 outer-scope
+        // discipline; the mono-collection chokepoint had been missed).
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             && !constrained_fn_names.contains(name)
             && let Some((entry, home)) =
-                self.resolve_terminal_entry_and_home(&state.current_module, name.as_ref())
+                self.resolve_terminal_entry_or_prelude(state, name.as_ref())
             && home != state.current_module
             && Self::entry_is_monomorphisable_polymorphic(&entry)
         {

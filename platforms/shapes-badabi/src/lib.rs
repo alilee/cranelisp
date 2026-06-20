@@ -13,16 +13,20 @@
 //! `__declare_platform_body!`), so it has **no override arm** for baking a
 //! stale version (FIXME 0238 notes this gap). To produce a DLL whose declared
 //! ABI deliberately differs from the host's, this fixture hand-writes the
-//! `cranelisp_platform_manifest` C-ABI entry point with a stale version
-//! literal ([`STALE_ABI_VERSION`]) rather than `cranelisp_platform::ABI_VERSION`.
+//! per-platform-namespaced `cranelisp_platform_manifest_shapes-badabi` C-ABI
+//! entry point (via `#[unsafe(export_name = ...)]`, matching the name the host
+//! computes through `cranelisp_platform::platform_manifest_symbol`) with a stale
+//! version literal ([`STALE_ABI_VERSION`]) rather than
+//! `cranelisp_platform::ABI_VERSION`.
 //!
 //! ## Distinct artifact name
 //!
 //! The crate is named `cranelisp-shapes-badabi` so the compiled cdylib is
 //! `libcranelisp_shapes_badabi` — a DISTINCT output from the real `shapes`
-//! platform's `libcranelisp_shapes`. Each cdylib exports its own
-//! `cranelisp_platform_manifest`; distinct artifacts keep the two manifest
-//! symbols in separate dynamic objects, so there is no symbol collision. The
+//! platform's `libcranelisp_shapes`. Each cdylib exports its own per-platform-
+//! namespaced `cranelisp_platform_manifest_<name>`; distinct artifacts AND
+//! distinct symbol names keep the two manifests apart, so there is no symbol
+//! collision. The
 //! host resolves `(platform shapes-badabi)` to this artifact via
 //! `resolve_platform_path` (`libcranelisp_{name}.{ext}`, `-`→`_`).
 //!
@@ -43,11 +47,13 @@ use cranelisp_platform::{
 
 /// The deliberately-stale ABI version baked into this DLL's manifest.
 ///
-/// The host's `ABI_VERSION` is currently `3`; baking `2` here (the prior ABI)
-/// guarantees `found (2) != expected (3)` at the `check_abi_version` gate,
-/// triggering `PlatformError::AbiVersionMismatch { expected: 3, found: 2 }`.
-/// If the host ABI is ever bumped, this stays stale (it is a fixed literal,
-/// not derived from `cranelisp_platform::ABI_VERSION`), so the mismatch holds.
+/// The host's `ABI_VERSION` is currently `6` (DEF-5 bump, §5.5.5); baking `2`
+/// here (a prior ABI) guarantees `found (2) != expected (6)` at the
+/// `check_abi_version` gate, triggering
+/// `PlatformError::AbiVersionMismatch { expected: 6, found: 2 }`. This literal
+/// is intentionally NOT derived from `cranelisp_platform::ABI_VERSION` — it
+/// stays stale across every host ABI bump, so the mismatch holds regardless of
+/// the current real ABI.
 const STALE_ABI_VERSION: u32 = 2;
 
 static HOST: HostContext = HostContext::new();
@@ -83,10 +89,10 @@ const AREA_PARAM_R: &str = "r";
 
 /// Hand-rolled C-ABI manifest entry point.
 ///
-/// Mirrors `__declare_platform_body!`'s emitted `cranelisp_platform_manifest`
+/// Mirrors `__declare_platform_body!`'s emitted manifest entry point
 /// (init the host context, build a single `PlatformFn` descriptor, return the
 /// `PlatformManifest`) — but with `abi_version: STALE_ABI_VERSION` (= 2) in
-/// place of the macro's `abi_version: ABI_VERSION` (= 3). The host reads
+/// place of the macro's `abi_version: ABI_VERSION` (= 6, DEF-5). The host reads
 /// `abi_version` first (`src/platform.rs` Step 4) and refuses with
 /// `AbiVersionMismatch { expected, found }`, so the descriptor/GOT/schema
 /// machinery the real macro emits is unnecessary here.
@@ -94,9 +100,14 @@ const AREA_PARAM_R: &str = "r";
 /// # Safety
 /// Matches the macro-emitted entry point's contract: `callbacks` must point to
 /// a valid `HostCallbacks` for the duration of the call (the host passes a
-/// stack reference). `unsafe(no_mangle)` so the host dlsyms it by the fixed
-/// `cranelisp_platform_manifest` symbol name.
-#[unsafe(no_mangle)]
+/// stack reference). `#[unsafe(export_name = "cranelisp_platform_manifest_shapes-badabi")]`
+/// exports the per-platform-namespaced symbol the host dlsyms, exactly matching
+/// `cranelisp_platform::platform_manifest_symbol("shapes-badabi")` (§5.5.5
+/// invariant: every per-platform C-ABI export is name-suffixed). The macro
+/// emits the same string via `concat!("cranelisp_platform_manifest_", $name)`;
+/// this fixture hand-rolls the identical export name because it bypasses the
+/// macro to bake a stale ABI literal.
+#[unsafe(export_name = "cranelisp_platform_manifest_shapes-badabi")]
 pub unsafe extern "C" fn cranelisp_platform_manifest(
     callbacks: *const HostCallbacks,
 ) -> PlatformManifest {

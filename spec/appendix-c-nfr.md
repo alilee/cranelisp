@@ -6,7 +6,7 @@ Non-functional requirements (NFRs) differ from functional specification (Section
 
 ## C.1 Memory Management Properties [Tested]
 
-### C.1.1 Deterministic Deallocation [Tested tests/rc.rs::rc_string_alloc_and_drop]
+### C.1.1 Deterministic Deallocation [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 
 A conforming implementation MUST deallocate heap values deterministically — at a point in the program that is statically predictable from the source code, not deferred to a later collection phase. This rules out tracing garbage collectors as the primary strategy (though a tracing collector MAY supplement a deterministic allocator for cycle detection if the language later introduces mutable references).
 
@@ -16,7 +16,7 @@ A conforming implementation MUST deallocate heap values deterministically — at
 
 **Activation**: Ring 1 (heap introduction).
 
-### C.1.2 Reference-Count-Equals-One Optimization (RC=1 COW) [Tested tests/rc.rs::rc_vec_set_copy]
+### C.1.2 Reference-Count-Equals-One Optimization (RC=1 COW) [Tested tests/spec_12_runtime::vec_set_cow_preserves_original]
 
 When a heap value has a reference count of exactly 1, operations that would otherwise copy MUST be permitted to mutate in place. This is the **copy-on-write** property: the implementation checks the reference count at runtime and either copies (rc > 1) or mutates (rc == 1). The optimization is semantically invisible — the caller observes pure functional behavior regardless.
 
@@ -32,7 +32,7 @@ This applies to:
 
 **Activation**: Ring 1 (Vec COW in Ring 1 Chunk D or Sprint 3).
 
-### C.1.3 Consuming Calling Convention [Tested tests/rc.rs::rc_string_passed_to_function]
+### C.1.3 Consuming Calling Convention [Tested tests/spec_12_runtime::string_returned_from_function_freed]
 
 Heap-typed function parameters MUST use a consuming calling convention: the callee owns the argument and is responsible for decrementing it (or transferring ownership onward). The caller performs a reference count increment for non-last-use arguments and transfers ownership (no increment) for last-use arguments.
 
@@ -42,7 +42,7 @@ Heap-typed function parameters MUST use a consuming calling convention: the call
 
 **Activation**: Ring 1 (heap introduction).
 
-### C.1.4 Per-Type Drop Glue [Tested tests/rc.rs::rc_adt_in_match_arms]
+### C.1.4 Per-Type Drop Glue [Tested tests/spec_12_runtime::adt_product_alloc_and_match_unwrap]
 
 When a heap value's reference count reaches zero, the implementation MUST invoke type-specific drop glue that recursively decrements any heap-typed fields before freeing the allocation. Drop glue functions MUST be generated per type — not dispatched through a generic mechanism that examines runtime type tags.
 
@@ -54,7 +54,7 @@ When a heap value's reference count reaches zero, the implementation MUST invoke
 
 ## C.2 Data Structure Strategies [S24]
 
-### C.2.1 Persistent Vec (RRB Tree) [Tested tests/ring1.rs::vec_get_first]
+### C.2.1 Persistent Vec (RRB Tree) [Tested tests/spec_appendix_a_builtins::primitive_vec_get_first]
 
 The implementation MUST NOT commit to a flat-array Vec representation in a way that precludes upgrading to a persistent data structure based on Relaxed Radix Balanced (RRB) trees. RRB trees provide O(log₃₂ n) random access, O(log₃₂ n) update, and O(log₃₂ n) concatenation — with structural sharing that makes persistent functional updates cheap.
 
@@ -79,7 +79,7 @@ When the `Map` type is introduced, the implementation SHOULD use a Hash Array Ma
 
 **Activation**: Ring 2 or Ring 3 (when trait dispatch enables `Hash` and `Eq` constraints on key types).
 
-### C.2.3 Rope Strings [Tested tests/ring1.rs::string_concat]
+### C.2.3 Rope Strings [Tested tests/spec_appendix_a_builtins::primitive_str_concat]
 
 The implementation MUST NOT commit to a flat byte-array String representation in a way that precludes upgrading to a rope data structure. Ropes provide O(log n) concatenation and O(log n) indexing for large strings.
 
@@ -125,7 +125,7 @@ The compiler MUST perform independence analysis on `bind!` chains and insert par
 
 **Activation**: Ring 4 (IO and platform infrastructure).
 
-### C.3.3 Tail Call Optimization [Tested+Neg tests/ring0.rs::tco_deep_countdown]
+### C.3.3 Tail Call Optimization [Tested+Neg tests/spec_12_runtime::tco_deep_countdown]
 
 An implementation SHOULD optimize self-recursive tail calls into loops. This is normatively specified in [§12.5](12-runtime.md#125-tail-call-optimization).
 
@@ -135,7 +135,7 @@ An implementation SHOULD optimize self-recursive tail calls into loops. This is 
 
 ## C.4 Concurrency Preparation [S11]
 
-### C.4.1 Thread-Safe Reference Counting [Tested tests/rc.rs::rc_string_alloc_and_drop]
+### C.4.1 Thread-Safe Reference Counting [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 
 Reference count operations MUST use atomic instructions (or equivalent memory ordering guarantees) so that values can be shared across concurrent evaluation contexts without data races.
 
@@ -145,7 +145,7 @@ Reference count operations MUST use atomic instructions (or equivalent memory or
 
 **Activation**: Ring 1 (heap introduction). Atomic operations MUST be used from the start — retrofitting atomicity is error-prone and requires auditing every RC operation site.
 
-### C.4.2 Value Immutability [Tested tests/rc.rs::rc_vec_set_copy]
+### C.4.2 Value Immutability [Tested tests/spec_12_runtime::vec_set_cow_preserves_original]
 
 All user-visible values MUST be immutable after construction. There is no `set!` or mutable reference. This is a language-level guarantee that enables safe concurrent access without synchronization beyond reference counting.
 
@@ -183,7 +183,7 @@ The architecture MUST NOT preclude adding CSP-style (Communicating Sequential Pr
 
 ## C.5 Compilation Properties [S11]
 
-### C.5.1 Static Monomorphisation [Tested tests/ring2.rs::constrained_add_int]
+### C.5.1 Static Monomorphisation [Tested tests/spec_03_types::constrained_add_int]
 
 All constrained polymorphic functions MUST be monomorphised at call sites. The compiler generates specialized code for each concrete type instantiation. There is no runtime type dispatch for polymorphic functions.
 
@@ -244,11 +244,11 @@ The architecture MUST NOT preclude targeting compilation platforms beyond the ho
 
 ## C.6 Performance Targets [Tested]
 
-### C.6.1 Compilation Latency [Tested tests/repl_experience.rs::simple_eval_is_fast]
+### C.6.1 Compilation Latency [Tested tests/build_confidence::perf_simple_eval_latency_under_2000ms]
 
 REPL expressions SHOULD compile and execute in under 10ms for simple expressions and under 100ms for module-sized compilation units. This is not a hard requirement but guides architectural decisions — e.g., preferring Cranelift (fast compilation) over LLVM (slow compilation, faster output) for the JIT tier.
 
-### C.6.2 Allocation Pressure [Tested tests/rc.rs::rc_adt_enum_no_alloc]
+### C.6.2 Allocation Pressure [Tested tests/spec_12_runtime::adt_sum_none_no_heap_alloc]
 
 The implementation SHOULD minimize allocation pressure for common patterns:
 - Scalar operations (arithmetic, comparison, boolean logic) MUST NOT allocate.
@@ -256,7 +256,7 @@ The implementation SHOULD minimize allocation pressure for common patterns:
 - Nullary ADT constructors MUST NOT allocate (bare tag representation).
 - RC=1 COW operations MUST NOT allocate when the reference count is 1.
 
-### C.6.3 Test Suite Performance [Tested tests/repl_experience.rs::simple_eval_is_fast]
+### C.6.3 Test Suite Performance [Tested tests/build_confidence::perf_simple_eval_latency_under_2000ms]
 
 The full test suite SHOULD complete in under 30 seconds. Individual tests SHOULD complete in under 100ms. These targets guide decisions about test infrastructure (in-process vs. subprocess) and compilation caching.
 

@@ -12,6 +12,7 @@
 #   * `cranelisp-test-capture`-> target/debug/libcranelisp_test_capture.{rlib,so}
 #   * `cranelisp-shapes`      -> target/debug/libcranelisp_shapes.{rlib,so}  (ADT platform fixture)
 #   * `cranelisp-shapes-badabi`-> target/debug/libcranelisp_shapes_badabi.{rlib,so}
+#   * `cranelisp-web`          -> target/debug/libcranelisp_web.{rlib,so}  (HTTP platform; exemplar/platforms/web)
 #
 # It resolves them AT RUNTIME by scanning `target/debug/` (see
 # `src/exe.rs::find_bundle_lib` / `find_platform_rlibs` and
@@ -38,4 +39,5 @@ cargo build \
   -p cranelisp-test-capture \
   -p cranelisp-shapes \
   -p cranelisp-shapes-badabi \
-  -p cranelisp-boom
+  -p cranelisp-boom \
+  -p cranelisp-web

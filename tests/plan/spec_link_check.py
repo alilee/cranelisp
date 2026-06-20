@@ -30,6 +30,11 @@ structural check only.
 
 Motivated by Wave 3.5 (Sprint 64) audit: 42 mis-cites across 7 e2e
 files. See tests/plan/wave-3.5-audit.md.
+
+This script checks ONLY the test->spec direction. The reverse direction
+(does a spec's `[Tested tests/FILE::name]` citation point at a real test)
+is checked by the sibling `spec_coverage_reconcile.py` (FIXME 0414, S86),
+which also reconciles rotted citations. Run both as the two-sided guard.
 """
 
 from __future__ import annotations

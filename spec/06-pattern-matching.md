@@ -2,7 +2,7 @@
 
 This section defines the syntax, semantics, and type-checking rules for pattern matching in Cranelisp. Pattern matching is used to inspect algebraic data type values and bind their components to variables.
 
-## 6.1 Match Expression Syntax [Tested tests/e2e::e2e_ring1_pattern_matching, tests/e2e::e2e_session_ring1_adt_workflow, tests/ring1::adt_sum_nested_match, tests/ring1::repl_adt_match, tests/ring1::string_from_int_to_string_in_match]
+## 6.1 Match Expression Syntax [Tested tests/spec_06_pattern_matching::match_enum_basic]
 
 The `match` special form inspects a value (the **scrutinee**) against a series of **arms**, each consisting of a pattern and a body expression.
 
@@ -31,7 +31,7 @@ A `match` expression MUST contain at least one arm.
    Blue  "blue"])
 ```
 
-## 6.2 Pattern Kinds [Tested tests/examples::example_11_destructuring]
+## 6.2 Pattern Kinds [Tested tests/examples.rs::every_example_runs_with_documented_exit]
 
 ```ebnf
 pattern      = ctor_pattern | wildcard | var_pattern
@@ -44,7 +44,7 @@ wildcard     = '_'
 var_pattern  = symbol                       ; variable binding (see 6.2.4 for disambiguation)
 ```
 
-### 6.2.1 Constructor Pattern (data) [Tested tests/ring1::repl_adt_product_match, tests/ring1::dual_mode_match_with_field_bindings]
+### 6.2.1 Constructor Pattern (data) [Tested tests/spec_06_pattern_matching::pattern_data_constructor_binds_fields]
 
 ```clojure
 (Ctor var1 var2 ...)
@@ -71,7 +71,7 @@ The number of variable bindings MUST equal the number of fields declared in the 
 
 Binding names are arbitrary — they need not match the field names from the type definition. Bindings are always positional: the first binding corresponds to the first field, the second binding to the second field, and so on.
 
-### 6.2.2 Constructor Pattern (nullary) [Tested tests/ring0::adt_enum_match, tests/ring0::repl_adt_enum_match, tests/ring0::dual_mode_enum_match, tests/repl_experience::enum_define_then_match, tests/repl_experience::enum_used_in_function_chain, tests/ring1::dual_mode_enum_match]
+### 6.2.2 Constructor Pattern (nullary) [Tested tests/spec_06_pattern_matching::pattern_nullary_constructor]
 
 ```clojure
 Ctor
@@ -89,7 +89,7 @@ A bare symbol that names a known **nullary constructor** (a constructor with no 
    Blue  "blue"])
 ```
 
-### 6.2.3 Wildcard Pattern [Tested tests/ring0::match_wildcard, tests/repl_experience::enum_wildcard_pattern_in_repl, tests/ring1::adt_sum_wildcard_pattern]
+### 6.2.3 Wildcard Pattern [Tested tests/spec_06_pattern_matching::pattern_wildcard_catchall]
 
 ```clojure
 _
@@ -105,7 +105,7 @@ The wildcard pattern matches any value and binds nothing. It is typically used a
    _   "not red"])
 ```
 
-### 6.2.4 Variable Pattern [Tested tests/ring0::match_var_pattern, tests/ring1::adt_sum_var_pattern]
+### 6.2.4 Variable Pattern [Tested tests/spec_06_pattern_matching::pattern_variable_binds_value]
 
 ```clojure
 name
@@ -138,7 +138,7 @@ This means that if a constructor and a local variable have the same name, the co
 
 ## 6.3 Pattern Matching Semantics [Tested]
 
-### 6.3.1 Evaluation Order [Tested tests/ring1.rs::match_eval_order_top_to_bottom]
+### 6.3.1 Evaluation Order [Tested tests/spec_06_pattern_matching::pattern_first_match_wins]
 
 1. The scrutinee expression is evaluated exactly once.
 2. Patterns are tested in order, top-to-bottom. The first pattern that matches the scrutinee wins.
@@ -146,7 +146,7 @@ This means that if a constructor and a local variable have the same name, the co
 4. The winning arm's body expression is evaluated with those bindings in scope.
 5. The result of the body is the result of the entire `match` expression.
 
-### 6.3.2 Binding Scope [Tested tests/ring1.rs::match_binding_scope_limited_to_arm]
+### 6.3.2 Binding Scope [Tested tests/spec_06_pattern_matching::pattern_some_binds_value]
 
 Variable bindings from a pattern are in scope ONLY within that arm's body expression. They are NOT visible in other arms or outside the `match`.
 
@@ -157,7 +157,7 @@ Variable bindings from a pattern are in scope ONLY within that arm's body expres
 ; x is NOT in scope here
 ```
 
-### 6.3.3 Arm Body Type Agreement [Tested tests/ring1.rs::error_match_arm_type_disagreement]
+### 6.3.3 Arm Body Type Agreement [Tested tests/spec_06_pattern_matching::pattern_match_arm_body_type_mismatch_names_both_types_strict_neg]
 
 All arm bodies MUST have the same type. The type checker unifies the types of all arm body expressions. If unification fails, it is a compile-time error.
 
@@ -175,7 +175,7 @@ All arm bodies MUST have the same type. The type checker unifies the types of al
 
 ## 6.4 Type Checking Patterns [Tested]
 
-### 6.4.1 Constructor Patterns [Tested tests/ring1.rs::match_constructor_pattern_type_checking]
+### 6.4.1 Constructor Patterns [Tested crates/cranelisp-typecheck/src/infer/tests.rs::test_infer_match_data_constructor_pattern]
 
 When a constructor pattern appears in a `match`, the type checker:
 
@@ -185,15 +185,15 @@ When a constructor pattern appears in a `match`, the type checker:
 
 All constructor patterns in a `match` MUST be compatible with the scrutinee type. A pattern for constructor `Red` (of type `Color`) in a match on an `(Option Int)` scrutinee is a compile-time error.
 
-### 6.4.2 Variable Patterns [Tested tests/ring1.rs::match_variable_pattern_gets_scrutinee_type]
+### 6.4.2 Variable Patterns [Tested tests/spec_06_pattern_matching::pattern_int_match_with_wildcard]
 
 A variable pattern introduces a binding with the same type as the scrutinee. No type constraint is added — the variable simply receives the scrutinee's type.
 
-### 6.4.3 Wildcard Pattern [Tested tests/ring1.rs::match_wildcard_no_constraints]
+### 6.4.3 Wildcard Pattern [Tested tests/spec_06_pattern_matching::pattern_wildcard_catchall]
 
 The wildcard pattern adds no type constraints and introduces no bindings.
 
-### 6.4.4 Return Type [Tested tests/ring1.rs::match_return_type_unified]
+### 6.4.4 Return Type [Tested tests/spec_06_pattern_matching::pattern_arms_type_unify]
 
 The type of a `match` expression is the unified type of all arm bodies. The type checker unifies the body types pairwise. If any two bodies have incompatible types, it is a compile-time error.
 
@@ -201,7 +201,7 @@ The type of a `match` expression is the unified type of all arm bodies. The type
 
 Every `match` expression MUST be statically guaranteed to handle all possible values of the scrutinee type. The exhaustiveness rules depend on whether the scrutinee type is a concrete ADT or not.
 
-### 6.5.1 ADT Scrutinee Types [Tested+Neg tests/ring1::exhaustive_match_all_constructors, tests/ring1::exhaustive_match_with_wildcard, tests/ring1::exhaustive_match_with_var_pattern, tests/ring1::exhaustive_product_type, tests/ring1::match_three_constructors, tests/repl_experience::match_all_constructors, tests/ring1::neg_exhaustive_match_missing_constructor_compile_error, tests/ring1::neg_exhaustive_match_single_arm_lists_all_missing]
+### 6.5.1 ADT Scrutinee Types [Tested+Neg tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg]
 
 When the scrutinee type resolves to a concrete ADT (a type defined via `deftype`), a `match` expression MUST be **exhaustive**: either every constructor of the ADT appears as a constructor pattern in at least one arm, or at least one arm uses a wildcard or variable pattern (which covers all remaining cases).
 
@@ -222,7 +222,7 @@ A non-exhaustive match on a concrete ADT type is a **compile-time error**. The e
 (match c [Red 1 Green 2])
 ```
 
-### 6.5.2 Non-ADT Scrutinee Types [Tested+Neg tests/ring1.rs::match_non_adt_int_var_pattern, tests/ring1.rs::match_non_adt_bool_wildcard, tests/ring1.rs::neg_match_empty_arms_rejected, tests/ring1.rs::neg_match_non_adt_scrut_with_adt_constructor_rejected]
+### 6.5.2 Non-ADT Scrutinee Types [Tested+Neg tests/spec_06_pattern_matching::pattern_int_match_with_wildcard]
 
 When the scrutinee type is not a concrete ADT — i.e., it is `Int`, `Bool`, `Float`, `String`, a function type, or a type variable — the type has no finite set of constructors that could be enumerated. In this case, a `match` expression MUST include at least one **wildcard pattern** (`_`) or **variable pattern** as a catch-all arm. A `match` on a non-ADT scrutinee type without a wildcard or variable pattern is a **compile-time error**.
 
@@ -246,7 +246,7 @@ When the scrutinee type is not a concrete ADT — i.e., it is `Int`, `Bool`, `Fl
 
 Note: `Bool` is a primitive type, not an ADT defined via `deftype`. Since literal patterns are not supported (see Section 6.6.2), there is no way to write constructor patterns for `true` or `false`. A `match` on a `Bool` scrutinee MUST use a wildcard or variable pattern to satisfy exhaustiveness.
 
-### 6.5.3 Runtime Safety Net [Tested tests/ring0::error_non_exhaustive_match_runtime, tests/ring1::non_exhaustive_match_panics]
+### 6.5.3 Runtime Safety Net [Tested tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg]
 
 The runtime panic path ("match failed") remains in generated code as a safety net, but SHOULD be unreachable in programs that pass the exhaustiveness check.
 
@@ -254,7 +254,7 @@ The runtime panic path ("match failed") remains in generated code as a safety ne
 
 The following pattern features are NOT supported:
 
-### 6.6.1 No Nested Patterns [Tested tests/ring1.rs::error_nested_pattern]
+### 6.6.1 No Nested Patterns [Tested tests/spec_06_pattern_matching::pattern_nested_constructor_rejected_neg]
 
 Patterns MUST NOT contain sub-patterns. Each binding position in a constructor pattern MUST be a plain variable name — not another constructor pattern.
 
@@ -266,7 +266,7 @@ Patterns MUST NOT contain sub-patterns. Each binding position in a constructor p
 
 Use nested `match` expressions as a workaround (see Section 6.7.6).
 
-### 6.6.2 No Literal Patterns [Tested tests/ring1.rs::match_non_adt_int_var_pattern]
+### 6.6.2 No Literal Patterns [Tested tests/spec_06_pattern_matching::pattern_int_match_with_wildcard]
 
 Integer, float, string, and boolean literals MUST NOT appear as patterns.
 
@@ -280,7 +280,7 @@ Integer, float, string, and boolean literals MUST NOT appear as patterns.
 
 Use `if` expressions or constructor-based wrappers instead.
 
-### 6.6.3 No Or-Patterns [Tested tests/ring1.rs::match_eval_order_top_to_bottom]
+### 6.6.3 No Or-Patterns [Tested tests/spec_06_pattern_matching::pattern_first_match_wins]
 
 A single pattern MUST NOT combine multiple alternatives.
 
@@ -291,7 +291,7 @@ A single pattern MUST NOT combine multiple alternatives.
    Green        "middle"])    ; compile-time error
 ```
 
-### 6.6.4 No Guards [Tested tests/ring1.rs::match_eval_order_top_to_bottom]
+### 6.6.4 No Guards [Tested tests/spec_06_pattern_matching::pattern_first_match_wins]
 
 Pattern arms MUST NOT have guard conditions.
 
@@ -312,7 +312,7 @@ Use `if` inside the arm body instead:
 
 ## 6.7 Examples [Tested]
 
-### 6.7.1 Matching on Option [Tested tests/ring1::repl_adt_match]
+### 6.7.1 Matching on Option [Tested tests/spec_06_pattern_matching::match_enum_basic]
 
 ```clojure
 (deftype (Option a) None (Some [:a val]))
@@ -326,7 +326,7 @@ Use `if` inside the arm body instead:
 (unwrap-or 0 None)          ; -> 0
 ```
 
-### 6.7.2 Matching on a Custom Sum Type [Tested tests/e2e::e2e_ring1_pattern_matching]
+### 6.7.2 Matching on a Custom Sum Type [Tested tests/spec_06_pattern_matching::pattern_data_constructor_binds_fields]
 
 ```clojure
 (deftype Shape
@@ -342,7 +342,7 @@ Use `if` inside the arm body instead:
 (area (Rect 3.0 4.0))   ; -> 12.0
 ```
 
-### 6.7.3 Enum Matching [Tested tests/ring0::adt_enum_match]
+### 6.7.3 Enum Matching [Tested tests/spec_06_pattern_matching::pattern_nullary_constructor]
 
 ```clojure
 (deftype Color Red Green Blue)
@@ -356,7 +356,7 @@ Use `if` inside the arm body instead:
 (color-name Green)    ; -> "green"
 ```
 
-### 6.7.4 Variable Binding [Tested tests/ring0::match_var_pattern, tests/ring1::adt_sum_var_pattern]
+### 6.7.4 Variable Binding [Tested tests/spec_06_pattern_matching::pattern_variable_binds_value]
 
 A variable pattern can bind the entire scrutinee value, which is useful as a catch-all that still needs the value:
 
@@ -371,7 +371,7 @@ A variable pattern can bind the entire scrutinee value, which is useful as a cat
      (Err e) (str-concat "err: " (show e))]))
 ```
 
-### 6.7.5 Wildcard Usage [Tested tests/ring0::match_wildcard, tests/ring1::adt_sum_wildcard_pattern]
+### 6.7.5 Wildcard Usage [Tested tests/spec_06_pattern_matching::pattern_wildcard_catchall]
 
 The wildcard is useful for ignoring variants or fields:
 
@@ -391,7 +391,7 @@ The wildcard is useful for ignoring variants or fields:
 
 Note: When `_` appears inside a constructor pattern — `(Some _)` — it is a binding name (a variable named `_`), not the wildcard pattern. It binds the field value but by convention the binding is not used.
 
-### 6.7.6 Nested Match Workaround [Tested tests/ring1::adt_sum_nested_match]
+### 6.7.6 Nested Match Workaround [Tested tests/spec_06_pattern_matching::nested_match_in_arm_body]
 
 Since nested patterns are not supported, use nested `match` expressions to destructure multi-level values:
 
@@ -412,7 +412,7 @@ Since nested patterns are not supported, use nested `match` expressions to destr
 (get-x None)                   ; -> 0
 ```
 
-### 6.7.7 Product Type Destructuring [Tested tests/ring1::repl_adt_product_match]
+### 6.7.7 Product Type Destructuring [Tested tests/spec_06_pattern_matching::pattern_data_constructor_binds_fields]
 
 Product types (single-constructor types) can be destructured like any other constructor:
 
@@ -428,7 +428,7 @@ Product types (single-constructor types) can be destructured like any other cons
 
 Note: For product types, field accessor functions (e.g., `x`, `y`) are also available and may be more convenient than `match` when only one field is needed.
 
-### 6.7.8 Match in Trait Implementations [Tested tests/ring1.rs::match_in_trait_impl, tests/ring2.rs::user_trait_adt]
+### 6.7.8 Match in Trait Implementations [Tested tests/spec_07_traits::trait_impl_on_enum_adt_with_match_over_all_constructors]
 
 Pattern matching is commonly used in trait implementations for ADTs:
 

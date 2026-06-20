@@ -8,26 +8,26 @@ Registered in the `primitives` module. Available in all programs via `(import [p
 
 | Type | Description | Value Domain |
 |---|---|---|
-| `Int` | Signed 64-bit integer | -2^63 to 2^63 - 1 | [Tested tests/ring0.rs::arithmetic_addition]
-| `Bool` | Boolean | `true`, `false` | [Tested tests/ring0.rs::boolean_not_true]
-| `String` | Immutable UTF-8 string | Heap-allocated byte sequence | [Tested tests/ring1.rs::string_concat]
-| `Float` | IEEE 754 double-precision | 64-bit floating point | [Tested tests/ring0.rs::float_arithmetic]
+| `Int` | Signed 64-bit integer | -2^63 to 2^63 - 1 | [Tested tests/spec_appendix_a_builtins::primitive_add_i64]
+| `Bool` | Boolean | `true`, `false` | [Tested tests/spec_appendix_a_builtins::primitive_not_true]
+| `String` | Immutable UTF-8 string | Heap-allocated byte sequence | [Tested tests/spec_appendix_a_builtins::primitive_str_concat]
+| `Float` | IEEE 754 double-precision | 64-bit floating point | [Tested tests/spec_appendix_a_builtins::primitive_add_f64]
 
-## A.2 Built-in Compound Types [Tested tests/ring1.rs::vec_literal_int, tests/io.rs::io_pure_int_type, tests/macros.rs::macro_basic_repl]
+## A.2 Built-in Compound Types [Tested tests/spec_04_expressions::vec_literal_int, tests/spec_10_io::pure_int_unwraps_inline, tests/spec_09_macros::defmacro_identity_expands]
 
 Registered in the `primitives` and `macros` synthetic modules.
 
 | Type | Module | Kind | Description |
 |---|---|---|---|
-| `(Vec a)` | `primitives` | Built-in | Resizable array, element access via extern primitives | [Tested tests/ring1.rs::vec_len_three]
+| `(Vec a)` | `primitives` | Built-in | Resizable array, element access via extern primitives | [Tested tests/spec_04_expressions::vec_literal_int]
 | `(IO a)` | `primitives` | Compiler-seeded ADT | Effectful computation; constructors `Pure`, `Effect`, `Bind` | [S9]
-| `Trace` | `primitives` | Compiler-seeded ADT | Execution trace tree; single constructor `TraceCall` with fields `name` (String), `params` (SList String), `result` (String), `children` (SList Trace), `nanos` (Int). Not auto-imported; requires explicit import. | [Tested tests/ring4_trace.rs::trace_type_importable_from_primitives]
+| `Trace` | `primitives` | Compiler-seeded ADT | Execution trace tree; single constructor `TraceCall` with fields `name` (String), `params` (SList String), `result` (String), `children` (SList Trace), `nanos` (Int). Not auto-imported; requires explicit import. | [Tested tests/spec_04_expressions::trace_returns_trace_type]
 | `(Pair a b)` | `primitives` | Compiler-seeded ADT | Two-field product; single data constructor `Pair` with fields `first` (a), `second` (b). Not auto-imported; requires explicit import or qualified reference. | [S77 — tested-by /qa]
 | `(Result a b)` | `primitives` | Compiler-seeded ADT | Success/failure sum; constructors `Ok` (one field, a) and `Err` (one field, b). Not auto-imported; requires explicit import or qualified reference. | [S77 — tested-by /qa]
-| `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system | [Tested tests/macros.rs::macro_basic_repl]
-| `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation | [Tested tests/macros.rs::macro_basic_repl]
+| `Sexp` | `macros` | Compiler-seeded ADT | S-expression value for macro system | [Tested tests/spec_09_macros::defmacro_identity_expands]
+| `(SList a)` | `macros` | Compiler-seeded ADT | Cons-list for S-expression manipulation | [Tested tests/spec_09_macros::defmacro_identity_expands]
 
-## A.3 Primitive Functions (Host-Implemented) [Tested tests/ring0.rs::hello, tests/ring1.rs::str_concat, tests/ring1.rs::int_to_string]
+## A.3 Primitive Functions (Host-Implemented) [Tested tests/spec_04_expressions::literal_integer_positive, tests/spec_appendix_a_builtins::primitive_str_concat, tests/spec_appendix_a_builtins::primitive_int_to_string]
 
 Primitive functions are implemented in the host language and registered in the `primitives` module. They are the low-level substrate; standard library functions and trait implementations are built on top of them.
 
@@ -39,45 +39,45 @@ Inline primitives compile to inline Cranelift IR instructions — no function ca
 
 | Function | Description |
 |---|---|
-| `add-i64` | Add | [Tested tests/ring0.rs::arithmetic_addition]
-| `sub-i64` | Subtract | [Tested tests/ring0.rs::arithmetic_subtraction]
-| `mul-i64` | Multiply | [Tested tests/ring0.rs::arithmetic_multiplication]
-| `div-i64` | Integer division | [Tested tests/ring0.rs::arithmetic_division]
+| `add-i64` | Add | [Tested tests/spec_appendix_a_builtins::primitive_add_i64]
+| `sub-i64` | Subtract | [Tested tests/spec_appendix_a_builtins::primitive_sub_i64]
+| `mul-i64` | Multiply | [Tested tests/spec_appendix_a_builtins::primitive_mul_i64]
+| `div-i64` | Integer division | [Tested tests/spec_appendix_a_builtins::primitive_div_i64]
 
 **Integer comparison** — all `(Fn [Int Int] Bool)`:
 
 | Function | Description |
 |---|---|
-| `eq-i64` | Equality | [Tested tests/ring0.rs::comparison_operators]
-| `lt-i64` | Less than | [Tested tests/ring0.rs::comparison_operators]
-| `gt-i64` | Greater than | [Tested tests/ring0.rs::comparison_operators]
-| `le-i64` | Less than or equal | [Tested tests/ring0.rs::comparison_less_equal]
-| `ge-i64` | Greater than or equal | [Tested tests/ring0.rs::comparison_greater_equal]
+| `eq-i64` | Equality | [Tested tests/spec_appendix_a_builtins::primitive_lt_i64]
+| `lt-i64` | Less than | [Tested tests/spec_appendix_a_builtins::primitive_lt_i64]
+| `gt-i64` | Greater than | [Tested tests/spec_appendix_a_builtins::primitive_lt_i64]
+| `le-i64` | Less than or equal | [Tested tests/spec_appendix_a_builtins::primitive_le_i64]
+| `ge-i64` | Greater than or equal | [Tested tests/spec_appendix_a_builtins::primitive_ge_i64]
 
 **Float arithmetic** — all `(Fn [Float Float] Float)`:
 
 | Function | Description |
 |---|---|
-| `add-f64` | Add | [Tested tests/ring0.rs::float_arithmetic]
-| `sub-f64` | Subtract | [Tested tests/ring0.rs::float_subtraction]
-| `mul-f64` | Multiply | [Tested tests/ring0.rs::float_multiplication]
-| `div-f64` | Division | [Tested tests/ring0.rs::float_division]
+| `add-f64` | Add | [Tested tests/spec_appendix_a_builtins::primitive_add_f64]
+| `sub-f64` | Subtract | [Tested tests/spec_appendix_a_builtins::primitive_add_f64]
+| `mul-f64` | Multiply | [Tested tests/spec_appendix_a_builtins::primitive_add_f64]
+| `div-f64` | Division | [Tested tests/spec_appendix_a_builtins::primitive_add_f64]
 
 **Float comparison** — all `(Fn [Float Float] Bool)`:
 
 | Function | Description |
 |---|---|
-| `eq-f64` | Equality | [Tested tests/repl_experience.rs::all_float_comparison_primitives_work_in_repl]
-| `lt-f64` | Less than | [Tested tests/ring0.rs::float_comparison]
-| `gt-f64` | Greater than | [Tested tests/repl_experience.rs::all_float_comparison_primitives_work_in_repl]
-| `le-f64` | Less than or equal | [Tested tests/repl_experience.rs::all_float_comparison_primitives_work_in_repl]
-| `ge-f64` | Greater than or equal | [Tested tests/repl_experience.rs::all_float_comparison_primitives_work_in_repl]
+| `eq-f64` | Equality | [Tested tests/spec_appendix_a_builtins::primitive_lt_f64]
+| `lt-f64` | Less than | [Tested tests/spec_appendix_a_builtins::primitive_lt_f64]
+| `gt-f64` | Greater than | [Tested tests/spec_appendix_a_builtins::primitive_lt_f64]
+| `le-f64` | Less than or equal | [Tested tests/spec_appendix_a_builtins::primitive_lt_f64]
+| `ge-f64` | Greater than or equal | [Tested tests/spec_appendix_a_builtins::primitive_lt_f64]
 
 **Boolean** — `(Fn [Bool] Bool)`:
 
 | Function | Description |
 |---|---|
-| `not` | Boolean negation | [Tested tests/ring0.rs::boolean_not_true]
+| `not` | Boolean negation | [Tested tests/spec_appendix_a_builtins::primitive_not_true]
 
 ### Extern Primitives
 
@@ -87,45 +87,45 @@ Extern primitives are called via the foreign function interface.
 
 | Function | Type | Description |
 |---|---|---|
-| `int-to-string` | `(Fn [Int] String)` | Convert integer to decimal string | [Tested tests/ring1.rs::string_int_to_string]
-| `float-to-string` | `(Fn [Float] String)` | Convert float to string | [Tested tests/ring1.rs::string_float_to_string]
-| `bool-to-string` | `(Fn [Bool] String)` | `"true"` or `"false"` | [Tested tests/ring1.rs::string_bool_to_string]
-| `string-identity` | `(Fn [String] String)` | Identity for `String` (used by Display impl) | [Tested tests/ring1.rs::string_identity_returns_same]
+| `int-to-string` | `(Fn [Int] String)` | Convert integer to decimal string | [Tested tests/spec_appendix_a_builtins::primitive_int_to_string]
+| `float-to-string` | `(Fn [Float] String)` | Convert float to string | [Tested tests/spec_appendix_a_builtins::primitive_int_to_string]
+| `bool-to-string` | `(Fn [Bool] String)` | `"true"` or `"false"` | [Tested tests/spec_appendix_a_builtins::primitive_bool_to_string]
+| `string-identity` | `(Fn [String] String)` | Identity for `String` (used by Display impl) | [Tested tests/spec_appendix_a_builtins::primitive_string_identity_returns_same]
 
 **String operations**:
 
 | Function | Type | Description |
 |---|---|---|
-| `str-concat` | `(Fn [String String] String)` | Concatenate two strings | [Tested tests/ring1.rs::string_concat]
-| `str-eq` | `(Fn [String String] Bool)` | String equality (byte-wise) | [Tested tests/ring1.rs::string_eq_true]
-| `str-len` | `(Fn [String] Int)` | String length in bytes | [Tested tests/ring1.rs::string_len]
-| `parse-int` | `(Fn [String] (Option Int))` | Parse decimal integer; `None` on failure | [Tested tests/ring1.rs::parse_int_valid]
-| `substring` | `(Fn [String Int Int] String)` | Extract substring from start (inclusive) to end (exclusive); clamps out-of-bounds indices | [Tested+Neg tests/ring1.rs::string_substring_basic, tests/ring1.rs::string_substring_clamps_end]
-| `char-at` | `(Fn [String Int] String)` | Character at byte index as single-character string; empty string if out of bounds | [Tested+Neg tests/ring1.rs::string_char_at_valid_index, tests/ring1.rs::string_char_at_out_of_bounds_empty]
-| `split` | `(Fn [String String] (Vec String))` | Split string by separator | [Tested tests/ring1.rs::string_split_produces_parts]
-| `join` | `(Fn [String (Vec String)] String)` | Join strings with separator | [Tested tests/ring1.rs::string_join_reassembles]
-| `replace` | `(Fn [String String String] String)` | Replace all occurrences of `from` with `to` | [Tested+Neg tests/ring1.rs::string_replace_multiple, tests/ring1.rs::string_replace_missing_needle]
-| `trim` | `(Fn [String] String)` | Trim leading and trailing whitespace | [Tested+Neg tests/ring1.rs::string_trim_whitespace, tests/ring1.rs::string_trim_interior_preserved]
-| `starts-with?` | `(Fn [String String] Bool)` | Test if string starts with prefix | [Tested+Neg tests/ring1.rs::string_starts_with_true, tests/ring1.rs::string_starts_with_false]
-| `ends-with?` | `(Fn [String String] Bool)` | Test if string ends with suffix | [Tested+Neg tests/ring1.rs::string_ends_with_true, tests/ring1.rs::string_ends_with_false]
-| `contains?` | `(Fn [String String] Bool)` | Test if string contains substring | [Tested+Neg tests/ring1.rs::string_contains_true, tests/ring1.rs::string_contains_false]
-| `to-upper` | `(Fn [String] String)` | Convert to uppercase | [Tested tests/ring1.rs::string_to_upper_ascii]
-| `to-lower` | `(Fn [String] String)` | Convert to lowercase | [Tested tests/ring1.rs::string_to_lower_ascii]
+| `str-concat` | `(Fn [String String] String)` | Concatenate two strings | [Tested tests/spec_appendix_a_builtins::primitive_str_concat]
+| `str-eq` | `(Fn [String String] Bool)` | String equality (byte-wise) | [Tested tests/spec_appendix_a_builtins::primitive_str_eq_true]
+| `str-len` | `(Fn [String] Int)` | String length in bytes | [Tested tests/spec_appendix_a_builtins::primitive_str_len]
+| `parse-int` | `(Fn [String] (Option Int))` | Parse decimal integer; `None` on failure | [Tested tests/spec_appendix_a_builtins::primitive_parse_int_valid]
+| `substring` | `(Fn [String Int Int] String)` | Extract substring from start (inclusive) to end (exclusive); clamps out-of-bounds indices | [Tested+Neg tests/spec_appendix_a_builtins::primitive_substring_basic, tests/spec_appendix_a_builtins::primitive_substring_clamps_end]
+| `char-at` | `(Fn [String Int] String)` | Character at byte index as single-character string; empty string if out of bounds | [Tested+Neg tests/spec_appendix_a_builtins::primitive_char_at_valid, tests/spec_appendix_a_builtins::primitive_char_at_out_of_bounds_empty]
+| `split` | `(Fn [String String] (Vec String))` | Split string by separator | [Tested tests/spec_appendix_a_builtins::primitive_split_produces_parts]
+| `join` | `(Fn [String (Vec String)] String)` | Join strings with separator | [Tested tests/spec_appendix_a_builtins::primitive_join_reassembles]
+| `replace` | `(Fn [String String String] String)` | Replace all occurrences of `from` with `to` | [Tested+Neg tests/spec_appendix_a_builtins::primitive_replace_multiple, tests/spec_appendix_a_builtins::primitive_replace_missing_needle]
+| `trim` | `(Fn [String] String)` | Trim leading and trailing whitespace | [Tested+Neg tests/spec_appendix_a_builtins::primitive_trim_whitespace, tests/spec_appendix_a_builtins::primitive_trim_interior_preserved]
+| `starts-with?` | `(Fn [String String] Bool)` | Test if string starts with prefix | [Tested+Neg tests/spec_appendix_a_builtins::primitive_starts_with_true, tests/spec_appendix_a_builtins::primitive_starts_with_false]
+| `ends-with?` | `(Fn [String String] Bool)` | Test if string ends with suffix | [Tested+Neg tests/spec_appendix_a_builtins::primitive_ends_with_true, tests/spec_appendix_a_builtins::primitive_ends_with_false]
+| `contains?` | `(Fn [String String] Bool)` | Test if string contains substring | [Tested+Neg tests/spec_appendix_a_builtins::primitive_contains_true, tests/spec_appendix_a_builtins::primitive_contains_false]
+| `to-upper` | `(Fn [String] String)` | Convert to uppercase | [Tested tests/spec_appendix_a_builtins::primitive_to_upper_ascii]
+| `to-lower` | `(Fn [String] String)` | Convert to lowercase | [Tested tests/spec_appendix_a_builtins::primitive_to_lower_ascii]
 
 **Macro support**:
 
 | Function | Type | Description |
 |---|---|---|
-| `quote-sexp` | `(Fn [Sexp] Sexp)` | Convert a runtime `Sexp` value to constructor source code | [Tested tests/macros.rs::macro_quasiquote_repl]
+| `quote-sexp` | `(Fn [Sexp] Sexp)` | Convert a runtime `Sexp` value to constructor source code | [Tested tests/spec_09_macros::quasiquote_with_unquote]
 
 **Vec operations**:
 
 | Function | Type | Description |
 |---|---|---|
-| `vec-get` | `(Fn [(Vec a) Int] a)` | Index (bounds-checked; panics on out-of-bounds) | [Tested tests/ring1.rs::vec_get_first]
-| `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element at index replaced | [Tested tests/ring1.rs::vec_set_element]
-| `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended | [Tested tests/ring1.rs::vec_push_appends]
-| `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements | [Tested tests/ring1.rs::vec_len_three]
+| `vec-get` | `(Fn [(Vec a) Int] a)` | Index (bounds-checked; panics on out-of-bounds) | [Tested tests/spec_appendix_a_builtins::primitive_vec_get_first]
+| `vec-set` | `(Fn [(Vec a) Int a] (Vec a))` | Return new Vec with element at index replaced | [Tested tests/spec_appendix_a_builtins::primitive_vec_set_preserves_len]
+| `vec-push` | `(Fn [(Vec a) a] (Vec a))` | Return new Vec with element appended | [Tested tests/spec_appendix_a_builtins::primitive_vec_push_increases_len]
+| `vec-len` | `(Fn [(Vec a)] Int)` | Number of elements | [Tested tests/spec_04_expressions::vec_literal_int]
 
 `vec-set` and `vec-push` are semantically pure (return new values). The implementation MAY use copy-on-write when the reference count is 1.
 
@@ -152,17 +152,17 @@ All primitive functions (§A.3) and special forms (§A.4) MUST have docstrings a
 
 | Form | Description |
 |---|---|
-| `defn` / `defn-` | Function definition (single or multi-sig); `defn-` is module-private | [Tested tests/ring0.rs::arithmetic_addition]
-| `deftype` / `deftype-` | Algebraic data type definition; `deftype-` is module-private | [Tested tests/ring1.rs::parse_int_valid]
-| `deftrait` / `deftrait-` | Trait declaration; `deftrait-` is module-private | [Tested tests/ring2.rs::user_trait_simple]
-| `impl` | Trait implementation | [Tested tests/ring2.rs::trait_plus_int]
-| `defmacro` / `defmacro-` | Macro definition; `defmacro-` is module-private | [Tested tests/ring3_repl::r3_defmacro_display_single_clause]
-| `let` | Local bindings: `(let [x e1 y e2] body)` | [Tested tests/ring0.rs::nested_let]
-| `if` | Conditional: `(if cond then else)` | [Tested tests/ring0.rs::comparison_operators]
-| `fn` | Lambda expression: `(fn [params] body)` | [Tested tests/ring1.rs::closure_simple_capture]
-| `match` | Pattern matching: `(match scrutinee [pat1 body1 ...])` | [Tested tests/ring1.rs::parse_int_valid]
-| `mod` / `mod-` | Submodule declaration; `mod-` is module-private | [Tested tests/ring2.rs::single_file_via_run_project]
-| `import` | Name import: `(import [module [names]])` | [Tested tests/ring2.rs::import_specific_names]
+| `defn` / `defn-` | Function definition (single or multi-sig); `defn-` is module-private | [Tested tests/spec_appendix_a_builtins::primitive_add_i64]
+| `deftype` / `deftype-` | Algebraic data type definition; `deftype-` is module-private | [Tested tests/spec_appendix_a_builtins::primitive_parse_int_valid]
+| `deftrait` / `deftrait-` | Trait declaration; `deftrait-` is module-private | [Tested tests/spec_07_traits::user_trait_simple]
+| `impl` | Trait implementation | [Tested tests/spec_05_definitions::deftrait_impl_and_dispatch]
+| `defmacro` / `defmacro-` | Macro definition; `defmacro-` is module-private | [Tested tests/repl_introspection::defmacro_display_single_clause]
+| `let` | Local bindings: `(let [x e1 y e2] body)` | [Tested tests/spec_04_expressions::let_nested_shadowing]
+| `if` | Conditional: `(if cond then else)` | [Tested tests/spec_appendix_a_builtins::primitive_lt_i64]
+| `fn` | Lambda expression: `(fn [params] body)` | [Tested tests/spec_04_expressions::lambda_closure_captures]
+| `match` | Pattern matching: `(match scrutinee [pat1 body1 ...])` | [Tested tests/spec_appendix_a_builtins::primitive_parse_int_valid]
+| `mod` / `mod-` | Submodule declaration; `mod-` is module-private | [Tested tests/spec_08_modules::synthetic_primitives_module_available]
+| `import` | Name import: `(import [module [names]])` | [Tested tests/spec_08_modules::import_specific_name_compiles_and_runs]
 | `export` | Name re-export: `(export [module [names]])` | [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific]
 | `platform` | Platform DLL declaration (entry module only): `(platform stdio)` | [S9]
 | `trace` | Execution trace: `(trace expr)` — evaluates `expr` with call instrumentation, returns `Trace` ADT. A root special form (always available, no import, no module path), reserved name. The returned `Trace`/`TraceCall` ADT names require explicit import. | [S76]

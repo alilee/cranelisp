@@ -19,6 +19,21 @@ use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64};
 
 use super::{collect_var_ids_from_type, signature_heap_category, substitute_type_inline, CtorMeta, FnCompiler};
 
+/// The new-element descriptor threaded through `vec-set` codegen (COW path).
+///
+/// Bundles the four element-related parameters so the per-path helpers stay
+/// under the argument-count budget: the value to store, the per-element-type RC
+/// inc function pointer (for the runtime copy helper), the Vec's element type
+/// (for old-element dec + heap-category lookups), and the shared
+/// `element_consuming_inc` decision (`Some` ⇒ heap-typed Var ⇒ inc; `None` ⇒
+/// temporary/scalar ⇒ transfer).
+struct VecSetElem<'t> {
+    new_val: Value,
+    inc_fn_ptr: Value,
+    elem_type: &'t Option<Type>,
+    consuming_inc: Option<HeapCategory>,
+}
+
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -98,13 +113,13 @@ where
             }
             "vec-set" if args.len() == 3 => {
                 let result = self.compile_vec_set(
-                    &args[0], arg_vals, span,
+                    &args[0], &args[2], arg_vals, span,
                 )?;
                 Ok(Some(result))
             }
             "vec-push" if args.len() == 2 => {
                 let result = self.compile_vec_push(
-                    &args[0], arg_vals, span,
+                    &args[0], &args[1], arg_vals, span,
                 )?;
                 Ok(Some(result))
             }
@@ -211,9 +226,17 @@ where
     /// Compile `vec-set`: COW inline + extern fallback.
     ///
     /// arg_vals: [vec_val, idx_val, new_val]
+    ///
+    /// DEF-3: the new element follows the same consuming-Var rule as `vec-push`
+    /// (DEF-2) — the Vec gains a reference iff the element is a heap-typed **Var**
+    /// (still owned by the enclosing scope, which dec's it at scope exit). A
+    /// **temporary** element transfers its rc=1 reference into the Vec and MUST
+    /// NOT be inc'd. The prior code inc'd unconditionally on both the inline-COW
+    /// and `vec_set_copy` paths, leaking a temporary heap element by one ref.
     fn compile_vec_set(
         &mut self,
         vec_expr: &MonoExpr,
+        elem_arg: &MonoExpr,
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
@@ -224,28 +247,57 @@ where
         let elem_type = self.vec_elem_type(vec_expr);
         let inc_fn_ptr = self.resolve_elem_inc_fn_ptr(&elem_type, span)?;
 
+        // Decide the consuming-inc form for the new element (shared with
+        // vec-push via `element_consuming_inc` — Principle 7). `Some(category)`
+        // ⇒ heap-typed Var ⇒ the Vec gains a reference. `None` ⇒ temporary or
+        // scalar ⇒ ownership transfers, no inc.
+        let consuming_inc = elem_type.as_ref().and_then(|ty| {
+            let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+            element_consuming_inc(elem_arg, category)
+        });
+
         // Check if vec is at last use (compile-time).
         let is_last = self.is_vec_last_use(vec_expr);
 
         if is_last {
             // Runtime COW: check rc == 1.
-            self.compile_vec_set_cow(vec_val, idx_val, new_val, inc_fn_ptr, &elem_type, span)
+            let elem = VecSetElem {
+                new_val,
+                inc_fn_ptr,
+                elem_type: &elem_type,
+                consuming_inc,
+            };
+            self.compile_vec_set_cow(vec_val, idx_val, elem, span)
         } else {
-            // Copy path: call vec-set-copy extern.
-            self.compile_vec_set_copy_call(vec_val, idx_val, new_val, inc_fn_ptr, span)
+            // Copy path (non-last-use Vec): call vec-set-copy extern (which inc's
+            // `new_val` unconditionally), then compensate a temporary's over-inc.
+            let result = self.emit_extern_call_4(
+                "vec-set-copy", vec_val, idx_val, new_val, inc_fn_ptr, span,
+            )?;
+            self.emit_vec_set_copy_temp_compensation(new_val, &elem_type, consuming_inc, span);
+            Ok(result)
         }
     }
 
     /// Compile vec-set COW inline path with runtime RC check fallback to copy.
+    ///
+    /// `elem` bundles the new-element descriptor (value, per-element inc fn
+    /// pointer, Vec element type, and the shared `element_consuming_inc`
+    /// decision — `Some` for a heap-typed Var element ⇒ the Vec gains a
+    /// reference; `None` for a temporary or scalar ⇒ ownership transfers, no inc).
     fn compile_vec_set_cow(
         &mut self,
         vec_val: Value,
         idx_val: Value,
-        new_val: Value,
-        inc_fn_ptr: Value,
-        elem_type: &Option<Type>,
+        elem: VecSetElem<'_>,
         span: Span,
     ) -> Result<Value, CranelispError> {
+        let VecSetElem {
+            new_val,
+            inc_fn_ptr,
+            elem_type,
+            consuming_inc,
+        } = elem;
         let dealloc_id = self.ctx.dealloc_func_id;
 
         // Load RC and check if == 1 (unique owner).
@@ -311,19 +363,19 @@ where
             }
         }
 
-        // Inc the new value (if heap type) — the vec needs its own reference.
-        // The caller retains its reference; the vec is gaining one.
-        if let Some(ty) = &elem_type {
-            let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut self.builder, new_val);
-                }
-                HeapCategory::Mixed => {
-                    emit_guarded_rc_inc(&mut self.builder, new_val);
-                }
-                HeapCategory::NeverHeap => {}
+        // DEF-3: inc the new value ONLY for a heap-typed Var element — the Vec
+        // gains a reference while the Var stays owned by its enclosing scope. A
+        // temporary element transfers its rc=1 reference into the Vec (no inc);
+        // the prior unconditional inc leaked the temporary. Gated by the shared
+        // `element_consuming_inc` decision (mirrors vec-push / DEF-2).
+        match consuming_inc {
+            Some(HeapCategory::AlwaysHeap) => {
+                heap::emit_rc_inc(&mut self.builder, new_val);
             }
+            Some(HeapCategory::Mixed) => {
+                emit_guarded_rc_inc(&mut self.builder, new_val);
+            }
+            Some(HeapCategory::NeverHeap) | None => {}
         }
 
         // Store new value.
@@ -333,12 +385,14 @@ where
 
         self.builder.ins().jump(merge_block, &[vec_val]);
 
-        // Copy path: call vec-set-copy extern.
+        // Copy path: call vec-set-copy extern (runtime inc's `new_val`
+        // unconditionally), then compensate for a temporary heap element.
         self.builder.switch_to_block(copy_block);
         self.builder.seal_block(copy_block);
         let copy_result = self.emit_extern_call_4(
             "vec-set-copy", vec_val, idx_val, new_val, inc_fn_ptr, span,
         )?;
+        self.emit_vec_set_copy_temp_compensation(new_val, elem_type, consuming_inc, span);
         self.builder.ins().jump(merge_block, &[copy_result]);
 
         // Merge.
@@ -347,16 +401,56 @@ where
         Ok(self.builder.block_params(merge_block)[0])
     }
 
-    /// Compile vec-set copy path (non-last-use, always copies).
-    fn compile_vec_set_copy_call(
+    /// DEF-3 copy-path compensation. `vec_set_copy` (the runtime helper) inc's
+    /// `new_val` UNCONDITIONALLY — correct for a heap-typed Var element (the Vec
+    /// gains a reference while the Var stays live), but a one-reference LEAK for a
+    /// temporary heap element (which already transfers its rc=1 reference into the
+    /// copied Vec). Since the runtime cannot distinguish the two (it is a
+    /// compile-time / last-use property), the codegen compensates: for a heap
+    /// element whose `element_consuming_inc` decision was `None` (i.e. a temporary,
+    /// not a Var), emit a dec on `new_val` to cancel the runtime's extra inc. For a
+    /// Var element the runtime inc is correct and no compensation is emitted; for a
+    /// scalar element the runtime receives `inc_fn_ptr == 0` and never inc's, so no
+    /// compensation is needed either.
+    ///
+    /// This is the copy-path mirror of the COW path's gated inc — both end at "inc
+    /// iff heap-typed Var", matching vec-push (DEF-2).
+    fn emit_vec_set_copy_temp_compensation(
         &mut self,
-        vec_val: Value,
-        idx_val: Value,
         new_val: Value,
-        inc_fn_ptr: Value,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        self.emit_extern_call_4("vec-set-copy", vec_val, idx_val, new_val, inc_fn_ptr, span)
+        elem_type: &Option<Type>,
+        consuming_inc: Option<HeapCategory>,
+        _span: Span,
+    ) {
+        // Only a temporary (consuming_inc == None) heap element is over-inc'd.
+        if consuming_inc.is_some() {
+            return;
+        }
+        // Determine the element's heap category from the Vec element type.
+        // `None` means the element type is unknown (assume NeverHeap → the
+        // runtime received `inc_fn_ptr == 0` and never inc'd, so nothing to
+        // compensate).
+        let category = match elem_type {
+            Some(ty) => signature_heap_category(ty, Some(self.ctx.symbol_tables)),
+            None => return,
+        };
+        let dealloc_id = self.ctx.dealloc_func_id;
+        match category {
+            HeapCategory::AlwaysHeap => {
+                heap::emit_rc_dec(&mut self.builder, self.module, new_val, dealloc_id, None);
+            }
+            HeapCategory::Mixed => {
+                heap::emit_rc_dec_guarded(
+                    &mut self.builder,
+                    self.module,
+                    new_val,
+                    dealloc_id,
+                    None,
+                    true,
+                );
+            }
+            HeapCategory::NeverHeap => {}
+        }
     }
 
     /// Compile `vec-push`: COW inline + extern fallback.
@@ -365,6 +459,7 @@ where
     fn compile_vec_push(
         &mut self,
         vec_expr: &MonoExpr,
+        elem_arg: &MonoExpr,
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
@@ -373,6 +468,28 @@ where
 
         let elem_type = self.vec_elem_type(vec_expr);
         let inc_fn_ptr = self.resolve_elem_inc_fn_ptr(&elem_type, span)?;
+
+        // DEF-2: a heap-typed Var element forwarded into vec-push (e.g. the `x`
+        // parameter of `(defn push2 [v x] (vec-push v x))`) is still owned by its
+        // enclosing scope, which dec's it at scope exit. vec-push stores `new_val`
+        // into the Vec WITHOUT inc'ing on the fast/grow/copy paths (the Vec takes
+        // ownership of one reference). Without a caller-side consuming inc here, the
+        // Vec's stored reference and the scope's dec race against the SAME single
+        // reference — under-counting the element by 1 (COW then mutates an aliased
+        // backing → over-count on read-back). Mirrors compile_consuming_arg_list
+        // (Decision 24 §3.1): inc heap-typed Var args, transfer temporaries.
+        if let Some(elem_ty) = &elem_type {
+            let category = signature_heap_category(elem_ty, Some(self.ctx.symbol_tables));
+            match element_consuming_inc(elem_arg, category) {
+                Some(HeapCategory::AlwaysHeap) => {
+                    heap::emit_rc_inc(&mut self.builder, new_val);
+                }
+                Some(HeapCategory::Mixed) => {
+                    emit_guarded_rc_inc(&mut self.builder, new_val);
+                }
+                Some(HeapCategory::NeverHeap) | None => {}
+            }
+        }
 
         let is_last = self.is_vec_last_use(vec_expr);
 
@@ -1313,4 +1430,235 @@ fn emit_vec_bounds_panic<M: Module>(
     builder.ins().return_(&[dummy]);
 
     Ok(())
+}
+
+/// Decide whether a Vec-mutating primitive's new element argument needs a
+/// caller-side consuming RC inc, and of which form. Shared by `vec-push`
+/// (DEF-2) and `vec-set` (DEF-3) — the single source of the consuming-Var rule
+/// for Vec element ownership (Principle 7).
+///
+/// Under the uniform consuming convention (Decision 24 / ring2-rc.md §3.1), a
+/// `vec-push` / `vec-set` stores `new_val` into the Vec, transferring one
+/// reference to the Vec's ownership (the Vec's drop glue dec's the element when
+/// the Vec dies). For a **temporary** element expression (e.g. `(Box i)`) that
+/// started at rc=1, this transfer is balanced — no caller action. But for a
+/// **Var** element (e.g. the `x` parameter inside `(defn push2 [v x] (vec-push
+/// v x))`, or `c` in `(vec-set (cells-of g) idx c)`) the Var is still owned by
+/// its enclosing scope, which dec's it at scope exit; without a caller-side inc
+/// the Vec's stored reference and the scope's dec race against the SAME single
+/// reference:
+///
+///   - DEF-2 (`vec-push`): under-count by 1 — the heap element is freed too
+///     early / read stale (a Var forwarded through a wrapper). The fix ADDS the
+///     inc for the Var case.
+///   - DEF-3 (`vec-set`): the prior code inc'd UNCONDITIONALLY, so a
+///     **temporary** element (which transfers rc=1) got a permanent extra
+///     reference the Vec never drops — a leak. The fix makes the inc
+///     conditional, REMOVING it for temporaries while keeping it for Vars.
+///
+/// Both defects converge on the same end state: inc iff the element is a
+/// heap-typed **Var**. This mirrors `compile_consuming_arg_list` exactly: inc
+/// heap-typed Var arguments, leave temporaries to transfer. `NeverHeap`
+/// elements (Int) and non-Var element expressions return `None` (no inc) —
+/// which is why the scalar control and the direct-temporary path are unaffected.
+///
+/// Returns `Some(category)` (AlwaysHeap or Mixed) when the element is a heap-typed
+/// Var that must be inc'd; `None` otherwise.
+fn element_consuming_inc(
+    elem_arg: &MonoExpr,
+    elem_category: HeapCategory,
+) -> Option<HeapCategory> {
+    match elem_arg {
+        MonoExpr::Var { .. } => match elem_category {
+            HeapCategory::AlwaysHeap => Some(HeapCategory::AlwaysHeap),
+            HeapCategory::Mixed => Some(HeapCategory::Mixed),
+            HeapCategory::NeverHeap => None,
+        },
+        // Temporaries (constructor calls, function results, literals, …) start at
+        // rc=1 and transfer their single reference into the Vec — no caller inc.
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod vec_push_rc_tests {
+    //! DEF-2 — the `vec-push` element-argument consuming-inc decision.
+    //!
+    //! Pins the seam where DEF-2 lived: a heap-ADT element forwarded into
+    //! `vec-push` through a user `defn` wrapper (so the element is a heap-typed
+    //! Var, not a fresh temporary) was stored into the Vec WITHOUT a caller-side
+    //! consuming inc, while the wrapper's scope cleanup dec'd the same single
+    //! reference — under-counting the element by 1 (the COW single-owner test
+    //! then fired against a stale rc and mutated an aliased backing). The fix
+    //! (`element_consuming_inc`, the predicate now shared with vec-set / DEF-3)
+    //! emits the inc for a heap-typed Var element, matching
+    //! `compile_consuming_arg_list` (Decision 24 §3.1).
+    use super::*;
+
+    fn var(ty: ConcreteType) -> MonoExpr {
+        MonoExpr::Var {
+            name: cranelisp_types::Symbol::from("x"),
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            ty,
+        }
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — DEF-2: a heap ADT element forwarded as a
+    // Var into vec-push (the wrapper path) MUST get a caller-side consuming inc so
+    // the Vec's stored reference and the wrapper-scope dec balance. The bug: no inc
+    // → under-count → COW mutates an aliased backing → over-count on read-back.
+    // (`ConcreteType::String` stands in for any AlwaysHeap element type; the
+    // decision keys on Var-ness + the passed `HeapCategory`, not the type's shape.)
+    #[test]
+    fn heap_adt_var_element_gets_consuming_inc() {
+        let elem = var(ConcreteType::String);
+        assert_eq!(
+            element_consuming_inc(&elem, HeapCategory::AlwaysHeap),
+            Some(HeapCategory::AlwaysHeap),
+            "a heap-typed (AlwaysHeap) Var element MUST be consuming-inc'd (DEF-2)"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — a Mixed-ADT Var element is guarded-inc'd
+    // (the <1024 nullary-tag discriminator), still the consuming convention.
+    #[test]
+    fn mixed_adt_var_element_gets_guarded_inc() {
+        let elem = var(ConcreteType::String);
+        assert_eq!(
+            element_consuming_inc(&elem, HeapCategory::Mixed),
+            Some(HeapCategory::Mixed),
+            "a Mixed Var element MUST be guarded-consuming-inc'd (DEF-2)"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — CONTROL: a scalar (Int / NeverHeap) Var
+    // element is NOT inc'd — nothing to refcount. Pins that the scalar-wrapper
+    // control test stays GREEN (Int elements are unaffected by DEF-2).
+    #[test]
+    fn scalar_var_element_not_inc_neg() {
+        let elem = var(ConcreteType::Int);
+        assert_eq!(
+            element_consuming_inc(&elem, HeapCategory::NeverHeap),
+            None,
+            "a NeverHeap (Int) Var element MUST NOT be inc'd"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — CONTROL: a TEMPORARY heap element (e.g.
+    // `(Box i)` — a non-Var constructor call) transfers its rc=1 reference into the
+    // Vec and MUST NOT be inc'd. Pins that the DIRECT path (and the temporary-into-
+    // vec-push case generally) stays GREEN — inc'ing it would leak.
+    #[test]
+    fn heap_temporary_element_not_inc_neg() {
+        // A non-Var heap expression: an Int literal stands in structurally for
+        // "any non-Var temporary" — the decision keys on the Var-ness, and a
+        // heap temporary (e.g. a constructor call) is likewise non-Var.
+        let temp = MonoExpr::IntLit {
+            value: 0,
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        assert_eq!(
+            element_consuming_inc(&temp, HeapCategory::AlwaysHeap),
+            None,
+            "a temporary (non-Var) element transfers ownership — MUST NOT be inc'd"
+        );
+    }
+}
+
+#[cfg(test)]
+mod vec_set_rc_tests {
+    //! DEF-3 — the `vec-set` new-element consuming-inc decision, the
+    //! opposite-direction mirror of DEF-2.
+    //!
+    //! Pins the seam where DEF-3 lived: `vec-set`'s inline-COW codegen (and the
+    //! `vec_set_copy` runtime helper) inc'd the NEW element UNCONDITIONALLY.
+    //! Correct for a heap-typed Var element (the Vec gains a reference while the
+    //! Var stays scope-owned), but a one-reference LEAK for a TEMPORARY heap
+    //! element — `(vec-set v i (Box 7))` — whose sole rc=1 reference must
+    //! TRANSFER into the Vec (no inc). The fix routes the decision through the
+    //! shared `element_consuming_inc` predicate (Principle 7): inc iff heap-typed
+    //! Var — exactly the end state DEF-2 aligned vec-push to.
+    //!
+    //! This module pins the DECISION (`element_consuming_inc`, the same predicate
+    //! both ops now consult). The COW codegen gates its inc on `Some(_)`; the
+    //! copy path compensates a temporary's runtime over-inc when the decision is
+    //! `None` on a heap element. The decision-table below is the single source of
+    //! both behaviours.
+    use super::*;
+
+    fn var(ty: ConcreteType) -> MonoExpr {
+        MonoExpr::Var {
+            name: cranelisp_types::Symbol::from("v"),
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            ty,
+        }
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — DEF-3: a heap-typed Var element handed to
+    // vec-set (e.g. `c` in `(vec-set (cells-of g) idx c)`) MUST get a consuming
+    // inc — the Vec gains a reference while the Var stays scope-owned. (Direction
+    // check: this is the case that MUST keep inc'ing — DEF-3 must not regress
+    // DEF-2's under-count for Var elements.)
+    #[test]
+    fn heap_var_element_gets_consuming_inc() {
+        let elem = var(ConcreteType::String);
+        assert_eq!(
+            element_consuming_inc(&elem, HeapCategory::AlwaysHeap),
+            Some(HeapCategory::AlwaysHeap),
+            "a heap-typed (AlwaysHeap) Var element handed to vec-set MUST be \
+             consuming-inc'd (the Vec gains a reference; do not regress DEF-2)"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — a Mixed-ADT Var element is guarded-inc'd
+    // (the <1024 nullary-tag discriminator), still the consuming convention.
+    #[test]
+    fn mixed_var_element_gets_guarded_inc() {
+        let elem = var(ConcreteType::String);
+        assert_eq!(
+            element_consuming_inc(&elem, HeapCategory::Mixed),
+            Some(HeapCategory::Mixed),
+            "a Mixed Var element handed to vec-set MUST be guarded-consuming-inc'd"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — THE DEF-3 BUG SEAM: a TEMPORARY heap
+    // element — `(vec-set v i (Box 7))`, a non-Var constructor call — transfers
+    // its rc=1 reference into the Vec and MUST NOT be inc'd. The prior code inc'd
+    // unconditionally → the temporary leaked one heap object (5 allocs / 4 frees).
+    // The decision MUST be `None` here so the COW path skips the inc (and the copy
+    // path compensates the runtime's unconditional inc).
+    #[test]
+    fn heap_temporary_element_not_inc_neg() {
+        // An Int literal stands in structurally for "any non-Var temporary" — the
+        // decision keys on Var-ness, and a heap temporary (e.g. `(Box 7)`) is
+        // likewise non-Var. Passing AlwaysHeap models a heap element type.
+        let temp = MonoExpr::IntLit {
+            value: 7,
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        assert_eq!(
+            element_consuming_inc(&temp, HeapCategory::AlwaysHeap),
+            None,
+            "a TEMPORARY (non-Var) heap element handed to vec-set transfers \
+             ownership — MUST NOT be inc'd (DEF-3 leak when it was)"
+        );
+    }
+
+    // spec: spec/12-runtime.md §12.3.3 — CONTROL: a scalar (Int / NeverHeap) Var
+    // element handed to vec-set is NOT inc'd — nothing to refcount. Pins that the
+    // scalar control stays GREEN (Int elements are unaffected by DEF-3).
+    #[test]
+    fn scalar_var_element_not_inc_neg() {
+        let elem = var(ConcreteType::Int);
+        assert_eq!(
+            element_consuming_inc(&elem, HeapCategory::NeverHeap),
+            None,
+            "a NeverHeap (Int) Var element handed to vec-set MUST NOT be inc'd"
+        );
+    }
 }

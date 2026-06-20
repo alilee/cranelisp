@@ -5205,6 +5205,124 @@
         );
     }
 
+    // spec: spec/08-modules.md §8.8.1 — a pure-parametric polymorphic fn provided
+    //   ONLY through the implicit-prelude OUTER SCOPE (bare call, no explicit
+    //   import) must mint its concrete mono in the CONSUMING module, exactly like
+    //   the explicit-import path. DEF-1 (S86): the mono-collection chokepoint
+    //   `collect_imported_constrained_calls` resolved the callee with
+    //   `resolve_terminal_entry_and_home(current_module, name)` — rooted at the
+    //   current module ONLY, NOT consulting the prelude-fallback hop the value /
+    //   type / ctor / trait chokepoints already consult (S78 §2). So a bare
+    //   `count` reached via the implicit-prelude fallback was invisible to the
+    //   collector → no `monomorphise_call` → no `count$Vec` mono → codegen later
+    //   fails `undefined function: count`.
+    //
+    //   This UNIT pins the fix at the typecheck seam: a bare prelude-fallback-
+    //   resolved polymorphic call MUST register a concrete `count$..` mono in the
+    //   CONSUMING module's table. The companion e2e is
+    //   `tests/spec_08_modules.rs::def1_prelude_provided_defn_called_bare_enters_codegen_batch`.
+    #[test]
+    fn def1_bare_prelude_fallback_polymorphic_call_mints_mono_in_consumer() {
+        let mut tc = tc_with_prims();
+        let prelude = ModuleFullPath::from("prelude");
+        let consumer = ModuleFullPath::from("consumer");
+
+        // --- DEFINE the polymorphic `count` in the PRELUDE module --------------
+        // `(defn count [v] (vec-len v))` generalizes to
+        // `forall a. (Fn [(Vec a)] Int)` — a pure-parametric polymorphic Def
+        // (slot-less template) living in `prelude`. Its body wraps the
+        // GOT-dispatched primitive `vec-len`, the representative DEF-1 shape.
+        tc.set_current_module(prelude.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        let count_src = "(defn count [v] (vec-len v))";
+        let count_sexps = cranelisp_frontend::parse(count_src).expect("parse count");
+        let count_prog = cranelisp_frontend::build_forms(&count_sexps).expect("build count");
+        tc.check_program_self(&count_prog)
+            .expect("polymorphic `count` must type-check in `prelude`");
+
+        // Sanity: `count` is a PUBLIC pure-parametric polymorphic UserFn in
+        // `prelude` (a slot-less template — the mono-collectible shape).
+        match tc.modules.get(&prelude).unwrap().get("count") {
+            Some(ModuleEntry::Def { kind, scheme, .. }) => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state }
+                            if !matches!(fn_state, UserFnState::Constrained(_))
+                    ),
+                    "count must be a non-constrained UserFn template, got {kind:?}",
+                );
+                assert!(
+                    !scheme.type_vars.is_empty(),
+                    "count must be polymorphic (a generic template), got {scheme:?}",
+                );
+            }
+            other => panic!("count not a Def in prelude: {other:?}"),
+        }
+
+        // --- BUILD the CONSUMER module -----------------------------------------
+        // The consumer turns the implicit-prelude OUTER SCOPE on (the
+        // `PreludeFallback` bit) but does NOT import `count` — exactly the
+        // bare/glob path. `vec-len` etc. are NOT in the consumer's table; the
+        // bare `count` call must resolve through the prelude fallback hop.
+        tc.set_current_module(consumer.clone());
+        tc.prelude_fallback.insert(consumer.clone(), true);
+        // The consumer still needs primitive type names / Vec-literal support; a
+        // glob of primitives gives `Vec`, the int primitives etc. WITHOUT giving
+        // `count` (count lives only in prelude). This mirrors the e2e's
+        // `(export [primitives [*]])` re-export reaching the consumer, while
+        // `count` reaches ONLY via the implicit-prelude fallback.
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+        assert!(
+            tc.modules.get(&consumer).unwrap().get("count").is_none(),
+            "the consumer must NOT have an explicit `count` entry — it reaches \
+             `count` ONLY via the implicit-prelude fallback",
+        );
+
+        // `(defn main [] (count [10 20 30]))` — a BARE call to the
+        // prelude-provided polymorphic `count` with a concrete `(Vec Int)`.
+        let main_src = "(defn main [] (count [10 20 30]))";
+        let main_sexps = cranelisp_frontend::parse(main_src).expect("parse main");
+        let main_prog = cranelisp_frontend::build_forms(&main_sexps).expect("build main");
+        tc.check_program_self(&main_prog).expect(
+            "bare prelude-fallback `count` call must type-check; its mono must be \
+             collected via the prelude-fallback hop (DEF-1)",
+        );
+
+        // CRUX: a concrete `count$..` mono variant MUST be registered in the
+        // CONSUMER's module. Before the fix the collector never saw the
+        // prelude-fallback-resolved callee, so no mono was minted (and codegen
+        // later failed `undefined function: count`).
+        let monos: Vec<(String, bool)> = tc
+            .modules
+            .get(&consumer)
+            .unwrap()
+            .all_symbols()
+            .filter(|(name, _)| name.as_ref().starts_with("count$"))
+            .map(|(name, entry)| {
+                let concrete = matches!(
+                    entry,
+                    ModuleEntry::Def { kind, .. }
+                        if matches!(
+                            kind.as_ref(),
+                            DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                        )
+                );
+                (name.as_ref().to_string(), concrete)
+            })
+            .collect();
+        assert!(
+            !monos.is_empty(),
+            "a concrete `count$..` mono variant must be minted in the CONSUMER \
+             module for the bare prelude-fallback call (DEF-1); found none",
+        );
+        assert!(
+            monos.iter().all(|(_, c)| *c),
+            "every minted `count$..` mono must be a concrete UserFn owning its \
+             own GOT slot; found: {monos:?}",
+        );
+    }
+
     // Vec has no dedicated `Type` variant; it is encoded as
     // `Type::ADT(primitives/Vec, [elem])` (see builtins.rs
     // `register_builtin_type_names`). The over-unification defect stamps this
@@ -5308,6 +5426,119 @@
                 assert_eq!(ret.as_ref(), &Type::Var(binder));
             }
             other => panic!("identity scheme not a fn type: {other:?}"),
+        }
+    }
+
+    // spec: spec/03-types.md §3.9.3 — Annotation Resolution (S86 D4). A SINGLE
+    //   annotation `:Eq a` is ambiguous (could be a concrete type OR a trait).
+    //   The typechecker first attempts to resolve it as a concrete type; if NO
+    //   type with that name exists, it resolves as a TRAIT CONSTRAINT
+    //   (try-type-then-trait). The frontend deliberately leaves a run-of-length-1
+    //   annotation as the resolved `TypeExpr::Named` (NOT `Bounds`) — see
+    //   `cranelisp-frontend::ast_builder::annotation_run_carrier` — delegating the
+    //   disambiguation to this seam. This is the typecheck half of FIXME 0346 /
+    //   0341 that was missing: before the D4 fix `:Eq a` errored
+    //   `unknown type \`Eq\` (from module \`\`)` because the `Named` arm only
+    //   tried type resolution and never fell back to a trait bound.
+    #[test]
+    fn single_trait_bound_param_resolves_via_try_type_then_trait() {
+        let mut tc = tc_with_prims();
+        register_marker_trait(&mut tc, "Eq", "eq?");
+
+        // (defn use-it [:Eq a] a) — `a` carries a SINGLE `:Eq` annotation, which
+        // the frontend leaves as `TypeExpr::Named(Eq)`. `Eq` is a trait, not a
+        // type, so type resolution fails and the binder must resolve as a trait
+        // constraint.
+        let single = TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Eq"),
+        ));
+        let defn = Defn {
+            name: Symbol::from("use-it"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("a"), Some(single))],
+                body: Expr::var(Symbol::from("a"), Span::SYNTHETIC),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let program = vec![TopLevel::Defn(defn)];
+        tc.check_program_self(&program).expect(
+            "defn with a single trait-bound param `:Eq a` must type-check via \
+             try-type-then-trait (spec §3.9.3, S86 D4)",
+        );
+
+        let scheme = match tc.symbol_table().get("use-it") {
+            Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+            other => panic!("use-it not a Def: {other:?}"),
+        };
+        // The single binder is generalized and carries the `Eq` constraint.
+        assert_eq!(
+            scheme.type_vars.len(), 1,
+            "use-it generalizes over its single constrained binder: {scheme:?}",
+        );
+        let binder = scheme.type_vars[0];
+        let constraints = scheme
+            .constraints
+            .get(&binder)
+            .unwrap_or_else(|| panic!("binder var {binder} has no constraints: {scheme:?}"));
+        let names: std::collections::HashSet<&str> =
+            constraints.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            names.contains("Eq"),
+            "binder must be constrained by Eq (single-bound try-type-then-trait), \
+             got {names:?} (S86 D4)",
+        );
+    }
+
+    // spec: spec/03-types.md §3.9.3 — a single annotation naming a CONCRETE TYPE
+    //   (`:Int x`) still resolves as a type, NOT a trait (the try-type-then-trait
+    //   fallback only fires when type resolution fails). Negative guard that the
+    //   D4 fix does not over-trigger and turn every single annotation into a
+    //   constrained var.
+    #[test]
+    fn single_concrete_type_annotation_stays_concrete_neg() {
+        let mut tc = tc_with_prims();
+        // (defn id-int [:Int x] x) — `Int` is a real type, so the binder MUST be
+        // the concrete `Int`, never a constrained var.
+        let int_ann = TypeExpr::Named(cranelisp_types::TypeRef::new(
+            None,
+            TypeName::from("Int"),
+        ));
+        let defn = Defn {
+            name: Symbol::from("id-int"),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: vec![(Symbol::from("x"), Some(int_ann))],
+                body: Expr::var(Symbol::from("x"), Span::SYNTHETIC),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        let program = vec![TopLevel::Defn(defn)];
+        tc.check_program_self(&program)
+            .expect("defn with concrete `:Int` param must type-check");
+
+        let scheme = match tc.symbol_table().get("id-int") {
+            Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+            other => panic!("id-int not a Def: {other:?}"),
+        };
+        // No constrained generalization — the param is the concrete `Int`.
+        assert!(
+            scheme.constraints.is_empty(),
+            "a concrete `:Int` annotation must NOT become a constrained var: {scheme:?}",
+        );
+        match &scheme.ty {
+            Type::Fn(params, _) => assert_eq!(
+                params[0],
+                Type::Int,
+                "param annotated `:Int` must be the concrete Int type, got {:?}",
+                params[0],
+            ),
+            other => panic!("id-int scheme not a fn type: {other:?}"),
         }
     }
 
@@ -6143,4 +6374,116 @@
             ModuleStrategy::Additive,
         )
         .expect("a fully concrete `Int` value at a codegen position MUST be admitted (§3.11.1)");
+    }
+
+    // spec: spec/07-traits.md §7.1.5 + spec/08-modules.md §8.6 — DEFECT D1 (S86):
+    //   a SYNTHESIZED default-method body's free names MUST resolve in the trait's
+    //   DEFINING module, not the impl-writer's (caller's) module. A trait `Foo`
+    //   declared in module `trait_mod` (which globs primitives) has a default
+    //   method `bar` whose body references the bare primitive `add-i64`. An impl
+    //   in module `user` (NO primitives glob) omits `bar`, so
+    //   `generate_default_methods` synthesizes the body and `check_impl_method_with_sig`
+    //   checks it. Before the fix, that check runs in `user`'s `current_module`, so
+    //   `add-i64` resolves there and fails (`undefined variable: add-i64`). The fix
+    //   mirrors `recheck_body_for_mono`'s defining-module switch into the
+    //   default-method check path, so the body re-checks in `trait_mod`'s import
+    //   context and `add-i64` resolves.
+    #[test]
+    fn default_method_body_resolves_in_trait_defining_module() {
+        let mut tc = tc_with_prims();
+        let trait_mod = ModuleFullPath::from("trait_mod");
+        let user = ModuleFullPath::from("user");
+
+        // --- DEFINING module `trait_mod`: globs primitives; declares `Foo` with a
+        //     required `req` and a DEFAULT `bar` whose body uses bare `add-i64`. ---
+        tc.set_current_module(trait_mod.clone());
+        seed_glob_import(&mut tc, &ModuleFullPath::from("primitives"));
+
+        let default_bar_body = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("add-i64"), Span::SYNTHETIC)),
+            args: vec![
+                Expr::var(Symbol::from("a"), Span::SYNTHETIC),
+                Expr::var(Symbol::from("b"), Span::SYNTHETIC),
+            ],
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let decl = TraitDecl {
+            name: TraitName::from("Foo"),
+            docstring: None,
+            type_params: vec![Symbol::from("a")],
+            methods: vec![
+                // Required method: (req [self] Self) — must be supplied by the impl.
+                TraitMethodSig {
+                    name: Symbol::from("req"),
+                    docstring: None,
+                    params: vec![(Symbol::from("self"), TypeExpr::SelfType)],
+                    ret_type: TypeExpr::SelfType,
+                    span: Span::SYNTHETIC,
+                    hkt_param_index: None,
+                    default_body: None,
+                },
+                // Default method: (bar [a b] Int (add-i64 a b)) — body uses a
+                // bare primitive in scope ONLY in `trait_mod`.
+                TraitMethodSig {
+                    name: Symbol::from("bar"),
+                    docstring: None,
+                    params: vec![
+                        (Symbol::from("a"), TypeExpr::SelfType),
+                        (Symbol::from("b"), TypeExpr::SelfType),
+                    ],
+                    ret_type: TypeExpr::Named(cranelisp_types::TypeRef::new(
+                        None,
+                        TypeName::from("Int"),
+                    )),
+                    span: Span::SYNTHETIC,
+                    hkt_param_index: None,
+                    default_body: Some(default_bar_body),
+                },
+            ],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_decl_self(&decl)
+            .expect("`Foo` declares in its defining module");
+
+        // --- IMPL module `user`: does NOT glob primitives; imports the trait +
+        //     methods, and registers an impl that OMITS `bar` (forcing default
+        //     synthesis + check). `add-i64` is NOT bare-in-scope here. ---
+        tc.set_current_module(user.clone());
+        seed_specific_import(&mut tc, &trait_mod, &["Foo", "req", "bar"]);
+        // `user` needs `Int` reachable for the impl target / sig resolution, but
+        // explicitly NOT `add-i64`.
+        seed_specific_import(&mut tc, &ModuleFullPath::from("primitives"), &["Int"]);
+
+        let impl_ = TraitImpl {
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("Foo")),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("req"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![(Symbol::from("self"), None)],
+                    body: Expr::var(Symbol::from("self"), Span::SYNTHETIC),
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+
+        // CRUX: registering the impl synthesizes + checks the default `bar` body.
+        // Before the fix this fails with `undefined variable: add-i64` (the body
+        // is checked in `user`'s scope). After the fix the body re-checks in
+        // `trait_mod`'s scope, where `add-i64` resolves.
+        tc.register_trait_impl_self(&impl_).unwrap_or_else(|e| {
+            panic!(
+                "default-method body must resolve `add-i64` in the trait's \
+                 DEFINING module (`trait_mod`), not the impl writer's (`user`); \
+                 got: {e:?}"
+            )
+        });
     }

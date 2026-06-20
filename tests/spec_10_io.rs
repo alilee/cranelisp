@@ -162,6 +162,46 @@ fn defn_returning_pure_displays_fn_type() {
     );
 }
 
+// spec: spec/10-io.md §10.1.1 — Type System Integration: IO propagates upward
+// through the call graph automatically via HM inference, with no special rules.
+// A fn that produces an IO value (here `(Pure 5)`) has `IO` in its inferred
+// return type WITHOUT any annotation. The REPL display shows
+// `(Fn [] (primitives/IO primitives/Int))` — the IO marker is present, proving
+// propagation is type-inferred, not annotated.
+#[test]
+fn io_propagates_into_inferred_return_type() {
+    let out = repl("(defn mk [] (Pure 5))\nmk\n");
+    assert!(
+        out.stdout.contains("(Fn [] (primitives/IO primitives/Int))"),
+        "a fn producing an IO value MUST inherit `IO` in its inferred return \
+         type with no annotation (spec/10-io.md §10.1.1 propagation); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/10-io.md §10.1.2 — Purity Guarantee: a function whose type does
+// NOT contain `IO` cannot have performed side effects — enforced by the type
+// system. Using an `IO`-typed value where a pure value is expected MUST produce
+// a type mismatch. Here `(mk)` has type `(IO Int)`; passing it to `add-i64`
+// (which expects `Int`) MUST be rejected as a type error naming the IO type.
+// This is the negative enforcing the purity boundary.
+#[test]
+fn io_value_in_pure_position_is_type_error_neg() {
+    let out = repl("(defn mk [] (Pure 5))\n(add-i64 1 (mk))\n");
+    assert!(
+        out.stdout.contains("type error") || out.stdout.contains("type mismatch"),
+        "using an IO-typed value where a pure value is expected MUST be a type \
+         error (spec/10-io.md §10.1.2 purity guarantee); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("IO"),
+        "the purity-violation type error MUST name the offending `IO` type; \
+         got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: spec/10-io.md §10.3 — bind result inferred as polymorphic
 #[test]
 fn bind_polymorphic_inference() {
@@ -874,6 +914,35 @@ fn io_observer_registration_lives_in_intrinsics() {
 /// Per-call sleep duration. >=100 ms swamps OS jitter; 200 ms gives a wide
 /// margin against the 1.5x midpoint in both directions.
 const RS_SLEEP_MS: u64 = 200;
+
+/// Best-of-N attempts for a POSITIVE wall-clock parallelism witness.
+///
+/// A "parallelism makes this faster" assertion (`run_ms < RS_MIDPOINT_MS`) is
+/// fragile under a saturated full-workspace `cargo nextest run` (16 processes):
+/// when the parallel sparks are starved of cores the wall-clock balloons past
+/// the midpoint even though the scheduling is correct. CPU contention can only
+/// ever make a measurement SLOWER than the true parallel wall-clock, never
+/// faster, so taking the MINIMUM over N attempts filters contention noise and
+/// reflects the genuine parallelization capability. The threshold is unchanged
+/// — if parallelism is actually broken, ALL N runs measure ~2*D (~400 ms) and
+/// the assertion still fails.
+///
+/// Only POSITIVE (`< RS_MIDPOINT_MS`) witnesses use this. NEGATIVE / serial
+/// guards (`> RS_MIDPOINT_MS`) stay single-shot: contention only makes those
+/// MORE serial, so they are already robust, and `min` could weaken them.
+///
+/// Hardened S86 (the S85 map-reduce best-of-N precedent applied to the auto-IO
+/// timing witnesses; see tests/plan/ledger.md S86 entry).
+const RS_BEST_OF_N: usize = 5;
+
+/// Run `attempt` `RS_BEST_OF_N` times and return the minimum elapsed-ms.
+fn best_of_n_ms(mut attempt: impl FnMut() -> u128) -> u128 {
+    (0..RS_BEST_OF_N)
+        .map(|_| attempt())
+        .min()
+        .expect("RS_BEST_OF_N >= 1")
+}
+
 /// Structural inequality boundary: 1.5 x single-call duration.
 const RS_MIDPOINT_MS: u128 = (RS_SLEEP_MS as u128 * 3) / 2; // 300 ms
 
@@ -1008,8 +1077,10 @@ fn resource_serial_same_token_serializes() {
 // IS the defect signal.
 #[test]
 fn resource_serial_diff_token_parallelizes() {
-    // Different tokens: 1 and 2.
-    let run_ms = rs_run_elapsed_ms(1, 2);
+    // Different tokens: 1 and 2. Best-of-N min (positive witness; see
+    // best_of_n_ms) so full-workspace CPU saturation can't masquerade as a
+    // scheduling regression.
+    let run_ms = best_of_n_ms(|| rs_run_elapsed_ms(1, 2));
     assert!(
         run_ms < RS_MIDPOINT_MS,
         "--run diff-token: expected concurrent wall-clock < {RS_MIDPOINT_MS}ms \
@@ -1019,7 +1090,7 @@ fn resource_serial_diff_token_parallelizes() {
          scheduling-not-wired defect, not a margin to relax."
     );
 
-    let link_ms = rs_link_elapsed_ms(1, 2);
+    let link_ms = best_of_n_ms(|| rs_link_elapsed_ms(1, 2));
     assert!(
         link_ms < RS_MIDPOINT_MS,
         "--link diff-token: expected concurrent wall-clock < {RS_MIDPOINT_MS}ms \
@@ -1192,7 +1263,9 @@ fn prog_link_elapsed_ms(source: &str, expected_exit: i32) -> u128 {
 #[test]
 fn auto_io_independent_diff_token_parallelizes_e2e() {
     let src = commutative_indep_program();
-    let run_ms = prog_run_elapsed_ms(&src, 144);
+    // Best-of-N min (positive witness; see best_of_n_ms) so full-workspace CPU
+    // saturation can't masquerade as a scheduling regression.
+    let run_ms = best_of_n_ms(|| prog_run_elapsed_ms(&src, 144));
     assert!(
         run_ms < RS_MIDPOINT_MS,
         "--run independent-Commutative: expected concurrent wall-clock < \
@@ -1202,7 +1275,7 @@ fn auto_io_independent_diff_token_parallelizes_e2e() {
          scheduling-not-wired defect, not a margin to relax."
     );
 
-    let link_ms = prog_link_elapsed_ms(&src, 144);
+    let link_ms = best_of_n_ms(|| prog_link_elapsed_ms(&src, 144));
     assert!(
         link_ms < RS_MIDPOINT_MS,
         "--link independent-Commutative: expected concurrent wall-clock < \
@@ -1322,7 +1395,9 @@ fn auto_io_par_grouping_uniform_across_modes() {
     // The grouping decision must be the SAME (parallelise) in --run and --link.
     // Both timing windows must fall below the 1.5*D midpoint — if any mode skips
     // the pass, that mode measures ~2*D and this fails for that mode.
-    let run_ms = prog_run_elapsed_ms(&src, 144);
+    // Best-of-N min per leg (positive witness; see best_of_n_ms) so
+    // full-workspace CPU saturation can't masquerade as a mode-uniformity hole.
+    let run_ms = best_of_n_ms(|| prog_run_elapsed_ms(&src, 144));
     assert!(
         run_ms < RS_MIDPOINT_MS,
         "--run mode: data-independent Commutative program did not parallelise \
@@ -1330,7 +1405,7 @@ fn auto_io_par_grouping_uniform_across_modes() {
          is dormant in --run (mode-uniformity hole; spec §10.12)."
     );
 
-    let link_ms = prog_link_elapsed_ms(&src, 144);
+    let link_ms = best_of_n_ms(|| prog_link_elapsed_ms(&src, 144));
     assert!(
         link_ms < RS_MIDPOINT_MS,
         "--link mode: data-independent Commutative program did not parallelise \

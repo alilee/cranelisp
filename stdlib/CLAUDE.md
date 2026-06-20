@@ -2,6 +2,71 @@
 
 Standard library for Cranelisp. Owned by `/stdlib` skill.
 
+## Current State (Sprint 86 Phase 6b — managed-surface revisit)
+
+S86 reframed the stdlib around a **managed, curated surface** (the
+hide-primitives pivot). See `plan-stdlib.md` §1.5 for the normative model.
+What landed this sprint:
+
+- **Curated Clojure verbs** `count`/`get`/`conj`/`assoc` added to
+  `collections/vec.cl` (wrapping `vec-len`/`vec-get`/`vec-push`/`vec-set`).
+  Reached module-qualified (`collections.vec/count`) or via import — NOT
+  bare prelude (the bare names are reserved for Phase-H trait dispatch).
+- **`Ord Bool`** impl added (`false < true`) in `compare/ord.cl`.
+  **`Ord String` is BLOCKED** — needs a code-point comparison primitive
+  (`char→int`/`str-lt`); the string primitive surface tests char equality
+  but cannot order differing chars. Usability finding for `/platform`/`/spec`.
+- **`head-of`/`tail-of` → `first`/`rest`** renamed in `collections/list.cl`
+  (Clojure alignment). Module-qualified; the bare name is reserved
+  (pair `first` coexists FQ-distinct). See FIXME 0402.
+- **FIXME 0402** (`target: /spec`) filed: reserve
+  `first`/`rest`/`get`/`count`/`map`/`filter`/`reduce` for Phase-H
+  trait-dispatched unified forms; pin list-`first` vs pair-`first` coexistence.
+
+**LANDED this sprint (S86 step 1.5d):**
+
+- **The de-leak.** The ~31 raw-primitive bare re-exports were REMOVED from
+  `prelude.cl` (`add-i64`/`vec-get`/`str-eq`/… no longer resolve bare; the
+  4 bare type re-exports `Int Bool Float String` stay). Users see only the
+  curated surface (`(+ a b)`/`(= a b)`/`(!= a b)`/`(< a b)`/`(show x)`).
+  Unblocked by the D1 fix (trait DEFAULT-method bodies — `!=`/`<=`/`>=` —
+  now resolve in the trait's defining module) and the D2 fix (`neq-string`
+  primitive exists, so String `!=` works). Curation invariants verified:
+  FQ `primitives/<name>` reachable; null-prelude module typechecks;
+  exemplar unaffected (it imports primitives explicitly, not via prelude).
+
+**STILL BLOCKED this sprint (carried — routed to `/qa` for narrow repros):**
+
+- **The collection-verb bare half (DEF-1).** Promoting curated Vec verbs
+  `count`/`get`/`conj` to BARE prelude is BLOCKED by a PIPELINE defect (not
+  curation): a plain `defn` the prelude only RE-EXPORTS resolves in
+  typecheck but its body never reaches the consuming program's codegen
+  batch — `(count [1 2 3])` typechecks then fails codegen with "undefined
+  function: count" (REPL + `--run`). Same defect already affects bare
+  `pure` (`io.monad`) — PRE-EXISTING, not caused by the de-leak. Root cause:
+  `derive_codegen_batch` (`src/worker.rs:621`) emits only `ModuleEntry::Def`
+  symbols; re-export installs `ModuleEntry::Import` (codegen-skipped).
+  Routed to `/qa` → `/int`. `count`/`get`/`conj`/`assoc` stay
+  module-qualified; the import path WORKS today
+  (`(import [collections.vec [count]])` then `(count [1 2 3])` ⇒ 3). When
+  DEF-1 lands, un-comment the `(export [collections.vec [count get conj]])`
+  line in `prelude.cl`.
+- **Self-test rollout** (`(mod test …)` submodules). BLOCKED by: circular
+  re-definition when a trait-module's test imports `testing.assertions`
+  ("trait Eq already defined"); submodule trait resolution ("unknown
+  trait Eq from module user"); `neq-string` codegen for String `!=`
+  (pre-existing, reproducible with `(!= "a" "b")` on HEAD); and
+  `testing.runner` cross-module-call SIGSEGV (unresolved
+  `__cranelisp_got_testing_runner`). The S82/S83 "runner 4/4 pass" note
+  does NOT reproduce on the current binary. Intended test bodies are
+  documented inline (`compare/eq.cl` §Self-tests) as the durable record.
+
+**Caching gotcha (S86):** REPL runs persist module scratch + a
+`.cranelisp-cache` in the CWD. A stale root `.cranelisp-cache` masks
+stdlib edits with confusing errors (e.g. "no impl of trait Ord for Bool"
+when the impl is present). Clear `./.cranelisp-cache` (or use `--no-cache`)
+when testing stdlib changes from the repo root.
+
 ## Current State (Sprint 82 Phase 6 — defect-restore)
 
 S82 fixed four S81-surfaced defects that had forced stdlib workarounds.

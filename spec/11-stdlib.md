@@ -4,7 +4,7 @@
 
 The Cranelisp language does not mandate a specific standard library. Any conforming implementation MAY provide a different set of library modules, provided it satisfies the language-level guarantees defined in Sections 1–10 and 12. This section describes those guarantees from the perspective of a standard library author.
 
-## 11.1 Language Guarantees to Library Authors [Tested tests/stdlib.rs::prelude_loads_without_errors]
+## 11.1 Language Guarantees to Library Authors [Tested crates/cranelisp-typecheck/src/checker/tests.rs::test_bare_module_has_root_contents_only]
 
 The language guarantees the following regardless of which standard library (if any) is provided:
 
@@ -16,7 +16,7 @@ The language guarantees the following regardless of which standard library (if a
 
 - **Special forms**: The structural special forms (`defn`, `deftype`, `deftrait`, `impl`, `defmacro`, `let`, `if`, `fn`, `match`, `mod`, `import`, `export`, `platform`) and `trace` are all **root special forms** — parser keywords with distinct syntax, always available without import and with no module path. `trace` produces a distinct trace node; the `Trace` / `TraceCall` types and the field accessors it returns ARE `primitives`-module entries that DO require import — the deliberate form/ADT asymmetry, mirroring `Sexp`-in-`macros` (see [Section 3.2.4](03-types.md#324-trace-type)).
 
-## 11.2 Compiler-Seeded Types [Tested tests/ring4_trace.rs::trace_type_importable_from_primitives, tests/ring4_trace.rs::trace_field_accessors_importable, tests/io.rs::io_pure_int_type]
+## 11.2 Compiler-Seeded Types [Tested+Neg tests/spec_04_expressions::trace_returns_trace_type, tests/spec_10_io::pure_int_unwraps_inline, tests/trace::trace_adt_names_are_importable_from_primitives, tests/trace::trace_adt_names_not_auto_imported_neg, tests/trace::trace_adt_names_reachable_via_qualified_path_without_import]
 
 The following types are seeded by the compiler into synthetic modules. A standard library author does not need to define them — they are always present. They are language-level requirements normatively specified in [Section 3](03-types.md), [Section 8.9](08-modules.md#89-synthetic-modules), and [Section 9.1](09-macros.md#91-sexp-data-model):
 
@@ -31,7 +31,7 @@ The following types are seeded by the compiler into synthetic modules. A standar
 
 Names in these modules are available via qualified reference (`primitives/add-i64`, `macros/SexpSym`) or by importing them (`(import [primitives [*]])`).
 
-## 11.3 Bootstrapping Order [Tested tests/stdlib.rs::prelude_loads_without_errors, tests/macros.rs::macro_uses_another_batch]
+## 11.3 Bootstrapping Order [Tested tests/spec_11_stdlib::prelude_loads_without_errors, tests/spec_09_macros::defmacro_identity_expands]
 
 A standard library that provides macros must be compiled with care because macro definitions and the types they operate on form a circular dependency. The two-pass bootstrapping order resolves this:
 
@@ -48,7 +48,7 @@ This ordering means a `defmacro` form can reference:
 
 Forward references to macros are not supported — a macro must appear before the code that uses it.
 
-## 11.4 Writing a Standard Library [Tested tests/stdlib.rs::prelude_loads_without_errors]
+## 11.4 Writing a Standard Library [Tested tests/spec_11_stdlib::prelude_loads_without_errors]
 
 Practical notes for library authors:
 

@@ -40,20 +40,33 @@ BOLD = "\033[1m"
 RESET = "\033[0m"
 
 
+def _first_comment(path):
+    """Return the first comment line of a .demo as its description."""
+    with open(path) as f:
+        for line in f:
+            if line.startswith(";"):
+                return line.lstrip("; ").strip()
+    return ""
+
+
+def _print_demo_row(path):
+    print(f"  {path.stem:20s} {DIM}{_first_comment(path)}{RESET}")
+
+
 def list_demos():
-    demos = sorted(DEMOS_DIR.glob("*.demo"))
-    if not demos:
+    active = sorted(DEMOS_DIR.glob("*.demo"))
+    archived = sorted((DEMOS_DIR / "archive").glob("**/*.demo"))
+    if not active and not archived:
         print("No demos found.")
         return
     print(f"{BOLD}Available demos:{RESET}")
-    for d in demos:
-        desc = ""
-        with open(d) as f:
-            for line in f:
-                if line.startswith(";"):
-                    desc = line.lstrip("; ").strip()
-                    break
-        print(f"  {d.stem:20s} {DIM}{desc}{RESET}")
+    for d in active:
+        _print_demo_row(d)
+    if archived:
+        print()
+        print(f"{BOLD}Archived (regression guards):{RESET}")
+        for d in archived:
+            _print_demo_row(d)
 
 
 def build_binary():
@@ -134,11 +147,16 @@ def main():
         sys.exit(0)
 
     demo_name = args[0]
+    # Resolve active path first, then fall back to the archive/ guards.
     demo_path = DEMOS_DIR / f"{demo_name}.demo"
     if not demo_path.exists():
-        print(f"Error: {demo_path} not found")
-        list_demos()
-        sys.exit(1)
+        archived = DEMOS_DIR / "archive" / f"{demo_name}.demo"
+        if archived.exists():
+            demo_path = archived
+        else:
+            print(f"Error: {demo_name}.demo not found (looked in demos/ and demos/archive/)")
+            list_demos()
+            sys.exit(1)
 
     repl_binary = build_binary()
     play_demo(demo_path, repl_binary)

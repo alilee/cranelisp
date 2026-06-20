@@ -1,0 +1,44 @@
+; Cranelisp — IO and effects
+; Effects are values of type (IO a). Nothing happens until they run.
+
+; A platform supplies real effects. stdio gives print and read-line:
+
+(platform stdio)
+(import [platform.stdio [print]])
+print
+
+; print returns an (IO Int) — the REPL runs it, you see the output, and
+; the inner value (the exit code) comes back:
+
+(print "hello, world")
+
+; do sequences effects left to right:
+
+(do (print "step 1") (print "step 2"))
+
+; bind! names the result of each effect for the next — like let, but for IO:
+
+(bind! [name (print "computing...")] (print "done"))
+
+; Pure lifts an ordinary value into IO so it can join an effect chain:
+
+(import [primitives [Pure bind]])
+(Pure 42)
+(bind (Pure 10) (fn [x] (print (str "got " x))))
+
+; A function that performs an effect is inferred as returning IO — you do
+; not annotate it; the type flows from print:
+
+(defn greet [name] (print (str "hi, " name)))
+(greet "cranelisp")
+
+; Effects compose with ordinary control flow. The branch picks which
+; effect runs:
+
+(if (> 10 5) (print "yes") (print "no"))
+
+; This is the shape of the Sudoku exemplar's main: parse a form body,
+; solve, then bind! the formatted board into print — pure computation in
+; the middle, effects only at the edges. See the `sudoku` demo.
+(bind! [board (Pure "0 2 _ _\n_ _ _ 3")]
+  (print (str "puzzle:\n" board)))

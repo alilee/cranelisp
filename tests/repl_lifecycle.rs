@@ -52,6 +52,66 @@ fn boot_banner_mentions_help() {
 }
 
 // =============================================================================
+// §6.1 / §6.3 — First Five Minutes / First Session Journey
+// =============================================================================
+
+// spec: repl/spec.md §6.1 — First Five Minutes / §6.3 First Session Journey:
+// a single END-TO-END journey driving the narrative arc a new user follows
+// from launch to confidence, in ONE session so state carries between phases.
+// The sub-steps are covered piecemeal elsewhere; this is the missing single
+// journey test the §6.1/§6.3 gap calls for. Each numbered §6.1 capability is
+// asserted in order:
+//   1. banner advertises /help               (§6.1 step 1, §6.3 Phase 1)
+//   2. evaluate an expression → typed result  (§6.1 step 2, §6.3 Phase 2)
+//   3. define a fn → inferred type displayed   (§6.1 step 3, §6.3 Phase 3)
+//   4. /list surfaces the user's definitions    (§6.1 step 4, §6.3 Phase 4)
+//   5. /sig + /info explain a symbol             (§6.1 step 5, §6.3 Phase 4)
+// Free-standing: uses the `add-i64` primitive (PrimitivesOnly prelude) rather
+// than the `+` operator from §6.1's example, which would require the trait
+// prelude (stdlib). The typed-result + inferred-type contract is identical.
+#[test]
+fn first_session_journey_launch_to_confidence() {
+    let out = repl_prims(
+        "(add-i64 1 2)\n\
+         (defn id [x] x)\n\
+         /list\n\
+         /sig id\n\
+         /info id\n",
+    );
+    let s = &out.stdout;
+    // Phase 1 — Orientation: banner names the language and the /help hint.
+    assert!(
+        s.contains("cranelisp REPL") && s.contains("/help"),
+        "Phase 1: banner MUST name the REPL and advertise /help \
+         (repl/spec.md §6.1 step 1 / §6.3 Phase 1); got:\n{s}"
+    );
+    // Phase 2 — First evaluation: typed result in `:Type value` form.
+    assert!(
+        s.contains(":primitives/Int 3"),
+        "Phase 2: a simple expression MUST yield a typed `:Type value` result \
+         (repl/spec.md §6.1 step 2 / §6.3 Phase 2); got:\n{s}"
+    );
+    // Phase 3 — Defining things: defn shows the inferred type scheme + FQ name.
+    assert!(
+        s.contains(":(Fn [a] a) user/id"),
+        "Phase 3: a defn MUST display its inferred type scheme + qualified name \
+         (repl/spec.md §6.1 step 3 / §6.3 Phase 3); got:\n{s}"
+    );
+    // Phase 4 — Introspection: /list surfaces the user's own definition.
+    assert!(
+        s.contains("id"),
+        "Phase 4: /list MUST surface the user's definitions \
+         (repl/spec.md §6.1 step 4 / §6.3 Phase 4); got:\n{s}"
+    );
+    // Phase 5 — Help on a symbol: /sig + /info explain `id`.
+    assert!(
+        s.matches("user/id").count() >= 2,
+        "Phase 5: /sig and /info MUST both explain the symbol `id` \
+         (repl/spec.md §6.1 step 5 / §6.3 Phase 4); got:\n{s}"
+    );
+}
+
+// =============================================================================
 // Single-form evals — repl/spec.md §1.2 (Expression Results) / §1.3 (Definition Results)
 // =============================================================================
 

@@ -58,18 +58,19 @@ fn read_source(rel: &str) -> String {
 // T23 per tests/plan/sprint71-platform.md row T23.
 #[test]
 fn sprint71_abi_version_baseline_co_regen() {
-    // (1) Source-side: ABI_VERSION must read `= 5;` after the FIXME 0327
-    //     Option-A bump (the dispatch-funnel fault-catch is DLL-local;
-    //     call_effect_thunk returns EffectOutcome). Was `= 4;` at the step-1
-    //     node-widen, `= 3;` at FIXME 0286 (the three-exports macro rework).
+    // (1) Source-side: ABI_VERSION must read `= 6;` after the DEF-5 bump (the
+    //     manifest export is namespaced per platform name, §5.5.5 / §6.7). Was
+    //     `= 5;` at FIXME 0327 Option-A (the DLL-local dispatch-funnel
+    //     fault-catch; call_effect_thunk returns EffectOutcome), `= 4;` at the
+    //     step-1 node-widen, `= 3;` at FIXME 0286 (the three-exports macro
+    //     rework).
     let lib_rs = read_source("src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 5;"),
-        "expected `pub const ABI_VERSION: u32 = 5;` in \
-         crates/cranelisp-platform/src/lib.rs (FIXME 0327 Option A: the \
-         call_effect_thunk force-return contract changes to EffectOutcome, \
-         bumping the ABI from 4 to 5). If you see this failure the source \
-         change was skipped or reverted."
+        lib_rs.contains("pub const ABI_VERSION: u32 = 6;"),
+        "expected `pub const ABI_VERSION: u32 = 6;` in \
+         crates/cranelisp-platform/src/lib.rs (DEF-5: the manifest export is \
+         namespaced per platform name, bumping the ABI from 5 to 6). If you \
+         see this failure the source change was skipped or reverted."
     );
 
     // (2) Baseline-side: the `public-api.txt` baseline must enumerate the
@@ -122,6 +123,9 @@ fn sprint71_abi_version_baseline_co_regen() {
         "cranelisp_platform::extract_layout_hash",
         "HostCallbacks::alloc_with_tag",
         "cranelisp_platform::null_alloc_with_tag",
+        // DEF-5 (§5.5.5): the shared emit/consume manifest-symbol helper joins
+        // the baseline in the same change-set as the ABI bump.
+        "cranelisp_platform::platform_manifest_symbol",
     ];
     // Retired surface MUST be absent — the marker-type DSL (S71) + the
     // jit_name / validate_schema surface (FIXME 0288 — GOT-indirect dispatch +

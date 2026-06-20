@@ -1,0 +1,83 @@
+; Cranelisp — the Sudoku solver
+; The showcase, end to end: ADTs model the domain, pure recursion does the
+; work, and one effect prints the result. A self-contained 4x4 sibling of
+; the 9x9 exemplar (exemplar/user.cl, exemplar/solver.cl).
+
+; The collection verbs the solver leans on:
+
+(import [collections.vec [count get assoc]])
+
+; === Domain types — a cell is one of three things ===
+; This is exactly exemplar/grid.cl's Cell, in miniature:
+
+(deftype Cell (Given [:Int value]) (Solved [:Int value]) (Candidates [:Int mask]))
+(Given 5)
+(defn cell-value [c] (match c [(Given v) v (Solved v) v (Candidates _) 0]))
+(cell-value (Given 5))
+
+; === Grid geometry — row, column, and box from a flat index ===
+
+(defn row4 [i] (/ i 4))
+(defn col4 [i] (- i (* (/ i 4) 4)))
+(defn box4 [i] (+ (* (/ (row4 i) 2) 2) (/ (col4 i) 2)))
+(str "cell 5 lives at row " (row4 5) ", col " (col4 5) ", box " (box4 5))
+
+; === Constraint check — may val sit at pos without conflicting? ===
+
+(defn no-conflict [board pos val i]
+  (if (= i 16) true
+    (if (= i pos) (no-conflict board pos val (+ i 1))
+      (if (= (get board i) 0) (no-conflict board pos val (+ i 1))
+        (let [peer (if (= (row4 i) (row4 pos)) true
+                     (if (= (col4 i) (col4 pos)) true (= (box4 i) (box4 pos))))]
+          (if peer
+            (if (= (get board i) val) false (no-conflict board pos val (+ i 1)))
+            (no-conflict board pos val (+ i 1))))))))
+
+; === Backtracking solver — place a digit, recurse, undo on failure ===
+; assoc returns a NEW board, so each guess is tried on its own copy.
+
+(defn solve [board pos guess]
+  (if (= pos 16) board
+    (if (not (= (get board pos) 0)) (solve board (+ pos 1) 1)
+      (if (> guess 4) (vec)
+        (if (no-conflict board pos guess 0)
+          (let [result (solve (assoc board pos guess) (+ pos 1) 1)]
+            (if (= (count result) 0) (solve board pos (+ guess 1)) result))
+          (solve board pos (+ guess 1)))))))
+
+; === Display — fold the flat board into rows of text ===
+
+(defn fmt-cell [v] (if (= v 0) "." (show v)))
+(defn fmt-row [b r c a]
+  (if (= c 4) a
+    (fmt-row b r (+ c 1) (str a (if (= c 0) "" " ") (fmt-cell (get b (+ (* r 4) c)))))))
+(defn fmt-grid [b r a]
+  (if (= r 4) a
+    (fmt-grid b (+ r 1) (str a (if (= r 0) "" "\n") (fmt-row b r 0 "")))))
+
+; === Solve a puzzle ===
+; The unsolved board, 0 = blank:
+
+(def puzzle (vec 0 2 0 0  0 0 0 3  4 0 0 0  0 0 1 0))
+(fmt-grid puzzle 0 "")
+
+; Solve it and show the completed grid:
+
+(def answer (solve puzzle 0 1))
+(fmt-grid answer 0 "")
+
+; === Print the result through the stdio platform ===
+; Pure computation in the middle, the single effect at the edge — the same
+; shape as exemplar/user.cl's main:
+
+(platform stdio)
+(import [platform.stdio [print]])
+(print (str "Sudoku solved:\n" (fmt-grid answer 0 "")))
+
+; === Unsolvable detection ===
+; Two 2s in row 0 of an otherwise-empty grid contradict; solve exhausts its
+; guesses and returns the empty Vec:
+
+(def contradiction (vec 2 2 0 0  0 0 0 0  0 0 0 0  0 0 0 0))
+(let [s (solve contradiction 0 1)] (if (= (count s) 0) "unsolvable" (fmt-grid s 0 "")))

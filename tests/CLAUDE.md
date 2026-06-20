@@ -105,6 +105,51 @@ spec promise. That is a human-review concern at audit time per
 `memory/feedback_validate_tests_against_spec.md`. The linter only
 verifies that the cited anchor structurally exists.
 
+### Spec→test direction (`spec_coverage_reconcile.py`)
+
+`tests/plan/spec_coverage_reconcile.py` is the **reverse-direction** guard,
+added Sprint 86 (FIXME 0414). The existing `spec_link_check.py` checks only
+test→spec (does a test's `// spec:` anchor exist). It could NOT catch citation
+rot: a spec citing `tests/ring0.rs::foo` after `ring0.rs` was deleted and the
+test re-authored as `tests/spec_04_expressions.rs::bar`. The S86 audit found
+~360 such dead spec-side citations (both `tests/X::n` and `tests/X.rs::n`
+forms) after the `tests/ringN.rs` → `tests/spec_NN_*.rs` suite reorg.
+
+What `spec_coverage_reconcile.py` does:
+
+- Parses every `[Tested tests/FILE::name]` / `[Tested+Neg …]` in `spec/*.md` +
+  `repl/spec.md` (both citation forms), with the governing §anchor.
+- Asserts the cited `tests/FILE.rs` exists AND contains `fn name`.
+- `--mode check` (default) — reports dead citations + live-but-broken (file
+  exists, fn missing); **exits non-zero** if any remain. The CI / wave guard.
+- `--mode propose` — proposes the real covering test for each dead citation,
+  resolved by matching the governing §anchor against the healthy test→spec
+  index (tier: exact/child anchor → manual override → reaudit-doc crosswalk →
+  immediate-parent fallback). Prints tiers so parent-grade picks can be
+  reviewed before trusting.
+- `--mode apply` — rewrites only the high-confidence tiers (`--tiers`, default
+  `exact,override,reaudit`; parent fallback excluded).
+- `--mode dedupe` — removes duplicate `file::name` tokens within one bracket
+  (artifact of distinct old tests collapsing to one current cover).
+- `--mode stale` / `--mode apply-stale --stale-scope spec/10-io.md` — the
+  stale-pending detector: heading lines tagged `[S{M}]` whose §anchor HAS a
+  covering test (covered-but-mislabelled). Scoped apply is the FIXME-0412 io
+  sweep; chapter-level headings elsewhere are NOT bulk-flipped (a section earns
+  `[Tested]` only when ALL children are).
+
+Run before committing spec/REPL annotation changes:
+
+```bash
+python3 tests/plan/spec_coverage_reconcile.py            # check (exit non-zero on dead)
+python3 tests/plan/spec_coverage_reconcile.py --mode propose
+python3 tests/plan/spec_coverage_reconcile.py --mode stale
+```
+
+As of S86 close: `--mode check` is **clean (exit 0, zero dead citations)**.
+Genuine coverage gaps surfaced by the reconciliation are tagged `[Gap(S86): …]`
+in the spec (NOT a `tests/…` citation) so they are visibly uncovered, not
+falsely cited. See the S86 reconcile entry in `tests/plan/ledger.md`.
+
 Pre-commit / CI integration is a future commitment, not a Sprint 64
 deliverable. As of Sprint 64 close, the seven Wave-3.5-audited files
 (`cache.rs`, `spec_11_stdlib.rs`, `build_confidence.rs`,
@@ -127,6 +172,40 @@ Sprint 66 introduces `cargo public-api` as the mechanical drift detector between
 ### Runtime Assertions
 
 `debug_assert!` for invariants in every skill. Fire during test runs (debug builds), compiled out in release. Examples: span monotonicity, no unresolved type vars in output, GOT slot uniqueness, RC never negative.
+
+**Heap-header integrity at the platform/FFI marshaling boundary (DEF-6
+class).** The host↔platform-DLL ADT-marshaling path MUST `debug_assert!`
+that an allocated chunk's heap header is intact after each construct/consume
+crossing — i.e. that the host and DLL agree on the pointer-base/layout
+contract (payload pointer vs base pointer, header-size offset). A
+few-bytes-per-crossing overrun is silent under the system allocator until it
+trips a glibc abort tens of crossings later; the debug-assert turns that
+threshold-delayed `double free or corruption` into a first-crossing failure
+at the exact seam. This is a `/platform` + `/backend` obligation; `/qa`
+specifies it. See `plan/risks.md` Risk 11 for the failure class and the
+DEF-6 root cause (`--link` `alloc` returned `base` not `base +
+HEAP_HEADER_SIZE`). CI recommendation: run the platform/`--link` e2e tests
+under ASAN or valgrind so a fresh overrun surfaces immediately.
+
+### Sustained-load convention (FFI/platform accumulators)
+
+Slow-accumulating corruption at any host↔DLL or FFI boundary is invisible to
+per-call assertions — a handful of crossings return correct values while
+metadata silently rots. Every marshaling-boundary capability therefore needs
+a **sustained-repetition** guard in addition to its correctness guard:
+
+- Drive the boundary ≥N crossings — N well above any observed corruption
+  threshold; use **200–2000** — for BOTH directions (construct/produce AND
+  consume) and assert the process does not abort (exit 0).
+- For `--link` capabilities, guard **link-then-RUN-under-load**, not
+  link-success-only. "Builds/links ≠ runs," and "runs once ≠ runs N times."
+- Where `--run` (JIT) and `--link` hand-roll host callbacks separately,
+  add (or rely on) a **parity** guard so the two wirings cannot diverge.
+
+First such guard:
+`tests/link.rs::link_repeated_platform_adt_marshal_does_not_corrupt_heap`
+(200× ADT crossing → platform effect; generic shapes fixture; RED until the
+DEF-6 off-by-16 is fixed).
 
 ### Diagnostic Logging
 

@@ -1,0 +1,49 @@
+; Cranelisp — functions, closures, and composition
+; Functions are first-class values with inferred types.
+
+; defn names a function; the REPL echoes its inferred signature:
+
+(defn square [x] (* x x))
+(square 9)
+
+; fn makes an anonymous function. A function that returns a function
+; captures its environment — a closure:
+
+(defn adder [n] (fn [x] (+ x n)))
+(adder 10)
+((adder 10) 5)
+
+; Functions take functions. apply-twice is generic over any f : a -> a:
+
+(defn apply-twice [f x] (f (f x)))
+(apply-twice (fn [x] (* x x)) 3)
+(apply-twice (fn [x] (+ x 1)) 10)
+
+; Compose two functions into one:
+
+(defn compose [f g] (fn [x] (f (g x))))
+(defn inc [x] (+ x 1))
+(defn dbl [x] (* x 2))
+((compose dbl inc) 5)
+
+; Threading macros read top-to-bottom instead of inside-out.
+; -> threads the value as the FIRST argument of each step:
+
+(-> 5 inc dbl inc)
+
+; ->> threads as the LAST argument — natural for collection pipelines:
+
+(import [collections.vec [count get]])
+(->> (vec 10 20 30 40) count)
+
+; Recursion with an accumulator is the idiom for loops — this is exactly
+; how the Sudoku solver formats a board row by row:
+
+(defn sum-to [n acc] (if (= n 0) acc (sum-to (- n 1) (+ acc n))))
+(sum-to 100 0)
+
+; A small interpreter built from the pieces above:
+
+(defn fmt-cell [v] (if (= v 0) "." (show v)))
+(fmt-cell 0)
+(fmt-cell 7)

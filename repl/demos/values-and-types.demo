@@ -1,0 +1,51 @@
+; Cranelisp — values and types
+; Every value carries a type. Inference figures it out; you never declare it.
+
+; Primitive literals and their inferred types:
+
+42
+3.14
+true
+"cranelisp"
+
+; Operators are trait methods shared across types — one + for Int and Float:
+
+/sig +
+(+ 1 2)
+(+ 1.0 2.5)
+(= 3 3)
+(< 1 2)
+
+; show renders any Display value as a String:
+
+(show 42)
+(show 3.14)
+(show true)
+
+; str builds a String from a mix of Display values:
+
+(str "name: " "Ada" ", age: " 30)
+(str "2 + 3 = " (+ 2 3))
+
+; Vectors are homogeneous and self-describing:
+
+(vec 1 2 3)
+(vec "a" "b" "c")
+
+; The collection verbs are import-on-demand — Clojure names:
+
+(import [collections.vec [count get assoc]])
+(count (vec 10 20 30))
+(get (vec 10 20 30) 1)
+(assoc (vec 10 20 30) 0 99)
+
+; One polymorphic definition serves every type its trait bounds allow:
+
+(defn describe [x] (str "value is " x))
+(describe 42)
+(describe 3.14)
+(describe "hello")
+
+; Inference flows through let-bindings and back out as the result type:
+
+(let [a 6 b 7 product (* a b)] (str a " * " b " = " product))

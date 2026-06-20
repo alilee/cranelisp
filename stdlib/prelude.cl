@@ -51,15 +51,58 @@
 
 (export [primitives [Int Bool Float String]])
 
-;; ── Primitive re-exports ─────────────────────────────────────────────
+;; ── Curated collection verbs (module-qualified — bare BLOCKED, carried) ──
 ;;
-;; Ring 0/1 named primitives are re-exported through the prelude so that
-;; `cargo run -- --run examples/FOO.cl` matches the REPL user surface.
-;; These coexist with the trait-dispatched operators above (e.g. + and
-;; add-i64 both work). See design/stdlib/examples-run-path.md for the
-;; decision rationale.
+;; The Clojure-aligned Vec verbs `count`/`get`/`conj`/`assoc` live in
+;; `collections.vec`, wrapping `vec-len`/`vec-get`/`vec-push`/`vec-set`.
+;; They are reached module-qualified (`collections.vec/count`) or via
+;; `(import [collections.vec [count get conj]])` — the capability is fully
+;; reachable that way (verified: `(import [collections.vec [count]])`
+;; then `(count [1 2 3])` ⇒ 3).
+;;
+;; The S86 de-leak TARGETED promoting `count`/`get`/`conj` to BARE prelude
+;; (so the curated surface needs no raw primitive for collection access).
+;; That half is BLOCKED by a pipeline defect, NOT a curation problem:
+;; a plain `defn` that the prelude only RE-EXPORTS (or imports-then-exports)
+;; is resolved by typecheck but its body is never pulled into the *user
+;; program's* codegen batch — `(count [1 2 3])` typechecks then fails at
+;; codegen with "undefined function: count" (REPL and `--run` alike). The
+;; same defect already affects the long-re-exported bare `pure` (io.monad).
+;; Root cause: `derive_codegen_batch` (src/worker.rs:621) emits only local
+;; `Def` entries; re-export/import installs `ModuleEntry::Import`, which is
+;; codegen-skipped, and the prelude's import does not cascade the body into
+;; the consuming module's batch. This is DEF-1 (see plan-stdlib.md §1.5),
+;; routed to /qa → /int. Trait methods (`+`/`show`) and macros (`vec`) are
+;; unaffected — they materialise on demand at the call site, which is why
+;; the raw-primitive de-leak itself (trait operators) succeeds.
+;;
+;; Until DEF-1 lands, these stay module-qualified (the import path works),
+;; and `assoc`/`first`/`rest`/`map`/`filter`/`reduce` stay reserved for
+;; Phase-H trait dispatch (FIXME 0402, target: /spec).
 
-(export [primitives [add-i64 sub-i64 mul-i64 div-i64 eq-i64 lt-i64 gt-i64 le-i64 ge-i64 not eq-bool]])
-(export [primitives [add-f64 sub-f64 mul-f64 div-f64 eq-f64 lt-f64 gt-f64 le-f64 ge-f64]])
-(export [primitives [str-concat str-eq str-len char-at int-to-string float-to-string bool-to-string]])
-(export [primitives [vec-len vec-get vec-set vec-push]])
+;; ── DE-LEAK LANDED (S86 step 1.5d) ───────────────────────────────────
+;;
+;; The ~31 raw-primitive bare re-exports (`add-i64`, `vec-get`,
+;; `str-concat`, …) that previously lived here have been REMOVED. The
+;; user now sees only the curated surface — `(+ a b)`, `(= a b)`,
+;; `(!= a b)`, `(< a b)`, `(show x)`, `(count v)`, `(get v i)` — never the
+;; bare raw primitives. This is the `print`→`platform.stdio/print`
+;; re-export precedent (§8.4.7) applied to primitives.
+;;
+;; The de-leak was unblocked by two S86 compiler fixes:
+;;   - D1 (/typecheck): trait default-method bodies (e.g. `Eq`'s `!=`,
+;;     `Ord`'s `<=`) now resolve their free symbols in the trait's
+;;     DEFINING module, not the caller's scope. Previously dropping the
+;;     bare `add-i64` re-export made `(!= 1 2)` / `(<= 2 2)` fail with
+;;     "undefined variable" because the default-method body resolved at the
+;;     call site. (Mirror of `recheck_body_for_mono`, FIXME 0355.)
+;;   - D2 (/backend): the `neq-string` primitive now exists, so String
+;;     `!=` (`(!= "a" "b")`) monomorphises to a real symbol.
+;;
+;; The three curation invariants still hold (spec §8.9.1 / §8.11.4 / §3.1
+;; / §8.8.1): FQ `primitives/<name>` stays reachable regardless of imports;
+;; the empty prelude remains valid; nothing here is load-bearing. Raw
+;; primitives reach via `(import [primitives [name]])` or `primitives/name`.
+;;
+;; See design/stdlib/examples-run-path.md for the original re-export
+;; rationale (now superseded by the curated surface).

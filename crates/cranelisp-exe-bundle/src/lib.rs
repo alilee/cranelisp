@@ -129,7 +129,17 @@ pub extern "C" fn cranelisp_init_platform(manifest_fn_ptr: i64) {
     // §5.5.4), baked into the startup object as a `cranelisp_check_layout_hash`
     // compare-and-abort.
     let callbacks = cranelisp_platform::HostCallbacks {
-        alloc: cranelisp_intrinsics::alloc::heap_alloc,
+        // DEF-6 (Sprint 86): `HostCallbacks::alloc` MUST return a PAYLOAD pointer
+        // (alloc base + HEAP_HEADER_SIZE) — the platform's heap-node constructors
+        // (`CLIO::pure`/`effect`, `CLString::from`) subtract HEAP_HEADER_SIZE to
+        // recover the base. `heap_alloc` returns the BASE, so wiring it here drove
+        // every platform-built node's stored base 16 bytes too low, clobbering the
+        // RC header and overrunning adjacent heap metadata one node per host↔DLL
+        // crossing (glibc "double free or corruption" after ~40 crossings). The
+        // JIT path (`src/platform.rs`) already wires `heap_alloc_payload`; this
+        // makes the `--link` path match. See the platform-side layout-invariant
+        // guards `def6_*` in cranelisp-platform/src/lib.rs.
+        alloc: cranelisp_intrinsics::alloc::heap_alloc_payload,
         alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
     };
     manifest_fn(&callbacks);

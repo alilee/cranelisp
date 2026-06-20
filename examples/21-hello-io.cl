@@ -18,12 +18,13 @@
 ;; functions like print) execute their side effects during forcing.
 ;;
 ;; Running:
-;;   Use the justfile recipe, which builds the platform cdylibs and puts
-;;   target/debug on the platform search path so the stdio DLL resolves:
-;;     just run-example examples/21-hello-io.cl
+;;   ./target/debug/cranelisp --run examples/21-hello-io.cl
 ;;
-;;   The recipe sets CRANELISP_PLATFORM_PATH=target/debug; discovery then
-;;   finds cargo's libcranelisp_stdio.{so,dylib,dll} directly (no symlinks).
+;;   examples/platforms/ ships host-correct symlinks (stdio.so on Linux,
+;;   stdio.dylib on macOS) pointing at cargo's built libcranelisp_stdio.*,
+;;   so the stdio DLL resolves with no environment variable. If you build
+;;   for a host without a checked-in symlink, set the search path instead:
+;;     CRANELISP_PLATFORM_PATH=target/debug ./target/debug/cranelisp --run …
 
 ;; Platform declaration: load the stdio DLL for print/read-line.
 ;; This must appear before any platform function imports.

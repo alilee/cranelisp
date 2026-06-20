@@ -1,0 +1,44 @@
+; Cranelisp — modules and imports
+; The standard library is modules. You pull names in on demand.
+
+; /imports shows what is currently in scope. At the start that is just the
+; prelude (operators, the common types, Some/None) plus special forms:
+
+/imports
+
+; The collection verbs are NOT bare — they live in collections.vec. Import
+; the ones you want by name; the REPL confirms each:
+
+(import [collections.vec [count get assoc]])
+/imports
+
+; An imported name reports its fully-qualified origin when you type it:
+
+count
+/info count
+
+; Now use them unqualified:
+
+(count (vec 10 20 30))
+(get (vec 10 20 30) 1)
+(assoc (vec 10 20 30) 0 99)
+
+; List operations live in collections.list — first and rest return Option:
+
+(import [collections.list [first rest]])
+(first (list 1 2 3))
+(rest (list 1 2 3))
+
+; A name you have not imported is simply unbound — the REPL tells you what
+; it knows, it does not guess. Type one and see:
+
+vec-reverse
+
+; Import it from its module and it resolves:
+
+(import [collections.vec [vec-reverse]])
+(vec-reverse (vec 1 2 3))
+
+; This is how the Sudoku exemplar is built: grid, solver, html, and form
+; are four modules, each importing only what it needs from the others and
+; from the prelude. `cranelisp exemplar/user.cl` wires them together.

@@ -185,13 +185,21 @@ fn check_abi_version(
 ///
 /// Steps:
 /// 1. Open the shared library via `libloading`.
-/// 2. Look up the `cranelisp_platform_manifest` entry point.
+/// 2. Look up the per-platform-namespaced `cranelisp_platform_manifest_<name>`
+///    entry point (platform-interface.md §5.5.5 / §6.7 — the manifest export is
+///    suffixed by the platform name like the GOT and layout-hash exports, so two
+///    platforms can link into one binary; DEF-5). The symbol name is computed
+///    from `platform_name` via `cranelisp_platform::platform_manifest_symbol` —
+///    the shared emit/consume helper, never an inline `format!`. The name is
+///    known here from the `(platform "<name>")` declaration (the caller's lookup
+///    key), before the manifest is read.
 /// 3. Call it with a `HostCallbacks` containing the runtime allocator.
 /// 4. Validate ABI version.
 /// 5. Convert C-ABI manifest to safe Rust types.
 ///
 /// Returns a `LoadedPlatform` that must remain alive for the process lifetime.
 pub fn load_platform_dll(
+    platform_name: &str,
     dll_path: &Path,
     span: Span,
 ) -> Result<LoadedPlatform, CranelispError> {
@@ -211,11 +219,16 @@ pub fn load_platform_dll(
         })?
     };
 
-    // Step 2: Look up the manifest function.
+    // Step 2: Look up the manifest function. The export is namespaced by
+    // platform name (`cranelisp_platform_manifest_<name>`, §5.5.5 / §6.7 /
+    // DEF-5) — the name is known here from the declaration, before the manifest
+    // is read, so we compute the symbol via the shared helper (never an inline
+    // `format!`).
+    let manifest_sym_name = cranelisp_platform::platform_manifest_symbol(platform_name);
     type ManifestFn = unsafe extern "C" fn(*const HostCallbacks) -> PlatformManifest;
     let manifest_fn: libloading::Symbol<ManifestFn> = unsafe {
         library
-            .get(b"cranelisp_platform_manifest")
+            .get(manifest_sym_name.as_bytes())
             .map_err(|_e| {
                 CranelispError::Platform(cranelisp_types::PlatformError::ManifestNotFound {
                     dll: dll_path.to_path_buf(),
@@ -642,7 +655,7 @@ pub fn load_platform_checked(
         })?;
 
     // Step 2: Load and validate the DLL (dlsym GOT + layout-hash).
-    let platform = load_platform_dll(&dll_path, span)?;
+    let platform = load_platform_dll(platform_name, &dll_path, span)?;
 
     // Step 3: Validate manifest name matches declared name.
     if platform.name != platform_name {
@@ -1060,7 +1073,7 @@ mod tests {
         }
         let dll_path = dll_path.unwrap();
 
-        let platform = load_platform_dll(&dll_path, Span::SYNTHETIC).unwrap();
+        let platform = load_platform_dll("stdio", &dll_path, Span::SYNTHETIC).unwrap();
 
         assert_eq!(platform.name, "stdio");
         assert_eq!(platform.version, "0.1.0");

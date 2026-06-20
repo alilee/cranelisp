@@ -1,0 +1,44 @@
+; Cranelisp — traits and constrained polymorphism
+; Traits are shared behaviour. The prelude's operators ARE trait methods.
+
+; /sig shows where an operator comes from — + is the Num trait's method:
+
+/sig +
+/sig =
+/sig show
+
+; The same + dispatches on the argument type at each call:
+
+(+ 1 2)
+(+ 1.0 2.5)
+
+; A function with no type annotation infers its trait bounds. double needs
+; Num (it uses +), so it works for every Num type and nothing else:
+
+(defn double [x] (+ x x))
+(double 5)
+(double 2.5)
+
+; clamp uses < and >, so it infers an Ord bound across all three params:
+
+(defn clamp [x lo hi] (if (< x lo) lo (if (> x hi) hi x)))
+(clamp 15 0 10)
+(clamp -3 0 10)
+
+; Define your own trait. A method signature names its receiver position:
+
+(deftype Box (MkBox [:Int w :Int h]))
+(deftrait (Sizeable a) (size [:a x] :Int))
+
+; impl supplies the method body for one type:
+
+(impl Sizeable Box (defn size [b] (match b [(MkBox w h) (* w h)])))
+(size (MkBox 3 4))
+
+; A function constrained on YOUR trait works for any type that implements it:
+
+(defn bigger? [a b] (> (size a) (size b)))
+(bigger? (MkBox 5 5) (MkBox 3 4))
+
+; This is the machinery behind show, =, <, and + — one name, many types,
+; resolved by inference. The Sudoku domain uses Eq and Ord the same way.

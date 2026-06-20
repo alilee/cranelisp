@@ -410,6 +410,46 @@ intrinsic (it calls a closure already present in the linked program and construc
 capture / protection* is a pure runtime capability available everywhere; *discovery* is
 a dev-session capability.
 
+**S86 D5a ruling (2026-06-17, /arch — interim REAFFIRMED).** Sprint-86 isolation
+(D5a) reduced an in-language-runner self-test blocker to this exact interim: a
+`--link` build of a module that references `discover-tests` fails at the `cc` step with
+a raw `undefined reference to discover-tests`, exit 1, no exe. `/qa` filed a repro
+(`tests/link.rs::link_module_referencing_discover_tests_extern_resolves_at_aot_link`)
+that asserted `assert_exit(0)` — i.e. that the linked build SHOULD resolve the extern
+and exit 0. **That expectation contradicts the settled fourth-convergence design above
+and is rejected.** Three dispositions were weighed:
+
+- **(a) resolve `discover-tests` under `--link`** (AOT stub / elide) — reopens the
+  settled "dev-session-only" ruling and erases the deliberate capture/discovery
+  asymmetry. **Off-limits without a user re-convergence.**
+- **(b) friendly compile-time rejection now** — the right long-term answer (it realizes
+  the "future sprint may add a friendly diagnostic" path and honors the project
+  no-opaque-error principle). **Deferred** — S86 is a user-facing-consolidation sprint
+  already carrying heavy defect-fix load; a new compile-time gate at the int/frontend
+  seam is out of proportion to the sprint. **Filed as FIXME 0406 (`target: /int`).**
+- **(c) interim raw-error STANDS for S86 — SELECTED.** The current behaviour is exactly
+  what §4.5 documents; the as-built (`apply.rs` `compile_extern_call` /
+  `compile_apply`, the `Linkage::Import` arm — "or surfaces as an unresolved-symbol link
+  error in `--link` (no friendly rejection)") is faithful. The `/qa` repro's
+  `assert_exit(0)` is the wrong oracle.
+
+**Corrected test expectation (`/qa` to encode).** The repro must assert the *documented*
+behaviour: a non-zero exit (link failure), with stderr/output naming the unresolved
+`discover-tests` symbol — e.g. `.assert_failure()` (non-zero exit) **and** an output
+substring assertion on `discover-tests` (the linker's `undefined reference to` /
+`Symbol not found` message naming the symbol). This flips the RED guard
+green-against-reality and pins the interim as a regression guard. When FIXME 0406 lands
+the friendly diagnostic, `/qa` retargets the same repro to assert the *friendly*
+compile-time message instead of the raw linker error (the assertion that the failure
+names `discover-tests` carries forward; only the channel + phrasing change). The raw
+`undefined reference` is the interim; the friendly message is the destination — both are
+non-zero-exit, so the `assert_failure` half is stable across the transition.
+
+(Note: the SECOND S86 D5 repro at `tests/link.rs` — the cross-mode cache-reuse
+`__cranelisp_got_<module>` drop — is a genuine backend cache defect, NOT this interim,
+and its `assert_exit(0)` expectation is CORRECT. This ruling concerns only the
+`discover-tests`-extern repro.)
+
 ---
 
 ## 5. The language constructs

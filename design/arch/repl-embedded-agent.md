@@ -1,0 +1,246 @@
+# Embedding an LLM Agent in the REPL — Exploratory Architectural Design
+
+**Status:** EXPLORATORY DESIGN PROPOSAL — pre-implementation, pre-user-ratification, not scheduled.
+**Owner:** `/arch` (crate/feature boundary). Cross-skill: `/repl` (experience), `/int` (dispatch + session wiring), `/spec` (spec-retrieval + module-preamble packaging).
+**Provenance:** Authored by `/arch` (S86) against the user's vision and refined through an `/arch`↔user design conversation. Greenfield — no prior LLM-as-feature design exists; the only adjacent concept is `/learn` (FIXME 0052), a scripted tutorial, not an LLM. First-principles + this codebase; the sketch has no REPL-agent precedent.
+
+---
+
+## §1. Vision, goals, non-goals
+
+### 1.1 Vision
+The REPL is already self-documenting: every symbol/expression/special-form typed at the prompt yields useful `:Type value` feedback (root `CLAUDE.md` §"Design Principles"; `repl/spec.md` §4). The embedded agent extends that principle into a **development partner** that lives inside the live session.
+
+The agent's range spans from whiteboard reasoning to compilable code in one breath — illustrated by the kinds of things a user asks it: *"how can I decompose this requirement into modules?"* (architecture advice) … *"write a data structure with an O(1) lookup for a cache of this record"* (concrete, typed code synthesis). It must be fluent across that whole span, always grounded.
+
+### 1.2 Goals — two tiers
+- **Tier 1 — the grounded advisor (core starting point).** Super-powered over four substrates: **errors** (type/runtime/link → explanation + fix), **platforms** (what's available, their effects/schema), and **modules** — both **stdlib** and **project** (exports, sigs, docs). Retrieval + grounding; the MVP, and it stands alone.
+- **Tier 2 — the development partner (the actual product).** Help the user **architect → design → build → test** *their* vision. This is the same skill decomposition this compiler project runs on itself (`/arch`, `/design`, `/dev`, `/qa`) — the embedded agent gives the Cranelisp user's project that same skilled-collaborator lifecycle. **Put this at the top of the goals: the agent brings the project's own development discipline inside the user's REPL.**
+- **G-ground** Grounded, not hallucinated. Cranelisp is a *private* language — the model has zero prior knowledge of it (§6), so grounding (project state + spec + an always-on language primer) is mandatory, not optional.
+- **G-legible** Every action the agent takes is a visible REPL command/input, echoed as if typed (§4.4) — the session stays a legible, replayable script.
+- **G-light** Feature-gated, off by default; the REPL works fully without it (§7). Cf. the optional-prelude principle.
+
+### 1.3 Non-goals
+- **NG1** Not a replacement for the deterministic REPL. `(…)`/`[…]`/`/…` always route to the existing machinery, untouched (§5). Additive only.
+- **NG2** Not required for the language to work. An LLM-free build is a first-class default.
+- **NG3** Not a silent autopilot. Code writes are confirmation-gated; understanding writes are consultative (§2, §7).
+- **NG4** Not part of the release tier. Orthogonal to `--release` (Phase H); a *dev-session* capability (like introspection — see the "Introspection is REPL-only" memory) that never ships in a `--link`/`--release` artifact.
+- **NG5** Not a normative change to the deterministic REPL spec, beyond one additive dispatch section + the module-preamble prerequisite (§3.4, §10).
+
+---
+
+## §2. The three modes
+
+The agent is not a waterfall of lifecycle phases the user switches between. The modes that earn their keep are cut by **what the agent touches and the consent that touch requires** — the agent slides between them fluidly inside one conversation (Build and Document usually pair):
+
+| Mode | Touches | Consent | Notes |
+|---|---|---|---|
+| **Advise** | reads only (errors, platforms, modules, spec, the project's own docs) | autonomous, no confirmation | most turns live here |
+| **Build** | writes *code* — defns/types via `submit_repl_input` | **confirm each submission** | the "build my vision" hands |
+| **Document** | writes *understanding* — docstrings + module preambles | **consultative** ("shall I record that as `solver`'s preamble?") | how accumulated intent becomes durable (§3) |
+
+"Architect" and "design" are *Advise* turns that happen to produce structure and signatures; they become durable only when promoted into code (Build) and docs (Document). There is no separate "architect subsystem" — there is reasoning (Advise) that lands in the two write modes.
+
+---
+
+## §3. Memory architecture
+
+The agent's persistent memory is **mostly the project's own docstrings and module preambles** — not a private store. The self-documenting principle, turned inward on the agent.
+
+### 3.1 Primary store — docstrings + module preambles (in the `.cl` code)
+Authoritative, version-controlled, human-readable, *shared* (humans edit them too), and already retrievable through the existing `/doc`/`/info`/exports surface the agent uses as tools. The agent's understanding can't bit-rot in a hidden place because it lives where humans look. The agent maintains it in **Document** mode (consultative). Virtuous loop: the agent reads its memory via the same introspection it advises with, and grows its memory by improving the docs — so memory-maintenance and documentation are the *same* activity, and the human benefits directly.
+
+### 3.2 Secondary store — a small persistent sidecar (the residual)
+Cross-cutting intent that has no natural docstring home: the overall vision, "why X over Y," open questions. **Small by design.** (Exactly the `memory/` + design-doc split this compiler project runs on; the user's project gets the same.) The only part that needs explicit serialization + reconciliation across sessions.
+
+**The line** (keep the sidecar tiny): *anything that describes a specific named thing goes on that thing (docstring/preamble); only genuinely cross-cutting, no-single-home intent goes to the sidecar.* This pushes the agent to attach understanding to the code it's about.
+
+### 3.3 Derived index — a pure cache, not a store
+A reconstructible read-index over the docstrings/preambles + symbol tables for fast retrieval. **Never the source of truth** — blow it away and it rebuilds from the files/session. Because the read path harvests fresh from live structures each turn (§4.1), this index is an *optimization*, not a necessity, and it has **no cache-invalidation problem**: the symbol table is the truth.
+
+### 3.4 Prerequisite: module preambles must be first-class
+Docstrings already are (`PrimitiveDef.docstring`, `/doc`, defn docstrings). Module-level documentation — a preamble block the agent can read and rewrite — may not be a first-class, addressable, editable concept today. **Making it one is load-bearing** for this memory model: a normative module-preamble form + `/doc <module>` to read it + an edit path. A small `/spec` + `/repl` item to confirm/build before the rest leans on it.
+
+---
+
+## §4. Context — harvest, don't fetch
+
+### 4.1 The embedded advantage
+An external assistant peers through a keyhole (grep/LSP/file reads) and pays a round-trip per fact. This agent is **in-process**: the symbol tables and the introspection dictionary are live structures in the same address space. Baseline context is therefore **harvested** — assembled fresh from live memory every turn at ~zero cost — not retrieved. That's where the "omniscient" feel comes from: the agent is never ignorant of, or stale about, the user's own code, because it reads the same tables the compiler just wrote. (Docstrings/preambles live on those same entries, so one harvest pass surfaces both current state *and* accumulated understanding.)
+
+### 4.2 The problem flips: from retrieval to selection under budget
+Omniscient ≠ dump everything. A real project has thousands of symbols; you can't prepend the table, and irrelevant entries dilute attention as badly as missing ones. **Token budget is the governing design principle.** So the centerpiece module is a continuous, in-process **context harvester + relevance ranker**; the omniscient feel is engineered by always selecting the *right* slice, cheaply, from signals that are also in-process and free (cursor module, symbols named/referenced in the message, the last error + its implicated symbols, recently-defined entries via the symbol table's `seq`, the import-graph neighborhood, the transcript).
+
+### 4.3 The push/pull balance
+**Push the shape of everything; pull the bodies.**
+
+- **Push (harvested map, every turn, ambient).** Default heuristics (tuning knobs, not architecture):
+  - module **preambles + export surface** for the **last ~6 modules mentioned**,
+  - **full src of the last ~10 fns mentioned**,
+  - **full src of the current module** (pinned).
+  Recency ("mentioned") = appeared in the transcript or surfaced by a command, ordered by the symbol table's `seq`. The budget enforces a **graceful-degradation ladder**: current-module full-src → preamble+exports+mentioned-fns → preamble+exports only.
+- **Pull (depth on demand, enacted).** Full source, full docstring, a spec section, CLIF/disasm — for the few things a reasoning step actually bites on.
+
+### 4.4 Tool calls ARE visible REPL commands (the keystone)
+A pull is the agent **issuing a REPL command on the user's behalf**: ask for source → answered by `/source foo` → rendered in the transcript *as if the user typed it*. Consequences:
+- **No separate tool registry** — the agent's pull-surface *is* `dispatch_command`; a pull synthesizes a command string and runs it through the same `process_commands` path a keystroke uses.
+- **Visibility is uniform; only consent differs** — reads auto-run-and-show; writes (submit a defn, `/sh`) confirm-and-show. Everything the agent does is on screen as a REPL line.
+- **It's a teaching surface** — the user *watches* the agent reach for `/source`/`/info`/`/refs` and learns the vocabulary by observation.
+- **Pulls warm the push** — once pulled, `foo` is "mentioned" and enters the harvest window next turn. Push and pull interlock.
+
+**Principle: the agent has no private tools — its entire capability surface is the REPL command set.**
+
+**Corollary — the agent grows the REPL for everyone.** When the agent needs something the command set lacks (e.g. "find the tests that reference this symbol"), that need is also a human's: it becomes a command (`/refs <sym>`, `/tests-for <sym>`, `/callers <fn>`, `/uses <type>`) serving both. The agent is a **forcing function for the REPL's introspection vocabulary.** *Implementation note:* today's introspection is **forward** (name → sig/doc/source); these are **reverse** queries we don't have. In a REPL the full ASTs are already in memory, so the cheap MVP is an **on-demand scan** over the in-memory bodies — no maintained reverse index, no invalidation in a mutating session; promote to an index only if scan latency bites.
+
+### 4.5 Self-tuning telemetry
+Treat the push as a **cache**; the goal is **max hit-rate under the token budget**; every pull is a miss. Log misses, and **split** them:
+- **Compensatory pull** — the target was *close* to scope (same module; a direct callee/caller of an in-window fn; a symbol that aged out). The heuristic should have included it. **This is the tuning signal** — its distribution names which categories to promote into the push defaults.
+- **Legit deep-dive** — something the push could never anticipate. The healthy push/pull split working; not a miss to fix.
+
+The same "instrument compensation" loop applies to generation (§6.3). Measure compensation → curate what's pushed → fewer compensations.
+
+### 4.6 Honest bound
+The agent is omniscient about **code + docs + spec** — not about *unstated* intent. The only intent it has is what's been captured (docstrings/preambles/sidecar). State this plainly; it's the engine of the loop: every **Document** edit converts mind→harvestable-substrate, so omniscience *grows as you work*.
+
+### 4.7 Open: push transparency
+Pull is enacted-and-visible; push is ambient-and-silent. Should the push be *partially surfaced* — a collapsed, expandable header like `⊙ in scope: solver (full), grid·html (api), +10 fns` — so the user can see/audit/**prune/extend** what the agent reasons over? Costs screen space; buys legible, steerable omniscience. (Decision fork — §12.)
+
+---
+
+## §5. The dispatch model
+
+### 5.1 The current seam
+The read loop (`src/main.rs:240-306`): accumulate lines; a line is **complete** when it starts with `/` (slash, single-line — `main.rs:251`) OR `parens_balanced(&buffer)`; else continuation. On complete, `process_commands` (`src/repl.rs:419`) sorts: blank/comment → `Nothing`; slash → dispatch; bare special-form → `Final`; else → `Compile` → `eval`. Bare atoms/literals (`3`, `+`, `foo`) flow to `eval`'s bare-symbol introspection gate (`eval.rs:447`) — the §4 self-documenting behavior.
+
+### 5.2 The bare-atom tension
+The naive "slash + bracket → REPL, else → agent" rule **breaks self-documentation**: `+`, `foo`, `42` match neither slash nor bracket and would route to the agent, regressing the heavily-tested `repl/spec.md` §4 contract.
+
+### 5.3 Recommendation — route by "parses as a complete form, or a slash command"
+```
+classify(line, buffer_state):
+  starts with '/'                 -> ReplSlash      (unchanged)
+  blank / comment-only            -> ReplNothing    (unchanged)
+  try parse(buffer):
+    Ok(complete sexp(s))          -> ReplForm        (atoms, literals, lists, vectors — the §4 surface)
+    Err(unclosed '(' or '[')      -> Continuation    (unchanged: parens_balanced gate)
+    Err(other parse error)        -> Agent           (not Cranelisp -> natural language)
+  feature off                     -> Err(other) falls back to today's parse-error display
+```
+**Zero regression** (anything the reader accepts routes deterministically); the brackets rule is a strict subset of "parses as a form." The discriminator is the reader the REPL already trusts (`cranelisp_frontend::parse`, `eval.rs:78`), called one step earlier to *decide routing*.
+
+**The one ambiguity** — a bare single word ("hello", "why") parses as a symbol and would route to introspection. Resolve with a minimal escape hatch: **`/ask <text>`** (and/or a reserved leading `\`) forces agent routing. Multi-word prose is never a single valid sexp (two bare symbols = parse error), so real sentences route to the agent with no sigil. With the feature off, `/ask` prints "agent not built in."
+
+### 5.4 Cadence
+The agent turn slots inside the existing REPL cadence (`overview.md`) as a new branch: it may spin a model↔tool sub-loop (synchronous to the user's Enter, like a normal eval); its `submit`/pull re-enter the compilation cadence through the same `eval`/`process_commands` handoff a keystroke would; the watcher polls at prompt boundaries (after the turn resolves). Ctrl-C interrupts back to the prompt; because mutation is confirmation-gated and staged (§6.2), an interrupt leaves the session consistent.
+
+---
+
+## §6. Novel-language correctness — primer + validator
+
+Cranelisp is private; the model has **zero** of it in training. Without supplementation it will emit code with syntax errors — and an error *from the assistant* breaks flow worse than one from the user. Two layers, the second of which the embedded setting makes nearly free:
+
+### 6.1 Layer 1 — supplement the prior (push, always)
+A compact, curated **language primer + canonical few-shot idioms** (a defn, a deftype, a match, a trait impl, a module-with-preamble) is **always in context** — syntax, special forms, the `:Type` convention, the prelude surface. Distinct from the (large, retrieved) spec: the primer is the distilled *always-needed* essentials, because every generation needs syntax. Curate it; tune it from §6.3.
+
+### 6.2 Layer 2 — the validator role (the embedded killer move)
+The in-process compiler is also the agent's **pre-flight validator**. Before generated code is shown as the answer, run it through the **real frontend + typechecker**; on failure, feed the *actual compiler error* back and retry — **silently, invisible to the user.** This is not new machinery: it is the existing **cluster-atomic staging** (commit-on-Ok / discard-on-Err). The agent stages; only clean code reaches the live session and the screen. The user **structurally cannot** see a syntax error from the agent — the primer lowers the retry rate, the gate guarantees the floor.
+
+**So the in-process compiler has three roles for the agent: read (harvest, §4), write (commands/submit, §4.4), and validate (pre-flight).** The validator role is what an external assistant can't cheaply have, and it turns "novel language" from a flow-breaker into a non-event.
+
+### 6.3 Telemetry closes the loop
+Pre-submission failure categories are the tuning signal for the primer, exactly as compensatory pulls tune the harvest (§4.5). One discipline: **instrument every place the agent had to compensate (a pull, or a fail-and-retry), and let the distribution drive what's curated into the push.**
+
+### 6.4 Open: silent-repair vs. surface
+Syntax has a clean answer — **always silent-repair, never break flow.** Type errors are ambiguous: some are the agent fumbling a signature (hide + repair); others are a real design signal the user should see. Fork: silent-repair *anything* that doesn't compile, or **parse errors only** + **surface type errors as a collaboration moment**. Lean: surface type errors (often the most useful thing to discuss) — at some cost to flow. (Decision fork — §12.)
+
+---
+
+## §7. Architecture, backend, safety
+
+### 7.1 Where it plugs in
+A feature-gated **`src/agent/`** module, `pub(crate)`, sibling to `repl.rs`/`eval.rs`. The §5.3 classifier gains an `Agent(text)` arm calling `session.agent_turn(...)`. `agent_turn` runs the model↔tool loop; reads call the existing `handle_*` directly; writes + pulls go back through `self.process_commands`/`self.eval` — the *same* path `main.rs` uses, inheriting cluster-atomic staging, error recovery (`repl/spec.md` §5.2), and backing-file regeneration. The agent holds the REPL-cadence `&mut CompilerSession` handle, not a new state window; it reads live state through the existing introspection surface (`describe_symbol` `repl.rs:300`, the `handle_*`, the symbol-table accessors).
+
+### 7.2 Feature gating (mirror the release-backend precedent)
+```toml
+# src/ binary crate Cargo.toml
+[dependencies]
+<llm-client> = { version = "...", optional = true }
+[features]
+agent = ["dep:<llm-client>"]   # OFF by default
+```
+`agent` in no crate's `default`; no dev-dependency enables it; `cargo build`/`cargo nextest run` never compile the client → the default build + ~9s suite stay agent-free. The published binary MAY ship `--features agent`; agent tests run in a separate lane behind `#[cfg(feature="agent")]`.
+
+### 7.3 LLM backend
+Default to an **API backend** (best capability/latency), configurable, behind a **pluggable backend trait** so a local-model/alternate-provider backend drops in without touching the agent loop. **Opt-in twice** — compiled in (flag) AND enabled at runtime (config/key present); absent a key the agent is dormant and `/ask` says so. The artifact carries only a small HTTP client (the service is hit at runtime), not a build-time toolchain.
+
+### 7.4 Safety & boundaries
+- **Deterministic vs. model output unmistakable.** The deterministic REPL owns the `:Type value` format and `;`-drawer; the agent uses a distinct reserved visual frame (reusing `src/style.rs` with its own role so `--no-color`/`NO_COLOR` degrade). Agent-issued commands + their results render in normal REPL style (they *are* normal output, §4.4); only the agent's prose is framed.
+- **Consent.** Reads auto-run-and-show; **Build** writes confirm-and-show (exact line shown); **Document** writes are consultative. Default "auto-approve reads only."
+- **Transcript transparency.** Everything the agent does is a visible REPL line → the session stays a legible, replayable script (preserves the §15 persistence model + reproducibility).
+- **Privacy / offline.** Opt-in twice; a one-time first-use notice (what is sent: the message, harvested signatures/excerpts; to where: the configured endpoint); a local-model escape hatch. The agent's view is bounded by the introspection surface + spec, not the host filesystem (no raw file-read tool; spec is the embedded curated `spec/`).
+- **`/sh`.** No direct shell tool. Shell is reachable only via `submit_repl_input("/sh …")` — confirmation-gated, so the agent *proposes* and the user approves the exact command.
+
+### 7.5 Grafting & facade impact
+int's *library* facade was retired (`facades/int.md` → BC §6; a binary has no `public-api.txt` boundary — its conformance gate is the e2e suite). int's contract is therefore the **CLI narrative** (`src/main.rs` `//!`), the **REPL experience** (`repl/spec.md`), and the **e2e suite**. "Without breaking the facade" = don't disturb that deterministic contract.
+
+The graft is neat because the agent is a new **consumer** at three existing seams + one new sibling module — nothing rewired:
+- **Dispatch** (`src/main.rs`): one new `Agent(text)` classifier arm (§5.3); existing arms untouched.
+- **Commands** (`src/repl.rs`): one new `/ask` `ReplCommand` variant; pulls reuse `dispatch_command` + the existing `String`-returning `handle_*` unchanged — the agent *consumes* the command surface, doesn't modify it.
+- **Eval/validate** (`src/eval.rs`): writes + the pre-flight validator reuse the existing `eval`/cluster-atomic staging; no new eval entry.
+- **Module:** `src/agent/` is another sibling in int's established session decomposition (the `eval.rs`/`repl.rs`/`process_form.rs` `impl CompilerSession`-over-`pub(crate)`-fields pattern). Fits exactly.
+
+All four cuts are `#[cfg(feature="agent")]`. **Feature-off ⇒ the binary is byte-identical to today** — no LLM dep in the build graph; the dispatch path unchanged (the `Err(other parse error)` case falls back to today's diagnostic) — so the REPL/CLI contract and the e2e suite are preserved **by construction** (same discipline as §7.2: `agent` in no `default`, no dev-dep enables it).
+
+**Zero new cross-crate edges.** The agent is fully contained in the int bounded context: it reads int's own symbol tables/introspection and reuses int's *existing* inward calls to frontend/typecheck/backend (harvest, validate). No other crate's `public-api.txt`/facade moves.
+
+Where it is *not* free (the honest list):
+- **`repl/spec.md` gains an additive agent section** (+ `/ask`, the agent-output frame, the `--agent` row) — the only deterministic-contract change, additive + behaviorally gated.
+- **Module preambles first-class** (§3.4) — the one genuinely new language/REPL concept, not just plumbing (the prerequisite; `/spec`+`/repl`).
+- **One new internal seam:** a *typecheck-only dry-run* over the existing staging (stage→check→discard, silent, no commit/print) for the validator's repair loop — distinct from the existing stage→check→commit→print. `pub(crate)`, internal to int; not a facade change.
+- **Additive surface:** the reverse-query commands (`/refs`/`/tests-for`) + modest `pub(crate)` field widening per the existing sibling-module pattern.
+
+The rule that keeps it neat: **the `#[cfg(feature="agent")]` cuts live AT the seams (three of them) — bolted on, not woven through.** Feature-off is provably the original REPL.
+
+---
+
+## §8. Relationship to existing concepts
+- **`/learn` (FIXME 0052)** — a *scripted* tutorial; the agent complements and could eventually subsume it (a conversational tutor grounded in the spec is a strictly more flexible `/learn`). Keep separate initially (the tutorial is deterministic + offline; the agent is neither). No coupling in the MVP.
+- **Self-documenting surface** — the agent *leans on* it (harvest, tools) rather than duplicating it; and via **Document** mode it *feeds* it.
+- **Spec impact** — `repl/spec.md` §1–§16 unchanged except (1) a new agent-dispatch section (+ `/ask` + the agent-output frame + an `--agent`/`--no-agent` §0.6 row), and (2) the **module-preamble** first-class concept (§3.4). Both additive; `/repl`-owned, with a `/spec` consult for the preamble form.
+
+---
+
+## §9. Phasing
+- **Phase 1 — Advisor MVP.** Feature-gated `src/agent/`; §5.3 classifier + `/ask`; API backend (opt-in twice); harvested push (§4.3 heuristics) + pull-as-visible-commands (§4.4); **Advise** mode (read-only) + the always-on **language primer** (§6.1); spec retrieval (grep over embedded `spec/`); telemetry skeleton (§4.5). No writes yet (proposes code, doesn't submit). Acceptance: ask "how do I define a constrained function over Num?" → a spec-grounded, session-aware answer with a proposed `(defn …)` shown.
+- **Phase 2 — Build + Document + validator.** `submit_repl_input` with confirmation; the **pre-flight validator + silent repair** on staging (§6.2); **Document** mode (consultative docstring/preamble edits) — needs the §3.4 preamble prerequisite; echo-as-typed transcript. Acceptance: the agent defines a user-approved function that *always at least parses*, and records its rationale in the preamble.
+- **Phase 3 — Self-tuning + reach.** Compensation telemetry drives push/primer curation (§4.5/§6.3); reverse-query commands (`/refs`/`/tests-for`); semantic spec search (precompute-and-ship index); pluggable local-model backend; optional push-transparency header (§4.7). 
+
+**Scheduling.** Its own track — **not gated by and not gating Phase H**. A dev-session feature; never ships in `--link`/`--release` (NG4). `/sprint` schedules it independently.
+
+---
+
+## §10. Open questions / sign-off
+
+- **U1 — Dispatch.** Confirm "parse-as-form-or-slash → REPL; else → agent" + the `/ask` escape hatch (§5.3) over the literal bracket rule.
+- **U2 — Module preambles first-class** (§3.4). Confirm this prerequisite + that `/spec`+`/repl` build it before Phase 2.
+- **U3 — Memory line** (§3.2). Confirm "describes a named thing → on that thing; only no-home intent → sidecar," keeping the sidecar tiny.
+- **U4 — Push transparency** (§4.7). Surface a prunable "in scope" header, or keep the push ambient?
+- **U5 — Validator policy** (§6.4). Silent-repair anything that doesn't compile, or parse-errors-only + surface type errors as collaboration?
+- **U6 — Backend + privacy** (§7.3/§7.4). API-default + pluggable + opt-in-twice + first-use disclosure — sufficient, or explicit per-session consent?
+
+### Cross-skill handoffs / Next skills
+*(To be filed as `design/arch/fixmes/NNNN-*.md` when scheduled — not now; unratified.)*
+- **`/repl`** — the experience: agent-dispatch section + `/ask` + agent-output frame + `--agent` row; **module-preamble** form + `/doc <module>` (§3.4); the reverse-query commands (§4.4).
+- **`/int`** — dispatch + session wiring: the §5.3 classifier, `src/agent/` + feature gate (§7.1/§7.2), the `agent_turn` loop, the validator-on-staging path (§6.2), the harvester/relevance-ranker (§4.2/§4.3), telemetry (§4.5).
+- **`/spec`** — the module-preamble normative form (§3.4); spec-retrieval/embedding packaging if it touches `spec/` layout.
+- **`/arch`** — the `agent` feature boundary/discipline; the ruling that the agent is a REPL-cadence consumer of the existing surface (not a new state window); the three-roles-of-the-in-process-compiler framing (read/write/validate).
+- **`/qa`** — agent-feature tests behind `#[cfg(feature="agent")]` (separate lane): classifier routing, pull-as-command wiring, the validator repair loop, echo-as-typed reproducibility. Default suite stays agent-free.
+
+### Key file/line citations
+- Dispatch seam: `src/main.rs:240-306`; `src/repl.rs:419/428/433/450`.
+- Tools-as-strings (pull surface): `src/repl.rs` `handle_*` (all return `String`); `describe_symbol` `:300`.
+- Eval/validate re-entry: `src/eval.rs:72/78`; `:447` (the bare-atom self-documentation gate §5.3 must preserve); cluster-atomic staging (commit-on-Ok/discard-on-Err) — the validator substrate (§6.2).
+- Self-documentation contract not to regress: `repl/spec.md` §4.
+- Feature-gating precedent: `design/arch/release-llvm-backend.md` §5.
+- Cadence/window model: `design/arch/overview.md`.
+- `/learn`: `design/arch/fixmes/0052-*.md`.

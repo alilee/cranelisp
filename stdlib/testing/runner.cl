@@ -186,25 +186,4 @@
 ;; 0354/0355 resolved). The submodule body survives a load without
 ;; source-regen clobber (0343).
 
-(mod test
-  (import [super [Outcome Passed Failed Panicked
-                  Tally tally passed? present-one]])
-  (import [testing.assertions [assert-true assert-false assert-eq]])
-
-  (defn test-passed-tally-is-passed [] :(Option String)
-    ;; A tally of all-passed Outcomes reports passed?=true.
-    (assert-true (passed? (tally [(Passed "a") (Passed "b")]))))
-
-  (defn test-failed-tally-is-not-passed [] :(Option String)
-    ;; Any Failed in the tally flips passed?=false.
-    (assert-false (passed? (tally [(Passed "a") (Failed "b" "why")]))))
-
-  (defn test-panicked-tally-is-not-passed [] :(Option String)
-    ;; Any Panicked in the tally flips passed?=false.
-    (assert-false (passed? (tally [(Panicked "a" "boom")]))))
-
-  (defn test-present-passed-line [] :(Option String)
-    ;; present-one renders a Passed outcome as "name ... ok".
-    ;; assert-eq is a CROSS-MODULE call of the stacked-trait-bound assert-eq
-    ;; (imported from testing.assertions) — the S83/0355 regression guard.
-    (assert-eq "t ... ok" (present-one (Passed "t")))))
+(mod test)

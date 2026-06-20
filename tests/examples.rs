@@ -122,7 +122,7 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("05-recursion.cl", &[111]),
         ("06-enums.cl", &[104]),
         ("07-polymorphism.cl", &[119]),
-        ("08-floats.cl", &[9]),
+        ("08-floats.cl", &[10]),
         ("09-strings.cl", &[55]),
         ("10-adts.cl", &[9]),
         ("11-destructuring.cl", &[69]),
@@ -138,7 +138,7 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // 21: hello-io prints but does not read stdin. Sum-of-pass-counts
         // = 499; truncated to u8 by process exit = 243.
         ("21-hello-io.cl", &[243]),
-        ("22-io-hello.cl", &[11]),
+        ("22-io-hello.cl", &[99]),
         ("23-io-sequence.cl", &[178]),
         // 24: read-line on closed (null) stdin lands on exit 20. With the
         // platform search path wired (`CRANELISP_PLATFORM_PATH=target/debug`)

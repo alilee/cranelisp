@@ -145,6 +145,33 @@ These ~200 lines are tested by integration/E2E tests but not counted in coverage
 
 **Estimate**: ~15 unit tests for the Rust API (`CLString`, `CLIO`, `SchedulingClass`, `derive_jit_name`) would cover ~150 lines, raising to ~45%. The remaining gap is macro-generated code and DLL-side functions that cannot be tested in-process without restructuring.
 
+#### Behavioural gap — sustained-load + checking-allocator (DEF-6 class)
+
+Line/region coverage is the wrong lens for this seam, and the line-coverage
+number above actively misleads: the ADT-marshaling crossing path
+(`CLAdt::construct` / `CLOwned` / `CLHeap::into_owned_consuming` + the host
+`alloc`/RC-header callbacks wired separately in `src/platform.rs` for `--run`
+and `crates/cranelisp-exe-bundle/src/lib.rs` for `--link`) was *exercised* by
+green platform e2e tests yet harboured a 16-byte-per-crossing heap overrun
+(DEF-6 — `--link` `alloc` returned `base` not `base + HEAP_HEADER_SIZE`). The
+gap is **behavioural, not line-coverage**:
+
+- **Sustained-repetition crossings** — no test drove the marshaling boundary
+  past the ~40-crossing corruption threshold. Needed: ≥200-crossing
+  construct AND consume loops asserting exit 0. First guard committed:
+  `tests/link.rs::link_repeated_platform_adt_marshal_does_not_corrupt_heap`.
+- **Link-then-RUN-under-load** — `--link` capabilities are guarded for
+  *links-successfully*, not *runs-N-times-without-aborting*.
+- **Checking allocator** — no ASAN/valgrind CI pass and no heap-header
+  debug-assert on the marshaling path, so a fresh few-byte overrun is silent
+  until the threshold.
+- **JIT/link host-callback parity** — the two hand-rolled wirings have no
+  parity test; they diverged (one correct, one off-by-16).
+
+Tracked as **Risk 11** in `risks.md` (Slow-Accumulating FFI/Platform-ABI
+Memory Corruption). This is an obligation-on-skills gap, not a "write N unit
+tests for M lines" gap — see the Risk 11 mitigations.
+
 ### 2.5 `crates/cranelisp-frontend/src/ast_builder.rs` -- 82.9% (P2)
 
 **~3,041 regions, 519 missed.** Large file covering AST construction from S-expressions.

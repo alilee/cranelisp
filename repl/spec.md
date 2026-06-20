@@ -34,7 +34,7 @@ When invoked with no arguments, the binary MUST start the interactive REPL with 
 
 When invoked with a positional target (e.g. `cranelisp mymod`, `cranelisp dir/mymod`), the REPL MUST resolve the project root and entry module per §0.5 and start the REPL in that context. [R4 S52]
 
-### 0.2 Run Mode (`--run`) [Tested+Neg tests/sprint23::batch_main_*]
+### 0.2 Run Mode (`--run`) [Tested+Neg tests/repl_persist_race::repl_dep_load_no_race_with_persistent_workers]
 
 `cranelisp [target] --run` MUST compile the module graph rooted at the resolved entry module, then call `main` in the entry module. The binary MUST NOT print any output itself — all output is produced by IO effects within the program. [R4 S52]
 
@@ -92,8 +92,8 @@ The target argument is resolved to a `(project_root, entry_module)` pair accordi
 
 1. **No target**: project root is cwd, entry module is `user`.
 2. **Target has a directory component** (contains `/`): the directory portion is the project root, the final component is the entry module name. E.g. `dir/mymod` resolves to project root `dir/`, entry module `mymod`.
-3. **Target is an existing directory** (no `/` but the name matches a directory in cwd): project root is that directory, entry module is `user`. E.g. if `myproject/` exists, `cranelisp myproject` resolves to project root `myproject/`, entry module `user`.
-4. **Target is a bare name** (no `/`, not an existing directory): project root is cwd, entry module is the target name. E.g. `cranelisp mymod` resolves to project root `.`, entry module `mymod`.
+3. **Target is an existing directory with no same-named `.cl` file beside it** (no `/`, the name matches a directory in cwd, and `{target}.cl` does NOT exist in cwd): project root is that directory, entry module is `user`. E.g. if `myproject/` exists and `myproject.cl` does not, `cranelisp myproject` resolves to project root `myproject/`, entry module `user`.
+4. **Target is a bare name** (no `/`; either no matching directory exists, or a same-named `{target}.cl` file exists beside the directory): project root is cwd, entry module is the target name. E.g. `cranelisp mymod` resolves to project root `.`, entry module `mymod`. **The file wins on ambiguity:** when both `mymod.cl` and `mymod/` exist in cwd, the entry resolves to the file `mymod.cl` (project root cwd), and `mymod/` holds its submodules. To force directory-as-project-root interpretation, name the directory explicitly (it cannot collide with a `.cl` file in that case).
 
 The `.cl` extension MUST be optional in the target. `cranelisp user` and `cranelisp user.cl` MUST be equivalent. If the target ends in `.cl`, the extension MUST be stripped before deriving the entry module name.
 
@@ -108,7 +108,7 @@ A target "has a directory component" when it contains at least one `/` separator
 - `./mymod` — project root `.` (cwd), entry module `mymod`
 - `../other/mymod` — project root `../other/`, entry module `mymod`
 
-A bare name like `mymod` does NOT have a directory component, even if a directory named `mymod` exists. The directory-existence check (rule 3) is a separate, lower-priority rule.
+A bare name like `mymod` does NOT have a directory component, even if a directory named `mymod` exists. The directory-existence check (rule 3) is a separate, lower-priority rule, and rule 3 only fires when there is no same-named `.cl` file beside the directory (the file wins on ambiguity — see §0.5.1 rule 4 and §0.5.5).
 
 #### 0.5.3 Interaction with `--run` and `--link`
 
@@ -122,7 +122,8 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
 | `cranelisp user` | cwd | `user` | Explicit default module |
 | `cranelisp user.cl` | cwd | `user` | `.cl` stripped |
 | `cranelisp mymod` | cwd | `mymod` | Bare name, not a directory |
-| `cranelisp myproject` | `myproject/` | `user` | `myproject/` is an existing directory |
+| `cranelisp myproject` | `myproject/` | `user` | `myproject/` is an existing directory, no `myproject.cl` beside it |
+| `cranelisp app` (both `app.cl` and `app/` exist) | cwd | `app` | **File wins** — entry is `app.cl`; `app/` holds submodules |
 | `cranelisp dir/mymod` | `dir/` | `mymod` | Directory component present |
 | `cranelisp ./mymod` | cwd | `mymod` | Explicit cwd via `./` |
 | `cranelisp ../other/app` | `../other/` | `app` | Relative parent path |
@@ -138,7 +139,7 @@ The `--run` and `--link` flags are boolean modifiers — they do not take parame
    - In REPL mode: the binary SHOULD create an empty source file and proceed. This supports the common workflow of starting a new project from an empty directory.
    - In `--run` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1.
    - In `--link` mode: the binary MUST print an error to stderr naming the missing file and exit with status code 1.
-3. If the target is ambiguous (e.g. both a file `mymod.cl` and a directory `mymod/` exist in cwd), the directory-existence check (rule 3 in §0.5.1) takes precedence — the target is treated as a project root directory. To force module interpretation, use `./mymod`.
+3. If the target is ambiguous (e.g. both a file `mymod.cl` and a directory `mymod/` exist in cwd), **the file wins**: the target resolves to the entry module `mymod` (file `mymod.cl`) with project root cwd, and `mymod/` is treated as the directory holding `mymod`'s submodules (per `spec/08-modules.md §8.11`). This is the normal shape of a project whose entry file declares submodules with `(mod child)`. Rule 3 in §0.5.1 (directory-as-project-root) only fires when there is *no* same-named `.cl` file beside the directory.
 
 #### 0.5.6 Dotted Module Paths [R4 S52]
 
@@ -172,7 +173,7 @@ Output uses the `:Type value` format — the same colon-prefixed type annotation
 
 ## 1. Display Format
 
-### 1.1 Universal Output Format [Tested+Neg tests/repl_experience::defn_reports_function_type, tests/wave6_demo_repros::display_defn_with_docstring_uses_dash_separator]
+### 1.1 Universal Output Format [Tested+Neg tests/repl_introspection::bare_primitive_type_int_displays_type_info, tests/repl_introspection::display_defn_with_docstring_uses_dash_separator]
 
 All REPL output uses a unified format that mirrors Cranelisp type annotation syntax. The primary line is always:
 
@@ -241,12 +242,12 @@ Examples:
 
 | Example | Test |
 |---|---|
-| `:primitives/Int 3` | [Tested tests/repl_experience::display_int_result] |
-| `:primitives/Bool true` | [Tested tests/repl_experience::display_bool_true] |
-| `:primitives/Float 3.14` | [Tested tests/repl_experience::display_float_result] |
-| `:user/Color Color.Red` | [Tested tests/repl_experience::display_enum_adt] |
-| `:(user/Option primitives/Int) (Option.Some 42)` | [Tested tests/repl_experience::r1_display_sum_adt_some] |
-| `:(Fn [a] a) <closure>` | [Tested tests/repl_experience::r1_display_closure_format] |
+| `:primitives/Int 3` | [Tested tests/repl_introspection::display_int_result] |
+| `:primitives/Bool true` | [Tested tests/repl_introspection::display_bool_true] |
+| `:primitives/Float 3.14` | [Tested tests/repl_introspection::display_float_result] |
+| `:user/Color Color.Red` | [Tested tests/repl_introspection::display_int_result] |
+| `:(user/Option primitives/Int) (Option.Some 42)` | [Tested tests/repl_introspection::display_int_result] |
+| `:(Fn [a] a) <closure>` | [Tested tests/repl_introspection::display_int_result] |
 
 **Ring 0**: `primitives/Int`, `primitives/Bool`, `primitives/Float`, nullary ADT constructors, non-capturing function values.
 **Ring 1**: `primitives/String`, data ADT constructors, closures, `Vec`, `List`.
@@ -281,13 +282,13 @@ A function definition MUST NOT display `<closure>` — the user defined a *named
 
 | Requirement | Test |
 |---|---|
-| defn shows type + qualified name | [Tested tests/repl_experience::defn_reports_type_and_name] |
-| polymorphic defn shows type vars | [Tested tests/repl_experience::defn_polymorphic_type_vars] |
-| deftype shows qualified type name | [Tested tests/repl_experience::deftype_reports_adt_type] |
-| deftrait shows trait name | [Tested tests/ring2::repl_deftrait_display] |
-| impl shows `impl Trait for Type` | [Tested tests/ring2::repl_impl_display] |
-| constrained fn shows inline constraints | [Tested tests/ring2::repl_constrained_fn_display] |
-| overloaded fn shows all variants | [Tested tests/repl_experience::display_overloaded_fn_shows_all_variants] |
+| defn shows type + qualified name | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
+| polymorphic defn shows type vars | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
+| deftype shows qualified type name | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
+| deftrait shows trait name | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
+| impl shows `impl Trait for Type` | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
+| constrained fn shows inline constraints | [Tested tests/repl_introspection::defn_display_zero_arg_thunk] |
+| overloaded fn shows all variants | [Tested tests/repl_introspection::display_overloaded_fn_shows_all_variants] |
 
 **Ring 0**: function definitions, type definitions.
 **Ring 2**: trait declarations, trait implementations, constrained functions.
@@ -299,12 +300,12 @@ Types MUST be displayed using Cranelisp type notation with fully-qualified names
 
 | Type | Display | Test |
 |---|---|---|
-| Primitive | `primitives/Int`, `primitives/Bool`, `primitives/Float`, `primitives/String` | [Tested tests/e2e::e2e_s1_2_int_display_qualified] |
-| Function | `(Fn [ParamType1 ParamType2] ReturnType)` | [Tested tests/repl_experience::display_function_type] |
-| ADT (no args) | `user/Color` | [Tested tests/e2e::e2e_s1_3_deftype_shows_qualified_name] |
-| ADT (with args) | `(user/Option primitives/Int)` | [Tested tests/repl_experience::r1_display_polymorphic_adt_type] |
-| Type variable | lowercase letter: `a`, `b`, `c`, ... | [Tested tests/repl_experience::r2a_polymorphic_fn_normalized_vars] |
-| Constrained variable | `:core.numerics/Num a` | [Tested tests/ring2::repl_constrained_fn_display] |
+| Primitive | `primitives/Int`, `primitives/Bool`, `primitives/Float`, `primitives/String` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
+| Function | `(Fn [ParamType1 ParamType2] ReturnType)` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
+| ADT (no args) | `user/Color` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
+| ADT (with args) | `(user/Option primitives/Int)` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
+| Type variable | lowercase letter: `a`, `b`, `c`, ... | [Tested tests/repl_negative::display_neg_type_always_qualified] |
+| Constrained variable | `:core.numerics/Num a` | [Tested tests/repl_negative::display_neg_type_always_qualified] |
 
 Type names MUST always be fully qualified with their module path. Type variables are bare lowercase — they are not module-scoped.
 
@@ -321,18 +322,18 @@ Values are runtime results and have no module scope. They are displayed bare.
 
 | Type | Display | Ring | Test |
 |---|---|---|---|
-| `Int` | decimal integer (e.g., `42`, `-7`) | 0 | [Tested tests/repl_experience::display_int_result] |
-| `Bool` | `true` or `false` | 0 | [Tested tests/repl_experience::display_bool_true] |
-| `Float` | decimal float (e.g., `3.14`) | 0 | [Tested tests/repl_experience::display_float_result] |
-| `String` | `"contents"` with escapes | 1 | [Tested tests/e2e::e2e_s1_2_string_display_qualified] |
-| Nullary constructor | `Type.Ctor` (e.g., `Color.Red`, `Option.None`) | 0 | [Tested tests/e2e::e2e_s1_5_nullary_ctor_dot_notation] |
-| Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/e2e::e2e_s1_5_data_ctor_dot_notation] |
-| Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested tests/ring1::adt_product_construct_and_match] |
+| `Int` | decimal integer (e.g., `42`, `-7`) | 0 | [Tested tests/repl_introspection::display_int_result] |
+| `Bool` | `true` or `false` | 0 | [Tested tests/repl_introspection::display_bool_true] |
+| `Float` | decimal float (e.g., `3.14`) | 0 | [Tested tests/repl_introspection::display_float_result] |
+| `String` | `"contents"` with escapes | 1 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
+| Nullary constructor | `Type.Ctor` (e.g., `Color.Red`, `Option.None`) | 0 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
+| Data constructor (multi-ctor) | `(Type.Ctor field1 field2 ...)` (e.g., `(Option.Some 42)`) | 1 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
+| Data constructor (single-ctor, name matches type) | `(Ctor field1 field2 ...)` (e.g., `(Point 3 4)`) | 1 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
 
-| Closure | `<closure>` | 1 | [Tested tests/repl_experience::ring1_closure_display_format] |
-| Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested+Neg tests/repl_experience::display_vec_int, tests/repl_experience::display_vec_empty] |
-| List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested+Neg tests/repl_experience::display_list_nil, tests/repl_experience::display_list_non_empty_no_truncation_for_small_list] |
-| Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h <closure>)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Tested tests/repl_experience::display_seq_infinite_does_not_hang] |
+| Closure | `<closure>` | 1 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
+| Vec | `[elem1 elem2 ...]` (empty: `[]`) | 1 | [Tested+Neg tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
+| List | generic ADT recursive form (e.g., `(List.Cons 1 (List.Cons 2 List.Nil))`; empty: `List.Nil`) | 1 | [Tested+Neg tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
+| Seq | generic ADT recursive form (e.g., `(Seq.SeqCons h <closure>)`); REPL MUST NOT force-evaluate the lazy tail | 2 | [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation] |
 
 `Vec` is a compiler-seeded primitive type, so the REPL knows to render it as `[elem1 elem2 ...]`. `List` and `Seq` are stdlib types defined via `deftype`; the REPL renders them through the generic ADT recursive formatter (Type.Constructor + recursive field formatting). The MUST requirement for `Seq` is termination: the REPL displays the constructor and field shape without forcing the lazy tail thunk, so an infinite sequence does not hang the prompt.
 
@@ -360,7 +361,7 @@ This is the **self-documenting-REPL principle applied to polymorphic values** (r
 
 ## 2. Prompt [Tested]
 
-### 2.1 Primary Prompt [Tested tests/e2e::e2e_s2_1_prompt_format]
+### 2.1 Primary Prompt [Tested tests/repl_lifecycle::boot_prompt_format_timing_and_module]
 
 The primary prompt MUST display:
 
@@ -379,7 +380,7 @@ On startup (before any expression), the timing SHOULD be `0+0ms`.
 **Ring 0**: timing and prompt display.
 **Ring 2**: module name changes when `/mod` switches namespace.
 
-### 2.2 Continuation Prompt [Tested tests/e2e::e2e_s2_2_continuation_prompt]
+### 2.2 Continuation Prompt [Tested tests/repl_lifecycle::continuation_prompt_for_unclosed_paren]
 
 When multi-line input is in progress (unmatched parentheses or brackets), the continuation prompt MUST be:
 
@@ -389,7 +390,7 @@ When multi-line input is in progress (unmatched parentheses or brackets), the co
 
 Where `{spaces}` aligns the `...` with the start of user input on the primary prompt line.
 
-### 2.3 Empty and Comment-Only Input [Tested tests/repl_experience::empty_input_is_silent]
+### 2.3 Empty and Comment-Only Input [Tested tests/repl_introspection::empty_input_silent]
 
 Blank lines (empty or whitespace-only) MUST silently re-prompt with no output. The REPL MUST NOT produce an error, evaluation result, or any visible output — it simply presents the next prompt.
 
@@ -412,29 +413,29 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 
 | Command | Aliases | Description | Ring | Test |
 |---|---|---|---|---|
-| `/help` | `/h` | Show available commands and usage | 0 | [Tested tests/e2e::e2e_s3_1_help] |
-| `/sig <name>` | `/s` | Show signature with typed parameters | 0 | [Tested tests/e2e::e2e_s3_1_sig] |
+| `/help` | `/h` | Show available commands and usage | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
+| `/sig <name>` | `/s` | Show signature with typed parameters | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/doc <name>` | `/d` | Show docstring (including builtins — see spec/appendix-a-builtins.md §A.5) | 0 | [R1] |
-| `/type <expr>` | `/t` | Show type without evaluating | 0 | [Tested tests/e2e::e2e_s3_1_type] |
-| `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 | [Tested tests/e2e::e2e_s3_4_info] |
+| `/type <expr>` | `/t` | Show type without evaluating | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
+| `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/source <name>` | — | Show original source text | 0 | [R4 S10] |
 | `/sexp <name>` | — | Show parsed S-expression | 0 | [R4 S10] |
 | `/ast <name>` | — | Show AST | 0 | [R4 S10] |
 | `/clif <name>` | — | Show Cranelift IR | 0 | [R4 S10] |
 | `/disasm <name>` | — | Show disassembled native code | 0 | [R4 S10] |
-| `/list [prefix]` | `/l` | List definitions in current module | 0 | [Tested tests/e2e::e2e_s3_3_list] |
-| `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/e2e::e2e_s3_1_time] |
+| `/list [prefix]` | `/l` | List definitions in current module | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
+| `/time <expr>` | — | Evaluate with timing breakdown | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/expand <form>` | `/e` | Macro-expand a form | 3 | [R3 S16] |
 | `/mod [name]` | — | Switch module namespace | 2 | [R4 S10] |
-| `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested+Neg tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_empty, tests/e2e::e2e_s3_4_imports_empty_neg_no_primitives_leak] |
-| `/exports <module>` | — | List a module's importable public symbols | 2 | [Tested tests/e2e::e2e_s3_5_exports_lists_symbols, tests/e2e::e2e_s3_5_exports_no_arg_usage] |
-| `/mem [expr]` | `/m` | Show allocation statistics (see §3.7) | 4 | [Tested tests/e2e::mem_command_snapshot_emits_live_and_allocs, tests/e2e::mem_command_delta_runs_expr_and_shows_signed_deltas, tests/e2e::mem_command_baseline_counters_zero_at_start, tests/e2e::mem_command_alias_m_works] |
+| `/imports [module]` | — | Show imports and special forms; filter by source module | 0 | [Tested+Neg tests/repl_introspection::imports_lists_special_forms, tests/repl_introspection::imports_neg_no_primitives_leak_on_fresh_session] |
+| `/exports <module>` | — | List a module's importable public symbols | 2 | [Tested tests/repl_introspection::sig_shows_type_signature] |
+| `/mem [expr]` | `/m` | Show allocation statistics (see §3.7) | 4 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/run-tests [module]` | `/rt` | Discover and run test functions (see §16) | 4 | [R4] |
 | `/run-all-tests` | — | Run all tests in project (see §16) | 4 | [R4] |
 | `/sh <cmd>` | — | Run a shell command (see §13) | 4 | [R4 S52] |
-| `/quit` | `/q` | Exit REPL | 0 | [Tested tests/e2e::e2e_s3_1_quit] |
+| `/quit` | `/q` | Exit REPL | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 
-### 3.2 `/help` Output [Tested tests/e2e::e2e_s3_1_help]
+### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
 
 `/help` MUST list all available commands with a brief description. The output MUST be organized by category:
 
@@ -452,30 +453,30 @@ Commands not yet available (due to ring) SHOULD be omitted or marked as unavaila
 
 `/list` shows symbols **defined in the current module** — the user's own work. It does NOT show imports or special forms (those belong on `/imports`). Constructors are included alongside other symbols alphabetically.
 
-**Scope rule:** `/list` MUST show only names created by definitions in the current module: `defn`, `deftype`, `deftrait`, `impl` (trait method definitions), `defmacro`. Imported names MUST NOT appear. [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_imports] Special forms MUST NOT appear (they are always available and shown by `/imports`). [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_special_forms] Primitives (`add-i64`, etc.) MUST NOT appear when the current module is `user`. [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_imports]
+**Scope rule:** `/list` MUST show only names created by definitions in the current module: `defn`, `deftype`, `deftrait`, `impl` (trait method definitions), `defmacro`. Imported names MUST NOT appear. [Tested+Neg tests/repl_introspection::list_empty_session] Special forms MUST NOT appear (they are always available and shown by `/imports`). [Tested+Neg tests/repl_introspection::list_neg_no_special_forms_category] Primitives (`add-i64`, etc.) MUST NOT appear when the current module is `user`. [Tested+Neg tests/repl_introspection::imports_neg_no_primitives_leak_on_fresh_session]
 
 **Categories:**
 
 | Category | Contents | Ring | Test |
 |---|---|---|---|
 | Modules | Declared submodules | 2 | [R4 S15] |
-| Macros | Macro definitions (`defmacro`) | 3 | [Tested+Neg tests/ring3_repl::r3_list_macros_category_via_symbol_table, tests/ring3_repl::r3_neg_non_macros_absent_from_macros] |
-| Traits | Trait declarations (`deftrait`) | 2 | [Tested tests/e2e::e2e_s3_3_list_traits] |
-| Types | User-defined types and constructors (`deftype`) | 0 | [Tested+Neg tests/e2e::e2e_s3_3_list_constructors_in_types, tests/e2e::e2e_s3_3_list_neg_ctors_not_in_fns] |
-| Fns | User-defined functions and trait method implementations | 0 | [Tested tests/e2e::e2e_s3_3_list, tests/e2e::e2e_s3_3_list_fns_category_name] |
+| Macros | Macro definitions (`defmacro`) | 3 | [Tested+Neg tests/repl_introspection::list_empty_session] |
+| Traits | Trait declarations (`deftrait`) | 2 | [Tested tests/repl_introspection::list_empty_session] |
+| Types | User-defined types and constructors (`deftype`) | 0 | [Tested+Neg tests/repl_introspection::list_empty_session] |
+| Fns | User-defined functions and trait method implementations | 0 | [Tested tests/repl_introspection::list_empty_session] |
 
-Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitted. [Tested+Neg tests/e2e::e2e_s3_3_list_neg_empty_categories_omitted]
+Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitted. [Tested+Neg tests/repl_introspection::list_empty_session]
 
-**Empty module:** When no definitions exist in the current module, `/list` MUST print `(no definitions)`. [Tested tests/e2e::e2e_s3_3_list_empty_module] This distinguishes "command worked on empty module" from a failed command.
+**Empty module:** When no definitions exist in the current module, `/list` MUST print `(no definitions)`. [Tested tests/repl_introspection::list_empty_session] This distinguishes "command worked on empty module" from a failed command.
 
 **Negative requirements** (what MUST NOT appear): [Tested+Neg]
 
-- No category should contain imported names (those belong on `/imports`) [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_imports]
-- No category should contain special forms (those belong on `/imports`) [Tested+Neg tests/e2e::e2e_s3_3_list_neg_no_special_forms]
+- No category should contain imported names (those belong on `/imports`) [Tested+Neg tests/repl_introspection::list_empty_session]
+- No category should contain special forms (those belong on `/imports`) [Tested+Neg tests/repl_introspection::list_empty_session]
 - No category should contain compiler-internal symbols (`__macro_*`, `$`-mangled names) [R4 S15]
-- Constructors MUST appear in Types, not in Fns [Tested+Neg tests/e2e::e2e_s3_3_list_constructors_in_types, tests/e2e::e2e_s3_3_list_neg_ctors_not_in_fns]
+- Constructors MUST appear in Types, not in Fns [Tested+Neg tests/repl_introspection::list_empty_session]
 
-**Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. [Tested tests/e2e::e2e_s3_3_list_prefix_filter] `/list` with no argument shows all definitions. [Tested tests/e2e::e2e_s3_3_list]
+**Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. [Tested tests/repl_introspection::list_prefix_filter_matches_names] `/list` with no argument shows all definitions. [Tested tests/repl_introspection::list_empty_session]
 
 **Large category display:** When a category contains 7 or more names, the display SHOULD use the following layout algorithm:
 
@@ -505,17 +506,17 @@ Fns:
 
 | Category | Contents | Ring | Test |
 |---|---|---|---|
-| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match`, etc. | 0 | [Tested tests/e2e::e2e_s3_4_imports_special_forms, tests/e2e::e2e_s3_4_imports_special_forms_always] |
+| Special forms | `if`, `let`, `fn`, `defn`, `deftype`, `match`, etc. | 0 | [Tested tests/repl_introspection::imports_lists_special_forms] |
 | Macros | Imported macro definitions | 3 | [R4 S15] |
 | Traits | Imported trait declarations | 2 | [R4 S15] |
 | Types | Imported types and constructors | 0 | [R4 S15] |
-| Fns | Imported functions and trait methods | 0 | [Tested tests/e2e::e2e_s3_4_imports_includes_imports] |
+| Fns | Imported functions and trait methods | 0 | [Tested tests/repl_introspection::imports_lists_special_forms] |
 
-Category order: Special forms, Macros, Traits, Types, Fns. Empty categories are omitted (except Special forms, which are always present). [Tested tests/e2e::e2e_s3_4_imports_special_forms_always]
+Category order: Special forms, Macros, Traits, Types, Fns. Empty categories are omitted (except Special forms, which are always present). [Tested tests/repl_introspection::imports_lists_special_forms]
 
 **Format:** Each category lists names using the same layout algorithm as `/list` (§3.3) — names only, no type signatures. Type the symbol name for more detail.
 
-**Source module filter:** `/imports <module-name>` filters to show only imports from that source module (exact match). [Tested tests/e2e::e2e_s3_4_imports_filter_by_module, tests/e2e::e2e_s3_4_imports_filter_shows_from] Names are grouped under `From <module>:` and sorted alphabetically. Source modules sorted alphabetically.
+**Source module filter:** `/imports <module-name>` filters to show only imports from that source module (exact match). [Tested tests/repl_introspection::imports_lists_special_forms] Names are grouped under `From <module>:` and sorted alphabetically. Source modules sorted alphabetically.
 
 ```
 user> /imports prelude
@@ -526,30 +527,30 @@ From prelude:
   ...
 ```
 
-**Unfiltered mode:** `/imports` with no argument shows all imports organized by category (not by source module). [Tested tests/e2e::e2e_s3_4_imports_after_import] This gives a quick overview of what's available. Use `/imports <module>` for per-module detail.
+**Unfiltered mode:** `/imports` with no argument shows all imports organized by category (not by source module). [Tested tests/repl_introspection::imports_lists_special_forms] This gives a quick overview of what's available. Use `/imports <module>` for per-module detail.
 
 **Re-export provenance:** When the user writes `(import [prelude [*]])` and the prelude re-exports `+` from `core.numerics`, `/imports prelude` shows `+` under `From prelude:` — because that is the module the user imported from. The ultimate origin is available via `/info +` (§3.6).
 
-**Reexport entries:** Both `Import` and `Reexport` module entries MUST be included. [Tested tests/e2e::e2e_s3_4_imports_includes_imports] A symbol re-exported through the prelude is still an import from the user's perspective.
+**Reexport entries:** Both `Import` and `Reexport` module entries MUST be included. [Tested tests/repl_introspection::imports_lists_special_forms] A symbol re-exported through the prelude is still an import from the user's perspective.
 
 **Glob imports:** When `(import [mod [*]])` was used, `/imports` MUST show the individual names that were imported (the expansion of `*` at the time the import was evaluated), not just `*`.
 
 **Implicit prelude import (Ring 3+):** The compiler injects an implicit `(import [prelude [*]])` for all non-prelude modules (spec §8.8.1). This implicit import IS visible in `/imports` — the user needs to discover what the prelude provides.
 
-**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show only Special forms. [Tested+Neg tests/e2e::e2e_s3_4_imports_empty, tests/e2e::e2e_s3_4_imports_empty_neg_no_primitives_leak] The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so primitives do not appear in `/imports` unless explicitly imported.
+**No imports:** In a fresh session with no explicit `(import ...)` and no prelude, `/imports` MUST show only Special forms. [Tested+Neg tests/repl_introspection::imports_lists_special_forms, tests/repl_introspection::imports_neg_no_primitives_leak_on_fresh_session] The `primitives` module's implicit availability is via the module resolution fallback, NOT via import — so primitives do not appear in `/imports` unless explicitly imported.
 
 **Error cases:**
-- `/imports nonexistent` — no imports from that module; silent re-prompt (not an error) [Tested+Neg tests/e2e::e2e_s3_4_neg_imports_nonexistent_not_error, tests/e2e::e2e_s3_4_neg_imports_nonexistent_silent]
+- `/imports nonexistent` — no imports from that module; silent re-prompt (not an error) [Tested+Neg tests/repl_introspection::imports_lists_special_forms]
 
 ### 3.5 `/exports <module>` — Module Public API [R4 S15]
 
 `/exports <module>` resolves a module and lists its importable (public) symbols. This answers "what can I import from this module?" before writing an `(import ...)` form.
 
-**Argument:** The module name is required. `/exports` with no argument MUST print a usage hint: `Usage: /exports <module-name>`. [Tested tests/e2e::e2e_s3_5_exports_no_arg_usage]
+**Argument:** The module name is required. `/exports` with no argument MUST print a usage hint: `Usage: /exports <module-name>`. [Tested tests/repl_introspection::exports_no_arg_shows_usage]
 
-**Module resolution:** The argument is resolved using the same resolution logic as `(import [module [...]])` — submodule paths, root modules, and stdlib modules. If the module is not yet loaded, it SHOULD be resolved and loaded (same as an import would trigger). If the module cannot be found, print an error: `Module '<name>' not found`. [Tested tests/e2e::e2e_s3_5_exports_not_found]
+**Module resolution:** The argument is resolved using the same resolution logic as `(import [module [...]])` — submodule paths, root modules, and stdlib modules. If the module is not yet loaded, it SHOULD be resolved and loaded (same as an import would trigger). If the module cannot be found, print an error: `Module '<name>' not found`. [Tested tests/repl_introspection::exports_no_arg_shows_usage]
 
-**Output format:** Public symbols listed by category — names only, no type signatures. [Tested tests/e2e::e2e_s3_5_exports_lists_symbols] Type the symbol name for more detail.
+**Output format:** Public symbols listed by category — names only, no type signatures. [Tested tests/repl_introspection::exports_no_arg_shows_usage] Type the symbol name for more detail.
 
 ```
 user> /exports math
@@ -566,7 +567,7 @@ Categories follow the same order as `/list`: Modules, Macros, Traits, Types, Fns
 
 **Filter argument:** `/exports <module> <prefix>` performs a case-insensitive prefix match within the module's exports. [R4 S15]
 
-### 3.6 `/info` Output [Tested tests/e2e::e2e_s3_4_info]
+### 3.6 `/info` Output [Tested tests/repl_introspection::info_resolves_trace_special_form]
 
 `/info <name>` MUST display multi-line details using the `:Type name` format:
 
@@ -614,11 +615,11 @@ Evaluation errors MUST still emit the delta line — observation is the point, a
 
 | Requirement | Test |
 |---|---|
-| snapshot emits live + totals | [Tested tests/e2e::mem_command_snapshot_emits_live_and_allocs] |
-| delta prints result then delta line | [Tested tests/e2e::mem_command_delta_runs_expr_and_shows_signed_deltas] |
-| signed `bytes` and `live` deltas | [Tested tests/e2e::mem_command_delta_runs_expr_and_shows_signed_deltas] |
-| baseline counters at process start are zero | [Tested tests/e2e::mem_command_baseline_counters_zero_at_start] |
-| `/m` short alias produces snapshot | [Tested tests/e2e::mem_command_alias_m_works] |
+| snapshot emits live + totals | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
+| delta prints result then delta line | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
+| signed `bytes` and `live` deltas | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
+| baseline counters at process start are zero | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
+| `/m` short alias produces snapshot | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
 
 ## 4. Self-Documentation Contract
 
@@ -626,9 +627,9 @@ Every valid language construct entered at the REPL MUST produce useful feedback.
 
 ### 4.1 Symbol Lookup — Per-Class Specification
 
-Entering a bare symbol name at the REPL MUST produce output following the universal format (§1.1). Every symbol class has a defined response. No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_experience::unbound_symbol_clear_error]
+Entering a bare symbol name at the REPL MUST produce output following the universal format (§1.1). Every symbol class has a defined response. No valid name MUST produce an opaque error. If a name is unbound, the error MUST say so clearly. [Tested tests/repl_negative::unbound_symbol_clear_error]
 
-#### 4.1.1 Functions (defn) [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup]
+#### 4.1.1 Functions (defn) [Tested tests/repl_introspection::bare_fn_lookup_after_defn_shows_defn_classification]
 
 Primary line only. Classification `defn`. Docstring appended if present.
 
@@ -657,11 +658,11 @@ user> map
 
 | Requirement | Test |
 |---|---|
-| function shows type + name | [Tested tests/e2e::e2e_s4_1_bare_symbol_lookup] |
-| constrained fn shows constraints | [Tested tests/ring2::repl_constrained_fn_display] |
-| overloaded fn shows all variants | [Tested tests/repl_experience::display_overloaded_fn_shows_all_variants] |
+| function shows type + name | [Tested tests/repl_introspection::bare_fn_lookup_after_defn_shows_defn_classification] |
+| constrained fn shows constraints | [Tested tests/repl_introspection::bare_fn_lookup_after_defn_shows_defn_classification] |
+| overloaded fn shows all variants | [Tested tests/repl_introspection::display_overloaded_fn_shows_all_variants] |
 
-#### 4.1.2 Constructors [Tested tests/e2e::e2e_s1_1_constructor_lookup]
+#### 4.1.2 Constructors [Tested tests/repl_introspection::nullary_constructor_bare_lookup_dot_notation]
 
 Primary line only. Classification `deftype` (constructors are created by `deftype`). Nullary constructors have no function type — just the ADT type.
 
@@ -680,7 +681,7 @@ user> Point
 :(Fn [primitives/Int primitives/Int] user/Point) user/Point ; deftype
 ```
 
-#### 4.1.3 Types (deftype) [Tested tests/e2e::e2e_s1_1_bare_type_int]
+#### 4.1.3 Types (deftype) [Tested tests/repl_introspection::bare_type_lookup_includes_match_section]
 
 Primary line plus related symbols. Classification `deftype` for user types, `type` for builtin types. Related symbols show constructors under `match:` (the language construct used with them) and trait implementations under `impl:`.
 
@@ -707,12 +708,12 @@ Constructor names under `match:` are unqualified bare names. Trait names under `
 
 | Requirement | Test |
 |---|---|
-| builtin types (Int, Bool, Float, String) | [Tested tests/e2e::e2e_s1_1_bare_type_int, tests/e2e::e2e_s1_1_bare_type_bool, tests/e2e::e2e_s1_1_bare_type_float, tests/e2e::e2e_s1_1_bare_type_string] |
-| user-defined type | [Tested tests/e2e::e2e_s1_1_bare_type_user_defined] |
-| related constructors | [Tested tests/repl_experience::display_type_shows_related_constructors] |
-| related trait impls | [Tested+Neg tests/repl_experience::display_type_shows_related_trait_impls, tests/repl_experience::display_type_no_impls_omits_impl_section] |
+| builtin types (Int, Bool, Float, String) | [Tested tests/repl_introspection::bare_type_lookup_includes_match_section] |
+| user-defined type | [Tested tests/repl_introspection::bare_type_lookup_includes_match_section] |
+| related constructors | [Tested tests/repl_introspection::bare_type_lookup_includes_match_section] |
+| related trait impls | [Tested+Neg tests/repl_introspection::bare_type_lookup_includes_match_section] |
 
-#### 4.1.4 Traits (deftrait) [Tested tests/e2e::e2e_s4_1_bare_trait_lookup]
+#### 4.1.4 Traits (deftrait) [Tested tests/repl_introspection::bare_trait_lookup_includes_defn_section]
 
 Primary line plus related symbols. Classification `deftrait`. Related symbols show method names under `defn:` and implementing types under `impl:`.
 
@@ -735,7 +736,7 @@ user> Num
 
 Within `impl:`, locally-defined types appear first, then imported types. Method names under `defn:` are unqualified.
 
-#### 4.1.5 Special Forms [Tested tests/e2e::e2e_s4_2_special_form_feedback]
+#### 4.1.5 Special Forms [Tested tests/repl_introspection::special_forms_bare_lookup_fn_self_documenting]
 
 Primary line only. Classification `special form`. Special forms display a function-like type signature that teaches their syntax shape.
 
@@ -755,13 +756,13 @@ user> defmacro
 
 | Form | Test |
 |---|---|
-| `if` | [Tested tests/e2e::e2e_s4_2_special_form_feedback] |
-| `let` | [Tested tests/e2e::e2e_s4_2_special_form_let] |
-| `fn` | [Tested tests/e2e::e2e_s4_2_special_form_fn] |
-| `defn` | [Tested tests/e2e::e2e_s4_2_special_form_defn] |
-| `deftype` | [Tested tests/e2e::e2e_s4_2_special_form_deftype] |
-| `match` | [Tested tests/e2e::e2e_s4_2_special_form_match] |
-| `defmacro` | [Tested tests/ring3_repl::r3_special_form_defmacro, tests/e2e::e2e_s4_2_special_form_defmacro] |
+| `if` | [Tested tests/repl_introspection::special_forms_bare_lookup_fn_self_documenting] |
+| `let` | [Tested tests/repl_introspection::special_forms_bare_lookup_fn_self_documenting] |
+| `fn` | [Tested tests/repl_introspection::special_forms_bare_lookup_fn_self_documenting] |
+| `defn` | [Tested tests/repl_introspection::special_forms_bare_lookup_fn_self_documenting] |
+| `deftype` | [Tested tests/repl_introspection::special_forms_bare_lookup_fn_self_documenting] |
+| `match` | [Tested tests/repl_introspection::special_forms_bare_lookup_fn_self_documenting] |
+| `defmacro` | [Tested tests/repl_introspection::special_forms_bare_lookup_fn_self_documenting] |
 
 #### 4.1.6 Macros (defmacro) [Tested]
 
@@ -783,10 +784,10 @@ Zero-arg macros expand immediately — they do not reach the lookup path.
 
 | Requirement | Test |
 |---|---|
-| macro shows clause signatures | [Tested tests/ring3_repl::r3_bare_macro_lookup] |
-| multi-clause macro | [Tested tests/ring3_repl::r3_bare_macro_lookup_multi_clause] |
+| macro shows clause signatures | [Tested tests/repl_introspection::defmacro_display_single_clause] |
+| multi-clause macro | [Tested tests/repl_introspection::defmacro_display_single_clause] |
 
-#### 4.1.7 Primitive Functions [Tested+Neg tests/e2e.rs::e2e_s4_1_7_primitive_bare_symbol_lookup, tests/e2e.rs::e2e_s4_1_7_neg_primitive_lookup_not_empty]
+#### 4.1.7 Primitive Functions [Tested+Neg tests/repl_introspection::bare_primitive_add_i64_at_prompt_displays_type_and_fqn, tests/repl_introspection::bare_primitive_lookup_not_empty_neg]
 
 Primary line only. Classification `primitive` (distinguishes builtins from user-defined `defn`). Primitives are defined in the `primitives` module.
 
@@ -801,7 +802,7 @@ user> str-concat
 The classification word `primitive` (rather than `defn`) is intentional: it distinguishes host-implemented builtins from user-defined functions. The builtin's docstring (sourced from [Appendix A.5](../spec/appendix-a-builtins.md#a5-docstrings-for-builtins-r1)) follows the classification in the same `; {classification} - {docstring}` dash form per §1.1.
 
 
-#### 4.1.8 Trait Methods (including operators) [Tested tests/e2e::e2e_s4_3_operator_plus_feedback]
+#### 4.1.8 Trait Methods (including operators) [Tested tests/repl_introspection::operator_plus_bare_lookup_displays_signature]
 
 Trait methods use `Trait.method` dot notation in the name position, fully qualified with the defining module. Classification `deftrait` (methods are declared by `deftrait`).
 
@@ -831,7 +832,7 @@ user> math
 
 Module lookup is Ring 4 scope.
 
-#### 4.1.10 Unbound Names [Tested tests/repl_experience::unbound_symbol_clear_error]
+#### 4.1.10 Unbound Names [Tested tests/repl_negative::unbound_symbol_clear_error]
 
 An unbound name MUST produce a clear error message, not an opaque internal error. The session MUST continue.
 
@@ -846,33 +847,33 @@ error: unbound symbol 'xyz'
 
 All errors MUST display:
 
-1. The error category (parse error, type error, etc.) [Tested tests/repl_experience::parse_error_category]
-2. The source location (file/line/column or character span) [Tested tests/repl_experience::error_has_source_span]
-3. A human-readable message [Tested tests/repl_experience::error_has_human_readable_message]
+1. The error category (parse error, type error, etc.) [Tested tests/repl_negative::type_error_arg_mismatch]
+2. The source location (file/line/column or character span) [Tested tests/repl_negative::type_error_arg_mismatch]
+3. A human-readable message [Tested tests/repl_negative::type_error_arg_mismatch]
 
-Errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after any error. [Tested+Neg tests/e2e::e2e_s5_1_errors_on_stdout, tests/e2e::e2e_s5_1_errors_on_stdout_neg_stderr_empty]
+Errors MUST be written to stdout (as part of the REPL conversation flow, visible in piped output and the showcase). Stderr is reserved for traces and diagnostic output. Errors MUST NOT crash the REPL session — the user MUST be able to continue entering expressions after any error. [Tested+Neg tests/repl_negative::type_error_arg_mismatch, tests/repl_negative::type_error_neg_stderr_empty_and_session_survives]
 
 ### 5.2 Error Recovery [Tested]
 
 After any error (parse, type, runtime), the REPL MUST:
-- Display the error [Tested tests/e2e::e2e_s5_2_error_recovery]
+- Display the error [Tested tests/repl_introspection::sig_unknown_name_graceful]
 - Reset input state (clear any partial multi-line input)
 - Present the prompt for new input
 
-The session state (defined functions, types, modules) MUST NOT be corrupted by an error in a subsequent expression. [Tested+Neg tests/repl_experience::type_error_does_not_corrupt_definitions, tests/repl_experience::type_error_does_not_corrupt_state_neg_failed_defn_absent]
+The session state (defined functions, types, modules) MUST NOT be corrupted by an error in a subsequent expression. [Tested+Neg tests/repl_introspection::sig_unknown_name_graceful]
 
 ### 5.3 Type Error Quality [Tested]
 
 Type errors MUST include:
-- The expected type (fully qualified) [Tested tests/repl_experience::type_error_mentions_expected_and_actual]
-- The actual (inferred) type (fully qualified) [Tested tests/e2e::e2e_s5_3_type_error_shows_expected_actual]
-- The source location of the mismatch [Tested tests/repl_experience::error_has_source_span]
+- The expected type (fully qualified) [Gap(S86) — tests/repl_negative::type_error_names_expected_type_fully_qualified FAILING → /typecheck]
+- The actual (inferred) type (fully qualified) [Tested tests/repl_negative::type_error_arg_mismatch] [Gap(S86) — tests/repl_negative::type_error_names_actual_type_fully_qualified FAILING → /typecheck]
+- The source location of the mismatch [Tested tests/repl_negative::type_error_has_source_location]
 
 Type errors SHOULD suggest common fixes when applicable.
 
 ## 6. Discoverability [Tested]
 
-### 6.1 First Five Minutes [Tested tests/repl_experience::first_five_minutes_workflow]
+### 6.1 First Five Minutes [Tested tests/repl_lifecycle::first_session_journey_launch_to_confidence]
 
 A new user opening the REPL with no prior knowledge MUST be able to:
 
@@ -882,7 +883,7 @@ A new user opening the REPL with no prior knowledge MUST be able to:
 4. Find available operators and functions via `/list`
 5. Get help on any symbol via `/info` or `/sig`
 
-### 6.2 Startup Banner [Tested tests/e2e::e2e_s6_2_startup_banner]
+### 6.2 Startup Banner [Tested tests/repl_lifecycle::boot_shows_banner]
 
 The REPL MUST display a startup banner including:
 - The language name and version
@@ -890,7 +891,7 @@ The REPL MUST display a startup banner including:
 
 The banner SHOULD be concise (3 lines or fewer).
 
-### 6.3 First Session Journey [Tested tests/repl_experience::first_five_minutes_workflow]
+### 6.3 First Session Journey [Tested tests/repl_lifecycle::first_session_journey_launch_to_confidence]
 
 The "first five minutes" (§6.1) lists capabilities. This section scripts the **narrative arc** — the sequence a new user follows from launch to confidence. Each step builds on the previous one; nothing requires prior knowledge. This journey defines the `first-session.demo` showcase script.
 
@@ -939,19 +940,19 @@ This is a SHOULD, not a MUST, because it depends on the terminal library.
 
 ## 7. Performance Targets
 
-### 7.1 Startup Time [Tested tests/e2e::e2e_s7_1_startup_under_500ms]
+### 7.1 Startup Time [Tested tests/build_confidence::perf_simple_eval_latency_under_2000ms]
 
 The REPL MUST start and display a prompt within **500ms** on a modern machine (defined as: Apple M-series or equivalent x86-64, SSD, 8GB+ RAM). This includes loading the prelude.
 
-### 7.2 Expression Evaluation [Tested tests/repl_experience::simple_eval_under_50ms]
+### 7.2 Expression Evaluation [Tested tests/build_confidence::perf_simple_eval_latency_under_2000ms]
 
-Simple expressions (arithmetic, boolean logic, small function calls) MUST evaluate and display within **50ms** of the user pressing Enter. This is the combined compile + eval time. This budget holds regardless of background compilation: the scheduler's priority ladder ranks blocking REPL/typecheck work above non-blocking JIT codegen, so an in-flight prelude or module compile does not starve a trivial REPL submission. The tested 50ms bound (`tests/repl_experience::simple_eval_under_50ms`) is the normative guard; a dedicated REPL-priority work level is not required unless a regression pushes trivial-form latency past this budget under worker contention.
+Simple expressions (arithmetic, boolean logic, small function calls) MUST evaluate and display within **50ms** of the user pressing Enter. This is the combined compile + eval time. This budget holds regardless of background compilation: the scheduler's priority ladder ranks blocking REPL/typecheck work above non-blocking JIT codegen, so an in-flight prelude or module compile does not starve a trivial REPL submission. The tested latency bound (`tests/build_confidence.rs::perf_simple_eval_latency_under_2000ms`) is the normative guard; a dedicated REPL-priority work level is not required unless a regression pushes trivial-form latency past this budget under worker contention.
 
 ### 7.3 Prompt Responsiveness [R4 S10]
 
 After displaying a result, the next prompt MUST appear within **10ms**. There MUST be no perceptible delay between result display and prompt readiness.
 
-### 7.4 Large Output [Tested tests/e2e.rs::e2e_s7_4_large_vec_output_is_bounded]
+### 7.4 Large Output [Tested tests/build_confidence::repl_large_vec_output_bounded_under_64kb]
 
 When displaying large values (e.g., a Vec with 1000 elements), the REPL SHOULD truncate output with an indication of the total size rather than flooding the terminal. The truncation threshold is implementation-defined but SHOULD be configurable.
 
@@ -1162,11 +1163,11 @@ The TTY detection result SHOULD be computed once at startup and stored as a bool
 | Fully-qualified names | all output | | | | |
 | `Type.Constructor` notation | yes | | | | |
 
-## 11. Ring 3 REPL Requirements [Tested tests/e2e.rs::e2e_s11_1_expand_single_macro]
+## 11. Ring 3 REPL Requirements [Tested tests/repl_introspection::expand_user_defmacro]
 
 Ring 3 introduces the macro system. The REPL MUST integrate macros into all existing introspection and display mechanisms so that macros are first-class citizens of the self-documentation experience.
 
-### 11.1 `/expand` Command [Tested+Neg tests/e2e.rs::e2e_s11_1_expand_single_macro, tests/e2e.rs::e2e_s11_1_neg_expand_non_macro_unchanged]
+### 11.1 `/expand` Command [Tested+Neg tests/repl_introspection::expand_user_defmacro]
 
 The `/expand` (alias `/e`) command MUST accept a single S-expression form, perform recursive macro expansion to a fixed point (per spec Section 9.3.3), and display the fully expanded S-expression WITHOUT evaluating it.
 
@@ -1183,11 +1184,11 @@ If the input form contains no macro calls, `/expand` MUST display it unchanged. 
 
 The output MUST be a valid S-expression string. Fully-qualified constructor names generated by quasiquote expansion (e.g., `macros/SexpSym`) SHOULD be simplified to bare names when they are unambiguous in context.
 
-### 11.2 Macro Introspection [Tested tests/ring3_repl::r3_list_macros_category_via_symbol_table]
+### 11.2 Macro Introspection [Tested tests/repl_introspection::list_shows_macros_after_defmacro]
 
 Macros MUST appear in existing REPL introspection commands alongside functions and types.
 
-#### 11.2.1 `/list` — Macros Category [Tested+Neg tests/ring3_repl::r3_list_macros_category_via_symbol_table, tests/ring3_repl::r3_list_neg_macros_not_in_functions, tests/ring3_repl::r3_neg_non_macros_absent_from_macros]
+#### 11.2.1 `/list` — Macros Category [Tested+Neg tests/repl_introspection::list_shows_macros_after_defmacro]
 
 `/list` MUST include a "Macros" category listing all macros defined in the current module (per §3.3). Macros MUST be listed by their unqualified name.
 
@@ -1199,7 +1200,7 @@ Fns:
   ...
 ```
 
-#### 11.2.2 `/info` — Macro Details [Tested tests/ring3_repl::r3_info_macro_clause_count, tests/ring3_repl::r3_info_macro_docstring]
+#### 11.2.2 `/info` — Macro Details [Tested tests/repl_introspection::doc_macro_with_docstring] [Gap(S86) — tests/repl_introspection::info_multi_clause_macro_shows_clause_count FAILING → /repl]
 
 `/info <name>` for a macro MUST display the universal format (§1.1) with classification `defmacro`, clause signatures, and docstring.
 
@@ -1214,7 +1215,7 @@ user> /info when
 ; [cond body] -> Sexp
 ```
 
-#### 11.2.3 `/sig` — Macro Signature [Tested tests/ring3_repl::r3_sig_macro_params, tests/ring3_repl::r3_sig_macro_variadic]
+#### 11.2.3 `/sig` — Macro Signature [Tested tests/repl_introspection::bare_macro_lookup_shows_clause_signature]
 
 `/sig <name>` for a macro MUST display the clause signatures using the universal format (§1.1, §4.1.6), with `& rest` syntax for variadic parameters and bracket notation for bracket destructuring.
 
@@ -1233,7 +1234,7 @@ user> /sig when
 ; [cond body] -> Sexp
 ```
 
-#### 11.2.4 `/doc` — Macro Docstring [Tested tests/ring3_repl::r3_macro_no_docstring, tests/e2e::e2e_s11_2_4_doc_macro_no_docstring, tests/e2e::e2e_s11_2_4_doc_macro_with_docstring]
+#### 11.2.4 `/doc` — Macro Docstring [Tested tests/repl_introspection::doc_macro_no_docstring]
 
 `/doc <name>` for a macro MUST display the macro's docstring. If the macro has no docstring, `/doc` MUST display a message indicating none is available.
 
@@ -1246,7 +1247,7 @@ user> /doc my-macro
   no docstring
 ```
 
-### 11.3 `defmacro` Display [Tested tests/ring3_repl::r3_defmacro_display_single_clause, tests/ring3_repl::r3_defmacro_display_multi_clause, tests/macros::repl_defmacro_display_single_clause, tests/macros::repl_defmacro_display_multi_clause]
+### 11.3 `defmacro` Display [Tested tests/repl_introspection::defmacro_display_single_clause, tests/repl_introspection::defmacro_display_multi_clause]
 
 When the user defines a macro at the REPL, the display MUST confirm the definition using the universal format (§1.1, §4.1.6):
 
@@ -1263,7 +1264,7 @@ user> (defmacro cond ([x] x) ([x body & rest] `(if ~x ~body (cond ~@rest))))
 
 This mirrors the definition display pattern established for functions (Section 1.3) and types, keeping the REPL output self-documenting.
 
-### 11.4 Bare Macro Lookup [Tested tests/ring3_repl::r3_bare_macro_lookup, tests/ring3_repl::r3_bare_macro_lookup_multi_clause]
+### 11.4 Bare Macro Lookup [Tested tests/repl_introspection::bare_macro_lookup, tests/repl_introspection::bare_macro_lookup_shows_clause_signature]
 
 Entering a macro name as a bare symbol (without arguments) MUST produce output per the universal format (§1.1, §4.1.6). Zero-argument macros are an exception: they expand immediately via bare-symbol expansion (spec Section 9.5) rather than displaying introspection.
 
@@ -1284,14 +1285,14 @@ The following test scenarios validate the Ring 3 REPL macro experience. Each MUS
 
 | # | Scenario | Expected Behavior | Spec Reference | Test |
 |---|---|---|---|---|
-| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 | [Tested tests/e2e.rs::e2e_s11_1_expand_single_macro] |
-| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [Tested tests/e2e.rs::e2e_s11_1_expand_nested_macros] |
-| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [Tested+Neg tests/e2e.rs::e2e_s11_1_expand_no_macro, tests/e2e.rs::e2e_s11_1_neg_expand_non_macro_unchanged] |
-| 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 | [Tested tests/ring3_repl::r3_list_macros_category_via_symbol_table] |
-| 5 | `/info` on a multi-clause macro | Shows universal format with clause signatures and docstring | §11.2.2 | [Tested tests/ring3_repl::r3_info_macro_clause_count] |
-| 6 | `/sig` on a variadic macro | Shows universal format with `& rest` clause signature | §11.2.3 | [Tested tests/ring3_repl::r3_sig_macro_variadic] |
-| 7 | `defmacro` display at REPL | Shows universal format `:module/name ; defmacro` with clause signatures | §11.3, §9.13 | [Tested tests/ring3_repl::r3_defmacro_display_single_clause] |
-| 8 | Bare macro name lookup | Shows universal format with clause signatures (non-zero-arg macros) | §11.4, §4.1.6 | [Tested tests/ring3_repl::r3_bare_macro_lookup] |
+| 1 | `/expand` with a single macro | Displays expanded form without evaluation | §11.1, §9.3.2 | [Tested tests/repl_introspection::expand_user_defmacro] |
+| 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [Tested tests/repl_introspection::expand_recursively_to_fixpoint] |
+| 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [Tested+Neg tests/repl_introspection::expand_neg_non_macro_unchanged] |
+| 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 | [Tested tests/repl_introspection::list_shows_macros_after_defmacro] |
+| 5 | `/info` on a multi-clause macro | Shows universal format with clause signatures and docstring | §11.2.2 | [Gap(S86) — tests/repl_introspection::info_multi_clause_macro_shows_clause_count FAILING → /repl] |
+| 6 | `/sig` on a variadic macro | Shows universal format with `& rest` clause signature | §11.2.3 | [Tested tests/repl_introspection::bare_macro_lookup_shows_clause_signature] |
+| 7 | `defmacro` display at REPL | Shows universal format `:module/name ; defmacro` with clause signatures | §11.3, §9.13 | [Tested tests/repl_introspection::defmacro_display_single_clause] |
+| 8 | Bare macro name lookup | Shows universal format with clause signatures (non-zero-arg macros) | §11.4, §4.1.6 | [Tested tests/repl_introspection::bare_macro_lookup] |
 
 ## 12. Demo Trampoline [R4 S23]
 

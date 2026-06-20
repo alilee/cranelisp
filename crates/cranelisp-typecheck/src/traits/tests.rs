@@ -225,14 +225,42 @@
         ));
     }
 
-    // spec: 07-traits §7.1 — duplicate trait declaration is an error
+    // spec: 07-traits §7.1 — a genuinely-DIFFERENT redeclaration of the same
+    // trait name is an error. The conflicting decl shares the name `TestTrait`
+    // but declares a different method (`other-op` instead of `test-op`), so it
+    // is NOT the idempotent retry re-submission accommodated below — it must be
+    // rejected.
     #[test]
-    fn test_register_duplicate_trait_fails() {
+    fn test_register_conflicting_duplicate_trait_fails() {
         let mut tc = tf_prims();
         let decl = make_test_trait_decl();
         tc.register_trait_decl_self(&decl).unwrap();
-        let err = tc.register_trait_decl_self(&decl).unwrap_err();
+
+        // Same name, DIFFERENT method set — a real conflict.
+        let mut conflicting = make_test_trait_decl();
+        conflicting.methods[0].name = Symbol::from("other-op");
+        let err = tc.register_trait_decl_self(&conflicting).unwrap_err();
         assert!(err.message().contains("already defined"));
+    }
+
+    // spec: spec/08-modules.md §8.2 — S86 D3. Re-registering the IDENTICAL trait
+    // declaration is idempotent (a no-op), NOT an "already defined" error. The
+    // cluster orchestration retries a module's typecheck from the top with no
+    // saved resume index when a declared `(mod child)` submodule must load, so a
+    // trait-defining module's `(deftrait …)` is re-submitted unchanged on the
+    // retry pass; the registration must absorb the re-submission the same way
+    // `register_type_def` upserts. Before the D3 fix this errored
+    // `trait TestTrait already defined`.
+    #[test]
+    fn test_register_identical_trait_twice_is_idempotent() {
+        let mut tc = tf_prims();
+        let decl = make_test_trait_decl();
+        tc.register_trait_decl_self(&decl).unwrap();
+        // Identical re-submission (the retry-from-top shape) must succeed.
+        tc.register_trait_decl_self(&decl)
+            .expect("identical re-registration must be idempotent (S86 D3)");
+        // The trait is still registered exactly once and resolvable.
+        assert!(tc.lookup_trait_decl(&TraitName::from("TestTrait")).is_some());
     }
 
     // spec: 03-types §3.4.1 — trait method scheme carries trait constraint

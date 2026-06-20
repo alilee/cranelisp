@@ -1,73 +1,143 @@
 # REPL Demo Scripts
 
-Owned by `/repl`. A growing library of demo scripts that showcase the REPL experience at each ring.
+Owned by `/repl`. A curated set of demos that showcase **the language**, played
+live through the REPL.
 
 ## Purpose
 
-Demo scripts are the REPL's "portfolio" — short, narrated sessions that show off what the language can do interactively. They grow with each sprint: `/repl` adds, extends, or refines scripts as new features land.
+Demos demonstrate Cranelisp's capabilities, organized by language feature, not by
+sprint or development milestone. Each demo takes one capability and shows it
+working interactively, building toward the Sudoku solver as the centerpiece. A
+viewer who watches the active set in order gets a guided introduction to the
+language — values and types, ADTs, functions, traits, modules, effects — and then
+sees them combine to solve a real problem.
+
+This is the durable framing: **demonstrate the language, not the changelog.** When
+a new capability lands, fold it into the demo for the relevant capability (a new
+collection verb → `values-and-types` or `modules`; a new trait feature → `traits`).
+Do not add a sprint-named demo to the active set.
+
+## The active set
+
+Eight capability-named demos, each self-contained, each replaying green against
+the prebuilt binary. They consume the **curated surface** (see below) — the same
+idiomatic surface the exemplar uses.
+
+| File | Demonstrates |
+|------|--------------|
+| `tour.demo` | A five-minute tour: the read-eval loop, literals + types, operators, defn, type errors caught, recursion, `show`/`str`. |
+| `values-and-types.demo` | Inference; trait operators across Int/Float; `show`/`str`; Vecs; import-on-demand collection verbs; one polymorphic definition over many types. |
+| `adts-and-matching.demo` | `deftype` enums and field-carrying variants; `match`; `Option`/`Result`; recursive types; the Sudoku `Cell` in miniature. |
+| `functions.demo` | `defn`/`fn`; closures; higher-order functions; `compose`; threading (`->`/`->>`); accumulator recursion. |
+| `traits.demo` | Operators as trait methods; inferred trait bounds; `deftrait`/`impl`; constrained polymorphism over a user trait. |
+| `modules.demo` | `/imports`; import-on-demand; fully-qualified origins; unbound-name discoverability; how the exemplar's modules fit together. |
+| `io-and-effects.demo` | `(IO a)` values; `platform stdio`/`print`; `do`/`bind!` sequencing; `Pure`/`bind`; effects in control flow; the exemplar's main shape. |
+| `sudoku.demo` | The centerpiece: ADT domain types, grid geometry, a backtracking solver, formatted output, and a single `print` effect — a 4×4 sibling of `exemplar/user.cl`. |
+
+The arc deliberately ends at `sudoku.demo`, which reuses every concept the prior
+demos introduced.
+
+## The archive (regression guards)
+
+`archive/` holds the historical sprint/ring-named demos (`ring*`, `v4*`, `s81`).
+They are **kept, not retired** — they exercise the language end-to-end and catch
+real regressions, so they must still replay green from their archive path. They
+are NOT part of the guided showcase narrative (they narrate development history,
+which the active set deliberately omits). When the binary changes, the archive is
+a regression sweep; the active set is the portfolio.
+
+Do not add new demos to `archive/`. Do not delete archived demos to "clean up" —
+they are the durable regression net.
+
+## Curated surface
+
+Demos consume the post-de-leak curated surface (S86). Run them with:
+
+```bash
+CRANELISP_LIB=$PWD/stdlib CRANELISP_PLATFORM_PATH=$PWD/target/debug
+```
+
+- **Bare via the prelude**: operators `+ - * / = != < > <= >=`; `show`, `str`;
+  types `Int Bool Float String Option Some None Result Ok Err List Nil Cons`;
+  macros `vec list when unless cond case -> ->> def def- const const- do bind! pure`.
+- **Import-on-demand** (NOT bare): `count`/`get`/`assoc` from `collections.vec`,
+  `first`/`rest` from `collections.list`. Import by name, then use unqualified.
+- **Avoid `conj` for Vecs of heap ADTs** (carried defect DEF-2 — refcount bug in
+  the wrapper). Use `assoc`/`vec-push` for ADT-element Vecs; `conj` only for
+  scalar Vecs. The Sudoku demo uses Int Vecs with `assoc`/`get`/`count`, which are
+  unaffected.
+- Demos model the idiomatic surface the exemplar uses: operators bare, `=` for
+  strings, collection verbs imported.
 
 ## Format: `.demo` files
 
-Demo scripts use a format that is almost valid Cranelisp:
+Almost-valid Cranelisp, line-oriented:
 
 ```
-; Comment lines (semicolons) — displayed as section headers
-; Blank lines — pause between sections
+; Comment lines (semicolons) — displayed as dimmed section headers
+; Blank lines — a visual pause
 
 (+ 1 2)
 
 ; Bare expressions are REPL input — typed character-by-character
-(defn double [x] (mul-i64 x 2))
+(defn double [x] (* x 2))
 (double 21)
 
-; REPL slash commands are valid input (but not valid .cl)
+; Slash commands are valid REPL input (but not valid .cl)
 /help
 ```
 
 ### Rules
 
-- Every line is sent to the REPL — comments, blanks, expressions, slash commands
-- The showcase types each line at the `> ` prompt, then shows whatever the REPL produced
-- No line gets special treatment — if the REPL silently re-prompts for a comment, that's what the viewer sees
-- Files use `.demo` extension
-- One demo per ring, plus optional themed demos (e.g., `adt-tour.demo`)
+- Every line is sent to the REPL — comments, blanks, expressions, slash commands.
+- The player types each line at the `> ` prompt, then shows whatever the REPL
+  produced. No line gets special treatment.
+- Files use the `.demo` extension.
 
 ### What makes it almost `.cl`
 
-- `;` is the Cranelisp comment character
-- Expressions are bare (no prefix)
-- Only `/commands` and line-orientation prevent it from being a valid batch program
+- `;` is the Cranelisp comment character.
+- Expressions are bare (no prefix).
+- Only `/commands` and line-orientation prevent it from being a valid batch
+  program.
 
-## Running Demos
+## Running demos
 
-The top-level `showcase` script builds the binary and delegates to `demo-player.py` for live PTY-based playback:
+The top-level `showcase` script builds the binary and delegates to
+`demo-player.py` for live PTY playback:
 
 ```bash
-./repl/showcase ring0          # build + play Ring 0 demo
-./repl/showcase ring1          # build + play Ring 1 demo
-./repl/showcase --list         # list available demos
+./repl/showcase sudoku          # build + play the Sudoku demo (active)
+./repl/showcase ring4s          # build + play an archived guard (falls through to archive/)
+./repl/showcase --list          # list the active set + the archived guards
+```
+
+`showcase` resolves a name as `demos/<name>.demo` first, then falls back to
+`demos/archive/<name>.demo`. `--list` presents the active set and an "Archived
+(regression guards)" section. `demo-player.py` replays any path directly:
+
+```bash
+DEMO_FAST=1 CRANELISP_LIB=$PWD/stdlib CRANELISP_PLATFORM_PATH=$PWD/target/debug \
+  python3 repl/demos/demo-player.py repl/demos/sudoku.demo $PWD/target/debug/cranelisp
 ```
 
 ### Live PTY playback — no filtering
 
-The showcase delegates to `demo-player.py` which runs the REPL in a real PTY. Each line is typed character-by-character into the live REPL process, and the REPL's actual output appears in real time. There is no capture-then-replay step — the viewer sees exactly what the REPL produces, when it produces it.
+The player runs the REPL in a real PTY. Each line is typed character-by-character
+into the live process, and the REPL's actual output appears in real time. There is
+no capture-then-replay step — the viewer sees exactly what the REPL produces.
 
-This approach supports:
-- **Interactive IO** (`read-line` works because the REPL has a real terminal)
-- **Shell escapes** (`; #!` output appears inline where it occurs)
-- **Session restart** (`/quit` trampoline: the REPL exits, a new one starts in the same run dir, and the demo continues — `; Restored user.cl` appears naturally)
-- **File watching** (timing is real — the REPL sees files when they're created)
+This supports interactive IO (`read-line`), shell escapes (`; #!`), session
+restart (the `/quit` trampoline), and real file-watching timing.
 
-If the showcase output looks wrong, the fix goes in the REPL — not in the showcase or the player.
+If the showcase output looks wrong, the fix goes in the REPL — not in the showcase
+or the player.
 
 ### Run isolation
 
-Each playback creates a timestamped directory under `repl/demos/runs/`:
-```
-runs/2026-03-05T14-30-00_ring1/
-```
-
-The REPL process `chdir`s into this directory, so `.cache` artifacts and any other side effects are isolated per run. The `runs/` directory is git-ignored.
+Each playback creates a timestamped directory under `repl/demos/runs/`. The REPL
+`chdir`s into it, so `.cache` artifacts are isolated per run. `runs/` is
+git-ignored.
 
 ### Timing parameters (environment variables)
 
@@ -76,57 +146,30 @@ The REPL process `chdir`s into this directory, so `.cache` artifacts and any oth
 | `DEMO_TYPING_MS` | `30` | Milliseconds between characters |
 | `DEMO_LINE_PAUSE_MS` | `1500` | Milliseconds pause before each input line |
 | `DEMO_COMMENT_PAUSE_MS` | `800` | Milliseconds after comment display |
-| `DEMO_FAST` | unset | If set, all delays are zero (CI mode) |
-
-## Script Library
-
-| File | Ring | Description |
-|------|------|-------------|
-| `first-session.demo` | 0–3 | Learner progression: evaluate, define, inspect, mistakes, recover |
-| `ring0.demo` | 0 | Arithmetic, booleans, let, if, defn, recursion, TCO |
-| `ring1.demo` | 1 | Strings, ADTs, pattern matching, closures, higher-order, Vecs |
-| `ring2a.demo` | 2A | Prelude discovery, trait-dispatched operators, float dispatch, docstrings, deftrait/impl, constrained polymorphism |
-| `ring2b.demo` | 2B | Display trait, string equality, user-defined types + Display impl, constrained polymorphism across traits |
-| `ring3.demo` | 3 | Macros & metaprogramming: defmacro with docstrings, multi-clause macros, prelude macros (case/cond/str), string primitives, threading macros with /expand |
-| `exemplar-progress.demo` | 3 | Exemplar: Sudoku domain types (ADTs), grid geometry, 4x4 backtracking solver with formatted output |
-| `stdlib-progress.demo` | 3 | Prelude vocabulary: trait-dispatched operators, constrained polymorphism, Option/Result matching, string ops, compose, threading |
-| `ring4a.demo` | 4A | IO foundation: Pure, bind, platform stdio, print, IO composition |
-| `ring4b.demo` | 4B | IO sequencing: do, bind!, named IO results, IO + conditionals |
-| `ring4c.demo` | 4C | REPL hardening: prelude ADT display, type annotations, Option |
-| `ring4d.demo` | 4D | Developer tools: /source, /clif, panic recovery (div-by-zero) |
-| `ring4e.demo` | 4E | Trace special form, corrected IO display, /mod namespace switching |
-| `ring4f.demo` | 4F | Auto-currying: partial application, curried composition, map with curried fn, /run-tests |
-| `ring4g.demo` | 4G | Module caching (--no-cache), curried trait operators (+ 5), map with curried ops, non-Var rejection error, /run-tests |
-| `ring4h.demo` | 4H | Session persistence (user.cl), shell escape (;#!), shell-driven module creation, file watching, --link standalone executable, /run-tests |
-| `ring4i.demo` | 4I | Higher-kinded types (Functor/fmap), lazy sequences (range-from/iterate/take), terminal styling narrative, checked division panic + recovery, /run-tests |
-| `ring4j.demo` | 4J | Lenient evaluation (parallel independent let bindings, cost heuristic), auto IO scheduling (commutative bind! chains), trait methods as first-class values (§7.6), /run-tests |
-| `ring4n.demo` | 4N | Sprint 56 — multi-sig JIT dispatch (arity and type), /sig/info/list for multi-sig, /clif on mangled variants ($Int, $Int+Int) |
-| `ring4o.demo` | 4O | Sprint 57 — Phase 3+4 convergence: platform fn via symbol table (/sig, /info), cross-module /clif + /disasm, /mem snapshot + delta, persistent workers keeping compile paths warm |
-| `ring4p.demo` | 4P | Sprint 58 — Phase 5 SymbolTable convergence: Decision 31 Scenario 2 per-redefinition JIT reclaim (HEADLINE), multi-sig bare-symbol display, Cranelisp.toml lib-dirs, private-submodule import rejection, cache-hit fast restart |
-| `ring4q.demo` | 4Q | Sprint 59 — /sig docstring dash separator, test-form AST scan for trace extern, dual-path persistence collapse (cache restore + fresh compile share one register_module recursion) |
-| `ring4r.demo` | 4R | Sprint 60 — Clean & Green: JIT/object convergence (one code path, one RC contract for captured values + .o relocation), /sig docstring format conformance, /clif permanent, manifest.json compiler_mtime build marker |
-| `ring4s.demo` | 4S | Sprint 61 — bare-primitive name echo at prompt (re-exported primitives resolve through user → prelude → primitives per §8.9), scheduler + IO trace env vars (CRANELISP_SCHEDULER_TRACE / CRANELISP_IO_TRACE merge-sortable event logs), capture-return-inc fix for `(fn [_] b)` / `bind` closures |
-| `s81.demo` | 4 | Sprint 81 — `:Type` annotation reader-macro (5 self-documenting cases: value / unify error / unknown-type / not-callable / unify-precedes), introspection on a user defn (`/source`, `/sexp`). Imports `[primitives [Int Float]]` since the stdlib prelude re-exports primitive functions but not primitive types. |
-| `v4a.demo` | — | Pipeline v4 skeleton — --v4 delegates to old pipeline, identical results |
-| `v4b.demo` | — | Pipeline v4 scheduler — primitive-only programs compile through scheduler-driven path |
-| `v4c.demo` | — | Pipeline v4 robust — error recovery (type error + undefined var), platform IO (print, bind), PlatformRegistry |
-
-Each sprint, `/repl` extends this library.
-
-## Prelude and Trait Availability
-
-With prelude loading (Sprint 11+), the REPL loads `stdlib/prelude.cl` at startup, which provides the four core traits (`Num`, `Eq`, `Ord`, `Display`) and their primitive type implementations, plus standard macros and convenience functions. **Operators like `+`, `-`, `*`, `/` work from the first prompt** — demos no longer need inline trait boilerplate.
-
-Decision 17 (eliminating bespoke compiler-seeded trait registration) was resolved in Sprint 9: core traits now flow through the normal `register_trait_decl` / `register_trait_impl` pipeline in `builtins.rs`. The prelude loading mechanism (Sprint 11) then made these traits available via stdlib rather than requiring inline setup in demos.
-
-**Current state**: Demos can freely use operators, trait-dispatched functions, and prelude macros without any setup. The `first-session.demo` script uses bare `+` and `/imports` — these work because the prelude provides `Num` and its `Int`/`Float` implementations at startup.
-
-**If prelude loading is broken**: If a sprint breaks prelude loading (e.g., import registration ordering), operators will fail with unresolved trait errors. The fix belongs in the compiler pipeline (`/int`), not in the demos. Do not add inline trait boilerplate to demos as a workaround — file a FIXME against `/int` or `/qa` instead.
+| `DEMO_FAST` | unset | If set, all delays are zero (CI / verification mode) |
 
 ## Conventions
 
-- Keep demos short (20–40 lines of input) — they should be watchable in 2–3 minutes
-- Build a narrative: introduce a concept, show it, combine with previous concepts
-- **Use REPL discoverability to introduce new features.** When a demo uses a feature for the first time, let the viewer discover it through the REPL — type the name, see its type/description, then use it. For example, ring2a introduces `+` which comes from the prelude: run `/imports` to see what's available, type `+` to see it's `Num.+`, type `Num` to see the trait. The REPL's self-documenting output sets up each section, not the demo author's comments. Comments are section breaks at most.
-- End with something satisfying — a composition of features that feels powerful
-- Each ring's demo should be self-contained (doesn't depend on previous demos)
+- **Demonstrate the language, not the changelog.** Organize by capability. No
+  sprint/ring/phase narration in the active set. Comments are section headers and
+  brief framing, not development history.
+- Keep each demo watchable in 2–3 minutes (~20–40 lines of input).
+- **Let the REPL do the talking.** When a demo introduces a name, type it bare and
+  let the REPL's self-documenting output describe it (its type, origin, docstring)
+  before using it. `/sig`, `/imports`, `/info`, and a bare name at the prompt set
+  up each section. The self-documenting REPL is itself a feature on display.
+- **Build toward Sudoku.** Where a capability maps onto the solver, point at it
+  (the `Cell` ADT, the accumulator-recursion board formatter, the main effect
+  shape). `sudoku.demo` then pays off the whole arc.
+- Each demo is self-contained — it does not depend on a prior demo's session.
+- End with something that combines the concepts and feels complete.
+- Consume the curated surface (above). Don't reach for raw `*-i64`/`str-eq`/`vec-*`
+  primitives where a curated operator or imported verb exists.
+
+## If the prelude breaks
+
+The REPL loads `stdlib/prelude.cl` at startup, providing the core traits, the
+common types, the operators, and the standard macros. If a change breaks prelude
+loading, operators fail with unresolved-trait errors. The fix belongs in the
+compiler pipeline (`/int` / `/qa`), not in the demos — file a FIXME, do not add
+inline trait boilerplate as a workaround.

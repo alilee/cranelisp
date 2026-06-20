@@ -2193,17 +2193,34 @@ impl CompilerSession {
         ),
         CranelispError,
     > {
+        // Dedup by platform identity (name) BEFORE handing the enumeration to
+        // the backend. `kept_dlls` carries one `LoadedPlatform` per *processed*
+        // `(platform <P>)` form, and a multi-module program re-processes the
+        // entry module's `(platform <P>)` form on every retry-from-top
+        // dependency drive (S78 cluster orchestration) — so the SAME platform
+        // appears in `kept_dlls` once per retry. Without dedup the backend
+        // startup-stub emitter (`exe.rs` ~:221/:236) tries to `define_data` the
+        // same `__cranelisp_expected_hash_<P>` / `__cranelisp_layout_name_<P>`
+        // symbols once per duplicate → "Duplicate definition of identifier"
+        // (DEF-4), and `find_platform_rlibs` lists the same `.rcgu.o` set twice
+        // → "multiple definition" on layout-hash-less platforms. Each platform
+        // must contribute exactly one layout-check entry and one kept-DLL entry
+        // regardless of how many modules (or retries) reference it.
         let platform_names: Vec<String> = {
             let guard = self
                 .shared
                 .kept_dlls
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            guard.iter().map(|p| p.name.clone()).collect()
+            dedup_platform_names_preserving_order(guard.iter().map(|p| p.name.as_str()))
         };
 
+        // Per-platform-namespaced manifest symbols (DEF-5 / §5.5.5): the deduped
+        // platform NAMES drive the symbol list, not the count, so two distinct
+        // platforms produce two distinct `cranelisp_platform_manifest_<name>`
+        // imports instead of colliding on a shared bare name.
         let manifest_names =
-            crate::exe::collect_platform_manifest_names(platform_names.len());
+            crate::exe::collect_platform_manifest_names(&platform_names);
 
         let rlib_paths = crate::exe::find_platform_rlibs(
             &platform_names,
@@ -2217,20 +2234,32 @@ impl CompilerSession {
         // read from the DLL) — the `--link` gate compares the compiler's
         // freshly-computed hash against the statically-linked
         // `__cranelisp_layout_hash_<name>`, so a drifted platform refuses.
+        //
+        // Driven off the SAME deduped name list as the manifest/rlib inputs so
+        // each platform's gate symbols are emitted exactly once. A platform that
+        // exported a layout hash is identified by its (unique) name; we re-read
+        // the layout-hash presence from the first matching `kept_dlls` entry.
         let mut layout_checks = Vec::new();
-        {
-            let guard = self
-                .shared
-                .kept_dlls
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for platform in guard.iter() {
-                if platform.layout_hash.is_none() {
-                    // Scalar-only platform (no ADTs) exports no hash — no gate.
-                    continue;
-                }
+        for name in &platform_names {
+            let has_layout_hash = {
+                let guard = self
+                    .shared
+                    .kept_dlls
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                guard
+                    .iter()
+                    .find(|p| p.name == *name)
+                    .map(|p| p.layout_hash.is_some())
+                    .unwrap_or(false)
+            };
+            if !has_layout_hash {
+                // Scalar-only platform (no ADTs) exports no hash — no gate.
+                continue;
+            }
+            {
                 let module_path =
-                    ModuleFullPath::from(format!("platform.{}", platform.name));
+                    ModuleFullPath::from(format!("platform.{}", name));
                 let roots = self
                     .shared
                     .symbol_tables
@@ -2242,7 +2271,7 @@ impl CompilerSession {
                     &roots,
                 );
                 layout_checks.push(cranelisp_backend::exe::PlatformLayoutCheck {
-                    name: platform.name.clone(),
+                    name: name.clone(),
                     expected_hash,
                 });
             }
@@ -2251,6 +2280,79 @@ impl CompilerSession {
         Ok((manifest_names, rlib_paths, layout_checks))
     }
 
+}
+
+/// Deduplicate platform names by identity, preserving first-seen order.
+///
+/// `SharedState::kept_dlls` carries one `LoadedPlatform` per *processed*
+/// `(platform <P>)` form. Because the S78 cluster orchestration re-processes
+/// the entry module's forms on every retry-from-top dependency drive, a
+/// multi-module `(platform <P>)` program enumerates the SAME platform once per
+/// retry. The backend startup-stub emitter trusts its input is already deduped
+/// (it `define_data`s one `__cranelisp_expected_hash_<P>` symbol per entry), so
+/// the enumeration MUST be deduped by platform name before it reaches the
+/// backend — otherwise the duplicate entries collide on the same symbol
+/// ("Duplicate definition of identifier", DEF-4). Order is preserved so the
+/// manifest-index ↔ rlib ↔ layout-check correspondence stays stable.
+fn dedup_platform_names_preserving_order<'a>(
+    names: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for name in names {
+        if seen.insert(name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod platform_enumeration_dedup_tests {
+    use super::dedup_platform_names_preserving_order;
+
+    // DEF-4 (S86 Wave E): the per-platform startup-stub layout-hash gate symbol
+    // `__cranelisp_expected_hash_<P>` was emitted once per `kept_dlls` entry, and
+    // a multi-module `(platform <P>)` program enumerated the SAME platform once
+    // per retry-from-top dependency drive — so the backend tried to define the
+    // same symbol twice ("Duplicate definition of identifier"). The fix dedups
+    // the platform enumeration by identity (name) before it reaches the backend
+    // startup-stub emitter. This pins that seam: a platform referenced N times
+    // yields exactly ONE entry, regardless of how many `kept_dlls` rows carry it.
+    #[test]
+    fn multi_module_platform_enumeration_dedups_to_one_entry_per_platform() {
+        // Same platform "web" enumerated three times (one per retry/module),
+        // exactly the shape `kept_dlls` carries on a multi-module --link.
+        let kept = ["web", "web", "web"];
+        let deduped = dedup_platform_names_preserving_order(kept.iter().copied());
+        assert_eq!(
+            deduped,
+            vec!["web".to_string()],
+            "a platform referenced N times must yield exactly ONE layout-check / \
+             kept-DLL entry — else exe.rs defines __cranelisp_expected_hash_web N times"
+        );
+    }
+
+    #[test]
+    fn distinct_platforms_dedup_preserves_first_seen_order() {
+        // Mixed: distinct platforms each kept once, in first-seen order, even
+        // when interleaved with duplicates. Order matters because the backend
+        // relies on the manifest-index ↔ rlib ↔ layout-check correspondence.
+        let kept = ["web", "stdio", "web", "shapes", "stdio"];
+        let deduped = dedup_platform_names_preserving_order(kept.iter().copied());
+        assert_eq!(
+            deduped,
+            vec!["web".to_string(), "stdio".to_string(), "shapes".to_string()],
+            "dedup must preserve first-seen order of distinct platforms"
+        );
+    }
+
+    #[test]
+    fn empty_enumeration_yields_no_entries() {
+        let kept: [&str; 0] = [];
+        let deduped = dedup_platform_names_preserving_order(kept.iter().copied());
+        assert!(deduped.is_empty(), "no platforms → no link entries");
+    }
 }
 
 pub(crate) fn extract_def_name_from_sexp(sexp: &Sexp) -> Option<String> {

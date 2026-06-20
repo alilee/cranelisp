@@ -10,7 +10,7 @@ This section defines the abstract runtime semantics of Cranelisp. It specifies o
 
 The layout tables and diagrams in §12.1.1–§12.1.5 below document the **current reference representation** chosen by the present backend: a uniform machine-word (64-bit) encoding in which the interpretation of each word depends on its statically-known type. They are **descriptive of the current backend choice, not a normative uniform-word mandate.** A conforming implementation is free to deviate from any of them for any concrete type, subject only to preserving the observable semantics of §12.3 and §12.4. Where other sections of this specification reference these layouts (e.g. the i64 element/field/capture descriptions), read them as describing the current reference representation, not as imposing a uniform-word requirement.
 
-### 12.1.1 Scalar Types [Tested tests/ring0.rs::dual_mode_simple_int]
+### 12.1.1 Scalar Types [Tested crates/cranelisp-primitives/src/bool.rs::test_bool_to_string_nonzero_is_true]
 
 | Type | Representation |
 |---|---|
@@ -20,7 +20,7 @@ The layout tables and diagrams in §12.1.1–§12.1.5 below document the **curre
 
 Scalar values are NOT heap-allocated. They require no memory management.
 
-### 12.1.2 String [Tested tests/rc.rs::rc_string_alloc_and_drop]
+### 12.1.2 String [Tested crates/cranelisp-intrinsics/src/heap_string.rs::test_alloc_string_empty]
 
 Strings are heap-allocated, immutable, UTF-8 byte sequences. The layout from the returned pointer is:
 
@@ -32,7 +32,7 @@ ptr -> [length: i64 | bytes: u8...]
 - `length` (offset 0): The number of bytes in the string (not characters)
 - `bytes` (offset 8): The raw UTF-8 byte data, NOT null-terminated
 
-### 12.1.3 Function Values (Closures) [Tested tests/rc.rs::rc_closure_env_alloc]
+### 12.1.3 Function Values (Closures) [Tested tests/spec_12_runtime::closure_multiple_captures]
 
 All function values at runtime are closures — a code pointer paired with zero or more captured values:
 
@@ -46,7 +46,7 @@ ptr -> [code_ptr: i64 | cap_0: i64 | cap_1: i64 | ... | cap_n: i64]
 
 Non-capturing functions (including top-level named functions used as values) still use this representation with zero captures: `[code_ptr]`.
 
-### 12.1.4 Algebraic Data Types [Tested tests/repl_experience.rs::constructor_tags_are_sequential]
+### 12.1.4 Algebraic Data Types [Tested tests/spec_12_runtime::adt_sum_some_alloc_and_match]
 
 **Nullary constructors** (constructors with no fields) are represented as bare integer tags, NOT heap-allocated:
 
@@ -73,7 +73,7 @@ For sum types mixing nullary and data constructors, tags are assigned to ALL con
 
 Example: `(deftype (Option a) None (Some [:a val]))` assigns tag 0 to `None` and tag 1 to `Some`. At runtime, `None` is the bare integer `0`, and `(Some 42)` is a heap pointer to `[1, 42]`.
 
-### 12.1.5 Vec [Tested tests/rc.rs::rc_vec_alloc_drop]
+### 12.1.5 Vec [Tested tests/spec_12_runtime::vec_of_strings_alloc_drop]
 
 Vec is a built-in resizable array type. Its layout is:
 
@@ -90,11 +90,11 @@ Elements in the data buffer are stored as contiguous i64 values.
 
 ## 12.2 Calling Convention [Tested]
 
-### 12.2.1 Direct Calls [Tested tests/ring0.rs::chained_function_calls]
+### 12.2.1 Direct Calls [Tested tests/spec_04_expressions::application_chained]
 
 When calling a known function by name (the common case), the implementation SHOULD use a direct call with the function's declared parameter types. All parameters and return values are i64.
 
-### 12.2.2 Indirect Calls (Closures) [Tested tests/ring0.rs::lambda_passed_to_function]
+### 12.2.2 Indirect Calls (Closures) [Tested tests/spec_04_expressions::lambda_closure_captures]
 
 When calling a function value (closure), the calling convention is:
 
@@ -104,21 +104,21 @@ result = call_indirect(code_ptr, [closure_ptr, arg_0, arg_1, ...])
 
 The closure pointer is passed as the first argument, allowing the callee to load captured values from it. The remaining arguments follow. The return value is a single i64.
 
-### 12.2.3 Top-Level Functions as Values [Tested tests/ring0.rs::named_function_as_value]
+### 12.2.3 Top-Level Functions as Values [Tested tests/spec_04_expressions::named_defn_passed_as_value_to_higher_order_fn]
 
 When a top-level function is used as a value (passed as an argument, stored in a data structure), the implementation MUST wrap it in a closure-compatible representation. This typically involves generating a wrapper function with signature `(env_ptr, params...) -> i64` that ignores the environment pointer and calls the real function.
 
 ## 12.3 Memory Management [Tested]
 
-### 12.3.1 Requirements [Tested tests/rc.rs::rc_string_alloc_and_drop]
+### 12.3.1 Requirements [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 
 A conforming implementation MUST satisfy the following:
 
-1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/rc.rs::rc_string_alloc_and_drop]
-2. Freed memory MUST NOT be accessed after deallocation. [Tested tests/rc.rs::rc_string_in_let_scope]
-3. The user MUST NOT need to manage memory manually — allocation and deallocation are entirely the implementation's responsibility. [Tested tests/rc.rs::rc_string_alloc_and_drop]
+1. Heap-allocated values (strings, closures, data constructors, Vecs) MUST be freed when they are no longer reachable from any live binding or data structure. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
+2. Freed memory MUST NOT be accessed after deallocation. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
+3. The user MUST NOT need to manage memory manually — allocation and deallocation are entirely the implementation's responsibility. [Tested tests/spec_12_runtime::string_literal_alloc_drop_balanced]
 
-### 12.3.2 Implementation Freedom [Tested tests/rc.rs::rc_string_alloc_and_drop]
+### 12.3.2 Implementation Freedom [Tested crates/cranelisp-intrinsics/src/alloc.rs::test_live_allocs_tracking]
 
 The implementation MAY use any memory management strategy:
 
@@ -127,13 +127,13 @@ The implementation MAY use any memory management strategy:
 - **Region-based allocation**: Group allocations by lifetime.
 - **Hybrid approaches**: Any combination of the above.
 
-### 12.3.3 Vec Copy-on-Write [Tested tests/rc.rs::rc_vec_set_copy]
+### 12.3.3 Vec Copy-on-Write [Tested tests/spec_12_runtime::vec_set_cow_preserves_original]
 
 Vec operations (`vec-set`, `vec-push`) return a new Vec value. The implementation MAY optimize by mutating the backing storage in place when the Vec has a single owner. This is semantically invisible — the caller observes pure functional behavior regardless.
 
 ## 12.4 Evaluation Order [Tested]
 
-### 12.4.1 Strict Evaluation [Tested tests/ring0.rs::chained_function_calls]
+### 12.4.1 Strict Evaluation [Tested tests/spec_04_expressions::application_chained]
 
 Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully evaluated before their results are used. Specifically:
 
@@ -142,7 +142,7 @@ Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully eval
 - Both branches of `if` exist but only the selected branch is evaluated.
 - `match` arms are tested top-to-bottom; only the first matching arm's body is evaluated.
 
-### 12.4.2 Lazy Sequences [Tested+Neg tests/ring2.rs::lazy_seq_take_from_infinite, tests/ring2.rs::lazy_seq_construction_does_not_force_tail]
+### 12.4.2 Lazy Sequences [Tested tests/spec_12_runtime::lazy_stream_take_from_infinite_terminates_with_demanded_element, tests/spec_12_runtime::lazy_stream_construction_does_not_force_tail]
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
@@ -189,11 +189,11 @@ Cranelisp distinguishes two error categories: **compile-time errors** (detected 
 
 The following are compile-time errors:
 
-- Parse errors (malformed syntax) [Tested tests/ring0.rs::error_parse_error_unclosed_paren]
-- Type errors (unification failure, arity mismatch) [Tested tests/ring0.rs::type_error_add_bool]
-- Unbound variable references [Tested tests/ring0.rs::error_unbound_symbol]
+- Parse errors (malformed syntax) [Tested tests/repl_negative::parse_error_stray_close]
+- Type errors (unification failure, arity mismatch) [Tested tests/repl_negative::type_error_arg_mismatch]
+- Unbound variable references [Tested tests/repl_negative::unbound_bare_symbol_error]
 - Ambiguous name resolution [Tested crates/cranelisp-typecheck/src/checker.rs::test_import_ambiguity]
-- Macro expansion errors (non-Sexp return type, expansion limit exceeded) [Tested tests/macros::neg_macro_non_sexp_return_type_batch, tests/macros::neg_macro_expansion_depth_limit_exceeded]
+- Macro expansion errors (non-Sexp return type, expansion limit exceeded) [Tested tests/spec_09_macros::macro_body_non_sexp_int_rejected_neg, tests/spec_09_macros::neg_macro_expansion_depth_limit_exceeded]
 
 ### 12.7.2 Runtime Panics [Tested]
 
@@ -205,7 +205,7 @@ The following conditions cause a runtime panic:
 
 | Condition | Message | Notes |
 |---|---|---|
-| Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Tested tests/ring0.rs::error_non_exhaustive_match_runtime] |
+| Non-exhaustive match | `"match failed"` | All match arms tested, none matched [Tested tests/spec_06_pattern_matching::pattern_non_exhaustive_match_on_adt_neg] |
 | Integer division by zero | `"division by zero"` | `div-i64` with zero divisor [S18] |
 | Vec index out of bounds | `"vec-get: index out of bounds"` | `vec-get` or `vec-set` with index < 0 or >= length [S18] |
 | Stack overflow | Implementation-defined message | Exhaustion of the call stack (e.g., unbounded recursion without TCO) [S18] |
@@ -214,12 +214,12 @@ The following conditions cause a runtime panic:
 
 | Condition | Behavior | Rationale |
 |---|---|---|
-| Integer overflow | Silent wraparound (two's complement) | Specified behavior, not an error. `Int` values are 64-bit two's complement; `add-i64`, `sub-i64`, `mul-i64` wrap on overflow. [Tested tests/ring0.rs::integer_overflow_wraps] |
+| Integer overflow | Silent wraparound (two's complement) | Specified behavior, not an error. `Int` values are 64-bit two's complement; `add-i64`, `sub-i64`, `mul-i64` wrap on overflow. [Tested tests/spec_12_runtime::integer_overflow_wraps_silently] |
 | Float division by zero | IEEE 754 result (`Inf`, `-Inf`, or `NaN`) | Follows IEEE 754 semantics. NOT a panic. [S18] |
-| `parse-int` with invalid input | Returns `None` | Parsing failure is a normal `Option` result, not an error. [Tested tests/ring1.rs::parse_int_valid] |
+| `parse-int` with invalid input | Returns `None` | Parsing failure is a normal `Option` result, not an error. [Tested tests/spec_appendix_a_builtins::primitive_parse_int_valid] |
 | IO operation failure | Platform-defined `IO` result | See §12.7.6. |
 
-### 12.7.3 Arithmetic Policy [Tested tests/ring0.rs::checked_division_by_zero_panics]
+### 12.7.3 Arithmetic Policy [Tested tests/spec_12_runtime::integer_division_by_zero_panics_neg]
 
 Cranelisp uses **unchecked (wrapping) integer arithmetic** and **checked integer division**:
 
@@ -341,11 +341,11 @@ Platform functions (loaded via `(platform name)`) use the C calling convention. 
 
 Platform DLLs are discovered via the platform DLL search order defined in §8.11.3. Every platform function MUST return `IO _` — unconditionally, because the compiler cannot verify the purity of foreign native code and must trust the declared signature (see §[8.9.3](08-modules.md#893-platform-modules) for the soundness rationale). The implementation MUST provide a mechanism for platform functions to allocate Cranelisp values (strings, IO wrappers) through a host callback interface. The specific details of the host callback interface are implementation-defined.
 
-## 12.9 Value Display Format [Tested tests/repl_experience.rs::display_int_result]
+## 12.9 Value Display Format [Tested tests/repl_introspection::display_int_result]
 
 This section defines the **canonical value display format** — the standard string representation of Cranelisp values. This format is used by the REPL for displaying expression results, by the `trace` special form for formatting traced arguments and return values, and by the `Display` trait's default implementations.
 
-### 12.9.1 Format by Type [Tested tests/repl_experience.rs::display_int_result]
+### 12.9.1 Format by Type [Tested tests/repl_introspection::display_int_result]
 
 Each type has a defined display representation:
 
@@ -362,7 +362,7 @@ Each type has a defined display representation:
 | `IO` | Displayed as the ADT value after trampoline execution resolves to `Pure` | `(IO.Pure 42)` |
 | `Trace` | Displayed as the ADT value | `(Trace.TraceCall ...)` |
 
-### 12.9.2 Qualified Names in Display [Tested tests/repl_experience.rs::display_int_result]
+### 12.9.2 Qualified Names in Display [Tested tests/repl_introspection::display_int_result]
 
 Constructor names in display output MUST use the `Type.Constructor` dot notation without module qualification of the type name. Field values are formatted recursively using this same format.
 
@@ -374,7 +374,7 @@ When the display format is used in a context that includes a type prefix (e.g., 
 
 Here `user/Option` and `primitives/Int` are in the type prefix; `Option.Some` and `42` are in the value display.
 
-### 12.9.3 Elision [Tested tests/repl_experience.rs::display_int_result]
+### 12.9.3 Elision [Tested tests/repl_introspection::display_int_result]
 
 Implementations SHOULD truncate displayed values that exceed a reasonable size to keep output manageable and trace overhead bounded. Specifically:
 
@@ -386,10 +386,10 @@ Elision is purely a display concern — it does not affect the actual value. The
 
 Elision applies uniformly: the same rules apply to REPL output, trace parameter/result formatting, and any other use of the canonical value display format.
 
-### 12.9.4 Relationship to REPL Output [Tested tests/repl_experience.rs::display_int_result]
+### 12.9.4 Relationship to REPL Output [Tested tests/repl_introspection::display_int_result]
 
 The REPL displays expression results using the format `:QualifiedType value` where `value` follows this canonical display format. See the REPL experience specification for the full REPL output format including type prefixes, definition feedback, and related symbol display.
 
-### 12.9.5 Relationship to Trace [Tested tests/ring4_trace.rs::trace_returns_trace_type_int]
+### 12.9.5 Relationship to Trace [Tested tests/spec_04_expressions::trace_returns_trace_type]
 
 The `trace` special form (see [Section 4.12](04-expressions.md#412-trace-expression)) captures function arguments and return values as strings using this canonical display format. The `params` and `result` fields of the `TraceCall` constructor contain formatted value strings conforming to this section.

@@ -1696,3 +1696,190 @@ fn self_qualified_type_reference_resolves_to_local_type() {
         // CORRECT: `:t/Box` resolves to the locally-defined `Box`; main exits 9.
         .assert_exit(9);
 }
+
+// =============================================================================
+// §8.2 Submodules — `(mod test)` inside a TRAIT-DEFINING module
+//
+// FAILING-NOT-IGNORED defect repros for S86 D3 + D4 (the self-test-rollout
+// blockers). Both are isolated, fully stdlib-free, single-tree repros of the
+// `(mod test …)`-inside-a-trait-module path that `/stdlib` could not roll out.
+// Owning crate guess: /typecheck (submodule trait-environment seeding /
+// parent-trait re-processing under submodule load). The visible errors are
+// typecheck "trait already defined" / "unknown type" — but the proximate cause
+// is module-load ordering, so /int (worker module-load) may co-own; see
+// tests/CLAUDE.md §"Isolating Cross-Crate Failures". Same defect family as the
+// (now-green) 0342 super-import guards above and the impl-body-scope D1.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.2 — a `(mod name)` child submodule MUST load
+//   WITHOUT re-processing (re-defining) the parent module's top-level forms.
+//
+// D3 (S86): a trait-defining module that declares a `(mod test)` child errors
+// "trait <T> already defined" — adding ANY child submodule (even a trivial one
+// that imports nothing from the parent) causes the parent's `(deftrait …)` to be
+// processed twice. The `(mod test)` child is the entire trigger: dropping it
+// makes the same module load clean. This blocks rolling self-tests into the
+// trait-defining foundation modules (compare.eq, num.num, …) — the headline
+// self-test-rollout goal.
+//
+// Minimal, stdlib-free: `eqmod.cl` defines a one-method trait + one impl and
+// declares `(mod test)`; `eqmod/test.cl` is a trivial test fn that touches
+// NOTHING in the parent. `entry.cl` imports the trait so the project compiles.
+// FIXME(/typecheck — D3).
+#[test]
+fn mod_test_child_in_trait_module_does_not_redefine_parent_trait() {
+    Cranelisp::new()
+        .file(
+            "eqmod.cl",
+            "(import [primitives [eq-i64 Bool Int]])\n\
+             (deftrait Eq (= [a b] Bool))\n\
+             (impl Eq Int (defn = [a b] (eq-i64 a b)))\n\
+             (mod test)",
+        )
+        .file(
+            "eqmod/test.cl",
+            "(defn test-trivial [] :primitives/Bool true)",
+        )
+        .file(
+            "entry.cl",
+            "(import [primitives [Pure]])\n\
+             (import [eqmod [Eq =]])\n\
+             (defn main [] (Pure 0))",
+        )
+        .run("entry.cl")
+        .output()
+        // CORRECT: the child submodule loads without re-processing the parent's
+        // `(deftrait Eq …)`; the project compiles and main exits 0. Today this
+        // FAILS with `type error … trait Eq already defined` (the parent's
+        // deftrait span), exit 1.
+        .assert_exit(0);
+}
+
+// spec: spec/08-modules.md §8.3.8 — a `(mod test)` child submodule that imports
+//   the parent's TRAIT via `super` MUST resolve that trait as a usable
+//   constraint inside the child's scope.
+//
+// D4 (S86): a test submodule that does `(import [super [Eq]])` and then uses
+// `:Eq` as a parameter constraint fails to resolve the trait in the child's
+// scope. This single-annotation form errors `unknown type \`Eq\` (from module
+// \`\`)` at the child's defn — the bound-resolver roots in the child's
+// (empty/root) module and finds no `TraitDecl` for `Eq`, falling through to the
+// TYPE-resolution path (a single `:Eq a` annotation is read as a type
+// annotation, not a trait bound; only a STACK of 2+ — `:Eq :Eq a` — parses as
+// trait bounds, which under a `user` entry module yields the sprint's reported
+// `unknown trait \`Eq\` (from module \`user\`)`). Both are the same root cause:
+// a super-imported trait is not seeded into the child submodule's
+// constraint-resolution scope. The single-annotation form is the smallest
+// deterministic repro and is what this test pins; the stacked-bound variant is
+// noted for the resolver fix. Distinct from D3: the super-import reorders the
+// load so the parent is NOT re-processed (no "already defined"). Same defect
+// family as the impl-body-scope D1.
+//
+// Minimal, stdlib-free: trait-only parent + `(mod test)`; the child super-imports
+// `Eq` and annotates a parameter `:Eq`. FIXME(/typecheck — D4).
+#[test]
+fn mod_test_child_super_imported_parent_trait_resolves_as_constraint() {
+    Cranelisp::new()
+        .file(
+            "eqmod.cl",
+            "(import [primitives [Bool]])\n\
+             (deftrait Eq (= [a b] Bool))\n\
+             (mod test)",
+        )
+        .file(
+            "eqmod/test.cl",
+            "(import [super [Eq]])\n\
+             (import [primitives [Bool]])\n\
+             (defn use-it [:Eq a] :Bool true)\n\
+             (defn test-x [] :Bool (use-it 1))",
+        )
+        .file(
+            "entry.cl",
+            "(import [primitives [Pure]])\n\
+             (import [eqmod [Eq]])\n\
+             (defn main [] (Pure 0))",
+        )
+        .run("entry.cl")
+        .output()
+        // CORRECT: the super-imported `Eq` resolves as a constraint inside the
+        // child; the project compiles and main exits 0. Today this FAILS with
+        // `type error … unknown type `Eq` (from module ``)` at the child's
+        // `use-it` defn, exit 1.
+        .assert_exit(0);
+}
+
+// =============================================================================
+// §8.8.1 Implicit prelude — re-export-only / prelude-provided `defn` body
+//        dropped from the consuming program's codegen batch — DEFECT DEF-1 (S86)
+// =============================================================================
+//
+// DEF-1 — a plain `defn` that the consuming program reaches ONLY through the
+// implicit-prelude glob (a bare call, no explicit import) typechecks but its
+// BODY never enters the user program's codegen batch. The call resolves at
+// typecheck (the prelude-resolution fallback per §8.8.1 surfaces the name into
+// bare scope), then codegen fails `undefined function: <name>`.
+//
+// ISOLATION (this session, /qa S86 step 1.5a):
+//   - The bare prelude-provided call FAILS; an EXPLICIT `(import [prelude [name]])`
+//     of the SAME name WORKS (the control test below, exit 3). So the trigger is
+//     the implicit-glob / re-export path, NOT the function itself.
+//   - The body must wrap a GOT-dispatched primitive (`vec-len`, `vec-push`,
+//     `Pure`) to surface the drop. A wrapper of an INLINE-emitted primitive
+//     (`add-i64`) appears to work because the inline materialises at the call
+//     site — masking the same batch-derivation gap. `count` (wraps `vec-len`)
+//     is the representative shape (matches the carried `count`/`get`/`conj`
+//     prelude-promotion blocker in `stdlib/prelude.cl`).
+//   - The long-re-exported bare `pure` (io.monad) is the pre-existing instance.
+//
+// TRUE OWNER: /int. `derive_codegen_batch` (`src/worker.rs:621`) emits only
+// `ModuleEntry::Def` entries; a name surfaced via the implicit-prelude fallback
+// installs as `ModuleEntry::Import`/`Reexport`, which is codegen-skipped, and
+// the prelude's provision does not cascade the body into the consuming module's
+// batch. FIXME(/int). LOCALIZED at the batch-derivation seam.
+//
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md: asserts the
+// CORRECT behaviour (a prelude-provided function is callable bare; the program
+// runs to exit 3), RED today (`codegen error … undefined function: count`,
+// exit 1), GREEN when the body enters the batch. When fixed, the
+// `count`/`get`/`conj` bare re-exports in `stdlib/prelude.cl` can be un-blocked.
+
+const PRELUDE_WITH_COUNT: &str = "\
+(export [primitives [*]])
+(defn count [v] (vec-len v))
+";
+
+// spec: spec/08-modules.md §8.8.1 — a function provided ONLY through the implicit
+// prelude (bare call, no explicit import) MUST be callable; its body MUST enter
+// the consuming program's codegen batch. DEF-1: today codegen-fails
+// `undefined function: count` (exit 1) — the bare-call/re-export path drops the body.
+#[test]
+fn def1_prelude_provided_defn_called_bare_enters_codegen_batch() {
+    // `count` wraps the GOT-dispatched primitive `vec-len`; main calls `count`
+    // BARE (relies on the implicit-prelude fallback, no explicit import).
+    // Vec of 3 ⇒ exit 3 when GREEN.
+    Cranelisp::new()
+        .prelude(PRELUDE_WITH_COUNT)
+        .user("(defn main [] (Pure (count [10 20 30])))")
+        .run("user.cl")
+        .output()
+        .assert_exit(3);
+}
+
+// spec: spec/08-modules.md §8.8.1 — CONTROL: the SAME prelude-provided function
+// reached via an EXPLICIT `(import [prelude [count]])` already works (exit 3).
+// This pins that the implicit-glob/re-export path — not the function — is the
+// DEF-1 trigger. GREEN today; a behaviour-preservation guard.
+#[test]
+fn def1_prelude_provided_defn_explicit_import_works_control() {
+    Cranelisp::new()
+        .prelude(PRELUDE_WITH_COUNT)
+        // Explicit import of `count`; `Pure` comes via the implicit prelude glob.
+        .user(
+            "(import [prelude [count]])\n\
+             (import [primitives [Pure]])\n\
+             (defn main [] (Pure (count [10 20 30])))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(3);
+}

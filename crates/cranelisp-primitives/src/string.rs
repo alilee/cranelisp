@@ -99,6 +99,22 @@ pub(crate) extern "C" fn str_eq(a: i64, b: i64) -> i64 {
     result
 }
 
+/// String inequality (byte-wise) — logical negation of `str-eq`.
+/// Returns 1 (true) when the strings differ, 0 (false) when equal.
+/// This is the `Eq.!=` String dispatch target (`spec/07-traits.md §7.7.2`),
+/// the not-equal counterpart of `str-eq` exactly as `neq-i64` is to `eq-i64`.
+///
+/// Decision 24: consuming convention — dec both heap args.
+#[unsafe(export_name = "neq-string")]
+pub(crate) extern "C" fn neq_string(a: i64, b: i64) -> i64 {
+    let a_str = unsafe { read_str(a as *const u8) };
+    let b_str = unsafe { read_str(b as *const u8) };
+    let result = if a_str != b_str { 1 } else { 0 };
+    rc::consume_shallow(a);
+    rc::consume_shallow(b);
+    result
+}
+
 /// String length in bytes.
 ///
 /// Decision 24: consuming convention — dec the heap arg.
@@ -349,6 +365,23 @@ mod tests {
         let a = alloc_string(b"hello") as i64;
         let b = alloc_string(b"world") as i64;
         assert_eq!(str_eq(a, b), 0);
+    }
+
+    // spec: 07-traits §7.7.2 — neq-string returns 0 (false) for equal strings
+    // (logical negation of str-eq; the `Eq.!=` String dispatch target).
+    #[test]
+    fn test_neq_string_equal() {
+        let a = alloc_string(b"same") as i64;
+        let b = alloc_string(b"same") as i64;
+        assert_eq!(neq_string(a, b), 0);
+    }
+
+    // spec: 07-traits §7.7.2 — neq-string returns 1 (true) for different strings.
+    #[test]
+    fn test_neq_string_not_equal() {
+        let a = alloc_string(b"a") as i64;
+        let b = alloc_string(b"b") as i64;
+        assert_eq!(neq_string(a, b), 1);
     }
 
     // spec: 12-runtime §12.1.2 — string length in bytes

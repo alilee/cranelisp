@@ -83,6 +83,28 @@ fn quasiquote_in_let_body() {
 }
 
 // =============================================================================
+// §9.8 Hygiene — auto-gensym
+// =============================================================================
+
+// spec: spec/09-macros.md §9.8.1 — auto-gensym: a `x#` symbol inside a
+// quasiquote template generates a UNIQUE name per expansion, so a binding it
+// introduces does NOT capture an identically-named binding in the expansion
+// context. The §9.8.1 worked example: `(defmacro my-let [v body]
+// `(let [x# ~v] ~body))`, invoked as `(let [x 100] (my-let 42 (add-i64 x 1)))`,
+// must yield 101 — the inner `x#` is renamed, so the body's `x` still refers to
+// the OUTER binding (100), not the macro-introduced one (42). If hygiene were
+// broken, `x#` would capture and the result would be 43. (Spec uses `+`; we use
+// the bare `add-i64` primitive to stay free-standing — no operator prelude.)
+#[test]
+fn auto_gensym_introduced_binding_does_not_capture_outer() {
+    repl_prims(
+        "(defmacro my-let [v body] `(let [x# ~v] ~body))\n\
+         (let [x 100] (my-let 42 (add-i64 x 1)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 101");
+}
+
+// =============================================================================
 // §9.6 Multi-form expansion via begin
 // =============================================================================
 

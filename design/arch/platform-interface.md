@@ -370,6 +370,110 @@ module, not a DLL schema).
 
 ---
 
+## 3a. Application: the web-server platform (S86 Wave E, FIXME 0405)
+
+The Sudoku exemplar's web front-end is the **first effectful platform beyond
+stdio/test-capture, and the first to marshal application-defined ADTs across the
+FFI in production** (the `shapes` DLL is the test fixture that proved the path;
+the web platform is the first real user). The S86 review (this section) rules its
+shape against the three-exports model above. **Nothing here changes the model — it
+is a straight application of it, with one named GAP (Model B) deferred.**
+
+**Decision — serve model: Model A only for S86.** Two models were proposed
+(`exemplar/plan-exemplar.md §"Two IO Models"`):
+
+- **Model A** — `listen`/`accept`/`send` effect functions (`SchedulingClass::Sequential`)
+  + a tail-recursive `serve-loop` written in cranelisp. **BUILDABLE NOW.** A
+  `Sequential` effect's thunk is forced synchronously on the calling thread
+  (`io_guard.rs::force_effect_thunk_protected` → `cranelisp_platform::call_effect_thunk`,
+  a synchronous C-ABI call — no timeout, no polling, no non-blocking assumption);
+  a blocking `accept()` inside the thunk simply blocks that thread until a request
+  arrives. The scheduling class is a **compile-time parallel-scheduling hint**, not
+  a runtime latency contract — an unbounded-blocking Sequential effect is legal.
+  TCO on `serve-loop` (an established language feature) bounds the stack.
+- **Model B** — `serve port handler`, where the platform DLL owns the loop and
+  **calls back into a cranelisp closure `(Fn [Request] (Option Response))` per
+  request.** **NOT BUILDABLE NOW — platform-model GAP.** Calling a cranelisp
+  closure from native code is established as-built **only inside `cranelisp-intrinsics`**
+  (`io::call_continuation` `io.rs:405`, `ivar.rs:137`, `session_v4.rs:4778` — load
+  `code_ptr` from the heap closure, transmute to `extern "C" fn`, call with the env
+  pointer). The **platform crate's public surface exposes no such capability**: there
+  is no `CLClosure`/`CLFn` wrapper type and no `HostCallbacks` method to invoke a
+  passed-in closure. A platform fn taking `(Fn [Request] (Option Response))` would
+  receive it as a raw `i64` with no host-side calling support, no RC discipline for
+  the captured closure across the boundary, and no error-slot ferry. Model B
+  therefore requires **new cross-crate machinery** (a `CLClosure` wrapper + a
+  `HostCallbacks::invoke_closure` callback wired host-side in `cranelisp-intrinsics`,
+  with a defined capture/RC/error-slot contract) — an ABI bump and a `/dev platform`
+  + `/dev` intrinsics change, out of S86's reach. **Deferred to FIXME 0407.**
+
+  This is consistent with the deliberate design boundary recorded in `test-discovery.md`
+  (the `catch-runtime-error` combinator is a `cranelisp-intrinsics` primitive *because*
+  closure-calling is confined to intrinsics, where thread-locals, RC, and the error
+  slot can be managed safely — the platform crate is kept minimal for FFI safety). The
+  GAP is genuine and the fallback (Model A) loses nothing the S86 showcase needs:
+  Model A serves the full GET-form / POST-solve roundtrip; Model B's only added value
+  is the "purity enables concurrency" teaching moment, which is documentation, not a
+  required capability.
+
+**Decision — Request/Response representation: ordinary `.cl` ADTs, exactly the
+`shapes/Rectangle` precedent.** The plan's "opaque heap values (pointer as i64)"
+framing predates the third convergence and is superseded. Under the settled model
+**platforms do not declare ADTs** — `Request` and `Response` are ordinary `.cl`
+type modules (e.g. `exemplar/web.cl`: `(deftype Request [:String method :String path :String body])`,
+`(deftype Response [:Int status :String content-type :String body])`), referenced
+FQ in the sigs (`web/Request`, `web/Response`). The DLL:
+
+- **reads** request fields by NAME via `CLAdt<Request>::read_field("method")` etc.,
+  resolved against the compiler-generated embedded schema (§5.5) — the exact
+  `rectangle_area` pattern (`platforms/shapes/src/lib.rs`);
+- **constructs** a `Response` via `CLAdt::construct` → `HostCallbacks::alloc_with_tag`
+  (the host allocator; `alloc_with_tag` is KEEP per §6.6) — the `response status ct body`
+  effect builds the heap ADT and returns it.
+
+So `request-method`/`request-path`/`request-body` are NOT separate platform accessor
+functions reading an opaque blob — they are **ordinary cranelisp field access on an
+ordinary ADT** (`(.method req)` / `match`), and the DLL only needs `read_field` for the
+fields it consumes when handling the request. `response` is the one constructor-shaped
+platform fn (or, equivalently, an ordinary `.cl` constructor the handler calls directly
+— the handler is cranelisp). This **collapses four proposed platform fns to at most
+`listen`/`accept`/`send` (+ `Response` construction)** and reuses the `shapes` ABI v3
+path end-to-end with zero new platform-model surface. The layout-hash gate (§5.5.4)
+guards `web.cl` ⟷ DLL drift exactly as it guards `shapes.cl`.
+
+**Decision — HTTP dependency: hand-rolled HTTP/1.0 over `std::net::TcpListener`, no
+external crate.** A showcase platform should be readable and dependency-light; the
+roundtrip the exemplar needs is a single-threaded read-request / parse-method-path-body /
+write-response loop over blocking TCP — a few dozen lines of `std::net` with no `tiny_http`
+(or any) dependency. Hand-rolling keeps the DLL legible as a teaching artifact, avoids
+a transitive-dep ABI/build-surface in the workspace, and is *exactly* the Model-A shape
+(`listen` = bind a `TcpListener`; `accept` = `listener.accept()` + read+parse one request
+into a `Request` ADT; `send` = serialize a `Response` ADT to the held `TcpStream`).
+`tiny_http` is rejected on the showcase-legibility + zero-dep grounds (Principle 6 —
+complexity budget). (If a future Model-B concurrent variant wants a thread pool, revisit
+then — not now.)
+
+**Build/link + discovery integration.** The web platform joins the workspace exactly
+as `shapes` did:
+
+- new workspace member `exemplar/platforms/web/` (`crate-type = ["cdylib", "rlib"]`,
+  dep on `cranelisp-platform`), added to the root `Cargo.toml` members;
+- the dylib is found on `CRANELISP_PLATFORM_PATH`; `web.cl` (the Request/Response type
+  module) is found on the **ordinary `.cl` resolution path** (project tree / `CRANELISP_LIB`),
+  NOT `CRANELISP_PLATFORM_PATH` (§2 q-assoc-discovery (c));
+- the embedded `web.platform-schema` is generated by `/platform-schema web` in a REPL
+  session after first build (the build-load-generate-embed-rebuild cycle, §4), and the
+  `__cranelisp_layout_hash_web` gate binds it;
+- for the e2e `--link` path, the crate is added to `tests/scripts/build-link-prereqs.sh`
+  (the `cargo build -p` prerequisite list) so the linker finds `libcranelisp_web.{rlib,so}`
+  — the same line `shapes`/`shapes-badabi` occupy. No layout-hash/schema-flow change: the
+  web platform uses ABI v3 unchanged.
+
+No platform-model change is required for Model A. The model is sufficient as-is; Model B
+is the only extension, and it is deferred (FIXME 0407).
+
+---
+
 ## 4. The platform-author experience
 
 The showcase is the **build-load-generate-embed-rebuild cycle** built around
@@ -757,19 +861,72 @@ changed, a `deftype` field added) after the DLL was built. The binding that catc
   `PlatformError` is `cranelisp-types`-hosted with `ErrorLocation` carriers; this is a new
   variant, flagged for the cascade, not authored doc-only).
 
-#### 5.5.5 The GOT/symbols naming convention
+#### 5.5.5 The GOT/symbols naming convention — EVERY per-platform export is name-suffixed (ABI v4)
 
-The symbol table in §7.1 gains the layout-hash export. The naming convention is now:
+**Invariant (binding).** *Every* C-ABI symbol a `declare_platform!` invocation exports
+is namespaced by the platform name: the export name carries a `_<name>` suffix, with
+`<name>` the **raw platform name verbatim** (the `name:` literal — NOT the
+crate-name `replace('-', '_')` form, which is only ever used for rlib *filenames* in
+`find_platform_rlibs`). The host computes the same suffixed name on the consume side from
+the manifest-reported `name`, so emit and consume agree by construction (single source of
+truth, Principle 7). This is the rule the GOT and layout-hash already followed; **the
+manifest fn was the lone violator** (it exported the bare `cranelisp_platform_manifest`
+`#[unsafe(no_mangle)]`), so two `--whole-archive`/`-force_load`'d platform rlibs collided
+on that one symbol — `cc: multiple definition of cranelisp_platform_manifest` (DEF-5). The
+fix extends the existing convention to the manifest fn; nothing else about the
+three-exports model changes.
+
+The full per-platform export table:
 
 | Symbol | Kind | Owner | Purpose |
 |---|---|---|---|
 | `__cranelisp_got_platform_<name>` | data (GOT) | DLL | the platform's GOT — fn pointers (§5.1) |
+| `cranelisp_platform_manifest_<name>` | fn (extern "C") | DLL | the manifest entry point (§5.2) — **namespaced as of ABI v4 (was bare `cranelisp_platform_manifest`)** |
 | `__cranelisp_layout_hash_<name>` | data | DLL | the platform's generated-schema layout hash (§5.5.4) — one per platform |
 
-Both are resolved by `dlsym` (JIT/`--run`) or `ld` against the force-loaded rlib
+All three are resolved by `dlsym` (JIT/`--run`) or `ld` against the force-loaded rlib
 (`--link`), consistently with `__cranelisp_got_primitives`. The hash is **one per platform**
 (not per module): the generated schema is whole-platform (the transitive closure of all the
 platform's sigs), so a single hash over it covers every type any sig reaches.
+
+**Shared naming function — one helper, used by emit AND consume.** The suffix derivation
+is a single `pub fn` in `cranelisp-platform` (the natural home — both the macro and the
+host depend on this crate; out-of-tree DLL authors get it for free):
+
+```rust
+// cranelisp-platform
+pub fn platform_manifest_symbol(name: &str) -> String {
+    format!("cranelisp_platform_manifest_{name}")
+}
+```
+
+The macro cannot call a runtime `fn` in `#[unsafe(export_name = …)]` (it needs a
+compile-time `concat!`), so the macro emits the suffix with the same `concat!(…,
+$platform_name)` form it already uses for the GOT and layout-hash exports — but the
+*pattern string* (`"cranelisp_platform_manifest_"`) is documented to match
+`platform_manifest_symbol` exactly, and a unit test in `cranelisp-platform` pins the two
+in agreement (assert `platform_manifest_symbol("shapes")` equals the macro-expanded export
+name for a `name: "shapes"` platform). The host (`--run` dlopen + `--link` startup-stub
+import) calls `platform_manifest_symbol(name)` — never an inline `format!` — so the two
+sides cannot drift. (The GOT and layout-hash suffixes are *already* consistent inline
+`format!`s on both sides; promoting them to sibling `platform_got_symbol` /
+`platform_layout_hash_symbol` helpers is a welcome consolidation but is NOT required for
+the DEF-5 fix — the manifest helper is the one this change mandates.)
+
+**ABI version: v3 → v4.** This is a breaking change to a layout-discipline-governed
+boundary (an exported-symbol name change — a host built against v3 looks up
+`cranelisp_platform_manifest`, a v4 DLL exports `cranelisp_platform_manifest_<name>`;
+neither finds the other), so `ABI_VERSION` bumps (`crates/cranelisp-platform/src/lib.rs`,
+the single `pub const ABI_VERSION: u32`). **Every platform DLL must rebuild** against the
+new macro: the in-tree members (`platforms/{stdio,test-capture,shapes,shapes-badabi,boom}`
++ `exemplar/platforms/web`) recompile automatically with the workspace; the
+`tests/scripts/build-link-prereqs.sh` setup-script already `cargo build -p`s the e2e set
+so the e2e platforms pick up the new symbol with no script edit. `check_abi_version` in
+`src/platform.rs` rejects a stale (v3) DLL at load with the standard rebuild guidance, so
+a not-yet-rebuilt third-party DLL fails loudly rather than missing-symbol-ing. *(Note: the
+`ABI_VERSION` const is currently `5` in source — it bumped past the doc's stated `3`
+through S77/S83 work; the operative instruction is "bump it by one as part of this change-
+set", landing whatever `current + 1` is.)*
 
 ---
 
@@ -967,6 +1124,111 @@ schema. A platform fn that *constructs* a `Rectangle` to return still allocates 
 heap node via the host allocator; what changed is that `Rectangle`'s shape is declared in
 `.cl`, not in a schema.
 
+### 6.7 DEF-5 manifest-symbol namespacing (S86 — the coupled ABI rename) — GO
+
+**The defect.** `declare_platform!` exports `cranelisp_platform_manifest`
+**un-namespaced** (`#[unsafe(no_mangle)]`, `declare.rs:303-304`). Two
+`--whole-archive`/`-force_load`'d platform rlibs each define that one symbol →
+`cc: multiple definition of cranelisp_platform_manifest`. The GOT
+(`__cranelisp_got_platform_<name>`) and layout-hash (`__cranelisp_layout_hash_<name>`)
+exports are **already** per-platform namespaced; the manifest fn was the lone holdout.
+This blocks the web exemplar `--link` (FIXME 0405 — it links `web` + transitively
+`stdio`). `collect_platform_manifest_names` even documents the limitation in source
+(`src/exe.rs:868-874`: "Multi-platform `--link` therefore needs per-platform mangled
+manifest names").
+
+**Scope confirmation — NAMING-ONLY.** This is a self-contained symbol-naming correction.
+**No manifest *content* change** (the `#[repr(C)]` `PlatformManifest` / `PlatformFn`
+structs are untouched), **no schema-model change**, **no three-exports-model change** —
+the model of §1 is unchanged; only the manifest export's *name* is corrected to honour
+the §5.5.5 invariant the other two exports already follow. It is therefore a pure rename
+that must land **atomically across three crates + the platform rebuilds** (the sanctioned
+exception to one-crate-per-`/dev`: a host that looks up the new name against a DLL still
+exporting the old name finds nothing, and vice-versa — emit and consume MUST flip
+together).
+
+**The exact rename (old → new):**
+
+| | Old export name | New export name |
+|---|---|---|
+| manifest fn | `cranelisp_platform_manifest` | `cranelisp_platform_manifest_<name>` |
+| GOT (unchanged) | `__cranelisp_got_platform_<name>` | *(already namespaced — no change)* |
+| layout-hash (unchanged) | `__cranelisp_layout_hash_<name>` | *(already namespaced — no change)* |
+
+`<name>` = the raw `name:` literal verbatim (§5.5.5) — e.g. `cranelisp_platform_manifest_shapes`,
+`cranelisp_platform_manifest_shapes-badabi`.
+
+**Per-crate change list (one coordinated change-set):**
+
+- **`/platform` — `cranelisp-platform`** (`src/declare.rs`, `src/lib.rs`):
+  1. In `__declare_platform_body!`, change the manifest fn's `#[unsafe(no_mangle)]` to
+     `#[unsafe(export_name = concat!("cranelisp_platform_manifest_", $platform_name))]`
+     (`declare.rs:303-304`), matching the GOT/hash export-name form on the adjacent lines.
+  2. Add `pub fn platform_manifest_symbol(name: &str) -> String` to the crate facade
+     (`lib.rs`) — the shared emit/consume helper (§5.5.5). New `pub` item → the
+     `public-api.txt` baseline regenerates + the crate-root rustdoc names it (the platform
+     facade is retired → source rustdoc is the canonical surface; out-of-tree DLL authors
+     consume this helper, so it is a legitimate boundary export — the external-audience
+     exception).
+  3. Add a unit test pinning `platform_manifest_symbol("shapes")` equal to the
+     macro-expanded export name (defend against the concat-string vs helper-string drift).
+  4. **Bump `pub const ABI_VERSION`** by one (`lib.rs` — currently `5`, so → `6`; the doc
+     frames it as the v3→v4 step relative to the three-exports baseline, but the operative
+     instruction is `current + 1`). Update the `ABI_VERSION` rustdoc bump-rule note +
+     the `assert_eq!(ABI_VERSION, …)` unit test (`lib.rs:1724`).
+
+- **`/backend` — `cranelisp-backend`** (`src/exe.rs`): the startup-stub emitter
+  (`generate_startup_object_checked`) iterates `platform_manifest_names` and declares each
+  `Linkage::Import` against the name string (`exe.rs:268-271`). **It is naming-agnostic —
+  it imports whatever names the slice carries**, so the only change here is the test
+  fixtures that hard-code `"cranelisp_platform_manifest"` (`exe.rs:440/448/467`) flip to
+  the per-platform form (e.g. `cranelisp_platform_manifest_shapes`). The dispatch/import
+  loop body needs no logic change. *(If a `platform_manifest_symbol` helper is wanted
+  backend-side it imports from `cranelisp-platform`, but backend receives the names
+  pre-computed from int, so it does not call the helper itself.)*
+
+- **`/int` — `src/`** (`src/platform.rs`, `src/exe.rs`, `src/session_v4.rs`):
+  1. **`src/platform.rs:218`** — the `--run` dlopen lookup
+     `library.get(b"cranelisp_platform_manifest")` is the **read-before-name-known**
+     problem: the manifest symbol now depends on `<name>`, but `<name>` *comes from* the
+     manifest. **Two clean resolutions, pick one** (an implementation-detail decision for
+     `/dev`, not an architectural fork): **(a)** the host already knows the platform name
+     before dlopen — it is `resolve_platform_path`'s lookup key / the `(platform "<name>")`
+     declaration — so thread that name in and `library.get(platform_manifest_symbol(name).as_bytes())`;
+     **(b)** keep an additional bare-named **alias export** in the macro for the
+     dlopen-discovery case only. **Recommend (a)** — the GOT and layout-hash dlsyms at
+     `platform.rs:275/297` *already* depend on `name` and resolve it from the
+     manifest-reported name, but the platform name is known at the call site from the
+     declaration before the manifest is read; passing it in keeps a single namespacing rule
+     with no alias-export special case. The lookup uses `platform_manifest_symbol(name)`,
+     never an inline `format!`.
+  2. **`src/exe.rs:860`** — `PLATFORM_MANIFEST_SYMBOL` const + `collect_platform_manifest_names`
+     change from "N copies of the shared bare name" to **the per-platform suffixed names**.
+     The function must therefore take the **platform names** (it currently takes only the
+     count) and map each through `platform_manifest_symbol`. Update its doc comment (delete
+     the "multi-platform needs mangled names — out of scope" limitation note; it is now
+     resolved). Update its unit test (`exe.rs:1089`).
+  3. **`src/session_v4.rs:2218-2219`** — `linked_platform_link_data` calls
+     `collect_platform_manifest_names(platform_names.len())`; change to pass the deduped
+     `platform_names` slice (it is right there at `:2209`) so the names, not the count,
+     drive the manifest-symbol list. This is the single call-site adjustment for the new
+     signature.
+
+- **Platform DLL rebuilds:** every platform rebuilds against the new macro. In-tree members
+  (`platforms/{stdio,test-capture,shapes,shapes-badabi,boom}` + `exemplar/platforms/web`)
+  recompile with the workspace; `tests/scripts/build-link-prereqs.sh` already
+  `cargo build -p`s the e2e platform set, so no script edit is needed.
+
+**`--run`/dlopen path impact.** Yes — the `--run`/REPL dlopen of the manifest
+(`src/platform.rs:218`) **must** use the new per-platform name (resolution (a) above);
+this is the one consume-site that reads the manifest *to learn the name*, so the name has
+to be sourced from the declaration, not the manifest. The GOT + layout-hash dlsyms
+(`platform.rs:275/297`) are unaffected — they already namespace by `name`.
+
+**Layout-hash / schema gate impact: NONE.** The layout-hash export, the schema generator,
+the dual gate, the `--link` startup-stub hash bake — all unaffected. The hash symbol was
+already namespaced; the schema model does not change. Only the manifest fn's name moves.
+
 ---
 
 ## 7. Data structures, functions & sequence
@@ -978,6 +1240,11 @@ __cranelisp_got_platform_<name> : [AtomicPtr<u8>; GOT_TABLE_SIZE]   ; the platfo
                                   ; slot i = fn pointer of manifest.functions[i]
                                   ; (manifest order IS GOT slot order — answer 1)
                                   ; entries linker-fixed-up via relocations — answer 2
+
+cranelisp_platform_manifest_<name> : extern "C" fn(*const HostCallbacks) -> PlatformManifest
+                                  ; the manifest entry point, exported by DLL
+                                  ; NAMESPACED per §5.5.5 (was bare cranelisp_platform_manifest, DEF-5/§6.7, ABI v4)
+                                  ; emit + consume agree via platform_manifest_symbol(name)
 
 __cranelisp_layout_hash_<name> : <hash bytes>                       ; exported by DLL, ONE per
                                   ; platform (§5.5.4)
@@ -1176,6 +1443,23 @@ The current pipeline, compressed to what informs the design:
 
 ## 10. Change history
 
+- **2026-06-18 (S86 — DEF-5 manifest-symbol namespacing, /arch GO)** — Blessed the
+  DEF-5 fix: the `declare_platform!` manifest export is renamed
+  `cranelisp_platform_manifest` → `cranelisp_platform_manifest_<name>`, extending the
+  per-platform namespacing convention the GOT + layout-hash exports already followed (the
+  manifest fn was the lone bare `#[unsafe(no_mangle)]` export → multi-platform `--link`
+  collision). Recorded the **§5.5.5 binding invariant** (every per-platform C-ABI export
+  is name-suffixed; shared `platform_manifest_symbol(name)` helper used by emit AND
+  consume), the **ABI bump** (v3→v4 framing; operative = `ABI_VERSION` `current + 1` in
+  `cranelisp-platform/src/lib.rs`; all DLLs rebuild), and the **§6.7 per-crate change
+  list** (/platform macro + helper + bump; /backend test fixtures only — the startup-stub
+  import loop is naming-agnostic; /int `collect_platform_manifest_names` takes names not
+  count + dlopen-lookup uses the pre-known platform name). **Naming-only** — no manifest
+  content, schema-model, or three-exports-model change; lands atomically (the sanctioned
+  one-change-set ABI-rename exception). `--run`/dlopen path: the manifest dlsym must use
+  the new name, resolved from the `(platform "<name>")` declaration (the name is known
+  before the manifest is read). Layout-hash/schema gate: unaffected. Doc-only; cascade is
+  the coordinated `/dev` change-set.
 - **2026-06-07** — Authored. Resolves FIXME 0282 / S-PLAT-1 by the user's converged
   direction (DLL exports its GOT; platforms stop declaring ADTs → associated `.cl`
   modules; manifest shrinks to host-non-derivable facts). Supersedes host-wiring-s76 §3

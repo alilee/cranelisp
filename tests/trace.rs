@@ -45,6 +45,13 @@ fn repl_prims(lines: &str) -> helpers::e2e::CrOutput {
     Cranelisp::repl_prims_capture(lines)
 }
 
+/// Pipe `lines` to a fresh REPL with NO prelude — nothing auto-imported.
+/// Used to witness the §11.2 / §3.2.4 "NOT auto-imported" property: the
+/// `Trace` ADT names are absent from user scope until explicitly imported.
+fn repl_bare(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::repl_capture(lines)
+}
+
 /// A prelude that re-exports primitives and adds ONE plain helper fn. Used to
 /// witness that a prelude-defined (stdlib-fixture-style) function appears as a
 /// child in a trace tree, WITHOUT pulling in the trait-heavy `TestStandard`
@@ -618,4 +625,54 @@ fn trace_small_expr_completes_under_ceiling() {
     // Sanity: the trace actually ran (so we're timing the real path, not an
     // early error short-circuit).
     out.assert_stdout_contains("Trace");
+}
+
+// =============================================================================
+// §11.2 / §3.2.4 — Trace ADT + field-accessor importability (form/ADT asymmetry)
+// =============================================================================
+
+// spec: spec/11-stdlib.md §11.2 — the `Trace` ADT (TraceCall) and its field
+// accessor names (name, params, result, children, nanos) ARE primitives-module
+// entries that DO require import (the deliberate form/ADT asymmetry: the
+// `trace` FORM needs no import, the Trace VALUE's destructuring names do).
+// Positive: after `(import [primitives [Trace TraceCall name ...]])`, the
+// imported names resolve and destructure the trace value — the `name` field of
+// `(trace 42)` is observable. spec/03-types.md §3.2.4 backs this.
+#[test]
+fn trace_adt_names_are_importable_from_primitives() {
+    repl_prims(
+        "(import [primitives [Trace TraceCall name params result children nanos]])\n\
+         (match (trace 42) [(TraceCall n p r c ns) n])\n",
+    )
+    .assert_stdout_contains(":primitives/String");
+}
+
+// spec: spec/11-stdlib.md §11.2 — negative: the Trace ADT names are NOT
+// auto-imported. With NO prelude / NO import, a bare `TraceCall` constructor in
+// a pattern MUST be unresolved (the `trace` form still works — it needs no
+// import — but the value's destructuring names do). spec/03-types.md §3.2.4
+// "NOT auto-imported into user scope".
+#[test]
+fn trace_adt_names_not_auto_imported_neg() {
+    let out = repl_bare("(match (trace 42) [(TraceCall n p r c ns) n])\n");
+    assert!(
+        out.stdout.contains("unknown constructor") || out.stdout.contains("TraceCall"),
+        "bare `TraceCall` without import MUST be unresolved (Trace ADT names are \
+         NOT auto-imported) per spec/11-stdlib.md §11.2; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains(":primitives/String \"::trace::\""),
+        "without import the destructure MUST NOT succeed; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: spec/11-stdlib.md §11.2 — qualified access works without import:
+// `primitives/TraceCall` resolves the constructor by its fully-qualified path
+// even when nothing is imported into user scope.
+#[test]
+fn trace_adt_names_reachable_via_qualified_path_without_import() {
+    repl_bare("(match (trace 42) [(primitives/TraceCall n p r c ns) n])\n")
+        .assert_stdout_contains(":primitives/String");
 }

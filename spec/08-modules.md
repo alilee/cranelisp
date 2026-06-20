@@ -30,7 +30,7 @@ project/
 
 A file's module identity is determined entirely by its filesystem path. There is no in-file declaration of module identity -- a file does not name itself.
 
-## 8.2 Module Declaration [Tested tests/ring2::single_file_via_run_project]
+## 8.2 Module Declaration [Tested tests/spec_08_modules::mod_test_child_in_trait_module_does_not_redefine_parent_trait]
 
 The `mod` special form declares that the current module has a submodule, and triggers loading of the corresponding `.cl` file.
 
@@ -67,7 +67,7 @@ After extraction, the submodule is indistinguishable from one created manually. 
 
 In the REPL, an inline `(mod name ...)` writes the backing file and loads the submodule via the standard file-based path.
 
-### 8.2.3 Private Submodule Declaration [Tested+Neg tests/ring2.rs::neg_private_submodule_not_importable_from_peer]
+### 8.2.3 Private Submodule Declaration [Tested+Neg tests/spec_08_modules::mod_dash_private_submodule_not_importable_from_peer_neg]
 
 ```clojure
 (mod- internal)
@@ -75,7 +75,7 @@ In the REPL, an inline `(mod name ...)` writes the backing file and loads the su
 
 Declares `internal` as a private submodule, accessible only within the declaring module and its submodule subtree. Other modules MUST NOT import from or reference names in a private submodule.
 
-### 8.2.5 File Resolution [Tested tests/ring2::module_missing_file_error]
+### 8.2.5 File Resolution [Tested tests/spec_08_modules::bare_mod_decl_resolves_nested_child_for_entry_main]
 
 When `(mod name)` appears in a file (after inline extraction, if applicable), the implementation MUST resolve the corresponding `.cl` file to the child directory path only:
 
@@ -85,7 +85,7 @@ For example, if `app.cl` contains `(mod handler)`, the implementation resolves t
 
 Sibling files (e.g., `handler.cl` in the same directory as `app.cl`) are NOT considered. A sibling file is a peer module, not a submodule. Allowing sibling fallback would create ambiguity: the same file could be both `app.handler` (via `mod`) and root module `handler` (via the search path in §8.11.2), violating §8.1's principle that file path determines module identity. To reference a peer module, use `import` with the module's own name (e.g., `(import [handler [...]])`), not `mod`.
 
-### 8.2.6 Placement [Tested tests/ring2::module_cycle_detection, crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
+### 8.2.6 Placement [Tested crates/cranelisp-frontend/src/module_extract.rs::test_mixed_forms]
 
 `mod` declarations MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. A `mod` form encountered in any other position (inside a function body, let binding, etc.) is an error.
 
@@ -120,7 +120,7 @@ project/
 (defn double [:Int x] :Int (* x 2))
 ```
 
-## 8.3 Import [Tested tests/ring2::import_specific_names]
+## 8.3 Import [Tested tests/spec_08_modules::import_specific_name_compiles_and_runs]
 
 The `import` special form brings names from other modules into the current module's scope as bare (unqualified) symbols.
 
@@ -141,7 +141,7 @@ name         = symbol                            ; bare import — local name = 
 member_glob  = symbol '.*'                       ; e.g. Display.*
 ```
 
-### 8.3.1 Specific Name Import [Tested+Neg tests/ring2::import_specific_names, tests/sprint59_neg::import_of_non_existent_name_errors_neg]
+### 8.3.1 Specific Name Import [Tested+Neg crates/cranelisp-frontend/src/module_extract.rs::test_import_specific_names, tests/spec_08_modules::import_of_non_existent_name_errors_neg]
 
 ```clojure
 (import [core.option [Some None]])
@@ -227,7 +227,7 @@ Registers `opt` as an alias for `core.option` without importing any bare names. 
 
 Imports nothing and does not trigger module loading or resolution. Useful to suppress the implicit prelude import (§8.8.1) — an explicit `(import [prelude []])` replaces the implicit glob without loading the prelude module.
 
-### 8.3.8 Super Import [Tested+Neg tests/modules::super_import_at_root_is_rejected_neg, tests/sprint59_neg::super_import_at_repl_prompt_rejected_neg]
+### 8.3.8 Super Import [Tested+Neg tests/spec_08_modules::super_import_resolves_parent_fn]
 
 ```clojure
 (import [super [*]])
@@ -260,7 +260,7 @@ Multiple modules MAY be imported in a single `import` form:
 
 Module-names-list pairs are processed left to right.
 
-### 8.3.10 Placement [Tested+Neg tests/sprint59_neg::import_below_use_still_available_before_definitions, tests/sprint59_neg::import_inside_let_rejected_neg]
+### 8.3.10 Placement [Tested+Neg tests/spec_08_modules::import_below_use_still_available_before_definitions, tests/spec_08_modules::import_inside_let_rejected_neg]
 
 `import` forms MUST appear as top-level forms. They are extracted from the raw S-expression stream before macro expansion. An implementation MUST process `import` before compiling definitions in the same module, so that imported names are available during type checking and code generation.
 
@@ -497,7 +497,7 @@ See [§5.11.1](05-definitions.md#5111-impl-visibility--transitive-import-closure
                      str-concat quote-sexp]])
 ```
 
-## 8.5 Qualified Names [Tested tests/ring2::module_qualified_name_resolution]
+## 8.5 Qualified Names [Tested tests/spec_08_modules::qualified_name_resolution]
 
 Names MAY be referenced with explicit module qualification, bypassing the need for imports.
 
@@ -553,7 +553,7 @@ In a REPL environment, qualified name references SHOULD trigger lazy loading of 
 
 A qualified name MAY resolve to any kind of symbol, including a **macro**. When the resolved symbol is a macro, the compiler invokes its expansion at the qualified call site, just as for a bare-name macro. Lazy loading applies equally: a qualified macro reference MAY trigger registration and typechecking-and-compilation of its defining module (see §9.3.6 for the macro-specific mechanics).
 
-## 8.6 Name Resolution [Tested tests/ring2.rs::name_resolution_local_shadows_module, tests/ring2.rs::module_qualified_name_resolution]
+## 8.6 Name Resolution [Tested tests/spec_08_modules::local_let_shadows_imported_name]
 
 Name resolution converts source-level names into their definitions. An implementation MUST follow the resolution layers defined in this section.
 
@@ -614,7 +614,7 @@ The following conflicts MUST produce compile-time errors:
 
 - **Mount-vs-submodule collisions**: An export mount whose alias collides with an actual submodule `(mod inner)` of the current module MUST produce a compile-time error. Example: if module `A` declares `(mod inner)` AND `(export [(other.mod inner) [...]])`, that's an error — `A/inner` would be ambiguous.
 
-Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous. The comparison is by **terminal source**, not immediate source: before declaring a same-name collision, an implementation MUST chain-follow BOTH import/re-export edges (per §8.6.2) to their terminal `(home_module, canonical_symbol)` — the original `Def` at the end of each chain. If the two terminals are equal, the imports denote the same original definition and dedup silently (no error); only **distinct** terminals collide. [Tested+Neg tests/modules::glob_and_reexport_of_same_terminal_dedup, tests/modules::distinct_terminal_overlap_collides]
+Same-source duplicates (the same name arriving through two re-export paths from the same original definition) are NOT ambiguous. The comparison is by **terminal source**, not immediate source: before declaring a same-name collision, an implementation MUST chain-follow BOTH import/re-export edges (per §8.6.2) to their terminal `(home_module, canonical_symbol)` — the original `Def` at the end of each chain. If the two terminals are equal, the imports denote the same original definition and dedup silently (no error); only **distinct** terminals collide. [Tested+Neg tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides]
 
 This terminal-source comparison is what makes a glob `(import [primitives [*]])` co-exist with a specific `(import [m [Option]])` when `m` re-exports `primitives/Option`: both bare `Option` entries chain-follow to the same terminal `primitives/Option`, so they dedup rather than poisoning the name. Comparing only the **immediate** source module (`primitives` vs `m`) would wrongly read these as two sources and report a false collision. The same rule resolves the common real-world shape "glob a module AND specifically import a name it re-exports."
 
@@ -643,7 +643,7 @@ When two **distinct terminal sources** (per the terminal-source comparison in §
 - **Same terminal** (the common case — the glob's source and the specific import re-export the same original definition): the two entries dedup benignly, no error.
 - **Distinct terminals** (genuinely different definitions that happen to share a bare name): the name is poisoned, as for any other same-name collision. This is deliberate footgun protection — overlapping imports of genuinely-different definitions MUST collide rather than one silently winning.
 
-[Tested+Neg tests/modules::glob_and_reexport_of_same_terminal_dedup, tests/modules::distinct_terminal_overlap_collides]
+[Tested+Neg tests/spec_08_modules::glob_and_reexport_of_same_terminal_dedup, tests/spec_08_modules::distinct_terminal_overlap_collides]
 
 **Duplicate field-name accessors are a source of bare-name ambiguity governed by this rule.** When two type definitions in the same module generate accessors with the same field name (§5.2.6), the bare accessor is poisoned exactly as any other distinct-terminal collision — using it is a compile-time error listing the qualified alternatives; the field stays reachable via `match` (§6) and module-qualification (§8.5.1).
 
@@ -684,7 +684,7 @@ This is the operational consequence of the visibility rule in [§5.11.1](05-defi
 
 The lookup mechanism — whether the typechecker pre-computes a per-module impl index at module-load time, or walks `current_module.imports` on demand at each call site — is **implementation-defined**. The spec pins the visibility rule (which impls a call site CAN see), not the algorithm.
 
-## 8.7 Visibility [Tested tests/ring2.rs::visibility_private_defn_not_importable, tests/ring2.rs::visibility_public_defn_importable, tests/ring2.rs::visibility_private_deftype_not_importable]
+## 8.7 Visibility [Tested tests/spec_08_modules::private_defn_not_importable_neg]
 
 ### 8.7.1 Public by Default
 
@@ -706,7 +706,7 @@ Private variants of definition forms use a `-` suffix on the form name:
 
 These are special forms, not macros.
 
-### 8.7.3 Private Name Semantics [Tested+Neg tests/ring2.rs::neg_private_name_not_in_glob_import, tests/ring2.rs::neg_glob_import_private_not_via_qualified, tests/ring2.rs::neg_private_macro_not_importable]
+### 8.7.3 Private Name Semantics [Tested+Neg tests/spec_08_modules::glob_import_excludes_private_neg]
 
 A private name:
 
@@ -731,7 +731,7 @@ A private name:
 (main.util/internal 42)         ; error: 'internal' is private
 ```
 
-## 8.8 Prelude [Tested tests/stdlib::prelude_loads_without_errors, tests/modules::prelude_like_reexport_compiles]
+## 8.8 Prelude [Tested tests/spec_08_modules::def1_prelude_provided_defn_called_bare_enters_codegen_batch, tests/spec_08_modules::prelude_like_reexport_compiles]
 
 ### 8.8.1 Implicit Import
 
@@ -761,7 +761,7 @@ An empty prelude is valid. The core language -- primitives, special forms, type 
 ;; A valid, empty prelude.cl
 ```
 
-## 8.9 Synthetic Modules [Tested tests/ring2.rs::synthetic_primitives_module_available]
+## 8.9 Synthetic Modules [Tested tests/spec_08_modules::synthetic_primitives_module_available]
 
 Synthetic modules are registered by the runtime without corresponding `.cl` source files. They provide compiler-seeded types, built-in functions, and platform bindings.
 
@@ -811,7 +811,7 @@ Platform module names follow the pattern `platform.<name>`.
 
 Synthetic modules are always known to the module system. Their names are seeded into the module name registry so that `(import [primitives [*]])` resolves without file discovery.
 
-## 8.10 Module Compilation Order [Tested tests/ring2::module_cycle_detection]
+## 8.10 Module Compilation Order [Tested tests/spec_08_modules::module_cycle_detection_neg]
 
 ### 8.10.1 Dependency Graph
 
@@ -848,11 +848,11 @@ main.cl                 ; depends on prelude (implicit)
 
 ## 8.11 Search Paths
 
-### 8.11.1 Project Root [Tested tests/modules.rs::project_root_shadows_stdlib]
+### 8.11.1 Project Root [Tested tests/spec_08_modules::project_root_shadows_stdlib]
 
 The **project root** is the directory containing the entry file (the `.cl` file passed to the compiler or the REPL's working directory). It anchors all relative path resolution for both modules and platform DLLs.
 
-### 8.11.2 Module Resolution Search Order [Tested tests/modules.rs::project_root_shadows_stdlib, tests/modules.rs::stdlib_module_compiles_and_runs]
+### 8.11.2 Module Resolution Search Order [Tested tests/spec_08_modules::project_root_shadows_stdlib, tests/spec_08_modules::stdlib_module_compiles_and_runs]
 
 When resolving a module name to a file, the implementation MUST search in this order:
 
@@ -876,7 +876,7 @@ The file extension `.{ext}` is platform-dependent (`.dylib` on macOS, `.so` on L
 
 Platform resolution mirrors module resolution: project root is checked first, then lib directories in order. This means a project can ship platform DLLs alongside its source (`myproject/platforms/custom-io.dylib`), and a standard library can ship platforms alongside its modules (`stdlib/platforms/stdio.dylib`).
 
-### 8.11.4 Lib Directory Configuration [Tested tests/e2e.rs::e2e_cranelisp_lib_env_overrides_stdlib, tests/e2e.rs::e2e_cranelisp_toml_lib_dirs_resolves_modules, tests/e2e.rs::e2e_cranelisp_toml_overrides_cranelisp_lib_env, tests/e2e.rs::e2e_cranelisp_toml_missing_falls_through_to_env, tests/e2e.rs::e2e_cranelisp_toml_malformed_errors_helpfully]
+### 8.11.4 Lib Directory Configuration [Tested tests/spec_platforms::cranelisp_toml_lib_dirs_resolves_module]
 
 Lib directory locations are assembled from the following sources, in precedence order:
 
@@ -916,7 +916,7 @@ These directories are searched after project root and lib directories (§8.11.3,
 
 There is no language-level requirement for the standard library structure.
 
-## 8.12 Macro Interaction [Tested tests/ring2::neg_private_macro_not_importable, tests/macros::batch_defmacro_simple]
+## 8.12 Macro Interaction [Tested crates/cranelisp-frontend/src/module_extract.rs::test_passthrough]
 
 ### 8.12.1 Pre-Expansion Processing
 

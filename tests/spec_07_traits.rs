@@ -502,6 +502,29 @@ fn hkt_deftrait_declaration_with_type_constructor_parameter_succeeds() {
     .assert_stdout_contains_all(&["user/Functor", "deftrait"]);
 }
 
+// spec: spec/03-types.md §3.7 — negative HKT: a primitive type is NOT a type
+// constructor, so implementing a higher-kinded trait on it MUST be rejected.
+// §3.7.4 is explicit: "Primitive types (Int, Bool, String, Float) are rejected
+// as HKT impl targets because they are not type constructors." The `Functor`
+// trait uses `f` at arity 1 (`(f a)`), so `(impl Functor Int ...)` must fail
+// at impl registration with an arity / not-a-constructor diagnostic. Negative
+// companion to `hkt_deftrait_declaration_with_type_constructor_parameter_succeeds`.
+#[test]
+fn hkt_impl_on_primitive_type_is_rejected_neg() {
+    let out = repl_prims(
+        "(deftrait (Functor f)\n  (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+         (impl Functor Int (defn fmap [func x] x))\n",
+    );
+    assert!(
+        out.stdout.contains("not a type constructor")
+            || out.stdout.contains("type constructor"),
+        "impl of a HKT trait on the primitive `Int` MUST be rejected with a \
+         not-a-type-constructor diagnostic per spec/03-types.md §3.7.4; \
+         got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: spec/07-traits.md §7.2 + spec/05-definitions.md §5.4.4 — full HKT
 // impl: declare `(deftrait (Functor f) ...)`, define `(deftype (Option a)
 // None (Some [:a val]))`, `(impl Functor Option ...)` with a match-
@@ -705,4 +728,147 @@ fn cross_module_stacked_trait_bound_call_links_to_exit_2() {
         .link_then_run("entry.cl")
         .output()
         .assert_exit(2);
+}
+
+// =============================================================================
+// §7.1.5 Default Methods × §8.6 Name Resolution — DEFECT D1 (S86)
+// =============================================================================
+//
+// D1 — impl-body (specifically a SYNTHESIZED DEFAULT method body) resolves in
+// the CALLER's module scope, not the trait's DEFINING module. A trait declares
+// a default method whose body references a bare name (`add-i64`) in scope only
+// in the trait's defining module (`trait_mod`, which globs primitives). An impl
+// in a DIFFERENT module (`user`) omits that method, so `generate_default_methods`
+// synthesizes a `Defn` from the default body and checks it via
+// `check_impl_method_with_sig` (crates/cranelisp-typecheck/src/traits.rs:595).
+// That function calls `check_defn_body_with_types` WITHOUT switching
+// `state.current_module` to the trait's home — the switch that
+// `recheck_body_for_mono` (traits.rs:1757-1759, the mono path) DOES have. So the
+// default body's `add-i64` resolves in `user`'s scope → `undefined variable:
+// add-i64`. Same class as FIXME 0355. TRUE OWNER: /typecheck (mirror the
+// defining-module switch into `check_impl_method_with_sig`). This is the
+// hide-primitives DE-LEAK blocker. FIXME(/typecheck).
+//
+// The concrete-call path (`(+ 1 2)`) does NOT trigger this — it goes through
+// monomorphisation, which already switches into the defining module. Only the
+// synthesized-default-method-checked-in-the-impl's-module path reaches the
+// unswitched `check_impl_method_with_sig`.
+//
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md: asserts the
+// CORRECT behaviour (the default body's home-module name resolves; the program
+// runs to exit 42), RED today (`undefined variable: add-i64`, exit 1), GREEN
+// when the module switch lands.
+
+// spec: spec/07-traits.md §7.1.5 + spec/08-modules.md §8.6 — a default-method
+// body's free names MUST resolve in the trait's DEFINING module, not the impl's
+// (caller's) module. D1: currently `undefined variable: add-i64`.
+#[test]
+fn default_method_body_resolves_in_trait_defining_module() {
+    // `42` is the success exit, distinct from the error exit `1` (RED).
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        // The trait's defining module: `add-i64` is bare-in-scope here.
+        .file(
+            "trait_mod.cl",
+            "(import [primitives [*]])\n\
+             (deftrait Foo\n\
+            \x20 (req [a] :Int self)\n\
+            \x20 (bar [a b] :Int (add-i64 a b)))",
+        )
+        // The impl module: does NOT have `add-i64` in scope. Omits `bar`, so the
+        // default body is synthesized and checked here.
+        .user(
+            "(import [trait_mod [Foo req bar]])\n\
+             (import [primitives [Int Pure]])\n\
+             (impl Foo Int (defn req [a] a))\n\
+             (defn main [] (Pure (bar 40 2)))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// =============================================================================
+// §7.7.2 Eq — String inequality (`!=`) — DEFECT D2 (S86)
+// =============================================================================
+//
+// D2 — String `!=` codegen panic. `(!= "a" "b")` on the TestStandard prelude
+// (which defines `(impl Eq String (defn = ...) (defn != ...))`) does NOT compile:
+// the typecheck primitive-dispatch table maps `("Eq", "!=", "String")` to the
+// symbol `neq-string` (`crates/cranelisp-typecheck/src/traits.rs:1183`), but NO
+// such primitive is registered (`cranelisp-primitives` has only
+// `neq-i64`/`neq-f64`/`neq-bool`) and NO backend inline emits it
+// (`cranelisp-backend/src/primitives_inline.rs`). At codegen the JIT panics
+// `can't resolve symbol neq-string`. Note the asymmetry: `=` String dispatches
+// to `str-eq` (which EXISTS) but `!=` String dispatches to the phantom
+// `neq-string`. TRUE OWNER: /backend (+ /primitives) — register/emit a
+// `neq-string` implementation (or have typecheck route String `!=` through the
+// default `(not (str-eq a b))` body). The typecheck mapping is the trigger; the
+// missing implementation is the defect. FIXME(/backend).
+//
+// These two tests are FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md:
+// they assert the CORRECT behaviour (`!= "a" "b"` is `true`), go RED today (panic),
+// and flip GREEN when the `neq-string` gap closes.
+
+// spec: spec/07-traits.md §7.7.2 — `(!= "a" "b")` MUST evaluate to `true`
+// (String inequality); D2: currently panics `can't resolve symbol neq-string`.
+#[test]
+fn eq_string_neq_evaluates_run() {
+    // `42` (not `1`) is the success exit so it is DISTINCT from the
+    // codegen-error exit (`1`): RED = exit 1 + panic on stderr; GREEN = exit 42.
+    // Control: the sibling `(= "a" "a")` form already exits 42 today (str-eq
+    // exists) — only `!=`/neq-string is missing.
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::TestStandard)
+        .user("(import [primitives [Pure]])\n(defn main [] (Pure (if (!= \"a\" \"b\") 42 0)))")
+        .run("user.cl")
+        .output()
+        .assert_exit(42);
+}
+
+// spec: spec/07-traits.md §7.7.2 — REPL companion: `(!= "a" "b")` MUST display
+// `:primitives/Bool true`; D2: currently panics `can't resolve symbol neq-string`.
+#[test]
+fn eq_string_neq_evaluates_repl() {
+    repl_std("(!= \"a\" \"b\")\n")
+        .assert_stdout_contains("true")
+        // Negative guard: the codegen-panic symbol MUST NOT leak to stderr once fixed.
+        .assert_stderr_empty();
+}
+
+// =============================================================================
+// §7.1.4 Type Expressions in Signatures — deftrait param annotation form
+//        (ring2a behavior-pin, S86)
+// =============================================================================
+//
+// ring2a behavior-pin (NOT a bug — pin expected behaviour). A `deftrait` method
+// signature parameter is written `:Type name` (spec §7.1.4: "To give a parameter
+// a different type, use a `:Type name` annotation"). So `(size [:a x] :Int)`
+// binds parameter `x` with type-var `a` (ACCEPTED), whereas `(size [:a] :Int)`
+// is an annotation `:a` with NO parameter name following it — REJECTED at parse
+// time with the clear message `annotation missing parameter name`. The compiler
+// behaviour is CORRECT (the error is clear, not a panic); these pin it so the
+// /repl demo fix (use the named form) stays anchored. Owner is /frontend ONLY if
+// the error becomes unclear — today it is a clean parse error, so this is a
+// passing guard pair (positive + negative).
+
+// spec: spec/07-traits.md §7.1.4 — `:Type name` annotated param ACCEPTED in a
+// deftrait method signature (named param after the annotation).
+#[test]
+fn deftrait_method_annotated_named_param_accepted() {
+    repl_prims("(deftrait Sized (size [:a x] :Int))\n")
+        .assert_stdout_contains_all(&["user/Sized", "deftrait"])
+        .assert_stderr_empty();
+}
+
+// spec: spec/07-traits.md §7.1.4 — a NAMELESS annotation `[:a]` (annotation with
+// no parameter name) is REJECTED with a clear parse error, NOT a panic.
+#[test]
+fn deftrait_method_nameless_annotation_param_rejected_neg() {
+    let out = repl_prims("(deftrait Sized (size [:a] :Int))\n");
+    // Clear, actionable parse error — the pin: nameless annotation is an error
+    // with a message naming the cause, not a panic and not silent acceptance.
+    out.assert_stdout_contains("annotation missing parameter name")
+        // Negative: the trait MUST NOT be silently declared from the bad sig.
+        .assert_stdout_does_not_contain("user/Sized");
 }

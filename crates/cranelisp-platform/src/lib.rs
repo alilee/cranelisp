@@ -214,8 +214,38 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// layout-contract / force-return change). A v4 DLL is rejected against a v5
 /// host: the force-return shape differs. The `IO_TAG_EFFECT` node layout (the
 /// v3-to-4 field-3 widen) is UNCHANGED. See `design/arch/bounded-contexts.md`
-/// §5 invariant 9.
-pub const ABI_VERSION: u32 = 5;
+/// §5 invariant 9. v6 (Sprint 86, DEF-5 / platform-interface.md §6.7) — the
+/// manifest fn export is **namespaced** by platform name
+/// (`cranelisp_platform_manifest_<name>`, was bare
+/// `cranelisp_platform_manifest`), honouring the §5.5.5 invariant the GOT and
+/// layout-hash exports already followed; this resolves the
+/// `multiple definition of cranelisp_platform_manifest` collision when two
+/// platforms link into one binary (rule (i) — an exported-symbol-name change to
+/// a layout-discipline-governed boundary: a v5 host looks up the bare name, a v6
+/// DLL exports the suffixed name, neither finds the other). The shared
+/// [`platform_manifest_symbol`] helper computes the suffixed name on the consume
+/// side. The three-exports model, manifest content, and schema are unchanged —
+/// naming only. See `design/arch/platform-interface.md` §5.5.5 / §6.7.
+pub const ABI_VERSION: u32 = 6;
+
+/// The exported-symbol name of a platform's manifest entry point, namespaced by
+/// the platform's raw `name:` literal (`cranelisp_platform_manifest_<name>`).
+///
+/// This is the **single source of truth** for the manifest symbol name on BOTH
+/// sides of the platform boundary (Principle 7): the `declare_platform!` macro
+/// emits the same string via `concat!("cranelisp_platform_manifest_", name)` in
+/// `#[unsafe(export_name = …)]` (it cannot call a runtime fn there), and the
+/// host consume sites — the `--run`/REPL dlopen lookup and the `--link`
+/// startup-stub import list — call this helper rather than inlining a
+/// `format!`, so emit and consume cannot drift. A unit test pins the macro's
+/// `concat!` string equal to this helper's output.
+///
+/// `name` is the **raw platform name verbatim** (the `name:` literal — NOT the
+/// crate-name `replace('-', '_')` form, which is only used for rlib filenames).
+/// See `design/arch/platform-interface.md` §5.5.5.
+pub fn platform_manifest_symbol(name: &str) -> String {
+    format!("cranelisp_platform_manifest_{name}")
+}
 
 /// IO task tree tags -- shared between platform DLLs and the host trampoline.
 pub const IO_TAG_PURE: i64 = 0;
@@ -1713,15 +1743,40 @@ mod tests {
     // `tests/plan/sprint71-platform.md`.
     // ---------------------------------------------------------------------
 
-    // ABI_VERSION is 5 (FIXME 0327 Option A — the dispatch-funnel fault-catch is
-    // DLL-local; `call_effect_thunk` returns `EffectOutcome` and the
-    // `CLIO::effect*` wrapper catches DLL-side). Was 4 at the FIXME 0327 step-1
-    // node-widen (the IO_TAG_EFFECT fourth-field add, UNCHANGED here), 3 at
-    // FIXME 0286 (the three-exports macro rework).
+    // ABI_VERSION is 6 (Sprint 86, DEF-5 — the manifest export namespacing).
+    // Was 5 at FIXME 0327 Option A (the DLL-local dispatch-funnel fault-catch;
+    // `call_effect_thunk` returns `EffectOutcome` and the `CLIO::effect*`
+    // wrapper catches DLL-side), 4 at the FIXME 0327 step-1 node-widen (the
+    // IO_TAG_EFFECT fourth-field add), 3 at FIXME 0286 (the three-exports macro
+    // rework).
     // spec: design/arch/bounded-contexts.md §5 invariant 9
     #[test]
-    fn abi_version_is_5() {
-        assert_eq!(ABI_VERSION, 5);
+    fn abi_version_is_6() {
+        assert_eq!(ABI_VERSION, 6);
+    }
+
+    // The macro's `concat!("cranelisp_platform_manifest_", name)` export-name
+    // string MUST equal `platform_manifest_symbol(name)` (the host consume-side
+    // helper) for every platform name — emit and consume agree by construction
+    // (Principle 7). This pins the two strings together so a future edit to one
+    // pattern without the other is caught at unit time, not at the
+    // multiple-definition / unresolved-symbol link failure.
+    // spec: design/arch/platform-interface.md §5.5.5 — shared naming function
+    #[test]
+    fn manifest_symbol_helper_matches_macro_concat() {
+        // The macro emits `concat!("cranelisp_platform_manifest_", $name)`.
+        // Mirror that compile-time concat here and assert the runtime helper
+        // produces the identical string for the same name.
+        for name in ["shapes", "stdio", "test-capture", "shapes-badabi", "web"] {
+            let macro_emitted = format!("cranelisp_platform_manifest_{name}");
+            assert_eq!(platform_manifest_symbol(name), macro_emitted);
+        }
+        // Spot-check the literal concat form for one concrete name, matching the
+        // macro's `concat!` exactly.
+        assert_eq!(
+            platform_manifest_symbol("shapes"),
+            concat!("cranelisp_platform_manifest_", "shapes"),
+        );
     }
 
     // spec: design/arch/bounded-contexts.md §5 invariant 9 — a `CLIO::effect`
@@ -1885,6 +1940,240 @@ mod tests {
         // Box<Box<dyn FnOnce>> that the trampoline would consume; we do not
         // force it here, so the closure box is intentionally left unfreed
         // (a one-shot leak bounded to this test).
+    }
+
+    // ---------------------------------------------------------------------
+    // DEF-6 (Sprint 86) — the alloc-callback payload-pointer LAYOUT INVARIANT
+    // ---------------------------------------------------------------------
+    //
+    // spec: HostCallbacks::alloc (lib.rs §"Current shape (ABI v3)") —
+    // "Allocate `size` bytes, returns payload pointer (base + 16)."
+    //
+    // The platform's heap-node constructors (`CLIO::pure`, `CLIO::effect*`,
+    // `CLString::from`) treat the `alloc` callback's return as a PAYLOAD pointer
+    // and compute the stored BASE as `payload - HEAP_HEADER_SIZE`. The whole
+    // base-pointer convention the consuming side (`CLHeap::dec_rc` reads the RC
+    // at `base + 8`; `CLOwned::drop`/`consume_io_tree` free `total_size` bytes
+    // from `base + 0`) depends on this single invariant:
+    //
+    //     stored_base == (alloc-return) - HEAP_HEADER_SIZE  AND
+    //     stored_base == the real allocation base           (so base+0 = total_size,
+    //                                                            base+8 = rc).
+    //
+    // DEF-6 was a HOST wiring bug (`cranelisp-exe-bundle` `--link` path) that
+    // wired `alloc` to `heap_alloc` (returns the alloc BASE) instead of
+    // `heap_alloc_payload` (returns base + 16). Given a base-returning `alloc`,
+    // these constructors compute `stored_base = base - 16` (16 bytes BEFORE the
+    // allocation) and write the node's tag/fields into the header + the previous
+    // chunk — clobbering the RC header (`base + 8`) and overrunning into adjacent
+    // heap metadata. The damage accumulates one node per host↔DLL crossing until
+    // glibc aborts (`double free or corruption`). RC accounting stays balanced
+    // (the bug is a pointer-base error, not a refcount miscount).
+    //
+    // This test pins the platform-side half of that invariant: when the `alloc`
+    // contract is honoured (payload pointer = base + 16), every heap node the
+    // platform builds has its stored base land EXACTLY on the real allocation
+    // base — so `base + 0` reads a sane `total_size` and `base + 8` reads the
+    // live rc=1 the allocator wrote. A tight construct loop verifies the property
+    // holds repeatedly (the per-crossing accumulation the e2e abort surfaced),
+    // and a control assertion shows that the contract-VIOLATING (base-returning)
+    // allocator drives the stored base off by exactly -HEAP_HEADER_SIZE — i.e.
+    // pins the precise offset of the host bug.
+
+    /// Contract-HONOURING host allocator: returns a payload pointer = base + 16,
+    /// with `total_size` at base+0 and rc=1 at base+8. Mirrors the real
+    /// `cranelisp_intrinsics::heap_alloc_payload` the JIT path wires (and the
+    /// `--link` path MUST wire). Leaks the allocation (bounded to the test).
+    extern "C" fn payload_returning_alloc(size: i64) -> i64 {
+        let total = HEAP_HEADER_SIZE as usize + size as usize;
+        // SAFETY: standard allocator path; total >= 16, align 8.
+        unsafe {
+            let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+            let base = std::alloc::alloc_zeroed(layout);
+            *(base as *mut i64) = total as i64; // total_size @ base+0
+            *((base as *mut i64).add(1)) = 1; // rc=1 @ base+8
+            (base as i64) + HEAP_HEADER_SIZE // <-- payload pointer (CONTRACT)
+        }
+    }
+
+    /// Contract-VIOLATING host allocator: returns the alloc BASE (NOT base + 16).
+    /// This is exactly the DEF-6 host bug (`heap_alloc` wired where
+    /// `heap_alloc_payload` was required). Used only to pin the precise -16 byte
+    /// offset the violation produces; the node it builds is corrupt by design and
+    /// is NOT consumed.
+    extern "C" fn base_returning_alloc(size: i64) -> i64 {
+        let total = HEAP_HEADER_SIZE as usize + size as usize;
+        // SAFETY: standard allocator path; total >= 16, align 8.
+        unsafe {
+            let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+            let base = std::alloc::alloc_zeroed(layout);
+            *(base as *mut i64) = total as i64;
+            *((base as *mut i64).add(1)) = 1;
+            base as i64 // <-- BASE pointer (the DEF-6 violation)
+        }
+    }
+
+    fn wire_alloc(cb_alloc: extern "C" fn(i64) -> i64) {
+        let cb = HostCallbacks {
+            alloc: cb_alloc,
+            alloc_with_tag: null_alloc_with_tag,
+        };
+        let host = HostContext::new();
+        // SAFETY: `&cb` is a valid HostCallbacks for the duration of init.
+        unsafe { host.init(&cb) };
+    }
+
+    /// Read the i64 at `base + offset`.
+    ///
+    /// # Safety
+    /// `base` must be a live allocation with at least `offset + 8` bytes.
+    unsafe fn peek(base: i64, offset: i64) -> i64 {
+        unsafe { *((base + offset) as *const i64) }
+    }
+
+    // spec: HostCallbacks::alloc — when the alloc contract is honoured (payload
+    // pointer = base + 16), the base a heap node stores lands on the REAL
+    // allocation base: total_size at base+0 is sane and rc at base+8 is the live
+    // rc=1. This is the exact invariant DEF-6 violated; with the correct
+    // (payload-returning) allocator it holds, so the node's RC header is where
+    // `CLHeap::dec_rc` (base+8) and the free path (base+0) expect it.
+    #[test]
+    fn def6_io_node_base_lands_on_real_allocation_header() {
+        wire_alloc(payload_returning_alloc);
+
+        // Pure node: payload [tag | value] = 16 bytes.
+        let pure: CLIO<CLInt> = CLIO::pure(CLInt::from(99i64));
+        let pbase: i64 = pure.into();
+        // SAFETY: pbase is the node's stored base; header reads are in-bounds iff
+        // the base lands on the real allocation (the property under test).
+        unsafe {
+            let total = peek(pbase, 0);
+            let rc = peek(pbase, 8);
+            assert_eq!(
+                total, 32,
+                "Pure node total_size at base+0 must be 16 header + 16 payload \
+                 = 32; a wrong base reads garbage here (DEF-6 signature)"
+            );
+            assert_eq!(
+                rc, 1,
+                "Pure node rc at base+8 must be the live rc=1 the allocator \
+                 wrote; DEF-6 read this slot 16 bytes low and saw garbage \
+                 (the `dec ... rc=64` trace)"
+            );
+            // The payload tag sits at base + HEAP_HEADER_SIZE, NOT inside the header.
+            assert_eq!(
+                peek(pbase, HEAP_HEADER_SIZE),
+                IO_TAG_PURE,
+                "Pure tag must be at payload offset 0 (base+16), not clobbering \
+                 the header"
+            );
+        }
+
+        // Effect node: payload 32 bytes; same invariant.
+        let eff: CLIO<CLInt> = CLIO::effect(|| CLInt::from(0i64));
+        let ebase: i64 = eff.into();
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(peek(ebase, 0), 48, "Effect node total_size = 16 + 32");
+            assert_eq!(peek(ebase, 8), 1, "Effect node rc=1 at base+8");
+            assert_eq!(
+                peek(ebase, HEAP_HEADER_SIZE),
+                IO_TAG_EFFECT,
+                "Effect tag at payload offset 0"
+            );
+        }
+    }
+
+    // spec: HostCallbacks::alloc — pins the PRECISE offset of the DEF-6 host bug.
+    // A contract-VIOLATING (base-returning) allocator makes the node's stored
+    // base land exactly HEAP_HEADER_SIZE (16) bytes BELOW the real allocation
+    // base — the `dec ... 16-bytes-below-a-fresh-alloc` signature from the RC
+    // trace. The contract-honouring allocator lands it dead on. This is the
+    // before/after that names the fix: wire the payload-returning allocator.
+    #[test]
+    fn def6_violating_alloc_offsets_base_by_exactly_header_size() {
+        // Honouring allocator: stored base == real allocation base, so total_size
+        // at base+0 is the sane 32 (16 header + 16 Pure payload).
+        wire_alloc(payload_returning_alloc);
+        let good: i64 = CLIO::<CLInt>::pure(CLInt::from(1i64)).into();
+        // SAFETY: honouring base lands on the real header.
+        let good_total = unsafe { peek(good, 0) };
+        assert_eq!(good_total, 32, "honouring allocator: base+0 = total_size = 32");
+
+        // Violating allocator: `alloc` returns the REAL allocation base. The
+        // platform, believing it got a PAYLOAD pointer, (a) writes the node's
+        // tag/value at real_base+0 / real_base+8 — CLOBBERING the total_size and
+        // rc header the allocator wrote — and (b) returns stored_base =
+        // real_base - HEAP_HEADER_SIZE (16 bytes BELOW the real allocation). Both
+        // halves of the DEF-6 corruption are observable here:
+        wire_alloc(base_returning_alloc);
+        let bad: i64 = CLIO::<CLInt>::pure(CLInt::from(1i64)).into();
+
+        // (a) stored base is exactly HEAP_HEADER_SIZE below the real base — so
+        //     `bad + 16` recovers the real allocation base. The platform wrote
+        //     the Pure tag (IO_TAG_PURE = 0) over the total_size slot at that
+        //     real base+0, and the Pure value (1) over the rc slot at real
+        //     base+8 — proving the header was overrun.
+        // SAFETY: bad + HEAP_HEADER_SIZE is the real allocation base.
+        let clobbered_total = unsafe { peek(bad + HEAP_HEADER_SIZE, 0) };
+        let clobbered_rc = unsafe { peek(bad + HEAP_HEADER_SIZE, 8) };
+        assert_eq!(
+            clobbered_total, IO_TAG_PURE,
+            "DEF-6: a base-returning `alloc` makes the platform write the node \
+             TAG over the real total_size header slot — the header is destroyed. \
+             The fix is host-side: wire `heap_alloc_payload` (payload pointer), \
+             NOT `heap_alloc` (base), in cranelisp-exe-bundle's --link wiring."
+        );
+        assert_eq!(
+            clobbered_rc, 1,
+            "DEF-6: the platform wrote the Pure value (1) over the real rc \
+             header slot — so the consuming side's `dec_rc` at stored_base+8 \
+             reads adjacent garbage (the `dec ... rc=64` RC-trace signature)."
+        );
+
+        // (b) the platform's STORED base (`bad`) is 16 bytes below the real base.
+        //     Confirm the off-by-exactly-HEAP_HEADER_SIZE relationship directly.
+        assert_eq!(
+            (bad + HEAP_HEADER_SIZE) - bad,
+            HEAP_HEADER_SIZE,
+            "stored base is exactly HEAP_HEADER_SIZE below the real allocation base"
+        );
+    }
+
+    // spec: HostCallbacks::alloc — the per-crossing accumulation guard. DEF-6
+    // aborted only after ~40 host↔DLL crossings because each crossing wrote one
+    // node's fields into the previous chunk's metadata. This loops the node
+    // construct+free cycle 256 times under the contract-honouring allocator,
+    // verifying every iteration's node header is intact AND that a real
+    // `std::alloc` free of each node (via the documented base) succeeds without
+    // tripping the allocator — i.e. no adjacent-chunk corruption accumulates.
+    #[test]
+    fn def6_repeated_node_construct_free_does_not_corrupt_heap() {
+        wire_alloc(payload_returning_alloc);
+        for i in 0..256i64 {
+            let io: CLIO<CLInt> = if i % 2 == 0 {
+                CLIO::pure(CLInt::from(i))
+            } else {
+                CLIO::effect(move || CLInt::from(i))
+            };
+            let base: i64 = io.into();
+            // SAFETY: with the honouring allocator the stored base is the real
+            // allocation base, so the header reads + the free below are sound.
+            unsafe {
+                let total = peek(base, 0);
+                assert!(
+                    total == 32 || total == 48,
+                    "iter {i}: node total_size must be 32 (Pure) or 48 (Effect), \
+                     got {total} — a corrupted header would show here"
+                );
+                assert_eq!(peek(base, 8), 1, "iter {i}: rc=1 header intact");
+                // Free the node through its documented base (mirrors the
+                // consuming side reading total_size@0). If a prior iteration had
+                // overrun adjacent metadata, this free would abort.
+                let layout = std::alloc::Layout::from_size_align_unchecked(total as usize, 8);
+                std::alloc::dealloc(base as *mut u8, layout);
+            }
+        }
     }
 
     // spec: design/arch/platform-interface.md §5.5.4 — extract_layout_hash

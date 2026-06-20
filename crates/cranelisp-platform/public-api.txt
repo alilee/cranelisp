@@ -436,4 +436,5 @@ pub unsafe fn cranelisp_platform::call_effect_thunk(i64) -> cranelisp_platform::
 pub const fn cranelisp_platform::extract_layout_hash(&str) -> &str
 pub unsafe fn cranelisp_platform::manifest_to_descriptors(&cranelisp_platform::PlatformManifest) -> core::result::Result<(alloc::string::String, alloc::string::String, alloc::vec::Vec<cranelisp_platform::OwnedPlatformFnDescriptor>), cranelisp_types::error::PlatformError>
 pub c fn cranelisp_platform::null_alloc_with_tag(u32, u32, *const i64) -> i64
+pub fn cranelisp_platform::platform_manifest_symbol(&str) -> alloc::string::String
 pub fn cranelisp_platform::set_global_schema(cranelisp_platform::Schema)

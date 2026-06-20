@@ -300,7 +300,16 @@ macro_rules! __declare_platform_body {
             [const { $crate::MacroAtomicPtr::new(::std::ptr::null_mut()) };
                 $crate::GOT_TABLE_SIZE];
 
-        #[unsafe(no_mangle)]
+        // NAMESPACED per platform-interface.md §5.5.5 (DEF-5, ABI v4 step) —
+        // the manifest export carries a `_<name>` suffix like the GOT and
+        // layout-hash exports, so two force-loaded platform rlibs no longer
+        // collide on a bare `cranelisp_platform_manifest`. The pattern string
+        // here MUST match `$crate::platform_manifest_symbol` exactly (the host
+        // consume side calls that helper); a unit test pins the two together.
+        // The macro cannot call a runtime fn in `export_name`, so it emits the
+        // suffix with the same `concat!(…, $platform_name)` form the GOT and
+        // layout-hash exports already use.
+        #[unsafe(export_name = concat!("cranelisp_platform_manifest_", $platform_name))]
         pub unsafe extern "C" fn cranelisp_platform_manifest(
             callbacks: *const $crate::HostCallbacks,
         ) -> $crate::PlatformManifest {
