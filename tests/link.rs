@@ -382,35 +382,31 @@ fn link_multi_module_project_with_cross_module_call_exits_with_main_value() {
 // =============================================================================
 // §9 Edge Cases — REPL-only `discover-tests` extern in a `--link` build
 //
-// REGRESSION GUARD pinning the DOCUMENTED INTERIM behaviour (S86 D5a ruling,
-// /arch 2026-06-17). `discover-tests` is a DEV-SESSION-ONLY host extern: it is
-// resolved only in a live session (int's `define_symbol`); the asymmetry with
-// `catch-runtime-error` (a self-contained intrinsic that DOES work in `--link`)
-// is deliberate and settled (test-discovery.md §4.5, "fourth convergence").
+// REGRESSION GUARD pinning the DESTINATION behaviour (S86 D5a ruling,
+// /arch 2026-06-17; FIXME 0406 LANDED S87 → /int `reject_dev_session_externs_in_link`).
+// `discover-tests` is a DEV-SESSION-ONLY host extern: it is resolved only in a
+// live session (int's `define_symbol`); the asymmetry with `catch-runtime-error`
+// (a self-contained intrinsic that DOES work in `--link`) is deliberate and
+// settled (test-discovery.md §4.5, "fourth convergence").
 //
-// A `--link` build of a module that references `discover-tests` is ACCEPTED at
-// compile time but FAILS at the `cc` link step with a raw
-// `undefined reference to discover-tests`, exit 1, no exe produced. Because a
-// whole module compiles to one object, importing even a PURE helper (`label`
-// below) from a module that also defines a `discover-tests`-using fn drags the
-// unresolved extern into the link.
+// A `--link` build of a module that references `discover-tests` is now REJECTED
+// at compile time with a FRIENDLY diagnostic surfaced before the `cc` link step:
+// it explains the symbol is REPL/dev-session-only and unavailable in `--link`,
+// names the referencing site, and points at the remedy (`--run` / the REPL
+// `/run-tests`). Non-zero exit, no exe produced. Because a whole module compiles
+// to one object, importing even a PURE helper (`label` below) from a module that
+// also defines a `discover-tests`-using fn drags the unresolved extern into the
+// link — the friendly rejection fires on the body call site.
 //
-// This is the SETTLED interim, NOT a backend defect. The /arch ruling (D5a)
+// This is the SETTLED destination, NOT a backend defect. The /arch ruling (D5a)
 // rejected the earlier `assert_exit(0)` oracle — resolving the extern under
 // `--link` would reopen the dev-session-only ruling and erase the
-// capture/discovery asymmetry. The friendly compile-time rejection is the
-// destination, deferred to FIXME 0406 (→/int).
+// capture/discovery asymmetry. FIXME 0406 replaced the earlier raw-linker
+// `undefined reference to discover-tests` interim with this friendly message.
 //
-// spec: design/arch/test-discovery.md §4.5 — What `--link` users see (interim).
-//
-// FIXME(/int 0406): when the friendly compile-time diagnostic lands, retarget
-// the substring assertion below from the raw linker message
-// (`undefined reference to discover-tests`) to the friendly compile-time
-// message (still non-zero exit, still naming `discover-tests`). The
-// non-zero-exit half is stable across the transition; only the channel +
-// phrasing change.
+// spec: design/arch/test-discovery.md §4.5 — What `--link` users see.
 #[test]
-fn link_module_referencing_discover_tests_extern_fails_with_named_link_error() {
+fn link_module_referencing_discover_tests_extern_fails_with_friendly_message() {
     let out = Cranelisp::new()
         .link_then_run("entry.cl")
         .file(
@@ -427,23 +423,32 @@ fn link_module_referencing_discover_tests_extern_fails_with_named_link_error() {
         )
         .output();
 
-    // DOCUMENTED INTERIM (test-discovery.md §4.5): non-zero exit, no exe — the
-    // missing dev-session host symbol surfaces as an unresolved-symbol link
-    // failure. The exact raw message on this toolchain is:
-    //   linker (cc) failed: … undefined reference to `discover-tests'
+    // DESTINATION (test-discovery.md §4.5): non-zero exit, no exe — the
+    // dev-session-only extern is rejected at compile time with a friendly
+    // diagnostic surfaced before linking. The actual message on this toolchain is:
+    //   error: codegen error at 0..0: `discover-tests` is a REPL/dev-session-only
+    //   builtin and is not available in `--link` builds (it scans the live
+    //   session's symbol table, …). It is referenced by `runner/run-all`. Remove
+    //   the reference, or run this program with `--run` or in the REPL (use
+    //   `/run-tests` there to run tests).
     assert!(
         !out.status.success(),
-        "expected link failure (interim: discover-tests has no AOT symbol), got exit {:?}\nstdout:\n{}\nstderr:\n{}",
+        "expected --link rejection (discover-tests is dev-session-only), got exit {:?}\nstdout:\n{}\nstderr:\n{}",
         out.status.code(), out.stdout, out.stderr
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert!(
         combined.contains("discover-tests"),
-        "link failure must name the unresolved `discover-tests` symbol: {combined}"
+        "rejection must name the `discover-tests` symbol: {combined}"
     );
+    // Friendly-message substrings (stable across phrasing tweaks): it explains
+    // the symbol is dev-session-only, that this is a `--link` build, and points
+    // at the `--run` remedy. Match the stable tokens, not the whole sentence.
     assert!(
-        combined.contains("undefined reference") || combined.contains("Symbol not found"),
-        "link failure must be an unresolved-symbol error (raw linker message): {combined}"
+        combined.contains("dev-session")
+            && combined.contains("--link")
+            && combined.contains("--run"),
+        "rejection must be the friendly dev-session-only/--link diagnostic naming the remedy: {combined}"
     );
 }
 

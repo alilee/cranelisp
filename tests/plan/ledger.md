@@ -437,23 +437,26 @@ findings.** The reported `__cranelisp_got_testing_runner` / SIGSEGV symptom did
 NOT reproduce via the `testing.runner` path as stated. Isolation found two
 separate root causes, each pinned:
 
-- **`link.rs::link_module_referencing_discover_tests_extern_fails_with_named_link_error`**
-  (GREEN interim guard — RETARGETED S86 D5a ruling, /arch 2026-06-17) —
+- **`link.rs::link_module_referencing_discover_tests_extern_fails_with_friendly_message`**
+  (GREEN — S87 retarget to the DESTINATION, FIXME 0406 landed; was
+  `…fails_with_named_link_error`, the S86 D5a interim guard, /arch 2026-06-17) —
   `// spec: design/arch/test-discovery.md §4.5`. A module referencing the
   DEV-SESSION-ONLY host extern `discover-tests` (resolved only in a live
   session, per `test-discovery.md §4.5`) has no symbol at AOT link; `--link`ing
   any project that pulls it in fails at `cc`. Importing even a PURE helper from
   such a module drags the unresolved extern in (whole module → one object).
   `catch-runtime-error` AOT-links fine; `discover-tests` is the sole culprit.
-  **This is the SETTLED INTERIM, not a defect.** /arch's D5a ruling rejected the
+  **This is the SETTLED behaviour, not a defect.** /arch's D5a ruling rejected the
   earlier `assert_exit(0)` oracle (it would reopen the dev-session-only ruling +
-  erase the deliberate capture/discovery asymmetry). The test now asserts the
-  documented interim: NON-ZERO exit + an output substring naming `discover-tests`
-  + an unresolved-symbol marker (`undefined reference` / `Symbol not found`).
-  **Now GREEN** — pins the interim as a regression guard. The friendly
-  compile-time rejection is the destination, deferred to **FIXME 0406
-  (→/int)**; when it lands, /qa retargets the substring from the raw linker
-  message to the friendly message (still non-zero, still names `discover-tests`).
+  erase the deliberate capture/discovery asymmetry). **S87 retarget (FIXME 0406
+  landed, /dev → `src/exe.rs::reject_dev_session_externs_in_link`):** the raw
+  `cc` `undefined reference` interim is replaced by a FRIENDLY compile-time
+  rejection surfaced before linking. The test now asserts the destination:
+  NON-ZERO exit + an output substring naming `discover-tests` + the friendly-
+  message stable tokens (`dev-session` AND `--link` AND the `--run` remedy),
+  matching substrings not the whole sentence. Renamed accordingly. **GREEN.**
+  FIXME 0406 (→/int) is discharged; FIXME 0422 (the retarget request) is deleted
+  per `memory/feedback_no_fixme_with_failing_test` — this green test is the record.
 - **`link.rs::link_after_run_reuses_cache_and_resolves_cross_module_got`**
   (RED, D5b guard, the LITERAL `__cranelisp_got_<module>` symptom) —
   `// spec: design/backend/executable-generation.md §9`. CROSS-MODE CACHE-REUSE:
@@ -491,9 +494,10 @@ cache invariant).
 > `/arch`'s D5a ruling (test-discovery.md §4.5) settled that the unresolved
 > `discover-tests` link failure is the DOCUMENTED INTERIM (dev-session-only
 > extern; friendly diagnostic deferred to FIXME 0406 →/int). The repro was
-> retargeted + renamed to
-> `link_module_referencing_discover_tests_extern_fails_with_named_link_error`
-> and now asserts the interim (non-zero exit + names `discover-tests`) — **GREEN**.
+> retargeted + renamed (originally `…fails_with_named_link_error`; S87 renamed to
+> `link_module_referencing_discover_tests_extern_fails_with_friendly_message` when
+> FIXME 0406 landed) and now asserts the destination friendly message (non-zero
+> exit + names `discover-tests` + dev-session/--link/--run tokens) — **GREEN**.
 > So D5a is no longer one of the carried RED guards; the running count is one
 > fewer RED than the row above states.
 

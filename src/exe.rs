@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, ModuleEntry, ModuleFullPath, Span, Type,
+    CranelispError, DefKind, FQSymbol, ModuleEntry, ModuleFullPath, Span, Type,
 };
 
 /// Generate a startup `.o` that defines `start` (exported, referenced by the
@@ -417,6 +417,173 @@ pub fn validate_main(entry_symbols: &crate::code::SessionSymbolTable) -> Result<
             message: "'main' in entry module is not a function definition".to_string(),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
+    }
+}
+
+/// Friendly compile-time rejection of a `--link` build that references a
+/// **dev-session-only** `DefKind::PrimitiveExtern` (today: `discover-tests`).
+///
+/// FIXME 0406 (→/int), test-discovery.md §4.5. `discover-tests` is host-promised
+/// only in a live session (int's `Jit::define_symbol`, REPL/`--run`). Under AOT
+/// `--link` there is no live session, so the emitted `Linkage::Import` against it
+/// is never satisfied and the `cc` step fails with a RAW
+/// `undefined reference to discover-tests`. That opaque linker diagnostic
+/// violates the project no-opaque-error principle (root `CLAUDE.md`:
+/// "No valid language construct should produce an opaque error"). This gate
+/// replaces it with a clear message — surfaced **before** linking — naming the
+/// symbol, the reason, and the remedy.
+///
+/// **Detection is structural, not a name match.** The dev-session-only set is
+/// the single-source list `worker::DEV_SESSION_ONLY_EXTERNS` (the same names
+/// `build_session_jit` promises). A `--link` reference is read off the
+/// **function body ASTs** — the only signal that pins a REAL reference that
+/// reaches the linked objects:
+///
+/// - A `discover-tests` reference resolves to a `ResolvedCall::BuiltinFn`, so it
+///   never lands in the Decision-21 `callees` graph — detection reads the
+///   reference itself.
+/// - An *import* entry alone is NOT a reference: the prelude's
+///   `(export [primitives [*]])` glob re-exports every primitive (incl.
+///   `discover-tests`), and a module may import a name it never calls. Neither
+///   drags the extern into the link. Only a body call site (an `Expr::Var`
+///   naming the extern — by the bare imported name OR a `module/extern` FQ form)
+///   compiles to a `Linkage::Import` against the unresolved symbol, so the body
+///   walk is the precise signal. A bare name is matched against the single-source
+///   list directly; an FQ name is confirmed by resolving its terminal entry to a
+///   dev-session-only `PrimitiveExtern` (so a user `mod/discover-tests` UserFn is
+///   not caught).
+///
+/// `catch-runtime-error` is deliberately NOT in the set — it is a self-contained
+/// intrinsic that resolves in `--link` (test-discovery.md §6), so it is never
+/// rejected here.
+pub fn reject_dev_session_externs_in_link(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+) -> Result<(), CranelispError> {
+    // Is FQ `fq` a dev-session-only `PrimitiveExtern` (the structural
+    // confirmation: named in the single-source list AND its home entry really is
+    // that kind)? Used for `module/extern` FQ body references.
+    let resolves_to_dev_session_extern = |fq: &FQSymbol| -> bool {
+        crate::worker::DEV_SESSION_ONLY_EXTERNS.contains(&fq.symbol.as_ref())
+            && symbol_tables
+                .get(&fq.module)
+                .is_some_and(|st| {
+                    matches!(
+                        st.get(fq.symbol.as_ref()),
+                        Some(ModuleEntry::Def { kind, .. })
+                            if matches!(kind.as_ref(), DefKind::PrimitiveExtern)
+                    )
+                })
+    };
+
+    for st_entry in symbol_tables.iter() {
+        let module = st_entry.key();
+        let st = st_entry.value();
+        for (caller, entry) in st.all_symbols() {
+            if let ModuleEntry::Def { ast: Some(variant), .. } = entry
+                && let Some(sym) = body_references_dev_session_extern(
+                    &variant.body,
+                    &resolves_to_dev_session_extern,
+                )
+            {
+                return Err(link_dev_session_error(&sym, module, caller));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build the friendly `--link` rejection error naming the offending symbol, the
+/// reason, the referencing site, and the remedy (FIXME 0406).
+fn link_dev_session_error(
+    sym: &cranelisp_types::Symbol,
+    module: &ModuleFullPath,
+    caller: &cranelisp_types::Symbol,
+) -> CranelispError {
+    CranelispError::CodegenError {
+        message: format!(
+            "`{sym}` is a REPL/dev-session-only builtin and is not available in \
+             `--link` builds (it scans the live session's symbol table, which a \
+             standalone executable does not have). It is referenced by \
+             `{module}/{caller}`. Remove the reference, or run this program with \
+             `--run` or in the REPL (use `/run-tests` there to run tests).",
+        ),
+        location: ErrorLocation::from_span(Span::SYNTHETIC),
+    }
+}
+
+/// Walk a body `Expr`, returning the first `Var` whose name resolves to a
+/// dev-session-only extern — either the bare-import name (e.g. `discover-tests`,
+/// matched against the single-source list directly) or a `module/extern` FQ
+/// reference (confirmed via `is_dev_session_extern`). Returns the referenced
+/// symbol name for the diagnostic.
+fn body_references_dev_session_extern(
+    expr: &cranelisp_types::Expr,
+    is_dev_session_extern: &impl Fn(&FQSymbol) -> bool,
+) -> Option<cranelisp_types::Symbol> {
+    use cranelisp_types::{Expr, Symbol};
+
+    // A `Var` name is a hit if it is a bare dev-session-only name, or a
+    // `module/extern` FQ form whose terminal entry is a dev-session extern.
+    let var_is_hit = |name: &Symbol| -> Option<Symbol> {
+        let n = name.as_ref();
+        if crate::worker::DEV_SESSION_ONLY_EXTERNS.contains(&n) {
+            return Some(name.clone());
+        }
+        if let Some(slash) = n.find('/') {
+            let (m, s) = (&n[..slash], &n[slash + 1..]);
+            if !m.is_empty() && !s.is_empty() {
+                let fq = FQSymbol {
+                    module: ModuleFullPath::from(m),
+                    symbol: Symbol::from(s),
+                };
+                if is_dev_session_extern(&fq) {
+                    return Some(Symbol::from(s));
+                }
+            }
+        }
+        None
+    };
+
+    match expr {
+        Expr::Var { name, .. } => var_is_hit(name),
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. } => None,
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => bindings
+            .iter()
+            .find_map(|(_, e)| body_references_dev_session_extern(e, is_dev_session_extern))
+            .or_else(|| body_references_dev_session_extern(body, is_dev_session_extern)),
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            body_references_dev_session_extern(cond, is_dev_session_extern)
+                .or_else(|| body_references_dev_session_extern(then_branch, is_dev_session_extern))
+                .or_else(|| body_references_dev_session_extern(else_branch, is_dev_session_extern))
+        }
+        Expr::Lambda { body, .. }
+        | Expr::Annotate { expr: body, .. }
+        | Expr::Trace { body, .. } => {
+            body_references_dev_session_extern(body, is_dev_session_extern)
+        }
+        Expr::Apply { callee, args, .. } => {
+            body_references_dev_session_extern(callee, is_dev_session_extern)
+                .or_else(|| {
+                    args.iter().find_map(|a| {
+                        body_references_dev_session_extern(a, is_dev_session_extern)
+                    })
+                })
+        }
+        Expr::Match { scrutinee, arms, .. } => {
+            body_references_dev_session_extern(scrutinee, is_dev_session_extern).or_else(|| {
+                arms.iter()
+                    .find_map(|arm| body_references_dev_session_extern(&arm.body, is_dev_session_extern))
+            })
+        }
+        Expr::VecLit { elements, .. } => elements
+            .iter()
+            .find_map(|e| body_references_dev_session_extern(e, is_dev_session_extern)),
+        Expr::ConstrADT { fields, .. } => fields
+            .iter()
+            .find_map(|e| body_references_dev_session_extern(e, is_dev_session_extern)),
     }
 }
 
@@ -1127,5 +1294,250 @@ mod tests {
                 ("main", "cranelisp_user_main")
             );
         }
+    }
+
+    // ── reject_dev_session_externs_in_link (FIXME 0406) ─────────────────────
+
+    use cranelisp_types::{Expr, UserFnState};
+
+    /// A `primitives` table declaring `name` as a `PrimitiveExtern` (the
+    /// dev-session-only `discover-tests` / the also-extern-but-link-OK
+    /// `catch-runtime-error`) so callee-kind confirmation resolves.
+    fn primitives_table_with_extern(name: &str) -> crate::code::SessionSymbolTable {
+        use cranelisp_types::{Scheme, Symbol, Visibility};
+        use std::collections::HashMap;
+        let mut st =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("primitives"));
+        st.insert(
+            Symbol::from(name),
+            ModuleEntry::<crate::code::Code>::def(
+                Scheme {
+                    type_vars: vec![],
+                    constraints: HashMap::new(),
+                    ty: Type::Fn(vec![], Box::new(Type::Int)),
+                },
+                DefKind::PrimitiveExtern,
+            )
+            .visibility(Visibility::Public)
+            .build(),
+        );
+        st
+    }
+
+    /// A `Def` whose single-variant body is `body`. Mirrors a typechecked
+    /// user-fn entry (`ast: Some(variant)`) so the body-Var signal is exercised.
+    fn user_fn_entry_with_body(body: Expr) -> ModuleEntry<crate::code::Code> {
+        use cranelisp_types::{DefnVariant, Scheme, Visibility};
+        use std::collections::HashMap;
+        ModuleEntry::<crate::code::Code>::def(
+            Scheme {
+                type_vars: vec![],
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![], Box::new(Type::Int)),
+            },
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0 } },
+        )
+        .visibility(Visibility::Public)
+        .ast(DefnVariant { params: vec![], body, span: Span::SYNTHETIC })
+        .build()
+    }
+
+    // spec: design/arch/test-discovery.md §4.5 — a `--link` fn that CALLS the
+    // dev-session-only `discover-tests` extern (by the bare imported name) is
+    // REJECTED with a friendly compile-time diagnostic (FIXME 0406), replacing
+    // the raw linker `undefined reference to discover-tests` (the documented
+    // interim). The message names the symbol, the reason, the referencing site,
+    // and the remedy.
+    #[test]
+    fn link_rejects_body_call_to_dev_session_extern_with_friendly_message() {
+        use cranelisp_types::Symbol;
+        let tables = dashmap::DashMap::new();
+        tables.insert(
+            ModuleFullPath::from("primitives"),
+            primitives_table_with_extern("discover-tests"),
+        );
+        // `runner/run-all` imports + CALLS `discover-tests` by its bare name (the
+        // tested shape). The bare name in the body is the real reference.
+        let body = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("discover-tests"), Span::SYNTHETIC)),
+            args: vec![Expr::VecLit { elements: vec![], span: Span::SYNTHETIC, inferred_type: None }],
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let mut runner =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("runner"));
+        runner.insert(Symbol::from("run-all"), user_fn_entry_with_body(body));
+        tables.insert(ModuleFullPath::from("runner"), runner);
+
+        let err = reject_dev_session_externs_in_link(&tables).unwrap_err();
+        match err {
+            CranelispError::CodegenError { message, .. } => {
+                assert!(message.contains("discover-tests"), "names the symbol: {message}");
+                assert!(
+                    message.contains("dev-session-only") && message.contains("--link"),
+                    "explains dev-session-only + unavailable in --link: {message}"
+                );
+                assert!(
+                    message.contains("runner/run-all"),
+                    "names the referencing site: {message}"
+                );
+                assert!(
+                    message.contains("--run") || message.contains("REPL"),
+                    "suggests the --run / REPL remedy: {message}"
+                );
+            }
+            other => panic!("expected CodegenError, got {other:?}"),
+        }
+    }
+
+    // spec: design/arch/test-discovery.md §4.5 — an IMPORT of the dev-session-only
+    // extern that is NEVER CALLED is ACCEPTED. The prelude's
+    // `(export [primitives [*]])` glob re-exports `discover-tests` into every
+    // session, and a module may import a name it never uses; neither drags the
+    // extern into the link. Only a body call site is a real reference. (Guards
+    // against the false-positive that an import-entry scan would produce.)
+    #[test]
+    fn link_does_not_reject_unused_import_of_dev_session_extern() {
+        use cranelisp_types::{Symbol, Visibility};
+        let tables = dashmap::DashMap::new();
+        tables.insert(
+            ModuleFullPath::from("primitives"),
+            primitives_table_with_extern("discover-tests"),
+        );
+        // `runner` imports `discover-tests` (a re-export edge) but its fn body
+        // does NOT call it.
+        let mut runner =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("runner"));
+        runner.insert(
+            Symbol::from("discover-tests"),
+            ModuleEntry::<crate::code::Code>::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("discover-tests"),
+                },
+                visibility: Visibility::Private,
+            },
+        );
+        runner.insert(
+            Symbol::from("label"),
+            user_fn_entry_with_body(Expr::StringLit { value: "hi".into(), span: Span::SYNTHETIC, inferred_type: None }),
+        );
+        tables.insert(ModuleFullPath::from("runner"), runner);
+        assert!(
+            reject_dev_session_externs_in_link(&tables).is_ok(),
+            "an unused import of discover-tests does not drag it into the link"
+        );
+    }
+
+    // spec: design/arch/test-discovery.md §4.5 — a bare `primitives/discover-tests`
+    // FQ reference in a fn body (no import) is ALSO rejected — the body-Var
+    // signal. The structural confirmation reads the terminal `PrimitiveExtern`.
+    #[test]
+    fn link_rejects_fq_body_reference_to_dev_session_extern() {
+        use cranelisp_types::Symbol;
+        let tables = dashmap::DashMap::new();
+        tables.insert(
+            ModuleFullPath::from("primitives"),
+            primitives_table_with_extern("discover-tests"),
+        );
+        // user/main calls (primitives/discover-tests []) — a Var inside an Apply.
+        let body = Expr::Apply {
+            callee: Box::new(Expr::var(
+                Symbol::from("primitives/discover-tests"),
+                Span::SYNTHETIC,
+            )),
+            args: vec![Expr::VecLit { elements: vec![], span: Span::SYNTHETIC, inferred_type: None }],
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let mut user =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        user.insert(Symbol::from("main"), user_fn_entry_with_body(body));
+        tables.insert(ModuleFullPath::from("user"), user);
+
+        let err = reject_dev_session_externs_in_link(&tables).unwrap_err();
+        assert!(
+            matches!(&err, CranelispError::CodegenError { message, .. } if message.contains("discover-tests")),
+            "FQ body reference must be rejected naming the symbol: {err:?}"
+        );
+    }
+
+    // spec: design/arch/test-discovery.md §6 — `catch-runtime-error` (a
+    // self-contained intrinsic that resolves in `--link`) is NOT in the
+    // dev-session-only set, so importing it under `--link` is ACCEPTED. The
+    // asymmetry with `discover-tests` is deliberate and settled.
+    #[test]
+    fn link_does_not_reject_catch_runtime_error() {
+        use cranelisp_types::Symbol;
+        let tables = dashmap::DashMap::new();
+        tables.insert(
+            ModuleFullPath::from("primitives"),
+            primitives_table_with_extern("catch-runtime-error"),
+        );
+        // `safe/guarded` actually CALLS catch-runtime-error — still accepted, it
+        // is a self-contained intrinsic that resolves in --link.
+        let body = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("catch-runtime-error"), Span::SYNTHETIC)),
+            args: vec![Expr::IntLit { value: 0, span: Span::SYNTHETIC, inferred_type: None }],
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let mut safe =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("safe"));
+        safe.insert(Symbol::from("guarded"), user_fn_entry_with_body(body));
+        tables.insert(ModuleFullPath::from("safe"), safe);
+        assert!(
+            reject_dev_session_externs_in_link(&tables).is_ok(),
+            "catch-runtime-error works in --link and must not be rejected"
+        );
+    }
+
+    // spec: design/arch/test-discovery.md §4.5 — the gate confirms the structural
+    // `DefKind::PrimitiveExtern` discriminator, NOT a bare name match: a user
+    // symbol that merely shares the name `discover-tests` (an ordinary UserFn) is
+    // NOT a dev-session extern and must NOT be rejected.
+    #[test]
+    fn link_does_not_reject_user_symbol_sharing_the_name() {
+        use cranelisp_types::Symbol;
+        let tables = dashmap::DashMap::new();
+        // `user` defines its OWN `discover-tests` (a plain UserFn) and calls it
+        // via a bare body Var. There is no `primitives` PrimitiveExtern at all.
+        let body = Expr::var(Symbol::from("user/discover-tests"), Span::SYNTHETIC);
+        let mut user =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        user.insert(
+            Symbol::from("discover-tests"),
+            user_fn_entry_with_body(Expr::IntLit { value: 1, span: Span::SYNTHETIC, inferred_type: None }),
+        );
+        user.insert(Symbol::from("main"), user_fn_entry_with_body(body));
+        tables.insert(ModuleFullPath::from("user"), user);
+        assert!(
+            reject_dev_session_externs_in_link(&tables).is_ok(),
+            "a user FQ symbol (user/discover-tests, a UserFn) is not a dev-session extern"
+        );
+    }
+
+    // spec: design/arch/test-discovery.md §4.5 — a `--link` program that
+    // references no dev-session extern is ACCEPTED (the gate is a no-op for the
+    // common case).
+    #[test]
+    fn link_accepts_program_without_dev_session_externs() {
+        use cranelisp_types::Symbol;
+        let tables = dashmap::DashMap::new();
+        let body = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("str-concat"), Span::SYNTHETIC)),
+            args: vec![Expr::StringLit { value: "hi".into(), span: Span::SYNTHETIC, inferred_type: None }],
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let mut user =
+            crate::code::SessionSymbolTable::new_with_params(ModuleFullPath::from("user"));
+        user.insert(Symbol::from("main"), user_fn_entry_with_body(body));
+        tables.insert(ModuleFullPath::from("user"), user);
+        assert!(reject_dev_session_externs_in_link(&tables).is_ok());
     }
 }

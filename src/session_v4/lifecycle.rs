@@ -1403,6 +1403,20 @@ impl CompilerSession {
         // §12.6). A valid `main` always returns `IO _` after this gate — the
         // startup stub therefore always trampolines the IO result.
         crate::exe::validate_main(&entry_table)?;
+        drop(entry_table);
+        // FIXME 0406 (test-discovery.md §4.5): refuse a `--link` build that
+        // references a dev-session-only `PrimitiveExtern` (`discover-tests`)
+        // BEFORE invoking `cc` — a friendly compile-time diagnostic instead of
+        // the raw `undefined reference to discover-tests` linker error. Scans
+        // every linked module (not just the entry); the offending callee can
+        // live in any module dragged into the link.
+        crate::exe::reject_dev_session_externs_in_link(&self.shared.symbol_tables)?;
+        let entry_table = self.module_table(&module).ok_or_else(|| {
+            CranelispError::ModuleError {
+                message: format!("entry module '{}' not found in typechecker", module_name),
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            }
+        })?;
         // Sprint 58 Wave 2 / Decision 36: read the entry module's `main`
         // GOT slot index now (before dropping the table guard). The alias
         // `.o` (emitted below) routes the system linker's `_main` import

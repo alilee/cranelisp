@@ -945,8 +945,28 @@ pub fn inline_jit_codegen_for_names(
     Ok(())
 }
 
+/// The ABI names of the `DefKind::PrimitiveExtern` symbols whose bodies are
+/// **host-promised only in a live session** — int hands them to the JIT via
+/// `Jit::define_symbol` (below), so they resolve in REPL / `--run` but have NO
+/// AOT symbol under `--link` (the standalone executable has no live session to
+/// scan). This is the single source of truth shared by two sites:
+///
+///   1. `build_session_jit` — promises each one to the live-session JIT.
+///   2. `crate::exe::reject_dev_session_externs_in_link` — refuses a `--link`
+///      build that references any of them, with a friendly compile-time
+///      diagnostic instead of a raw `cc` `undefined reference` (FIXME 0406).
+///
+/// The list is the structural discriminator the friendly-rejection gate keys on
+/// (test-discovery.md §4.5): a `PrimitiveExtern` named here is dev-session-only;
+/// other `PrimitiveExtern`s (`catch-runtime-error`, `bind`, the intrinsic-type
+/// accessors) resolve in `--link` from binary-exported / intrinsics-catalog
+/// symbols and are NOT rejected. Prefer extending this list over a name match
+/// elsewhere so any future REPL-only extern inherits both the promise and the
+/// rejection from one edit.
+pub(crate) const DEV_SESSION_ONLY_EXTERNS: &[&str] = &["discover-tests"];
+
 /// Build the session JIT from the symbol tables (the unified `Jit::new`
-/// boundary, BC §3), then register the host-promised `discover-tests` extern.
+/// boundary, BC §3), then register the host-promised dev-session-only externs.
 ///
 /// `Jit::new` registers the full intrinsics catalog (incl. trace +
 /// `catch-runtime-error`) + per-module GOT data symbols + platform-effect
@@ -958,10 +978,17 @@ fn build_session_jit(
     tc_modules: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
 ) -> Result<cranelisp_backend::jit::Jit, CranelispError> {
     let jit = cranelisp_backend::jit::Jit::new(tc_modules)?;
-    jit.define_symbol(
-        "discover-tests",
-        crate::session_v4::discover_tests_extern as *const u8,
-    );
+    for name in DEV_SESSION_ONLY_EXTERNS {
+        debug_assert_eq!(
+            *name, "discover-tests",
+            "the only dev-session-only extern body wired here is discover-tests; \
+             a new entry in DEV_SESSION_ONLY_EXTERNS needs its own define_symbol",
+        );
+        jit.define_symbol(
+            name,
+            crate::session_v4::discover_tests_extern as *const u8,
+        );
+    }
     Ok(jit)
 }
 
