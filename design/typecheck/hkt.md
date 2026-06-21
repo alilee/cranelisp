@@ -17,7 +17,7 @@ Here `f` ranges over type constructors like `Option` and `List`, and `(f a)` mea
 
 ### What is already in place
 
-1. **`Type::TyConApp(TypeId, Vec<Type>)`** exists in `crates/cranelisp-types/src/types.rs` and is handled by all utility functions: `apply`, `free_vars`, `contains_var`, `max_type_var_id`, `collect_var_ids_ordered`, `format_type_with_vars`, and `Display`.
+1. **`Type::TyConApp(TypeId, Vec<Type>)`** exists in `crates/cranelisp-types/src/types.rs` and is handled by all utility functions: `apply`, `free_vars`, `contains_var`, `max_type_var_id`, `collect_var_ids_ordered`, the shared `render_type(ty, PrimitiveNaming, VarNaming)` renderer, and `Display`.
 
 2. **AST support**: `TraitDecl.type_params: Vec<Symbol>` carries the constructor variable names. `TraitMethodSig.hkt_param_index: Option<usize>` records which method parameter carries the constructor for dispatch. Both are already defined in `crates/cranelisp-types/src/ast.rs`.
 
