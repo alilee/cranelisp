@@ -1,7 +1,3 @@
-sketch/target
-sketch/.cranelisp-cache/
-sketch/.cranelisp_history
-sketch/profile.json.gz
 /target
 /worktrees
 .worktrees/
@@ -23,7 +19,6 @@ examples/platforms/
 coverage/
 # REPL session persistence (per-user state, not project source)
 user.cl
-sketch/user.cl
 # Sprint 23 test run artifacts
 tests/sprint23/.runs/
 tests/v4_pipeline/.runs/

@@ -1,5 +1,0 @@
-# Increase default main thread stack size to 64 MB.
-# Prevents silent crash on deep mutual recursion (ROADMAP item D).
-# Note: macOS -stack_size and Linux -z stacksize are emitted via build.rs
-# using cargo:rustc-link-arg-bins so they only apply to binary targets,
-# not to proc-macro dylibs which reject these flags.

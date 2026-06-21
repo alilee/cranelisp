@@ -19,7 +19,6 @@ This repository is organized for the Cranelisp reimplementation:
 | `spec/` | Language specification (16 files) — owned by `/spec` skill |
 | `design/` | Architecture and implementation design — owned by `/arch` skill |
 | `user/` | User-facing documentation (tutorials, guide) — owned by `/docs` skill |
-| `sketch/` | Prototype compiler — reference oracle, not the active compiler |
 | `src/` | New compiler source (to be created by `/arch`) |
 | `stdlib/` | Standard library in Cranelisp — owned by `/stdlib` |
 | `examples/` | Learning-sequence examples — owned by `/examples` skill |
@@ -27,29 +26,11 @@ This repository is organized for the Cranelisp reimplementation:
 | `tests/` | Reimplementation test suite (to be created by `/qa`) |
 | `sprints/` | Delivery coordination — roadmap, current sprint, archive — owned by `/sprint` skill |
 
-## Sketch Oracle
+## Sketch Oracle (retired)
 
-We have a prototype compiler as a sketch.
+The prototype compiler that lived in `sketch/` was **deleted at the close of Sprint 87** (pre-Phase-H hygiene): Phases A–G are complete, language semantics are frozen, and the reimplementation has its own working references (`design/{crate}/`, `design/arch/facades/`, `audits/`, `spec/`) that long ago superseded it. If a spec ambiguity ever needs the original oracle's behaviour, recover the sketch from git history (it predates this deletion commit) rather than treating it as a live reference. Historical mentions of the sketch throughout `design/`, `sprints/`, and `audits/` are an accurate record of past consultations and are left intact.
 
-> **Important** The sketch is a reference point only, not the destination. Its purpose was to de-risk the reimplementation by informing requirements, design decisions, and technical risk assessments. The reimplementation has matured to the point where the sketch is no longer the default reference for design work — it is consulted **exceptionally**, not by default.
-
-> **When to consult the sketch.** When debugging an unexplained behaviour or design dead-end where a known-working precedent might inform the next move; when the spec is ambiguous and the sketch's behaviour is the available oracle; when an audit, defect, or `/review` finding explicitly cites a sketch comparison as the resolution. *Not* as a routine pre-reading step before design or implementation work — the reimplementation has its own design docs (`design/{crate}/`), facades (`design/arch/facades/`), and audits (`audits/`) that supersede the sketch as the working reference.
-
-> **If you do consult the sketch**, document the consultation in the design doc you're updating: what you looked at, what you took or rejected from it, and why. This keeps the consultation legible to future readers. A "Sketch comparison" section is not mandatory; include one only when the consultation was substantive.
-
-> **First-principles default.** New design work stands on its own — starts from spec + facade + audit + bounded-context statement, not from the sketch. Uninformed divergence from the sketch was a real risk in early reimplementation; routine consultation was the mitigation. That phase is past for most subsystems. Re-engage the sketch when the working materials don't suffice — that is the exception, not the rule.
-
-The prototype compiler lives in `sketch/`. Use it when the spec is ambiguous:
-
-```bash
-cd sketch && cargo run -- --run examples/hello.cl
-cd sketch && cargo run                    # start REPL
-cd sketch && just test                    # run all prototype tests
-```
-
-See `sketch/CLAUDE.md` for full oracle instructions and key file locations.
-
-> **Do not copy the sketch's pipeline structure.** The sketch had a dual-pipeline defect (`TopLevel`/`ReplInput` duplication). Study the sketch's *solutions to language-level problems* (RC semantics, match field ownership, closure captures), but design the pipeline independently. See `design/arch/archive/pipeline-convergence-review.md` for the historical analysis.
+> **Do not copy the sketch's pipeline structure** (relevant only if recovering it from history). The sketch had a dual-pipeline defect (`TopLevel`/`ReplInput` duplication); the v4 pipeline was designed independently. See `design/arch/archive/pipeline-convergence-review.md` for the historical analysis.
 
 ## Pipeline
 
@@ -230,4 +211,4 @@ When `/qa` writes a test, it adds the test-side `// spec:` comment. When coverag
 
 ## Known Issues
 
-Prototype compromises are documented in `sketch/KNOWN_ISSUES.md`. See `sketch/audits/` for the full audit findings. See `sprints/reimplementation.md` §"Risk Analysis" for known issues disposition.
+See `sprints/reimplementation.md` §"Risk Analysis" for known-issues disposition. (The former prototype's `sketch/KNOWN_ISSUES.md` and `sketch/audits/` were removed with the sketch at Sprint 87 close; recover from git history if needed.)
