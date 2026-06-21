@@ -28,7 +28,7 @@ flowchart TB
         PDEF["PrimitiveDef struct\n(name, ty, param_names, docstring)"]
     end
 
-    subgraph EXTERNS["extern bodies — 46 #[export_name] pub(crate) extern \"C\" fn"]
+    subgraph EXTERNS["extern bodies — 46 #[export_name] pub(crate) extern &quot;C&quot; fn"]
         RING0B["ring0.rs (23): arith/cmp/bool\nincl. neq-i64/f64/bool (out-of-table)"]
         STRB["string.rs (16): str-* + neq-string\n(S86 DEF: neq-string now registered)"]
         MARB["marshal.rs (2): sconcat (out-of-table),\nquote-sexp — SList/Sexp marshalling"]
@@ -44,7 +44,7 @@ flowchart TB
         PANIC["panic::runtime_panic"]
     end
 
-    SESS -->|into_concrete::<Code,()>| TABLE
+    SESS -->|"into_concrete::<Code,()>"| TABLE
     EXEB -->|force| TABLE
     BK -.->|reads fn ptr via GOT slot| SLAB
 
@@ -55,7 +55,7 @@ flowchart TB
     BUILD --> INS1 & INSV
     R0 & R1 & R3 --> PDEF
     INS1 -->|store_slot N, fn_ptr| SLAB
-    INSV -->|3 of 4 slots stay NULL\n(vec-get/set/push inline-only — LOW)| SLAB
+    INSV -->|"3 of 4 slots stay NULL\n(vec-get/set/push inline-only — LOW)"| SLAB
     HARV --> RING0B & STRB & MARB & INTB & FLTB
 
     RING0B --> PANIC

@@ -32,23 +32,23 @@ sequenceDiagram
         Eval->>PF: process_single_form -> process_cluster_once
         PF->>Exp: recognize_macro_head (single prelude_fallback recognition seam)
         Exp->>TC: resolve_with_fallback (prelude outer scope)
-        PF->>TC: check_forms (staging; commit-on-Ok)
+        PF->>TC: check_forms (staging#59; commit-on-Ok)
         PF->>Worker: inline_jit_codegen_for_module
-        Worker->>Worker: derive_codegen_batch (F-A: scans current table ONLY; no prelude_fallback)
+        Worker->>Worker: derive_codegen_batch (F-A: scans current table ONLY#59; no prelude_fallback)
         Worker->>BE: build_session_jit / compile_to_module (F-B: JIT exported-symbol fallback)
         Repl->>Repl: lookup_with_prelude_fallback (F-G: re-inlined in describe_symbol / format_eval_result_body)
     else batch / link
-        Sched->>PF: process_cluster (worker entry; SOLE Gap->scheduler crossing)
+        Sched->>PF: process_cluster (worker entry#59; SOLE Gap->scheduler crossing)
         PF->>FE: build_form / extract_module_declarations
         PF->>PF: drive_module_dep (single FQ-autoload drive seam)
         PF->>Worker: try_cache_hit_load (F-C: ~254-line, 9-phase god fn)
-        Worker->>BE: register_binary_exported_primitives -> dlsym (F-B: Linker has NO fallback; hand-rolled)
+        Worker->>BE: register_binary_exported_primitives -> dlsym (F-B: Linker has NO fallback#59; hand-rolled)
         Session->>BE: compile_module_object (F-D: ~174-line) -> .o / manifest
     end
 
-    Note over TC,Exp: Resolution seam is consolidated (resolve_terminal_entry_or_prelude in TC; recognize_macro_head in src/).
+    Note over TC,Exp: Resolution seam is consolidated (resolve_terminal_entry_or_prelude in TC#59; recognize_macro_head in src/).
     Note over Worker: F-A — codegen-BATCH derivation re-derives module scope WITHOUT the prelude outer scope -> DEF-1.
     Note over Worker,BE: F-B — host-extern resolution wired TWICE: JIT fallback vs cache/--link dlsym (DEF-6 / 0407 family). No parity guard.
-    Note over Session,PF: FIXME 0109 split landed: session_v4 5417->1428; eval/repl/process_form are the new homes (baseline F1/F2 resolved).
+    Note over Session,PF: FIXME 0109 split landed: session_v4 5417->1428#59; eval/repl/process_form are the new homes (baseline F1/F2 resolved).
     Note over Caller,Session: lib.rs now exposes 8 pub items, not 18 modules (baseline F5 resolved).
-    Note over Session: Worker orchestration still two-homed (priority loop worker-side; object/nice compile session-side) — baseline F4 improved, not eliminated.
+    Note over Session: Worker orchestration still two-homed (priority loop worker-side#59; object/nice compile session-side) — baseline F4 improved, not eliminated.

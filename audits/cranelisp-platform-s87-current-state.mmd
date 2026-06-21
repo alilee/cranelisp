@@ -2,7 +2,7 @@
 %% FRESH diagram — the named baseline audits/platform-2026-06-14.md carried NO diagram,
 %% so this is produced from zero (not a refresh of a predecessor .mmd). Extends the
 %% 2026-04-23 backend/frontend/src/typecheck precedent to the platform crate.
-%%
+%% .
 %% Reading guide: solid arrows = call / data flow; dashed = "must agree by construction".
 %% The RED dashed edges mark the lens-(vii) host-callback divergence (F2): two
 %% production HostCallbacks constructions in two crates with no shared builder — the
@@ -11,7 +11,7 @@
 
 flowchart TB
     subgraph DLL["Platform DLL author crate (out-of-tree, e.g. shapes / stdio)"]
-        EXT["extern \"C\" fns over CL* wrappers<br/>(rectangle_area, print_string, …)"]
+        EXT["extern &quot;C&quot; fns over CL* wrappers<br/>(rectangle_area, print_string, …)"]
         DECL["declare_platform! { … }"]
     end
 
@@ -85,9 +85,9 @@ flowchart TB
     HOSTCTX --> FALLBK
 
     %% === LENS (vii) HEADLINE: host-callback divergence (F2) ===
-    JIT     -->|HostCallbacks{ alloc, alloc_with_tag }| HAP
+    JIT     -->|"HostCallbacks{ alloc, alloc_with_tag }"| HAP
     JIT     --> AWT
-    LINKMODE -->|HostCallbacks{ alloc, alloc_with_tag }| HAP
+    LINKMODE -->|"HostCallbacks{ alloc, alloc_with_tag }"| HAP
     LINKMODE --> AWT
     TESTH   --> HAP
 

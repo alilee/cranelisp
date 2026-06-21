@@ -5,7 +5,7 @@
 %% backend/frontend/src/typecheck; cranelisp-types had only the S69 textual
 %% facade audit (design/arch/facades/types-audit-s69.md), no diagram. This is
 %% the first current-state diagram for the crate.
-%%
+%% .
 %% Reads: module structure + intra-crate dependency edges (crate:: refs) +
 %% the cross-crate consumers of the Type-rendering surface (Finding 1).
 
@@ -90,5 +90,4 @@ graph TD
     classDef rec fill:#e6f3ff,stroke:#0066cc,stroke-width:2px;
     class r1,r3,r4,r5,r6,interim finding;
     class r2 dead;
-    class consolidate,recrec;
     class consolidate rec;

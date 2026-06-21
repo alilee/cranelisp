@@ -10,13 +10,13 @@
 sequenceDiagram
     autonumber
     participant Caller as int workers / tests
-    participant CTM as lib.rs::compile_to_module&lt;M&gt; (sole PROD entry)
+    participant CTM as lib.rs::compile_to_module<M> (sole PROD entry)
     participant Impl as compile_to_module_impl
-    participant CDM as compile_defn_in_module ──&gt; FunctionArtifacts (F9)
+    participant CDM as compile_defn_in_module ──> FunctionArtifacts (F9)
     participant ISAo as cache::object::build_isa(is_pic)
     participant ISAj as jit.rs::build_isa() [is_pic=false hardcoded] (F1 dup)
-    participant Jit as Jit::new ──&gt; build_isa()  (PROD ISA path)
-    participant FC as compiler::FnCompiler&lt;M&gt;
+    participant Jit as Jit::new ──> build_isa()  (PROD ISA path)
+    participant FC as compiler::FnCompiler<M>
     participant RC as element_consuming_inc (shared predicate, Principle 7 OK)
     participant Vec as vec_codegen (vec-set vs vec-push RC SPLIT — F3)
     participant Intr as cranelisp-intrinsics vec_runtime (vec_set_copy inc's val)
@@ -42,7 +42,7 @@ sequenceDiagram
     end
 
     rect rgb(245,235,235)
-    note over Caller,Dead: DEAD-IN-PROD path (lens ii — F2; mirror of Wave-0 produce_disasm cleanup)
+    note over Caller,Dead: DEAD-IN-PROD path (lens ii — F2#59; mirror of Wave-0 produce_disasm cleanup)
     Caller-->>Dead: (no prod caller) Jit::compile_defn + build_compile_context
     Dead->>ISAj: build_isa()
     Dead->>FC: compile_body
@@ -57,4 +57,4 @@ sequenceDiagram
     Cache->>Linker: load_object (cache-hit)
     note over Cache: F7 — CacheMetadata "Wave 2b" envelope + got.rs/codegen_types.rs re-export shims still live
 
-    note over FC: heap classification single-source: HeapCategory::classify (heap.rs:438) &lt;- signature_heap_category (mod.rs:2032). No dup (sketch-HIGH NOT reintroduced).
+    note over FC: heap classification single-source: HeapCategory::classify (heap.rs:438) <- signature_heap_category (mod.rs:2032). No dup (sketch-HIGH NOT reintroduced).
