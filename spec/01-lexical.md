@@ -105,12 +105,14 @@ String literals are enclosed in double quotes. The following escape sequences ar
 
 ## 1.4 Symbols [Tested]
 
-### 1.4.1 Simple Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_simple_symbol]
+### 1.4.1 Simple Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_simple_symbol, Tested crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_arrow, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_arrow_minimal, crates/cranelisp-frontend/src/reader/tests.rs::test_parse_symbol_with_interior_le, tests/spec_05_definitions.rs::defn_name_with_arrow_in_symbol_parses]
 
 ```ebnf
-symbol       = symbol_start symbol_char*
-symbol_start = 'a'-'z' | 'A'-'Z' | '_'
-symbol_char  = 'a'-'z' | 'A'-'Z' | '0'-'9' | '_' | '-' | '?' | '!'
+symbol         = symbol_start (symbol_char | interior_op_run)*
+symbol_start   = 'a'-'z' | 'A'-'Z' | '_'
+symbol_char    = 'a'-'z' | 'A'-'Z' | '0'-'9' | '_' | '-' | '?' | '!'
+interior_op    = '+' | '*' | '=' | '<' | '>'
+interior_op_run = interior_op+ &symbol_char    (* absorbed only when followed by a symbol_char *)
 ```
 
 Symbols are identifiers. They start with a letter or underscore, followed by any combination of letters, digits, underscores, hyphens, question marks, and exclamation marks.
@@ -124,7 +126,21 @@ _private      ; underscore start
 Point         ; uppercase (typically types/constructors)
 ```
 
-### 1.4.2 Operator Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_operator_plus]
+**Interior operator characters.** A symbol that has already started (with `symbol_start`) MAY contain a run of operator characters from the set `interior_op` (`+ * = < >`) **when that run is immediately followed by another `symbol_char`** — the run is then *interior* to the symbol and absorbed into the token. A run of operator characters at the **end** of an identifier (a *trailing* run, with no following `symbol_char`) is NOT absorbed: it is left for the operator reader and tokenizes as a separate operator symbol (§1.4.2). The hyphen, `?`, and `!` are already `symbol_char` and need no special treatment; the qualifier `/` (§1.4.3) and the dot `.` (§1.4.4) are structurally significant and are NEVER absorbed as interior operator characters.
+
+```clojure
+char->digit   ; ONE symbol — the interior `->` run is followed by `digit`
+a->b          ; ONE symbol — minimal interior-operator form
+clamp<=hi     ; ONE symbol — interior `<=` run followed by `hi`
+(-> x f)      ; the head is the standalone `->` threading operator (§1.4.2),
+              ;   not a symbol — `->` has no following symbol_char
+a <= b        ; THREE tokens — `a`, the operator `<=`, and `b`
+foo ->        ; TWO tokens — symbol `foo` then the trailing operator `->`
+```
+
+A token whose FIRST character is an operator character is an operator symbol (§1.4.2), never a simple symbol — interior absorption applies only after a `symbol_start` has begun the token.
+
+### 1.4.2 Operator Symbols [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_operator_plus, Tested crates/cranelisp-frontend/src/reader/tests.rs::test_symbol_then_standalone_arrow_not_merged, crates/cranelisp-frontend/src/reader/tests.rs::test_threading_arrow_head_still_standalone]
 
 ```ebnf
 operator_symbol = operator_char+ !digit
@@ -132,6 +148,8 @@ operator_char   = '+' | '-' | '*' | '/' | '=' | '<' | '>'
 ```
 
 Operator symbols are sequences of operator characters. They MUST NOT be immediately followed by a digit — this prevents `-3` from being parsed as the operator `-` followed by `3`.
+
+An operator run is a *standalone* operator symbol whenever it is not interior to an alphabetic-started identifier (see §1.4.1) — i.e. when it does not directly follow a `symbol_start`-begun token body, or when it is a trailing run not followed by a `symbol_char`. Thus `->` in `(-> x f)` is the threading operator, `<=` in `a <= b` is the comparison operator, and the trailing `->` in `foo ->` is a separate operator token, even though the same characters appear interior to `char->digit` and `clamp<=hi`.
 
 ```clojure
 +             ; addition
