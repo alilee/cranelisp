@@ -1,5 +1,5 @@
-//! DEF-3 — the `vec-set` new-element consuming-inc decision, the
-//! opposite-direction mirror of DEF-2.
+//! DEF-3 / FIXME 0417 — the `vec-set` new-element consuming-inc decision, now
+//! FULLY SYMMETRIC with `vec-push` (DEF-2).
 //!
 //! Pins the seam where DEF-3 lived: `vec-set`'s inline-COW codegen (and the
 //! `vec_set_copy` runtime helper) inc'd the NEW element UNCONDITIONALLY.
@@ -10,11 +10,20 @@
 //! shared `element_consuming_inc` predicate (Principle 7): inc iff heap-typed
 //! Var — exactly the end state DEF-2 aligned vec-push to.
 //!
+//! FIXME 0417 completed the alignment: `compile_vec_set` now emits the
+//! consuming inc UP-FRONT (gated by `element_consuming_inc`), exactly as
+//! `compile_vec_push` does. BOTH the mutate-in-place and copy sub-paths store
+//! `new_val` with NO further inc; `vec_set_copy` no longer inc's the new value
+//! (it inc's only retained copied-over elements); the codegen compensation dec
+//! (`emit_vec_set_copy_temp_compensation`) is DELETED. One predicate, one
+//! division of labour — identical to vec-push. PAIRED-OR-UAF: the runtime inc
+//! drop and the compensation deletion land together (mis-pairing reintroduces
+//! FIXME 0296's use-after-free).
+//!
 //! This module pins the DECISION (`element_consuming_inc`, the same predicate
-//! both ops now consult). The COW codegen gates its inc on `Some(_)`; the
-//! copy path compensates a temporary's runtime over-inc when the decision is
-//! `None` on a heap element. The decision-table below is the single source of
-//! both behaviours.
+//! both ops now consult). The up-front codegen inc gates on `Some(_)`; the
+//! decision-table below is the single source of the inc-or-transfer behaviour
+//! for BOTH the COW and copy paths.
 use super::*;
 
 fn var(ty: ConcreteType) -> MonoExpr {
@@ -89,4 +98,42 @@ fn scalar_var_element_not_inc_neg() {
         None,
         "a NeverHeap (Int) Var element handed to vec-set MUST NOT be inc'd"
     );
+}
+
+// spec: spec/12-runtime.md §12.3.3 — FIXME 0417 ALIGNMENT GUARD: vec-set and
+// vec-push consult the SAME `element_consuming_inc` predicate, so for any
+// (element-expr, heap-category) the consuming-inc decision is IDENTICAL across
+// the two ops. This is the structural property the up-front-inc refactor
+// depends on: `compile_vec_set` and `compile_vec_push` both emit the inc
+// up-front gated by this one predicate; `vec_set_copy`/`vec_push_copy` both
+// skip the new value. Pin that the predicate yields one decision for both —
+// the single-source-of-truth (Principle 7) the FIXME established. (A drift
+// where vec-set diverged from vec-push is exactly the PAIRED-OR-UAF hazard.)
+#[test]
+fn vec_set_and_vec_push_share_one_consuming_inc_decision() {
+    let heap_var = var(ConcreteType::String);
+    let temp = MonoExpr::IntLit {
+        value: 7,
+        span: Span::SYNTHETIC,
+        ty: ConcreteType::Int,
+    };
+    let scalar_var = var(ConcreteType::Int);
+
+    // The predicate is the single source both ops read — same inputs ⇒ same
+    // decision, by construction. Cover the three discriminating cases: heap Var
+    // (inc), heap temporary (transfer/None), scalar Var (None). Each row is the
+    // value vec-set hoists AND the value vec-push hoists — they cannot diverge.
+    for (elem, category, expected) in [
+        (&heap_var, HeapCategory::AlwaysHeap, Some(HeapCategory::AlwaysHeap)),
+        (&heap_var, HeapCategory::Mixed, Some(HeapCategory::Mixed)),
+        (&temp, HeapCategory::AlwaysHeap, None),
+        (&scalar_var, HeapCategory::NeverHeap, None),
+    ] {
+        assert_eq!(
+            element_consuming_inc(elem, category),
+            expected,
+            "vec-set and vec-push MUST share one consuming-inc decision \
+             (FIXME 0417 single-source-of-truth) for category {category:?}"
+        );
+    }
 }

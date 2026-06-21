@@ -175,10 +175,20 @@ pub extern "C" fn vec_new(cap: i64) -> i64 {
 
 /// Vec set — copy path.
 ///
-/// Allocates a new Vec, copies all elements from the source (calling `elem_inc_fn`
-/// on each copied element for RC), and stores `val` at `idx`.
+/// Allocates a new Vec, copies all RETAINED elements from the source (calling
+/// `elem_inc_fn` on each copied-over element for RC), and stores `val` at `idx`.
 /// Does NOT dec the old element at `idx` — caller handles that.
 /// Returns base pointer to the new Vec (rc=1).
+///
+/// **Does NOT inc the new `val`** (FIXME 0417): the new element's consuming inc
+/// (heap-typed Var ⇒ inc; temporary ⇒ transfer) is emitted up-front in codegen
+/// by `compile_vec_set`, exactly as `vec_push_copy` leaves the appended `val`
+/// to the codegen-side inc. This is the single division of labour for the Vec
+/// element-write convention: codegen owns the new-element consuming inc, the
+/// runtime owns only the retained-element incs. (Prior to FIXME 0417 this helper
+/// inc'd `val` unconditionally and codegen compensated a temporary's over-inc
+/// with a dec — two opposite labour splits for one operation; PAIRED-OR-UAF if
+/// only one side changes — see FIXME 0296.)
 ///
 /// `elem_inc_fn`: function pointer `(i64) -> i64` for per-element RC inc.
 ///                Pass 0 (null) for NeverHeap element types.
@@ -196,28 +206,20 @@ pub extern "C" fn vec_set_copy(vec: i64, idx: i64, val: i64, elem_inc_fn: i64) -
         let new_base = heap_alloc_mod::alloc_with_rc(VEC_PAYLOAD_SIZE);
         let new_data = alloc_data_buffer(cap);
 
-        // Copy all elements, calling inc_fn on each.
+        // Copy all elements. Inc only the RETAINED copied-over elements; the new
+        // `val` at `idx` is stored WITHOUT an inc here — its consuming inc is
+        // emitted up-front in codegen (FIXME 0417, mirroring vec_push_copy).
         for i in 0..len as usize {
             let elem = *src_data.add(i);
             if i as i64 == idx {
-                // Store the new value at the target index.
+                // Store the new value at the target index. No inc — codegen owns
+                // the new-element consuming inc.
                 *new_data.add(i) = val;
             } else {
                 *new_data.add(i) = elem;
                 call_elem_fn(elem_inc_fn, elem);
             }
         }
-
-        // Inc the new value too: the returned Vec gains an owning reference to
-        // `val`, while the caller still holds its own reference (which the
-        // caller's scope cleanup will dec). Without this inc, a heap `val`
-        // consumed into the copied Vec is double-counted as one reference and
-        // freed prematurely when the caller dec's its copy — a use-after-free
-        // surfacing as garbage reads on a later access (Sprint 77 W-Exemplar /
-        // FIXME 0296). This mirrors the COW mutate-in-place codegen path, which
-        // inc's new_val before storing it (`compile_vec_set_cow`). NeverHeap
-        // elements pass `elem_inc_fn == 0`, so `call_elem_fn` is a no-op.
-        call_elem_fn(elem_inc_fn, val);
 
         write_len(new_base, len);
         write_cap(new_base, cap);

@@ -44,7 +44,7 @@ where
             .module
             .declare_function(name, Linkage::Import, &sig)
             .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare extern '{name}': {e}"),
+                message: format!("failed to declare extern function '{name}': {e}"),
                 location: ErrorLocation::from_span(span),
             })?;
 

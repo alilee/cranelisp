@@ -206,17 +206,34 @@ fn test_vec_set_copy_calls_inc_fn() {
     vec_drop(v2, 0);
 }
 
-// spec: 12-runtime §12.3.2 — vec-set copy also inc's the NEW value
+// spec: 12-runtime §12.3.2 — vec-set copy does NOT inc the NEW value (FIXME 0417)
 //
-// Regression for Sprint 77 W-Exemplar / FIXME 0296: the copied Vec gains an
-// owning reference to the replacement value, so `vec-set-copy` MUST inc it.
-// Without this inc, a heap value consumed into the copied Vec while the
-// caller still owns its own reference (and dec's it at scope exit) is freed
-// prematurely — a use-after-free that surfaced as the Sudoku-solver runtime
-// stack overflow (garbage cell value → unbounded `pow2` recursion).
+// PAIRED-OR-UAF guard (FIXME 0417). `vec_set_copy` inc's ONLY the retained
+// copied-over elements; the new `val` stored at `idx` is left to the codegen-
+// side consuming inc emitted up-front in `compile_vec_set` (mirroring
+// `vec_push_copy`, which likewise does not inc the appended `val`). This pins
+// the runtime half of the labour split: the helper must fire inc EXACTLY ONCE
+// PER RETAINED ELEMENT and ZERO TIMES for the new value.
+//
+// The earlier behaviour — `vec_set_copy` inc'ing `val` unconditionally + a
+// codegen compensation dec for temporaries — was the asymmetry FIXME 0417
+// removed. Reintroducing the unconditional inc here WITHOUT restoring the
+// codegen compensation (or vice-versa) is a use-after-free regression of
+// FIXME 0296 — hence this test asserts the EXACT retained-only inc count.
+//
+// Isolate from the parallel-shared counter by using a thread-local count: we
+// need an EXACT == assertion (not the delta >= used elsewhere) to prove the new
+// value is NOT inc'd. A dedicated single-shot inc fn with its own counter gives
+// a contention-free exact count.
 #[test]
-fn test_vec_set_copy_incs_new_value() {
-    let before = INC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+fn test_vec_set_copy_does_not_inc_new_value() {
+    // Dedicated, contention-free counter for an EXACT-count assertion.
+    static LOCAL_INC_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    extern "C" fn local_inc(val: i64) -> i64 {
+        LOCAL_INC_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        val
+    }
 
     let v = vec_new(3);
     unsafe {
@@ -227,17 +244,24 @@ fn test_vec_set_copy_incs_new_value() {
         write_len(v as *mut u8, 3);
     }
 
-    let inc_fn_ptr = test_inc_fn as extern "C" fn(i64) -> i64;
+    LOCAL_INC_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    let inc_fn_ptr = local_inc as extern "C" fn(i64) -> i64;
     let v2 = vec_set_copy(v, 1, 99, inc_fn_ptr as usize as i64);
 
-    // inc_fn must fire for the two retained elements (indices 0, 2) AND for
-    // the new value (99) stored at index 1: three incs total.
-    let after = INC_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-    assert!(
-        after - before >= 3,
-        "expected >=3 incs (2 retained + 1 new value), got {}",
-        after - before
+    // EXACTLY 2 incs: the two RETAINED elements (indices 0, 2). The new value
+    // (99 at index 1) MUST NOT be inc'd — codegen owns its consuming inc.
+    let count = LOCAL_INC_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        count, 2,
+        "vec_set_copy must inc EXACTLY the 2 retained elements and NOT the new \
+         value (FIXME 0417); got {count} incs"
     );
+
+    // Confirm the new value landed correctly regardless of RC.
+    unsafe {
+        let data = read_data_ptr(v2 as *const u8);
+        assert_eq!(*data.add(1), 99);
+    }
 
     vec_drop(v, 0);
     vec_drop(v2, 0);

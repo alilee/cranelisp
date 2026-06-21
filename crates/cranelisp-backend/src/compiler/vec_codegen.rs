@@ -21,17 +21,16 @@ use super::{collect_var_ids_from_type, signature_heap_category, substitute_type_
 
 /// The new-element descriptor threaded through `vec-set` codegen (COW path).
 ///
-/// Bundles the four element-related parameters so the per-path helpers stay
-/// under the argument-count budget: the value to store, the per-element-type RC
-/// inc function pointer (for the runtime copy helper), the Vec's element type
-/// (for old-element dec + heap-category lookups), and the shared
-/// `element_consuming_inc` decision (`Some` ⇒ heap-typed Var ⇒ inc; `None` ⇒
-/// temporary/scalar ⇒ transfer).
+/// Bundles the element-related parameters so the per-path helpers stay under the
+/// argument-count budget: the value to store, the per-element-type RC inc
+/// function pointer (for the runtime copy helper's retained-element incs), and
+/// the Vec's element type (for old-element dec + heap-category lookups). The
+/// new-element consuming inc is emitted up-front in `compile_vec_set` (gated by
+/// `element_consuming_inc`, mirroring vec-push) — it is NOT carried here.
 struct VecSetElem<'t> {
     new_val: Value,
     inc_fn_ptr: Value,
     elem_type: &'t Option<Type>,
-    consuming_inc: Option<HeapCategory>,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -227,12 +226,20 @@ where
     ///
     /// arg_vals: [vec_val, idx_val, new_val]
     ///
-    /// DEF-3: the new element follows the same consuming-Var rule as `vec-push`
-    /// (DEF-2) — the Vec gains a reference iff the element is a heap-typed **Var**
-    /// (still owned by the enclosing scope, which dec's it at scope exit). A
-    /// **temporary** element transfers its rc=1 reference into the Vec and MUST
-    /// NOT be inc'd. The prior code inc'd unconditionally on both the inline-COW
-    /// and `vec_set_copy` paths, leaking a temporary heap element by one ref.
+    /// DEF-3 (FIXME 0417 — symmetric with `vec-push` / DEF-2): the new element
+    /// follows the same consuming-Var rule as `vec-push` — the Vec gains a
+    /// reference iff the element is a heap-typed **Var** (still owned by the
+    /// enclosing scope, which dec's it at scope exit). A **temporary** element
+    /// transfers its rc=1 reference into the Vec and MUST NOT be inc'd.
+    ///
+    /// The consuming inc is emitted **up-front in codegen** (gated by the shared
+    /// `element_consuming_inc` predicate), exactly as `compile_vec_push` does —
+    /// `vec_set_copy` does NOT inc the new `val` (it inc's only retained
+    /// copied-over elements). This is the single division of labour: codegen
+    /// owns the new-element consuming inc, the runtime owns the retained-element
+    /// incs. (Prior to FIXME 0417 the COW path gated the inc here while the copy
+    /// path relied on the runtime's unconditional inc + a codegen compensation
+    /// dec — two opposite labour splits for one operation, now unified.)
     fn compile_vec_set(
         &mut self,
         vec_expr: &MonoExpr,
@@ -247,14 +254,26 @@ where
         let elem_type = self.vec_elem_type(vec_expr);
         let inc_fn_ptr = self.resolve_elem_inc_fn_ptr(&elem_type, span)?;
 
-        // Decide the consuming-inc form for the new element (shared with
-        // vec-push via `element_consuming_inc` — Principle 7). `Some(category)`
-        // ⇒ heap-typed Var ⇒ the Vec gains a reference. `None` ⇒ temporary or
-        // scalar ⇒ ownership transfers, no inc.
-        let consuming_inc = elem_type.as_ref().and_then(|ty| {
-            let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-            element_consuming_inc(elem_arg, category)
-        });
+        // Consuming inc for the new element, emitted up-front (mirrors
+        // compile_vec_push). A heap-typed Var element forwarded into vec-set
+        // (e.g. `c` in `(vec-set (cells-of g) idx c)`) is still owned by its
+        // enclosing scope, which dec's it at scope exit; the Vec also stores a
+        // reference. Without a caller-side inc the two race against the SAME
+        // single reference. A temporary element transfers its rc=1 reference
+        // into the Vec — no inc. Gated by the shared `element_consuming_inc`
+        // decision (Principle 7), identical to vec-push (DEF-2).
+        if let Some(elem_ty) = &elem_type {
+            let category = signature_heap_category(elem_ty, Some(self.ctx.symbol_tables));
+            match element_consuming_inc(elem_arg, category) {
+                Some(HeapCategory::AlwaysHeap) => {
+                    heap::emit_rc_inc(&mut self.builder, new_val);
+                }
+                Some(HeapCategory::Mixed) => {
+                    emit_guarded_rc_inc(&mut self.builder, new_val);
+                }
+                Some(HeapCategory::NeverHeap) | None => {}
+            }
+        }
 
         // Check if vec is at last use (compile-time).
         let is_last = self.is_vec_last_use(vec_expr);
@@ -265,26 +284,25 @@ where
                 new_val,
                 inc_fn_ptr,
                 elem_type: &elem_type,
-                consuming_inc,
             };
             self.compile_vec_set_cow(vec_val, idx_val, elem, span)
         } else {
-            // Copy path (non-last-use Vec): call vec-set-copy extern (which inc's
-            // `new_val` unconditionally), then compensate a temporary's over-inc.
-            let result = self.emit_extern_call(
+            // Copy path (non-last-use Vec): call vec-set-copy extern. The runtime
+            // inc's only the retained copied-over elements; the new `val`'s
+            // consuming inc was already emitted up-front above.
+            self.emit_extern_call(
                 "vec-set-copy", &[vec_val, idx_val, new_val, inc_fn_ptr], span,
-            )?;
-            self.emit_vec_set_copy_temp_compensation(new_val, &elem_type, consuming_inc, span);
-            Ok(result)
+            )
         }
     }
 
     /// Compile vec-set COW inline path with runtime RC check fallback to copy.
     ///
     /// `elem` bundles the new-element descriptor (value, per-element inc fn
-    /// pointer, Vec element type, and the shared `element_consuming_inc`
-    /// decision — `Some` for a heap-typed Var element ⇒ the Vec gains a
-    /// reference; `None` for a temporary or scalar ⇒ ownership transfers, no inc).
+    /// pointer for the runtime copy helper's retained-element incs, and Vec
+    /// element type). The new-element consuming inc was already emitted up-front
+    /// in `compile_vec_set` (mirroring vec-push) — both the mutate-in-place and
+    /// copy sub-paths below store `new_val` WITHOUT an additional inc.
     fn compile_vec_set_cow(
         &mut self,
         vec_val: Value,
@@ -296,7 +314,6 @@ where
             new_val,
             inc_fn_ptr,
             elem_type,
-            consuming_inc,
         } = elem;
         let dealloc_id = self.ctx.dealloc_func_id;
 
@@ -363,20 +380,9 @@ where
             }
         }
 
-        // DEF-3: inc the new value ONLY for a heap-typed Var element — the Vec
-        // gains a reference while the Var stays owned by its enclosing scope. A
-        // temporary element transfers its rc=1 reference into the Vec (no inc);
-        // the prior unconditional inc leaked the temporary. Gated by the shared
-        // `element_consuming_inc` decision (mirrors vec-push / DEF-2).
-        match consuming_inc {
-            Some(HeapCategory::AlwaysHeap) => {
-                heap::emit_rc_inc(&mut self.builder, new_val);
-            }
-            Some(HeapCategory::Mixed) => {
-                emit_guarded_rc_inc(&mut self.builder, new_val);
-            }
-            Some(HeapCategory::NeverHeap) | None => {}
-        }
+        // The new-element consuming inc (heap-typed Var ⇒ inc; temporary ⇒
+        // transfer) was emitted up-front in `compile_vec_set` (mirrors
+        // vec-push). Store the value directly — no inc here.
 
         // Store new value.
         self.builder
@@ -385,72 +391,20 @@ where
 
         self.builder.ins().jump(merge_block, &[vec_val]);
 
-        // Copy path: call vec-set-copy extern (runtime inc's `new_val`
-        // unconditionally), then compensate for a temporary heap element.
+        // Copy path: call vec-set-copy extern. The runtime inc's only the
+        // retained copied-over elements; the new `val`'s consuming inc was
+        // emitted up-front in `compile_vec_set`.
         self.builder.switch_to_block(copy_block);
         self.builder.seal_block(copy_block);
         let copy_result = self.emit_extern_call(
             "vec-set-copy", &[vec_val, idx_val, new_val, inc_fn_ptr], span,
         )?;
-        self.emit_vec_set_copy_temp_compensation(new_val, elem_type, consuming_inc, span);
         self.builder.ins().jump(merge_block, &[copy_result]);
 
         // Merge.
         self.builder.switch_to_block(merge_block);
         self.builder.seal_block(merge_block);
         Ok(self.builder.block_params(merge_block)[0])
-    }
-
-    /// DEF-3 copy-path compensation. `vec_set_copy` (the runtime helper) inc's
-    /// `new_val` UNCONDITIONALLY — correct for a heap-typed Var element (the Vec
-    /// gains a reference while the Var stays live), but a one-reference LEAK for a
-    /// temporary heap element (which already transfers its rc=1 reference into the
-    /// copied Vec). Since the runtime cannot distinguish the two (it is a
-    /// compile-time / last-use property), the codegen compensates: for a heap
-    /// element whose `element_consuming_inc` decision was `None` (i.e. a temporary,
-    /// not a Var), emit a dec on `new_val` to cancel the runtime's extra inc. For a
-    /// Var element the runtime inc is correct and no compensation is emitted; for a
-    /// scalar element the runtime receives `inc_fn_ptr == 0` and never inc's, so no
-    /// compensation is needed either.
-    ///
-    /// This is the copy-path mirror of the COW path's gated inc — both end at "inc
-    /// iff heap-typed Var", matching vec-push (DEF-2).
-    fn emit_vec_set_copy_temp_compensation(
-        &mut self,
-        new_val: Value,
-        elem_type: &Option<Type>,
-        consuming_inc: Option<HeapCategory>,
-        _span: Span,
-    ) {
-        // Only a temporary (consuming_inc == None) heap element is over-inc'd.
-        if consuming_inc.is_some() {
-            return;
-        }
-        // Determine the element's heap category from the Vec element type.
-        // `None` means the element type is unknown (assume NeverHeap → the
-        // runtime received `inc_fn_ptr == 0` and never inc'd, so nothing to
-        // compensate).
-        let category = match elem_type {
-            Some(ty) => signature_heap_category(ty, Some(self.ctx.symbol_tables)),
-            None => return,
-        };
-        let dealloc_id = self.ctx.dealloc_func_id;
-        match category {
-            HeapCategory::AlwaysHeap => {
-                heap::emit_rc_dec(&mut self.builder, self.module, new_val, dealloc_id, None);
-            }
-            HeapCategory::Mixed => {
-                heap::emit_rc_dec_guarded(
-                    &mut self.builder,
-                    self.module,
-                    new_val,
-                    dealloc_id,
-                    None,
-                    true,
-                );
-            }
-            HeapCategory::NeverHeap => {}
-        }
     }
 
     /// Compile `vec-push`: COW inline + extern fallback.
