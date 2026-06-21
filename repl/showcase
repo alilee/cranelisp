@@ -2,9 +2,11 @@
 """Showcase the Cranelisp REPL experience.
 
 Usage:
-    ./repl/showcase ring0          # build + play the Ring 0 demo
-    ./repl/showcase ring1          # build + play the Ring 1 demo
-    ./repl/showcase --list         # list available demos
+    ./repl/showcase tour           # build + play the tour demo (bare name)
+    ./repl/showcase 01-tour        # same demo, full numbered name
+    ./repl/showcase sudoku         # build + play the Sudoku demo
+    ./repl/showcase ring4s         # build + play an archived guard
+    ./repl/showcase --list         # list the active set (guided order) + guards
 
 Delegates to demo-player.py for live PTY-based playback. The showcase
 handles building the binary, setting up the environment, creating the
@@ -53,13 +55,34 @@ def _print_demo_row(path):
     print(f"  {path.stem:20s} {DIM}{_first_comment(path)}{RESET}")
 
 
+def resolve_active(demo_name):
+    """Resolve a demo name against the active set.
+
+    Active demos are numbered (NN-name.demo) so the alphabetical sort
+    coincides with the pedagogical order. A viewer may invoke either the
+    full numbered stem (01-tour) or the bare name (tour) — both resolve to
+    the same file. Returns the path or None.
+    """
+    # Exact stem match first (full numbered name, e.g. 01-tour).
+    exact = DEMOS_DIR / f"{demo_name}.demo"
+    if exact.exists():
+        return exact
+    # Bare-name match: strip the NN- prefix and compare the suffix.
+    for d in sorted(DEMOS_DIR.glob("*.demo")):
+        stem = d.stem
+        suffix = stem.split("-", 1)[1] if stem[:2].isdigit() and "-" in stem else stem
+        if suffix == demo_name:
+            return d
+    return None
+
+
 def list_demos():
     active = sorted(DEMOS_DIR.glob("*.demo"))
     archived = sorted((DEMOS_DIR / "archive").glob("**/*.demo"))
     if not active and not archived:
         print("No demos found.")
         return
-    print(f"{BOLD}Available demos:{RESET}")
+    print(f"{BOLD}Guided order (watch top-to-bottom):{RESET}")
     for d in active:
         _print_demo_row(d)
     if archived:
@@ -138,7 +161,8 @@ def main():
 
     if not args or "--help" in args or "-h" in args:
         print("Usage: ./repl/showcase [--list] <demo-name>")
-        print("       ./repl/showcase ring0")
+        print("       ./repl/showcase tour        # bare name, or 01-tour")
+        print("       ./repl/showcase sudoku")
         print("       ./repl/showcase --list")
         sys.exit(0)
 
@@ -147,9 +171,10 @@ def main():
         sys.exit(0)
 
     demo_name = args[0]
-    # Resolve active path first, then fall back to the archive/ guards.
-    demo_path = DEMOS_DIR / f"{demo_name}.demo"
-    if not demo_path.exists():
+    # Resolve against the active set first (full numbered name OR bare name —
+    # `01-tour` and `tour` both resolve), then fall back to the archive/ guards.
+    demo_path = resolve_active(demo_name)
+    if demo_path is None:
         archived = DEMOS_DIR / "archive" / f"{demo_name}.demo"
         if archived.exists():
             demo_path = archived

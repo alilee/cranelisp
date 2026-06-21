@@ -23,18 +23,24 @@ Eight capability-named demos, each self-contained, each replaying green against
 the prebuilt binary. They consume the **curated surface** (see below) — the same
 idiomatic surface the exemplar uses.
 
+The files are **numbered `NN-name`** (matching the `examples/` convention) so the
+alphabetical `--list` sort coincides with the pedagogical order — watch them
+top-to-bottom for the guided introduction. The number is a sequencing affordance
+only: `./repl/showcase tour` (bare name) resolves to `01-tour.demo` just as
+`./repl/showcase 01-tour` does.
+
 | File | Demonstrates |
 |------|--------------|
-| `tour.demo` | A five-minute tour: the read-eval loop, literals + types, operators, defn, type errors caught, recursion, `show`/`str`. |
-| `values-and-types.demo` | Inference; trait operators across Int/Float; `show`/`str`; Vecs; import-on-demand collection verbs; one polymorphic definition over many types. |
-| `adts-and-matching.demo` | `deftype` enums and field-carrying variants; `match`; `Option`/`Result`; recursive types; the Sudoku `Cell` in miniature. |
-| `functions.demo` | `defn`/`fn`; closures; higher-order functions; `compose`; threading (`->`/`->>`); accumulator recursion. |
-| `traits.demo` | Operators as trait methods; inferred trait bounds; `deftrait`/`impl`; constrained polymorphism over a user trait. |
-| `modules.demo` | `/imports`; import-on-demand; fully-qualified origins; unbound-name discoverability; how the exemplar's modules fit together. |
-| `io-and-effects.demo` | `(IO a)` values; `platform stdio`/`print`; `do`/`bind!` sequencing; `Pure`/`bind`; effects in control flow; the exemplar's main shape. |
-| `sudoku.demo` | The centerpiece: ADT domain types, grid geometry, a backtracking solver, formatted output, and a single `print` effect — a 4×4 sibling of `exemplar/user.cl`. |
+| `01-tour.demo` | A five-minute tour: the read-eval loop, literals + types, operators, defn, type errors caught, recursion, `show`/`str`. |
+| `02-values-and-types.demo` | Inference; trait operators across Int/Float; `show`/`str`; Vecs; import-on-demand collection verbs; one polymorphic definition over many types. |
+| `03-adts-and-matching.demo` | `deftype` enums and field-carrying variants; `match`; `Option`/`Result`; recursive types; the Sudoku `Cell` in miniature. |
+| `04-functions.demo` | `defn`/`fn`; closures; higher-order functions; `compose`; threading (`->`/`->>`); accumulator recursion. |
+| `05-traits.demo` | Operators as trait methods; inferred trait bounds; `deftrait`/`impl`; constrained polymorphism over a user trait. |
+| `06-modules.demo` | `/imports`; import-on-demand; fully-qualified origins; unbound-name discoverability; how the exemplar's modules fit together. |
+| `07-io-and-effects.demo` | `(IO a)` values; `platform stdio`/`print`; `do`/`bind!` sequencing; `Pure`/`bind`; effects in control flow; the exemplar's main shape. |
+| `08-sudoku.demo` | The centerpiece: ADT domain types, grid geometry, a backtracking solver, formatted output, and a single `print` effect — a 4×4 sibling of `exemplar/user.cl`. |
 
-The arc deliberately ends at `sudoku.demo`, which reuses every concept the prior
+The arc deliberately ends at `08-sudoku.demo`, which reuses every concept the prior
 demos introduced.
 
 ## The archive (regression guards)
@@ -112,13 +118,17 @@ The top-level `showcase` script builds the binary and delegates to
 ./repl/showcase --list          # list the active set + the archived guards
 ```
 
-`showcase` resolves a name as `demos/<name>.demo` first, then falls back to
-`demos/archive/<name>.demo`. `--list` presents the active set and an "Archived
+`showcase` resolves a name against the active set first, then falls back to
+`demos/archive/<name>.demo`. Active-set resolution accepts **either** the full
+numbered stem (`01-tour`) **or** the bare name (`tour`) — a bare name matches by
+stripping the `NN-` prefix off each active stem, so the muscle-memory invocation
+keeps working. `--list` presents the active set under a "Guided order" heading
+(numbered, so the listed order is the pedagogical order) and an "Archived
 (regression guards)" section. `demo-player.py` replays any path directly:
 
 ```bash
 DEMO_FAST=1 CRANELISP_LIB=$PWD/stdlib CRANELISP_PLATFORM_PATH=$PWD/target/debug \
-  python3 repl/demos/demo-player.py repl/demos/sudoku.demo $PWD/target/debug/cranelisp
+  python3 repl/demos/demo-player.py repl/demos/08-sudoku.demo $PWD/target/debug/cranelisp
 ```
 
 ### Live PTY playback — no filtering
@@ -160,7 +170,7 @@ git-ignored.
   up each section. The self-documenting REPL is itself a feature on display.
 - **Build toward Sudoku.** Where a capability maps onto the solver, point at it
   (the `Cell` ADT, the accumulator-recursion board formatter, the main effect
-  shape). `sudoku.demo` then pays off the whole arc.
+  shape). `08-sudoku.demo` then pays off the whole arc.
 - Each demo is self-contained — it does not depend on a prior demo's session.
 - End with something that combines the concepts and feels complete.
 - Consume the curated surface (above). Don't reach for raw `*-i64`/`str-eq`/`vec-*`
