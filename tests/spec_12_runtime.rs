@@ -1997,3 +1997,89 @@ fn vec_push_heap_element_borrowed_recursive_source_no_uaf_run() {
         .output()
         .assert_exit(6);
 }
+
+// spec: spec/12-runtime.md §12.3.3 / §12.1.5 — vec-SET mirror of the vec-push
+// borrowed-recursive heap-element no-UAF guard above. FIXME 0417 aligned
+// vec-set's RC convention with vec-push: the new heap element is inc'd up-front
+// in codegen (the inc-then-compensate dance removed). This pins the no-UAF
+// property for vec-set with a HEAP TEMPORARY element ("zz") replaced into a
+// borrowed Vec `v` on every recursive iteration — `v` is read-shared across the
+// recursion, so a mis-counted set-element copy would free a still-borrowed heap
+// cell. GREEN today (0417 landed + is correct): 2 iterations × str-len "zz" = 4.
+// A RED here is a 0417 regression. → /backend (vec-set heap-element consuming-inc
+// symmetry; `vec_codegen.rs` / `vec_runtime.rs` `vec_set_copy`).
+#[test]
+fn vec_set_heap_element_borrowed_recursive_source_no_uaf() {
+    repl_prims(
+        "(defn loop [v n acc] \
+           (if (le-i64 n 0) acc \
+             (loop v (sub-i64 n 1) \
+               (add-i64 acc (str-len (vec-get (vec-set v 0 \"zz\") 0))))))\n\
+         (loop [\"aaa\"] 2 0)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 4");
+}
+
+// spec: spec/12-runtime.md §12.3.3 / §12.1.5 — same vec-set DEF-3/0417 no-UAF
+// property, observed END-TO-END through `--run` (the form above is REPL). A
+// mode-crossing guard: a use-after-free aborts the process, so the `--run` exit
+// code is the witness — exit 4 when correct, SIGSEGV (139) on a 0417 regression.
+// Mode parity matters because `--run` (JIT) and the REPL share the codegen but
+// the e2e path proves the no-UAF property is not a REPL-session artifact.
+// GREEN today. → /backend (same fix surface as the REPL form above).
+#[test]
+fn vec_set_heap_element_borrowed_recursive_source_no_uaf_run() {
+    Cranelisp::new()
+        .file(
+            "user.cl",
+            "(import [primitives [vec-set vec-get str-len add-i64 sub-i64 le-i64 Pure]])\n\
+             (defn loop [v n acc] \
+               (if (le-i64 n 0) acc \
+                 (loop v (sub-i64 n 1) \
+                   (add-i64 acc (str-len (vec-get (vec-set v 0 \"zz\") 0))))))\n\
+             (defn main [] (Pure (loop [\"aaa\"] 2 0)))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(4);
+}
+
+// spec: spec/12-runtime.md §12.3.3 / §12.1.5 — vec-set no-UAF for a heap VAR
+// element (the CONSUMING-INC case, distinct from the temporary above). A
+// `String` `s` is threaded through the recursion and `vec-set` into a borrowed
+// Vec `v` on every iteration: `s` is a live Var with its own reference, so the
+// set-element path must INC it (consuming a borrowed binding, not transferring a
+// sole reference) — under-counting frees `s` while the loop still reads it
+// (UAF); over-counting leaks. FIXME 0417's up-front-inc convention covers both.
+// GREEN today: 3 iterations, final read-back is the threaded "bbbb" → str-len 4.
+// A RED here is a 0417 regression on the Var/consuming-inc face. → /backend.
+#[test]
+fn vec_set_heap_var_element_borrowed_recursive_source_no_uaf() {
+    repl_prims(
+        "(defn loop [v s n] \
+           (if (le-i64 n 0) (str-len (vec-get v 0)) \
+             (loop (vec-set v 0 s) s (sub-i64 n 1))))\n\
+         (loop [\"aaa\"] \"bbbb\" 3)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 4");
+}
+
+// spec: spec/12-runtime.md §12.3.3 / §12.1.5 — the heap-VAR vec-set no-UAF guard
+// observed END-TO-END through `--run`. Exit 4 when correct (consuming-inc of the
+// threaded `String` Var balances), SIGSEGV (139) on a 0417 regression. GREEN
+// today. → /backend (same fix surface as the REPL form above).
+#[test]
+fn vec_set_heap_var_element_borrowed_recursive_source_no_uaf_run() {
+    Cranelisp::new()
+        .file(
+            "user.cl",
+            "(import [primitives [vec-set vec-get str-len sub-i64 le-i64 Pure]])\n\
+             (defn loop [v s n] \
+               (if (le-i64 n 0) (str-len (vec-get v 0)) \
+                 (loop (vec-set v 0 s) s (sub-i64 n 1))))\n\
+             (defn main [] (Pure (loop [\"aaa\"] \"bbbb\" 3)))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(4);
+}
