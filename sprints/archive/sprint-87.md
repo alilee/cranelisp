@@ -1,6 +1,6 @@
 # Sprint 87: Green-and-Clear → Deep Per-Crate Audit
 
-**Status**: PHASE 4 WAVE ORG (complete) — ready for PHASE 5 LANGUAGE (ACTIVE)
+**Status**: COMPLETE (closed 2026-06-21)
 
 **Goal**: First return the suite to fully green and triage the FIXME store; then run a fresh-view per-crate audit of the 6 crate-shaped surfaces against their prior-audit baselines, producing a prioritized pre-Phase-H consolidation/simplification backlog and a scope-decision gate; and roll out the de-risked stdlib self-test + bare-verb promotion, informed by an exemplar-driven stdlib-adequacy review.
 
@@ -305,7 +305,14 @@ _C.2 (1d) is source-editing — it must not run concurrently with Wave-0 `/dev` 
   - **5e DONE** (`design/typecheck/s87-traits-decomposition.md`, HIGH-RISK): `traits.rs` 2824→63-line hub + 5 submodules; `monomorphise_call`→8 phases (P4 subst isolation preserved, 0344 guard intact); bulk-scan dedup (`find_trait_method_decl<R>`, HKT-vs-bool distinction preserved); D-default helpers kept with resolver; typecheck 435/435, workspace 2846/0/0, **public-api byte-identical**, `mod traits` still private.
   - **WAVE 5 COMPLETE** — all 5 modules decomposed, behavior-preserving, suite green throughout. Deferred: `emit_extern_call_*` ladder dedup (vec_codegen/control_flow, separate S-task); src-side prelude-fallback dedup (repl.rs 2 sites, with the root-tier `root:bool` subtlety).
   - **/review of Wave-5 decompositions: batched to close** (each /dev self-verified green + public-api-identical + equivalence-checked; consolidated coherence review pending).
-- **Remaining hygiene:** emit_extern_call dedup; src-side prelude-fallback dedup; consolidation FIXMEs 0417 (vec RC — latent) + 0420 (FQ-walk → types); cheap kind-A FIXMEs 0406/0409/0415; consolidated Wave-5 /review.
+- **Remaining hygiene — DONE (committed in logical groups, suite 2865/0/0):** emit_extern_call dedup + src prelude-fallback dedup (`80b16f0`); 0420 FQ-walk → `render_type` (`bb39c26`); 0406 friendly --link rejection (`cb76f85`); 0409 demo numbering (`54d9746`); 0415 symbol-layout formatter — was never implemented, now is + 10 tests (`89d1d69`); resolved-FIXME cleanup 0415/0420 (`252fa37`); 0416-as-stdlib `num.bits` module (`2ad315a`); 0421 lexical-grammar reconcile (`ae2b337`). Consolidated Wave-5 /review: running.
+- **DEFERRALS (documented; FIXMEs remain open, status=deferred):**
+  - **0417** (vec RC alignment) — **not repro'd** (repro pass: correct-as-shipped, latent only); paired-UAF-risk; deferred (revisit only if it reproduces). User-confirmed 2026-06-21.
+  - **0416** (bit-* compiler intrinsics) — deferred to a future perf-driven feature decision; **stdlib `num.bits` covers the need now** (user: "should be in stdlib for now").
+  - **0419** (shared HostCallbacks builder) + **0407** (Model-B closure-callback) — **Phase H** (user: host-callback "definitely Phase H if we even go that way"); the concurrency direction (B vs C) is a Phase-H decision.
+  - **0408** (Sudoku parallel-search showcase) — follows the concurrency direction → Phase-H arc.
+  - **0410** (Cranelisp.toml scaffold) — gated on a `/spec §8.11.4` ruling (present-file-fully-replaces footgun); deferred.
+  - **Phase-H carries:** 0050 (display protocol / List-Seq pretty-printer), 0052 (/learn), 0365 (Type.member accessor).
 - **⚠ LARGE UNCOMMITTED TREE:** entire sprint (defects + ~32.5k LOC test extraction across 8 crates + 5 module decompositions) is uncommitted working-tree state. Suite green (2846/0/0) + per-crate public-api byte-identical. Checkpoint commit advisable (pending user — no commit without request).
 
 **SCOPE EXPANSION → FULL HYGIENE SPRINT (user, 2026-06-21).** "This is a hygiene sprint so we now want to address all those points." S87 expands from audit-only to **execute the maintainability backlog in-sprint**:
@@ -361,4 +368,31 @@ _C.2 (1d) is source-editing — it must not run concurrently with Wave-0 `/dev` 
 
 ## Outcome (Phase 7)
 
-_Pending close._
+**Final gate:** `cargo nextest run --workspace` = **2870 passed / 0 failed / 0 skipped** (S86 close was 2829/2825 + 4 intentional guards; S87 ends at **0 intentional reds**, +41 net new tests). Committed in logical groups on `main` (checkpoint `66a4d41` → close); **not pushed**.
+
+### Delivered
+- **Stage A — green-and-clear:** 4 Stage-A guards fixed (`/disasm` on-demand wiring, `/info` clause-count, FQ type-error naming ×2); dead-disasm machinery removed (`symbol_disasm`/`Introspection.disasm` + PIF row, 0418); FIXME store triaged (0405/0412/0413/0414 resolved).
+- **Stage B — deep audit (the chartered centerpiece):** LOC pre-pass (`audits/loc-s87.md`, R5c test-split rerank), 8 per-crate fresh-view passes (`audits/{crate}-s87.md` + `.mmd`), maintainability deep-pass (`audits/s87-maintainability.md`), /arch synthesis (`audits/s87-findings.md`), clear-all-FIXMEs assessment (`audits/s87-clear-all-fixmes.md`). **A user-directed repro pass corrected the audit:** of ~80 findings + the synthesis's "must-fix B1", only **3 were real reproducible defects** (B1/DEF-1/simple-conj/vec_set-uniformity/D-regen did NOT reproduce). **SVGs rendered (all 8, committed `531500f`)** — required clearing snap-chromium AppArmor confinement (relocate mermaid-cli to a non-hidden path + snap-writable profile + `cli.js` entry) + mermaid-v11 syntax fixes in 6 `.mmd` (meaning preserved); `.mmd` + `.svg` committed.
+- **Defects (3 real, repro-verified, fixed in-sprint):** heap-vec borrowed-recursive RC **use-after-free** (root cause: a **last-use-analysis soundness bug** in `backend/heap.rs` — NOT the audit's vec-RC-asymmetry); **D-default** (nullary return-poly trait dispatch — owner typecheck not backend); **D-name** (reader interior-operator chars). Each with unit + e2e guards.
+- **Test extraction:** ~**32,500 LOC** of inline `#[cfg(test)]` → sibling files across **all 8 crates** (uniform convention; `backend/lib.rs` −78%); behavior-preserving, every crate's test count unchanged.
+- **Decomposition (5 modules, design-first, staged):** `control_flow.rs` 1463→47, `compiler/mod.rs` 1281→33, `process_form.rs` 1765→360, `session_v4.rs` 3139→531, `traits.rs` 2824→63 (hub LOC) + cohesive submodules; over-budget functions split (`monomorphise_call`/`try_cache_hit_load`/`compile_module_object`/`CompilerSession::new`/`compile_par_bind_continuation`). **Behavior-preserving; per-crate `public-api.txt` byte-identical** (except the intended 0420 delta). Wave-5 /review: COHERENT, 0 Blocker/0 Important, all dedups complete.
+- **Dedups (Principle 7 / Decision 24):** `emit_extern_call` ladder (4→1), capture-RC-inc (5→2), import-chain walk (4→`resolve_chain`), **0420 FQ Type-render walk (5→1 `render_type`** + config enums; /arch-acknowledged public-API delta), src prelude-fallback (`root:bool`), **0417 vec-set/vec-push RC alignment** (paired backend+intrinsics, PAIRED-OR-UAF, 10× stress + e2e guards).
+- **Stage C — stdlib:** 97 `(mod test)` self-tests across 14 modules (backing-file form); `range`/`char-to-digit`/`replace-at` verbs; **`conj` correctly HELD** (§11.4a reserves it); **`num.bits` module** (0416-as-stdlib, user-directed — bitwise via arithmetic, 23 tests).
+- **FIXMEs resolved/deleted:** 0402, 0405, 0406, 0409, 0412, 0413, 0414, 0415, 0417, 0420, 0421 (+ transient 0416-qa/0418/0422 removed per no-FIXME-with-failing-test).
+- **Examples:** 29-annotations reworked (disambiguation + function-typing constraint, not literals); 30-parallel reworked (accurate sparkability + Functor `par-fmap` progression).
+- **Cleanup:** removed 14 stray root stdlib-mirror `test.cl` cruft + `.gitignore` guard; /arch surface-record updates (BC §7, interfaces.md, rustdoc); typecheck doc reconciliation.
+
+### Deferred (with rationale)
+- **Phase H:** 0050 (display protocol / List-Seq pretty-printer), 0052 (`/learn`), 0365 (Type.member accessor), **0407 (Model-B closure-callback) + 0419 (shared HostCallbacks builder)** — user: host-callback "definitely Phase H if we even go that way"; **the concurrency direction (B select/streaming vs C platform-driven) is a Phase-H decision**.
+- **0408** (Sudoku parallel-search showcase) — follows the concurrency direction.
+- **0410** (Cranelisp.toml scaffold) — gated on a `/spec §8.11.4` ruling (present-file-fully-replaces footgun).
+- **0416** (bit-* compiler intrinsics) — deferred to a future perf-driven feature decision; **stdlib `num.bits` covers the need now**.
+- **0417** was *done* (not deferred); the audit's "vec_set_copy uniformity" was confirmed **not repro'd** (correct-as-shipped), so it landed as pure cleanup, not a defect fix.
+- **New findings filed:** **0423** (→/int — regen/extraction writes CWD-relative not lib-dir; the root-cruft root cause), **0424** (→/arch — spark independent apply-args / par-map primitive for a general Functor parallel-map).
+- **Wave-5 review Suggestions (future):** large-but-cohesive residual submodules (`lifecycle.rs` 1695, `dependency.rs` 1022, `monomorphise.rs` 1041); an unreachable error-string wording near-miss. **Diagnostics-quality note:** an ambiguous nullary-return-poly expression surfaces "no main function" instead of an ambiguity diagnostic (self-documenting-REPL gap — uncaptured, candidate finding).
+
+### Findings (methodology + technical)
+- **The audit over-claimed; the repro pass was the corrective control.** ~80 audit findings + the synthesis's #1 "must-fix B1" collapsed to **3 real defects** on repro-verification — and the genuinely serious one (the SIGSEGV) was *mis-framed* by the audit (last-use analysis, not the vec-RC-asymmetry it fingered). **Lesson: a fresh-view audit surfaces candidates; severity + root-cause must be repro-verified before they drive scope.** (This validated the user's skepticism.)
+- **The maintainability charter was the audit's real value, and it was under-delivered by the defect-skewed per-crate passes** until a dedicated maintainability deep-pass produced it. The test-extraction (zero-risk, ~32.5k LOC) + decomposition were the highest-confidence wins; the defect themes were mostly noise.
+- **Concurrency model clarified:** lenient eval sparks independent `let` bindings only (deps serialize — a conservative-analysis choice, not a hard semantic); apply-args are not sparked → the `par-map` gap (0424). Host-callback divergence (T3) is real-but-Phase-H.
+- **Process:** serial-source discipline held across ~35 agent passes on a broken-worktree-isolation repo; checkpoint-commit + logical-group commits de-risked a very large change; the Phase-3 parallel-doc-clobber lesson (agents editing SPRINT.md concurrently) was applied (text-return + /sprint-transcribe thereafter). The CWD-write artifact (0423) is concrete evidence of the D-regen class the repro pass had dismissed.
