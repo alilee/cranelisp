@@ -1553,7 +1553,7 @@ Source: `exemplar/notes-stdlib-adequacy-s87.md §FULL` (G1–G10). Each row:
 
 | Gap | Site | Class | Disposition (S87 Stage C.2) |
 |---|---|---|---|
-| **G1** | `grid.cl:83-126` (9-bit mask layer) | [COMPILER] bitwise intrinsics | **ROUTE-OUT** — FIXME 0416 (`target: /arch`), Stage-B backlog. NOT a stdlib gap (no primitive). Untouched. |
+| **G1** | `grid.cl:83-126` (9-bit mask layer) | [COMPILER] bitwise intrinsics | **STDLIB-COVERED (S87 hygiene) + intrinsics route-out HELD.** A reusable `num.bits` module (composed from arithmetic, §26.8) now provides the bitwise API. FIXME 0416 (`target: /arch`) stays **OPEN** for the COMPILER-intrinsics version (a future perf-driven decision — the stdlib version is O(width) per op, an intrinsic is one CLIF instruction). The exemplar's `grid.cl` bit layer can now adopt `num.bits/*` (a `/port` `.cl` swap, not stdlib's job). |
 | **G2** | `grid.cl`/`solver.cl`/`html.cl` (bare `vec-push` not `conj`) | [COMPILER] DEF-2 heap-ADT-`conj` RC | **ROUTE-OUT** — repro queued for /qa → /backend (no new FIXME). Not actioned in stdlib (would bake a workaround). |
 | **G3** `range` | `solver.cl`/`grid.cl`/`html.cl`/`form.cl` (~15 hand-threaded index folds) | [STDLIB] authoring | **ACTION-IN-SPRINT** — `(range lo hi)` added to `collections/vec.cl`, **HALF-OPEN [lo,hi)** (Clojure `(range start end)` semantics: inclusive lo, exclusive hi). Empty when `hi<=lo`. Ships with 5 self-tests (`collections/vec/test.cl`). Unreserved by §11.4a (but NOT bare-promoted; reached module-qualified / import). |
 | **G4** `char-to-digit`/`digit-to-char` | `form.cl:41-53`, `grid.cl:191-202` | [STDLIB] authoring | **ACTION-IN-SPRINT** — both added to `text/string.cl` (`-1` sentinel for non-digit; empty string for out-of-range). 6 self-tests. **NAMING:** the proposed `char->digit`/`digit->char` do NOT parse (a `defn` name containing `->` is mis-read as the threading-macro head — see DEFECT D-name below); shipped as `-to-` spelling. |
@@ -1647,6 +1647,50 @@ import-on-demand. The capability is fully reachable
 `collections.vec/conj` FQ; `vec-push` primitive). When the Phase-H collection
 trait is built, it owns these bare names cleanly. Net S87 bare-promotion: NONE
 (the conservative, forward-compatible subset under the actual ruling is empty).
+
+### 26.8 `num.bits` — bitwise ops as STDLIB (S87 hygiene; FIXME 0416 stdlib coverage)
+
+**Intake: 0416-as-stdlib.** FIXME 0416 (`target: /arch`) proposes adding bitwise
+*intrinsics* (`band`/`bor`/`bxor`/`bnot`/`ishl`/`ushr`/`popcnt`) to the primitive
+surface — a 1:1 CLIF lowering. That **COMPILER decision stays DEFERRED** (a future
+perf-driven call by `/spec` for width/shift semantics + `/backend` for lowering;
+0416 remains OPEN, not deleted). User direction 2026-06-21: *"this should be in
+stdlib for now"* — so the same surface ships **now** as a pure-stdlib module
+composed from existing Ring 0 arithmetic.
+
+**Module:** `stdlib/num/bits.cl` (registered `(mod bits)` in `num.cl`; module
+`num.bits`). Self-tests in `num/bits/test.cl` (bare `(mod test)` in the parent —
+the S87 extraction-stable backing-file convention, §26.1).
+
+**WIDTH decision: 30 bits** (positions 0..29) for the fixed-width ops
+(`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`popcount`). 30 keeps `(pow2 width)` and
+a fully-set mask inside the positive Int range, so the arithmetic simulation
+never touches the sign bit. `bit-not x` is therefore the **one's complement
+within the low 30 bits** (`(- (full-mask) x)`), NOT a machine two's-complement —
+the correct model for bitmask/flags/candidate-set domains (operands expected
+non-negative, < 2^30). The exemplar's 9-bit Sudoku masks fit comfortably.
+
+**Ops (Clojure-aligned names):** `bit-and`, `bit-or`, `bit-xor`, `bit-not`,
+`bit-shift-left`, `bit-shift-right`, `bit-test`, `bit-set`, `bit-clear`,
+`bit-flip`, `popcount`, plus the building blocks `pow2`, `full-mask`, `width`,
+`bit-at`. **Composition:** `(1<<n)≡(pow2 n)`; `(x<<n)≡(* x (pow2 n))`;
+`(x>>n)≡(/ x (pow2 n))`; `bit n ≡ (rem (/ x (pow2 n)) 2)`; and/or/xor are a
+bit-by-bit fold over 0..width re-weighting each result bit by `(pow2 i)`;
+`bit-not ≡ (- (full-mask) x)`; `popcount` folds the set bits. None of these
+names are reserved by §11.4a, so they are safe; reached **module-qualified /
+import-on-demand — NOT bare-promoted** to the prelude (import-on-demand per the
+managed-surface model).
+
+**Self-tests:** 23 `test-*` fns in `num/bits/test.cl` covering every op against
+known values (`12&10=8`, `12|10=14`, `12^10=6`, shift round-trips, bit-test/set/
+clear/flip, `bit-not` round-trip, `popcount(full-mask)=30`). **Verified green**
+via the in-language runner: `(discover-tests ["num.bits.test"])` → `run-one` →
+`tally-line` reports `23 passed, 0 failed, 0 panicked`.
+
+**Note for /port:** `exemplar/grid.cl`'s ~55-line C3 bit layer (`pow2`,
+`bit-set?`, `bit-clear`, `bit-set`, `bit-count`, `bit-lowest`) can now adopt
+`num.bits/*` (`bit-test`/`bit-clear`/`bit-set`/`popcount`, etc.). That is a
+future exemplar-side `.cl` swap owned by `/port`, not stdlib authoring.
 
 ### 26.5 Phase-3 plan for SPRINT.md "Skill plans / /stdlib"
 

@@ -2,6 +2,24 @@
 
 Standard library for Cranelisp. Owned by `/stdlib` skill.
 
+## Current State (Sprint 87 hygiene — `num.bits` bitwise module)
+
+Added `stdlib/num/bits.cl` (module `num.bits`; registered `(mod bits)` in
+`num.cl`) — the bitwise API (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/
+`bit-shift-left`/`bit-shift-right`/`bit-test`/`bit-set`/`bit-clear`/`bit-flip`/
+`popcount` + `pow2`/`full-mask`/`width`/`bit-at`) composed entirely from Ring 0
+arithmetic primitives. **WIDTH = 30 bits** for the fixed-width ops (`bit-not` is
+one's-complement within the low 30 bits, not machine two's-complement — keeps
+intermediates positive). Clojure-aligned names; none reserved by §11.4a; reached
+module-qualified / import-on-demand — **NOT bare-promoted**. 23 self-tests in
+`num/bits/test.cl` (bare `(mod test)` parent, extraction-stable), **all green**
+via the in-language runner (`(discover-tests ["num.bits.test"])` →
+`23 passed, 0 failed, 0 panicked`). This is the STDLIB coverage of FIXME 0416's
+need; the COMPILER-intrinsics version of 0416 stays DEFERRED/OPEN (future
+perf-driven /arch+/backend decision). See `plan-stdlib.md §26.8`. The exemplar's
+`grid.cl` C3 bit layer can now adopt `num.bits/*` (a future `/port` `.cl` swap).
+`cargo nextest run --workspace` = **2865 passed / 0 failed / 0 skipped** (unchanged).
+
 ## Current State (Sprint 87 Phase 5 Wave 1d — Stage C.2 rollout)
 
 The self-test rollout LANDED + the C.1 adequacy gaps were intaken.
