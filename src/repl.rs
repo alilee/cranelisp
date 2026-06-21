@@ -298,52 +298,14 @@ impl CompilerSession {
     /// module (no chain-follow performed at this layer — the caller may
     /// chain-follow if it wants imports + reexports resolved).
     pub fn describe_symbol(&self, name: &str) -> Option<SymbolDescription> {
-        let current = self.current_module_path();
-        // Probe current module first; if absent, fall back to root `""`
-        // (FIXME 0192 Residual Task 3 + FIXME 0193 — special-form metadata
-        // lives at root, not in user-mode tables). The fallback's resolved
-        // module reflects where the entry actually lives so the returned
-        // `FQSymbol` is correct.
-        let (entry, resolved_module) = {
-            let cur_table = self.shared.symbol_tables.get(&current);
-            let cur_hit = cur_table.as_ref().and_then(|t| t.get(name).cloned());
-            match cur_hit {
-                Some(e) => (e, current.clone()),
-                None => {
-                    // S78 §2.7.6 — prelude hop. A bare prelude-provided name
-                    // (e.g. `/sig map`) is no longer flattened into the current
-                    // table; when this module's fallback bit is ON, probe
-                    // prelude's OWN table before root, mirroring the typecheck
-                    // outer-scope fallback so `/sig`/`/doc`/`/info`/`/type` on a
-                    // prelude name still resolve.
-                    let prelude_path = ModuleFullPath::from("prelude");
-                    let prelude_on = self
-                        .shared
-                        .prelude_fallback
-                        .get(&current)
-                        .map(|b| *b)
-                        .unwrap_or(false);
-                    let prelude_hit = if prelude_on && current != prelude_path {
-                        self.shared
-                            .symbol_tables
-                            .get(&prelude_path)
-                            .and_then(|t| t.get(name).cloned())
-                            .map(|e| (e, prelude_path.clone()))
-                    } else {
-                        None
-                    };
-                    match prelude_hit {
-                        Some(pair) => pair,
-                        None => {
-                            let root = ModuleFullPath::from("");
-                            let root_table = self.shared.symbol_tables.get(&root)?;
-                            let root_hit = root_table.get(name).cloned()?;
-                            (root_hit, root)
-                        }
-                    }
-                }
-            }
-        };
+        // Probe current module first, then the prelude outer-scope hop, then
+        // root `""` (FIXME 0192 Residual Task 3 + FIXME 0193 — special-form
+        // metadata lives at root, not in user-mode tables; S78 §2.7.6 — prelude
+        // hop). Routes through the canonical `lookup_with_prelude_fallback`
+        // (root tier ON) so the three-tier walk has a single definition
+        // (S87 §4 dedup, Principle 7). The resolved module reflects where the
+        // entry actually lives so the returned `FQSymbol` is correct.
+        let (entry, resolved_module) = self.lookup_with_prelude_fallback(name)?;
         let fq = FQSymbol {
             module: resolved_module.clone(),
             symbol: Symbol::from(name),
@@ -560,6 +522,28 @@ impl CompilerSession {
         &self,
         name: &str,
     ) -> Option<(ModuleEntry<Code>, ModuleFullPath)> {
+        self.lookup_with_prelude_fallback_opt(name, true)
+    }
+
+    /// Core of the prelude-fallback lookup (S87 §4 dedup, Principle 7).
+    ///
+    /// Walks current module → prelude (bit-gated, `current != prelude`) → root
+    /// `""` and returns the first hit + the module it resolved in. The `root`
+    /// flag controls the final tier:
+    ///
+    /// - `root: true` — also consult the root `""` table (special-form metadata
+    ///   lives there). This is the canonical behaviour used by `/sig`, `/doc`,
+    ///   `/info`, and `describe_symbol` (current → prelude → root).
+    /// - `root: false` — stop after the prelude hop (current → prelude only, NO
+    ///   root tier). This preserves `format_eval_result_body`'s two-tier walk:
+    ///   a bare special-form name (`if`/`match`) must NOT resolve in the
+    ///   eval-result value display — it falls through to the caller's `None`
+    ///   arm. (The "let root resolve too" cleanup is deferred — see S87 §4.1.)
+    pub(crate) fn lookup_with_prelude_fallback_opt(
+        &self,
+        name: &str,
+        root: bool,
+    ) -> Option<(ModuleEntry<Code>, ModuleFullPath)> {
         let module = self.current_module_path();
         if let Some(e) = self.current_symbol_table().get(name) {
             return Some((e.clone(), module));
@@ -584,6 +568,9 @@ impl CompilerSession {
             {
                 return Some((e, prelude_path));
             }
+        }
+        if !root {
+            return None;
         }
         // Root `""` tier — special-form metadata lives here (Principle 17
         // amendment, FIXME 0193). Falling back to root lets `/info`/`/sig`
@@ -1681,35 +1668,20 @@ impl CompilerSession {
                 }
 
                 let cur_module = self.current_module_path();
-                let entry = self.current_symbol_table().get(name).cloned();
                 // S78 §2.7.6 — prelude outer-scope hop. A bare prelude-provided
                 // name (e.g. `add-i64`) is no longer flattened into the current
                 // table; when the per-module fallback bit is ON, look it up in
                 // prelude's own table (the `(export …)` re-export edge) so the
-                // chain-follow below still reaches `primitives/add-i64`.
-                let (entry, lookup_module) = match entry {
-                    Some(e) => (Some(e), cur_module.clone()),
-                    None => {
-                        let prelude_path = ModuleFullPath::from("prelude");
-                        let prelude_on = cur_module != prelude_path
-                            && self
-                                .shared
-                                .prelude_fallback
-                                .get(&cur_module)
-                                .map(|b| *b)
-                                .unwrap_or(false);
-                        if prelude_on {
-                            let pe = self
-                                .shared
-                                .symbol_tables
-                                .get(&prelude_path)
-                                .and_then(|t| t.get(name).cloned());
-                            (pe, prelude_path)
-                        } else {
-                            (None, cur_module.clone())
-                        }
-                    }
-                };
+                // chain-follow below still reaches `primitives/add-i64`. Routes
+                // through the canonical helper with `root: false` (S87 §4 dedup,
+                // Principle 7) — the NO-root-tier walk is deliberate: a bare
+                // special-form name must NOT resolve here (it falls through to
+                // the `None` arm below); the root cleanup is deferred (§4.1).
+                let (entry, lookup_module) =
+                    match self.lookup_with_prelude_fallback_opt(name, false) {
+                        Some((e, m)) => (Some(e), m),
+                        None => (None, cur_module.clone()),
+                    };
                 // Follow import chains to the definition.
                 let (entry, resolved_module) = match entry {
                     Some(ref e) => self.resolve_entry_for_display(e, &lookup_module),

@@ -34,6 +34,7 @@ pub(crate) mod vec_codegen;
 // concerns are split into cohesive files; the hub re-exports their items so
 // the in-crate import paths (`crate::compiler::X`, `super::X`) keep resolving.
 mod context;
+mod extern_call;
 mod fn_compiler;
 mod rc_emission;
 mod resolution;

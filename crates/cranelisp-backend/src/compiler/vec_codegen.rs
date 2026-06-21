@@ -271,8 +271,8 @@ where
         } else {
             // Copy path (non-last-use Vec): call vec-set-copy extern (which inc's
             // `new_val` unconditionally), then compensate a temporary's over-inc.
-            let result = self.emit_extern_call_4(
-                "vec-set-copy", vec_val, idx_val, new_val, inc_fn_ptr, span,
+            let result = self.emit_extern_call(
+                "vec-set-copy", &[vec_val, idx_val, new_val, inc_fn_ptr], span,
             )?;
             self.emit_vec_set_copy_temp_compensation(new_val, &elem_type, consuming_inc, span);
             Ok(result)
@@ -389,8 +389,8 @@ where
         // unconditionally), then compensate for a temporary heap element.
         self.builder.switch_to_block(copy_block);
         self.builder.seal_block(copy_block);
-        let copy_result = self.emit_extern_call_4(
-            "vec-set-copy", vec_val, idx_val, new_val, inc_fn_ptr, span,
+        let copy_result = self.emit_extern_call(
+            "vec-set-copy", &[vec_val, idx_val, new_val, inc_fn_ptr], span,
         )?;
         self.emit_vec_set_copy_temp_compensation(new_val, elem_type, consuming_inc, span);
         self.builder.ins().jump(merge_block, &[copy_result]);
@@ -497,7 +497,7 @@ where
             self.compile_vec_push_cow(vec_val, new_val, inc_fn_ptr, span)
         } else {
             // Copy path: call vec-push-copy extern.
-            self.emit_extern_call_3("vec-push-copy", vec_val, new_val, inc_fn_ptr, span)
+            self.emit_extern_call("vec-push-copy", &[vec_val, new_val, inc_fn_ptr], span)
         }
     }
 
@@ -578,14 +578,14 @@ where
         // Grow path: call vec-push-grow extern.
         self.builder.switch_to_block(grow_block);
         self.builder.seal_block(grow_block);
-        let grow_result = self.emit_extern_call_2("vec-push-grow", vec_val, new_val, span)?;
+        let grow_result = self.emit_extern_call("vec-push-grow", &[vec_val, new_val], span)?;
         self.builder.ins().jump(merge_block, &[grow_result]);
 
         // Copy path: call vec-push-copy extern.
         self.builder.switch_to_block(copy_block);
         self.builder.seal_block(copy_block);
-        let copy_result = self.emit_extern_call_3(
-            "vec-push-copy", vec_val, new_val, inc_fn_ptr, span,
+        let copy_result = self.emit_extern_call(
+            "vec-push-copy", &[vec_val, new_val, inc_fn_ptr], span,
         )?;
         self.builder.ins().jump(merge_block, &[copy_result]);
 
@@ -1207,92 +1207,6 @@ where
         }
     }
 
-    /// Emit an extern call with 2 i64 args, returning i64.
-    fn emit_extern_call_2(
-        &mut self,
-        name: &str,
-        a: Value,
-        b: Value,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let mut sig = self.module.make_signature();
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(types::I64));
-        sig.returns.push(AbiParam::new(types::I64));
-
-        let func_id = self
-            .module
-            .declare_function(name, Linkage::Import, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare extern '{name}': {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-        let func_ref = self
-            .module
-            .declare_func_in_func(func_id, self.builder.func);
-        let call = self.builder.ins().call(func_ref, &[a, b]);
-        Ok(self.builder.inst_results(call)[0])
-    }
-
-    /// Emit an extern call with 3 i64 args, returning i64.
-    fn emit_extern_call_3(
-        &mut self,
-        name: &str,
-        a: Value,
-        b: Value,
-        c: Value,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let mut sig = self.module.make_signature();
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(types::I64));
-        sig.returns.push(AbiParam::new(types::I64));
-
-        let func_id = self
-            .module
-            .declare_function(name, Linkage::Import, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare extern '{name}': {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-        let func_ref = self
-            .module
-            .declare_func_in_func(func_id, self.builder.func);
-        let call = self.builder.ins().call(func_ref, &[a, b, c]);
-        Ok(self.builder.inst_results(call)[0])
-    }
-
-    /// Emit an extern call with 4 i64 args, returning i64.
-    fn emit_extern_call_4(
-        &mut self,
-        name: &str,
-        a: Value,
-        b: Value,
-        c: Value,
-        d: Value,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let mut sig = self.module.make_signature();
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(types::I64));
-        sig.returns.push(AbiParam::new(types::I64));
-
-        let func_id = self
-            .module
-            .declare_function(name, Linkage::Import, &sig)
-            .map_err(|e| CranelispError::CodegenError {
-                message: format!("failed to declare extern '{name}': {e}"),
-                location: ErrorLocation::from_span(span),
-            })?;
-        let func_ref = self
-            .module
-            .declare_func_in_func(func_id, self.builder.func);
-        let call = self.builder.ins().call(func_ref, &[a, b, c, d]);
-        Ok(self.builder.inst_results(call)[0])
-    }
 }
 
 // ---------------------------------------------------------------------------

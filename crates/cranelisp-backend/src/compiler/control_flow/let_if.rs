@@ -148,13 +148,13 @@ where
             let thunk_val = self.compile_expr(&thunk_expr)?;
 
             // Call cranelisp_ivar_create(thunk_ptr) -> ivar_ptr
-            let ivar_val = self.emit_extern_call_1(
-                "cranelisp_ivar_create", thunk_val, span,
+            let ivar_val = self.emit_extern_call(
+                "cranelisp_ivar_create", &[thunk_val], span,
             )?;
 
             // Call cranelisp_ivar_spark(ivar_ptr)
-            let _spark_result = self.emit_extern_call_1(
-                "cranelisp_ivar_spark", ivar_val, span,
+            let _spark_result = self.emit_extern_call(
+                "cranelisp_ivar_spark", &[ivar_val], span,
             )?;
 
             ivar_map.insert(idx, ivar_val);
@@ -167,8 +167,8 @@ where
             let val = if sparkable_set.contains(&i) {
                 // Force the IVar and dec our reference.
                 let ivar_val = ivar_map[&i];
-                let forced_val = self.emit_extern_call_1(
-                    "cranelisp_ivar_force", ivar_val, span,
+                let forced_val = self.emit_extern_call(
+                    "cranelisp_ivar_force", &[ivar_val], span,
                 )?;
 
                 // Dec the IVar (main thread's reference).
@@ -248,7 +248,7 @@ where
         self.builder.ins().fence();
 
         let _dealloc_result = self
-            .emit_extern_call_1("cranelisp_ivar_dealloc", ivar_val, span)?;
+            .emit_extern_call("cranelisp_ivar_dealloc", &[ivar_val], span)?;
         self.builder.ins().jump(cont_block, &[]);
 
         // Continue.
