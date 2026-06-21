@@ -10,6 +10,30 @@ status: open
 
 # Platform-model GAP: a platform DLL cannot call back into a cranelisp closure (Model B)
 
+## Reframing (S87, 2026-06-21 — see `design/arch/effect-concurrency.md`)
+
+An `/arch` concurrency design pass concluded that **Model B is the direction we are
+deliberately NOT taking** for the primary concurrency story. Letting a platform own
+its event loop and call pure handlers back pushes the concurrency/state/RC/ferry
+complexity *into every platform* — the "cranelisp is just a DSL on a platform written
+in a real language" (Roc) degeneration. The target instead keeps the loop in
+cranelisp and makes the **trampoline a concurrent effect scheduler** over *thin,
+stateless* platforms; concurrency is extracted from dataflow + platform-declared
+concurrency descriptors (tokens + cardinality), with no platform-side callback
+machinery. See `effect-concurrency.md` §2 (the anti-pattern) + §3–4 (the model).
+
+**Consequence for this FIXME:** it is **downgraded from "platform-model gap to close"
+to "escape hatch, build only on demand."** The host-mediated closure-call capability
+is genuinely needed *only* for native libraries that **force** callback ownership of
+their own loop (e.g. a GUI/event-reactor library, or a C lib with an internal
+dispatcher that cannot be inverted). It is NOT needed for the web/server throughput
+case — that is served by the scheduler-trampoline path, where cranelisp owns the
+accept loop (exemplar "Model A" is the seed). Keep this FIXME open as the record of
+the capability and its contract; do not schedule it as part of the concurrency arc.
+When it *is* built, its capture/RC-across-threads/error-slot-ferry contract (below)
+must align with the supervisor error semantics in `effect-concurrency.md` §7, not be
+designed independently.
+
 ## Issue
 
 The web-platform review (S86 Wave E, `platform-interface.md §3a`) surfaced a
