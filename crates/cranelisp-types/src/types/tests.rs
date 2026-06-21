@@ -242,39 +242,129 @@ fn test_unwrap_io_no_args() {
 
 // --- U1.6: type variable display name tests ---
 
+/// Helper: render with the lettered (value-display) convention, deriving the
+/// var-name map from the type — the behaviour the deleted `format_type_display`
+/// free fn provided, now expressed through the shared `render_type` walk.
+fn lettered(ty: &Type) -> String {
+    let names = type_var_names(ty);
+    render_type(ty, PrimitiveNaming::Bare, VarNaming::Lettered(&names))
+}
+
 #[test]
 fn test_format_type_display_single_var() {
     // A single type variable should display as "a", not "t42".
     let ty = Type::Var(42);
-    assert_eq!(format_type_display(&ty), "a");
+    assert_eq!(lettered(&ty), "a");
 }
 
 #[test]
 fn test_format_type_display_identity_fn() {
     // (Fn [Var(5)] Var(5)) should display as "(Fn [a] a)".
     let ty = Type::Fn(vec![Type::Var(5)], Box::new(Type::Var(5)));
-    assert_eq!(format_type_display(&ty), "(Fn [a] a)");
+    assert_eq!(lettered(&ty), "(Fn [a] a)");
 }
 
 #[test]
 fn test_format_type_display_two_vars() {
     // Two distinct vars should be "a" and "b".
     let ty = Type::Fn(vec![Type::Var(10), Type::Var(20)], Box::new(Type::Var(10)));
-    assert_eq!(format_type_display(&ty), "(Fn [a b] a)");
+    assert_eq!(lettered(&ty), "(Fn [a b] a)");
 }
 
 #[test]
 fn test_format_type_display_concrete_type() {
     // Concrete types should display normally.
-    assert_eq!(format_type_display(&Type::Int), "Int");
-    assert_eq!(format_type_display(&Type::Bool), "Bool");
+    assert_eq!(lettered(&Type::Int), "Int");
+    assert_eq!(lettered(&Type::Bool), "Bool");
 }
 
 #[test]
 fn test_format_type_display_polymorphic_adt() {
     // (test/Option Var(3)) should display as "(test/Option a)".
     let ty = Type::ADT(test_fqtn("Option"), vec![Type::Var(3)]);
-    assert_eq!(format_type_display(&ty), "(test/Option a)");
+    assert_eq!(lettered(&ty), "(test/Option a)");
+}
+
+// --- S87 render_type: the byte-for-byte §2.4 contract guard ---
+
+#[test]
+fn render_type_primitive_naming_axis() {
+    // spec: design/typecheck/s87-fq-walk-consolidation.md §2.4 — primitive axis.
+    for (ty, bare, fq) in [
+        (Type::Int, "Int", "primitives/Int"),
+        (Type::Bool, "Bool", "primitives/Bool"),
+        (Type::String, "String", "primitives/String"),
+        (Type::Float, "Float", "primitives/Float"),
+    ] {
+        assert_eq!(
+            render_type(&ty, PrimitiveNaming::Bare, VarNaming::Numbered),
+            bare
+        );
+        assert_eq!(
+            render_type(&ty, PrimitiveNaming::Qualified, VarNaming::Numbered),
+            fq
+        );
+    }
+}
+
+#[test]
+fn render_type_var_naming_axis() {
+    // spec: design/typecheck/s87-fq-walk-consolidation.md §2.4 — Var axis.
+    let ty = Type::Var(7);
+    assert_eq!(
+        render_type(&ty, PrimitiveNaming::Bare, VarNaming::Numbered),
+        "t7"
+    );
+    let mut map = std::collections::HashMap::new();
+    map.insert(7u32, "a".to_string());
+    assert_eq!(
+        render_type(&ty, PrimitiveNaming::Bare, VarNaming::Lettered(&map)),
+        "a"
+    );
+    // Absent id falls back to t{id}.
+    let empty = std::collections::HashMap::new();
+    assert_eq!(
+        render_type(&ty, PrimitiveNaming::Bare, VarNaming::Lettered(&empty)),
+        "t7"
+    );
+}
+
+#[test]
+fn render_type_tyconapp_four_cells() {
+    // spec: design/typecheck/s87-fq-walk-consolidation.md §2.4 — the TyConApp
+    // two-shape coupling. Numbered always wraps `(TyCon t{id} …)` incl. empty;
+    // Lettered emits bare head, no `TyCon`, no empty parens. (No integration
+    // test reliably hits the empty-args `(TyCon t{id})` shape — §4.3.)
+    let empty_args = Type::TyConApp(3, vec![]);
+    let with_args = Type::TyConApp(3, vec![Type::Int]);
+
+    // Numbered: literal TyCon prefix, parens even when empty.
+    assert_eq!(
+        render_type(&empty_args, PrimitiveNaming::Bare, VarNaming::Numbered),
+        "(TyCon t3)"
+    );
+    assert_eq!(
+        render_type(&with_args, PrimitiveNaming::Bare, VarNaming::Numbered),
+        "(TyCon t3 Int)"
+    );
+
+    // Lettered: bare head, no TyCon, no empty parens.
+    let mut map = std::collections::HashMap::new();
+    map.insert(3u32, "f".to_string());
+    assert_eq!(
+        render_type(&empty_args, PrimitiveNaming::Bare, VarNaming::Lettered(&map)),
+        "f"
+    );
+    assert_eq!(
+        render_type(&with_args, PrimitiveNaming::Qualified, VarNaming::Lettered(&map)),
+        "(f primitives/Int)"
+    );
+    // Lettered head fallback to t{id} when absent.
+    let empty = std::collections::HashMap::new();
+    assert_eq!(
+        render_type(&empty_args, PrimitiveNaming::Bare, VarNaming::Lettered(&empty)),
+        "t3"
+    );
 }
 
 #[test]

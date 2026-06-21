@@ -107,39 +107,110 @@ impl Type {
 
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::Int => write!(f, "Int"),
-            Type::Bool => write!(f, "Bool"),
-            Type::String => write!(f, "String"),
-            Type::Float => write!(f, "Float"),
-            Type::Fn(params, ret) => {
-                write!(f, "(Fn [")?;
-                for (i, p) in params.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{p}")?;
-                }
-                write!(f, "] {ret})")
+        write!(
+            f,
+            "{}",
+            render_type(self, PrimitiveNaming::Bare, VarNaming::Numbered)
+        )
+    }
+}
+
+/// How primitive variants (Int/Bool/String/Float) render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PrimitiveNaming {
+    /// Bare keyword: `Int`, `Bool`, `String`, `Float`. Debug / `Display` / internal.
+    Bare,
+    /// Module-qualified: `primitives/Int`, … . User-facing (repl/spec.md §5.3).
+    Qualified,
+}
+
+/// How `Type::Var` / `Type::TyConApp` head ids render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum VarNaming<'a> {
+    /// Raw internal id: `t{id}`. Debug / `Display` / type-error messages.
+    Numbered,
+    /// User-friendly letters via a precomputed `type_var_names` map: `a`, `b`, …
+    /// (`t{id}` fallback when a var id is absent from the map, e.g. >26 vars).
+    Lettered(&'a HashMap<TypeId, String>),
+}
+
+/// The single structural walk over `Type`, parameterized by output convention.
+/// Every renderer in the workspace delegates here; `Display`, the typecheck
+/// type-error renderer, and the REPL/value-display renderers differ ONLY in the
+/// `PrimitiveNaming` / `VarNaming` values they pass (Principle 7 — single source
+/// of truth; Principle 15 — the canonical renderer lives beside `Type`).
+///
+/// The `TyConApp` arm is the one variant whose rendering is coupled to
+/// `VarNaming` rather than `PrimitiveNaming`: `Numbered` always wraps with the
+/// literal `TyCon` prefix even when args are empty (`(TyCon t{id})`); `Lettered`
+/// never emits `TyCon` and drops the parens when args are empty (bare head).
+pub fn render_type(ty: &Type, prim: PrimitiveNaming, vars: VarNaming<'_>) -> String {
+    // Render a Var / TyConApp head id per the variable-naming convention.
+    let head = |id: &TypeId| -> String {
+        match vars {
+            VarNaming::Numbered => format!("t{id}"),
+            VarNaming::Lettered(map) => {
+                map.get(id).cloned().unwrap_or_else(|| format!("t{id}"))
             }
-            Type::ADT(fqtn, args) => {
-                if args.is_empty() {
-                    write!(f, "{fqtn}")
-                } else {
-                    write!(f, "({fqtn}")?;
-                    for a in args {
-                        write!(f, " {a}")?;
-                    }
-                    write!(f, ")")
-                }
+        }
+    };
+    match ty {
+        Type::Int => match prim {
+            PrimitiveNaming::Bare => "Int".to_string(),
+            PrimitiveNaming::Qualified => "primitives/Int".to_string(),
+        },
+        Type::Bool => match prim {
+            PrimitiveNaming::Bare => "Bool".to_string(),
+            PrimitiveNaming::Qualified => "primitives/Bool".to_string(),
+        },
+        Type::String => match prim {
+            PrimitiveNaming::Bare => "String".to_string(),
+            PrimitiveNaming::Qualified => "primitives/String".to_string(),
+        },
+        Type::Float => match prim {
+            PrimitiveNaming::Bare => "Float".to_string(),
+            PrimitiveNaming::Qualified => "primitives/Float".to_string(),
+        },
+        Type::Fn(params, ret) => {
+            let parts: Vec<String> =
+                params.iter().map(|p| render_type(p, prim, vars)).collect();
+            let ret_s = render_type(ret, prim, vars);
+            format!("(Fn [{}] {ret_s})", parts.join(" "))
+        }
+        Type::ADT(fqtn, args) => {
+            if args.is_empty() {
+                format!("{fqtn}")
+            } else {
+                let arg_strs: Vec<String> =
+                    args.iter().map(|a| render_type(a, prim, vars)).collect();
+                format!("({fqtn} {})", arg_strs.join(" "))
             }
-            Type::Var(id) => write!(f, "t{id}"),
-            Type::TyConApp(id, args) => {
-                write!(f, "(TyCon t{id}")?;
-                for a in args {
-                    write!(f, " {a}")?;
+        }
+        Type::Var(id) => head(id),
+        Type::TyConApp(id, args) => {
+            let arg_strs: Vec<String> =
+                args.iter().map(|a| render_type(a, prim, vars)).collect();
+            match vars {
+                // The `Display` / `format_type_fq` shape: literal `TyCon` prefix,
+                // parens even when args are empty.
+                VarNaming::Numbered => {
+                    if arg_strs.is_empty() {
+                        format!("(TyCon t{id})")
+                    } else {
+                        format!("(TyCon t{id} {})", arg_strs.join(" "))
+                    }
                 }
-                write!(f, ")")
+                // The value-display shape: bare head, no `TyCon`, no empty parens.
+                VarNaming::Lettered(_) => {
+                    let h = head(id);
+                    if arg_strs.is_empty() {
+                        h
+                    } else {
+                        format!("({h} {})", arg_strs.join(" "))
+                    }
+                }
             }
         }
     }
@@ -174,64 +245,6 @@ pub fn type_var_names(ty: &Type) -> HashMap<TypeId, String> {
             (id, name)
         })
         .collect()
-}
-
-/// Format a type with user-friendly variable names (a, b, c, ...).
-///
-/// Replaces internal TypeId numbers with sequential letters.
-pub fn format_type_display(ty: &Type) -> String {
-    let names = type_var_names(ty);
-    format_type_with_vars(ty, &names)
-}
-
-/// Format a type using the given variable name mapping.
-pub fn format_type_with_vars(ty: &Type, var_names: &HashMap<TypeId, String>) -> String {
-    match ty {
-        Type::Int => "Int".to_string(),
-        Type::Bool => "Bool".to_string(),
-        Type::String => "String".to_string(),
-        Type::Float => "Float".to_string(),
-        Type::Fn(params, ret) => {
-            let parts: Vec<String> = params
-                .iter()
-                .map(|p| format_type_with_vars(p, var_names))
-                .collect();
-            let ret_s = format_type_with_vars(ret, var_names);
-            format!("(Fn [{}] {ret_s})", parts.join(" "))
-        }
-        Type::ADT(fqtn, args) => {
-            if args.is_empty() {
-                format!("{fqtn}")
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| format_type_with_vars(a, var_names))
-                    .collect();
-                format!("({fqtn} {})", arg_strs.join(" "))
-            }
-        }
-        Type::Var(id) => {
-            var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"))
-        }
-        Type::TyConApp(id, args) => {
-            let name = var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"));
-            if args.is_empty() {
-                name
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| format_type_with_vars(a, var_names))
-                    .collect();
-                format!("({name} {})", arg_strs.join(" "))
-            }
-        }
-    }
 }
 
 /// Collect Var ids in order of first occurrence (left-to-right, depth-first).

@@ -225,7 +225,7 @@ pub use ast::{
     ConstructorDef, Defn, DefnVariant, Expr, FieldDef, MatchArm, Pattern, Program,
     TopLevel, TraitDecl, TraitImpl, TraitMethodSig, TypeExpr, Visibility, free_vars_expr,
 };
-pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, format_type_display, format_type_with_vars, type_var_names};
+pub use types::{Scheme, Subst, Type, TypeId, apply, free_vars, max_type_var_id, render_type, PrimitiveNaming, VarNaming, type_var_names};
 // The concrete-only codegen-boundary type (Phase 1 scaffold;
 // design/arch/concrete-boundary-type.md). No `Var`/`TyConApp` variant — a
 // generic is structurally unrepresentable at the typecheck→backend boundary.

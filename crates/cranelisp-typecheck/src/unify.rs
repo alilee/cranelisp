@@ -3,7 +3,10 @@
 //! Core functions take explicit `&mut Subst` and `&mut TypeId` parameters
 //! (borrow-splitting pattern) to avoid &mut self conflicts in the TypeChecker.
 
-use cranelisp_types::{ErrorLocation, CranelispError, Span, Subst, Type, TypeId, apply, free_vars};
+use cranelisp_types::{
+    ErrorLocation, CranelispError, PrimitiveNaming, Span, Subst, Type, TypeId, VarNaming, apply,
+    free_vars, render_type,
+};
 
 /// Unify two types, updating the substitution.
 ///
@@ -112,71 +115,19 @@ pub fn unify(subst: &mut Subst, t1: &Type, t2: &Type) -> Result<(), CranelispErr
             Ok(())
         }
 
-        // Everything else is a type mismatch
+        // Everything else is a type mismatch. Error-message rendering uses the
+        // shared `render_type` walk with `Qualified` primitives (`primitives/Int`,
+        // repl/spec.md §5.3) + `Numbered` vars — reproducing the former
+        // crate-private `format_type_fq` byte-for-byte (S87 consolidation,
+        // FIXME 0420; the cross-crate `Type` re-walk is eliminated).
         _ => Err(CranelispError::TypeError {
             message: format!(
                 "type mismatch: expected {}, got {}",
-                format_type_fq(&t1),
-                format_type_fq(&t2)
+                render_type(&t1, PrimitiveNaming::Qualified, VarNaming::Numbered),
+                render_type(&t2, PrimitiveNaming::Qualified, VarNaming::Numbered),
             ),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
-    }
-}
-
-/// Render a type with primitive variants fully qualified (`primitives/Int`),
-/// for use ONLY in typecheck error-message rendering (per `repl/spec.md` §5.3,
-/// design `typecheck.md` §8.3).
-///
-/// Crate-private and the structural twin of `Type`'s bare `Display` impl: it
-/// maps the four primitive variants to their canonical `primitives/…` strings,
-/// renders `Type::ADT` through `FQTypeName`'s already-qualified Display, and
-/// recurses on `Fn`/args. `Var`/`TyConApp` are rendered exactly as `Display`
-/// does (type variables are not the §5.3 FQ concern).
-///
-/// This deliberately duplicates the primitive→`primitives/…` mapping rather
-/// than reusing the value-display path (`src/display.rs`) — the two renderers
-/// are kept structurally distinct, converging only on the FQ output convention
-/// (design §8.3, /arch Phase-2 keep-distinct advisory).
-fn format_type_fq(ty: &Type) -> String {
-    match ty {
-        Type::Int => "primitives/Int".to_string(),
-        Type::Bool => "primitives/Bool".to_string(),
-        Type::String => "primitives/String".to_string(),
-        Type::Float => "primitives/Float".to_string(),
-        Type::Fn(params, ret) => {
-            let params_str = params
-                .iter()
-                .map(format_type_fq)
-                .collect::<Vec<_>>()
-                .join(" ");
-            format!("(Fn [{}] {})", params_str, format_type_fq(ret))
-        }
-        Type::ADT(fqtn, args) => {
-            if args.is_empty() {
-                format!("{fqtn}")
-            } else {
-                let args_str = args
-                    .iter()
-                    .map(format_type_fq)
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("({fqtn} {args_str})")
-            }
-        }
-        Type::Var(id) => format!("t{id}"),
-        Type::TyConApp(id, args) => {
-            let args_str = args
-                .iter()
-                .map(format_type_fq)
-                .collect::<Vec<_>>()
-                .join(" ");
-            if args_str.is_empty() {
-                format!("(TyCon t{id})")
-            } else {
-                format!("(TyCon t{id} {args_str})")
-            }
-        }
     }
 }
 
@@ -192,7 +143,10 @@ fn bind_var(subst: &mut Subst, id: TypeId, ty: &Type) -> Result<(), CranelispErr
     // Occurs check: prevent infinite types
     if occurs_check(subst, id, ty) {
         return Err(CranelispError::TypeError {
-            message: format!("infinite type: t{id} occurs in {}", format_type_fq(ty)),
+            message: format!(
+                "infinite type: t{id} occurs in {}",
+                render_type(ty, PrimitiveNaming::Qualified, VarNaming::Numbered)
+            ),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         });
     }

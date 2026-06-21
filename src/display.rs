@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, Scheme, Symbol, SymbolTable, Type,
-    TypeDefInfo, TypeId, NULLARY_TAG_THRESHOLD,
+    DefKind, FQTypeName, ModuleEntry, ModuleFullPath, PrimitiveNaming, Scheme, Symbol, SymbolTable,
+    Type, TypeDefInfo, TypeId, VarNaming, NULLARY_TAG_THRESHOLD, render_type,
 };
 
 use cranelisp_backend::heap::{HeapAdt, HeapVec};
@@ -112,9 +112,11 @@ pub(crate) fn format_result(value: i64, ty: &Type) -> String {
 pub fn format_type_qualified(
     ty: &Type,
 ) -> String {
-    // Compute var names from the full type, then use them in the recursive helper.
+    // Compute var names from the full type, then render through the shared walk
+    // (S87 consolidation, FIXME 0420): FQ primitives + lettered vars reproduce
+    // the former `format_type_qualified_inner` byte-for-byte.
     let var_names = cranelisp_types::type_var_names(ty);
-    format_type_qualified_inner(ty, &var_names)
+    render_type(ty, PrimitiveNaming::Qualified, VarNaming::Lettered(&var_names))
 }
 
 /// Format a constrained function's scheme for REPL display (spec §1.3).
@@ -150,9 +152,14 @@ pub fn format_scheme_type(scheme: &Scheme) -> String {
     let var_names = cranelisp_types::type_var_names(&scheme.ty);
 
     if scheme.constraints.is_empty() {
-        // No constraints: the plain qualified+normalized type. Reuse the
-        // var_names so normalization is identical to the constrained path.
-        return format_type_qualified_inner(&scheme.ty, &var_names);
+        // No constraints: the plain qualified+normalized type via the shared walk
+        // (S87 consolidation, FIXME 0420). Reuse the var_names so normalization
+        // is identical to the constrained path.
+        return render_type(
+            &scheme.ty,
+            PrimitiveNaming::Qualified,
+            VarNaming::Lettered(&var_names),
+        );
     }
 
     // Build a map from TypeId to the constraint traits for quick lookup.
@@ -177,65 +184,21 @@ pub fn format_scheme_type(scheme: &Scheme) -> String {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Recursive helper for `format_type_qualified` with pre-computed var names.
-fn format_type_qualified_inner(
-    ty: &Type,
-    var_names: &HashMap<TypeId, String>,
-) -> String {
-    match ty {
-        Type::Int => "primitives/Int".to_string(),
-        Type::Bool => "primitives/Bool".to_string(),
-        Type::String => "primitives/String".to_string(),
-        Type::Float => "primitives/Float".to_string(),
-        Type::Fn(params, ret) => {
-            let parts: Vec<String> = params
-                .iter()
-                .map(|p| format_type_qualified_inner(p, var_names))
-                .collect();
-            let ret_s = format_type_qualified_inner(ret, var_names);
-            format!("(Fn [{}] {ret_s})", parts.join(" "))
-        }
-        Type::ADT(fqtn, args) => {
-            let qname = format!("{}/{}", fqtn.module, fqtn.name);
-            if args.is_empty() {
-                qname
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| format_type_qualified_inner(a, var_names))
-                    .collect();
-                format!("({qname} {})", arg_strs.join(" "))
-            }
-        }
-        Type::Var(id) => {
-            var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"))
-        }
-        Type::TyConApp(id, args) => {
-            let name = var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"));
-            if args.is_empty() {
-                name
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| format_type_qualified_inner(a, var_names))
-                    .collect();
-                format!("({name} {})", arg_strs.join(" "))
-            }
-        }
-    }
-}
-
 /// Format a type with inline constraint annotations (spec §1.3, §1.4).
 ///
 /// Type names are fully qualified. Inside function param lists (`in_params = true`):
 ///   every occurrence of constrained var: `:TraitName var` (spec §3.5.1)
 /// Outside param lists (return type, ADT args): vars are always bare.
+///
+/// S87 (FIXME 0420, §4.4 approach (a)): this renderer is REPL-display-specific —
+/// the `:TraitName var` decoration in param position is a `cranelisp-types`
+/// boundary crate must NOT own (Principle 1). It therefore keeps its own
+/// recursion to thread `in_params`, but routes every variant that carries NO
+/// constraint decoration — the primitive leaves, `ADT`, and `TyConApp` (vars
+/// inside ADT/TyConApp args are always rendered bare) — through the shared
+/// `cranelisp_types::render_type` walk with FQ primitives + lettered vars.
+/// Only the `Fn` structure (which must thread `in_params`) and the constrained
+/// `Var`-in-params decoration stay local.
 fn format_type_with_inline_constraints(
     ty: &Type,
     var_names: &HashMap<TypeId, String>,
@@ -243,10 +206,6 @@ fn format_type_with_inline_constraints(
     in_params: bool,
 ) -> String {
     match ty {
-        Type::Int => "primitives/Int".to_string(),
-        Type::Bool => "primitives/Bool".to_string(),
-        Type::String => "primitives/String".to_string(),
-        Type::Float => "primitives/Float".to_string(),
         Type::Fn(params, ret) => {
             let parts: Vec<String> = params
                 .iter()
@@ -260,22 +219,6 @@ fn format_type_with_inline_constraints(
                 ret, var_names, constraints, false,
             );
             format!("(Fn [{}] {ret_s})", parts.join(" "))
-        }
-        Type::ADT(fqtn, args) => {
-            let qname = format!("{}/{}", fqtn.module, fqtn.name);
-            if args.is_empty() {
-                qname
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| {
-                        format_type_with_inline_constraints(
-                            a, var_names, constraints, false,
-                        )
-                    })
-                    .collect();
-                format!("({qname} {})", arg_strs.join(" "))
-            }
         }
         Type::Var(id) => {
             let var_name = var_names
@@ -297,24 +240,13 @@ fn format_type_with_inline_constraints(
                 var_name
             }
         }
-        Type::TyConApp(id, args) => {
-            let name = var_names
-                .get(id)
-                .cloned()
-                .unwrap_or_else(|| format!("t{id}"));
-            if args.is_empty() {
-                name
-            } else {
-                let arg_strs: Vec<String> = args
-                    .iter()
-                    .map(|a| {
-                        format_type_with_inline_constraints(
-                            a, var_names, constraints, false,
-                        )
-                    })
-                    .collect();
-                format!("({name} {})", arg_strs.join(" "))
-            }
+        // Primitives, ADT, and TyConApp carry no `:TraitName` decoration (vars in
+        // their args are always rendered bare), so they delegate fully to the
+        // shared walk — FQ primitives + lettered vars, byte-identical to the
+        // former local arms.
+        Type::Int | Type::Bool | Type::String | Type::Float | Type::ADT(_, _)
+        | Type::TyConApp(_, _) => {
+            render_type(ty, PrimitiveNaming::Qualified, VarNaming::Lettered(var_names))
         }
     }
 }
