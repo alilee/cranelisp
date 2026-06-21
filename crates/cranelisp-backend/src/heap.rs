@@ -571,332 +571,8 @@ impl HeapCategory {
 // The classifier walks each name → its Def for the field count. See
 // `design/backend/compile-to-module.md` §2.6 + `DefKind::Constructor` rustdoc.
 #[cfg(test)]
-mod heap_category_tests {
-    use super::*;
-    use cranelisp_types::{DefKind, FQTypeName, Scheme, Type, TypeDefInfo, TypeName, Visibility};
+mod heap_category_tests;
 
-    const TEST_MOD: &str = "test";
-
-    /// A constructor spec for test fixtures: name, tag, and field count.
-    struct CtorSpec {
-        name: &'static str,
-        tag: usize,
-        field_count: usize,
-    }
-
-    /// Test helper: create an FQTypeName in a "test" module.
-    fn test_fqtn(name: &str) -> FQTypeName {
-        FQTypeName::new(ModuleFullPath::from(TEST_MOD), TypeName::from(name))
-    }
-
-    /// Helper: nullary constructor spec (no fields).
-    fn nullary_ctor(name: &'static str, tag: usize) -> CtorSpec {
-        CtorSpec { name, tag, field_count: 0 }
-    }
-
-    /// Helper: data constructor spec with the given field count.
-    fn data_ctor(name: &'static str, tag: usize, field_count: usize) -> CtorSpec {
-        CtorSpec { name, tag, field_count }
-    }
-
-    /// Build a constructor `Def` entry under the ctor-as-Def shape.
-    /// `type_def` is `Some(..)` for a single-ctor product type (the ctor IS
-    /// its own type — S79 Option 3a dual facet), `None` for sum/enum ctors.
-    fn ctor_def_entry(
-        type_fqtn: &FQTypeName,
-        spec: &CtorSpec,
-        type_def: Option<Box<TypeDefInfo>>,
-    ) -> ModuleEntry {
-        let scheme = Scheme {
-            type_vars: vec![],
-            constraints: std::collections::HashMap::new(),
-            ty: Type::ADT(type_fqtn.clone(), vec![]),
-        };
-        ModuleEntry::Def {
-            scheme,
-            visibility: Visibility::Public,
-            docstring: None,
-            param_names: (0..spec.field_count)
-                .map(|i| Symbol::from(format!("f{i}")))
-                .collect(),
-            kind: Box::new(DefKind::Constructor {
-                got_slot: 0,
-                type_name: type_fqtn.clone(),
-                tag: spec.tag,
-                field_count: spec.field_count,
-                internal: false,
-                type_def,
-            }),
-            callees: vec![],
-            trait_origin: None,
-            seq: 0,
-            ast: None,
-            codegen_view: None,
-            code: None,
-        }
-    }
-
-    /// Build a DashMap with a single module, mirroring the production
-    /// registration shape (S79 Option 3a, `cranelisp-typecheck::adt`):
-    /// every constructor — sum, enum, OR product — is a got-slotted
-    /// `ModuleEntry::Def { kind: DefKind::Constructor { .. }, .. }`. For a
-    /// **product type** (single constructor whose name equals the type name)
-    /// that `Def` ALSO carries the type facet `type_def: Some(TypeDefInfo)`
-    /// and IS the `type_name` key — there is no separate `TypeDef` entry, and
-    /// the prior `constructor_scheme`-smuggling `TypeDef` is retired. For
-    /// sum/enum types each ctor `Def` is keyed distinctly and a separate
-    /// `ModuleEntry::TypeDef` is inserted under the type name.
-    fn tables_with_type(
-        type_name: &str,
-        type_params: &[&str],
-        ctors: &[CtorSpec],
-    ) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
-        let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
-        let mut st = SymbolTable::new(ModuleFullPath::from(TEST_MOD));
-        let fqtn = test_fqtn(type_name);
-
-        let info = TypeDefInfo {
-            name: fqtn.clone(),
-            type_params: type_params.iter().map(|s| Symbol::from(*s)).collect(),
-            constructors: ctors.iter().map(|c| Symbol::from(c.name)).collect(),
-        };
-
-        let is_product = ctors.len() == 1 && ctors[0].name == type_name;
-
-        // Insert ctor Defs. The product ctor carries its type facet and IS the
-        // type-name key; sum/enum ctors carry `type_def: None`.
-        for spec in ctors {
-            let type_def = if is_product {
-                Some(Box::new(info.clone()))
-            } else {
-                None
-            };
-            st.insert(
-                Symbol::from(spec.name),
-                ctor_def_entry(&fqtn, spec, type_def),
-            );
-        }
-
-        // Sum/enum: a separate `TypeDef` entry under the type name. A product
-        // type needs NONE — its got-slotted ctor `Def` already answers as the
-        // type via its `type_def` facet.
-        if !is_product {
-            st.insert(
-                Symbol::from(type_name),
-                ModuleEntry::TypeDef {
-                    info,
-                    visibility: Visibility::Public,
-                    docstring: None,
-                },
-            );
-        }
-        tables.insert(ModuleFullPath::from(TEST_MOD), st);
-        tables
-    }
-
-    // --- Primitive types (no tables needed) ---
-
-    // Build a concrete ADT `ConcreteType` from a test type name + concrete args.
-    fn cadt(name: &str, args: Vec<ConcreteType>) -> ConcreteType {
-        ConcreteType::ADT(test_fqtn(name), args)
-    }
-
-    #[test]
-    fn test_primitives_never_heap() {
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&ConcreteType::Int, None),
-            HeapCategory::NeverHeap
-        );
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&ConcreteType::Bool, None),
-            HeapCategory::NeverHeap
-        );
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&ConcreteType::Float, None),
-            HeapCategory::NeverHeap
-        );
-    }
-
-    #[test]
-    fn test_string_always_heap() {
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&ConcreteType::String, None),
-            HeapCategory::AlwaysHeap
-        );
-    }
-
-    #[test]
-    fn test_fn_always_heap() {
-        let fn_ty = ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int));
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&fn_ty, None),
-            HeapCategory::AlwaysHeap
-        );
-    }
-
-    // S84 Phase 3 (concrete-boundary-type.md §3.1, FIXME 0391). `classify` now
-    // takes a `ConcreteType` — there is NO `Var` and NO `TyConApp` variant, so
-    // the old `test_var_*` / `test_tyconapp_*` / `(Option Var)` / `(Vec Var)`
-    // backstop-deferred cases are **structurally inexpressible**: you cannot
-    // construct a `ConcreteType::Var` to hand to `classify` (the migration's
-    // whole proof — `cargo check` rejects `ConcreteType::Var(0)` at compile time).
-    // The four behavioural `Var`-guards collapsed to that one structural property;
-    // §3.11.1 ambiguity is caught upstream at typecheck + `MonoExpr::from_expr`,
-    // never at this seam.
-
-    // --- ADT without tables (conservative fallback) ---
-
-    #[test]
-    fn test_adt_without_tables_is_mixed() {
-        let color = cadt("Color", vec![]);
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&color, None),
-            HeapCategory::Mixed,
-        );
-    }
-
-    #[test]
-    fn test_parameterized_adt_without_tables_is_mixed() {
-        let option_int = cadt("Option", vec![ConcreteType::Int]);
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&option_int, None),
-            HeapCategory::Mixed,
-        );
-    }
-
-    // --- ADT with tables: enum-only (all nullary) ---
-
-    #[test]
-    fn test_enum_only_adt_never_heap() {
-        // (deftype Color Red Green Blue)
-        let tables = tables_with_type(
-            "Color",
-            &[],
-            &[
-                nullary_ctor("Red", 0),
-                nullary_ctor("Green", 1),
-                nullary_ctor("Blue", 2),
-            ],
-        );
-        let color = cadt("Color", vec![]);
-        assert_eq!(
-            HeapCategory::classify(&color, Some(&tables)),
-            HeapCategory::NeverHeap,
-        );
-    }
-
-    // --- ADT with tables: all data constructors ---
-
-    #[test]
-    fn test_data_only_adt_always_heap() {
-        // (deftype Wrapper [val]) — non-parameterized with data constructor
-        // This is the F-2 bug case: was incorrectly NeverHeap
-        let tables = tables_with_type(
-            "Wrapper",
-            &[],
-            &[data_ctor("Wrapper", 0, 1)],
-        );
-        let wrapper = cadt("Wrapper", vec![]);
-        assert_eq!(
-            HeapCategory::classify(&wrapper, Some(&tables)),
-            HeapCategory::AlwaysHeap,
-        );
-    }
-
-    #[test]
-    fn test_product_type_always_heap() {
-        // (deftype IPoint (IPoint [:Int x :Int y])) — product type
-        let tables = tables_with_type(
-            "IPoint",
-            &[],
-            &[data_ctor("IPoint", 0, 2)],
-        );
-        let point = cadt("IPoint", vec![]);
-        assert_eq!(
-            HeapCategory::classify(&point, Some(&tables)),
-            HeapCategory::AlwaysHeap,
-        );
-    }
-
-    // --- ADT with tables: mixed constructors ---
-
-    // regression: KEPT path (FIXME 0375/0379). A type-KNOWN `Mixed` ADT with NO
-    // free var (`is_representation_undetermined()` is FALSE) still classifies as
-    // `Mixed` and keeps its sound `<1024` nullary-tag discrimination guard — it
-    // must NOT be swept into the widened panic. This is the `(true,true)` ctor
-    // shape → `Mixed` → `emit_rc_*_guarded` chain that must stay intact.
-    #[test]
-    fn test_mixed_adt_with_tables() {
-        // (deftype (Option a) None (Some [:a val]))
-        let tables = tables_with_type(
-            "Option",
-            &["a"],
-            &[nullary_ctor("None", 0), data_ctor("Some", 1, 1)],
-        );
-        let option_int = cadt("Option", vec![ConcreteType::Int]);
-        assert_eq!(
-            HeapCategory::classify(&option_int, Some(&tables)),
-            HeapCategory::Mixed,
-        );
-    }
-
-    // --- ADT with tables: parameterized but only nullary ---
-
-    #[test]
-    fn test_phantom_type_never_heap() {
-        // (deftype (Phantom a) PhantomVal) — parameterized, but only nullary constructor
-        // This was incorrectly Mixed with the old heuristic
-        let tables = tables_with_type(
-            "Phantom",
-            &["a"],
-            &[nullary_ctor("PhantomVal", 0)],
-        );
-        let phantom = cadt("Phantom", vec![ConcreteType::Int]);
-        assert_eq!(
-            HeapCategory::classify(&phantom, Some(&tables)),
-            HeapCategory::NeverHeap,
-        );
-    }
-
-    // --- ADT with tables: unknown type (not in tables) ---
-
-    #[test]
-    fn test_unknown_adt_with_empty_tables_is_mixed() {
-        let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
-        let unknown = cadt("Unknown", vec![]);
-        assert_eq!(
-            HeapCategory::classify(&unknown, Some(&tables)),
-            HeapCategory::Mixed,
-        );
-    }
-
-    // --- Vec type (built-in, always heap) ---
-
-    #[test]
-    fn test_vec_always_heap_without_tables() {
-        let vec_int = ConcreteType::ADT(
-            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
-            vec![ConcreteType::Int],
-        );
-        assert_eq!(
-            HeapCategory::classify::<(), ()>(&vec_int, None),
-            HeapCategory::AlwaysHeap,
-        );
-    }
-
-    #[test]
-    fn test_vec_always_heap_with_tables() {
-        let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
-        let vec_str = ConcreteType::ADT(
-            FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
-            vec![ConcreteType::String],
-        );
-        assert_eq!(
-            HeapCategory::classify(&vec_str, Some(&tables)),
-            HeapCategory::AlwaysHeap,
-        );
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Last-use analysis
@@ -910,7 +586,7 @@ mod heap_category_tests {
 /// Ring 1 simplified approach: walk the expression tree and for each variable,
 /// record all use sites. The last one in a pre-order traversal is the last use.
 pub(crate) fn compute_last_uses(
-    expr: &cranelisp_types::MonoExpr,
+expr: &cranelisp_types::MonoExpr,
 ) -> HashMap<(cranelisp_types::Symbol, cranelisp_types::Span), bool> {
     use cranelisp_types::{Symbol, Span};
 
@@ -927,10 +603,25 @@ pub(crate) fn compute_last_uses(
     result
 }
 
+/// Collect variable uses for a call sub-expression, *skipping* a direct
+/// top-level `Var` (its occurrence is recorded separately by the `Apply` arm,
+/// ordered after all nested uses — see the comment there). For any non-`Var`
+/// expression this is identical to `collect_var_uses`.
+fn collect_var_uses_nested_only(
+expr: &cranelisp_types::MonoExpr,
+uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
+) {
+    if matches!(expr, cranelisp_types::MonoExpr::Var { .. }) {
+        // Direct Var: recorded by the caller after nested uses.
+        return;
+    }
+    collect_var_uses(expr, uses);
+}
+
 /// Collect all variable references in pre-order traversal.
 fn collect_var_uses(
-    expr: &cranelisp_types::MonoExpr,
-    uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
+expr: &cranelisp_types::MonoExpr,
+uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
 ) {
     use cranelisp_types::MonoExpr;
 
@@ -953,9 +644,39 @@ fn collect_var_uses(
             collect_var_uses(body, uses);
         }
         MonoExpr::Apply { callee, args, .. } => {
-            collect_var_uses(callee, uses);
+            // Evaluation/consumption order is NOT pre-order textual order. A
+            // direct `Var` argument (or callee) is *held* from the moment it is
+            // evaluated until the call executes — i.e. until AFTER every sibling
+            // argument has been evaluated. So a direct-Var occurrence outlives
+            // any use of the same variable nested deeper inside a sibling
+            // argument, regardless of textual position.
+            //
+            // The naive "last textual occurrence is the last use" heuristic gets
+            // this wrong for self-recursive tail calls: in
+            //   (loop v (sub n 1) (... (vec-push v "z") ...))
+            // the direct arg `v` (occurrence #1) is textually BEFORE the nested
+            // `(vec-push v …)` (occurrence #2), so #2 was marked last-use. But
+            // the tail call re-passes `v` into the next iteration (the backend
+            // lowers it to a `jump` reusing the binding — see ring2-rc.md §"TCO+
+            // RC"), so `v` is live across iterations. Marking the `vec-push` use
+            // as last-use let Vec COW mutate `v` in place and then drop the
+            // aliased result as a temporary → use-after-free (DEF-2 / T2). See
+            // ring2-rc.md §5.5 for the sibling captured/borrowed-var rules.
+            //
+            // Fix: record direct-Var occurrences of callee+args AFTER recursing
+            // into the nested (non-direct-Var) subexpressions, so a direct-Var
+            // arg correctly counts as the latest live use within this call.
+            collect_var_uses_nested_only(callee, uses);
             for arg in args {
-                collect_var_uses(arg, uses);
+                collect_var_uses_nested_only(arg, uses);
+            }
+            if let MonoExpr::Var { name, span, .. } = callee.as_ref() {
+                uses.entry(name.clone()).or_default().push(*span);
+            }
+            for arg in args {
+                if let MonoExpr::Var { name, span, .. } = arg {
+                    uses.entry(name.clone()).or_default().push(*span);
+                }
             }
         }
         MonoExpr::Match { scrutinee, arms, .. } => {
@@ -992,69 +713,4 @@ fn collect_var_uses(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // spec: 12-runtime §12.1.4 — ADT heap layout offsets (tag at 16, fields at 24+)
-    #[test]
-    fn test_heap_adt_layout() {
-        assert_eq!(HeapAdt::TAG_OFFSET, 16);
-        assert_eq!(HeapAdt::FIELDS_START, 24);
-        assert_eq!(HeapAdt::field_offset(0), 24);
-        assert_eq!(HeapAdt::field_offset(1), 32);
-        assert_eq!(HeapAdt::payload_size(0), 8); // tag only
-        assert_eq!(HeapAdt::payload_size(2), 24); // tag + 2 fields
-    }
-
-    // spec: 12-runtime §12.1.3 — closure heap layout (code_ptr at 16, drop_glue at 24, captures at 32+)
-    #[test]
-    fn test_heap_closure_layout() {
-        assert_eq!(HeapClosure::CODE_PTR_OFFSET, 16);
-        assert_eq!(HeapClosure::DROP_GLUE_PTR_OFFSET, 24);
-        assert_eq!(HeapClosure::CAPTURES_START, 32);
-        assert_eq!(HeapClosure::capture_offset(0), 32);
-        assert_eq!(HeapClosure::capture_offset(1), 40);
-        assert_eq!(HeapClosure::payload_size(0), 16); // code_ptr + drop_glue_ptr only
-        assert_eq!(HeapClosure::payload_size(3), 40); // code_ptr + drop_glue_ptr + 3 captures
-    }
-
-    // spec: 12-runtime §12.1.5 — Vec heap layout (len/cap/data_ptr at 16/24/32)
-    #[test]
-    fn test_heap_vec_layout() {
-        assert_eq!(HeapVec::LEN_OFFSET, 16);
-        assert_eq!(HeapVec::CAP_OFFSET, 24);
-        assert_eq!(HeapVec::DATA_PTR_OFFSET, 32);
-        assert_eq!(HeapVec::payload_size(), 24);
-        assert_eq!(std::mem::size_of::<HeapVec>(), 40);
-    }
-
-    // spec: 12-runtime §12.3 — last-use analysis for RC consuming calling convention
-    #[test]
-    fn test_compute_last_uses() {
-        use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
-
-        let x = Symbol::from("x");
-        let var = |name: Symbol, span: Span| MonoExpr::Var {
-            name,
-            span,
-            resolved_call: None,
-            ty: ConcreteType::Int,
-        };
-        let expr = MonoExpr::Apply {
-            callee: Box::new(var(Symbol::from("f"), Span::new(0, 1))),
-            args: vec![
-                var(x.clone(), Span::new(2, 3)),
-                var(x.clone(), Span::new(4, 5)),
-            ],
-            span: Span::new(0, 6),
-            resolved_call: None,
-            ty: ConcreteType::Int,
-        };
-
-        let last_uses = compute_last_uses(&expr);
-        // First use of x is NOT last use.
-        assert_eq!(last_uses.get(&(x.clone(), Span::new(2, 3))), Some(&false));
-        // Second use of x IS last use.
-        assert_eq!(last_uses.get(&(x.clone(), Span::new(4, 5))), Some(&true));
-    }
-}
+mod tests;

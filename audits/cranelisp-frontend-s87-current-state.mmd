@@ -1,0 +1,62 @@
+%% cranelisp-frontend current-state — Sprint 87 Stage B audit.
+%% Refreshes audits/frontend-20260423-current-state.mmd (superseded, kept in place
+%% per the never-delete-archived rule). Delta vs predecessor: the dual REPL/batch
+%% top-level entry pair (build_repl_input / build_top_level) is GONE — replaced by
+%% one per-form dispatcher build_form + one sequence boundary build_forms; the
+%% synthetic-span allocator is now centralized; name resolution is deferred to int.
+%% Remaining structural notes mark the S87 findings (F1, F2, F4, F5, F7).
+sequenceDiagram
+    autonumber
+    participant Caller as int orchestrator / REPL / Tests
+    participant API as cranelisp_frontend::lib (facade re-exports)
+    participant Reader as reader.rs (hand-written rec-descent)
+    participant Mod as module_extract.rs
+    participant QQ as quasiquote.rs
+    participant DM as defmacro.rs
+    participant Span as next_synthetic_span() (single allocator)
+    participant Forms as ast_builder::build_forms (:Type seam)
+    participant Form as ast_builder::build_form (per-form dispatch)
+    participant Expr as ast_builder::build_expr
+    participant Helpers as type/annotation/param/pattern helpers
+
+    Caller->>API: parse / expand / build request
+    API->>Reader: source -> Vec<Sexp>
+    Note over Reader: Lexes booleans + reader macros (quote/quasiquote/unquote/anon-fn). Dotted-module-path parsing duplicated across read_symbol_or_keyword & read_qualified_tail (F5).
+
+    opt module forms present
+        API->>Mod: extract mod/import/export/platform
+        Note over Mod: super rewritten eagerly here (BC inv #3, documented). No literal super survives the boundary.
+    end
+
+    opt quasiquote present
+        API->>QQ: expand_quasiquotes
+        QQ->>Span: next_synthetic_span (shared)
+        QQ->>QQ: make_sexp_* / make_slist / make_sconcat (DSL #1)
+    end
+
+    opt defmacro present
+        API->>DM: parse defmacro / synthesize clauses
+        DM->>Span: next_synthetic_span (shared, via re-export)
+        DM->>DM: make_*_match / make_var_pattern (DSL #2)
+        Note over QQ,DM: Two parallel synthetic-Sexp DSLs (F2). Both must match ast_builder reading EXACTLY — hidden contract.
+    end
+
+    Note over Caller,Forms: Orchestrator (int) peels begin (flatten_begin) + structural decls (extract_module_declarations) + expands macros BEFORE frontend dispatch (documented caller contract).
+
+    Caller->>Forms: build_forms(&[Sexp])  (single entry — no REPL/batch split)
+    loop per sexp
+        alt leading :Type annotation
+            Forms->>Expr: build_one_expr_at (pairs :Type + following form)
+        else top-level form head
+            Forms->>Form: is_top_level_form_sexp? -> build_form
+            Note right of Form: head-set classification expressed twice (routing predicate :328 vs dispatch :210) — latent skew (F7).
+            Form->>Helpers: parse_def_visibility / parse_defn / deftype / deftrait / impl / defmacro
+        else bare expression
+            Forms->>Expr: build_expr
+        end
+    end
+    Form->>Helpers: annotation / type-expr / param / pattern parsing
+    Expr->>Helpers: same shared helpers
+
+    Note right of Form: ast_builder.rs (1211 prod LOC) still mixes top-level + expr + trait/impl + types + patterns in one file — not split per baseline rec #1 (F1). No god function (largest ~75 lines).
+    Note right of Helpers: Frontend emits cranelisp_types DTOs only (ParsedEntry/TopLevel/Expr/Sexp). Name resolution deferred to int/typecheck — SymbolRef::new(None, ..) only (lens v clean).

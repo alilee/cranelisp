@@ -4,7 +4,7 @@ This section defines the syntactic grammar of Cranelisp -- how S-expression tree
 
 Throughout this section, EBNF non-terminals in `UPPER_CASE` refer to lexical tokens from Section 1. Non-terminals in `lower_case` are syntactic grammar rules defined here. The notation `(...)` denotes a parenthesized list form, `[...]` denotes a bracket form.
 
-## 2.1 Program Structure [S10]
+## 2.1 Program Structure [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_repl_expression]
 
 A Cranelisp program is a sequence of top-level forms:
 
@@ -419,7 +419,7 @@ The `export` form re-exports names from child or imported modules as part of the
 
 See [§8.4](08-modules.md#84-export) for full export semantics including module mounting (§8.4.4) and renamed re-exports (§8.4.5).
 
-### 2.2.9 `platform` -- Platform Declaration [S10]
+### 2.2.9 `platform` -- Platform Declaration [Tested tests/spec_platforms::platform_print_via_test_capture]
 
 ```ebnf
 platform_form = '(' 'platform' SYMBOL ')'
@@ -928,7 +928,7 @@ Where `COLON_PREFIX` is a colon-prefixed symbol from the lexical grammar (e.g., 
 
 The colon serves as the annotation introducer. A colon immediately followed by an uppercase letter is a named type annotation. A colon immediately followed by a lowercase letter is a type variable or trait constraint. A bare colon followed by a parenthesized form is a compound type annotation.
 
-## 2.9 Reserved Words [S76 — tested-by /qa S76]
+## 2.9 Reserved Words [Tested crates/cranelisp-frontend/src/ast_builder.rs::test_reject_trace_defn_name]
 
 The following names are **reserved words** — they are recognised directly by the parser and AST builder (and, for the special forms below, the typechecker) and have dedicated syntax. They are not ordinary identifiers, are always available with no import and no module path, and **cannot be shadowed**:
 

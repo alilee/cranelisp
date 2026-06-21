@@ -133,3 +133,30 @@
 (defn vec-flatten "Flatten a Vec of Vecs into a single Vec"
   [vv]
   (vec-reduce vec-concat [] vv))
+
+;; ── range (eager) — Stage C.1 gap G3 ─────────────────────────────────
+;; `(range lo hi)` builds the eager Vec [lo, lo+1, …, hi-1] — HALF-OPEN
+;; (inclusive lo, EXCLUSIVE hi), matching Clojure's `(range start end)`.
+;; This is the highest-leverage adequacy gap (G3): it collapses the
+;; pervasive hand-threaded `(if (= i N) acc (helper (+ i 1) …))` index
+;; recursion in the exemplar into `(vec-reduce f init (range 0 N))` /
+;; `(vec-map f (range 0 N))`. `range` is NOT 0402-reserved, but it FEEDS the
+;; future collection trait's map/reduce — curating it here does not pull a
+;; bare `map`/`reduce` into the prelude (§11.4a caveat). Home: collections.vec
+;; (it produces a Vec; lives beside count/get/conj). Empty when hi <= lo.
+
+(defn range "Eager Vec of ints [lo, hi) — inclusive lo, exclusive hi"
+  [:Int lo :Int hi] :(Vec Int)
+  (range-loop lo hi []))
+
+(defn- range-loop "Tail-recursive helper for range"
+  [:Int i :Int hi acc] :(Vec Int)
+  (if (ge-i64 i hi) acc
+    (range-loop (add-i64 i 1) hi (vec-push acc i))))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; `(mod test …)` submodule (S87 Stage C.2): exercises the curated Clojure
+;; verbs (count/get/conj/assoc) and the vec combinators with the harness.
+;; Vec values reduce to Int scalars (via count/get/vec-reduce) for assert-eq.
+
+(mod test)

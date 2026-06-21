@@ -190,16 +190,37 @@ The presence of the map IS the mode discriminator; there is no separate `is_repl
 **`Introspection` shape** (per `facades/int.md` §"Introspection"):
 - `source: Option<String>` — per-defn source snippet (Decision 39); replaces module-global source store.
 - `sexp: Option<Sexp>` — post-expansion s-expression.
-- `clif_ir: Option<String>` — CLIF IR text (when trace mode).
-- `disasm: Option<String>` — native disassembly (when trace mode).
-- `code_size: Option<usize>` — native code size in bytes.
+- `clif_ir: Option<String>` — CLIF IR text (when trace mode); **eagerly captured** post-codegen.
+- `code_size: Option<usize>` — native code size in bytes; **eagerly captured** post-codegen.
 - `compile_duration: Option<Duration>` — codegen wall-clock.
+
+> **No `disasm` field.** Native disassembly is NOT a stored introspection
+> field — it is **re-derived on demand** (Decision 41 on-demand model). Disasm
+> is the most expensive metadata (a full capstone pass over the finalised
+> machine code) and is needed only when a human types `/disasm`; persisting it
+> for every compiled symbol would tax every REPL eval to serve a rare query.
+> The GOT slot already holds the live code address and `code_size` is already
+> captured, so `cranelisp_backend::produce_disasm(fq, code_size, symbol_tables)`
+> reconstructs the disassembly from the same allocation the backend finalised,
+> on the `/disasm` keystroke. This mirrors the eager/lazy split: cheap, often-read
+> metadata (`source`/`sexp`/`clif_ir`/`code_size`) is captured at codegen;
+> expensive, rarely-read metadata (disasm) is derived at read time.
+>
+> *Historical note:* an earlier `Introspection.disasm: Option<String>` field +
+> a `CompilerSession::symbol_disasm()` accessor were introduced under the
+> assumption the backend would write disasm eagerly. The backend never
+> populated it (`worker.rs` step 7 sets only `clif_ir` + `code_size`), so the
+> field is permanently `None` and the `/disasm` handler reading it always hits
+> the dead "no disassembly available" path (S86 defect, ledger guard
+> `disasm_command_shows_native_code_for_compiled_fn`). The field + dead accessor
+> are vestigial and SHOULD be removed when `/disasm` is rewired (S87 Stage A);
+> if removed they cease to be a read site below.
 
 **Population sites** (all conditional on `shared.introspection.is_some()`):
 - `process_form` after parse + macro expansion: write `source` + `sexp`.
-- `compile_to_module` per-symbol call (Decision 41): backend writes `clif_ir`, `disasm`, `code_size`, `compile_duration` directly into the introspection map via the `Option<&DashMap<FQSymbol, Introspection>>` parameter — no int-side post-processing.
+- `compile_to_module` per-symbol call (Decision 41): backend writes `clif_ir`, `code_size`, `compile_duration` directly into the introspection map via the `Option<&DashMap<FQSymbol, Introspection>>` parameter — no int-side post-processing. Disasm is NOT among them (re-derived on demand, above).
 
-**Read sites**: slash-command accessors on `CompilerSession` (`symbol_source`, `symbol_sexp`, `symbol_clif`, `symbol_disasm`, `symbol_code_size`, `symbol_compile_duration`); `Sess::format_error` for rich inline display; `Sess::regenerate_backing_file` for source emission.
+**Read sites**: slash-command accessors on `CompilerSession` (`symbol_source`, `symbol_sexp`, `symbol_clif`, `symbol_code_size`, `symbol_compile_duration`) read the stored fields; `Sess::format_error` for rich inline display; `Sess::regenerate_backing_file` for source emission. `/disasm` is NOT a stored-field read — `handle_disasm` calls `cranelisp_backend::produce_disasm` on demand (see §8.2.1).
 
 Cited principles: P1 (Decoupling), P6 (Complexity has a budget — production carries no overhead), P7 (Single source of truth — one place per-symbol metadata lives), P11 (Single pipeline — one mode discriminator at the integration layer).
 
@@ -406,11 +427,117 @@ introspection.insert(fq, Introspection {
   source: Some(eval_text),                     // for REPL evals; for file-based modules, sliced from file Arc<str> at parse-time
   sexp: Some(expanded.clone()),
   clif_ir: ...,                                // populated post-codegen in worker (Decision 41 — backend writes directly)
-  disasm: ..., code_size: ..., compile_duration: ...,
+  code_size: ..., compile_duration: ...,       // populated post-codegen in worker
+  // NB: no `disasm` field — derived on demand (§4.3, §8.2.1)
 })
 ```
 
 Production batch (`shared.introspection == None`) skips the populate path entirely.
+
+### 8.2.1 `/disasm` — on-demand disassembly (Decision 41)
+
+`/disasm <name>` does NOT read a stored field. The handler
+(`src/repl.rs::handle_disasm`) re-derives the disassembly at the keystroke:
+
+```text
+handle_disasm(name):
+  if name empty            -> usage line
+  fq = FQSymbol { module: current_module_path(), symbol: name }   // same resolution as /clif's get_introspection
+  code_size = introspection[fq].code_size                          // captured at codegen
+      else -> "Error: no disassembly available for '<name>'"       // not compiled / no metadata
+  match cranelisp_backend::produce_disasm(&fq, code_size, &shared.symbol_tables):
+    Ok(text) -> "; disasm for <name>\n{text}"                      // header + capstone lines
+    Err(_)   -> "Error: no disassembly available for '<name>'"     // slot empty / not compilable
+```
+
+Design points:
+
+- **`produce_disasm` is ALREADY public** (`crates/cranelisp-backend/public-api.txt`;
+  def `crates/cranelisp-backend/src/lib.rs`). The S87 fix is pure wiring at the
+  int boundary — **no backend surface change, no `cranelisp-types` edit**
+  (/arch Phase-2 confirmed: no interface delta).
+- **`code_size` is the bridge.** `produce_disasm` requires the caller to supply
+  `code_size` (the backend does not persist it; §"The caller supplies code_size"
+  in `lib.rs`). int already captures `code_size` eagerly into the introspection
+  record (`worker.rs` step 7), so the handler reads it from there and forwards it.
+  A name with no `code_size` (never compiled, or batch mode with no introspection
+  map) yields the graceful "no disassembly available" line — same shape as the
+  other introspection handlers.
+- **Symbol-table lookup is backend-side.** `produce_disasm` itself resolves the
+  GOT slot from `shared.symbol_tables` and reads the live code bytes; int hands
+  it the `FQSymbol` + `code_size` + a `&DashMap` of the symbol tables. The
+  module of `fq` is the current REPL module (identical resolution to `/clif`'s
+  `get_introspection`), so `/disasm` and `/clif` resolve the same symbol.
+- **Why not eager?** See the §4.3 disasm note — disasm is the most expensive
+  metadata and rarely read; deriving it on the keystroke keeps every REPL eval
+  cheap (Principle 6 — complexity has a budget; the production-batch path pays
+  nothing, the REPL pays only when asked).
+- **Contrast with `/clif` (the working sibling).** `/clif` reads the eagerly
+  captured `intr.clif_ir` (cheap to capture, captured at codegen). `/disasm`
+  cannot mirror that path because no `disasm` field is populated — and per
+  Decision 41 it SHOULD NOT be. `/disasm`'s correct shape is the re-derivation
+  above, not "populate the field too."
+- **Vestigial accessor.** `CompilerSession::symbol_disasm()` reads the dead
+  `intr.disasm` field; it has no correct caller after this rewire and should be
+  removed alongside the field (§4.3 historical note). `/dev` removes both in the
+  same change-set or leaves a one-line `// dead — see int.md §4.3` if removal is
+  scoped out; the design intent is removal.
+
+This closes the S86 ledger guard `disasm_command_shows_native_code_for_compiled_fn`
+(spec: `repl/spec.md §3.1`).
+
+### 8.2.2 `/info` macro card — clause-count line (`repl/spec.md §11.2.2`)
+
+`/info <macro>` renders through `format_def_entry` → `format_macro_display`
+(`src/repl.rs`). Per `repl/spec.md §11.2.2` the macro card MUST, for a
+**multi-clause** macro, emit a clause-count summary line after the per-clause
+signature lines:
+
+```
+:user/cond ; defmacro - Multi-way conditional
+; [x] -> Sexp
+; [x body & rest] -> Sexp
+  2 clauses
+```
+
+Current `format_macro_display` emits the `:module/name ; defmacro` line, the
+docstring comment, and one `; <params> -> Sexp` line per clause — but NOT the
+count line. That omission is the S86 ledger guard
+`info_multi_clause_macro_shows_clause_count` (spec: `repl/spec.md §11.2.2`).
+
+Design points:
+
+- **Rendering home is `format_macro_display`.** The clause count is computed
+  from the same `clauses: &[MacroClauseInfo]` slice the renderer already
+  iterates — `clauses.len()`. No new data is needed; `clauses_meta` is already
+  carried on the `DefKind::Macro` entry (`describe_symbol`'s bare-lookup arm
+  already prints `({N} clause(s), …)` from it, so the count datum is proven
+  available — this is a rendering gap, not a data gap).
+- **Format: `  N clauses`** — two leading spaces, no `;` prefix (it is a summary
+  line, not a comment line), matching the spec worked example exactly. Append it
+  as the final line of the returned string.
+- **Gate on `clauses.len() > 1`.** The spec's single-clause worked example
+  (`/info when`) shows NO count line; only the multi-clause example carries it.
+  Emit the line only when there is more than one clause. (Pluralisation is moot
+  under this gate — the count is always ≥ 2, so a fixed `"clauses"` is correct;
+  no `clause`/`clauses` branch needed.)
+- **Scope: `format_macro_display` only — do NOT touch `/sig` or bare display
+  divergently.** `/sig` renders macros through a *different* path
+  (`format_entry_sig`, NOT `format_macro_display`), so it is unaffected and its
+  `[Tested]` guards (`bare_macro_lookup_shows_clause_signature`) stay green.
+  `format_macro_display` is ALSO reached by the bare-`defmacro` display
+  (`format_def_entry` at the eval-result site) and `/info`; both existing guards
+  there (`defmacro_display_single_clause`, `defmacro_display_multi_clause`,
+  `bare_macro_lookup`) assert with `contains`, so appending the count line to a
+  multi-clause macro is non-breaking. The single-clause guards never trip the
+  `> 1` gate.
+- **No interface delta.** Pure int-side rendering; `clauses_meta` already on the
+  symbol-table entry. /arch Phase-2 confirmed no `cranelisp-types` change.
+- **Resolver split.** This is the `/repl` half of the Stage-A pair (the spec
+  format question is `/repl`-owned: `repl/spec.md §11.2.2` is the normative
+  contract); the rendering lives in `src/` (the `/int`-owned surface). See the
+  Phase-4 wave note below on whether the two src/ fixes are one `/dev`
+  invocation or two.
 
 ### 8.3 `regenerate_backing_file` (Decision 39)
 

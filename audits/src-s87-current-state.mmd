@@ -1,0 +1,54 @@
+%% src/ binary-surface current-state — Sprint 87 Stage B.
+%% Refreshes (supersedes, does not delete) audits/src-20260423-current-state.mmd.
+%% The 04-23 predecessor showed two god-files (session_v4.rs 5417 / worker.rs 5041)
+%% carrying split integration policy. This refresh reflects the FIXME 0109 §3.3
+%% Wave-C/D decomposition: session_v4 split into eval.rs / repl.rs / process_form.rs;
+%% lib.rs narrowed from 18 pub modules to 8 pub items. Notes mark the S87 findings
+%% (F-A DEF-1 codegen-batch seam; F-B host-callback JIT-vs-link divergence).
+sequenceDiagram
+    autonumber
+    participant Caller as CLI / REPL / Tests
+    participant Main as main.rs
+    participant Session as session_v4.rs (lifecycle + SharedState)
+    participant Eval as eval.rs (REPL eval chain)
+    participant Repl as repl.rs (slash + display)
+    participant PF as process_form.rs (per-form orchestration)
+    participant Worker as worker.rs (codegen batch + cache load)
+    participant Sched as scheduler.rs
+    participant Boot as bootstrap.rs (synthetic mount)
+    participant Exp as expander.rs (macro recognition seam)
+    participant FE as cranelisp-frontend
+    participant TC as cranelisp-typecheck
+    participant BE as cranelisp-backend (Jit / Linker)
+
+    Caller->>Main: run / repl / link
+    Main->>Session: CompilerSession::new (F-D: ~216-line fn)
+    Session->>Boot: mount_synthetic_modules (F-J: register_synth_adt mirrors TC)
+    Session->>Sched: spawn worker pool / register module
+
+    alt REPL eval (eval-thread orchestrates entry module)
+        Caller->>Repl: slash command / source line
+        Repl->>Eval: eval (cluster boundary + :Type grouping)
+        Eval->>PF: process_single_form -> process_cluster_once
+        PF->>Exp: recognize_macro_head (single prelude_fallback recognition seam)
+        Exp->>TC: resolve_with_fallback (prelude outer scope)
+        PF->>TC: check_forms (staging; commit-on-Ok)
+        PF->>Worker: inline_jit_codegen_for_module
+        Worker->>Worker: derive_codegen_batch (F-A: scans current table ONLY; no prelude_fallback)
+        Worker->>BE: build_session_jit / compile_to_module (F-B: JIT exported-symbol fallback)
+        Repl->>Repl: lookup_with_prelude_fallback (F-G: re-inlined in describe_symbol / format_eval_result_body)
+    else batch / link
+        Sched->>PF: process_cluster (worker entry; SOLE Gap->scheduler crossing)
+        PF->>FE: build_form / extract_module_declarations
+        PF->>PF: drive_module_dep (single FQ-autoload drive seam)
+        PF->>Worker: try_cache_hit_load (F-C: ~254-line, 9-phase god fn)
+        Worker->>BE: register_binary_exported_primitives -> dlsym (F-B: Linker has NO fallback; hand-rolled)
+        Session->>BE: compile_module_object (F-D: ~174-line) -> .o / manifest
+    end
+
+    Note over TC,Exp: Resolution seam is consolidated (resolve_terminal_entry_or_prelude in TC; recognize_macro_head in src/).
+    Note over Worker: F-A — codegen-BATCH derivation re-derives module scope WITHOUT the prelude outer scope -> DEF-1.
+    Note over Worker,BE: F-B — host-extern resolution wired TWICE: JIT fallback vs cache/--link dlsym (DEF-6 / 0407 family). No parity guard.
+    Note over Session,PF: FIXME 0109 split landed: session_v4 5417->1428; eval/repl/process_form are the new homes (baseline F1/F2 resolved).
+    Note over Caller,Session: lib.rs now exposes 8 pub items, not 18 modules (baseline F5 resolved).
+    Note over Session: Worker orchestration still two-homed (priority loop worker-side; object/nice compile session-side) — baseline F4 improved, not eliminated.

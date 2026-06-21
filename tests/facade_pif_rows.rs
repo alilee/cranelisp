@@ -436,10 +436,18 @@ fn row_31_cranelisp_op_extern_fns_deleted_from_intrinsics() {
 //
 // At S67 W0, signal (a) fails — none of describe_symbol / list_user_definitions
 // / module_imports / module_exports / symbol_source / symbol_sexp / symbol_clif
-// / symbol_disasm exist as CompilerSession methods (grep src/ returns 0).
+// exist as CompilerSession methods (grep src/ returns 0).
 // Signal (b) may pass coincidentally — the existing slash-command paths happen
 // to produce the universal-display format via a different code path. The
 // failure of (a) is the actionable PIF.
+//
+// S87 Phase 5 Wave 0 (/qa, per /arch GO): `symbol_disasm` dropped from this
+// list. Disasm is now produced on-demand via `cranelisp_backend::produce_disasm`
+// (Decision 41 — introspection is REPL-only, re-derived not persisted), so the
+// `Introspection.disasm` field + `CompilerSession::symbol_disasm()` accessor are
+// dead and being removed. /arch dropped `symbol_disasm` from the canonical
+// accessor-family enumeration in `design/arch/d1-introspection-repl-only.md`.
+// The PIF guard now enforces 7 read-side accessors, not 8.
 #[test]
 fn row_42_describe_symbol_family_methods_exist_on_compiler_session() {
     // Scan src/ tree for `fn describe_symbol`, etc. Pre-row-42 the methods
@@ -453,7 +461,6 @@ fn row_42_describe_symbol_family_methods_exist_on_compiler_session() {
         "symbol_source",
         "symbol_sexp",
         "symbol_clif",
-        "symbol_disasm",
     ];
     let src_root = workspace_root().join("src");
     let mut found: Vec<&'static str> = Vec::new();
@@ -479,8 +486,10 @@ fn row_42_describe_symbol_family_methods_exist_on_compiler_session() {
         missing.is_empty(),
         "FIXME 0176 partial close: describe_symbol family missing from src/. \
          Missing methods: {missing:?}. Found: {found:?}. Facade prescribes \
-         these 8 read-side accessors as CompilerSession methods reading \
-         shared.symbol_tables + shared.introspection. /dev (int) Wave 3 row 42."
+         these 7 read-side accessors as CompilerSession methods reading \
+         shared.symbol_tables + shared.introspection (symbol_disasm dropped \
+         S87 W0 — disasm is on-demand re-derivation per Decision 41, not a \
+         persisted accessor). /dev (int) Wave 3 row 42."
     );
 }
 

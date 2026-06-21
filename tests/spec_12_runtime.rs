@@ -1926,3 +1926,74 @@ fn lazy_stream_construction_does_not_force_tail() {
         .output()
         .assert_exit(37);
 }
+
+// =============================================================================
+// §12.3.3 Vec Copy-on-Write — heap-element Vec RC under borrowed-source copy
+// (DEF-2 / T2 family: vec-push/vec-set consuming-inc on heap elements)
+// =============================================================================
+
+// spec: spec/12-runtime.md §12.3.3 — `vec-push` returns a NEW Vec; the original
+// Vec and its heap (String) elements remain valid and re-readable. spec §12.1.5
+// — each heap element is reference-counted and freed with the Vec, not before.
+//
+// DEFECT (DEF-2 / T2 family — heap-element-vec RC; surfaced verifying the S87
+// `conj` curated verb and the audit's B2/B17 claims). When a Vec with HEAP
+// (String) elements is a BORROWED recursive parameter, re-passed unchanged to
+// the recursive call, and each iteration `vec-push`-copies it AND reads back
+// from the copy, the per-element consuming-inc on the heap element is
+// mismatched: the original String's refcount is decremented by the copy path
+// without a compensating inc, so by the SECOND iteration the still-live
+// original element is freed → use-after-free → SIGSEGV (exit 139).
+//
+// ISOLATION (this session):
+//   - Crashes deterministically 10/10 at recursion DEPTH 2 (n=2) in BOTH REPL
+//     and `--run`. Depth 0/1 pass.
+//   - The SAME loop with INT elements (no per-element heap RC) does NOT
+//     use-after-free — the trigger is the HEAP element, not the loop shape.
+//   - A single non-recursive `vec-push` reading both original and copy passes;
+//     the corruption needs the borrowed-source re-read on a SUBSEQUENT
+//     iteration after a prior copy decremented the element.
+//   - The simple threaded-accumulator `conj`/`vec-push` stress (build a vec by
+//     threading the result) does NOT crash — so plain `conj` is NOT corrupt;
+//     this borrowed-recursive shape is the live face of the DEF-2/B17 family.
+//
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md — RED today
+// (SIGSEGV), GREEN when the heap-element consuming-inc balances on the
+// vec-push/vec-set copy path. When GREEN: 2 iterations × str-len "aaa" = 6.
+// → /backend (vec heap-element consuming-inc symmetry; audit B2/T2,
+// `vec_codegen.rs` / `vec_runtime.rs` `vec_set_copy`/`vec_push_copy`).
+#[test]
+fn vec_push_heap_element_borrowed_recursive_source_no_uaf() {
+    repl_prims(
+        "(defn loop [v n acc] \
+           (if (le-i64 n 0) acc \
+             (loop v (sub-i64 n 1) \
+               (add-i64 acc (str-len (vec-get (vec-push v \"z\") 0))))))\n\
+         (loop [\"aaa\"] 2 0)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 6");
+}
+
+// spec: spec/12-runtime.md §12.3.3 / §12.1.5 — same DEF-2/T2 heap-element-vec
+// RC defect, observed END-TO-END through `--run` (the unit-tier face above is
+// REPL). A mode-crossing guard: the use-after-free aborts the process, so the
+// `--run` exit code is the witness — exit 6 when GREEN, SIGSEGV (139) today.
+// Mode parity matters because `--run` (JIT) and the REPL share the codegen but
+// the e2e path proves the corruption is not a REPL-session artifact.
+// → /backend (same fix as the unit-tier repro above).
+#[test]
+fn vec_push_heap_element_borrowed_recursive_source_no_uaf_run() {
+    Cranelisp::new()
+        .file(
+            "user.cl",
+            "(import [primitives [vec-push vec-get str-len add-i64 sub-i64 le-i64 Pure]])\n\
+             (defn loop [v n acc] \
+               (if (le-i64 n 0) acc \
+                 (loop v (sub-i64 n 1) \
+                   (add-i64 acc (str-len (vec-get (vec-push v \"z\") 0))))))\n\
+             (defn main [] (Pure (loop [\"aaa\"] 2 0)))",
+        )
+        .run("user.cl")
+        .output()
+        .assert_exit(6);
+}

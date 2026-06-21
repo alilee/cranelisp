@@ -269,7 +269,7 @@ Forbidding same-module non-macro expansion-time references is what makes REPL se
 
 The expanded S-expressions SHOULD carry the source location (span) of the original macro call site. This means that error messages resulting from expanded code point to where the macro was invoked, not where the macro was defined.
 
-### 9.3.6 Qualified Macro References [S76 — tested-by /qa S76]
+### 9.3.6 Qualified Macro References [Tested tests/s76_macro_availability::fq_macro_reference_expands_without_import]
 
 Macros MAY be invoked through qualified names (`module/macro-name`) without an explicit `import`. A qualified macro reference is resolved during macro expansion (the compile-time pass): the compiler lazy-loads, typechecks, and compiles the referenced module just-in-time (per §8.5.4), then expands the macro. There is no syntactic distinction between a qualified macro call and a qualified function call; the distinction is made when the compiler resolves the entry.
 
@@ -881,7 +881,7 @@ Concatenates two strings. Available as a primitive and commonly used in macro he
 (str-concat "foo" "-def")   ; -> "foo-def"
 ```
 
-## 9.12 Bootstrapping Order [S76 — tested-by /qa S76]
+## 9.12 Bootstrapping Order [Tested tests/spec_09_macros::macro_persists_across_evals]
 
 A module is compiled in **three passes**:
 

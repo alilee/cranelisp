@@ -1,0 +1,94 @@
+%% cranelisp-types — S87 Stage-B current-state module + data-flow diagram
+%% FRESH diagram (authored 2026-06-20, /review S87 Stage-B Wave 1b).
+%% No predecessor .mmd exists for this crate — the 2026-04-23 audit-diagram
+%% precedent (sprints/SPRINT.md §"Audit artefacts") covered only
+%% backend/frontend/src/typecheck; cranelisp-types had only the S69 textual
+%% facade audit (design/arch/facades/types-audit-s69.md), no diagram. This is
+%% the first current-state diagram for the crate.
+%%
+%% Reads: module structure + intra-crate dependency edges (crate:: refs) +
+%% the cross-crate consumers of the Type-rendering surface (Finding 1).
+
+graph TD
+    subgraph types["cranelisp-types (interface crate — bottom of DAG, corrected 3035 LOC)"]
+        direction TB
+
+        subgraph core["Core DTOs (leaf — no intra-crate deps)"]
+            span["span.rs<br/>Span"]
+            newtype["newtype.rs<br/>Symbol / TypeName / TraitName<br/>FQSymbol / FQTypeName / FQTraitName<br/>(string_newtype! — inner String now private)"]
+            sexp["sexp.rs<br/>Sexp"]
+            error["error.rs<br/>CranelispError / PlatformError<br/>ErrorLocation / LineCol"]
+            scheduling["scheduling.rs<br/>SchedulingClass"]
+            pipeline["pipeline.rs<br/>GOT_TABLE_SIZE etc."]
+            heap["heap.rs<br/>HeapHeader (layout contract)<br/>[HeapCategory relocated to backend — S69 U22]"]
+            got["got.rs<br/>GotTable"]
+            marshal["marshal.rs"]
+            parsed["parsed.rs<br/>ParsedEntry / MacroClause"]
+        end
+
+        subgraph typ["Type model"]
+            typesrs["types.rs<br/>Type / Scheme / Subst / TypeId<br/>apply / free_vars / type_var_names"]
+            concrete["concrete.rs<br/>ConcreteType (→ Type)"]
+            mono["mono_expr.rs<br/>MonoExpr / MonoDefnVariant"]
+        end
+
+        subgraph astg["AST + symbol-table state"]
+            astrs["ast.rs<br/>Expr / Defn / Pattern<br/>(unreachable! guard @436)"]
+            macro_exp["macro_expander.rs<br/>MacroExpander"]
+            modulers["module.rs<br/>SymbolTable / ModuleEntry / DefKind<br/>ImportSpec / ExportSpec / ImportNames<br/>**685 corrected — one concentration**"]
+            check["check.rs<br/>TypeDefInfo / FieldInfo"]
+            view["view.rs<br/>View (struct, private fields)"]
+            resolve["resolve.rs<br/>resolve / resolve_with_fallback<br/>split_qualified (single seam, /-guard)"]
+        end
+
+        typesrs --> newtype
+        concrete --> typesrs
+        mono --> astrs
+        astrs --> typesrs
+        view --> modulers
+        view --> newtype
+        resolve --> modulers
+        resolve --> view
+        resolve --> astrs
+        resolve --> error
+        resolve --> newtype
+        resolve --> span
+        resolve --> typesrs
+        modulers --> astrs
+        modulers --> concrete
+        modulers --> mono
+        modulers --> scheduling
+    end
+
+    %% ===== Finding 1 — FQ-rendering duplication (THE HEADLINE) =====
+    subgraph render["Type-string rendering — FIVE walks, TWO conventions (Finding 1, IMPORTANT)"]
+        direction TB
+        r1["#1 impl Display for Type<br/>types.rs:108 — BARE Int — t{id}"]
+        r2["#2 format_type_display / format_type_with_vars<br/>types.rs:182,188 — BARE Int — lettered<br/>**DEAD export (Finding 2)**"]
+        r3["#3 format_type_fq<br/>typecheck/unify.rs:141 — FQ primitives/Int — t{id}<br/>(Wave-0 add — deepened the dup)"]
+        r4["#4 format_type_qualified_inner<br/>src/display.rs:181 — FQ — lettered"]
+        r5["#5 format_type_with_inline_constraints<br/>src/display.rs:239 — FQ — lettered"]
+        r6["(adjacent) concrete_type_name<br/>typecheck/traits.rs:2202 — STRIPS module<br/>no-impl msg (Finding 4)"]
+    end
+
+    typesrs -.defines Type, walked by.-> r1
+    typesrs -.defines Type, walked by.-> r2
+    typesrs -.defines Type, re-walked in typecheck.-> r3
+    typesrs -.defines Type, re-walked in src/.-> r4
+    typesrs -.defines Type, re-walked in src/.-> r5
+    typesrs -.defines Type, re-walked in typecheck.-> r6
+
+    consolidate["RECOMMENDATION (Wave-2 /arch synthesis):<br/>ONE parameterised walk in types.rs<br/>config = {primitive: Bare|Qualified, var: Numbered|Lettered}<br/>→ all 5 sites become thin callers; #2 deleted;<br/>output conventions preserved AS CONFIG, walk unified"]
+    render -.->|Principle 7 single-source| consolidate
+
+    %% ===== Finding 3 — SymbolTable concurrency complex un-migrated =====
+    interim["Finding 3 (IMPORTANT, lens vi / Principle 8):<br/>symbols: HashMap (not DashMap-inner)<br/>next_got_slot: usize / next_seq: u64 (not atomics)<br/>writes &mut self (no &self interior-mutable methods)<br/>— S69 source-move ruling un-migrated 3 sprints;<br/>field rustdoc documents the deferral"]
+    modulers -.documented-deferred target.-> interim
+
+    classDef finding fill:#ffe6e6,stroke:#cc0000,stroke-width:2px;
+    classDef dead fill:#f0f0f0,stroke:#999,stroke-dasharray:4 3;
+    classDef rec fill:#e6f3ff,stroke:#0066cc,stroke-width:2px;
+    class r1,r3,r4,r5,r6,interim finding;
+    class r2 dead;
+    class consolidate,recrec;
+    class consolidate rec;

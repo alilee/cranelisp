@@ -307,6 +307,60 @@ Production batch (no introspection) shows `file:line:col: type error: …` — t
 
 The `Warning` shape mirrors `ErrorLocation` (per `facades/types.md`). Typecheck warnings (e.g., shadowing, unused imports — none yet implemented) follow the same producer policy.
 
+### 8.3 Type-name rendering inside error messages — FQ-qualification (S87 Stage A)
+
+**Contract.** `repl/spec.md` §5.3 requires a type error to name BOTH the expected and the actual (inferred) type **fully qualified** — `primitives/Int`, not the bare `Int`; `user/Color`, not `Color`. The source-location requirement is already met; the FQ-naming requirement is the open gap.
+
+**Root cause (the bare-vs-FQ divergence).** The type-mismatch message is built at `unify.rs:117`:
+
+```rust
+_ => Err(CranelispError::TypeError {
+    message: format!("type mismatch: expected {t1}, got {t2}"),
+    location: ErrorLocation::from_span(Span::SYNTHETIC),
+}),
+```
+
+`{t1}` / `{t2}` invoke `Type`'s `Display` impl (`cranelisp-types/src/types.rs:108`). That impl renders the **primitive** variants **bare** — `Type::Int => "Int"`, `Type::String => "String"` — while it renders `Type::ADT(fqtn, …)` through `FQTypeName`'s Display (which IS `module/name`). So for the failing guard `(add-i64 1 "hello")` (expected `Int`, actual `String` — both primitive variants), the rendered message is `type mismatch: expected Int, got String`: the names appear but unqualified.
+
+The **value-display path** (`src/display.rs::format_type_qualified_inner`, the binary crate) already does the right thing — it maps each primitive variant to its `primitives/…` string. The two paths diverged because they are different functions: the error renderer reuses the bare `Display` impl; the value-display path has its own qualified formatter. The renderer's message string flows through `checker.rs::unify` (line 1642) verbatim — only the `Span` is re-wrapped — so the bare names reach the REPL output unchanged. `unify.rs:117` is therefore the exact and sole seam.
+
+**Why the value-display formatter cannot simply be reused.** `format_type_qualified_inner` lives in `src/display.rs` — the **binary crate**, which *depends on* `cranelisp-typecheck`, not vice versa (dependency flows toward stability, Principle 3). `cranelisp-typecheck` cannot call up into `src/`. The qualification mechanism the error renderer needs must therefore live at or below `cranelisp-typecheck`.
+
+**Fix locus and mechanism — typecheck-local FQ renderer (preferred).** Add a small **private** FQ formatter inside `cranelisp-typecheck` — a free fn `format_type_fq(ty: &Type) -> String` in `unify.rs` (private to the crate; the only consumer is the unify error renderer). It is the structural twin of the existing bare renderers but maps the four primitive variants to their canonical `primitives/…` strings and renders ADT / Fn / args recursively through itself:
+
+- `Type::Int → "primitives/Int"`, `Bool → "primitives/Bool"`, `String → "primitives/String"`, `Float → "primitives/Float"`.
+- `Type::ADT(fqtn, args)` → `format!("{fqtn}")` already yields `module/name` via `FQTypeName`'s Display; recurse on `args` (parenthesised when non-empty, matching the existing Display shape).
+- `Type::Fn(params, ret)` → `(Fn [<params…>] <ret>)`, recursing on each.
+- `Type::Var(id) → "t{id}"`; `Type::TyConApp` → render as the existing Display does (vars are not the §5.3 FQ concern).
+
+Then **call it at `unify.rs:117`** — replace the two `{t1}` / `{t2}` `Display` interpolations:
+
+```rust
+message: format!(
+    "type mismatch: expected {}, got {}",
+    format_type_fq(&t1),
+    format_type_fq(&t2),
+),
+```
+
+**Why typecheck-local, not promoted to `cranelisp-types`.** Two reasons, both binding:
+
+1. **Boundary ownership.** `crates/cranelisp-types/` is `/arch`'s direct ownership — the triad (incl. `/dev`) does NOT narrow-deploy to it (`triad-shared.md`). Promoting the formatter into `cranelisp-types` would force a cross-skill FIXME `target: /arch` and serialize the Stage-A fix behind an /arch edit. A crate-private helper keeps the entire fix inside the `/dev`-deployable typecheck crate — the Stage-A guard flips green without a cross-crate dependency. (No `cranelisp-types` boundary change is needed: /arch's Phase-2 ruling already confirmed "no interface delta … the /typecheck fix changes `TypeError.message` content only.")
+2. **The /arch advisory wants the paths kept distinct.** The binding Phase-2 advisory is "do not unify the two [renderers] in a way that changes REPL value-display output." A typecheck-local renderer is the *most* faithful reading: the error path and the value-display path remain entirely separate functions in separate crates, converging only on the shared *output convention* (FQ primitive names), never on a shared call. The small duplication of the primitive→`primitives/…` mapping (now in three places: `Type::Display` bare, `src/display.rs` value-display, and this typecheck-local error renderer) is the deliberate price of the keep-distinct constraint. It is logged as an adjacent-instance / consolidation candidate for the Stage-B audit (lens item i), NOT collapsed in Stage A.
+
+**Why this cannot regress value-display.** The change adds a *new crate-private* formatter and rewires *only* the unify error-renderer call site. It does NOT touch `Type`'s `Display` impl, does NOT touch `cranelisp-types::format_type_display` / `format_type_with_vars`, and does NOT touch `src/display.rs::format_type_qualified_inner` (the value-display path keeps its own separate function and its separate spec contract). Nothing the value-display path calls is modified — the keep-distinct constraint is honoured structurally.
+
+**Adjacent instances (lens — METHOD §Phase-5 emergent / audit-backlog candidates).** The same bare-vs-FQ class appears in two further typecheck error renderers:
+
+- `unify.rs:135` — `"infinite type: t{id} occurs in {ty}"` interpolates `{ty}` through bare `Display` (occurs-check failure). Same FQ-formatter swap applies.
+- `traits.rs:1157` and `traits.rs:1804` — `"no impl of trait {} for type {}"` render the type via `concrete_type_name` (`traits.rs:2202`), which returns a bare `TypeName` and even strips an ADT's module (`Type::ADT(fqtn, _) => fqtn.name.clone()`). This is a *deeper* gap than the unify path: the bare name is produced before the message, so qualifying it needs the FQ name reconstructed (primitives → `primitives/…`; ADT → `fqtn` itself, not `fqtn.name`), not just a formatter swap at the interpolation site.
+
+These are **not** in the S87 Stage-A guard scope (only the two `type_error_names_*` guards are). They are noted here as an audit-backlog candidate for the Stage-B typecheck pass (lens item i — duplicated rendering paths / consistency). If `/dev` finds the `unify.rs:135` fix trivially covered by the same new formatter while making the Stage-A change, it is an emergent-mandatory in-sprint tidy (it shares the exact mechanism); the `traits.rs` `no-impl` sites are a larger reconstruction and should be left to the audit backlog unless a guard demands them.
+
+**Testability (the mandatory unit test — Principle 5).** The fix lands with a **`cranelisp-typecheck` unit test on the renderer**, distinct from the two e2e guards in `tests/repl_negative.rs`. The unit test is authored by `/dev` in `unify.rs`'s `#[cfg(test)] mod tests` (where `test_unify_different_primitives_fails` already lives, line 188). It calls `crate::unify::unify(&mut subst, &Type::Int, &Type::String)`, asserts the returned `Err`'s `.message()` contains `primitives/Int` AND `primitives/String` (and, for an ADT shape, `module/Name`) — pinning the FQ-qualification at the exact seam where the bug lived, independent of the REPL stack. This is the fastest re-break guard and answers a different question than the e2e (which proves the qualified name survives the whole pipeline to stdout). Assess-before-fix verdict: the bug is observable end-to-end (REPL output), so the existing two e2e guards are the right e2e coverage — they already exist (failing); no NEW e2e is warranted. The mandatory NEW artefact is the unit test.
+
+**Module-layout impact.** `unify.rs` (§3.1, "Clean", 339 LOC) gains one crate-private free fn (`format_type_fq`), a one-call-site edit at line 117, and one unit test; its health classification is unchanged. No `cranelisp-types` edit, no facade-shape change, no new public surface (the formatter is crate-private). No structural change to the crate shape.
+
 ---
 
 ## 9. Trait + monomorphisation architecture

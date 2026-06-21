@@ -29,18 +29,17 @@
   (defn != [a b] (not (str-eq a b))))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; INTENDED: a `(mod test …)` submodule with zero-arg `(Fn [] (Option
-;; String))` `test-*` fns asserting `(= 1 1)` etc. via testing.assertions.
+;; `(mod test …)` submodule (S87 Stage C.2): imports the parent trait + its
+;; methods via `super` (D4 path — the trait is seeded into the child's
+;; constraint scope). The S86 trait-bedrock blockers (D3 child re-defines
+;; parent trait; D4 super-trait not in child scope; the `neq-string` String
+;; `!=` codegen) are all FIXED — this is a real, runnable `(mod test)`.
 ;;
-;; BLOCKED this sprint by compiler defects in the submodule-test path
-;; (S86 Phase 6b — routed to /qa for narrow repro → /typecheck/backend):
-;;   * A `(mod test …)` inside a TRAIT-DEFINING module that imports
-;;     `testing.assertions` creates a circular re-definition — the import
-;;     chain compare.eq → compare.eq.test → testing.assertions → compare.eq
-;;     re-enters the parent and errors "trait Eq already defined".
-;;   * A test submodule importing the parent trait (`Eq`/`=`) resolves it
-;;     in the WRONG module scope ("unknown trait Eq (from module user)").
-;;   * String `!=` monomorphises to an unresolved `neq-string` symbol
-;;     (JIT "can't resolve symbol neq-string") — a PRE-EXISTING codegen
-;;     defect, reproducible with plain `(!= "a" "b")` on pristine HEAD.
-;; See plan-stdlib.md §"S86 self-test rollout — blocked" for the full list.
+;; HARNESS-FREE by necessity: `testing.assertions` itself depends on
+;; `compare.eq` (its `assert-eq` carries an `Eq` bound), so a self-test that
+;; imported `testing.assertions` would form a load cycle
+;; (compare.eq → compare.eq.test → testing.assertions → compare.eq). The
+;; tests therefore return `(Option String)` directly via inline `if`, exactly
+;; the shape the harness produces — None = pass, (Some why) = fail.
+
+(mod test)

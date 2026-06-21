@@ -2,6 +2,57 @@
 
 Standard library for Cranelisp. Owned by `/stdlib` skill.
 
+## Current State (Sprint 87 Phase 5 Wave 1d — Stage C.2 rollout)
+
+The self-test rollout LANDED + the C.1 adequacy gaps were intaken.
+
+- **Self-tests ship as SEPARATE backing files** (`<module-dir>/<stem>/test.cl`),
+  with a bare `(mod test)` in each parent — NOT inline `(mod test …)` bodies.
+  Rationale: the compiler EXTRACTS an inline `(mod test …)` body to its backing
+  file on first compile (spec §8.2.5) and leaves the parent bare; but the
+  extraction does NOT write the backing file when the lib dir is the in-place
+  workspace `stdlib/`, so an inline body gets silently STRIPPED (observed: a
+  full parallel `cargo nextest run` stripped every inline-bodied stdlib
+  `(mod test)`, corrupting the tree). Authoring the backing file directly is
+  extraction-stable — a full `cargo nextest run` now leaves stdlib
+  byte-identical. **Do NOT author inline `(mod test …)` bodies in stdlib;
+  write `<stem>/test.cl` and leave a bare `(mod test)` in the parent.**
+- **14 modules carry green self-tests** (97 tests total, 0 fail / 0 panic via
+  the in-language runner): testing.runner (6), compare.eq (6), compare.ord (7),
+  num.num (4), text.display (3), fn.option (2), fn.result (7), collections.pair
+  (4), collections.list (7), num.int (10), num.float (6), collections.vec (14,
+  incl. `range`), text.string (17, incl. G4/G5). Trait-bedrock modules that the
+  HARNESS depends on (`compare.eq`, `text.display`, `fn.option`) self-test
+  HARNESS-FREE (inline `if`→`(Option String)`) to avoid the load cycle through
+  `testing.assertions`.
+- **Run the self-tests** (live REPL, the only mode `discover-tests` works in):
+  ```
+  (import [<module> [<a-public-name>]])   ; force-load the module
+  (import [testing.runner [run-one tally tally-line]])
+  (import [collections.vec [vec-map]])
+  (import [primitives [discover-tests]])
+  (tally-line (tally (vec-map run-one (discover-tests ["<module>.test"]))))
+  ```
+- **GAP INTAKE (C.1 §FULL):** G3 `range` (`collections.vec`, HALF-OPEN
+  `[lo,hi)`), G4 `char-to-digit`/`digit-to-char` + G5 `replace-at`/`str-assoc`
+  (`text/string.cl`) — all actioned with self-tests. G6–G10 are adoption gaps
+  (verbs exist) → `/port` exemplar `.cl` swaps. G1/G2 are [COMPILER] → routed
+  out (FIXME 0416; /backend repro). See `plan-stdlib.md §26.4`.
+- **`conj` bare-promotion HELD** — `spec/11-stdlib.md §11.4a` RESERVES `conj`
+  (the actual 0402 ruling included it, unlike the proposed resolution §26.2
+  assumed). NO `(export …)` added; the full reserved set stays
+  module-qualified. See `plan-stdlib.md §26.7`.
+- **Stdlib-side fixes:** `core/syntax.cl` now imports `[primitives [str-concat]]`
+  (was using it unimported — latent breakage); `default.cl` imports
+  `[primitives [Int Float Bool String]]`. `default`/`derive` self-tests are
+  DEFERRED (compiler limitations — nullary-trait-method codegen; same-module
+  macro in own `(mod test)`; see those files + `plan-stdlib.md §26.6`).
+- **Defects surfaced → /qa handoff** (`plan-stdlib.md §26.6`): D-either
+  (discover-tests SIGBUS on `(Either String Int)`); D-name (`->` in a `defn`
+  name won't parse); D-default (nullary trait-method codegen); D-regen
+  (regen strips inline `(mod test)` + in-place-stdlib test isolation).
+- `cargo nextest run --workspace` = **2833 passed / 0 failed / 0 skipped**.
+
 ## Current State (Sprint 86 Phase 6b — managed-surface revisit)
 
 S86 reframed the stdlib around a **managed, curated surface** (the

@@ -19,3 +19,11 @@
 (import [prelude []])
 (import [primitives [Option Some None]])
 (export [primitives [Option Some None]])
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; `(mod test …)` submodule (S87 Stage C.2). HARNESS-FREE: `testing.assertions`
+;; depends on `fn.option` (it returns `(Option String)`), so importing the
+;; harness here would form a load cycle. Tests construct/match Some & None
+;; and return `(Option String)` directly.
+
+(mod test)

@@ -22,3 +22,14 @@
 
 (impl Display String
   (defn show [x] x))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; `(mod test …)` submodule (S87 Stage C.2): super-imports `show` and checks
+;; each primitive's rendering. HARNESS-FREE by necessity: `testing.assertions`
+;; depends on `text.display` (for `assert-eq`'s `Display` bound), so importing
+;; the harness here forms a load cycle
+;; (text.display → text.display.test → testing.assertions → text.display).
+;; The tests return `(Option String)` directly via inline `if` over a
+;; `str-eq` of the rendered String — the same shape the harness produces.
+
+(mod test)

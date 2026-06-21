@@ -33,6 +33,13 @@
   (defn <= [a b] (if a b true))
   (defn >= [a b] (if b a true)))
 
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; `(mod test …)` submodule (S87 Stage C.2): super-imports the Ord methods
+;; and exercises Int + Bool ordering. (String ordering is omitted by design,
+;; see the note below, so there is no String self-test.)
+
+(mod test)
+
 ;; NOTE: `Ord String` is intentionally NOT implemented. Lexicographic
 ;; string ordering needs a code-point comparison primitive (a `char→int`
 ;; or `str-lt` style code-unit test). The string primitive surface

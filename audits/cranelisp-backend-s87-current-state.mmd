@@ -1,0 +1,60 @@
+%% cranelisp-backend — S87 current-state (2026-06-20, Wave 1b)
+%% Refreshes audits/backend-20260423-current-state.mmd (SUPERSEDED but kept).
+%% Delta vs 04-23: compile_to_object stub deleted; compile_to_module is the sole
+%% PRODUCTION CLIF entry (returns CompilationArtifacts by value, S75 W2 D41 +
+%% capture_clif FIXME 0325); Jit::compile_defn / build_compile_context now
+%% pub(crate) + TEST-ONLY (F2 dead-in-prod). Persisting: two build_isa (F1),
+%% arity-ladder externs (F5), vec-set/push RC-convention split (F3), cache
+%% migration residue (F7). Single-source heap classification confirmed (no dup).
+
+sequenceDiagram
+    autonumber
+    participant Caller as int workers / tests
+    participant CTM as lib.rs::compile_to_module&lt;M&gt; (sole PROD entry)
+    participant Impl as compile_to_module_impl
+    participant CDM as compile_defn_in_module ──&gt; FunctionArtifacts (F9)
+    participant ISAo as cache::object::build_isa(is_pic)
+    participant ISAj as jit.rs::build_isa() [is_pic=false hardcoded] (F1 dup)
+    participant Jit as Jit::new ──&gt; build_isa()  (PROD ISA path)
+    participant FC as compiler::FnCompiler&lt;M&gt;
+    participant RC as element_consuming_inc (shared predicate, Principle 7 OK)
+    participant Vec as vec_codegen (vec-set vs vec-push RC SPLIT — F3)
+    participant Intr as cranelisp-intrinsics vec_runtime (vec_set_copy inc's val)
+    participant Disasm as produce_disasm (on-demand, REPL-only — clean)
+    participant Cache as cache/* (CacheMetadata + got.rs/codegen_types.rs shims — F7)
+    participant Linker as cache/linker.rs (load_object)
+    participant Dead as Jit::compile_defn + CompileArtifacts.disasm (TEST-ONLY — F2)
+
+    rect rgb(235,245,235)
+    note over Caller,FC: PRODUCTION CLIF emission — single entry (HIGH-1 largely landed)
+    Caller->>CTM: compile_to_module(path, names, symbol_tables, aliases, &mut M, capture_clif)
+    CTM->>Impl: delegate
+    Jit->>ISAj: build_isa() (F1 — should be cache::object::build_isa(false))
+    Impl->>CDM: per-symbol compile
+    CDM->>FC: compile_body / dispatch
+    FC->>RC: inc heap-typed Var args (consuming convention, Decision 24)
+    FC->>Vec: vec ops
+    Vec->>RC: element_consuming_inc (same predicate as args + push)
+    Vec->>Intr: vec_set_copy (UNCONDITIONAL inc of val) + codegen compensation dec (F3 asymmetry)
+    Vec->>Intr: vec_push_copy (NO inc — codegen inc'd up-front) (F3 the symmetric side)
+    CDM-->>CTM: FunctionArtifacts {clif_ir, code_size}
+    CTM-->>Caller: CompilationArtifacts {clif_ir, code_size, compile_duration}
+    end
+
+    rect rgb(245,235,235)
+    note over Caller,Dead: DEAD-IN-PROD path (lens ii — F2; mirror of Wave-0 produce_disasm cleanup)
+    Caller-->>Dead: (no prod caller) Jit::compile_defn + build_compile_context
+    Dead->>ISAj: build_isa()
+    Dead->>FC: compile_body
+    Dead-->>Caller: CompileArtifacts {clif_ir, disasm (eager — D1b-retired), code_size}
+    end
+
+    Caller->>Disasm: produce_disasm(fq, symbol_tables) [REPL /disasm only]
+    Disasm-->>Caller: String (reads got().load_slot + code_size)
+
+    Caller->>Cache: cache write/load
+    Cache->>ISAo: build_isa(true)
+    Cache->>Linker: load_object (cache-hit)
+    note over Cache: F7 — CacheMetadata "Wave 2b" envelope + got.rs/codegen_types.rs re-export shims still live
+
+    note over FC: heap classification single-source: HeapCategory::classify (heap.rs:438) &lt;- signature_heap_category (mod.rs:2032). No dup (sketch-HIGH NOT reintroduced).

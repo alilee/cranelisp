@@ -1,0 +1,110 @@
+%% cranelisp-platform — current-state structure + host-callback data flow (S87, 2026-06-20)
+%% FRESH diagram — the named baseline audits/platform-2026-06-14.md carried NO diagram,
+%% so this is produced from zero (not a refresh of a predecessor .mmd). Extends the
+%% 2026-04-23 backend/frontend/src/typecheck precedent to the platform crate.
+%%
+%% Reading guide: solid arrows = call / data flow; dashed = "must agree by construction".
+%% The RED dashed edges mark the lens-(vii) host-callback divergence (F2): two
+%% production HostCallbacks constructions in two crates with no shared builder — the
+%% DEF-6 root enabler. The GREEN dashed edge marks the layout-hash export, which IS
+%% divergence-proof by representation (the counter-example, §3.3).
+
+flowchart TB
+    subgraph DLL["Platform DLL author crate (out-of-tree, e.g. shapes / stdio)"]
+        EXT["extern \"C\" fns over CL* wrappers<br/>(rectangle_area, print_string, …)"]
+        DECL["declare_platform! { … }"]
+    end
+
+    subgraph PLAT["cranelisp-platform (THIS crate — C-ABI contract, 4 files, 1315 LOC)"]
+        direction TB
+        subgraph LIB["lib.rs — facade + wrappers + contract types"]
+            CLFAM["CL* wrapper family<br/>CLInt/Bool/Float/String/IO/Owned<br/>(#repr transparent over i64)"]
+            CONTRACT["#repr(C) contract types<br/>PlatformFn · PlatformManifest<br/>HostCallbacks · EffectOutcome"]
+            CONSTS["constants<br/>ABI_VERSION=6 · IO_TAG_* · HEAP_HEADER_SIZE<br/>IO_EFFECT_*_OFFSET"]
+            HOSTCTX["HostContext::init<br/>→ GLOBAL_ALLOC / GLOBAL_ALLOC_WITH_TAG<br/>(per-DLL write-once AtomicPtr)"]
+            M2D["manifest_to_descriptors<br/>(C-ABI → OwnedPlatformFnDescriptor)"]
+            FALLBK["null_alloc_with_tag<br/>(permanent uninitialized-host fallback; MED-2 reframed)"]
+        end
+        subgraph DECLM["declare.rs — three-exports emitter (MED-4 extracted)"]
+            MAC["declare_platform! / __declare_platform_body!"]
+            XLH["extract_layout_hash (const fn)"]
+        end
+        subgraph ADTM["adt.rs — ADT marshaling"]
+            CLADT["CLAdt&lt;T&gt; · CLAdtType marker<br/>read_field/own_field/construct"]
+            GSCHEMA["GLOBAL_SCHEMA OnceLock<br/>set_global_schema"]
+            WIT["CLTypeWitness / ExpectedFieldType"]
+        end
+        subgraph SCHM["schema.rs — generated-artifact parser (frontend-independent)"]
+            SCHEMA["Schema · TypeShape · Ctor · Field · FieldType<br/>Schema::parse (tiny S-expr lexer/parser)"]
+        end
+    end
+
+    subgraph TYPES["cranelisp-types (the ONLY dep — DAG clean, Principle 3)"]
+        TY["SchedulingClass · PlatformError · HeapHeader::SIZE · GOT_TABLE_SIZE"]
+    end
+
+    subgraph HOSTRUN["Host run modes (CONSUMERS — where wiring lives)"]
+        JIT["src/platform.rs:253<br/>load_platform_dll (--run / REPL / JIT)"]
+        LINKMODE["cranelisp-exe-bundle/src/lib.rs:131<br/>cranelisp_init_platform (--link startup stub)"]
+        TESTH["src/platform.rs:932 wired_host_callbacks (test mirror)"]
+    end
+
+    subgraph INTR["cranelisp-intrinsics (the real callbacks; platform must NOT dep on it)"]
+        HAP["heap_alloc_payload (returns PAYLOAD = base+16)"]
+        AWT["cranelisp_alloc_with_tag (returns ALLOC BASE)"]
+        TRAMP["IO trampoline + fork-join join<br/>(forces Effect nodes; §12.4.3 ferry obligation lives here)"]
+    end
+
+    %% author → macro → exports
+    EXT --> DECL
+    DECL --> MAC
+    MAC -->|emits GOT export| CONTRACT
+    MAC -->|emits manifest fn| CONTRACT
+    MAC -->|schema: arm parses once| SCHEMA
+    MAC --> GSCHEMA
+    XLH -->|;; layout-hash: → data symbol| MAC
+
+    %% intra-crate deps
+    CLADT --> SCHEMA
+    CLADT --> GSCHEMA
+    CLADT --> WIT
+    CLFAM --> CONSTS
+    CONTRACT --> CONSTS
+    CLADT --> CLFAM
+    LIB --> TY
+    SCHM -.->|grammar replicated, NOT dep| TYPES
+
+    %% effect path (fork-join ferry — platform half sound, F6)
+    CLFAM -->|effect_on_resource: DLL-local catch_unwind| EFFOUT["EffectOutcome value<br/>(fault ferried as #repr(C) return, F6 platform half OK)"]
+    EFFOUT -->|call_effect_thunk forwards| TRAMP
+
+    %% host consumers call the manifest → HostContext::init
+    JIT -->|dlsym + manifest_fn callbacks| HOSTCTX
+    LINKMODE -->|startup stub manifest_fn callbacks| HOSTCTX
+    JIT --> M2D
+    HOSTCTX --> FALLBK
+
+    %% === LENS (vii) HEADLINE: host-callback divergence (F2) ===
+    JIT     -->|HostCallbacks{ alloc, alloc_with_tag }| HAP
+    JIT     --> AWT
+    LINKMODE -->|HostCallbacks{ alloc, alloc_with_tag }| HAP
+    LINKMODE --> AWT
+    TESTH   --> HAP
+
+    %% the divergence: two independent constructions, agree only by hand-mirroring
+    JIT -. "F2: NO shared builder — agree by hand<br/>(DEF-6 was the window they didn't)" .-> LINKMODE
+
+    %% counter-example: layout-hash export read identically in both modes (§3.3)
+    MAC == "layout-hash: divergence-PROOF by representation (§3.3)" ==> JIT
+    MAC ==> LINKMODE
+
+    classDef thiscrate fill:#e8f0ff,stroke:#3060c0,stroke-width:1px;
+    classDef consumer fill:#fff3e0,stroke:#c08030,stroke-width:1px;
+    classDef intr fill:#eafbe7,stroke:#3a8c3a,stroke-width:1px;
+    classDef divergence fill:#ffe3e3,stroke:#c02020,stroke-width:2px;
+    class CLFAM,CONTRACT,CONSTS,HOSTCTX,M2D,FALLBK,MAC,XLH,CLADT,GSCHEMA,WIT,SCHEMA thiscrate;
+    class JIT,LINKMODE,TESTH consumer;
+    class HAP,AWT,TRAMP intr;
+    class EFFOUT divergence;
+
+    linkStyle default stroke-width:1px;

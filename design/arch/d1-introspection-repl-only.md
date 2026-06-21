@@ -53,8 +53,11 @@ The reversal is **narrow and does not undo D41's symmetry**:
   *compile* path needs the original form. It does **not** reintroduce a generic
   `Def.sexp`/`Def.source`.
 - Every *other* Def kind stays exactly as D41 left it: `source`/`expanded`/`clif_ir`/
-  `disasm`/`code_size` (and the `/sexp` *display*) remain on the int `Introspection`
-  record for REPL display. D41's symmetry holds for the introspection readers.
+  `code_size` (and the `/sexp` *display*) remain on the int `Introspection`
+  record for REPL display. D41's symmetry holds for the introspection readers. (The
+  `disasm` field that D41 also enumerated here is dropped — S87 Wave 0, FIXME 0418
+  option (a): native disassembly is on-demand via `cranelisp_backend::produce_disasm`,
+  not a persisted-introspection field; see §"Reader handling".)
 - Macros are uniquely justified: they are the **only** Def kind with **no
   `ast: Option<DefnVariant>`** to carry a compile payload (a macro parent's clause
   bodies are separate mangled-name Defs; the parent entry has no `ast`). So the recompile
@@ -424,7 +427,19 @@ behaviour change. Sites:
 
 | Reader | Site | `None` behaviour |
 |---|---|---|
-| `symbol_source` / `symbol_sexp` / `symbol_clif` / `symbol_disasm` | `session_v4.rs:1524/1531/1539/1546` | already return `Option`; `None` flows out as "no record" — the exact documented batch semantics ("`None` … in production batch mode"). |
+| `symbol_source` / `symbol_sexp` / `symbol_clif` | `session_v4.rs:1524/1531/1539` | already return `Option`; `None` flows out as "no record" — the exact documented batch semantics ("`None` … in production batch mode"). |
+
+> **`symbol_disasm` / `Introspection.disasm` removed (S87 Wave 0; FIXME 0418 option (a)).**
+> The read-side accessor family no longer includes a disasm accessor. Native
+> disassembly is **on-demand**, re-derived per request via
+> `cranelisp_backend::produce_disasm(fq, code_size, symbol_tables)` (Decision 41 —
+> "Disassembly is NOT captured … `produce_disasm` re-derives it on demand"; §B4 above).
+> The former `Introspection.disasm: Option<String>` field was never written (the worker
+> asserted it stayed `None`) and was read only by `symbol_disasm`, which had no correct
+> caller once `/disasm` moved to the on-demand path; both the field and the accessor are
+> dropped. Unlike `source`/`sexp`/`clif_ir`, disasm is not a persisted-introspection
+> accessor — it is a derive-on-demand product, so it leaves the accessor family entirely
+> rather than being rehydrated lazily like the others.
 | `describe_symbol` source read | `session_v4.rs:1627` | `source: None` in the returned `SymbolDescription` — correct. |
 | `get_introspection` (`/source`,`/info`) | `session_v4.rs:2912` | returns `None` ⇒ handlers print "no source captured" — correct REPL fallback. |
 

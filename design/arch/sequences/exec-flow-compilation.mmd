@@ -227,7 +227,7 @@ sequenceDiagram
             PW ->> ST_m1: SymbolTable::write_code(fq.symbol, Code::Jit(Arc[Jit])) — caller-side compose
             opt REPL or trace mode (caller retains the artefact)
                 Note over PW, Shared: int composes Introspection from CompilationArtifacts + parse/expansion fields. disasm via on-demand produce_disasm(fq, code_size, symbol_tables) when /disasm fires (S75 W2 Finding-C — caller-supplied code_size + capstone).
-                PW ->> Shared: introspection.insert(fq, Introspection { clif_ir: Some(...), code_size: Some(...), compile_duration: Some(...), disasm: None, .. })
+                PW ->> Shared: introspection.insert(fq, Introspection { clif_ir: Some(...), code_size: Some(...), compile_duration: Some(...), .. })
             end
             PW ->> Sched: CompileScheduler::notify_inmem_codegen_complete(fq: &FQSymbol)
             Note over Sched: when all m1/sym in-mem complete: Sched enqueues NiceWork::ObjectCodegen(m1)

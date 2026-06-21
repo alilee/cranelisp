@@ -1,0 +1,89 @@
+%% cranelisp-typecheck — current-state (Sprint 87, /review Stage-B audit)
+%% Refreshes audits/typecheck-20260423-current-state.mmd and the structural
+%% picture implied by audits/typecheck-20260531.md. Predecessors are SUPERSEDED
+%% (never-delete-archived rule keeps them in place).
+%%
+%% KEY DELTAS vs the 04-23 predecessor:
+%%   - The dual/deprecated pipelines (check_program / check_repl_input) are GONE.
+%%     The crate has ONE entry: check_forms (form.rs). The 04-23 "alt: deprecated
+%%     batch/REPL path" branches no longer exist.
+%%   - The boundary now uses the SymbolTables<C,L> newtype (cranelisp-types) and
+%%     threads &ModuleAliases explicitly (FIXME 0240 RESOLVED).
+%%   - Prelude fallback is ONE gate (prelude_fallback_target) + ONE shared
+%%     primitive (cranelisp_types::resolve_with_fallback). DEF-1 mono-collection
+%%     chokepoint now routes through the same seam.
+%%   - Expr child enumeration is the single for_each_child_expr source.
+flowchart TB
+    Caller["Integration / Worker / Tests"]
+
+    subgraph Boundary["Public boundary (form.rs)"]
+        CF["check_forms(parsed,&nbsp;ctx,<br/>symbol_tables:&amp;SymbolTables&lt;C,L&gt;,<br/>module_aliases:&amp;ModuleAliases)<br/>— the ONE entry point"]
+        P2TL["parsed_to_top_level<br/>(per-ParsedEntry translate;<br/>F4: _ =&gt; None silent-drop)"]
+    end
+
+    subgraph Driver["Per-form pipeline (program.rs)"]
+        FORMS["check_forms loop →<br/>check_form_body_single_defn /<br/>_multi_sig"]
+        FIN["finalize_check_result_inner<br/>(~150 LOC phase driver:<br/>generalize→resolve→overload→<br/>mono→writeback)"]
+        WALK["for_each_child_expr / _mut<br/>(SINGLE Expr child source)"]
+        MONOCOLL["collect_imported_constrained_calls<br/>(routes via fallback-aware seam)"]
+    end
+
+    subgraph Infer["Inference core (infer.rs)"]
+        IEXP["infer_expr<br/>(one method per Expr variant)"]
+        AUTOC["try_auto_curry<br/>(ctor-guard)"]
+    end
+
+    subgraph Traits["Traits + monomorphisation (traits.rs)"]
+        REGIMPL["register_trait_impl (~127)"]
+        IMPLM["check_impl_method_with_sig (~173)<br/>+ check_hkt_impl_method (~103)"]
+        WB["finalize_impl_method_writeback<br/>(shared tail — factored)"]
+        MONO["monomorphise_call (~307)<br/>↞ LARGEST prod fn"]
+        GETCF["get_constrained_fn (~121)"]
+        CTN["concrete_type_name → BARE name<br/>(S87-1: lossy in 'no impl' msgs)"]
+    end
+
+    subgraph Resolve["Resolution seam (checker.rs) — Principle 17, single-key"]
+        GATE["prelude_fallback_target<br/>(THE gate: absence-OFF,<br/>current≠prelude)"]
+        SHARED["cranelisp_types::<br/>resolve_with_fallback<br/>(shared primitive)"]
+        CHOKE4["4 chokepoints →&nbsp;shared primitive:<br/>resolve_current_or_prelude,<br/>probe_current_or_prelude,<br/>resolve_entry_in_current_module,<br/>resolve_terminal_entry_or_prelude"]
+        DIRECT["3 direct/inline gate users<br/>(S87-5 consolidation seed):<br/>lookup_constructor_type_with_state,<br/>find_hkt_param_index_in_registry,<br/>resolve_type_expr_internal"]
+        DEAD["lookup_constructor_type<br/>(#[dead_code], 'user'-default — S87-4)"]
+    end
+
+    Modules[("SymbolTables&lt;C,L&gt;<br/>= DashMap&lt;ModuleFullPath,<br/>SymbolTable&gt;<br/>single-key access only")]
+
+    Caller --> CF
+    CF --> P2TL
+    P2TL --> FORMS
+    FORMS --> IEXP
+    FORMS --> FIN
+    FIN --> MONOCOLL
+    MONOCOLL --> MONO
+    FORMS --> REGIMPL
+    REGIMPL --> IMPLM
+    IMPLM --> WB
+    MONO --> GETCF
+    MONO --> CTN
+    IMPLM --> CTN
+    IEXP --> AUTOC
+    IEXP --> WALK
+    FIN --> WALK
+
+    IEXP --> CHOKE4
+    FORMS --> CHOKE4
+    REGIMPL --> CHOKE4
+    MONOCOLL --> CHOKE4
+    CHOKE4 --> SHARED
+    SHARED --> GATE
+    DIRECT --> GATE
+    GATE --> Modules
+    SHARED --> Modules
+    CHOKE4 -.single-key.-> Modules
+    WB --> Modules
+
+    classDef resolved fill:#d4f7d4,stroke:#2a7;
+    classDef finding fill:#fde2c4,stroke:#d80;
+    classDef ok fill:#e8f0fe,stroke:#36c;
+    class CF,SHARED,GATE,WALK,WB resolved;
+    class P2TL,MONO,CTN,DIRECT,DEAD finding;
+    class IEXP,CHOKE4 ok;

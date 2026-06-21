@@ -62,6 +62,44 @@ Practical notes for library authors:
 
 **Prelude design**: The prelude module is the mechanism by which library names become globally available. A standard library SHOULD provide a `prelude.cl` that re-exports the names it considers universally useful. The prelude itself must not import the prelude (it is excluded from implicit prelude injection).
 
+## 11.4a Curated Collection-Verb Naming Reservation (Non-Normative) [S87]
+
+> **This subsection is non-normative guidance to standard-library authors.** It records a forward-compatibility reservation so that the *bare-name surface* a library curates today does not collide with a future trait-dispatched collection abstraction. It changes no language semantics — the reservation operates entirely within the bare-name-curation freedom a library already has under §11.4 and §8.8. The fully-qualified path (`primitives/<name>`, `collections.vec/get`, …) is unaffected and reachable regardless of any reservation (§8.9.1, §8.11.4, §3.1).
+
+A standard library that grows toward a unified, trait-dispatched collection interface (a `Functor`/`Foldable`-style abstraction — see §7.2, §7.7.5, and the §7.12.2 future-extensions table) will eventually want a small set of Clojure-aligned verbs as the *single overload-unified entry point* across `List`/`Vec`/`Seq`. Those verbs are most naturally bound as bare names by the *trait* that owns them, so that one bare call site dispatches to the right concrete family.
+
+To keep an interim curated surface forward-compatible with that future trait, a standard library SHOULD treat the following names as **reserved for future trait-dispatched dispatch** and SHOULD NOT pre-bind them as bare prelude names to a single concrete family in the interim:
+
+| Reserved bare name | Reserved for | Interim guidance |
+|---|---|---|
+| `map` | future Functor/collection-trait method | Keep concrete families disambiguated (`vec-map`, `map-list`, `seq-map`). Do NOT re-export a bare `map` to one family. |
+| `filter` | future collection-trait method | Keep `vec-filter`, `filter-list`, … . Do NOT bare-promote to one family. |
+| `reduce` | future Foldable/collection-trait method | Keep `vec-reduce`, `fold-list`, … . Do NOT bare-promote to one family. |
+| `count` | future collection-trait method | MAY curate a module-local wrapper (`collections.vec/count`), reachable module-qualified. Do NOT re-export bare `count` through the prelude until the trait owns the name. |
+| `get` | future collection-trait method | MAY curate `collections.vec/get`, reachable module-qualified. Do NOT re-export bare `get` through the prelude until the trait owns the name. |
+| `conj` | future collection-trait method | MAY curate `collections.vec/conj`, reachable module-qualified. Do NOT re-export bare `conj` through the prelude until the trait owns the name. |
+| `assoc` | future collection-trait method | MAY curate `collections.vec/assoc`, reachable module-qualified. Do NOT re-export bare `assoc` through the prelude until the trait owns the name. |
+
+The distinction is **bare-promotion vs. module-qualified curation**:
+
+- **Curating a wrapper inside its family module** (e.g. `collections.vec/count` wrapping `vec-len`) is always permitted, even for a reserved name. The wrapper is reachable module-qualified or via an explicit `(import [collections.vec [count]])`. Binding the name *inside its own module* does not pre-empt the future trait — the trait owns the *bare* name surfaced through the prelude, not the qualified path.
+- **Bare-promoting to the prelude** — re-exporting `count`/`get`/`conj`/`assoc` (etc.) as a bare name through the prelude, pointing at one concrete family — is the action that collides with the future trait method of the same name and is what this reservation asks authors to defer.
+
+### 11.4a.1 `first`/`rest` — list vs. pair coexistence
+
+`first`/`rest` are the Clojure idiom for the head/tail of a sequence, and a future sequence trait is the natural owner of the bare names. A standard library MAY rename its concrete list accessors to `first`/`rest` *within the list module* (e.g. `collections.list/first`, `collections.list/rest`), and a `collections/pair` module MAY independently define `first`/`second` as pair accessors. These coexist without conflict **as long as neither bare `first` is re-exported through the prelude**: the two live in distinct modules and are reachable by their fully-qualified paths (`collections.list/first`, `collections.pair/first`).
+
+Re-exporting *both* bare `first` names through one prelude would poison the name under §8.6.4 — the two accessors chain-follow to **distinct terminal sources** (the list `Def` and the pair `Def`), so the bare name is ambiguous (§8.6.5). A standard library SHOULD therefore leave bare `first`/`rest` unbound in the prelude until the future sequence trait decides which abstraction owns them; the concrete accessors stay reachable module-qualified in the interim. (This is the same terminal-source collision rule that governs any two distinct definitions sharing a bare name; the reservation is the author-side discipline that avoids triggering it.)
+
+### 11.4a.2 What the reservation does NOT restrict
+
+The reservation is purely about *which bare names a library promotes to the prelude in the interim*. It does not:
+
+- restrict the fully-qualified path — `collections.vec/get`, `collections.pair/first`, `primitives/<name>` are always reachable (§8.9.1, §8.11.4);
+- restrict explicit on-demand import — `(import [collections.vec [count get conj assoc]])` is always available to a user who wants the concrete verbs bare in their own module;
+- mandate that the future trait ever be built — it is a forward-compatibility courtesy, not a language requirement;
+- affect the trait-dispatched operator surface (`+`, `-`, `*`, `/`, `=`, `<`, `>`, `<=`, `>=`, `show`), which is already trait-dispatched (§7.5) and unaffected — those names are bound by the trait, exactly the model the reserved verbs anticipate.
+
 ## 11.5 Trace Support [S20]
 
 The `trace` form is a **root special form** — always available with no import and no module path (see [Section 2.3.10](02-grammar.md#2310-trace----execution-trace) and [Section 3.2.4](03-types.md#324-trace-type)); it is NOT a `primitives` entry and cannot be re-exported. The `Trace` ADT, `TraceCall` constructor, and field accessor functions (`name`, `params`, `result`, `children`, `nanos`) ARE compiler-seeded in the `primitives` module and are NOT auto-imported (the deliberate form/ADT asymmetry, see [Section 3.2.4](03-types.md#324-trace-type)). A standard library SHOULD re-export the ADT names and provide additional display functions through a `core.trace` module:

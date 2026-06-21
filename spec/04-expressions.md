@@ -725,7 +725,7 @@ E |- (trace expr) => TraceCall(root_name, root_params, root_result,
 
 The expression `expr` is evaluated exactly once. Its value `v` is used only to produce the root trace node's formatted result string -- the value itself is not accessible from the returned `Trace`.
 
-### 4.12.3 What Is Traced [S76 — tested-by /qa S76]
+### 4.12.3 What Is Traced [Tested tests/trace::trace_extern_primitive_appears_as_child]
 
 Instrumentation applies to **every named function that is compiled with an entry in the implementation's function indirection table** — that is, any callable holding an indirection-table slot with a real code pointer. There is no project-root filter and no library/standard-library exclusion: completeness is by construction — if a call goes through an indirection-table slot, it is recorded, regardless of which module the callee lives in or how the callee was reached. This includes: [S76]
 
@@ -778,7 +778,7 @@ Per [§5.2.6](05-definitions.md#526-generated-accessors), each named field in th
 
 There is no `trace-nanos` function. The accessor name is `nanos`, matching the field name in the `TraceCall` definition.
 
-### 4.12.5 Nested Trace [S76 — tested-by /qa S76]
+### 4.12.5 Nested Trace [Tested tests/trace::trace_nested_dynamic_raises_runtime_error]
 
 A `(trace ...)` expression MUST NOT be evaluated while another `(trace ...)` is actively tracing on the same thread. An implementation MUST raise a runtime error when a `(trace ...)` form is entered during the evaluation of an enclosing `(trace ...)` body — whether the inner form appears lexically:
 
@@ -857,7 +857,7 @@ The `Trace` value returned by `(trace expr)` is an ordinary ADT value. It can be
 ; => the Trace value -- no side effects occurred
 ```
 
-### 4.12.9 Build-Mode Availability [S76 — tested-by /qa S76]
+### 4.12.9 Build-Mode Availability [Tested tests/link::link_traced_extern_primitives_appear_as_children_exit_42]
 
 `(trace ...)` is available in **all** build modes — REPL, `--run`, and `--link` standalone binaries. The trace runtime is part of the language's runtime support and is present in every produced artefact. A `(trace ...)` form behaves identically across modes: the rules of [§4.12.1](#4121-type) through [§4.12.8](#4128-examples) apply unmodified in every mode. [S76]
 

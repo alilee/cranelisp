@@ -47,6 +47,34 @@ fn defn_one_param() {
     repl_prims("(defn id [x] x)\n(id 7)\n").assert_stdout_contains(":primitives/Int 7");
 }
 
+// spec: spec/05-definitions.md §5.1.1 — "The name MUST be a valid symbol."
+// DEFECT (D-name, S87 Stage-C.2 /stdlib rollout): a `defn` whose name embeds
+// `->` (e.g. `char->digit`) FAILS to parse — the reader tokenises the `->`
+// inside the symbol as the threading-macro head, so the form after the name is
+// no longer recognised as the params bracket:
+//   `parse error … defn: expected params [...] or variant (...)` (at the `[`).
+// A `defn` NAME is an opaque symbol regardless of any embedded `->`; the
+// threading reader-macro must not fire inside a symbol token. The control test
+// below (`chardigit`, no `->`) parses, isolating `->`-in-symbol as the trigger.
+// Worked around in stdlib by shipping `char-to-digit`/`digit-to-char`.
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md — RED today
+// (parse error), GREEN when `->` no longer splits a symbol token.
+// → /frontend (reader/symbol tokenisation).
+#[test]
+fn defn_name_with_arrow_in_symbol_parses() {
+    repl_prims("(defn char->digit [c] c)\n")
+        .assert_stdout_contains("user/char->digit");
+}
+
+// spec: spec/05-definitions.md §5.1.1 — CONTROL for D-name: the SAME defn shape
+// with an `->`-free name parses and registers normally. Pins the embedded `->`
+// (not the docstring or any other element) as the D-name trigger. GREEN today.
+#[test]
+fn defn_name_without_arrow_control_parses() {
+    repl_prims("(defn chardigit \"d\" [c] c)\n")
+        .assert_stdout_contains("user/chardigit");
+}
+
 // spec: spec/05-definitions.md §5.1.1 — defn with multiple params
 #[test]
 fn defn_multi_params() {

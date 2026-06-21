@@ -119,7 +119,7 @@ Result(A, B)
 
 `Result` is defined in the `primitives` module and participates in the type system as an ordinary parameterised ADT. It is **not** auto-imported into user scope: user code must import it explicitly (e.g., `(import [primitives [Result Ok Err]])`) or use qualified names (e.g., `primitives/Ok`). It is the return type of the `catch-runtime-error` combinator (see [Appendix A.3](appendix-a-builtins.md#test-discovery-and-error-capture)): `(Ok result)` when a protected thunk completes, `(Err message)` when it raised a runtime error. Both constructors carry data, so both are heap-allocated.
 
-### 3.2.6 Pair Type [S77 — tested-by /qa]
+### 3.2.6 Pair Type [Tested tests/spec_03_types::vec_as_function_return_type]
 
 ```
 Pair(A, B)
@@ -673,7 +673,7 @@ Multiple annotations can be stacked on a single parameter:
 
 When the annotation name is ambiguous (could be either a type or a trait), the typechecker first attempts to resolve it as a concrete type. If no type with that name exists, it is resolved as a trait constraint. If neither exists, a type error is produced.
 
-## 3.10 Rank-1 Hindley-Milner [S84]
+## 3.10 Rank-1 Hindley-Milner [Tested tests/regression::mono_tier2_fold_accumulator_not_over_monomorphised]
 
 Cranelisp is a **rank-1** (prenex, predicative) Hindley-Milner language. Universal quantification appears only at the outermost level of a type scheme (see [§3.4](#34-type-schemes)) — never nested inside a function parameter, an ADT field, or any other position within a type. This is a normative property of the type system, and the following requirements MUST hold:
 
@@ -691,7 +691,7 @@ Cranelisp is a **rank-1** (prenex, predicative) Hindley-Milner language. Univers
 
 Cranelisp has **no defaulting rule.** There is no Haskell-style numeric defaulting and no implicit selection of a concrete type for an otherwise-unconstrained type variable. An unconstrained type variable is never silently resolved to `Int`, `()`, or any other type.
 
-### 3.11.1 The ambiguity rule is scoped to codegen-reaching value positions [S84]
+### 3.11.1 The ambiguity rule is scoped to codegen-reaching value positions [Tested tests/regression::mono_ambiguous_unconstrained_top_level_var_rejected_neg]
 
 **Typecheck produces only concrete types.** A residual type variable remaining in a **codegen-reaching value form** after inference is a **type error** (ambiguous). The source MUST disambiguate it with a `:Type form` annotation (see [§3.9](#39-type-annotations) and [§4.9](04-expressions.md#49-type-annotation)) for the program to compile. A free type variable is **ambiguous** exactly when a value carrying it must be turned into a runtime value — i.e., when it **reaches code generation** — and no reachable use site pins it to a concrete type. Ambiguity is a property of a *use that forces codegen*, not a property of a type or a definition in isolation.
 
@@ -723,7 +723,7 @@ Entering a **bare, unpinned polymorphic value** at the REPL — `None` (type `�
 
 This does not weaken the no-defaulting rule: the REPL does **not** pick a concrete type for the displayed value. It reports the value's polymorphic type as-is. The §3.11.1 ambiguity error still fires the moment that same value is placed in a position that forces codegen without pinning the variable (e.g. `(let [x None] (some-runtime-use x))` where `x` must become a runtime value at an unpinned type).
 
-### 3.11.3 A named polymorphic definition with result-only free variables is SOUND, not ambiguous [S84]
+### 3.11.3 A named polymorphic definition with result-only free variables is SOUND, not ambiguous [Tested tests/regression::mono_ambiguous_neg_does_not_reach_codegen]
 
 A **named top-level definition** whose generalized scheme retains free type variables that appear **only in its result** — `(defn empty [] [])` of type `∀a. (Fn [] (Vec a))`, `(defn ambig [] None)` of type `∀a. (Fn [] (Option a))`, or any `pure`/`empty`-style nullary constructor wrapper — is **admitted, not rejected.** Under rank-1 HM (see [§3.10](#310-rank-1-hindley-milner)), such a definition is a legitimate polymorphic scheme: it is **dead for code generation until instantiated at a concrete use site**, where instantiation-at-use (§3.10) pins the variable and monomorphisation mints a concrete instance for that use. The definition itself emits no specialization; only its concrete uses do. [S84]
 

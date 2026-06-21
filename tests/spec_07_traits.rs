@@ -872,3 +872,39 @@ fn deftrait_method_nameless_annotation_param_rejected_neg() {
         // Negative: the trait MUST NOT be silently declared from the bad sig.
         .assert_stdout_does_not_contain("user/Sized");
 }
+
+// =============================================================================
+// §7.4 — Nullary return-type-polymorphic trait method dispatch (D-default)
+// =============================================================================
+
+// spec: spec/07-traits.md §7.4 — Static method resolution. A nullary trait
+// method whose ONLY type information is its return type (`self` in return
+// position, no parameter to dispatch on) MUST monomorphise/dispatch to the
+// concrete impl when the call site fixes the return type.
+//
+// DEFECT (D-default, S87 Stage-C.2 /stdlib rollout). Such a nullary
+// return-type-polymorphic method FAILS at codegen even though typecheck pins
+// the return type. With `(add-i64 (z) 5)` the `add-i64` context fixes `(z)`'s
+// return to `Int`, so the form TYPECHECKS — but codegen emits
+//   `codegen error … undefined function: z`
+// because the method is never resolved to the `Int` impl's body. Same shape as
+// the stdlib `default` self-test (`:Int (default)` → `undefined function:
+// default`), reduced to a 3-line self-contained repro. Blocks any nullary
+// return-poly method (`default`, `zero`, `empty`, …).
+//
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md — RED today
+// (codegen error), GREEN when the nullary return-poly method dispatches to its
+// impl body. → /backend (monomorphisation/dispatch at codegen; typecheck
+// already pins the return type, so the defect is on the codegen side).
+#[test]
+fn nullary_return_poly_trait_method_dispatches_at_codegen() {
+    // `z` has no parameter; its only type info is the `self` return. The
+    // `add-i64` context fixes the return to Int, selecting the Int impl;
+    // 0 + 5 = 5 when GREEN.
+    repl_prims(
+        "(deftrait T (z [] self))\n\
+         (impl T Int (defn z [] 0))\n\
+         (add-i64 (z) 5)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
+}

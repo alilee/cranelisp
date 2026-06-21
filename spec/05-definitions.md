@@ -184,7 +184,7 @@ An optional docstring MAY appear after the type head (before the body) and after
   (Some "Wraps a present value" [:a val]))
 ```
 
-### 5.2.6 Generated Accessors [Tested tests/spec_05_definitions::generated_field_accessor_resolves_as_free_callable] [S83 — tests/spec_05_definitions::accessor_cross_type_duplicate_field_name]
+### 5.2.6 Generated Accessors [Tested tests/spec_05_definitions::generated_field_accessor_resolves_as_free_callable, tests/spec_05_definitions::accessor_cross_type_duplicate_field_name]
 
 For each named field in a type definition, an accessor function is automatically generated in the enclosing scope. The accessor's name is the field name.
 
@@ -613,7 +613,7 @@ This means a function may call another function defined later in the file, and a
   (if (= n 0) false (is-even (- n 1))))
 ```
 
-### 5.13.2 REPL Input Boundary and `begin` Clusters [S66 — tests/process_form_dispatch.rs::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, tests/process_form_dispatch.rs::process_form_dispatch_bare_forward_ref_errors_clearly]
+### 5.13.2 REPL Input Boundary and `begin` Clusters [Tested tests/process_form_dispatch::process_form_dispatch_begin_cluster_resolves_mutual_forward_ref, tests/process_form_dispatch::process_form_dispatch_bare_forward_ref_errors_clearly]
 
 In the REPL, **each input is a single top-level form**. Forward references to definitions defined in subsequent REPL inputs are NOT supported -- non-`begin`-grouped forms are processed in source order, one per eval. A reference in a REPL input to a name that has not yet been defined is an error, with the same diagnostic shape as a reference to a non-existent identifier.
 

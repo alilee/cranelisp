@@ -789,15 +789,34 @@ impl CompilerSession {
     }
 
     /// /disasm handler: show disassembled native code of a definition.
+    ///
+    /// Per Decision 41 (`design/int/int.md` §8.2.1) disasm is NOT a stored
+    /// field — it is re-derived on the keystroke. The handler resolves the
+    /// symbol in the current module (same resolution as `/clif`'s
+    /// `get_introspection`), reads the eagerly-captured `code_size` (the bridge
+    /// `produce_disasm` needs), and forwards both to the already-public
+    /// `cranelisp_backend::produce_disasm`, which resolves the GOT slot and
+    /// reads the live code bytes. A symbol with no `code_size` (never compiled,
+    /// or batch mode with no introspection map) or a backend `Err` (slot empty
+    /// / not compilable) yields the graceful "no disassembly available" line.
     pub(crate) fn handle_disasm(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /disasm <name>".to_string();
         }
-        if let Some(intr) = self.get_introspection(name)
-            && let Some(ref disasm) = intr.disasm {
-                return format!("; disasm for {name}\n{}", disasm);
-            }
-        format!("Error: no disassembly available for '{name}'")
+        let fq = FQSymbol {
+            module: self.current_module_path(),
+            symbol: Symbol::from(name),
+        };
+        let Some(code_size) = self
+            .get_introspection(name)
+            .and_then(|intr| intr.code_size)
+        else {
+            return format!("Error: no disassembly available for '{name}'");
+        };
+        match cranelisp_backend::produce_disasm(&fq, code_size, &self.shared.symbol_tables) {
+            Ok(text) => format!("; disasm for {name}\n{text}"),
+            Err(_) => format!("Error: no disassembly available for '{name}'"),
+        }
     }
 
     /// /info handler: show full details (sig + code size + compile time).
@@ -2062,6 +2081,13 @@ pub(crate) fn format_macro_display(
         let params = format_macro_clause_params(clause);
         result.push_str(&format!("\n; {params} -> Sexp"));
     }
+    // repl/spec.md §11.2.2: a multi-clause macro card ends with a clause-count
+    // summary line (two leading spaces, no `;`). The single-clause worked
+    // example (`/info when`) shows NO count line, so gate on `> 1`. The count
+    // is always >= 2 under this gate, so a fixed "clauses" is correct.
+    if clauses.len() > 1 {
+        result.push_str(&format!("\n  {} clauses", clauses.len()));
+    }
     result
 }
 
@@ -2557,6 +2583,39 @@ mod format_entry_sig_tests {
         assert!(
             out.starts_with(":(Fn [primitives/Bool a a] a) if ; special form"),
             "if MUST render the Bool→a arrow from its scheme, got: {out}"
+        );
+    }
+
+    fn mk_clause(name: &str) -> cranelisp_types::MacroClauseInfo {
+        cranelisp_types::MacroClauseInfo {
+            params: vec![cranelisp_types::MacroParam::Name(Symbol::from(name))],
+            rest_param: None,
+        }
+    }
+
+    // spec: repl/spec.md §11.2.2 — a multi-clause macro card ends with a
+    //   `N clauses` summary line (two leading spaces, no `;`).
+    #[test]
+    fn format_macro_display_multi_clause_shows_clause_count() {
+        let module = ModuleFullPath::from("user");
+        let clauses = vec![mk_clause("x"), mk_clause("y")];
+        let out = format_macro_display("cond", &clauses, None, &module);
+        assert!(
+            out.contains("2 clauses"),
+            "multi-clause macro card MUST end with the clause count, got: {out}"
+        );
+    }
+
+    // spec: repl/spec.md §11.2.2 — the single-clause worked example shows NO
+    //   count line; the gate is `clauses.len() > 1`.
+    #[test]
+    fn format_macro_display_single_clause_omits_clause_count() {
+        let module = ModuleFullPath::from("user");
+        let clauses = vec![mk_clause("x")];
+        let out = format_macro_display("when", &clauses, None, &module);
+        assert!(
+            !out.contains("clauses"),
+            "single-clause macro card MUST NOT carry a clause count, got: {out}"
         );
     }
 }

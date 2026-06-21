@@ -2,11 +2,11 @@
 
 This section defines the abstract runtime semantics of Cranelisp. It specifies observable behavior without prescribing a particular implementation strategy. A conforming implementation MAY use JIT compilation, ahead-of-time compilation, interpretation, or any hybrid approach.
 
-## 12.1 Value Representation [Tested] [S84]
+## 12.1 Value Representation [Tested tests/spec_12_runtime::adt_sum_some_alloc_and_match]
 
 **The runtime representation of each concrete type is a backend-internal detail; no language-level or ABI-level uniformity across types is required or guaranteed.** Because every value's concrete type is known statically at every code-generation site — a consequence of rank-1 Hindley-Milner (see [§3.10](03-types.md#310-rank-1-hindley-milner)) together with full monomorphisation-from-roots (see [§3.6.3](03-types.md#363-monomorphisation)), made total by the concreteness rule that rejects any residual free type variable in a codegen-reaching position (see [§3.11](03-types.md#311-ambiguous-types)) — the implementation MAY choose each concrete type's runtime representation independently. It MAY use a narrower-than-word encoding (e.g. a packed scalar, a `u16` for a small character type, an `f32`), an unboxed small ADT, or any other layout, provided the **observable semantics** of [§12.3](#123-memory-management) (memory management) and [§12.4](#124-evaluation) (evaluation) are preserved. There is no requirement that distinct types share a representation, and there is no guarantee that any particular type is machine-word-sized. Representation is not part of the language definition or any stable ABI — it is chosen per concrete type by the backend.
 
-### 12.1.1 — 12.1.5: Current reference representation (descriptive, not prescriptive) [S84]
+### 12.1.1 — 12.1.5: Current reference representation (descriptive, not prescriptive) [Tested crates/cranelisp-primitives/src/bool.rs::test_bool_to_string_nonzero_is_true]
 
 The layout tables and diagrams in §12.1.1–§12.1.5 below document the **current reference representation** chosen by the present backend: a uniform machine-word (64-bit) encoding in which the interpretation of each word depends on its statically-known type. They are **descriptive of the current backend choice, not a normative uniform-word mandate.** A conforming implementation is free to deviate from any of them for any concrete type, subject only to preserving the observable semantics of §12.3 and §12.4. Where other sections of this specification reference these layouts (e.g. the i64 element/field/capture descriptions), read them as describing the current reference representation, not as imposing a uniform-word requirement.
 
@@ -146,7 +146,7 @@ Cranelisp uses **strict (eager) evaluation**. All sub-expressions are fully eval
 
 The `Seq` type provides lazy evaluation through thunks (zero-argument closures). Laziness is explicit and user-controlled — it is NOT a property of the evaluation model itself.
 
-### 12.4.3 Lenient Evaluation [S11]
+### 12.4.3 Lenient Evaluation [Tested tests/spec_12_runtime::lenient_no_lenient_env_var_preserves_correctness]
 
 An implementation MUST evaluate independent `let` bindings in parallel where a cost heuristic determines it is beneficial. This is called **lenient evaluation**. Because all binding expressions in a `let` are pure, evaluating them concurrently produces the same result as sequential evaluation — the non-determinism in evaluation order is not observable.
 
@@ -231,7 +231,7 @@ Cranelisp uses **unchecked (wrapping) integer arithmetic** and **checked integer
 
 - **Modulo/remainder**: If provided, follows the same policy as integer division — zero divisor causes a runtime panic.
 
-### 12.7.4 REPL vs Batch Error Behavior [S18]
+### 12.7.4 REPL vs Batch Error Behavior [Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run]
 
 The execution environment determines what happens after a runtime panic:
 
@@ -252,7 +252,7 @@ user> (+ 1 2)
 
 Heap allocations from the panicking evaluation MAY be leaked. This is acceptable because the REPL session continues and leaked memory is bounded by the size of the single failed evaluation.
 
-#### 12.7.4.2 Batch Mode [S18]
+#### 12.7.4.2 Batch Mode [Tested tests/spec_12_runtime::uncaught_runtime_panic_surfaces_message_and_clean_exit_run]
 
 In batch mode (`cranelisp --run file.cl`), a runtime panic terminates the process with a non-zero exit code. The implementation MUST print the panic message to stderr before exiting.
 
@@ -335,7 +335,7 @@ A conforming implementation MUST satisfy:
 4. **No UB on panic**: A runtime panic MUST NOT cause undefined behavior, even if it occurs during heap allocation, closure invocation, or IO trampoline execution. Heap leaks are acceptable; use-after-free and double-free are not. [S18]
 5. **Deterministic panics**: Given the same inputs, the same panic condition MUST be triggered. The implementation MUST NOT silently suppress panics or convert them to arbitrary values (except for integer overflow, which is specified as wrapping). [S18]
 
-## 12.8 Platform ABI [S10]
+## 12.8 Platform ABI [Tested tests/platform_errors::platform_manifest_not_found_carries_dll_path]
 
 Platform functions (loaded via `(platform name)`) use the C calling convention. All parameters and return values are i64. The platform ABI defines the contract between the Cranelisp runtime and external platform libraries.
 

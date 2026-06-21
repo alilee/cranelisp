@@ -1320,6 +1320,403 @@ resolved.
 
 ---
 
+## 26. Stage C.2 Rollout Design (Sprint 87, Phase 3)
+
+The de-risked S86 follow-up. S86 closed having FIXED the compiler blockers
+that stopped the self-test rollout and the bare-verb promotion last sprint:
+**D3** (`(mod test)` child re-defines parent trait — `register_trait_decl`
+now idempotent on structurally-identical re-registration), **D4**
+(`super`-imported parent trait now seeded into child constraint scope), and
+**DEF-1** (re-export-only `defn` body now reaches the consuming program's
+codegen batch — the mono chokepoint `collect_imported_constrained_calls`
+routes through `resolve_terminal_entry_or_prelude`). **D5** (the
+`testing.runner` cross-module-call SIGSEGV) — the runner's own `(mod test)`
+submodule already ships green again per `testing/runner.cl` §S82/S83 notes;
+the dev-session-runner path (`discover-tests`) is REPL-live by design
+(`test-discovery.md §4.5`). This section is the **authoring plan for Phase 5**
+— no `.cl` is edited in Phase 3.
+
+> **Dependency on the 0402 ruling (binding, R4).** The bare-verb promotion
+> below is **conditioned on the FIXME 0402 ruling that resolves in Stage A
+> FIRST** (`target: /spec`, curated-overload naming reservation). 0402
+> reserves `first`/`rest`/`get`/`count`/`map`/`filter`/`reduce` as
+> Phase-H trait-dispatched names. This plan assumes the **default ruling**
+> (0402's proposed resolution: those bare names stay reserved; concrete
+> families keep disambiguated names). If `/spec` rules differently, the
+> promotion set in §26.2 adapts per the table there. **No name this plan
+> promotes bare may pre-bind a reserved Phase-H trait name.**
+
+### 26.0 Constitutional invariants (must survive the rollout)
+
+All three are pre-existing normative text (§1.5); the rollout MUST NOT
+weaken any of them, and each is on the Phase-5 acceptance checklist:
+
+1. **`primitives/<name>` FQ path stays valid** — every capability the
+   curated surface offers is also reachable FQ with an empty prelude.
+2. **Empty prelude stays valid** — `(import [prelude []])` + core language
+   works with zero prelude content. The promoted verbs are convenience,
+   never load-bearing.
+3. **Bare-name curation MUST NOT change reachability** — promoting a verb
+   to bare prelude only changes how it is *named at the call site*; the
+   module-qualified and FQ paths to the same `defn` are unchanged.
+
+### 26.1 Self-test rollout
+
+**Mechanism (DISTINCT from `tests/`).** Stdlib self-tests are `(mod test …)`
+submodules *inside each stdlib module*, asserting with
+`testing.assertions` (`assert-true`/`assert-false`/`assert-eq`) and run via
+the in-language runner (`testing.runner` — `discover-tests` → `run-all` /
+`run-matching` in a live REPL session, or `run-one` direct-call in any mode).
+They are NOT in the `tests/` suite (owned by `/qa`, free-standing,
+zero-stdlib-dependency per CLAUDE.md §Stdlib separation). The
+free-standing discipline is preserved by construction: this work lives
+entirely under `stdlib/`.
+
+**The proven pattern (the template every submodule follows).**
+`testing/runner.cl` already ships a green `(mod test)` submodule (S82/S83):
+it imports the parent module's symbols via **`super`** (D4-path, fixed) and
+asserts with `assert-true`/`assert-false`/`assert-eq`. That is the template.
+The trait-defining modules (`compare/eq`, `compare/ord`, `num/num`,
+`text/display`) were the ones that hit **D3** (now fixed: idempotent
+re-registration) — their test submodules import the parent trait + methods
+via `super` rather than re-importing `testing.assertions` through a chain
+that re-enters the parent.
+
+**Rollout order** (bootstrap-first, per §5.3 — the foundation validates the
+rest; matches the §6.2 keystone sequence):
+
+| Wave | Modules | What the `(mod test)` asserts |
+|---|---|---|
+| **S1 (keystone)** | `testing/assertions.cl` | `assert-true`/`assert-false`/`assert-eq` return `None` on success, `(Some why)` on failure — the harness self-validates first (if this works, everything downstream is trustworthy). |
+| **S2 (trait bedrock — was D3-blocked)** | `compare/eq.cl`, `compare/ord.cl`, `num/num.cl`, `text/display.cl` | `(= 1 1)`⇒true / `(= 1 2)`⇒false / `(!= "a" "b")`⇒true; `(< 1 2)`, `(<= 2 2)`, `Ord Bool` `(< false true)`; `(+ 2 3)`⇒5, `(* 2 3)`, `inc`/`dec`; `(show 42)`⇒"42", `(show true)`. (The intended bodies are already documented inline in `compare/eq.cl §Self-tests` — promote them to a real `(mod test)`.) |
+| **S3 (core types)** | `fn/option.cl`, `fn/result.cl`, `collections/pair.cl`, `collections/either.cl` | `(is-some? (Some 1))`, `unwrap-or`, `map` over Some/None; `Ok`/`Err`, `is-ok?`, `map-err`, `and-then`; pair `first`/`second`/`swap`; `Left`/`Right`, `map-left`/`map-right`, `either`. |
+| **S4 (collections + num/text helpers)** | `collections/list.cl`, `collections/vec.cl`, `num/int.cl`, `num/float.cl`, `text/string.cl` | list `first`/`rest`/`length`/`reverse`/`fold`; vec `count`/`get`/`conj` + `vec-map`/`vec-filter`/`vec-reduce`; `abs`/`even?`/`odd?`/`rem`; `abs-float`/`min-float`; string `blank?`/`index-of`/`reverse-str`/`pad-left`. |
+| **S5 (fn + defaults + derive)** | `fn/compose.cl`, `default.cl`, `derive.cl` | `compose`/`pipe`/`identity`/`flip`; `Default` `(default)` per type; derive-Eq/Ord/Display on a small test ADT. |
+
+**Per-submodule shape** (the canonical form, all waves):
+
+```clojure
+(mod test
+  ;; parent symbols via super (D4 path — fixed); harness via import
+  (import [super [<names under test>]])
+  (import [testing.assertions [assert-true assert-false assert-eq]])
+
+  (defn test-<behaviour> []          ; (Fn [] (Option String)) — test- prefix
+    (assert-true (<predicate under test>)))
+  ...)
+```
+
+**How they are run / verified** (cannot depend on `tests/`):
+
+1. **In-language runner, live REPL** — the primary path.
+   `(import [testing.runner [run-all run-matching report]])` then
+   `(report (run-all))` in a REPL session loaded with the stdlib prelude.
+   `discover-tests` returns the eligible `test-*` fns (correct `test-`
+   prefix AND exact `(Fn [] (Option String))` signature); `run-all` folds
+   each three-way (pass / assertion-fail / panic) via `catch-runtime-error`.
+   Green = every `test-*` returns `None`.
+2. **Direct-call, any mode** — for the pure helpers and as a `--run`-mode
+   smoke check: a tiny driver `(defn -main [] (report (run-matching "test-")))`
+   exercises the runner's pure path (`run-one`/`tally`/`report`) which works
+   in every mode (the `discover-tests` *host extern* is REPL-only, but the
+   fold machinery is not).
+3. **Demo replay** — `repl/demos/*` (owned by `/repl`) that load the prelude
+   replay green at each wave gate, confirming no surface drift.
+
+**Defect-handoff posture.** If authoring a `(mod test)` surfaces a NEW
+language defect (not a stdlib bug), the wave is not closed until `/qa` has a
+narrow failing-not-ignored repro with `// spec:` + `FIXME(/owner)` (CLAUDE.md
+§Usability Findings and Defects). Two specifically-flagged candidates to
+watch (pre-existing, carried as design notes, NOT assumed present):
+- The **fork-join error-slot ferry** defect (`test-discovery.md` §"OWED…") —
+  only if a self-test wraps `catch-runtime-error` *around a parallel branch*
+  (a `Par`/lenient-`let` spark). Keep self-tests sequential to avoid it; if a
+  test legitimately needs it, route the surfaced defect to `/qa`, don't
+  work around it silently.
+- Any residual D3/D4-class re-entry in a module not yet exercised — the S87
+  Stage-A entry check confirms the live red set is exactly the 4 named
+  guards, so a fresh red here is a genuine regression, route to `/qa`.
+
+### 26.2 Bare-verb promotion (the `(export …)` un-comment)
+
+DEF-1 is FIXED — a `defn` the prelude only re-exports now reaches the
+consuming program's codegen batch. This de-risks promoting the curated
+collection verbs from **module-qualified** to **bare prelude**. The verbs
+already exist as wrappers in their domain modules (`collections/vec.cl`:
+`count`/`get`/`conj`/`assoc` over `vec-len`/`vec-get`/`vec-push`/`vec-set`;
+`collections/list.cl`: `first`/`rest`). Promotion is purely the
+`prelude.cl` re-export line — **bare-name curation, MUST NOT touch
+reachability** (invariant 3).
+
+**The 0402 conditioning — what may and may not be promoted.** 0402 reserves
+`first`/`rest`/`get`/`count`/`map`/`filter`/`reduce` as Phase-H
+trait-dispatched bare names. Promoting any of those bare now would
+**pre-bind a reserved Phase-H trait name** (R4 — forbidden). So the
+promotion is conservative and adapts to the ruling:
+
+| Verb | Domain module | 0402 status (proposed ruling) | S87 promotion decision |
+|---|---|---|---|
+| `count` | `collections.vec` | **RESERVED** (Phase-H Foldable/collection trait) | **DO NOT bare-promote.** Stays module-qualified / import-on-demand. |
+| `get` | `collections.vec` | **RESERVED** (Phase-H) | **DO NOT bare-promote.** Module-qualified. |
+| `first` | `collections.list` (+ pair `first`) | **RESERVED** + §8.6.4 list-vs-pair collision | **DO NOT bare-promote.** Both stay FQ-distinct. |
+| `rest` | `collections.list` | **RESERVED** (Phase-H seq trait) | **DO NOT bare-promote.** Module-qualified. |
+| `conj` | `collections.vec` | **NOT reserved** by 0402 | **BARE-PROMOTE** (un-comment) — no Phase-H trait name collision; safe under DEF-1 fix. |
+| `assoc` | `collections.vec` | **NOT reserved** by 0402 (Phase-H Map verb candidate, but not in 0402's list) | **CANDIDATE** — promote bare only if `/spec` confirms it is not a future trait-dispatched name. Default: HOLD module-qualified pending 0402 ruling confirmation; promote in a follow-up if cleared. |
+
+> **Net effect under the default 0402 ruling:** of the six verbs named in
+> the S87 task (`count`/`get`/`conj`/`assoc`, `first`/`rest`), only **`conj`**
+> is unambiguously bare-promotable in-sprint; **`assoc`** is a conditional
+> candidate; the other four (`count`/`get`/`first`/`rest`) stay
+> module-qualified because they are 0402-reserved Phase-H trait names.
+> This is the de-risked, forward-compatible subset — it removes the raw
+> primitive (`vec-push`) need for the most common append idiom (`conj`)
+> while not pre-binding any name the Phase-H trait must own. **The full
+> Clojure collection-verb surface arrives bare at Phase H via trait
+> dispatch, owning these reserved names cleanly** — this sprint does not
+> race it.
+
+**The mechanism.** Un-comment in `prelude.cl` (currently the commented
+"Curated collection verbs" block, lines ~54–81):
+
+```clojure
+(export [collections.vec  [conj]])          ; bare-promoted (0402-safe)
+;; (export [collections.vec [assoc]])       ; HOLD — pending 0402 assoc ruling
+;; count/get/first/rest stay module-qualified — 0402-reserved (Phase H)
+```
+
+If `/spec`'s actual 0402 ruling **releases** any of the reserved names for
+S87 concrete binding (override of the proposed resolution), add the matching
+`(export …)` line(s) per the same one-line mechanism — the verbs already
+exist; only the re-export changes.
+
+**Verification of each promotion** (Phase 5, the acceptance gate for §26.2):
+1. **Reachability unchanged (invariant 3):** before and after, the verb is
+   reachable FQ (`collections.vec/conj`) and via import — promotion adds the
+   bare path, removes nothing.
+2. **DEF-1 fix exercised:** `(conj [1 2] 3)` bare (no import) typechecks
+   AND codegens AND runs in BOTH the REPL and `--run` — the exact shape that
+   failed pre-DEF-1 ("undefined function: count"). This is also the durable
+   stdlib-side regression guard for DEF-1.
+3. **Empty prelude still valid (invariant 2):** a `(import [prelude []])`
+   module still compiles; the promoted bare name is simply absent there.
+4. **No existing code broke:** exemplar + demos replay green (they import
+   primitives explicitly, so the promotion does not touch them; this
+   confirms the promotion is additive).
+
+### 26.3 Adequacy-gap intake (triage of the Stage C.1 `/port` gap list)
+
+Stage C.1 (`/port`) produces a **collated, prioritized stdlib gap list** from
+re-reading the Sudoku exemplar — each entry naming the exemplar site
+(`file:line`), what was awkward, and the proposed stdlib feature. `/port`
+pre-classifies each entry as **pure stdlib gap** or **compiler/language gap**.
+`/stdlib`'s triage applies this **decision rule**:
+
+> **DECISION RULE.** For each gap entry:
+> 1. **Compiler/language gap** (the feature needs typecheck / codegen / spec /
+>    new-primitive support) → **ROUTE OUT, not in-sprint.** Feed it to the
+>    Stage B audit backlog (`audits/s87-findings.md`) and/or file a numbered
+>    FIXME (`design/arch/fixmes/NNNN-name.md`, `target:` the owning skill) per
+>    CLAUDE.md §Cross-Skill Changes. Record the entry in §26.4 of this plan
+>    with its routing destination. **Do NOT author a stdlib workaround for a
+>    compiler gap** — that bakes a workaround into the model code.
+> 2. **Pure stdlib gap** (a missing function/macro **composable from existing
+>    primitives + existing stdlib**, needing no compiler change) → assess
+>    **cheap AND obviously-correct**:
+>    - **Cheap** = adds to an existing domain module, no new module, no new
+>      type, ≤ ~15 lines of public API, follows an existing Clojure-aligned
+>      pattern.
+>    - **Obviously-correct** = the implementation is a direct composition with
+>      no inference-friction risk, AND it ships with a `(mod test)` self-test
+>      in the same change-set (§26.1 discipline).
+>    - **Both true → ACTION IN-SPRINT** (Phase 5), with self-test.
+>    - **Either false** (large, new module/type, ambiguous semantics, naming
+>      that might collide with a Phase-H reserved name per 0402, or
+>      inference-risky) → **DEFER** into this plan (§26.4) with rationale +
+>      target sprint. Borderline cases default to DEFER (a deferred gap is
+>      cheap to revisit; a rushed wrong API is expensive to retract).
+> 3. **0402 cross-check (mandatory for every pure-stdlib action):** if the
+>    proposed name is on the 0402 reserved set, it is NOT actioned bare —
+>    same conditioning as §26.2.
+
+**Why route compiler gaps out, not action them:** the exemplar's flagship
+awkwardness (per S86 FIXME 0408) — copy-per-guess grid + no parallel search —
+is a *language/perf* gap, not a stdlib gap; actioning it in stdlib would be a
+workaround masking the real audit input. Compiler/language gaps are precisely
+the Stage B audit's currency; routing them there keeps the backlog complete
+and prevents stdlib from accreting band-aids. (CLAUDE.md §Stdlib separation +
+the project's "defects need failing tests, not doc-only closure" discipline.)
+
+### 26.4 Gap-intake ledger (populated Phase 5 from C.1 `§FULL`)
+
+Source: `exemplar/notes-stdlib-adequacy-s87.md §FULL` (G1–G10). Each row:
+`gap` | `exemplar site` | `classification` | `disposition`.
+
+| Gap | Site | Class | Disposition (S87 Stage C.2) |
+|---|---|---|---|
+| **G1** | `grid.cl:83-126` (9-bit mask layer) | [COMPILER] bitwise intrinsics | **ROUTE-OUT** — FIXME 0416 (`target: /arch`), Stage-B backlog. NOT a stdlib gap (no primitive). Untouched. |
+| **G2** | `grid.cl`/`solver.cl`/`html.cl` (bare `vec-push` not `conj`) | [COMPILER] DEF-2 heap-ADT-`conj` RC | **ROUTE-OUT** — repro queued for /qa → /backend (no new FIXME). Not actioned in stdlib (would bake a workaround). |
+| **G3** `range` | `solver.cl`/`grid.cl`/`html.cl`/`form.cl` (~15 hand-threaded index folds) | [STDLIB] authoring | **ACTION-IN-SPRINT** — `(range lo hi)` added to `collections/vec.cl`, **HALF-OPEN [lo,hi)** (Clojure `(range start end)` semantics: inclusive lo, exclusive hi). Empty when `hi<=lo`. Ships with 5 self-tests (`collections/vec/test.cl`). Unreserved by §11.4a (but NOT bare-promoted; reached module-qualified / import). |
+| **G4** `char-to-digit`/`digit-to-char` | `form.cl:41-53`, `grid.cl:191-202` | [STDLIB] authoring | **ACTION-IN-SPRINT** — both added to `text/string.cl` (`-1` sentinel for non-digit; empty string for out-of-range). 6 self-tests. **NAMING:** the proposed `char->digit`/`digit->char` do NOT parse (a `defn` name containing `->` is mis-read as the threading-macro head — see DEFECT D-name below); shipped as `-to-` spelling. |
+| **G5** `replace-at`/`str-assoc` | `form.cl:57-59` | [STDLIB] authoring | **ACTION-IN-SPRINT** — both added to `text/string.cl` (`str-assoc` is the Clojure-aligned alias of `replace-at`). Out-of-range `idx` returns `s` unchanged. 4 self-tests. |
+| **G6** `int-to-string` adoption | `solver.cl:197-207` | [STDLIB] adoption | **DEFER** — exemplar-side `.cl` swap, owned by `/port` (the `digit-to-char` from G4 also serves this; verb exists). Not a stdlib authoring gap. |
+| **G7** `num.int/rem` reuse | `grid.cl:68-69` etc. | [STDLIB] adoption | **DEFER** — exemplar redefines `rem-i64`; `num.int/rem` already exists. `/port` swap; DEF currently rationalises the inline alias. |
+| **G8** `repeat-str` adoption | `form.cl:33-38` | [STDLIB] adoption | **DEFER** — `text.string/repeat-str` exists; `/port` swap. |
+| **G9** `str` macro adoption | `html.cl`/`solver.cl`/`user.cl` | [STDLIB] adoption (optional) | **DEFER / DO-NOT-FORCE** — `text.string/str` exists; exemplar deliberately avoids it (documented in `exemplar/CLAUDE.md`). Flag only. |
+| **G10** reuse `rem`/`row-of`/`col-of` | `user.cl:45-48` | [STDLIB] adoption | **DEFER** — verbs exist; `/port` de-duplication. |
+
+**Net Stage-C.2 stdlib authoring delivered:** G3 `range`, G4 `char-to-digit`/
+`digit-to-char`, G5 `replace-at`/`str-assoc` — all composable from existing
+primitives + existing stdlib, ≤~15 LOC each, each ships with self-tests. The
+5 adoption gaps (G6–G10) are exemplar-side `.cl` swaps owned by `/port` (the
+verbs already exist), not stdlib authoring. The 2 [COMPILER] gaps (G1/G2) are
+routed out, not worked around.
+
+### 26.6 Defects surfaced by the Stage-C.2 rollout (handoff to /qa)
+
+Authoring the self-tests + gaps surfaced several **language/compiler defects**
+(not stdlib bugs). Each needs a narrow failing-not-ignored repro by /qa →
+owning skill (CLAUDE.md §Usability Findings and Defects). The stdlib-side
+record (a correct `(mod test)` that can't go green, or a workaround) is noted.
+
+1. **D-either (discover-tests SIGBUS on two-param ADT).** Running
+   `collections.either.test` through the discover-tests → `run-one` path
+   SIGBUSes on `test-is-right` — the `(Either String Int)` `(Right 1)` shape
+   (heap-ADT, String-then-Int field order). The same assertion PASSES when
+   called directly, and the other 5 either tests pass individually through the
+   runner; only the String-first two-param Either shape crashes in the
+   discover-tests marshaling/GOT path. → **/qa narrow repro → /backend.** The
+   `collections/either/test.cl` self-tests are kept as the durable record
+   (correct code; the crash is the compiler's). It does NOT block the prelude
+   load or `cargo nextest` (it only crashes when run through the in-language
+   runner).
+
+2. **D-name (`->` in a `defn` name fails to parse).** `(defn char->digit "doc"
+   [..] ..)` fails with `parse error … defn: expected params [...] or variant`
+   — the reader treats the `->` in the symbol as the threading-macro head.
+   Worked around by shipping `char-to-digit`/`digit-to-char`. → **/qa repro →
+   /frontend** (reader/symbol tokenisation; a `defn` name SHOULD be an opaque
+   symbol regardless of embedded `->`).
+
+3. **D-default (nullary return-type-polymorphic trait method → codegen).**
+   `:Int (default)` typechecks but fails `codegen error … undefined function:
+   default` — a nullary trait method whose only type info is the return type
+   does not monomorphise/dispatch at codegen even with a `:Type` annotation.
+   Blocks the `default` self-test (held — see `default.cl`). → **/qa repro →
+   /typecheck/backend.** Minimal: `(deftrait T (z [] self)) (impl T Int (defn
+   z [] 0)) (:Int (z))`.
+
+4. **D-derive (same-module macro in its own `(mod test)`).** A `(derive …)`
+   call inside derive.cl's own `(mod test)` fails at expansion (`unexpected
+   quasiquote form — should have been expanded`) — the `derive`/`derive-*`
+   macros are defined in the same module and are not available to expand its
+   own submodule forms (spec §9.3.4 same-module-macro rejection). derive's
+   self-test is therefore deferred to a consumer-side test (held — see
+   `derive.cl`). → tracked as a known limitation, not a fresh defect (it is
+   the documented §9.3.4 behaviour).
+
+5. **D-regen-strips-`(mod test)` + in-place-stdlib test isolation.** The REPL
+   source-regeneration path strips an INLINE `(mod test …)` body to a bare
+   `(mod test)` (the §8.2.5 one-time-extraction behaviour) but does NOT write
+   the extracted `…/test.cl` backing file when the lib dir is the in-place
+   workspace `stdlib/`. Combined with the e2e tests that point
+   `CRANELISP_LIB` at the in-place real `stdlib/`
+   (`use_workspace_stdlib_for_stdlib_conformance_only`), a full parallel
+   `cargo nextest run` was observed to STRIP every inline-bodied stdlib
+   `(mod test)`, corrupting the working tree and breaking the prelude load.
+   **Stdlib-side mitigation applied:** every self-test is authored as a
+   SEPARATE backing file (`<mod>/test.cl`) with a bare `(mod test)` in the
+   parent — extraction-stable (nothing to strip), so a full `cargo nextest run`
+   leaves the tree byte-identical (verified). → /qa + /int may still want to
+   fix the regen-write-target / test-isolation (tests should copy stdlib to a
+   tmpdir, not use it in place), but the stdlib rollout no longer depends on it.
+
+### 26.7 `conj` bare-promotion — HELD (0402 ruling reserves `conj`)
+
+The Phase-3 plan (§26.2) assumed the **proposed** 0402 resolution left `conj`
+unreserved and so bare-promotable in-sprint. The **actual** /spec ruling
+recorded in `spec/11-stdlib.md §11.4a` (Stage A, this sprint) RESERVES `conj`
+explicitly: the §11.4a table row reads *"`conj` … Do NOT re-export bare `conj`
+through the prelude until the trait owns the name."* Bare-promoting `conj`
+would therefore pre-bind a reserved Phase-H trait name (R4 — forbidden).
+
+**Decision: HOLD `conj` (and `assoc`) module-qualified.** No `(export …)` line
+is added to `prelude.cl`. The full reserved set — `map`/`filter`/`reduce`/
+`count`/`get`/`conj`/`assoc`, `first`/`rest` — stays module-qualified /
+import-on-demand. The capability is fully reachable
+(`(import [collections.vec [conj]])` then `(conj v x)`, verified ⇒ works;
+`collections.vec/conj` FQ; `vec-push` primitive). When the Phase-H collection
+trait is built, it owns these bare names cleanly. Net S87 bare-promotion: NONE
+(the conservative, forward-compatible subset under the actual ruling is empty).
+
+### 26.5 Phase-3 plan for SPRINT.md "Skill plans / /stdlib"
+
+**Task.** Stage C.2 stdlib rollout (de-risked S86 follow-up), three parts:
+(1) author `(mod test)` self-test submodules across stdlib modules in the
+bootstrap order S1→S5 (§26.1), run via the in-language runner; (2)
+bare-promote the 0402-safe curated collection verb(s) — `conj` (and `assoc`
+if 0402 clears it), un-commenting the matching `(export …)` in `prelude.cl`
+now that DEF-1 is fixed, holding the 0402-reserved `count`/`get`/`first`/`rest`
+module-qualified (§26.2); (3) triage the Stage C.1 `/port` adequacy-gap list
+per the §26.3 decision rule — action cheap + obviously-correct pure-stdlib
+gaps in-sprint (each with a self-test), route compiler/language gaps to the
+Stage B audit backlog / FIXME store, defer the rest into §26.4 with rationale.
+
+**Design refs.** `stdlib/plan-stdlib.md` §1.5 (managed-surface model + the
+three curation invariants), §26 (this rollout design); `stdlib/CLAUDE.md`
+S86 state; `design/arch/fixmes/0402-spec-curated-overload-naming-reservation.md`
+(the binding naming reservation — must be RESOLVED in Stage A before §26.2
+authoring); `design/arch/test-discovery.md` §4.3/§4.5/§5/§6 (runner +
+dev-session scope + the fork-join ferry note); `testing/runner.cl §S82/S83`
+(the proven `(mod test)` + `super`-import template); `tests/spec_08_modules.rs`
+D3/D4 guards (the fixes that unblock the trait-module self-tests); S86 archive
+DEF-1 entry (the fix that unblocks the bare promotion).
+
+**Sequencing / dependencies.**
+- Depends on **0402 resolving in Stage A first** (R4) — §26.2's promotion set
+  is conditioned on the ruling; the conservative default ships only `conj`.
+- Authoring is **source-touching → single agent at a time, serial with the
+  Stage-A Wave-0 fixes** (CLAUDE.md §Testing — worktree isolation broken).
+- **C.1 gates into Wave 2** (SPRINT.md Phase-4 note) — §26.3 triage consumes
+  the C.1 list, so the gap-intake part runs after C.1 produces it; the
+  self-test rollout (§26.1) and `conj` promotion (§26.2) do NOT depend on C.1
+  and proceed on the green base.
+
+**Acceptance.**
+1. **Self-tests green** — every authored `(mod test)` submodule's `test-*`
+   fns return `None` under the in-language runner (`(report (run-all))` in a
+   prelude-loaded REPL session shows 0 failures across waves S1–S5); the
+   direct-call pure-helper path (`run-one`/`report`) works in `--run` mode.
+2. **`conj` bare-promoted + guarded** — `(conj [1 2] 3)` bare (no import)
+   typechecks, codegens, and runs in BOTH REPL and `--run` (the DEF-1
+   regression shape); `count`/`get`/`first`/`rest` confirmed still
+   module-qualified-reachable (not bare) per the 0402 reservation; `assoc`
+   per the 0402 ruling.
+3. **Constitutional invariants intact** — `primitives/<name>` FQ reachable;
+   `(import [prelude []])` empty-prelude module compiles; no promoted verb is
+   load-bearing (each reachable FQ with empty prelude). Guarded by the
+   existing spec-conformance suite (the FQ-path / empty-prelude guards).
+4. **Adequacy gaps dispositioned** — every C.1 gap entry recorded in §26.4
+   with an explicit disposition; in-sprint pure-stdlib actions each ship with
+   a `(mod test)` self-test; compiler/language gaps routed to the audit
+   backlog / FIXME store (not worked around in stdlib).
+5. **Free-standing discipline preserved** — `tests/` and `examples/` remain
+   zero-stdlib-dependency (no edits there); self-tests are stdlib-internal
+   `(mod test)` submodules only.
+6. **Prior demos / exemplar replay green** — `repl/demos/*` (prelude-loading)
+   + `exemplar/` replay green at the wave gate; `cargo nextest run --workspace`
+   shows no regression beyond the (now-cleared) Stage-A named guards.
+
+**Next skills.**
+- `/qa` — narrow repro for any NEW language defect a `(mod test)` surfaces
+  (the durable record + cross-skill trigger); confirm the DEF-1 bare-`conj`
+  guard and the spec-conformance FQ/empty-prelude guards stay green.
+- `/repl` — demos model the post-promotion curated surface (bare `conj`);
+  refresh `stdlib-progress`-style demos if the bare set changed.
+- `/spec` — if the 0402 ruling releases any reserved name for S87 binding,
+  this plan's §26.2 promotion set widens per the one-line `(export …)` mechanism.
+
+---
+
 ## Next Skills
 
 - `/arch` — Confirm the builtin-to-trait transition strategy. Validate that cross-module trait impls work (trait in module A, type in module B, impl in module B). Review Map/Set implementation strategy.

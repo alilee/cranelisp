@@ -1,0 +1,69 @@
+%% cranelisp-primitives — current-state structure + data flow (S87 Stage B)
+%% FRESH diagram. The S87 prior baseline (audits/primitives-2026-06-14.md)
+%% carried a single sequenceDiagram but NO standalone .mmd; this is the first
+%% committed .mmd for the crate, authored per SPRINT.md Stage B (one .mmd per
+%% crate, extending the 2026-04-23 backend/frontend/src/typecheck precedent).
+%% No predecessor .mmd to supersede.
+
+flowchart TB
+    subgraph EXT["Consumers (out of crate)"]
+        SESS["int::CompilerSession\n(Arc-clone @ session init)"]
+        EXEB["cranelisp-exe-bundle\ncranelisp_init_primitives()\nLazyLock::force"]
+        BK["cranelisp-backend\n(GOT-indirect call only;\nNO dep edge — Principle 18)"]
+    end
+
+    subgraph LIB["lib.rs — single front door (165 prod LOC)"]
+        TABLE["PRIMITIVES_TABLE\nLazyLock<Arc<SymbolTable<(),()>>>\n(pub static #1)"]
+        SLAB["PRIMITIVES_GOT_SLAB\n[AtomicPtr<u8>; 1024]\n#[export_name __cranelisp_got_primitives]\n(pub static #2)"]
+        BUILD["build_primitives_table()"]
+        INS1["insert_primitive_entry()"]
+        INSV["insert_vec_query_entries()\n(4 hand-built Vec rows)"]
+        HARV["extern_shims()\nHashMap name -> *const u8\n(46 hand-maintained entries)"]
+    end
+
+    subgraph OP["operator.rs — input data (272 prod LOC, crate-private)"]
+        R0["ring0_primitives() — 20 rows"]
+        R1["ring1_primitives() — 18 rows"]
+        R3["ring3_primitives() — 1 row (quote-sexp)"]
+        PDEF["PrimitiveDef struct\n(name, ty, param_names, docstring)"]
+    end
+
+    subgraph EXTERNS["extern bodies — 46 #[export_name] pub(crate) extern \"C\" fn"]
+        RING0B["ring0.rs (23): arith/cmp/bool\nincl. neq-i64/f64/bool (out-of-table)"]
+        STRB["string.rs (16): str-* + neq-string\n(S86 DEF: neq-string now registered)"]
+        MARB["marshal.rs (2): sconcat (out-of-table),\nquote-sexp — SList/Sexp marshalling"]
+        INTB["int.rs (2): int-to-string, parse-int"]
+        FLTB["float.rs (1) / bool.rs (1) / vec.rs (1)"]
+    end
+
+    subgraph INTR["cranelisp-intrinsics (inward dep — blessed substrate)"]
+        ALLOC["alloc / rc / drop"]
+        HS["heap_string::HeapString\n(LEN/DATA offsets)"]
+        VR["vec_runtime\n(LEN/DATA_PTR offsets)"]
+        HH["cranelisp-types::HeapHeader\n(SIZE / RC_OFFSET)"]
+        PANIC["panic::runtime_panic"]
+    end
+
+    SESS -->|into_concrete::<Code,()>| TABLE
+    EXEB -->|force| TABLE
+    BK -.->|reads fn ptr via GOT slot| SLAB
+
+    TABLE --> BUILD
+    BUILD -->|got = with_static_backing| SLAB
+    BUILD --> HARV
+    BUILD --> R0 & R1 & R3
+    BUILD --> INS1 & INSV
+    R0 & R1 & R3 --> PDEF
+    INS1 -->|store_slot N, fn_ptr| SLAB
+    INSV -->|3 of 4 slots stay NULL\n(vec-get/set/push inline-only — LOW)| SLAB
+    HARV --> RING0B & STRB & MARB & INTB & FLTB
+
+    RING0B --> PANIC
+    STRB --> ALLOC & HS & VR
+    MARB --> ALLOC & HH & PANIC
+    INTB --> ALLOC & HS & HH
+    FLTB --> HS
+
+    classDef pub fill:#cfe,stroke:#069,stroke-width:2px;
+    classDef null fill:#fdd,stroke:#900;
+    class TABLE,SLAB pub;

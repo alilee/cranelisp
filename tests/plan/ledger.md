@@ -36,18 +36,121 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
-### Sprint 86 — dead `/disasm` REPL command repro (RED) (/qa, 2026-06-20)
+### Sprint 87 Wave 0 — close note: 4 S86 guards RESOLVED + removed (/qa, 2026-06-20)
 
-- **`tests/repl_introspection.rs::disasm_command_shows_native_code_for_compiled_fn`** (RED) — `/disasm <name>` is DEAD: `src/repl.rs::handle_disasm` reads `intr.disasm`, which is never populated; native disassembly via `cranelisp_backend::produce_disasm` has ZERO call sites in `src/`, so `/disasm sq` returns `Error: no disassembly available for 'sq'` even for a freshly JIT-compiled fn (`(sq 7)` → `49`). Asserts the `; disasm for sq` header + a `0x` instruction line are present and the dead-path string is absent. Resolver: **/int** (resolver; failing test is the record). Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; flips green when /int wires `produce_disasm` into the handler. spec: repl/spec.md §3.1.
+Resolved in S87 Wave 0: typecheck FQ renderer fix + src/ disasm-on-demand wiring
++ /info clause-count; suite green 2833/0/0; 3 collateral spec_08_modules
+assertions updated bare→FQ. Per the Close-time Verification Protocol step 3, a
+guard that now passes on HEAD is **Resolved** — its entry is removed. The four
+removed entries (all now GREEN on HEAD):
 
-### Sprint 86 — coverage-gap closing: 2 latent defects as failing-not-ignored guards (/qa, 2026-06-20)
+- `tests/repl_introspection.rs::disasm_command_shows_native_code_for_compiled_fn`
+  (was →/int — `/disasm` native-code path) — RESOLVED (`produce_disasm` wired
+  on-demand into `src/`).
+- `tests/repl_introspection.rs::info_multi_clause_macro_shows_clause_count`
+  (was →/repl — `/info` clause-count line) — RESOLVED.
+- `tests/repl_negative.rs::type_error_names_expected_type_fully_qualified`
+  (was →/typecheck — type-error FQ renderer) — RESOLVED.
+- `tests/repl_negative.rs::type_error_names_actual_type_fully_qualified`
+  (was →/typecheck — type-error FQ renderer) — RESOLVED.
 
-Closing the `[Gap(S86)]` coverage gaps surfaced 2 real defects (the `/disasm` pattern — a "gap" that is a bug). Per the no-FIXME-with-failing-test rule (`memory/feedback_no_fixme_with_failing_test`), the failing tests ARE the record + trigger — no paired numbered FIXME.
+**Canonical run now carries 0 intentional failing-not-ignored guards** as of
+S87 Wave 0 — `cargo nextest run --workspace` is fully green (2833 passed, 0
+failed, 0 skipped). A genuine regression is now ANY RED.
 
-- **`tests/repl_introspection.rs::info_multi_clause_macro_shows_clause_count`** (RED) — `/info` on a multi-clause macro omits the required `N clauses` count line (spec §11.2.2); clause signatures are present, the count is not. Resolver: **/repl** (the `/info` macro-card renderer). Flips green when `/info` emits the clause-count line. spec: repl/spec.md §11.2.2.
-- **`tests/repl_negative.rs::type_error_names_expected_type_fully_qualified`** (RED) and **`::type_error_names_actual_type_fully_qualified`** (RED) — type-error messages name expected/actual types **bare** (`Int`) not fully-qualified (`primitives/Int`) as spec §5.3 requires; the value-display path qualifies, the error renderer (`crates/cranelisp-typecheck/src/unify.rs:117`) does not (the two diverge). The §5.3 source-location requirement is already met. Resolver: **/typecheck**. Flips green when the error renderer qualifies type names. spec: repl/spec.md §5.3.
+### Sprint 87 Phase 5 — REPRO PASS: 3 real defects of 7 audited candidates (RED) (/qa, 2026-06-20)
 
-**Canonical run carries 4 intentional failing-not-ignored guards total** (these 3 + `disasm_command_shows_native_code_for_compiled_fn`). A genuine regression is any RED beyond these 4.
+The user did not trust the Stage-B audit + Stage-C.2 rollout's latent-defect
+claims and asked /qa to **reproduce each candidate as a minimal program and
+separate real defects from over-claims**. Seven candidates examined; **3 real,
+4 over-claims/masked**. **4 RED tests added** (1 green control alongside).
+SHA: `2fd7300` (pre-commit working tree). All four RED per
+`memory/feedback_failing_not_ignored.md` — no FIXME (the failing test is the
+record + trigger, per `memory/feedback_no_fixme_with_failing_test.md`).
+
+**REAL — repro added (RED):**
+
+- **D-name** — `tests/spec_05_definitions.rs::defn_name_with_arrow_in_symbol_parses`
+  (RED) + `::defn_name_without_arrow_control_parses` (GREEN control). A `defn`
+  whose name embeds `->` (`char->digit`) fails to parse:
+  `parse error … defn: expected params [...] or variant (...)` — the threading
+  reader-macro fires inside the symbol token. Control (`chardigit`) parses,
+  isolating `->`-in-symbol as the trigger. **Owner: /frontend** (reader/symbol
+  tokenisation). Target: next /frontend wave.
+
+- **D-default** — `tests/spec_07_traits.rs::nullary_return_poly_trait_method_dispatches_at_codegen`
+  (RED). A nullary return-type-polymorphic trait method
+  (`(deftrait T (z [] self)) (impl T Int (defn z [] 0))`) typechecks when the
+  call context fixes the return type (`(add-i64 (z) 5)`) but **fails at codegen**:
+  `codegen error … undefined function: z`. Same shape as the stdlib `default`
+  self-test (plan reported `undefined function: default`). Reduced to 3 lines.
+  **Owner: /backend** (codegen monomorphisation/dispatch — typecheck already
+  pins the return type, so the defect is codegen-side, NOT typecheck). Target:
+  next /backend wave.
+
+- **DEF-2 / T2 family (heap-element-vec RC)** —
+  `tests/spec_12_runtime.rs::vec_push_heap_element_borrowed_recursive_source_no_uaf`
+  (RED, REPL tier) +
+  `::vec_push_heap_element_borrowed_recursive_source_no_uaf_run` (RED, `--run`
+  e2e tier). A Vec with HEAP (String) elements, BORROWED as a recursive
+  parameter, `vec-push`-copied + read-back each iteration, **SIGSEGVs at
+  recursion depth 2** (use-after-free of the original element) — **10/10
+  deterministic in BOTH REPL and `--run`**. The same loop with Int elements
+  does NOT crash → the trigger is the heap element's mismatched consuming-inc
+  on the copy path. When GREEN: 2 × str-len "aaa" = 6. **Owner: /backend**
+  (vec heap-element consuming-inc symmetry — the audit's B2/T2 seam,
+  `vec_codegen.rs` / `vec_runtime.rs` `vec_set_copy`/`vec_push_copy`). Target:
+  next /backend wave. This is the deterministic durable guard for the same
+  root cause behind the intermittent D-either runner crash (below).
+
+**OVER-CLAIM / MASKED — no test added (per the repro-pass brief):**
+
+- **D-either (discover-tests SIGBUS)** — REPRODUCES but **INTERMITTENT** (5/5
+  crashes on first sweep, then 0/15 and 0/20 on re-runs — allocator-state
+  dependent UAF through the stdlib `discover-tests → run-one` runner over
+  `collections.either.test`). Per ledger §Discipline `flaky` is NOT an allowed
+  disposition and an intermittent test is suite noise. The crash's **root cause
+  is the same heap-element-vec RC defect captured DETERMINISTICALLY by the
+  DEF-2/T2 tests above** (the runner copies a `(Vec (Pair String (Fn …)))` —
+  heap-element vec — via `vec-map`). No separate flaky test authored; the T2
+  tests are the durable guard. If /backend's T2 fix does not also settle the
+  runner crash, /qa re-reduces. → /backend (via the T2 guard).
+
+- **B2/DEF-2 simple `conj` corruption** — **DOES NOT REPRODUCE.** `conj`
+  (= `vec-push`) on vecs of Strings and of ADTs returns correct values across
+  REPL, `--run`, AND `--link`, including COW (reading both original and new
+  vec) and sustained load (500× threaded). Confirms the audit's "both correct,
+  test suite green" — plain `conj` is sound. Only the borrowed-recursive shape
+  (T2 above) is the live defect.
+
+- **B1/DEF-1 codegen-batch seam** — **DOES NOT REPRODUCE.** A prelude-glob-
+  surfaced `defn` (incl. `count` wrapping the GOT-dispatched `vec-len`) used
+  bare in a CONSUMING dependency module enters that module's codegen batch and
+  runs correctly under `--run` AND `--link` (verified the exact GOT-primitive-
+  wrapper-in-dependency-module shape). Existing
+  `spec_08_modules::def1_prelude_provided_defn_called_bare_enters_codegen_batch`
+  PASSES. Fully masked by S86's fix, as the audit predicted.
+
+- **T2 vec_set_copy RC (uniformity-only claim)** — the audit itself states the
+  vec-set/vec-push RC labor-split is "correct (test suite green)" — a
+  maintainability/uniformity gap, not an observable defect in the simple case.
+  Confirmed: simple vec-set with heap elements is correct. The **observable**
+  T2 defect is the borrowed-recursive shape, captured by the DEF-2/T2 tests
+  above (same `vec_codegen.rs`/`vec_runtime.rs` seam the audit flags).
+
+- **D-regen (inline `(mod test)` strip-without-write)** — **DOES NOT REPRODUCE**
+  as an isolated defect. Inline `(mod test form…)` extraction correctly writes
+  the `{stem}/test.cl` backing file AND rewrites the parent to bare `(mod test)`
+  (spec §8.2.2); the extraction-stable shape (bare `(mod test)` + existing
+  backing — the stdlib's current mitigation) is byte-stable on load. The
+  historical tree corruption was a **test-isolation artifact** (e2e tests
+  pointing `CRANELISP_LIB` at the in-place workspace `stdlib/` under parallel
+  `nextest`), already mitigated stdlib-side. → /int + /qa test-isolation
+  hardening (tests should copy stdlib to a tmpdir, not use it in place) — a
+  hygiene improvement, not a compiler defect; no failing test warranted.
+  (Note: an adjacent real issue — `:(Option String)` annotation resolving
+  `String` from an empty module name in a submodule — surfaced during this
+  reduction; out of scope for this pass, not authored.)
 
 ### Sprint 86 — DEF-6 repeated platform-ADT marshaling corrupts the heap in a `--link` binary (RED) (/qa, 2026-06-18)
 

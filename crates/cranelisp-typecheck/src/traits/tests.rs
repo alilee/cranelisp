@@ -403,6 +403,109 @@
         }
     }
 
+    /// Nullary trait decl whose only method `z` takes no params and returns
+    /// `Self` — the return-type-polymorphic shape (`(deftrait T (z [] self))`,
+    /// `(default)`, `(zero)`, `(empty)`). There is no argument to dispatch on.
+    fn make_nullary_return_poly_trait_decl() -> TraitDecl {
+        TraitDecl {
+            name: TraitName::from("NullaryRP"),
+            docstring: None,
+            type_params: vec![],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from("z"),
+                docstring: None,
+                params: vec![],
+                ret_type: TypeExpr::SelfType,
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    /// Register the nullary `NullaryRP` trait + an `Int` impl `(defn z [] 0)`.
+    fn register_nullary_rp_int_impl(tc: &mut TestFixture) {
+        tc.register_trait_decl_self(&make_nullary_return_poly_trait_decl())
+            .unwrap();
+        let impl_ = TraitImpl {
+            trait_name: cranelisp_types::TraitRef::new(None, TraitName::from("NullaryRP")),
+            target: TypeExpr::Named(cranelisp_types::TypeRef::new(None, TypeName::from("Int"))),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from("z"),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![],
+                    body: cranelisp_types::Expr::IntLit {
+                        value: 0,
+                        span: Span::SYNTHETIC,
+                        inferred_type: None,
+                    },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        };
+        tc.register_trait_impl_self(&impl_).unwrap();
+    }
+
+    // spec: 07-traits §7.4 — a nullary, return-type-polymorphic trait method
+    // (`self` in return position, no parameter to dispatch on) dispatches on the
+    // call's RETURN type once the call context fixes it. This is the typecheck
+    // seam of defect D-default: without the return-type fallback the resolver
+    // returned `Ok(None)` (no dispatch arg), leaving `resolved_call: None` so
+    // codegen emitted "undefined function: z". With the call return type fixed
+    // to Int the resolver must select the Int impl.
+    #[test]
+    fn nullary_return_poly_method_dispatches_on_return_type() {
+        let mut tc = tc_with_prims();
+        register_nullary_rp_int_impl(&mut tc);
+
+        // Simulate the post-inference recorded call return type: `(z)` fixed to
+        // Int by its call context. `try_resolve_trait_method` reads this from
+        // `expr_types` at the call span when there is no dispatch argument.
+        let call_span = Span::new(10, 13);
+        tc.seed_expr_type(call_span, Type::Int);
+
+        let result = tc
+            .try_resolve_trait_method_self(&Symbol::from("z"), &[], call_span)
+            .expect("should not error");
+        let resolved = result.expect("nullary return-poly method must resolve to the Int impl");
+        match resolved {
+            ResolvedCall::TraitMethod { method_name, impl_type, mangled_name, .. } => {
+                assert_eq!(method_name.as_ref(), "z");
+                assert_eq!(impl_type.name.as_ref(), "Int");
+                assert_eq!(mangled_name.as_ref(), "NullaryRP.z$Int");
+            }
+            other => panic!("expected TraitMethod resolution, got {other:?}"),
+        }
+    }
+
+    // spec: 07-traits §7.4 — NEGATIVE: when the call return type is NOT yet
+    // fixed (no `expr_types` entry / still a var), a nullary return-poly method
+    // must DEFER (`Ok(None)`), not guess an impl. The later deferred pass
+    // resolves it once the context pins the type.
+    #[test]
+    fn nullary_return_poly_method_defers_when_return_type_unfixed() {
+        let mut tc = tc_with_prims();
+        register_nullary_rp_int_impl(&mut tc);
+
+        // No expr_types entry seeded at the span → return type is unknown.
+        let result = tc.try_resolve_trait_method_self(
+            &Symbol::from("z"),
+            &[],
+            Span::new(20, 23),
+        );
+        assert!(
+            matches!(result, Ok(None)),
+            "must defer when the return type is not yet fixed, got {result:?}"
+        );
+    }
+
     // spec: 07-traits §7.4.1 — non-trait-method name returns None
     #[test]
     fn test_try_resolve_non_trait_method() {

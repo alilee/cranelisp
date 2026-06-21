@@ -1,0 +1,12 @@
+(import [super [Pair first second swap map-first]])
+(import [testing.assertions [assert-eq]])
+(import [primitives [Option String Int add-i64]])
+(defn test-first [] : (Option String)
+  (assert-eq 1 (first (Pair 1 2))))
+(defn test-second [] : (Option String)
+  (assert-eq 2 (second (Pair 1 2))))
+(defn test-swap [] : (Option String)
+  (assert-eq 1 (second (swap (Pair 1 2)))))
+(defn test-map-first [] : (Option String)
+  (assert-eq 2
+    (first (map-first (fn [x] (add-i64 x 1)) (Pair 1 9)))))

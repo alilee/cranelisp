@@ -46,3 +46,9 @@
   [:Int x :Int lo :Int hi] :Int
   (if (lt-i64 x lo) lo
     (if (gt-i64 x hi) hi x)))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; `(mod test …)` submodule (S87 Stage C.2): exercises the Int helpers with
+;; the in-language harness.
+
+(mod test)  ;; body in int/test.cl (extraction-stable backing file, spec §8.2.5)

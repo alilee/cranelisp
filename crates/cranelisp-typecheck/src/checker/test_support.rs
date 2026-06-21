@@ -132,6 +132,13 @@ impl TestFixture {
         env.register_trait_impl(&mut self.state, impl_)
     }
 
+    /// Seed `CheckState.expr_types` at `span` (test convenience). Used to
+    /// simulate the post-inference recorded call return type that
+    /// return-type-polymorphic nullary trait-method dispatch reads.
+    pub fn seed_expr_type(&mut self, span: Span, ty: Type) {
+        self.state.expr_types.insert(span, ty);
+    }
+
     /// Try resolve trait method (test convenience).
     pub fn try_resolve_trait_method_self(
         &mut self,

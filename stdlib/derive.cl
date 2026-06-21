@@ -401,3 +401,21 @@
                      _ acc]))
                 SNil traits)]
     (SexpList (SCons (SexpSym "begin") (SCons dt (sreverse calls))))))
+
+;; ── Self-tests — DEFERRED (same-module-macro limitation, S87 Stage C.2) ──
+;; A `(mod test …)` for derive cannot be shipped this sprint. Exercising the
+;; derive macros requires INVOKING them — `(derive [Eq Ord Display] (deftype
+;; Color …))` — but a `(derive …)` call placed in derive.cl's OWN `(mod test)`
+;; submodule fails at expansion: `parse error … unexpected quasiquote form —
+;; should have been expanded`. The `derive`/`derive-*` macros are defined in
+;; THIS module, and a macro is not available for expansion within its own
+;; module's forms (spec §9.3.4 same-module-macro rejection; the submodule is
+;; part of the same compilation), so the quasiquote-bearing expansion never
+;; runs and the raw template leaks to the parser. A `(mod test)` that fails at
+;; PARSE/expansion would poison the whole load graph, so it is held.
+;;
+;; The derive macros ARE exercised end-to-end from a SEPARATE module — that is
+;; the correct test home (a downstream module deriving on its own ADT). For
+;; the stdlib self-test rollout, derive's coverage is deferred to such a
+;; consumer-side test rather than an in-module `(mod test)`. Recorded in
+;; plan-stdlib.md §26.4.

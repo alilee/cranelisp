@@ -1,0 +1,324 @@
+use super::*;
+use cranelisp_types::{DefKind, FQTypeName, Scheme, Type, TypeDefInfo, TypeName, Visibility};
+
+const TEST_MOD: &str = "test";
+
+/// A constructor spec for test fixtures: name, tag, and field count.
+struct CtorSpec {
+    name: &'static str,
+    tag: usize,
+    field_count: usize,
+}
+
+/// Test helper: create an FQTypeName in a "test" module.
+fn test_fqtn(name: &str) -> FQTypeName {
+    FQTypeName::new(ModuleFullPath::from(TEST_MOD), TypeName::from(name))
+}
+
+/// Helper: nullary constructor spec (no fields).
+fn nullary_ctor(name: &'static str, tag: usize) -> CtorSpec {
+    CtorSpec { name, tag, field_count: 0 }
+}
+
+/// Helper: data constructor spec with the given field count.
+fn data_ctor(name: &'static str, tag: usize, field_count: usize) -> CtorSpec {
+    CtorSpec { name, tag, field_count }
+}
+
+/// Build a constructor `Def` entry under the ctor-as-Def shape.
+/// `type_def` is `Some(..)` for a single-ctor product type (the ctor IS
+/// its own type — S79 Option 3a dual facet), `None` for sum/enum ctors.
+fn ctor_def_entry(
+    type_fqtn: &FQTypeName,
+    spec: &CtorSpec,
+    type_def: Option<Box<TypeDefInfo>>,
+) -> ModuleEntry {
+    let scheme = Scheme {
+        type_vars: vec![],
+        constraints: std::collections::HashMap::new(),
+        ty: Type::ADT(type_fqtn.clone(), vec![]),
+    };
+    ModuleEntry::Def {
+        scheme,
+        visibility: Visibility::Public,
+        docstring: None,
+        param_names: (0..spec.field_count)
+            .map(|i| Symbol::from(format!("f{i}")))
+            .collect(),
+        kind: Box::new(DefKind::Constructor {
+            got_slot: 0,
+            type_name: type_fqtn.clone(),
+            tag: spec.tag,
+            field_count: spec.field_count,
+            internal: false,
+            type_def,
+        }),
+        callees: vec![],
+        trait_origin: None,
+        seq: 0,
+        ast: None,
+        codegen_view: None,
+        code: None,
+    }
+}
+
+/// Build a DashMap with a single module, mirroring the production
+/// registration shape (S79 Option 3a, `cranelisp-typecheck::adt`):
+/// every constructor — sum, enum, OR product — is a got-slotted
+/// `ModuleEntry::Def { kind: DefKind::Constructor { .. }, .. }`. For a
+/// **product type** (single constructor whose name equals the type name)
+/// that `Def` ALSO carries the type facet `type_def: Some(TypeDefInfo)`
+/// and IS the `type_name` key — there is no separate `TypeDef` entry, and
+/// the prior `constructor_scheme`-smuggling `TypeDef` is retired. For
+/// sum/enum types each ctor `Def` is keyed distinctly and a separate
+/// `ModuleEntry::TypeDef` is inserted under the type name.
+fn tables_with_type(
+    type_name: &str,
+    type_params: &[&str],
+    ctors: &[CtorSpec],
+) -> dashmap::DashMap<ModuleFullPath, SymbolTable> {
+    let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
+    let mut st = SymbolTable::new(ModuleFullPath::from(TEST_MOD));
+    let fqtn = test_fqtn(type_name);
+
+    let info = TypeDefInfo {
+        name: fqtn.clone(),
+        type_params: type_params.iter().map(|s| Symbol::from(*s)).collect(),
+        constructors: ctors.iter().map(|c| Symbol::from(c.name)).collect(),
+    };
+
+    let is_product = ctors.len() == 1 && ctors[0].name == type_name;
+
+    // Insert ctor Defs. The product ctor carries its type facet and IS the
+    // type-name key; sum/enum ctors carry `type_def: None`.
+    for spec in ctors {
+        let type_def = if is_product {
+            Some(Box::new(info.clone()))
+        } else {
+            None
+        };
+        st.insert(
+            Symbol::from(spec.name),
+            ctor_def_entry(&fqtn, spec, type_def),
+        );
+    }
+
+    // Sum/enum: a separate `TypeDef` entry under the type name. A product
+    // type needs NONE — its got-slotted ctor `Def` already answers as the
+    // type via its `type_def` facet.
+    if !is_product {
+        st.insert(
+            Symbol::from(type_name),
+            ModuleEntry::TypeDef {
+                info,
+                visibility: Visibility::Public,
+                docstring: None,
+            },
+        );
+    }
+    tables.insert(ModuleFullPath::from(TEST_MOD), st);
+    tables
+}
+
+// --- Primitive types (no tables needed) ---
+
+// Build a concrete ADT `ConcreteType` from a test type name + concrete args.
+fn cadt(name: &str, args: Vec<ConcreteType>) -> ConcreteType {
+    ConcreteType::ADT(test_fqtn(name), args)
+}
+
+#[test]
+fn test_primitives_never_heap() {
+    assert_eq!(
+        HeapCategory::classify::<(), ()>(&ConcreteType::Int, None),
+        HeapCategory::NeverHeap
+    );
+    assert_eq!(
+        HeapCategory::classify::<(), ()>(&ConcreteType::Bool, None),
+        HeapCategory::NeverHeap
+    );
+    assert_eq!(
+        HeapCategory::classify::<(), ()>(&ConcreteType::Float, None),
+        HeapCategory::NeverHeap
+    );
+}
+
+#[test]
+fn test_string_always_heap() {
+    assert_eq!(
+        HeapCategory::classify::<(), ()>(&ConcreteType::String, None),
+        HeapCategory::AlwaysHeap
+    );
+}
+
+#[test]
+fn test_fn_always_heap() {
+    let fn_ty = ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int));
+    assert_eq!(
+        HeapCategory::classify::<(), ()>(&fn_ty, None),
+        HeapCategory::AlwaysHeap
+    );
+}
+
+// S84 Phase 3 (concrete-boundary-type.md §3.1, FIXME 0391). `classify` now
+// takes a `ConcreteType` — there is NO `Var` and NO `TyConApp` variant, so
+// the old `test_var_*` / `test_tyconapp_*` / `(Option Var)` / `(Vec Var)`
+// backstop-deferred cases are **structurally inexpressible**: you cannot
+// construct a `ConcreteType::Var` to hand to `classify` (the migration's
+// whole proof — `cargo check` rejects `ConcreteType::Var(0)` at compile time).
+// The four behavioural `Var`-guards collapsed to that one structural property;
+// §3.11.1 ambiguity is caught upstream at typecheck + `MonoExpr::from_expr`,
+// never at this seam.
+
+// --- ADT without tables (conservative fallback) ---
+
+#[test]
+fn test_adt_without_tables_is_mixed() {
+    let color = cadt("Color", vec![]);
+    assert_eq!(
+        HeapCategory::classify::<(), ()>(&color, None),
+        HeapCategory::Mixed,
+    );
+}
+
+#[test]
+fn test_parameterized_adt_without_tables_is_mixed() {
+    let option_int = cadt("Option", vec![ConcreteType::Int]);
+    assert_eq!(
+        HeapCategory::classify::<(), ()>(&option_int, None),
+        HeapCategory::Mixed,
+    );
+}
+
+// --- ADT with tables: enum-only (all nullary) ---
+
+#[test]
+fn test_enum_only_adt_never_heap() {
+    // (deftype Color Red Green Blue)
+    let tables = tables_with_type(
+        "Color",
+        &[],
+        &[
+            nullary_ctor("Red", 0),
+            nullary_ctor("Green", 1),
+            nullary_ctor("Blue", 2),
+        ],
+    );
+    let color = cadt("Color", vec![]);
+    assert_eq!(
+        HeapCategory::classify(&color, Some(&tables)),
+        HeapCategory::NeverHeap,
+    );
+}
+
+// --- ADT with tables: all data constructors ---
+
+#[test]
+fn test_data_only_adt_always_heap() {
+    // (deftype Wrapper [val]) — non-parameterized with data constructor
+    // This is the F-2 bug case: was incorrectly NeverHeap
+    let tables = tables_with_type(
+        "Wrapper",
+        &[],
+        &[data_ctor("Wrapper", 0, 1)],
+    );
+    let wrapper = cadt("Wrapper", vec![]);
+    assert_eq!(
+        HeapCategory::classify(&wrapper, Some(&tables)),
+        HeapCategory::AlwaysHeap,
+    );
+}
+
+#[test]
+fn test_product_type_always_heap() {
+    // (deftype IPoint (IPoint [:Int x :Int y])) — product type
+    let tables = tables_with_type(
+        "IPoint",
+        &[],
+        &[data_ctor("IPoint", 0, 2)],
+    );
+    let point = cadt("IPoint", vec![]);
+    assert_eq!(
+        HeapCategory::classify(&point, Some(&tables)),
+        HeapCategory::AlwaysHeap,
+    );
+}
+
+// --- ADT with tables: mixed constructors ---
+
+// regression: KEPT path (FIXME 0375/0379). A type-KNOWN `Mixed` ADT with NO
+// free var (`is_representation_undetermined()` is FALSE) still classifies as
+// `Mixed` and keeps its sound `<1024` nullary-tag discrimination guard — it
+// must NOT be swept into the widened panic. This is the `(true,true)` ctor
+// shape → `Mixed` → `emit_rc_*_guarded` chain that must stay intact.
+#[test]
+fn test_mixed_adt_with_tables() {
+    // (deftype (Option a) None (Some [:a val]))
+    let tables = tables_with_type(
+        "Option",
+        &["a"],
+        &[nullary_ctor("None", 0), data_ctor("Some", 1, 1)],
+    );
+    let option_int = cadt("Option", vec![ConcreteType::Int]);
+    assert_eq!(
+        HeapCategory::classify(&option_int, Some(&tables)),
+        HeapCategory::Mixed,
+    );
+}
+
+// --- ADT with tables: parameterized but only nullary ---
+
+#[test]
+fn test_phantom_type_never_heap() {
+    // (deftype (Phantom a) PhantomVal) — parameterized, but only nullary constructor
+    // This was incorrectly Mixed with the old heuristic
+    let tables = tables_with_type(
+        "Phantom",
+        &["a"],
+        &[nullary_ctor("PhantomVal", 0)],
+    );
+    let phantom = cadt("Phantom", vec![ConcreteType::Int]);
+    assert_eq!(
+        HeapCategory::classify(&phantom, Some(&tables)),
+        HeapCategory::NeverHeap,
+    );
+}
+
+// --- ADT with tables: unknown type (not in tables) ---
+
+#[test]
+fn test_unknown_adt_with_empty_tables_is_mixed() {
+    let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
+    let unknown = cadt("Unknown", vec![]);
+    assert_eq!(
+        HeapCategory::classify(&unknown, Some(&tables)),
+        HeapCategory::Mixed,
+    );
+}
+
+// --- Vec type (built-in, always heap) ---
+
+#[test]
+fn test_vec_always_heap_without_tables() {
+    let vec_int = ConcreteType::ADT(
+        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
+        vec![ConcreteType::Int],
+    );
+    assert_eq!(
+        HeapCategory::classify::<(), ()>(&vec_int, None),
+        HeapCategory::AlwaysHeap,
+    );
+}
+
+#[test]
+fn test_vec_always_heap_with_tables() {
+    let tables: dashmap::DashMap<ModuleFullPath, SymbolTable> = dashmap::DashMap::new();
+    let vec_str = ConcreteType::ADT(
+        FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
+        vec![ConcreteType::String],
+    );
+    assert_eq!(
+        HeapCategory::classify(&vec_str, Some(&tables)),
+        HeapCategory::AlwaysHeap,
+    );
+}

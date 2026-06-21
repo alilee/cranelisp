@@ -43,3 +43,9 @@
   (match e
     [(Left v) (f v)
      (Right v) (g v)]))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; `(mod test …)` submodule (S87 Stage C.2): exercises the Either eliminators
+;; with the in-language harness.
+
+(mod test)  ;; body in either/test.cl (extraction-stable backing file, spec §8.2.5)

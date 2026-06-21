@@ -6,6 +6,7 @@
 
 (import [prelude []])
 
+(import [primitives [str-concat]])
 (import [macros [*]])
 
 ;; -- SList Helpers ----------------------------------------------------------

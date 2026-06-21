@@ -255,7 +255,7 @@ fn generate_exports(specs: &[ExportSpec]) -> String {
 
 /// Look up the canonical `sexp` for a symbol from the Introspection DashMap
 /// (per Decision 41: `Introspection` is the single store for source/sexp/
-/// expanded/clif_ir/disasm/code_size across all `DefKind` variants and
+/// expanded/clif_ir/code_size across all `DefKind` variants and
 /// `ModuleEntry::{TypeDef, TraitDecl}`). Returns `None` for cache-loaded
 /// modules whose Introspection has not been rehydrated — tracked at
 /// FIXME 0220 (lazy re-read on demand); the symmetric None-skip is the

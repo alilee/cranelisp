@@ -1457,7 +1457,7 @@ fn annotation_binds_top_level_following_form() {
 #[test]
 fn annotation_type_mismatch_is_unify_error() {
     let out = repl_with_prim_types(":Float 42\n");
-    out.assert_stdout_contains("type mismatch: expected Int, got Float");
+    out.assert_stdout_contains("type mismatch: expected primitives/Int, got primitives/Float");
 }
 
 // spec: spec/02-grammar.md §2.3.8 — the annotation type MUST resolve. `:Foo 42`
@@ -1482,7 +1482,7 @@ fn annotation_unknown_type_is_error() {
 fn annotation_in_paren_is_application_of_annotated_element() {
     let out = repl_with_prim_types("(:Int 42)\n");
     // The annotated element has type Int but is applied as a function.
-    out.assert_stdout_contains_all(&["type mismatch", "expected Int, got (Fn"]);
+    out.assert_stdout_contains_all(&["type mismatch", "expected primitives/Int, got (Fn"]);
 }
 
 // spec: spec/02-grammar.md §2.3.8 — the annotation's unification check is
@@ -1495,7 +1495,7 @@ fn annotation_in_paren_is_application_of_annotated_element() {
 fn annotation_in_paren_unify_precedes_not_a_function() {
     let out = repl_with_prim_types("(:Float 42)\n");
     // The unify mismatch (Int vs Float) is reported …
-    let out = out.assert_stdout_contains("type mismatch: expected Int, got Float");
+    let out = out.assert_stdout_contains("type mismatch: expected primitives/Int, got primitives/Float");
     // … and the not-a-function `(Fn …)` mismatch is NOT the reported error.
     out.assert_stdout_does_not_contain("got (Fn");
 }

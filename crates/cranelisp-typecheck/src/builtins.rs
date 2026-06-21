@@ -2402,7 +2402,12 @@ mod tests {
             ("scheme.rs", include_str!("scheme.rs")),
             ("scope.rs", include_str!("scope.rs")),
             ("trace.rs", include_str!("trace.rs")),
-            ("traits.rs", include_str!("traits.rs")),
+            ("traits/mod.rs", include_str!("traits/mod.rs")),
+            ("traits/registry.rs", include_str!("traits/registry.rs")),
+            ("traits/impl_check.rs", include_str!("traits/impl_check.rs")),
+            ("traits/dispatch.rs", include_str!("traits/dispatch.rs")),
+            ("traits/monomorphise.rs", include_str!("traits/monomorphise.rs")),
+            ("traits/type_resolve.rs", include_str!("traits/type_resolve.rs")),
             ("unify.rs", include_str!("unify.rs")),
         ];
         // Construct the forbidden symbol at runtime so this very test

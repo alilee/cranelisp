@@ -1,0 +1,12 @@
+(import [super [Default default]])
+(import [testing.assertions [assert-eq assert-true]])
+(import
+  [primitives [Option String Int Float Bool eq-i64 eq-f64 not]])
+(defn test-default-int [] : (Option String)
+  (assert-eq 0 :Int (default)))
+(defn test-default-float [] : (Option String)
+  (assert-eq 0.0 :Float (default)))
+(defn test-default-string [] : (Option String)
+  (assert-eq "" :String (default)))
+(defn test-default-bool [] : (Option String)
+  (assert-true (not :Bool (default))))

@@ -1,0 +1,8 @@
+(import [super [Display show]])
+(import [primitives [Option Some None String str-eq]])
+(defn test-show-int [] : (Option String)
+  (if (str-eq "42" (show 42)) None (Some "show 42")))
+(defn test-show-bool [] : (Option String)
+  (if (str-eq "true" (show true)) None (Some "show true")))
+(defn test-show-string [] : (Option String)
+  (if (str-eq "hi" (show "hi")) None (Some "show hi")))

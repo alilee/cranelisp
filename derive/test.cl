@@ -1,0 +1,13 @@
+(import [super [derive derive-Eq derive-Ord derive-Display]])
+(import
+  [testing.assertions [assert-true assert-false assert-eq]])
+(import [primitives [Option String]])
+(derive [Eq Ord Display] (deftype Color Red Green Blue))
+(defn test-derived-eq [] : (Option String)
+  (assert-true (= Red Red)))
+(defn test-derived-neq [] : (Option String)
+  (assert-false (= Red Blue)))
+(defn test-derived-ord [] : (Option String)
+  (assert-true (< Red Green)))
+(defn test-derived-show [] : (Option String)
+  (assert-eq "Green" (show Green)))

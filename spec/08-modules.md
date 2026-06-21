@@ -930,7 +930,7 @@ Macros from imported modules are available for expansion in the importing module
 
 Macro authors SHOULD use qualified names for non-prelude references within macro bodies to avoid capture by the importing module's local names.
 
-## 8.13 REPL Integration [S10]
+## 8.13 REPL Integration [Tested crates/cranelisp-typecheck/src/checker/tests.rs::test_default_module_is_user]
 
 A conforming REPL implementation SHOULD support the following module-related behaviors.
 

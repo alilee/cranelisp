@@ -342,7 +342,7 @@ Values are runtime results and have no module scope. They are displayed bare.
 
 ADT fields MUST be recursively formatted according to this table.
 
-### 1.5.1 Bare Polymorphic Values — Type Display via Introspection [S84]
+### 1.5.1 Bare Polymorphic Values — Type Display via Introspection [Tested+Neg tests/repl_introspection::prelude_option_none_value_display_neg_definition_metadata]
 
 A **result-only-polymorphic value** is a value whose finalised type is polymorphic with no concrete instantiation forced by the surrounding context — e.g. a bare `None` (type `∀a. (Option a)`) or a bare empty literal `[]` (type `∀a. (Vec a)`) entered alone at the prompt. Such a value has **no concrete runtime representation** to show: under the slot⟺concrete model it is *slot-less* (`UserFnState::Polymorphic`) — it has no GOT slot and is not compiled as a runtime value.
 
@@ -449,7 +449,7 @@ Available commands:
 
 Commands not yet available (due to ring) SHOULD be omitted or marked as unavailable.
 
-### 3.3 `/list` — Module Definitions [R4 S15]
+### 3.3 `/list` — Module Definitions [Tested tests/repl_introspection::list_empty_session]
 
 `/list` shows symbols **defined in the current module** — the user's own work. It does NOT show imports or special forms (those belong on `/imports`). Constructors are included alongside other symbols alphabetically.
 
@@ -498,7 +498,7 @@ Fns:
   ...
 ```
 
-### 3.4 `/imports` — Imports and Special Forms [R4 S15]
+### 3.4 `/imports` — Imports and Special Forms [Tested+Neg tests/repl_introspection::imports_lists_special_forms]
 
 `/imports` shows everything available in the current module that was NOT defined here: imported names and language special forms. This is the complement of `/list` — together they cover all symbols in scope.
 
@@ -542,7 +542,7 @@ From prelude:
 **Error cases:**
 - `/imports nonexistent` — no imports from that module; silent re-prompt (not an error) [Tested+Neg tests/repl_introspection::imports_lists_special_forms]
 
-### 3.5 `/exports <module>` — Module Public API [R4 S15]
+### 3.5 `/exports <module>` — Module Public API [Tested tests/repl_introspection::exports_no_arg_shows_usage]
 
 `/exports <module>` resolves a module and lists its importable (public) symbols. This answers "what can I import from this module?" before writing an `(import ...)` form.
 
@@ -865,8 +865,8 @@ The session state (defined functions, types, modules) MUST NOT be corrupted by a
 ### 5.3 Type Error Quality [Tested]
 
 Type errors MUST include:
-- The expected type (fully qualified) [Gap(S86) — tests/repl_negative::type_error_names_expected_type_fully_qualified FAILING → /typecheck]
-- The actual (inferred) type (fully qualified) [Tested tests/repl_negative::type_error_arg_mismatch] [Gap(S86) — tests/repl_negative::type_error_names_actual_type_fully_qualified FAILING → /typecheck]
+- The expected type (fully qualified) [Tested tests/repl_negative::type_error_names_expected_type_fully_qualified]
+- The actual (inferred) type (fully qualified) [Tested tests/repl_negative::type_error_arg_mismatch] [Tested tests/repl_negative::type_error_names_actual_type_fully_qualified]
 - The source location of the mismatch [Tested tests/repl_negative::type_error_has_source_location]
 
 Type errors SHOULD suggest common fixes when applicable.
@@ -1200,7 +1200,7 @@ Fns:
   ...
 ```
 
-#### 11.2.2 `/info` — Macro Details [Tested tests/repl_introspection::doc_macro_with_docstring] [Gap(S86) — tests/repl_introspection::info_multi_clause_macro_shows_clause_count FAILING → /repl]
+#### 11.2.2 `/info` — Macro Details [Tested tests/repl_introspection::doc_macro_with_docstring] [Tested tests/repl_introspection::info_multi_clause_macro_shows_clause_count]
 
 `/info <name>` for a macro MUST display the universal format (§1.1) with classification `defmacro`, clause signatures, and docstring.
 
@@ -1289,7 +1289,7 @@ The following test scenarios validate the Ring 3 REPL macro experience. Each MUS
 | 2 | `/expand` with nested macros | Displays fully expanded form (recursive to fixed point) | §11.1, §9.3.3 | [Tested tests/repl_introspection::expand_recursively_to_fixpoint] |
 | 3 | `/expand` with no macro calls | Displays input unchanged | §11.1 | [Tested+Neg tests/repl_introspection::expand_neg_non_macro_unchanged] |
 | 4 | `/list` after `defmacro` | Macro appears under "Macros" category | §11.2.1, §3.3 | [Tested tests/repl_introspection::list_shows_macros_after_defmacro] |
-| 5 | `/info` on a multi-clause macro | Shows universal format with clause signatures and docstring | §11.2.2 | [Gap(S86) — tests/repl_introspection::info_multi_clause_macro_shows_clause_count FAILING → /repl] |
+| 5 | `/info` on a multi-clause macro | Shows universal format with clause signatures and docstring | §11.2.2 | [Tested tests/repl_introspection::info_multi_clause_macro_shows_clause_count] |
 | 6 | `/sig` on a variadic macro | Shows universal format with `& rest` clause signature | §11.2.3 | [Tested tests/repl_introspection::bare_macro_lookup_shows_clause_signature] |
 | 7 | `defmacro` display at REPL | Shows universal format `:module/name ; defmacro` with clause signatures | §11.3, §9.13 | [Tested tests/repl_introspection::defmacro_display_single_clause] |
 | 8 | Bare macro name lookup | Shows universal format with clause signatures (non-zero-arg macros) | §11.4, §4.1.6 | [Tested tests/repl_introspection::bare_macro_lookup] |
@@ -1325,13 +1325,13 @@ user> /sh ls -la
 
 `/sh` follows the same slash-command convention as all other REPL commands (§3). Everything after `/sh` and optional whitespace is the shell command string.
 
-### 13.2 Execution [R4 S52]
+### 13.2 Execution [Tested tests/repl_shell::shell_escape_basic_echo_command_runs]
 
 The command string (everything after `/sh` and optional whitespace) MUST be passed to the system shell for execution. On Unix-like systems, this means invoking `/bin/sh -c "<command>"`. The REPL MUST NOT attempt to parse or interpret the command itself.
 
 The command runs synchronously — the REPL blocks until the command completes. The REPL prompt is not displayed until the command finishes.
 
-### 13.3 Output Handling [R4 S52]
+### 13.3 Output Handling [Tested tests/repl_shell::shell_escape_quoted_args_pass_through_to_stdout]
 
 The command's stdout and stderr MUST be passed through directly to the terminal. The REPL does NOT capture, buffer, or reformat the output. The user sees exactly what the command produces, interleaved as the OS delivers it.
 
@@ -1341,7 +1341,7 @@ hello from shell
 0+0ms; user>
 ```
 
-### 13.4 Exit Code Display [R4 S52]
+### 13.4 Exit Code Display [Tested+Neg tests/repl_shell::shell_escape_nonzero_exit_code_is_displayed]
 
 If the command exits with a non-zero status, the REPL MUST display the exit code after the command output:
 
@@ -1361,7 +1361,7 @@ killed by signal: 9
 0+0ms; user>
 ```
 
-### 13.5 No REPL State Interaction [R4 S52]
+### 13.5 No REPL State Interaction [Tested+Neg tests/repl_shell::shell_escape_does_not_disturb_repl_state]
 
 Shell escape is a pure passthrough. The command MUST NOT affect REPL state in any way:
 - No variables, definitions, or imports are modified.
@@ -1369,7 +1369,7 @@ Shell escape is a pure passthrough. The command MUST NOT affect REPL state in an
 - The typechecker, code cache, and compilation state are untouched.
 - Environment variables set by the command do NOT propagate back to the REPL process (the command runs in a child process).
 
-### 13.6 Edge Cases [R4 S52]
+### 13.6 Edge Cases [Tested+Neg tests/repl_shell::shell_escape_neg_empty_command_does_not_error_or_crash]
 
 **No arguments:** `/sh` with no command (or only whitespace) MUST print a usage hint: `Usage: /sh <command>`. [R4 S52]
 
@@ -1392,7 +1392,7 @@ exit status: 127
 
 **Timing:** The prompt after a shell escape MUST show `0+0ms` — shell commands are not Cranelisp evaluations and do not contribute to compile/eval timing.
 
-### 13.7 `/help` Integration [R4 S52]
+### 13.7 `/help` Integration [Tested tests/repl_shell::shell_escape_listed_in_help_output]
 
 `/sh` MUST appear in `/help` output as:
 
@@ -1404,7 +1404,7 @@ exit status: 127
 
 The REPL automatically detects when source files change on disk, eagerly recompiles the affected modules, and notifies the user of the result. The developer edits files in their editor, saves, and the REPL immediately recompiles — no manual reload command needed.
 
-### 14.1 Watch Scope [R4 S23]
+### 14.1 Watch Scope [Tested tests/repl_watch::watch_emits_notification_when_loaded_module_source_changes]
 
 The file watcher MUST monitor directories that contain source files actually loaded during the current session. This includes:
 - The project root directory (if one was determined at startup).
@@ -1416,7 +1416,7 @@ New files in watched directories SHOULD be detected, but they do not trigger any
 
 The watcher MUST NOT watch directories that have not been imported. Stdlib directories are watched only if the prelude or a user module actually imported from them.
 
-### 14.2 Eager Recompilation [R4 S23]
+### 14.2 Eager Recompilation [Tested+Neg tests/repl_watch::watch_does_not_notify_on_metadata_only_change]
 
 When a `.cl` source file is modified (content change, not just metadata/timestamp), the watcher MUST:
 
@@ -1430,7 +1430,7 @@ Recompilation is **eager** — it happens as soon as the change is detected (at 
 
 Content hash comparison MUST be used to skip metadata-only changes (e.g., `touch foo.cl`). The watcher records the content hash of each source file when it is first loaded and compares against it on each filesystem event. Only true content changes trigger recompilation.
 
-### 14.3 Notification Format [R4 S23]
+### 14.3 Notification Format [Tested tests/repl_watch::watch_notification_uses_bracketed_file_format]
 
 The recompilation result IS the notification. There is no separate `[changed: ...]` message.
 
@@ -1459,7 +1459,7 @@ The format is `[errors: <file>]` followed by the error details on indented lines
 
 **Input preservation (nice-to-have):** If the user is mid-input when a notification arrives, the notification SHOULD print on a new line, then reinstate the partial input line so typing is uninterrupted. Implementation MAY use rustyline's `ExternalPrinter` API for this. As an interim approach, notifications MAY be deferred until the next prompt boundary (before the prompt is printed). Notifications MUST NOT corrupt the user's input.
 
-### 14.4 Error Blocking [R4 S23]
+### 14.4 Error Blocking [Tested tests/repl_watch::watch_errors_block_evaluation_no_last_known_good]
 
 When a module fails to recompile, the REPL MUST block further evaluation until the error is resolved:
 
@@ -1497,7 +1497,7 @@ This "errors block" approach is preferable to "last-known-good" because it preve
 
 Error-locked modules (§14.4) are cleared when the offending file is fixed and saved — the watcher detects the change, recompiles successfully, and removes the module from the error set. The user can also restart the REPL (`/quit`) to clear all state.
 
-### 14.7 Interaction with Object Cache [R4 S23]
+### 14.7 Interaction with Object Cache [Tested tests/repl_watch::watch_change_triggers_cache_directory_creation]
 
 File watching and the object cache work together:
 - Recompilation invalidates and replaces cache entries for changed modules.
@@ -1508,7 +1508,7 @@ This means that after editing one file, only that file and its dependents are re
 
 ## 15. REPL Session Persistence [R4 S52]
 
-### 15.1 Source Regeneration [R4 S52]
+### 15.1 Source Regeneration [Tested tests/repl_persist::persist_user_cl_is_created_with_definition_after_session]
 
 The REPL MUST persist interactive definitions to disk by maintaining a backing `.cl` file for the entry module (e.g. `user.cl`). When the user enters a definition that compiles successfully:
 
@@ -1519,7 +1519,7 @@ The regenerated source file MUST be valid, parseable Cranelisp source — loadin
 
 Definitions that fail to compile MUST NOT trigger regeneration — the backing file reflects only the last successfully compiled state. [R4 S52]
 
-### 15.2 Session Restore [R4 S52]
+### 15.2 Session Restore [Tested tests/repl_persist::persist_defn_survives_restart_via_user_cl]
 
 On REPL startup, the entry module's backing `.cl` file MUST be loaded through the normal module graph pipeline (with cache hit for fast restore). Definitions from the previous session MUST survive restart — the user resumes where they left off. [R4 S52]
 
@@ -1532,7 +1532,7 @@ This design unifies interactive and file-based development:
 - File watching (§14) applies uniformly — external edits to the backing file MUST be picked up by the watcher and recompiled.
 - The object cache (§14.7) accelerates both imported modules and the user's own work.
 
-### 15.4 Regeneration Integrity [R4 S52]
+### 15.4 Regeneration Integrity [Tested tests/repl_persist::persist_user_cl_is_valid_source_with_topological_ordering]
 
 The regenerated source file MUST satisfy the following invariants:
 
@@ -1548,7 +1548,7 @@ The regenerated source file MUST satisfy the following invariants:
 
 The file watcher (§14) MUST ignore writes triggered by the REPL's own source regeneration. Self-triggered writes MUST NOT cause a recompilation cycle. External edits to the backing file (e.g. from a text editor) MUST be detected and recompiled normally. [R4 S52]
 
-### 15.6 Redefinition [R4 S52]
+### 15.6 Redefinition [Tested tests/repl_lifecycle::redefinition_replaces_value]
 
 When the user redefines a name that already exists in the session, the regenerated source file MUST contain only the latest definition — the previous definition MUST be replaced, not duplicated. [R4 S52]
 

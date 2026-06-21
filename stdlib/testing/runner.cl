@@ -180,10 +180,10 @@
     [(Tally _ f x) (if (eq-i64 f 0) (eq-i64 x 0) false)]))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S82 Phase 6): imports the runner's parent symbols
-;; via `super` (0342) and exercises the pure helpers with assert-true/
-;; assert-false AND assert-eq (S83 Phase 6 — assert-eq RESTORED, FIXME
-;; 0354/0355 resolved). The submodule body survives a load without
-;; source-regen clobber (0343).
+;; The `(mod test)` body lives in the SEPARATE backing file
+;; `testing/runner/test.cl` (module testing.runner.test) — authored as a file
+;; rather than an inline body so the compiler's one-time inline-submodule
+;; EXTRACTION (spec §8.2.5) cannot strip it. It super-imports the runner's
+;; pure helpers and asserts with the in-language harness.
 
 (mod test)

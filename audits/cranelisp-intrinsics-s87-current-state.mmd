@@ -1,0 +1,84 @@
+%% cranelisp-intrinsics — S87 current-state structure + data flow
+%% FRESH diagram — NO predecessor. The 2026-06-14 baseline audit
+%% (audits/intrinsics-2026-06-14.md) carried an inline sequenceDiagram but no
+%% standalone .mmd; this is the first committed .mmd for this crate. It extends
+%% the 2026-04-23 precedent set (backend/frontend/src/typecheck) to intrinsics.
+%% Corrected prod LOC 2,065 (audits/loc-s87.md); 59% inline-test (highest density).
+%% Render: no mmdc on host — source committed, SVG optional.
+
+graph TD
+    subgraph consumers["Consumers (never user code)"]
+        BE["backend codegen<br/>emits Linkage::Import by string name<br/>+ harvests fn-ptrs at jit.rs"]
+        INT["int session init / cache-hit / --link<br/>JITBuilder::symbol · register_symbol · archive"]
+        PRIM["cranelisp-primitives<br/>Rust-path: alloc / drop / RC / layout consts"]
+        PLAT["cranelisp-platform<br/>CLString::as_str → read_string_as_str"]
+    end
+
+    subgraph catalog["catalog.rs — published Import-catalog (BC §4b inv 11)"]
+        TABLE["intrinsics_table() -> &'static [IntrinsicEntry]<br/>29 entries (16 core + 12 trace + catch-runtime-error)<br/>ABI guardrail tests: name-set / non-null / arity / is_runtime"]
+    end
+
+    subgraph heapcore["Heap core"]
+        ALLOC["alloc.rs<br/>heap_alloc / alloc_with_rc / dealloc<br/>RC header (Decision 11 base-ptr) + stats"]
+        HACC["heap_access.rs (pub(crate)) — NEW S87<br/>read_i64 / write_i64 over base+offset<br/>single-source accessor (MED-1 / FIXME 0370)"]
+        RC["rc.rs<br/>consume_shallow (canonical dec) + rc_inc<br/>rc_underflow_check + RC trace"]
+        HSTR["heap_string.rs<br/>HeapString layout-ABI + alloc/read + ferry-decode"]
+    end
+
+    subgraph dropglue["drop.rs — consume_* drop glue"]
+        DROP["consume_slist / consume_sexp / consume_vec_with<br/>consume_io_tree / consume_closure / dec_shallow_io<br/>private atomic_dec_rc helper (mirrors consume_shallow)"]
+    end
+
+    subgraph vecrt["vec_runtime.rs — Vec COW + drop"]
+        VEC["vec_new / vec_drop<br/>vec_push_copy / vec_push_grow<br/>vec_set_copy ⚠ unconditional new-val inc (:220)"]
+    end
+
+    subgraph tracemod["trace + trace_format (split S87 — HIGH-3)"]
+        TRACE["trace.rs (924 raw / 409 corrected)<br/>12 cranelisp_trace_* + GOT-swap + TRACE_STACK<br/>nested-trace guard + consume_trace_call"]
+        TFMT["trace_format.rs (NEW S87 split)<br/>pure DisplayDescriptor formatter<br/>cranelisp_trace_format / render_value/_adt/_vec"]
+    end
+
+    subgraph iomod["IO trampoline"]
+        IO["io.rs<br/>cranelisp_run_io → run_io_trampoline_inner<br/>Pure/Effect/Bind/Par arms (decomposed S87)<br/>call_continuation (⚠ transmute no SAFETY :408)<br/>dispatch_par_branches_with_trace"]
+        GUARD["io_guard.rs (pub(crate))<br/>force_effect_thunk_protected<br/>sigsetjmp + EffectOutcome (FIXME 0327)"]
+        OBS["io_observer.rs<br/>register_io_observer / emit / trace_anchor<br/>usize→fn transmute (LOW-2 RESOLVED)"]
+    end
+
+    subgraph errmod["Error / panic"]
+        PANIC["panic.rs<br/>RUNTIME_ERROR slot (take/set/has)<br/>DispatchFault slot + cranelisp_run_program<br/>catch-runtime-error combinator"]
+    end
+
+    subgraph ivarmod["ivar.rs — lenient eval"]
+        IVAR["ivar_create / spark / force / dealloc<br/>fork-join error-slot ferry<br/>(SeqCst RC discipline — FIXME 0397)"]
+    end
+
+    LAYOUT["layout.rs<br/>cranelisp_check_layout_hash (--link gate)"]
+
+    BE --> TABLE
+    INT --> TABLE
+    TABLE -.fn ptrs.-> ALLOC & VEC & TRACE & TFMT & IO & PANIC & IVAR & RC & HSTR
+    PRIM -.Rust path.-> ALLOC & DROP & RC & HSTR
+    PLAT -.Rust path.-> HSTR
+
+    DROP --> HACC
+    IO --> HACC
+    VEC -. open-coded read .-> ALLOC
+    DROP -. open-coded Vec read :204-206 .-> VEC
+    TRACE --> HACC
+    TRACE --> ALLOC
+    TFMT -. read-only display walk .-> VEC
+    VEC --> ALLOC
+    DROP --> RC
+    IVAR --> PANIC
+    PANIC -. clear_trace_guard_on_panic .-> TRACE
+    IO --> GUARD
+    IO --> OBS
+    IO --> PANIC
+    IO --> DROP
+    GUARD --> PLAT
+    GUARD --> PANIC
+
+    classDef new fill:#d5f5d5,stroke:#2a7;
+    classDef warn fill:#fde8c8,stroke:#d80;
+    class HACC,TFMT new;
+    class VEC,IO warn;

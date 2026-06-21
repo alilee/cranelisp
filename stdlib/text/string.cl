@@ -64,3 +64,55 @@
   (let [len (str-len s)]
     (if (ge-i64 len width) s
       (str-concat s (repeat-str pad (sub-i64 width len))))))
+
+;; ── char<->digit — Stage C.1 gap G4 ──────────────────────────────────
+;; `char-to-digit` maps a single-character decimal-digit string to its Int
+;; value, returning the sentinel -1 for any non-digit (so callers branch on
+;; `(< d 0)` rather than crash). `digit-to-char` is the inverse for 0..9.
+;; Both are direct compositions over the digit table "0123456789" — no new
+;; primitive. They collapse the exemplar's N-way cond/if char-to-int ladders
+;; (form.cl parse-digit-char, grid.cl make-grid-helper).
+;;
+;; NAMING NOTE: the C.1 gap proposed `char->digit`/`digit->char`, but a `defn`
+;; NAME containing `->` does not parse on the current binary (the reader
+;; treats `->` as the threading macro head: `(defn char->digit "doc" […])`
+;; ⇒ `parse error … defn: expected params [...]`). The `-to-` spelling is the
+;; stdlib choice that avoids the collision; the verb is otherwise identical.
+;; Defect handoff filed for the `->`-in-defn-name parse failure (plan §26.4).
+
+(defn char-to-digit "Decimal digit char 0-9 to its Int value, or -1 if not a digit"
+  [:String ch] :Int
+  (if (eq-i64 (str-len ch) 1)
+    (index-of "0123456789" ch)
+    -1))
+
+(defn digit-to-char "Int 0-9 to its single-character string, or empty if out of range"
+  [:Int d] :String
+  (if (lt-i64 d 0) ""
+    (if (gt-i64 d 9) ""
+      (substring "0123456789" d (add-i64 d 1)))))
+
+;; ── replace-at / str-assoc — Stage C.1 gap G5 ────────────────────────
+;; Functional string-index set: return `s` with the character at `idx`
+;; replaced by `ch` (a single-character string). Composed from
+;; `substring`/`str-concat`. `str-assoc` is the Clojure-aligned alias
+;; (matching collections `assoc`'s "set at key" shape). Out-of-range `idx`
+;; returns `s` unchanged. Collapses the exemplar's set-char-at (form.cl).
+
+(defn replace-at "Return s with the character at idx replaced by ch (single char)"
+  [:String s :Int idx :String ch] :String
+  (let [len (str-len s)]
+    (if (lt-i64 idx 0) s
+      (if (ge-i64 idx len) s
+        (str-concat (substring s 0 idx)
+          (str-concat ch (substring s (add-i64 idx 1) len)))))))
+
+(defn str-assoc "Clojure-aligned alias for replace-at: set the char at idx"
+  [:String s :Int idx :String ch] :String
+  (replace-at s idx ch))
+
+;; ── Self-tests ───────────────────────────────────────────────────────
+;; `(mod test …)` submodule (S87 Stage C.2): exercises the string helpers with
+;; the in-language harness (String has Eq + Display).
+
+(mod test)
