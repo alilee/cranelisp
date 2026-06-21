@@ -559,9 +559,21 @@ pub struct Scheme {
 pub type Subst = HashMap<TypeId, Type>;
 pub fn apply(subst: &Subst, ty: &Type) -> Type { ... }
 pub fn free_vars(ty: &Type) -> HashSet<TypeId> { ... }
+
+/// The single parameterized walk over `Type`, beside its `Display` impl
+/// (S87, FIXME 0420). Every workspace renderer delegates here; the two
+/// `#[non_exhaustive]` config enums select output convention without forking
+/// the walk. See `bounded-contexts.md` §7 "Type rendering".
+pub fn render_type(ty: &Type, prim: PrimitiveNaming, vars: VarNaming<'_>) -> String { ... }
+pub enum PrimitiveNaming { Bare, Qualified }            // bare `Int` vs FQ `primitives/Int`
+pub enum VarNaming<'a> { Numbered, Lettered(&'a HashMap<TypeId, String>) } // `t{id}` vs lettered
+pub fn type_var_names(...) -> HashMap<TypeId, String> { ... } // supplies the lettered map
 ```
 
-No changes from v1.
+The `Type`-representation core is unchanged from v1; S87 added the single
+`render_type` walk + `PrimitiveNaming`/`VarNaming` config and **removed** the
+dead `format_type_display` / `format_type_with_vars` free fns (their lettered
+capability preserved as `VarNaming::Lettered`).
 
 ---
 

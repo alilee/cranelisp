@@ -33,6 +33,16 @@
 //!   annotated in-place by typecheck; lowered by backend.
 //! - **Resolved type system** ([`Type`], [`Scheme`], [`Subst`], [`TypeId`])
 //!   — output of typecheck; consumed by backend.
+//! - **Type rendering** ([`render_type`], [`PrimitiveNaming`], [`VarNaming`],
+//!   [`type_var_names`]) — the single parameterized `Type`-to-string walk
+//!   (S87, FIXME 0420), beside `Type`'s `Display` impl. Every renderer in the
+//!   workspace delegates to `render_type`; the two config enums select output
+//!   convention (`PrimitiveNaming::{Bare, Qualified}`,
+//!   `VarNaming::{Numbered, Lettered}`) so a new variant or rendering change
+//!   edits one walk, not five (Principles 7 + 15). The dead
+//!   `format_type_display` / `format_type_with_vars` free fns retired; their
+//!   lettered-var capability lives on as `VarNaming::Lettered`. See
+//!   `design/arch/bounded-contexts.md` §7 ("Type rendering").
 //! - **Symbol table** ([`SymbolTable`], [`SymbolTables`], [`ModuleEntry`],
 //!   [`DefKind`], [`OverloadVariant`], [`ConstrainedFn`],
 //!   [`MacroClauseInfo`], [`MacroParam`], [`ImportSpec`], [`ExportSpec`],
