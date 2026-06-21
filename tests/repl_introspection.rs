@@ -603,6 +603,361 @@ fn list_neg_macros_not_in_functions() {
 }
 
 // =============================================================================
+// Symbol-layout (line-breaking) algorithm — repl/spec.md §3.3 rules L0–L4
+// (FIXME 0415; /repl promoted the layout to a normative MUST in S87)
+//
+// STATUS: FAILING-NOT-IGNORED. The live formatter (`src/repl.rs::handle_list`
+// + `append_name_category`) does NOT implement the L0–L4 layout at all — it
+// renders one name per line and (for Fns) appends `: <type>`. Every rule
+// below diverges; the single resolver is /int in `src/repl.rs` (the
+// symbol-list formatter). See `tests/plan/ledger.md` S87 RED entry.
+// =============================================================================
+
+/// Extract the body lines of a `/list`/`/imports`/`/exports` category — the
+/// run of lines beginning with two spaces immediately following the `Label:`
+/// header line. REPL stdout prefixes the HEADER line with the timing+prompt
+/// banner (`0+0ms; user> Fns:`) but body lines carry no prefix, so we match
+/// the header by suffix and collect the indented run that follows.
+///
+/// Returns the body lines with their leading two spaces stripped, in order.
+fn category_body_lines(stdout: &str, label: &str) -> Vec<String> {
+    let header = format!("{label}:");
+    let mut lines = stdout.lines();
+    // Find the header line (it ends with `<label>:` after the prompt banner).
+    while let Some(line) = lines.next() {
+        if line.trim_end().ends_with(&header) {
+            // Collect the indented run.
+            let mut body = Vec::new();
+            for next in lines.by_ref() {
+                if let Some(rest) = next.strip_prefix("  ") {
+                    body.push(rest.to_string());
+                } else {
+                    break;
+                }
+            }
+            return body;
+        }
+    }
+    Vec::new()
+}
+
+// spec: repl/spec.md §3.3 — L0: a category with FEWER THAN 7 names renders on a
+// SINGLE line after the label, space-separated, with NO line-breaking applied.
+#[test]
+fn list_layout_l0_under_seven_single_line() {
+    // Six Fns (< 7) → one space-separated line: "alpha beta delta eps gamma zeta".
+    let out = repl(
+        "(defn alpha [] 1)
+(defn beta [] 1)
+(defn delta [] 1)
+(defn eps [] 1)
+(defn gamma [] 1)
+(defn zeta [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    assert_eq!(
+        body,
+        vec!["alpha beta delta eps gamma zeta".to_string()],
+        "L0: <7 names MUST render on a single space-separated line, names only; got body:\n{:?}\nfull stdout:\n{}",
+        body,
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 — L0 negative (boundary): EXACTLY 6 names stay
+// single-line. The threshold is 7, not 6 — six MUST NOT trigger breaking.
+#[test]
+fn list_layout_l0_neg_exactly_six_not_broken() {
+    let out = repl(
+        "(defn alpha [] 1)
+(defn beta [] 1)
+(defn delta [] 1)
+(defn eps [] 1)
+(defn gamma [] 1)
+(defn zeta [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    assert_eq!(
+        body.len(),
+        1,
+        "L0 boundary: exactly 6 names MUST stay on ONE line (threshold is 7); got {} body lines:\n{:?}\nfull stdout:\n{}",
+        body.len(),
+        body,
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 — L1 boundary: EXACTLY 7 names trigger the breaking
+// layout. Where 6 stayed on one line, 7 MUST break into multiple lines.
+#[test]
+fn list_layout_l1_seven_triggers_break() {
+    // Seven Fns across letter groups a,b,c,d,e → operators absent, so L3 packs
+    // groups onto rows. With one name per letter (a..g) all 7 names exceed the
+    // 6-per-row cap, so the layout MUST produce more than one body line.
+    let out = repl(
+        "(defn aa [] 1)
+(defn bb [] 1)
+(defn cc [] 1)
+(defn dd [] 1)
+(defn ee [] 1)
+(defn ff [] 1)
+(defn gg [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    assert!(
+        body.len() >= 2,
+        "L1: 7 names MUST trigger the breaking layout (>1 body line); got {} line(s):\n{:?}\nfull stdout:\n{}",
+        body.len(),
+        body,
+        out.stdout
+    );
+    // Every body line must hold names-only (no `: type` signature).
+    for line in &body {
+        assert!(
+            !line.contains(':'),
+            "L1: body lines MUST be names only (no type signatures); got line {line:?}\nfull stdout:\n{}",
+            out.stdout
+        );
+    }
+}
+
+// spec: repl/spec.md §3.3 — L2: operators (non-alphabetic symbols) appear FIRST,
+// 6 per line; after the last operator a NEW line MUST start (an operator MUST
+// NEVER share a line with an alphabetic name).
+#[test]
+fn list_layout_l2_operators_first_own_line() {
+    // 2 operators + 5 alphabetic names = 7 → breaking layout.
+    // Expected:
+    //   + -
+    //   abs add ceil drop echo
+    let out = repl(
+        "(defn + [a b] a)
+(defn - [a b] a)
+(defn abs [x] x)
+(defn add [x] x)
+(defn ceil [x] x)
+(defn drop [x] x)
+(defn echo [x] x)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    assert!(
+        body.first().map(|l| l.as_str()) == Some("+ -"),
+        "L2: operators MUST appear first on their own line ('+ -'); got body:\n{:?}\nfull stdout:\n{}",
+        body,
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 (negative) — L2: an operator MUST NEVER share a row
+// with an alphabetic name. No body line may contain BOTH an operator token and
+// an alphabetic-name token.
+#[test]
+fn list_layout_l2_neg_operator_never_shares_name_row() {
+    let out = repl(
+        "(defn + [a b] a)
+(defn - [a b] a)
+(defn abs [x] x)
+(defn add [x] x)
+(defn ceil [x] x)
+(defn drop [x] x)
+(defn echo [x] x)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    let is_operator =
+        |tok: &str| tok.chars().next().map(|c| !c.is_alphabetic()).unwrap_or(false);
+    for line in &body {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        let has_op = toks.iter().any(|t| is_operator(t));
+        let has_name = toks.iter().any(|t| !is_operator(t));
+        assert!(
+            !(has_op && has_name),
+            "L2 negative: a row MUST NOT mix operators and alphabetic names; got row {line:?}\nfull stdout:\n{}",
+            out.stdout
+        );
+    }
+}
+
+// spec: repl/spec.md §3.3 — L3: letter groups break early to stay together. A
+// group is flushed to a fresh row when `current_count + group_size > 6`; a group
+// MUST therefore appear entirely on one row (unless it alone has 7+ names — L4).
+#[test]
+fn list_layout_l3_letter_group_early_break() {
+    // Group sizes: a=4 (aa,ab,ac,ad), b=4 (ba,bb,bc,bd). Total 8 → breaking.
+    // a-group (4) fits on row 1; adding b-group (4) → 4+4=8 > 6, so b flushes
+    // to a fresh row. Expected exactly two rows, each holding one whole group:
+    //   aa ab ac ad
+    //   ba bb bc bd
+    let out = repl(
+        "(defn aa [] 1)
+(defn ab [] 1)
+(defn ac [] 1)
+(defn ad [] 1)
+(defn ba [] 1)
+(defn bb [] 1)
+(defn bc [] 1)
+(defn bd [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    assert_eq!(
+        body,
+        vec!["aa ab ac ad".to_string(), "ba bb bc bd".to_string()],
+        "L3: letter groups MUST early-break to stay whole (a-group then b-group on separate rows); got body:\n{:?}\nfull stdout:\n{}",
+        body,
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 (negative) — L3: no letter group straddles a row
+// boundary. Every body line's names share a common first letter, OR the line is
+// a packed run of complete single-letter groups (no group split across rows).
+#[test]
+fn list_layout_l3_neg_no_group_straddles_row() {
+    let out = repl(
+        "(defn aa [] 1)
+(defn ab [] 1)
+(defn ac [] 1)
+(defn ad [] 1)
+(defn ba [] 1)
+(defn bb [] 1)
+(defn bc [] 1)
+(defn bd [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    // Build per-row sets of first letters; a group straddles iff the same first
+    // letter appears on two different rows.
+    use std::collections::{HashMap, HashSet};
+    let mut letter_rows: HashMap<char, HashSet<usize>> = HashMap::new();
+    for (row, line) in body.iter().enumerate() {
+        for tok in line.split_whitespace() {
+            if let Some(c) = tok.chars().next() {
+                if c.is_alphabetic() {
+                    letter_rows.entry(c.to_ascii_lowercase()).or_default().insert(row);
+                }
+            }
+        }
+    }
+    for (letter, rows) in &letter_rows {
+        assert!(
+            rows.len() <= 1,
+            "L3 negative: letter group '{letter}' MUST NOT straddle a row boundary (found on rows {rows:?}); body:\n{:?}\nfull stdout:\n{}",
+            body,
+            out.stdout
+        );
+    }
+}
+
+// spec: repl/spec.md §3.3 — L4: a single letter group with MORE THAN 6 names
+// hard-wraps at 6 names per line within itself.
+#[test]
+fn list_layout_l4_oversized_group_wraps_at_six() {
+    // One letter group 'a' with 7 names → wraps 6 + 1:
+    //   aa ab ac ad ae af
+    //   ag
+    let out = repl(
+        "(defn aa [] 1)
+(defn ab [] 1)
+(defn ac [] 1)
+(defn ad [] 1)
+(defn ae [] 1)
+(defn af [] 1)
+(defn ag [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    assert_eq!(
+        body,
+        vec!["aa ab ac ad ae af".to_string(), "ag".to_string()],
+        "L4: an oversized single-letter group MUST hard-wrap at 6/line; got body:\n{:?}\nfull stdout:\n{}",
+        body,
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3, §3.4, §3.5 — cross-command consistency: the SAME name
+// set fed to `/list` and `/exports` produces BYTE-FOR-BYTE identical layout (one
+// shared formatter, not three divergent ones).
+#[test]
+fn layout_cross_command_list_exports_byte_identical() {
+    // Define 7 Fns in a submodule `m`, then compare `/exports m` against `/list`
+    // run while the cursor is in `m`. Same name set ⇒ identical category body.
+    let list_out = repl(
+        "(defn aa [] 1)
+(defn ab [] 1)
+(defn ac [] 1)
+(defn ad [] 1)
+(defn ba [] 1)
+(defn bb [] 1)
+(defn bc [] 1)
+/list
+",
+    );
+    let exports_out = repl(
+        "(defn aa [] 1)
+(defn ab [] 1)
+(defn ac [] 1)
+(defn ad [] 1)
+(defn ba [] 1)
+(defn bb [] 1)
+(defn bc [] 1)
+/exports user
+",
+    );
+    let list_body = category_body_lines(&list_out.stdout, "Fns");
+    let exports_body = category_body_lines(&exports_out.stdout, "Fns");
+    assert_eq!(
+        list_body, exports_body,
+        "/list and /exports MUST produce byte-for-byte identical Fns layout for the same name set;\n/list body:\n{:?}\n/exports body:\n{:?}\n/list stdout:\n{}\n/exports stdout:\n{}",
+        list_body, exports_body, list_out.stdout, exports_out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 (negative) — category purity: the Fns layout body
+// holds ONLY names defined in the current module — no `: type` signatures leak
+// into the name rows, and no primitives (`add-i64`) appear.
+#[test]
+fn list_layout_neg_names_only_no_type_sigs() {
+    let out = repl(
+        "(defn aa [] 1)
+(defn ab [] 1)
+(defn ac [] 1)
+(defn ad [] 1)
+(defn ba [] 1)
+(defn bb [] 1)
+(defn bc [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    for line in &body {
+        assert!(
+            !line.contains(':') && !line.contains("Fn ["),
+            "category purity: Fns rows MUST be names only — no type signatures; got row {line:?}\nfull stdout:\n{}",
+            out.stdout
+        );
+        assert!(
+            !line.contains("add-i64"),
+            "category purity: a user-module /list MUST NOT leak primitives; got row {line:?}\nfull stdout:\n{}",
+            out.stdout
+        );
+    }
+}
+
+// =============================================================================
 // Multi-eval persistence — repl/spec.md §15.2
 // =============================================================================
 

@@ -36,6 +36,18 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 87 close — FIXME 0415 §3.3 symbol-layout formatter RESOLVED, 10 tests GREEN + entry removed (/qa, 2026-06-21)
+
+S87: 0415 layout formatter implemented (the L0–L4 shared symbol-list formatter
+routing `/list`/`/imports`/`/exports`/related-symbol lists through one path) —
+the 10 `list_layout_*`/`layout_cross_command_*` repros in
+`tests/repl_introspection.rs` are now GREEN. Per the Close-time Verification
+Protocol step 3, a guard that now passes on HEAD is **Resolved** — its RED entry
+(formerly here) is removed. `repl/spec.md` §3.3 L0–L4 + §3.4/§3.5/line-198
+cross-command identity flipped from `[S87]` to `[Tested]`/`[Tested+Neg]` naming
+the now-green tests. `cargo nextest run --workspace` fully green
+(2865 passed / 0 failed / 0 skipped).
+
 ### Sprint 87 Wave 0 — close note: 4 S86 guards RESOLVED + removed (/qa, 2026-06-20)
 
 Resolved in S87 Wave 0: typecheck FQ renderer fix + src/ disasm-on-demand wiring

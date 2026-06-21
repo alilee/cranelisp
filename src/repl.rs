@@ -648,28 +648,23 @@ impl CompilerSession {
 
         for (name, entry) in table_ref.symbols.iter() {
             match entry {
-                ModuleEntry::Def { kind, scheme, .. } => match kind.as_ref() {
-                    DefKind::Macro { .. } => macros.push(format!("  {name}")),
+                ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                    DefKind::Macro { .. } => macros.push(name.to_string()),
                     // Constructors are part of their type — not listed
                     // separately.
                     DefKind::Constructor { .. } => {}
-                    _ => {
-                        // FIXME 0352: route through the same normalize +
-                        // qualify renderer the definition-display / `/sig`
-                        // paths use (Principle 7), NOT the raw `Type::Display`
-                        // (which leaked internal `t1` vars and unqualified
-                        // `Int`, violating repl/spec.md §1.4). One renderer
-                        // closes both the `t1`→`a` and `Int`→`primitives/Int`
-                        // leaks.
-                        let type_str = crate::display::format_scheme_type(scheme);
-                        fns.push(format!("  {name} : {type_str}"));
-                    }
+                    // §3.3: names only, no `: type` suffix — the layout block is
+                    // shared verbatim with /imports and /exports (which are
+                    // names-only), so cross-command byte-identity requires
+                    // /list be names-only too. Type detail is on `/sig`/`/info`
+                    // or by typing the bare name.
+                    _ => fns.push(name.to_string()),
                 },
                 ModuleEntry::TypeDef { .. } => {
-                    types.push(format!("  {name}"));
+                    types.push(name.to_string());
                 }
                 ModuleEntry::TraitDecl { .. } => {
-                    traits.push(format!("  {name}"));
+                    traits.push(name.to_string());
                 }
                 // SpecialForm, Import, Ambiguous: not listed (special forms +
                 // imports are shown by /imports).
@@ -677,27 +672,26 @@ impl CompilerSession {
             }
         }
 
-        let mut parts = Vec::new();
-        if !types.is_empty() {
-            types.sort();
-            parts.push(format!("Types:\n{}", types.join("\n")));
+        macros.sort();
+        traits.sort();
+        types.sort();
+        fns.sort();
+
+        // Category order per §3.3: Modules, Macros, Traits, Types, Fns.
+        // (Modules not yet populated here.) Each block is rendered through the
+        // shared §3.3 L0–L4 layout formatter via `append_name_category`.
+        let mut output = String::new();
+        append_name_category(&mut output, "Macros", &macros);
+        append_name_category(&mut output, "Traits", &traits);
+        append_name_category(&mut output, "Types", &types);
+        append_name_category(&mut output, "Fns", &fns);
+        while output.ends_with('\n') {
+            output.pop();
         }
-        if !traits.is_empty() {
-            traits.sort();
-            parts.push(format!("Traits:\n{}", traits.join("\n")));
-        }
-        if !macros.is_empty() {
-            macros.sort();
-            parts.push(format!("Macros:\n{}", macros.join("\n")));
-        }
-        if !fns.is_empty() {
-            fns.sort();
-            parts.push(format!("Fns:\n{}", fns.join("\n")));
-        }
-        if parts.is_empty() {
+        if output.is_empty() {
             "(no definitions)".to_string()
         } else {
-            parts.join("\n")
+            output
         }
     }
 
@@ -2084,9 +2078,17 @@ pub(crate) fn format_macro_clause_params(clause: &MacroClauseInfo) -> String {
     format!("[{}]", parts.join(" "))
 }
 
-/// Format a related symbols section (spec §1.1).
+/// Format a related symbols section (spec §1.1). The symbol block uses the
+/// shared §3.3 layout formatter (repl/spec.md:198 — related lists use the same
+/// normative L0–L4 layout as `/list`), rendered as comment rows.
 pub(crate) fn format_related_section(label: &str, names: &[&str]) -> String {
-    format!("\n; {label}:\n;  {}", names.join(" "))
+    let owned: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    let mut out = format!("\n; {label}:");
+    for row in format_symbol_layout(&owned) {
+        out.push_str("\n;  ");
+        out.push_str(&row);
+    }
+    out
 }
 
 /// Classification of an imported symbol for category-based display.
@@ -2098,16 +2100,116 @@ pub(crate) enum ImportClass {
     Fn,
 }
 
-/// Append a category of names to a string buffer (for /list, /imports, /exports).
+/// Maximum number of names per body row in the breaking layout (L2/L3/L4).
+const LAYOUT_ROW_CAP: usize = 6;
+
+/// Threshold (exclusive) below which a category renders on a single line (L0/L1).
+/// Fewer than 7 names → single line; 7 or more → breaking layout.
+const LAYOUT_BREAK_THRESHOLD: usize = 7;
+
+/// Whether a symbol name reads as an operator (non-alphabetic leading char).
+/// Operators (`+`, `-`, `<=`, `!=`, …) sort before, and never share a row with,
+/// alphabetic names (repl/spec.md §3.3 L2).
+fn is_operator_name(name: &str) -> bool {
+    name.chars().next().map(|c| !c.is_alphabetic()).unwrap_or(true)
+}
+
+/// The single normative symbol-layout formatter shared by `/list` (§3.3),
+/// `/imports` (§3.4), `/exports` (§3.5), and related-symbol lists (§2).
+///
+/// Realises rules L0–L4 from repl/spec.md §3.3. Returns the BODY rows (names
+/// only, no indent, no `: type` suffix) in order; callers add their own chrome
+/// (the `Label:` header and two-space indent). The same name set MUST always
+/// produce byte-for-byte identical output across all four commands.
+///
+/// - **L0/L1** — fewer than 7 names → a single space-separated row; 7+ break.
+/// - **L2** — operators first, on their own rows, capped at 6/row; an operator
+///   never shares a row with an alphabetic name.
+/// - **L3** — alphabetic names grouped by first letter (case-insensitive) in
+///   sorted order; a group flushes the current row when `count + size > 6`, so
+///   a group never straddles a row boundary…
+/// - **L4** — …except a single group of more than 6 names, which hard-wraps at
+///   6/row within itself.
+pub(crate) fn format_symbol_layout(names: &[String]) -> Vec<String> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+
+    // Deterministic input ordering (callers already sort, but the formatter is
+    // the single source of truth for the contract — sort defensively).
+    let mut sorted: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+    sorted.sort();
+
+    // L0/L1: below the threshold, one space-separated row, no breaking.
+    if sorted.len() < LAYOUT_BREAK_THRESHOLD {
+        return vec![sorted.join(" ")];
+    }
+
+    let mut rows: Vec<String> = Vec::new();
+
+    // L2: operators first, on their own rows, capped at LAYOUT_ROW_CAP per row.
+    // After the last operator a new row starts — operators never share a row
+    // with an alphabetic name.
+    let operators: Vec<&str> = sorted.iter().copied().filter(|n| is_operator_name(n)).collect();
+    for chunk in operators.chunks(LAYOUT_ROW_CAP) {
+        rows.push(chunk.join(" "));
+    }
+
+    // L3/L4: alphabetic names grouped by first letter (case-insensitive), in
+    // sorted order. Build the contiguous letter groups (input is sorted, so
+    // names sharing a first letter are already adjacent).
+    let mut groups: Vec<Vec<&str>> = Vec::new();
+    let mut current_letter: Option<char> = None;
+    for name in sorted.iter().copied().filter(|n| !is_operator_name(n)) {
+        let letter = name.chars().next().map(|c| c.to_ascii_lowercase());
+        if letter != current_letter {
+            current_letter = letter;
+            groups.push(Vec::new());
+        }
+        if let Some(g) = groups.last_mut() {
+            g.push(name);
+        }
+    }
+
+    let mut row: Vec<&str> = Vec::new();
+    for group in &groups {
+        if group.len() > LAYOUT_ROW_CAP {
+            // L4: an oversized single-letter group hard-wraps at 6/row. Flush
+            // any in-progress row first so the group starts fresh.
+            if !row.is_empty() {
+                rows.push(row.join(" "));
+                row.clear();
+            }
+            for chunk in group.chunks(LAYOUT_ROW_CAP) {
+                rows.push(chunk.join(" "));
+            }
+            continue;
+        }
+        // L3: early-break to keep the group whole.
+        if !row.is_empty() && row.len() + group.len() > LAYOUT_ROW_CAP {
+            rows.push(row.join(" "));
+            row.clear();
+        }
+        row.extend(group.iter().copied());
+    }
+    if !row.is_empty() {
+        rows.push(row.join(" "));
+    }
+
+    rows
+}
+
+/// Append a category of names to a string buffer (for /list, /imports, /exports),
+/// rendering the symbol block through the shared §3.3 layout formatter.
 pub(crate) fn append_name_category(buf: &mut String, label: &str, names: &[String]) {
     if names.is_empty() {
         return;
     }
     buf.push_str(label);
     buf.push_str(":\n");
-    for name in names {
+    for row in format_symbol_layout(names) {
         buf.push_str("  ");
-        buf.push_str(name);
+        buf.push_str(&row);
         buf.push('\n');
     }
 }

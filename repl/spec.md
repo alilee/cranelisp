@@ -195,7 +195,7 @@ Builtins use the same dash form: `; {classification} - {docstring}` with classif
 ;  {symbol} {symbol} ...
 ```
 
-Related symbol lists use the same line-breaking algorithm as `/list` categories (§3.3). Within each section, locally-defined symbols appear before imported symbols.
+Related symbol lists use the **same normative layout algorithm** as `/list` categories (§3.3 rules L0–L4); the layout MUST be byte-for-byte identical to `/list` for the same name set. [Tested repl/spec.md→tests/repl_introspection.rs::layout_cross_command_list_exports_byte_identical] Within each section, locally-defined symbols appear before imported symbols.
 
 **Examples:**
 
@@ -478,15 +478,21 @@ Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitte
 
 **Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. [Tested tests/repl_introspection::list_prefix_filter_matches_names] `/list` with no argument shows all definitions. [Tested tests/repl_introspection::list_empty_session]
 
-**Large category display:** When a category contains 7 or more names, the display SHOULD use the following layout algorithm:
+**Large category display layout algorithm** [Tested+Neg repl/spec.md→tests/repl_introspection.rs::layout_cross_command_list_exports_byte_identical]**.** The multi-column line-breaking layout below is a **normative MUST**, not advisory. It is a deterministic, exactly-reproducible contract — the same input symbol set MUST always produce byte-for-byte identical output. Because this layout is **shared verbatim** by `/list` (§3.3), `/imports` (§3.4), `/exports` (§3.5), and related-symbol lists (§2, repl/spec.md:198), divergence between any two of those commands is a conformance defect, not a stylistic variation. Each rule below is individually checkable.
 
-1. **Operators first, then mandatory break.** Non-alphabetic symbols (`+`, `-`, `*`, `!=`, etc.) are displayed first, wrapping at 6 per line. After all operators, a new line starts — operators never share a line with alphabetic names.
+The layout is a **MUST** (not SHOULD) so that exact output can be asserted in tests and so the four commands stay mutually consistent. Each numbered rule is a separate conformance obligation:
 
-2. **Letter groups pack onto rows, breaking early to stay together.** Names are grouped by first letter (case-insensitive, sorted). Before adding a letter group to the current row, check: would `current_count + group_size > 6`? If so, flush the current row first. This ensures a letter group either fits entirely on the current row alongside previous groups, or starts a new row — it never splits across a row boundary (unless the group itself has 7+ names).
+- **L0 — Single-line threshold (the <7 case).** A category with **fewer than 7 names** MUST be rendered on a single line after the category label, space-separated, with no line-breaking applied. The breaking rules L1–L4 MUST NOT be applied below the 7-name threshold. [Tested+Neg repl/spec.md→tests/repl_introspection.rs::list_layout_l0_under_seven_single_line, tests/repl_introspection.rs::list_layout_l0_neg_exactly_six_not_broken]
 
-3. **Hard wrap at 6 within large groups.** If a single letter group has more than 6 names, it wraps at 6 per line within itself.
+- **L1 — 7-or-more triggers breaking.** A category with **7 or more names** MUST apply the line-breaking layout (rules L2–L4). The threshold is exactly 7: 6 names stay on one line (L0), 7 names break. [Tested repl/spec.md→tests/repl_introspection.rs::list_layout_l1_seven_triggers_break]
 
-Categories with fewer than 7 names appear on a single line after the category label.
+- **L2 — Operators first, on their own break.** Non-alphabetic symbols (operators such as `+`, `-`, `*`, `!=`, `<=`) MUST be displayed before all alphabetic names, wrapping at 6 per line. After the last operator, a new line MUST start: an operator MUST NEVER share a line with an alphabetic name. [Tested+Neg repl/spec.md→tests/repl_introspection.rs::list_layout_l2_operators_first_own_line, tests/repl_introspection.rs::list_layout_l2_neg_operator_never_shares_name_row]
+
+- **L3 — Letter groups never split; early-break to stay together.** Alphabetic names MUST be grouped by first letter (case-insensitive) and the groups emitted in sorted order. Before appending a letter group to the current row, if `current_count + group_size > 6` the current row MUST be flushed first. A letter group MUST therefore appear either entirely on the current row (alongside earlier groups) or starting on a fresh row — it MUST NEVER be split across a row boundary, **except** when the group alone has 7+ names (then L4 applies). [Tested+Neg repl/spec.md→tests/repl_introspection.rs::list_layout_l3_letter_group_early_break, tests/repl_introspection.rs::list_layout_l3_neg_no_group_straddles_row]
+
+- **L4 — Hard wrap at 6 within an oversized group.** A single letter group with **more than 6 names** MUST wrap at 6 names per line within itself. [Tested repl/spec.md→tests/repl_introspection.rs::list_layout_l4_oversized_group_wraps_at_six]
+
+The example below is illustrative of the rules above; it is the reference layout that tests assert as expected output.
 
 ```
 Fns:
@@ -514,7 +520,7 @@ Fns:
 
 Category order: Special forms, Macros, Traits, Types, Fns. Empty categories are omitted (except Special forms, which are always present). [Tested tests/repl_introspection::imports_lists_special_forms]
 
-**Format:** Each category lists names using the same layout algorithm as `/list` (§3.3) — names only, no type signatures. Type the symbol name for more detail.
+**Format:** Each category lists names using the **same normative layout algorithm** as `/list` (§3.3 rules L0–L4) — names only, no type signatures. The layout MUST be byte-for-byte identical to what `/list` produces for the same name set (one shared formatter, not a re-implementation). Type the symbol name for more detail. [Tested+Neg repl/spec.md→tests/repl_introspection.rs::layout_cross_command_list_exports_byte_identical, tests/repl_introspection.rs::list_layout_neg_names_only_no_type_sigs]
 
 **Source module filter:** `/imports <module-name>` filters to show only imports from that source module (exact match). [Tested tests/repl_introspection::imports_lists_special_forms] Names are grouped under `From <module>:` and sorted alphabetically. Source modules sorted alphabetically.
 
@@ -550,7 +556,7 @@ From prelude:
 
 **Module resolution:** The argument is resolved using the same resolution logic as `(import [module [...]])` — submodule paths, root modules, and stdlib modules. If the module is not yet loaded, it SHOULD be resolved and loaded (same as an import would trigger). If the module cannot be found, print an error: `Module '<name>' not found`. [Tested tests/repl_introspection::exports_no_arg_shows_usage]
 
-**Output format:** Public symbols listed by category — names only, no type signatures. [Tested tests/repl_introspection::exports_no_arg_shows_usage] Type the symbol name for more detail.
+**Output format:** Public symbols listed by category — names only, no type signatures. [Tested tests/repl_introspection::exports_no_arg_shows_usage] Categories use the **same normative layout algorithm** as `/list` (§3.3 rules L0–L4); the layout MUST be byte-for-byte identical to `/list` for the same name set. [Tested+Neg repl/spec.md→tests/repl_introspection.rs::layout_cross_command_list_exports_byte_identical, tests/repl_introspection.rs::list_layout_neg_names_only_no_type_sigs] Type the symbol name for more detail.
 
 ```
 user> /exports math
