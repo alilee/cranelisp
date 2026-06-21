@@ -1,95 +1,150 @@
-;; 29-annotations.cl -- The :Type annotation model (capstone)
+;; 29-annotations.cl -- What the :Type annotation is FOR (capstone)
 ;;
 ;; You have been reading `:Type` since the very first typed examples:
 ;; `:Int` on deftype fields (example 10), `:Int` on defn parameters
-;; (from example 03 onward), `:primitives/Int` in every REPL result line.
+;; (from example 04 onward), `:primitives/Int` in every REPL result line.
 ;; This example does NOT introduce a new feature -- it names the single
-;; model those scattered appearances all share, so the construct stops
-;; looking like several unrelated notations and becomes one rule.
+;; model those scattered appearances share, and then shows the annotation
+;; doing REAL WORK: changing what typechecks and which trait instance the
+;; compiler selects.
 ;;
 ;; The rule: `:Type` is a type-unifying annotation. It is a reader-level
-;; prefix that binds the IMMEDIATELY-FOLLOWING form -- in EVERY position --
-;; and unifies that form's inferred type with the named type. It is never a
-;; standalone atom; it always attaches to the next form.
+;; prefix that binds the IMMEDIATELY-FOLLOWING form (no space) -- in EVERY
+;; position -- and unifies that form's inferred type with the named type.
+;; It is never a standalone atom; it always attaches to the next form.
 ;;
-;;   :Int 42      ;; annotates the literal 42 with Int -> :primitives/Int 42
-;;   :Int x       ;; annotates the name x with Int
-;;   :Int (f y)   ;; annotates the call (f y) with Int
+;;   :Int x       ;; annotate the name x with Int
+;;   :Int (f y)   ;; annotate the call (f y) with Int
+;;   :Int 42      ;; simplest form: annotate a literal (a no-op identity here,
+;;                ;; since 42 already infers as Int -- shown once, for shape)
 ;;
 ;; The annotation is a CHECK, not a cast. The annotated form must already
-;; have a type that unifies with the named type, or compilation fails.
-;; Annotations document intent and pin inference; they never change a value.
+;; have a type that unifies with the named type, or compilation fails. It
+;; never changes a value -- but it CAN change what the compiler infers, and
+;; that is the point of this example.
 ;;
-;; You have already seen :Type in two idiomatic places:
-;;   - deftype fields:  (deftype Point [:Int x :Int y])
-;;   - defn params:     (defn rem [:Int a :Int b] ...)
-;; Those are the same construct: `:Int` binds the following form (the field
-;; name, the parameter name), unifying its type with Int.
+;; Why annotations earn their keep:
+;;
+;;   1. CONSTRAIN FUNCTION TYPING. A function whose body is polymorphic or
+;;      under-determined can be pinned to a concrete type by an annotation
+;;      on a parameter, on the return, or on a sub-expression. The annotation
+;;      decides which trait instance the body uses.
+;;
+;;   2. DISAMBIGUATE AN EXPRESSION. An expression the inferencer cannot pin
+;;      on its own -- e.g. a nullary trait method whose only type clue is its
+;;      RETURN type -- is ambiguous and is REJECTED. Annotating it resolves
+;;      which instance to select, and the program compiles.
+;;
+;; Both purposes are demonstrated below with code that genuinely needs the
+;; annotation. The error cases at the end show what happens WITHOUT it.
 
-;; --- Annotating a literal -------------------------------------------------
+;; --- A tiny trait family we can be ambiguous about ------------------------
+;;
+;; `Default` returns a value OF THE IMPLEMENTING TYPE with no arguments.
+;; Its signature is (default [] self): the only type information is the
+;; return type. That is exactly the shape inference cannot resolve on its
+;; own -- there is no argument to drive instance selection.
+(deftrait Default
+  (default [] self))
 
-;; Annotate a literal directly. The literal already infers as Int, and the
-;; annotation unifies with that -- so this is the identity on the value 42.
-(defn annotated-literal []
-  :Int 42)
+(impl Default Int
+  (defn default [] 7))
 
-;; --- Annotating a let binding's value ------------------------------------
+(impl Default Float
+  (defn default [] 2.5))
 
-;; Inside a let, annotate the bound value to pin its type explicitly.
-;; `n` is forced to Int; the body returns it.
-(defn annotated-let []
-  (let [n :Int 40]
-    (add-i64 n 2)))
+;; `Show` turns a value into a String. Its parameter type is the only clue.
+(deftrait Show
+  (show [v] String))
 
-;; --- Annotating a parameter (the idiomatic defn form) --------------------
+(impl Show Int
+  (defn show [v] (int-to-string v)))
 
-;; The :Type prefix on a parameter name unifies that parameter's type.
-;; Here both parameters are pinned to Int and the body adds them.
-(defn add-ints [:Int a :Int b]
-  (add-i64 a b))
+(impl Show Float
+  (defn show [v] (float-to-string v)))
 
-;; --- Annotating fields in a deftype --------------------------------------
+;; --- Purpose 1: DISAMBIGUATE an expression --------------------------------
+;;
+;; `(default)` is ambiguous: both `Default Int` and `Default Float` match,
+;; and there is no argument to choose between them. On its own this does NOT
+;; compile (see the error notes at the bottom). Annotating the call pins the
+;; return type, which selects the instance:
+;;
+;;   :Int   (default)  -> selects `Default Int`,   yields 7
+;;   :Float (default)  -> selects `Default Float`, yields 2.5
+(defn disambiguate-int []
+  (let [x :Int (default)]                                 ;; pins Default Int
+    x))                                                   ;; -> 7
 
-;; Each field's :Type binds the following field name, unifying its type.
-(deftype Point [:Int x :Int y])
+(defn disambiguate-float []
+  (let [x :Float (default)]                               ;; pins Default Float
+    (if (eq-f64 x 2.5) 1 0)))                             ;; -> 1
 
-(defn point-sum [p]
-  (match p [(Point x y) (add-i64 x y)]))
+;; --- Purpose 2: CONSTRAIN function typing ---------------------------------
+;;
+;; (a) Annotate the RETURN sub-expression. `int-default` has no parameters
+;; and its body is the ambiguous `(default)`. Annotating the body pins the
+;; whole function to Int -- its inferred type becomes (Fn [] Int), and the
+;; body uses `Default Int`.
+(defn int-default []
+  :Int (default))                                         ;; body pinned to Int
 
-;; --- Annotating a subexpression ------------------------------------------
+(defn constrain-return []
+  (add-i64 (int-default) 35))                             ;; 7 + 35 -> 42
 
-;; The annotation can bind a whole parenthesised form. Here it documents
-;; that the result of the call is expected to be Int.
-(defn annotated-call []
-  :Int (add-i64 10 7))
+;; (b) Annotate a PARAMETER. `describe`'s parameter `v` is only constrained
+;; by `(show v)`, which is itself polymorphic over Show. Annotating the
+;; parameter `:Int v` pins the body to the `Show Int` instance, so `show`
+;; resolves to `int-to-string`. Without the annotation the parameter type is
+;; under-determined and the call is ambiguous.
+(defn describe [:Int v]
+  (str-len (show v)))                                     ;; uses Show Int
 
-;; --- Error cases (shown as comments -- a runnable example cannot type-error)
+(defn constrain-param []
+  (describe 12345))                                       ;; len of "12345" -> 5
 
-;; The annotation must UNIFY with the form's inferred type. Annotating an
-;; Int literal with Float is a type mismatch, rejected at compile time:
+;; --- Simplest form: annotate a literal (shown once, for completeness) -----
+;;
+;; The literal already infers as Int, so the annotation is the identity on
+;; the value. This is the shape you have seen since example 04; it does no
+;; inference work, which is precisely why it is NOT the interesting case.
+(defn annotate-literal []
+  :Int 64)                                                ;; -> 64
+
+;; --- Error cases (comments -- a runnable example cannot type-error) --------
+;;
+;; WITHOUT the annotation, the disambiguation cases above are REJECTED,
+;; because the inferencer has no way to choose an instance:
+;;
+;;   (let [x (default)] x)
+;;   ;; error: ambiguous trait method `default` -- no argument or annotation
+;;   ;;        pins which Default instance to use
+;;
+;; The annotation must UNIFY with the form's inferred type. Pinning an Int
+;; literal to Float is a mismatch, rejected at compile time:
 ;;
 ;;   :Float 42
-;;   ;; error: type mismatch: expected Int, got Float
+;;   ;; error: type mismatch: expected Float, got Int
 ;;
 ;; `:Type` is NOT a function and `(:Type form)` is NOT a special form. The
-;; reader binds :Int to the single following element, yielding a one-element
+;; reader binds `:Int` to the single following element, yielding a one-element
 ;; list -- then that Int-typed element is applied as a function, which fails:
 ;;
-;;   (:Int 42)
-;;   ;; error: type mismatch: expected Int, got (Fn ...)   ;; Int is not callable
+;;   (:Int (default))
+;;   ;; error: type mismatch: expected a function, got Int  ;; Int is not callable
 ;;
 ;; The annotation type must also be a known type. An unknown name is rejected:
 ;;
 ;;   :Foo 42
 ;;   ;; error: unknown type `Foo`
 
-;; Expected: 42 + 42 + 11 + 7 + 17 = 119
+;; Expected: 7 + 1 + 42 + 5 + 64 = 119
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
   (Pure
-    (add-i64 (annotated-literal)
-      (add-i64 (annotated-let)
-        (add-i64 (add-ints 5 6)
-          (add-i64 (point-sum (Point 3 4))
-                   (annotated-call)))))))
+    (add-i64 (disambiguate-int)
+      (add-i64 (disambiguate-float)
+        (add-i64 (constrain-return)
+          (add-i64 (constrain-param)
+                   (annotate-literal)))))))
