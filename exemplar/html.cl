@@ -10,11 +10,12 @@
 ;;
 ;; Idiomatic surface (S86 de-leak): arithmetic/comparison via prelude trait
 ;; operators (`=` on String is Eq dispatch, not a primitive); string helpers
-;; (`str-concat`, `int-to-string`, `contains?`) imported by name. Test-only
-;; grid builders use the bare `vec-push` primitive (DEF-2 carve-out — the
-;; curated `conj` wrapper corrupts heap-ADT elements; see grid.cl header).
+;; (`str-concat`, `int-to-string`, `contains?`) imported by name. S88 adoption
+;; (Stage D): test-only grid builders use the curated `collections.vec/conj`
+;; (DEF-2 carve-out retired — see grid.cl header).
 
-(import [primitives [str-concat int-to-string contains? vec-push]])
+(import [collections.vec [conj]])
+(import [primitives [str-concat int-to-string contains?]])
 (import [grid [Grid Cell Given Solved Candidates cell-at cell-value]])
 
 ;; ── CSS ──────────────────────────────────────────────────────────────
@@ -223,7 +224,7 @@
 ;; Helpers for hand-built grids (avoid `let`-recursion patterns).
 (defn build-all-ones-helper [v i]
   (if (= i 81) v
-    (build-all-ones-helper (vec-push v (Given 1)) (+ i 1))))
+    (build-all-ones-helper (conj v (Given 1)) (+ i 1))))
 
 (defn make-all-ones-grid []
   (Grid (build-all-ones-helper [] 0)))
@@ -244,10 +245,10 @@
 (defn build-mixed-helper [v i]
   (if (= i 81) v
     (if (= i 0)
-      (build-mixed-helper (vec-push v (Given 5)) (+ i 1))
+      (build-mixed-helper (conj v (Given 5)) (+ i 1))
       (if (= i 1)
-        (build-mixed-helper (vec-push v (Solved 3)) (+ i 1))
-        (build-mixed-helper (vec-push v (Given 1)) (+ i 1))))))
+        (build-mixed-helper (conj v (Solved 3)) (+ i 1))
+        (build-mixed-helper (conj v (Given 1)) (+ i 1))))))
 
 (defn make-mixed-grid []
   (Grid (build-mixed-helper [] 0)))

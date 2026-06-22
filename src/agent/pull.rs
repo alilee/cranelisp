@@ -184,4 +184,94 @@ mod tests {
         assert!(!defs.iter().any(|d| d.name == "submit"));
         assert_eq!(defs.len(), ALLOWLIST.len());
     }
+
+    // -----------------------------------------------------------------------
+    // run_pull result-content tests (S88 pull-loop defect). The model loops
+    // when the fed-back tool_result content is empty — these pin that the
+    // ToolCallResult a real read command produces CARRIES the command output,
+    // and that it is rendered as-typed AND used as the model's tool_result.
+    // -----------------------------------------------------------------------
+
+    /// Build a session where `f` is a defined, mentionable symbol with
+    /// introspection source — so `/source f` / `/info f` resolve to real output
+    /// (mirrors the `mod.rs` harvest test fixture, Principle 7).
+    fn session_with_defined_f() -> CompilerSession {
+        use crate::agent::test_support::repl_session;
+        let s = repl_session();
+        let module = s.current_module_path();
+        {
+            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
+            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
+                let entry = ModuleEntry::def(
+                    cranelisp_types::Scheme {
+                        type_vars: Vec::new(),
+                        constraints: std::collections::HashMap::new(),
+                        ty: cranelisp_types::Type::Int,
+                    },
+                    DefKind::PrimitiveExtern,
+                )
+                .visibility(Visibility::Public)
+                .build();
+                table.insert(Symbol::from("f"), entry);
+            }
+        }
+        if let Some(intr) = s.shared.introspection.as_ref() {
+            intr.insert(
+                cranelisp_types::FQSymbol {
+                    module: module.clone(),
+                    symbol: cranelisp_types::Symbol::from("f"),
+                },
+                crate::session_v4::Introspection {
+                    source: Some("(defn f [x] x)".to_string()),
+                    sexp: None,
+                    expanded: None,
+                    ast: None,
+                    clif_ir: None,
+                    code_size: None,
+                },
+            );
+        }
+        s
+    }
+
+    // A pull for a real read command returns a ToolCallResult whose `output`
+    // is NON-EMPTY and CONTAINS the command's actual output (the source text) —
+    // this is the content fed back to the model. An empty/placeholder result is
+    // exactly what makes the model re-request the same tool forever (the pull
+    // loop). The output is ALSO rendered as-typed to stdout (the transcript).
+    #[test]
+    fn run_pull_source_captures_command_output() {
+        let mut s = session_with_defined_f();
+        let mut sink: Vec<u8> = Vec::new();
+        let result = s.run_pull(&call("source", "f"), &mut sink);
+        // The fed-back content is non-empty and carries the source.
+        assert!(!result.output.is_empty(), "tool_result content must not be empty");
+        assert!(
+            result.output.contains("(defn f [x] x)"),
+            "tool_result content must carry the command output, got: {:?}",
+            result.output
+        );
+        // The same output is rendered as-typed to stdout (the transcript).
+        let rendered = String::from_utf8_lossy(&sink);
+        assert!(rendered.contains("/source f"), "the command is echoed as-typed: {rendered}");
+        assert!(
+            rendered.contains("(defn f [x] x)"),
+            "the output is displayed in the transcript: {rendered}"
+        );
+    }
+
+    // +neg: `/info` on a defined symbol likewise produces non-empty content —
+    // a read command with output is NEVER silently reduced to an empty result.
+    #[test]
+    fn run_pull_info_is_not_empty() {
+        let mut s = session_with_defined_f();
+        let mut sink: Vec<u8> = Vec::new();
+        let result = s.run_pull(&call("info", "f"), &mut sink);
+        assert!(
+            !result.output.is_empty(),
+            "an /info pull on a defined symbol must carry content, got empty"
+        );
+        // It is the symbol's name, not a placeholder.
+        assert!(result.output.contains('f'), "info content must describe f: {:?}", result.output);
+    }
 }

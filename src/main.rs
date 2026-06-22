@@ -2,6 +2,20 @@
 //
 // Three modes: Run (--run), Link (--link), Repl (default).
 // One CompilerSession, one code path. Workers are persistent.
+//
+// Embedded agent (REPL-only). The optional LLM advisor is compiled in ONLY
+// with the `agent` Cargo feature, which is off by default — a default
+// `cargo build` has no agent at all (`cargo build --features agent` to
+// include it). It is configured entirely through the ENVIRONMENT, never
+// `Cranelisp.toml`: `CRANELISP_AGENT_PROVIDER` selects the backend
+// (`anthropic` or `ollama`), `CRANELISP_AGENT_MODEL` the model-id,
+// `ANTHROPIC_API_KEY` (or `CRANELISP_AGENT_KEY`) the Anthropic key, and
+// `OLLAMA_API_BASE_URL` the Ollama endpoint (local, no key — the offline
+// path). With the feature compiled in but no provider configured/reachable,
+// the agent stays dormant and `/ask` renders a notice. The `--agent` /
+// `--no-agent` flags are the runtime half of the opt-in (off by default,
+// `--no-agent` wins on conflict) and are accepted no-ops in a feature-off
+// build. See `repl/spec.md §17.10` for the full normative enable+config scheme.
 
 use std::path::{Path, PathBuf};
 use std::process;

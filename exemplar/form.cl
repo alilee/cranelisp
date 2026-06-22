@@ -17,6 +17,9 @@
 
 (import [collections.vec [count get]])
 (import [primitives [char-at str-len str-concat substring split replace not]])
+;; S88 G8 adoption: the recursive make-dots loop is replaced by the stdlib
+;; `text.string/repeat-str`.
+(import [text.string [repeat-str]])
 
 ;; ── URL decoding ─────────────────────────────────────────────────────
 
@@ -30,12 +33,10 @@
 ;; ── Puzzle string construction ───────────────────────────────────────
 
 ;; Initialize an 81-character string of dots.
-(defn make-dots-helper [i acc]
-  (if (= i 81) acc
-    (make-dots-helper (+ i 1) (str-concat acc "."))))
-
+;; S88 G8 adoption: was a hand-rolled recursive str-concat loop; now the
+;; stdlib one-liner.
 (defn make-dots []
-  (make-dots-helper 0 ""))
+  (repeat-str "." 81))
 
 ;; Parse a digit character to its integer value (0-9), or -1 if not a digit.
 (defn parse-digit-char [ch]

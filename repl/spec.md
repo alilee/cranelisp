@@ -1938,3 +1938,45 @@ This section is the **complete** set of additive agent requirements on the REPL 
 - the "Agent prose frame" style role (§10.3).
 
 Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. The resolution-aware dispatch classifier (§17.1) — which resolves bare atoms and routes any *unknown* symbol to the agent — is itself **entirely feature-gated**: feature-off, an unbound bare symbol still lands on today's §4.1.10 unbound display and a genuine parse error on the §5 display, so the REPL is byte-identical to §1–§16. [S88]
+
+### 17.10 Enabling & Configuring the Agent [S88]
+
+This subsection is **normative** on how a user turns the agent on and points it at a backend. It pins the as-built scheme: the agent is a **compile-time feature** plus **environment-based runtime configuration** — and it is **explicitly NOT configured via `Cranelisp.toml`** (see the rationale below).
+
+#### 17.10.1 Enabling — the `agent` Cargo feature [S88]
+
+The embedded agent is compiled **only** when the binary is built with the `agent` Cargo feature, which is **off by default**:
+
+- A **default build** (`cargo build`, `cargo nextest run`) contains no LLM client at all — the entire `src/agent/` module is absent. `/ask` reports `agent not built in` (§17.1) and `--agent` is an accepted no-op (§0.6.1). This is the first of the two opt-ins (§17.4).
+- An **agent build** (`cargo build --features agent`) compiles the agent in. Whether it is *live* in a given session still depends on the runtime configuration below — being compiled in is necessary but not sufficient (opt-in-twice, §17.4). [S88]
+
+#### 17.10.2 Configuring — the environment, NOT `Cranelisp.toml` [S88]
+
+The agent is configured **entirely through environment variables**, read once at session construction. The agent **MUST NOT** read `Cranelisp.toml` (the project config file) for provider, model, or key. [S88]
+
+**Rationale (normative intent).** The provider, model-id, and API key are **per-developer secrets and preferences**, not version-controlled project configuration. `Cranelisp.toml` is checked into the project and shared across every developer and CI run; an API key there would be a leaked secret, and a hard-coded provider/model there would impose one developer's backend choice on the whole team. Keeping agent configuration in the environment keeps secrets out of source control and lets each developer (and each shell session) choose their own backend independently. The agent therefore **never** consults `Cranelisp.toml`. [S88]
+
+The environment surface (matching the as-built `src/agent/provider.rs`):
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `CRANELISP_AGENT_PROVIDER` | Selects the backend: `anthropic`, `ollama`, or `stub`. | `anthropic` [S88] |
+| `CRANELISP_AGENT_MODEL` | The model-id (provider-specific). **Required** for any live provider — a live provider with no model-id stays dormant. | — [S88] |
+| `ANTHROPIC_API_KEY` *or* `CRANELISP_AGENT_KEY` | The Anthropic API key. Its **presence** (non-empty) is the reachability gate for the Anthropic provider; either variable supplies it. | — [S88] |
+| `OLLAMA_API_BASE_URL` | The Ollama endpoint. Ollama needs **no key** — it is the local / offline escape hatch (the U6 privacy path, §17.8). | `http://localhost:11434` [S88] |
+| `CRANELISP_AGENT_STUB_SCRIPT` | **Test-only.** Path to a scripted-response fixture for the deterministic `stub` provider. This selects a canned, offline test double — it is **not** an end-user configuration knob. | — [S88] |
+
+#### 17.10.3 Dormancy — the reachability gate [S88]
+
+With the feature compiled in (§17.10.1) but **no provider configured or reachable**, the agent is **dormant** (§17.4) — it never transmits anything (§17.8). This is the **second** opt-in: the agent is live only when it is *both* compiled in *and* backed by a configured, reachable provider. [S88]
+
+When the agent is dormant for want of configuration, `/ask` MUST report what to set, naming the missing variables for the selected provider — for example:
+
+- Anthropic (the default provider) with no key or no model-id → a notice to set `ANTHROPIC_API_KEY` (or `CRANELISP_AGENT_KEY`) **and** `CRANELISP_AGENT_MODEL`. [S88]
+- Ollama with no model-id → a notice to set `CRANELISP_AGENT_MODEL` (no key is needed for Ollama). [S88]
+
+The reachability gates are, per provider: **Anthropic** — a non-empty key *and* a non-empty model-id; **Ollama** — a non-empty model-id (the endpoint defaults to localhost, no key); **stub** — a loadable fixture from `CRANELISP_AGENT_STUB_SCRIPT`. Absent its gate, each provider yields a dormant agent rather than an error, and `/ask` renders the dormant notice (§17.1) naming what to set. [S88]
+
+#### 17.10.4 Cross-reference — the first-use disclosure [S88]
+
+Configuration determines **where** data goes, so it is bound to the privacy disclosure (§17.8). The **first** time a live agent would transmit in a session, the REPL presents the first-use disclosure (§17.8.1) naming the **configured endpoint** — i.e. the backend selected by `CRANELISP_AGENT_PROVIDER` and its endpoint. Because **Ollama is local** (`OLLAMA_API_BASE_URL` defaults to `http://localhost:11434`), a turn against an Ollama backend transmits to the local host and **nothing leaves the machine** — the offline escape hatch (§17.8). A turn against the Anthropic provider transmits source excerpts to the external Anthropic endpoint, which is exactly what the §17.8.1 disclosure exists to surface. [S88]

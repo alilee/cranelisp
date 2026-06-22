@@ -21,17 +21,22 @@
 ;; the two trees permitted to depend on stdlib (root CLAUDE.md §Stdlib
 ;; separation).
 ;;
-;; CARVE-OUT (DEF-2, see exemplar/CLAUDE.md "Known Issues"): the curated
-;; `conj` is NOT used here — it routes through the bare `vec-push` primitive
-;; instead. The `collections.vec/conj` wrapper mis-manages the refcount of a
-;; heap-ADT element when accumulated in a loop (verified: a Vec of `Cell`
-;; values built via `conj` comes out corrupted, so the solver finds spurious
-;; contradictions and reports "No solution found"). Int elements are
-;; unaffected. Minimal repro queued for /qa. Swap `vec-push`→`conj` once the
-;; wrapper-RC defect lands.
+;; S88 adoption (Stage D): the DEF-2 carve-out is RETIRED — heap-ADT (`Cell`)
+;; accumulators now use the curated `collections.vec/conj` (S88 confirmed it
+;; is RC-identical to the bare `vec-push`; the earlier corruption was the
+;; collateral-fixed 0417 defect). The hand-rolled 9-bit mask layer (~55 lines
+;; of `pow2`/`bit-set?`/`bit-clear`/`bit-set`/`bit-count`/`bit-lowest`
+;; simulating `<< >> & ~ popcount` in `+ - * /`) is replaced by the stdlib
+;; `num.bits` module (landed S87). grid keeps thin *digit-1-9* domain
+;; adapters over the *bit-position-0-8* `num.bits` verbs so the solver and
+;; tests are unchanged at their boundary.
 
-(import [collections.vec [count get assoc]])
-(import [primitives [char-at str-len not vec-push]])
+(import [collections.vec [count get assoc conj]])
+(import [primitives [char-at str-len not]])
+;; num.bits is reached module-qualified inside the digit-domain adapters
+;; below (its `bit-clear`/`bit-set` names would collide with grid's
+;; digit-domain `bit-clear`/`bit-set`, so it is NOT imported bare).
+(import [num.bits []])
 
 ;; ── Data Types ──────────────────────────────────────────────────────────
 
@@ -68,55 +73,35 @@
 (defn rem-i64 [a b]
   (- a (* (/ a b) b)))
 
-;; ── Bitmask operations ─────────────────────────────────────────────────
+;; ── Bitmask operations (digit-domain adapters over num.bits) ────────────
+;;
+;; Candidates are a 9-bit mask: digit d (1-9) occupies bit position (d-1).
+;; The arithmetic bit simulation that used to live here is now provided by
+;; the stdlib `num.bits` module (composed from Ring 0 `+ - * /`). grid keeps
+;; these thin adapters so the rest of the exemplar speaks in *digits 1-9*
+;; while `num.bits` speaks in *bit positions 0-8*.
 
-;; Test if digit d (1-9) is set in bitmask.
-;; Bit for digit d is at position (d-1).
-;; We test by shifting mask right by (d-1) and checking the low bit.
-;;
-;; Since we don't have bitwise ops as primitives, we simulate:
-;;   (mask >> n) is (/ mask (2^n))
-;;   (mask & 1)  is (rem-i64 mask 2)
-;;   (1 << n)    is a power of 2
-;;
-;; Helper: compute 2^n for small n (0-8) via repeated multiplication.
-(defn pow2 [n]
-  (if (= n 0) 1
-    (* 2 (pow2 (- n 1)))))
+;; 2^n — re-exported from num.bits (kept as a grid name for the test that
+;; exercises it directly).
+(defn pow2 [n] (num.bits/pow2 n))
 
 ;; Test if digit d (1-9) is set in bitmask.
 (defn bit-set? [mask d]
-  (let [shift (- d 1)
-        p (pow2 shift)
-        shifted (/ mask p)]
-    (= (rem-i64 shifted 2) 1)))
+  (num.bits/bit-test mask (- d 1)))
 
 ;; Clear digit d (1-9) from bitmask.
-;; If the bit is set, subtract 2^(d-1) from mask.
 (defn bit-clear [mask d]
-  (if (bit-set? mask d)
-    (- mask (pow2 (- d 1)))
-    mask))
+  (num.bits/bit-clear mask (- d 1)))
 
 ;; Set digit d (1-9) in bitmask.
 (defn bit-set [mask d]
-  (if (bit-set? mask d)
-    mask
-    (+ mask (pow2 (- d 1)))))
+  (num.bits/bit-set mask (- d 1)))
 
-;; Count number of set bits in a 9-bit mask (popcount).
-;; Iterate digits 1-9, count those that are set.
-(defn bit-count-helper [mask d acc]
-  (if (> d 9) acc
-    (if (bit-set? mask d)
-      (bit-count-helper mask (+ d 1) (+ acc 1))
-      (bit-count-helper mask (+ d 1) acc))))
-
+;; Count number of set bits in the 9-bit mask (popcount).
 (defn bit-count [mask]
-  (bit-count-helper mask 1 0))
+  (num.bits/popcount mask))
 
-;; Return the lowest set digit (1-9) in a bitmask.
-;; Returns 0 if mask is empty.
+;; Return the lowest set digit (1-9) in a bitmask. Returns 0 if mask is empty.
 (defn bit-lowest-helper [mask d]
   (if (> d 9) 0
     (if (bit-set? mask d) d
@@ -165,7 +150,7 @@
       (if (if (= (row-of i) (row-of idx)) true
             (if (= (col-of i) (col-of idx)) true
               (= (box-of i) (box-of idx))))
-        (peers-helper idx (+ i 1) (vec-push acc i))
+        (peers-helper idx (+ i 1) (conj acc i))
         (peers-helper idx (+ i 1) acc)))))
 
 (defn peers [idx]
@@ -185,20 +170,20 @@
   (if (= i 81) (Some (Grid cells))
     (let [ch (char-at s i)]
       (if (= ch ".")
-        (make-grid-helper s (+ i 1) (vec-push cells (Candidates (full-mask))))
+        (make-grid-helper s (+ i 1) (conj cells (Candidates (full-mask))))
         ;; Try to parse as a digit 1-9.
         ;; We compare the character against digit strings.
-        (if (= ch "1") (make-grid-helper s (+ i 1) (vec-push cells (Given 1)))
-        (if (= ch "2") (make-grid-helper s (+ i 1) (vec-push cells (Given 2)))
-        (if (= ch "3") (make-grid-helper s (+ i 1) (vec-push cells (Given 3)))
-        (if (= ch "4") (make-grid-helper s (+ i 1) (vec-push cells (Given 4)))
-        (if (= ch "5") (make-grid-helper s (+ i 1) (vec-push cells (Given 5)))
-        (if (= ch "6") (make-grid-helper s (+ i 1) (vec-push cells (Given 6)))
-        (if (= ch "7") (make-grid-helper s (+ i 1) (vec-push cells (Given 7)))
-        (if (= ch "8") (make-grid-helper s (+ i 1) (vec-push cells (Given 8)))
-        (if (= ch "9") (make-grid-helper s (+ i 1) (vec-push cells (Given 9)))
+        (if (= ch "1") (make-grid-helper s (+ i 1) (conj cells (Given 1)))
+        (if (= ch "2") (make-grid-helper s (+ i 1) (conj cells (Given 2)))
+        (if (= ch "3") (make-grid-helper s (+ i 1) (conj cells (Given 3)))
+        (if (= ch "4") (make-grid-helper s (+ i 1) (conj cells (Given 4)))
+        (if (= ch "5") (make-grid-helper s (+ i 1) (conj cells (Given 5)))
+        (if (= ch "6") (make-grid-helper s (+ i 1) (conj cells (Given 6)))
+        (if (= ch "7") (make-grid-helper s (+ i 1) (conj cells (Given 7)))
+        (if (= ch "8") (make-grid-helper s (+ i 1) (conj cells (Given 8)))
+        (if (= ch "9") (make-grid-helper s (+ i 1) (conj cells (Given 9)))
         ;; '0' treated as empty (like '.')
-        (if (= ch "0") (make-grid-helper s (+ i 1) (vec-push cells (Candidates (full-mask))))
+        (if (= ch "0") (make-grid-helper s (+ i 1) (conj cells (Candidates (full-mask))))
           None))))))))))))))
 
 (defn make-grid [s]
@@ -350,7 +335,7 @@
 (defn build-given-grid-helper [v i]
   (if (= i 81) v
     (build-given-grid-helper
-      (vec-push v (Given (+ (rem-i64 i 9) 1)))
+      (conj v (Given (+ (rem-i64 i 9) 1)))
       (+ i 1))))
 
 (defn build-given-grid []
@@ -373,8 +358,8 @@
 (defn build-grid-with-candidates-helper [v i]
   (if (= i 81) v
     (if (= i 0)
-      (build-grid-with-candidates-helper (vec-push v (Candidates (full-mask))) (+ i 1))
-      (build-grid-with-candidates-helper (vec-push v (Given (+ (rem-i64 i 9) 1))) (+ i 1)))))
+      (build-grid-with-candidates-helper (conj v (Candidates (full-mask))) (+ i 1))
+      (build-grid-with-candidates-helper (conj v (Given (+ (rem-i64 i 9) 1))) (+ i 1)))))
 
 (defn test-is-solved-with-candidates []
   ;; A grid with a Candidates cell is not solved
@@ -385,7 +370,7 @@
 
 (defn build-all-given-1-helper [v i]
   (if (= i 81) v
-    (build-all-given-1-helper (vec-push v (Given 1)) (+ i 1))))
+    (build-all-given-1-helper (conj v (Given 1)) (+ i 1))))
 
 (defn test-set-cell []
   ;; set-cell should replace the cell at the given index

@@ -10,6 +10,7 @@
 
 #![cfg(feature = "agent")]
 
+use rig_core::OneOrMany;
 use rig_core::completion::message::{AssistantContent, Message};
 use rig_core::completion::request::ToolDefinition;
 
@@ -28,29 +29,105 @@ pub fn preamble(req: &AgentRequest) -> String {
     p
 }
 
-/// The chat history (transcript turns) as rig `Message`s, in order (§3.4). The
-/// caller appends the current user turn as the final message (rig requires the
-/// last message to be the prompt).
+/// The chat history (transcript turns) as rig `Message`s, in order (§3.4).
+///
+/// CRITICAL — the history is every transcript turn EXCEPT the last: the LAST
+/// turn is the prompt (`prompt_message`), which rig appends as the final wire
+/// message (`completion_request(prompt).build()` pushes the prompt last). The
+/// model answers the LAST message, so the last message MUST be the most recent
+/// real turn — the just-fed-back `tool_result` on a continuation step, the user
+/// question on the opening step. Folding the whole transcript into history AND
+/// re-appending the original user turn as the prompt (the pre-fix shape) left
+/// the wire sequence ending `…, tool_result, user(original-question)` — so the
+/// model never "saw" the result as the thing to act on and re-requested the same
+/// tool forever (the S88 Lane-C pull-loop defect). Splitting head/last fixes it:
+/// history is the head, the prompt is the last turn (`prompt_message`).
 pub fn history_messages(req: &AgentRequest) -> Vec<Message> {
-    let mut msgs = Vec::with_capacity(req.transcript.len() + 1);
-    for turn in &req.transcript {
-        match turn {
-            Turn::User(text) => msgs.push(Message::user(text.clone())),
-            Turn::Assistant(text) => msgs.push(Message::assistant(text.clone())),
-            Turn::ToolResult(r) => {
-                // A pulled command + its output, fed back as a tool result so the
-                // model sees what its pull returned (§4.1). Correlated by call id.
-                let id = if r.id.is_empty() { r.command.clone() } else { r.id.clone() };
-                msgs.push(Message::tool_result(id, r.output.clone()));
-            }
+    // All but the last transcript turn — the last is the prompt.
+    let head = req.transcript.len().saturating_sub(1);
+    let mut msgs = Vec::with_capacity(head);
+    for turn in req.transcript.iter().take(head) {
+        if let Some(msg) = turn_to_message(turn) {
+            msgs.push(msg);
         }
     }
     msgs
 }
 
-/// The current user turn as the final (prompt) message.
+/// Lower one transcript `Turn` to a rig `Message`. Returns `None` for a turn
+/// that builds no meaningful message (an empty assistant tool-call set — the
+/// loop never records one, but guard defensively).
+fn turn_to_message(turn: &Turn) -> Option<Message> {
+    match turn {
+        Turn::User(text) => Some(Message::user(text.clone())),
+        Turn::Assistant(text) => Some(Message::assistant(text.clone())),
+        Turn::AssistantToolCalls(calls) => {
+            // The assistant `tool_use` turn — emitted BEFORE the matching
+            // `tool_result`(s) so the Anthropic API's pairing invariant holds
+            // (every `tool_result` block must follow an assistant message
+            // carrying the matching `tool_use` id — §4.1). An empty call set
+            // would build an empty assistant message, which is meaningless;
+            // skip it (the loop never records an empty tool-call turn).
+            assistant_tool_calls_message(calls)
+        }
+        Turn::ToolResult(r) => {
+            // A pulled command + its output, fed back as a tool result so the
+            // model sees what its pull returned (§4.1). Correlated by call id —
+            // the id MUST match the `tool_use` id in the preceding assistant
+            // turn, or the provider rejects the request.
+            let id = tool_call_id(&r.id, &r.command);
+            Some(Message::tool_result(id, r.output.clone()))
+        }
+    }
+}
+
+/// The correlation id used to pair a `tool_result` with its `tool_use`. Falls
+/// back to the rendered command when the provider supplied no id (the stub /
+/// id-free path), so the two sides still agree on a key.
+fn tool_call_id(id: &str, command: &str) -> String {
+    if id.is_empty() {
+        command.to_string()
+    } else {
+        id.to_string()
+    }
+}
+
+/// Build the assistant `tool_use` message for one loop step's tool calls. Each
+/// `ToolCallRequest` is lowered to a rig `tool_call` content block carrying the
+/// SAME id the model emitted (and that the matching `tool_result` echoes), the
+/// command name, and the `{ "argument": … }` JSON args matching the tool schema
+/// (`tool_definitions`). Returns `None` for an empty call set.
+fn assistant_tool_calls_message(calls: &[ToolCallRequest]) -> Option<Message> {
+    let content: Vec<AssistantContent> = calls
+        .iter()
+        .map(|c| {
+            AssistantContent::tool_call(
+                c.id.clone(),
+                c.name.clone(),
+                serde_json::json!({ "argument": c.argument }),
+            )
+        })
+        .collect();
+    OneOrMany::many(content)
+        .ok()
+        .map(|content| Message::Assistant { id: None, content })
+}
+
+/// The final (prompt) message — the LAST transcript turn, which rig appends as
+/// the final wire message and the model answers.
+///
+/// On the opening loop step the last turn is the user's question (recorded by
+/// `record_user` before the loop); on a continuation step it is the just-fed-back
+/// `tool_result` (recorded by `record_tool_result`). Either way the model is
+/// answering the most recent real turn — NOT a stale re-statement of the original
+/// question (the pull-loop defect). Falls back to `req.user` only when the
+/// transcript is empty (a request assembled without `record_user`, e.g. a direct
+/// unit test) so the prompt is never absent (rig requires one).
 pub fn prompt_message(req: &AgentRequest) -> Message {
-    Message::user(req.user.clone())
+    match req.transcript.last() {
+        Some(turn) => turn_to_message(turn).unwrap_or_else(|| Message::user(req.user.clone())),
+        None => Message::user(req.user.clone()),
+    }
 }
 
 /// The read-only tool allowlist (§4.2) as rig `ToolDefinition`s. Each tool takes
@@ -120,5 +197,265 @@ where
         ModelResponse::Done(prose)
     } else {
         ModelResponse::ToolCalls(calls)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::{ToolCallResult, Turn};
+    use rig_core::completion::message::UserContent;
+
+    fn tool_call(id: &str, name: &str, arg: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: id.to_string(),
+            name: name.to_string(),
+            argument: arg.to_string(),
+        }
+    }
+
+    fn tool_result(id: &str, command: &str, output: &str) -> ToolCallResult {
+        ToolCallResult {
+            id: id.to_string(),
+            command: command.to_string(),
+            output: output.to_string(),
+        }
+    }
+
+    /// Extract the tool_use id(s) from an assistant `Message`, in order.
+    fn assistant_tool_use_ids(msg: &Message) -> Vec<String> {
+        match msg {
+            Message::Assistant { content, .. } => content
+                .iter()
+                .filter_map(|c| match c {
+                    AssistantContent::ToolCall(tc) => Some(tc.id.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Extract the tool_result id(s) from a user `Message`, in order.
+    fn user_tool_result_ids(msg: &Message) -> Vec<String> {
+        match msg {
+            Message::User { content } => content
+                .iter()
+                .filter_map(|c| match c {
+                    UserContent::ToolResult(r) => Some(r.id.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The full wire message sequence `RigModel::complete` builds: the history
+    /// (all-but-last transcript turn) followed by the prompt (the last turn). The
+    /// model answers the LAST element, so assertions about "what the model sees"
+    /// must be made over THIS sequence, not over `history_messages` alone.
+    fn wire_messages(req: &AgentRequest) -> Vec<Message> {
+        let mut msgs = history_messages(req);
+        msgs.push(prompt_message(req));
+        msgs
+    }
+
+    /// The tool_result *content text* of a user `Message`, concatenated, in order.
+    fn user_tool_result_text(msg: &Message) -> String {
+        match msg {
+            Message::User { content } => content
+                .iter()
+                .filter_map(|c| match c {
+                    UserContent::ToolResult(r) => Some(
+                        r.content
+                            .iter()
+                            .filter_map(|tc| match tc {
+                                rig_core::completion::message::ToolResultContent::Text(t) => {
+                                    Some(t.text.clone())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    ),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        }
+    }
+
+    // spec: repl/spec.md §17 — the Anthropic pairing invariant: a `tool_result`
+    // block MUST be immediately preceded by an assistant message carrying the
+    // matching `tool_use` block (same id). This is the exact seam where the
+    // S88 Lane-C 400 lived — the assistant tool_use turn was omitted, so the
+    // built rig request had a `tool_result` with no preceding `tool_use`. The
+    // pure regression guard: build the FULL wire sequence (history + prompt) from
+    // a transcript that includes the assistant tool-call turn + its result, and
+    // assert the order + id match. (The tool_result is the LAST turn, so it lands
+    // in the prompt slot — the model answers it, not a re-asked question.)
+    #[test]
+    fn tool_use_precedes_matching_tool_result_with_matching_id() {
+        let req = AgentRequest {
+            transcript: vec![
+                Turn::User("show me the source of f".to_string()),
+                Turn::AssistantToolCalls(vec![tool_call("toolu_01H", "source", "f")]),
+                Turn::ToolResult(tool_result("toolu_01H", "/source f", "(defn f [x] x)")),
+            ],
+            ..Default::default()
+        };
+
+        let msgs = wire_messages(&req);
+        // user, assistant(tool_use), user(tool_result) — three messages.
+        assert_eq!(msgs.len(), 3, "expected user + assistant-tool_use + tool_result");
+
+        let use_ids = assistant_tool_use_ids(&msgs[1]);
+        let result_ids = user_tool_result_ids(&msgs[2]);
+        assert_eq!(
+            use_ids,
+            vec!["toolu_01H".to_string()],
+            "msg[1] must be the assistant tool_use carrying the call id"
+        );
+        assert_eq!(
+            result_ids,
+            vec!["toolu_01H".to_string()],
+            "msg[2] must be the tool_result echoing the SAME id"
+        );
+        // The pairing invariant: the tool_result is immediately preceded by the
+        // matching tool_use (same id, adjacent).
+        assert_eq!(
+            use_ids, result_ids,
+            "tool_use id and the following tool_result id must match"
+        );
+        // The defect guard: the tool_result is the FINAL message (the prompt) and
+        // CARRIES the command output — the model answers the result, not a stale
+        // re-statement of the question (the pull-loop root cause).
+        assert!(
+            user_tool_result_text(&msgs[2]).contains("(defn f [x] x)"),
+            "the final message must carry the command output, got: {:?}",
+            user_tool_result_text(&msgs[2])
+        );
+    }
+
+    // spec: repl/spec.md §17 — the pull-loop defect guard at the membrane: when
+    // the transcript ends with a fed-back tool_result (a continuation step), the
+    // FINAL wire message (the prompt the model answers) is that tool_result and
+    // it CARRIES the command output — NOT a re-pushed copy of the original user
+    // question. Pre-fix the prompt was always `req.user` (the original question)
+    // appended after the tool_result, so the model never acted on the result and
+    // re-requested the same tool forever.
+    #[test]
+    fn continuation_prompt_is_tool_result_carrying_output_not_restated_question() {
+        let req = AgentRequest {
+            user: "show me the source of f".to_string(),
+            transcript: vec![
+                Turn::User("show me the source of f".to_string()),
+                Turn::AssistantToolCalls(vec![tool_call("toolu_01H", "source", "f")]),
+                Turn::ToolResult(tool_result(
+                    "toolu_01H",
+                    "/source f",
+                    "; source for f\n(defn f [x] x)",
+                )),
+            ],
+            ..Default::default()
+        };
+
+        let msgs = wire_messages(&req);
+        let last = msgs.last().expect("a prompt message");
+        // +neg: the final message is NOT a re-asked user question.
+        assert!(
+            user_tool_result_ids(last) == vec!["toolu_01H".to_string()],
+            "the final (prompt) message must be the tool_result, not the question"
+        );
+        // The final message carries the actual command output.
+        assert!(
+            user_tool_result_text(last).contains("(defn f [x] x)"),
+            "the final tool_result prompt must carry the command output, got: {:?}",
+            user_tool_result_text(last)
+        );
+        // +neg: the original question is NOT also re-appended as a trailing user
+        // text message (the duplication that caused the loop).
+        let trailing_question = matches!(
+            last,
+            Message::User { content }
+                if content.iter().any(|c| matches!(
+                    c, UserContent::Text(t) if t.text.contains("show me the source")))
+        );
+        assert!(!trailing_question, "the original question must not be re-appended as the prompt");
+    }
+
+    // spec: repl/spec.md §17 — the opening step (transcript = just the user turn)
+    // sends the question EXACTLY ONCE: with the head/last split, history is empty
+    // and the prompt is the lone user turn — no duplicate.
+    #[test]
+    fn opening_step_sends_user_question_once() {
+        let req = AgentRequest {
+            user: "what is f".to_string(),
+            transcript: vec![Turn::User("what is f".to_string())],
+            ..Default::default()
+        };
+        let msgs = wire_messages(&req);
+        assert_eq!(msgs.len(), 1, "opening step is a single user message, not a duplicate");
+        let user_texts = msgs
+            .iter()
+            .filter(|m| matches!(m, Message::User { .. }))
+            .count();
+        assert_eq!(user_texts, 1, "the question must appear exactly once");
+    }
+
+    // spec: repl/spec.md §17 (+neg) — a `tool_result` is NEVER emitted without a
+    // preceding `tool_use` carrying its id. Every tool_result message's id set
+    // must be a subset of the ids of the immediately-preceding assistant message.
+    #[test]
+    fn no_tool_result_without_preceding_matching_tool_use() {
+        let req = AgentRequest {
+            transcript: vec![
+                Turn::User("two pulls".to_string()),
+                Turn::AssistantToolCalls(vec![
+                    tool_call("id-a", "source", "f"),
+                    tool_call("id-b", "info", "g"),
+                ]),
+                Turn::ToolResult(tool_result("id-a", "/source f", "body-f")),
+                Turn::ToolResult(tool_result("id-b", "/info g", "type-g")),
+                Turn::Assistant("here is what I found".to_string()),
+            ],
+            ..Default::default()
+        };
+
+        let msgs = wire_messages(&req);
+        // For each tool_result message, the most recent preceding assistant
+        // tool_use message must carry its id.
+        let mut last_use_ids: Vec<String> = Vec::new();
+        for msg in &msgs {
+            let uses = assistant_tool_use_ids(msg);
+            if !uses.is_empty() {
+                last_use_ids = uses;
+            }
+            for rid in user_tool_result_ids(msg) {
+                assert!(
+                    last_use_ids.contains(&rid),
+                    "tool_result id {rid} has no preceding matching tool_use; \
+                     preceding tool_use ids were {last_use_ids:?}"
+                );
+            }
+        }
+    }
+
+    // spec: repl/spec.md §17 — a plain prose-only transcript (no tool calls)
+    // builds no tool_use / tool_result messages (the common path is unchanged).
+    #[test]
+    fn prose_only_transcript_has_no_tool_blocks() {
+        let req = AgentRequest {
+            transcript: vec![
+                Turn::User("hi".to_string()),
+                Turn::Assistant("hello".to_string()),
+            ],
+            ..Default::default()
+        };
+        let msgs = wire_messages(&req);
+        assert_eq!(msgs.len(), 2);
+        assert!(assistant_tool_use_ids(&msgs[1]).is_empty());
+        assert!(user_tool_result_ids(&msgs[0]).is_empty());
     }
 }

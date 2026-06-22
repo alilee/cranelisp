@@ -243,6 +243,17 @@ impl CompilerSession {
                     // results are recorded onto the transcript — the next
                     // `assemble_request` folds them back into context from there
                     // (transcript-carried feedback is the only feedback path).
+                    //
+                    // Record the assistant `tool_use` turn FIRST, before the
+                    // matching tool results. The Anthropic Messages API requires
+                    // every `tool_result` block to be preceded by an assistant
+                    // message carrying the matching `tool_use` block (same id);
+                    // omitting it 400s the continuation request (§4.1). The pair
+                    // is recorded in order: assistant tool-calls, then the
+                    // user-side tool results.
+                    if let Some(state) = self.agent.as_mut() {
+                        state.record_assistant_tool_calls(calls.clone());
+                    }
                     for call in &calls {
                         let result = self.run_pull(call, stdout);
                         if let Some(state) = self.agent.as_mut() {
@@ -300,16 +311,20 @@ impl CompilerSession {
     }
 }
 
+/// Shared test helpers for the agent unit tests (`mod.rs` + `provider.rs`). A
+/// single home for the session builder so the rig-loop test (`provider.rs`) and
+/// the classifier/request tests (`mod.rs`) construct sessions the same way
+/// (Principle 7 — one source of truth for the fixture).
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
-    use crate::session_v4::{SessionSettings, RunMode};
+    use crate::session_v4::{RunMode, SessionSettings};
     use cranelisp_types::CodegenBehaviour;
 
-    /// Build a minimal REPL-mode session for classifier unit tests. The agent
-    /// classifier is a pure routing decision over `parse` + the feature cut, so
-    /// it needs only a constructed session, no compiled state.
-    fn repl_session() -> CompilerSession {
+    /// Build a minimal REPL-mode session for agent unit tests. The classifier is
+    /// a pure routing decision and the agent loop only needs a constructed
+    /// session (no compiled state), so this builds the lightest viable session.
+    pub(crate) fn repl_session() -> CompilerSession {
         let tmp = tempfile::tempdir().unwrap();
         let settings = SessionSettings {
             no_color: true,
@@ -324,6 +339,12 @@ mod tests {
         let root = tmp.keep();
         CompilerSession::new(settings, root, "user")
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::test_support::repl_session;
 
     // spec: repl/spec.md §17.1 — a complete form routes to the deterministic REPL.
     #[test]
@@ -624,34 +645,82 @@ mod tests {
     // spec: repl/spec.md §17 — across a multi-step turn (ToolCalls then Done),
     // the SECOND request carries the prior turn's tool result fed back into
     // context (rung 4 result-re-enters-context, agent.md §4.1). Uses an
-    // allowlisted read command so the pull actually runs through process_commands.
+    // allowlisted read command on a DEFINED symbol so the pull runs through
+    // process_commands and produces real output.
+    //
+    // S88 pull-loop fix — STRENGTHENED: the prior version pulled `/list` and
+    // asserted only the PRESENCE of a `Turn::ToolResult`. That passed even
+    // though the live agent looped, because presence is not content: the model
+    // loops precisely when the fed-back tool_result content is EMPTY. This now
+    // asserts the fed-back tool_result `output` is NON-EMPTY and CONTAINS the
+    // pulled command's actual output (the source text) — the assertion that
+    // would have caught the loop.
     #[test]
     fn tool_result_re_enters_next_request() {
-        let (mut s, capture) = session_with_stub(vec![
-            // Turn 1: pull a read command, then…
+        // Define `f` with introspection source so `/source f` yields real output.
+        let mut s = repl_session();
+        let module = s.current_module_path();
+        {
+            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
+            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
+                let entry = ModuleEntry::def(empty_scheme(), DefKind::PrimitiveExtern)
+                    .visibility(Visibility::Public)
+                    .build();
+                table.insert(Symbol::from("f"), entry);
+            }
+        }
+        if let Some(intr) = s.shared.introspection.as_ref() {
+            intr.insert(
+                cranelisp_types::FQSymbol {
+                    module: module.clone(),
+                    symbol: cranelisp_types::Symbol::from("f"),
+                },
+                crate::session_v4::Introspection {
+                    source: Some("(defn f [x] x)".to_string()),
+                    sexp: None,
+                    expanded: None,
+                    ast: None,
+                    clif_ir: None,
+                    code_size: None,
+                },
+            );
+        }
+        // Wire the stub with a source pull then a Done.
+        let stub = StubModel::new(vec![
             ModelResponse::ToolCalls(vec![crate::agent::types::ToolCallRequest {
                 id: "c1".to_string(),
-                name: "list".to_string(),
-                argument: String::new(),
+                name: "source".to_string(),
+                argument: "f".to_string(),
             }]),
-            // Turn 2: answer.
             ModelResponse::Done("done".to_string()),
         ]);
-        drive(&mut s, "what is defined");
+        let capture = stub.requests.clone();
+        s.agent = Some(AgentState {
+            transcript: Vec::new(),
+            model: Some(Box::new(stub)),
+            provider_label: "stub (test)".to_string(),
+        });
+        drive(&mut s, "show me the source of f");
+
         let reqs = capture.lock().unwrap();
         assert_eq!(reqs.len(), 2, "a pull turn drives two completion calls");
         // The second request's transcript must carry the tool-result turn fed
-        // back (the pulled `/list` and its output).
-        let has_tool_result = reqs[1]
-            .transcript
-            .iter()
-            .any(|t| matches!(t, crate::agent::types::Turn::ToolResult(_)));
-        assert!(has_tool_result, "turn-2 request must carry the fed-back tool result");
+        // back — AND its `output` must carry the actual command output, not be
+        // empty (the loop trigger).
+        let tool_result_output = reqs[1].transcript.iter().find_map(|t| match t {
+            crate::agent::types::Turn::ToolResult(r) => Some(r.output.clone()),
+            _ => None,
+        });
+        let output = tool_result_output.expect("turn-2 request must carry the fed-back tool result");
+        assert!(!output.is_empty(), "the fed-back tool_result content must NOT be empty");
+        assert!(
+            output.contains("(defn f [x] x)"),
+            "the fed-back tool_result must carry the command output (the source), got: {output:?}"
+        );
         // And the original user turn is in the transcript too.
-        let has_user = reqs[1]
-            .transcript
-            .iter()
-            .any(|t| matches!(t, crate::agent::types::Turn::User(u) if u == "what is defined"));
+        let has_user = reqs[1].transcript.iter().any(
+            |t| matches!(t, crate::agent::types::Turn::User(u) if u == "show me the source of f"),
+        );
         assert!(has_user, "turn-2 request must carry the user turn");
     }
 

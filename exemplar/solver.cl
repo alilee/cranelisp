@@ -20,11 +20,13 @@
 ;; IO primitives imported by name. Solver logic is pure Int/Vec; only `main`
 ;; and `build-output` touch strings and IO.
 ;;
-;; CARVE-OUT (DEF-2): `conj` routes through the bare `vec-push` primitive, not
-;; the `collections.vec/conj` wrapper — the wrapper corrupts heap-ADT element
-;; refcounts when accumulated in a loop (see grid.cl header + CLAUDE.md).
-(import [collections.vec [count get assoc]])
-(import [primitives [char-at str-concat str-len not bind Pure vec-push]])
+;; S88 adoption (Stage D): heap-ADT (`Cell`) accumulators in the test grid
+;; builders now use the curated `collections.vec/conj` (DEF-2 carve-out
+;; retired — see grid.cl header). `digit-to-char` replaces the 10-arm
+;; `digit-string` ladder.
+(import [collections.vec [count get assoc conj]])
+(import [primitives [char-at str-concat str-len not bind Pure]])
+(import [text.string [digit-to-char]])
 
 (import [grid [Grid Cell Given Solved Candidates SolveResult Success Unsolvable
                full-mask bit-set? bit-clear bit-count bit-lowest
@@ -194,17 +196,11 @@
 ;; ── Board Formatting ──────────────────────────────────────────────────
 
 ;; Convert a cell value (1-9) to its string digit, or "." for 0.
+;; S88 G6 adoption: the 10-arm `if` ladder is replaced by the stdlib
+;; `text.string/digit-to-char` (inverse of grid's char parsing); 0 maps to
+;; the board's blank glyph ".".
 (defn digit-string [v]
-  (if (= v 1) "1"
-  (if (= v 2) "2"
-  (if (= v 3) "3"
-  (if (= v 4) "4"
-  (if (= v 5) "5"
-  (if (= v 6) "6"
-  (if (= v 7) "7"
-  (if (= v 8) "8"
-  (if (= v 9) "9"
-    "."))))))))))
+  (if (= v 0) "." (digit-to-char v)))
 
 ;; Format a puzzle string (81 chars) as a readable board.
 ;; Works directly on the string, no Grid needed.
@@ -331,8 +327,8 @@
 (defn build-mask-then-givens-helper [v i mask]
   (if (= i 81) v
     (if (= i 0)
-      (build-mask-then-givens-helper (vec-push v (Candidates mask)) (+ i 1) mask)
-      (build-mask-then-givens-helper (vec-push v (Given 1)) (+ i 1) mask))))
+      (build-mask-then-givens-helper (conj v (Candidates mask)) (+ i 1) mask)
+      (build-mask-then-givens-helper (conj v (Given 1)) (+ i 1) mask))))
 
 (defn make-test-grid-with-mask [mask]
   (Grid (build-mask-then-givens-helper [] 0 mask)))

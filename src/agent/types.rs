@@ -65,13 +65,21 @@ pub struct ToolCallResult {
 }
 
 /// One entry in the session transcript (§3.4) — a prior turn's user message,
-/// model prose, or tool-result, kept so each turn carries the prior context.
+/// model prose, model tool-call request(s), or tool-result, kept so each turn
+/// carries the prior context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Turn {
     /// The user's message (the `/ask` text or the classified prose).
     User(String),
     /// The model's prose reply.
     Assistant(String),
+    /// The model's tool-call request(s) for one loop step — the assistant
+    /// `tool_use` turn (§4.1). The Anthropic Messages API REQUIRES that every
+    /// `tool_result` block be preceded by an assistant message carrying the
+    /// matching `tool_use` block (same id), so the loop records this turn BEFORE
+    /// the `ToolResult`(s) it produced. `request.rs` lowers it to a rig
+    /// assistant `Message` whose content is the `tool_call` block(s).
+    AssistantToolCalls(Vec<ToolCallRequest>),
     /// A pulled command + its result (rendered as-typed in the transcript).
     ToolResult(ToolCallResult),
 }
