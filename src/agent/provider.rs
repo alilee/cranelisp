@@ -167,6 +167,12 @@ impl<M: CompletionModel> RigModel<M> {
 
 impl<M: CompletionModel> AgentModel for RigModel<M> {
     fn complete(&mut self, request: &AgentRequest) -> Result<ModelResponse, String> {
+        // Trace mode (`CRANELISP_AGENT_TRACE=1`): log the assembled message
+        // sequence to stderr at the rig boundary so wire-path bugs (the
+        // tool_use↔tool_result pairing 400 class) are directly visible rather
+        // than inferred from a live 400 (off by default — `trace.rs`).
+        crate::agent::trace::emit_request(request);
+
         // Build the rig request via the membrane (`request.rs`) + the model's
         // own builder (it carries the model handle rig needs).
         let preamble = agent_request::preamble(request);
@@ -187,7 +193,9 @@ impl<M: CompletionModel> AgentModel for RigModel<M> {
             .block_on(self.model.completion(rig_req))
             .map_err(|e| format!("completion failed: {e}"))?;
 
-        Ok(agent_request::lower_response(resp.choice))
+        let lowered = agent_request::lower_response(resp.choice);
+        crate::agent::trace::emit_response(&lowered);
+        Ok(lowered)
     }
 }
 
@@ -215,6 +223,41 @@ impl AgentState {
     /// Push a tool-result turn (a pulled command + its output) onto the transcript.
     pub fn record_tool_result(&mut self, result: crate::agent::types::ToolCallResult) {
         self.transcript.push(Turn::ToolResult(result));
+    }
+
+    /// Record a pull/submit outcome onto the transcript, KEEPING the transcript
+    /// wire-valid in BOTH directions (the Phase-6 give-up/decline 400 fix).
+    ///
+    /// The Anthropic API rule: a `tool_result` block is legal ONLY immediately
+    /// after an assistant message carrying the matching `tool_use`. The repair
+    /// loop (`pull.rs::validate_and_repair`) may have ALREADY paired the outer
+    /// `submit` tool_use (its iter-1 error feedback is a `tool_result` against
+    /// `call.id`) and then either left a TRAILING UNPAIRED repair tool_use
+    /// (cap-exhausted give-up) or fully paired everything (prose/model-None
+    /// give-up). The outer loop records exactly one result per submit — so blindly
+    /// pushing a `ToolResult` either correctly closes the trailing unpaired
+    /// tool_use OR adds a SPURIOUS second tool_result (the current 400).
+    ///
+    /// This method makes the choice structurally: it pushes a `ToolResult` ONLY
+    /// when the LAST transcript turn is an `AssistantToolCalls` whose id set
+    /// contains the result's id (i.e. there IS a trailing unpaired tool_use to
+    /// close). Otherwise the outer submit is already paired, so the outcome is
+    /// recorded as a benign `User` turn (the model still sees the give-up/decline
+    /// prose, the pairing stays valid). The same rule serves clean-submit,
+    /// 1-repair, cap-exhausted give-up, declined, and `--yes` uniformly.
+    pub fn record_pull_result(&mut self, result: crate::agent::types::ToolCallResult) {
+        let closes_trailing_tool_use = matches!(
+            self.transcript.last(),
+            Some(Turn::AssistantToolCalls(calls)) if calls.iter().any(|c| c.id == result.id)
+        );
+        if closes_trailing_tool_use {
+            self.transcript.push(Turn::ToolResult(result));
+        } else {
+            // No trailing unpaired tool_use — recording a tool_result would be the
+            // unpaired-tool_result 400. Carry the outcome as a user turn instead
+            // (still visible to the model on the next turn).
+            self.transcript.push(Turn::User(result.output));
+        }
     }
 }
 

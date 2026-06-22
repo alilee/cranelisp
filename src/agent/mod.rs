@@ -25,6 +25,7 @@ pub mod pull;
 pub mod render;
 pub mod request;
 pub mod stub;
+pub mod trace;
 pub mod types;
 
 use std::io::Write;
@@ -281,7 +282,13 @@ impl CompilerSession {
                     for call in &calls {
                         let result = self.run_pull(call, stdout, consent);
                         if let Some(state) = self.agent.as_mut() {
-                            state.record_tool_result(result);
+                            // Wire-valid recording (Phase-6): pushes a `tool_result`
+                            // only when it closes a trailing unpaired tool_use;
+                            // otherwise carries the outcome as a user turn. This is
+                            // the give-up/decline 400 fix — a `submit` whose repair
+                            // loop already paired the outer tool_use must not get a
+                            // spurious second tool_result.
+                            state.record_pull_result(result);
                         }
                     }
                 }
@@ -310,6 +317,16 @@ impl CompilerSession {
             .as_ref()
             .map(|s| s.transcript.clone())
             .unwrap_or_default();
+        // Wire-validity guard (S89 Phase-6): every assembled request's transcript
+        // MUST satisfy the Anthropic tool_use↔tool_result pairing invariant, in
+        // BOTH directions. A malformed transcript here is a 400 waiting to be sent
+        // — fail fast in tests (debug builds) at the assembly seam, where the
+        // offending path is named, instead of inferring it from a live 400. The
+        // deterministic stub never enforces this, so this guard is the only thing
+        // that catches a give-up/decline/repair mis-pairing in CI.
+        if let Err(why) = crate::agent::types::assert_transcript_wire_valid(&transcript) {
+            debug_assert!(false, "agent transcript is not wire-valid at assemble_request: {why}");
+        }
         AgentRequest {
             primer: crate::agent::primer::language_primer().to_string(),
             harvest,

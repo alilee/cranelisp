@@ -251,7 +251,7 @@ impl CompilerSession {
         // — an unpaired tool_use → live 400 (Phase-6 defect).
         let (clean, final_tool_use_id) = match self.validate_and_repair(&call.argument, &call.id) {
             Ok(pair) => pair,
-            Err(()) => {
+            Err(give_up_id) => {
                 // Give-up (§16.4): never submit broken code, never surface a raw
                 // compiler error. An honest, framed notice; the turn continues
                 // read-only (degrades to "proposed, not submitted").
@@ -263,8 +263,21 @@ impl CompilerSession {
                          so I did not submit anything."
                     )
                 );
+                // PAIRING (Phase-6 give-up corner, the CURRENT 400): the repair
+                // loop has recorded a chain of `submit` tool_use turns onto the
+                // transcript, the LAST of which is UNPAIRED (its error feedback
+                // was the prompt that exhausted the cap). The give-up tool_result
+                // the OUTER loop records MUST pair against THAT last tool_use id
+                // (`give_up_id`), NOT the original `call.id` — else the transcript
+                // ends `…tool_use(repair-N), tool_result(orig)` and the NEXT
+                // request 400s ("unexpected tool_use_id … no corresponding
+                // tool_use"). When the loop never recorded a repair tool_use (the
+                // first form was broken but NO repair tool_use was emitted, e.g. a
+                // prose-only repair), `give_up_id` falls back to `call.id` — the
+                // outer submit's own tool_use, which IS the last unpaired one.
+                let result_id = give_up_id.unwrap_or_else(|| call.id.clone());
                 return ToolCallResult {
-                    id: call.id.clone(),
+                    id: result_id,
                     command: format!("(submit gave up: {})", call.name),
                     output: "submit aborted: could not produce compiling code".to_string(),
                 };
@@ -547,7 +560,7 @@ impl CompilerSession {
         &mut self,
         initial_form: &str,
         submit_id: &str,
-    ) -> Result<(String, Option<String>), ()> {
+    ) -> Result<(String, Option<String>), Option<String>> {
         let mut form = initial_form.to_string();
         // The id of the tool_use whose form we are validating this iteration. When
         // `Some`, the next error-feedback is a PAIRED `tool_result`; when `None`
@@ -609,12 +622,27 @@ impl CompilerSession {
                             pending_tool_use = None;
                             form = next;
                         }
-                        None => return Err(()), // no model / no extractable form
+                        // No model / no extractable form: give up. At this point the
+                        // feedback `tool_result` (or user turn) for THIS iteration
+                        // was already recorded ABOVE, so any prior tool_use is
+                        // paired — there is NO trailing unpaired tool_use. The
+                        // returned `pending_tool_use` is only a HINT; `run_submit` +
+                        // `record_pull_result` make the real wire-valid recording
+                        // decision off the live transcript tail (a paired tail ⇒ the
+                        // give-up outcome is carried as a benign user turn, not a
+                        // spurious second tool_result).
+                        None => return Err(pending_tool_use.clone()),
                     }
                 }
             }
         }
-        Err(())
+        // Cap exhausted (the give-up the user observed). The LAST loop iteration
+        // recorded a fresh `submit` tool_use (`record_assistant_tool_calls`) whose
+        // error-feedback `tool_result` was NEVER recorded (the loop exited first) —
+        // so `pending_tool_use` is the TRAILING UNPAIRED tool_use. `run_submit`
+        // returns the give-up result with this id; `record_pull_result` then closes
+        // the pairing with exactly one `tool_result` (the current 400 fix).
+        Err(pending_tool_use.clone())
     }
 
     /// Validate one proposed form on staging (parse+expand half via
@@ -915,6 +943,14 @@ mod tests {
         }
     }
 
+    fn submit_call_with_id(id: &str, form: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: id.to_string(),
+            name: "submit".to_string(),
+            argument: form.to_string(),
+        }
+    }
+
     // §15.1 — the allowlist widening: a `submit` tool-call routes to the
     // confirm-gated write arm (NOT the read-only refusal). With consent declined
     // (`n`), nothing is committed and the result reports the decline.
@@ -1007,6 +1043,16 @@ mod tests {
             vec![ModelResponse::ToolCalls(vec![submit_call("(defn fixed [x] x)")])],
             false,
         );
+        // The outer `agent_turn` loop records the submit tool_use BEFORE invoking
+        // the pull/repair; mirror that so the repair loop's iter-1 feedback
+        // tool_result pairs against a real preceding tool_use (the wire-valid guard
+        // at assemble_request rejects a bare leading tool_result).
+        if let Some(state) = s.agent.as_mut() {
+            state.record_assistant_tool_calls(vec![submit_call_with_id(
+                "toolu_outer",
+                "(defn fixed [x] x",
+            )]);
+        }
         let (clean, final_id) = s
             .validate_and_repair("(defn fixed [x] x", "toolu_outer")
             .expect("repair yields a clean form");

@@ -276,6 +276,126 @@ impl AgentRequest {
     }
 }
 
+/// The wire-validity invariant over a recorded transcript (the Anthropic
+/// Messages API tool_use↔tool_result pairing rule, both directions). The S88/S89
+/// 400 class lived in transcript paths that violated this — a `tool_result` with
+/// no preceding matching `tool_use` (the give-up/decline corner), or a
+/// `tool_use` with no following `tool_result` (the repair-feedback corner). The
+/// deterministic stub sits ABOVE rig and never enforces this, so CI stayed green
+/// while live 400'd. This is the central guard: called as a checked
+/// `debug_assert!` at every `assemble_request` site so a malformed transcript
+/// fails fast in tests instead of reaching the API.
+///
+/// The rules encoded (both directions):
+///   1. **Forward** — every `AssistantToolCalls(ids)` turn is IMMEDIATELY followed
+///      by `ToolResult` turn(s) that, taken together, cover EXACTLY those ids (in
+///      any order; one tool_result per id; no extra, no missing). The Anthropic
+///      API requires the next user message after a tool_use to carry the matching
+///      tool_results.
+///   2. **Backward** — every `ToolResult(id)` turn is IMMEDIATELY preceded (across
+///      the run of contiguous tool_results, back to the assistant turn) by an
+///      `AssistantToolCalls` turn carrying a matching `tool_use(id)`. A
+///      `ToolResult` after a `User`/`Assistant`(prose) turn is the violation that
+///      caused the current (give-up/decline) 400.
+///
+/// Note on id-correlation: the wire membrane (`request.rs::tool_call_id`) falls
+/// back to the rendered command string when the provider supplied no id, so the
+/// invariant here is checked on the SAME effective key (the `id` field, with an
+/// empty-id ⇒ command fallback) the wire uses, to stay faithful to what the
+/// provider actually receives.
+pub fn assert_transcript_wire_valid(transcript: &[Turn]) -> Result<(), String> {
+    // The effective correlation key for a tool_use id (empty ⇒ no fallback here:
+    // the assistant tool_use carries the raw id; pairing is by raw id on BOTH
+    // sides via `tool_result_key`, so empty ids on both sides still correlate by
+    // the command string).
+    let mut i = 0;
+    while i < transcript.len() {
+        match &transcript[i] {
+            Turn::AssistantToolCalls(calls) => {
+                if calls.is_empty() {
+                    return Err(format!(
+                        "turn {i}: AssistantToolCalls is empty (no tool_use blocks)"
+                    ));
+                }
+                // The set of ids this assistant turn promised.
+                let want: Vec<String> = calls.iter().map(|c| tool_use_key(c)).collect();
+                // Collect the contiguous run of ToolResult turns that follow.
+                let mut got: Vec<String> = Vec::new();
+                let mut j = i + 1;
+                while j < transcript.len() {
+                    if let Turn::ToolResult(r) = &transcript[j] {
+                        got.push(tool_result_key(r));
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // Forward: every promised id is covered exactly once, no extras.
+                if got.is_empty() {
+                    return Err(format!(
+                        "turn {i}: AssistantToolCalls(ids={want:?}) is not followed by any \
+                         tool_result — a tool_use with no matching tool_result (the \
+                         repair-feedback / give-up unpaired-tool_use 400)"
+                    ));
+                }
+                let mut remaining = want.clone();
+                for g in &got {
+                    match remaining.iter().position(|w| w == g) {
+                        Some(pos) => {
+                            remaining.remove(pos);
+                        }
+                        None => {
+                            return Err(format!(
+                                "turn {i}: tool_result id {g:?} has no matching tool_use in the \
+                                 preceding AssistantToolCalls(ids={want:?}) (unexpected \
+                                 tool_use_id in tool_result — the current 400)"
+                            ));
+                        }
+                    }
+                }
+                if !remaining.is_empty() {
+                    return Err(format!(
+                        "turn {i}: AssistantToolCalls promised ids {want:?} but tool_results \
+                         covered {got:?} — uncovered tool_use ids {remaining:?} (a tool_use \
+                         with no matching tool_result)"
+                    ));
+                }
+                i = j;
+            }
+            Turn::ToolResult(r) => {
+                // A ToolResult NOT preceded by an AssistantToolCalls turn — the
+                // exact backward violation behind the give-up/decline 400.
+                return Err(format!(
+                    "turn {i}: ToolResult(id={:?}) has no preceding AssistantToolCalls turn \
+                     carrying a matching tool_use — a tool_result with no corresponding \
+                     tool_use block in the previous message (the give-up/decline 400)",
+                    tool_result_key(r)
+                ));
+            }
+            Turn::User(_) | Turn::Assistant(_) => {
+                i += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The correlation key for an assistant tool_use — the raw provider id (the
+/// real Anthropic pairing key). In every live flow the id is non-empty
+/// (`toolu_…` from the provider, `stub-N` / `s1` from the test stub), so the
+/// invariant correlates purely by id, as the API does.
+fn tool_use_key(c: &ToolCallRequest) -> String {
+    c.id.clone()
+}
+
+/// The correlation key for a tool_result — the raw id it echoes back (the same
+/// key the matching tool_use carries). Matches the real Anthropic correlation
+/// (id-to-id); the wire membrane's command-fallback is only for the never-live
+/// empty-id case.
+fn tool_result_key(r: &ToolCallResult) -> String {
+    r.id.clone()
+}
+
 /// The approximate character length of a transcript turn, for the budget note.
 fn turn_debug_len(turn: &Turn) -> usize {
     match turn {
@@ -302,5 +422,110 @@ fn render_turn_for_debug(turn: &Turn) -> String {
         Turn::ToolResult(r) => {
             format!("[tool result] {}\n{}\n", r.command, r.output)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tc(id: &str) -> ToolCallRequest {
+        ToolCallRequest { id: id.to_string(), name: "submit".to_string(), argument: "x".to_string() }
+    }
+    fn tr(id: &str) -> ToolCallResult {
+        ToolCallResult {
+            id: id.to_string(),
+            command: "submit x".to_string(),
+            output: "ok".to_string(),
+        }
+    }
+
+    // spec: repl/spec.md §17 — a well-formed transcript (user, prose, and a
+    // paired tool_use→tool_result) is wire-valid in both directions.
+    #[test]
+    fn well_formed_transcript_is_valid() {
+        let t = vec![
+            Turn::User("hi".to_string()),
+            Turn::AssistantToolCalls(vec![tc("toolu_1")]),
+            Turn::ToolResult(tr("toolu_1")),
+            Turn::Assistant("done".to_string()),
+        ];
+        assert!(assert_transcript_wire_valid(&t).is_ok());
+    }
+
+    // spec: repl/spec.md §17 — a prose-only transcript (no tool blocks) is valid.
+    #[test]
+    fn prose_only_is_valid() {
+        let t = vec![Turn::User("hi".to_string()), Turn::Assistant("hello".to_string())];
+        assert!(assert_transcript_wire_valid(&t).is_ok());
+    }
+
+    // spec: repl/spec.md §17 — multi-call: one assistant tool_use turn with two
+    // calls, followed by two tool_results covering exactly those ids — valid.
+    #[test]
+    fn multi_call_paired_is_valid() {
+        let t = vec![
+            Turn::User("two".to_string()),
+            Turn::AssistantToolCalls(vec![tc("a"), tc("b")]),
+            Turn::ToolResult(tr("a")),
+            Turn::ToolResult(tr("b")),
+        ];
+        assert!(assert_transcript_wire_valid(&t).is_ok());
+    }
+
+    // spec: repl/spec.md §17 (+neg) — THE CURRENT 400: a tool_result whose id does
+    // not match the immediately-preceding tool_use (the give-up/decline corner:
+    // `…AssistantToolCalls(repair-id), ToolResult(orig-id)`). Must be rejected.
+    #[test]
+    fn tool_result_with_mismatched_id_is_invalid() {
+        let t = vec![
+            Turn::AssistantToolCalls(vec![tc("repair-3")]),
+            Turn::ToolResult(tr("orig")),
+        ];
+        let err = assert_transcript_wire_valid(&t).unwrap_err();
+        assert!(err.contains("no matching tool_use"), "got: {err}");
+    }
+
+    // spec: repl/spec.md §17 (+neg) — a tool_result with NO preceding
+    // AssistantToolCalls turn at all (after a User/prose turn) — the backward
+    // violation behind the give-up/decline 400.
+    #[test]
+    fn tool_result_after_prose_is_invalid() {
+        let t = vec![Turn::Assistant("here".to_string()), Turn::ToolResult(tr("x"))];
+        let err = assert_transcript_wire_valid(&t).unwrap_err();
+        assert!(err.contains("no preceding"), "got: {err}");
+    }
+
+    // spec: repl/spec.md §17 (+neg) — a tool_use with NO following tool_result
+    // (the unpaired-tool_use forward violation — the S89 repair-feedback corner).
+    #[test]
+    fn tool_use_without_following_tool_result_is_invalid() {
+        let t = vec![
+            Turn::AssistantToolCalls(vec![tc("toolu_1")]),
+            Turn::User("next".to_string()),
+        ];
+        let err = assert_transcript_wire_valid(&t).unwrap_err();
+        assert!(err.contains("no matching tool_result"), "got: {err}");
+    }
+
+    // spec: repl/spec.md §17 (+neg) — a tool_use at the very end of the transcript
+    // (no following turn at all) — also unpaired.
+    #[test]
+    fn trailing_tool_use_is_invalid() {
+        let t = vec![Turn::AssistantToolCalls(vec![tc("toolu_1")])];
+        assert!(assert_transcript_wire_valid(&t).is_err());
+    }
+
+    // spec: repl/spec.md §17 (+neg) — a multi-call tool_use only partially covered
+    // by the following tool_results (one id uncovered) is invalid.
+    #[test]
+    fn partially_covered_multi_call_is_invalid() {
+        let t = vec![
+            Turn::AssistantToolCalls(vec![tc("a"), tc("b")]),
+            Turn::ToolResult(tr("a")),
+            Turn::User("oops".to_string()),
+        ];
+        let err = assert_transcript_wire_valid(&t).unwrap_err();
+        assert!(err.contains("uncovered"), "got: {err}");
     }
 }
