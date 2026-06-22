@@ -34,17 +34,23 @@ those win — file FIXME `target: /arch` (cross-crate type/interface) or `target
 
 ---
 
-## 1. The linchpin — a deterministic stub `CompletionModel`
+## 1. The linchpin — a deterministic stub `AgentModel`
 
 Everything CI-testable about the agent rests on one structural fact (Principle 5,
-`design/int/agent.md §1`, §6, §11): **`agent_turn` drives `rig::completion::CompletionModel`,
-which is a TRAIT.** The agent loop holds a `Box<dyn rig::completion::CompletionModel>`
-(`AgentState.model`, `agent.md §3.4`) and calls its completion method directly. There is
-**no project-owned wrapper trait to mock** — the real Anthropic / Ollama providers and a
-test stub implement the *same* rig trait. So a test constructs an `AgentState` whose
-`model` is a deterministic stub, and the entire agent *logic* — classifier → request
-assembly → harvest → pull → render → feed-back → validator-repair — runs with **zero
-network, zero API key, zero non-determinism.**
+`design/int/agent.md §1`, §6, §11): **`agent_turn` drives the object-safe `AgentModel`
+membrane (`src/agent/types.rs`), which is a project-owned TRAIT one layer ABOVE rig.**
+(0429 correction, 2026-06-22: as-built the stub implements `AgentModel`, NOT rig's
+`rig::completion::CompletionModel` directly — the membrane was introduced FIXME 0427;
+see `design/int/agent.md §6` + `src/CLAUDE.md`.) The agent loop holds the model behind
+this membrane (`AgentState.model`, `agent.md §3.4`) and calls its `complete` method
+directly. The real Anthropic / Ollama providers reach rig **below** the membrane
+(`RigModel<M: CompletionModel>`, `provider.rs`); a test stub implements the membrane
+directly. So a test constructs an `AgentState` whose `model` is a deterministic stub
+`AgentModel`, and the entire agent *logic* — classifier → request assembly → harvest →
+pull → render → feed-back → validator-repair — runs with **zero network, zero API key,
+zero non-determinism.** The rig wire-path BELOW the membrane (`provider.rs`/`request.rs`)
+is covered separately by a rig-trait-level mock (the 0429 step-1 deliverable, `s89-test-plan.md
+§Cluster-B`).
 
 This single seam is what makes the agent's *plumbing* a CI lane (Lane A) and confines
 its *model quality* to a separate, non-blocking eval lane (Lane C). The split is the

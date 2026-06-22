@@ -36,6 +36,33 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 89 Phase 3 — `/qa` test PLAN authored (no `.rs` yet) + 0429 §1 correction (/qa, 2026-06-22)
+
+S89 Phase-3 deliverable: `tests/plan/s89-test-plan.md` authored — rungs 5–6 +
+the agent-output-rendering cluster, slotted into the durable 4-lane strategy
+(`agent-testing-strategy.md`). **No `.rs` test files this phase** (they land
+Phase 5 Stage 1, serially). Plan covers: Cluster A render incl. the **ANSI-leak
+narrow failing-not-ignored repro** owed before closure
+(`agent_output_no_literal_ansi_escape_when_color_off_neg`, §14.6, RED on HEAD →
+green on the leaf-styling fix); Cluster B stage→check→discard broken-then-fixed
+repair loop (§16.5) + read-only floor +neg (§15.4, unconfirmed/non-read tool
+never reaches `eval`) + 0429 rig-trait-level mock; Cluster C Document
+round-trip + harvester read-back (§17.3/4); B/C decline +neg; Lane B feature-OFF
+byte-identical re-verify.
+
+**0429 (`target: /qa`) — partial close THIS phase.** Applied the one-line
+`agent-testing-strategy.md §1` correction (the stub implements **`AgentModel`**,
+the project-owned membrane — `src/agent/types.rs` — NOT rig's `CompletionModel`
+directly; rig wire-path covered by a separate rig-trait-level mock). Residual
+owed S89: the B.3 rig-trait mock tests land Phase 5; on green, **`/qa` deletes
+`design/arch/fixmes/0429-*.md`**. **0423 (`target: /int`)**: `/int` deletes its
+FIXME (bookkeeping; the green
+`spec_08_modules.rs::inline_mod_test_extraction_writes_lib_dir_relative_not_cwd`
+is the record).
+
+No ledger failure rows added (plan only; the Phase-5 RED-first tests get rows
+when authored). Default suite unchanged at this phase.
+
 ### Sprint 87 close — FIXME 0415 §3.3 symbol-layout formatter RESOLVED, 10 tests GREEN + entry removed (/qa, 2026-06-21)
 
 S87: 0415 layout formatter implemented (the L0–L4 shared symbol-list formatter
