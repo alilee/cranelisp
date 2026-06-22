@@ -1,6 +1,6 @@
 # Embedding an LLM Agent in the REPL — Exploratory Architectural Design
 
-**Status:** EXPLORATORY DESIGN PROPOSAL — pre-implementation, pre-user-ratification, not scheduled.
+**Status:** RATIFIED (U1–U6, user 2026-06-21 — §10) + IN DELIVERY. **Phase 1 (Advisor MVP, rungs 0–4) SHIPPED + live-validated S88** (`sprints/archive/sprint-88.md`). **Phase 2 (Build + Document + pre-flight validator, rungs 5–6) is S89.** The implementable int-side plan is `design/int/agent.md`; the REPL experience is `repl/spec.md §17`; the module-preamble form is spec §8.16. This doc remains the master architectural reference; §§ below describe the full target, with phasing in §9.
 **Owner:** `/arch` (crate/feature boundary). Cross-skill: `/repl` (experience), `/int` (dispatch + session wiring), `/spec` (spec-retrieval + module-preamble packaging).
 **Provenance:** Authored by `/arch` (S86) against the user's vision and refined through an `/arch`↔user design conversation. Greenfield — no prior LLM-as-feature design exists; the only adjacent concept is `/learn` (FIXME 0052), a scripted tutorial, not an LLM. First-principles + this codebase; the sketch has no REPL-agent precedent.
 
@@ -103,7 +103,7 @@ The same "instrument compensation" loop applies to generation (§6.3). Measure c
 The agent is omniscient about **code + docs + spec** — not about *unstated* intent. The only intent it has is what's been captured (docstrings/preambles/sidecar). State this plainly; it's the engine of the loop: every **Document** edit converts mind→harvestable-substrate, so omniscience *grows as you work*.
 
 ### 4.7 Open: push transparency
-Pull is enacted-and-visible; push is ambient-and-silent. Should the push be *partially surfaced* — a collapsed, expandable header like `⊙ in scope: solver (full), grid·html (api), +10 fns` — so the user can see/audit/**prune/extend** what the agent reasons over? Costs screen space; buys legible, steerable omniscience. (Decision fork — §12.)
+Pull is enacted-and-visible; push is ambient-and-silent. Should the push be *partially surfaced* — a collapsed, expandable header like `⊙ in scope: solver (full), grid·html (api), +10 fns` — so the user can see/audit/**prune/extend** what the agent reasons over? Costs screen space; buys legible, steerable omniscience. **RATIFIED (U4, §10): ambient for the MVP, prunable header in Phase 3** — the harvest stays silent through Phase 1–2; the header rides Phase 3 once telemetry informs what to surface (§9 Phase 3).
 
 ---
 
@@ -150,8 +150,10 @@ The in-process compiler is also the agent's **pre-flight validator**. Before gen
 ### 6.3 Telemetry closes the loop
 Pre-submission failure categories are the tuning signal for the primer, exactly as compensatory pulls tune the harvest (§4.5). One discipline: **instrument every place the agent had to compensate (a pull, or a fail-and-retry), and let the distribution drive what's curated into the push.**
 
-### 6.4 Open: silent-repair vs. surface
-Syntax has a clean answer — **always silent-repair, never break flow.** Type errors are ambiguous: some are the agent fumbling a signature (hide + repair); others are a real design signal the user should see. Fork: silent-repair *anything* that doesn't compile, or **parse errors only** + **surface type errors as a collaboration moment**. Lean: surface type errors (often the most useful thing to discuss) — at some cost to flow. (Decision fork — §12.)
+### 6.4 Validator policy — RATIFIED: silent-repair anything (U5)
+Syntax has a clean answer — **always silent-repair, never break flow.** Type errors are ambiguous: some are the agent fumbling a signature (hide + repair); others are a real design signal the user should see. The fork was: silent-repair *anything* that doesn't compile, or **parse errors only** + **surface type errors as a collaboration moment** (the original lean).
+
+**RATIFIED (user, 2026-06-21; `sprints/archive/sprint-88.md` §"U1–U6 ratification gate"): SILENT-REPAIR ANYTHING.** The user OVERRODE the original "surface type errors" lean: **both** parse AND type failures are hidden-and-repaired; the user **structurally cannot** see an agent compile failure (max flow over collaboration-on-type-errors). This decides the validator's policy for the Phase-2 implementation (§9 Phase 2). **No interface consequence:** the validator is a typecheck-only dry-run over the existing staging (stage → check → discard, silent — §7.5), and silent-repair-anything means it simply discards on *any* `Err` (parse or type) and re-prompts the model with the captured compiler error — which is exactly what the existing `check_forms` discard-on-Err arm already does (Decision 44). "Repair anything" needs *less* machinery than "surface type errors" would have (no error-classification branch, no surfacing path). `pub(crate)`, int-internal, no facade/`cranelisp-types` delta.
 
 ---
 
@@ -212,24 +214,26 @@ The rule that keeps it neat: **the `#[cfg(feature="agent")]` cuts live AT the se
 
 ## §9. Phasing
 - **Phase 1 — Advisor MVP.** Feature-gated `src/agent/`; §5.3 classifier + `/ask`; API backend (opt-in twice); harvested push (§4.3 heuristics) + pull-as-visible-commands (§4.4); **Advise** mode (read-only) + the always-on **language primer** (§6.1); spec retrieval (grep over embedded `spec/`); telemetry skeleton (§4.5). No writes yet (proposes code, doesn't submit). Acceptance: ask "how do I define a constrained function over Num?" → a spec-grounded, session-aware answer with a proposed `(defn …)` shown.
-- **Phase 2 — Build + Document + validator.** `submit_repl_input` with confirmation; the **pre-flight validator + silent repair** on staging (§6.2); **Document** mode (consultative docstring/preamble edits) — needs the §3.4 preamble prerequisite; echo-as-typed transcript. Acceptance: the agent defines a user-approved function that *always at least parses*, and records its rationale in the preamble.
+- **Phase 2 — Build + Document + validator (S89, rungs 5–6).** The agent's first **write** path. Build mode: the read-only pull allowlist (§4.2/Phase-1) is **extended with a confirm-gated write arm** — a submitted form goes back through `process_commands`/`eval` (the *same* cluster-atomic staging path `main.rs` uses, commit-on-Ok / discard-on-Err, §7.1), **no new eval entry** (§7.5); writes remain structurally unconstructable without passing the gate (consent is the allowlist + the confirm, exactly as Phase-1 read-only was structural by allowlist-exclusion). The **pre-flight validator + silent-repair-anything** (§6.2, U5 ratified §6.4): before generated code is shown or submitted, run it through the real frontend + typechecker on staging via the **typecheck-only dry-run seam** (stage → check → discard, silent — §7.5; `pub(crate)`, int-internal, no facade delta), repairing on *any* failure. **Document** mode: consultative docstring/preamble edits, reusing the S88 first-class module-preamble substrate (`SymbolTable.module_preamble` + `capture_module_preamble` + the byte-stable regen path — no new `cranelisp-types` change; cache schema already v9). Acceptance: the agent defines a user-approved function that *always at least parses*, a deliberately-broken generation is silently repaired and never shown, and a preamble the agent writes round-trips byte-stably and is read back by next session's harvester. **Zero new cross-crate edges; zero `public-api.txt` baselines move** (agent additions stay `pub(crate)`, int-private, behind `#[cfg(feature="agent")]`).
 - **Phase 3 — Self-tuning + reach.** Compensation telemetry drives push/primer curation (§4.5/§6.3); reverse-query commands (`/refs`/`/tests-for`); semantic spec search (precompute-and-ship index); pluggable local-model backend; optional push-transparency header (§4.7). 
 
 **Scheduling.** Its own track — **not gated by and not gating Phase H**. A dev-session feature; never ships in `--link`/`--release` (NG4). `/sprint` schedules it independently.
 
 ---
 
-## §10. Open questions / sign-off
+## §10. Sign-off — U1–U6 RATIFIED (user, 2026-06-21)
 
-- **U1 — Dispatch.** Confirm "parse-as-form-or-slash → REPL; else → agent" + the `/ask` escape hatch (§5.3) over the literal bracket rule.
-- **U2 — Module preambles first-class** (§3.4). Confirm this prerequisite + that `/spec`+`/repl` build it before Phase 2.
-- **U3 — Memory line** (§3.2). Confirm "describes a named thing → on that thing; only no-home intent → sidecar," keeping the sidecar tiny.
-- **U4 — Push transparency** (§4.7). Surface a prunable "in scope" header, or keep the push ambient?
-- **U5 — Validator policy** (§6.4). Silent-repair anything that doesn't compile, or parse-errors-only + surface type errors as collaboration?
-- **U6 — Backend + privacy** (§7.3/§7.4). API-default + pluggable + opt-in-twice + first-use disclosure — sufficient, or explicit per-session consent?
+All six sign-offs are ratified; the durable record is `sprints/archive/sprint-88.md` §"U1–U6 ratification gate". Summary:
+
+- **U1 — Dispatch.** **ADOPT + REFINED** — `/ask` is the explicit door; else parse → unclosed = continuation, parse-error = agent, `Ok` compound = REPL, bare atoms resolve (all-known → REPL §4; any unbound → agent). Symbol-resolution-aware (the bare-prose-parses-Ok reality gap), not the literal bracket rule. Feature-off byte-identical. (§5.3; `design/int/agent.md §2.2`.)
+- **U2 — Module preambles first-class** (§3.4). **ADOPT** — landed S88: additive `SymbolTable.module_preamble: Option<String>` field (FIXME 0428, BC §7), `CACHE_SCHEMA_VERSION` 8→9, the `;;`-leading-comment-block form (spec §8.16), `capture_module_preamble` + byte-stable regen. Phase-2 Document mode reuses this substrate with **no further interface change**.
+- **U3 — Memory line** (§3.2). **ADOPT** — named-thing → on the thing; only no-home intent → tiny sidecar (sidecar is Phase-3+).
+- **U4 — Push transparency** (§4.7). **AMBIENT for MVP; prunable header in Phase 3** — the harvest is ambient/silent in Phase 1–2; the header rides Phase 3 over the same harvest map (§9 Phase 3).
+- **U5 — Validator policy** (§6.4). **SILENT-REPAIR ANYTHING** (user override of the original "surface type errors" lean) — parse AND type failures hidden-and-repaired; the user structurally cannot see an agent compile failure. Lands in Phase 2 (S89). No interface consequence (§6.4, §7.5).
+- **U6 — Backend + privacy** (§7.3/§7.4). **OPT-IN-TWICE + first-use notice** — dormant unless built `--features agent` AND a reachable provider; one-time disclosure names **source excerpts** (not just signatures) + endpoint.
 
 ### Cross-skill handoffs / Next skills
-*(To be filed as `design/arch/fixmes/NNNN-*.md` when scheduled — not now; unratified.)*
+*(Filed as `design/arch/fixmes/NNNN-*.md` when scheduled by `/sprint`. The Phase-1 MVP handoffs landed in S88; the Phase-2 design-lock handoffs (write-allowlist arm, validator dry-run seam) are S89.)*
 - **`/repl`** — the experience: agent-dispatch section + `/ask` + agent-output frame + `--agent` row; **module-preamble** form + `/doc <module>` (§3.4); the reverse-query commands (§4.4).
 - **`/int`** — dispatch + session wiring: the §5.3 classifier, `src/agent/` + feature gate (§7.1/§7.2), the `agent_turn` loop, the validator-on-staging path (§6.2), the harvester/relevance-ranker (§4.2/§4.3), telemetry (§4.5).
 - **`/spec`** — the module-preamble normative form (§3.4); spec-retrieval/embedding packaging if it touches `spec/` layout.
