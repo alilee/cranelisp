@@ -198,6 +198,53 @@ published via `intrinsics_table()`, registered by `Jit::new`. `src/trace.rs` is 
 
 The thread-local state `discover_tests_extern` dereferences (`TestRunnerState`) is set just-in-time before invoking compiled code. `TestRunnerState` lives on `SharedState` (built once in `CompilerSession::new`, stable for session lifetime); the REPL `/mod` command updates only its `current_module` field through its `Mutex`. The intrinsic null-checks the pointer and returns harmless defaults when no eval is active. (`TraceDisplayState` was deleted with the trace family in S76 — see above.)
 
+## Embedded agent (`src/agent/`, S88 Phase 5 Wave 3 — Advisor MVP core)
+
+The embedded LLM advisor lives entirely in `src/agent/`, fully
+`#[cfg(feature = "agent")]` — **feature-off the module does not exist and the
+default `cargo build` / `cargo nextest run` never compile rig** (the ~9s suite
+stays agent-free). `design/int/agent.md` is the design.
+
+- **Feature + deps.** `agent = ["dep:rig-core", "dep:tokio", "dep:serde_json"]`
+  (root `Cargo.toml`). `rig-core` is `optional`, `default-features = false`,
+  `features = ["reqwest", "native-tls"]` — the smallest set that compiles the
+  completion API + the anthropic/ollama providers. **native-tls, NOT rustls:**
+  the rustls path pulls `aws-lc-rs` (a heavy C TLS backend, ~30 MB of build
+  artifacts + a C toolchain); native-tls links the system OpenSSL — a far
+  lighter agent footprint. tokio is a current-thread runtime only (`rt` +
+  `macros`) — `agent_turn` `block_on`s one async rig completion per loop step.
+- **The `AgentModel` membrane (object-safety).** The design names the model
+  handle `Box<dyn rig::completion::CompletionModel>`, but rig's `CompletionModel`
+  is **NOT object-safe** in 0.39.0 (associated types + `Clone` bound + async
+  methods). We preserve the §6 intent with a thin object-safe internal trait
+  `AgentModel` (`agent/types.rs`): the stub and each rig-backed provider
+  implement it; rig's `CompletionModel` is still the wire boundary, one layer
+  below, inside `provider.rs`. The lib name is `rig_core` (not `rig`) — imports
+  are `use rig_core::...`. Correction filed as FIXME 0427 `target: /design`.
+- **Module map.** `types.rs` (neutral vocabulary + `AgentModel` + `AgentState`);
+  `provider.rs` (runtime provider selection — anthropic/ollama/stub by
+  `CRANELISP_AGENT_PROVIDER`; the rig membrane impl + tokio bridge);
+  `request.rs` (the one place coupled to rig's `CompletionRequest`/`Message`/
+  tool-call shapes); `harvest.rs` (the push-context assembler, §5 ladder);
+  `primer.rs` + `primer.txt` (the always-on language primer, `include_str!`);
+  `pull.rs` (pull-as-visible-commands + the read-only allowlist consent gate);
+  `stub.rs` (the deterministic test `AgentModel`, the testing linchpin);
+  `mod.rs` (the classifier + the real `agent_turn` model↔tool loop).
+- **Wiring.** `CompilerSession.agent: Option<AgentState>` (`#[cfg]`-gated, zero
+  bytes feature-off). `main.rs` threads the resolved `--agent` flag
+  (`agent_enabled`) into `s.enable_agent(...)` in the REPL arm only (agent is
+  REPL-only). Dormant (no reachable provider) ⇒ `/ask` renders the U6 notice.
+- **Testing.** The stub is selected e2e by `CRANELISP_AGENT_PROVIDER=stub` +
+  `CRANELISP_AGENT_STUB_SCRIPT=<fixture>` (a line DSL: `tool: <name> <arg>` /
+  `done: <prose>`). Lane A e2e lives in `tests/agent.rs` (`--features agent`);
+  request-content assertions are `#[cfg(test)]` unit tests in `agent/mod.rs`
+  (the stub captures every `AgentRequest`). Run: `cargo nextest run --features
+  agent --test agent` (e2e) + `... --lib 'agent::'` (unit).
+- **DEFERRED (R5 release valve, → S89/3b).** Spec-grep retrieval
+  (`agent/spec_grep.rs`) and the telemetry skeleton (`agent/telemetry.rs`) are
+  NOT built — the MVP acceptance holds without them (primer + harvest carry the
+  grounding). Build/Document write modes + the validator are S89.
+
 ## Known regressions from the Wave 3a-β collapse
 
 The Wave 3a-β typecheck-collapse refactor regressed several test categories where the pre-S66 multi-call shape carried cross-form state across separate `check_form` invocations. The new single-call shape rebuilds that state per `check_forms` call, which exposes accumulator-fragmentation issues on:

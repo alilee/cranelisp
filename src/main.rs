@@ -74,10 +74,10 @@ fn main() {
     let _got_flush = got_trace::GotTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
 
-    let (action, project_root, entry_module, settings) = parse_args();
+    let (action, project_root, entry_module, settings, agent_enabled) = parse_args();
     cranelisp::style::init_color(settings.no_color);
 
-    if let Err(e) = run(action, &project_root, &entry_module, settings) {
+    if let Err(e) = run(action, &project_root, &entry_module, settings, agent_enabled) {
         let entry_file = project_root.join(format!("{entry_module}.cl"));
         eprintln!("{}", format_error(&e, &entry_file));
         flush_traces();
@@ -171,8 +171,15 @@ fn run(
     project_root: &Path,
     entry_module_name: &str,
     settings: SessionSettings,
+    agent_enabled: bool,
 ) -> Result<(), CranelispError> {
     use std::io::{self, BufRead, Write};
+
+    // `agent_enabled` is consumed by the REPL arm's `s.enable_agent` only under
+    // `#[cfg(feature="agent")]`; feature-off it is an accepted no-op (the
+    // `--agent` flag is still recognised).
+    #[cfg(not(feature = "agent"))]
+    let _ = agent_enabled;
 
     // §2.2: CompilerSession::new(settings, project_root, entry_module_name).
     // Workers are spawned and parked on condvars immediately. S78 §1: the
@@ -229,6 +236,14 @@ fn run(
 
             // Initialize file watcher now that modules are loaded.
             s.init_watcher();
+
+            // S88 W3: wire the embedded agent (the S1 `_agent_enabled` seam).
+            // REPL-only; selects the runtime provider (anthropic / ollama / stub
+            // by config) or stays dormant. Feature-off this call does not exist
+            // and `agent_enabled` is an accepted no-op (the `--agent` flag is
+            // still recognised so a script written for an agent build runs).
+            #[cfg(feature = "agent")]
+            s.enable_agent(agent_enabled);
 
             s.print_banner(&mut stdout);
 
@@ -364,7 +379,7 @@ fn run(
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
+fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool) {
     let args: Vec<String> = std::env::args().collect();
     let mut no_color = false;
     let mut no_cache = false;
@@ -483,11 +498,11 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
     // §0.6.1: resolve the agent toggle. `--no-agent` wins when both are present;
     // default is off. The agent is a REPL-only, dev-session capability — it
     // never participates in `--run`/`--link`, so the resolved value is only
-    // meaningful in REPL mode. Wave 2 accepts the flags as no-ops (in BOTH
-    // builds); Wave 3 (the `agent` feature) threads `_agent_enabled` into the
-    // session's runtime agent state. Computed (not discarded at the parse site)
-    // so the precedence rule is exercised and the flags are provably accepted.
-    let _agent_enabled = agent_on && !agent_off && matches!(action, Action::Repl);
+    // meaningful in REPL mode. The flags are accepted no-ops in a feature-off
+    // build (so a script written for an agent build runs); the `agent` feature
+    // build (S88 W3) threads `agent_enabled` into `s.enable_agent` (the runtime
+    // half of opt-in-twice — §6.4). Returned to `run`.
+    let agent_enabled = agent_on && !agent_off && matches!(action, Action::Repl);
 
     // Resolve (project_root, entry_module) per spec §0.5.1.
     let (project_root, entry_module) = resolve_target(target.as_deref());
@@ -504,7 +519,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
         run_mode,
     };
 
-    (action, project_root, entry_module, settings)
+    (action, project_root, entry_module, settings, agent_enabled)
 }
 
 /// Resolve a positional target to (project_root, entry_module) per spec §0.5.1.

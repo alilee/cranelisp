@@ -85,14 +85,53 @@ features = ["derive"]
 # the accessor is purely additive (Principle 8 — no interim scaffolding).
 [features]
 bench = []
-# Sprint 88 Phase 5 (agentic-REPL track, Wave 2 foundations): the embedded
-# agent. OFF by default — in NO default feature set, enabled by no
+# Sprint 88 Phase 5 (agentic-REPL track, Wave 3 — Advisor MVP core): the
+# embedded agent. OFF by default — in NO default feature set, enabled by no
 # dev-dependency, so `cargo build` / `cargo nextest run` never compile it and
 # the ~9s default suite stays agent-free (design/int/agent.md §6.4). All of
-# `src/agent/` is `#[cfg(feature = "agent")]`. Wave 3 adds the `rig-core`
-# optional dependency (the LLM client) under this feature; Wave 2 deliberately
-# does NOT — the feature gates the module seam + classifier arm only.
-agent = []
+# `src/agent/` is `#[cfg(feature = "agent")]`. The `agent` feature pulls in the
+# `rig-core` LLM client (`rig::completion::CompletionModel` is the
+# provider-agnostic boundary, R3-amended) and a current-thread `tokio` runtime
+# (rig's completion methods are async; `agent_turn` is synchronous to the user's
+# Enter, so it `block_on`s a current-thread runtime).
+agent = ["dep:rig-core", "dep:tokio", "dep:serde_json"]
+
+# Sprint 88 Phase 5 Wave 3: the embedded-agent LLM client, optional + gated by
+# the `agent` feature (above). `default-features = false` drops rig's default
+# derive/reqwest/rustls bundle; we opt back in only the transport the HTTP
+# providers need — `reqwest` (the HTTP client the Anthropic + Ollama providers
+# use) + `native-tls` (TLS via the system OpenSSL). Providers are NOT
+# individually feature-gated in rig-core 0.39.0 (they live under
+# `rig::providers::*` and are always compiled once `rig-core` is a dep —
+# design/int/agent.md §6.4 verification note); `reqwest`+`native-tls` is the
+# smallest set that compiles the completion API + the anthropic/ollama providers
+# (verified against 0.39.0). native-tls is chosen over rustls deliberately: the
+# rustls path pulls `aws-lc-rs` (a heavy C TLS backend requiring a C toolchain
+# and ~30 MB of build artifacts), whereas native-tls links the system OpenSSL —
+# a far lighter agent-feature footprint with no extra C build.
+[dependencies.rig-core]
+version = "0.39.0"
+optional = true
+default-features = false
+features = ["reqwest", "native-tls"]
+
+# rig's `CompletionModel::completion` is async; `agent_turn` is synchronous to
+# the user's Enter (it holds the REPL-cadence `&mut CompilerSession` on the eval
+# thread). A current-thread tokio runtime lets `agent_turn` `block_on` a single
+# completion call without spawning threads. `rt` + `macros` is the minimal set;
+# no multi-thread runtime is needed (one blocking call per loop iteration).
+[dependencies.tokio]
+version = "1"
+optional = true
+features = ["rt", "macros"]
+
+# Agent-only: build the rig tool-definition JSON schema + decode tool-call
+# arguments (`src/agent/request.rs`). `serde_json` is already a transitive dep
+# (through `toml` / rig); declared optional + gated by the `agent` feature so the
+# default build's dependency surface is unchanged.
+[dependencies.serde_json]
+version = "1"
+optional = true
 
 [[bin]]
 name = "cranelisp"

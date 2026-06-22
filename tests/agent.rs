@@ -473,3 +473,151 @@ fn agent_on_ask_forces_agent_for_bare_word() {
         out.stdout
     );
 }
+
+// ---------------------------------------------------------------------------
+// Lane A — stub-driven e2e (the §1.1(a) stub-provider-by-config mechanism).
+// CRANELISP_AGENT_PROVIDER=stub selects a deterministic `AgentModel` built from
+// a scripted-response fixture; the test writes the script, drives the real
+// binary via the REPL, and asserts the rendered transcript. This tests the REAL
+// dispatch / request-assembly / pull wiring in the real binary, with zero
+// network. Script DSL (one scripted turn-response per line):
+//   tool: <name> <argument>   → a ToolCalls response (synthesized REPL command)
+//   done: <prose>             → a terminal Done(prose) response
+// ---------------------------------------------------------------------------
+
+/// Build a stub-driven agent REPL: write `script` to a fixture in the tmpdir and
+/// wire `CRANELISP_AGENT_PROVIDER=stub` + the script path. The model-id is unused
+/// by the stub but a provider must be selected.
+#[cfg(feature = "agent")]
+fn stub_repl(script: &str, prelude: PreludeVariant, stdin: &str) -> helpers::e2e::CrOutput {
+    let cl = Cranelisp::new().repl().with_prelude(prelude).cli_flag("--agent");
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(&script_path, script).unwrap();
+    cl.env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        .stdin(stdin)
+        .output()
+}
+
+// spec: repl/spec.md §17.2 — pull-as-visible-command: the stub asks for a read
+// command (`/source foo`); the agent synthesizes it, runs it through the SAME
+// process_commands path a keystroke uses, renders it as-if-typed, feeds the
+// result back, then answers. The transcript shows the command line + the answer.
+#[cfg(feature = "agent")]
+#[test]
+fn stub_pull_renders_as_visible_command() {
+    let out = stub_repl(
+        "tool: source target\n\
+         done: that is the source of target\n",
+        PreludeVariant::PrimitivesOnly,
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask show me target\n",
+    );
+    // The synthesized read command appears in the transcript as if typed.
+    assert!(
+        out.stdout.contains("/source target"),
+        "the pulled command must render as-typed, stdout={}",
+        out.stdout
+    );
+    // The agent's terminal prose is framed.
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "the agent answer must be framed, stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("that is the source of target"),
+        "the agent prose must render, stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.3 — +neg: a write/non-read tool-call is REFUSED by the
+// read-only allowlist. The stub attempts `/sh`; the agent renders a refusal and
+// nothing is executed (the consent boundary in read-only Advise mode).
+#[cfg(feature = "agent")]
+#[test]
+fn stub_write_tool_call_is_refused() {
+    let out = stub_repl(
+        "tool: sh echo pwned\n\
+         done: ok\n",
+        PreludeVariant::PrimitivesOnly,
+        "/ask run a shell command\n",
+    );
+    assert!(
+        out.stdout.contains("refused"),
+        "a write command must be refused, stdout={}",
+        out.stdout
+    );
+    // The shell command must NOT have run (its output must be absent).
+    assert!(
+        !out.stdout.contains("pwned"),
+        "the refused shell command must not execute, stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17 — acceptance (with the stub): `/ask` returns a grounded
+// answer + a proposed `(defn …)`. The proposal is SHOWN (framed), NOT submitted:
+// the session symbol table is unchanged — a subsequent reference to the proposed
+// name is still unbound. (Real-model grounding is Lane C, non-CI.)
+#[cfg(feature = "agent")]
+#[test]
+fn stub_proposed_defn_is_shown_not_submitted() {
+    let out = stub_repl(
+        "done: Here is how to define a constrained function over Num:\\n(defn double [a] (+ a a))\n",
+        PreludeVariant::PrimitivesOnly,
+        // After the /ask, reference the proposed name via a COMPOUND form so it
+        // routes to the deterministic REPL (a bare `double` would re-route to the
+        // agent as an unknown symbol). `(double 2)` reaches eval → unbound, which
+        // proves the proposed `(defn double …)` was never submitted.
+        "/ask how do I define a constrained function over Num?\n\
+         (double 2)\n",
+    );
+    // The proposal is shown in the agent frame.
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "the proposal must be framed, stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("constrained function over Num"),
+        "the grounded answer must render, stdout={}",
+        out.stdout
+    );
+    // +neg: the proposed `(defn double …)` was NOT submitted — `double` is still
+    // unbound when referenced afterwards (the read-only Advise contract).
+    assert!(
+        out.stdout.to_lowercase().contains("unbound")
+            || out.stdout.to_lowercase().contains("undefined")
+            || out.stdout.to_lowercase().contains("unknown"),
+        "the proposed defn must NOT be submitted (double stays unbound), stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.1 — with the agent feature ON but NO provider
+// configured/reachable, the agent is dormant and `/ask` says so (the U6
+// opt-in-twice "no provider" path). The notice is framed; no crash.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_on_no_provider_is_dormant() {
+    let out = Cranelisp::new()
+        .repl()
+        .cli_flag("--agent")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // Force the anthropic provider with no key → dormant.
+        .env("CRANELISP_AGENT_PROVIDER", "anthropic")
+        .stdin("/ask anything\n")
+        .output();
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "the dormant notice must be framed, stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.to_lowercase().contains("provider"),
+        "the dormant notice must mention the missing provider, stdout={}",
+        out.stdout
+    );
+}

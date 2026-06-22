@@ -115,7 +115,23 @@ impl CompilerSession {
             repl_input_active: std::sync::Arc::new(AtomicBool::new(false)),
             warnings: Vec::new(),
             entry_module,
+            // Agent starts unconfigured; `enable_agent` wires it in REPL mode
+            // when `--agent` is set + the `agent` feature is built (S88 W3).
+            #[cfg(feature = "agent")]
+            agent: None,
         }
+    }
+
+    /// Enable the embedded agent for this (REPL) session (Sprint 88 Phase 5
+    /// Wave 3). Threads the resolved `--agent` runtime toggle (`main.rs` S1
+    /// `_agent_enabled`) into the agent state: selects + constructs the runtime
+    /// provider (anthropic / ollama / stub by config — `agent.md §6.3/§6.4`),
+    /// or leaves the agent dormant when no provider is reachable. The agent is
+    /// REPL-only, so this is called from `main.rs`'s REPL arm only. Idempotent
+    /// is not required (called once at startup).
+    #[cfg(feature = "agent")]
+    pub fn enable_agent(&mut self, enabled: bool) {
+        self.agent = Some(crate::agent::provider::build_agent_state(enabled));
     }
 
     /// `new` phase (S87 §3.2): build the on-disk `ObjectCache` facade.

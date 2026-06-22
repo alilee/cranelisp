@@ -431,6 +431,16 @@ pub struct CompilerSession {
     /// `pub(crate)` (FIXME 0109 Wave D) — reached by relocated `eval.rs` /
     /// `repl.rs` methods (module-scoped field privacy).
     pub(crate) entry_module: ModuleFullPath,
+
+    /// The embedded agent's state (Sprint 88 Phase 5 Wave 3 — Advisor MVP core).
+    /// `#[cfg(feature="agent")]`-gated so feature-off the field does NOT exist
+    /// and the binary is byte-identical to today (`design/int/agent.md §3.4`).
+    /// `None` until the session is built with the agent enabled (`--agent` +
+    /// the `agent` feature); when present it carries the conversation transcript
+    /// + the provider model handle (or dormancy). The session adds ONE optional
+    /// field, lazily wired — not a parallel state machine (int.md §4).
+    #[cfg(feature = "agent")]
+    pub(crate) agent: Option<crate::agent::types::AgentState>,
 }
 
 impl CompilerSession {

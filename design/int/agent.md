@@ -82,9 +82,9 @@ Quality attributes touched: **Simplicity** (Principle 6 — the agent adds no ne
 state-management complexity; it consumes existing surfaces), **Maintainability** (the
 feature-gate cuts give bounded blast radius — feature-off is provably today's REPL),
 **Observability** (telemetry skeleton §8 [R5]; pull-as-visible-commands makes every
-agent action a transcript line), **Testability** (Principle 5 — `rig-core`'s
-`CompletionModel` is a trait §6, so the agent loop can be driven against a stub
-`CompletionModel` impl with zero network).
+agent action a transcript line), **Testability** (Principle 5 — `agent_turn` dispatches
+through the object-safe `AgentModel` membrane §6, so the agent loop can be driven against a
+stub `AgentModel` impl with zero network).
 
 ---
 
@@ -257,8 +257,10 @@ in `lib.rs` as `#[cfg(feature = "agent")] pub(crate) mod agent;`. Suggested inte
 | File | Responsibility |
 |---|---|
 | `agent/mod.rs` | `impl CompilerSession { pub(crate) fn agent_turn(&mut self, text, stdout); fn classify_for_agent(&self, input) -> Classify; }` — the loop + classifier entry. |
-| `agent/provider.rs` | Runtime provider selection (§6.4) — builds a `rig`-backed `CompletionModel` for the configured provider (Anthropic default / Ollama local), reads model-id + key/endpoint from runtime config, and reports dormancy. NO owned LLM-protocol code: rig owns the wire. |
-| `agent/request.rs` | Translation between the agent's neutral turn vocabulary (primer/harvest/transcript/tool-defs, §3.3/§6.1) and rig's `CompletionRequest` + `Message`/tool-call types. The one place coupled to rig's request/response shapes. |
+| `agent/types.rs` | The provider-neutral turn vocabulary (`AgentRequest`/`ModelResponse`/`Turn`/`ToolDef`/`ToolCallRequest`/`ToolCallResult`) + the object-safe **`AgentModel`** membrane trait (§6.0) + `AgentState`. No rig type crosses this surface. |
+| `agent/provider.rs` | Runtime provider selection (§6.4) — builds a `rig`-backed `AgentModel` (the `RigModel<M: CompletionModel>` membrane impl) for the configured provider (Anthropic default / Ollama local / stub), reads model-id + key/endpoint from runtime config, reports dormancy, and hosts the current-thread tokio `block_on` bridge. The ONE place holding a concrete rig `CompletionModel`. NO owned LLM-protocol code: rig owns the wire. |
+| `agent/request.rs` | Translation between the agent's neutral turn vocabulary (primer/harvest/transcript/tool-defs, §3.3/§6.1) and rig's `CompletionRequest` + `Message`/tool-call types (via `serde_json` for the tool schema/args). The one place coupled to rig's request/response shapes. |
+| `agent/stub.rs` | The deterministic test `AgentModel` (§6.0, §11) — a scripted-response model + an assertable capture of every `AgentRequest`. Implements `AgentModel`, the membrane, NOT rig's trait — the zero-network testability seam. |
 | `agent/harvest.rs` | The harvester + relevance ranker (§5) — push-context assembly under token budget. |
 | `agent/primer.rs` | The always-on language primer (§7) — a curated `const`/`include_str!` block + few-shot idioms. |
 | `agent/pull.rs` | Pull-as-visible-commands (§4) — synthesize a REPL command string, run through `process_commands`, render as-typed. |
@@ -276,7 +278,9 @@ agent_turn(text):
   if no provider reachable (dormant) -> print U6 dormant notice, return    (§2.3, §6.4)
   req = assemble_request(text)                                              (§3.3)
   loop:
-    resp = self.model.completion(req).await?  // rig CompletionModel; streamed; tool-calls surface here (§6)
+    resp = self.model.complete(&req)?         // AgentModel membrane (§6.0); the rig-backed impl
+                                              //   block_on's rig's async CompletionModel one layer below;
+                                              //   tool-calls surface here as ModelResponse::ToolCalls (§6)
     render agent prose in the reserved frame (style.rs, §3.5)
     match resp:
       Done(prose)                    -> render, break
@@ -337,9 +341,14 @@ feature-off carries zero bytes):
 pub(crate) agent: Option<crate::agent::AgentState>,   // None until first /ask or agent route
 ```
 
-`AgentState` = `{ transcript: Vec<Turn>, model: Box<dyn rig::completion::CompletionModel>,
-telemetry: Telemetry }` (the `model` is the rig-backed completion handle built by
-`agent/provider.rs` for the configured provider — §6).
+`AgentState` = `{ transcript: Vec<Turn>, model: Option<Box<dyn AgentModel>>,
+provider_label: String }` (the `model` is the object-safe **`AgentModel`** membrane handle
+built by `agent/provider.rs` for the configured provider — §6; `None` ⇒ dormant). It is
+**`Box<dyn AgentModel>`, NOT `Box<dyn rig::completion::CompletionModel>`** — rig's
+`CompletionModel` is dyn-incompatible (associated types + a `Clone` bound + async methods),
+so a `Box<dyn CompletionModel>` does not compile; `AgentModel` is the one-method object-safe
+trait the stub and each rig-backed provider implement, with rig's `CompletionModel` the wire
+boundary one layer below inside `provider.rs` (§6.1). See §6.0 for the full membrane rationale.
 This is the **per-symbol-mutability / windowed-state discipline** (int.md §4) applied: the
 agent adds ONE optional field, lazily constructed, not a parallel state machine. It is NOT
 serialized (the MVP has no cross-session agent memory — the §3.2/§4.6 "memory is the
@@ -454,29 +463,60 @@ user's cursor context. The budget number is a runtime config knob (§6.4), not a
 
 ---
 
-## 6. LLM completion layer — `rig-core`'s `CompletionModel`, used directly (R3-amended — BINDING)
+## 6. LLM completion layer — rig's `CompletionModel` behind a one-method `AgentModel` membrane (R3-amended — BINDING)
 
-### 6.0 The decision (R3-amended, user 2026-06-21)
+### 6.0 The decision (R3-amended, user 2026-06-21; membrane deviation accepted 2026-06-22)
 
 R3's **intent** — a provider-agnostic boundary so `agent_turn` survives a local-model /
 alternate-provider backend untouched — stands and is binding. Its **mechanism changed by
 user direction (2026-06-21; `sprints/SPRINT.md` §"Architecture review" R3-amended):**
 
-- **The boundary is `rig-core`'s `CompletionModel` trait, consumed directly.** We do NOT
-  define a project-owned `LlmBackend` trait, and there is **no `agent/anthropic.rs`
-  hand-rolled provider impl**. rig's `CompletionModel` (verified path:
-  **`rig::completion::CompletionModel`** — docs.rs/rig-core 0.39.0, the low-level
-  completion interface every rig provider implements) **IS** the provider-agnostic boundary
-  R3 required. `agent_turn` calls it directly (§3.2). The user chose this leaner
-  no-adapter option over an owned wrapper trait.
+- **rig's `CompletionModel` is the provider WIRE boundary; a one-method object-safe
+  `AgentModel` membrane is what `agent_turn` actually dispatches through.** We do NOT define
+  a project-owned `LlmBackend` *adapter* trait (no protocol re-implementation, no
+  `agent/anthropic.rs` hand-rolled provider), and rig's `CompletionModel` (verified path:
+  **`rig_core::completion::CompletionModel`** — the lib name is `rig_core`, not `rig`;
+  docs.rs/rig-core 0.39.0, the low-level completion interface every rig provider implements)
+  **IS** the provider-agnostic wire boundary R3 required, consumed in `provider.rs`/`request.rs`.
+
+  **Object-safety deviation (as-built, accepted by user 2026-06-22; FIXME 0427 resolved).**
+  The original §6 mechanism named `agent_turn` holding `Box<dyn rig::completion::CompletionModel>`
+  directly. **That does not compile.** rig's `CompletionModel` is **dyn-incompatible**: it
+  carries associated types (`Response`, `StreamingResponse`, `Client`), a `Clone` supertrait
+  bound, and async methods (`-> impl Future`: `completion`, `stream`). Any one of those makes
+  a trait non-`dyn`-compatible; this trait has all three — `Box<dyn CompletionModel>` is
+  rejected by the compiler. The as-built therefore introduces a **minimal one-method
+  object-safe membrane** in `agent/types.rs`:
+
+  ```rust
+  pub trait AgentModel: Send {
+      fn complete(&mut self, request: &AgentRequest) -> Result<ModelResponse, String>;
+  }
+  ```
+
+  `AgentState.model` is `Option<Box<dyn AgentModel>>`. The stub and each rig-backed provider
+  implement `AgentModel`; the rig-backed impl (`RigModel<M: CompletionModel>` in `provider.rs`)
+  holds the concrete rig `CompletionModel` and `block_on`s its async `completion` internally,
+  speaking only the neutral vocabulary (§3.3) across the boundary. **This is NOT a new adapter
+  layer in the R3-rejected sense** — it re-implements no protocol, owns no wire detail (rig
+  still owns all of that one layer below). It is the **structural consequence of
+  dyn-incompatibility plus the requirement for runtime provider selection** (a `Box<dyn …>` is
+  needed to hold "anthropic OR ollama OR stub, chosen at session construction" — §6.3) **plus
+  the stub plug-in point** (§11 / `tests/plan/agent-testing-strategy.md`). The membrane *is*
+  the testability seam: the stub implements `AgentModel`, so the whole agent loop runs against
+  a deterministic canned model with zero network (Principle 5 — testability is structural).
+  rig's `CompletionModel` membrane was always §6.1's named coupling point; the only change is
+  that the dispatch shim over it is the project-owned object-safe `AgentModel`, not `dyn
+  CompletionModel`. **A future reader MUST NOT "simplify" this back to
+  `Box<dyn rig::CompletionModel>` — it will not compile.**
 - **rig is used as the provider / completion layer ONLY — explicitly NOT rig's `Agent`
-  struct, RAG, or tool-orchestration framework.** rig ships a higher-level `rig::agent::Agent`
+  struct, RAG, or tool-orchestration framework.** rig ships a higher-level `rig_core::agent::Agent`
   with its own tool registry, RAG context injection, and turn loop. We do **not** use it:
   it would collide head-on with our own `agent_turn` loop (§3.2), our harvester (§5), our
   **pull-as-visible-commands** mechanism (§4), and the keystone principle that **the agent
   has no private tools — its entire capability surface IS the REPL command set** (§4.4).
   We consume rig at the `CompletionModel`/`CompletionRequest` seam and own everything above
-  it. *A future reader must not reach for `rig::agent::Agent` — that is a deliberate
+  it. *A future reader must not reach for `rig_core::agent::Agent` — that is a deliberate
   exclusion, not an omission.*
 
 The discriminator (Principle 8 — no interim implementations) is unchanged: *will the loop
@@ -487,10 +527,13 @@ construction-time choice (§6.4), not an `agent_turn` edit.
 
 ### 6.1 What `agent_turn` speaks
 
-`agent_turn`'s loop (§3.2) holds a `Box<dyn rig::completion::CompletionModel>` (the
-`model` field on `AgentState`, §3.4) and calls its completion method directly, passing a
-rig `CompletionRequest` built by `agent/request.rs` from the agent's neutral turn
-vocabulary (§3.3):
+`agent_turn`'s loop (§3.2) holds a `Box<dyn AgentModel>` (the object-safe membrane, §6.0;
+the `model` field on `AgentState`, §3.4) and calls its one method `complete(&AgentRequest)`,
+passing the agent's neutral turn vocabulary (§3.3). One layer below, inside the rig-backed
+`AgentModel` impl (`RigModel` in `provider.rs`), `agent/request.rs` translates that neutral
+request into a rig `CompletionRequest` and `block_on`s rig's async `completion` —
+`rig_core::completion::CompletionModel` is the wire boundary there (NOT `agent_turn`'s
+dispatch type; rig's trait is dyn-incompatible, §6.0). The neutral→rig field mapping:
 
 - **System primer** (§7) → the request's preamble / system content.
 - **Harvested context** (§5) + **spec excerpts** `[R5]` (§7.2) → additional system/context
@@ -501,9 +544,11 @@ vocabulary (§3.3):
 
 The single coupling point is `agent/request.rs` (§3.1): the translation between the agent's
 neutral vocabulary and rig's `CompletionRequest` / `Message` / tool-call types. The agent's
-own `Turn` / `ToolDef` / `ToolCallRequest` / `ToolCallResult` types remain provider-neutral
-(unchanged from the prior design's vocabulary) so the harvester, primer, pull, and transcript
-machinery never see a rig type; `request.rs` is the membrane.
+own `AgentRequest` / `ModelResponse` / `Turn` / `ToolDef` / `ToolCallRequest` /
+`ToolCallResult` types remain provider-neutral (the vocabulary `AgentModel::complete` speaks)
+so the harvester, primer, pull, and transcript machinery — and `agent_turn` itself — never see
+a rig type; `request.rs` is the rig-coupling membrane and the `AgentModel` trait is the
+object-safe dispatch shim above it.
 
 ### 6.2 Streaming + tool-use come from rig's completion layer
 
@@ -523,15 +568,17 @@ block shapes — rig owns all provider wire detail. (This is the coupling tradeo
 
 ### 6.3 Provider selection — Anthropic default, Ollama local (multi-provider, U6 hatch)
 
-`agent/provider.rs` (§3.1) builds the `CompletionModel` for the **runtime-configured**
-provider. Selection is runtime config, not a compile choice:
+`agent/provider.rs` (§3.1) builds the rig `CompletionModel` for the **runtime-configured**
+provider, wraps it in a `RigModel<M>` (the rig-backed `AgentModel` impl, §6.0), and boxes it
+as the `Box<dyn AgentModel>` membrane handle. Selection is runtime config
+(`CRANELISP_AGENT_PROVIDER`), not a compile choice:
 
-- **Anthropic = the default provider.** Built from `rig::providers::anthropic` (verified
-  module path), with the **model-id taken from runtime config** (not hardcoded — per the
-  `claude-api`/`/anthropic` discipline, the concrete current model-id is a Phase-5 config
-  value looked up against live Anthropic docs, never baked from memory). Requires an API key
-  → contributes to opt-in-twice (§6.4).
-- **Ollama = the local / offline escape hatch.** Built from `rig::providers::ollama`
+- **Anthropic = the default provider.** Built from `rig_core::providers::anthropic` (verified
+  module path; the lib name is `rig_core`), with the **model-id taken from runtime config**
+  (not hardcoded — per the `claude-api`/`/anthropic` discipline, the concrete current model-id
+  is a Phase-5 config value looked up against live Anthropic docs, never baked from memory).
+  Requires an API key → contributes to opt-in-twice (§6.4).
+- **Ollama = the local / offline escape hatch.** Built from `rig_core::providers::ollama`
   (verified module path) against a **local endpoint with no API key**. This is what delivers
   the **U6 privacy escape hatch** *and* the `repl-embedded-agent.md §9` Phase-3
   **local-model goal — now**, in the MVP, because rig already implements `CompletionModel`
@@ -545,36 +592,53 @@ the §6.4 opt-in-twice surface). Adding a third rig provider later (OpenAI, Groq
 ### 6.4 Dependency discipline + feature gate + opt-in-twice (U6)
 
 ```toml
-# Cargo.toml (the cranelisp binary crate)
+# Cargo.toml (the cranelisp binary crate) — AS-BUILT (Wave 3, accepted 2026-06-22)
 [dependencies.rig-core]
-version = "…"                    # Phase-5 pin; 0.39.0 is current at design time
-default-features = false         # drop rig's default derive/reqwest/rustls bundle; opt back in
-                                 # ONLY what the Anthropic + Ollama providers + completion API need
-                                 # (the exact minimal feature set is a Phase-5 lookup — see note)
-features = [ /* minimal: the TLS/http transport the two providers require */ ]
+version = "0.39.0"               # the Phase-5 pin
+default-features = false         # drop rig's default derive/reqwest/rustls bundle
+features = ["reqwest", "native-tls"]  # the smallest set that compiles the completion API
+                                 #   + the anthropic/ollama providers; native-tls NOT rustls
+optional = true
+
+[dependencies.tokio]
+version = "…"                    # current-thread runtime only — `agent_turn` block_on bridge
+default-features = false
+features = ["rt", "macros"]
+optional = true
+
+[dependencies.serde_json]        # tool schema + tool-call argument (de)serialization
+version = "…"
 optional = true
 
 [features]
-agent = ["dep:rig-core"]         # OFF by default — in NO default feature set
+agent = ["dep:rig-core", "dep:tokio", "dep:serde_json"]  # OFF by default — in NO default set
 ```
 
-- **`rig-core` is `optional = true`, enabled ONLY by the `agent` Cargo feature**, which is
-  in **no crate's `default`**, enabled by no dev-dependency. `cargo build` / `cargo nextest
-  run` therefore **never compile rig** → the default build + ~9s suite stay agent-free
-  (`repl-embedded-agent.md §7.2`; mirrors `design/arch/release-llvm-backend.md §5`). All of
-  `src/agent/` is `#[cfg(feature="agent")]`. Agent tests run in a separate
+- **`rig-core` (+ `tokio` + `serde_json`) are `optional = true`, enabled ONLY by the `agent`
+  Cargo feature**, which is in **no crate's `default`**, enabled by no dev-dependency. `cargo
+  build` / `cargo nextest run` therefore **never compile rig** → the default build + ~9s suite
+  stay agent-free (`repl-embedded-agent.md §7.2`; mirrors `design/arch/release-llvm-backend.md
+  §5`). All of `src/agent/` is `#[cfg(feature="agent")]`. Agent tests run in a separate
   `#[cfg(feature="agent")]` lane (`tests/agent.rs`, per the `/qa` Step-3.1 plan).
-- **`default-features = false`** — rig's default features (in 0.39.0: `derive`, `reqwest`,
-  `rustls`) are dropped; we opt back in only the transport features the two providers need.
-  **Verification note (corrects the SPRINT R3 wording):** in current `rig-core` (0.39.0),
-  **providers are compiled into the core crate and are NOT individually feature-gated** —
-  there is no `anthropic` or `ollama` Cargo feature to enable (they live under
-  `rig::providers::{anthropic,ollama}` and are always present once `rig-core` is a dep).
-  The SPRINT R3 phrasing "`+ only the anthropic + ollama providers`" should be read as
-  *intent* (compile only what those two providers need, via `default-features = false` + a
-  minimal opt-in), not as literal provider feature flags. **The exact minimal `features`
-  list is a Phase-5 lookup against the pinned rig-core version's `Cargo.toml`** — do not
-  hardcode it here. If a later rig version does gate providers, enable exactly the two.
+- **`features = ["reqwest", "native-tls"]` (as-built) — native-tls, deliberately NOT rustls.**
+  rig's defaults (in 0.39.0: `derive`, `reqwest`, `rustls`) are dropped; the as-built opts back
+  in `reqwest` + `native-tls` — the smallest set that compiles the completion API and the
+  anthropic + ollama providers. **The rustls path was rejected:** it pulls `aws-lc-rs` (a heavy
+  C TLS backend, ~30 MB of build artifacts + a C toolchain), which is prohibitive on the
+  disk-tight VM (`memory/linux-vm-baseline.md`); `native-tls` links the system OpenSSL instead —
+  a far lighter agent footprint. **Provider feature note (corrects the SPRINT R3 wording):** in
+  `rig-core` 0.39.0 **providers are compiled into the core crate and are NOT individually
+  feature-gated** — there is no `anthropic`/`ollama` Cargo feature (they live under
+  `rig_core::providers::{anthropic,ollama}`, always present once `rig-core` is a dep). The SPRINT
+  R3 phrasing "`+ only the anthropic + ollama providers`" reads as *intent* (compile only what
+  those two need), not literal flags. If a later rig version gates providers, enable exactly the two.
+- **`tokio` is a current-thread runtime only** (`rt` + `macros`) — `agent_turn` runs
+  synchronous to the user's Enter, and the rig-backed `AgentModel::complete` (`RigModel`,
+  §6.0) `block_on`s ONE async rig `completion` per loop step on a
+  `Builder::new_current_thread()` runtime (no multi-thread executor, no spawned thread). This
+  is the sync↔async bridge the membrane hides from `agent_turn`.
+- **`serde_json`** carries the tool-definition schema and the tool-call argument
+  (de)serialization at the `request.rs` membrane.
 - **Opt-in twice (U6) — unchanged:** compiled-in (the `agent` flag) AND a runtime provider
   configured *and reachable* (Anthropic key present, OR a reachable local Ollama endpoint).
   Absent any reachable provider the agent is **dormant** and `/ask` says so, naming the
@@ -585,18 +649,25 @@ agent = ["dep:rig-core"]         # OFF by default — in NO default feature set
 
 ### 6.5 Coupling tradeoff (accepted)
 
-`agent_turn` and `agent/request.rs` are now **coupled to rig's API surface** — rig's
+`agent/request.rs` + `agent/provider.rs` are **coupled to rig's API surface** — rig's
 `CompletionModel` method shape, its `CompletionRequest` / `Message` / streaming-chunk /
-tool-call types. **Dropping rig later would touch the loop** (`agent_turn`) and the request
-membrane (`request.rs`), not just one isolated impl file. This is the **accepted cost of the
-leaner no-adapter choice** (user direction): we trade the prior design's owned `LlmBackend`
-insulation layer — which would have localized any provider-library swap to one impl — for
-not building and maintaining that adapter at all, and for getting ~20 providers (incl. local
-Ollama) for free *today*. The blast radius of a hypothetical future rig replacement is
-bounded to `agent_turn` + `request.rs` + `provider.rs` (all `#[cfg(feature="agent")]`,
-int-private) — never a cross-crate edge, never a facade. Recorded per Principle 6
-(complexity has a budget): the cost is real and named; the benefit (no adapter, multi-provider
-+ local now) was judged worth it.
+tool-call types. The `AgentModel` membrane (§6.0) means `agent_turn` *itself* is **not**
+coupled to a rig type (it dispatches through `Box<dyn AgentModel>` over the neutral
+`AgentRequest`/`ModelResponse` vocabulary) — the rig coupling is confined to the two
+membrane-implementing files. **Dropping rig later would touch the request membrane
+(`request.rs`) and the rig-backed `AgentModel` impl (`provider.rs`)** — not `agent_turn`, and
+not one isolated provider file per provider. This is the **accepted cost of the leaner
+no-adapter choice** (user direction): we trade the prior design's owned `LlmBackend`
+*protocol-adapter* layer — which would have re-implemented the wire — for not building and
+maintaining that at all, and for getting ~20 providers (incl. local Ollama) for free *today*.
+The `AgentModel` membrane is the small structural price the dyn-incompatibility of rig's trait
+(§6.0) plus runtime provider selection plus the stub seam exact — it is a one-method dispatch
+shim, NOT a protocol re-implementation, so it does not reintroduce the rejected adapter cost.
+The blast radius of a hypothetical future rig replacement is bounded to `request.rs` +
+`provider.rs` (and never `agent_turn`), all `#[cfg(feature="agent")]`, int-private — never a
+cross-crate edge, never a facade. Recorded per Principle 6 (complexity has a budget): the cost
+is real and named; the benefit (no protocol adapter, multi-provider + local now, plus a clean
+zero-network testability seam at the membrane) was judged worth it.
 
 ---
 
@@ -710,8 +781,8 @@ default lane (the Step-3.1 plan notes default-lane LLM-free coverage). The `/hel
    impls / numeric fns mentioned, exports of a `num`-ish module if present) + the user turn.
    `[R5]` if spec-grep is in: `/spec Num constrained` excerpt; if trailed, the primer
    carries enough.
-3. `model.completion` (rig `CompletionModel`, §6) → the model may pull `/info Num` or
-   `/sig some-numeric-fn` (§4) — each
+3. `model.complete` (the `AgentModel` membrane over rig's `CompletionModel`, §6) → the model
+   may pull `/info Num` or `/sig some-numeric-fn` (§4) — each
    renders as a visible REPL line and feeds back. (Pulls warm the push — §4.1.)
 4. The model returns prose + a proposed `(defn …)` over `Num`. The agent renders the prose
    in its frame (§3.5) and the `(defn …)` **as a proposal — SHOWN, not submitted** (§3.2,
@@ -731,12 +802,15 @@ optional.
   `/ask` → "agent not built in" and the `Err(other)` / unbound-bare-symbol paths are
   today's diagnostics (byte-identical guard — the whole `agent` module, incl.
   `classify_for_agent`, is `#[cfg]`-gated away).
-- **`agent_turn` against a stub `CompletionModel`** — because the boundary is rig's
-  `CompletionModel` *trait* (§6), the loop is tested by implementing it with a stub that
-  returns a canned response (no network): assert a tool-call response synthesizes the right
-  command, runs it through `process_commands`, and feeds the result back; assert a
-  write-command synthesis is refused (allowlist §4.2). (The stub impls the same rig trait the
-  real providers do — no project-owned trait to mock.)
+- **`agent_turn` against a stub `AgentModel`** — because `agent_turn` dispatches through the
+  object-safe **`AgentModel`** membrane (§6.0, §6.1), the loop is tested by implementing
+  *that one-method trait* with a stub that returns a canned `ModelResponse` (no network, no
+  rig): assert a tool-call response synthesizes the right command, runs it through
+  `process_commands`, and feeds the result back; assert a write-command synthesis is refused
+  (allowlist §4.2). (The stub impls `AgentModel` — the project-owned object-safe membrane —
+  NOT rig's `CompletionModel` directly; rig's trait is dyn-incompatible and sits one layer
+  below in the rig-backed impl. The stub captures every `AgentRequest` so a unit test can also
+  assert WHAT the agent sent — primer present, harvest slice correct, tools = the allowlist.)
 - **Harvest** — assert the push map under a tiny budget degrades per the §5.4 ladder
   (current-module pinned at the floor).
 - **`/refs` / `/tests-for`** — default-lane, LLM-free: define fns referencing a symbol,
@@ -788,7 +862,7 @@ pass; `/sprint` schedules):
   U6 disclosure wording) against this mechanism.
 - `/dev` (int, narrow) — implement against this design once `/qa`'s failing tests land
   (Phase 5). Source-touching steps serialize (broken worktree isolation).
-- `/qa` — draft the failing tests (classifier routing, stub-`CompletionModel` loop, harvest
+- `/qa` — draft the failing tests (classifier routing, stub-`AgentModel` loop, harvest
   ladder, reverse-query scan) per §11.
 - `/arch` — only if the `rig-core` dep wants a workspace-dep declaration, or if a
   cross-crate seam surfaces during implementation (none anticipated).

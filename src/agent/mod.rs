@@ -1,21 +1,39 @@
-// Embedded agent — int-side module seam (Sprint 88 Phase 5, Wave 2 foundations).
+// Embedded agent — int-side module (Sprint 88 Phase 5, Wave 3 — Advisor MVP core).
 //
-// `design/int/agent.md` §3.1. This module is entirely `#[cfg(feature = "agent")]`
+// `design/int/agent.md` §3. This module is entirely `#[cfg(feature = "agent")]`
 // (declared so in `lib.rs`), a sibling to `repl.rs` / `eval.rs` / `process_form.rs`
 // in int's session decomposition (`src/CLAUDE.md §"Session/REPL module
 // decomposition"`). Feature-off ⇒ this module does not exist and the binary is
 // byte-identical to today (`agent.md §1`, `repl/spec.md §17.1`).
 //
-// WAVE SCOPE. This wave delivers the *seam*, not the agent: the §5.3 dispatch
-// classifier entry point (`classify_for_agent`) and a minimal `agent_turn`
-// placeholder with the stable signature. The real loop (rig `CompletionModel`,
-// harvester, primer, pull-as-visible-commands) lands in Wave 3 — `agent.md §6`
-// is explicit that the `rig-core` dep is NOT added until then. Keeping the
-// signature + module seam stable now is the Wave-2 foundation.
+// WAVE 3 SCOPE (Advisor MVP core). The §5.3 dispatch classifier
+// (`classify_for_agent`, this file) routes prose/unknowns to the agent; the real
+// `agent_turn` model↔tool loop (this file) drives an `AgentModel` (the membrane
+// over rig's `CompletionModel`, R3-amended — `types.rs`/`provider.rs`/`request.rs`),
+// assembling the request from the always-on language primer (`primer.rs`) + the
+// harvested session context (`harvest.rs`) + the transcript, handling `Done(prose)`
+// (rendered in the agent frame) and `ToolCalls` (pull-as-visible-commands through
+// `process_commands`, read-only allowlist — `pull.rs`). Provider selection
+// (anthropic default / ollama local / stub) is runtime config (`provider.rs`);
+// absent a reachable provider the agent is dormant. DEFERRED to a later step:
+// spec-grep retrieval + the telemetry skeleton (the R5 release valve, §0).
+
+pub mod harvest;
+pub mod primer;
+pub mod provider;
+pub mod pull;
+pub mod request;
+pub mod stub;
+pub mod types;
 
 use std::io::Write;
 
+use crate::agent::types::{AgentRequest, ModelResponse};
 use crate::session_v4::CompilerSession;
+
+/// Cap on model↔tool loop iterations within one turn — a budget guard so a
+/// misbehaving model cannot spin forever pulling commands (§3.2 "budget guard").
+const MAX_TURN_ITERATIONS: usize = 8;
 
 /// The dispatch-classifier routing decision (`agent.md §2.2`,
 /// `repl/spec.md §17.1`). Computed one step earlier than evaluation, in the
@@ -153,18 +171,132 @@ impl CompilerSession {
             || self.lookup_with_prelude_fallback(name).is_some()
     }
 
-    /// Take one agent turn over the user's text (`agent.md §3.2`).
+    /// Take one agent turn over the user's text (`agent.md §3.2`) — the real
+    /// model↔tool loop (Wave 3 — Advisor MVP core).
     ///
-    /// WAVE-2 PLACEHOLDER. The real model↔tool loop (rig `CompletionModel`,
-    /// request assembly, harvest, pull-as-visible-commands, prose framing) is
-    /// Wave 3. This placeholder holds the stable signature (`&mut CompilerSession`
-    /// plus the user text plus the output sink) so the `agent` feature COMPILES
-    /// and the dispatch wiring (the `main.rs` read-loop arm and the `/ask` arm)
-    /// is real. It renders a single framed notice that the agent is unimplemented.
+    /// Synchronous to the user's Enter (it runs on the eval thread, holding the
+    /// REPL-cadence `&mut CompilerSession`). It is NOT a new state window — every
+    /// read goes through the existing introspection surface (the harvest) or
+    /// re-enters via `process_commands` (a pull), never a bespoke state view
+    /// (BC §6.3). The loop:
+    ///   1. If no provider is reachable (dormant), render the U6 notice + return.
+    ///   2. Assemble the request: primer + harvest + transcript + tools + turn.
+    ///   3. `model.complete(req)` → `Done(prose)` renders in the agent frame and
+    ///      breaks; `ToolCalls` runs each as a visible REPL command (read-only
+    ///      allowlist), feeds the results back, and loops.
+    ///
+    /// Read-only Advise mode: a proposed `(defn …)` arrives inside the prose and
+    /// is SHOWN (framed), never routed to `eval` — the agent has no write path
+    /// this wave (the allowlist excludes writes; §3.2, §4.2).
     pub fn agent_turn(&mut self, text: &str, stdout: &mut impl Write) {
-        let _ = text;
-        let body = "agent not yet implemented (Wave 3)";
-        let _ = write!(stdout, "{}", crate::style::agent_prose(body));
+        // The agent must be configured (enable_agent ran) AND have a reachable
+        // provider. Absent either, render the U6 dormant notice in the frame so
+        // the user sees WHY (`agent.md §2.3`, §6.4 opt-in-twice).
+        let dormant_label = match self.agent.as_ref() {
+            None => Some("agent not enabled (run with --agent)".to_string()),
+            Some(state) if state.is_dormant() => Some(format!(
+                "agent enabled but no provider reachable: {}. \
+                 Set a provider (Anthropic key + model, or a local Ollama) — \
+                 a turn transmits your message + harvested source excerpts to the provider.",
+                state.provider_label
+            )),
+            Some(_) => None,
+        };
+        if let Some(notice) = dormant_label {
+            let _ = write!(stdout, "{}", crate::style::agent_prose(&notice));
+            return;
+        }
+
+        // Record the user turn on the transcript before assembling (so the turn
+        // is part of the session memory even if the model errors).
+        if let Some(state) = self.agent.as_mut() {
+            state.record_user(text);
+        }
+
+        for _ in 0..MAX_TURN_ITERATIONS {
+            let req = self.assemble_request(text);
+
+            // Run the model. Take the handle out across the call so we can mutate
+            // `self` (for pulls) without aliasing the borrow.
+            let resp = match self.agent_complete(&req) {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = write!(
+                        stdout,
+                        "{}",
+                        crate::style::agent_prose(&format!("agent error: {e}"))
+                    );
+                    return;
+                }
+            };
+
+            match resp {
+                ModelResponse::Done(prose) => {
+                    let _ = write!(stdout, "{}", crate::style::agent_prose(&prose));
+                    if let Some(state) = self.agent.as_mut() {
+                        state.record_assistant(&prose);
+                    }
+                    return;
+                }
+                ModelResponse::ToolCalls(calls) => {
+                    // Each tool call IS a visible REPL command (§4 keystone). The
+                    // results are recorded onto the transcript — the next
+                    // `assemble_request` folds them back into context from there
+                    // (transcript-carried feedback is the only feedback path).
+                    for call in &calls {
+                        let result = self.run_pull(call, stdout);
+                        if let Some(state) = self.agent.as_mut() {
+                            state.record_tool_result(result);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Iteration budget exhausted without a terminal Done.
+        let _ = write!(
+            stdout,
+            "{}",
+            crate::style::agent_prose("agent stopped: too many tool steps without an answer")
+        );
+    }
+
+    /// Assemble the provider-neutral request for a turn (`agent.md §3.3`): the
+    /// always-on primer + the harvested session context + the transcript + the
+    /// read-only tool allowlist + the user turn. Tool results from prior loop
+    /// steps re-enter via the transcript (recorded by `record_tool_result`); there
+    /// is no separate feedback channel.
+    fn assemble_request(&self, text: &str) -> AgentRequest {
+        let mentions = crate::agent::harvest::mentions_from_text(text);
+        let harvest =
+            self.harvest_context(&mentions, crate::agent::harvest::DEFAULT_TOKEN_BUDGET);
+        let transcript = self
+            .agent
+            .as_ref()
+            .map(|s| s.transcript.clone())
+            .unwrap_or_default();
+        AgentRequest {
+            primer: crate::agent::primer::language_primer().to_string(),
+            harvest,
+            transcript,
+            tools: crate::agent::pull::tool_defs(),
+            user: text.to_string(),
+        }
+    }
+
+    /// Run one completion against the configured model. Split out so the borrow
+    /// of `self.agent` is confined here (the model handle is mutably borrowed for
+    /// the call; the surrounding loop mutates `self` for pulls separately).
+    fn agent_complete(&mut self, req: &AgentRequest) -> Result<ModelResponse, String> {
+        let state = self
+            .agent
+            .as_mut()
+            .ok_or_else(|| "agent not enabled".to_string())?;
+        let model = state
+            .model
+            .as_mut()
+            .ok_or_else(|| "agent dormant".to_string())?;
+        model.complete(req)
     }
 }
 
@@ -314,5 +446,253 @@ mod tests {
     fn unclosed_paren_routes_to_continuation() {
         let s = repl_session();
         assert_eq!(s.classify_for_agent("(add-i64 1"), Classify::Continuation);
+    }
+
+    // -----------------------------------------------------------------------
+    // Wave-3 request-assembly / harvest — the `/dev`-owned request-content unit
+    // tests (tests/plan/agent-testing-strategy.md §1.1(b), §3.2). These assert
+    // WHAT the agent sent (the request the stub captured): the primer is always
+    // present; the harvest carries the right slice; the transcript carries prior
+    // turns; the tools are exactly the read-only allowlist. They run unit-tier
+    // because the assembled `CompletionRequest` never surfaces through stdout.
+    // -----------------------------------------------------------------------
+
+    use crate::agent::stub::StubModel;
+    use crate::agent::types::{AgentState, ModelResponse};
+    use std::sync::{Arc, Mutex};
+
+    /// Build a REPL session whose agent is wired to a deterministic stub model
+    /// running `script`. Returns the session + the shared request-capture handle
+    /// (assert against the requests the stub received).
+    fn session_with_stub(
+        script: Vec<ModelResponse>,
+    ) -> (CompilerSession, Arc<Mutex<Vec<AgentRequest>>>) {
+        let mut s = repl_session();
+        let stub = StubModel::new(script);
+        let capture = stub.requests.clone();
+        s.agent = Some(AgentState {
+            transcript: Vec::new(),
+            model: Some(Box::new(stub)),
+            provider_label: "stub (test)".to_string(),
+        });
+        (s, capture)
+    }
+
+    /// Drive one turn over `text`, discarding rendered output.
+    fn drive(s: &mut CompilerSession, text: &str) {
+        let mut sink: Vec<u8> = Vec::new();
+        s.agent_turn(text, &mut sink);
+    }
+
+    // spec: repl/spec.md §17 — every request carries the always-on language
+    // primer (rung 2). The model is grounded in Cranelisp on every turn.
+    #[test]
+    fn request_always_carries_primer() {
+        let (mut s, capture) = session_with_stub(vec![ModelResponse::Done("hi".to_string())]);
+        drive(&mut s, "how do I define a function");
+        let reqs = capture.lock().unwrap();
+        assert_eq!(reqs.len(), 1, "one completion call for a Done turn");
+        assert!(
+            reqs[0].primer.contains(":Type"),
+            "primer must carry the :Type convention, got: {}",
+            &reqs[0].primer[..reqs[0].primer.len().min(80)]
+        );
+        assert!(reqs[0].primer.contains("deftype"), "primer must carry special forms");
+    }
+
+    // spec: repl/spec.md §17 — the read-only tool allowlist is offered every
+    // turn, and contains NO write/`/sh`/submit tools (+neg, the consent gate).
+    #[test]
+    fn request_tools_are_read_only_allowlist() {
+        let (mut s, capture) = session_with_stub(vec![ModelResponse::Done("ok".to_string())]);
+        drive(&mut s, "anything");
+        let reqs = capture.lock().unwrap();
+        let names: Vec<&str> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"source"), "source must be offered: {names:?}");
+        assert!(names.contains(&"refs"));
+        // +neg: no write tool leaks into the offered set.
+        assert!(!names.contains(&"sh"), "no /sh tool: {names:?}");
+        assert!(!names.contains(&"submit"));
+        assert!(!names.iter().any(|n| n.contains("def")), "no def/write tool: {names:?}");
+    }
+
+    // spec: repl/spec.md §17 — a fn NAMED in the turn is harvested (its source);
+    // a defined-but-UNMENTIONED fn is ABSENT (+neg, the ranker is selective, not
+    // a dump — agent.md §5.1). The harvester's mentioned-fn arm reads the live
+    // introspection source for a name that (a) appears in the turn AND (b) is
+    // mentionable (resolves in some table). We inject both: a slot-less table
+    // entry (so `symbol_is_mentionable` is true) + an introspection record (the
+    // source). `target` is mentioned; `unrelated` is not — so the +neg holds.
+    #[test]
+    fn harvest_includes_mentioned_excludes_unmentioned() {
+        let s = repl_session();
+        let module = s.current_module_path();
+        // Slot-less table entries so both names are "mentionable" (resolve).
+        {
+            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
+            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
+                for name in ["target", "unrelated"] {
+                    let entry = ModuleEntry::def(
+                        empty_scheme(),
+                        DefKind::PrimitiveExtern,
+                    )
+                    .visibility(Visibility::Public)
+                    .build();
+                    table.insert(Symbol::from(name), entry);
+                }
+            }
+        }
+        // Introspection sources (the bodies the mentioned-fn arm harvests).
+        if let Some(intr) = s.shared.introspection.as_ref() {
+            let mk = |name: &str, body: &str| {
+                (
+                    cranelisp_types::FQSymbol {
+                        module: module.clone(),
+                        symbol: cranelisp_types::Symbol::from(name),
+                    },
+                    crate::session_v4::Introspection {
+                        source: Some(body.to_string()),
+                        sexp: None,
+                        expanded: None,
+                        ast: None,
+                        clif_ir: None,
+                        code_size: None,
+                    },
+                )
+            };
+            let (k1, v1) = mk("target", "(defn target [x] (mul-by-two x))");
+            let (k2, v2) = mk("unrelated", "(defn unrelated [y] (negate-it y))");
+            intr.insert(k1, v1);
+            intr.insert(k2, v2);
+        }
+        // Mention only `target`.
+        let harvest = s.harvest_context(
+            &["target".to_string()],
+            crate::agent::harvest::DEFAULT_TOKEN_BUDGET,
+        );
+        assert!(harvest.contains("Current module"), "pin header present: {harvest}");
+        assert!(
+            harvest.contains("mul-by-two"),
+            "the mentioned fn `target` must be harvested: {harvest}"
+        );
+        // +neg: the unmentioned fn must NOT be pulled in by the mention arm.
+        assert!(
+            !harvest.contains("negate-it"),
+            "an unmentioned fn must be absent from the harvest: {harvest}"
+        );
+    }
+
+    /// A minimal empty scheme for slot-less test table entries (mirrors the
+    /// `expander.rs` test helper of the same name).
+    fn empty_scheme() -> cranelisp_types::Scheme {
+        cranelisp_types::Scheme {
+            type_vars: Vec::new(),
+            constraints: std::collections::HashMap::new(),
+            ty: cranelisp_types::Type::Int,
+        }
+    }
+
+    // spec: repl/spec.md §17 — under a TIGHT budget the harvest degrades per the
+    // §5.4 ladder: the current-module pin survives at the floor; the optional
+    // mentioned-module preamble/exports block drops out (+neg). Reads the
+    // `module_preamble` field (FIXME 0428) when the block is included.
+    #[test]
+    fn harvest_degrades_under_tight_budget_keeps_pin() {
+        let s = repl_session();
+        // Create a second module with a preamble + a public export, and "mention"
+        // it; under a tiny budget its block must drop while the pin survives.
+        let other = cranelisp_types::ModuleFullPath::from("geometry");
+        {
+            let mut table = crate::code::SessionSymbolTable::new_with_params(other.clone());
+            table.module_preamble = Some(";; geometry — points and shapes.".to_string());
+            s.shared.symbol_tables.insert(other.clone(), table);
+        }
+        // Tight budget: 1 token (~4 chars) — only the pin (always-included) fits.
+        let tight = s.harvest_context(&["geometry".to_string()], 1);
+        assert!(tight.contains("Current module"), "pin survives the floor: {tight}");
+        assert!(
+            !tight.contains("geometry preamble") && !tight.contains("geometry exports"),
+            "the mentioned-module block must drop under a 1-token budget: {tight}"
+        );
+        // Generous budget: the mentioned module's preamble + exports appear, and
+        // the preamble text is read from `module_preamble` (FIXME 0428).
+        let roomy = s.harvest_context(&["geometry".to_string()], 4000);
+        assert!(roomy.contains("geometry — points and shapes"),
+            "module_preamble must be read into the harvest: {roomy}");
+    }
+
+    // spec: repl/spec.md §17 — across a multi-step turn (ToolCalls then Done),
+    // the SECOND request carries the prior turn's tool result fed back into
+    // context (rung 4 result-re-enters-context, agent.md §4.1). Uses an
+    // allowlisted read command so the pull actually runs through process_commands.
+    #[test]
+    fn tool_result_re_enters_next_request() {
+        let (mut s, capture) = session_with_stub(vec![
+            // Turn 1: pull a read command, then…
+            ModelResponse::ToolCalls(vec![crate::agent::types::ToolCallRequest {
+                id: "c1".to_string(),
+                name: "list".to_string(),
+                argument: String::new(),
+            }]),
+            // Turn 2: answer.
+            ModelResponse::Done("done".to_string()),
+        ]);
+        drive(&mut s, "what is defined");
+        let reqs = capture.lock().unwrap();
+        assert_eq!(reqs.len(), 2, "a pull turn drives two completion calls");
+        // The second request's transcript must carry the tool-result turn fed
+        // back (the pulled `/list` and its output).
+        let has_tool_result = reqs[1]
+            .transcript
+            .iter()
+            .any(|t| matches!(t, crate::agent::types::Turn::ToolResult(_)));
+        assert!(has_tool_result, "turn-2 request must carry the fed-back tool result");
+        // And the original user turn is in the transcript too.
+        let has_user = reqs[1]
+            .transcript
+            .iter()
+            .any(|t| matches!(t, crate::agent::types::Turn::User(u) if u == "what is defined"));
+        assert!(has_user, "turn-2 request must carry the user turn");
+    }
+
+    // spec: repl/spec.md §17.3 — a write/non-read tool-call is REFUSED by the
+    // allowlist: nothing is executed, and the model gets a refusal back (+neg,
+    // the read-only Advise consent boundary). The turn still completes (Done).
+    #[test]
+    fn write_tool_call_is_refused() {
+        let (mut s, _capture) = session_with_stub(vec![
+            ModelResponse::ToolCalls(vec![crate::agent::types::ToolCallRequest {
+                id: "c1".to_string(),
+                name: "sh".to_string(),
+                argument: "rm -rf /".to_string(),
+            }]),
+            ModelResponse::Done("ok".to_string()),
+        ]);
+        let mut sink: Vec<u8> = Vec::new();
+        s.agent_turn("run a shell command", &mut sink);
+        let out = String::from_utf8_lossy(&sink);
+        assert!(out.contains("refused"), "a write must be refused: {out}");
+        // The refusal turn is recorded as a tool result with a refusal output.
+        let refused = s
+            .agent
+            .as_ref()
+            .unwrap()
+            .transcript
+            .iter()
+            .any(|t| matches!(t, crate::agent::types::Turn::ToolResult(r) if r.output.contains("refused")));
+        assert!(refused, "refusal must be fed back to the model");
+    }
+
+    // spec: repl/spec.md §17 — a dormant agent (no provider) renders the U6
+    // "no provider" notice in the agent frame and does NOT call any model.
+    #[test]
+    fn dormant_agent_renders_notice() {
+        let mut s = repl_session();
+        s.agent = Some(crate::agent::provider::build_agent_state(false));
+        let mut sink: Vec<u8> = Vec::new();
+        s.agent_turn("hello", &mut sink);
+        let out = String::from_utf8_lossy(&sink);
+        // The prose frame gutter must be present (rendered through agent_prose).
+        assert!(out.contains('\u{258c}'), "dormant notice must be framed: {out}");
     }
 }
