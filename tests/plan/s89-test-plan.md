@@ -113,28 +113,65 @@ code that passes. The validator stages → checks → **discards** the broken st
 commits), feeds the actual compiler error back to the model silently, and re-prompts; the
 second completion compiles and (on confirm) submits.
 
-| Test (behaviour) | Asserts |
-|---|---|
-| `agent_build_broken_then_fixed_repaired_silently` | the loop stages→checks→**discards** the turn-1 broken form, re-prompts, and the turn-2 clean form is the one that reaches the confirm gate + submits — only the clean form's `(defn …)` lands in the session |
-| `agent_build_only_clean_form_reaches_session` | after the loop, exactly the clean form is committed; the broken intermediate **never** committed (live state untouched on the discard — no staging leak) |
-| `agent_build_broken_intermediate_never_shown_neg` | **+neg (U5 silent contract):** the broken form text AND the compiler error are **absent** from the rendered transcript — "the user structurally cannot see an agent compile failure" (rendering happens only after `validate_and_repair` returns `Ok(clean_form)`) |
+| Test (behaviour) | Asserts | As-authored status |
+|---|---|---|
+| `agent_build_broken_then_fixed_repaired_silently` | the loop stages→checks→**discards** the turn-1 broken form, re-prompts; the turn-2 clean form reaches the confirm gate (answered `y`) + submits — only the clean form's `(defn …)` lands: (i) **no compiler error** reaches the transcript (U5 silent), (ii) the fixed form **binds** — `(double 5)` evals to `10`, (iii) `double` is not reported unbound after the write | **RED** (write arm + validator absent; `submit` currently refused) |
+| `agent_build_broken_intermediate_never_shown_neg` | **+neg (U5 silent contract):** the broken form's compiler diagnostic (`parse error`/`unbalanced`/`unexpected`) is **absent** from the rendered transcript — "the user structurally cannot see an agent compile failure" (rendering happens only after `validate_and_repair` returns `Ok(clean_form)`); the agent's terminal prose still frames | **PASS today** (standing +neg floor guard — broken form never echoed while `submit` is refused; must **continue** holding once the write arm lands) |
 
-These are RED-first (the §15/§16 write arm + validator do not exist yet — won't-compile
-is a valid loud signal) and flip green when `/dev` lands rung 5. `// spec: repl/spec.md §17.3`,
-`§17.3.1` (proposed-not-submitted floor).
+These are RED-first / standing-floor (the §15/§16 write arm + validator do not exist yet —
+`submit` is refused at `synthesize_command` today, so the keystone is RED and the silent
++neg passes by the floor). They flip-and-hold when `/dev` lands rung 5.
+`// spec: repl/spec.md §17.14.3` (silent validator), `§17.14.2` (accept/decline).
+
+**The broken-then-fixed stub-script DSL — the contract `/dev` 2d MUST implement (verbatim).**
+The existing stub-script DSL is one scripted MODEL turn-response per line, consumed in order,
+one per `AgentModel::complete()` call (`tool: <name> <arg>` / `done: <prose>` / `prose:
+<cont>`). Cluster B extends it with **exactly one new tool name — `submit`** (the Build write
+tool, §15.1), in the SAME `tool:` form:
+
+```text
+tool: submit <FORM>   → a `submit` ToolCalls response carrying <FORM> (rest of the
+                        line, verbatim) as the form string to validate→confirm→submit.
+```
+
+A **broken-then-fixed** repair sequence is expressed as **TWO consecutive `tool: submit`
+lines — NO new keyword.** The repair loop (§16.2) consumes scripted responses in sequence
+exactly as the model↔tool loop does: the FIRST `tool: submit` carries code that FAILS
+`validate_forms_dry_run` (parse OR type — U5); the validator stages→checks→**discards** it,
+feeds the compiler error back silently, re-prompts; the stub's NEXT scripted response (the
+SECOND `tool: submit`) carries CLEAN code. The Nth `tool: submit` is the Nth repair attempt;
+the first that validates clean reaches the confirm gate.
+
+Canonical broken-then-fixed script (verbatim — the `BROKEN_THEN_FIXED_SUBMIT` const in
+`tests/agent.rs`):
+
+```text
+tool: submit (defn double [x] (add-i64 x x)
+tool: submit (defn double [x] (add-i64 x x))
+done: defined double for you
+```
+
+Line 1 is parse-broken (unbalanced paren → repair). Line 2 is the clean repaired form
+(reaches the confirm gate → submits). Line 3 is the terminal prose after the write. Minimal +
+consistent with the existing `tool:`/`done:` DSL — `submit` is just a tool name; the
+broken-then-fixed sequence is just two scripted turn-responses in order. **`/dev` 2d must
+implement EXACTLY this format** (the stub parses `tool: submit <FORM>` into a `submit`
+tool-call, and consecutive `tool: submit` lines feed the repair loop in order).
 
 ### B.2 Read-only floor +neg — unconfirmed / non-read tool never reaches `eval` (§15.4) — Lane A
 
 The consent boundary (R3 structural floor). Two negative guards:
 
-| Test (behaviour) | Asserts (ABSENCE) |
-|---|---|
-| `agent_build_unconfirmed_submit_never_evals_neg` | a `submit` whose confirm-gate is **declined** mutates nothing — it never reaches `eval`, nothing enters the symbol table, session state is byte-identical to the pre-submit state (the §17.3 "proposed, not submitted" floor) |
-| `agent_build_non_read_tool_still_refused_neg` | a non-read, non-`submit` tool (e.g. `/sh`, or a write the model attempts to synthesize outside `submit`) is **refused at `synthesize_command`** exactly as in the S88 read-only MVP — the read `ALLOWLIST` floor is unchanged, the write is structurally unconstructable without the confirm gate |
+| Test (behaviour) | Asserts (ABSENCE) | As-authored status |
+|---|---|---|
+| `agent_build_declined_submit_no_change_neg` | a `submit` whose confirm-gate is **declined** (`n`) mutates nothing — the proposed name (`declinee`) stays unbound (`(declinee 1)` → unbound), structurally identical to the §17.3.1 "proposed, not submitted" floor | **PASS today** (standing floor — `submit` refused, so `declinee` never binds; must continue holding once the write arm + decline path land) |
+| `agent_build_non_read_tool_still_refused_neg` | a non-read, non-`submit` tool (`/sh`) is **refused at `synthesize_command`** exactly as in the S88 read-only MVP — the read `ALLOWLIST` floor is unchanged, the write is structurally unconstructable WITHOUT any confirm gate (`pwned` never executes) | **PASS today** (the S88 structural floor — the rung-5 write arm must NOT regress it) |
 
 The second row proves the floor was **extended, not loosened** (§15.4): the only new write
-path is the confirm-gated `submit`; everything else still hits the read-only refusal. This is
-the rung-5 equivalent of the S88 `agent_pull_read_only_in_advise_mode_neg` guard.
+path is the confirm-gated `submit`; everything else still hits the read-only refusal. Both
+are the rung-5 equivalent of the S88 `agent_pull_read_only_in_advise_mode_neg` guard —
+standing floor guards that hold today and MUST continue holding when the write arm lands.
+`// spec: repl/spec.md §17.14.2` (decline), `§17.14` (floor §15.4).
 
 ### B.3 0429 close — rig wire-path rig-trait-level mock (Lane A)
 
@@ -155,6 +192,38 @@ These are the **rig-trait-level** mock (distinct from the `AgentModel` stub) —
 membrane's underside. Per the 0429 §1 correction now applied to `agent-testing-strategy.md §1`.
 On these landing green, **0429 is fully met → `/qa` deletes `design/arch/fixmes/0429-*.md`**
 with a commit naming the resolution (deletion owed this sprint).
+
+### B.4 `--yes` validation-floor (CRITICAL — `/arch §7.4` / `agent.md §20.3`) — Lane A
+
+The safety-critical `--yes` guard: `--yes` skips **consent**, NEVER **validation**. With
+`--yes` ON, the broken-then-fixed sequence (the `BROKEN_THEN_FIXED_SUBMIT` script + the
+`--yes` flag) MUST still silently repair — only the clean form commits — AND **no `[y/N]`
+prompt** fires (auto-accepted). A `--yes` that skipped the validator would submit the raw
+broken form and `double` would never bind (the conflation defect §20.3 names). Note: NO `y`
+line is piped — `--yes` auto-accepts, so the binding is asserted via `(double 5)`.
+
+| Test (behaviour) | Asserts | As-authored status |
+|---|---|---|
+| `agent_build_yes_validation_floor_still_repairs` | (a) the broken intermediate is STILL silently repaired under `--yes` — **no compiler error** surfaces; (b) only the CLEAN form commits — `(double 5)` evals to `10` (a raw-broken submit would leave `double` unbound); (c) **no `[y/N]` prompt** — consent auto-accepted (§17.14.5) | **RED** (`--yes` threading + §20.3 placement absent) |
+
+`// spec: repl/spec.md §17.14.6` (validation floor under `--yes`), `§17.14.5` (auto-accept),
+`§0.6.2`.
+
+### B.5 `--yes` accepted-no-op — default build / `--no-agent` (3a)
+
+`--yes`/`-y` is an **accepted no-op** when no agent is active: never `unknown flag`, the
+session evals exactly as today (§20.1, identical to `--agent`). The **default-build half is a
+DEFAULT-lane test** (NOT `#[cfg(feature="agent")]`); the `--no-agent` half is agent-lane.
+
+| Test (behaviour) | Lane | Asserts | As-authored status |
+|---|---|---|---|
+| `yes_flag_accepted_no_op_default_build` | **DEFAULT** | `--yes` on a default (non-`agent`) build → accepted (no `unknown flag`), session evals `3` | **RED** (default build errors `unknown flag: --yes` today) |
+| `y_short_flag_accepted_no_op_default_build` | **DEFAULT** | `-y` (short form) on a default build → parsed as a **FLAG**, not swallowed as the REPL target (no `-y>` target prompt) — the +neg guard against today's `_ =>` arm capturing `-y` as a target | **RED** (today `-y` is swallowed as the REPL target → `-y>` prompt) |
+| `agent_yes_with_no_agent_is_accepted_no_op` | A | `--no-agent --yes` (agent build, agent disabled) → `--yes` accepted/inert, session evals `3` | **RED** (`--yes` unknown even in the agent build today) |
+
+`// spec: repl/spec.md §0.6.2`. The `-y`-not-swallowed-as-target row is the load-bearing
++neg: a flag that parses as `unknown flag`-free but lands as a target is a **false-green** the
+naïve assertion would miss — pinned via the `-y>` target-prompt absence.
 
 ---
 

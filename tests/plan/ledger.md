@@ -111,6 +111,64 @@ fence: no literal `\x1b` when colour off, well-formed SGR when on, §14.6) — t
 one seam where the colour-ON leak is observable. This is recorded as the
 unit/e2e split, not a deferral.
 
+### Sprint 89 Phase 5 Wave 2 — Cluster B Build + validator + `--yes` RED-first tests authored (/qa, 2026-06-22)
+
+S89 Phase-5 Wave-2 step 2q deliverable: the Cluster-B (Build write arm + pre-flight
+validator + `--yes`) failing-not-ignored tests authored in `tests/agent.rs`, driven
+through the stub-provider-by-config mechanism. Agent lane
+(`cargo nextest run --features agent --test agent`): **37 tests, 32 pass, 5 fail**.
+Default lane (`cargo nextest run --test agent`): **15 tests, 13 pass, 2 fail** — the
+2 B.5 default-build reds. Full default suite **1519 tests, 2 fail** (exactly the 2 B.5
+default-build reds; no other regression). Default build re-confirmed agent-free
+(`cargo check --tests` clean; `cargo tree` shows 0 rig/tokio). Spec-link check clean
+(42 OK). **B.3 (`continuation_request_pairs_tool_use_before_tool_result`,
+`src/agent/provider.rs`) confirmed GREEN — not re-authored; 0429 closes when it stays
+green at wave close.**
+
+The **broken-then-fixed stub-script DSL** (the `/dev` 2d contract, also in
+`s89-test-plan.md §B.1`): `tool: submit <FORM>` is the new write-tool line (same `tool:`
+form, one new tool name `submit`); a broken-then-fixed sequence is TWO consecutive
+`tool: submit` lines consumed in order — the first carries parse/type-broken code (repair),
+the next carries clean code. Canonical script (the `BROKEN_THEN_FIXED_SUBMIT` const):
+`tool: submit (defn double [x] (add-i64 x x)` (broken — unbalanced) /
+`tool: submit (defn double [x] (add-i64 x x))` (clean) / `done: defined double for you`.
+
+- **`agent.rs::agent_build_broken_then_fixed_repaired_silently`** (B.1 keystone, RED) —
+  `// spec: repl/spec.md §17.14.3`. Broken-then-fixed: no compiler error reaches the
+  transcript (U5 silent), the fixed form binds (`(double 5)`→10), `double` not unbound after.
+  RED on HEAD: `submit` is refused at `synthesize_command` (write arm absent). Owner `/dev`
+  (int, rung-5 §15/§16 write arm + validator), target S89.
+- **`agent.rs::agent_build_broken_intermediate_never_shown_neg`** (B.1 +neg, PASS-today
+  standing floor) — `// spec: repl/spec.md §17.14.3`. The broken form's compiler
+  diagnostic is absent from the transcript; passes today (broken form never echoed while
+  `submit` refused) and MUST continue holding once the write arm lands.
+- **`agent.rs::agent_build_declined_submit_no_change_neg`** (B.2, PASS-today standing
+  floor) — `// spec: repl/spec.md §17.14.2`. A declined (`n`) submit writes nothing
+  (`declinee` stays unbound). Standing floor; must hold once the decline path lands.
+- **`agent.rs::agent_build_non_read_tool_still_refused_neg`** (B.2, PASS-today S88 floor)
+  — `// spec: repl/spec.md §17.14`. A non-read non-`submit` tool (`/sh`) is refused at
+  synthesize without any confirm gate (`pwned` never runs). The S88 structural floor the
+  rung-5 write arm must NOT regress.
+- **`agent.rs::agent_build_yes_validation_floor_still_repairs`** (B.4 CRITICAL, RED) —
+  `// spec: repl/spec.md §17.14.6`. With `--yes` ON the broken generation is STILL
+  silently repaired (no error surfaces), only the clean form commits (`(double 5)`→10),
+  and NO `[y/N]` prompt fires. Proves `--yes` skips consent, not validation (§20.3). RED:
+  `--yes` threading + §20.3 placement absent. Owner `/dev` (int, §20), target S89.
+- **`agent.rs::yes_flag_accepted_no_op_default_build`** (B.5 DEFAULT lane, RED) —
+  `// spec: repl/spec.md §0.6.2`. `--yes` on a default build is accepted (no
+  `unknown flag`), session evals 3. RED: default build errors `unknown flag: --yes` today.
+- **`agent.rs::y_short_flag_accepted_no_op_default_build`** (B.5 DEFAULT lane, RED) —
+  `// spec: repl/spec.md §0.6.2`. `-y` must parse as a FLAG, not be swallowed as the REPL
+  target (no `-y>` target prompt). RED: today `-y` lands in the `_ =>` arm → captured as
+  the target → `-y>` prompt (a false-green the naïve `unknown flag` check would miss).
+- **`agent.rs::agent_yes_with_no_agent_is_accepted_no_op`** (B.5 agent lane, RED) —
+  `// spec: repl/spec.md §0.6.2`. `--no-agent --yes` (agent build) → `--yes` accepted/inert,
+  session evals 3. RED: `--yes` unknown even in the agent build today.
+
+All flip green when `/dev` 2d lands the confirm-gated write arm + validator + `--yes`
+threading (parse `--yes`/`-y` accepted-no-op in BOTH builds; `agent_auto_accept()` reads
+only at the consent site, §20.3). 0429 deletes when B.3 stays green at wave close.
+
 ### Sprint 87 close — FIXME 0415 §3.3 symbol-layout formatter RESOLVED, 10 tests GREEN + entry removed (/qa, 2026-06-21)
 
 S87: 0415 layout formatter implemented (the L0–L4 shared symbol-list formatter
