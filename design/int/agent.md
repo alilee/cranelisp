@@ -1354,13 +1354,204 @@ Decisions this design couples to another skill's choice — `/sprint` reconciles
 
 ---
 
+## 20. Scope item 3a — `--yes` autonomous-submit flag (policy knob, NOT a boundary change)
+
+Extends §15 (Build write arm + `run_submit` confirm-gate) and §17 (Document consultative
+gate) **additively** with the user-requested `--yes` flag (`sprints/SPRINT.md` §"3a";
+`/arch` ruling `design/arch/repl-embedded-agent.md §7.4`, commit `93961e8`). `--yes`
+auto-*answers* the existing write-consent gates — it does not relocate, widen, or remove
+them.
+
+**Binding constraints (`/arch` §7.4 — verbatim intent).** Policy knob, not a
+structural-floor change. **Blanket** — one flag covers both write gates (Build `submit`
+§15.2 + Document `set-preamble`/`set-doc` §17.2). **`--yes` touches ONLY the consent seam,
+NEVER the validator** — `validate_forms_dry_run` (§16.1, stage→check→discard,
+silent-repair-anything U5) runs unchanged. "Skip confirm" and "skip check" are **distinct
+seams at distinct sites** (§20.3). Zero public-API / cross-crate impact; `pub(crate)`,
+`#[cfg(feature="agent")]`-gated, no-op on default builds — exactly like `--agent` (§6.4,
+§7.2). Feature-OFF byte-identity preserved by construction (§18).
+
+### 20.1 Flag parse + threading (cite the real seam)
+
+`--yes` is parsed in `parse_args` (`src/main.rs:413` arg loop) **alongside `--agent`**
+(`main.rs:462`), with the identical accepted-no-op discipline: a binary built WITHOUT the
+`agent` feature MUST recognise `--yes`/`-y` and treat them as no-ops (never "unknown
+flag"), so a script written for an agent build runs in either build. The parse adds a
+`yes` bool sibling to `agent_on`/`agent_off` (`main.rs:408-409`); the usage strings
+(`main.rs:475`) gain `[--yes]`.
+
+The resolved value rides the **same threading path as `agent_enabled`** (the cleanest
+seam — no new plumbing): the resolved bool
+
+```text
+auto_accept = yes && agent_enabled        // §0.6.1: meaningful only with an active agent;
+                                          //   off by default; REPL-only (agent_enabled is
+                                          //   already gated to Action::Repl, main.rs:519)
+```
+
+is computed beside `agent_enabled` (`main.rs:519`), returned from `parse_args` as a fifth
+field's companion, and threaded through `run` (`main.rs:188` param list) into the REPL
+arm's `s.enable_agent(...)` call (`main.rs:260`). The `enable_agent` signature
+(`src/session_v4/lifecycle.rs:133`) gains the bool — `enable_agent(&mut self, enabled:
+bool, auto_accept: bool)` — and forwards it to `provider::build_agent_state`
+(`src/agent/provider.rs:47`), which stores it on a **new `pub auto_accept: bool` field on
+`AgentState`** (`src/agent/types.rs:132`, beside `model`/`provider_label`). Feature-OFF
+`auto_accept` is dropped exactly as `agent_enabled` is (`main.rs:195-196` `let _ = …`).
+
+**Why `AgentState`, not a session field.** The consent gates (`run_submit` §15.2,
+`run_document_edit` §17.2) are `impl CompilerSession` methods that already read `self.agent`
+(the `Option<AgentState>`); the auto-accept bit lives where the model handle and transcript
+live (§3.4 — "the agent adds ONE optional state object, not a parallel state machine").
+Feature-off the field does not exist (the whole `AgentState` is `#[cfg]`-gated), so the
+binary is byte-identical (§1).
+
+### 20.2 Consent-gate auto-answer — short-circuit the prompt-read, keep render + downstream identical
+
+`--yes` changes **exactly one step** of each gate: the consent *capture*. The render of the
+proposed form/edit and the entire downstream commit path are untouched.
+
+**Build gate (§15.2 `run_submit`).** Step 1 (render the proposed form, §15.2.1) runs
+**unchanged** — the user always sees the form the agent will submit, through the
+agent-input prefix (§14.2). Step 2 (capture consent) is where `auto_accept` short-circuits:
+
+```text
+run_submit(call, stdout):
+  form = validate_and_repair(call.arg, model)?            // §16 — RUNS UNCHANGED (see §20.3)
+  render proposed form (echo via agent-input prefix)       // §15.2 step 1 — UNCHANGED, always shown
+  consent =
+    if self.agent_auto_accept() { true }                   // ← --yes: skip the [y/N] line-read
+    else { prompt "[y/N]" + blocking line-read }            // §15.2 step 2 — the normal path
+  if !consent { feed "declined" tool-result; continue }    // §15.2 step 3 — UNCHANGED
+  self.process_commands(&form, stdout) → eval → regen      // §15.2 step 4 / §15.3 — IDENTICAL
+```
+
+`agent_auto_accept(&self) -> bool` is a one-line `pub(crate)` reader
+(`self.agent.as_ref().map_or(false, |a| a.auto_accept)`) — dormant / feature-off ⇒ `false`.
+The bool short-circuits **only** the prompt-emit + line-read; `consent` is `true` either
+way on accept, so step 4 (`process_commands` → `eval` → `regenerate_backing_file`, §15.3)
+is byte-for-byte the same call. The decline branch (step 3) is simply unreachable under
+`--yes` (the gate always answers accept), not removed.
+
+**Document gate (§17.2 `run_document_edit`).** Identical shape, the *consultative* prompt is
+the short-circuit point: render the exact proposed `;;` block (§17.5.2, via
+`generate_preamble`) — **always shown** — then `if agent_auto_accept() { accept } else {
+ask "record this as <module>'s preamble?" + line-read }`; on accept, `apply_preamble_edit`
+(§17.1) + regen run **identically**. Blanket per `/arch` §7.4(a): the same
+`agent_auto_accept()` reader gates both `run_submit` and `run_document_edit` — one bool, one
+mental model.
+
+The render-always invariant is load-bearing for the §7.4 "the user sees it" requirement:
+`--yes` is *trust*, not *silence* — every auto-accepted write still echoes the proposed
+form/edit + (on Build) the `format_eval_result` `:Type name` confirmation (§15.3). Only the
+`[y/N]`/consultative prompt line and its read disappear.
+
+### 20.3 Validation-floor guard (CRITICAL — `/arch` §7.4 non-negotiable)
+
+**`--yes` does NOT reach `validate_forms_dry_run` (§16.1).** The validator's
+stage→check→discard, silent-repair-anything loop (`validate_and_repair`, §16.2) runs
+**identically** with the flag on or off — only compiling code ever reaches the live session.
+This is structural, not a convention to be remembered:
+
+- **The bool lives in the consent branch, never the staging branch.** `auto_accept` is read
+  **only** by `agent_auto_accept()`, called **only** at the §15.2-step-2 / §17.2-consultative
+  prompt site — i.e. **after** `validate_and_repair` has already returned `Ok(clean_form)`
+  (§15.2: the repair loop runs *before* the echo and the gate). `validate_forms_dry_run` and
+  `validate_and_repair` take **no `auto_accept` parameter** and have **no read path** to the
+  `AgentState.auto_accept` field. The validator cannot observe the flag, so it cannot be
+  skipped by it.
+- **"Skip confirm" and "skip check" are distinct seams (§7.4).** The confirm-gate is the
+  **consent seam** (`run_submit` step 2 / the consultative prompt) — the only thing `--yes`
+  answers. `validate_forms_dry_run`'s discard-on-Err arm is the **correctness seam** (§16.1)
+  — untouched. The two are different functions at different call sites; conflating them would
+  require threading `auto_accept` into the validator, which this design structurally forbids
+  (the field is on `AgentState`, the validator takes only `symbol_tables`/`module`/
+  `working_program`, §16.1).
+- **The conflation risk, named.** An implementation that treated `--yes` as "skip the
+  dry-run" (e.g. by branching the repair loop on `auto_accept`, or by passing the flag into
+  `run_submit`'s validate call) would be a **defect** — a `--yes`-on agent could submit raw
+  un-typechecked code. The design prevents it by *placement*: `auto_accept` is unreachable
+  from the validation path, so the only way to introduce the bug is to add a new parameter,
+  which review would catch.
+- **Phase-5 `/dev` guard + `/qa` obligation.** A `--yes`-**on** Lane-A test (stub
+  `AgentModel` scripted broken-then-fixed, §16.5) MUST prove a deliberately-broken generation
+  is **still silently repaired** — staged → checked → discarded → re-prompted, never
+  submitted raw — exactly as with `--yes` off. The auto-accept changes *which* gate answer is
+  given; it changes **nothing** about the validator's behaviour. The test asserts: (a) the
+  broken intermediate never reaches the session under `--yes`; (b) the user never sees the
+  broken form (the U5 silent contract holds); (c) only the repaired clean form is committed —
+  and is committed *without* a `[y/N]` prompt (the `--yes` distinction from the §16.5 base
+  test). The `/dev` mandatory unit test pins `agent_auto_accept()` is read only at the consent
+  site (not the validate site) — a structural guard at the seam.
+
+### 20.4 First-use notice hook (mechanism; wording → `/repl §17`)
+
+`--yes` is an autonomy escalation (the agent now writes without per-action assent), parallel
+to the U6 opt-in-twice first-use disclosure (§2.3). Per `/arch` §7.4(b) a **one-time**
+first-use notice on the **first auto-accepted write** is warranted — naming that the agent
+will now submit/edit without prompting **and** that the pre-flight validator still gates
+correctness. This doc fixes the **mechanism**; the wording is `/repl`-owned (`repl/spec.md
+§17`, sibling to the U6 disclosure — §19).
+
+**Mechanism — where the once-flag lives and fires.** A `pub auto_accept_notice_shown: bool`
+field on `AgentState` (`types.rs:132`, default `false`, beside `auto_accept`). The notice
+fires at the **single auto-accept short-circuit point** shared by both gates — immediately
+**inside** the `if agent_auto_accept()` branch (§20.2), **before** the auto-accepted write
+proceeds, guarded once:
+
+```text
+// in run_submit / run_document_edit, at the auto-accept branch (§20.2):
+if self.agent_auto_accept() {
+    self.fire_auto_accept_notice_once(stdout);   // ← once-only; sets the flag
+    accept                                       // (no [y/N] read)
+}
+```
+
+`fire_auto_accept_notice_once(&mut self, stdout)` (a `pub(crate)` method, `src/agent/mod.rs`
+or `pull.rs`) checks-and-sets the flag: `if !state.auto_accept_notice_shown { render the
+/repl-owned notice in the agent prose frame (§3.5 / §14.3); state.auto_accept_notice_shown =
+true; }`. Because the flag is on `AgentState` (session-lived, not serialised — §3.4), the
+notice fires **once per session** on the first auto-accepted write of **either** class
+(Build or Document — blanket, §7.4(a)), never again. Feature-off / `--yes`-off the branch is
+unreachable so the notice never fires (the flag costs zero bytes feature-off — `#[cfg]`-gated
+with the rest of `AgentState`).
+
+### 20.5 What §20 does NOT change (zero-movement, R4 / §18 extended)
+
+- **No validator change** (§20.3) — `validate_forms_dry_run` / `validate_and_repair` take no
+  new parameter, have no read path to `auto_accept`.
+- **No new write path** — `--yes` answers the *existing* §15.2 / §17.2 gates; the
+  `process_commands`→`eval`→staging commit (§15.3) and `apply_preamble_edit`+regen (§17.1) are
+  the same calls. No parallel submit, no new eval entry (R3 preserved).
+- **Read-only allowlist untouched** — reads were never gated; `--yes` answers only the gate
+  that already guards writes (§15.4 / §17.2 floor intact).
+- **Public-API / cross-crate: ZERO** — `--yes` is an int-internal `pub(crate)` CLI flag; the
+  `auto_accept` + `auto_accept_notice_shown` bits live on the `#[cfg(feature="agent")]`
+  `AgentState`. No `cranelisp-types` change, no facade delta, no `public-api.txt` movement, no
+  `CACHE_SCHEMA_VERSION` bump (the flag never persists — it is a per-session runtime toggle).
+- **Feature-OFF byte-identical** (§18) — `--yes`/`-y` parse as accepted no-ops in both builds;
+  all consuming code is `#[cfg(feature="agent")]`.
+
+### 20.6 Coordination points (add to §19)
+
+- **`/repl`** — the **`--yes`/`-y` flag name** (§7.4(c): `/arch` defers naming to `/repl`,
+  `repl/spec.md §0.6.1` alongside `--agent`/`--no-agent`) and the **first-use notice wording**
+  (§20.4: names autonomy escalation + that the validator still gates — `repl/spec.md §17`).
+- **`/qa`** — the `--yes`-**on** validation-floor guard (§20.3: deliberately-broken generation
+  still silently repaired, never submitted raw; committed without a `[y/N]` prompt), Lane A,
+  `#[cfg(feature="agent")]`, extending the §16.5 broken-then-fixed stub script.
+- **`/arch`** — none anticipated (zero cross-crate edge / type change; the ruling is
+  ratified, `repl-embedded-agent.md §7.4`). Only if Phase-5 surfaces a boundary need.
+
+---
+
 ## 13b. Cross-skill handoffs / FIXMEs (S89)
 
 Per the protocol (filed as `design/arch/fixmes/NNNN-*.md` when `/sprint` schedules; not
-authored from this design pass): the §19 coordination points are the S89 handoffs. No new
-`cranelisp-types` field is anticipated (R4) — the one used (`module_preamble`) landed S88
-(FIXME 0428). The validator dry-run + write-arm allowlist widening are int-internal, no facade
-delta (the Phase-2 ruling); no FIXME needed unless Phase-5 surfaces a cross-crate seam.
+authored from this design pass): the §19 + §20.6 coordination points are the S89 handoffs.
+No new `cranelisp-types` field is anticipated (R4) — the one used (`module_preamble`) landed
+S88 (FIXME 0428). The validator dry-run + write-arm allowlist widening + the `--yes` consent
+auto-answer (§20) are int-internal, no facade delta (the Phase-2 ruling + the §7.4 `--yes`
+ruling); no FIXME needed unless Phase-5 surfaces a cross-crate seam.
 
 ## Next skills
 
@@ -1370,7 +1561,11 @@ delta (the Phase-2 ruling); no FIXME needed unless Phase-5 surfaces a cross-crat
 - `/dev` (int, narrow) — implement against this design once `/qa`'s failing tests land
   (Phase 5). Source-touching steps serialize (broken worktree isolation). **S89**: three
   clusters serial — Cluster A render (`src/agent/render.rs`, §14, R1/R2), Build write arm
-  + validator (§15/§16, R3), Document edit (§17, R4); keep feature-OFF byte-identical (§18).
+  + validator (§15/§16, R3), Document edit (§17, R4); plus the `--yes` consent auto-answer
+  (§20 — flag parse `main.rs:413/519`, `enable_agent`→`AgentState.auto_accept`, the
+  `agent_auto_accept()` gate at §15.2/§17.2, the once-only first-use notice §20.4); the
+  validation-floor guard (§20.3) is structural — `auto_accept` must never reach the
+  validator. Keep feature-OFF byte-identical (§18).
 - `/qa` — draft the failing tests (classifier routing, stub-`AgentModel` loop, harvest
   ladder, reverse-query scan) per §11. **S89**: stage→check→discard repair loop (Lane A,
   §16.5), confirm-gated-write + allowlist-refuses-non-writes (§15.4), Document round-trip +
