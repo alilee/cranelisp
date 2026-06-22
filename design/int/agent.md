@@ -856,13 +856,524 @@ pass; `/sprint` schedules):
 - **`/qa`** — agent lane (`#[cfg(feature="agent")]`), classifier/loop/harvest tests, the
   default-lane `/refs`/`/tests-for` tests, the feature-off byte-identical guard.
 
+---
+
+# S89 — Phase 2 (rungs 5–6) + Cluster A render
+
+The sections below extend the S88 Advisor-MVP design above with the Sprint 89 scope:
+**Cluster A** (agent output rendering — 3 improvements + 1 defect), **Cluster B**
+(rung 5 — Build mode + pre-flight validator), **Cluster C** (rung 6 — Document mode).
+The S88 sections §0–§13 are intact and unchanged; this is accretion (Principle 9).
+
+**Authority.** Scope + the binding constraints R1–R4 are fixed by the Phase-2 `/arch`
+verdict (`sprints/SPRINT.md §"Architecture review (Phase 2)"`, U5 ratified in
+`design/arch/repl-embedded-agent.md §6.4`). Every seam rungs 5–6 need **already exists**
+from S88 — Build/Document/validator are *consumer* extensions of the int bounded context,
+not new machinery (the `/arch` central claim). The S89 work is `pub(crate)`, int-private,
+fully `#[cfg(feature="agent")]`; **zero new cross-crate edge, zero `cranelisp-types`
+change, no `CACHE_SCHEMA_VERSION` bump** (R4). Where this doc and BC §6 / the ratified
+`repl-embedded-agent.md` drift, those win — file FIXME `target: /arch`.
+
+---
+
+## 14. Cluster A — agent output rendering (`src/agent/render.rs`, R1/R2)
+
+Four items surfaced from live S88 use (`sprints/SPRINT.md §"Agent output rendering"`):
+three experience improvements + one defect. **R1 (binding): all of it is agent-output-only
+and fully `#[cfg(feature="agent")]`.** The render code lives in a **new submodule
+`src/agent/render.rs`** that *consumes* `src/pretty.rs::pretty_print` and `src/style.rs`,
+**never modifies them, and is never reachable from the default REPL render path.** The
+normal REPL already pretty-prints (no default-build work); feature-off `render.rs` does not
+exist and the binary stays byte-identical (§1).
+
+### 14.0 Where the agent renders today (the seam being extended)
+
+`agent_turn` renders the model's terminal prose at `src/agent/mod.rs:234-235`:
+
+```rust
+ModelResponse::Done(prose) => {
+    let _ = write!(stdout, "{}", crate::style::agent_prose(&prose));  // ← raw prose
+```
+
+`style::agent_prose` (`src/style.rs:72`) gutters each line with `▌` and (when colour is on)
+styles only the **gutter** bright-magenta — the body passes through **verbatim**. So today
+the model's markdown renders raw and any ```lisp fence is emitted unformatted. Agent-issued
+*commands* + their results render separately, unframed, in `run_pull` (`src/agent/pull.rs:113-136`)
+— that path is correct (§17.2) and is **not** touched by Cluster A.
+
+The Cluster-A change is a single new step between the model response and `agent_prose`:
+`render::render_agent_prose(&prose)` produces the framed, markdown-formatted, fence-pretty-printed
+block, which `agent_turn` then writes. The §3.5 framing contract is unchanged — only prose
+is framed; commands stay in `run_pull`.
+
+### 14.1 `render.rs` shape (the new submodule)
+
+| Fn (`pub(crate)`) | Responsibility |
+|---|---|
+| `render_agent_prose(prose: &str) -> String` | The Cluster-A entry. Splits the model's markdown into prose runs and ```lisp/```` ``` ```` fenced runs (§14.4); formats prose runs as terminal markdown (§14.3); routes lisp fences through `crate::pretty::pretty_print_str` (§14.5, Principle-7 reuse); re-assembles and wraps the whole in the `▌` agent frame via `style::agent_prose`. Replaces the bare `agent_prose(&prose)` call at `mod.rs:235`. |
+| `markdown_to_terminal(run: &str) -> String` (private) | §14.3 — headings/lists/emphasis/inline-code → SGR roles drawn from the existing `style::Style` palette. Degrades under `--no-color` (the `styled()` short-circuit). |
+| `split_fences(prose: &str) -> Vec<Run>` (private) | §14.4 — partitions the prose into `Run::Prose(text)` / `Run::Lisp(code)` by ```` ``` ```` fences, recognising the `lisp`/`cranelisp` info-string. |
+
+`Run` is a tiny private enum local to `render.rs`. No type crosses a module boundary — this
+is all int-private behind the feature gate.
+
+### 14.2 Improvement 1 — agent-input prompt (distinct prompt prefix)
+
+**Problem (SPRINT item 1):** agent-issued pulls / echoed turns render with no prompt prefix,
+so the transcript cannot tell who typed what. Today `run_pull` echoes the synthesized command
+bare (`pull.rs:116`: `writeln!(stdout, "{cmd}")`).
+
+**Design.** Give agent-originated input a **distinct prompt glyph** so a pulled command reads
+honestly as agent-issued (vs. the human `user>` prompt). The int mechanism: a new
+`render::agent_input_prefix() -> String` consulted at the **two** echo sites where the agent
+"types" — the pull-command echo in `run_pull` (`pull.rs:116`) and (S89) the Build-write
+echo (§15.4). It prepends the agent-input glyph (coordinated with `/repl` — the glyph is a
+`/repl`-owned normative choice; this doc fixes only that int routes both agent-echo sites
+through one prefix fn so they cannot diverge). The prefix degrades under `--no-color` to a
+plain-text marker (same `styled()` short-circuit as `agent_prose`). The glyph is **distinct
+from** the `▌` prose gutter (commands are not prose — §17.2) and distinct from the human
+prompt. **Coordination point flagged to `/repl`** (§19).
+
+This is the one Cluster-A item NOT inside `render_agent_prose` — it is a one-line prefix at
+the command-echo sites, kept in `render.rs` so the whole agent-render surface is one module.
+
+### 14.3 Improvement 2 — markdown formatting of prose (within the §10.3 frame)
+
+**Problem (SPRINT item 2):** the model returns markdown; it renders raw. **Design.**
+`markdown_to_terminal` formats the common inline/block markdown the model emits —
+headings, bullet/numbered lists, `**bold**`/`*emphasis*`, and `` `inline code` `` — into
+terminal SGR using the **existing** `style::Style` palette (`Bold`, `Italic`, etc.); it does
+NOT introduce a new colour mode or writer target (R2 — see §14.6). It is a small, bounded
+formatter (Principle 6 — complexity budget): it handles the markdown the model actually
+produces, not a full CommonMark engine. The formatted prose then flows through
+`style::agent_prose` so each line still carries the `▌` gutter — markdown formatting lives
+**inside** the §10.3 agent-prose frame, not beside it. **Degrades under `--no-color`:**
+every span goes through `style::styled`, which short-circuits to plain text when
+`is_color_enabled()` is false (`style.rs:133`), so `--no-color` yields gutter + plain
+markdown-stripped-to-text. **Coordination point flagged to `/repl`** (the markdown→frame
+composition is a §17.2 experience detail — §19).
+
+### 14.4 / 14.5 Improvement 3 — route ```lisp fences through `pretty_print` (Principle 7)
+
+**Problem (SPRINT item 3):** a ```` ```lisp ```` block inside the model's markdown renders
+as a raw fence. **Design.** `split_fences` partitions the prose by ```` ``` ```` fences;
+each run whose info-string is `lisp` or `cranelisp` is a `Run::Lisp(code)`. Its body routes
+through the **existing S24 S-expression pretty-printer** — `crate::pretty::pretty_print_str`
+(`src/pretty.rs:33`, the string entry that parses then syntax-highlights + indents, with the
+token-fallback for non-round-tripping display strings). This is **clean Principle-7 reuse**:
+the same printer `/source`/`/sexp` already use (`repl.rs:966/982`), consumed not modified.
+The pretty-printed block is re-wrapped in the prose frame (it is part of the agent's *answer*,
+not a pulled command, so it lives inside `▌`) — distinguishing it from §17.2's unframed
+agent-issued commands by **origin**: a fence in the model's prose is the agent *showing* code
+(framed); a `run_pull` echo is the agent *running* a command (unframed). A non-lisp fence
+(e.g. ```` ```sh ````) stays a `Run::Prose` and is markdown-formatted as a literal block.
+
+### 14.6 The DEFECT — pretty-printer leaks raw ANSI escape codes on agent output (R2)
+
+**Symptom (SPRINT item 4):** when the pretty-printer renders agent output, ANSI colour codes
+appear as **literal text** (`\x1b[36m…`) instead of rendering. **Repro is `/qa`'s to author**
+(a narrow failing-not-ignored Lane-A test — §17); this section is the int-internal root-cause
+hypothesis + the fix shape, bounded by **R2: do NOT add a color-mode / writer-target parameter
+to `pretty_print` or any `cranelisp-types` printer.** The bug is a wiring mismatch, not a
+missing param — adding one would be Principle-8 interim machinery for a wiring bug.
+
+**Root-cause hypothesis (the wiring mismatch).** Colour is a **global** decision owned by
+`src/style.rs::is_color_enabled()` — a process-wide `OnceLock` set once at startup by
+`init_color(no_color_flag)` (`style.rs:88-100`). `styled()` (`style.rs:133`) keys on it:
+colour-on ⇒ wrap in SGR; colour-off ⇒ return the text **verbatim**. There is exactly one
+colour gate and it is correct. So a *literal* `\x1b[…m` reaching the screen means **styled
+text was produced for one writer target and then routed to a different one** — the classic
+double-styling / mis-routing. Two concrete candidates, both wiring (the `/dev`+`/qa` repro
+will distinguish which — likely (a)):
+
+  (a) **Double-routing already-styled text through a second styler.** `pretty_print_str`
+      returns SGR-bearing text when colour is on. If a Cluster-A path (or the existing
+      `run_pull` result echo) takes that already-styled string and passes it through a
+      *second* formatting pass that escapes or re-wraps it — e.g. a markdown formatter that
+      treats `\x1b` as literal body text, or a fence-detector that does not route the lisp
+      run to `pretty_print` and instead emits the raw styled-or-literal fence — the SGR
+      bytes survive as visible text. **Fix:** style **once**, at the leaf. `render.rs` must
+      produce each run's final styled text exactly once (markdown leaf OR `pretty_print`
+      leaf), never re-style an already-styled run; the frame wrapper (`agent_prose`) only
+      prefixes gutters and MUST NOT re-escape the body. This is the §14.1 contract made
+      load-bearing: `render_agent_prose` is the single styling site for prose.
+
+  (b) **Writer-target mismatch on the `OnceLock` in a test/sub-context.** If agent output
+      is assembled in a context where `init_color` ran with a different value than the
+      writer's actual TTY-ness (e.g. styled-for-TTY text captured into a pipe), literal SGR
+      leaks. **Fix:** the agent render path consults the **same** `is_color_enabled()` gate
+      as every other writer (it already must — `styled` is the only styler); the fix is to
+      ensure no agent path *constructs* SGR through any route other than `style::styled`
+      (so the global gate is always honoured). No new param — just funnel all agent styling
+      through `style::styled`.
+
+**The fix is `style.rs`/`pretty.rs` wiring + `render.rs` discipline, no signature change**
+(R2). `pretty_print`/`pretty_print_str` keep their exact current signatures; `cranelisp-types`
+printers are untouched; the correction is "style once at the leaf, honour the one global
+gate, never re-style." **`/dev`'s mandatory unit test** pins the leaf-styling invariant at
+the seam (a `render_agent_prose` output over a ```lisp fence contains no *literal* `\x1b`
+substring when colour is off, and well-formed SGR when on); **`/qa`'s e2e repro** pins the
+observable end-to-end symptom (no literal escape codes anywhere; `--no-color` clean).
+
+---
+
+## 15. Cluster B — Build mode: the confirm-gated write arm (rung 5, R3)
+
+The agent's **first write path**. **R3 (binding): the submitted form re-enters via the
+existing `self.process_commands` / `self.eval` cluster-atomic staging path `main.rs` uses —
+no new eval entry, no parallel submit path.** The §4.2 read-only allowlist is **widened in
+one place** to admit the confirm-gated write while read-only-by-default stays the structural
+floor.
+
+### 15.1 The write arm is one widening of the §4.2 allowlist (R3)
+
+Today the consent boundary is structural: `pull::synthesize_command` (`src/agent/pull.rs:72`)
+rejects any tool not in the read-only `ALLOWLIST` (`pull.rs:29`), so a write is **unconstructable**
+(§4.2). Build mode adds **exactly one** writing tool — `submit` (it carries a form string as
+its argument, e.g. `(defn double [x] (* x 2))`) — and admits it through **one new arm**, not by
+loosening the allowlist's read-only floor:
+
+- The read-only `ALLOWLIST` is **unchanged** — reads stay auto-run (§17.3). `submit` is NOT
+  added to it.
+- `synthesize_command` keeps refusing everything not read-only **by default**. A new,
+  separate gate recognises `submit` and routes it to the **confirm-gated write arm**
+  (§15.2). A `submit` that does not pass the confirm-gate is refused exactly as a non-read
+  command is today — so **a non-confirmed / disallowed write stays unconstructable** (the
+  structural floor R3 requires).
+- Concretely: `run_pull` (`pull.rs:96`) gains a pre-dispatch match — if `call.name == "submit"`,
+  route to `run_submit` (§15.2, the confirm-gated arm); else fall through to the existing
+  read-only `synthesize_command` path verbatim. The read path is byte-unchanged; the write
+  path is the single new branch. This is "widen the allowlist in one place" — the one place
+  is the `run_pull` head, and the floor (read-only-by-default refusal) is untouched.
+
+`submit` is added to `tool_defs()` (`pull.rs:49`) **only when Build mode is active** for the
+turn (so a read-only Advise turn never offers it). Whether Build is offered is a turn-level
+flag (a future U-knob); for S89 the simplest correct shape is: `submit` is always in the
+tool-defs but always confirm-gated — the gate, not the offer, is the consent boundary
+(matching §17.3 "confirm each submission"). The +neg guard (a `submit` without confirm does
+not reach `eval`) is what `/qa` pins.
+
+### 15.2 The confirm gate (int mechanism; wording → `/repl`)
+
+When the agent emits `submit <form>`, the int mechanism:
+
+1. **Render the proposed form** as a normal definition echo (unframed, §17.2 / §17.3.1) —
+   the exact line the user would approve, through the agent-input prefix (§14.2) so it reads
+   as agent-issued.
+2. **Capture consent.** The int-level mechanism is a **synchronous prompt at the eval thread**:
+   `agent_turn` runs on the REPL-cadence `&mut CompilerSession`, synchronous to the user's
+   Enter (§3.2), so the confirm read is an ordinary blocking line-read at the same cadence —
+   the user types `y`/`n` (or equivalent) at the prompt. This holds BC §6.3 (REPL-cadence
+   consumer, not a new state window): the confirm is a prompt boundary, not a second cadence.
+   The **exact prompt wording** ("submit this definition? [y/N]") is deferred to `/repl` (the
+   §17.3 confirm-and-show experience — §19). This doc fixes that int captures consent via a
+   synchronous prompt at the existing cadence, not an async dialog or a new state window.
+3. **On decline:** render nothing to the session; feed a "declined" tool-result back to the
+   model (so it knows the form was not submitted) and continue the turn. Session state is
+   unchanged — structurally identical to the §17.3.1 "proposed, not submitted" floor.
+4. **On confirm:** route the form through `self.process_commands(&form, stdout)` (§15.3) —
+   the **same** path a user keystroke uses.
+
+`run_submit(&self, call, stdout)` is the new `pub(crate)` method in `pull.rs` (sibling to
+`run_pull`), holding steps 1–4. It is the single confirm-gated write site.
+
+### 15.3 Submission re-enters via `process_commands` / `eval` (R3 — no new eval entry)
+
+On confirm, `run_submit` calls `self.process_commands(&form, stdout)` — for a `(defn …)`
+this returns `CommandResult::Compile(src)`, which **the caller must drive through `eval`**
+exactly as the `main.rs` read loop does (`main.rs:313-326`: `CommandResult::Compile(src) =>
+s.eval(&src) …`). Two placement options, both reusing the existing path (R3):
+
+- **(preferred) `run_submit` drives `eval` itself**, mirroring `main.rs:315`: on
+  `Compile(src)` it calls `self.eval(&src)`, renders the result via `format_eval_result`
+  (unframed — it is normal REPL output, §17.2), and on a successful def triggers
+  `regenerate_backing_file()` (`main.rs:325`) so the new definition persists (§15 of the
+  spec). This inherits **commit-on-Ok / discard-on-Err** cluster-atomic staging (Decision 44),
+  error recovery, and backing-file regeneration **for free** — the agent's write is, at the
+  staging layer, indistinguishable from a user keystroke.
+- The tool-result fed back to the model is the `format_eval_result` text (the new symbol's
+  `:Type name` echo) on success, or — **per the validator (§16) this should never be a raw
+  compile error**, because the validator runs *first* and only clean code reaches `submit`.
+
+**No new eval entry, no parallel submit path** (R3): `run_submit` is a *caller* of the
+existing `process_commands`→`eval`→staging chain, structurally the same caller `main.rs` is.
+The "one new internal seam" the master design names (`repl-embedded-agent.md §7.5`) is the
+validator dry-run (§16), **not** a new submit path — submission is plain reuse.
+
+### 15.4 Read-only-by-default stays the structural floor
+
+The invariant R3 protects: **a write is reachable only past the confirm-gate.** Structurally:
+the read `ALLOWLIST` excludes writes (unchanged); `submit` is the only writing tool and it is
+unconditionally routed through `run_submit`'s confirm gate; an un-confirmed `submit` mutates
+nothing (it never reaches `eval`). So "auto-approve reads only" (§7.4, §17.3) is preserved by
+construction — the MVP's allowlist-exclusion floor is extended, not replaced, by a
+confirm-gate floor for the one write tool. `/sh` and any other non-read, non-`submit` tool
+stays refused at `synthesize_command` exactly as today.
+
+---
+
+## 16. Cluster B — pre-flight validator + silent-repair-anything (U5, R3)
+
+Before generated code is shown or submitted, it is validated on staging and **silently
+repaired on any failure** — the user structurally never sees an agent compile failure.
+**R3 (binding): the stage→check→discard loop reuses the existing `check_forms`
+discard-on-Err arm — `pub(crate)`, int-internal, no new public surface / facade delta (R3/R4).**
+**U5 (binding): silent-repair *anything*** — on **any** `Err` (parse OR type), no
+error-classification branch, feed the actual compiler error back to the model and retry.
+
+### 16.1 The dry-run seam already exists: `process_cluster_with_staging` (R3)
+
+The validator is the **typecheck-only dry-run** the master design names as "the one new
+internal seam" (`repl-embedded-agent.md §7.5`). The substrate is the existing cluster-atomic
+staging function `worker::process_cluster_with_staging` (`src/worker.rs:243-291`): it builds a
+**fresh staging `SymbolTable`**, runs `cranelisp_typecheck::check_forms` over it via
+`SymbolTableAccess::cluster`, and — crucially —
+
+- on `Ok` it **commits** staging into live (`commit_staging_to_live`, `worker.rs:279`),
+- on `Err` the staging table **drops** (atomic discard, live unchanged — `worker.rs:289`).
+
+The validator needs the **discard arm without the commit** — a *check-only* run: stage →
+`check_forms` → **always discard** (never commit), returning `Ok(())` / `Err(compiler_error)`.
+The existing function's two halves (build-staging + `check_forms` over `SymbolTableAccess::cluster`,
+`worker.rs:258-270`) are exactly the dry-run; the commit (`worker.rs:279`) is what the
+validator omits. The cleanest int-internal shape (no signature change to the existing fn —
+R4):
+
+```rust
+// src/worker.rs (pub(crate), #[cfg(feature="agent")]) — the typecheck-only dry-run.
+// Reuses the EXACT build-staging + check_forms body of process_cluster_with_staging,
+// minus commit_staging_to_live. Staging always drops (the discard arm, every path).
+pub(crate) fn validate_forms_dry_run(
+    symbol_tables: &DashMap<…>, module_aliases, prelude_fallback,
+    module: &ModuleFullPath, working_program: &[TopLevel],
+) -> Result<(), CranelispError> {
+    // build fresh staging  (worker.rs:258-261)
+    // check_forms over SymbolTableAccess::cluster  (worker.rs:264-270)
+    // match: Ok(_) => Ok(()),  Err(Gap) => Err(...)?,  Err(e) => Err(...)   // NO commit
+}
+```
+
+The frontend half (parse + macro-expand the model's code into `Vec<TopLevel>`) reuses the
+existing `worker::build_program_compat` / the build-form boundary the REPL already uses
+(`src/CLAUDE.md §"Cluster-Atomic Orchestration"`), so "parse OR type" failure (U5) surfaces
+uniformly: a parse/expand error is an `Err` from the build half; a type error is an `Err`
+from `check_forms`. **No error-classification branch** (U5): the validator does not
+distinguish them — *any* `Err` triggers repair. This is exactly why silent-repair-anything
+needs *less* machinery than the superseded "surface type errors" lean (`repl-embedded-agent.md
+§6.4`): one `Result`, one discard, one re-prompt.
+
+**No facade/interface delta (R3/R4):** `validate_forms_dry_run` is a `pub(crate)`
+int-internal fn that reuses the same `check_forms` call and the same staging shape the live
+path uses. `cranelisp-types` is untouched; no `public-api.txt` moves (int is a binary, no
+baseline); no `CACHE_SCHEMA_VERSION` bump (the dry-run never persists).
+
+### 16.2 The repair loop (silent, capped, in `agent_turn`'s write path)
+
+The repair loop lives where the write originates — `run_submit` (§15.2), before the confirm
+gate and before any echo:
+
+```text
+validate_and_repair(form, model):
+  for _ in 0..MAX_REPAIR_ITERATIONS:                 // cap — §16.3
+    parsed = build_program_compat(form)?or capture-as-Err
+    match validate_forms_dry_run(parsed):            // §16.1 — stage→check→DISCARD
+      Ok(())          -> return Ok(form)              // clean; proceeds to confirm+submit (§15)
+      Err(compiler_error):
+        // SILENT: nothing rendered to the transcript (the user never sees this).
+        feedback = neutral-vocabulary message carrying compiler_error.to_string()
+        record a HIDDEN repair turn on the transcript (NOT rendered to stdout)
+        resp = model.complete(assemble_request_with(feedback))   // §3.2 membrane
+        form = extract proposed code from resp (Done prose / a submit tool-call)
+  return Err(give-up)                                // §16.4
+```
+
+Key properties:
+- **Silent (U5, the load-bearing contract).** The broken intermediate is **never written to
+  `stdout`** — neither the broken form nor the compiler error reaches the transcript. The
+  repair model↔model exchange is internal: the feedback + the model's retry are recorded on
+  the transcript *as agent state* (so the next real turn has context) but **not rendered**.
+  Only the final clean form reaches the echo (§15.2 step 1) and the confirm gate. "The user
+  structurally cannot see an agent compile failure" is enforced by *where the render call is*:
+  rendering happens only after `validate_and_repair` returns `Ok(clean_form)`.
+- **Reuses the membrane.** The retry `model.complete` is the same `AgentModel::complete`
+  (§6.0) `agent_turn` already drives — so the repair loop is driven by a **stub `AgentModel`**
+  in tests (§16.5, Lane A) with zero network.
+- **Stage→check→discard only.** `validate_forms_dry_run` never commits, so a failed
+  validation leaves live state untouched (no staging leak) — and a *successful* validation
+  also discards (it is a *dry* run); the actual commit happens later, on confirm, through
+  `process_commands`→`eval` (§15.3). The validator proves "this will at least parse/typecheck";
+  the submit re-runs the real staged commit. (Running the check twice — once dry, once for
+  real — is the accepted cost of reusing the existing commit path verbatim rather than
+  threading a "validated" flag through `eval`; Principle 6 — the duplication is one extra
+  typecheck at REPL cadence, cheap, and keeps R3's "no new eval entry" exact.)
+
+### 16.3 The retry cap and 16.4 the give-up behaviour
+
+- **Cap.** `MAX_REPAIR_ITERATIONS` — a `const` in `pull.rs`/`mod.rs`, sibling to the existing
+  `MAX_TURN_ITERATIONS = 8` (`mod.rs:36`). Suggested **3** (a tuning knob, not architecture —
+  the primer lowers the retry rate, the gate guarantees the floor; `repl-embedded-agent.md §6.2`).
+- **Give-up.** When the cap is hit without a clean form, the agent does **not** submit broken
+  code and does **not** show a compile error (U5). It renders, in the prose frame, a single
+  honest notice ("I couldn't produce code that compiles cleanly here") and continues the turn
+  read-only — i.e. it degrades to the §17.3.1 "proposed, not submitted" floor (the last
+  attempt MAY be shown as a *proposal* the user can hand-fix, clearly marked not-submitted).
+  The exact give-up wording is `/repl`-owned (§19); this doc fixes that give-up never submits
+  and never surfaces a raw compiler error.
+
+### 16.5 Testability hook (Lane A — `/qa`, R3 testability)
+
+The repair loop is **drivable by a stub `AgentModel`** deterministically (Principle 5,
+`tests/plan/agent-testing-strategy.md §3.4`): the stub is scripted **broken-then-fixed** —
+turn 1 returns a `submit`/`Done` whose form fails `validate_forms_dry_run`; a later scripted
+turn returns clean code that passes. The test (Lane A, `#[cfg(feature="agent")]`) asserts:
+broken-generation-repaired (the loop stages→checks→discards then re-prompts), only-clean-
+reaches-session (after the loop only the clean form is committed; the broken intermediate
+never committed), and **+neg: the user never sees the broken intermediate** (the broken form
++ compiler error are absent from the rendered transcript — the U5 silent contract). The
+testability seam is the *same* one S88 keeps open: `agent_turn`/`run_submit` dispatch through
+the object-safe `AgentModel` membrane, so the stub drives the whole repair loop with zero
+network. **Coordination flagged to `/qa`** (§19): the stub script DSL (`src/CLAUDE.md`
+`tool:`/`done:` lines) gains a way to express a broken-then-fixed sequence.
+
+---
+
+## 17. Cluster C — Document mode: consultative preamble/docstring edits (rung 6, R4)
+
+The agent records durable understanding by writing a module preamble (or docstring), reusing
+the **S88 module-preamble substrate** — **R4 (binding): no `cranelisp-types` change, no cache
+bump; reuse the S88 `module_preamble` field + cache v9.**
+
+### 17.1 The write path already exists: `apply_module_preamble` + section-0 regen (R4)
+
+The substrate landed S88 (U2; `repl-embedded-agent.md §3.4`):
+- `SymbolTable.module_preamble: Option<String>` (the FIXME-0428 field, cache v9).
+- `save::apply_module_preamble(symbol_tables, module, source)` (`src/save.rs:308`) captures a
+  leading `;;` block off source text into the field.
+- `save::generate_module_source` (`src/save.rs:96-101`) re-emits the field as the **byte-stable
+  section-0 block** (`generate_preamble`, `save.rs:326`, the exact inverse of capture — §8.16.5
+  byte-stable round-trip).
+- `regenerate_backing_file()` (driven from `main.rs:325/333`) writes the regenerated source.
+
+A Document-mode edit is therefore **a field set + a regen**, no new machinery:
+
+```text
+apply_preamble_edit(module, new_preamble_text):
+  symbol_tables[module].module_preamble = Some(new_preamble_text)   // direct field set
+  self.regenerate_backing_file()                                    // byte-stable section-0 regen
+```
+
+The direct field set is the durable, byte-stable write (vs. `apply_module_preamble` which
+*captures from `;;`-marked source* — the agent supplies the **stripped prose**, so it sets the
+field directly, exactly the form `/doc <module>` reads back, §17.5.1). The unmodified-rest-of-
+file invariant (§8.16.5 — no reflow) holds by construction because only `module_preamble` is
+touched and `generate_module_source` is byte-stable for the unchanged sections (the FIXME-0423
+regen path). A `pub(crate) fn apply_preamble_edit` lives in `save.rs` next to
+`apply_module_preamble`.
+
+### 17.2 The consent gate distinguishes a preamble edit from a code write
+
+A preamble edit is a **Document write** — **consultative**, not the Build confirm (§17.3): the
+agent asks "shall I record that as `solver`'s preamble?" The int mechanism reuses the §15.2
+synchronous-prompt-at-the-eval-thread consent capture, but the **gate is keyed by tool**, so
+the two write classes are distinguished at the consent gate (the SPRINT-required distinction):
+
+- The Build write tool is `submit <form>` (a code form) → **confirm gate** (§15.2),
+  "submit this definition?".
+- The Document write tool is `set-preamble <module> <text>` (or `set-doc <sym> <text>`) →
+  **consultative gate**, "record this as <module>'s preamble?".
+
+`run_pull`'s head (§15.1) routes `set-preamble`/`set-doc` to a `run_document_edit` arm (sibling
+to `run_submit`), which renders the **exact new leading comment block** it proposes (§17.5.2 —
+through `generate_preamble` so the user sees the canonical `;;` form), asks the consultative
+question (wording → `/repl`, §19), and on confirm calls `apply_preamble_edit` (§17.1) then
+echoes the edit as a normal REPL line (§17.2). The tool name **is** the discriminator — a
+`submit` is code (confirm), a `set-preamble`/`set-doc` is documentation (consultative) — so the
+consent gate branches on `call.name`, no content sniffing. Both are absent from the read-only
+`ALLOWLIST` (so unconstructable without their gate — the §15.4 floor extends to Document writes
+too).
+
+### 17.3 Round-trip + harvester read-back (rung 6 → rung 3 feedback, R4)
+
+The closing loop ("memory is the code", §3.1/§4.6): after `apply_preamble_edit` + regen, the
+preamble (a) **round-trips byte-stably** through save/reload (it is the same field
+`generate_module_source` emits and `capture_module_preamble` re-reads — §8.16.5), and (b) is
+**read back by the harvester next session**. The harvester already reads `module_preamble` —
+§5.2 step 2 ("preamble: `symbol_table.module_preamble` … The harvester READS it") — and the
+S88 test `harvest_degrades_under_tight_budget_keeps_pin` (`mod.rs:620`) already asserts the
+field is folded into the harvest. So rung 6 (the *write*) feeds rung 3 (the *read*) with **no
+new harvest code**: a fresh session loads the regenerated `.cl`, `apply_module_preamble`
+captures the section-0 block into the field on load, and the next `assemble_request` harvests
+it. **No `cranelisp-types` change, no cache bump** (R4): cache v9 already serialises
+`module_preamble`; a cache-restored module carries it through serde (`save.rs:301-303`).
+
+### 17.4 Testability (Lane A — `/qa`)
+
+Per `tests/plan/agent-testing-strategy.md §3.5` (rung 6): a Document-mode edit round-trips (the
+edit writes the preamble; a subsequent `/doc <module>` reads it back; it persists across the
+backing-file regen — byte-stable), and the harvester reads the edited preamble (after the edit,
+a new turn's harvest carries the new preamble text). Drivable by a stub `AgentModel` scripting a
+`set-preamble` tool-call + a confirm; the round-trip + harvest-read-back are deterministic.
+
+---
+
+## 18. What S89 does NOT change (the zero-movement gate — R4)
+
+Pinned as a checkable Phase-5 gate (the `/arch` "zero baselines move" claim):
+- **No `cranelisp-types` change.** Build reuses `process_commands`/`eval`/staging; the
+  validator reuses `check_forms` + the existing staging shape; Document reuses the v9
+  `module_preamble` field. If `/dev` finds in Phase 5 it needs a new boundary type or a
+  cached-struct change, that is cross-crate → file `target: /arch` (none anticipated — R4).
+- **No `CACHE_SCHEMA_VERSION` bump.** The validator dry-run never persists; Document reuses v9.
+- **No `public-api.txt` movement.** `src/` is a binary (no baseline); all S89 additions
+  (`render.rs`, `validate_forms_dry_run`, `run_submit`/`run_document_edit`/`apply_preamble_edit`,
+  the `submit`/`set-preamble`/`set-doc` write arms) are `pub(crate)`, int-private,
+  `#[cfg(feature="agent")]`. The agent never ships in `--link`/`--release` (NG4).
+- **Feature-OFF byte-identical.** All Cluster-A render (`render.rs`) + rung-5/6 code rides the
+  existing four `#[cfg(feature="agent")]` cuts (§1); feature-off the binary is byte-identical
+  to today. Cluster A is the watch-item (R1): markdown/fence render lives **inside**
+  `src/agent/`, never a default-build render path.
+
+---
+
+## 19. S89 coordination points (flag to `/sprint` at the Phase-3 exit gate)
+
+Decisions this design couples to another skill's choice — `/sprint` reconciles at the gate:
+- **`/repl`** (additive to `repl/spec.md §17`):
+  - the **agent-input prompt glyph** (§14.2) — distinct from `▌` and from the human prompt; normative.
+  - **markdown rendering** within the §10.3 agent-prose frame (§14.3) — the markdown→frame composition.
+  - the **Build confirm-gate wording** ("submit this definition? [y/N]", §15.2) and the
+    **Document consultative wording** ("record this as <module>'s preamble?", §17.2).
+  - the **validator give-up wording** (§16.4) — never surfaces a raw compiler error (U5).
+- **`/qa`** (testability hooks; `tests/plan/agent-testing-strategy.md §3.4/§3.5`):
+  - the stub-script DSL extension for a **broken-then-fixed** repair sequence (§16.5, Lane A).
+  - the Cluster-A **ANSI-leak narrow failing-not-ignored repro** (§14.6) — owed before closure.
+  - the confirm-gated-write + allowlist-still-refuses-non-writes guard (§15.4) and the
+    Document round-trip + harvest-read-back guard (§17.4).
+- **`/arch`** — none anticipated (R4: zero cross-crate edge / type change). Only if Phase-5
+  surfaces a boundary-type need → file `target: /arch`.
+
+---
+
+## 13b. Cross-skill handoffs / FIXMEs (S89)
+
+Per the protocol (filed as `design/arch/fixmes/NNNN-*.md` when `/sprint` schedules; not
+authored from this design pass): the §19 coordination points are the S89 handoffs. No new
+`cranelisp-types` field is anticipated (R4) — the one used (`module_preamble`) landed S88
+(FIXME 0428). The validator dry-run + write-arm allowlist widening are int-internal, no facade
+delta (the Phase-2 ruling); no FIXME needed unless Phase-5 surfaces a cross-crate seam.
+
 ## Next skills
 
 - `/repl` — settle the agent experience (frame, `/ask`, `--agent` row, reverse-query UX,
-  U6 disclosure wording) against this mechanism.
+  U6 disclosure wording) against this mechanism; **S89**: agent-input prompt glyph, markdown
+  frame, Build confirm + Document consultative wording, validator give-up wording (§19).
 - `/dev` (int, narrow) — implement against this design once `/qa`'s failing tests land
-  (Phase 5). Source-touching steps serialize (broken worktree isolation).
+  (Phase 5). Source-touching steps serialize (broken worktree isolation). **S89**: three
+  clusters serial — Cluster A render (`src/agent/render.rs`, §14, R1/R2), Build write arm
+  + validator (§15/§16, R3), Document edit (§17, R4); keep feature-OFF byte-identical (§18).
 - `/qa` — draft the failing tests (classifier routing, stub-`AgentModel` loop, harvest
-  ladder, reverse-query scan) per §11.
+  ladder, reverse-query scan) per §11. **S89**: stage→check→discard repair loop (Lane A,
+  §16.5), confirm-gated-write + allowlist-refuses-non-writes (§15.4), Document round-trip +
+  harvest read-back (§17.4), and the Cluster-A ANSI-leak narrow repro (§14.6).
 - `/arch` — only if the `rig-core` dep wants a workspace-dep declaration, or if a
-  cross-crate seam surfaces during implementation (none anticipated).
+  cross-crate seam surfaces during implementation (none anticipated; R4 pins zero movement).
