@@ -257,6 +257,24 @@ fn run(
                 let input = buffer.trim().to_string();
                 buffer.clear();
 
+                // §5.3 dispatch classifier (design/int/agent.md §2.4,
+                // repl/spec.md §17.1). Feature-OFF this whole block is absent and
+                // the `process_commands` path below is byte-identical to today —
+                // the divergence is the `Agent` arm only, which fires solely on
+                // input that today produces a parse-error diagnostic anyway.
+                // `/ask` does NOT route through here — it is a slash command and
+                // flows through `process_commands` like any other.
+                #[cfg(feature = "agent")]
+                if let cranelisp::agent::Classify::Agent(text) = s.classify_for_agent(&input) {
+                    s.agent_turn(&text, &mut stdout);
+                    s.sync_watcher();
+                    for msg in s.poll_and_reload() {
+                        let _ = writeln!(stdout, "{msg}");
+                    }
+                    s.write_prompt(&mut stdout, compile_ms, eval_ms);
+                    continue;
+                }
+
                 match s.process_commands(&input, &mut stdout) {
                     CommandResult::Nothing => {}
                     CommandResult::Quit => break,
@@ -354,6 +372,12 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
     let mut nice_workers: Option<usize> = None;
     let mut action_run = false;
     let mut action_link = false;
+    // §0.6.1 agent toggle. `Some(true)` = `--agent`, `Some(false)` = `--no-agent`,
+    // `None` = default (off). When both flags are given, `--no-agent` wins (the
+    // safe default — off), enforced after the parse loop. In Wave 2 this is an
+    // accepted no-op in both builds; Wave 3 (agent feature) consumes it.
+    let mut agent_on = false;
+    let mut agent_off = false;
     let mut target: Option<String> = None;
     let mut i = 1;
 
@@ -399,11 +423,27 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
                 action_link = true;
                 i += 1;
             }
+            // §0.6.1: `--agent` / `--no-agent` are the runtime half of the
+            // agent's opt-in-twice discipline. REPL-only. A binary built WITHOUT
+            // the agent feature MUST accept them as recognised flags (so a script
+            // written for an agent-enabled build does not break) and treat them as
+            // no-ops — never "unknown flag". Off by default. The agent feature
+            // build (Wave 3) wires these to the runtime agent toggle; in Wave 2
+            // they are accepted no-ops in BOTH builds.
+            "--agent" => {
+                agent_on = true;
+                i += 1;
+            }
+            "--no-agent" => {
+                agent_off = true;
+                i += 1;
+            }
             arg if arg.starts_with("--") => {
                 eprintln!("error: unknown flag: {arg}");
                 eprintln!(
                     "usage: cranelisp [target] [--run | --link] [--no-color] \
-                     [--no-cache] [--priority-workers N] [--nice-workers N]"
+                     [--no-cache] [--priority-workers N] [--nice-workers N] \
+                     [--agent | --no-agent]"
                 );
                 process::exit(1);
             }
@@ -439,6 +479,15 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings) {
     } else {
         Action::Repl
     };
+
+    // §0.6.1: resolve the agent toggle. `--no-agent` wins when both are present;
+    // default is off. The agent is a REPL-only, dev-session capability — it
+    // never participates in `--run`/`--link`, so the resolved value is only
+    // meaningful in REPL mode. Wave 2 accepts the flags as no-ops (in BOTH
+    // builds); Wave 3 (the `agent` feature) threads `_agent_enabled` into the
+    // session's runtime agent state. Computed (not discarded at the parse site)
+    // so the precedence rule is exercised and the flags are provably accepted.
+    let _agent_enabled = agent_on && !agent_off && matches!(action, Action::Repl);
 
     // Resolve (project_root, entry_module) per spec §0.5.1.
     let (project_root, entry_module) = resolve_target(target.as_deref());

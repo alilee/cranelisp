@@ -449,7 +449,7 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | `/refs <sym>` | — | List sites that reference a symbol (reverse query; LLM-free — see §17.6) | 4 | [S88] |
 | `/tests-for <sym>` | — | List test functions that reference a symbol (reverse query; LLM-free — see §17.6) | 4 | [S88] |
 | `/doc <module>` | `/d` | Read a module's preamble (module-level documentation — see §17.5); `/doc <name>` reads a definition docstring (§3.1, builtins) | 0 | [S88] |
-| `/ask <text>` | — | Route natural-language text to the embedded agent (see §17.1); prints "agent not built in" when the feature is off | 4 | [S88] |
+| `/ask <text>` | — | The explicit agent door — routes `<text>` to the embedded agent **unconditionally**, bypassing the resolution-aware classifier (useful even for a *known* symbol's prose; see §17.1); prints "agent not built in" when the feature is off | 4 | [S88] |
 | `/quit` | `/q` | Exit REPL | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
@@ -1732,7 +1732,7 @@ This section is **additive and behaviorally feature-gated.** It specifies the us
 
 The agent extends the self-documentation principle (§4) into a conversational partner, but it does **not** replace, alter, or contend with the deterministic surface. Three invariants hold unconditionally:
 
-- **The deterministic REPL is untouched.** Any complete form, slash command, or bare-symbol introspection routes exactly as §1–§16 specify, whether or not the agent is enabled (§17.1). The agent is a new destination for input the deterministic REPL would otherwise reject as a parse error — nothing more.
+- **The deterministic REPL is untouched.** Any complete form, slash command, or **known**-symbol introspection routes exactly as §1–§16 specify, whether or not the agent is enabled (§17.1). The agent is a new destination for input the deterministic REPL would otherwise present as a parse error or an **unbound**-symbol display (genuine parse errors and bare *unknown* symbols/prose, §17.1) — and for the explicit `/ask` door — nothing more.
 - **Everything the agent does is a visible REPL line.** The agent has no private capability surface: its reads, its proposed writes, and its shell proposals all appear as ordinary REPL commands and ordinary REPL output (§17.2). The session remains a legible, replayable script (§15).
 - **Deterministic output and model output are unmistakable.** The agent's *prose* is rendered in a distinct reserved visual frame (§17.2); the deterministic `:Type value` format and the `;`-comment drawer remain exclusively the deterministic REPL's (§1, §4).
 
@@ -1740,27 +1740,33 @@ The agent extends the self-documentation principle (§4) into a conversational p
 
 When the agent is enabled, the REPL classifies each completed line of input into one of the existing deterministic destinations or the agent, **without regressing any §4 self-documentation behavior.** The classifier is a routing decision made one step earlier than evaluation; it does not change what any deterministic destination does.
 
+**Parseable is not sufficient.** The discriminator is **symbol resolution**, not merely whether the reader accepts the input. The naive rule "anything the reader accepts routes deterministically" is wrong about the reader: multi-word natural-language prose (e.g. `how do I define a constrained function over Num?`) parses cleanly as `Ok(N bare symbols)` — a sequence of valid atoms — so a reader-acceptance test would route real sentences to the REPL, not the agent. The classifier therefore goes one step further: when a line parses to **bare atoms**, it **resolves** each symbol against the session before deciding. Known names stay deterministic (§4 is preserved); any unbound/unknown symbol routes the line to the agent. [S88]
+
 A line is routed as follows (the first matching rule wins):
 
 | Input shape | Routes to | Behavior |
 |---|---|---|
 | Starts with `/` (slash command) | Deterministic REPL | Unchanged (§3). `/ask` is the one slash command that forces the agent — see below. |
+| `/ask <text>` | **Agent (always)** | The explicit door. Routes `<text>` to the agent unconditionally — **regardless of resolution** — bypassing the classifier (see below). |
 | Blank or comment-only | Deterministic REPL | Unchanged — silent re-prompt (§2.3). |
-| Parses as one or more complete forms (atoms, literals, lists, vectors) | Deterministic REPL | Unchanged. This is the entire §4 self-documentation surface: bare symbols (`+`, `foo`, `42`), expressions, definitions, special forms — **all still route to introspection/eval exactly as today.** |
-| Unclosed `(` or `[` (parens not balanced) | Continuation | Unchanged — continuation prompt (§2.2). |
-| A parse error that is **not** an unclosed bracket (i.e. natural-language prose) | **Agent** | The text is sent to the agent as a natural-language turn. |
+| `parse(line)` → unclosed `(` or `[` (brackets not balanced) | Continuation | Unchanged — continuation prompt (§2.2). |
+| `parse(line)` → a **genuine parse error** (stray `)`, unterminated string — *not* an unclosed bracket) | **Agent** | The text is sent to the agent as a natural-language turn. |
+| `parse(line)` → `Ok(forms)` containing a **compound form** (`(…)` list or `[…]` vector) | Deterministic REPL | It is code. Expressions, definitions, special-form calls — evaluated/introspected exactly as today (§4, §1). |
+| `parse(line)` → `Ok(forms)` of **bare atoms only**, where **every** symbol resolves (a literal, or a known/bound symbol) | Deterministic REPL | The §4 self-documentation surface is preserved: bare `map`, `+`, `42` are still **described** (§4), never sent to the agent. |
+| `parse(line)` → `Ok(forms)` of **bare atoms** where **any** symbol is unbound/unknown | **Agent** | A bare `yes`, a typo like `lenght`, or any natural-language prose (a run of bare symbols, at least one of which is unknown) reaches the agent. |
 
-The discriminator is the **same reader the REPL already trusts** (the one that decides eval vs. continuation), consulted to decide routing. **Anything the reader accepts routes deterministically** — so the §4 contract is preserved by construction. Multi-word prose (e.g. `how do I define a constrained function over Num?`) is never a single valid form (two bare symbols in a row are a parse error), so real sentences route to the agent with no sigil. [S88]
+**Symbol resolution is the discriminator.** For the bare-atom case the classifier consults the **same symbol table the §4 self-documentation uses** to describe a name. If the line is a single bare symbol or a run of bare symbols and **all** of them resolve (literals always resolve; known operators, builtins, special forms, types, traits, macros, and user/imported bindings resolve), the line is deterministic and is described/evaluated exactly as today. If **any** bare symbol is unbound, the line routes to the agent. This is why a bare known `map` is still described by §4, while a bare unknown `yes` — or a real sentence, which is just a run of bare symbols at least one of which is unknown — reaches the agent with no sigil. [S88]
 
-**The bare single-word case.** A bare single word ("hello", "why") parses as a symbol and therefore routes to **introspection** (§4), not the agent — preserving §4. To force a single word (or any text the reader would otherwise accept) to the agent, use the explicit escape hatch:
+**§4 self-documentation is preserved for known symbols.** A bare known symbol (`+`, `map`, `42`, a user-defined `foo`) routes to **introspection** (§4) and is **described**, not sent to the agent. The resolve→agent routing fires only on *unknown* symbols, so no input that §4 describes today changes destination. [S88]
 
-- **`/ask <text>`** routes `<text>` to the agent unconditionally, bypassing the classifier. This is the canonical way to ask a one-word or form-shaped question of the agent. [S88]
+**The explicit `/ask` door always reaches the agent.** `/ask <text>` routes `<text>` to the agent **unconditionally**, bypassing the classifier and ignoring resolution. This is the canonical way to ask the agent about a *known* symbol's usage in prose (e.g. `/ask how do I use map with a closure?` — where `map` is bound and would otherwise be described by §4), or to force a single bound word or a form-shaped question to the agent. [S88]
 
 **Feature-off and dormant behavior (byte-identical fallback):**
 
-- When the agent is **compiled out** or **dormant** (built-in but no runtime key, §17.4):
+- The resolve→agent routing is **entirely feature-gated.** When the agent is **compiled out** or **dormant** (built-in but no runtime key, §17.4) the classifier's `Agent` arm does not exist, and routing is **byte-identical to today**:
+  - A bare unbound symbol → today's **"unbound" introspection display** (§4.1.10) — exactly as the deterministic REPL shows now. The resolution check still happens; it simply routes the unbound result to the §4 unbound display rather than to a nonexistent agent. [S88]
+  - A genuine parse error (or a run of bare symbols including an unbound one) → today's **parse-error / unbound display** (§5.1, §4.1.10) — byte-identical to the deterministic REPL with no agent. [S88]
   - `/ask <text>` MUST print a single, clear notice and re-prompt — `agent not built in` when compiled out, or `agent not enabled (no key configured)` when built-in but dormant — and MUST NOT crash, evaluate, or alter session state. [S88]
-  - Prose that would route to the agent instead **falls back to today's parse-error display** (§5.1) — byte-identical to the deterministic REPL with no agent. The classifier's `Agent` arm simply does not exist; an unbalanced-bracket-free parse error is presented exactly as §5 specifies. [S88]
 
 This fallback is the user-facing guarantee behind "feature-off ⇒ the REPL is the original REPL": no input that routes deterministically today changes, and the only new behavior is the `Agent` arm, which is absent unless the agent is live.
 
@@ -1931,4 +1937,4 @@ This section is the **complete** set of additive agent requirements on the REPL 
 - the `--agent` / `--no-agent` flags (§0.6.1);
 - the "Agent prose frame" style role (§10.3).
 
-Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. Feature-off, the REPL is byte-identical to §1–§16. [S88]
+Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. The resolution-aware dispatch classifier (§17.1) — which resolves bare atoms and routes any *unknown* symbol to the agent — is itself **entirely feature-gated**: feature-off, an unbound bare symbol still lands on today's §4.1.10 unbound display and a genuine parse error on the §5 display, so the REPL is byte-identical to §1–§16. [S88]

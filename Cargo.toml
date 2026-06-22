@@ -85,6 +85,14 @@ features = ["derive"]
 # the accessor is purely additive (Principle 8 — no interim scaffolding).
 [features]
 bench = []
+# Sprint 88 Phase 5 (agentic-REPL track, Wave 2 foundations): the embedded
+# agent. OFF by default — in NO default feature set, enabled by no
+# dev-dependency, so `cargo build` / `cargo nextest run` never compile it and
+# the ~9s default suite stays agent-free (design/int/agent.md §6.4). All of
+# `src/agent/` is `#[cfg(feature = "agent")]`. Wave 3 adds the `rig-core`
+# optional dependency (the LLM client) under this feature; Wave 2 deliberately
+# does NOT — the feature gates the module seam + classifier arm only.
+agent = []
 
 [[bin]]
 name = "cranelisp"

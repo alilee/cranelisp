@@ -110,44 +110,78 @@ On a complete buffer, `main.rs:260` calls `s.process_commands(&input, &mut stdou
 `check_bare_symbol_introspection` (`src/eval.rs:447` — verified; the §4 self-documenting
 behaviour). `describe_symbol` is `src/repl.rs:300` (verified).
 
-### 2.2 The classifier shape
+### 2.2 The classifier shape — symbol-resolution-aware (refined, user-directed 2026-06-22)
 
 The classifier is a routing decision made **one step earlier** than today, using the
 reader the REPL already trusts (`cranelisp_frontend::parse`, `crates/cranelisp-frontend/
 src/lib.rs:368`, called at `src/eval.rs:78`). It does NOT replace `process_commands`'s
-internal sort — it sits *in front of it*, in the `main.rs` read loop, and only diverts
-the one case `process_commands` cannot reach today (a buffer that is neither a slash
-command nor a parseable form):
+internal sort — it sits *in front of it*, in the `main.rs` read loop, and diverts to the
+agent the two cases `process_commands` would otherwise mishandle: a genuine parse error
+(not Cranelisp), and a paren-balanced **bare-symbol** buffer whose symbols do not resolve.
+
+**The design lesson (why the prior shape was wrong): parseability ≠ routing; resolution
+is the discriminator.** The earlier draft of this section assumed prose fails to parse —
+"two bare symbols = parse error per the reader" — and therefore routed any `Ok(forms)`
+straight to `Repl`. That premise is **false about this reader.**
+`cranelisp_frontend::parse("how do I define a function")` returns `Ok(N bare Symbol
+forms)`, not `Err` — a run of bare words is a perfectly valid sequence of `Sexp::Symbol`
+atoms. So a parse-success test alone routes a natural-language sentence to the REPL, never
+the agent. **Parseability is insufficient; the classifier must resolve the symbols.** A
+buffer of bare atoms is the §4 self-documentation surface **only if every atom is known**;
+any unbound bare symbol (a typo, a bare word, a multi-word sentence) is for the agent. A
+future reader MUST NOT reintroduce the "bare words don't parse → any `Ok` is REPL" premise.
 
 ```text
-classify(buffer) ->                                   // called in main.rs read loop, on a complete buffer
-  starts_with('/')                  -> Repl           // slash command — unchanged path (incl. /ask, /refs, /tests-for)
+classify(buffer) ->                                   // main.rs read loop, on a complete buffer
+  starts_with('/')                  -> Repl           // slash command — unchanged path (/ask, /refs, /tests-for)
   blank / comment-only              -> Repl           // unchanged (process_commands::Nothing)
   match cranelisp_frontend::parse(buffer):
-    Ok(_ non-empty)                 -> Repl           // a complete sexp / atom / literal — the §4 surface, unchanged
-    Err(unclosed '(' or '[')        -> Continuation   // unchanged: this is what parens_balanced already gates
-    Err(other parse error):
-        #[cfg(feature="agent")]     -> Agent(buffer)  // not Cranelisp → natural language
-        #[cfg(not(...))]            -> Repl           // FALL THROUGH to today's parse-error diagnostic
+    Err(unclosed '(' / '[')         -> Continuation   // (paren-balance guard) what parens_balanced gates today
+    Err(other parse error)          -> Agent(buffer)  // not Cranelisp → natural language
+    Ok(forms):
+      ANY compound (List / Bracket)  -> Repl           // (+ 1 2), [1 2 3] — it is code, the §4 surface
+      else (all forms are bare atoms — Symbol / Int / Float / Bool / Str):
+        ALL known                    -> Repl           // §4 describe surface (bare-symbol introspection)
+        ANY unbound / unknown symbol -> Agent(buffer)  // typo, bare word, multi-word prose
 ```
 
-**Critical (R3-adjacent, /arch advisory): the feature-OFF path is byte-identical.** The
-`Err(other parse error)` arm with the feature off routes to `Repl` — i.e. into
-`process_commands`/`eval` exactly as today — so the same parse error surfaces through
-the same `eval` → `format_error` path the user sees now. The `#[cfg(feature="agent")]`
-arm is the ONLY divergence, and it only fires on input that today produces a parse-error
-diagnostic anyway. **There is no behaviour change for any input the reader accepts** —
-the brackets/slash/atom/literal surface routes deterministically to `Repl`, untouched.
+Atom resolution (the discriminator): a literal (`Int`/`Float`/`Bool`/`Str`) always counts
+as known; a bare `Symbol` is known iff `symbol_is_known(name)` —
 
-**Self-documentation preserved (the §5.2 tension, resolved).** A bare atom (`+`, `foo`,
-`42`) parses `Ok` → `Repl` → reaches `check_bare_symbol_introspection` (`eval.rs:447`) —
-the `repl/spec.md §4` contract is untouched. The one ambiguity is a **bare single word**
-("hello", "why") that parses as a lone `Sexp::Symbol` and would route to introspection
-rather than the agent. This is intentional and matches §4: a bare word IS an
-introspection query. Multi-word prose is never one valid sexp (two bare symbols = parse
-error per the reader), so a real sentence routes to `Agent` with no sigil. For the case
-where the user wants to ask a one-word or form-shaped question, the escape hatch is
-`/ask` (§2.3).
+```rust
+fn symbol_is_known(&self, name: &str) -> bool {                 // src/agent/mod.rs
+    crate::session_v4::intrinsic_type_from_name(name).is_some() //   Int/Bool/Float/String (§4.1.3)
+        || self.lookup_with_prelude_fallback(name).is_some()    //   src/repl.rs:562 — the canonical path
+}
+```
+
+This reuses the **exact** resolution path `/sig` / `/info` / bare-symbol introspection /
+`describe_symbol` use — `lookup_with_prelude_fallback` (`src/repl.rs:562`: current module
+→ prelude outer scope → root, covering bound defs, special forms, types, traits,
+operators, constructors), plus the `intrinsic_type_from_name` check those paths apply
+ahead of the table lookup for the §4.1.3 names that live outside the symbol tables. **No
+second resolver is hand-rolled** (Principle 7 — single source of truth): the `Some`/`None`
+gate that decides "describe this symbol" vs "unknown symbol '…'" is the same gate that
+decides Repl vs Agent here.
+
+**Critical: the feature-OFF path is byte-identical.** The ENTIRE `agent` module — including
+`classify_for_agent`, `symbol_is_known`, and the `Classify::Agent` variant — is
+`#[cfg(feature = "agent")]` (declared in `lib.rs`), and `main.rs` calls `classify_for_agent`
+only under the same cfg. Feature-off, the classifier and its `Agent` arm **do not exist**:
+every input flows through `process_commands` / `eval` exactly as today. A bare unbound
+symbol reaches today's `eval.rs` "unbound" introspection message; a genuine parse error
+surfaces the same `eval` → `format_error` diagnostic. The feature-on `Agent` arms only fire
+on input that today produces an unbound-symbol or parse-error diagnostic anyway, so there
+is **no behaviour change for any input the reader accepts as known code.**
+
+**Self-documentation preserved (the §5.2 tension, resolved).** A bare *known* atom (`+`,
+`map`, `Int`, `42`) parses `Ok`, resolves, and routes `Repl` → reaches
+`check_bare_symbol_introspection` (`eval.rs:447`) — the `repl/spec.md §4` contract is
+untouched. A bare *unknown* word (`hello`, `lenght`, `why`) parses `Ok` as a lone
+`Sexp::Symbol`, fails resolution, and routes to the agent — which is the right behaviour:
+an unknown bare word is far more likely a question than a deliberate "describe this
+unbound symbol" request. For a user who genuinely wants to introspect a not-yet-defined
+name, or to ask a form-shaped question, the explicit escape hatch is `/ask` (§2.3).
 
 ### 2.3 `/ask <text>` — the escape hatch
 
@@ -196,11 +230,13 @@ match s.process_commands(&input, &mut stdout) { … }
 ```
 
 `classify_for_agent` is a `#[cfg(feature="agent")]` `pub(crate)` method on
-`CompilerSession` (lives in `src/agent/`). It returns `Classify::Agent(text)` ONLY for
-the `Err(other parse error)` case (it re-runs the cheap `parse` the loop would run
-anyway, or — better — the loop threads the already-computed parse `Result` to avoid a
-double parse; a Phase-5 micro-decision, noted). For every other case it returns
-`Classify::Repl` and the loop falls through to `process_commands` unchanged. **`/ask`
+`CompilerSession` (lives in `src/agent/`). It returns `Classify::Agent(text)` for the
+`Err(other parse error)` case AND for an `Ok(all-bare-atoms)` buffer with any unbound
+symbol (§2.2 — the resolution discriminator; it re-runs the cheap `parse` the loop would
+run anyway, or — better — the loop threads the already-computed parse `Result` to avoid a
+double parse; a Phase-5 micro-decision, noted). For every other case (slash, blank,
+compound forms, all-known bare atoms) it returns `Classify::Repl` and the loop falls
+through to `process_commands` unchanged. **`/ask`
 does NOT go through `classify_for_agent`** — it is a slash command and flows through
 `process_commands` → `dispatch_command` like any other (§2.3), so the classifier and the
 escape hatch are two independent entry points to `agent_turn`.
@@ -689,10 +725,12 @@ optional.
 
 ## 11. Testability notes (Principle 5 — for `/qa`, not authored here)
 
-- **Classifier routing** — table tests over `classify_for_agent` (form → Repl, prose →
-  Agent, unclosed → Continuation, bare word → Repl/introspection). Feature-off: assert
-  `/ask` → "agent not built in" and the `Err(other)` path is today's diagnostic
-  (byte-identical guard).
+- **Classifier routing** — table tests over `classify_for_agent` (compound form → Repl,
+  prose → Agent, unclosed → Continuation, **known** bare atom/literal → Repl/introspection,
+  **unbound** bare symbol → Agent — the §2.2 resolution discriminator). Feature-off: assert
+  `/ask` → "agent not built in" and the `Err(other)` / unbound-bare-symbol paths are
+  today's diagnostics (byte-identical guard — the whole `agent` module, incl.
+  `classify_for_agent`, is `#[cfg]`-gated away).
 - **`agent_turn` against a stub `CompletionModel`** — because the boundary is rig's
   `CompletionModel` *trait* (§6), the loop is tested by implementing it with a stub that
   returns a canned response (no network): assert a tool-call response synthesizes the right

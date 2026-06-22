@@ -61,6 +61,18 @@ pub(crate) enum ReplCommand<'a> {
     PlatformSchema(&'a str),
     Reset,
     Sh(&'a str),
+    /// `/ask <text>` — the embedded-agent escape hatch (repl/spec.md §17.1,
+    /// design/int/agent.md §2.3). Registered in BOTH builds so the parser table
+    /// is identical (so `/ask` is always recognised-not-unknown); the *dispatch
+    /// body* is feature-split — agent-ON routes to `agent_turn`, agent-OFF prints
+    /// "agent not built in".
+    Ask(&'a str),
+    /// `/refs <sym>` — reverse-query: definitions whose body references `<sym>`
+    /// (repl/spec.md §17.6.1, agent.md §9). LLM-free, default build, unconditional.
+    Refs(&'a str),
+    /// `/tests-for <sym>` — reverse-query restricted to test functions
+    /// (repl/spec.md §17.6.2, agent.md §9). LLM-free, default build, unconditional.
+    TestsFor(&'a str),
     Unknown(&'a str),
 }
 
@@ -103,6 +115,9 @@ pub(crate) fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/platform-schema" => ReplCommand::PlatformSchema(arg),
         "/reset" => ReplCommand::Reset,
         "/sh" => ReplCommand::Sh(arg),
+        "/ask" => ReplCommand::Ask(arg),
+        "/refs" => ReplCommand::Refs(arg),
+        "/tests-for" => ReplCommand::TestsFor(arg),
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -131,6 +146,9 @@ pub(crate) fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /run-tests (/rt) [MOD]  Run test-* functions (current module or named)");
     let _ = writeln!(stdout, "  /run-all-tests      Run all tests in project modules");
     let _ = writeln!(stdout, "  /platform-schema NAME  Print the generated layout schema for a loaded platform");
+    let _ = writeln!(stdout, "  /refs NAME          List definitions whose body references NAME");
+    let _ = writeln!(stdout, "  /tests-for NAME     List test functions that reference NAME");
+    let _ = writeln!(stdout, "  /ask <text>         Ask the embedded agent (if built in)");
     let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
     let _ = writeln!(stdout, "  /sh <cmd>       Run a shell command");
 }
@@ -482,6 +500,29 @@ impl CompilerSession {
                 run_shell_command(cmd, stdout);
                 CommandResult::Nothing
             }
+            ReplCommand::Ask(text) => {
+                // The variant + parse arm are unconditional (the parser table is
+                // identical in both builds); the dispatch BODY is feature-split.
+                // repl/spec.md §17.1, design/int/agent.md §2.3.
+                #[cfg(feature = "agent")]
+                {
+                    self.agent_turn(text, stdout);
+                    CommandResult::Nothing
+                }
+                #[cfg(not(feature = "agent"))]
+                {
+                    let _ = text;
+                    CommandResult::Final(
+                        "agent not built in (rebuild with --features agent)".to_string(),
+                    )
+                }
+            }
+            ReplCommand::Refs(sym) => {
+                CommandResult::Final(self.handle_refs(sym))
+            }
+            ReplCommand::TestsFor(sym) => {
+                CommandResult::Final(self.handle_tests_for(sym))
+            }
             ReplCommand::Unknown(cmd) => {
                 CommandResult::Final(format!(
                     "error: unknown command '{cmd}'. Type /help for available commands."
@@ -693,6 +734,115 @@ impl CompilerSession {
         } else {
             output
         }
+    }
+
+    /// `/refs <sym>` handler (repl/spec.md §17.6.1, design/int/agent.md §9).
+    ///
+    /// Lists the definitions in scope whose body references `<sym>` — the
+    /// reverse of the forward name→source/sig/doc introspection. LLM-free,
+    /// default build. An on-demand scan over the in-memory module bodies (no
+    /// maintained reverse index, no invalidation in a mutating session — §9.2).
+    /// Output uses the §3.3 L0–L4 layout (names only), byte-identical to `/list`
+    /// for the same name set.
+    pub(crate) fn handle_refs(&self, sym: &str) -> String {
+        if sym.is_empty() {
+            return "Usage: /refs <symbol-name>".to_string();
+        }
+        // §17.6.1: a genuinely-unbound name is distinguished from a bound-but-
+        // unreferenced one — report `unbound symbol '<sym>'` (consistent with
+        // §4.1.10) rather than silently reporting no references.
+        if !self.symbol_is_bound(sym) {
+            return format!("unbound symbol '{sym}'");
+        }
+        let referers = self.scan_referers(sym, false);
+        if referers.is_empty() {
+            return format!("; no references to {sym}");
+        }
+        let mut out = format!("; references to {sym}\n");
+        out.push_str(&format_symbol_layout(&referers).join("\n"));
+        out
+    }
+
+    /// `/tests-for <sym>` handler (repl/spec.md §17.6.2, design/int/agent.md §9).
+    ///
+    /// A specialization of `/refs` filtered to test functions (the `test-`
+    /// prefix + nullary test signature, §16.1). LLM-free, default build.
+    pub(crate) fn handle_tests_for(&self, sym: &str) -> String {
+        if sym.is_empty() {
+            return "Usage: /tests-for <symbol-name>".to_string();
+        }
+        if !self.symbol_is_bound(sym) {
+            return format!("unbound symbol '{sym}'");
+        }
+        let referers = self.scan_referers(sym, true);
+        if referers.is_empty() {
+            return format!("; no tests reference {sym}");
+        }
+        let mut out = format!("; tests referencing {sym}\n");
+        out.push_str(&format_symbol_layout(&referers).join("\n"));
+        out
+    }
+
+    /// Whether `sym` (a bare name) is bound anywhere in the live session —
+    /// the current module, prelude (outer scope), or any loaded module.
+    /// Used by `/refs`/`/tests-for` to distinguish a typo (unbound) from a
+    /// genuinely-unreferenced symbol (repl/spec.md §17.6.1, §4.1.10).
+    fn symbol_is_bound(&self, sym: &str) -> bool {
+        if self.lookup_with_prelude_fallback(sym).is_some() {
+            return true;
+        }
+        // Also accept a name defined in any loaded module (the scan target may
+        // be a symbol the user names without it being in the current scope).
+        self.shared
+            .symbol_tables
+            .iter()
+            .any(|t| t.get(sym).is_some())
+    }
+
+    /// Scan every loaded module's definitions for bodies that reference `target`.
+    ///
+    /// Returns the fully-qualified names of referring definitions, sorted. When
+    /// `tests_only` is set, only test functions (the `test-` prefix +
+    /// nullary-test shape, §16.1) are considered (the `/tests-for` filter).
+    ///
+    /// Reference detection (§9.2): a body references `target` if `target`
+    /// appears as a whole symbol token in the definition's stored source. The
+    /// scan reads the int `Introspection.source` (REPL-evaled defns) or its
+    /// `sexp`; a definition with no stored body (e.g. cache-restored modules
+    /// carrying no introspection) cannot be scanned and is skipped. This is the
+    /// MVP token-scan; an AST-walk refinement is noted in the design as a later
+    /// precision knob.
+    fn scan_referers(&self, target: &str, tests_only: bool) -> Vec<String> {
+        let mut referers: Vec<String> = Vec::new();
+        let intr = match self.shared.introspection.as_ref() {
+            Some(m) => m,
+            None => return referers, // batch mode: no introspection store.
+        };
+        for table in self.shared.symbol_tables.iter() {
+            let module = table.key().clone();
+            for (name, entry) in table.defined_symbols() {
+                // A symbol never counts as referencing itself.
+                if name.as_ref() == target {
+                    continue;
+                }
+                if tests_only && !is_test_function(name.as_ref(), entry) {
+                    continue;
+                }
+                let fq = FQSymbol {
+                    module: module.clone(),
+                    symbol: name.clone(),
+                };
+                let Some(record) = intr.get(&fq) else {
+                    continue;
+                };
+                if body_references(&record, target) {
+                    referers.push(format!("{}/{}", module.as_ref(), name.as_ref()));
+                }
+            }
+        }
+        referers.sort();
+        referers.dedup();
+        referers
     }
 
     /// /mod handler: switch module namespace.
@@ -2106,6 +2256,106 @@ const LAYOUT_ROW_CAP: usize = 6;
 /// Threshold (exclusive) below which a category renders on a single line (L0/L1).
 /// Fewer than 7 names → single line; 7 or more → breaking layout.
 const LAYOUT_BREAK_THRESHOLD: usize = 7;
+
+/// Whether a definition is a test function (the `test-` prefix + a nullary
+/// `Def`, per the test convention §16.1) — the `/tests-for` filter
+/// (repl/spec.md §17.6.2). Structural (does not require the function to be
+/// codegen'd), so it works over freshly-typechecked REPL state.
+fn is_test_function(name: &str, entry: &ModuleEntry<Code>) -> bool {
+    if !name.starts_with("test-") {
+        return false;
+    }
+    matches!(entry, ModuleEntry::Def { param_names, .. } if param_names.is_empty())
+}
+
+/// Whether a definition's stored body references `target` as a whole symbol
+/// token (repl/spec.md §17.6, design/int/agent.md §9.2). Prefers a walk over
+/// the stored `sexp` (precise — matches a `Symbol` node, not a substring);
+/// falls back to a token-scan of the source text when no sexp is stored.
+///
+/// A qualified reference (`mod/target`) matches an unqualified `target` query
+/// (the `/`-tail is compared), so `/refs grid-get` finds `solver/grid-get` uses.
+fn body_references(record: &Introspection, target: &str) -> bool {
+    if let Some(ref sexp) = record.sexp {
+        return sexp_references(sexp, target);
+    }
+    if let Some(ref src) = record.source {
+        return source_tokens_reference(src, target);
+    }
+    false
+}
+
+/// Walk a `Sexp` tree, returning true if any `Symbol` node names `target`
+/// (bare or as the `/`-qualified tail).
+fn sexp_references(sexp: &Sexp, target: &str) -> bool {
+    match sexp {
+        Sexp::Symbol(name, _) => symbol_token_matches(name, target),
+        Sexp::List(items, _) | Sexp::Bracket(items, _) => {
+            items.iter().any(|s| sexp_references(s, target))
+        }
+        _ => false,
+    }
+}
+
+/// Token-scan a source string for `target` as a whole symbol token. A token is
+/// a maximal run of non-delimiter chars (delimiters: whitespace, parens,
+/// brackets, quotes). Comments (`;` to end of line) and string literals are
+/// skipped so a mention inside a comment or string is not a reference.
+fn source_tokens_reference(src: &str, target: &str) -> bool {
+    let mut token = String::new();
+    let mut in_string = false;
+    let mut in_comment = false;
+    let mut prev = '\0';
+    let flush = |token: &mut String, target: &str| -> bool {
+        let hit = !token.is_empty() && symbol_token_matches(token, target);
+        token.clear();
+        hit
+    };
+    for ch in src.chars() {
+        if in_comment {
+            if ch == '\n' {
+                in_comment = false;
+            }
+            prev = ch;
+            continue;
+        }
+        if in_string {
+            if ch == '"' && prev != '\\' {
+                in_string = false;
+            }
+            prev = ch;
+            continue;
+        }
+        match ch {
+            ';' => {
+                if flush(&mut token, target) {
+                    return true;
+                }
+                in_comment = true;
+            }
+            '"' => {
+                if flush(&mut token, target) {
+                    return true;
+                }
+                in_string = true;
+            }
+            c if c.is_whitespace() || c == '(' || c == ')' || c == '[' || c == ']' => {
+                if flush(&mut token, target) {
+                    return true;
+                }
+            }
+            c => token.push(c),
+        }
+        prev = ch;
+    }
+    flush(&mut token, target)
+}
+
+/// Whether a symbol token names `target` — exact match, or the `/`-qualified
+/// tail of a module-qualified reference (`mod/target`).
+fn symbol_token_matches(token: &str, target: &str) -> bool {
+    token == target || token.rsplit_once('/').map(|(_, tail)| tail) == Some(target)
+}
 
 /// Whether a symbol name reads as an operator (non-alphabetic leading char).
 /// Operators (`+`, `-`, `<=`, `!=`, …) sort before, and never share a row with,

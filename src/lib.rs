@@ -90,3 +90,13 @@ pub(crate) mod thread_util;
 // `Jit::new(symbol_tables)` registers them. int hosts no `(trace ...)` runtime.
 pub(crate) mod watch;
 pub(crate) mod worker;
+
+// agent — embedded-agent module seam (Sprint 88 Phase 5, Wave 2 foundations).
+// Entirely `#[cfg(feature = "agent")]`: feature-off ⇒ this module does not
+// exist and the binary is byte-identical to today (design/int/agent.md §1,
+// §3.1; repl/spec.md §17.1). Holds the §5.3 dispatch classifier
+// (`classify_for_agent`) + the Wave-2 `agent_turn` placeholder. Wave 3 fills
+// the loop (rig `CompletionModel` + harvester + primer + pull) and adds the
+// `rig-core` optional dep under this feature — NOT this wave (agent.md §6).
+#[cfg(feature = "agent")]
+pub mod agent;
