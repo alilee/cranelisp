@@ -148,6 +148,20 @@ pub struct AgentState {
     /// Once-per-session flag for the §20.4 first-use notice — fired the first
     /// time an autonomous (`--yes`) write is auto-accepted, then never again.
     pub auto_accept_notice_shown: bool,
+    /// Per-TURN bookkeeping for the user-facing give-up line (Phase-6, S89). A
+    /// `submit` whose pre-flight repair cap exhausts feeds the MODEL an honest
+    /// abort (`run_submit`), but it must NOT print the user-facing
+    /// "I couldn't produce a definition" line per-failed-submit mid-turn — the
+    /// turn may CONTINUE and ultimately submit cleanly (live trace, S89). These
+    /// flags are reset at every `agent_turn` start and consulted at TRUE
+    /// turn-end: the give-up line prints at most once, only when the turn
+    /// produced NO committed write (`submit_committed == false`) AND at least one
+    /// submit gave up (`submit_gave_up == true`), AND the turn did not end on a
+    /// `Done` answer (the Done arm returns before the end-of-turn give-up site).
+    pub submit_gave_up: bool,
+    /// Set when a `submit` actually commits a definition this turn (the success
+    /// that suppresses the give-up line — the turn "produced something").
+    pub submit_committed: bool,
 }
 
 impl AgentState {

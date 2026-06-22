@@ -78,6 +78,8 @@ fn new_state(model: Option<Box<dyn AgentModel>>, label: &str, auto_accept: bool)
         provider_label: label.to_string(),
         auto_accept,
         auto_accept_notice_shown: false,
+        submit_gave_up: false,
+        submit_committed: false,
     }
 }
 
@@ -473,6 +475,8 @@ mod tests {
             provider_label: "mock (test)".to_string(),
             auto_accept: false,
             auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
@@ -594,6 +598,8 @@ mod tests {
             // (and independently of) the consent gate (§20.3).
             auto_accept: true,
             auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
@@ -806,17 +812,25 @@ mod tests {
             // give-up happens in the validator-repair loop, BEFORE any gate.
             auto_accept: true,
             auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
         s.agent_turn("write me a never fn in this module", &mut sink, &mut consent);
 
-        // The user-visible give-up notice rendered (U5 §16.4) — the agent never
-        // submitted broken code, and never surfaced a raw compiler error.
+        // Phase-6 (S89) give-up semantics: the per-submit cap exhaustion feeds the
+        // MODEL an honest abort (so it can adapt), but the USER-facing
+        // "couldn't produce a definition" line is decided ONLY at TRUE turn-end and
+        // ONLY when the turn produced nothing. Here the loop continues after the
+        // give-up and reaches the scripted `Done("ok")` answer — so the turn DID
+        // produce an answer, and the give-up line must NOT appear (it would be
+        // false). The agent still never submitted broken code (verified below).
         let rendered = String::from_utf8_lossy(&sink);
         assert!(
-            rendered.contains("couldn't produce a definition that compiles cleanly"),
-            "the cap-exhausted give-up notice must render, stdout={rendered}"
+            !rendered.contains("couldn't produce a definition"),
+            "a turn that ends on a Done answer must NOT show the give-up line, \
+             stdout={rendered}"
         );
 
         // EVERY captured request must be wire-paired in BOTH directions — the

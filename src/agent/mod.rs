@@ -228,9 +228,13 @@ impl CompilerSession {
         }
 
         // Record the user turn on the transcript before assembling (so the turn
-        // is part of the session memory even if the model errors).
+        // is part of the session memory even if the model errors). Reset the
+        // per-turn give-up bookkeeping (Phase-6, S89): a give-up line is decided
+        // ONLY at true turn-end, off the outcome of THIS turn's submits.
         if let Some(state) = self.agent.as_mut() {
             state.record_user(text);
+            state.submit_gave_up = false;
+            state.submit_committed = false;
         }
 
         for _ in 0..MAX_TURN_ITERATIONS {
@@ -295,7 +299,30 @@ impl CompilerSession {
             }
         }
 
-        // Iteration budget exhausted without a terminal Done.
+        // TRUE turn-end: the iteration budget exhausted without a terminal Done
+        // (a `Done` answer returns early above — an answer never shows the give-up
+        // line). The user-facing give-up line (Phase-6, S89) prints HERE, at most
+        // once, ONLY if the turn produced no committed write AND at least one
+        // submit gave up. If a submit committed (the live trace: fib WAS defined
+        // after an earlier give-up), the line is FALSE and must not appear.
+        let gave_up_nothing = self
+            .agent
+            .as_ref()
+            .map(|s| s.submit_gave_up && !s.submit_committed)
+            .unwrap_or(false);
+        if gave_up_nothing {
+            let _ = write!(
+                stdout,
+                "{}",
+                crate::style::agent_prose(
+                    "I couldn't produce a definition that compiles cleanly here, \
+                     so I did not submit anything."
+                )
+            );
+            return;
+        }
+
+        // Budget exhausted with no submit-give-up to report — the generic notice.
         let _ = write!(
             stdout,
             "{}",
@@ -538,6 +565,8 @@ mod tests {
             provider_label: "stub (test)".to_string(),
             auto_accept: false,
             auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
         });
         (s, capture)
     }
@@ -747,6 +776,8 @@ mod tests {
             provider_label: "stub (test)".to_string(),
             auto_accept: false,
             auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
         });
         drive(&mut s, "show me the source of f");
 
@@ -907,5 +938,134 @@ mod tests {
         let out = String::from_utf8_lossy(&sink);
         // The prose frame gutter must be present (rendered through agent_prose).
         assert!(out.contains('\u{258c}'), "dormant notice must be framed: {out}");
+    }
+
+    // -----------------------------------------------------------------------
+    // S89 Phase-6 — the user-facing give-up line is decided ONLY at TRUE
+    // turn-end (NOT per-failed-submit mid-turn). A submit whose repair cap
+    // exhausts feeds the MODEL an honest abort (so it can retry), but the
+    // user must NOT see "I couldn't produce a definition" if the turn then
+    // submits cleanly (the live trace: fib WAS defined after an earlier
+    // give-up). The line appears only when the turn produced NOTHING.
+    // -----------------------------------------------------------------------
+
+    /// The exact user-facing give-up phrase (a single source so the tests and
+    /// the implementation cannot drift).
+    const GIVE_UP_LINE: &str = "I couldn't produce a definition";
+
+    /// Wire a stub agent with `auto_accept` so a clean submit commits without a
+    /// `[y/N]` line-read (the give-up tests care about the submit OUTCOME, not
+    /// the consent gate).
+    fn session_with_stub_auto(
+        script: Vec<ModelResponse>,
+        auto_accept: bool,
+    ) -> CompilerSession {
+        let mut s = repl_session();
+        s.agent = Some(AgentState {
+            transcript: Vec::new(),
+            model: Some(Box::new(StubModel::new(script))),
+            provider_label: "stub (test)".to_string(),
+            auto_accept,
+            auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
+        });
+        s
+    }
+
+    fn submit_tc(form: &str) -> ModelResponse {
+        ModelResponse::ToolCalls(vec![crate::agent::types::ToolCallRequest {
+            id: format!("toolu-{}", form.len()),
+            name: "submit".to_string(),
+            argument: form.to_string(),
+        }])
+    }
+
+    // spec: repl/spec.md §17 — a submit-1 that EXHAUSTS its repair cap, followed
+    // by a clean submit that COMMITS, must NOT show the user-facing give-up line
+    // (the turn succeeded). The MODEL still receives the per-submit abort feedback
+    // (wire-valid), so the line being absent is NOT a loss of the model-facing
+    // signal. REVERT-VERIFY: moving the line back into `run_submit`'s give-up arm
+    // makes this assertion bite (the false line reappears).
+    #[test]
+    fn give_up_line_not_shown_when_turn_ultimately_submits() {
+        // BROKEN form (unbalanced) re-proposed enough times to exhaust the cap
+        // (MAX_REPAIR_ITERATIONS validations + completions), then a CLEAN submit,
+        // then a Done. The repair loop pulls 3 completions during submit-1's
+        // give-up; each is the same broken form.
+        let broken = "(defn fib [n] n";
+        let clean = "(defn fib [n] n)";
+        let script = vec![
+            submit_tc(broken), // iter-1: the model's first (broken) submit
+            submit_tc(broken), // repair completion 1 (still broken)
+            submit_tc(broken), // repair completion 2 (still broken)
+            submit_tc(broken), // repair completion 3 (still broken) → cap exhausted
+            submit_tc(clean),  // iter-2: a CLEAN submit → commits
+            ModelResponse::Done("defined fib for you".to_string()),
+        ];
+        let mut s = session_with_stub_auto(script, true);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("define fib", &mut sink, &mut consent);
+        let out = String::from_utf8_lossy(&sink);
+
+        // (a) the turn SUCCEEDED — fib is bound.
+        assert!(
+            s.lookup_with_prelude_fallback("fib").is_some(),
+            "the clean submit must commit fib; output: {out}"
+        );
+        // (b) the user-facing give-up line must NOT appear (the turn succeeded).
+        assert!(
+            !out.contains(GIVE_UP_LINE),
+            "the false give-up line must NOT print when the turn ultimately \
+             submits cleanly: {out}"
+        );
+        // (c) the MODEL still received the per-submit abort feedback (kept,
+        // wire-valid): the give-up tool_result/user turn carries the abort text.
+        let got_abort = s.agent.as_ref().unwrap().transcript.iter().any(|t| {
+            matches!(t, crate::agent::types::Turn::ToolResult(r) if r.output.contains("submit aborted"))
+                || matches!(t, crate::agent::types::Turn::User(u) if u.contains("submit aborted"))
+        });
+        assert!(
+            got_abort,
+            "the model-facing abort feedback must be kept on the transcript"
+        );
+    }
+
+    // spec: repl/spec.md §17 — a turn that produces NOTHING (every submit gives
+    // up, no clean submit, no Done answer within budget) DOES show the give-up
+    // line, exactly once, at true turn-end.
+    #[test]
+    fn give_up_line_shown_once_when_turn_produces_nothing() {
+        // Every completion is the same broken submit — the model never recovers.
+        // The outer loop keeps re-proposing the broken submit; each submit-1
+        // gives up; the turn exhausts MAX_TURN_ITERATIONS with no commit, no Done.
+        let broken = "(defn fib [n] n";
+        let script: Vec<ModelResponse> = std::iter::repeat_with(|| submit_tc(broken))
+            .take(64)
+            .collect();
+        let mut s = session_with_stub_auto(script, true);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("define fib", &mut sink, &mut consent);
+        let out = String::from_utf8_lossy(&sink);
+
+        // fib never bound (nothing committed).
+        assert!(
+            s.lookup_with_prelude_fallback("fib").is_none(),
+            "no clean form was ever submitted; output: {out}"
+        );
+        // The give-up line appears EXACTLY once.
+        let count = out.matches(GIVE_UP_LINE).count();
+        assert_eq!(
+            count, 1,
+            "the give-up line must print exactly once at true turn-end: {out}"
+        );
+        // The generic "too many tool steps" notice must NOT also appear (the
+        // give-up line replaces it when a submit gave up with nothing).
+        assert!(
+            !out.contains("too many tool steps"),
+            "the give-up line is the single end-of-turn message: {out}"
+        );
     }
 }

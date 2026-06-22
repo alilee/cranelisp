@@ -1289,10 +1289,23 @@ fn agent_build_cap_exhausted_give_up_stays_wire_valid() {
         out.status,
         out.stderr
     );
-    // (ii) the graceful give-up notice rendered (U5 §16.4).
+    // (ii) Phase-6 (S89) corrected give-up semantics: the per-submit cap
+    // exhaustion feeds the MODEL an honest abort (so it can adapt), but the
+    // USER-facing "couldn't produce a definition" line is decided ONLY at TRUE
+    // turn-end and ONLY when the turn produced nothing. Here the loop continues
+    // after the give-up and reaches the scripted `done: I tried but could not`
+    // ANSWER — so the turn DID produce an answer, and the give-up line must NOT
+    // appear (it would be false, the live-trace defect this work fixed). The
+    // model's answer is what renders instead. (FIXME 0431 → /qa: this test
+    // previously asserted the false mid-turn give-up line; corrected with the fix.)
     assert!(
-        out.stdout.contains("couldn't produce a definition that compiles cleanly"),
-        "the cap-exhausted give-up must render the U5 notice, stdout={}",
+        !out.stdout.contains("couldn't produce a definition"),
+        "a turn that ends on a Done answer must NOT show the give-up line, stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("I tried but could not"),
+        "the model's terminal answer must render in the frame, stdout={}",
         out.stdout
     );
     // (iii) NO raw compiler error leaked across the three broken attempts (§16.2).

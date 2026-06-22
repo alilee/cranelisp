@@ -195,10 +195,18 @@ impl CompilerSession {
                 let result = self.process_commands(&cmd, stdout);
                 let output = match result {
                     CommandResult::Final(text) => {
-                        // Render the result so it appears in the transcript, then
-                        // feed it back to the model.
+                        // §14.6 ANSI-leak fix (S89 Phase-6). A styled REPL command
+                        // (`/source` etc.) returns SGR-coloured text when colour is
+                        // on. The USER echo keeps that text verbatim — well-formed
+                        // colour on a TTY, plain under `--no-color` (the one global
+                        // `style::is_color_enabled` gate already decided it). But
+                        // the MODEL-fed copy MUST be clean plain text: shipping raw
+                        // SGR to the provider leaks mangled `1m`/`0m` fragments back
+                        // into the displayed reply (the ESC byte is dropped in
+                        // transport). So we strip ANSI from the fed-back `output`
+                        // ONLY — render once, feed clean.
                         let _ = writeln!(stdout, "{text}");
-                        text
+                        crate::style::strip_ansi(&text)
                     }
                     CommandResult::Nothing => String::new(),
                     // A read-only command cannot produce these. Guard defensively
@@ -253,16 +261,18 @@ impl CompilerSession {
             Ok(pair) => pair,
             Err(give_up_id) => {
                 // Give-up (§16.4): never submit broken code, never surface a raw
-                // compiler error. An honest, framed notice; the turn continues
-                // read-only (degrades to "proposed, not submitted").
-                let _ = write!(
-                    stdout,
-                    "{}",
-                    crate::style::agent_prose(
-                        "I couldn't produce a definition that compiles cleanly here, \
-                         so I did not submit anything."
-                    )
-                );
+                // compiler error. The MODEL receives an honest abort (the fed-back
+                // `tool_result` below) so it can adapt and re-submit, but the
+                // user-facing "I couldn't produce a definition" line is NOT printed
+                // here (Phase-6 fix, S89). A per-failed-submit give-up line is FALSE
+                // mid-turn: the turn may CONTINUE and ultimately submit cleanly (the
+                // live trace — fib was defined after the first submit's repair cap
+                // exhausted). The line is deferred to TRUE turn-end (`agent_turn`),
+                // emitted at most once and only if the turn produced no committed
+                // write and no answer. Here we only RECORD that a submit gave up.
+                if let Some(state) = self.agent.as_mut() {
+                    state.submit_gave_up = true;
+                }
                 // PAIRING (Phase-6 give-up corner, the CURRENT 400): the repair
                 // loop has recorded a chain of `submit` tool_use turns onto the
                 // transcript, the LAST of which is UNPAIRED (its error feedback
@@ -359,6 +369,12 @@ impl CompilerSession {
                     let _ = writeln!(stdout, "{text}");
                     if result.is_def() {
                         self.regenerate_backing_file();
+                    }
+                    // The turn "produced something": a committed submit suppresses
+                    // the end-of-turn give-up line (Phase-6, S89), even if an
+                    // EARLIER submit this turn gave up.
+                    if let Some(state) = self.agent.as_mut() {
+                        state.submit_committed = true;
                     }
                     ToolCallResult {
                         id: result_id.to_string(),
@@ -902,6 +918,61 @@ mod tests {
         assert!(result.output.contains('f'), "info content must describe f: {:?}", result.output);
     }
 
+    // spec: repl/spec.md §17 / §14.6 — ANSI-leak on PULL-command results (S89
+    // Phase-6). A `/source` pull whose result is STYLED (colour ON) must:
+    //   (a) feed the MODEL clean PLAIN text — no `\x1b`, no bare `1m`/`0m` SGR
+    //       fragment (the residue the model echoes back, leaking into display);
+    //   (b) echo to the USER with WELL-FORMED SGR only (every ESC introduces a
+    //       `[`) — never an orphan ESC or a `\x1b[`-less `1m`/`0m` fragment.
+    // The Wave-1 fix covered agent PROSE only, NOT the pull-result echo; this is
+    // that hole. Uses the `style` `#[cfg(test)]` colour-force seam (the non-TTY
+    // test process is colour-off by default, so colour-on is otherwise
+    // unreachable from a unit test).
+    #[test]
+    fn pull_result_no_mangled_sgr_for_user_or_model() {
+        let _guard = crate::style::test_support::ColorGuard::force(true);
+        assert!(
+            crate::style::is_color_enabled(),
+            "the force seam must drive the gate ON, else this guard is vacuous"
+        );
+        let mut s = session_with_defined_f();
+        let mut sink: Vec<u8> = Vec::new();
+        let result = s.run_pull(&call("source", "f"), &mut sink, &mut crate::agent::types::NoConsent);
+
+        // (a) the MODEL-fed copy is clean plain text — ANSI fully stripped.
+        assert!(
+            !result.output.contains('\u{1b}'),
+            "the model-fed output must carry NO ESC byte: {:?}",
+            result.output
+        );
+        // No SGR residue (the `1m`/`0m` the mangling left as literal text).
+        assert!(
+            !result.output.contains("1m") && !result.output.contains("0m"),
+            "the model-fed output must carry no `1m`/`0m` SGR fragment: {:?}",
+            result.output
+        );
+        // It still carries the real source content (strip removed only the SGR).
+        assert!(
+            result.output.contains("(defn f [x] x)"),
+            "stripping must keep the command output, got: {:?}",
+            result.output
+        );
+
+        // (b) the USER echo: every ESC introduces a well-formed SGR (ESC '['),
+        // never an orphan ESC or a `\x1b[`-less `1m`/`0m` fragment.
+        let rendered = String::from_utf8_lossy(&sink);
+        for (i, _) in rendered.match_indices('\u{1b}') {
+            let after = &rendered[i + 1..];
+            assert!(
+                after.starts_with('['),
+                "every ESC in the user echo must introduce a well-formed SGR \
+                 (ESC '['); orphan at {i}: {rendered:?}"
+            );
+        }
+        // The user echo still shows the command + the source.
+        assert!(rendered.contains("/source f"), "command echoed: {rendered:?}");
+    }
+
     // -----------------------------------------------------------------------
     // S89 Cluster B — write arm, validator, allowlist widening, --yes guard.
     // -----------------------------------------------------------------------
@@ -932,6 +1003,8 @@ mod tests {
             provider_label: "stub (test)".to_string(),
             auto_accept,
             auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
         });
     }
 

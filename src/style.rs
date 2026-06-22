@@ -137,6 +137,46 @@ fn detect_color(no_color_flag: bool) -> bool {
     true
 }
 
+/// Strip ANSI SGR escape sequences (`ESC [ … m`) from a string, leaving clean
+/// plain text. Used where a styled REPL render must be fed to a NON-terminal
+/// consumer that mangles or cannot interpret SGR — notably the embedded agent's
+/// model feed (`agent/pull.rs`): a captured `/source`/`/sig`/… result is styled
+/// when colour is on, and shipping the raw SGR to the model leaks mangled
+/// `1m`/`0m` fragments back into the displayed reply (the ESC byte is dropped in
+/// transport, leaving the bare `[`-less code). Stripping at the membrane keeps
+/// the model's copy clean plain text while the user echo keeps its (well-formed)
+/// colour on a TTY.
+///
+/// Robust to a truncated/orphan escape: a lone `ESC` (or `ESC [` without a
+/// terminating `m`) is dropped along with the bytes up to end-of-string, so no
+/// `\x1b`-fragment survives. Only the CSI-SGR form (`ESC [ params m`) is
+/// recognised — the only sequence `styled` emits.
+pub fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // A CSI sequence is `ESC [ <params> <final>`. Consume the optional
+            // `[` introducer FIRST (it is itself in the `@`..`~` range, so it
+            // must NOT be mistaken for the final byte), then the parameter run up
+            // to and INCLUDING the final byte (`@`..`~`, e.g. `m` for an SGR), or
+            // to end-of-string if the sequence is truncated.
+            if chars.peek() == Some(&'[') {
+                chars.next();
+            }
+            for d in chars.by_ref() {
+                // The CSI final byte is in `@`..`~` (`m` for SGR).
+                if ('@'..='~').contains(&d) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Wrap text in ANSI escape sequences for the given style.
 ///
 /// When colour is disabled (via TTY detection), returns text unchanged.
@@ -263,6 +303,26 @@ mod tests {
             assert!(!is_color_enabled(), "force(false) disables the gate");
             assert_eq!(styled("x", Style::Bold), "x");
         }
+    }
+
+    // strip_ansi removes well-formed SGR sequences, leaving clean plain text —
+    // and is robust to a truncated/orphan escape (no `\x1b`-fragment survives).
+    #[test]
+    fn strip_ansi_removes_sgr_and_handles_orphans() {
+        // Well-formed SGR (what `styled` emits) is fully removed.
+        assert_eq!(strip_ansi("\x1b[1mdefn\x1b[0m"), "defn");
+        assert_eq!(
+            strip_ansi("(\x1b[1mdefn\x1b[0m f [x] (\x1b[1mprimitives/add-i64\x1b[0m x x))"),
+            "(defn f [x] (primitives/add-i64 x x))"
+        );
+        // Plain text passes through unchanged.
+        assert_eq!(strip_ansi("(defn f [x] x)"), "(defn f [x] x)");
+        // A truncated escape at EOF leaves no fragment.
+        assert_eq!(strip_ansi("hello\x1b[1m"), "hello");
+        assert_eq!(strip_ansi("hello\x1b"), "hello");
+        // No `1m`/`0m` literal fragment survives, and no ESC byte remains.
+        let out = strip_ansi("\x1b[1mx\x1b[0m");
+        assert!(!out.contains('\u{1b}') && !out.contains("1m") && !out.contains("0m"));
     }
 
     #[test]
