@@ -164,6 +164,7 @@ These flags modify behaviour but do not select a mode. They may appear in any mo
 | `--nice-workers` | `N` (numeric) | Number of background ("nice") compilation workers. A non-numeric `N` is an error. | `1` |
 | `--agent` | none | Enable the embedded LLM agent for this session (REPL only). Requires the binary to be **built** with the agent feature AND a backend key present at runtime; otherwise the agent stays dormant (see §17.4). Ignored — but accepted, not an error — by a binary built without the agent feature. | agent off |
 | `--no-agent` | none | Force the embedded agent off for this session even when built-in and a key is present. Always accepted. | — |
+| `--yes` (`-y`) | none | Autonomous-submit: auto-accept the agent's write-consent gates (Build form-submit, §17.14; Document preamble/docstring edit, §17.15) so the agent acts without the per-action `[y/N]` prompt. REPL only; meaningful only with an active agent. A no-op on default (non-`agent`) builds and when no agent is active — accepted, never an error. Auto-accepts **consent only**; the pre-flight validator (§17.14.3) still gates correctness. | off |
 
 This table is kept consistent with `user/cli-reference.md`; the two MUST agree.
 
@@ -177,6 +178,16 @@ The `--agent` and `--no-agent` flags are the runtime half of the agent's **opt-i
 - When both `--agent` and `--no-agent` are present, `--no-agent` wins (the safe default — off).
 
 The default with no flag is **agent off**, even on an agent-built binary with a key present: the user opts in explicitly per session. (An implementation MAY additionally honour a config-file or environment default; if it does, `--no-agent` MUST still override it to off.)
+
+#### 0.6.2 `--yes` / `-y` — Autonomous-Submit Toggle [S89]
+
+`--yes` (short form `-y`) is a **policy knob** that auto-answers the agent's write-consent gates. Per the `/arch` ruling (`design/arch/repl-embedded-agent.md §7.4`), it auto-*accepts* the consent question; it does **not** relocate, widen, or remove the gate, and it does **not** touch the pre-flight validator (§17.14.3) — it changes who answers the `[y/N]`, not whether code is validated. It is **off by default**: the human answers each write gate unless `--yes` is given. The flag is **blanket** — one `--yes` covers **both** agent write classes (Build form-submit, §17.14, *and* Document preamble/docstring edits, §17.15), following the universal `-y` convention. Accordingly:
+
+- `--yes` / `-y` are meaningful **only in REPL mode** with an **active agent** (built `--features agent`, enabled per §0.6.1, and backed by a reachable provider — §17.4). In `--run` or `--link` mode, on a binary **built without** the agent feature, and whenever **no agent is active** (dormant or `--no-agent`), `--yes` MUST be accepted (not an error) and have **no effect** — consistent with `--agent` (§0.6.1). It MUST NOT print `unknown flag`.
+- **Precedence / interaction with `--agent`.** `--yes` presupposes the agent is in play but **does not itself enable the agent.** It is **not** an implicit `--agent`, and it does **not** bypass the opt-in-twice posture (§17.4): with no agent feature, no enabling flag, or no provider key, `--yes` stays a no-op — there is no write gate to auto-answer, so there is nothing to escalate. To act autonomously a user opts in explicitly: enable the agent (`--agent`, §0.6.1) **and** pass `--yes`. (`--no-agent` keeps the agent off, so `--yes` is likewise inert.)
+- `--yes` auto-answers **consent, never validation.** The pre-flight validator (§17.14.3) runs on every submission regardless of `--yes`; only code that at least parses and type-checks ever reaches the session. `--yes` removes the question, not the correctness floor (§17.14.6).
+
+When `--yes` is active and the agent first wants to write, the REPL MUST present a one-time first-use notice (§17.16) — the autonomy-escalation disclosure, sibling to the §17.8.1 transmit disclosure.
 
 ## Design Principle
 
@@ -1936,10 +1947,10 @@ The disclosure's honesty about **source excerpts** is the user's only signal tha
 This section is the **complete** set of additive agent requirements on the REPL experience. The deterministic contract (§1–§16) is unchanged; the only deterministic-surface additions are:
 
 - the `/ask`, `/refs`, `/tests-for` command rows and the `/doc <module>` overload (§3.1);
-- the `--agent` / `--no-agent` flags (§0.6.1);
+- the `--agent` / `--no-agent` flags (§0.6.1) and (S89) the `--yes` / `-y` flag (§0.6.2);
 - the "Agent prose frame" style role and (S89) the "Agent-input prompt" style role (§10.3).
 
-The **S89** additions (§17.12–§17.15) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14) and Document consultative edit (§17.15) only fire when the live agent proposes a write. None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so §1–§16 stay byte-identical. [S89]
+The **S89** additions (§17.12–§17.16) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14), Document consultative edit (§17.15), and the `--yes` auto-accept (§17.14.5 / §17.15.2a) + autonomous-submit first-use notice (§17.16) only fire when the live agent proposes a write. `--yes` (§0.6.2) is, like `--agent`, a no-op on default builds and when no agent is active. None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so §1–§16 stay byte-identical. [S89]
 
 Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. The resolution-aware dispatch classifier (§17.1) — which resolves bare atoms and routes any *unknown* symbol to the agent — is itself **entirely feature-gated**: feature-off, an unbound bare symbol still lands on today's §4.1.10 unbound display and a genuine parse error on the §5 display, so the REPL is byte-identical to §1–§16. [S88]
 
@@ -2112,6 +2123,23 @@ If silent-repair exhausts its attempt cap without producing a form that validate
 
 The exact phrasing is at implementation discretion but MUST convey: it could not produce valid code, nothing was submitted, and (if shown) the remaining code is an unverified suggestion. The user's experience of an agent that cannot get the code right is a **calm apology and a suggestion**, never a wall of diagnostics. [S89]
 
+#### 17.14.5 Autonomous Submit Under `--yes` — Auto-Accept the Confirm-Gate [S89]
+
+When the session is started with `--yes` (§0.6.2), the Build confirm-gate (§17.14.1) **auto-accepts**: the agent submits its proposed form **without prompting** for `[y/N]`. Normatively:
+
+- **The proposed form is still shown.** The pretty-printed `agent>`-prefixed definition echo (§17.14.1 step 1) MUST still render before submission — the user always sees exactly what the agent submitted. `--yes` removes the **question**, not the **visibility**. [S89]
+- **The confirm prompt is suppressed; submission proceeds as on accept.** In place of the `submit this definition? [y/N]` prompt (§17.14.1 step 2), the form goes straight through the **accept path** (§17.14.2) — type-checked, defined, persisted, with its normal `:Type name` result rendered unframed below the echo, and added to the replayable transcript (§15). The behaviour is exactly as if the user had answered `y`. [S89]
+- **The decline path is unreachable while `--yes` is on, by design.** There is no opportunity to decline an individual Build submit under `--yes`; that is the flag's purpose. (To regain per-action control, restart without `--yes`.) [S89]
+
+#### 17.14.6 The Validation Floor Holds Under `--yes` — Never Submit Raw [S89]
+
+`--yes` auto-answers **consent, not validation** (`/arch` ruling, `design/arch/repl-embedded-agent.md §7.4`). The pre-flight validator (§17.14.3) and its give-up path (§17.14.4) are **invariant under the flag** — `--yes` changes nothing about them:
+
+- Every form the agent submits under `--yes` is **still silently validated and silently repaired** exactly as with `--yes` off (§17.14.3). Only a form that at least parses and type-checks is ever auto-submitted; a deliberately-broken generation is **silently repaired, never submitted raw.** The user never sees broken code reach the session, with or without `--yes`. [S89]
+- If silent-repair exhausts its attempt cap, the agent **gives up gracefully** under `--yes` exactly as in §17.14.4 — it does **not** auto-submit broken code, and it does **not** dump a compiler diagnostic. `--yes` cannot force an un-validating form into the session; the give-up degrades to the read-only "proposed, not submitted" floor (§17.3.1), shown as an un-submitted suggestion. [S89]
+
+`--yes` removes the prompt, not the correctness floor. An implementation that treated `--yes` as "skip the dry-run" would be a conformance defect (the `/arch` validation-floor invariant). [S89]
+
 ### 17.15 Document Mode — The Consultative Preamble/Docstring Edit UX [S89]
 
 S88 specified **reading** a module preamble (`/doc <module>`, §17.5.1) and the **shape** of the edit UX, deferring the edit itself to S89 (§17.5.2). S89 specifies the **edit experience**: the agent records its understanding durably — as a module preamble or a definition docstring — through a **consultative** gate that is deliberately distinct, in wording and posture, from the Build code-submit confirm (§17.14). This realizes the §17.3 "Document writes → consultative" row. [S89]
@@ -2130,6 +2158,40 @@ Before asking, the agent MUST **show exactly what it proposes to record** — th
 - **On accept**: the preamble/docstring is written durably into the code — for a module preamble, as the canonical leading `;;` block at the head of the module's backing file (§17.5.2); for a docstring, into the definition. The edit is shown as a normal REPL line (§17.2) and becomes part of the replayable transcript (§15). The **rest of the file MUST remain byte-stable** (§8.16.5) — an unrelated regeneration MUST leave the hand-written text verbatim (the §17.5.2 no-reflow guarantee). [S89]
 - **On decline**: nothing is written; the existing preamble/docstring (or its absence) is unchanged; the agent is told the user declined and the turn continues. [S89]
 
+#### 17.15.2a Autonomous Edit Under `--yes` — Auto-Accept the Consultative Gate [S89]
+
+`--yes` (§0.6.2) is **blanket** — it auto-accepts the Document consultative gate (§17.15.1) as well as the Build confirm-gate (§17.14.5). When `--yes` is active:
+
+- **The proposed text is still shown.** The agent MUST still render exactly what it proposes to record — the preamble `;;` block or the docstring, as it would be stored, carrying the `agent>` prompt (§17.15.1) — before writing. The user always sees the documentation the agent recorded. [S89]
+- **The consultative question is suppressed; the edit proceeds as on accept.** In place of the *"record this as `solver`'s preamble?"* consultation (§17.15.1), the edit goes straight through the **accept path** (§17.15.2) — written durably into the code with the rest of the file byte-stable (§8.16.5), shown as a normal REPL line, added to the transcript. The behaviour is exactly as if the user had endorsed it. [S89]
+- **The decline path is unreachable while `--yes` is on, by design.** No per-edit decline opportunity exists under `--yes`. (Restart without `--yes` to regain per-edit consultation.) [S89]
+
+The byte-stable round-trip (§8.16.5) and the durable-memory promise (§17.15.3) hold unchanged under `--yes` — the flag removes the question, not the correctness or persistence guarantees.
+
 #### 17.15.3 The Durable-Memory Promise — "Next Session It Remembers" [S89]
 
 A Document edit is **durable**: it round-trips byte-stably through source regeneration (§17.5.2, §8.16.5) — the recorded text persists in the code exactly as endorsed. Because the agent's harvested context reads module preambles and docstrings back from the live session (§17.8, the agent's durable memory is the code, `design/arch/repl-embedded-agent.md §3.1`), a preamble the agent helps write **this** session is read back by the agent **next** session. The experience-level promise the user can rely on: **what the agent records, it remembers** — and because the record lives in the code as ordinary, readable documentation, improving a module's docs and growing the agent's memory are the **same activity** (§17.5.2). The user never maintains a separate agent memory; the documentation *is* the memory, and it is durable across sessions. [S89]
+
+### 17.16 Autonomous-Submit First-Use Notice — `--yes` Escalation Disclosure [S89]
+
+`--yes` (§0.6.2) is an **autonomy escalation**: the agent now writes — submits Build forms (§17.14) and records Document edits (§17.15) — **without asking** the per-action `[y/N]`/consultative question. Parallel in spirit to the S88 transmit first-use disclosure (§17.8.1), this escalation warrants its own **one-time** notice (per the `/arch` ruling, `design/arch/repl-embedded-agent.md §7.4 (b)`; wording owned here).
+
+The **first time** in a session that `--yes` is active and the agent **would write** (the first Build submit or Document edit), the REPL MUST present a one-time disclosure **before** the write, in the agent prose frame (§17.2) so it is unmistakably the agent's own notice. It is shown **once per session** — subsequent autonomous writes do not repeat it. The disclosure is **normative in content** (exact phrasing at implementation discretion, but it MUST convey all of the following):
+
+- It MUST state that, because the session was started with `--yes`, the agent will **submit definitions and record documentation edits without asking** — the per-action confirm/consultative prompt is being **auto-accepted** on the user's behalf. [S89]
+- It MUST state that the user **still sees every form and every edit** the agent makes (they are shown as agent-issued lines, §17.12) — autonomy removes the prompt, **not** the visibility. [S89]
+- It MUST state that the **pre-flight validator still gates correctness** (§17.14.3): only code that compiles is ever submitted — `--yes` skips the question, **not** the correctness check; the agent never submits broken code. [S89]
+- It SHOULD state how to regain per-action control: **restart without `--yes`.** [S89]
+
+Illustrative wording (an implementation MAY reword, but MUST cover every element above):
+
+```
+▌ Autonomous mode (--yes) — the agent will submit definitions and record
+▌ documentation edits WITHOUT asking you each time. You still see every
+▌ form and edit it makes (shown as agent> lines). Only code that compiles
+▌ is ever submitted — the pre-flight check still runs; --yes skips the
+▌ prompt, not the correctness check.
+▌ (To approve each write yourself, restart without --yes.)
+```
+
+An implementation MAY additionally require an explicit per-session acknowledgement before the first autonomous write; if it does, declining MUST fall back to the per-action confirm/consultative gates (§17.14.1 / §17.15.1) for the rest of the session (i.e. behave as if `--yes` were off). This disclosure is **distinct from** the §17.8.1 transmit disclosure — that one names *what leaves the machine*; this one names *that the agent acts without asking*. Both may fire in the same session (transmit first, then autonomous-write). [S89]
