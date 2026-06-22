@@ -240,9 +240,17 @@ impl CompilerSession {
         // (1) Validate + silently repair. The repair loop runs BEFORE any echo —
         // "the user structurally cannot see an agent compile failure" (§16.2) is
         // enforced by where the render call is: render happens only after this
-        // returns Ok(clean_form).
-        let clean = match self.validate_and_repair(&call.argument) {
-            Ok(form) => form,
+        // returns Ok(clean_form). The submit tool_use `id` is threaded in so the
+        // compiler-error feedback is recorded as a `tool_result` PAIRED with this
+        // tool_use (NOT a bare user turn) — the Anthropic Messages API requires
+        // every `tool_use` block to be immediately followed by its matching
+        // `tool_result`, and the outer loop (`mod.rs`) already recorded this
+        // submit as an assistant `tool_use` turn but pairs the OUTER tool_result
+        // only AFTER `run_submit` returns. Without pairing here, the repair
+        // request assembled mid-handling ends `…tool_use(submit), user(feedback)`
+        // — an unpaired tool_use → live 400 (Phase-6 defect).
+        let (clean, final_tool_use_id) = match self.validate_and_repair(&call.argument, &call.id) {
+            Ok(pair) => pair,
             Err(()) => {
                 // Give-up (§16.4): never submit broken code, never surface a raw
                 // compiler error. An honest, framed notice; the turn continues
@@ -293,10 +301,19 @@ impl CompilerSession {
             }
         };
 
+        // The id the OUTER `agent_turn` loop will pair its recorded tool_result
+        // against: the LAST recorded `submit` tool_use (the last repair's id when a
+        // repair produced the clean form; the original `call.id` when the form was
+        // clean first-try OR the final form came via prose — `None`). Pairing the
+        // outer result against `call.id` unconditionally would, after a repair,
+        // leave the transcript ending `…tool_use(repair-id), tool_result(orig-id)`
+        // and 400 the NEXT (post-submit) request (the residual Phase-6 corner).
+        let result_id = final_tool_use_id.unwrap_or_else(|| call.id.clone());
+
         if !consented {
             // §15.2 step 3 — decline: write nothing, feed "declined" back.
             return ToolCallResult {
-                id: call.id.clone(),
+                id: result_id,
                 command: "(submit declined)".to_string(),
                 output: "the user declined to submit this definition".to_string(),
             };
@@ -304,17 +321,22 @@ impl CompilerSession {
 
         // (4) Confirm — route through the EXISTING process_commands→eval→regen
         // staging chain (§15.3, R3). Structurally the same caller `main.rs` is.
-        self.submit_clean_form(&clean, call, stdout)
+        self.submit_clean_form(&clean, &result_id, stdout)
     }
 
     /// Drive the confirmed clean form through `process_commands`→`eval`→regen
     /// (§15.3). On `Compile(src)` it evals (mirroring `main.rs:315`), renders the
     /// `:Type name` confirmation unframed (normal REPL output), regenerates the
     /// backing file on a successful def, and feeds the result back to the model.
+    ///
+    /// `result_id` is the tool_use id the OUTER loop's `record_tool_result` must
+    /// pair against — the ACTUAL submitted tool_use (the last repair, or the
+    /// original `call.id`), so the post-submit continuation request stays
+    /// well-formed (Phase-6 residual corner).
     fn submit_clean_form(
         &mut self,
         clean: &str,
-        call: &ToolCallRequest,
+        result_id: &str,
         stdout: &mut impl Write,
     ) -> ToolCallResult {
         match self.process_commands(clean, stdout) {
@@ -326,13 +348,13 @@ impl CompilerSession {
                         self.regenerate_backing_file();
                     }
                     ToolCallResult {
-                        id: call.id.clone(),
+                        id: result_id.to_string(),
                         command: format!("submit {clean}"),
                         output: text,
                     }
                 }
                 Ok(None) => ToolCallResult {
-                    id: call.id.clone(),
+                    id: result_id.to_string(),
                     command: format!("submit {clean}"),
                     output: "(submitted)".to_string(),
                 },
@@ -340,19 +362,19 @@ impl CompilerSession {
                 // here is unexpected, but surface it as a fed-back result (NOT a
                 // crash) rather than swallowing it.
                 Err(e) => ToolCallResult {
-                    id: call.id.clone(),
+                    id: result_id.to_string(),
                     command: format!("submit {clean}"),
                     output: format!("submit failed at eval: {e}"),
                 },
             },
             // A submit that did not produce a Compile (e.g. blank) — nothing to do.
             CommandResult::Final(text) => ToolCallResult {
-                id: call.id.clone(),
+                id: result_id.to_string(),
                 command: format!("submit {clean}"),
                 output: text,
             },
             CommandResult::Nothing | CommandResult::Quit => ToolCallResult {
-                id: call.id.clone(),
+                id: result_id.to_string(),
                 command: format!("submit {clean}"),
                 output: "(submitted)".to_string(),
             },
@@ -494,25 +516,97 @@ impl CompilerSession {
     ///
     /// §20.3 (binding): takes NO `auto_accept` parameter and has no read path to
     /// it — the `--yes` flag cannot skip this validation floor.
-    fn validate_and_repair(&mut self, initial_form: &str) -> Result<String, ()> {
+    ///
+    /// **Tool_use↔tool_result pairing (Phase-6 fix).** The outer `agent_turn` loop
+    /// (`mod.rs`) already recorded the model's `submit` as an assistant `tool_use`
+    /// turn (`record_assistant_tool_calls`) before invoking the pull, and only
+    /// records the OUTER paired `tool_result` AFTER `run_submit` returns. So when
+    /// this loop assembles its repair request mid-handling, the transcript's most
+    /// recent unpaired turn is that `submit` tool_use. The compiler-error feedback
+    /// MUST therefore be recorded as a `tool_result` referencing the submit
+    /// tool_use `id` (`pending_tool_use`), NOT a bare user turn — else the request
+    /// ends `…tool_use(submit), user(feedback)` and the Anthropic API 400s
+    /// (unpaired tool_use). Each repair iteration that re-proposes via a fresh
+    /// `submit` tool_use records ITS tool_use (`record_assistant_tool_calls`) and
+    /// carries that new id forward, so the next error-feedback pairs against it. A
+    /// repair that arrives as PROSE (no tool_use) records an assistant prose turn
+    /// instead, and the following feedback is a plain user turn (no pairing owed —
+    /// the prior turn was assistant prose). The invariant held at EVERY
+    /// `assemble_request` call: every assistant `tool_use` turn is immediately
+    /// followed by its matching `tool_result`.
+    ///
+    /// Returns `(clean_form, final_tool_use_id)`. `final_tool_use_id` is the id of
+    /// the LAST `submit` tool_use recorded onto the transcript — the OUTER submit's
+    /// id when the original form was clean, the LAST repair tool_use's id when a
+    /// repair produced the clean form, or `None` when the clean form came via prose
+    /// (no trailing tool_use). The caller (`run_submit`) MUST pair the OUTER
+    /// success `tool_result` against THIS id, not the original `call.id` — else a
+    /// repair leaves the transcript ending `…tool_use(repair-id), tool_result(orig-id)`,
+    /// re-introducing the unpaired-tool_use 400 on the NEXT (post-submit) request.
+    fn validate_and_repair(
+        &mut self,
+        initial_form: &str,
+        submit_id: &str,
+    ) -> Result<(String, Option<String>), ()> {
         let mut form = initial_form.to_string();
+        // The id of the tool_use whose form we are validating this iteration. When
+        // `Some`, the next error-feedback is a PAIRED `tool_result`; when `None`
+        // (the form arrived as prose, not a tool_use), the feedback is a plain user
+        // turn. It starts as the outer submit's id (the form being validated now).
+        let mut pending_tool_use: Option<String> = Some(submit_id.to_string());
         for _ in 0..MAX_REPAIR_ITERATIONS {
             match self.validate_one_form(&form) {
-                Ok(()) => return Ok(form),
+                // The clean form's owning tool_use id (`pending_tool_use`) is
+                // returned so the OUTER success tool_result pairs against the
+                // ACTUAL submitted tool_use (the last repair, or the original).
+                Ok(()) => return Ok((form, pending_tool_use)),
                 Err(compiler_error) => {
                     // SILENT (§16.2): nothing rendered to the transcript. Record a
-                    // HIDDEN repair turn on the agent state (so the next request
-                    // has context) and re-prompt the model.
+                    // HIDDEN repair turn on the agent state (so the next request has
+                    // context) and re-prompt the model.
                     let feedback = format!(
                         "The code you proposed does not compile:\n{compiler_error}\n\
                          Reply with a corrected `submit` of the SAME definition that compiles."
                     );
-                    let req = self.assemble_request(&feedback);
+                    // Record the feedback FIRST (paired as a tool_result when a
+                    // tool_use is pending), THEN assemble — so the assembled
+                    // request's last turn IS this feedback (the prompt the model
+                    // answers) and the tool_use↔tool_result pairing holds.
                     if let Some(state) = self.agent.as_mut() {
-                        state.record_user(&feedback);
+                        match &pending_tool_use {
+                            Some(id) => state.record_tool_result(ToolCallResult {
+                                id: id.clone(),
+                                command: format!("(submit {})", form),
+                                output: feedback.clone(),
+                            }),
+                            None => state.record_user(&feedback),
+                        }
                     }
+                    let req = self.assemble_request(&feedback);
                     match self.agent_complete_for_repair(&req) {
-                        Some(next) => {
+                        Some(RepairResponse::ToolCall { id, argument }) => {
+                            // The model re-proposed via a fresh `submit` tool_use —
+                            // record ITS tool_use turn so the NEXT iteration's
+                            // feedback pairs against it (the pairing invariant
+                            // chains across iterations).
+                            if let Some(state) = self.agent.as_mut() {
+                                state.record_assistant_tool_calls(vec![ToolCallRequest {
+                                    id: id.clone(),
+                                    name: SUBMIT_TOOL.to_string(),
+                                    argument: argument.clone(),
+                                }]);
+                            }
+                            pending_tool_use = Some(id);
+                            form = argument;
+                        }
+                        Some(RepairResponse::Prose { prose, form: next }) => {
+                            // The model replied with prose (no tool_use). Record the
+                            // assistant prose turn; the next feedback is a plain user
+                            // turn (no pairing owed — prior turn is assistant prose).
+                            if let Some(state) = self.agent.as_mut() {
+                                state.record_assistant(&prose);
+                            }
+                            pending_tool_use = None;
                             form = next;
                         }
                         None => return Err(()), // no model / no extractable form
@@ -547,18 +641,25 @@ impl CompilerSession {
     }
 
     /// Run one repair completion and extract the proposed form from the model's
-    /// response — a `submit` tool-call's argument, or a `(...)` form mined from
-    /// `Done` prose. Returns `None` when no model is reachable or no form can be
-    /// extracted (the loop then gives up). Used ONLY by the silent repair loop.
-    fn agent_complete_for_repair(&mut self, req: &AgentRequest) -> Option<String> {
+    /// response. Returns `None` when no model is reachable or no form can be
+    /// extracted (the loop then gives up). The discriminated result carries the
+    /// **shape** of the reply (tool_use vs prose) so the caller can keep the
+    /// transcript's tool_use↔tool_result pairing correct (a tool_use repair must
+    /// be recorded as an assistant `tool_use` turn carrying its id; a prose repair
+    /// as an assistant prose turn). Used ONLY by the silent repair loop.
+    fn agent_complete_for_repair(&mut self, req: &AgentRequest) -> Option<RepairResponse> {
         let state = self.agent.as_mut()?;
         let model = state.model.as_mut()?;
         match model.complete(req) {
             Ok(ModelResponse::ToolCalls(calls)) => calls
                 .into_iter()
                 .find(|c| c.name.trim().trim_start_matches('/') == SUBMIT_TOOL)
-                .map(|c| c.argument),
-            Ok(ModelResponse::Done(prose)) => extract_form_from_prose(&prose),
+                .map(|c| RepairResponse::ToolCall {
+                    id: c.id,
+                    argument: c.argument,
+                }),
+            Ok(ModelResponse::Done(prose)) => extract_form_from_prose(&prose)
+                .map(|form| RepairResponse::Prose { prose, form }),
             Err(_) => None,
         }
     }
@@ -593,6 +694,20 @@ impl CompilerSession {
             }
         }
     }
+}
+
+/// The shape of a repair completion (`agent_complete_for_repair`). Carries enough
+/// to keep the transcript's tool_use↔tool_result pairing correct across repair
+/// iterations: a `ToolCall` repair must be recorded as an assistant `tool_use`
+/// turn (so its id pairs with the NEXT iteration's error `tool_result`), while a
+/// `Prose` repair is recorded as an assistant prose turn (no pairing owed).
+enum RepairResponse {
+    /// The model re-proposed via a `submit` tool-call. `id` is the new tool_use
+    /// id (paired with the next feedback's `tool_result`); `argument` is the form.
+    ToolCall { id: String, argument: String },
+    /// The model replied with prose carrying a `(...)` form. `prose` is recorded
+    /// as the assistant turn; `form` is the mined definition.
+    Prose { prose: String, form: String },
 }
 
 /// Mine the first balanced `(...)` s-expression form out of model prose (a `Done`
@@ -892,10 +1007,18 @@ mod tests {
             vec![ModelResponse::ToolCalls(vec![submit_call("(defn fixed [x] x)")])],
             false,
         );
-        let clean = s
-            .validate_and_repair("(defn fixed [x] x")
+        let (clean, final_id) = s
+            .validate_and_repair("(defn fixed [x] x", "toolu_outer")
             .expect("repair yields a clean form");
         assert_eq!(clean.trim(), "(defn fixed [x] x)", "the repaired clean form is returned");
+        // The returned pairing id is the LAST repair tool_use's id (the stub
+        // `submit_call` uses id "s1"), NOT the outer "toolu_outer" — so the outer
+        // success tool_result pairs against the actually-submitted tool_use.
+        assert_eq!(
+            final_id.as_deref(),
+            Some("s1"),
+            "the final pairing id must be the repair tool_use's id, not the outer submit's"
+        );
     }
 
     // §20.3 (CRITICAL) — `agent_auto_accept()` reads the field ONLY at the consent

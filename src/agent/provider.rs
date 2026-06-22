@@ -498,4 +498,186 @@ mod tests {
         );
         assert!(!restated, "the original question must not be re-appended after the tool_result");
     }
+
+    // spec: repl/spec.md §17 — Phase-6 Build-mode repair-loop pairing. Drive a
+    // BROKEN-then-FIXED `submit` through the validator-repair loop against the
+    // REAL rig boundary: turn 1 = a `submit` tool_use carrying a BROKEN form
+    // (fails the validator); turn 2 (the REPAIR completion) = a `submit` tool_use
+    // carrying the FIXED form; turn 3 = Done. The REPAIR request (turn 2) is the
+    // one the live agent sent malformed — the outer loop recorded the broken
+    // submit as an assistant `tool_use`, and the inner repair loop assembled its
+    // request mid-handling. Pre-fix it recorded the compiler-error feedback as a
+    // bare USER turn, so the repair request ended `…tool_use(submit), user(feedback)`
+    // — an unpaired tool_use → live Anthropic 400. This asserts the repair request
+    // is well-formed: every `tool_result` block is immediately preceded by an
+    // assistant `tool_use` block carrying the SAME id (the exact invariant the 400
+    // enforced). The stub (which sits ABOVE rig) cannot catch this — only the real
+    // `CompletionModel` request construction surfaces the pairing.
+    #[test]
+    fn repair_loop_request_pairs_submit_tool_use_before_error_tool_result() {
+        use rig_core::completion::message::ToolResultContent;
+
+        // Turn 1: the model submits a BROKEN form (missing close paren → parse err).
+        let turn1 = vec![AssistantContent::ToolCall(ToolCall::new(
+            "toolu_broken".to_string(),
+            ToolFunction::new(
+                "submit".to_string(),
+                serde_json::json!({"argument": "(defn dbl [x] x"}),
+            ),
+        ))];
+        // Turn 2: the REPAIR completion — a fresh `submit` tool_use with the FIXED
+        // form (a bare identity, no unresolved primitive, so it validates clean).
+        let turn2 = vec![AssistantContent::ToolCall(ToolCall::new(
+            "toolu_fixed".to_string(),
+            ToolFunction::new(
+                "submit".to_string(),
+                serde_json::json!({"argument": "(defn dbl [x] x)"}),
+            ),
+        ))];
+        // Turn 3: the model answers.
+        let turn3 = vec![AssistantContent::text("defined dbl")];
+        let mock = MockModel::new(vec![turn1, turn2, turn3]);
+        let captured = mock.requests.clone();
+
+        let rig = RigModel::new(mock).expect("tokio current-thread runtime builds");
+
+        let mut s = crate::agent::test_support::repl_session();
+        s.agent = Some(AgentState {
+            transcript: Vec::new(),
+            model: Some(Box::new(rig)),
+            provider_label: "mock (test)".to_string(),
+            // --yes so the confirm gate auto-accepts without a line-read; the
+            // pairing defect is in the validator-repair loop, which runs BEFORE
+            // (and independently of) the consent gate (§20.3).
+            auto_accept: true,
+            auto_accept_notice_shown: false,
+        });
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("write me a dbl fn in this module", &mut sink, &mut consent);
+
+        let reqs = captured.lock().unwrap();
+        // Turn 1 (initial submit) + turn 2 (the repair completion) + turn 3 (the
+        // post-submit continuation Done) — three completion calls.
+        assert!(
+            reqs.len() >= 2,
+            "the broken-then-fixed repair drives at least the initial + repair calls, got {}",
+            reqs.len()
+        );
+
+        // The REPAIR request (turn 2 = index 1) is the one that 400'd live. Walk
+        // its chat_history and assert every tool_result is preceded by a matching
+        // tool_use (the exact invariant the Anthropic 400 enforced).
+        let history: Vec<Message> = reqs[1].chat_history.clone().into_iter().collect();
+        let mut last_use_ids: Vec<String> = Vec::new();
+        let mut saw_tool_use = false;
+        let mut saw_tool_result = false;
+        for msg in &history {
+            let uses = assistant_tool_use_ids(msg);
+            if !uses.is_empty() {
+                last_use_ids = uses;
+                saw_tool_use = true;
+            }
+            for rid in user_tool_result_ids(msg) {
+                saw_tool_result = true;
+                assert!(
+                    last_use_ids.contains(&rid),
+                    "tool_result id {rid} has no preceding matching tool_use in the \
+                     REPAIR request; preceding tool_use ids were {last_use_ids:?} \
+                     (this is the Phase-6 Anthropic 400 — unpaired tool_use)"
+                );
+            }
+        }
+        assert!(
+            saw_tool_use,
+            "the repair request must carry the (broken) submit's assistant tool_use block"
+        );
+        assert!(
+            saw_tool_result,
+            "the repair request must carry the compiler-error tool_result block \
+             (paired, NOT a bare user turn)"
+        );
+        assert!(
+            last_use_ids.contains(&"toolu_broken".to_string()),
+            "the broken submit's tool_use id (toolu_broken) must appear in the repair history"
+        );
+
+        // The error feedback must be carried as the tool_result content (paired),
+        // and it must be the FINAL message (the prompt the model answers) — not a
+        // bare trailing user turn.
+        let last = history.last().expect("a final message in the repair request");
+        assert!(
+            !user_tool_result_ids(last).is_empty(),
+            "the final repair message must be the error tool_result (paired), not a bare user turn"
+        );
+        let last_text: String = match last {
+            Message::User { content } => content
+                .iter()
+                .filter_map(|c| match c {
+                    UserContent::ToolResult(r) => Some(
+                        r.content
+                            .iter()
+                            .filter_map(|tc| match tc {
+                                ToolResultContent::Text(t) => Some(t.text.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    ),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+            _ => String::new(),
+        };
+        assert!(
+            last_text.contains("does not compile"),
+            "the paired tool_result must carry the compiler-error feedback, got: {last_text:?}"
+        );
+
+        // RESIDUAL-CORNER guard: the POST-SUBMIT continuation request (turn 3 =
+        // index 2) must ALSO be well-formed. After the repair, the LAST recorded
+        // tool_use is the REPAIR submit (toolu_fixed); the outer loop's success
+        // tool_result must pair against THAT id, not the original toolu_broken —
+        // else this request ends `…tool_use(toolu_fixed), tool_result(toolu_broken)`
+        // and 400s. Walk its history and assert every tool_result is preceded by a
+        // matching tool_use.
+        assert!(
+            reqs.len() >= 3,
+            "the successful submit drives a post-submit continuation call, got {}",
+            reqs.len()
+        );
+        let cont: Vec<Message> = reqs[2].chat_history.clone().into_iter().collect();
+        let mut cont_use_ids: Vec<String> = Vec::new();
+        for msg in &cont {
+            let uses = assistant_tool_use_ids(msg);
+            if !uses.is_empty() {
+                cont_use_ids = uses;
+            }
+            for rid in user_tool_result_ids(msg) {
+                assert!(
+                    cont_use_ids.contains(&rid),
+                    "POST-SUBMIT continuation: tool_result id {rid} has no preceding \
+                     matching tool_use (residual Phase-6 corner); preceding tool_use \
+                     ids were {cont_use_ids:?}"
+                );
+            }
+        }
+        // Specifically: the FINAL success tool_result must carry the REPAIR
+        // tool_use id (toolu_fixed), and the history must contain the repair
+        // tool_use — proving the outer result paired against the actual submit.
+        let cont_last = cont.last().expect("a final message in the post-submit request");
+        assert_eq!(
+            user_tool_result_ids(cont_last),
+            vec!["toolu_fixed".to_string()],
+            "the success tool_result must pair against the REPAIR submit's id (toolu_fixed)"
+        );
+
+        // End-to-end: the FIXED form was submitted (the repair succeeded and the
+        // clean form committed under --yes).
+        assert!(
+            s.lookup_with_prelude_fallback("dbl").is_some(),
+            "the repaired clean form must commit the definition"
+        );
+    }
 }
