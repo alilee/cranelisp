@@ -1097,6 +1097,7 @@ The palette assigns one colour per semantic role. There are no user-configurable
 | Slash command body (symbol names, info lines) | default | — | — | Dense informational content; styling would add noise |
 | Startup banner | dim | `\033[2m` | `\033[0m` | One-time context; should not dominate |
 | Agent prose frame (`▌` gutter + agent text) | bright magenta gutter, default body | `\033[95m` (gutter) | `\033[0m` | Reserved exclusively for the agent's *prose* — makes model output unmistakable from deterministic REPL output (§17.2). Only the prose is framed; agent-issued commands and their results use their normal roles. [S88] |
+| Agent-input prompt (`agent>` glyph at agent-echo sites) | dim, bright-magenta `agent` token | `\033[2m` + `\033[95m` (the `agent` token) | `\033[0m` | The prompt prefix shown when the agent "types" a line — a pulled read command (§17.2) or a Build-submit echo (§17.14). Distinct from the dim human prompt (§2.1) and from the `▌` prose gutter, so the transcript reads honestly: who issued each line. Degrades under `--no-color`/non-TTY to the plain-text token `agent>` (no SGR). [S89] |
 
 Notes on specific choices:
 
@@ -1785,7 +1786,7 @@ A turn therefore reads on screen as an interleaving of framed prose and unframed
 
 ### 17.3 Consent Model [S88]
 
-The agent's actions are gated by **what they touch**, not by which "mode" the user selected. The S88 MVP is **read-only Advise**: it reads and shows, and it MAY *propose* code (shown, never submitted), but it performs no writes. The fuller consent model (Build and Document writes) is specified here as the **target** for the agentic-Phase-2 work (S89); the S88 MVP implements only the read-only row.
+The agent's actions are gated by **what they touch**, not by which "mode" the user selected. The S88 MVP is **read-only Advise**: it reads and shows, and it MAY *propose* code (shown, never submitted), but it performs no writes. The fuller consent model (Build and Document writes) is specified here as the **target** for the agentic-Phase-2 work (S89); the S88 MVP implements only the read-only row. **S89 realizes the Build and Document write rows** — the Build confirm-gate UX is §17.14, the Document consultative-edit UX is §17.15; both extend (never relax) the "auto-approve reads only" floor.
 
 | Action class | Consent | S88 MVP | Notes |
 |---|---|---|---|
@@ -1936,7 +1937,9 @@ This section is the **complete** set of additive agent requirements on the REPL 
 
 - the `/ask`, `/refs`, `/tests-for` command rows and the `/doc <module>` overload (§3.1);
 - the `--agent` / `--no-agent` flags (§0.6.1);
-- the "Agent prose frame" style role (§10.3).
+- the "Agent prose frame" style role and (S89) the "Agent-input prompt" style role (§10.3).
+
+The **S89** additions (§17.12–§17.15) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14) and Document consultative edit (§17.15) only fire when the live agent proposes a write. None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so §1–§16 stay byte-identical. [S89]
 
 Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. The resolution-aware dispatch classifier (§17.1) — which resolves bare atoms and routes any *unknown* symbol to the agent — is itself **entirely feature-gated**: feature-off, an unbound bare symbol still lands on today's §4.1.10 unbound display and a genuine parse error on the §5 display, so the REPL is byte-identical to §1–§16. [S88]
 
@@ -2011,3 +2014,122 @@ Configuration determines **where** data goes, so it is bound to the privacy disc
 **Success and error reporting.** On success the REPL prints a confirmation line naming the path and the number of characters written — e.g. `wrote agent context to <path> (<N> chars)`. If `<path>` cannot be written (e.g. an unwritable directory), the REPL reports a graceful error rather than crashing or panicking. [S88]
 
 **Feature-OFF behavior.** When the binary is built **without** the `agent` feature (§17.10.1), `/context` prints `agent not built in` — identical to `/ask`'s feature-off behavior (§17.1) — and writes nothing. [S88]
+
+### 17.12 Agent-Input Prompt — Who Typed What [S89]
+
+§17.2 establishes that an agent turn interleaves **framed prose** (`▌` gutter) with **unframed deterministic REPL lines** (the agent's reads, proposals, and — in S89 — its writes, all rendered as if the user had typed them). That unframed-equals-keystroke contract created an honesty gap surfaced in live S88 use: when the agent **issues a line itself** — a pulled read command (`/source foo`), or (S89) a submitted form — the line renders with **no prompt prefix at all**, so a reader scanning the replayable transcript (§15) cannot tell whether the agent typed it or the user did. This subsection closes that gap with a distinct **agent-input prompt**. [S89]
+
+**The agent-input prompt glyph.** Every line the agent "types" — i.e. a line the *agent originated* and the REPL is echoing as an issued command — MUST be prefixed with a distinct **agent-input prompt**: the token `agent>` (the agent analogue of the human `user>` prompt, §2.1). The prompt:
+
+- is **distinct from the human prompt** (`user>` / the timing+module prompt of §2.1) — the reader can tell agent-issued input from user-typed input at a glance; [S89]
+- is **distinct from the `▌` prose gutter** (§17.2) — a pulled command is the agent *acting*, not the agent *speaking*; the `agent>` prompt marks issued input, the `▌` gutter marks prose. The two never share a glyph. [S89]
+- is styled per the new §10.3 "Agent-input prompt" role (dim, with the `agent` token in bright magenta to tie it visually to the agent's magenta prose frame), and **degrades under `--no-color`, `NO_COLOR`, or a non-TTY** (§10.1) to the **plain-text token `agent>`** with no SGR codes — so piped output and the showcase still read honestly. [S89]
+
+**Where the agent-input prompt appears (the two agent-echo sites).** The `agent>` prompt prefixes exactly the lines the agent issues as input:
+
+1. **Pulled read commands** (§17.2) — when the agent reaches for `/source`, `/info`, `/refs`, `/sig`, … the echoed command line carries `agent>`; its **result** below it renders in normal deterministic style (cyan type prefix, dim drawer, the `/list` layout — §1, §3) exactly as today, *unprefixed and unframed*. Only the issued command line gets the `agent>` prompt; the result is the REPL's own output. [S89]
+2. **Build-submit echoes** (§17.14) — when the agent submits a form past the confirm-gate, the submitted definition line is echoed with `agent>` so the transcript shows the agent issued it (then the normal `:Type name` definition result follows, unprefixed). [S89]
+
+Illustratively (colour elided):
+
+```
+user> /ask how does grid-get work?
+▌ Let me look at its definition.
+agent> /source grid-get
+:(Fn [primitives/Vec primitives/Int] primitives/Int) solver/grid-get  ; defn - Read a cell
+▌ It indexes the flat grid vector by row-major offset. ...
+```
+
+The `agent>` line is agent-issued input; the `:(Fn …)` line beneath it is the deterministic REPL's normal `/source` output; the `▌` lines are the agent's prose. Three visually-distinct origins, each honestly marked. [S89]
+
+**Feature-off / dormant.** The agent-input prompt exists only when the agent is live (it only ever prefixes agent-issued lines, which only exist when the agent takes a turn). Feature-off or dormant, no agent line is ever issued, so the prompt never appears — the deterministic REPL is byte-identical (§17.1, §17.9). [S89]
+
+### 17.13 Markdown Rendering Within the Agent-Prose Frame [S89]
+
+The agent returns **markdown** prose. S88 rendered it raw inside the `▌` frame (§17.2) — headings, lists, emphasis, and fenced code all passed through verbatim, and (the live-use defect, §17.13.3) raw ANSI escape codes could leak as literal text. S89 specifies that the model's markdown is **formatted for the terminal inside the §17.2 prose frame**, that fenced Lisp renders through the deterministic pretty-printer, and — normatively — that **no raw ANSI escape code ever appears as literal text** in any rendering mode. [S89]
+
+#### 17.13.1 Markdown Formatting (inside the `▌` frame) [S89]
+
+The agent's prose MUST be formatted as terminal text — not emitted as raw markdown source — **within** the §17.2 agent-prose frame (every formatted prose line still carries the `▌` gutter; the markdown formatting lives *inside* the frame, not beside it). The formatter MUST handle the common markdown the model actually produces:
+
+- **Headings** (`#`, `##`, …) — rendered as a visually-distinct heading line (e.g. bold), not as a literal `## ` prefix. [S89]
+- **Bullet and numbered lists** — rendered as aligned list items with a bullet/number marker, not as literal `- `/`1. ` source. [S89]
+- **Emphasis** — `**bold**` and `*emphasis*` rendered with the corresponding terminal weight/style (bold, italic), with the surrounding `*`/`**` markers consumed (not shown literally). [S89]
+- **Inline code** — `` `code` `` rendered as a distinguishable inline span (e.g. via the existing palette), with the backticks consumed. [S89]
+
+This is a **bounded** terminal formatter for the markdown the model emits — not a full CommonMark engine; constructs it does not handle MUST degrade to readable plain text (the marker shown or stripped), never to a crash or to garbled output. The formatting uses the **existing §10.3 palette roles** (bold, dim, etc.) — it introduces **no new colour and no new style role** beyond the agent-prose frame role already in §10.3. [S89]
+
+**Degrades cleanly under `--no-color`.** Under `--no-color`, `NO_COLOR`, or a non-TTY (§10.1), the markdown formatting MUST degrade to **plain text with the `▌` gutter still present** (per §17.2's frame-degradation rule) and **no SGR codes** — headings/lists read as plain text lines, emphasis markers are stripped to their words, inline code shows its text. The prose stays legible and frame-marked in piped output and the showcase, exactly as the bare prose did in S88. [S89]
+
+#### 17.13.2 Fenced Lisp Renders via the Pretty-Printer [S89]
+
+When the model's prose contains a fenced code block whose info-string is `lisp` (or `cranelisp`) — `` ```lisp … ``` `` — the block's body MUST be rendered through the **deterministic S-expression pretty-printer** (the same printer `/source` and `/sexp` use, §3.1, §10) — syntax-highlighted and indented — **not** emitted as a raw fence. The pretty-printed block renders **inside** the `▌` prose frame (it is part of the agent's *answer* — the agent *showing* code — distinct from an agent-issued `/source` pull, which is the agent *running a command* and renders unframed with the `agent>` prompt, §17.12). A fence with a **non-Lisp** info-string (e.g. `` ```sh ``) is left as a literal block (markdown-formatted, not pretty-printed). [S89]
+
+The pretty-printed fence MUST honour the colour mode: syntax-highlighted when colour is enabled, plain indented text under `--no-color`/non-TTY — degrading via the **same** global colour gate as every other styled output (§10.1, §10.7), never a separate one. [S89]
+
+#### 17.13.3 No Raw ANSI Escape Codes — Normative (the S88 defect) [S89]
+
+In live S88 use, agent output sometimes emitted ANSI colour codes as **literal text** (e.g. a visible `\033[36m…` in the rendered prose or a fenced block) instead of rendering as colour. This is a **conformance failure**, not a cosmetic nicety. Normatively:
+
+- In **every** rendering mode, an agent turn's output (framed prose, formatted markdown, and pretty-printed fenced Lisp) MUST contain **no ANSI escape code as literal visible text**. Colour codes either take effect as styling (colour enabled) or are absent entirely (colour disabled) — they are never shown as characters. [S89]
+- Under `--no-color`, `NO_COLOR`, or a non-TTY (§10.1), agent output MUST be **completely free of SGR/escape sequences** — the `--no-color` transcript is clean plain text (gutter + plain prose + plain-indented Lisp). [S89]
+- This is the **user-visible acceptance** for the defect's fix: an `/ask` answer containing prose **plus** a `` ```lisp `` block renders with formatted prose and a pretty-printed, correctly-coloured form, with **no literal escape codes anywhere**, and stays clean under `--no-color`. [S89]
+
+(The root cause is an int-internal render-path wiring issue — style-once-at-the-leaf, the global colour gate honoured uniformly — not a missing colour-mode parameter; that is `/int`/`/dev`-owned mechanism. This spec pins only the user-visible contract: no literal escapes, clean `--no-color`. A `/qa` narrow failing-not-ignored repro is owed before closure, per `CLAUDE.md §Testing`.) [S89]
+
+### 17.14 Build Mode — The Confirm-Gated Submit UX [S89]
+
+S88's read-only MVP **proposed** code — shown, never submitted (§17.3.1). S89 promotes the agent to **propose-then-submit-on-confirm**: the agent MAY submit a form into the live session, but **only past a confirm-gate the user controls**. This realizes the §17.3 "Build writes → confirm-and-show" row, which S88 specified as the target and left unimplemented. The read-only-by-default floor (§17.3) is **extended, not replaced**: a write is reachable **only** past the confirm-gate; reads stay auto-run-and-show; non-read, non-submit tools (e.g. `/sh`, §17.7) stay refused. [S89]
+
+#### 17.14.1 The Confirm-Gate Experience [S89]
+
+When the agent wants to submit a form, the user sees, in order:
+
+1. **The proposed form, shown pretty-printed.** The exact `(defn …)`/`(deftype …)` the agent proposes is rendered as a normal definition echo (the same visual a user-typed definition produces, §1.3) — pretty-printed (§17.13.2) so the user reads exactly what would be submitted. It is echoed with the **`agent>` agent-input prompt** (§17.12) so it reads honestly as agent-issued. [S89]
+2. **A confirm prompt.** The REPL MUST then present a clear, single-line confirm prompt that names the action as a **code submission** and offers an explicit accept/decline choice — e.g. `submit this definition? [y/N]`. The prompt MUST make the **default-decline** posture visible (the capitalized `N`): pressing Enter, or any non-affirmative response, declines. The exact wording is at implementation discretion but MUST convey (a) that a **definition is being submitted into the session**, and (b) an explicit yes/no with **decline as the safe default**. [S89]
+
+The consent interaction is a **synchronous prompt at the REPL prompt** — the user types `y`/`n` (or equivalent) on the next line, the same way they answer any prompt; it is not a background dialog or a mode switch. [S89]
+
+#### 17.14.2 Accept and Decline [S89]
+
+- **On accept** (`y`): the form is submitted — it goes through the *same* path a user keystroke uses, so it is type-checked, defined, and persisted exactly as if the user had typed it, and its normal `:Type name` definition result (§1.3) renders **unframed** below the echo (it is now real session state). Typing the new name afterward reports it as bound (§4). The submission is part of the replayable transcript (§15). [S89]
+- **On decline** (Enter / `n` / anything non-affirmative): **nothing is written to the session.** The proposal is discarded; the session symbol table is **unchanged** — typing the proposed name afterward MUST still report it unbound (§4.1.10), structurally identical to the S88 "proposed, not submitted" floor (§17.3.1). The agent is told the user declined (so it does not assume the code is live) and the turn continues. A decline MUST never partially apply, crash, or leave the session in an inconsistent state. [S89]
+
+#### 17.14.3 The Pre-Flight Validator — The User Never Sees an Agent Compile Error [S89]
+
+Before a proposed form reaches the confirm-gate (§17.14.1), the REPL **silently validates** it (a behind-the-scenes type-check on a throwaway staging copy) and, on **any** failure — a parse error or a type error, no distinction — **silently repairs** it (asks the model to fix it and re-validates), up to a bounded number of attempts. The user-visible contract (the U5 ratified decision, `design/arch/repl-embedded-agent.md §6.4`):
+
+- **The user NEVER sees a raw agent compiler error.** A broken intermediate the agent generated — the broken form *and* the compiler diagnostic it produced — MUST NOT appear in the transcript at all. Only a form that **at least parses and type-checks** ever reaches the confirm-gate echo. The whole stage→check→discard→repair exchange is invisible. [S89]
+- **No stack of compiler diagnostics, ever.** The user is never shown a sequence of failed attempts, error messages, or internal retry chatter. The validator's work is silent by construction. [S89]
+
+#### 17.14.4 The Validator Give-Up Wording [S89]
+
+If silent-repair exhausts its attempt cap without producing a form that validates, the agent **gives up gracefully** — it does **not** submit broken code, and it does **not** dump a compiler error. Instead it renders, in its prose frame (§17.2), a **single honest, polite notice** that it could not produce valid code here — e.g. *"I wasn't able to produce code that compiles cleanly for this — here's my best attempt, which you may need to adjust."* Normatively, the give-up:
+
+- MUST be a **graceful, plain-language notice** in the agent prose frame — never a raw compiler diagnostic, a stack trace, or a stack of failed attempts. [S89]
+- MUST NOT submit anything to the session (it degrades to the §17.3.1 read-only "proposed, not submitted" floor). [S89]
+- MAY show its **last attempt clearly marked as an un-submitted proposal** the user can copy and hand-fix — pretty-printed (§17.13.2), with no confirm-gate (there is nothing valid to submit), and with prose that makes unmistakable it is **not** in the session. [S89]
+
+The exact phrasing is at implementation discretion but MUST convey: it could not produce valid code, nothing was submitted, and (if shown) the remaining code is an unverified suggestion. The user's experience of an agent that cannot get the code right is a **calm apology and a suggestion**, never a wall of diagnostics. [S89]
+
+### 17.15 Document Mode — The Consultative Preamble/Docstring Edit UX [S89]
+
+S88 specified **reading** a module preamble (`/doc <module>`, §17.5.1) and the **shape** of the edit UX, deferring the edit itself to S89 (§17.5.2). S89 specifies the **edit experience**: the agent records its understanding durably — as a module preamble or a definition docstring — through a **consultative** gate that is deliberately distinct, in wording and posture, from the Build code-submit confirm (§17.14). This realizes the §17.3 "Document writes → consultative" row. [S89]
+
+#### 17.15.1 The Consultative Gate — Distinct From the Build Confirm [S89]
+
+A Document write (set/replace a module preamble or a definition docstring) is **consultative**, not a terse code-submit confirm. The two write classes are distinguished **by the question the user is asked**, so the user always knows whether the agent is changing **code** or changing **documentation**:
+
+- **Build (code) — confirm posture** (§17.14): `submit this definition? [y/N]` — a terse, default-decline confirm for a code change. [S89]
+- **Document (documentation) — consultative posture**: the agent **proposes recording its understanding** and asks a consultative question naming the target — e.g. *"record this as `solver`'s preamble?"* (for a module preamble) or *"record this as `grid-get`'s docstring?"* (for a definition docstring). The wording is a **consultation** ("shall I record this as …?"), distinct from the Build "submit this definition?" — the user is being asked to endorse a piece of *documentation*, not to approve *code*. [S89]
+
+Before asking, the agent MUST **show exactly what it proposes to record** — the proposed preamble/docstring text, rendered as it would be stored (for a module preamble, the canonical leading `;;` comment block, §17.5.2; for a docstring, the docstring text) — so the user endorses the exact wording. The proposal echo carries the `agent>` agent-input prompt (§17.12). [S89]
+
+#### 17.15.2 Accept and Decline [S89]
+
+- **On accept**: the preamble/docstring is written durably into the code — for a module preamble, as the canonical leading `;;` block at the head of the module's backing file (§17.5.2); for a docstring, into the definition. The edit is shown as a normal REPL line (§17.2) and becomes part of the replayable transcript (§15). The **rest of the file MUST remain byte-stable** (§8.16.5) — an unrelated regeneration MUST leave the hand-written text verbatim (the §17.5.2 no-reflow guarantee). [S89]
+- **On decline**: nothing is written; the existing preamble/docstring (or its absence) is unchanged; the agent is told the user declined and the turn continues. [S89]
+
+#### 17.15.3 The Durable-Memory Promise — "Next Session It Remembers" [S89]
+
+A Document edit is **durable**: it round-trips byte-stably through source regeneration (§17.5.2, §8.16.5) — the recorded text persists in the code exactly as endorsed. Because the agent's harvested context reads module preambles and docstrings back from the live session (§17.8, the agent's durable memory is the code, `design/arch/repl-embedded-agent.md §3.1`), a preamble the agent helps write **this** session is read back by the agent **next** session. The experience-level promise the user can rely on: **what the agent records, it remembers** — and because the record lives in the code as ordinary, readable documentation, improving a module's docs and growing the agent's memory are the **same activity** (§17.5.2). The user never maintains a separate agent memory; the documentation *is* the memory, and it is durable across sessions. [S89]
