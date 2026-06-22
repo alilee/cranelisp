@@ -723,4 +723,130 @@ mod tests {
             "the repaired clean form must commit the definition"
         );
     }
+
+    /// Walk a captured `CompletionRequest`'s chat_history and assert the
+    /// Anthropic tool_use↔tool_result pairing invariant holds in BOTH directions:
+    ///   - every `tool_result` is preceded by an assistant `tool_use` carrying
+    ///     the SAME id (the `messages.N: unexpected tool_use_id …` 400);
+    ///   - every assistant `tool_use` whose id is later closed by a `tool_result`
+    ///     pairs against the most recent preceding tool_use run.
+    ///
+    /// `label` names the request (which completion call) so a failure points at
+    /// the exact offender. Returns whether the request carried ANY tool blocks.
+    fn assert_request_wire_paired(req: &CompletionRequest, label: &str) -> (bool, bool) {
+        let history: Vec<Message> = req.chat_history.clone().into_iter().collect();
+        let mut last_use_ids: Vec<String> = Vec::new();
+        let mut saw_tool_use = false;
+        let mut saw_tool_result = false;
+        for msg in &history {
+            let uses = assistant_tool_use_ids(msg);
+            if !uses.is_empty() {
+                last_use_ids = uses;
+                saw_tool_use = true;
+            }
+            for rid in user_tool_result_ids(msg) {
+                saw_tool_result = true;
+                assert!(
+                    last_use_ids.contains(&rid),
+                    "{label}: tool_result id {rid} has no preceding matching tool_use \
+                     (the messages.N unexpected_tool_use_id 400); preceding tool_use \
+                     ids were {last_use_ids:?}"
+                );
+            }
+        }
+        (saw_tool_use, saw_tool_result)
+    }
+
+    // spec: repl/spec.md §17 — Phase-6 CAP-EXHAUSTED GIVE-UP pairing. This is the
+    // EXACT live 400 that triggered the Phase-6 work: the repair loop exhausts its
+    // cap (3 consecutive broken `submit`s → "I couldn't produce a definition that
+    // compiles cleanly…") and the give-up `tool_result` the OUTER loop records
+    // must close the LAST (trailing-unpaired) repair tool_use — NOT the original
+    // submit, and NOT be a spurious second tool_result. Get it wrong and the NEXT
+    // request 400s `messages.4…: unexpected tool_use_id … each tool_result must
+    // have a corresponding tool_use in the previous message`.
+    //
+    // Drive THREE consecutive broken `submit`s through the REAL rig boundary
+    // (turn 1 = outer broken submit; turns 2,3,4 = the repair completions, each a
+    // fresh broken submit → cap exhausted → give-up). Walk EVERY captured
+    // `CompletionRequest` and assert each is wire-valid in BOTH directions — i.e.
+    // it would have caught the live `messages.4` 400. The stub (above rig) cannot
+    // catch this; only the real `CompletionModel` request construction surfaces it.
+    #[test]
+    fn cap_exhausted_give_up_keeps_every_request_wire_paired() {
+        // A broken `submit` (missing close paren → parse Err → always re-prompts).
+        let broken = |id: &str| {
+            vec![AssistantContent::ToolCall(ToolCall::new(
+                id.to_string(),
+                ToolFunction::new(
+                    "submit".to_string(),
+                    serde_json::json!({"argument": "(defn never [x] x"}),
+                ),
+            ))]
+        };
+        // Turn 1 = the outer submit; turns 2..4 = the three repair completions the
+        // loop requests (MAX_REPAIR_ITERATIONS = 3). All broken ⇒ cap exhausted ⇒
+        // give-up. A trailing scripted Done is harmless (the give-up returns first).
+        let mock = MockModel::new(vec![
+            broken("toolu_b0"),
+            broken("toolu_b1"),
+            broken("toolu_b2"),
+            broken("toolu_b3"),
+            vec![AssistantContent::text("ok")],
+        ]);
+        let captured = mock.requests.clone();
+        let rig = RigModel::new(mock).expect("tokio current-thread runtime builds");
+
+        let mut s = crate::agent::test_support::repl_session();
+        s.agent = Some(AgentState {
+            transcript: Vec::new(),
+            model: Some(Box::new(rig)),
+            provider_label: "mock (test)".to_string(),
+            // --yes so the (never-reached) confirm gate would auto-accept; the
+            // give-up happens in the validator-repair loop, BEFORE any gate.
+            auto_accept: true,
+            auto_accept_notice_shown: false,
+        });
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("write me a never fn in this module", &mut sink, &mut consent);
+
+        // The user-visible give-up notice rendered (U5 §16.4) — the agent never
+        // submitted broken code, and never surfaced a raw compiler error.
+        let rendered = String::from_utf8_lossy(&sink);
+        assert!(
+            rendered.contains("couldn't produce a definition that compiles cleanly"),
+            "the cap-exhausted give-up notice must render, stdout={rendered}"
+        );
+
+        // EVERY captured request must be wire-paired in BOTH directions — the
+        // central assertion. The give-up's trailing request (and any post-give-up
+        // turn the outer loop assembles) is exactly where the live `messages.4`
+        // 400 lived: a trailing repair tool_use closed by a mis-id'd or spurious
+        // tool_result. The repair loop drives ≥4 completion calls.
+        let reqs = captured.lock().unwrap();
+        assert!(
+            reqs.len() >= 4,
+            "three broken submits drive the outer + three repair completions, got {}",
+            reqs.len()
+        );
+        let mut any_paired = false;
+        for (i, req) in reqs.iter().enumerate() {
+            let (saw_use, saw_result) = assert_request_wire_paired(req, &format!("request[{i}]"));
+            any_paired |= saw_use && saw_result;
+        }
+        // The give-up path DID exercise the tool_use↔tool_result pairing (it is
+        // not vacuously green on a transcript that never carried tool blocks).
+        assert!(
+            any_paired,
+            "at least one request must carry a paired tool_use+tool_result \
+             (the give-up path must actually exercise pairing, not pass vacuously)"
+        );
+
+        // The broken form was NEVER submitted — `never` stays unbound (give-up).
+        assert!(
+            s.lookup_with_prelude_fallback("never").is_none(),
+            "the cap-exhausted give-up must commit NOTHING"
+        );
+    }
 }

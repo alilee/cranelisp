@@ -1233,6 +1233,89 @@ fn agent_build_broken_intermediate_never_shown_neg() {
     );
 }
 
+/// The cap-exhausted give-up script: FOUR consecutive broken `submit`s (each an
+/// unbalanced paren → parse Err → re-prompt). The repair loop (MAX_REPAIR_
+/// ITERATIONS = 3) validates the outer submit + drives 3 repair completions, all
+/// broken ⇒ cap exhausted ⇒ give-up. A trailing `done:` is harmless (the give-up
+/// returns first). This is the EXACT shape that 400'd live (`messages.4 …
+/// unexpected tool_use_id`): the trailing repair tool_use's give-up tool_result.
+#[cfg(feature = "agent")]
+const CAP_EXHAUSTED_GIVE_UP: &str = "tool: submit (defn never [x] x\n\
+     tool: submit (defn never [x] x\n\
+     tool: submit (defn never [x] x\n\
+     tool: submit (defn never [x] x\n\
+     done: I tried but could not\n";
+
+// spec: repl/spec.md §17.14.4 — the CAP-EXHAUSTED GIVE-UP path, e2e: this is the
+// live 400 that triggered the Phase-6 work. Three consecutive broken `submit`s
+// exhaust the silent-repair cap (§16.3); the agent gives up gracefully ("I
+// couldn't produce a definition that compiles cleanly…", §16.4) — it NEVER
+// submits broken code and never surfaces a raw compiler error. CRITICAL: the
+// give-up transcript must stay wire-valid (the `mod.rs` assemble_request
+// `debug_assert!(assert_transcript_wire_valid)` guard executes on THIS path in
+// the debug binary) — a malformed give-up transcript would panic the subprocess
+// (non-zero exit), so a clean exit proves the guard fired green at the seam,
+// catching the `messages.4` 400 in CI instead of at the live API.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_build_cap_exhausted_give_up_stays_wire_valid() {
+    // `--yes` so the (never-reached) confirm gate would auto-accept; the give-up
+    // is in the validator-repair loop, BEFORE any gate. No `y` line is piped.
+    let out = stub_repl_flags(
+        CAP_EXHAUSTED_GIVE_UP,
+        PreludeVariant::PrimitivesOnly,
+        &["--yes"],
+        "/ask define never\n\
+         (never 1)\n",
+    );
+    // (i) THE WIRE-VALIDITY GUARD (the primary signal): the subprocess exited
+    // cleanly with NO wire-validity panic. A malformed give-up transcript would
+    // trip the `assert_transcript_wire_valid` debug_assert at assemble_request
+    // (the give-up path assembles a follow-up request) and panic the debug binary
+    // — a non-zero exit + a `not wire-valid` stderr. A clean exit proves the guard
+    // fired green: the give-up transcript is wire-paired, so the live `messages.4`
+    // `unexpected tool_use_id` 400 is unreachable from this path.
+    assert!(
+        !out.stderr.contains("not wire-valid"),
+        "the wire-validity guard must NOT fire on the give-up path — a `messages.4` \
+         400 is a debug-binary panic here; stderr={}",
+        out.stderr
+    );
+    assert!(
+        out.status.success(),
+        "the give-up path must keep the transcript wire-valid — a malformed \
+         transcript would panic the debug binary's assemble_request guard; \
+         exit={:?}, stderr={}",
+        out.status,
+        out.stderr
+    );
+    // (ii) the graceful give-up notice rendered (U5 §16.4).
+    assert!(
+        out.stdout.contains("couldn't produce a definition that compiles cleanly"),
+        "the cap-exhausted give-up must render the U5 notice, stdout={}",
+        out.stdout
+    );
+    // (iii) NO raw compiler error leaked across the three broken attempts (§16.2).
+    assert!(
+        !out.stdout.to_lowercase().contains("parse error")
+            && !out.stdout.to_lowercase().contains("unbalanced")
+            && !out.stdout.to_lowercase().contains("unexpected"),
+        "the broken attempts must be silently discarded — NO compiler diagnostic \
+         may leak on the give-up path (§16.2), stdout={}",
+        out.stdout
+    );
+    // (iv) the give-up committed NOTHING — `never` stays unbound (`(never 1)`
+    // routes to the deterministic REPL via the compound form and is unbound).
+    assert!(
+        out.stdout.to_lowercase().contains("unbound")
+            || out.stdout.to_lowercase().contains("undefined")
+            || out.stdout.to_lowercase().contains("unknown"),
+        "a cap-exhausted give-up must write NOTHING — `never` must stay unbound, \
+         stdout={}",
+        out.stdout
+    );
+}
+
 // ---------------------------------------------------------------------------
 // B.2 — read-only floor +neg: declined submit makes no change; non-read tool
 // never reaches `eval` (§15.4).
