@@ -221,6 +221,7 @@ fn format_inline(text: &str) -> String {
     out
 }
 
+#[derive(Clone, Copy)]
 enum SpanKind {
     Bold,
     Emphasis,
@@ -252,12 +253,7 @@ fn next_span(text: &str) -> Option<(&str, &str, SpanKind, &str)> {
                         None => true,
                     };
                     if better {
-                        let k = match kind {
-                            SpanKind::Bold => SpanKind::Bold,
-                            SpanKind::Emphasis => SpanKind::Emphasis,
-                            SpanKind::Code => SpanKind::Code,
-                        };
-                        best = Some((open, close, dlen, k));
+                        best = Some((open, close, dlen, *kind));
                     }
                 }
             }
@@ -296,20 +292,34 @@ mod tests {
         assert!(out.contains('\u{258c}'), "framed: {out:?}");
     }
 
-    // §14.6 colour-ON leaf guard: when the global colour gate is ON, every escape
-    // produced is a WELL-FORMED SGR sequence (ESC immediately followed by `[`),
-    // never an orphan literal escape byte. This pins the half the e2e harness
-    // cannot (it forces colour off). Runs serially via the global OnceLock — the
-    // gate is process-wide, so this is the one test that sets it on.
+    // §14.6 colour-ON leaf guard: when the global colour gate is ON, the render
+    // path genuinely emits ANSI, AND every escape is a WELL-FORMED SGR sequence
+    // (ESC immediately followed by `[`), never an orphan literal escape byte.
+    // This pins the half the e2e harness structurally cannot reach (it pipes
+    // stdout ⇒ colour auto-off). The colour gate is a process-wide OnceLock fed
+    // by `is_terminal()` (always false in the non-TTY test process), so we use
+    // the `#[cfg(test)]` force seam in `style.rs` to drive it ON for real — not
+    // the vacuous `init_color(false)` which left colour OFF and made this guard
+    // hold trivially with no ESC at all. nextest = one process per test ⇒ the
+    // process-global force cannot race a sibling; the RAII guard restores it.
     #[test]
     fn lisp_fence_color_on_emits_well_formed_sgr() {
-        // The colour gate is a process-wide OnceLock; in the test binary it is
-        // unset by default (→ off). Force it on for this assertion. If another
-        // test already set it off, `set` is a no-op and colour stays off — in
-        // which case the "no orphan ESC" invariant holds vacuously (no ESC at
-        // all), which is still correct.
-        style::init_color(false);
-        let out = render_agent_prose("```lisp\n(defn double [x] (add-i64 x x))\n```");
+        let _guard = style::test_support::ColorGuard::force(true);
+        assert!(
+            style::is_color_enabled(),
+            "the force seam must drive the gate ON, else this guard is vacuous"
+        );
+        let out = render_agent_prose(
+            "Here is **bold** prose:\n```lisp\n(defn double [x] (add-i64 x x))\n```",
+        );
+        // The gate is ON ⇒ the render path MUST actually emit ANSI (the markdown
+        // `**bold**` span and/or the pretty-printed fence). A vacuous guard would
+        // produce zero escapes; this assertion makes the test bite.
+        assert!(
+            out.contains('\u{1b}'),
+            "colour ON must emit at least one SGR escape: {out:?}"
+        );
+        // Every escape introduces a well-formed SGR (ESC '['), no orphan bytes.
         for (i, _) in out.match_indices('\u{1b}') {
             let after = &out[i + 1..];
             assert!(

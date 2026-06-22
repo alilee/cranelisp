@@ -96,6 +96,17 @@ pub fn init_color(no_color_flag: bool) {
 
 /// Query whether colour output is enabled.
 pub fn is_color_enabled() -> bool {
+    // Test-only force seam: when a test has forced the colour gate (ON or OFF),
+    // honour that over the `is_terminal()` auto-detect — the test process is a
+    // non-TTY, so `COLOR_ENABLED` would otherwise always resolve OFF and the
+    // colour-ON code paths (well-formed SGR) would be unreachable from a unit
+    // test. nextest runs each test in its own process, so a process-global force
+    // in one test cannot race another. This seam is `#[cfg(test)]`-only — the
+    // production path below is byte-identical to the release binary.
+    #[cfg(test)]
+    if let Some(forced) = test_support::forced_color() {
+        return forced;
+    }
     *COLOR_ENABLED.get().unwrap_or(&false)
 }
 
@@ -137,6 +148,61 @@ pub fn styled(text: &str, style: Style) -> String {
     format!("\x1b[{}m{}\x1b[0m", style.sgr_code(), text)
 }
 
+/// Test-only colour-gate override seam (`#[cfg(test)]`).
+///
+/// The production gate is a `OnceLock<bool>` driven by `is_terminal()` — which
+/// is always `false` in the (non-TTY) test process, so the colour-ON code paths
+/// are otherwise unreachable from a unit test. `force_color(Some(true))` pins the
+/// gate ON for the current process (nextest = one process per test ⇒ no
+/// cross-test race); `force_color(None)` clears it. `is_color_enabled` consults
+/// this before the real `OnceLock`. This module does NOT exist in a non-test
+/// build, so the release binary's colour logic is byte-identical.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    // 0 = unset (fall through to the real OnceLock), 1 = forced OFF, 2 = forced ON.
+    static FORCE: AtomicU8 = AtomicU8::new(0);
+
+    /// Read the forced colour gate, if any. `None` ⇒ no force.
+    pub(crate) fn forced_color() -> Option<bool> {
+        match FORCE.load(Ordering::Relaxed) {
+            1 => Some(false),
+            2 => Some(true),
+            _ => None,
+        }
+    }
+
+    /// Force the colour gate to a value (`Some(true/false)`), or clear the force
+    /// (`None`) so detection falls back to the real `OnceLock` auto-detect.
+    pub(crate) fn force_color(value: Option<bool>) {
+        let code = match value {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        };
+        FORCE.store(code, Ordering::Relaxed);
+    }
+
+    /// RAII guard that forces the colour gate and restores it on drop, so a test
+    /// that forces colour ON cannot leak that state to a sibling test sharing the
+    /// process (defensive — under nextest each test is its own process anyway).
+    pub(crate) struct ColorGuard;
+
+    impl ColorGuard {
+        pub(crate) fn force(value: bool) -> Self {
+            force_color(Some(value));
+            ColorGuard
+        }
+    }
+
+    impl Drop for ColorGuard {
+        fn drop(&mut self) {
+            force_color(None);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +242,27 @@ mod tests {
     fn agent_prose_empty_body_still_framed() {
         let out = agent_prose("");
         assert_eq!(out, "\u{258c}\n");
+    }
+
+    // The `#[cfg(test)]` colour-force seam overrides the non-TTY auto-detect.
+    // Forcing ON makes `styled` emit a well-formed SGR; clearing restores the
+    // non-TTY default (plain text). nextest = one process per test ⇒ no race.
+    #[test]
+    fn test_color_force_seam_toggles_gate() {
+        // Default (non-TTY test process): colour off.
+        assert!(!is_color_enabled());
+        {
+            let _g = test_support::ColorGuard::force(true);
+            assert!(is_color_enabled(), "force(true) enables the gate");
+            assert_eq!(styled("x", Style::Bold), "\x1b[1mx\x1b[0m");
+        }
+        // Guard dropped ⇒ force cleared ⇒ back to non-TTY default.
+        assert!(!is_color_enabled(), "force cleared after guard drop");
+        {
+            let _g = test_support::ColorGuard::force(false);
+            assert!(!is_color_enabled(), "force(false) disables the gate");
+            assert_eq!(styled("x", Style::Bold), "x");
+        }
     }
 
     #[test]
