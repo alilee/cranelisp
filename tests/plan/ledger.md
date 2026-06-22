@@ -63,6 +63,54 @@ is the record).
 No ledger failure rows added (plan only; the Phase-5 RED-first tests get rows
 when authored). Default suite unchanged at this phase.
 
+### Sprint 89 Phase 5 Wave 1 — Cluster A render + ANSI-leak RED-first tests authored (/qa, 2026-06-22)
+
+S89 Phase-5 Wave-1 step 1q deliverable: the 6 Cluster-A failing-not-ignored
+tests authored in `tests/agent.rs` (all `#[cfg(feature="agent")]`, Lane A/D,
+driven through the stub-provider-by-config mechanism). **RED on HEAD** under the
+`--features agent` lane (`cargo nextest run --features agent --test agent`):
+**29 tests, 23 pass, 6 fail** = exactly these 6 guards. They flip green when
+`/dev` lands `src/agent/render.rs` (step 1d). Default build re-confirmed
+agent-free (`cargo check` clean, no rig). Spec-link check clean (34 OK).
+
+- **`agent.rs::agent_output_no_literal_ansi_escape_when_color_off_neg`** (A.1, the
+  owed ANSI-leak DEFECT repro, RED) — `// spec: repl/spec.md §17.13.3`. Asserts
+  the `--no-color` transcript is clean plain-indented Lisp: no literal `\x1b[`
+  AND no raw ```fence markers surviving. RED on HEAD because today the raw fence
+  is echoed verbatim (not pretty-printed). Owner `/dev` (int, §14.6 leaf-styling
+  + §14.5 fence-routing), target S89.
+- **`agent.rs::agent_output_lisp_fence_pretty_printed_styled`** (A.1 positive, RED)
+  — `// spec: repl/spec.md §17.13.2`. The ```lisp fence is pretty-printed (form
+  symbols present, raw fence absent); with colour on every ESC is a well-formed
+  SGR (no orphan escape).
+- **`agent.rs::agent_issued_pull_shows_agent_prompt`** (A.2 i, RED) —
+  `// spec: repl/spec.md §17.12`. An agent-issued pull carries the `agent>`
+  prompt glyph.
+- **`agent.rs::agent_prose_markdown_formatted_for_terminal`** (A.2 ii, RED) —
+  `// spec: repl/spec.md §17.13.1`. Markdown prose renders formatted inside the
+  `▌` frame; raw `##`/`**`/backtick markers must not survive.
+- **`agent.rs::agent_prose_markdown_no_color_clean_neg`** (A.2 iii, RED) —
+  `// spec: repl/spec.md §17.13.3`. Same markdown under `--no-color` degrades to
+  plain text (no escapes, markers stripped, gutter present).
+- **`agent.rs::agent_session_render_golden_transcript`** (A.2 iv, Lane D, RED) —
+  `// spec: repl/spec.md §17.12`. Whole-session shape: pull glyph + framed prose
+  + pretty-printed fence + clean `--no-color`.
+
+**Testability gap flagged to `/dev` 1d / `/int` (NOT bridged with an internal
+helper).** The *literal-ANSI-escape-leak* half of §17.13.3 — a visible `\x1b[`
+reaching the screen — is the candidate-(b) "styled-for-TTY text captured into a
+pipe" leak that manifests only with **colour ON**. The e2e harness pipes stdout,
+so `style.rs::detect_color` returns false (non-TTY ⇒ off) and there is **no
+`--color=force` path** (`repl/spec.md §10.7` explicitly: "no `--color=force`").
+So the colour-ON escape leak **cannot be reproduced end-to-end** through the
+binary's I/O. The A.1 e2e repro therefore pins the colour-OFF half (no literal
+escape + plain-indented Lisp, not a raw fence — the observable §17.13.3 contract,
+RED on HEAD). The residual colour-ON leaf-styling guard is `/dev`'s mandatory
+unit test in `src/agent/render.rs` (`render_agent_prose` output over a ```lisp
+fence: no literal `\x1b` when colour off, well-formed SGR when on, §14.6) — the
+one seam where the colour-ON leak is observable. This is recorded as the
+unit/e2e split, not a deferral.
+
 ### Sprint 87 close — FIXME 0415 §3.3 symbol-layout formatter RESOLVED, 10 tests GREEN + entry removed (/qa, 2026-06-21)
 
 S87: 0415 layout formatter implemented (the L0–L4 shared symbol-list formatter

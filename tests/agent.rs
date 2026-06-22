@@ -674,3 +674,339 @@ fn agent_on_no_provider_is_dormant() {
         out.stdout
     );
 }
+
+// ===========================================================================
+// Cluster A — agent output rendering (S89 Wave 1; design/int/agent.md §14,
+// repl/spec.md §17.12–§17.13). RED-FIRST: these pin the new `render.rs`
+// behaviour (the agent-input `agent>` prompt at echo sites, markdown formatted
+// inside the `▌` frame, ```lisp fences pretty-printed) AND the §17.13.3 ANSI-
+// leak defect (no literal escape codes; `--no-color` clean). They drive the
+// real binary through the stub-provider-by-config mechanism (CRANELISP_AGENT_
+// PROVIDER=stub) so the rendering is exercised end-to-end with zero network.
+//
+// A.1 (`agent_output_no_literal_ansi_escape_when_color_off_neg`) is the OWED
+// failing-not-ignored DEFECT repro — RED on HEAD against today's leaking render,
+// flips green when /dev lands the §14.6 style-once-at-the-leaf fix (step 1d) in
+// the same change-set with its mandatory unit test. A.2 are RED until the §14
+// `render.rs` work lands. None is `#[ignore]`d.
+//
+// ESC `[` (the literal `\x1b[` SGR introducer) is the leak signature: a literal
+// escape character that reached the captured pipe as a *visible byte* rather
+// than taking effect / being suppressed.
+// ===========================================================================
+
+/// The literal ANSI/SGR introducer (ESC followed by `[`). A conforming agent
+/// render NEVER emits this as visible text under `--no-color` (§17.13.3).
+#[cfg(feature = "agent")]
+const ESC_SGR: &str = "\u{1b}[";
+
+/// Stub-driven agent REPL with extra CLI flags (e.g. `--no-color`). Like
+/// `stub_repl` but lets a test pass additional flags so the colour-off path can
+/// be exercised. Writes `script` to the per-test tmpdir, wires the stub provider.
+#[cfg(feature = "agent")]
+fn stub_repl_flags(
+    script: &str,
+    prelude: PreludeVariant,
+    flags: &[&str],
+    stdin: &str,
+) -> helpers::e2e::CrOutput {
+    let mut cl = Cranelisp::new().repl().with_prelude(prelude).cli_flag("--agent");
+    for f in flags {
+        cl = cl.cli_flag(f);
+    }
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(&script_path, script).unwrap();
+    cl.env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        .stdin(stdin)
+        .output()
+}
+
+// ---------------------------------------------------------------------------
+// A.1 — the ANSI-escape-leak DEFECT (§14.6, §17.13.3) — RED-FIRST on HEAD
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.13.3 — an `/ask` answer whose scripted prose carries a
+// ```lisp fence MUST, under `--no-color`, render as a **clean plain-text
+// transcript**: the §17.13.3 normative acceptance is "gutter + plain prose +
+// plain-indented Lisp" with NO literal ANSI escape sequence anywhere and NO raw
+// fence markers surviving. This is the owed narrow failing-not-ignored DEFECT
+// repro (CLAUDE.md §Testing) and is RED on HEAD: today the agent render path
+// emits the ```lisp fence verbatim (raw fence markers survive — NOT "plain-
+// indented Lisp"), violating the §17.13.3 `--no-color`-clean contract. It flips
+// green when /dev lands the §14.6 style-once-at-the-leaf render fix (step 1d).
+//
+// TESTABILITY NOTE (flagged to /dev 1d / /int): the *literal-ANSI-escape* half
+// of §17.13.3 (a visible `\x1b[` reaching the screen) is the candidate-(b)
+// "styled-for-TTY text captured into a pipe" leak — which manifests only with
+// COLOUR ON. The e2e harness pipes stdout, so `is_color_enabled()` is always
+// false (style.rs detect_color: non-TTY ⇒ off) and there is no `--color=force`
+// path (repl/spec.md §10.7). So the colour-ON escape leak CANNOT be reproduced
+// end-to-end through the binary's I/O today — that residual is the /dev-owned
+// unit-tier guard (`render_agent_prose` output over a ```lisp fence contains no
+// literal `\x1b` when colour off / well-formed SGR when on, §14.6). This e2e
+// repro therefore pins the colour-OFF `--no-color`-clean contract (no literal
+// escape + plain-indented Lisp, not a raw fence), the half that IS observable.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_output_no_literal_ansi_escape_when_color_off_neg() {
+    // One `/ask` turn; one scripted `done:` prose carrying one ```lisp fence.
+    // The fence body is the form the render path routes through pretty_print.
+    let out = stub_repl_flags(
+        "done: Here is a definition:\n\
+         prose: ```lisp\n\
+         prose: (defn double [x] (add-i64 x x))\n\
+         prose: ```\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I double a number?\n",
+    );
+    // (a) NO literal `\x1b[` may appear anywhere under `--no-color` — agent
+    // output must be completely free of SGR/escape sequences (§17.13.3). (This
+    // half passes on HEAD because the harness forces colour off; it is the
+    // load-bearing absence guard that must NOT regress when the fix lands.)
+    assert!(
+        !out.stdout.contains(ESC_SGR),
+        "agent output must contain NO literal ANSI escape (\\x1b[) under --no-color; \
+         found leaked SGR in stdout={:?}",
+        out.stdout
+    );
+    // (b) §17.13.3 acceptance: the `--no-color` transcript is "plain-indented
+    // Lisp" — the raw ```lisp fence markers must NOT survive (the fence is
+    // pretty-printed, not echoed verbatim). RED on HEAD: today the raw fence is
+    // emitted verbatim, so this fails until the §14.5 fence-routing lands.
+    assert!(
+        !out.stdout.contains("```"),
+        "the `--no-color` transcript must be plain-indented Lisp, NOT a raw \
+         ```fence — raw fence markers must not survive (§17.13.3), stdout={:?}",
+        out.stdout
+    );
+    // Sanity: the agent turn actually rendered (so the absences above are real
+    // coverage, not an empty transcript). The prose frame gutter is present.
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "the agent answer must have rendered (framed), stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.13.2 — the fenced ```lisp form is routed through the
+// deterministic S-expression pretty-printer (the same one /source and /sexp
+// use), rendered as a correctly-styled, indented Lisp form INSIDE the `▌` prose
+// frame — NOT emitted as a raw fence. Positive companion to A.1. RED until the
+// §14.5 fence-routing lands; with colour ON the SGR is well-formed (no orphan
+// literal escape bytes — every escape is part of a complete SGR sequence).
+#[cfg(feature = "agent")]
+#[test]
+fn agent_output_lisp_fence_pretty_printed_styled() {
+    let out = stub_repl_flags(
+        "done: Here is a definition:\n\
+         prose: ```lisp\n\
+         prose: (defn double [x] (add-i64 x x))\n\
+         prose: ```\n",
+        PreludeVariant::PrimitivesOnly,
+        // colour ON (no --no-color) — exercises the styled leaf.
+        &[],
+        "/ask how do I double a number?\n",
+    );
+    // Positive: the form is pretty-printed — the symbols of the form appear
+    // (round-tripped through the printer), NOT a raw ```lisp fence marker.
+    assert!(
+        out.stdout.contains("double") && out.stdout.contains("add-i64"),
+        "the fenced lisp form must be pretty-printed into the answer, stdout={}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("```lisp") && !out.stdout.contains("```"),
+        "the raw markdown fence markers must NOT survive into the rendered output, \
+         stdout={:?}",
+        out.stdout
+    );
+    // With colour on, any escape present must be a WELL-FORMED SGR sequence:
+    // every ESC is immediately followed by `[` (the CSI introducer). An orphan
+    // ESC not followed by `[` is the leak signature.
+    for (i, _) in out.stdout.match_indices('\u{1b}') {
+        let after = &out.stdout[i + 1..];
+        assert!(
+            after.starts_with('['),
+            "every ESC must introduce a well-formed SGR (ESC '['); found an orphan \
+             escape at byte {i} in stdout={:?}",
+            out.stdout
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A.2 — rendering improvements (positive — RED until §14 render.rs lands)
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.12 — an agent-issued pull (a read command the agent
+// "types") renders with the distinct agent-input prompt glyph `agent>` so the
+// transcript reads honestly: who typed what. The result below it is the REPL's
+// own normal output, unprefixed. RED until the §14.2 agent-input prefix lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_issued_pull_shows_agent_prompt() {
+    let out = stub_repl_flags(
+        "tool: source target\n\
+         done: that is the source of target\n",
+        PreludeVariant::PrimitivesOnly,
+        // colour-independent assertion (the glyph degrades to plain `agent>`),
+        // so run under --no-color to pin the plain-text token.
+        &["--no-color"],
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask show me target\n",
+    );
+    // The pulled command line carries the `agent>` agent-input prompt (§17.12).
+    assert!(
+        out.stdout.contains("agent>"),
+        "the agent-issued pull must carry the `agent>` prompt glyph, stdout={}",
+        out.stdout
+    );
+    // And the command itself is still echoed as-typed after the prompt.
+    assert!(
+        out.stdout.contains("/source target"),
+        "the pulled command must still render as-typed, stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.13.1 — the agent's markdown prose (heading / list /
+// emphasis / inline-code) renders FORMATTED for the terminal within the §17.2
+// `▌` agent-prose frame, NOT as raw markdown source. Under --no-color the
+// markdown degrades to plain text (markers stripped) with the gutter present.
+// RED until the §14.3 markdown_to_terminal formatter lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_prose_markdown_formatted_for_terminal() {
+    let out = stub_repl_flags(
+        "done: ## Defining functions\n\
+         prose: Use **defn** to define a `function`.\n\
+         prose: - first point\n\
+         prose: - second point\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I define a function?\n",
+    );
+    // Framed (the prose frame gutter is present).
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "the markdown prose must render inside the agent frame, stdout={}",
+        out.stdout
+    );
+    // The heading text and the list/emphasis words survive (formatted), but the
+    // raw markdown SOURCE markers must NOT (heading `##`, bold `**`, list `- `
+    // as literal source, inline-code backticks).
+    assert!(
+        out.stdout.contains("Defining functions"),
+        "the heading text must render, stdout={}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("##") && !out.stdout.contains("**") && !out.stdout.contains('`'),
+        "raw markdown source markers (##, **, backticks) must NOT survive into \
+         the formatted prose, stdout={:?}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.13.3 — the same markdown prose under `--no-color`
+// degrades cleanly: formatted layout, gutter present, and NO literal escape
+// codes. This ties A.1's absence guard to the markdown leaf (the `styled()`
+// short-circuit). RED until the colour-gate-honouring markdown leaf lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_prose_markdown_no_color_clean_neg() {
+    let out = stub_repl_flags(
+        "done: ## Defining functions\n\
+         prose: Use **defn** to define a `function`.\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "/ask how do I define a function?\n",
+    );
+    assert!(
+        !out.stdout.contains(ESC_SGR),
+        "markdown prose under --no-color must contain NO literal ANSI escape \
+         (\\x1b[), stdout={:?}",
+        out.stdout
+    );
+    // The gutter is still emitted as a plain-text prefix (frame degradation).
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "the `▌` gutter must still mark the frame under --no-color, stdout={}",
+        out.stdout
+    );
+    // §17.13.1: under --no-color the markdown DEGRADES to plain text — emphasis
+    // markers stripped to their words, inline-code backticks gone, heading `##`
+    // gone. RED on HEAD: today the raw markdown source passes through verbatim.
+    assert!(
+        !out.stdout.contains("##") && !out.stdout.contains("**") && !out.stdout.contains('`'),
+        "markdown must degrade to plain text under --no-color (markers stripped: \
+         ##, **, backticks), NOT pass through as raw source, stdout={:?}",
+        out.stdout
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A.2 (iv) — Lane-D whole-session golden: a full `/ask` session (scripted prose
+// + a ```lisp fence + an agent-issued pull) renders with the three visually-
+// distinct origins honestly marked: agent prose framed in `▌`, the pull echoed
+// unframed with the `agent>` prompt glyph, the fence pretty-printed (not raw),
+// and NO literal escape codes under --no-color. Pins the whole rendered shape;
+// a single drift in any of the three render rules flips it red. RED until §14.
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.12 — whole-session render shape (Lane D): pull glyph +
+// framed prose + pretty-printed fence + clean --no-color, all in one session.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_session_render_golden_transcript() {
+    let out = stub_repl_flags(
+        // Turn 1: a read pull. Turn 2: terminal prose carrying a ```lisp fence.
+        "tool: source target\n\
+         done: Here is the source, and a cleaner version:\n\
+         prose: ```lisp\n\
+         prose: (defn target [x] (add-i64 x 1))\n\
+         prose: ```\n",
+        PreludeVariant::PrimitivesOnly,
+        &["--no-color"],
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask show me target and a cleaner version\n",
+    );
+    // (1) the agent-issued pull line carries the `agent>` prompt glyph (§17.12).
+    assert!(
+        out.stdout.contains("agent>"),
+        "the agent-issued pull must carry the `agent>` prompt, stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("/source target"),
+        "the pulled command must render as-typed, stdout={}",
+        out.stdout
+    );
+    // (2) the agent's terminal prose is framed in the `▌` gutter.
+    assert!(
+        out.stdout.contains("\u{258c}"),
+        "the agent prose must be framed, stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("cleaner version"),
+        "the agent prose must render, stdout={}",
+        out.stdout
+    );
+    // (3) the ```lisp fence is pretty-printed into the answer (no raw fence).
+    assert!(
+        !out.stdout.contains("```"),
+        "the raw fence markers must NOT survive (the fence is pretty-printed), \
+         stdout={:?}",
+        out.stdout
+    );
+    // (4) the whole session is clean under --no-color — no literal escapes.
+    assert!(
+        !out.stdout.contains(ESC_SGR),
+        "the whole agent session under --no-color must contain NO literal ANSI \
+         escape (\\x1b[), stdout={:?}",
+        out.stdout
+    );
+}
