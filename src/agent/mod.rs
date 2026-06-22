@@ -22,6 +22,7 @@ pub mod harvest;
 pub mod primer;
 pub mod provider;
 pub mod pull;
+pub mod render;
 pub mod request;
 pub mod stub;
 pub mod types;
@@ -232,7 +233,12 @@ impl CompilerSession {
 
             match resp {
                 ModelResponse::Done(prose) => {
-                    let _ = write!(stdout, "{}", crate::style::agent_prose(&prose));
+                    // Cluster A (§14): the model's terminal prose is markdown —
+                    // route it through the agent renderer (markdown→terminal +
+                    // ```lisp fences pretty-printed, all inside the `▌` frame),
+                    // not raw into `agent_prose`. This is the single styling site
+                    // for prose (§14.6 style-once-at-the-leaf).
+                    let _ = write!(stdout, "{}", crate::agent::render::render_agent_prose(&prose));
                     if let Some(state) = self.agent.as_mut() {
                         state.record_assistant(&prose);
                     }

@@ -111,9 +111,13 @@ impl CompilerSession {
                 }
             }
             Ok(cmd) => {
-                // Echo the command as if the user typed it (§4.4, §3.5 — agent
-                // commands render in NORMAL REPL style, only prose is framed).
-                let _ = writeln!(stdout, "{cmd}");
+                // Echo the command behind the agent-input prompt glyph (§14.2)
+                // so the transcript reads honestly: who typed what. The command
+                // itself renders in NORMAL REPL style (§4.4, §3.5 — agent
+                // commands are not prose, so only the prompt is marked, not the
+                // body framed). One prefix fn (`render::agent_input_prefix`) is
+                // shared with the S89 Build-submit echo so they cannot diverge.
+                let _ = writeln!(stdout, "{}{cmd}", crate::agent::render::agent_input_prefix());
                 // Run through the SAME path a keystroke uses. Read-only commands
                 // return `Final(text)` (or `Nothing`); a read can never reach the
                 // `Compile` arm (the allowlist excludes eval/write).
