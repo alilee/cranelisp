@@ -232,33 +232,92 @@ naïve assertion would miss — pinned via the `-y>` target-prompt absence.
 `spec/08-modules.md §8.16` (module preamble) + `repl/spec.md §17.5`. Lane A. Reuses the S88
 `module_preamble` substrate + byte-stable regen (R4: no `cranelisp-types` change, no cache bump).
 
+**The `set-preamble` / `set-doc` stub-script DSL — the contract `/dev` 3d MUST implement (verbatim).**
+EXTENDS the existing one-scripted-turn-per-line DSL (`src/CLAUDE.md`, §1.1) with the TWO
+Document write tools, in the SAME `tool:` form. As with `submit` (Cluster B), the tool **name**
+is the discriminator (§17.2): `submit` is code (confirm gate); `set-preamble`/`set-doc` are
+documentation (consultative gate). Both are absent from the read-only `ALLOWLIST` (unconstructable
+without their gate — the §15.4 floor extends to Document writes).
+
+```text
+tool: set-preamble <MODULE> <TEXT>   → a `set-preamble` ToolCalls response. The argument splits
+                                       on the FIRST run of whitespace: the FIRST token is <MODULE>
+                                       (e.g. `user`); the REST of the line, verbatim, is <TEXT> —
+                                       the STRIPPED preamble prose (NO `;;`, NO comment markers).
+                                       The agent renders the proposed canonical leading `;;` block
+                                       (via `generate_preamble`, §17.5.2), asks the CONSULTATIVE
+                                       question ("record this as <MODULE>'s preamble?"), and on
+                                       confirm calls `apply_preamble_edit(MODULE, TEXT)` (§17.1) +
+                                       regenerates the backing file byte-stably (§8.16.5).
+
+tool: set-doc <SYMBOL> <TEXT>        → a `set-doc` ToolCalls response. Same line grammar (FIRST
+                                       token = <SYMBOL>, REST = docstring <TEXT>), same consultative
+                                       gate ("record this as <SYMBOL>'s docstring?"), same tool-name
+                                       discrimination. (C.1–C.3 exercise `set-preamble`; `set-doc`
+                                       is defined here for `/dev` 3d completeness.)
+```
+
+Canonical C.1 script (verbatim — the `SET_PREAMBLE_USER` const in `tests/agent.rs`; a single
+`set-preamble` records a one-line preamble — a multi-line TEXT is NOT expressed within one line):
+
+```text
+tool: set-preamble user Solver core: constraint propagation over a grid.
+done: recorded the module preamble for you
+```
+
+Line 1 is the Document write (consultative gate → on confirm writes the
+`;; Solver core: constraint propagation over a grid.` leading block into `user.cl` + regenerates
+byte-stably). Line 2 is the terminal prose. **`/dev` 3d must implement EXACTLY this format** —
+the stub parses `tool: set-preamble <MODULE> <TEXT>` / `tool: set-doc <SYMBOL> <TEXT>` into the
+respective ToolCalls; `run_pull`'s head routes both to the consultative `run_document_edit` arm
+by tool name (§17.2).
+
 ### C.1 Write → save → reload → harvester-read-back round-trip (§17.3/§17.4) — Lane A
 
 The closing memory loop ("memory is the code"). A stub `AgentModel` scripts a `set-preamble`
 tool-call + a confirm; the agent writes a module preamble; it round-trips byte-identically;
 a fresh session's harvester reads it back into context.
 
-| Test (behaviour) | Asserts |
-|---|---|
-| `agent_document_preamble_edit_round_trips_byte_stable` | the Document edit (`apply_preamble_edit` + section-0 regen) writes the preamble; a subsequent `/doc <module>` reads it back; it persists **byte-identically** across the module's backing-file regen (the §8.16.5 byte-stable round-trip — leading comment block identical before/after, no reflow) |
-| `agent_document_harvester_reads_edited_preamble_back` | after the Document-mode edit, a **fresh session** loads the regenerated `.cl`, `apply_module_preamble` captures the section-0 block, and the next turn's harvest carries the new preamble text into the request (rung 6 write → rung 3 read, no new harvest code) |
+| Test (behaviour) | Asserts | As-authored status |
+|---|---|---|
+| `agent_document_preamble_edit_round_trips_byte_stable` | the Document edit (`apply_preamble_edit` + section-0 regen) writes the canonical leading `;;` block into the module SOURCE (`user.cl`, above the first form, §8.16.1); the consultative gate echoes the **exact** block proposed (§17.15.1 "show exactly what it proposes"); it persists **byte-stably** (no reflow — the block appears ONCE, §8.16.5) | **RED** (rung 6 edit arm absent — `set-preamble` is an unknown tool, refused; `user.cl` carries no preamble) |
+| `agent_document_harvester_reads_edited_preamble_back` | after the Document edit, a **fresh session** (`run_again()` over the same tmpdir) loads the regenerated `.cl`, `apply_module_preamble` captures the section-0 block on load, and — with the edited module MENTIONED — the next turn's harvest carries the preamble text into the request, observed via the `/context` dump's `=== HARVESTED CONTEXT ===` (rung 6 write → rung 3 read, no new harvest code; §17.15.3) | **RED** (write side absent → fresh session finds no preamble to read back) |
+
+**Observable seam for read-back (chosen):** `/context <path>` dump (the assembled-request echo,
+already wired §17 / `tests/agent.rs::agent_on_context_dumps_request_to_file_dormant`) in the
+fresh `run_again()` session, with the edited module **mentioned** so the harvest includes its
+mentioned-module preamble block (`harvest.rs` reads `module_preamble` for mentioned modules,
+§5.2 #2). NOT `/doc <module>` — `handle_doc` (`src/repl.rs:682`) today resolves only **symbols**
+(returns "unknown symbol 'user'" for a module name); the `/doc <module>` preamble-read (§17.5.1 /
+§8.16.4) is itself unimplemented. **Testability note for `/dev` 3d:** the `/doc <module>`
+preamble-read is an additional §17.5.1 surface Document mode wants — either implement it (so the
+read-back has a direct REPL command) or the `/context` harvest seam suffices for the durable-memory
+guard. Either way the byte-stable write + regen (`user.cl`) is the durable record this test pins.
 
 RED-first (rung 6 edit arm does not exist yet). `// spec: spec/08-modules.md §8.16`,
-`§8.16.5`; `repl/spec.md §17.5`.
+`§8.16.5`; `repl/spec.md §17.15.3`.
 
 ---
 
 ## Cluster B/C consent +neg — confirm-gate declines path
 
-The confirm/consultative gate's decline path makes no change. (B.2's `agent_build_unconfirmed_submit_never_evals_neg`
+The confirm/consultative gate's decline path makes no change. (B.2's `agent_build_declined_submit_no_change_neg`
 covers the Build decline; this is the Document twin.)
 
-| Test (behaviour) | Lane | Asserts |
-|---|---|---|
-| `agent_document_declined_preamble_edit_no_change_neg` | A | a `set-preamble` edit whose **consultative** gate is declined writes nothing — the module's preamble (and its backing file) are byte-identical to the pre-edit state, no regen fires | `repl/spec.md §17.5`, §17.2 |
+| Test (behaviour) | Lane | Asserts | As-authored status |
+|---|---|---|---|
+| `agent_document_declined_preamble_edit_no_change_neg` | A | a `set-preamble` edit whose **consultative** gate is declined (`n`) writes nothing — the module's backing file (`user.cl`) carries neither the proposed `;;` block nor the raw prose; no preamble recorded (`repl/spec.md §17.15.2`, §17.2) | **PASS today** (standing floor — `set-preamble` is an unknown tool, refused, so nothing is ever written; must **continue** holding once the decline path lands — the Document twin of B.2's floor guard) |
 
 The Build confirm and the Document consultative gate are discriminated by **tool name** (§17.2);
-both decline paths are no-ops on session state.
+both decline paths are no-ops on session/source state.
+
+### C.3 `--yes` covers Document (blanket auto-accept, §17.15.2a) — Lane A
+
+| Test (behaviour) | Lane | Asserts | As-authored status |
+|---|---|---|---|
+| `agent_document_yes_auto_accepts_preamble_edit` | A | with `--yes` ON the `set-preamble` is applied WITHOUT the "record this as …'s preamble?" consultation firing (auto-accepted, §17.15.2a); the edit is nonetheless applied (`user.cl` carries the canonical block — blanket coverage, not Build-only); the proposed block is STILL shown (render-always — `--yes` is trust, not silence) | **RED** (`--yes` threading into the Document gate absent — §20.2; NO `y` line piped) |
+
+`// spec: repl/spec.md §17.15.2a`.
 
 ---
 

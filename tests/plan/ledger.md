@@ -196,6 +196,62 @@ All flip green when `/dev` 2d lands the confirm-gated write arm + validator + `-
 threading (parse `--yes`/`-y` accepted-no-op in BOTH builds; `agent_auto_accept()` reads
 only at the consent site, §20.3). 0429 deletes when B.3 stays green at wave close.
 
+### Sprint 89 Phase 5 Wave 3 — Cluster C Document mode RED-first tests authored (/qa, 2026-06-22)
+
+S89 Phase-5 Wave-3 step 3q deliverable: the Cluster-C (rung 6 — Document mode: durable
+preamble/docstring edits) failing-not-ignored tests authored in `tests/agent.rs`, driven
+through the stub-provider-by-config mechanism. Agent lane
+(`cargo nextest run --features agent --test agent`): **41 tests, 38 pass, 3 fail** (exactly
+the 3 Cluster-C reds — C.1 ×2 + C.3; no other regression; Cluster A/B all green, so
+`/dev` has already landed rungs 5 + render). Default lane (`cargo nextest run --test agent`):
+**15 tests, 15 pass** — Cluster C compiles out (`#[cfg(feature="agent")]`). Default build
+re-confirmed agent-free (`cargo check` clean). Spec-link check clean (46 OK).
+
+The **`set-preamble`/`set-doc` stub-script DSL** (the `/dev` 3d contract, also in
+`s89-test-plan.md §C`): two new Document write tools in the SAME `tool:` form, discriminated
+from `submit` by tool NAME (§17.2 — consultative gate, not confirm). `tool: set-preamble
+<MODULE> <TEXT>` (first token = module, rest = STRIPPED preamble prose, no `;;`); `tool:
+set-doc <SYMBOL> <TEXT>` (first token = symbol, rest = docstring prose). Both absent from the
+read-only ALLOWLIST (unconstructable without their gate). Canonical C.1 script (the
+`SET_PREAMBLE_USER` const): `tool: set-preamble user Solver core: constraint propagation over
+a grid.` / `done: recorded the module preamble for you`. On confirm the agent calls
+`apply_preamble_edit(MODULE, TEXT)` (§17.1) + regenerates the backing file byte-stably
+(§8.16.5), emitting the canonical `;; <prose>` leading block.
+
+**Observable read-back seam (chosen):** the `/context <path>` harvest dump in a fresh
+`run_again()` session over the same tmpdir (with the edited module MENTIONED so the harvest
+includes its mentioned-module preamble block, `harvest.rs` §5.2 #2), plus the regenerated
+`user.cl` backing file (the durable byte-stable write). NOT `/doc <module>` — `handle_doc`
+(`src/repl.rs:682`) resolves only symbols today; the `/doc <module>` preamble-read (§17.5.1)
+is itself unimplemented — flagged as a testability/coverage note to `/dev` 3d.
+
+- **`agent.rs::agent_document_preamble_edit_round_trips_byte_stable`** (C.1 keystone, RED) —
+  `// spec: spec/08-modules.md §8.16.5`. The Document edit writes the canonical leading `;;`
+  block into `user.cl` (above the first form, §8.16.1); the consultative gate echoes the exact
+  proposed block; no reflow (emitted once, §8.16.5). RED on HEAD: `set-preamble` is an unknown
+  tool, refused — `user.cl` carries no preamble. Owner `/dev` (int, rung-6 §17 Document edit
+  arm + `apply_preamble_edit` + section-0 regen wiring), target S89.
+- **`agent.rs::agent_document_harvester_reads_edited_preamble_back`** (C.1 read-back, RED) —
+  `// spec: repl/spec.md §17.15.3`. A FRESH session (`run_again()`) loads the regenerated
+  `.cl`, captures the section-0 block on load, and the next turn's harvest (`/context` dump)
+  carries the preamble text back (durable memory, rung 6 write → rung 3 read). RED: write side
+  absent → fresh session finds no preamble. Owner `/dev` (int, rung 6), target S89.
+- **`agent.rs::agent_document_declined_preamble_edit_no_change_neg`** (C.2 +neg, PASS-today
+  standing floor) — `// spec: repl/spec.md §17.15.2`. A declined (`n`) consultative gate writes
+  nothing (`user.cl` carries neither the `;;` block nor the raw prose). The Document twin of
+  B.2's floor guard — passes today (`set-preamble` refused, nothing written) and MUST continue
+  holding once the decline path lands.
+- **`agent.rs::agent_document_yes_auto_accepts_preamble_edit`** (C.3, RED) —
+  `// spec: repl/spec.md §17.15.2a`. With `--yes` ON the `set-preamble` applies WITHOUT the
+  consultative question firing (auto-accepted); the edit is nonetheless applied (`user.cl`
+  carries the canonical block — blanket coverage, not Build-only); the block is STILL shown
+  (render-always). RED: `--yes` threading into the Document gate absent (§20.2). Owner `/dev`
+  (int, §17 + §20), target S89.
+
+All flip green when `/dev` 3d lands the consultative Document edit arm (`run_document_edit` +
+`apply_preamble_edit` + the `set-preamble`/`set-doc` stub DSL + `--yes` auto-accept of the
+consultative gate). C.2 is a standing floor that must hold throughout.
+
 ### Sprint 87 close — FIXME 0415 §3.3 symbol-layout formatter RESOLVED, 10 tests GREEN + entry removed (/qa, 2026-06-21)
 
 S87: 0415 layout formatter implemented (the L0–L4 shared symbol-list formatter

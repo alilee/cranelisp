@@ -1382,3 +1382,306 @@ fn agent_yes_with_no_agent_is_accepted_no_op() {
         out.stdout
     );
 }
+
+// ===========================================================================
+// Cluster C — Document mode: durable preamble/docstring edits (S89 Wave 3;
+// design/int/agent.md §17, repl/spec.md §17.15, spec/08-modules.md §8.16).
+// RED-FIRST: these pin the agent's SECOND write class — the **consultative**
+// Document edit (set/replace a module preamble, §17.15.1) that records the
+// agent's durable understanding into the code itself ("memory is the code",
+// §17.15.3). Document mode does NOT exist yet (no `set-preamble`/`set-doc`
+// tool, no `run_document_edit` arm, no `apply_preamble_edit` — verified absent
+// on HEAD), so these are RED until /dev 3d lands rung 6. None is `#[ignore]`d.
+//
+// They drive the real binary through the stub-provider-by-config mechanism
+// (CRANELISP_AGENT_PROVIDER=stub) so the whole Document write path is exercised
+// end-to-end with zero network. The keystone (C.1) closes the memory loop:
+// write → save → reload → harvester-reads-it-back, using `run_again()` (a
+// fresh session over the same tmpdir) as the cross-session seam.
+//
+// ---------------------------------------------------------------------------
+// THE set-preamble / set-doc STUB-SCRIPT DSL — the contract /dev 3d MUST
+// implement (verbatim). This EXTENDS the existing one-scripted-turn-per-line
+// DSL (src/CLAUDE.md, agent-testing-strategy.md §1.1) with the TWO Document
+// write tools, in the SAME `tool:` form. As with `submit` (Cluster B), the
+// tool NAME is the discriminator (§17.2): `submit` is code (confirm gate);
+// `set-preamble`/`set-doc` are documentation (consultative gate).
+//
+//     tool: set-preamble <MODULE> <TEXT>
+//         → a `set-preamble` ToolCalls response. The argument is split on the
+//           FIRST run of whitespace: the FIRST token is <MODULE> (the module
+//           whose preamble to record, e.g. `user`); the REST of the line,
+//           verbatim, is <TEXT> — the STRIPPED preamble prose (NO leading `;;`,
+//           NO comment markers). The agent renders the proposed canonical
+//           leading `;;` block (via `generate_preamble`, §17.5.2), asks the
+//           CONSULTATIVE question ("record this as <MODULE>'s preamble?"), and
+//           on confirm calls `apply_preamble_edit(MODULE, TEXT)` (§17.1) +
+//           regenerates the module's backing file (byte-stable §8.16.5).
+//
+//     tool: set-doc <SYMBOL> <TEXT>
+//         → a `set-doc` ToolCalls response. The argument is split on the FIRST
+//           whitespace: the FIRST token is <SYMBOL> (the definition whose
+//           docstring to record); the REST is <TEXT> — the docstring prose.
+//           Same consultative gate ("record this as <SYMBOL>'s docstring?").
+//           (C.1/C.2/C.3 exercise `set-preamble`; the `set-doc` shape is
+//           defined here for /dev 3d completeness — same line grammar, same
+//           consultative gate, same tool-name discrimination.)
+//
+// A multi-line TEXT preamble is NOT expressed within one line; a single
+// `set-preamble` records a single-line-or-`\n`-joined preamble text. The
+// canonical C.1 script records a one-line preamble:
+//
+//     tool: set-preamble user Solver core: constraint propagation over a grid.
+//     done: recorded the module preamble for you
+//
+// Line 1 is the Document write (consultative gate → on confirm, writes the
+// `;; Solver core: constraint propagation over a grid.` leading block into
+// `user.cl` + regenerates byte-stably). Line 2 is the terminal prose after the
+// edit. Minimal + consistent with the existing `tool:`/`done:` DSL — the new
+// tools are just two tool names whose argument splits MODULE/SYMBOL ⊕ TEXT.
+// **/dev 3d must implement EXACTLY this format** (the stub parses
+// `tool: set-preamble <MODULE> <TEXT>` / `tool: set-doc <SYMBOL> <TEXT>` into
+// the respective ToolCalls; `run_pull`'s head routes both to the consultative
+// `run_document_edit` arm by tool name — §17.2).
+// ---------------------------------------------------------------------------
+
+/// The canonical C.1 Document-edit script (the DSL above): a single
+/// `set-preamble` recording a one-line preamble on the `user` module, then the
+/// terminal prose. The recorded prose is STRIPPED (no `;;`); the regen emits
+/// the canonical `;; <prose>` leading block.
+#[cfg(feature = "agent")]
+const SET_PREAMBLE_USER: &str =
+    "tool: set-preamble user Solver core: constraint propagation over a grid.\n\
+     done: recorded the module preamble for you\n";
+
+/// The stripped preamble prose the script records (no `;;`), and its canonical
+/// regenerated leading-comment-block form (`;; ` + prose, §8.16.2/§8.16.5).
+#[cfg(feature = "agent")]
+const PREAMBLE_PROSE: &str = "Solver core: constraint propagation over a grid.";
+#[cfg(feature = "agent")]
+const PREAMBLE_BLOCK: &str = ";; Solver core: constraint propagation over a grid.";
+
+// ---------------------------------------------------------------------------
+// C.1 — the keystone: durable round-trip + harvester read-back.
+// ---------------------------------------------------------------------------
+
+// spec: spec/08-modules.md §8.16.5 — a Document-mode preamble edit (i) WRITES
+// the preamble into the module source as the leading `;;` comment block, and
+// (ii) ROUND-TRIPS byte-stably through save→reload: the regenerated `user.cl`
+// carries the exact canonical block, and re-reading it (the inverse capture)
+// recovers the same prose. RED-FIRST: the `set-preamble` Document tool +
+// `apply_preamble_edit` + the section-0 regen wiring do not exist yet (rung 6),
+// so the consultative gate is never reached and `user.cl` carries no preamble —
+// flips green when /dev 3d lands the Document edit arm.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_document_preamble_edit_round_trips_byte_stable() {
+    // A defn is submitted first so the module has a backing file to regenerate;
+    // then the agent records the preamble; `y` confirms the consultative gate.
+    let out = stub_repl(
+        SET_PREAMBLE_USER,
+        PreludeVariant::PrimitivesOnly,
+        "(defn solve [g] g)\n\
+         /ask record what this module does\n\
+         y\n",
+    );
+    // (i) the edit is written into the module SOURCE — the regenerated backing
+    // file `user.cl` (in the binary's cwd = the per-test tmpdir) carries the
+    // canonical leading `;;` block at the head of the file (§8.16.1/§8.16.5).
+    let user_cl = std::fs::read_to_string(out.tmpdir.join("user.cl"))
+        .expect("the module backing file `user.cl` must exist after the edit");
+    assert!(
+        user_cl.contains(PREAMBLE_BLOCK),
+        "the preamble edit must write the canonical leading `;;` block into the \
+         module source (§8.16.5), user.cl={user_cl:?}"
+    );
+    // The preamble is the LEADING block (section 0, above the first form) — it
+    // precedes the `solve` definition in the regenerated file (§8.16.1).
+    let block_at = user_cl.find(PREAMBLE_BLOCK);
+    let solve_at = user_cl.find("solve");
+    assert!(
+        matches!((block_at, solve_at), (Some(b), Some(s)) if b < s),
+        "the preamble block must be the LEADING section-0 block, above the first \
+         form (§8.16.1), user.cl={user_cl:?}"
+    );
+    // (ii) byte-stable round-trip: the consultative gate echoes the EXACT block
+    // it proposes (§17.15.1 "show exactly what it proposes to record"), and the
+    // written block re-reads to the same prose. We assert the proposed block is
+    // shown verbatim in the transcript (the inverse-pair `;; <prose>` form).
+    assert!(
+        out.stdout.contains(PREAMBLE_BLOCK),
+        "the consultative gate must show the EXACT canonical `;;` block it \
+         proposes to record (§17.15.1), stdout={}",
+        out.stdout
+    );
+    // The regenerated source has NOT reflowed the preamble — exactly ONE
+    // canonical block line, not a re-wrapped / re-marked variant (§8.16.5
+    // no-reflow). The prose appears once, behind exactly one `;; `.
+    assert_eq!(
+        user_cl.matches(PREAMBLE_BLOCK).count(),
+        1,
+        "the preamble must be emitted ONCE as the canonical block — no reflow / \
+         duplication (§8.16.5), user.cl={user_cl:?}"
+    );
+}
+
+// spec: repl/spec.md §17.15.3 — the durable-memory promise ("next session it
+// remembers"): after the Document edit + regen, a FRESH session loads the
+// regenerated `user.cl`, `apply_module_preamble` captures the section-0 block
+// back into `SymbolTable.module_preamble` on load, and the next turn's harvest
+// carries the recorded preamble text into the assembled request (rung 6 write →
+// rung 3 read, no new harvest code). The observable seam is the `/context`
+// dump's `=== HARVESTED CONTEXT ===` section in the fresh session: with the
+// edited module MENTIONED, its preamble surfaces (harvest.rs reads
+// `module_preamble` for mentioned modules, §5.2 #2). RED-FIRST: the write side
+// (rung 6) does not exist, so the fresh session finds no preamble to read back.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_document_harvester_reads_edited_preamble_back() {
+    // Session 1: define + record the preamble (confirm the consultative gate).
+    let first = stub_repl(
+        SET_PREAMBLE_USER,
+        PreludeVariant::PrimitivesOnly,
+        "(defn solve [g] g)\n\
+         /ask record what this module does\n\
+         y\n",
+    );
+    // Sanity: session 1 actually wrote the backing file with the preamble (so
+    // the read-back below is a genuine cross-session test, not an empty start).
+    let user_cl = std::fs::read_to_string(first.tmpdir.join("user.cl"))
+        .expect("session 1 must leave a `user.cl` backing file");
+    assert!(
+        user_cl.contains(PREAMBLE_BLOCK),
+        "session 1 must have recorded the preamble into `user.cl`, user.cl={user_cl:?}"
+    );
+
+    // Session 2 (run_again — a FRESH binary over the SAME tmpdir, so `user.cl`
+    // is loaded from disk): mention the `user` module in the conversation, then
+    // dump the assembled context. The harvest must carry the preamble read back
+    // from the regenerated file (§17.15.3 / §8.16.4).
+    let second = first
+        .run_again()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent")
+        .env("CRANELISP_AGENT_PROVIDER", "stub");
+    // No script tool-calls needed for the read-back; an empty script keeps the
+    // stub well-formed (the /context dump is pure — no completion is issued).
+    let script_path = second.tmpdir_path().join("agent_script2.txt");
+    std::fs::write(&script_path, "done: ok\n").unwrap();
+    let out = second
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        // Mention `user` (the edited module) so the harvest includes its
+        // mentioned-module preamble block (§5.2 #2), then dump the context.
+        .stdin("/ask tell me about the user module\n/context ctx2.txt\n")
+        .output();
+    assert!(
+        out.stdout.contains("wrote agent context to ctx2.txt"),
+        "the /context dump must succeed in the fresh session, stdout={}",
+        out.stdout
+    );
+    let dumped = std::fs::read_to_string(out.tmpdir.join("ctx2.txt"))
+        .expect("the fresh-session /context file must exist");
+    // The harvested context of the FRESH session carries the preamble text that
+    // session 1 recorded — the durable-memory loop is closed (§17.15.3).
+    assert!(
+        dumped.contains(PREAMBLE_PROSE),
+        "the fresh session's harvester must read the recorded preamble back into \
+         the assembled context (durable memory, §17.15.3), dumped={dumped}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C.2 — consent decline +neg (Document consultative gate).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.15.2 — On decline, NOTHING is written: a
+// `set-preamble` whose CONSULTATIVE gate is declined (`n` to "record this as
+// <module>'s preamble?") leaves the module source unmodified — no preamble
+// block is written and no regen fires. The Document twin of B.2's declined
+// Build `submit` (`agent_build_declined_submit_no_change_neg`, Cluster B) — the
+// confirm and consultative gates are discriminated by tool NAME (§17.2), but
+// both decline paths are no-ops on session/source state. RED-FIRST until the
+// Document edit arm + its decline path land.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_document_declined_preamble_edit_no_change_neg() {
+    // The consultative gate is reached; the user declines with `n`. The module
+    // source must remain free of the proposed preamble block.
+    let out = stub_repl(
+        SET_PREAMBLE_USER,
+        PreludeVariant::PrimitivesOnly,
+        "(defn solve [g] g)\n\
+         /ask record what this module does\n\
+         n\n",
+    );
+    // If a backing file exists at all (the `solve` defn regen may write one), it
+    // MUST NOT carry the declined preamble block — the decline wrote nothing
+    // (§17.15.2). Read it leniently: absence-of-file is also "no preamble".
+    let user_cl = std::fs::read_to_string(out.tmpdir.join("user.cl")).unwrap_or_default();
+    assert!(
+        !user_cl.contains(PREAMBLE_BLOCK),
+        "a DECLINED preamble edit must write NOTHING — the module source must not \
+         carry the proposed `;;` block (§17.15.2 decline path), user.cl={user_cl:?}"
+    );
+    // And the proposed prose must not appear as a recorded preamble anywhere in
+    // the regenerated source (no partial/uncommented write either).
+    assert!(
+        !user_cl.contains(PREAMBLE_PROSE),
+        "a declined preamble edit must leave the module source byte-identical to \
+         the pre-edit state (no preamble recorded), user.cl={user_cl:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C.3 — `--yes` covers Document (blanket auto-accept).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.15.2a — `--yes` is BLANKET: it auto-accepts the
+// Document consultative gate exactly as it auto-accepts the Build confirm gate
+// (§17.14.5). With `--yes` ON, the `set-preamble` is applied WITHOUT the
+// "record this as <module>'s preamble?" consultation firing — proving the
+// blanket flag covers Document writes, not just Build. The proposed block is
+// STILL shown (§17.15.2a render-always); only the consultative question is
+// suppressed. RED-FIRST: the `--yes` threading into the Document gate (§20.2)
+// does not exist yet. Note: NO `y` line is piped — `--yes` auto-accepts.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_document_yes_auto_accepts_preamble_edit() {
+    let out = stub_repl_flags(
+        SET_PREAMBLE_USER,
+        PreludeVariant::PrimitivesOnly,
+        &["--yes"],
+        // No `y` line — `--yes` auto-accepts the consultative gate.
+        "(defn solve [g] g)\n\
+         /ask record what this module does\n",
+    );
+    // (a) the edit was applied WITHOUT a consultative prompt — the
+    // "record this as ...'s preamble?" question must NOT appear (auto-accepted,
+    // §17.15.2a). It is suppressed, not asked-then-auto-answered.
+    let lc = out.stdout.to_lowercase();
+    assert!(
+        !lc.contains("record this as"),
+        "under `--yes` the Document consultative question must NOT fire — the \
+         gate is auto-accepted (§17.15.2a), stdout={}",
+        out.stdout
+    );
+    // (b) the edit was nonetheless APPLIED — the regenerated `user.cl` carries
+    // the canonical preamble block (proving `--yes` covers Document writes, not
+    // just Build; the blanket flag, §17.15.2a).
+    let user_cl = std::fs::read_to_string(out.tmpdir.join("user.cl"))
+        .expect("the module backing file must exist after the auto-accepted edit");
+    assert!(
+        user_cl.contains(PREAMBLE_BLOCK),
+        "under `--yes` the preamble edit must STILL be applied (blanket auto-accept \
+         covers Document, §17.15.2a), user.cl={user_cl:?}"
+    );
+    // (c) the proposed block is STILL shown (§17.15.2a render-always: `--yes` is
+    // trust, not silence — the user always sees the documentation recorded).
+    assert!(
+        out.stdout.contains(PREAMBLE_BLOCK),
+        "under `--yes` the proposed `;;` block must STILL be shown before the \
+         auto-accepted write (§17.15.2a render-always), stdout={}",
+        out.stdout
+    );
+}
