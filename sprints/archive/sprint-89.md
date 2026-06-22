@@ -1,6 +1,6 @@
 # Sprint 89: Agentic-REPL Phase 2 — Build + Document + pre-flight validator (rungs 5–6)
 
-**Status**: PHASE 5 COMPLETE ✅ (Waves 1+2+3 CLOSED) — Phase 6 (user-facing) next, pending user go
+**Status**: COMPLETE ✅ (closed 2026-06-22 — user-approved "wrap S89")
 
 **Goal**: Polish the embedded REPL agent's output rendering (prompts, markdown, pretty-printed code) and give it its first **write** capabilities — submit forms (confirm-gated, behind a silent pre-flight validator) and record durable understanding (docstring/preamble edits) — on the read-only Advisor MVP base shipped + live-validated in S88.
 
@@ -244,4 +244,32 @@ All four `/design (src/)` §19 points settled + agreed across `/design`+`/repl`:
 
 ## Outcome (Phase 7)
 
-*(Pending — Phase 7.)*
+**Final state:** default `cargo nextest run` **1520/1520, 0 intentional reds**; `--features agent` 82 lib + 42 e2e; default build provably agent-free (no rig/tokio in the dep tree). Committed across ~30 checkpoints on `main` (plan `bb21253` → … → primer-refinements `8825af4`); **not pushed**. **Agentic-REPL Phase 2 (rungs 5–6) is built, tested, and live-validated against Anthropic** across 5 user smokes — the agent defines functions in your session end-to-end.
+
+### Delivered
+- **Rung 5 — Build mode:** confirm-gated `submit` write arm (the agent's first session mutation) through the existing `process_commands`/`eval` cluster-atomic staging (no new eval entry); **pre-flight validator** reusing the `check_forms` discard-on-Err arm with **silent-repair-anything (U5)**, capped at 3, graceful give-up. Read-only floor stays structural (writes unconstructable without confirm).
+- **Rung 6 — Document mode:** `set-preamble` durable module-preamble edits over the S88 `module_preamble` field + byte-stable section-0 regen; harvester reads them back next session; `/doc <module>`.
+- **`--yes` autonomous-submit flag** (user-requested): blanket auto-accept of the consent gates; **bypasses consent, NOT validation** (§20.3 structurally enforced); once-per-session first-use notice; off by default, no-op on default builds.
+- **Agent output rendering:** `agent>` prompt for agent inputs; markdown formatting in the prose frame; ```lisp → S24 pretty-printer; **ANSI-leak fixed on BOTH prose and pull-result paths** (style-once-at-leaf + `strip_ansi` for the model copy).
+- **LLM trace mode** (`CRANELISP_AGENT_TRACE=1`, user-requested) + a **wire-valid transcript invariant** (`assert_transcript_wire_valid`) guarded at every send, with **rig-trait MockModel tests across all 5 Build paths** (clean / repair / give-up / decline / `--yes`) — the Anthropic 400 class is closed.
+- **Primer** rewritten for the shipped capabilities (instructs Build/Document + ```lisp), steered off Clojure/CL idioms, given verified-compiling recursion + multi-signature-`defn` + favour-TCO guidance; regression-tested.
+- **FIXME 0429 closed** (rig-wire-path automated test). **Live validation:** rungs 0–6 confirmed against Anthropic Haiku; **6 live-found defects fixed + guarded** that every green CI run missed.
+
+### Deferred (with rationale)
+- **`set-doc` (docstring edits) descoped → FIXME 0430 (/design)** — the regen path drops the docstring field; shipping a silently-non-durable edit would break the §17.15.3 memory promise. `set-preamble` (the keystone) ships.
+- **FIXME 0431 (/qa)** — a give-up e2e `/dev` corrected in place; `/qa` reviews/owns.
+- **FIXME 0432 (/qa → typecheck/backend)** — multi-clause `defn` + self-call (codegen undefined-function + typecheck **panic**); pre-existing language defect, out of agentic scope; the panic is an agent-validator robustness risk to repro first.
+- **FIXME 0423 (/int)** — delete the S88-resolved file (still on disk).
+- **Agent prelude/stdlib awareness → via harvest/context, NOT primer** (user direction; memory `agent-prelude-awareness-via-harvest-not-primer`) — the user owns this.
+- **Agentic Phase 3 (S90, rung 7):** compensation telemetry → push/primer curation, semantic spec search, push-transparency header (U4); the **R5 valve** (spec-grep + telemetry skeleton) rides this.
+- **Effect-concurrency track, then Phase H** — established sequencing; standing carries (0050/0052/0365/0407/0419 + 0408/0424/0425/0426 + 0410/0416) confirm-deferred.
+
+### Findings (methodology + technical)
+- **The headline lesson — green CI ≠ working feature, for an LLM-in-the-loop.** Build/Document passed *every* green test while being **broken live in six distinct ways** (read-only primer; three tool_use/tool_result pairing bugs; Clojure-idiom mismatch; ANSI on pull results; a false give-up line). The deterministic stub sits **above the model** (can't test whether the model is *instructed* to use a capability) **and above the API** (can't enforce Anthropic's wire pairing). **Only the user's live smokes caught them.** Now guarded deterministically: primer-content tests, the wire-valid transcript invariant + **a rig-trait MockModel pairing test per transcript-construction site**, and the trace mode. **The primer is part of the feature surface.**
+- **A transcript-pairing finding is a Blocker vs the real API, not a Suggestion.** `/sprint` deferred the Wave-2 2R-S1 "fidelity" suggestion; it was the live 400. Recorded as a durable agentic-track rule: *a transcript-construction change isn't done until a rig-trait MockModel test pins its pairing, revert-verified.*
+- **Repro-before-scope earned its keep, repeatedly** — `/dev`'s "REPL returns wrong recursive values (fib→1)" did NOT reproduce (`(fib 10)=55` verified); the 0432 symptom was two-faced, not the single one first filed. Verify the alarming claim before scoping the fix.
+- **The verified-compiling primer discipline is load-bearing** — it refused to document the combined multi-sig+recursion idiom and thereby surfaced a real compiler defect (0432) instead of teaching the model to write code that panics typecheck.
+- **Phase 6 (user-facing) was satisfied by extensive live user validation** (5 smokes driving the real agent against Anthropic) rather than a scripted `/repl` demo — far stronger evidence. Prior demos + the default suite remain the regression guard (1520/1520 green).
+
+### Architectural-principles check (per `/sprint` close prompt)
+The feature-gate + pluggable-backend discipline (Principle 8, the `AgentModel` membrane over `rig-core`) held throughout — the default build stays byte-identical and agent-free by construction. The S89 dormant-fallback (**agent active ⇒ route per U1; dormant/off ⇒ today's deterministic display**) was a clean *refinement within* the ratified U1 contract, no new principle. The strongest candidate durable rule — *every agent transcript-construction site needs a rig-trait pairing test* — is a **testing-strategy** rule (recorded in `tests/plan/agent-testing-strategy.md` territory + these findings), **not** an architectural principle. **No new architectural principle proposed.**
