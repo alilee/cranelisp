@@ -56,13 +56,14 @@ This single seam is what makes the agent's *plumbing* a CI lane (Lane A) and con
 its *model quality* to a separate, non-blocking eval lane (Lane C). The split is the
 whole strategy.
 
-### 1.1 Stub shape — what the stub `CompletionModel` must provide
+### 1.1 Stub shape — what the stub `AgentModel` must provide
 
-The stub is a test double implementing `rig::completion::CompletionModel` (the exact
-associated types / method signature are a Phase-5/Wave-3 lookup against the pinned
-`rig-core` version — `agent.md §6.4` pins the version at implementation time; do not
-hardcode the trait shape here). Its required capabilities, in the vocabulary of
-`agent_turn`'s loop (`agent.md §3.2`):
+The stub is a test double implementing the object-safe **`AgentModel` membrane**
+(`src/agent/types.rs`) — NOT rig's `rig::completion::CompletionModel` directly (0429
+correction, 2026-06-22: the membrane was introduced FIXME 0427 because rig's trait is
+dyn-incompatible — associated types + `Clone` bound + async methods; the real providers
+reach rig BELOW the membrane via `RigModel<M: CompletionModel>` in `provider.rs`). Its
+required capabilities, in the vocabulary of `agent_turn`'s loop (`agent.md §3.2`):
 
 1. **Scripted turn responses.** The stub is constructed from an ordered script of
    responses, one consumed per `completion()` call within a turn's model↔tool loop.

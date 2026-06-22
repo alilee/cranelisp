@@ -63,6 +63,33 @@ is the record).
 No ledger failure rows added (plan only; the Phase-5 RED-first tests get rows
 when authored). Default suite unchanged at this phase.
 
+### Sprint 89 Wave 2 close — 0429 FULL close + agent-aware bare-unknown test (/qa, 2026-06-22)
+
+**0429 (`target: /qa`) — FULLY CLOSED + file deleted.** The residual S89 obligation
+(the rig-trait-level mock for the `provider.rs`/`request.rs` wire path) landed S88
+as `src/agent/provider.rs::tests::continuation_request_pairs_tool_use_before_tool_result`
+(a `MockModel: rig_core::completion::CompletionModel` driving the FULL model↔tool loop
+through the real rig boundary; asserts the Anthropic tool_use↔tool_result pairing
+invariant + non-empty tool_result content). **Verified green** under
+`cargo nextest run --features agent --lib 'agent::provider::tests::continuation_request_pairs_tool_use_before_tool_result'`.
+The `agent-testing-strategy.md §1`/`§1.1` correction (stub implements `AgentModel`,
+the project-owned membrane — `src/agent/types.rs` — NOT rig's `CompletionModel`
+directly) is applied. `design/arch/fixmes/0429-*.md` **deleted** by `/qa` (the `target`
+skill) this commit.
+
+**`repl_introspection.rs::bare_primitive_unknown_name_produces_undefined_error_neg`
+made agent-aware.** The test passed default but FAILED under `--features agent` because
+S88's U1 dispatch classifier (repl/spec.md §17.1) routes a bare UNBOUND symbol → the
+agent (dormant U6 notice in the `▌` prose frame), not the §4 "undefined name" error.
+Fix: the existing test is gated `#[cfg(not(feature = "agent"))]` (default-build guarantee
+unchanged — the undefined-name error still asserted); a sibling
+`#[cfg(feature = "agent")]` test `bare_primitive_unknown_name_routes_to_agent` asserts the
+agent route (`▌` frame present) + preserves the cross-build negative guard (MUST NOT
+dispatch to `primitives/add-i64`). Both builds green for the file.
+
+**0423 (`target: /int`)** — file may still be on disk; NOT `/qa`'s to delete (only `/int`
+deletes its own FIXME). Left in place; noted for `/int`.
+
 ### Sprint 89 Phase 5 Wave 1 — Cluster A render + ANSI-leak RED-first tests authored (/qa, 2026-06-22)
 
 S89 Phase-5 Wave-1 step 1q deliverable: the 6 Cluster-A failing-not-ignored

@@ -2418,6 +2418,16 @@ fn bare_primitive_surface_resolves_identically_across_five_plus_symbols() {
 // spec: repl/spec.md §1.1 (negative complement) — unknown bare symbol
 //       MUST NOT silently dispatch to a similarly-named primitive
 // (carry: legacy/sprint61_bare_primitive.rs::bare_primitive_unknown_name_produces_undefined_error_neg)
+//
+// DEFAULT (non-agent) build only. Under `--features agent` the U1 dispatch
+// classifier (repl/spec.md §17.1, ratified S88) routes a bare UNBOUND symbol
+// to the agent instead of the §4 "undefined name" display — so this default-
+// build expectation is wrong by design in the agent build. The agent-build
+// behaviour is asserted by the sibling `#[cfg(feature = "agent")]` test below
+// (`bare_primitive_unknown_name_routes_to_agent`). This default-build guarantee
+// is unchanged + correct: agent-route routing lives entirely under the feature
+// gate, so feature-off the unbound symbol still produces today's error.
+#[cfg(not(feature = "agent"))]
 #[test]
 fn bare_primitive_unknown_name_produces_undefined_error_neg() {
     let out = repl_prims("unknown-primitive-name-zzzz\n");
@@ -2442,6 +2452,37 @@ fn bare_primitive_unknown_name_produces_undefined_error_neg() {
         combined.contains("unknown-primitive-name-zzzz"),
         "error message MUST name the unknown symbol to be actionable; \
          got:\n{combined}"
+    );
+}
+
+// spec: repl/spec.md §17.1 — under `--features agent` the U1 resolution-aware
+//       dispatch classifier routes a bare UNBOUND symbol to the agent (not the
+//       §4 "undefined name" display). With the feature compiled in but no
+//       provider configured the agent is dormant, so the unknown symbol reaches
+//       `agent_turn`, which renders the dormant U6 notice inside the agent prose
+//       frame (`▌`). The load-bearing agent-build assertion is the SAME negative
+//       guard the default build makes: the unknown symbol MUST NOT silently
+//       dispatch to a nearby primitive (`add-i64`). This is the agent-aware
+//       complement of `bare_primitive_unknown_name_produces_undefined_error_neg`.
+#[cfg(feature = "agent")]
+#[test]
+fn bare_primitive_unknown_name_routes_to_agent() {
+    let out = repl_prims("unknown-primitive-name-zzzz\n");
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+
+    // The bare unbound symbol reaches the agent (U1) — the agent prose frame
+    // (`▌`) is the observable signal the line was diverted, not described.
+    assert!(
+        combined.contains('\u{258c}'),
+        "under --features agent a bare UNBOUND symbol MUST route to the agent \
+         (the `\u{258c}` prose frame) per repl/spec.md §17.1; got:\n{combined}"
+    );
+    // The negative guard is preserved across both builds: the unknown symbol
+    // MUST NOT silently dispatch to a nearby primitive (over-broad-fix guard).
+    assert!(
+        !combined.contains("primitives/add-i64"),
+        "unknown bare symbol MUST NOT silently dispatch to `add-i64` \
+         (guards against over-broad Slice 1 fix); got:\n{combined}"
     );
 }
 
