@@ -85,6 +85,21 @@ pub fn generate_module_source(
 ) -> String {
     let mut sections = Vec::new();
 
+    // 0. Module preamble (spec §8.16.5) — the leading `;;` comment block at the
+    //    file head, ABOVE the first form. Re-emitted verbatim from
+    //    `symbol_table.module_preamble` (captured on load by
+    //    `cranelisp_frontend::capture_module_preamble`). The capture/re-emit
+    //    pair is INVERSE on the canonical `;;`-and-one-space form (§8.16.3 /
+    //    §6.3 inverse-pair invariant): capture stripped `;;` + one space, so
+    //    re-emit prefixes each line with `;; ` (one space) — an unedited
+    //    preamble round-trips byte-identically. `None` ⇒ no section-0 block.
+    if let Some(preamble) = &symbol_table.module_preamble {
+        let block = generate_preamble(preamble);
+        if !block.is_empty() {
+            sections.push(block);
+        }
+    }
+
     // 1. Module declarations
     let mod_section = generate_mod_decls(&symbol_table.submodules);
     if !mod_section.is_empty() {
@@ -141,8 +156,185 @@ pub fn generate_module_source(
 }
 
 // ---------------------------------------------------------------------------
+// Colon-annotation-aware rendering (FIXME 0423 secondary symptom)
+// ---------------------------------------------------------------------------
+
+/// Render a definition `Sexp` for source-regeneration, emitting compound type
+/// annotations as `:(Option String)` (NO space after `:`), not `: (Option
+/// String)`.
+///
+/// FIXME 0423 secondary symptom + `memory/annotation-reader-macro-binds-following-form`:
+/// the reader represents a COMPOUND annotation `:(Option String)` as two sibling
+/// forms — a bare `Sexp::Symbol(":")` immediately followed by the type form. The
+/// generic `Sexp::format_indented` joins all siblings with a single space, so it
+/// emits `: (Option String)`, inserting a space the reader semantics forbid
+/// (`:` binds the IMMEDIATELY-following form with no separator). A simple-symbol
+/// annotation (`:Int`, `:primitives/Int`) is a single `Sexp::Symbol(":Int")`
+/// and already round-trips correctly — only the bare-`:` + following-form case
+/// needs the space suppressed.
+///
+/// This regen-local renderer mirrors `format_indented`'s line-fitting but, when
+/// a child is the bare colon-annotation symbol `":"`, attaches the FOLLOWING
+/// child with no separating space (flat or indented). It is the regen path's
+/// renderer; the generic `format_indented` is left untouched (it is
+/// `cranelisp-types`-owned; the colon-binding round-trip is a regen concern).
+fn render_decl_sexp(sexp: &Sexp) -> String {
+    render_decl_sexp_indented(sexp, 0)
+}
+
+/// `true` iff `s` is the bare colon-annotation marker symbol (`":"`), the
+/// reader's representation of a `:`-prefix on a COMPOUND (`(…)`) type form.
+fn is_bare_colon(s: &Sexp) -> bool {
+    matches!(s, Sexp::Symbol(name, _) if name == ":")
+}
+
+/// Flat (single-line) render with colon-binding suppression of the separator.
+fn render_decl_flat(sexp: &Sexp) -> String {
+    match sexp {
+        Sexp::List(children, _) => format!("({})", render_children_flat(children)),
+        Sexp::Bracket(children, _) => format!("[{}]", render_children_flat(children)),
+        // Leaves + simple `:Int` symbols + comments render as the generic flat.
+        _ => sexp.format_flat(),
+    }
+}
+
+/// Join children flat, suppressing the space AFTER a bare `:` colon marker so it
+/// binds the following form (`: (Option …)` → `:(Option …)`).
+fn render_children_flat(children: &[Sexp]) -> String {
+    let mut out = String::new();
+    let mut suppress_sep = false;
+    for (i, child) in children.iter().enumerate() {
+        if i > 0 && !suppress_sep {
+            out.push(' ');
+        }
+        out.push_str(&render_decl_flat(child));
+        suppress_sep = is_bare_colon(child);
+    }
+    out
+}
+
+/// Indented render mirroring `Sexp::format_indented`, but colon-binding aware.
+fn render_decl_sexp_indented(sexp: &Sexp, indent: usize) -> String {
+    if matches!(sexp, Sexp::Comment(_, _)) {
+        return sexp.format_flat();
+    }
+    let flat = render_decl_flat(sexp);
+    if flat.len() <= 60 {
+        return flat;
+    }
+    let (open, close, child_indent) = match sexp {
+        Sexp::List(children, _) if !children.is_empty() => ('(', ')', indent + 2),
+        Sexp::Bracket(children, _) if !children.is_empty() => ('[', ']', indent + 1),
+        _ => return flat,
+    };
+    let children = match sexp {
+        Sexp::List(c, _) | Sexp::Bracket(c, _) => c,
+        _ => unreachable!("guarded above"),
+    };
+    let pad = " ".repeat(child_indent);
+
+    // Greedily fit short items on the first line (like format_indented), but
+    // when an item is the bare `:` colon marker, attach the NEXT item to it
+    // with no separating space so the annotation binds its following form.
+    let mut first_line = format!("{}{}", open, render_decl_flat(&children[0]));
+    let mut rest_start = 1;
+    let mut prev_colon = is_bare_colon(&children[0]);
+    while rest_start < children.len() {
+        let next_flat = render_decl_flat(&children[rest_start]);
+        let sep_len = if prev_colon { 0 } else { 1 };
+        if first_line.len() + sep_len + next_flat.len() <= 60 {
+            if !prev_colon {
+                first_line.push(' ');
+            }
+            first_line.push_str(&next_flat);
+            prev_colon = is_bare_colon(&children[rest_start]);
+            rest_start += 1;
+        } else {
+            break;
+        }
+    }
+    if rest_start >= children.len() {
+        first_line.push(close);
+        return first_line;
+    }
+    let mut result = first_line;
+    let mut idx = rest_start;
+    while idx < children.len() {
+        let child_str = render_decl_sexp_indented(&children[idx], child_indent);
+        // A colon marker that lands at a line break binds the following form on
+        // the SAME line (`:(Option …)`), never `:`-on-its-own-line.
+        if is_bare_colon(&children[idx]) && idx + 1 < children.len() {
+            let next_str = render_decl_flat(&children[idx + 1]);
+            result.push('\n');
+            result.push_str(&pad);
+            result.push_str(&child_str);
+            result.push_str(&next_str);
+            idx += 2;
+        } else {
+            result.push('\n');
+            result.push_str(&pad);
+            result.push_str(&child_str);
+            idx += 1;
+        }
+    }
+    result.push(close);
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Section generators
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Module-preamble wiring (frontend → int seam; design/frontend/module-preamble.md §5)
+// ---------------------------------------------------------------------------
+
+/// Capture the leading-comment-block module preamble from `source` (via
+/// `cranelisp_frontend::capture_module_preamble`) and write it onto the live
+/// `SymbolTable.module_preamble` for `module`, ensuring the table exists.
+///
+/// The frontend hands off a pure `&str -> Option<String>`; int threads it onto
+/// the right module's table at each fresh-source load site (§5). This is the
+/// "one call + one field assignment per load site" wiring — orthogonal to
+/// `extract_module_declarations` (the structural-decl peel is left untouched).
+///
+/// Cache restore does NOT call this: a cache-restored module carries its
+/// preamble through serde (`#[serde(default)]`, schema 8→9), so re-capturing on
+/// a cache hit would be redundant. Capture runs only on a fresh source parse.
+///
+/// The live table persists across the typecheck commit
+/// (`worker::commit_staging_to_live` only writes `symbols`, never
+/// `module_preamble`), so setting the field here survives codegen.
+pub(crate) fn apply_module_preamble(
+    symbol_tables: &DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    source: &str,
+) {
+    let preamble = cranelisp_frontend::capture_module_preamble(source);
+    cranelisp_types::ensure_module_exists(symbol_tables, module);
+    if let Some(mut st) = symbol_tables.get_mut(module) {
+        st.module_preamble = preamble;
+    }
+}
+
+/// Re-emit a captured module preamble as the leading `;;` comment block
+/// (spec §8.16.5 section-0). Each `\n`-split line is prefixed with `;; ` (one
+/// space) and joined with `\n` — the EXACT inverse of `capture_module_preamble`'s
+/// strip (marker + one space, §8.16.2). A blank preamble line (`""`) re-marks as
+/// a bare `;;` (no trailing space), preserving the inverse-pair invariant so an
+/// unedited preamble round-trips byte-identically (§6.3).
+fn generate_preamble(text: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            if line.is_empty() {
+                ";;".to_string()
+            } else {
+                format!(";; {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 fn generate_mod_decls(decls: &[ModDecl]) -> String {
     decls
@@ -284,7 +476,7 @@ fn generate_traits(
         if let ModuleEntry::TraitDecl { .. } = entry
             && let Some(sexp) = introspection_sexp(introspection, module_path, name)
         {
-            items.push((name.to_string(), sexp.format_indented(0)));
+            items.push((name.to_string(), render_decl_sexp(&sexp)));
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
@@ -305,7 +497,7 @@ fn generate_types(
         if let ModuleEntry::TypeDef { .. } = entry
             && let Some(sexp) = introspection_sexp(introspection, module_path, name)
         {
-            items.push((name.to_string(), sexp.format_indented(0)));
+            items.push((name.to_string(), render_decl_sexp(&sexp)));
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
@@ -394,7 +586,7 @@ fn generate_fns_and_macros(
     macros_sorted
         .into_iter()
         .chain(fns_sorted)
-        .map(|(_, sexp)| sexp.format_indented(0))
+        .map(|(_, sexp)| render_decl_sexp(&sexp))
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -805,4 +997,193 @@ mod tests {
         let content = std::fs::read_to_string(&path).expect("read");
         assert_eq!(content, "(defn foo [] 42)\n");
     }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0423 secondary symptom — annotation spacing on regen
+    // -----------------------------------------------------------------------
+
+    fn parse1(src: &str) -> Sexp {
+        cranelisp_frontend::parse(src).unwrap().remove(0)
+    }
+
+    // The regen renderer MUST emit a COMPOUND type annotation with NO space
+    // after `:` — `:(Option String)`, not `: (Option String)`. The reader
+    // represents the compound annotation as a bare `Sexp::Symbol(":")` followed
+    // by the type form; the generic `format_indented` joins siblings with a
+    // space (the regression). `render_decl_sexp` suppresses that separator per
+    // the `:Type`-binds-following-form reader-macro semantics.
+    // spec: spec/08-modules.md §8.2.2 — regen annotation spacing (FIXME 0423)
+    #[test]
+    fn render_decl_compound_annotation_no_space_after_colon() {
+        let sexp = parse1("(defn f [x] :(Option String) x)");
+        let rendered = render_decl_sexp(&sexp);
+        assert!(
+            rendered.contains(":(Option String)"),
+            "compound annotation must render with NO space after `:`: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains(": (Option String)"),
+            "regen must NOT insert a space after `:` (FIXME 0423 regression): {rendered:?}"
+        );
+    }
+
+    // A simple-symbol annotation (`:Int`) is a single `Sexp::Symbol(":Int")` and
+    // already round-trips; verify the renderer leaves it intact.
+    // spec: spec/08-modules.md §8.2.2
+    #[test]
+    fn render_decl_simple_annotation_unchanged() {
+        let sexp = parse1("(defn g [] :Int 3)");
+        let rendered = render_decl_sexp(&sexp);
+        assert_eq!(rendered, "(defn g [] :Int 3)", "got {rendered:?}");
+    }
+
+    // The colon-binding suppression must also hold when the form breaks across
+    // lines (long body forces the indented path) — the `:(…)` stays glued.
+    // spec: spec/08-modules.md §8.2.2
+    #[test]
+    fn render_decl_compound_annotation_no_space_when_indented() {
+        let sexp = parse1(
+            "(defn h [:Int x] :(Option String) \
+             (longerbody aaaaaaaa bbbbbbbb cccccccc dddddddd eeeeeeee))",
+        );
+        let rendered = render_decl_sexp(&sexp);
+        assert!(
+            rendered.contains(":(Option String)"),
+            "indented compound annotation must glue `:` to its form: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains(": (Option String)"),
+            "no space after `:` even when indented: {rendered:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // §8.16 module preamble — wiring + byte-stable regen round-trip
+    // -----------------------------------------------------------------------
+
+    // Wiring (§8.16.5 / design/frontend/module-preamble.md §5): loading a module
+    // (here, applying preamble capture over its source) populates the live
+    // `SymbolTable.module_preamble` from the leading comment block.
+    // spec: spec/08-modules.md §8.16.2 — stored representation
+    #[test]
+    fn apply_module_preamble_populates_field_from_leading_comment_block() {
+        let module = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, crate::code::SessionSymbolTable> = DashMap::new();
+        let source = ";; Module docs line 1\n;; line 2\n(defn f [] 0)\n";
+        apply_module_preamble(&tables, &module, source);
+        let st = tables.get(&module).expect("table created");
+        assert_eq!(
+            st.module_preamble.as_deref(),
+            Some("Module docs line 1\nline 2"),
+            "preamble text must be the marker-stripped, newline-joined block"
+        );
+    }
+
+    // A module with NO leading comment block stores `None` (the common, valid
+    // case — §8.16.2).
+    // spec: spec/08-modules.md §8.16.2
+    #[test]
+    fn apply_module_preamble_none_when_no_leading_comment() {
+        let module = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, crate::code::SessionSymbolTable> = DashMap::new();
+        apply_module_preamble(&tables, &module, "(defn f [] 0)\n");
+        let st = tables.get(&module).expect("table created");
+        assert_eq!(st.module_preamble, None);
+    }
+
+    // Inverse-pair invariant (§8.16.5 / §6.3): capture's strip (marker + one
+    // space) ∘ re-emit's re-mark (`;; ` + line) == identity on the canonical
+    // form. An unedited preamble re-emits byte-identically to its captured
+    // source block, and re-capturing the regenerated head yields the same text.
+    // spec: spec/08-modules.md §8.16.5 — byte-stable source-regen round-trip
+    #[test]
+    fn preamble_reemit_is_inverse_of_capture() {
+        // Canonical `;;`-and-one-space block (the spec §8.16.1 idiom).
+        let captured = cranelisp_frontend::capture_module_preamble(
+            ";; Sudoku solver: constraint propagation +\n\
+             ;; backtracking over a Vec-backed grid.\n\
+             (mod solver)\n",
+        )
+        .expect("captured");
+        assert_eq!(
+            captured,
+            "Sudoku solver: constraint propagation +\nbacktracking over a Vec-backed grid."
+        );
+
+        // Re-emit the stored text as the leading `;;` block.
+        let block = generate_preamble(&captured);
+        assert_eq!(
+            block,
+            ";; Sudoku solver: constraint propagation +\n\
+             ;; backtracking over a Vec-backed grid."
+        );
+
+        // Re-capturing the re-emitted block (followed by a form) yields the
+        // SAME stored text — the inverse-pair round-trip holds.
+        let regen_source = format!("{block}\n(mod solver)\n");
+        let recaptured = cranelisp_frontend::capture_module_preamble(&regen_source)
+            .expect("recaptured");
+        assert_eq!(recaptured, captured, "capture ∘ re-emit must be identity");
+
+        // A bare-empty preamble line re-marks as bare `;;` and round-trips.
+        let empty_line = generate_preamble("");
+        assert_eq!(empty_line, ";;");
+    }
+
+    // End-to-end via `generate_module_source`: a module whose table carries a
+    // preamble re-emits it as the leading `;;` section-0 block, ABOVE the first
+    // form; a module with no preamble regenerates with no leading block.
+    // spec: spec/08-modules.md §8.16.5 — canonical leading position
+    #[test]
+    fn generate_module_source_emits_preamble_section_zero() {
+        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
+        use std::collections::HashMap;
+
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.module_preamble = Some("Header doc\nsecond line".to_string());
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Int,
+        };
+        st.insert(
+            "answer".into(),
+            ModuleEntry::def(
+                scheme,
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot: 0 },
+                },
+            )
+            .build(),
+        );
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: "answer".into(),
+        };
+        introspection.entry(fq).or_default().sexp = Some(parse1("(defn answer [] 42)"));
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.starts_with(";; Header doc\n;; second line\n"),
+            "preamble must be the leading section-0 block: {out:?}"
+        );
+        // Re-capturing the regenerated source yields the same preamble text.
+        assert_eq!(
+            cranelisp_frontend::capture_module_preamble(&out).as_deref(),
+            Some("Header doc\nsecond line"),
+            "regenerated preamble must re-parse to the same text"
+        );
+
+        // No-preamble module: no leading `;;` block.
+        st.module_preamble = None;
+        let out_none = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            !out_none.starts_with(";;"),
+            "a no-preamble module must regenerate without a leading block: {out_none:?}"
+        );
+    }
+
 }
+

@@ -30,6 +30,8 @@ Line comments begin with `;` and extend to the end of the line (or end of input)
 [1, 2, 3] ; commas are whitespace, equivalent to [1 2 3]
 ```
 
+> **Note (leading comment block — module preamble).** Comments are ordinarily insignificant. One position is an exception: a **contiguous `;;` comment block at the very top of a file**, running up to the first form, has the **module preamble** role (§8.16) — file-header documentation for the module as a whole. The reader does not discard it; it is preserved via `Sexp::Comment` (added Sprint 24) and surfaced so the frontend can associate the captured text with the module. A blank line breaks the leading block, and comments after the first form are ordinary comments. This is purely positional — the lexer treats the tokens as ordinary line comments; §8.16 assigns the role.
+
 ## 1.3 Literals [Tested]
 
 ### 1.3.1 Integer Literals [Tested crates/cranelisp-frontend/src/reader.rs::test_parse_integer_literal]
@@ -102,6 +104,8 @@ String literals are enclosed in double quotes. The following escape sequences ar
 "she said \"hi\"" ; escaped quotes
 ""                ; empty string
 ```
+
+> **Note (leading-string roles).** A bare string literal is lexically a single token wherever it appears; its *role* is positional. As the leading form of a definition it is a docstring (§5.12); elsewhere it is an ordinary string value. The lexer does not distinguish these — the position does. (The **module preamble** (§8.16) is *not* a leading string literal — it is the contiguous leading `;;` comment block at the head of a file; see the comment note in §1.2.)
 
 ## 1.4 Symbols [Tested]
 

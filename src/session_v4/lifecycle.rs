@@ -1028,6 +1028,11 @@ impl CompilerSession {
         let sexps: std::sync::Arc<[Sexp]> =
             std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
 
+        // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
+        // a reload re-reads fresh source, so re-capture the leading `;;` block
+        // onto the module's live table (disk is the source of truth on reload).
+        crate::save::apply_module_preamble(&self.shared.symbol_tables, module_path, &source);
+
         // S82 reload-during-compile race: a worker sets `inmem_done = true`
         // partway through its codegen pass, BEFORE it reaches
         // `notify_typecheck_done` (the TypecheckWorking → TypecheckDone
@@ -1102,6 +1107,11 @@ impl CompilerSession {
         let module = ModuleFullPath::from(module_name);
         let sexps: std::sync::Arc<[Sexp]> =
             std::sync::Arc::from(cranelisp_frontend::parse(source)?);
+
+        // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
+        // capture the leading `;;` block from the SAME source and write it onto
+        // this (entry) module's live `SymbolTable.module_preamble`.
+        crate::save::apply_module_preamble(&self.shared.symbol_tables, &module, source);
 
         // Record source hash for manifest generation. Sprint 67 Cluster B
         // sub-fire 3: dispatch via the `ObjectCache` facade method.

@@ -975,6 +975,7 @@ Typing a module name at the REPL SHOULD display information about that module: i
 | `(export [mod [(src local) ...]])` | Renamed re-export — exported name differs from source | Public |
 | `module/name` | Qualified name reference | N/A |
 | `Type.member` | Dotted member access | N/A |
+| Leading `;;` comment block (file head) | Module preamble — module-level documentation (§8.16) | Metadata (public-readable) |
 
 ## 8.15 Complete Example [S10]
 
@@ -1034,3 +1035,92 @@ project/
     (print (show (main.shapes/circle 1.0)))  ; qualified access also works
     ))
 ```
+
+## 8.16 Module Preamble [S88]
+
+A **module preamble** is module-level documentation: the module analogue of a definition docstring (§5.12). Where a `defn` docstring documents a function, a module preamble documents the module as a whole — its purpose, its public surface's intent, design notes. It is the module-level realization of the self-documenting principle (root `CLAUDE.md` §"Design Principles") and is purely additive: a module **without** a preamble is valid, exactly as the optional-prelude principle requires (§8.8.3).
+
+### 8.16.1 Syntax and Position [S88]
+
+The module preamble is the **contiguous leading line-comment block** at the top of the file — file-header documentation, the natural place a module's purpose is written. It is the module-level analogue of a `defn` docstring (§5.12), but realized through comments rather than a string literal (§8.16.6 explains the deliberate asymmetry). It requires no new keyword and no new reader construct: a `;;` comment block is already valid syntax (§1.2); the preamble role is purely positional.
+
+```ebnf
+module_preamble = comment_line+    (* a contiguous leading line-comment block; see §1.2 *)
+```
+
+**Boundary rule.** The preamble is the **contiguous block of line comments that begins on the first line of the file and runs up to (but not including) the first form** — whether that first form is a structural form (`mod`, `import`, `export`, `platform`) or a module-body form (a `defn`, trait-impl, expression, etc.). The natural file-header position is **above `(mod …)`**. Concretely:
+
+- The block **starts at the first line of the file**. Comments that begin further down — after any form has already appeared — are never preamble.
+- The block is **terminated by the first non-comment form**. The block extends through every contiguous comment line up to that first form.
+- A **blank line breaks the block.** Only the contiguous run of comment lines starting at the file's first line forms the preamble; if a blank line interrupts the leading comments before the first form, the preamble is the run **above** the first blank line, and the comment lines below the blank line are ordinary comments. (This lets an author write a short file-header preamble, then a blank line, then ordinary section comments, without the latter being absorbed into the documentation.)
+- Comments appearing **after the first form** are ordinary comments, never preamble — regardless of content.
+- **At most one** preamble exists per module: the single contiguous leading block defined above. There is no second preamble.
+
+```clojure
+;; Sudoku solver: constraint propagation +
+;; backtracking over a Vec-backed grid.
+(mod solver)                                  ; first form terminates the preamble block
+(import [collections.vec [conj]])
+
+(deftype Grid [:Vec cells])
+(defn solve [:Grid g] :Grid ...)
+```
+
+The contiguous `;;` block at the file's head — `"Sudoku solver: constraint propagation + backtracking over a Vec-backed grid."` — is the module preamble. It sits **above** `(mod solver)`, the file-header position.
+
+A module with no leading comment block has **no preamble** (the common, valid case):
+
+```clojure
+(defn helper [:Int x] :Int (+ x 1))   ; util.cl -> module "util" — no preamble, valid
+```
+
+### 8.16.2 Stored Representation [S88]
+
+The stored preamble **text** is the comment block's content with comment markers stripped and lines joined:
+
+- Each comment line contributes its content with the leading `;;` (or `;`) marker **and one immediately-following space, if present,** stripped. (`;; Sudoku solver` contributes `Sudoku solver`; a bare `;;` line contributes the empty string.)
+- The stripped lines are **joined with a newline (`\n`)**, preserving the block's internal line structure. A two-line comment block becomes a two-line string with one interior newline.
+- This joined text is the value stored on the per-module symbol table as `SymbolTable.module_preamble: Option<String>` (FIXME 0428 — the field shape is `Option<String>`, **unchanged**; only the *source* of the text is the leading comment block rather than a string literal).
+- A module with **no** leading comment block stores `None` — a valid, common state, consistent with the optional-prelude principle (§8.8.3). The absence of a preamble is never an error.
+
+### 8.16.3 Semantics [S88]
+
+- The preamble has **no effect on program semantics**. Like a docstring (§5.12) — and like any comment — it is metadata only: not evaluated, producing no value, entering no module's value namespace.
+- The preamble is stored in the module's compilation metadata (§8.16.2), parallel to per-definition docstrings (§5.12), and is available for introspection (§8.16.4).
+- Recognizing the preamble requires the **reader to surface the leading comment block** rather than discard it, and associate it with the module. Comments are ordinarily discarded; the leading comment block is **semantically captured, not discarded**. (The implementation is a frontend-reader concern — `/design (cranelisp-frontend)`'s — not the spec's; the spec pins only that the leading comment block is captured and stored, leaning on the `Sexp::Comment` preservation added in Sprint 24, §1.2.)
+
+### 8.16.4 Reading the Preamble [S88]
+
+The preamble is the module-level entry on the same introspection surface as docstrings. A conforming REPL's module-documentation command (the `/doc <module>` family) MUST be able to return a module's preamble text, and MUST indicate when a module has no preamble (the documentation-read analogue of a definition with no docstring, §5.12).
+
+> **NOTE — experience is `/repl`-owned.** This subsection pins only the spec-level *read result*: `/doc <module>` returns the module's preamble text (or a no-preamble indication). The command's exact output formatting, framing, aliases, and interaction with `/doc <name>` (the definition-docstring read, `repl/spec.md` §3.1) are the REPL experience contract, authored by `/repl` in `repl/spec.md`. This section does not constrain that presentation beyond the read-result requirement above.
+
+### 8.16.5 Edit Path and Source-Regeneration Stability [S88]
+
+A module preamble is **editable in-session** (the basis for the agent's Document-mode preamble maintenance, `design/arch/repl-embedded-agent.md` §3.1/§3.4): a REPL or tool MAY set or replace a module's preamble, which rewrites the leading comment block in the module's backing file.
+
+When a module's source is regenerated — the same source-regeneration path that rewrites a parent file on inline-submodule extraction (§8.2.2) and writes `(mod …)` backing files (§8.2.5) — the preamble MUST **round-trip byte-stably**:
+
+- A module whose preamble is **unchanged** across a regeneration MUST have a byte-identical leading comment block before and after. The regenerator MUST NOT reflow, re-wrap, re-indent, or re-mark an unmodified preamble comment block.
+- The preamble MUST be re-emitted in its canonical leading position (§8.16.1) — the contiguous comment block at the head of the file, above the first form — so that a regenerated file re-parses to the same preamble.
+- Setting a preamble on a module that has none inserts the leading comment block at the head of the file; clearing a preamble removes that block and MUST leave the rest of the file byte-stable.
+
+This byte-stability requirement **coordinates with the live FIXME 0423 fix.** The round-trip leans on `Sexp::Comment` preservation (added Sprint 24, §1.2): the **frontend reader captures the leading comment block** (rather than discarding it, §8.16.3), and the **regen pretty-printer must re-emit it verbatim** — the same source-regen path FIXME 0423 is correcting (CWD-relative write + annotation spacing) for `(mod …)` backing-file regeneration (§8.2.5). The preamble comment block participates in that round-trip on equal footing with the rest of the file: an extraction or regen that touches a module carrying a preamble MUST preserve the preamble comment block verbatim unless the preamble itself is the thing being edited. The preamble round-trip and the 0423 fix therefore share, and must be reconciled on, the one regen pretty-printer path.
+
+### 8.16.6 Why a Comment Block, Not a String Literal [S88]
+
+The preamble is a **comment block**, whereas a `defn` docstring (§5.12) is a leading **string literal**. This asymmetry is deliberate:
+
+- A `defn` (or `deftype`, `deftrait`, …) has a **binding form** that can unambiguously carry a leading string literal in a fixed position — between the name and the parameter list. The string literal's docstring role is anchored by that surrounding form.
+- A **module has no enclosing binding form**: a file is a flat sequence of top-level forms. A leading bare string literal in module-body position would be ambiguous and fragile (is it documentation, or a top-level expression whose value is discarded?), and would interact awkwardly with the pre-expansion structural forms (`mod`/`import`/`export`/`platform`) that are extracted before the module body.
+- **File-header comments are where module documentation naturally lives** — every author already writes the module's purpose as a `;;` block at the top of the file. Promoting that existing convention to the preamble role requires no relocation of where documentation is written and no new syntax.
+
+So the two documentation surfaces use different lexis by design: string-literal docstrings for *named definitions* (anchored by a binding form), and a leading comment block for the *module as a whole* (anchored by file-header position).
+
+### 8.16.7 Summary Row [S88]
+
+Added to the §8.14 form summary:
+
+| Form | Purpose | Visibility |
+|---|---|---|
+| Leading `;;` comment block (file head) | Module preamble — module-level documentation | Metadata (public-readable) |

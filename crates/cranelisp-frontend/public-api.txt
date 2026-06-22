@@ -29,6 +29,8 @@ impl core::marker::UnsafeUnpin for cranelisp_frontend::module_extract::Extracted
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_frontend::module_extract::ExtractedDeclarations
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_frontend::module_extract::ExtractedDeclarations
 pub fn cranelisp_frontend::module_extract::extract_module_declarations(&cranelisp_types::newtype::ModuleFullPath, &[cranelisp_types::sexp::Sexp]) -> core::result::Result<(cranelisp_frontend::module_extract::ExtractedDeclarations, alloc::vec::Vec<cranelisp_types::sexp::Sexp>), cranelisp_types::error::CranelispError>
+pub mod cranelisp_frontend::preamble
+pub fn cranelisp_frontend::preamble::capture_module_preamble(&str) -> core::option::Option<alloc::string::String>
 pub mod cranelisp_frontend::quasiquote
 pub fn cranelisp_frontend::quasiquote::expand_quasiquotes(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::sexp::Sexp, cranelisp_types::error::CranelispError>
 pub fn cranelisp_frontend::quasiquote::expand_quote_template(&cranelisp_types::sexp::Sexp) -> cranelisp_types::sexp::Sexp
@@ -52,6 +54,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_frontend::module_extract
 pub fn cranelisp_frontend::build_expr(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::ast::Expr, cranelisp_types::error::CranelispError>
 pub fn cranelisp_frontend::build_form(&cranelisp_types::sexp::Sexp) -> core::result::Result<alloc::vec::Vec<cranelisp_types::parsed::ParsedEntry>, cranelisp_types::error::CranelispError>
 pub fn cranelisp_frontend::build_forms(&[cranelisp_types::sexp::Sexp]) -> core::result::Result<alloc::vec::Vec<cranelisp_types::ast::TopLevel>, cranelisp_types::error::CranelispError>
+pub fn cranelisp_frontend::capture_module_preamble(&str) -> core::option::Option<alloc::string::String>
 pub fn cranelisp_frontend::expand_quasiquotes(&cranelisp_types::sexp::Sexp) -> core::result::Result<cranelisp_types::sexp::Sexp, cranelisp_types::error::CranelispError>
 pub fn cranelisp_frontend::expand_quote_template(&cranelisp_types::sexp::Sexp) -> cranelisp_types::sexp::Sexp
 pub fn cranelisp_frontend::extract_module_declarations(&cranelisp_types::newtype::ModuleFullPath, &[cranelisp_types::sexp::Sexp]) -> core::result::Result<(cranelisp_frontend::module_extract::ExtractedDeclarations, alloc::vec::Vec<cranelisp_types::sexp::Sexp>), cranelisp_types::error::CranelispError>

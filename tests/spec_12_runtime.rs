@@ -2083,3 +2083,111 @@ fn vec_set_heap_var_element_borrowed_recursive_source_no_uaf_run() {
         .output()
         .assert_exit(4);
 }
+
+// =============================================================================
+// §12.3.3 / §12.1.5 — DEF-2: curated `conj` wrapper preserves heap-ADT Vec
+// elements (S88 Stage-A gating repro — RESOLVED guard)
+// =============================================================================
+//
+// DEF-2 (exemplar/CLAUDE.md §Known-Issues, user-flagged) claimed that the
+// curated wrapper `(defn conj [v x] (vec-push v x))` mis-manages the refcount
+// of a HEAP-ADT element passed through its own call frame, so a `(Vec Box)` /
+// `(Vec Cell)` accumulated via `conj` in a ~30-iteration loop comes out
+// CORRUPTED (vs the identical loop using the bare `vec-push` primitive) — the
+// exemplar dodged it everywhere by hand-using `vec-push`.
+//
+// ISOLATION (S88, /qa): reduced to the EXACT shape the exemplar reports — a
+// heap ADT element threaded through the wrapper's call frame, ~30 iterations,
+// conj-built vs vec-push-built element sums compared — and the corruption
+// **does NOT reproduce on the current binary**. The two paths produce equal,
+// correct sums; an `--run` exemplar with every `vec-push`→`conj` swap solves
+// the full 9×9 puzzle (valid grid, exit 0) and passes 39/39 in-language tests;
+// a 200× sustained build-and-sum of an 81-element `(Vec Cell)` via `conj`
+// stays correct. DEF-2 was **collaterally resolved** by the S87 FIXME-0417
+// vec-push/vec-set heap-element consuming-inc alignment (the same
+// `vec_codegen.rs`/`vec_runtime.rs` seam DEF-2 lived in). The carve-out the
+// exemplar carries can retire (`/port` Stage D, G2 swap).
+//
+// These are therefore GREEN regression guards (NOT failing-not-ignored repros
+// — a fixed defect earns a guard, not a RED), per /qa §Failing-not-ignored. A
+// RED here is a regression of the heap-ADT-through-the-wrapper RC convention.
+// Free-standing: the `conj` wrapper + `Box` type are defined inline (zero
+// stdlib dependency, CLAUDE.md §Stdlib separation).
+
+// Single-field heap ADT (`Box`) accumulated via the curated `conj` wrapper vs
+// the bare `vec-push` primitive over 30 iterations; the two element sums MUST
+// be equal (and equal to 1+2+…+30 = 465). The corruption, if present, would
+// surface as a wrong/divergent sum (freed-element garbage), not a crash.
+#[test]
+fn conj_wrapper_heap_adt_element_matches_vec_push_repl() {
+    repl_prims(
+        "(deftype Box [:Int v])\n\
+         (defn unbox [b] (match b [(Box x) x]))\n\
+         (defn conj [v x] (vec-push v x))\n\
+         (defn build-conj [v n] \
+           (if (le-i64 n 0) v (build-conj (conj v (Box n)) (sub-i64 n 1))))\n\
+         (defn build-push [v n] \
+           (if (le-i64 n 0) v (build-push (vec-push v (Box n)) (sub-i64 n 1))))\n\
+         (defn sumv [v i acc] \
+           (if (le-i64 (vec-len v) i) acc \
+             (sumv v (add-i64 i 1) (add-i64 acc (unbox (vec-get v i))))))\n\
+         (sub-i64 (sumv (build-conj [] 30) 0 0) (sumv (build-push [] 30) 0 0))\n",
+    )
+    // conj-sum minus push-sum == 0 ⇒ the wrapper preserves every element.
+    .assert_stdout_contains(":primitives/Int 0");
+}
+
+// spec: spec/12-runtime.md §12.3.3 — same DEF-2 shape observed END-TO-END via
+// `--run`: a `(Vec Box)` built through the `conj` wrapper, summed; the exit
+// code is the witness. Mode parity matters — the exemplar trips DEF-2 under
+// `--run`, not just in the REPL. Exit 465 mod 256 = 209 when correct.
+#[test]
+fn conj_wrapper_heap_adt_element_sum_run() {
+    Cranelisp::new()
+        .file(
+            "user.cl",
+            "(import [primitives [vec-push vec-get vec-len add-i64 sub-i64 le-i64 Int Pure]])\n\
+             (deftype Box [:Int v])\n\
+             (defn unbox [b] (match b [(Box x) x]))\n\
+             (defn conj [v x] (vec-push v x))\n\
+             (defn build-conj [v n] \
+               (if (le-i64 n 0) v (build-conj (conj v (Box n)) (sub-i64 n 1))))\n\
+             (defn sumv [v i acc] \
+               (if (le-i64 (vec-len v) i) acc \
+                 (sumv v (add-i64 i 1) (add-i64 acc (unbox (vec-get v i))))))\n\
+             (defn main [] (Pure (sumv (build-conj [] 30) 0 0)))",
+        )
+        .run("user.cl")
+        .output()
+        // 1+2+…+30 = 465; 465 mod 256 = 209.
+        .assert_exit(209);
+}
+
+// spec: spec/12-runtime.md §12.3.3 / §12.1.5 — the FAITHFUL exemplar shape: a
+// MULTI-VARIANT heap ADT (`Cell`, mirroring exemplar/grid.cl) accumulated via
+// `conj`, then one element replaced via `vec-set` (the solver's assoc path),
+// then ALL elements read back. This is the structure that produced the
+// exemplar's spurious "No solution found". GREEN: 30 cells summing to
+// (465 - 30 + 100) = 535; 535 mod 256 = 23. A RED is a DEF-2 regression on the
+// multi-variant-element conj path. → /backend (vec heap-element RC; the FIXME
+// 0417 seam that resolved this).
+#[test]
+fn conj_wrapper_multivariant_cell_vec_built_correctly_run() {
+    Cranelisp::new()
+        .file(
+            "user.cl",
+            "(import [primitives [vec-push vec-set vec-get vec-len add-i64 sub-i64 le-i64 Int Pure]])\n\
+             (deftype Cell (Given [:Int value]) (Solved [:Int value]) (Candidates [:Int bitmask]))\n\
+             (defn cval [c] (match c [(Given x) x (Solved x) x (Candidates m) m]))\n\
+             (defn conj [v x] (vec-push v x))\n\
+             (defn build [v n] (if (le-i64 n 0) v (build (conj v (Candidates n)) (sub-i64 n 1))))\n\
+             (defn sumv [v i acc] \
+               (if (le-i64 (vec-len v) i) acc \
+                 (sumv v (add-i64 i 1) (add-i64 acc (cval (vec-get v i))))))\n\
+             (defn main [] (Pure (sumv (vec-set (build [] 30) 0 (Solved 100)) 0 0)))",
+        )
+        .run("user.cl")
+        .output()
+        // (1+2+…+30) - 30 + 100 = 535; 535 mod 256 = 23.
+        .assert_exit(23);
+}

@@ -11,12 +11,12 @@ The `cranelisp` binary supports the following invocation modes:
 The general invocation form is:
 
 ```
-cranelisp [target] [--run | --link] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N]
+cranelisp [target] [--run | --link] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent]
 ```
 
-The optional positional `[target]` specifies the project root and entry module (see §0.5). The mode flags (`--run`, `--link`) and the modifier flags (`--no-color`, `--no-cache`) are boolean modifiers and take no parameter; `--priority-workers` and `--nice-workers` each take a numeric argument `N`. Flags modify the behaviour applied to the resolved entry module.
+The optional positional `[target]` specifies the project root and entry module (see §0.5). The mode flags (`--run`, `--link`) and the modifier flags (`--no-color`, `--no-cache`, `--agent`, `--no-agent`) are boolean modifiers and take no parameter; `--priority-workers` and `--nice-workers` each take a numeric argument `N`. Flags modify the behaviour applied to the resolved entry module.
 
-The modifier and worker flags (`--no-color`, `--no-cache`, `--priority-workers`, `--nice-workers`) are detailed in §0.6.
+The modifier and worker flags (`--no-color`, `--no-cache`, `--priority-workers`, `--nice-workers`, `--agent`, `--no-agent`) are detailed in §0.6. The agent flags (`--agent`/`--no-agent`) are REPL-only and behaviorally gated on the embedded-agent feature; see §0.6.1 and §17.
 
 | Mode | Invocation | Description | Status |
 |---|---|---|---|
@@ -162,8 +162,21 @@ These flags modify behaviour but do not select a mode. They may appear in any mo
 | `--no-cache` | none | Bypass the on-disk module cache (recompile from source). **MUST error if combined with `--link`** (link mode relies on the object cache) — usage hint to stderr, exit code 1. | cache on |
 | `--priority-workers` | `N` (numeric) | Number of priority compilation workers. A non-numeric `N` is an error (usage hint to stderr, exit code 1). | `1` |
 | `--nice-workers` | `N` (numeric) | Number of background ("nice") compilation workers. A non-numeric `N` is an error. | `1` |
+| `--agent` | none | Enable the embedded LLM agent for this session (REPL only). Requires the binary to be **built** with the agent feature AND a backend key present at runtime; otherwise the agent stays dormant (see §17.4). Ignored — but accepted, not an error — by a binary built without the agent feature. | agent off |
+| `--no-agent` | none | Force the embedded agent off for this session even when built-in and a key is present. Always accepted. | — |
 
 This table is kept consistent with `user/cli-reference.md`; the two MUST agree.
+
+#### 0.6.1 `--agent` / `--no-agent` — Embedded Agent Toggle [S88]
+
+The `--agent` and `--no-agent` flags are the runtime half of the agent's **opt-in-twice** discipline (§17.4). The embedded agent is a **dev-session capability only** — it is never part of `--run` or `--link`, and never ships in a release artifact. Accordingly:
+
+- `--agent` / `--no-agent` are meaningful **only in REPL mode**. In `--run` or `--link` mode they MUST be accepted (not an error) and have **no effect** — the agent does not participate in batch compilation or linking.
+- A binary **built without** the agent feature MUST accept `--agent` and `--no-agent` as recognised flags (so a script written for an agent-enabled build does not break on a default build) and treat them as no-ops. It MUST NOT print `unknown flag` for them. With the feature compiled out, the agent is unconditionally absent regardless of these flags.
+- A binary **built with** the agent feature treats `--agent` as a request to enable the agent for the session and `--no-agent` as a request to keep it off. Even with `--agent`, the agent is **dormant** unless a backend key/config is also present at runtime (§17.4) — opt-in-twice. If `--agent` is given but no key is configured, the REPL SHOULD note at startup that the agent is built-in but dormant (no key), and `/ask` behaves per the dormant case (§17.1).
+- When both `--agent` and `--no-agent` are present, `--no-agent` wins (the safe default — off).
+
+The default with no flag is **agent off**, even on an agent-built binary with a key present: the user opts in explicitly per session. (An implementation MAY additionally honour a config-file or environment default; if it does, `--no-agent` MUST still override it to off.)
 
 ## Design Principle
 
@@ -433,6 +446,10 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | `/run-tests [module]` | `/rt` | Discover and run test functions (see §16) | 4 | [R4] |
 | `/run-all-tests` | — | Run all tests in project (see §16) | 4 | [R4] |
 | `/sh <cmd>` | — | Run a shell command (see §13) | 4 | [R4 S52] |
+| `/refs <sym>` | — | List sites that reference a symbol (reverse query; LLM-free — see §17.6) | 4 | [S88] |
+| `/tests-for <sym>` | — | List test functions that reference a symbol (reverse query; LLM-free — see §17.6) | 4 | [S88] |
+| `/doc <module>` | `/d` | Read a module's preamble (module-level documentation — see §17.5); `/doc <name>` reads a definition docstring (§3.1, builtins) | 0 | [S88] |
+| `/ask <text>` | — | Route natural-language text to the embedded agent (see §17.1); prints "agent not built in" when the feature is off | 4 | [S88] |
 | `/quit` | `/q` | Exit REPL | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
@@ -1078,6 +1095,7 @@ The palette assigns one colour per semantic role. There are no user-configurable
 | Slash command category headers (`Fns:`, `Types:`, etc.) | bold | `\033[1m` | `\033[0m` | Anchors for scanning `/list`, `/imports`, `/exports` |
 | Slash command body (symbol names, info lines) | default | — | — | Dense informational content; styling would add noise |
 | Startup banner | dim | `\033[2m` | `\033[0m` | One-time context; should not dominate |
+| Agent prose frame (`▌` gutter + agent text) | bright magenta gutter, default body | `\033[95m` (gutter) | `\033[0m` | Reserved exclusively for the agent's *prose* — makes model output unmistakable from deterministic REPL output (§17.2). Only the prose is framed; agent-issued commands and their results use their normal roles. [S88] |
 
 Notes on specific choices:
 
@@ -1707,3 +1725,210 @@ Standard library convenience functions (e.g., `format-test-run`, `failures-only`
 `discover-tests` is **REPL / `--run` only**. A `--link` build of a program that calls `discover-tests` is accepted at compile time, but the missing host symbol surfaces as an unresolved-symbol failure at link/load (the standalone executable has no live session to scan). This is documented interim behaviour — no friendly rejection yet; a future sprint may add a diagnostic.
 
 `catch-runtime-error`, by contrast, **works in all modes including `--link`**: it is a self-contained intrinsic (it calls a closure already present in the linked program and constructs a `Result` heap value — no live session needed). Error capture is a pure runtime capability available everywhere; discovery is a dev-session capability.
+
+## 17. Embedded Agent Experience [S88]
+
+This section is **additive and behaviorally feature-gated.** It specifies the user-visible experience of the optional embedded LLM agent — a development partner that lives inside the live REPL session (`design/arch/repl-embedded-agent.md`). **None of §1–§16 changes.** When the agent feature is compiled out, or built-in but dormant (§17.4), the REPL is byte-identical to the deterministic REPL §1–§16 describes — every requirement below that references the agent is gated on it being **both compiled-in and runtime-enabled**.
+
+The agent extends the self-documentation principle (§4) into a conversational partner, but it does **not** replace, alter, or contend with the deterministic surface. Three invariants hold unconditionally:
+
+- **The deterministic REPL is untouched.** Any complete form, slash command, or bare-symbol introspection routes exactly as §1–§16 specify, whether or not the agent is enabled (§17.1). The agent is a new destination for input the deterministic REPL would otherwise reject as a parse error — nothing more.
+- **Everything the agent does is a visible REPL line.** The agent has no private capability surface: its reads, its proposed writes, and its shell proposals all appear as ordinary REPL commands and ordinary REPL output (§17.2). The session remains a legible, replayable script (§15).
+- **Deterministic output and model output are unmistakable.** The agent's *prose* is rendered in a distinct reserved visual frame (§17.2); the deterministic `:Type value` format and the `;`-comment drawer remain exclusively the deterministic REPL's (§1, §4).
+
+### 17.1 Agent Dispatch — The Classifier From the User's POV [S88]
+
+When the agent is enabled, the REPL classifies each completed line of input into one of the existing deterministic destinations or the agent, **without regressing any §4 self-documentation behavior.** The classifier is a routing decision made one step earlier than evaluation; it does not change what any deterministic destination does.
+
+A line is routed as follows (the first matching rule wins):
+
+| Input shape | Routes to | Behavior |
+|---|---|---|
+| Starts with `/` (slash command) | Deterministic REPL | Unchanged (§3). `/ask` is the one slash command that forces the agent — see below. |
+| Blank or comment-only | Deterministic REPL | Unchanged — silent re-prompt (§2.3). |
+| Parses as one or more complete forms (atoms, literals, lists, vectors) | Deterministic REPL | Unchanged. This is the entire §4 self-documentation surface: bare symbols (`+`, `foo`, `42`), expressions, definitions, special forms — **all still route to introspection/eval exactly as today.** |
+| Unclosed `(` or `[` (parens not balanced) | Continuation | Unchanged — continuation prompt (§2.2). |
+| A parse error that is **not** an unclosed bracket (i.e. natural-language prose) | **Agent** | The text is sent to the agent as a natural-language turn. |
+
+The discriminator is the **same reader the REPL already trusts** (the one that decides eval vs. continuation), consulted to decide routing. **Anything the reader accepts routes deterministically** — so the §4 contract is preserved by construction. Multi-word prose (e.g. `how do I define a constrained function over Num?`) is never a single valid form (two bare symbols in a row are a parse error), so real sentences route to the agent with no sigil. [S88]
+
+**The bare single-word case.** A bare single word ("hello", "why") parses as a symbol and therefore routes to **introspection** (§4), not the agent — preserving §4. To force a single word (or any text the reader would otherwise accept) to the agent, use the explicit escape hatch:
+
+- **`/ask <text>`** routes `<text>` to the agent unconditionally, bypassing the classifier. This is the canonical way to ask a one-word or form-shaped question of the agent. [S88]
+
+**Feature-off and dormant behavior (byte-identical fallback):**
+
+- When the agent is **compiled out** or **dormant** (built-in but no runtime key, §17.4):
+  - `/ask <text>` MUST print a single, clear notice and re-prompt — `agent not built in` when compiled out, or `agent not enabled (no key configured)` when built-in but dormant — and MUST NOT crash, evaluate, or alter session state. [S88]
+  - Prose that would route to the agent instead **falls back to today's parse-error display** (§5.1) — byte-identical to the deterministic REPL with no agent. The classifier's `Agent` arm simply does not exist; an unbalanced-bracket-free parse error is presented exactly as §5 specifies. [S88]
+
+This fallback is the user-facing guarantee behind "feature-off ⇒ the REPL is the original REPL": no input that routes deterministically today changes, and the only new behavior is the `Agent` arm, which is absent unless the agent is live.
+
+### 17.2 Agent Output Frame — Prose vs. Commands [S88]
+
+When the agent takes a turn, its output has two kinds, rendered differently so the user can never confuse model output with deterministic output:
+
+1. **Agent prose** — the model's natural-language explanation, reasoning, or proposal text. This MUST be rendered in a **distinct reserved visual frame** (§10.3 "Agent prose frame" role): a left gutter marker (`▌`) prefixing each prose line, with the gutter in bright magenta when colour is enabled. The frame MUST degrade gracefully: under `--no-color`, `NO_COLOR`, or a non-TTY (§10.1), the gutter marker MUST still be emitted as a plain-text prefix (so the prose remains visually distinguishable in piped output and the showcase), but with no SGR codes. The prose frame is the **only** place the agent's own words appear; it MUST NOT use the `:Type value` format or the `;`-comment drawer (those belong to the deterministic REPL). [S88]
+
+2. **Agent-issued commands and their results** — when the agent reads (`/source foo`, `/info bar`, `/refs baz`) or proposes a write or shell command (§17.7), the command line and its output render in **NORMAL deterministic REPL style** (§1, §3, §10) — exactly as if the user had typed them. They ARE normal REPL output (`design/arch/repl-embedded-agent.md` §4.4). The command appears echoed as a REPL line (so the user watches the agent reach for the introspection vocabulary and learns it by observation), and its result uses the result's normal role (cyan type prefix, dim comment drawer, the `/list` layout, etc.). These MUST NOT be wrapped in the prose frame. [S88]
+
+The contract: **only the agent's prose is framed; everything the agent does deterministically is unframed and indistinguishable from a user keystroke's output.** This makes the deterministic-vs-model boundary unmistakable in every rendering mode. [S88]
+
+A turn therefore reads on screen as an interleaving of framed prose and unframed REPL lines — e.g. a prose sentence, then an echoed `/source` line and its normal output, then more prose, then a proposed `(defn …)` shown (not submitted) as a normal definition echo. The whole interleaving is part of the replayable transcript (§15). [S88]
+
+### 17.3 Consent Model [S88]
+
+The agent's actions are gated by **what they touch**, not by which "mode" the user selected. The S88 MVP is **read-only Advise**: it reads and shows, and it MAY *propose* code (shown, never submitted), but it performs no writes. The fuller consent model (Build and Document writes) is specified here as the **target** for the agentic-Phase-2 work (S89); the S88 MVP implements only the read-only row.
+
+| Action class | Consent | S88 MVP | Notes |
+|---|---|---|---|
+| **Reads** (`/source`, `/info`, `/doc`, `/refs`, `/exports`, spec lookups, …) | **Auto-run-and-show** — no confirmation | **Yes** | The default is "auto-approve reads only." Reads are side-effect-free introspection; they run and their output appears as normal REPL lines (§17.2). |
+| **Build writes** (submit a `defn`/`deftype` into the session) | **Confirm-and-show** — the exact line is shown and the user approves before it is submitted | **No (S89)** | In the MVP the agent **proposes** code: the `(defn …)` is *shown* as a normal definition echo but **not submitted** (§17.3.1). The confirm-each-submission flow lands in Phase 2. |
+| **Document writes** (set/replace a docstring or a module preamble, §17.5) | **Consultative** — the agent asks ("shall I record that as `solver`'s preamble?") before writing | **No (S89)** | The read of a preamble is an auto-run read (above); *writing* one is consultative and is Phase 2. |
+| **Shell** (`/sh …`) | **Confirm-and-show** — the agent proposes the exact command; the user approves | **No (S89)** | The agent has no direct shell tool; shell is reachable only by proposing a `/sh` line the user must approve (§17.7). |
+
+**The default is "auto-approve reads only."** No write of any kind — code, documentation, or shell — happens without an explicit user action in the turn. [S88]
+
+#### 17.3.1 The MVP "proposed, not submitted" Read-Out [S88]
+
+In the S88 read-only MVP, when the agent answers a request that warrants code, it MUST present the proposed code as a **normal definition echo** (the same rendering a user-typed `(defn …)` produces visually) inside the turn, and MUST make clear in its framed prose that the code is a **proposal the user can submit**, not something already in the session. The session symbol table MUST be unchanged by the proposal — typing the proposed name afterward MUST still report it as unbound (§4.1.10) until the user actually submits it. [S88]
+
+This satisfies the Stage C acceptance shape: `/ask "how do I define a constrained function over Num?"` → a spec-grounded, session-aware answer with a proposed `(defn …)` **shown, not submitted.** [S88]
+
+### 17.4 Opt-In-Twice and Dormancy [S88]
+
+The agent requires **two** independent opt-ins to be live, and is **dormant** unless both hold (`design/arch/repl-embedded-agent.md` §7.3/§7.4):
+
+1. **Compiled in** — the binary was built with the agent feature. A default build has no LLM client in it at all; `--agent` is a no-op (§0.6.1).
+2. **Runtime-enabled with a key** — the session was started with the agent on (§0.6.1) AND a backend key/config is present.
+
+Absent either, the agent is dormant: `/ask` reports the dormant case (§17.1) and prose falls back to the parse-error display. This is the user-facing expression of "off by default; the REPL works fully without it." A dormant or absent agent MUST never transmit anything anywhere. [S88]
+
+### 17.5 `/doc <module>` and the Module-Preamble Edit UX [S88]
+
+A **module preamble** (`spec/08-modules.md §8.16`) is module-level documentation — the leading `;;` comment block at the head of a module file, the module analogue of a `defn` docstring. The REPL surfaces it on the same introspection family as docstrings.
+
+#### 17.5.1 Reading a Module Preamble — `/doc <module>` [S88]
+
+`/doc` is overloaded by what its argument resolves to:
+
+- `/doc <name>` — when the argument is a **definition** (function, type, trait, macro, …), reads that definition's **docstring** (the existing behavior, §3.1, §11.2.4). Unchanged.
+- `/doc <module>` — when the argument resolves to a **module**, reads that module's **preamble** text (`spec/08-modules.md §8.16.4`). [S88]
+
+The module-preamble read MUST:
+
+- Print the preamble text. The text is presented as documentation prose, not as source comments — the stored form (§8.16.2) has the `;;` markers already stripped — so the user sees the documentation content directly, consistent with how `/doc <name>` shows a docstring's content (not its surrounding quotes). [S88]
+- Indicate clearly when the module has **no preamble** — the module-level analogue of a definition with no docstring (§8.16.4). The no-preamble indication MUST be distinguishable from "module not found" (a resolution error per §3.5) and from an empty-but-present preamble. A module with no leading comment block is the common, valid case (§8.16.1) and MUST NOT be reported as an error. [S88]
+- Resolve the module argument using the same logic as `/exports <module>` (§3.5) — submodule paths, root modules, stdlib modules; load-on-demand if not yet loaded; `Module '<name>' not found` if unresolvable. [S88]
+
+Suggested shape (illustrative; the exact framing is at implementation discretion within these requirements):
+
+```
+user> /doc solver
+; module solver
+Sudoku solver: constraint propagation +
+backtracking over a Vec-backed grid.
+
+user> /doc util
+; module util — no preamble
+```
+
+The `; module <name>` header and the no-preamble line are comment-drawer lines (`;`-prefixed, dim per §10.3), consistent with the self-documentation comment convention (§1.5). The preamble body is plain prose. [S88]
+
+**Ambiguity note.** When a name could denote both a definition and a module (rare), `/doc` SHOULD prefer the definition reading and offer the module reading via the fully-qualified module path, OR clearly indicate which it resolved. The implementation MUST NOT silently pick one with no signal to the user. [S88]
+
+#### 17.5.2 Module-Preamble Edit UX (read now; consultative edit in S89) [S88]
+
+The preamble is **editable in-session** (`spec/08-modules.md §8.16.5`): setting or replacing a module's preamble rewrites the leading comment block in the module's backing file, and the change MUST round-trip byte-stably through source regeneration (§8.16.5; coordinated with the FIXME 0423 regen fix). The S88 work specs the **read** (§17.5.1) and the **shape** of the edit UX; the edit flow itself is the agent's **Document mode**, which is **consultative** and lands in S89 (§17.3).
+
+The edit UX shape (normative on the experience when implemented in S89; specified now so the read and the edit are designed together):
+
+- A preamble edit is a **Document write** — consultative (§17.3). The agent (or a user-facing edit command) MUST present the **exact new leading comment block** it proposes and ask for confirmation ("shall I record that as `solver`'s preamble?") before writing. [S88]
+- On confirmation, the new preamble is rendered as the canonical leading `;;` comment block (§8.16.1) at the head of the module file; the rest of the file MUST remain byte-stable (§8.16.5). Setting a preamble on a module that had none inserts the block; clearing one removes it. [S88]
+- An unmodified preamble MUST NOT be reflowed, re-wrapped, or re-marked on any regeneration (§8.16.5) — the user MUST be able to trust that source regeneration after an unrelated change leaves their hand-written preamble verbatim. [S88]
+- The edit is shown as a normal REPL line (§17.2) and becomes part of the replayable transcript (§15). [S88]
+
+Because the preamble is also the agent's primary durable memory (`design/arch/repl-embedded-agent.md` §3.1), improving a module's documentation and growing the agent's memory are the **same activity** — the user benefits from every preamble the agent helps write. [S88]
+
+### 17.6 Reverse-Query Commands — `/refs` and `/tests-for` [S88]
+
+These commands answer **reverse** questions (which sites reference X?) that the existing introspection family — all **forward** (name → sig/doc/source) — cannot. They are **LLM-free**, available in the **default build** (no agent feature required), and useful to humans directly. They exist because the agent needs them and "the agent's needs are also a human's" (`design/arch/repl-embedded-agent.md` §4.4 corollary) — the agent is a forcing function that grows the REPL's introspection vocabulary for everyone. [S88]
+
+Both are an **on-demand scan over the in-memory bodies** of the live session — no maintained reverse index, no cache to invalidate in a mutating session. (The implementation strategy is `/int`-owned; the spec pins the user-visible result + format.) [S88]
+
+#### 17.6.1 `/refs <sym>` [S88]
+
+`/refs <sym>` lists the **definitions in scope whose body references `<sym>`** — the call/use sites of a symbol. [S88]
+
+- The argument is required. `/refs` with no argument MUST print a usage hint: `Usage: /refs <symbol-name>`. [S88]
+- The output lists the referencing definitions by their fully-qualified name, using the **same normative layout algorithm** as `/list` (§3.3 rules L0–L4) — names only — so `/refs` output is consistent with the rest of the introspection family and stays byte-identical to `/list` for the same name set. [S88]
+- If no definition in scope references `<sym>`, print a clear no-results line (e.g. `; no references to <sym>`), distinguishable from an unknown-symbol error. [S88]
+- If `<sym>` is itself an unbound name in the session, `/refs` SHOULD report `unbound symbol '<sym>'` (consistent with §4.1.10) rather than silently reporting no references — distinguishing a typo from a genuinely-unreferenced symbol. [S88]
+
+```
+user> /refs grid-get
+; references to grid-get
+solver/solve solver/propagate
+user> /refs unused-helper
+; no references to unused-helper
+```
+
+#### 17.6.2 `/tests-for <sym>` [S88]
+
+`/tests-for <sym>` lists the **test functions whose body references `<sym>`** — "what tests exercise this?" A test function is one recognized by the test convention (the `test-` prefix and the test signature, §16.1). [S88]
+
+- The argument is required. `/tests-for` with no argument MUST print a usage hint: `Usage: /tests-for <symbol-name>`. [S88]
+- The output lists matching test functions by fully-qualified name, using the `/list` layout (§3.3 L0–L4), byte-identical for the same name set. [S88]
+- If no test references `<sym>`, print a clear no-results line (e.g. `; no tests reference <sym>`), distinguishable from an unknown-symbol error. This is itself useful signal — an un-tested symbol. [S88]
+
+```
+user> /tests-for solve
+; tests referencing solve
+solver/test-solve-easy solver/test-solve-hard
+```
+
+Both commands MUST appear in `/help` (§3.2) and MUST NOT crash or alter session state on any input (§5.2). [S88]
+
+### 17.7 Shell Proposals [S88]
+
+The agent has **no direct shell tool.** When the agent would run a shell command, it MUST do so by **proposing a `/sh <cmd>` line** (§13) that the user approves — confirm-and-show (§17.3). The agent proposes the exact command (shown as a normal REPL line, §17.2); the user runs it. This is **S89** (a write-class action); the S88 read-only MVP issues no shell proposals. [S88]
+
+### 17.8 Privacy and First-Use Disclosure [S88]
+
+The agent's view is bounded by the introspection surface and the embedded spec — **not** the host filesystem (no raw file-read tool; §17.6's scans are over in-memory session structures, not files). When the agent is enabled and a turn would transmit data to the backend, the REPL MUST satisfy the **opt-in-twice** discipline (§17.4) and the **first-use disclosure** below.
+
+#### 17.8.1 First-Use Disclosure — Normative Wording [S88]
+
+The **first time** in a session that the agent would transmit anything to the configured backend, the REPL MUST present a one-time disclosure **before** the transmission, stating plainly **what is sent** and **to where**. The disclosure is normative in content (the exact phrasing is at implementation discretion, but it MUST convey all of the following):
+
+- **What is sent** — the disclosure MUST state that the following leave the session and are sent to the backend:
+  1. **The user's message** (the `/ask` text or the prose that routed to the agent).
+  2. **Harvested source excerpts** — explicitly **source excerpts, not merely signatures.** The disclosure MUST use language that makes clear the *bodies* of code are transmitted, not only type signatures. Per the agent's context model (`design/arch/repl-embedded-agent.md` §4.3), the harvested context includes the **full source of the current module** and the **full source of recently-mentioned functions** (the last ~10), plus module preambles and export surfaces. The wording MUST NOT understate this as "signatures" or "metadata" — it MUST say source excerpts / code bodies. [S88]
+- **To where** — the disclosure MUST name the **configured endpoint** (the backend the session is configured to use) so the user knows the destination of the transmitted data. [S88]
+
+Illustrative wording (an implementation MAY reword, but MUST cover every element above):
+
+```
+▌ Heads up — the embedded agent is about to contact an external model.
+▌ What is sent: your message, plus source excerpts harvested from your
+▌ session — including the full source of the current module and of the
+▌ functions you have recently referenced (their code bodies, not just
+▌ their type signatures), and module documentation.
+▌ To where: <configured-endpoint>.
+▌ (The agent is dev-session only and never runs in --run or --link.
+▌  To keep the agent off, restart without --agent, or start with --no-agent.)
+```
+
+The disclosure MUST appear in the agent prose frame (§17.2) so it is unmistakably the agent's own notice. It is shown **once per session** before the first transmission; subsequent turns do not repeat it. An implementation MAY additionally require an explicit per-session acknowledgement before the first transmission; if it does, declining MUST keep the agent dormant for the session with no transmission. [S88]
+
+The disclosure's honesty about **source excerpts** is the user's only signal that their code bodies — not just abstract type information — are leaving the machine. Understating it would be a conformance failure, not a wording nicety. [S88]
+
+### 17.9 Relationship to the Deterministic Spec [S88]
+
+This section is the **complete** set of additive agent requirements on the REPL experience. The deterministic contract (§1–§16) is unchanged; the only deterministic-surface additions are:
+
+- the `/ask`, `/refs`, `/tests-for` command rows and the `/doc <module>` overload (§3.1);
+- the `--agent` / `--no-agent` flags (§0.6.1);
+- the "Agent prose frame" style role (§10.3).
+
+Of these, `/refs`, `/tests-for`, and `/doc <module>` are **LLM-free** and live in the default build; `/ask`, the agent frame, and the agent flags are **feature-gated** and inert (or accepted-but-no-op) when the agent is compiled out. Feature-off, the REPL is byte-identical to §1–§16. [S88]

@@ -99,6 +99,18 @@ FIXMEs carried into the arc / Phase H: `0365` (extend `Type.member` to field acc
 **Exploratory tracks (designed, unratified, unscheduled — own track, NOT a Phase-H gate item):**
 - **Embedded REPL agent** — an LLM development partner inside the REPL (Tier-1 grounded advisor over errors/platforms/modules → Tier-2 architect/design/build/test partner). Design: `design/arch/repl-embedded-agent.md` (S86 `/arch`). Key shape: parse-as-form-or-slash dispatch (`/ask` escape hatch), harvest-not-fetch context + tools-as-visible-REPL-commands, memory in docstrings/preambles, always-on language primer + in-process validator/silent-repair gate, feature-gated off by default (REPL byte-identical without it), zero new cross-crate edges. **Its own track — not gated by/gating Phase H** (a dev-session feature; never ships in `--link`/`--release`). Pending user sign-off **U1–U6** + the one load-bearing prerequisite: **module preambles as a first-class doc concept** (`/spec`+`/repl`). Implementation FIXMEs deliberately NOT filed until the track is ratified + scheduled (unratified-design ⇒ no premature FIXMEs).
 
+### Agentic-REPL track — capability ladder (S88 → S90; first track after the pre-H arc)
+
+The embedded-REPL-agent track (`design/arch/repl-embedded-agent.md`; U1–U6 ratified S88). A feature-gated (`agent`, off by default) in-process LLM development partner that is a **REPL-cadence consumer** of int's existing surface (zero new cross-crate edges). LLM backend = **`rig-core`'s `CompletionModel`** directly (multi-provider incl. local Ollama; S88 user decision). Delivered as a fine-grained capability ladder (full table + acceptance/demos in each sprint plan; testing strategy in `tests/plan/agent-testing-strategy.md`):
+
+| Sprint | Rungs | Capability |
+|---|---|---|
+| **S88** (active) | 0–4 | Module preambles + clean regen (0) → talk to an agent (1) → knows the language/primer (2) → knows the module/harvester (3) → uses REPL commands as tools/pull (4). **Read-only Advisor MVP.** |
+| **S89** | 5–6 | Submit forms (Build mode + pre-flight validator, silent-repair-anything) → record understanding (Document mode: durable docstring/preamble edits). |
+| **S90** | 7 | Self-tuning (compensation telemetry → push/primer curation) + reach (semantic spec search, push-transparency header, provider/local polish). |
+
+**Testing:** the rig-trait choice enables a deterministic **stub `CompletionModel`** → Lane A (plumbing, CI), Lane B (feature-off byte-identical guard), Lane C (model-quality eval, non-CI, local-Ollama-capable), Lane D (golden-transcript replay). Default build + ~9s suite stay agent-free.
+
 ### Phase H sequencing — the effect-concurrency track precedes `--release` (S87, user direction 2026-06-21)
 
 The language-level concurrency model is scheduled as its **own track**, sequenced **after** the embedded-REPL-agent track and **before** Phase H (`--release`). Linear order: **agentic-repl track → effect-concurrency track → Phase H**.

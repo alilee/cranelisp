@@ -180,7 +180,18 @@ pub mod linker;
 /// field defaults `None` on a v8 cold-load — the typecheck seam (Phase 2b/3,
 /// /dev) repopulates it, and the backend's relocated backstop (a `None` at a
 /// codegen-reached entry) is the single structural guard.
-pub const CACHE_SCHEMA_VERSION: u32 = 8;
+///
+/// **S88 bump 8 → 9 (module-preamble storage, FIXME 0428).** The per-module
+/// `SymbolTable` gained the additive `module_preamble: Option<String>` field
+/// (spec §8.16, BC §7) — module-level documentation text, off the symbol axis.
+/// It is a `#[serde(default)]` participant in the cached `.meta.json`
+/// symbol-table shape, so its addition changes the serialized `SymbolTable`
+/// surface. The bump rejects every v8 cache as `CacheStale::SchemaMismatch`
+/// (cache-miss → recompile) so no v8 `.meta.json` is round-tripped against the
+/// extended serde surface. The field defaults `None` on a v9 cold-load; the
+/// frontend reader (a future `/dev` change) populates it from the leading
+/// comment block (§8.16.2).
+pub const CACHE_SCHEMA_VERSION: u32 = 9;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

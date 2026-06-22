@@ -593,6 +593,8 @@ Definitions MAY include an optional docstring -- a string literal placed between
 - Docstrings have no effect on program semantics.
 - `const`, `def`, `impl`, `mod`, `import`, `export`, and `platform` do not support docstrings.
 
+The **module-level** analogue of a docstring is the *module preamble* (§8.16) — a **leading `;;` comment block** at the head of a module file (file-header docs) that documents the module as a whole. The lexis is deliberately asymmetric to a docstring: a `defn` docstring is a leading *string literal* (anchored by the binding form), whereas the module preamble is a *comment block*. A module has no binding form to carry a leading string literal unambiguously, and file-header comments are where module documentation naturally lives — so the module preamble uses comment lexis (§8.16.6 explains the asymmetry in full). Like a docstring it is metadata-only, and it is read via the `/doc <module>` family.
+
 ## 5.13 Definition Ordering [Tested]
 
 ### 5.13.1 Functions, Types, Traits, and Implementations [Tested tests/spec_05_definitions::defns_mutual_forward_references]

@@ -99,6 +99,35 @@ impl<T: Clone + Send + Sync + 'static> LinkerStore for T {}
 #[serde(bound = "")]
 pub struct SymbolTable<C: CodeStore = (), L: LinkerStore = ()> {
     pub path: ModuleFullPath,
+    /// Module-level documentation — the **module preamble** (spec §8.16).
+    ///
+    /// The module analogue of a per-definition docstring (the per-entry
+    /// `ModuleEntry::Def.docstring`), but documenting the module **as a whole**
+    /// rather than a named symbol — so it lives here on the per-module table,
+    /// off the symbol axis entirely (a synthetic `ModuleEntry` was rejected:
+    /// it would force a fake name into `symbols` and leak into export/import
+    /// enumeration — see `bounded-contexts.md` §7).
+    ///
+    /// `None` for a module with no leading comment block — the common, valid
+    /// case (a preamble is purely additive, like the optional prelude, spec
+    /// §8.16 / §8.8.3); `Some(text)` carries the preamble text when present.
+    /// The stored text is the file's contiguous leading `;;` comment block
+    /// with each line's `;;` (or `;`) marker and one following space stripped,
+    /// the lines newline-joined (spec §8.16.2). A bare `String` is the correct
+    /// carrier: it is documentation text — one of the explicitly-allowed
+    /// bare-`String` uses (`design/arch/CLAUDE.md` §"String Newtypes"),
+    /// alongside docstrings / source text — so no newtype is warranted.
+    ///
+    /// **Populated by the frontend reader, not constructed here.** Every
+    /// construction site defaults this to `None`; the reader surfaces the
+    /// leading comment block (via `Sexp::Comment` preservation, §8.16.3) and
+    /// sets it later. The §8.16.5 byte-stable source-regen round-trip re-emits
+    /// `Some(text)` verbatim as the leading comment block.
+    ///
+    /// `#[serde(default)]` so caches written before this field existed
+    /// deserialise cleanly as `None`.
+    #[serde(default)]
+    pub module_preamble: Option<String>,
     pub symbols: HashMap<Symbol, ModuleEntry<C>>,
     /// Next available GOT slot index for this module.
     /// Module-local: slot 0, 1, 2... independently per module.
@@ -439,6 +468,7 @@ impl SymbolTable<(), ()> {
     pub fn new(path: ModuleFullPath) -> Self {
         SymbolTable {
             path,
+            module_preamble: None,
             symbols: HashMap::new(),
             next_got_slot: 0,
             next_seq: 0,
@@ -477,6 +507,7 @@ impl SymbolTable<(), ()> {
         }
         SymbolTable {
             path: self.path,
+            module_preamble: self.module_preamble,
             symbols,
             next_got_slot: self.next_got_slot,
             next_seq: self.next_seq,
@@ -560,6 +591,7 @@ impl<C: CodeStore, L: LinkerStore> SymbolTable<C, L> {
     pub fn new_with_params(path: ModuleFullPath) -> Self {
         SymbolTable {
             path,
+            module_preamble: None,
             symbols: HashMap::new(),
             next_got_slot: 0,
             next_seq: 0,

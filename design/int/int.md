@@ -693,6 +693,17 @@ The destination shape is the working reference for design. The as-built reality 
 
 ## 15. Subordinate topic docs (triage)
 
+> **S88 — `agent.md` is a current, load-bearing subordinate doc (KEEP).** `design/int/agent.md`
+> designs the agentic-REPL track: the §5.3 dispatch classifier + `/ask`, the
+> `#[cfg(feature="agent")]` `src/agent/` module + `agent_turn` loop, the provider-agnostic
+> `LlmBackend` trait (R3), the harvester/relevance-ranker, the always-on primer,
+> pull-as-visible-commands, read-only Advise mode, the `[R5]` spec-grep + telemetry
+> release-valve seams, and the LLM-free reverse-query commands (`/refs`/`/tests-for`).
+> It elaborates within BC §6 (the agent is a REPL-cadence consumer, not a new state window)
+> and refines `design/arch/repl-embedded-agent.md` (U1–U6 ratified). Feature-off ⇒ the binary
+> is byte-identical to today (the classifier's `Err(other parse error)` arm falls back to
+> today's diagnostic). Cited from §8.5 (slash commands) once `/ask`/`/refs`/`/tests-for` land.
+
 The 32 docs in `design/int/` plus the `concurrency/` subdirectory were authored over 12+ sprints and reflect the historical evolution of int. Sprint 64 triage applies the methodology rule: *delete files, rely on git for history if work is fully embodied; preserve if still load-bearing*. Below is the per-doc disposition.
 
 ### Concurrency family

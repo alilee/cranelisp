@@ -1329,6 +1329,7 @@ pub cranelisp_types::SymbolTable::exports: alloc::vec::Vec<cranelisp_types::Expo
 pub cranelisp_types::SymbolTable::got: alloc::sync::Arc<cranelisp_types::GotTable>
 pub cranelisp_types::SymbolTable::imports: alloc::vec::Vec<cranelisp_types::ImportSpec>
 pub cranelisp_types::SymbolTable::linker: core::option::Option<L>
+pub cranelisp_types::SymbolTable::module_preamble: core::option::Option<alloc::string::String>
 pub cranelisp_types::SymbolTable::next_got_slot: usize
 pub cranelisp_types::SymbolTable::next_seq: u64
 pub cranelisp_types::SymbolTable::path: cranelisp_types::ModuleFullPath

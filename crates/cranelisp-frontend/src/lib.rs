@@ -122,6 +122,7 @@
 //! | [`reader`] | [`parse`], [`parse_preserving_comments`] — source-text to `Vec<Sexp>` lowering | yes |
 //! | [`ast_builder`] | [`build_form`], [`build_forms`], [`build_expr`], [`parse_type_expr`] — per-form + form-sequence AST construction | yes |
 //! | [`module_extract`] | [`extract_module_declarations`], [`ExtractedDeclarations`] — structural-decl peeling | yes |
+//! | [`preamble`] | [`capture_module_preamble`] — leading comment-block module preamble (spec §8.16) | yes |
 //! | [`defmacro`] | [`parse_defmacro`], [`is_defmacro`], [`is_begin`], [`flatten_begin`], [`synthesize_macro_clause_defn`] plus the [`DefmacroInfo`] / [`MacroClause`] re-exports from `cranelisp-types` | yes |
 //! | [`quasiquote`] | [`expand_quasiquotes`], [`expand_quote_template`], [`next_synthetic_span`] | yes |
 //!
@@ -333,6 +334,7 @@
 pub mod reader;
 pub mod ast_builder;
 pub mod module_extract;
+pub mod preamble;
 pub mod quasiquote;
 pub mod defmacro;
 
@@ -351,6 +353,11 @@ pub use ast_builder::{build_expr, build_form, build_forms, parse_type_expr};
 // deletion; it now travels with `CheckError::Gap` (a typecheck/types concern).
 pub use module_extract::extract_module_declarations;
 pub use module_extract::ExtractedDeclarations;
+// Module-preamble capture (spec §8.16) — pure `&str -> Option<String>` that
+// reads the raw source head, orthogonal to structural-decl extraction. The int
+// load seam calls this alongside `extract_module_declarations` to populate
+// `SymbolTable.module_preamble` (wiring is int's, design §5).
+pub use preamble::capture_module_preamble;
 pub use quasiquote::{expand_quasiquotes, expand_quote_template, next_synthetic_span};
 pub use defmacro::{
     is_defmacro, is_begin, flatten_begin, parse_defmacro,

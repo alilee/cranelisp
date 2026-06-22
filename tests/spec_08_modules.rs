@@ -449,6 +449,87 @@ fn inline_mod_extraction_is_idempotent_on_rerun() {
 }
 
 // =============================================================================
+// §8.2.2 — inline `(mod test …)` extraction writes the backing file
+// LIB-DIR-RELATIVE (`{parent_dir}/…`), never CWD-relative (FIXME 0423 — /int)
+// =============================================================================
+//
+// DEFECT (FIXME 0423 → /int): when a module that lives in a CRANELISP_LIB
+// directory declares an INLINE `(mod test …)` body, and the program is run
+// from a working directory that is NOT the lib-dir, the extractor writes the
+// extracted backing file CWD-relative (`<cwd>/<module>/test.cl`) instead of
+// next to its parent in the lib-dir (`<lib-dir>/<module>/test.cl`). This is
+// the root cause of the stray `./collections/`, `./num/`, … trees that
+// appeared at the repo root when the stdlib self-test runner was invoked from
+// the repo root in S87 (currently band-aided by a `.gitignore` guard). The
+// parent rewrite (to bare `(mod test)`) DOES correctly target the lib-dir
+// copy; only the backing-file write mis-resolves against the process CWD.
+//
+// REPRO (this test): `mod.cl` with an inline `(mod test …)` lives in the
+// lib-dir (`lib/` under the per-test tmpdir, on CRANELISP_LIB); the `--run`
+// driver (`driver.cl`) sits at the tmpdir ROOT, which is the process CWD.
+// CWD (tmpdir root) ≠ lib-dir (tmpdir/lib). After the run, the extracted
+// backing file MUST appear under the lib-dir (`lib/mod/test.cl`) and MUST NOT
+// appear CWD-relative (`mod/test.cl` at the tmpdir root).
+//
+// FAILING-NOT-IGNORED per `memory/feedback_failing_not_ignored.md` — it pins
+// the spec-correct lib-dir-relative behaviour and flips green when /int
+// resolves the extraction output path against the lib-dir / the source
+// module's own directory rather than the process CWD. → /int (source-regen /
+// `(mod …)` extraction write path; `src/`).
+
+// spec: spec/08-modules.md §8.2.2 — extraction step 1 writes the backing file
+// at `{parent_dir}/{stem}/{name}.cl`; `{parent_dir}` is the parent module's OWN
+// directory (the lib-dir for a lib-dir module), NEVER the process working
+// directory. The stray CWD-relative write is FIXME 0423.
+#[test]
+fn inline_mod_test_extraction_writes_lib_dir_relative_not_cwd() {
+    // `accum.cl` lives in the lib-dir (`lib/`, on CRANELISP_LIB). It declares
+    // an inline `(mod test …)` body — the extractor must write the backing
+    // file next to `accum.cl` (under `lib/`), not under the process CWD.
+    let out = Cranelisp::new()
+        .file(
+            "lib/accum.cl",
+            "(import [prelude []])\n\
+             (import [primitives [add-i64]])\n\
+             (defn double [x] (add-i64 x x))\n\
+             (mod test \
+               (import [primitives [add-i64]]) \
+               (defn check [x] (add-i64 x 1)))",
+        )
+        // The `--run` driver sits at the tmpdir ROOT (= the process CWD), which
+        // is DISTINCT from the lib-dir. It imports `accum` to force its load +
+        // the inline-`(mod test)` extraction.
+        .file(
+            "driver.cl",
+            "(import [accum [double]])\n\
+             (import [primitives [Pure]])\n\
+             (defn main [] (Pure (double 21)))",
+        )
+        .lib_dir("lib")
+        .run("driver.cl")
+        .output()
+        .assert_exit(42);
+
+    // CORRECT (§8.2.5): the backing file is written next to its parent in the
+    // lib-dir. Fails today under 0423 (the write is CWD-relative, so the
+    // lib-dir copy is never created).
+    assert!(
+        out.tmp_exists("lib/accum/test.cl"),
+        "the extracted `(mod test)` backing file MUST be written LIB-DIR-relative \
+         at lib/accum/test.cl; under FIXME 0423 it is written CWD-relative instead"
+    );
+
+    // NEGATIVE (the 0423 symptom): no stray backing file appears CWD-relative
+    // (at the tmpdir root, outside the lib-dir). This is the assertion that is
+    // RED today — the stray `accum/test.cl` is written next to the driver.
+    assert!(
+        !out.tmp_exists("accum/test.cl"),
+        "NO stray backing file may appear OUTSIDE the lib-dir (CWD-relative \
+         accum/test.cl) — this is the FIXME-0423 stray-write defect"
+    );
+}
+
+// =============================================================================
 // §8.10.3 Whole-Module Compilation — explicit (mod ...) declaration
 //
 // Wave 5.6 carry-forwards from legacy/modules.rs. All 13 use the

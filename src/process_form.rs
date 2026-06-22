@@ -76,7 +76,9 @@ pub(crate) use self::dependency::gap_target_module;
 // `dependency`; their only callers are the sibling/worker test modules — re-export
 // on the parent path (test-only, gated to avoid a lib-build unused-import warning).
 #[cfg(test)]
-pub(crate) use self::dependency::{check_private_submodule_import, splice_inline_mod_to_bare};
+pub(crate) use self::dependency::{
+    check_private_submodule_import, splice_inline_mod_to_bare, write_inline_mod_to_disk,
+};
 // `LayoutHashGate`/`layout_hash_gate` are `pub(crate)` in `platform`; their only
 // caller is the sibling `tests` module via `use super::*` — re-export on the
 // parent path (test-only, gated to avoid a lib-build unused-import warning).

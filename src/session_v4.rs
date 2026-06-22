@@ -468,6 +468,11 @@ impl CompilerSession {
         };
         let sexps: std::sync::Arc<[Sexp]> =
             std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
+        // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
+        // a watcher-triggered re-register re-reads fresh source from disk, so the
+        // preamble is re-captured (the on-disk file is the source of truth here,
+        // not a cache).
+        crate::save::apply_module_preamble(&self.shared.symbol_tables, module, &source);
         Ok(self.shared.scheduler.re_register_module(module, sexps))
     }
 }

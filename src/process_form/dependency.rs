@@ -12,7 +12,7 @@
 //! §Cluster-Atomic Orchestration`). `compile_macro_clause_*` stays a documented
 //! single-impl-with-adapters elsewhere; this module owns the dep protocol.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cranelisp_types::{
     CranelispError, ErrorLocation, ExportSpec, ImportNames, ImportSpec,
@@ -411,6 +411,14 @@ pub(super) fn register_dep(
     let dep_sexps: std::sync::Arc<[Sexp]> =
         std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
 
+    // 2b. Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
+    //     capture the leading `;;` comment block from the SAME source string and
+    //     write it onto this dependency module's live `SymbolTable.module_preamble`.
+    //     Orthogonal to the structural-decl peel; one call + one field write.
+    //     (Cache-hit deps skip this path entirely — they restore the preamble via
+    //     serde, so no re-capture occurs on a cache hit.)
+    crate::save::apply_module_preamble(ctx.symbol_tables, dep, &source);
+
     // 3. record source hash for manifest generation. Sprint 67 Cluster B
     //    sub-fire 3: ObjectCache facade.
     if let Some(shared) = ctx.shared_state {
@@ -552,8 +560,16 @@ pub(super) fn handle_mod(
         // Step 1 (§8.2.2): write the inline body to the submodule backing file.
         // Always required — the submodule loads from this child `.cl` regardless
         // of whether the parent keeps the inline body (REPL) or is rewritten to
-        // a bare reference (batch).
-        write_inline_mod_to_disk(module, &decl.name, body_sexps, ctx.project_root)?;
+        // a bare reference (batch). The backing file is resolved LIB-DIR-relative
+        // (next to the PARENT module's own on-disk file), NEVER CWD-relative —
+        // FIXME 0423.
+        write_inline_mod_to_disk(
+            module,
+            &decl.name,
+            body_sexps,
+            ctx.project_root,
+            ctx.lib_dirs,
+        )?;
         // Step 2 (§8.2.2, FIXME 0217): rewrite the PARENT source file, replacing
         // the inline `(mod name form…)` form with a bare `(mod name)` reference,
         // then drop `inline_body` from the in-memory ModDecl so the persistent
@@ -708,17 +724,63 @@ pub(super) fn drive_submodules(
     Ok(None)
 }
 
-/// Write an inline mod body to disk as `{module_dir}/{name}.cl`.
-fn write_inline_mod_to_disk(
+/// Write an inline mod body to disk as `{parent_dir}/{stem}/{name}.cl`
+/// (§8.2.2 extraction step / §8.2.5 nested-child path).
+///
+/// FIXME 0423 — the backing file MUST be resolved against the **parent
+/// module's own on-disk directory** (the lib-dir for a lib-dir module), NEVER
+/// the process CWD. The old code joined `project_root` (the CWD for a
+/// run-from-elsewhere invocation) to the dotted module path, producing stray
+/// `<cwd>/<module>/<name>.cl` trees outside the lib-dir. We instead locate the
+/// parent module's real file via the same `resolve_module_file` rules the
+/// loader uses (project-root, then lib-dirs) and write the backing file next to
+/// it — `<parent_file_dir>/<stem>/<name>.cl`. If the parent file cannot be
+/// located (it should always exist — it is what declared this `(mod …)`), we
+/// fall back to the `project_root`-relative path so the run is not blocked.
+///
+/// If an extraction-stable backing file already exists at the target path, we
+/// PREFER recognizing it (no re-emit) — the hand-authored / previously-extracted
+/// copy is canonical (FIXME 0423 resolution point 2).
+pub(crate) fn write_inline_mod_to_disk(
     parent_module: &ModuleFullPath,
     name: &cranelisp_types::ModuleName,
     body_sexps: &[Sexp],
     project_root: &Path,
+    lib_dirs: &[PathBuf],
 ) -> Result<(), CranelispError> {
-    // Convert parent module path to directory.
-    let relative_dir = parent_module.as_ref().replace('.', "/");
-    let mod_dir = project_root.join(&relative_dir);
+    // Resolve the backing-file directory against the PARENT module's own
+    // on-disk location (lib-dir-relative, FIXME 0423), not the process CWD.
+    let mod_dir = match crate::pipeline::resolve_module_file(
+        parent_module,
+        project_root,
+        lib_dirs,
+    ) {
+        // Parent file found (e.g. `lib/accum.cl`): backing dir is the parent's
+        // own directory joined with the parent's stem — `lib/accum/`.
+        Some(parent_file) => {
+            let parent_dir = parent_file
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| project_root.to_path_buf());
+            let stem = parent_module
+                .as_ref()
+                .rsplit('.')
+                .next()
+                .unwrap_or(parent_module.as_ref());
+            parent_dir.join(stem)
+        }
+        // Fallback (parent file not yet on disk — should not happen for a
+        // module that declared this inline `(mod …)`): project-root-relative.
+        None => project_root.join(parent_module.as_ref().replace('.', "/")),
+    };
     let file_path = mod_dir.join(format!("{}.cl", name));
+
+    // Prefer recognizing an existing extraction-stable backing file over
+    // re-emitting it (FIXME 0423 point 2): the canonical copy already on disk
+    // is read, not rewritten.
+    if file_path.is_file() {
+        return Ok(());
+    }
 
     // Create directory if needed.
     std::fs::create_dir_all(&mod_dir).map_err(|e| CranelispError::ModuleError {

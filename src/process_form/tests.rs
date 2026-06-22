@@ -424,6 +424,79 @@
         );
     }
 
+    // FIXME 0423 (path-resolution half): an inline `(mod …)` backing file MUST
+    // be written next to the PARENT module's own on-disk file (lib-dir-relative
+    // when the parent lives in a lib-dir), NEVER under the process CWD /
+    // project root. Before the fix `write_inline_mod_to_disk` joined
+    // `project_root` to the dotted module path, producing stray
+    // `<cwd>/<module>/<name>.cl` trees outside the lib-dir. (The e2e guard is
+    // tests/spec_08_modules.rs::inline_mod_test_extraction_writes_lib_dir_relative_not_cwd.)
+    // spec: spec/08-modules.md §8.2.2 — extraction writes {parent_dir}/{stem}/{name}.cl
+    #[test]
+    fn write_inline_mod_resolves_lib_dir_relative_not_project_root() {
+        let project_root = tempfile::tempdir().expect("project root tmpdir");
+        let lib = tempfile::tempdir().expect("lib tmpdir");
+
+        // Parent module `accum` lives in the lib-dir (NOT the project root).
+        std::fs::write(lib.path().join("accum.cl"), "(defn double [x] x)\n").unwrap();
+
+        let body = cranelisp_frontend::parse("(defn check [x] x)").unwrap();
+        let lib_dirs = vec![lib.path().to_path_buf()];
+        write_inline_mod_to_disk(
+            &ModuleFullPath::from("accum"),
+            &cranelisp_types::ModuleName::from("test"),
+            &body,
+            project_root.path(),
+            &lib_dirs,
+        )
+        .expect("write inline mod");
+
+        // CORRECT: backing file next to parent in the lib-dir.
+        assert!(
+            lib.path().join("accum/test.cl").is_file(),
+            "backing file MUST be written lib-dir-relative at <lib>/accum/test.cl"
+        );
+        // NEGATIVE: no stray write under the project root (the 0423 symptom).
+        assert!(
+            !project_root.path().join("accum/test.cl").exists(),
+            "NO stray backing file may appear under the project root (CWD) — FIXME 0423"
+        );
+    }
+
+    // The "prefer recognizing an existing backing file" half (FIXME 0423 point
+    // 2): if an extraction-stable backing file already exists, it is read, not
+    // re-emitted (the call is a no-op that leaves the canonical copy intact).
+    // spec: spec/08-modules.md §8.2.2
+    #[test]
+    fn write_inline_mod_prefers_existing_backing_file() {
+        let project_root = tempfile::tempdir().expect("project root tmpdir");
+        let lib = tempfile::tempdir().expect("lib tmpdir");
+        std::fs::write(lib.path().join("accum.cl"), "(defn double [x] x)\n").unwrap();
+
+        // A canonical backing file already exists.
+        std::fs::create_dir_all(lib.path().join("accum")).unwrap();
+        let backing = lib.path().join("accum/test.cl");
+        std::fs::write(&backing, "(defn canonical [] 7)\n").unwrap();
+
+        let body = cranelisp_frontend::parse("(defn regenerated [x] x)").unwrap();
+        let lib_dirs = vec![lib.path().to_path_buf()];
+        write_inline_mod_to_disk(
+            &ModuleFullPath::from("accum"),
+            &cranelisp_types::ModuleName::from("test"),
+            &body,
+            project_root.path(),
+            &lib_dirs,
+        )
+        .expect("write inline mod");
+
+        // Untouched — the canonical copy is recognized, not overwritten.
+        assert_eq!(
+            std::fs::read_to_string(&backing).unwrap(),
+            "(defn canonical [] 7)\n",
+            "an existing extraction-stable backing file MUST be preferred, not re-emitted"
+        );
+    }
+
     /// Minimal `ModuleCompiler` for exercising `handle_mod`'s Pass-0 behaviour.
     /// (Mirrors `worker::tests::mk_writer_test_ctx`, which is not visible here.)
     fn mk_mod_test_ctx<'a>(
