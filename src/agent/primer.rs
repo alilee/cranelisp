@@ -60,6 +60,29 @@ mod tests {
     }
 
     #[test]
+    fn primer_steers_off_clojure_recur_idiom() {
+        // S89 Phase-6: the model was burning its validator-repair cap
+        // translating mainstream-Lisp idioms (`recur`, `zero?`, `dec`) that
+        // don't exist in Cranelisp. The primer must name `recur` in a "don't"
+        // context so the steering can't silently regress.
+        assert!(
+            LANGUAGE_PRIMER.contains("NO `recur`"),
+            "primer must steer the model off Clojure/CL `recur` (use self-recursion)"
+        );
+    }
+
+    #[test]
+    fn primer_has_recursion_idiom() {
+        // The grounded few-shot recursive example (verified to type-check as
+        // `(Fn [Int] Int)`, `(fib 10) = 55`) must be present so the model has
+        // an idiomatic Cranelisp recursion to pattern-match against.
+        assert!(
+            LANGUAGE_PRIMER.contains("(defn fib [n]"),
+            "primer must carry the canonical recursive-function idiom"
+        );
+    }
+
+    #[test]
     fn primer_has_no_stale_read_only_framing() {
         // Regression guard: the S88 read-only paragraph told the model NOT to
         // submit. Its presence is the live defect this fix removes.

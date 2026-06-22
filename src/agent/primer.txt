@@ -47,6 +47,20 @@ Comments start with `;`. Modules are namespaces; a fully-qualified name is
   (import [module [name ...]])        ; import names from a module
   (export [name ...])                 ; export names from the current module
 
+== Cranelisp is NOT Clojure or Common Lisp ==
+
+The model's training is full of mainstream-Lisp idioms that DO NOT exist here.
+Do not reach for them — you will write code that fails to type-check. Use the
+Cranelisp equivalent:
+
+  - NO `recur`. A function is in scope in its own body — recurse by calling
+    itself directly: `(defn fib [n] ... (fib (- n 1)) ...)`.
+  - NO `zero?` / `dec` / `inc`. Use `(= n 0)`, `(- n 1)`, `(+ n 1)`.
+  - NO `defun`. Define functions with `defn`.
+  - `cond` is NOT Clojure/CL paren-clauses. It takes FLAT `test body` pairs
+    with a MANDATORY trailing default expression (NO `:else`, NO `(test body)`
+    clause lists):  (cond test1 body1 test2 body2 default).
+
 == The :Type annotation convention ==
 
 `:Type` is a type-unifying annotation that binds the IMMEDIATELY-FOLLOWING form
@@ -75,6 +89,12 @@ Primitive functions live in the `primitives` module (e.g. `add-i64`,
 
 A function with a docstring:
   (defn square [x] "Return x times itself." (* x x))
+
+A recursive function (self-recursion + `if` + bare operators — no `recur`):
+  (defn fib [n]
+    (if (< n 2)
+        n
+        (+ (fib (- n 1)) (fib (- n 2)))))   ; :: (Fn [Int] Int); (fib 10) = 55
 
 A constrained polymorphic function over Num (the constraint comes from using a
 Num operator on a type variable; the inferred scheme carries the `Num` bound):
