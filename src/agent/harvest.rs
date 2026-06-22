@@ -50,6 +50,18 @@ impl CompilerSession {
         //    never be blind to the user's cursor context.
         let cur = self.current_module_path();
         out.push_str(&format!("== Current module: {} ==\n", cur.as_ref()));
+        // The current module's preamble is part of its pinned context (§5.2 #1 /
+        // §17.3 read-back): a Document-mode preamble edit on the cursor module
+        // must surface in the very next turn's harvest, and on a fresh session
+        // the regenerated `.cl`'s captured `module_preamble` is read back here —
+        // the rung-6-write → rung-3-read loop ("memory is the code"). The
+        // mentioned-module arm (#2) covers OTHER modules; this covers the cursor
+        // module (which #2 skips because it is already pinned).
+        if let Some(table) = self.shared.symbol_tables.get(&cur)
+            && let Some(preamble) = table.module_preamble.as_ref()
+        {
+            out.push_str(&format!("== module {} preamble ==\n{preamble}\n", cur.as_ref()));
+        }
         self.push_module_full_source(&cur, &mut out);
 
         // Partition the mentions into modules and fns/symbols. A mention is a

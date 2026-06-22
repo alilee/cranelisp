@@ -176,6 +176,40 @@ mod tests {
         assert_eq!(script[2], ModelResponse::Done("defined double for you".to_string()));
     }
 
+    // S89 Cluster C: `tool: set-preamble <MODULE> <TEXT>` / `tool: set-doc
+    // <SYMBOL> <TEXT>` parse with the FIRST token as the target and the REST of
+    // the line (verbatim, including inner spaces) as the text — the same `tool:`
+    // grammar as `submit` (the argument is `<TARGET> <TEXT>`, re-split in
+    // `run_document_edit`). No new keyword: `set-preamble`/`set-doc` are tool
+    // NAMES (the §17.2 discriminator).
+    #[test]
+    fn parses_set_preamble_and_set_doc_tools() {
+        let script = parse_script(
+            "tool: set-preamble user Solver core: constraint propagation over a grid.\n\
+             tool: set-doc solve Solve the grid by propagation.\n\
+             done: recorded\n",
+        );
+        assert_eq!(script.len(), 3);
+        match &script[0] {
+            ModelResponse::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "set-preamble");
+                // The whole `<MODULE> <TEXT>` is the argument (split later).
+                assert_eq!(
+                    calls[0].argument,
+                    "user Solver core: constraint propagation over a grid."
+                );
+            }
+            other => panic!("expected ToolCalls(set-preamble), got {other:?}"),
+        }
+        match &script[1] {
+            ModelResponse::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "set-doc");
+                assert_eq!(calls[0].argument, "solve Solve the grid by propagation.");
+            }
+            other => panic!("expected ToolCalls(set-doc), got {other:?}"),
+        }
+    }
+
     #[test]
     fn complete_consumes_script_then_terminates() {
         let mut stub = StubModel::new(vec![ModelResponse::Done("ok".to_string())]);

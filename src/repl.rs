@@ -684,6 +684,17 @@ impl CompilerSession {
             return "usage: /doc <name>".to_string();
         }
         let Some((local, lookup_module)) = self.lookup_with_prelude_fallback(name) else {
+            // §17.5.1 / spec §8.16.4 — `/doc <module>` reads a module's preamble
+            // (the leading `;;` block) when the name resolves to a module rather
+            // than a symbol. The module's `module_preamble` is the durable record
+            // a Document-mode `set-preamble` edit writes (S89 Cluster C); this is
+            // the human read-back path (the harvester reads the same field).
+            let module_path = cranelisp_types::ModuleFullPath::from(name);
+            if let Some(table) = self.shared.symbol_tables.get(&module_path)
+                && let Some(preamble) = table.module_preamble.as_ref()
+            {
+                return format!("{name} (module): \"{preamble}\"");
+            }
             return format!("error: unknown symbol '{name}'");
         };
         // Follow import/re-export chains to the defining entry — a bare

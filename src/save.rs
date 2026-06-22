@@ -317,6 +317,37 @@ pub(crate) fn apply_module_preamble(
     }
 }
 
+/// Set the module preamble field directly to the agent-supplied STRIPPED prose
+/// (no `;;` markers) and persist it byte-stably (`design/int/agent.md §17.1`,
+/// S89 Cluster C — the Document-mode write path, R4). Unlike
+/// `apply_module_preamble` (which CAPTURES from `;;`-marked source on load), the
+/// agent supplies the stripped prose — exactly the form `/doc <module>` reads
+/// back — so the field is set directly. Only `module_preamble` is touched, so the
+/// unmodified-rest-of-file invariant (§8.16.5 no-reflow) holds by construction;
+/// `generate_preamble` re-emits the canonical `;; ` block on the next regen (the
+/// byte-stable inverse of capture). Ensures the module table exists first.
+#[cfg(feature = "agent")]
+pub(crate) fn apply_preamble_edit(
+    symbol_tables: &DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module: &ModuleFullPath,
+    new_preamble_text: &str,
+) {
+    cranelisp_types::ensure_module_exists(symbol_tables, module);
+    if let Some(mut st) = symbol_tables.get_mut(module) {
+        st.module_preamble = Some(new_preamble_text.to_string());
+    }
+}
+
+/// Render stripped preamble prose as the canonical leading `;;` comment block —
+/// the exact form `generate_module_source` emits at section 0, so the agent's
+/// Document-mode consultative gate can SHOW the user precisely what it proposes
+/// to record (`design/int/agent.md §17.2`). A `pub(crate)` window onto the
+/// byte-stable `generate_preamble` emitter (Principle 7 — one emitter, not two).
+#[cfg(feature = "agent")]
+pub(crate) fn render_preamble_block(text: &str) -> String {
+    generate_preamble(text)
+}
+
 /// Re-emit a captured module preamble as the leading `;;` comment block
 /// (spec §8.16.5 section-0). Each `\n`-split line is prefixed with `;; ` (one
 /// space) and joined with `\n` — the EXACT inverse of `capture_module_preamble`'s

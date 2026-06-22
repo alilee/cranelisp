@@ -30,6 +30,18 @@ use crate::session_v4::{CommandResult, CompilerSession};
 /// head; the read-only floor (`synthesize_command`) is byte-unchanged.
 pub(crate) const SUBMIT_TOOL: &str = "submit";
 
+/// The Document write tools (`design/int/agent.md §17.2`, S89 Cluster C). The
+/// agent records durable understanding into the code itself ("memory is the
+/// code", §17.3): `set-preamble <module> <text>` records a module preamble;
+/// `set-doc <symbol> <text>` records a definition's docstring. Both route — like
+/// `submit` — through a gated write arm (`run_document_edit`), NOT the read-only
+/// `synthesize_command` allowlist. The discriminator is the tool NAME (§17.2): a
+/// `submit` is code (the Build CONFIRM gate); a `set-preamble`/`set-doc` is
+/// documentation (the Document CONSULTATIVE gate) — distinct wording, same
+/// `--yes` blanket auto-accept (§20.2).
+pub(crate) const SET_PREAMBLE_TOOL: &str = "set-preamble";
+pub(crate) const SET_DOC_TOOL: &str = "set-doc";
+
 /// Cap on the silent pre-flight repair loop (`design/int/agent.md §16.3`). On
 /// exhaustion the agent gives up gracefully — it NEVER submits broken code and
 /// never surfaces a raw compiler error (U5, §16.4).
@@ -77,6 +89,23 @@ pub fn tool_defs() -> Vec<ToolDef> {
         name: SUBMIT_TOOL.to_string(),
         description: "Submit a definition to the session (confirm-gated write): \
                       submit <form>"
+            .to_string(),
+    });
+    // The Document write tools (§17.2, Cluster C) — consultative-gated, always
+    // offered but never auto-run. They record durable understanding (a module
+    // preamble / a definition docstring) into the source itself.
+    defs.push(ToolDef {
+        name: SET_PREAMBLE_TOOL.to_string(),
+        description: "Record a module's preamble — durable documentation written \
+                      into the source (consultative-gated write): \
+                      set-preamble <module> <text>"
+            .to_string(),
+    });
+    defs.push(ToolDef {
+        name: SET_DOC_TOOL.to_string(),
+        description: "Record a definition's docstring — durable documentation \
+                      written into the source (consultative-gated write): \
+                      set-doc <symbol> <text>"
             .to_string(),
     });
     defs
@@ -130,8 +159,16 @@ impl CompilerSession {
         // read-only `synthesize_command` path verbatim (the read-only floor is
         // untouched). A non-`submit` write / `/sh` / unknown name still hits the
         // read-only refusal below WITHOUT any confirm gate (the B.2 floor).
-        if call.name.trim().trim_start_matches('/') == SUBMIT_TOOL {
+        let tool = call.name.trim().trim_start_matches('/');
+        if tool == SUBMIT_TOOL {
             return self.run_submit(call, stdout, consent);
+        }
+        // §17.2 — the Document write tools route to the CONSULTATIVE gate arm
+        // (sibling to `run_submit`'s confirm gate). The tool NAME is the
+        // discriminator; both stay out of the read-only `synthesize_command`
+        // allowlist (the §15.4 floor extends to Document writes).
+        if tool == SET_PREAMBLE_TOOL || tool == SET_DOC_TOOL {
+            return self.run_document_edit(call, stdout, consent);
         }
         match synthesize_command(call) {
             Err(refusal) => {
@@ -323,6 +360,147 @@ impl CompilerSession {
         }
     }
 
+    /// The consultative-gated Document write arm (`design/int/agent.md §17.2`,
+    /// S89 Cluster C). The Document twin of `run_submit`, distinguished by the
+    /// tool NAME (§17.2): a `set-preamble`/`set-doc` is documentation, not code,
+    /// so it asks the CONSULTATIVE question ("record this as <X>'s preamble?")
+    /// rather than the Build confirm ("submit this definition?"). No validator —
+    /// a doc edit is not code (the validator is Build-only). The arm:
+    ///   1. Parse the argument: `<TARGET> <TEXT>` split on the FIRST whitespace.
+    ///   2. **Render** the proposed canonical `;;` block (set-preamble) / the
+    ///      docstring (set-doc) — always shown, even under `--yes` (§17.15.2a).
+    ///   3. **Capture consent**: `--yes` auto-accepts (§20.2, blanket — the same
+    ///      once-notice as Build); else the consultative `[y/N]` line-read.
+    ///   4. **On confirm**, apply: `set-preamble` → `save::apply_preamble_edit`
+    ///      (field set) + byte-stable section-0 regen; `set-doc` → set the
+    ///      symbol's live docstring + regen. **On decline**, write nothing.
+    fn run_document_edit(
+        &mut self,
+        call: &ToolCallRequest,
+        stdout: &mut impl Write,
+        consent: &mut dyn ConsentReader,
+    ) -> ToolCallResult {
+        let tool = call.name.trim().trim_start_matches('/');
+        let is_preamble = tool == SET_PREAMBLE_TOOL;
+        let noun = if is_preamble { "preamble" } else { "docstring" };
+
+        // (1) Parse `<TARGET> <TEXT>` — split on the FIRST run of whitespace.
+        let arg = call.argument.trim();
+        let mut parts = arg.splitn(2, char::is_whitespace);
+        let target = parts.next().unwrap_or("").trim().to_string();
+        let text = parts.next().unwrap_or("").trim().to_string();
+        if target.is_empty() || text.is_empty() {
+            let msg = format!(
+                "agent {tool} needs a target and text ({tool} <{}> <text>) — nothing recorded",
+                if is_preamble { "module" } else { "symbol" }
+            );
+            let _ = writeln!(stdout, "{msg}");
+            return ToolCallResult {
+                id: call.id.clone(),
+                command: format!("({tool} malformed)"),
+                output: msg,
+            };
+        }
+
+        // (2) Render the EXACT proposed documentation — the canonical `;;` block
+        // for a preamble (via the shared `generate_preamble` emitter, §17.2), the
+        // raw prose for a docstring. Always shown (§17.15.2a render-always),
+        // behind the agent-input prefix so the transcript reads honestly.
+        let shown = if is_preamble {
+            crate::save::render_preamble_block(&text)
+        } else {
+            text.clone()
+        };
+        let _ = writeln!(
+            stdout,
+            "{}{}",
+            crate::agent::render::agent_input_prefix(),
+            shown
+        );
+
+        // (3) Capture consent. `--yes` is BLANKET (§20.2): it auto-accepts the
+        // CONSULTATIVE gate exactly as it auto-accepts the Build confirm — the
+        // consultative question is then SUPPRESSED, not asked-then-answered.
+        let consented = if self.agent_auto_accept() {
+            self.fire_auto_accept_notice_once(stdout);
+            true
+        } else {
+            // The CONSULTATIVE wording — distinct from the Build `[y/N]` confirm
+            // ("submit this definition?"). Tool-name discrimination surfaces here.
+            let _ = write!(stdout, "record this as {target}'s {noun}? [y/N] ");
+            let _ = stdout.flush();
+            match consent.read_consent_line() {
+                Some(line) => {
+                    let a = line.trim().to_ascii_lowercase();
+                    a == "y" || a == "yes"
+                }
+                None => false, // EOF ⇒ decline (the safe default)
+            }
+        };
+
+        if !consented {
+            // §17.15.2 decline: write nothing, feed "declined" back. No regen.
+            return ToolCallResult {
+                id: call.id.clone(),
+                command: format!("({tool} declined)"),
+                output: format!("the user declined to record this {noun}"),
+            };
+        }
+
+        // (4) Confirm — apply the durable, byte-stable edit + regen.
+        if is_preamble {
+            self.apply_preamble_edit(&target, &text);
+        } else {
+            self.apply_docstring_edit(&target, &text);
+        }
+        let _ = writeln!(stdout, "recorded {target}'s {noun}");
+        ToolCallResult {
+            id: call.id.clone(),
+            command: format!("{tool} {target}"),
+            output: format!("recorded {target}'s {noun}"),
+        }
+    }
+
+    /// Apply a Document-mode preamble edit (`design/int/agent.md §17.1`): set the
+    /// module's `module_preamble` field to the stripped prose + regenerate the
+    /// backing file byte-stably (the §8.16.5 section-0 round-trip). The TARGET is
+    /// a module name; it resolves to a full path (the current-module short name,
+    /// or a literal full path). The edit is on the named module's table; regen
+    /// runs against the current module's backing file (the named module is the
+    /// current module in the MVP shape — §17.1).
+    fn apply_preamble_edit(&mut self, module: &str, text: &str) {
+        let module_path = self.resolve_document_module(module);
+        crate::save::apply_preamble_edit(&self.shared.symbol_tables, &module_path, text);
+        self.regenerate_backing_file();
+    }
+
+    /// Apply a Document-mode docstring edit (`design/int/agent.md §17.2`): set the
+    /// live `ModuleEntry::Def.docstring` for the named symbol + regenerate. The
+    /// durable in-session record is the entry field (read by `/doc <symbol>`).
+    fn apply_docstring_edit(&mut self, symbol: &str, text: &str) {
+        let module = self.current_module_path();
+        if let Some(mut table) = self.shared.symbol_tables.get_mut(&module)
+            && let Some(cranelisp_types::ModuleEntry::Def { docstring, .. }) =
+                table.symbols.get_mut(&cranelisp_types::Symbol::from(symbol))
+        {
+            *docstring = Some(text.to_string());
+        }
+        self.regenerate_backing_file();
+    }
+
+    /// Resolve a Document-edit module TARGET to a full path. A bare short name
+    /// that equals the current module's short name maps to the current module;
+    /// otherwise it is treated as a literal full path (the harvester reads back
+    /// by the same key, §17.3).
+    fn resolve_document_module(&self, module: &str) -> cranelisp_types::ModuleFullPath {
+        let current = self.current_module_path();
+        if current.as_ref() == module {
+            current
+        } else {
+            cranelisp_types::ModuleFullPath::from(module)
+        }
+    }
+
     /// The silent pre-flight validator + repair loop (`design/int/agent.md §16.2`,
     /// U5). Stages → checks → DISCARDS the proposed form (`validate_forms_dry_run`,
     /// §16.1 — never commits). On ANY `Err` (parse OR type — no classification),
@@ -498,10 +676,13 @@ mod tests {
         let defs = tool_defs();
         assert!(defs.iter().any(|d| d.name == "source"));
         assert!(!defs.iter().any(|d| d.name == "sh"));
-        // The one write tool is offered (Build mode, §15.1) ...
+        // The write tools are offered (Build §15.1 + Document §17.2) ...
         assert!(defs.iter().any(|d| d.name == "submit"));
-        // ... and the set is exactly the read-only allowlist + that one tool.
-        assert_eq!(defs.len(), ALLOWLIST.len() + 1);
+        assert!(defs.iter().any(|d| d.name == "set-preamble"));
+        assert!(defs.iter().any(|d| d.name == "set-doc"));
+        // ... and the set is exactly the read-only allowlist + those 3 write
+        // tools (submit / set-preamble / set-doc), all gated, none auto-run.
+        assert_eq!(defs.len(), ALLOWLIST.len() + 3);
     }
 
     // -----------------------------------------------------------------------
@@ -778,5 +959,189 @@ mod tests {
             !rendered2.contains("--yes is on"),
             "the notice fires ONCE per session: {rendered2}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // S89 Cluster C — Document mode (set-preamble/set-doc, consultative gate).
+    // -----------------------------------------------------------------------
+
+    fn set_preamble_call(arg: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: "d1".to_string(),
+            name: "set-preamble".to_string(),
+            argument: arg.to_string(),
+        }
+    }
+
+    // §17.2 — a `set-preamble` routes to the CONSULTATIVE Document arm, NOT the
+    // read-only refusal and NOT the Build confirm: the gate wording is "record
+    // this as <module>'s preamble?" (distinct from the Build "[y/N]" confirm),
+    // and the canonical `;;` block is shown verbatim. The tool name discriminates.
+    #[test]
+    fn set_preamble_uses_consultative_gate_distinct_from_build() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], false);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&["n"]);
+        let module = s.current_module_path();
+        let arg = format!("{} Solver core: propagation over a grid.", module.as_ref());
+        let result = s.run_pull(&set_preamble_call(&arg), &mut sink, &mut consent);
+        let rendered = String::from_utf8_lossy(&sink);
+        assert!(
+            !result.output.contains("refused"),
+            "set-preamble must route to the Document arm, not the refusal: {:?}",
+            result.output
+        );
+        // The CONSULTATIVE wording — distinct from the Build confirm.
+        assert!(
+            rendered.contains("record this as") && rendered.contains("preamble?"),
+            "the consultative gate must ask 'record this as <module>'s preamble?': {rendered}"
+        );
+        assert!(
+            !rendered.contains("submit this definition"),
+            "the Document gate must NOT use the Build confirm wording: {rendered}"
+        );
+        // The exact canonical `;;` block is shown (§17.15.1 render-always).
+        assert!(
+            rendered.contains(";; Solver core: propagation over a grid."),
+            "the proposed canonical block must be shown verbatim: {rendered}"
+        );
+    }
+
+    // §17.1 — a confirmed `set-preamble` applies the byte-stable edit: the
+    // module's `module_preamble` field carries the stripped prose afterwards
+    // (the durable record `/doc <module>` + the harvester read back).
+    #[test]
+    fn set_preamble_confirmed_sets_module_preamble_field() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], false);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&["y"]);
+        let module = s.current_module_path();
+        let arg = format!("{} Solver core: propagation.", module.as_ref());
+        let _ = s.run_pull(&set_preamble_call(&arg), &mut sink, &mut consent);
+        let table = s.shared.symbol_tables.get(&module).expect("module table exists");
+        assert_eq!(
+            table.module_preamble.as_deref(),
+            Some("Solver core: propagation."),
+            "a confirmed set-preamble sets the stripped prose on module_preamble"
+        );
+    }
+
+    // §17.15.2 +neg — a DECLINED set-preamble writes NOTHING: the
+    // `module_preamble` field stays unset (the Document twin of the declined
+    // Build submit floor).
+    #[test]
+    fn set_preamble_declined_writes_nothing_neg() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], false);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&["n"]);
+        let module = s.current_module_path();
+        let arg = format!("{} declined preamble.", module.as_ref());
+        let result = s.run_pull(&set_preamble_call(&arg), &mut sink, &mut consent);
+        assert!(result.output.contains("declined"), "decline result: {:?}", result.output);
+        let preamble = s
+            .shared
+            .symbol_tables
+            .get(&module)
+            .and_then(|t| t.module_preamble.clone());
+        assert_eq!(preamble, None, "a declined set-preamble must record nothing");
+    }
+
+    // §17.15.2a / §20.2 — under `--yes` the Document consultative gate is
+    // SUPPRESSED (the "record this as ...?" question must NOT fire) yet the edit
+    // is STILL applied (blanket auto-accept covers Document), and the proposed
+    // block is STILL shown (render-always).
+    #[test]
+    fn set_preamble_yes_auto_accepts_suppresses_question_still_applies() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], true);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&[]);
+        let module = s.current_module_path();
+        let arg = format!("{} Auto preamble.", module.as_ref());
+        let _ = s.run_pull(&set_preamble_call(&arg), &mut sink, &mut consent);
+        let rendered = String::from_utf8_lossy(&sink);
+        assert!(
+            !rendered.contains("record this as"),
+            "under --yes the consultative question must NOT fire: {rendered}"
+        );
+        assert!(
+            rendered.contains(";; Auto preamble."),
+            "the proposed block must STILL be shown under --yes (render-always): {rendered}"
+        );
+        let table = s.shared.symbol_tables.get(&module).expect("module table exists");
+        assert_eq!(
+            table.module_preamble.as_deref(),
+            Some("Auto preamble."),
+            "under --yes the edit must STILL be applied (blanket auto-accept)"
+        );
+    }
+
+    // §17.2 — a `set-doc` tool-call routes to the Document arm and asks the
+    // docstring-flavoured consultative question (NOT the preamble wording), and
+    // on confirm sets the symbol's live docstring field.
+    #[test]
+    fn set_doc_consultative_gate_sets_docstring() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], false);
+        let module = s.current_module_path();
+        {
+            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
+            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
+                let entry = ModuleEntry::def(
+                    cranelisp_types::Scheme {
+                        type_vars: Vec::new(),
+                        constraints: std::collections::HashMap::new(),
+                        ty: cranelisp_types::Type::Int,
+                    },
+                    DefKind::PrimitiveExtern,
+                )
+                .visibility(Visibility::Public)
+                .build();
+                table.insert(Symbol::from("solve"), entry);
+            }
+        }
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&["y"]);
+        let call = ToolCallRequest {
+            id: "d2".to_string(),
+            name: "set-doc".to_string(),
+            argument: "solve Solve the grid.".to_string(),
+        };
+        let _ = s.run_pull(&call, &mut sink, &mut consent);
+        let rendered = String::from_utf8_lossy(&sink);
+        assert!(
+            rendered.contains("record this as") && rendered.contains("docstring?"),
+            "set-doc must ask the docstring consultative question: {rendered}"
+        );
+        let table = s.shared.symbol_tables.get(&module).expect("table");
+        let doc = match table.symbols.get(&cranelisp_types::Symbol::from("solve")) {
+            Some(cranelisp_types::ModuleEntry::Def { docstring, .. }) => docstring.clone(),
+            _ => None,
+        };
+        assert_eq!(doc.as_deref(), Some("Solve the grid."), "the docstring is set on confirm");
+    }
+
+    // §17.2 +neg — the Document tools stay OUT of the read-only allowlist: a
+    // `set-preamble`/`set-doc` is unconstructable through `synthesize_command`
+    // (refused), exactly like a write — the gate (not the allowlist) is the
+    // consent boundary.
+    #[test]
+    fn document_tools_refused_by_read_only_allowlist_neg() {
+        assert!(
+            synthesize_command(&call("set-preamble", "user x")).is_err(),
+            "set-preamble must be refused by the read-only allowlist"
+        );
+        assert!(
+            synthesize_command(&call("set-doc", "solve x")).is_err(),
+            "set-doc must be refused by the read-only allowlist"
+        );
+        // The tool-def set offers them (gated), but they are not read-allowlisted.
+        let defs = tool_defs();
+        assert!(defs.iter().any(|d| d.name == "set-preamble"));
+        assert!(defs.iter().any(|d| d.name == "set-doc"));
+        assert!(!is_allowed("set-preamble") && !is_allowed("set-doc"));
     }
 }
