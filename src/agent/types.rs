@@ -146,3 +146,115 @@ impl AgentState {
         self.model.is_none()
     }
 }
+
+impl AgentRequest {
+    /// Render the assembled request as readable, labeled text — exactly the
+    /// content `agent_turn` sends to the model, in send-order. The `/context`
+    /// debug command (`repl.rs`) writes this to a file so a human can inspect
+    /// the grounding/harvest/transcript WITHOUT making an API call. This is a
+    /// faithful flattening of the SAME `AgentRequest` `assemble_request` builds,
+    /// so a reader can trust it as ground truth (it is the request, not a
+    /// reconstruction — Principle 7).
+    ///
+    /// Sections, in the order the provider sees them (`request.rs`: primer +
+    /// harvest form the system preamble, the transcript is the chat history, the
+    /// last turn is the prompt the model answers):
+    ///   `=== SYSTEM PRIMER ===`      — the always-on language primer (§7).
+    ///   `=== HARVESTED CONTEXT ===`  — the push-context block (§5), or `(none)`.
+    ///   `=== TOOLS (read-only) ===`  — the offered allowlist, name + description.
+    ///   `=== TRANSCRIPT ===`         — every turn so far, oldest first; the
+    ///                                  final turn is the prompt the model answers.
+    pub fn render_for_debug(&self) -> String {
+        let mut out = String::new();
+
+        // A cheap, honest budget note: the approximate total system+transcript
+        // character size (the model's wire payload is dominated by this).
+        let char_total = self.primer.len()
+            + self.harvest.len()
+            + self
+                .transcript
+                .iter()
+                .map(turn_debug_len)
+                .sum::<usize>()
+            + self.user.len();
+        out.push_str(&format!(
+            "=== BUDGET (approx) ===\n{char_total} chars (~{} tokens @4ch/tok)\n\n",
+            char_total / 4
+        ));
+
+        out.push_str("=== SYSTEM PRIMER ===\n");
+        out.push_str(&self.primer);
+        if !self.primer.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push('\n');
+
+        out.push_str("=== HARVESTED CONTEXT ===\n");
+        if self.harvest.is_empty() {
+            out.push_str("(none)\n");
+        } else {
+            out.push_str(&self.harvest);
+            if !self.harvest.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+
+        out.push_str("=== TOOLS (read-only) ===\n");
+        if self.tools.is_empty() {
+            out.push_str("(none)\n");
+        } else {
+            for t in &self.tools {
+                out.push_str(&format!("{} — {}\n", t.name, t.description));
+            }
+        }
+        out.push('\n');
+
+        out.push_str("=== TRANSCRIPT ===\n");
+        if self.transcript.is_empty() {
+            out.push_str("(empty — the current user turn is the prompt)\n");
+        } else {
+            for turn in &self.transcript {
+                out.push_str(&render_turn_for_debug(turn));
+            }
+        }
+        out.push('\n');
+
+        out.push_str("=== CURRENT USER TURN ===\n");
+        out.push_str(&self.user);
+        if !self.user.ends_with('\n') {
+            out.push('\n');
+        }
+
+        out
+    }
+}
+
+/// The approximate character length of a transcript turn, for the budget note.
+fn turn_debug_len(turn: &Turn) -> usize {
+    match turn {
+        Turn::User(t) | Turn::Assistant(t) => t.len(),
+        Turn::AssistantToolCalls(calls) => {
+            calls.iter().map(|c| c.name.len() + c.argument.len()).sum()
+        }
+        Turn::ToolResult(r) => r.command.len() + r.output.len(),
+    }
+}
+
+/// Render one transcript turn as a labeled block for `render_for_debug`.
+fn render_turn_for_debug(turn: &Turn) -> String {
+    match turn {
+        Turn::User(text) => format!("[user] {text}\n"),
+        Turn::Assistant(text) => format!("[assistant] {text}\n"),
+        Turn::AssistantToolCalls(calls) => {
+            let mut s = String::from("[assistant tool calls]\n");
+            for c in calls {
+                s.push_str(&format!("  - {} {} (id={})\n", c.name, c.argument, c.id));
+            }
+            s
+        }
+        Turn::ToolResult(r) => {
+            format!("[tool result] {}\n{}\n", r.command, r.output)
+        }
+    }
+}

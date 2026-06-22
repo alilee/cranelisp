@@ -1,6 +1,6 @@
 # Sprint 88: Clean-and-Green Close-out → Agentic-REPL Phase 1 (Advisor MVP)
 
-**Status**: PHASE 5 (Waves 1-3 COMPLETE — Advisor MVP rungs 0-4 done) → Wave 4 / Phase 6 (Wave 1 `5833bd1`, Wave 2 `3696931`, Wave 3 `d1d2e30`)
+**Status**: PHASE 7 CLOSE (awaiting user approval to archive) — commits `5833bd1` / `3696931` / `d1d2e30` / `523eb9b`
 
 **Goal**: Clear the last genuinely-clearable defects on the green base (the exemplar-gating `conj` heap-ADT corruption + the CWD-relative regen write), then open the **agentic-REPL track** — ratify the embedded-agent design (U1–U6), build its LLM-free foundations (module preambles first-class + the dispatch classifier + reverse-query commands), and land the **Phase-1 read-only "grounded advisor" MVP** behind a default-off `agent` feature.
 
@@ -225,4 +225,33 @@ The fine-grained capability sequence for the whole agentic-REPL track (refines t
 
 ## Outcome (Phase 7)
 
-*To be authored at close.*
+**Final state:** `cargo nextest run` (default) **1515/1515, 0 intentional reds**; `--features agent` 31/31 lib + 22/22 e2e; default build provably agent-free (no rig/tokio in the dep tree). Committed in 4 logical checkpoints on `main` (`5833bd1` W1 → `3696931` W2 → `d1d2e30` W3 → `523eb9b` Phase-6 + live fixes); **not pushed**. **The agentic-REPL Phase-1 Advisor MVP is built, tested, and validated live against Anthropic.**
+
+### Delivered
+- **Stage A — green & clear:** **0423** fixed (lib-dir-relative `(mod …)` extraction path + regen annotation spacing); **DEF-2 verified already-resolved** (collateral of S87 `0417` — repro-confirmed, not assumed → 3 green guards, exemplar carve-out retired); FIXME store triaged.
+- **Module preambles first-class** (U2): leading-**comment-block** model (user choice) — `spec/08-modules.md §8.16`; `SymbolTable.module_preamble` field (`cranelisp-types`, cache 8→9); frontend `capture_module_preamble` (Shape-A scan) + int wiring + byte-stable regen re-emit.
+- **Stage B — LLM-free foundations:** **symbol-resolution-aware** dispatch classifier (U1 refined live — known→REPL/§4, unbound→agent), `/ask`, `/refs`·`/tests-for` (default build), agent-prose style frame, `--agent`/`--no-agent`. Feature-OFF byte-identical.
+- **Stage C — Phase-1 Advisor MVP** (default-off `agent` feature): **`rig-core` `CompletionModel`** via a minimal object-safe `AgentModel` membrane (R3, user-accepted); providers anthropic (default) / ollama (local) / stub; `agent_turn` loop, harvester (current-module pin + mentioned-symbols + `module_preamble`), language primer, pull-as-visible-commands (read-only allowlist), Advise mode (propose-not-submit).
+- **Live validation (manual Lane-C, Anthropic Haiku):** rungs 0–4 confirmed — grounded session-aware answers, pull round-trips (`/source`/`/refs` rendered as-typed + fed back), prose-routing. **Two wire-path defects found live + fixed + revert-verified** (tool_use/tool_result pairing; continuation-prompt loop) — the stub couldn't catch them (sits above rig).
+- **Stage D — exemplar adoption:** `vec-push`→`conj`, `num.bits/*`, `digit-to-char`/`repeat-str`/`row-of`·`col-of` reuse; replays green (39/39, byte-identical HTML).
+- **`/context <path>` debug command** (user-requested, in-sprint): dumps the **full assembled next-turn request** (budget · primer · harvested context · tools · transcript · current turn) to a file via the existing `assemble_request` (Principle 7) — **works dormant/offline, no key** (no model call); human-only (not in the pull allowlist). `repl/spec.md §17.11` + §3.1, `[Tested+Neg]`. Default 1516/1516; `--features agent` 33/33 lib + 23/23 e2e.
+- **Phase 6:** agent **env-config documented** (env-based, separate from `Cranelisp.toml`) — `repl/spec.md §17.10` + `src/main.rs` CLI narrative.
+- **U1–U6 ratified** (U5 silent-repair-anything; comment-block preambles; rig-direct backend).
+
+### Deferred (with rationale)
+- **Agentic Phase 2 — S89 (rungs 5–6):** Build mode + Document mode + the pre-flight **validator** (silent-repair-anything per U5). Needs the MVP proven first (now done).
+- **Agentic Phase 3 — S90 (rung 7):** compensation telemetry → push/primer curation, semantic spec search, push-transparency header (U4). **R5 valve** (spec-grep retrieval + telemetry skeleton) deferred — MVP acceptance held without them.
+- **FIXME 0429 — substantially MET:** the rig-wire-path automated test landed (`provider.rs::tests::continuation_request_pairs_tool_use_before_tool_result`). Residual = a one-line `tests/plan/agent-testing-strategy.md §1` doc correction; `/qa` closes at S89 (`target: /qa`; `/sprint` does not delete).
+- **NEW idea — subscription/OAuth provider:** a `claude-oauth` backend (Bearer + `anthropic-beta: oauth-2025-04-20` + refresh) so a Pro/Max subscription could back the agent — surfaced during config setup; future agentic phase, not S88.
+- **Effect-concurrency track, then Phase H** — per the established sequencing. Standing Phase-H carries (0050/0052/0365/0407/0419) + concurrency-track FIXMEs (0408/0424/0425/0426) + ruling-gated (0410/0416) confirmed-deferred.
+
+### Findings (methodology + technical)
+- **The manual Lane-C smoke earned its keep — twice.** A deterministic stub validates plumbing, but the **provider wire-path needs a real-endpoint smoke**: the two defects (tool_use/tool_result pairing; continuation-prompt loop) live below the membrane where the stub structurally can't reach. The rig-trait `MockModel` test (0429) now closes that gap deterministically, and tests are **revert-verified** (proven to go red on the buggy code). Captured in `tests/plan/agent-testing-strategy.md` (Lanes A/C).
+- **Repro-verify before scope (again).** DEF-2 — the user-flagged exemplar-gating defect — did **not** reproduce; it was already fixed by S87 `0417`. Confirmed by swapping the exemplar to `conj` (not assumed). Consistent with the S87 lesson.
+- **Visible-vs-true cause corrected by repro+fix.** `/sprint`'s hypothesis on defect #2 (uncaptured pull output) was wrong; `/dev` empirically showed `run_pull` *did* capture, and the real cause was the prompt-message re-emit. The repro+fix discipline corrected the framing — same pattern as S87's mis-framed defects.
+- **Dispatch: "parseable" is insufficient** (U1 reality-gap, caught Wave 2 by repro-in-code): the discriminator is **symbol resolution**, not reader-acceptance. Validated live.
+- **R3 object-safety:** rig's `CompletionModel` is dyn-incompatible → a minimal one-method `AgentModel` membrane was the forced (user-accepted) realization of "use rig directly"; rig stays the wire boundary one layer below.
+- **Config hygiene:** provider/model/key are env-based, never `Cranelisp.toml` — secrets stay out of version control by construction.
+
+### Architectural-principles check (per `/sprint` close prompt)
+The feature-gate + pluggable-backend discipline (Principle 8 / R3) held throughout; the one deviation (the `AgentModel` membrane) was a forced object-safety reality, recorded and user-accepted — no interim trap. **No new principle proposed.** The durable lesson (a stub above the provider boundary cannot substitute for a real-endpoint wire-path smoke) is a **testing-strategy** finding, already recorded in `tests/plan/agent-testing-strategy.md`, not a candidate architectural principle.

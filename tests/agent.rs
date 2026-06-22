@@ -49,6 +49,24 @@ fn ask_feature_off_prints_not_built_in() {
     );
 }
 
+// spec: repl/spec.md §17 — `/context <path>` on a feature-off build prints the
+// "agent not built in" notice and does not crash, write a file, or evaluate
+// (the debug command's dispatch body is feature-split, mirroring `/ask`).
+#[cfg(not(feature = "agent"))]
+#[test]
+fn context_feature_off_prints_not_built_in() {
+    let out = repl("/context /tmp/should-not-be-written.txt\n");
+    assert!(
+        out.stdout.contains("agent not built in"),
+        "stdout={}",
+        out.stdout
+    );
+    assert!(
+        !std::path::Path::new("/tmp/should-not-be-written.txt").exists(),
+        "feature-off /context must NOT write the file"
+    );
+}
+
 // spec: repl/spec.md §17.9 — with the feature off, input that the refined
 // classifier's Agent arm WOULD divert (a non-bracket parse error) falls back to
 // today's parse-error display (byte-identical fallback); the Agent arm does not
@@ -305,6 +323,41 @@ fn agent_on_form_routes_to_repl() {
         !out.stdout.contains("\u{258c}"),
         "a form must NOT route to the agent, stdout={}",
         out.stdout
+    );
+}
+
+// spec: repl/spec.md §17 — `/context <path>` (feature-ON) dumps the assembled
+// agent request to a file even when the agent is DORMANT (no provider key set):
+// `assemble_request` is pure, so the debug dump needs no API call. The file
+// carries the labeled section headers + the always-on primer, and the
+// confirmation line is printed. Writes a relative path into the per-test tmpdir
+// (the binary's cwd), then reads it back.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_on_context_dumps_request_to_file_dormant() {
+    let cr = Cranelisp::new()
+        .repl()
+        .cli_flag("--agent")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // No CRANELISP_AGENT_PROVIDER / key ⇒ dormant; /context still works.
+        .stdin("(defn ctx-marker-fn [x] (add-i64 x 1))\n/context ctx-dump.txt\n");
+    let out = cr.output();
+    assert!(
+        out.stdout.contains("wrote agent context to ctx-dump.txt"),
+        "the confirmation line must print, stdout={}",
+        out.stdout
+    );
+    let dumped = std::fs::read_to_string(out.tmpdir.join("ctx-dump.txt"))
+        .expect("the /context file must exist");
+    assert!(!dumped.is_empty(), "the dumped context must be non-empty");
+    assert!(dumped.contains("=== SYSTEM PRIMER ==="), "primer header: {dumped}");
+    assert!(dumped.contains("=== HARVESTED CONTEXT ==="), "harvest header");
+    assert!(dumped.contains("=== TRANSCRIPT ==="), "transcript header");
+    assert!(dumped.contains(":Type"), "the real language primer must be present");
+    // The current-module pin in the harvest carries the just-defined fn's source.
+    assert!(
+        dumped.contains("ctx-marker-fn"),
+        "the harvested current-module source must carry the defined fn: {dumped}"
     );
 }
 

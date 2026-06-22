@@ -450,6 +450,7 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | `/tests-for <sym>` | — | List test functions that reference a symbol (reverse query; LLM-free — see §17.6) | 4 | [S88] |
 | `/doc <module>` | `/d` | Read a module's preamble (module-level documentation — see §17.5); `/doc <name>` reads a definition docstring (§3.1, builtins) | 0 | [S88] |
 | `/ask <text>` | — | The explicit agent door — routes `<text>` to the embedded agent **unconditionally**, bypassing the resolution-aware classifier (useful even for a *known* symbol's prose; see §17.1); prints "agent not built in" when the feature is off | 4 | [S88] |
+| `/context <path>` | — | **Debug command** — write the agent's full **assembled** next-turn request (system primer, harvested context, tools, transcript, current turn) to `<path>` as readable text, **without calling the model** (works dormant/offline, no key; see §17.11); human-only, not an agent tool; prints "agent not built in" when the feature is off | 4 | [Tested+Neg tests/agent.rs::context_feature_off_prints_not_built_in, tests/agent.rs::agent_on_context_dumps_request_to_file_dormant] |
 | `/quit` | `/q` | Exit REPL | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
@@ -1980,3 +1981,33 @@ The reachability gates are, per provider: **Anthropic** — a non-empty key *and
 #### 17.10.4 Cross-reference — the first-use disclosure [S88]
 
 Configuration determines **where** data goes, so it is bound to the privacy disclosure (§17.8). The **first** time a live agent would transmit in a session, the REPL presents the first-use disclosure (§17.8.1) naming the **configured endpoint** — i.e. the backend selected by `CRANELISP_AGENT_PROVIDER` and its endpoint. Because **Ollama is local** (`OLLAMA_API_BASE_URL` defaults to `http://localhost:11434`), a turn against an Ollama backend transmits to the local host and **nothing leaves the machine** — the offline escape hatch (§17.8). A turn against the Anthropic provider transmits source excerpts to the external Anthropic endpoint, which is exactly what the §17.8.1 disclosure exists to surface. [S88]
+
+### 17.11 Debugging the agent context — `/context` [Tested+Neg tests/agent.rs::context_feature_off_prints_not_built_in, tests/agent.rs::agent_on_context_dumps_request_to_file_dormant] [S88]
+
+`/context <path>` is a **debug command** for inspecting *what the agent would send the model* — not for invoking it. It writes the agent's **fully assembled next-turn request** — byte-for-byte the grounding, context, and turn structure that an `agent_turn` would transmit on the next turn — to the file at `<path>` as readable text, and **does not call the model**. Its purpose is to let a developer audit the agent's grounding, harvested context, and system primer **offline**, before (or without) ever spending a transmission. [S88]
+
+**What it dumps.** The file contains the assembled request rendered as labelled sections, in **send-order** — the order in which the material is presented to the model: [S88]
+
+```
+=== BUDGET (approx) ===
+=== SYSTEM PRIMER ===
+=== HARVESTED CONTEXT ===
+=== TOOLS (read-only) ===
+=== TRANSCRIPT ===
+=== CURRENT USER TURN ===
+```
+
+- `=== BUDGET (approx) ===` — the approximate token/size budget for the turn. [S88]
+- `=== SYSTEM PRIMER ===` — the agent's system grounding (its role, the introspection vocabulary, the consent model). [S88]
+- `=== HARVESTED CONTEXT ===` — the context the agent harvested from the live session (the in-memory introspection surface and embedded spec excerpts, §17.8) for this turn. [S88]
+- `=== TOOLS (read-only) ===` — the tool surface offered to the model. In the S88 read-only MVP this is the read-only pull allowlist (§17.3); `/context` itself is **not** in it (see below). [S88]
+- `=== TRANSCRIPT ===` — the conversation so far this session. [S88]
+- `=== CURRENT USER TURN ===` — the pending user turn that would be sent next. [S88]
+
+**Works dormant/offline — no model call, no key.** Because `/context` dumps the *assembled* request rather than transmitting it, it functions regardless of provider, reachability, or dormancy (§17.4, §17.10.3): it requires **no API key and contacts no backend**, and a **dormant** agent (built-in but unconfigured) MUST still produce the full dump. This is the entire point — the developer can inspect grounding, harvest, and primer **without** opting in to a transmission. A dormant agent dumping its context does **not** violate "a dormant or absent agent MUST never transmit anything" (§17.4): writing a local file is not a transmission. [S88]
+
+**Human-only debug command — never an agent tool.** `/context` is invoked **only by the human** at the prompt. It is **NOT** in the agent's pull allowlist (§17.3) and the agent **cannot** issue it — `/context` writes a file, which is outside the agent's read-only capability surface (§17.2, §17.8). It does not appear in the `=== TOOLS (read-only) ===` section it dumps. [S88]
+
+**Success and error reporting.** On success the REPL prints a confirmation line naming the path and the number of characters written — e.g. `wrote agent context to <path> (<N> chars)`. If `<path>` cannot be written (e.g. an unwritable directory), the REPL reports a graceful error rather than crashing or panicking. [S88]
+
+**Feature-OFF behavior.** When the binary is built **without** the `agent` feature (§17.10.1), `/context` prints `agent not built in` — identical to `/ask`'s feature-off behavior (§17.1) — and writes nothing. [S88]

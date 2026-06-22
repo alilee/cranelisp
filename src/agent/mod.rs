@@ -277,7 +277,7 @@ impl CompilerSession {
     /// read-only tool allowlist + the user turn. Tool results from prior loop
     /// steps re-enter via the transcript (recorded by `record_tool_result`); there
     /// is no separate feedback channel.
-    fn assemble_request(&self, text: &str) -> AgentRequest {
+    pub(crate) fn assemble_request(&self, text: &str) -> AgentRequest {
         let mentions = crate::agent::harvest::mentions_from_text(text);
         let harvest =
             self.harvest_context(&mentions, crate::agent::harvest::DEFAULT_TOKEN_BUDGET);
@@ -750,6 +750,100 @@ mod tests {
             .iter()
             .any(|t| matches!(t, crate::agent::types::Turn::ToolResult(r) if r.output.contains("refused")));
         assert!(refused, "refusal must be fed back to the model");
+    }
+
+    // spec: repl/spec.md §17 — `/context <path>` dumps the FULL assembled agent
+    // request (exactly what `agent_turn` would send) to a file, reusing the live
+    // `assemble_request` (the primer + the harvested session context + the
+    // transcript). The dump must contain the primer marker AND the harvested
+    // symbol/source (proving it captured the REAL request, not a stub), and have
+    // the labeled section headers. CRITICAL: it works with NO provider configured
+    // (dormant) — `assemble_request` is pure and needs no API key.
+    #[test]
+    fn context_dumps_assembled_request_to_file_when_dormant() {
+        // A session with a defined `f` carrying introspection source, mentioned
+        // in a prior transcript turn — so the harvest pulls f's source in.
+        let mut s = repl_session();
+        let module = s.current_module_path();
+        {
+            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
+            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
+                let entry = ModuleEntry::def(empty_scheme(), DefKind::PrimitiveExtern)
+                    .visibility(Visibility::Public)
+                    .build();
+                table.insert(Symbol::from("f"), entry);
+            }
+        }
+        if let Some(intr) = s.shared.introspection.as_ref() {
+            intr.insert(
+                cranelisp_types::FQSymbol {
+                    module: module.clone(),
+                    symbol: cranelisp_types::Symbol::from("f"),
+                },
+                crate::session_v4::Introspection {
+                    source: Some("(defn f [x] (some-marker-body x))".to_string()),
+                    sexp: None,
+                    expanded: None,
+                    ast: None,
+                    clif_ir: None,
+                    code_size: None,
+                },
+            );
+        }
+        // Dormant agent: enabled but NO provider/model. `/context` must still
+        // succeed (assemble_request is pure).
+        s.agent = Some(crate::agent::provider::build_agent_state(false));
+        assert!(
+            s.agent.as_ref().unwrap().is_dormant(),
+            "the fixture agent must be dormant (no provider) — that is the point"
+        );
+        // Record a transcript turn mentioning `f` so the harvest pulls its source.
+        if let Some(state) = s.agent.as_mut() {
+            state.record_user("show me the source of f");
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ctx.txt");
+        let path_str = path.to_string_lossy().to_string();
+
+        let confirmation = s.handle_context(&path_str);
+        assert!(
+            confirmation.contains("wrote agent context") && confirmation.contains("chars"),
+            "confirmation line: {confirmation}"
+        );
+
+        // The file exists and is non-empty.
+        let dumped = std::fs::read_to_string(&path).expect("the context file must exist");
+        assert!(!dumped.is_empty(), "the dumped context must be non-empty");
+
+        // The three required section headers are present (send-order).
+        assert!(dumped.contains("=== SYSTEM PRIMER ==="), "primer header: {dumped}");
+        assert!(dumped.contains("=== HARVESTED CONTEXT ==="), "harvest header");
+        assert!(dumped.contains("=== TRANSCRIPT ==="), "transcript header");
+
+        // It dumped the REAL assembled request: the primer marker (:Type) AND the
+        // harvested symbol/source (proving harvest ran), AND the transcript turn.
+        assert!(dumped.contains(":Type"), "the real language primer must be present");
+        assert!(
+            dumped.contains("some-marker-body"),
+            "the harvested source of `f` must be present (proves harvest ran): {dumped}"
+        );
+        assert!(
+            dumped.contains("show me the source of f"),
+            "the recorded transcript turn must be present: {dumped}"
+        );
+    }
+
+    // spec: repl/spec.md §17 — `/context <bad/path>` returns a graceful error
+    // line (no panic) when the target is unwritable.
+    #[test]
+    fn context_bad_path_returns_graceful_error() {
+        let s = repl_session();
+        // A path inside a non-existent directory cannot be written.
+        let out = s.handle_context("/nonexistent-dir-xyz/sub/ctx.txt");
+        assert!(out.starts_with("error:"), "expected a graceful error line, got: {out}");
+        // An empty path is a usage hint, not a panic.
+        assert_eq!(s.handle_context(""), "Usage: /context <path>");
     }
 
     // spec: repl/spec.md §17 — a dormant agent (no provider) renders the U6

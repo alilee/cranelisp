@@ -73,6 +73,14 @@ pub(crate) enum ReplCommand<'a> {
     /// `/tests-for <sym>` — reverse-query restricted to test functions
     /// (repl/spec.md §17.6.2, agent.md §9). LLM-free, default build, unconditional.
     TestsFor(&'a str),
+    /// `/context <path>` — debug: dump the assembled agent request (exactly what
+    /// `agent_turn` would send to the model) to `<path>` as readable text
+    /// (repl/spec.md §17). Registered in BOTH builds so the parser table is
+    /// identical; the dispatch body is feature-split — agent-ON serializes the
+    /// live `assemble_request` (no API call, works dormant), agent-OFF prints
+    /// "agent not built in". Human-invoked debug only — NOT in the pull allowlist
+    /// (it writes a file; the agent can never issue it).
+    Context(&'a str),
     Unknown(&'a str),
 }
 
@@ -118,6 +126,7 @@ pub(crate) fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/ask" => ReplCommand::Ask(arg),
         "/refs" => ReplCommand::Refs(arg),
         "/tests-for" => ReplCommand::TestsFor(arg),
+        "/context" => ReplCommand::Context(arg),
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -149,6 +158,7 @@ pub(crate) fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /refs NAME          List definitions whose body references NAME");
     let _ = writeln!(stdout, "  /tests-for NAME     List test functions that reference NAME");
     let _ = writeln!(stdout, "  /ask <text>         Ask the embedded agent (if built in)");
+    let _ = writeln!(stdout, "  /context <path>     Dump the assembled agent request to a file (debug; if built in)");
     let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
     let _ = writeln!(stdout, "  /sh <cmd>       Run a shell command");
 }
@@ -523,6 +533,23 @@ impl CompilerSession {
             ReplCommand::TestsFor(sym) => {
                 CommandResult::Final(self.handle_tests_for(sym))
             }
+            ReplCommand::Context(path) => {
+                // The variant + parse arm are unconditional (identical parser
+                // table); the dispatch BODY is feature-split. Agent-ON dumps the
+                // assembled request (no API call — works dormant). Agent-OFF
+                // mirrors `/ask`. repl/spec.md §17.
+                #[cfg(feature = "agent")]
+                {
+                    CommandResult::Final(self.handle_context(path))
+                }
+                #[cfg(not(feature = "agent"))]
+                {
+                    let _ = path;
+                    CommandResult::Final(
+                        "agent not built in (rebuild with --features agent)".to_string(),
+                    )
+                }
+            }
             ReplCommand::Unknown(cmd) => {
                 CommandResult::Final(format!(
                     "error: unknown command '{cmd}'. Type /help for available commands."
@@ -734,6 +761,68 @@ impl CompilerSession {
         } else {
             output
         }
+    }
+
+    /// `/context <path>` handler (repl/spec.md §17) — a debug tool.
+    ///
+    /// Dumps the FULL assembled agent request — exactly what `agent_turn` would
+    /// send to the model on this turn — to `<path>` as readable labeled text.
+    /// Reuses the existing `assemble_request` (Principle 7 — no re-implemented
+    /// harvesting/primer), so the dump reflects the same primer + harvested
+    /// session context + transcript the model would receive. `assemble_request`
+    /// is PURE — it needs no API key and no reachable provider — so `/context`
+    /// succeeds even when the agent is dormant (that is the point: inspect the
+    /// grounding/harvest without a key). The `<path>` argument is the user-typed
+    /// turn text fed to `assemble_request` so the harvest reflects what would be
+    /// pushed for "ask about <path>"; the rendered request is then written there.
+    ///
+    /// A bad/unwritable path returns a graceful error line — never a panic
+    /// (`src/CLAUDE.md` §Error Handling: no `unwrap`/`expect` in pipeline code).
+    #[cfg(feature = "agent")]
+    pub(crate) fn handle_context(&self, path: &str) -> String {
+        let path = path.trim();
+        if path.is_empty() {
+            return "Usage: /context <path>".to_string();
+        }
+        // Assemble the SAME request a turn would send via the existing
+        // `assemble_request` (Principle 7 — no re-implemented harvest/primer).
+        // Pure — no provider/key needed — so this works regardless of dormancy
+        // (the point of the command: inspect the grounding without an API call).
+        //
+        // There is no pending question, so the inspection drives the harvest off
+        // the conversation so far: the concatenated prior user turns stand in for
+        // the "current turn text", so the dump shows what the NEXT turn building
+        // on this conversation would pull (the names the user has been asking
+        // about). With no transcript yet, the text is empty and the harvest is
+        // the pinned current-module floor alone.
+        let driver = self.agent_context_driver_text();
+        let req = self.assemble_request(&driver);
+        let rendered = req.render_for_debug();
+        match std::fs::write(path, &rendered) {
+            Ok(()) => format!("wrote agent context to {path} ({} chars)", rendered.len()),
+            Err(e) => format!("error: could not write agent context to {path}: {e}"),
+        }
+    }
+
+    /// The mention-driver text for a `/context` dump: the concatenation of the
+    /// prior user turns this session (so the harvest reflects what the user has
+    /// been asking about). Empty when no transcript exists.
+    #[cfg(feature = "agent")]
+    fn agent_context_driver_text(&self) -> String {
+        self.agent
+            .as_ref()
+            .map(|state| {
+                state
+                    .transcript
+                    .iter()
+                    .filter_map(|t| match t {
+                        crate::agent::types::Turn::User(u) => Some(u.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default()
     }
 
     /// `/refs <sym>` handler (repl/spec.md §17.6.1, design/int/agent.md §9).
