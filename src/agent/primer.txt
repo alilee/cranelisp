@@ -35,6 +35,7 @@ Comments start with `;`. Modules are namespaces; a fully-qualified name is
 
   (defn name [params...] body)        ; define a function
   (defn name [params...] :Ret body)   ; with an explicit return-type annotation
+  (defn name ([p] b) ([p q] b))       ; multi-signature: variants dispatched on arg types/arity
   (deftype Name [fields...])          ; product type (single constructor)
   (deftype Name (Ctor1 ...) (Ctor2 ...)) ; sum type (multiple constructors)
   (let [x v y w] body)                ; sequential local bindings
@@ -95,6 +96,16 @@ A recursive function (self-recursion + `if` + bare operators — no `recur`):
     (if (< n 2)
         n
         (+ (fib (- n 1)) (fib (- n 2)))))   ; :: (Fn [Int] Int); (fib 10) = 55
+
+PREFER TAIL RECURSION. Cranelisp guarantees TCO: it optimizes self-recursive
+tail calls into loops (constant stack, no overflow). Put the recursive call in
+TAIL position — the LAST operation, never inside another call's arguments. Tail
+position is: a function body, both `if` branches, a `let`/`do` body, each
+`match` arm — NOT a call's arguments, an `if` condition, or a `let` value. So
+`(+ n (sum-to (- n 1)))` is NOT tail (the call is an arg); use an accumulator
+parameter so the recursive call IS the last operation:
+  (defn sum-to [n acc]                      ; tail-recursive accumulator
+    (if (= n 0) acc (sum-to (- n 1) (+ acc n))))   ; (sum-to 5 0) = 15
 
 A constrained polymorphic function over Num (the constraint comes from using a
 Num operator on a type variable; the inferred scheme carries the `Num` bound):

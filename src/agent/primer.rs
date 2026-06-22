@@ -72,6 +72,43 @@ mod tests {
     }
 
     #[test]
+    fn primer_has_multi_signature_defn_form() {
+        // S89 Phase-6: asked for multi-dispatch, the model proposed two
+        // clashing single-clause `defn`s instead of Cranelisp's real
+        // multi-clause shape (spec/05-definitions.md §5.1.2). The primer must
+        // carry the multi-signature `([params] body)` variant form so the
+        // steering can't silently regress.
+        assert!(
+            LANGUAGE_PRIMER.contains("multi-signature"),
+            "primer must name the multi-signature defn form"
+        );
+        assert!(
+            LANGUAGE_PRIMER.contains("([p] b) ([p q] b)"),
+            "primer must show the multi-clause variant syntax `([params] body)`"
+        );
+    }
+
+    #[test]
+    fn primer_favours_tail_recursion_tco() {
+        // S89 Phase-6: the model wrote a NON-tail-recursive accumulator by
+        // default (recursive call as a call ARGUMENT). Cranelisp guarantees
+        // TCO (spec/12-runtime.md §12.5), so the primer must steer toward the
+        // tail-recursive accumulator form (recursive call in tail position).
+        assert!(
+            LANGUAGE_PRIMER.contains("PREFER TAIL RECURSION"),
+            "primer must steer the model toward tail recursion"
+        );
+        assert!(
+            LANGUAGE_PRIMER.contains("TCO"),
+            "primer must name TCO (tail-call optimization guarantee)"
+        );
+        assert!(
+            LANGUAGE_PRIMER.contains("tail-recursive accumulator"),
+            "primer must carry the canonical tail-recursive accumulator idiom"
+        );
+    }
+
+    #[test]
     fn primer_has_recursion_idiom() {
         // The grounded few-shot recursive example (verified to type-check as
         // `(Fn [Int] Int)`, `(fib 10) = 55`) must be present so the model has
