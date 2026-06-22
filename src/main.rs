@@ -88,10 +88,17 @@ fn main() {
     let _got_flush = got_trace::GotTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
 
-    let (action, project_root, entry_module, settings, agent_enabled) = parse_args();
+    let (action, project_root, entry_module, settings, agent_enabled, auto_accept) = parse_args();
     cranelisp::style::init_color(settings.no_color);
 
-    if let Err(e) = run(action, &project_root, &entry_module, settings, agent_enabled) {
+    if let Err(e) = run(
+        action,
+        &project_root,
+        &entry_module,
+        settings,
+        agent_enabled,
+        auto_accept,
+    ) {
         let entry_file = project_root.join(format!("{entry_module}.cl"));
         eprintln!("{}", format_error(&e, &entry_file));
         flush_traces();
@@ -186,14 +193,16 @@ fn run(
     entry_module_name: &str,
     settings: SessionSettings,
     agent_enabled: bool,
+    auto_accept: bool,
 ) -> Result<(), CranelispError> {
     use std::io::{self, BufRead, Write};
 
-    // `agent_enabled` is consumed by the REPL arm's `s.enable_agent` only under
-    // `#[cfg(feature="agent")]`; feature-off it is an accepted no-op (the
-    // `--agent` flag is still recognised).
+    // `agent_enabled` / `auto_accept` are consumed by the REPL arm's
+    // `s.enable_agent` only under `#[cfg(feature="agent")]`; feature-off they are
+    // accepted no-ops (the `--agent` / `--yes` flags are still recognised, so a
+    // script written for an agent build runs unchanged).
     #[cfg(not(feature = "agent"))]
-    let _ = agent_enabled;
+    let _ = (agent_enabled, auto_accept);
 
     // §2.2: CompilerSession::new(settings, project_root, entry_module_name).
     // Workers are spawned and parked on condvars immediately. S78 §1: the
@@ -257,7 +266,7 @@ fn run(
             // and `agent_enabled` is an accepted no-op (the `--agent` flag is
             // still recognised so a script written for an agent build runs).
             #[cfg(feature = "agent")]
-            s.enable_agent(agent_enabled);
+            s.enable_agent(agent_enabled, auto_accept);
 
             s.print_banner(&mut stdout);
 
@@ -266,7 +275,13 @@ fn run(
             let mut eval_ms: u64 = 0;
             s.write_prompt(&mut stdout, compile_ms, eval_ms);
 
-            for line in stdin.lock().lines() {
+            // Hold the stdin line iterator explicitly (not a `for`) so the agent
+            // confirm-gate (§15.2 step 2) can pull the NEXT line of the SAME stdin
+            // as its `y`/`n` consent answer — the synchronous prompt-read at the
+            // REPL cadence. Feature-off this is byte-identical to a plain
+            // line-loop (no agent path reads it).
+            let mut lines = stdin.lock().lines();
+            while let Some(line) = lines.next() {
                 let line = match line {
                     Ok(l) => l,
                     Err(_) => break,
@@ -291,17 +306,36 @@ fn run(
                 // the `process_commands` path below is byte-identical to today —
                 // the divergence is the `Agent` arm only, which fires solely on
                 // input that today produces a parse-error diagnostic anyway.
-                // `/ask` does NOT route through here — it is a slash command and
-                // flows through `process_commands` like any other.
+                //
+                // §15.2 — `/ask` is ALSO intercepted here (feature-on) so the
+                // Build write gate has the consent line-reader (the next stdin
+                // line). The reader is a `FnConsent` closure over `&mut lines`,
+                // alive only for the agent call, dropped before the loop's next
+                // `lines.next()`. Feature-off `/ask` still flows through
+                // `process_commands` (the dispatch body prints "not built in").
                 #[cfg(feature = "agent")]
-                if let cranelisp::agent::Classify::Agent(text) = s.classify_for_agent(&input) {
-                    s.agent_turn(&text, &mut stdout);
-                    s.sync_watcher();
-                    for msg in s.poll_and_reload() {
-                        let _ = writeln!(stdout, "{msg}");
+                {
+                    let ask_text: Option<String> = input
+                        .strip_prefix("/ask")
+                        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
+                        .map(|r| r.trim().to_string());
+                    let agent_text: Option<String> = match s.classify_for_agent(&input) {
+                        cranelisp::agent::Classify::Agent(text) => Some(text),
+                        _ => None,
+                    };
+                    if let Some(text) = ask_text.or(agent_text) {
+                        let mut consent = cranelisp::agent::types::FnConsent(|| {
+                            lines.next().and_then(|r| r.ok())
+                        });
+                        s.agent_turn(&text, &mut stdout, &mut consent);
+                        drop(consent);
+                        s.sync_watcher();
+                        for msg in s.poll_and_reload() {
+                            let _ = writeln!(stdout, "{msg}");
+                        }
+                        s.write_prompt(&mut stdout, compile_ms, eval_ms);
+                        continue;
                     }
-                    s.write_prompt(&mut stdout, compile_ms, eval_ms);
-                    continue;
                 }
 
                 match s.process_commands(&input, &mut stdout) {
@@ -393,7 +427,7 @@ fn run(
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool) {
+fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool) {
     let args: Vec<String> = std::env::args().collect();
     let mut no_color = false;
     let mut no_cache = false;
@@ -407,6 +441,12 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool) {
     // accepted no-op in both builds; Wave 3 (agent feature) consumes it.
     let mut agent_on = false;
     let mut agent_off = false;
+    // §0.6.2 `--yes` / `-y` autonomous-submit toggle (S89 §20.1). Accepted in
+    // BOTH builds: a no-op on a default / non-agent build (sibling to `--agent`),
+    // and threaded onto `AgentState.auto_accept` when the agent is active. The
+    // `-y` SHORT form must be recognised as a FLAG here, NOT swallowed as the
+    // REPL target (the `-y` false-green trap — it does not start with `--`).
+    let mut yes = false;
     let mut target: Option<String> = None;
     let mut i = 1;
 
@@ -467,12 +507,22 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool) {
                 agent_off = true;
                 i += 1;
             }
+            // §0.6.2 `--yes` (long) / `-y` (short) — accepted-no-op discipline
+            // identical to `--agent` (§20.1). The `-y` arm MUST live here, in the
+            // recognised-flag set, NOT in the `_` target-capture arm below — else
+            // `-y` (which does not start with `--`) is swallowed as the REPL
+            // target and the session runs in a `-y>` context (the false-green
+            // trap the B.5 short-flag test guards).
+            "--yes" | "-y" => {
+                yes = true;
+                i += 1;
+            }
             arg if arg.starts_with("--") => {
                 eprintln!("error: unknown flag: {arg}");
                 eprintln!(
                     "usage: cranelisp [target] [--run | --link] [--no-color] \
                      [--no-cache] [--priority-workers N] [--nice-workers N] \
-                     [--agent | --no-agent]"
+                     [--agent | --no-agent] [--yes]"
                 );
                 process::exit(1);
             }
@@ -518,6 +568,12 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool) {
     // half of opt-in-twice — §6.4). Returned to `run`.
     let agent_enabled = agent_on && !agent_off && matches!(action, Action::Repl);
 
+    // §20.1: `--yes` is meaningful ONLY with an active agent (it auto-answers the
+    // write-consent gate). Off by default; REPL-only (gated by `agent_enabled`,
+    // already Action::Repl). On a default / non-agent build it is a parsed no-op
+    // (this resolves to `false` and the consuming `enable_agent` is `#[cfg]`-gated).
+    let auto_accept = yes && agent_enabled;
+
     // Resolve (project_root, entry_module) per spec §0.5.1.
     let (project_root, entry_module) = resolve_target(target.as_deref());
 
@@ -533,7 +589,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool) {
         run_mode,
     };
 
-    (action, project_root, entry_module, settings, agent_enabled)
+    (action, project_root, entry_module, settings, agent_enabled, auto_accept)
 }
 
 /// Resolve a positional target to (project_root, entry_module) per spec §0.5.1.

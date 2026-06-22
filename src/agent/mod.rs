@@ -189,7 +189,12 @@ impl CompilerSession {
     /// Read-only Advise mode: a proposed `(defn …)` arrives inside the prose and
     /// is SHOWN (framed), never routed to `eval` — the agent has no write path
     /// this wave (the allowlist excludes writes; §3.2, §4.2).
-    pub fn agent_turn(&mut self, text: &str, stdout: &mut impl Write) {
+    pub fn agent_turn(
+        &mut self,
+        text: &str,
+        stdout: &mut impl Write,
+        consent: &mut dyn crate::agent::types::ConsentReader,
+    ) {
         // The agent must be configured (enable_agent ran) AND have a reachable
         // provider. Absent either, render the U6 dormant notice in the frame so
         // the user sees WHY (`agent.md §2.3`, §6.4 opt-in-twice).
@@ -261,7 +266,7 @@ impl CompilerSession {
                         state.record_assistant_tool_calls(calls.clone());
                     }
                     for call in &calls {
-                        let result = self.run_pull(call, stdout);
+                        let result = self.run_pull(call, stdout, consent);
                         if let Some(state) = self.agent.as_mut() {
                             state.record_tool_result(result);
                         }
@@ -501,6 +506,8 @@ mod tests {
             transcript: Vec::new(),
             model: Some(Box::new(stub)),
             provider_label: "stub (test)".to_string(),
+            auto_accept: false,
+            auto_accept_notice_shown: false,
         });
         (s, capture)
     }
@@ -508,7 +515,8 @@ mod tests {
     /// Drive one turn over `text`, discarding rendered output.
     fn drive(s: &mut CompilerSession, text: &str) {
         let mut sink: Vec<u8> = Vec::new();
-        s.agent_turn(text, &mut sink);
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn(text, &mut sink, &mut consent);
     }
 
     // spec: repl/spec.md §17 — every request carries the always-on language
@@ -537,9 +545,11 @@ mod tests {
         let names: Vec<&str> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"source"), "source must be offered: {names:?}");
         assert!(names.contains(&"refs"));
-        // +neg: no write tool leaks into the offered set.
+        // The ONE write tool `submit` is offered (Build mode, §15.1) — always
+        // confirm-gated, so the offer is not a consent loosening.
+        assert!(names.contains(&"submit"), "submit must be offered in Build mode: {names:?}");
+        // +neg: no OTHER write tool leaks into the offered set.
         assert!(!names.contains(&"sh"), "no /sh tool: {names:?}");
-        assert!(!names.contains(&"submit"));
         assert!(!names.iter().any(|n| n.contains("def")), "no def/write tool: {names:?}");
     }
 
@@ -705,6 +715,8 @@ mod tests {
             transcript: Vec::new(),
             model: Some(Box::new(stub)),
             provider_label: "stub (test)".to_string(),
+            auto_accept: false,
+            auto_accept_notice_shown: false,
         });
         drive(&mut s, "show me the source of f");
 
@@ -744,7 +756,8 @@ mod tests {
             ModelResponse::Done("ok".to_string()),
         ]);
         let mut sink: Vec<u8> = Vec::new();
-        s.agent_turn("run a shell command", &mut sink);
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("run a shell command", &mut sink, &mut consent);
         let out = String::from_utf8_lossy(&sink);
         assert!(out.contains("refused"), "a write must be refused: {out}");
         // The refusal turn is recorded as a tool result with a refusal output.
@@ -859,7 +872,8 @@ mod tests {
         let mut s = repl_session();
         s.agent = Some(crate::agent::provider::build_agent_state(false));
         let mut sink: Vec<u8> = Vec::new();
-        s.agent_turn("hello", &mut sink);
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("hello", &mut sink, &mut consent);
         let out = String::from_utf8_lossy(&sink);
         // The prose frame gutter must be present (rendered through agent_prose).
         assert!(out.contains('\u{258c}'), "dormant notice must be framed: {out}");

@@ -144,6 +144,38 @@ mod tests {
         assert_eq!(script[1], ModelResponse::Done("here is the answer".to_string()));
     }
 
+    // S89 Cluster B: `tool: submit <FORM>` parses with the WHOLE rest-of-line
+    // (the form, verbatim, including its inner spaces) as the single argument —
+    // the broken-then-fixed DSL contract (tests/agent.rs). Two consecutive
+    // `tool: submit` lines parse as two ordered ToolCalls (the repair sequence).
+    #[test]
+    fn parses_submit_tool_with_form_argument() {
+        let script = parse_script(
+            "tool: submit (defn double [x] (add-i64 x x)\n\
+             tool: submit (defn double [x] (add-i64 x x))\n\
+             done: defined double for you\n",
+        );
+        assert_eq!(script.len(), 3);
+        match &script[0] {
+            ModelResponse::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "submit");
+                // The whole form (with its spaces) is the argument; line 1 is the
+                // BROKEN form (missing its closing paren).
+                assert_eq!(calls[0].argument, "(defn double [x] (add-i64 x x)");
+            }
+            other => panic!("expected ToolCalls(submit), got {other:?}"),
+        }
+        match &script[1] {
+            ModelResponse::ToolCalls(calls) => {
+                assert_eq!(calls[0].name, "submit");
+                // Line 2 is the CLEAN repaired form.
+                assert_eq!(calls[0].argument, "(defn double [x] (add-i64 x x))");
+            }
+            other => panic!("expected ToolCalls(submit), got {other:?}"),
+        }
+        assert_eq!(script[2], ModelResponse::Done("defined double for you".to_string()));
+    }
+
     #[test]
     fn complete_consumes_script_then_terminates() {
         let mut stub = StubModel::new(vec![ModelResponse::Done("ok".to_string())]);

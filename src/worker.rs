@@ -290,6 +290,67 @@ pub(crate) fn process_cluster_with_staging(
     }
 }
 
+/// The agent Build-mode pre-flight validator (`design/int/agent.md §16.1`,
+/// Cluster B, S89): a **typecheck-only dry-run** that stages the proposed
+/// forms, runs `check_forms` over them, and **always discards** — it NEVER
+/// commits to live (the §16.1 discard-arm-without-commit). Returns `Ok(())`
+/// when the forms parse+typecheck cleanly, `Err(compiler_error)` on **any**
+/// failure (a resolution gap is folded into `Err` too — the validator wants a
+/// *self-contained* clean form, not one that needs FQ-autoload orchestration).
+///
+/// **R3/R4 (binding):** reuses the EXACT build-staging + `check_forms` body of
+/// [`process_cluster_with_staging`] minus `commit_staging_to_live`; `pub(crate)`,
+/// int-internal, no facade/`cranelisp-types` change, no cache bump (the dry-run
+/// never persists). **§20.3 (binding):** takes NO `auto_accept` parameter and
+/// has no read path to it — the `--yes` flag is structurally unreachable from
+/// here, so it can skip CONSENT but never this VALIDATION floor.
+#[cfg(feature = "agent")]
+pub(crate) fn validate_forms_dry_run(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+    module: &ModuleFullPath,
+    working_program: &[TopLevel],
+) -> Result<(), CranelispError> {
+    use cranelisp_typecheck::{check_forms, CheckError, SymbolTableAccess};
+
+    let parsed = top_level_to_parsed_entries(working_program);
+    if parsed.is_empty() {
+        // No checkable forms (e.g. a bare expression that built to nothing) —
+        // treat as "nothing to validate", a clean pass. The submit path's own
+        // `process_commands`→`eval` will still run for real on confirm.
+        return Ok(());
+    }
+
+    let mut staging: crate::code::SessionSymbolTable =
+        cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(module.clone());
+    let mut ctx: SymbolTableAccess<'_, crate::code::Code, ()> =
+        SymbolTableAccess::cluster(symbol_tables, &mut staging, module.clone());
+    let result = check_forms(
+        parsed,
+        &mut ctx,
+        symbol_tables,
+        module_aliases,
+        prelude_fallback,
+    );
+    drop(ctx);
+    // `staging` is dropped at function end on EVERY path — never committed
+    // (the §16.1 discard arm). A failed validation leaves live untouched; a
+    // *clean* validation also discards (it is a dry run — the real commit
+    // happens later through `process_commands`→`eval`, §15.3).
+    match result {
+        Ok(_warnings) => Ok(()),
+        // A resolution gap is a not-yet-clean form for the validator's purpose;
+        // surface it as an error so the repair loop re-prompts (U5 — no
+        // error-classification; any non-Ok triggers repair).
+        Err(CheckError::Gap(gap)) => Err(CranelispError::TypeError {
+            message: format!("unresolved cross-module reference: {gap:?}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }),
+        Err(e) => Err(check_error_to_cranelisp_error(e)),
+    }
+}
+
 /// Drain `staging.symbols` into the live `SymbolTable` for `module` under a
 /// single `DashMap::get_mut` write guard. Per `facades/int.md` invariant 5b
 /// — entries land per-symbol; the drain is committed before this function

@@ -17,8 +17,23 @@
 
 use std::io::Write;
 
-use crate::agent::types::{ToolCallRequest, ToolCallResult, ToolDef};
+use crate::agent::types::{
+    AgentRequest, ConsentReader, ModelResponse, ToolCallRequest, ToolCallResult, ToolDef,
+};
 use crate::session_v4::{CommandResult, CompilerSession};
+
+/// The Build write tool (`design/int/agent.md §15.1`, S89 Cluster B). The ONE
+/// writing tool — it carries a form string (e.g. `(defn double [x] (* x 2))`) as
+/// its argument and is routed, not through the read-only `synthesize_command`
+/// allowlist, but through the confirm-gated `run_submit` write arm (§15.2). This
+/// is the single allowlist widening (§15.1): one new branch at the `run_pull`
+/// head; the read-only floor (`synthesize_command`) is byte-unchanged.
+pub(crate) const SUBMIT_TOOL: &str = "submit";
+
+/// Cap on the silent pre-flight repair loop (`design/int/agent.md §16.3`). On
+/// exhaustion the agent gives up gracefully — it NEVER submits broken code and
+/// never surfaces a raw compiler error (U5, §16.4).
+const MAX_REPAIR_ITERATIONS: usize = 3;
 
 /// The read-only command allowlist (§4.2) — the ONLY tools the agent may emit.
 /// Each entry is `(tool-name, leading-slash command, one-line description)`. The
@@ -47,13 +62,24 @@ const ALLOWLIST: &[(&str, &str)] = &[
 /// Built from the allowlist so the model is told exactly the read-only command
 /// surface — and nothing else.
 pub fn tool_defs() -> Vec<ToolDef> {
-    ALLOWLIST
+    let mut defs: Vec<ToolDef> = ALLOWLIST
         .iter()
         .map(|(name, desc)| ToolDef {
             name: (*name).to_string(),
             description: (*desc).to_string(),
         })
-        .collect()
+        .collect();
+    // The ONE write tool (§15.1, Build mode). It is always offered but always
+    // confirm-gated — the gate, not the offer, is the consent boundary (§15.1):
+    // a `submit` that is not confirmed mutates nothing. Reads stay auto-run; the
+    // read-only `ALLOWLIST` floor above is untouched.
+    defs.push(ToolDef {
+        name: SUBMIT_TOOL.to_string(),
+        description: "Submit a definition to the session (confirm-gated write): \
+                      submit <form>"
+            .to_string(),
+    });
+    defs
 }
 
 /// Is `name` (a bare tool/command word) in the read-only allowlist?
@@ -97,7 +123,16 @@ impl CompilerSession {
         &mut self,
         call: &ToolCallRequest,
         stdout: &mut impl Write,
+        consent: &mut dyn ConsentReader,
     ) -> ToolCallResult {
+        // §15.1 — the SINGLE allowlist widening: a `submit` tool-call routes to
+        // the confirm-gated write arm; everything else falls through to the
+        // read-only `synthesize_command` path verbatim (the read-only floor is
+        // untouched). A non-`submit` write / `/sh` / unknown name still hits the
+        // read-only refusal below WITHOUT any confirm gate (the B.2 floor).
+        if call.name.trim().trim_start_matches('/') == SUBMIT_TOOL {
+            return self.run_submit(call, stdout, consent);
+        }
         match synthesize_command(call) {
             Err(refusal) => {
                 // Render the refusal in normal REPL style (it is deterministic
@@ -146,6 +181,281 @@ impl CompilerSession {
             }
         }
     }
+
+    /// The confirm-gated Build write arm (`design/int/agent.md §15.2`, S89). The
+    /// single write site:
+    ///   1. **Validate + silently repair** the proposed form (§16). The broken
+    ///      intermediate + any compiler error NEVER reach `stdout` — only a clean
+    ///      form proceeds (U5 silent contract). On give-up, render an honest
+    ///      not-submitted notice and feed a declined result back.
+    ///   2. **Render** the (clean) proposed form behind the agent-input prefix
+    ///      (§15.2 step 1) — always shown, even under `--yes` (§20.2).
+    ///   3. **Capture consent**: `--yes` auto-accepts (§20.2, the once-notice
+    ///      fires here); else a blocking `[y/N]` line-read (default-decline).
+    ///   4. **On confirm**, route the form through `process_commands`→`eval`→regen
+    ///      — the SAME staging path a keystroke uses (§15.3, R3: no new eval
+    ///      entry). **On decline**, write nothing; feed a "declined" result back.
+    fn run_submit(
+        &mut self,
+        call: &ToolCallRequest,
+        stdout: &mut impl Write,
+        consent: &mut dyn ConsentReader,
+    ) -> ToolCallResult {
+        // (1) Validate + silently repair. The repair loop runs BEFORE any echo —
+        // "the user structurally cannot see an agent compile failure" (§16.2) is
+        // enforced by where the render call is: render happens only after this
+        // returns Ok(clean_form).
+        let clean = match self.validate_and_repair(&call.argument) {
+            Ok(form) => form,
+            Err(()) => {
+                // Give-up (§16.4): never submit broken code, never surface a raw
+                // compiler error. An honest, framed notice; the turn continues
+                // read-only (degrades to "proposed, not submitted").
+                let _ = write!(
+                    stdout,
+                    "{}",
+                    crate::style::agent_prose(
+                        "I couldn't produce a definition that compiles cleanly here, \
+                         so I did not submit anything."
+                    )
+                );
+                return ToolCallResult {
+                    id: call.id.clone(),
+                    command: format!("(submit gave up: {})", call.name),
+                    output: "submit aborted: could not produce compiling code".to_string(),
+                };
+            }
+        };
+
+        // (2) Render the proposed (clean) form behind the agent-input prefix —
+        // always shown (§15.2 step 1 / §20.2 render-always), pretty-printed via
+        // the SAME printer `/source`/`/sexp` use (Principle 7).
+        let pretty = crate::pretty::pretty_print_str(clean.trim());
+        let _ = writeln!(
+            stdout,
+            "{}{}",
+            crate::agent::render::agent_input_prefix(),
+            pretty.trim_end()
+        );
+
+        // (3) Capture consent. `--yes` short-circuits the prompt-read ONLY (§20.2);
+        // the render above + the commit below are byte-identical either way.
+        let consented = if self.agent_auto_accept() {
+            // §20.4 first-use notice — once per session, before the first
+            // auto-accepted write of either class.
+            self.fire_auto_accept_notice_once(stdout);
+            true
+        } else {
+            let _ = write!(stdout, "submit this definition? [y/N] ");
+            let _ = stdout.flush();
+            match consent.read_consent_line() {
+                Some(line) => {
+                    let a = line.trim().to_ascii_lowercase();
+                    a == "y" || a == "yes"
+                }
+                None => false, // EOF ⇒ decline (the safe default)
+            }
+        };
+
+        if !consented {
+            // §15.2 step 3 — decline: write nothing, feed "declined" back.
+            return ToolCallResult {
+                id: call.id.clone(),
+                command: "(submit declined)".to_string(),
+                output: "the user declined to submit this definition".to_string(),
+            };
+        }
+
+        // (4) Confirm — route through the EXISTING process_commands→eval→regen
+        // staging chain (§15.3, R3). Structurally the same caller `main.rs` is.
+        self.submit_clean_form(&clean, call, stdout)
+    }
+
+    /// Drive the confirmed clean form through `process_commands`→`eval`→regen
+    /// (§15.3). On `Compile(src)` it evals (mirroring `main.rs:315`), renders the
+    /// `:Type name` confirmation unframed (normal REPL output), regenerates the
+    /// backing file on a successful def, and feeds the result back to the model.
+    fn submit_clean_form(
+        &mut self,
+        clean: &str,
+        call: &ToolCallRequest,
+        stdout: &mut impl Write,
+    ) -> ToolCallResult {
+        match self.process_commands(clean, stdout) {
+            CommandResult::Compile(src) => match self.eval(&src) {
+                Ok(Some(result)) => {
+                    let text = self.format_eval_result(&result);
+                    let _ = writeln!(stdout, "{text}");
+                    if result.is_def() {
+                        self.regenerate_backing_file();
+                    }
+                    ToolCallResult {
+                        id: call.id.clone(),
+                        command: format!("submit {clean}"),
+                        output: text,
+                    }
+                }
+                Ok(None) => ToolCallResult {
+                    id: call.id.clone(),
+                    command: format!("submit {clean}"),
+                    output: "(submitted)".to_string(),
+                },
+                // The validator already proved this typechecks; an eval error
+                // here is unexpected, but surface it as a fed-back result (NOT a
+                // crash) rather than swallowing it.
+                Err(e) => ToolCallResult {
+                    id: call.id.clone(),
+                    command: format!("submit {clean}"),
+                    output: format!("submit failed at eval: {e}"),
+                },
+            },
+            // A submit that did not produce a Compile (e.g. blank) — nothing to do.
+            CommandResult::Final(text) => ToolCallResult {
+                id: call.id.clone(),
+                command: format!("submit {clean}"),
+                output: text,
+            },
+            CommandResult::Nothing | CommandResult::Quit => ToolCallResult {
+                id: call.id.clone(),
+                command: format!("submit {clean}"),
+                output: "(submitted)".to_string(),
+            },
+        }
+    }
+
+    /// The silent pre-flight validator + repair loop (`design/int/agent.md §16.2`,
+    /// U5). Stages → checks → DISCARDS the proposed form (`validate_forms_dry_run`,
+    /// §16.1 — never commits). On ANY `Err` (parse OR type — no classification),
+    /// feeds the actual compiler error back to the model and re-prompts SILENTLY
+    /// (the broken text never reaches `stdout`). Capped at `MAX_REPAIR_ITERATIONS`;
+    /// on exhaustion returns `Err(())` (the give-up — §16.4). Returns the FIRST
+    /// form string that validates clean.
+    ///
+    /// §20.3 (binding): takes NO `auto_accept` parameter and has no read path to
+    /// it — the `--yes` flag cannot skip this validation floor.
+    fn validate_and_repair(&mut self, initial_form: &str) -> Result<String, ()> {
+        let mut form = initial_form.to_string();
+        for _ in 0..MAX_REPAIR_ITERATIONS {
+            match self.validate_one_form(&form) {
+                Ok(()) => return Ok(form),
+                Err(compiler_error) => {
+                    // SILENT (§16.2): nothing rendered to the transcript. Record a
+                    // HIDDEN repair turn on the agent state (so the next request
+                    // has context) and re-prompt the model.
+                    let feedback = format!(
+                        "The code you proposed does not compile:\n{compiler_error}\n\
+                         Reply with a corrected `submit` of the SAME definition that compiles."
+                    );
+                    let req = self.assemble_request(&feedback);
+                    if let Some(state) = self.agent.as_mut() {
+                        state.record_user(&feedback);
+                    }
+                    match self.agent_complete_for_repair(&req) {
+                        Some(next) => {
+                            form = next;
+                        }
+                        None => return Err(()), // no model / no extractable form
+                    }
+                }
+            }
+        }
+        Err(())
+    }
+
+    /// Validate one proposed form on staging (parse+expand half via
+    /// `build_program_compat`, typecheck half via `validate_forms_dry_run`),
+    /// always discarding (§16.1). Returns `Ok(())` clean, `Err(message)` on any
+    /// parse OR type failure (U5 — no error-classification branch).
+    fn validate_one_form(&self, form: &str) -> Result<(), String> {
+        // Parse + macro-expand (the frontend half — a parse/expand failure is an
+        // Err here, surfacing "parse OR type" uniformly, §16.1).
+        let sexps = cranelisp_frontend::parse(form).map_err(|e| e.to_string())?;
+        if sexps.is_empty() {
+            return Ok(());
+        }
+        let program = crate::worker::build_program_compat(&sexps).map_err(|e| e.to_string())?;
+        let module = self.current_module_path();
+        crate::worker::validate_forms_dry_run(
+            &self.shared.symbol_tables,
+            &self.shared.module_aliases,
+            &self.shared.prelude_fallback,
+            &module,
+            &program,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Run one repair completion and extract the proposed form from the model's
+    /// response — a `submit` tool-call's argument, or a `(...)` form mined from
+    /// `Done` prose. Returns `None` when no model is reachable or no form can be
+    /// extracted (the loop then gives up). Used ONLY by the silent repair loop.
+    fn agent_complete_for_repair(&mut self, req: &AgentRequest) -> Option<String> {
+        let state = self.agent.as_mut()?;
+        let model = state.model.as_mut()?;
+        match model.complete(req) {
+            Ok(ModelResponse::ToolCalls(calls)) => calls
+                .into_iter()
+                .find(|c| c.name.trim().trim_start_matches('/') == SUBMIT_TOOL)
+                .map(|c| c.argument),
+            Ok(ModelResponse::Done(prose)) => extract_form_from_prose(&prose),
+            Err(_) => None,
+        }
+    }
+
+    /// `--yes` reader (§20.2). Dormant / feature-off ⇒ `false`. Read ONLY at the
+    /// consent-gate site (§15.2 step 2) — NEVER by the validator (§20.3): the
+    /// structural guard that `--yes` skips consent, not validation.
+    pub(crate) fn agent_auto_accept(&self) -> bool {
+        self.agent.as_ref().is_some_and(|a| a.auto_accept)
+    }
+
+    /// Fire the §20.4 first-use autonomy notice once per session (on the first
+    /// auto-accepted write of either class). Check-and-set on `AgentState`.
+    fn fire_auto_accept_notice_once(&mut self, stdout: &mut impl Write) {
+        let should = self
+            .agent
+            .as_ref()
+            .map(|a| !a.auto_accept_notice_shown)
+            .unwrap_or(false);
+        if should {
+            let _ = write!(
+                stdout,
+                "{}",
+                crate::style::agent_prose(
+                    "--yes is on: the agent will now submit definitions WITHOUT asking \
+                     for per-action confirmation. The pre-flight validator still gates \
+                     correctness — only code that compiles cleanly is ever submitted."
+                )
+            );
+            if let Some(state) = self.agent.as_mut() {
+                state.auto_accept_notice_shown = true;
+            }
+        }
+    }
+}
+
+/// Mine the first balanced `(...)` s-expression form out of model prose (a `Done`
+/// reply that carries a definition without a `submit` tool-call). Returns the
+/// substring from the first `(` through its matching `)`, or `None`.
+fn extract_form_from_prose(prose: &str) -> Option<String> {
+    let start = prose.find('(')?;
+    let bytes = prose.as_bytes();
+    let mut depth = 0usize;
+    let mut end = None;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i + 1);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    end.map(|e| prose[start..e].to_string())
 }
 
 #[cfg(test)]
@@ -179,14 +489,19 @@ mod tests {
         assert!(synthesize_command(&call("frobnicate", "x")).is_err());
     }
 
-    // The tool-def set is exactly the allowlist (no writes leak in).
+    // The tool-def set is the read-only allowlist PLUS the one Build write tool
+    // `submit` (§15.1) — and nothing else. `submit` is offered but always
+    // confirm-gated (the gate, not the offer, is the consent boundary); `/sh`
+    // and other writes never leak in.
     #[test]
-    fn tool_defs_are_read_only() {
+    fn tool_defs_are_read_only_plus_submit() {
         let defs = tool_defs();
         assert!(defs.iter().any(|d| d.name == "source"));
         assert!(!defs.iter().any(|d| d.name == "sh"));
-        assert!(!defs.iter().any(|d| d.name == "submit"));
-        assert_eq!(defs.len(), ALLOWLIST.len());
+        // The one write tool is offered (Build mode, §15.1) ...
+        assert!(defs.iter().any(|d| d.name == "submit"));
+        // ... and the set is exactly the read-only allowlist + that one tool.
+        assert_eq!(defs.len(), ALLOWLIST.len() + 1);
     }
 
     // -----------------------------------------------------------------------
@@ -247,7 +562,7 @@ mod tests {
     fn run_pull_source_captures_command_output() {
         let mut s = session_with_defined_f();
         let mut sink: Vec<u8> = Vec::new();
-        let result = s.run_pull(&call("source", "f"), &mut sink);
+        let result = s.run_pull(&call("source", "f"), &mut sink, &mut crate::agent::types::NoConsent);
         // The fed-back content is non-empty and carries the source.
         assert!(!result.output.is_empty(), "tool_result content must not be empty");
         assert!(
@@ -270,12 +585,198 @@ mod tests {
     fn run_pull_info_is_not_empty() {
         let mut s = session_with_defined_f();
         let mut sink: Vec<u8> = Vec::new();
-        let result = s.run_pull(&call("info", "f"), &mut sink);
+        let result = s.run_pull(&call("info", "f"), &mut sink, &mut crate::agent::types::NoConsent);
         assert!(
             !result.output.is_empty(),
             "an /info pull on a defined symbol must carry content, got empty"
         );
         // It is the symbol's name, not a placeholder.
         assert!(result.output.contains('f'), "info content must describe f: {:?}", result.output);
+    }
+
+    // -----------------------------------------------------------------------
+    // S89 Cluster B — write arm, validator, allowlist widening, --yes guard.
+    // -----------------------------------------------------------------------
+
+    use crate::agent::stub::StubModel;
+    use crate::agent::test_support::repl_session;
+    use crate::agent::types::{AgentState, ConsentReader, ModelResponse};
+
+    /// A scripted consent reader: yields its lines in order, then EOF (decline).
+    struct ScriptedConsent(std::vec::IntoIter<String>);
+    impl ScriptedConsent {
+        fn new(lines: &[&str]) -> Self {
+            Self(lines.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter())
+        }
+    }
+    impl ConsentReader for ScriptedConsent {
+        fn read_consent_line(&mut self) -> Option<String> {
+            self.0.next()
+        }
+    }
+
+    /// Wire a session's agent to a stub model (with `auto_accept`), so a write
+    /// turn can drive `run_submit` deterministically with zero network.
+    fn session_with_agent(s: &mut CompilerSession, script: Vec<ModelResponse>, auto_accept: bool) {
+        s.agent = Some(AgentState {
+            transcript: Vec::new(),
+            model: Some(Box::new(StubModel::new(script))),
+            provider_label: "stub (test)".to_string(),
+            auto_accept,
+            auto_accept_notice_shown: false,
+        });
+    }
+
+    fn submit_call(form: &str) -> ToolCallRequest {
+        ToolCallRequest {
+            id: "s1".to_string(),
+            name: "submit".to_string(),
+            argument: form.to_string(),
+        }
+    }
+
+    // §15.1 — the allowlist widening: a `submit` tool-call routes to the
+    // confirm-gated write arm (NOT the read-only refusal). With consent declined
+    // (`n`), nothing is committed and the result reports the decline.
+    #[test]
+    fn submit_routes_to_write_arm_not_refused() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], false);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&["n"]);
+        let result = s.run_pull(&submit_call("(defn idfn [x] x)"), &mut sink, &mut consent);
+        assert!(
+            !result.output.contains("refused"),
+            "submit must route to the write arm, not the read-only refusal: {:?}",
+            result.output
+        );
+        let rendered = String::from_utf8_lossy(&sink);
+        assert!(rendered.contains("[y/N]"), "the confirm gate must prompt: {rendered}");
+        assert!(result.output.contains("declined"), "decline result: {:?}", result.output);
+        assert!(
+            s.lookup_with_prelude_fallback("idfn").is_none(),
+            "declined submit committed nothing"
+        );
+    }
+
+    // §15.4 +neg — a non-read, non-`submit` tool (`/sh`) is STILL refused at
+    // `synthesize_command`, WITHOUT any confirm gate. The floor was EXTENDED
+    // (one write tool, confirm-gated), not loosened.
+    #[test]
+    fn non_submit_write_still_refused() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], false);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&[]);
+        let result = s.run_pull(&call("sh", "echo pwned"), &mut sink, &mut consent);
+        assert!(
+            result.output.contains("refused"),
+            "a non-submit write must be refused: {:?}",
+            result.output
+        );
+        let rendered = String::from_utf8_lossy(&sink);
+        assert!(!rendered.contains("[y/N]"), "no confirm gate for a refused write: {rendered}");
+    }
+
+    // §15.2/§15.3 — a clean submit, confirmed with `y`, commits: the def binds.
+    #[test]
+    fn submit_confirmed_commits_definition() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], false);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&["y"]);
+        let result = s.run_pull(&submit_call("(defn idfn [x] x)"), &mut sink, &mut consent);
+        assert!(
+            s.lookup_with_prelude_fallback("idfn").is_some(),
+            "a confirmed clean submit must bind the definition; result={:?}",
+            result.output
+        );
+    }
+
+    // §16.1 — the validator dry-run DISCARDS: a clean form validated does NOT
+    // leak into live state (only a real submit binds).
+    #[test]
+    fn validate_dry_run_discards_does_not_commit() {
+        let s = repl_session();
+        assert!(s.validate_one_form("(defn ghost [x] x)").is_ok(), "the form is clean");
+        assert!(
+            s.lookup_with_prelude_fallback("ghost").is_none(),
+            "validate_forms_dry_run must NEVER commit to live (§16.1 discard arm)"
+        );
+    }
+
+    // §16.1 — a BROKEN form (unbalanced paren) fails the validator with an Err
+    // (parse OR type — U5; a parse failure surfaces uniformly as Err).
+    #[test]
+    fn validate_broken_form_is_err() {
+        let s = repl_session();
+        assert!(
+            s.validate_one_form("(defn broken [x] (add-i64 x x)").is_err(),
+            "an unbalanced form must fail the validator (silent-repair trigger)"
+        );
+    }
+
+    // §16.2 — broken-then-fixed: the repair loop stages→checks→discards the
+    // broken form, re-prompts the (stub) model, and returns the CLEAN repaired
+    // form. The broken text never escapes.
+    #[test]
+    fn validate_and_repair_returns_clean_after_broken() {
+        let mut s = repl_session();
+        session_with_agent(
+            &mut s,
+            vec![ModelResponse::ToolCalls(vec![submit_call("(defn fixed [x] x)")])],
+            false,
+        );
+        let clean = s
+            .validate_and_repair("(defn fixed [x] x")
+            .expect("repair yields a clean form");
+        assert_eq!(clean.trim(), "(defn fixed [x] x)", "the repaired clean form is returned");
+    }
+
+    // §20.3 (CRITICAL) — `agent_auto_accept()` reads the field ONLY at the consent
+    // site; the VALIDATOR takes no such param and behaves identically regardless
+    // of the flag (proven by validating with auto_accept on).
+    #[test]
+    fn auto_accept_reader_reads_field_validator_unaffected() {
+        let mut s = repl_session();
+        assert!(!s.agent_auto_accept(), "no agent ⇒ auto_accept false");
+        session_with_agent(&mut s, vec![], true);
+        assert!(s.agent_auto_accept(), "the reader must reflect auto_accept=true");
+        // The validator is UNAFFECTED by the flag (no read path — §20.3).
+        assert!(
+            s.validate_one_form("(defn b [x] (add-i64 x x)").is_err(),
+            "broken Err with --yes ON"
+        );
+        assert!(s.validate_one_form("(defn c [x] x)").is_ok());
+        assert!(
+            s.lookup_with_prelude_fallback("c").is_none(),
+            "validation never commits, --yes or not"
+        );
+    }
+
+    // §20.2/§20.4 — under `--yes` the gate auto-accepts WITHOUT a `[y/N]` prompt,
+    // the once-only first-use notice fires, and the clean form commits.
+    #[test]
+    fn yes_auto_accepts_without_prompt_and_fires_notice_once() {
+        let mut s = repl_session();
+        session_with_agent(&mut s, vec![], true);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = ScriptedConsent::new(&[]);
+        let _ = s.run_pull(&submit_call("(defn auto1 [x] x)"), &mut sink, &mut consent);
+        let rendered = String::from_utf8_lossy(&sink);
+        assert!(!rendered.contains("[y/N]"), "no confirm prompt under --yes: {rendered}");
+        assert!(rendered.contains("--yes is on"), "first-use notice must fire: {rendered}");
+        assert!(
+            s.lookup_with_prelude_fallback("auto1").is_some(),
+            "the clean form commits under --yes"
+        );
+        // The notice is once-per-session.
+        let mut sink2: Vec<u8> = Vec::new();
+        let _ = s.run_pull(&submit_call("(defn auto2 [x] x)"), &mut sink2, &mut consent);
+        let rendered2 = String::from_utf8_lossy(&sink2);
+        assert!(
+            !rendered2.contains("--yes is on"),
+            "the notice fires ONCE per session: {rendered2}"
+        );
     }
 }

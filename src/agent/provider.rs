@@ -45,19 +45,39 @@ const MODEL_VAR: &str = "CRANELISP_AGENT_MODEL";
 /// false, or no provider is reachable, the returned state is DORMANT (model
 /// `None`) and `/ask`/the classifier route renders the dormant notice.
 pub fn build_agent_state(enabled: bool) -> AgentState {
+    build_agent_state_with(enabled, false)
+}
+
+/// Build the agent state, threading the resolved `--yes` autonomous-submit
+/// toggle (§20.1) onto `AgentState.auto_accept`. `auto_accept` is meaningful
+/// only with an active agent (it is already `&& agent_enabled` at the `main.rs`
+/// seam, §20.1); a dormant / disabled agent carries it inertly. This is the
+/// single construction site — every returned `AgentState` flows its
+/// `auto_accept` from here (`new_state` seeds the two §20 bits).
+pub fn build_agent_state_with(enabled: bool, auto_accept: bool) -> AgentState {
     if !enabled {
-        return AgentState {
-            transcript: Vec::new(),
-            model: None,
-            provider_label: "disabled (--agent not set)".to_string(),
-        };
+        return new_state(None, "disabled (--agent not set)", auto_accept);
     }
 
     let provider = std::env::var(PROVIDER_VAR).unwrap_or_else(|_| "anthropic".to_string());
-    match provider.as_str() {
+    let state = match provider.as_str() {
         "stub" => build_stub_state(),
         "ollama" => build_ollama_state(),
         _ => build_anthropic_state(),
+    };
+    AgentState { auto_accept, ..state }
+}
+
+/// Construct an `AgentState`, seeding the §20 autonomy bits (`auto_accept` +
+/// the once-only `auto_accept_notice_shown`, which always starts `false`). The
+/// single literal site so the field set cannot drift across providers.
+fn new_state(model: Option<Box<dyn AgentModel>>, label: &str, auto_accept: bool) -> AgentState {
+    AgentState {
+        transcript: Vec::new(),
+        model,
+        provider_label: label.to_string(),
+        auto_accept,
+        auto_accept_notice_shown: false,
     }
 }
 
@@ -74,11 +94,7 @@ fn build_anthropic_state() -> AgentState {
                 Ok(client) => {
                     let model = client.completion_model(model_id);
                     match RigModel::new(model) {
-                        Ok(rig) => AgentState {
-                            transcript: Vec::new(),
-                            model: Some(Box::new(rig)),
-                            provider_label: "anthropic".to_string(),
-                        },
+                        Ok(rig) => new_state(Some(Box::new(rig)), "anthropic", false),
                         Err(_) => dormant("anthropic (async runtime construction failed)"),
                     }
                 }
@@ -101,11 +117,7 @@ fn build_ollama_state() -> AgentState {
                 Ok(client) => {
                     let model = client.completion_model(model_id);
                     match RigModel::new(model) {
-                        Ok(rig) => AgentState {
-                            transcript: Vec::new(),
-                            model: Some(Box::new(rig)),
-                            provider_label: "ollama (local)".to_string(),
-                        },
+                        Ok(rig) => new_state(Some(Box::new(rig)), "ollama (local)", false),
                         Err(_) => dormant("ollama (async runtime construction failed)"),
                     }
                 }
@@ -121,21 +133,13 @@ fn build_ollama_state() -> AgentState {
 /// Loads a scripted-response fixture from `CRANELISP_AGENT_STUB_SCRIPT`.
 fn build_stub_state() -> AgentState {
     match crate::agent::stub::StubModel::from_env() {
-        Ok(stub) => AgentState {
-            transcript: Vec::new(),
-            model: Some(Box::new(stub)),
-            provider_label: "stub (test)".to_string(),
-        },
+        Ok(stub) => new_state(Some(Box::new(stub)), "stub (test)", false),
         Err(reason) => dormant(&format!("stub ({reason})")),
     }
 }
 
 fn dormant(label: &str) -> AgentState {
-    AgentState {
-        transcript: Vec::new(),
-        model: None,
-        provider_label: label.to_string(),
-    }
+    new_state(None, label, false)
 }
 
 /// The rig-backed `AgentModel` impl — the membrane's other half (§6.1). Holds a
@@ -424,9 +428,12 @@ mod tests {
             transcript: Vec::new(),
             model: Some(Box::new(rig)),
             provider_label: "mock (test)".to_string(),
+            auto_accept: false,
+            auto_accept_notice_shown: false,
         });
         let mut sink: Vec<u8> = Vec::new();
-        s.agent_turn("show me the source of f", &mut sink);
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("show me the source of f", &mut sink, &mut consent);
 
         let reqs = captured.lock().unwrap();
         assert_eq!(reqs.len(), 2, "a tool-call turn drives two completion calls");

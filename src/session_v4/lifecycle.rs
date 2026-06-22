@@ -130,8 +130,11 @@ impl CompilerSession {
     /// REPL-only, so this is called from `main.rs`'s REPL arm only. Idempotent
     /// is not required (called once at startup).
     #[cfg(feature = "agent")]
-    pub fn enable_agent(&mut self, enabled: bool) {
-        self.agent = Some(crate::agent::provider::build_agent_state(enabled));
+    pub fn enable_agent(&mut self, enabled: bool, auto_accept: bool) {
+        self.agent = Some(crate::agent::provider::build_agent_state_with(
+            enabled,
+            auto_accept,
+        ));
     }
 
     /// `new` phase (S87 §3.2): build the on-disk `ObjectCache` facade.

@@ -516,7 +516,14 @@ impl CompilerSession {
                 // repl/spec.md §17.1, design/int/agent.md §2.3.
                 #[cfg(feature = "agent")]
                 {
-                    self.agent_turn(text, stdout);
+                    // The REPL loop (`main.rs`) intercepts `/ask` BEFORE
+                    // `process_commands` (feature-on) so the Build confirm-gate
+                    // gets the stdin consent line-reader (§15.2). This arm is the
+                    // fallback for any other caller reaching `/ask` through
+                    // dispatch directly — it has no stdin source, so the gate
+                    // declines by default (`NoConsent`).
+                    let mut consent = crate::agent::types::NoConsent;
+                    self.agent_turn(text, stdout, &mut consent);
                     CommandResult::Nothing
                 }
                 #[cfg(not(feature = "agent"))]

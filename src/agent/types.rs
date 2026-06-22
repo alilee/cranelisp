@@ -138,12 +138,58 @@ pub struct AgentState {
     /// A short human label for the active provider (e.g. "anthropic", "ollama",
     /// "stub") or the dormancy reason, for the U6 disclosure notice.
     pub provider_label: String,
+    /// `--yes` autonomous-submit (§20.1). When true, the write-consent gate
+    /// (`run_submit` step 2, §15.2) auto-accepts WITHOUT a `[y/N]` line-read —
+    /// the policy knob. CRITICAL (§20.3): this bit lives in the CONSENT branch
+    /// only; it is read solely by `agent_auto_accept()` at the gate site and is
+    /// STRUCTURALLY unreachable from the validator (`validate_forms_dry_run`
+    /// takes no `auto_accept` param). `--yes` skips consent, NEVER validation.
+    pub auto_accept: bool,
+    /// Once-per-session flag for the §20.4 first-use notice — fired the first
+    /// time an autonomous (`--yes`) write is auto-accepted, then never again.
+    pub auto_accept_notice_shown: bool,
 }
 
 impl AgentState {
     /// True when no provider is reachable (the dormant / "no key" state — §6.4).
     pub fn is_dormant(&self) -> bool {
         self.model.is_none()
+    }
+}
+
+/// The consent line-read seam for the Build write gate (§15.2 step 2).
+///
+/// `run_submit`'s confirm gate is a synchronous blocking line-read at the REPL
+/// cadence (§15.2 step 2 / BC §6.3 — a prompt boundary, not a new state window).
+/// The production reader (`main.rs`) pulls the next line off the REPL's own stdin
+/// iterator; unit/e2e tests script the answers. Returns `None` at EOF (treated as
+/// a decline). The reader is passed into `agent_turn` so the confirm gate reads
+/// the SAME stdin the REPL loop reads — it never opens a second input handle.
+pub trait ConsentReader {
+    /// Read one line of consent input (without the trailing newline). `None` at
+    /// EOF / no further input — the gate treats that as a decline.
+    fn read_consent_line(&mut self) -> Option<String>;
+}
+
+/// A `ConsentReader` that never yields a line (EOF) — the no-consent reader used
+/// where a write gate cannot be reached (a read-only pull through
+/// `process_commands`). Any confirm gate it backs declines by default.
+pub struct NoConsent;
+
+impl ConsentReader for NoConsent {
+    fn read_consent_line(&mut self) -> Option<String> {
+        None
+    }
+}
+
+/// A `ConsentReader` adapter over any `FnMut() -> Option<String>` — lets
+/// `main.rs` wrap its stdin-lines iterator (and tests wrap a scripted vec)
+/// without a bespoke type each.
+pub struct FnConsent<F: FnMut() -> Option<String>>(pub F);
+
+impl<F: FnMut() -> Option<String>> ConsentReader for FnConsent<F> {
+    fn read_consent_line(&mut self) -> Option<String> {
+        (self.0)()
     }
 }
 
