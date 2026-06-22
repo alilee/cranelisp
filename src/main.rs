@@ -319,9 +319,21 @@ fn run(
                         .strip_prefix("/ask")
                         .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
                         .map(|r| r.trim().to_string());
-                    let agent_text: Option<String> = match s.classify_for_agent(&input) {
-                        cranelisp::agent::Classify::Agent(text) => Some(text),
-                        _ => None,
+                    // §5.3/§7.4 dormant fall-through (arch ruling e3f7d57): the
+                    // `Classify::Agent` route DIVERTS only when the agent is ACTIVE
+                    // (a provider is reachable). Dormant / `--agent` OFF ⇒ the input
+                    // flows through `process_commands`/`eval` exactly as the
+                    // feature-OFF build does (bare-unbound → `eval.rs` undefined-
+                    // symbol introspection; non-paren parse-error → `format_error`).
+                    // The dormant short-circuit inside `agent_turn` stays the guard
+                    // for the explicit `/ask` door ONLY (`ask_text` is unconditional).
+                    let agent_text: Option<String> = if s.agent_is_active() {
+                        match s.classify_for_agent(&input) {
+                            cranelisp::agent::Classify::Agent(text) => Some(text),
+                            _ => None,
+                        }
+                    } else {
+                        None
                     };
                     if let Some(text) = ask_text.or(agent_text) {
                         let mut consent = cranelisp::agent::types::FnConsent(|| {

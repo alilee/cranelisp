@@ -501,18 +501,21 @@ fn agent_on_compound_vector_routes_to_repl() {
 
 // spec: repl/spec.md §17.1 — a bare UNKNOWN symbol (a typo / bare word) routes to
 // the agent (the refined classifier resolves the symbol and finds it unbound).
+// The route fires only when the agent is ACTIVE (arch ruling e3f7d57, §5.3/§7.4:
+// active ⇒ route; dormant ⇒ today's display) — so this drives an ACTIVE stub. The
+// dormant complement (today's undefined-name diagnostic, NO frame) is the now-
+// passing `repl_introspection::bare_primitive_unknown_name_produces_undefined_error_neg`.
 #[cfg(feature = "agent")]
 #[test]
 fn agent_on_bare_unknown_symbol_routes_to_agent() {
-    let out = Cranelisp::new()
-        .repl()
-        .cli_flag("--agent")
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin("lenght\n")
-        .output();
+    let out = stub_repl(
+        "done: that is not a defined symbol\n",
+        PreludeVariant::PrimitivesOnly,
+        "lenght\n",
+    );
     assert!(
         out.stdout.contains("\u{258c}"),
-        "a bare unknown symbol must route to the agent frame, stdout={}",
+        "a bare unknown symbol must route to the ACTIVE agent frame, stdout={}",
         out.stdout
     );
 }
@@ -520,55 +523,55 @@ fn agent_on_bare_unknown_symbol_routes_to_agent() {
 // spec: repl/spec.md §17.1 — multi-word prose parses as a run of bare symbols
 // (Ok), but they do not resolve, so the refined classifier routes it to the
 // agent. This is the U1 gap the refinement closes (was wrongly Repl before).
+// Active-agent route (arch ruling e3f7d57).
 #[cfg(feature = "agent")]
 #[test]
 fn agent_on_prose_routes_to_agent() {
-    let out = Cranelisp::new()
-        .repl()
-        .cli_flag("--agent")
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin("how do I define a function\n")
-        .output();
+    let out = stub_repl(
+        "done: to define a function use defn\n",
+        PreludeVariant::PrimitivesOnly,
+        "how do I define a function\n",
+    );
     assert!(
         out.stdout.contains("\u{258c}"),
-        "multi-word prose must route to the agent frame, stdout={}",
+        "multi-word prose must route to the ACTIVE agent frame, stdout={}",
         out.stdout
     );
 }
 
 // spec: repl/spec.md §17.1 — a buffer mixing a known bare symbol with an unknown
 // one routes to the agent (any-unbound wins). `add-i64` resolves; `frobnicate`
-// does not.
+// does not. Active-agent route (arch ruling e3f7d57).
 #[cfg(feature = "agent")]
 #[test]
 fn agent_on_mixed_known_unknown_routes_to_agent() {
-    let out = Cranelisp::new()
-        .repl()
-        .cli_flag("--agent")
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        .stdin("add-i64 frobnicate\n")
-        .output();
+    let out = stub_repl(
+        "done: frobnicate is not defined\n",
+        PreludeVariant::PrimitivesOnly,
+        "add-i64 frobnicate\n",
+    );
     assert!(
         out.stdout.contains("\u{258c}"),
-        "mixed known+unknown must route to the agent frame, stdout={}",
+        "mixed known+unknown must route to the ACTIVE agent frame, stdout={}",
         out.stdout
     );
 }
 
-// spec: repl/spec.md §17.1 — a non-bracket parse error routes to the agent (the
-// Wave-2 placeholder renders the framed notice). A stray `)` is a genuine parse
-// error the classifier diverts.
+// spec: repl/spec.md §17.1 — a non-bracket parse error routes to the agent when
+// ACTIVE (arch ruling e3f7d57). A stray `)` is a genuine parse error the
+// classifier diverts to a live agent. The dormant complement (today's parse-error
+// diagnostic, NO frame) is the now-passing `repl_negative::parse_error_stray_close`.
 #[cfg(feature = "agent")]
 #[test]
 fn agent_on_parse_error_routes_to_agent() {
-    let out = Cranelisp::new()
-        .repl()
-        .cli_flag("--agent")
-        .stdin(")\n")
-        .output();
+    let out = stub_repl(
+        "done: that looks like a stray close paren\n",
+        PreludeVariant::PrimitivesOnly,
+        ")\n",
+    );
     assert!(
         out.stdout.contains("\u{258c}"),
-        "a non-bracket parse error must route to the agent frame, stdout={}",
+        "a non-bracket parse error must route to the ACTIVE agent frame, stdout={}",
         out.stdout
     );
 }

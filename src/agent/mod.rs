@@ -172,6 +172,19 @@ impl CompilerSession {
             || self.lookup_with_prelude_fallback(name).is_some()
     }
 
+    /// Is the embedded agent ACTIVE — configured AND with a reachable provider
+    /// (`design/arch/repl-embedded-agent.md §5.3/§7.4`, arch ruling e3f7d57)?
+    ///
+    /// The `Classify::Agent` dispatch route at the `main.rs` classifier site is
+    /// gated on this: ACTIVE ⇒ route per U1; dormant (`--agent` OFF, or ON with no
+    /// provider reachable) ⇒ today's deterministic display (the input flows through
+    /// `process_commands`/`eval` exactly as the feature-OFF build does). The
+    /// explicit `/ask` door is NOT gated here — its dormant case renders the U6
+    /// notice via `agent_turn`'s own dormant short-circuit.
+    pub fn agent_is_active(&self) -> bool {
+        self.agent.as_ref().is_some_and(|a| !a.is_dormant())
+    }
+
     /// Take one agent turn over the user's text (`agent.md §3.2`) — the real
     /// model↔tool loop (Wave 3 — Advisor MVP core).
     ///

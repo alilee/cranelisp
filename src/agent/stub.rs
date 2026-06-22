@@ -176,20 +176,19 @@ mod tests {
         assert_eq!(script[2], ModelResponse::Done("defined double for you".to_string()));
     }
 
-    // S89 Cluster C: `tool: set-preamble <MODULE> <TEXT>` / `tool: set-doc
-    // <SYMBOL> <TEXT>` parse with the FIRST token as the target and the REST of
-    // the line (verbatim, including inner spaces) as the text — the same `tool:`
-    // grammar as `submit` (the argument is `<TARGET> <TEXT>`, re-split in
-    // `run_document_edit`). No new keyword: `set-preamble`/`set-doc` are tool
-    // NAMES (the §17.2 discriminator).
+    // S89 Cluster C: `tool: set-preamble <MODULE> <TEXT>` parses with the FIRST
+    // token as the target and the REST of the line (verbatim, including inner
+    // spaces) as the text — the same `tool:` grammar as `submit` (the argument is
+    // `<TARGET> <TEXT>`, re-split in `run_document_edit`). No new keyword:
+    // `set-preamble` is a tool NAME (the §17.2 discriminator). (`set-doc` descoped
+    // — FIXME 0430.)
     #[test]
-    fn parses_set_preamble_and_set_doc_tools() {
+    fn parses_set_preamble_tool() {
         let script = parse_script(
             "tool: set-preamble user Solver core: constraint propagation over a grid.\n\
-             tool: set-doc solve Solve the grid by propagation.\n\
              done: recorded\n",
         );
-        assert_eq!(script.len(), 3);
+        assert_eq!(script.len(), 2);
         match &script[0] {
             ModelResponse::ToolCalls(calls) => {
                 assert_eq!(calls[0].name, "set-preamble");
@@ -200,13 +199,6 @@ mod tests {
                 );
             }
             other => panic!("expected ToolCalls(set-preamble), got {other:?}"),
-        }
-        match &script[1] {
-            ModelResponse::ToolCalls(calls) => {
-                assert_eq!(calls[0].name, "set-doc");
-                assert_eq!(calls[0].argument, "solve Solve the grid by propagation.");
-            }
-            other => panic!("expected ToolCalls(set-doc), got {other:?}"),
         }
     }
 
