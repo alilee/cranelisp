@@ -2227,11 +2227,14 @@ agent-tool allowlist row + the primer topic-name cross-reference) is `/dev (src/
   recursion-tco  …` — the exact set is `/docs`-owned). It MUST also name how to drill in:
   a one-line hint such as `Use /syntax <topic> for detail.` The bare list is the
   **index**, not the content. [S90]
-- **`/syntax <topic>`** — returns that topic's **dense content**: a compact prose
-  explanation plus one or more **verified-compiling** Cranelisp examples. The examples are
-  rendered through the deterministic S-expression pretty-printer (§3.1, §17.13.2) —
-  syntax-highlighted when colour is on, plain-indented under `--no-color` — so a topic's
-  code reads exactly as REPL output does. [S90]
+- **`/syntax <topic>`** — returns that topic's **dense content**: a curated, mixed
+  prose+form reference combining a compact explanation, syntactic **`FORM` templates**
+  (e.g. `(defn name ([params] body) ...)` with `...` and metavariables), and one or more
+  **verified-compiling** Cranelisp `EXAMPLE` lines. The asset is **rendered as authored —
+  deterministic plain text, exactly the bytes shipped in the curated asset**. It is **not**
+  routed through the S-expression pretty-printer: the `FORM` templates are syntactic
+  skeletons, not parseable expressions, so the pretty-printer cannot consume them, and the
+  concrete `EXAMPLE` lines are presented as-authored to preserve their layout. [S90 re-pin]
 - **Unknown topic** — `/syntax <unknown>` MUST NOT error opaquely. It re-prints the
   available-topics list (as bare `/syntax` does) with a short note that the requested topic
   is not one of them — the self-documenting principle: a wrong topic name teaches the right
@@ -2239,18 +2242,29 @@ agent-tool allowlist row + the primer topic-name cross-reference) is `/dev (src/
 
 #### 17.17.2 Output Framing — Reuse Existing Roles, Degrade Cleanly [S90]
 
-`/syntax` is **deterministic REPL output**, not agent prose — it is a static asset read
-off disk, the same category as `/help` or `/list`. Accordingly:
+`/syntax` is **deterministic REPL output**, not agent prose — it is a static curated asset
+read off disk, the same category as `/help` or `/list`. Accordingly:
 
-- It uses the **existing §10.3 palette roles** (the `/list`/`/help` styling family —
-  headings, dim hints, the pretty-printer's syntax highlighting for fenced examples). It
-  introduces **no new colour and no new style role**. It is **not** wrapped in the `▌`
-  agent-prose frame (§17.2) — that frame marks *model output*; `/syntax` content is curated,
-  deterministic, and human-authored. [S90]
+- The topic's content is **emitted verbatim — deterministic plain text, exactly as authored
+  in the curated asset**. It introduces **no new colour and no new style role**, and it does
+  **not** route content through the pretty-printer or apply syntax highlighting to the
+  example/form lines (§17.17.1). The bare-index headings and dim hints MAY use the existing
+  §10.3 palette roles (the `/list`/`/help` family), but no new role is added. It is **not**
+  wrapped in the `▌` agent-prose frame (§17.2) — that frame marks *model output*; `/syntax`
+  content is curated, deterministic, and human-authored. [S90 re-pin]
 - It **degrades under `--no-color`, `NO_COLOR`, or a non-TTY** (§10.1) to clean plain text
-  with **no SGR codes** — the topic list reads as plain names, each topic's examples as
-  plain-indented Lisp. Piped output and the showcase stay legible, exactly as `/list` does.
-  [S90]
+  with **no SGR codes** — the topic list reads as plain names, each topic's content as the
+  authored plain text. Piped output and the showcase stay legible, exactly as `/list` does.
+  Because the topic content is already plain text, `--no-color` and TTY output differ only in
+  any framing (headings/hints), never in the body. [S90 re-pin]
+
+> **Non-normative — possible future enhancement.** Syntax-highlighting the concrete
+> `EXAMPLE` lines (the verified-compiling code) is conceivable later, but is **explicitly
+> out of scope now**: the templated `FORM` lines are not parseable S-expressions, so the
+> pretty-printer cannot render them, and the agent — the primary consumer — needs the dense
+> text, not colour. Any future highlighting would have to discriminate `EXAMPLE` from `FORM`
+> lines and would couple the renderer to the asset's content format; the modest gain does
+> not justify it now. [S90 re-pin]
 
 #### 17.17.3 Dual Use — Human Command and Agent Pull-Tool [S90]
 
@@ -2265,7 +2279,7 @@ same who-typed-what honesty as every other agent pull (§17.12 site 1). Illustra
 user> /ask how do I write a higher-kinded type?
 ▌ Let me check the exact syntax.
 agent> /syntax hkt
-<the hkt topic's dense, pretty-printed content>
+<the hkt topic's dense, plain-text content as authored>
 ▌ So you'd write it like this: ...
 ```
 
