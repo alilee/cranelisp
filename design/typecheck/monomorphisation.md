@@ -743,10 +743,188 @@ this doc's seam scope, noted for coordination.
 
 ---
 
-## 9. Cross-references
+## 9. FIXME 0432 — multi-clause `defn` self-call: the panic→clean-error root fix (S90 R2 layer a)
+
+**Sprint 90, /arch Phase-2 R2(a)** — pulled in as a Pillar-3 prerequisite
+(`design/arch/repl-embedded-agent.md §11.3`, `sprints/SPRINT.md` §"Architecture
+review" Q4). The agentic-REPL's importable-symbol indexer (Pillar 3) typechecks
+**arbitrary reachable library modules** at index time; a `0432`-shaped module would
+**panic-crash the REPL** in the agent's debug build. This section designs the
+**typecheck root fix** (layer a). Layer b — the int-side eval-thread `catch_unwind`
+floor — is `/design (int)`'s, not designed here.
+
+### 9.1 The defect — Face B (the typecheck face)
+
+`design/arch/fixmes/0432-multi-clause-defn-self-call-codegen.md` Face B. An
+**unannotated** multi-clause `defn` whose body recursively self-calls across
+variants:
+
+```lisp
+(defn sum-to ([n] (sum-to n 0))
+             ([n acc] (if (primitives/eq-i64 n 0) acc
+                          (sum-to (primitives/sub-i64 n 1) (primitives/add-i64 acc n)))))
+```
+
+Without annotations the cross-variant self-recursion cannot pin the second
+variant's param types from the first variant's call. The result is a **partial mono
+instance** whose param vector still carries a residual `Type::Var`
+(`[Int, Var(62)]` in the FIXME). It reaches `build_mangled_name`
+(`monomorphise.rs:1004`) and trips the `debug_assert!` at `:1016`:
+
+> `build_mangled_name(sum-to) saw a non-concrete param type (lossy-name hazard …): [Int, Var(62)]`
+
+### 9.2 The two-face divergence — debug panics, release clean-errors
+
+The divergence the FIXME records (REPL → panic; `--run` → clean ambiguous-type
+error) is a **debug-vs-release `debug_assert!` artifact**, and locating it pins the
+seam exactly:
+
+- **The mint runs inside Pass 4** (`pass4_monomorphise` → `monomorphise_call`,
+  `program.rs:1880`). The residual-`Var` param vector is computed at
+  `monomorphise_call` **P1** (`monomorphise.rs:108–117`): `instantiate_and_resolve`
+  leaves a param `Var` unpinned, then `build_mangled_name` is called on it at `:117`.
+- **In a debug build** (`cargo run`/`nextest` — the agent's only build) the `:1016`
+  `debug_assert!` is **live** and fires *inside Pass 4*, **before** the §4 ambiguity
+  backstop is reached → the unwind escapes (REPL has no catch on the eval thread →
+  crash).
+- **In a release build** (`--run`) the `debug_assert!` is **compiled out**; the mint
+  silently produces a lossy mangled name, Pass 4 returns, and the §4 backstop
+  `find_ambiguous_top_level_form` (`program.rs:1913`) catches the residual var at the
+  *finalisation* boundary and raises the clean
+
+  > `ambiguous type; add an annotation to pin the type of the polymorphic value bound in \`sum-to\``
+
+So the clean error **already exists** on the release path; the panic is the debug
+path reaching the mangler tripwire *before* that backstop. **The fix is to move the
+verdict earlier — to the mint seam — so both builds converge on the clean error and
+the mangler is never reached with a non-concrete param.**
+
+### 9.3 The seam — guard `monomorphise_call` P1, before `build_mangled_name`
+
+**The fix is an early concreteness gate at `monomorphise_call` P1, between
+`instantiate_and_resolve` and `build_mangled_name`** (`monomorphise.rs`, after the
+`concrete_param_types` binding at `:111–115`, before `:117`). This is the **only**
+place where a residual-`Var` param vector is handed to the mangler; guarding here is
+necessary and sufficient for Face B.
+
+The gate:
+
+1. After `concrete_param_types` is bound (`:111`), test
+   `concrete_param_types.iter().all(Type::is_concrete)` — the **same predicate** the
+   `:1016` `debug_assert!` tests, lifted from a release-erased assertion to a live
+   `Result`-returning check.
+2. On a **non-concrete** param, return `Err(CranelispError::TypeError { … })` —
+   **not** `Ok(None)` (which means "not a mono target" and would silently skip the
+   instance) and **not** a panic. The error propagates via the existing `?` chain
+   out of `pass4_monomorphise` exactly as the §4 backstop's error does.
+3. `build_mangled_name` is then reached **only** with all-concrete params. Its
+   `:1016` `debug_assert!` stays as a **pure tripwire** for a *future* unrelated
+   spurious-mint site (it should now be unreachable for 0432; keep it — it is the
+   §4.5 "ground-truth tripwire" discipline, Principle 18). The gate is the *clean
+   path*; the assert is the *belt-and-braces backstop* behind it — exactly the
+   two-layer shape §4.5 already establishes for the codegen-reaching ambiguity.
+
+**Why P1 and not the §4 backstop alone.** The §4 backstop fires at the
+*finalisation* boundary, which in release is *after* Pass 4 returns — too late to
+stop the debug `debug_assert!` that fires *during* Pass 4. The §4 backstop is
+position-complete over **top-level value positions**, but the residual-`Var`
+**mono-instance param vector** is an *intermediate Pass-4 artifact*, not a
+top-level value position it scans. The mint seam is where the non-concrete param
+first becomes observable; catching it there is the minimal, on-path fix. (The §4
+backstop remains as the finalisation-boundary guard for the *other* ambiguity
+shapes; this gate is its Pass-4-interior sibling for the mono-mint shape.)
+
+### 9.4 Intended error — converge REPL and `--run` on one message
+
+The gate's error **MUST match the release-path message both faces of the bug already
+converge toward**, so REPL and `--run` produce *identical* diagnostics (the
+convergence the FIXME demands and `s84-concrete-types-ambiguity-ruling` mandates: a
+residual var reaching the mangler is a **clean type error, never a panic**).
+
+- **Message shape** — reuse the established §3.11.1 / `find_ambiguous_top_level_form`
+  wording so the suite's existing ambiguous-type assertions hold and the user sees
+  one consistent diagnostic:
+
+  > `ambiguous type; add an annotation to pin the type of the polymorphic value monomorphised in \`{fn_name}\` (a residual unbound type variable reached a codegen position)`
+
+  This is the **same template** `finalize_mono_codegen_view` (`monomorphise.rs:475`)
+  already raises for the `MonoExpr::from_expr` `NotConcrete::Var` case — i.e. the
+  fix **reuses the existing mono-ambiguity diagnostic**, just fired one step earlier
+  (at the param-vector gate, before mangling) instead of at the body-conversion gate
+  (after mangling, after registration). /dev's choice whether to factor the shared
+  wording into one helper or mirror it; the design intent is **one message, fired at
+  the earliest non-concrete observation**.
+- **Location** — `ErrorLocation::from_span(call_span)` (or the defn span, matching
+  the existing P7 site `:482`) so the user gets a source pointer to the offending
+  self-call / definition. Either is acceptable; `call_span` points at the
+  ambiguity-inducing self-call, which is the more actionable hint.
+- **Error type** — `CranelispError::TypeError` today (matching the §4 backstop and
+  the P7 site); migrates to `CheckError::AmbiguousType` post-FIXME-0098 with the rest
+  of the typecheck error surface. No new error variant.
+
+### 9.5 What this fix is NOT
+
+- **NOT Face A.** Face A (annotated params → codegen `undefined function`) is a
+  **backend/codegen** lowering defect (bare in-body name → mangled variant symbol),
+  owned by `/design (backend)` + `/dev (src/)`. This typecheck fix addresses Face B
+  only. The two faces have different owners; the repros disambiguate (0432 §"Proposed
+  resolution").
+- **NOT a multi-clause inference change.** The fix does **not** attempt to make the
+  unannotated cross-variant self-call *infer* (that would require propagating the
+  first variant's call-shape into the second variant's param types — a real inference
+  extension, out of scope and arguably undesirable: the spec's favour-annotation
+  posture means a public-entry/private-accumulator split *should* annotate). The fix
+  makes the *currently-ambiguous* program **fail cleanly** instead of panicking — it
+  converts a robustness defect into a correct, located type error. The combined
+  multi-sig + tail-recursive idiom compiles once the user annotates (the primer's
+  separated forms, 0432 §"Operational implication").
+- **NOT the §3.11.1 backstop's job.** §4's position-complete scanner is unchanged;
+  this gate is additive and Pass-4-interior. The two coexist — different positions,
+  same predicate family (`is_concrete` here / `is_representation_undetermined` in §4;
+  both reject a residual codegen-reaching `Var`).
+
+### 9.6 Test seams (Phase-5 authoring by /qa + /dev)
+
+- **Unit (typecheck, mandatory per CLAUDE.md "unit test per fix")** — the 0432 Face-B
+  shape (unannotated multi-clause `defn` + cross-variant self-call) checked through
+  `check_forms`/`pass4_monomorphise` asserts `Err(TypeError{ message contains
+  "ambiguous type" … })` — **not** a panic. Pin it in `cranelisp-typecheck` (the
+  S81-close ledger already tracks a 0344-tier unit red; this is its 0432 sibling). The
+  test is **debug-built** (the panic only fired in debug), so it directly guards the
+  divergence: pre-fix it panics, post-fix it returns the clean `Err`.
+- **e2e (warranted — REPL/`--run` convergence)** — the same form via the REPL path and
+  the `--run` path produce the **identical** ambiguous-type error (no panic, no
+  divergence). This is the cross-mode guard the FIXME's two-face divergence demands;
+  it also exercises the agent-validator path once layer b lands. `/qa` owns the
+  narrow repro (0432 `target: /qa → /typecheck`); it converts the existing failing
+  repro from RED to GREEN at the same diagnostic.
+- **Containment interaction** — layer b (int `catch_unwind`) is independently tested by
+  `/design (int)` / `/qa`; this fix removes the *trigger*, so post-fix a 0432-shaped
+  module index produces a clean type error caught as a normal indexing failure rather
+  than exercising the catch. Both land; the catch is the floor, the root fix removes
+  the panic.
+
+### 9.7 Cross-crate impact — zero edges
+
+Confirmed **zero** `cranelisp-types` / `public-api.txt` / cache-schema impact
+(matches `repl-embedded-agent.md §11.8`): the fix is an interior `Result` arm in
+`monomorphise_call`, reusing the existing `CranelispError::TypeError` and the
+existing `Type::is_concrete()` predicate. No new boundary type, no new variant, no
+baseline movement. It is a **behaviour fix inside an existing crate**.
+
+---
+
+## 10. Cross-references
 
 - `design/typecheck/typecheck.md` §9.3 — master-doc monomorphisation pointer (this
   doc is its structural-slot-gate-first elaboration).
+- `design/typecheck/signature-match.md` — the Pillar-3 type-signature match predicate
+  (S90 R6); a sibling typecheck capability that *consumes* the same `cranelisp-types`
+  `Scheme`/`Type` this doc's mono instances produce.
+- `design/arch/repl-embedded-agent.md §11.3` — the 0432 two-layer containment ruling
+  (layer a = this §10 root fix; layer b = int `catch_unwind`).
+- `design/arch/fixmes/0432-multi-clause-defn-self-call-codegen.md` — the defect
+  (Face A backend / Face B this fix).
 - `design/typecheck/traits.md` §6–§7 — constrained polymorphism + the as-built batch
   pipeline this doc completes; the termination Invariant (§8) lands there with the code.
 - `design/arch/principles/20-model-invariants-by-representation.md` — the S84
