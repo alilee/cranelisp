@@ -36,6 +36,90 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 90 Phase 3 — `/qa` test PLAN authored (no `.rs` yet): fluency pillars + 0432 repro + containment floor (/qa, 2026-06-23)
+
+S90 Phase-3 deliverable: `tests/plan/s90-test-plan.md` authored — the fluency
+"reach" half of rung 7 (four pillars) + the pulled-in **0432** defect repro + the
+R2 layer-b containment floor, slotted into the durable 4-lane strategy
+(`agent-testing-strategy.md`). **No `.rs` test files this phase** (they land
+Phase 5, serially). Each row marked **ships-this-sprint** (RED-first → `/dev`
+flips green in change-set) vs **design-pinned** (authored at Pillar-3
+implementation).
+
+**Ships this sprint (RED-first):**
+- **P1 `/syntax`** (8 rows, `tests/repl_introspection.rs` + `tests/agent.rs`) —
+  bare-list topics; topic-content; unknown-topic-relist (no dead end, +neg);
+  **works on the default non-`agent` build** (P1.4 — NOT feature-gated);
+  no-color-clean-degrade (+neg, mirrors S89 §17.13.3 ANSI-leak floor); agent-pull
+  via `tool: syntax`; the cheat-sheet asset parses by the `=== topic: <name> ===`
+  delimiter (P1.7); a sampled `/syntax` example compiles (P1.8 — guards the
+  mechanism; verified-compiling is `/docs`' discipline).
+- **P2 harvest sig-grain** (4 rows, `tests/agent.rs` Lane A via `/context` dump) —
+  name + `:Type` sig + docstring for own defns + prelude + imports; FQ-+neg (no
+  bare `Int`); **budget degrades grain, does NOT silently truncate** (P2.3 +neg,
+  the load-bearing precision guard); no-relist acceptance.
+- **P4 silent log** (5 rows, `tests/agent.rs` + default suite) — with
+  `CRANELISP_AGENT_LOG=<path>` writes JSONL with stable greppable keys (event
+  type/symbol/error-class/repair-iteration-count/module); **SILENT** (transcript
+  byte-identical log-on vs log-off, +neg); **absent on default build** (+neg);
+  graceful on unwritable path (+neg); Lane-B feature-OFF re-verify.
+- **0432 repro (R2, MANDATORY — the durable record)** — 4 rows. Shape: the
+  unannotated multi-clause `defn` cross-variant self-call
+  (`(defn sum-to ([n] (sum-to n 0)) ([n acc] (if (eq-i64 n 0) acc (sum-to …))))`,
+  no prelude). Captures **BOTH faces**: **0432.U** (unit, `cranelisp-typecheck`,
+  `/dev`-authored) — `check_forms`/`pass4_monomorphise` returns clean
+  `Err(TypeError "ambiguous type …")`, **NOT a panic** (debug-built, directly
+  guards the divergence); **0432.E1** (e2e REPL) — clean error, no crash (RED
+  today: REPL panics at `monomorphise.rs:1016`); **0432.E2** (e2e `--run`) — clean
+  error (green-today face, pins the convergence target); **0432.E3** (e2e +neg) —
+  REPL == `--run` identical diagnostic (RED today: divergence). Flip green when
+  `/typecheck`'s `monomorphise_call` P1 concreteness gate
+  (`monomorphisation.md §9.3`) lands. Face A (annotated → codegen undefined-fn) is
+  explicitly OUT (separate backend defect, §9.5). `tests/spec_05_definitions.rs`.
+- **Containment floor (R2 layer b)** — 1 row: **CF.1**
+  (`agent_validator_malformed_form_does_not_crash_repl`, `tests/agent.rs`) — a
+  0432-shaped form fed through the S89 Build validator does NOT crash the REPL.
+  RED on HEAD's un-caught eval-thread `check_forms`; green on the §11.3(b)
+  `catch_unwind` floor (mirrors `src/worker.rs:1483`). Floor + root fix land
+  together; they guard different seams.
+
+**Design-pinned (authored at Pillar-3 implementation — `[S90 — design only]`,
+NOT written failing this phase):**
+- **P3 indexer + `/lib-search` + match** (7 rows) — name-fragment search;
+  exact-shape signature search; no-match-reprompt (+neg); **zero-residue +neg
+  (R4 keystone)** — after a search, `symbol_tables`/`module_aliases`/
+  `prelude_fallback`/introspection unchanged, mirrors
+  `validate_dry_run_discards_does_not_commit`; agent-pull via `tool: lib-search`;
+  **0432-shaped-module-doesn't-crash-the-indexer +neg (§17.19.4 keystone)** —
+  graceful "could not index" note, never a crash; and the `signature_matches`
+  unit suite (`/dev`-owned, `cranelisp-typecheck`) — alpha-equivalence
+  (`(Fn [a] a)`≡`(Fn [b] b)`), bijective renaming (`(Fn [a a] a)`✗`(Fn [a b] a)`),
+  FQ-head (same-name-different-module ADTs ✗), arity structural.
+
+**Phase-5 verification step (conditional repro):** the primer/spec `match`-shape
+contradiction `/docs` flagged (primer paren-grouped `((Circle r) …)` vs spec
+flat-bracket `[(Circle r) … ]`, `spec/06 §6.1`). Run BOTH shapes through the live
+REPL in Phase 5; if the primer's paren-grouped shape doesn't compile → primer
+defect → `/dev (src/)` fixes `primer.txt` + `/qa` authors a repro in
+`tests/spec_06_pattern_matching.rs`; if the spec example itself fails → escalate
+`/spec` + `/qa`.
+
+**Testability seams flagged to `/dev` (file `target: /int` only if absent at
+Phase 5, NOT bridged with internal helpers):** (1) `syntax`/`lib-search` pull-tool
+names in the read-only allowlist; (2) a harvest-budget test lever
+(`CRANELISP_AGENT_HARVEST_BUDGET`-style) so P2.3 degradation is observable e2e;
+(3) an observable "could not validate/index" surfacing so CF.1/P3.6 can assert the
+catch directly (else only the session-survives proxy); (4) `CRANELISP_AGENT_LOG`
+honored in the test subprocess (already provided by the `Cranelisp` builder
+`.env`).
+
+No ledger failure rows added (plan only; the Phase-5 RED-first tests get rows when
+authored). Default suite unchanged at this phase (1520/1520). Provenance:
+`sprints/SPRINT.md §Scope`/§"Architecture review (Phase 2)" (R1–R7),
+`repl-embedded-agent.md §11`, `repl/spec.md §17.17–§17.20`,
+`design/typecheck/{monomorphisation.md §9, signature-match.md}`,
+`user/syntax-cheatsheet-plan.md`, `0432-*.md`.
+
 ### Sprint 89 Phase 3 — `/qa` test PLAN authored (no `.rs` yet) + 0429 §1 correction (/qa, 2026-06-22)
 
 S89 Phase-3 deliverable: `tests/plan/s89-test-plan.md` authored — rungs 5–6 +
