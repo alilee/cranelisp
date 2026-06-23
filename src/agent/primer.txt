@@ -41,12 +41,28 @@ Comments start with `;`. Modules are namespaces; a fully-qualified name is
   (let [x v y w] body)                ; sequential local bindings
   (if cond then else)                 ; conditional
   (fn [params...] body)               ; anonymous function (lambda)
-  (match scrutinee (pattern result) ...) ; pattern match
+  (match scrutinee [pat1 body1 pat2 body2 ...]) ; pattern match (FLAT bracket pairs)
   (defmacro name ([pat] template) ...)   ; macro (multi-clause)
-  (deftrait Name [method-sigs...])    ; trait declaration
-  (impl Trait Type [method-defs...])  ; trait implementation
+  (deftrait Name (method [a] Ret) ...) ; trait declaration (method sigs are direct children)
+  (impl Trait Type (defn method [a] body) ...) ; trait implementation
   (import [module [name ...]])        ; import names from a module
   (export [name ...])                 ; export names from the current module
+
+== Deeper syntax on demand: the `syntax` tool ==
+
+For dense, verified-compiling detail on any core-language construct, PULL the
+`syntax <topic>` tool (it runs `/syntax <topic>` and feeds you the topic's
+content: FORM, EXAMPLE, NOT-this, SPEC cross-link). The available topics are:
+
+  defn defn-multi-sig let if fn match patterns annotations vectors
+  recursion-tco trace types fn-type constraints hkt deftype adt traits impl
+  defmacro modules import export io cond threading do-bind prelude-sugar
+
+These are CORE-LANGUAGE topic names only — for prelude/stdlib symbols in scope,
+read the harvested session context below (do not assume a symbol exists; pull
+`list` / `sig` / `doc` to confirm). (SYNC NOTE for /dev + /docs: this topic-name
+list MUST stay in sync with src/syntax/cheatsheet.txt's `=== topic: <name> ===`
+delimiters — agent.md §22.4.)
 
 == Cranelisp is NOT Clojure or Common Lisp ==
 
@@ -117,16 +133,16 @@ A product type and its constructor:
   (deftype Point [:Int x :Int y])
   (Point 1 2)
 
-A sum type and a match over it:
+A sum type and a match over it (match arms are FLAT pat/body pairs in ONE [ ]):
   (deftype Shape (Circle :Float) (Rect :Float :Float))
   (defn area [s]
     (match s
-      ((Circle r) (* 3.14159 (* r r)))
-      ((Rect w h) (* w h))))
+      [(Circle r) (* 3.14159 (* r r))
+       (Rect w h) (* w h)]))
 
-A trait impl:
-  (deftrait Show [(show [a] String)])
-  (impl Show Int [(show [x] (int-to-string x))])
+A trait + impl (method sigs are DIRECT children — no outer [ ] around them):
+  (deftrait Show (show [a] String))
+  (impl Show Int (defn show [x] (int-to-string x)))
 
 A module with a preamble (the leading `;;` comment block documents intent):
   ;; geometry — points and shapes.

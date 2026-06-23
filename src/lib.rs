@@ -83,6 +83,11 @@ pub(crate) mod repl;
 // FileWatcher extracted to watch.rs; remaining features (save, trace, run-tests) are future work.
 pub(crate) mod save;
 pub(crate) mod scheduler;
+// syntax — the `/syntax` topic-indexed core-language cheat-sheet (design/int/
+// agent.md §22, repl/spec.md §17.17). UNCONDITIONAL (default build) — the
+// command is not feature-gated; only the agent *pull* of it rides the `agent`
+// feature. A pure delimiter parser over the embedded `syntax/cheatsheet.txt`.
+pub(crate) mod syntax;
 pub(crate) mod thread_util;
 // trace — DELETED S76 (FIXME 0256, trace ruling 2026-06-04). The 12
 // `cranelisp_trace_*` bodies + the descriptor-driven formatter now live in

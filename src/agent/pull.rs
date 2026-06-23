@@ -73,6 +73,10 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "tests-for",
         "List test functions referencing a symbol: tests-for <name>",
     ),
+    (
+        "syntax",
+        "Show core-language syntax: bare for topics, syntax <topic> for detail",
+    ),
 ];
 
 /// The tool definitions offered to the model in every request (§4.2, §6.1).

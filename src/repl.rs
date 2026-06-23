@@ -73,6 +73,13 @@ pub(crate) enum ReplCommand<'a> {
     /// `/tests-for <sym>` — reverse-query restricted to test functions
     /// (repl/spec.md §17.6.2, agent.md §9). LLM-free, default build, unconditional.
     TestsFor(&'a str),
+    /// `/syntax [<topic>]` — the topic-indexed core-language cheat-sheet
+    /// (repl/spec.md §17.17, agent.md §22). Bare → the topic-name index;
+    /// `<topic>` → that topic's content; unknown → re-list the index (never a
+    /// dead end). UNCONDITIONAL (default build) — not feature-gated; the static
+    /// cheat-sheet asset is LLM-free. The agent *pull* of it rides the `agent`
+    /// feature (the allowlist row), but the command is always present.
+    Syntax(&'a str),
     /// `/context <path>` — debug: dump the assembled agent request (exactly what
     /// `agent_turn` would send to the model) to `<path>` as readable text
     /// (repl/spec.md §17). Registered in BOTH builds so the parser table is
@@ -126,6 +133,7 @@ pub(crate) fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/ask" => ReplCommand::Ask(arg),
         "/refs" => ReplCommand::Refs(arg),
         "/tests-for" => ReplCommand::TestsFor(arg),
+        "/syntax" => ReplCommand::Syntax(arg),
         "/context" => ReplCommand::Context(arg),
         _ => ReplCommand::Unknown(cmd),
     })
@@ -157,6 +165,7 @@ pub(crate) fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /platform-schema NAME  Print the generated layout schema for a loaded platform");
     let _ = writeln!(stdout, "  /refs NAME          List definitions whose body references NAME");
     let _ = writeln!(stdout, "  /tests-for NAME     List test functions that reference NAME");
+    let _ = writeln!(stdout, "  /syntax [TOPIC]     Core-language syntax cheat-sheet (bare lists topics)");
     let _ = writeln!(stdout, "  /ask <text>         Ask the embedded agent (if built in)");
     let _ = writeln!(stdout, "  /context <path>     Dump the assembled agent request to a file (debug; if built in)");
     let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
@@ -539,6 +548,13 @@ impl CompilerSession {
             }
             ReplCommand::TestsFor(sym) => {
                 CommandResult::Final(self.handle_tests_for(sym))
+            }
+            ReplCommand::Syntax(topic) => {
+                // Deterministic curated output (repl/spec.md §17.17.2) — a free
+                // fn over the static cheat-sheet, NOT agent prose (no `▌` frame)
+                // and NOT styled (the plain-text asset carries no ANSI, so it
+                // degrades cleanly under --no-color with no new style role).
+                CommandResult::Final(crate::syntax::handle_syntax(topic))
             }
             ReplCommand::Context(path) => {
                 // The variant + parse arm are unconditional (identical parser
