@@ -1980,3 +1980,264 @@ fn primer_match_flat_bracket_shape_compiles_e2e() {
         out.stdout
     );
 }
+
+// ---------------------------------------------------------------------------
+// Pillar 2 — harvest at signature grain (S90 Phase 5 Wave 2; §P2 rows P2.1–P2.4)
+//
+// The harvester surfaces in-scope symbols — the current module's own defns +
+// explicit imports + implicit prelude — at name + `:Type` signature + docstring
+// grain, ambiently every turn, WITHOUT the agent first spending a turn on
+// `/list`/`/imports`/`/exports`. This is ambient (no command, nothing extra in
+// the human REPL); it is observable via the `/context <path>` harvest dump
+// (§17.11, the `=== HARVESTED CONTEXT ===` section) — the established read-back
+// seam (mirrors `agent_on_context_dumps_request_to_file_dormant` above and the
+// S89 `agent_document_harvester_reads_edited_preamble_back` read-back).
+//
+// RED on HEAD: harvest is name-only today (no sig grain). `/dev` step 2d
+// enriches `harvest_context` (`src/agent/harvest.rs`) to reuse
+// `repl::format_entry_sig` → `display::format_type_qualified`, flipping these
+// green (design/int/agent.md §23).
+//
+// `/context` is pure (no model call) and works DORMANT, so these run with the
+// agent built-in but unconfigured — no stub, no provider.
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.18 — P2.1: a fresh session defines a docstring'd fn
+// over the PrimitivesOnly prelude (which re-exports `primitives` as bare implicit
+// prelude names — e.g. `add-i64` carries an §A.5 Description docstring). The
+// `/context` dump's in-scope block MUST carry, per symbol, name + its `:Type`
+// signature (FQ type names) + its docstring — for an OWN defn (`inc-doc`), and
+// for an implicit-prelude symbol (`add-i64`). RED on HEAD (harvest is name-only:
+// no signature, no docstring for the export/prelude surface).
+#[cfg(feature = "agent")]
+#[test]
+fn harvest_in_scope_shows_name_sig_docstring() {
+    let cr = Cranelisp::new()
+        .repl()
+        .cli_flag("--agent")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // Dormant: no provider key ⇒ `/context` still dumps (pure assembly).
+        .stdin(
+            "(defn inc-doc \"adds one to its argument\" [x] (add-i64 x 1))\n\
+             /context p2-grain.txt\n",
+        );
+    let out = cr.output();
+    assert!(
+        out.stdout.contains("wrote agent context to p2-grain.txt"),
+        "the /context dump must succeed, stdout={}",
+        out.stdout
+    );
+    let dumped = std::fs::read_to_string(out.tmpdir.join("p2-grain.txt"))
+        .expect("the /context file must exist");
+    // Scope to the NEW `== in scope ==` block (§17.18.2 / design §23.1 header) —
+    // NOT the current-module full-source pin (which always carries `inc-doc`'s
+    // source inline and would satisfy the assertions trivially). The in-scope
+    // block is the read-enrichment Pillar 2 adds. RED on HEAD: the block does not
+    // exist (harvest is name-only), so `nth(1)` yields nothing.
+    let in_scope = dumped
+        .split("== in scope ==")
+        .nth(1)
+        .unwrap_or("")
+        .split("=== TOOLS")
+        .next()
+        .unwrap_or("");
+
+    // --- own defn: name + FQ `:Type` signature + docstring (§17.18.1, 3 facets) ---
+    assert!(
+        in_scope.contains("inc-doc"),
+        "the `== in scope ==` block must name the own defn `inc-doc`, in_scope={in_scope}"
+    );
+    assert!(
+        in_scope.contains("(Fn [primitives/Int] primitives/Int)"),
+        "the `== in scope ==` block must carry `inc-doc`'s FQ `:Type` signature \
+         (the same shape `/sig` renders), in_scope={in_scope}"
+    );
+    assert!(
+        in_scope.contains("adds one to its argument"),
+        "the `== in scope ==` block must carry `inc-doc`'s docstring (§17.18.1 \
+         facet 3), in_scope={in_scope}"
+    );
+
+    // --- implicit-prelude symbol: name + FQ signature (§A.5 description) ---
+    // `add-i64` is NOT in the current module's source, so its signature appearing
+    // proves the in-scope / export-surface arm is enriched (not the source pin).
+    assert!(
+        in_scope.contains("add-i64"),
+        "the `== in scope ==` block must name the implicit-prelude symbol \
+         `add-i64`, in_scope={in_scope}"
+    );
+    assert!(
+        in_scope.contains("(Fn [primitives/Int primitives/Int] primitives/Int)"),
+        "the `== in scope ==` block must carry `add-i64`'s FQ `:Type` signature at \
+         sig grain (not name-only) — the harvest-sourced prelude awareness, \
+         in_scope={in_scope}"
+    );
+}
+
+// spec: repl/spec.md §17.18 — P2.2 (+neg, fully-qualified): the harvested
+// signatures render with the qualified `:Type` form (the `/sig`-grain formatter,
+// `display::format_type_qualified`), NOT bare/unqualified. Assert the qualified
+// shape appears AND that a bare-only `Int` token does not appear in a type
+// position in the in-scope block. RED on HEAD (name-only harvest carries no type
+// at all — neither qualified nor bare).
+#[cfg(feature = "agent")]
+#[test]
+fn harvest_sig_is_fully_qualified_neg() {
+    let cr = Cranelisp::new()
+        .repl()
+        .cli_flag("--agent")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin(
+            "(defn inc-doc \"adds one\" [x] (add-i64 x 1))\n\
+             /context p2-fq.txt\n",
+        );
+    let out = cr.output();
+    let dumped = std::fs::read_to_string(out.tmpdir.join("p2-fq.txt"))
+        .expect("the /context file must exist");
+    // Scope to the NEW `== in scope ==` block — the signature-grain rendering
+    // Pillar 2 adds (RED on HEAD: the block does not exist).
+    let in_scope = dumped
+        .split("== in scope ==")
+        .nth(1)
+        .unwrap_or("")
+        .split("=== TOOLS")
+        .next()
+        .unwrap_or("");
+
+    // Positive: the FQ form appears (the §4.1 FQ-display discipline, same as `/sig`).
+    assert!(
+        in_scope.contains("primitives/Int"),
+        "the `== in scope ==` signature must use FQ type names (`primitives/Int`), \
+         in_scope={in_scope}"
+    );
+    // +neg: no bare `Int` type token leaks into the in-scope block. A bare `Int`
+    // appears only as the tail of `primitives/Int`; stripping every qualified
+    // occurrence must leave no free-standing `Int`.
+    let stripped = in_scope.replace("primitives/Int", "");
+    assert!(
+        !stripped.contains("Int"),
+        "the `== in scope ==` block must NOT carry a bare unqualified `Int` in a \
+         type position — only the FQ `primitives/Int` form (the `/sig`-grain +neg), \
+         in_scope={in_scope}"
+    );
+}
+
+// spec: repl/spec.md §17.18 — P2.3 (+neg, budget degrades GRAIN not membership):
+// under a constrained harvest budget the in-scope block drops signature DETAIL
+// (docstring first, then sig — toward names-only) rather than silently DROPPING
+// a symbol. Assert every in-scope symbol's NAME still appears under the tight
+// budget (the agent must never believe a symbol is absent), while the heavier
+// detail (the docstring) is elided.
+//
+// This row depends on a HARVEST-BUDGET TEST LEVER that does not exist on HEAD:
+// `CRANELISP_AGENT_HARVEST_BUDGET` (an env knob to force a small `char_budget`
+// in-process). 2d OWES this testability seam (flagged in the test plan §
+// "Testability seams" #2 / design/int/agent.md §23.2). RED on HEAD for TWO
+// reasons: (a) harvest is name-only (no grain to degrade), and (b) the budget
+// lever is absent so the constrained budget is not honored. Both resolve when
+// 2d lands the sig-grain enrichment AND the budget env lever.
+#[cfg(feature = "agent")]
+#[test]
+fn harvest_budget_degrades_grain_not_truncates_neg() {
+    let cr = Cranelisp::new()
+        .repl()
+        .cli_flag("--agent")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // Force a tiny harvest budget so degradation (not truncation) is exercised.
+        // 2d testability-seam obligation: this env lever does not exist on HEAD.
+        .env("CRANELISP_AGENT_HARVEST_BUDGET", "200")
+        .stdin(
+            "(defn inc-doc \"a long descriptive docstring that costs many characters \
+             and should be the first grain dropped under budget pressure\" [x] \
+             (add-i64 x 1))\n\
+             /context p2-budget.txt\n",
+        );
+    let out = cr.output();
+    let dumped = std::fs::read_to_string(out.tmpdir.join("p2-budget.txt"))
+        .expect("the /context file must exist");
+    // Scope to the NEW `== in scope ==` block (§17.18.2 / design §23.1 header) —
+    // NOT the whole harvest. The current-module full-source pin (§5.4 floor) is
+    // unchanged and always carries the inline docstring; the budget degrades the
+    // grain of the in-scope block, not the pinned source. RED on HEAD: the
+    // `== in scope ==` block does not exist (harvest is name-only), so `nth(1)`
+    // yields nothing and the name-membership assertions below fail.
+    let in_scope = dumped
+        .split("== in scope ==")
+        .nth(1)
+        .unwrap_or("")
+        .split("=== TOOLS")
+        .next()
+        .unwrap_or("");
+
+    // +neg (membership): the symbol's NAME is still present in the in-scope block
+    // under the tight budget — the in-scope LIST is never silently truncated.
+    assert!(
+        in_scope.contains("inc-doc"),
+        "under a tight harvest budget the in-scope symbol's NAME must still appear \
+         in the `== in scope ==` block — budget degrades GRAIN, not membership \
+         (§17.18.2), in_scope={in_scope}"
+    );
+    assert!(
+        in_scope.contains("add-i64"),
+        "under a tight harvest budget the implicit-prelude symbol's NAME must still \
+         appear in the `== in scope ==` block — no symbol is silently dropped, \
+         in_scope={in_scope}"
+    );
+    // Grain degraded: the heavy docstring detail is elided first (sig→names) in
+    // the in-scope block under the tight budget.
+    assert!(
+        !in_scope.contains("a long descriptive docstring that costs many characters"),
+        "under a tight harvest budget the docstring DETAIL must be dropped from the \
+         `== in scope ==` block (grain degrades sig→names; docstrings go first), \
+         in_scope={in_scope}"
+    );
+}
+
+// spec: repl/spec.md §17.18 — P2.4 (no-relist acceptance): the sig-grain content
+// appears in the AMBIENT harvest without the agent having to issue
+// `/list`/`/exports`/`/imports`. A stub session whose only scripted action is a
+// terminal `done:` (no read-pull) still gets the in-scope signature ambiently:
+// the `/context` dump carries the own-defn's signature even though the
+// transcript contains NO `/list`/`/exports`/`/imports` pull. RED on HEAD (the
+// ambient harvest is name-only, so the agent WOULD have to pull `/list` to learn
+// the signature — the very pre-flight Pillar 2 removes).
+#[cfg(feature = "agent")]
+#[test]
+fn harvest_references_actual_sig_no_relist_needed() {
+    let out = stub_repl(
+        // The model answers directly — no `tool: list` / `tool: exports` pull.
+        "done: inc-doc takes an Int and returns an Int\n",
+        PreludeVariant::PrimitivesOnly,
+        "(defn inc-doc \"adds one\" [x] (add-i64 x 1))\n\
+         /ask what is the signature of inc-doc\n\
+         /context p2-noflight.txt\n",
+    );
+    // The transcript must contain NO pre-flight list/exports/imports pull: the
+    // ambient sig-grain harvest made it unnecessary (the acceptance).
+    assert!(
+        !out.stdout.contains("/list")
+            && !out.stdout.contains("/exports")
+            && !out.stdout.contains("/imports"),
+        "the agent must answer from the AMBIENT harvest grain — no `/list`/\
+         `/exports`/`/imports` pre-flight pull in the transcript (§17.18.2 \
+         acceptance), stdout={}",
+        out.stdout
+    );
+    // And the ambient harvest actually carried the signature (so the no-pull
+    // answer was grounded, not guessed): the /context dump shows the sig grain.
+    let dumped = std::fs::read_to_string(out.tmpdir.join("p2-noflight.txt"))
+        .expect("the /context file must exist");
+    let in_scope = dumped
+        .split("== in scope ==")
+        .nth(1)
+        .unwrap_or("")
+        .split("=== TOOLS")
+        .next()
+        .unwrap_or("");
+    assert!(
+        in_scope.contains("inc-doc")
+            && in_scope.contains("(Fn [primitives/Int] primitives/Int)"),
+        "the ambient `== in scope ==` harvest must carry `inc-doc`'s actual \
+         signature so the agent never needs to relist (§17.18.2), in_scope={in_scope}"
+    );
+}

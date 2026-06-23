@@ -508,3 +508,67 @@ Environment-dependent; untouched by this step.
 No plan-row shifts (the 8 P1 rows landed exactly as planned); the primer-shape
 repros are the SPRINT.md-Notes Wave-1 fold-in (not a new §P1 row). No FIXME filed
 (seam #1 is already named in §"Testability seams" and re-confirmed above).
+
+---
+
+## Execution note — Phase 5 Wave 2 step 2q (`/qa`, 2026-06-23)
+
+Pillar-2 (§P2) tests authored RED-first in `tests/agent.rs` (Lane A,
+`--features agent`). The `.rs` rows landed; `/dev` step 2d enriches
+`harvest_context` (`src/agent/harvest.rs`) to flip them green.
+
+**P2 rows authored (4/4), all observed via the `/context` dump's new
+`== in scope ==` block:**
+
+- `harvest_in_scope_shows_name_sig_docstring` (P2.1) — own defn (`inc-doc`,
+  docstring'd) + implicit-prelude symbol (`add-i64`) each carry name + FQ `:Type`
+  signature + docstring in the `== in scope ==` block. The `add-i64` signature
+  is the discriminating assertion (it is NOT in the current-module source pin, so
+  its presence proves the export-surface arm is enriched, not the §5.4 source
+  floor).
+- `harvest_sig_is_fully_qualified_neg` (P2.2, +neg) — the in-scope signature uses
+  the FQ `primitives/Int` form; the +neg strips every `primitives/Int` and asserts
+  no bare `Int` survives in a type position (the `/sig`-grain FQ-display +neg).
+- `harvest_budget_degrades_grain_not_truncates_neg` (P2.3, +neg) — under a tight
+  budget the `== in scope ==` block keeps every symbol NAME (`inc-doc`, `add-i64`)
+  while eliding the docstring DETAIL (grain degrades sig→names, never silent
+  membership truncation).
+- `harvest_references_actual_sig_no_relist_needed` (P2.4) — a stub session whose
+  model answers directly (no `tool: list`/`exports`) asserts the transcript carries
+  NO `/list`/`/exports`/`/imports` pre-flight pull AND the ambient `== in scope ==`
+  harvest carries `inc-doc`'s actual signature (so the no-pull answer is grounded).
+
+All four scope their grain assertions to the new `== in scope ==` block header
+(`repl/spec.md §17.18.2` / design/int/agent.md §23.1) — deliberately NOT the
+whole `=== HARVESTED CONTEXT ===` (which always carries the current-module
+full-source pin and would satisfy the own-defn assertions trivially). RED on HEAD
+because the `== in scope ==` block does not exist (harvest is name-only): the
+`split("== in scope ==").nth(1)` yields nothing, so every grain + name assertion
+fails.
+
+**Confirmed RED count.** `cargo nextest run --features agent --test agent`
+(`--no-fail-fast`, agent env unset so the dormant precondition holds — see the
+Wave-1 note re `agent_on_no_provider_is_dormant`): **50 tests run, 46 passed, 4
+failed** — the 4 failures are exactly the new P2 rows above; no pre-existing
+agent-lane test regressed. Default `cargo nextest run`: **1539/1539, 0 failures**
+— the P2 rows are `#[cfg(feature = "agent")]` and compile out of the default
+build, so the Wave-1 default count (1539/0) is undisturbed.
+`python3 tests/plan/spec_link_check.py --scope agent.rs` clean (55/55 OK, every P2
+row cites `repl/spec.md §17.18`).
+
+**Testability seam owed by 2d (CONFIRMED at authoring — test plan §"Testability
+seams" #2 / design/int/agent.md §23.2).** P2.3 sets
+`CRANELISP_AGENT_HARVEST_BUDGET=200` to force a small in-process `char_budget` so
+budget-degrades-GRAIN-not-membership is observable through the `/context` dump.
+**This env lever does not exist on HEAD** — P2.3 is RED partly because the lever is
+absent (and partly because there is no in-scope block to degrade). 2d must add the
+lever (a sibling to the §17.10 agent env surface) alongside the sig-grain
+enrichment, or P2.3 cannot go green even once the in-scope block exists. The other
+three P2 rows need only the §23.1 in-scope-block enrichment (the existing
+`/context` dump seam already surfaces it — no new lever). No FIXME filed (the seam
+is already named in §"Testability seams" #2 and re-confirmed here; file
+`target: /int` only if 2d finds the lever genuinely cannot be wired).
+
+No plan-row shifts (the 4 P2 rows landed exactly as planned); no ledger entry
+(ship-this-sprint RED-first guards are tracked here, not in the carry-forward
+failure ledger).
