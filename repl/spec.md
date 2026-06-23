@@ -462,6 +462,8 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | `/doc <module>` | `/d` | Read a module's preamble (module-level documentation — see §17.5); `/doc <name>` reads a definition docstring (§3.1, builtins) | 0 | [S88] |
 | `/ask <text>` | — | The explicit agent door — routes `<text>` to the embedded agent **unconditionally**, bypassing the resolution-aware classifier (useful even for a *known* symbol's prose; see §17.1); prints "agent not built in" when the feature is off | 4 | [S88] |
 | `/context <path>` | — | **Debug command** — write the agent's full **assembled** next-turn request (system primer, harvested context, tools, transcript, current turn) to `<path>` as readable text, **without calling the model** (works dormant/offline, no key; see §17.11); human-only, not an agent tool; prints "agent not built in" when the feature is off | 4 | [Tested+Neg tests/agent.rs::context_feature_off_prints_not_built_in, tests/agent.rs::agent_on_context_dumps_request_to_file_dormant] |
+| `/syntax [topic]` | — | Core-language syntax cheat-sheet — bare `/syntax` lists topics, `/syntax <topic>` shows that topic's dense, verified-compiling content (see §17.17); a human REPL command **and** an agent pull-tool; LLM-free (a static curated asset, works with the agent absent) | 4 | [S90] |
+| `/lib-search <query>` | — | **Design-pinned S90, implemented later** — search **importable-but-unimported** library symbols by name fragment and/or type signature (see §17.19); human command + agent pull-tool; LLM-free | 4 | [S90 — design only] |
 | `/quit` | `/q` | Exit REPL | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
@@ -1948,7 +1950,10 @@ This section is the **complete** set of additive agent requirements on the REPL 
 
 - the `/ask`, `/refs`, `/tests-for` command rows and the `/doc <module>` overload (§3.1);
 - the `--agent` / `--no-agent` flags (§0.6.1) and (S89) the `--yes` / `-y` flag (§0.6.2);
-- the "Agent prose frame" style role and (S89) the "Agent-input prompt" style role (§10.3).
+- the "Agent prose frame" style role and (S89) the "Agent-input prompt" style role (§10.3);
+- (S90) the `/syntax` command row (§3.1, §17.17) and the `/lib-search` command row (§3.1, §17.19, *design-pinned*) — both reusing existing §10.3 roles, **no new style role**.
+
+The **S90** additions (§17.17–§17.20 — the fluency pillars) introduce **no new style role** and (apart from the two command rows above) stay *inside* the agent surface: `/syntax` (§17.17) is an LLM-free static-asset command that also serves as an agent pull-tool; the signature-grain harvest (§17.18) is ambient agent context with **no command and nothing extra in the REPL**; `/lib-search` (§17.19) is design-pinned-now / implemented-later (gated on the FIXME-0432 fix per §11.5); and the silent agent log (§17.20) is an env-opt-in (`CRANELISP_AGENT_LOG`), feature-gated, off-by-default file sink that produces **nothing extra in the REPL**. Feature-off, none of the four exists (the harvest, the log, and `/lib-search`'s index require the agent; `/syntax` is the lone LLM-free one and works in the default build). [S90]
 
 The **S89** additions (§17.12–§17.16) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14), Document consultative edit (§17.15), and the `--yes` auto-accept (§17.14.5 / §17.15.2a) + autonomous-submit first-use notice (§17.16) only fire when the live agent proposes a write. `--yes` (§0.6.2) is, like `--agent`, a no-op on default builds and when no agent is active. None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so §1–§16 stay byte-identical. [S89]
 
@@ -2195,3 +2200,330 @@ Illustrative wording (an implementation MAY reword, but MUST cover every element
 ```
 
 An implementation MAY additionally require an explicit per-session acknowledgement before the first autonomous write; if it does, declining MUST fall back to the per-action confirm/consultative gates (§17.14.1 / §17.15.1) for the rest of the session (i.e. behave as if `--yes` were off). This disclosure is **distinct from** the §17.8.1 transmit disclosure — that one names *what leaves the machine*; this one names *that the agent acts without asking*. Both may fire in the same session (transmit first, then autonomous-write). [S89]
+
+### 17.17 The `/syntax` Cheat-Sheet Command — Pillar 1 [S90]
+
+S88/S89 made the agent *act*; the S90 fluency phase makes it *reach* for supplemental
+detail rather than guess. The first reach is **`/syntax`** — a topic-indexed,
+token-dense, **verified-compiling** reference for the **core language syntax**, surfaced
+as a REPL command that is useful to **both the human at the prompt and the agent**
+(the self-documenting-REPL principle, root `CLAUDE.md` §"Design Principles", turned toward
+syntax discovery). It is the curated, higher-precision replacement for fuzzy spec-grep
+(`design/arch/repl-embedded-agent.md §11` R7; `sprints/SPRINT.md §Pillar 1`). [S90]
+
+**Ownership boundary (R7 — do not author content here).** This section specifies the
+**command UX only**. The cheat-sheet **content** — the topic taxonomy and each topic's
+verified-compiling examples — is **`/docs`-owned** (authored from `spec/`, validated by
+`/spec`), shipped as a static `include_str!` asset (sibling to `primer.txt`,
+`src/agent/`). The command-wiring (the `/syntax` `ReplCommand` variant + dispatch +
+agent-tool allowlist row + the primer topic-name cross-reference) is `/dev (src/)`-owned.
+`/syntax` **references** the topic vocabulary; it does **not** define it. [S90]
+
+#### 17.17.1 The Two Forms — Bare List, Topic Detail [S90]
+
+- **`/syntax` (bare)** — lists the **available topic names**, so a reader (human or agent)
+  learns the vocabulary it can pull on. The output is a plain, scannable list of topic
+  names (e.g. `hkt  defn-multi-sig  cond  match  traits  modules  annotations  let
+  recursion-tco  …` — the exact set is `/docs`-owned). It MUST also name how to drill in:
+  a one-line hint such as `Use /syntax <topic> for detail.` The bare list is the
+  **index**, not the content. [S90]
+- **`/syntax <topic>`** — returns that topic's **dense content**: a compact prose
+  explanation plus one or more **verified-compiling** Cranelisp examples. The examples are
+  rendered through the deterministic S-expression pretty-printer (§3.1, §17.13.2) —
+  syntax-highlighted when colour is on, plain-indented under `--no-color` — so a topic's
+  code reads exactly as REPL output does. [S90]
+- **Unknown topic** — `/syntax <unknown>` MUST NOT error opaquely. It re-prints the
+  available-topics list (as bare `/syntax` does) with a short note that the requested topic
+  is not one of them — the self-documenting principle: a wrong topic name teaches the right
+  vocabulary, never a dead end. [S90]
+
+#### 17.17.2 Output Framing — Reuse Existing Roles, Degrade Cleanly [S90]
+
+`/syntax` is **deterministic REPL output**, not agent prose — it is a static asset read
+off disk, the same category as `/help` or `/list`. Accordingly:
+
+- It uses the **existing §10.3 palette roles** (the `/list`/`/help` styling family —
+  headings, dim hints, the pretty-printer's syntax highlighting for fenced examples). It
+  introduces **no new colour and no new style role**. It is **not** wrapped in the `▌`
+  agent-prose frame (§17.2) — that frame marks *model output*; `/syntax` content is curated,
+  deterministic, and human-authored. [S90]
+- It **degrades under `--no-color`, `NO_COLOR`, or a non-TTY** (§10.1) to clean plain text
+  with **no SGR codes** — the topic list reads as plain names, each topic's examples as
+  plain-indented Lisp. Piped output and the showcase stay legible, exactly as `/list` does.
+  [S90]
+
+#### 17.17.3 Dual Use — Human Command and Agent Pull-Tool [S90]
+
+`/syntax` is in the agent's **read-only pull allowlist** (§17.3) — the agent issues
+`/syntax <topic>` to ground itself on a syntax point it does not know, exactly as it pulls
+`/source` or `/info`. When the agent pulls it, the issued command line carries the
+**`agent>` agent-input prompt** (§17.12) and its result renders **unframed** below — the
+same who-typed-what honesty as every other agent pull (§17.12 site 1). Illustratively
+(colour elided):
+
+```
+user> /ask how do I write a higher-kinded type?
+▌ Let me check the exact syntax.
+agent> /syntax hkt
+<the hkt topic's dense, pretty-printed content>
+▌ So you'd write it like this: ...
+```
+
+The `agent>` line is agent-issued input; the content beneath it is the deterministic
+`/syntax` output; the `▌` lines are the agent's prose — three honestly-marked origins
+(§17.12). [S90]
+
+**It is LLM-free.** `/syntax` is a static curated asset; it works **with the agent absent
+or feature-off** — a human types `/syntax match` in a default (non-`agent`) build and gets
+the cheat-sheet. (It is the agent's *pull surface* only when the agent is live; the command
+itself is unconditional, like `/help`.) [S90]
+
+#### 17.17.4 Relationship to the Primer Topic Cross-Reference [S90]
+
+The always-on primer (`src/agent/primer.txt`) carries a **compact core-syntax summary that
+cross-references the `/syntax` topic *names***, so the model knows *which topics exist* and
+can pull detail on demand (R7; `repl-embedded-agent.md §11` item 1). The division of labour
+the user experiences:
+
+- the **primer** gives the model the always-needed essentials **plus the topic vocabulary**
+  (a known list of names to reach for) — it does **not** inline every topic's full content
+  (that would bloat every turn); [S90]
+- **`/syntax <topic>`** is the **on-demand depth** the primer points at — pulled only for the
+  few topics a given turn actually needs. [S90]
+
+This is core-language syntax derived from spec — the primer-appropriate kind of grounding.
+It does **NOT** hardcode prelude/stdlib idioms into the primer; those stay **harvest-sourced**
+(§17.18, honouring the `agent-prelude-awareness-via-harvest-not-primer` ruling). The line:
+**core syntax → primer summary + `/syntax` depth; prelude/stdlib symbols → harvest (§17.18)**.
+[S90]
+
+### 17.18 Ambient In-Scope Symbol Awareness — Harvest at Signature Grain — Pillar 2 [S90]
+
+The harvester (§17.8, `design/arch/repl-embedded-agent.md §4.1`) already pushes the *shape*
+of the session into every turn's context, silently and without being asked. S90 **enriches
+its grain** so the agent has **ambient awareness of what is in scope** — the in-scope prelude
+and imported symbols — at **name + full type signature + docstring** grain, every turn,
+**without** the agent first having to spend a turn on `/imports`/`/list`/`/exports`. This is
+the user-directed "keep prelude plus imported symbols in context" delivered the user-owned
+way — **harvest, not primer** (`agent-prelude-awareness-via-harvest-not-primer`;
+`sprints/SPRINT.md §Pillar 2`). [S90]
+
+**This is ambient, not a command.** There is **no `/harvest` command** and nothing extra
+appears in the human's REPL — the enrichment lives entirely in the context the agent
+receives each turn (auditable offline via `/context`, §17.11, where it appears under
+`=== HARVESTED CONTEXT ===`). The human-facing equivalents already exist and are unchanged:
+`/imports` (§3.4) and `/list`/`/exports` (§3.3/§3.5) are how a *human* inspects in-scope
+symbols; Pillar 2 gives the *agent* that same picture ambiently, at signature grain. [S90]
+
+#### 17.18.1 The Display Grain — Name + Signature + Docstring [S90]
+
+For each **in-scope** symbol — the current module's own definitions, the symbols the module
+explicitly imports, **and** the implicit prelude symbols (the §3.4 "Prelude (implicit)"
+surface when the prelude-fallback bit is on) — the harvested context surfaces **three facets
+per symbol**:
+
+1. **name** — the symbol as the agent would write it (bare when in scope; the reader already
+   has the §3.4 import provenance), [S90]
+2. **type signature** — the symbol's full type in the canonical cranelisp `:Type` notation
+   (the same signature `/sig` and the bare-symbol lookup render, §4.1, §3.1) — fully-qualified
+   type names, exactly as the REPL displays them, so the agent references the **actual**
+   signature rather than guessing it, [S90]
+3. **docstring** — the symbol's docstring when it has one (a defn docstring; a primitive's
+   §A.5 Description, §3.1) — so the agent knows *what a symbol does*, not just its shape;
+   absent when the symbol carries none (no placeholder). [S90]
+
+This is **`/imports` + `/list` at signature grain** — the names those commands list, each
+annotated with the signature and docstring a human would get by then typing the name. It is
+a **read enrichment** of an existing harvest arm (the export-surface arm of `harvest_context`,
+`src/agent/harvest.rs`) — the symbol table stays the single source of truth (Principle 7); the
+harvest copies nothing, it reads grain it previously skipped. [S90]
+
+#### 17.18.2 How It Reads In Context — and the Budget [S90]
+
+The enriched in-scope block reads as a compact symbol-with-signature listing — conceptually
+(the exact rendering is `/dev`-owned; this pins the grain and the read, not the bytes):
+
+```
+== in scope ==
+solver/grid-get :: (Fn [primitives/Vec primitives/Int] primitives/Int)  ; Read a cell
++ :: (Fn [primitives/Int primitives/Int] primitives/Int)  ; primitive - integer addition
+map :: (Fn [(Fn [a] b) (primitives/Vec a)] (primitives/Vec b))  ; apply f to each element
+...
+```
+
+**Budget governs grain, as everywhere in the harvest (§17.8, `§4.2`).** Signature+docstring
+grain is heavier than the bare export names §3.4 lists. The enrichment therefore rides the
+**same graceful-degradation ladder** the harvester already enforces (`harvest.rs`, the
+`char_budget` gate): under budget pressure the in-scope block degrades grain
+(signature-without-docstring, then names-only) rather than being silently truncated to a
+misleadingly-short list — the agent must never believe a symbol is *absent* merely because the
+budget elided its detail. The acceptance is experiential: **a fresh agent session references an
+in-scope symbol's actual signature without first having to `/list`/`/exports`** (`SPRINT.md
+§Pillar 2 acceptance`). [S90]
+
+### 17.19 Importable-Symbol Search — `/lib-search` — Pillar 3 (DESIGN-PINNED, IMPLEMENTED LATER) [S90]
+
+> **Status: DESIGN-PINNED THIS SPRINT, IMPLEMENTED LATER.** Per the `/arch` Phase-2 ruling
+> (R1/R2; `repl-embedded-agent.md §11.5`), Pillar 3 ships as **design only** in S90; its
+> implementation is gated on the FIXME-0432 typecheck root fix **plus** the eval-thread
+> `catch_unwind` agent-robustness floor (§11.3). This subsection pins the **experience
+> contract** — the command shape, the result row, and the dual human/agent use — so the
+> implementation, whenever it lands, has a fixed target. It carries the `[S90 — design only]`
+> tag and is **not yet a conformance MUST** for a shipping build. [S90]
+
+Pillars 1 and 2 ground the agent in the **core language** (`/syntax`) and **what is already
+in scope** (harvest). Pillar 3 closes the last fluency gap: discovering symbols that are
+**reachable on the library search path but not yet imported** — "importable", not yet in
+scope — by **name fragment and/or type signature**. This is the experience of *"is there
+already a function that does this?"* answered **before** writing the `(import …)`, for both
+the human and the agent. [S90]
+
+The mechanism is **typecheck-to-index-then-discard** (`§11.1`): to know an importable
+symbol's signature, its defining module must be typechecked, but it must **not** be imported
+into the session — so the indexer typechecks reachable modules into throwaway staging, reads
+out their public `{ name, signature, docstring, module }` records, and **discards** the
+typecheck state, serving searches from the index. That seam is **int/typecheck-owned**
+(`§11.1–§11.4`); this section owns only the **user-visible** half. [S90]
+
+#### 17.19.1 The Command Shape — `/lib-search <query>` [S90]
+
+`/lib-search <query>` searches the importable-symbol index and lists matching symbols. The
+query is matched (MVP per R6, `§11.4`) by:
+
+- **name fragment** — a case-insensitive substring of the symbol name (e.g. `/lib-search
+  grid` finds `grid-get`, `grid-set`, `make-grid`); and/or [S90]
+- **type signature, exact structural shape** — a type-shaped query matched against indexed
+  signatures **up to alpha-renaming of type variables** (e.g. `/lib-search (Fn [Int Int]
+  Int)` finds symbols of exactly that shape). This is the MVP match (no unifier); Hoogle-style
+  subsumption (a query `(Fn [Int] ?)` subsuming `(Fn [Int] Bool)`) is a **`/typecheck`-owned
+  follow-up**, and the **query-pattern syntax for holes/wildcards** is a **flagged `/spec`
+  consult** (R6, `§11.4`) — *not* specified here. [S90]
+
+How an implementation distinguishes a name-fragment query from a type-shape query (e.g. a
+leading `(Fn …`, or an explicit flag) is at implementation discretion, but the command MUST
+support **both** match modes and SHOULD allow them in combination (name fragment narrowed by
+shape). An empty or no-match query re-prompts with a short "no importable symbols matched"
+note (self-documenting; never an opaque error). [S90]
+
+#### 17.19.2 The Result Row — Name, Signature, Module, How-To-Import [S90]
+
+Each result row MUST show enough for the reader to **decide and act** — four facets:
+
+1. **symbol name** — the importable symbol; [S90]
+2. **type signature** — its full `:Type` signature (canonical cranelisp notation, FQ type
+   names, §4.1) — the same grain Pillar 2 surfaces for in-scope symbols, so search results and
+   in-scope listings read identically; [S90]
+3. **originating module** — the module the symbol lives in (its full path), so the reader knows
+   *where it comes from*; [S90]
+4. **how to import it** — the exact `(import …)` form that would bring it into scope (e.g.
+   `(import [solver.grid [grid-get]])`) — so a human can copy-paste it and the agent can
+   propose-and-submit it (Build mode, §17.14) directly. This is the actionable payoff:
+   search → see the form → import. [S90]
+
+Conceptually (rendering `/dev`-owned; this pins the facets):
+
+```
+user> /lib-search (Fn [Int Int] Int)
+grid-get :: (Fn [primitives/Int primitives/Int] primitives/Int)
+  in solver.grid   — (import [solver.grid [grid-get]])
+gcd :: (Fn [primitives/Int primitives/Int] primitives/Int)
+  in math.number   — (import [math.number [gcd]])
+```
+
+Results use the **existing §10.3 palette roles** (the `/list` family) and **degrade under
+`--no-color`/non-TTY** (§10.1) to clean plain text — same rule as `/syntax` (§17.17.2) and
+every other deterministic command. [S90]
+
+#### 17.19.3 Dual Use — Human Command and Agent Pull-Tool [S90]
+
+`/lib-search` is both a **human REPL command** (typed at the prompt to find a library function
+before importing) and an **agent read-only pull-tool** (§17.3) — the agent issues `/lib-search
+…` to discover a reachable symbol it needs, exactly as it pulls `/syntax` or `/exports`. When
+the agent pulls it, the issued line carries the **`agent>` prompt** (§17.12) and the result
+renders **unframed** below. It is **LLM-free** (the index is deterministic; the command works
+with the agent absent). The natural agent workflow the dual use enables: *search → find the
+symbol + its import form → propose the import (and the using code) through the Build confirm-gate
+(§17.14)* — fluency end-to-end, from "is there a function for this?" to a submitted, importing,
+type-checking form. [S90]
+
+#### 17.19.4 Robustness — Searching the Library Must Never Crash the REPL [S90]
+
+Because Pillar 3 typechecks **arbitrary reachable third-party modules** at index time, a
+malformed or 0432-shaped library module on the search path could (today, in a debug/agent build)
+**crash the REPL by being searched** (`§11.3`). The experience contract, pinned now for the
+later implementation: **`/lib-search` MUST NOT crash the REPL or the session**, regardless of
+what it encounters while indexing. A reachable module that fails to typecheck (or trips a
+compiler `debug_assert!`) MUST surface as a **graceful "could not index <module>" search-quality
+note** — the bad module is simply absent from results — never an unwound eval thread, a panic, or
+a lost session. (The two-layer containment that makes this hold — the `/typecheck` 0432 root fix
+plus the eval-thread `catch_unwind` floor — is `§11.3`-owned mechanism; this pins only the
+user-visible floor: **searching the library is always safe**.) [S90]
+
+### 17.20 Silent Agent Activity Log — Pillar 4 [S90]
+
+S89's `CRANELISP_AGENT_TRACE` (`src/agent/trace.rs`) is an **ephemeral stderr** debug trace of
+the rig wire-sequence — for watching one session live. Pillar 4 is its complement: a **silent,
+persistent, structured** log of the agent's activity, written to a **file**, with enough
+structure to **`grep`/`jq` "where did the agent struggle"** by hand — the *recording* half of
+self-tuning, captured now so insight can be extracted manually (and automated later)
+(`sprints/SPRINT.md §Pillar 4`; `repl-embedded-agent.md §11.6`, R5). The `/arch` ruling makes it
+a **new feature-gated sibling sink** (`src/agent/log.rs` / the reserved `telemetry.rs` slot),
+**not** a `trace.rs` extension; this section owns the **`/repl` experience details** — that it is
+silent, where it goes, and its format. [S90]
+
+#### 17.20.1 Silent — Nothing Extra in the REPL [S90]
+
+The log is **SILENT**: writing it produces **nothing extra in the REPL** — no banner, no
+"logging to …" line, no per-event echo, no change to any transcript. The human's session looks
+**byte-identical** to the same session with logging off; the agent's framed prose, its `agent>`
+lines, and its results are exactly as specified in §17.1–§17.19. The log is a **dev-session
+artifact** (NG4, `repl-embedded-agent.md §1.3`) — it is written **off to the side**, never
+surfaced, and (like the whole agent) never present in a `--link`/`--release` artifact. [S90]
+
+#### 17.20.2 Env-Configurable Location — Sibling to `CRANELISP_AGENT_TRACE` [S90]
+
+The log is **opt-in via an environment variable**, a sibling to the §17.10.2 agent env surface
+and to `CRANELISP_AGENT_TRACE`. The normative `/repl` recommendation:
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `CRANELISP_AGENT_LOG` | Path to the agent activity-log file. **Set** ⇒ the agent appends one structured record per event to this file. **Unset/empty** ⇒ **no log is written** (the default — silent *and* absent). | — (unset = off) [S90] |
+
+Rationale and rules:
+
+- **Off by default, opt-in by setting a path.** Like every agent knob (§17.10.2), it is an
+  environment variable, **not** `Cranelisp.toml` (a log path is a per-developer dev-session
+  preference, not version-controlled project config). Unset ⇒ no file is created and no logging
+  cost is paid. Naming it after a **path** (rather than a `=1` toggle) makes the destination
+  explicit and lets each developer/session direct its own log. [S90]
+- **Append, persistent, across turns and the session.** When set, each agent event appends to
+  the file (the file persists; it is the durable record across the whole session, unlike the
+  ephemeral trace). [S90]
+- **Feature-gated; absent on the default build.** Like `CRANELISP_AGENT_TRACE` and the whole
+  agent, the log exists **only** in an `--features agent` build; on a default (non-`agent`)
+  build the variable is inert and **no log is ever written** (feature-OFF stays byte-identical,
+  §17.9). [S90]
+- **Graceful on an unwritable path.** If `CRANELISP_AGENT_LOG` names a path that cannot be
+  written, the agent MUST **degrade silently** — it does **not** crash the session, and
+  (consistent with §17.20.1) it does **not** spew errors into the REPL. Logging is a side
+  channel; its failure never disturbs the session. [S90]
+
+#### 17.20.3 Format — Persistent JSONL, Greppable by Hand [S90]
+
+The log is **JSONL** — one JSON object per line, one line per agent event — chosen precisely so
+`grep`/`jq` extract insight **without a query UI** (`SPRINT.md §Pillar 4`). The **`/repl`
+experience requirement** is that the format carry **stable, greppable keys** for the
+struggle-signal the user wants to mine — at minimum: an **event type** (e.g. a model exchange, a
+pull, a **validator-repair iteration**, a submit/commit, a give-up), the **symbol** involved when
+there is one, an **error class** for a repair iteration (the triggering compiler error), a
+**repair-iteration count**, and the **module**. (The exact key vocabulary the loop emits is
+`/dev`-owned — it consumes the events `pull.rs`/`run_pull`/`run_submit` already produce; this
+pins the *experience* requirement: the keys are stable enough that a one-line `grep`/`jq`
+extracts "every repair event and its triggering symbol/error" reliably.) The acceptance is
+operational: **`grep`/`jq` over the file extracts the repair events and exploration pulls with
+their triggering symbols/errors** (`SPRINT.md §Pillar 4 acceptance`). [S90]
+
+This log is the **passive recording** half only. The **automated curation/push loop** that would
+read it back to curate the primer/cheat-sheet — plus the §4.7/U4 push-transparency header — is
+**deferred** (`SPRINT.md §Out of scope`): capture the signal now, extract insight by hand, automate
+once the pattern proves worth it. [S90]
