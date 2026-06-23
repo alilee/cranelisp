@@ -210,14 +210,13 @@ impl CompilerSession {
                 }
                 // Resolve an import to the canonical entry + its defining module
                 // so the rendered signature is the real one (FQ), mirroring the
-                // path `/sig` takes for a re-exported name. An own `Def` (not an
-                // `Import`) is the module's own definition → full grain (with its
-                // docstring); a re-exported / imported symbol is sourced
-                // elsewhere → sig grain (its docstring is one `/doc` hop away,
-                // and is the heaviest signal the §23.2 ladder drops first).
-                let is_own_defn = !matches!(entry, cranelisp_types::ModuleEntry::Import { .. });
+                // path `/sig` takes for a re-exported name. ALL feeders — own
+                // defns, explicit imports, implicit prelude — render at full
+                // grain (name + FQ `:Type` sig + docstring) by default (§23.1 /
+                // `repl/spec.md §17.18.1`); the §23.2 budget ladder, not the
+                // symbol's SOURCE, drops the docstring under pressure.
                 let (resolved, home) = self.resolve_entry_for_display(entry, cur);
-                entries.push(self.render_in_scope_entry(&resolved, &name, &home, is_own_defn));
+                entries.push(self.render_in_scope_entry(&resolved, &name, &home));
             }
         }
 
@@ -232,10 +231,11 @@ impl CompilerSession {
             if let Some(ptable) = self.shared.symbol_tables.get(&prelude_path)
                 && let Some(entry) = ptable.get(&name)
             {
-                // Implicit-prelude symbols are sourced from prelude, not the
-                // current module → sig grain (no docstring), as for imports.
+                // Implicit-prelude symbols render at full grain too (§23.1 — all
+                // feeders carry the docstring facet, incl. a primitive's §A.5
+                // Description); the §23.2 ladder drops it under budget pressure.
                 let (resolved, home) = self.resolve_entry_for_display(entry, &prelude_path);
-                entries.push(self.render_in_scope_entry(&resolved, &name, &home, false));
+                entries.push(self.render_in_scope_entry(&resolved, &name, &home));
             }
         }
 
@@ -276,7 +276,6 @@ impl CompilerSession {
         entry: &cranelisp_types::ModuleEntry<crate::code::Code>,
         name: &str,
         home: &cranelisp_types::ModuleFullPath,
-        with_docstring: bool,
     ) -> InScopeEntry {
         // Sig grain: name + FQ `:Type` signature, docstring stripped. Clearing
         // the docstring and re-rendering through the SAME formatter keeps it the
@@ -284,16 +283,14 @@ impl CompilerSession {
         let stripped = strip_entry_docstring(entry.clone());
         let sig = self.format_def_entry(&stripped, name, home);
         // Full grain: name + FQ `:Type` signature + docstring — the bare-symbol
-        // display a human gets by typing the name. Only own-module defns carry
-        // the docstring ambiently (`with_docstring`); imported / implicit-prelude
-        // symbols render at sig grain (their docstring is a `/doc` hop away — and
-        // is the heaviest signal the §23.2 ladder drops first). See the FIXME to
-        // /design recording this refinement of §23.1's "all feeders carry doc".
-        let full = if with_docstring {
-            self.format_def_entry(entry, name, home)
-        } else {
-            sig.clone()
-        };
+        // display a human gets by typing the name. EVERY feeder (own defn,
+        // explicit import, implicit prelude) carries its docstring at full grain
+        // (§23.1 / `repl/spec.md §17.18.1` — all three feeders carry the
+        // docstring facet, incl. a primitive's §A.5 Description). The §23.2
+        // budget ladder, not the symbol's source, drops the docstring (full →
+        // sig → name) under pressure — `strip_entry_docstring` is that sig rung,
+        // never the default for imports/prelude.
+        let full = self.format_def_entry(entry, name, home);
         InScopeEntry { name: name.to_string(), sig, full }
     }
 
@@ -473,7 +470,7 @@ mod in_scope_tests {
         let table = s.shared.symbol_tables.get(&module).unwrap();
         let entry = table.get("inc-doc").unwrap().clone();
         drop(table);
-        let rendered = s.render_in_scope_entry(&entry, "inc-doc", &module, true);
+        let rendered = s.render_in_scope_entry(&entry, "inc-doc", &module);
         assert!(rendered.full.contains("a docstring"), "full carries doc: {}", rendered.full);
         assert!(!rendered.sig.contains("a docstring"), "sig drops doc: {}", rendered.sig);
         assert!(
