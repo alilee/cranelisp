@@ -1,6 +1,6 @@
 # Sprint 90: Agentic-REPL Phase 3 — Fluency (rung 7, reach half)
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 1 CLOSED ✅; Wave 2 (Pillar 2 harvest sig-grain) next
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Waves 1–2 CLOSED ✅; Wave 3 (Pillar 4 silent log) next
 
 **Goal**: Make the embedded REPL agent *fluent* — give it on-demand syntax detail, ambient awareness of what's in scope (prelude + imports at signature grain), and the ability to search reachable-but-unimported library symbols by name and/or type signature — so its first submit typechecks more often and it stops burning repair/exploration turns rediscovering the language and library.
 
@@ -191,6 +191,8 @@ Fanned out in two sub-waves (3a interfaces/UX/content/typecheck, then 3b int-int
 | 2q | /qa | tests | P2 rows (`agent.rs` via `/context`): name+`:Type`+docstring; FQ +neg; **budget degrades grain not silent truncation** (+neg); no-relist. **Needs the harvest-budget test lever (seam 2 → 2d).** |
 | 2d | /dev | src/ | Enrich `harvest_context` export arm (`harvest.rs:104–133`) + in-scope block; **reuse `format_entry_sig`→`format_type_qualified`** (P7, byte-identical to `/sig`); feeders `defined_symbols()`+`Import`+`prelude_implicit_names()`; grain-degrade on `char_budget`; add the budget test lever. Flip 2q green + unit tests |
 | 2R | /review | all | Sig-grain reuses `/sig` renderer (no divergence); budget degrades grain (never silent truncation); harvest-only (no default-build touch); +neg complete |
+
+**Wave 2 CLOSED ✅** — `2q` `/qa` `e93bcac` (4 agent RED via `/context` `== in scope ==` block) → `2d` `/dev` `38f619b` (enrich `harvest_context`: name + FQ `:Type` + docstring; reuse `format_def_entry`→`format_type_qualified` P7; budget ladder full→sig→name; `CRANELISP_AGENT_HARVEST_BUDGET` lever) → `2R` `/review` **CHANGES-REQUESTED (1 Blocker)** → **fix cycle:** `/qa` `d6ab037` refined P2.2 (bare-`Int` type-position-only, not false-firing on "Integer") + extended P2.1 (assert prelude `add-i64` docstring) → `/dev` `cf9caa1` reverted the by-source docstring discrimination (ALL feeders carry docstrings per `§17.18.1` + the user's Q2; budget ladder is the sole dropper) + **deleted FIXME 0434** → `2R` re-confirm **GATE-READY**. **default 1539/0, agent lane 1657/0, feature-OFF byte-identical.** Blocker = `/dev` had dropped import/prelude docstrings to dodge a blunt `_neg` substring check; root cause was the test, reverted to spec.
 
 ### Wave 3 — Pillar 4 silent agent log (SHIPS; serial)
 | Step | Skill | Crate | Task |
