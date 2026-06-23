@@ -1,0 +1,598 @@
+=== topic: defn ===
+TOPIC defn  [core]
+  Define a named function. Single signature, optional docstring, optional :Type params.
+
+  FORM
+    (defn name [params...] body)
+    (defn name "docstring" [params...] body)
+    (defn- name [params...] body)        ; module-private
+    ; param forms: bare (inferred) | :Type name | :Trait name | _ (discard)
+
+  EXAMPLE
+    (defn square [x] (* x x))                 ; :(Fn [:Num a] a) user/square
+    (square 5)                                ; :primitives/Int 25
+    (defn add [:Int x :Int y] (* x y))        ; concrete-annotated params
+    (defn fst [a _] a)                        ; _ discards its argument
+
+  NOT
+    (defun f [x] ...) -> (defn f [x] ...)            ; no `defun`
+    (defn f (x) ...)  -> (defn f [x] ...)            ; params are in [brackets]
+    return-type annotation -> return type is always inferred (no syntax for it)
+
+  SPEC  05 §5.1.1, §5.1.3; 02 §2.3
+
+=== topic: defn-multi-sig ===
+TOPIC defn-multi-sig  [core]
+  Multi-signature defn: several variants dispatched on arg arity/types after inference.
+
+  FORM
+    (defn name
+      ([params1...] body1)
+      ([params2...] body2)
+      ...)
+    ; each variant is paren-grouped: ([params] body) — NOT flat like match arms.
+
+  EXAMPLE
+    (defn dbl
+      ([:Int x] (* x 2))
+      ([:Int x :Int y] (* x y)))            ; annotate variants to pin dispatch
+    (dbl 5)                                  ; :primitives/Int 10  (1-arg variant)
+    (dbl 3 4)                                ; :primitives/Int 12  (2-arg variant)
+
+  NOT
+    bare multi-sig value (no args) -> ambiguous; supply >=1 arg or wrap in (fn ...)
+
+  SPEC  05 §5.1.2; 04 §4.7
+
+=== topic: let ===
+TOPIC let  [core]
+  Sequential local bindings; each binding sees the previous ones; body is the result.
+
+  FORM
+    (let [name1 e1 name2 e2 ...] body)
+    ; binding list is [name expr name expr ...] — even number of forms.
+
+  EXAMPLE
+    (let [x (* 1 2) y (+ x 1)] (* x y))      ; :primitives/Int 6  (y sees x)
+    (let [x 10] (let [x 20] x))              ; :primitives/Int 20 (inner shadows)
+
+  NOT
+    (let (x 1) ...)      -> (let [x 1] ...)         ; bindings in [brackets]
+    (let [x 1 y] ...)    -> odd binding count is an error (name with no expr)
+
+  SPEC  04 §4.3; 02 §2.3.3
+
+=== topic: if ===
+TOPIC if  [core]
+  Two-armed conditional. Condition must be Bool; both branches required, same type.
+
+  FORM
+    (if cond then-expr else-expr)
+
+  EXAMPLE
+    (if (< 1 2) 100 200)                     ; :primitives/Int 100
+
+  NOT
+    (if c then)            -> else branch is mandatory (no one-armed if)
+    (if 42 ...)            -> condition must be Bool, not Int
+    (if c 1 "x")           -> both branches must share one type
+
+  SPEC  04 §4.4
+
+=== topic: fn ===
+TOPIC fn  [core]
+  Anonymous function (lambda / closure). Captures free variables by value.
+
+  FORM
+    (fn [params...] body)
+    ; params support :Type annotations, same as defn.
+
+  EXAMPLE
+    ((fn [x] (* x x)) 7)                     ; :primitives/Int 49
+    ((fn [:Int x] (* x x)) 5)               ; :primitives/Int 25
+    (defn make-adder [n] (fn [x] (+ n x)))  ; closure captures n
+
+  NOT
+    (lambda [x] ...)  -> (fn [x] ...)               ; the keyword is `fn`
+    ((fn [a b] ...) 1) as bare partial -> bind to a var first for auto-curry
+
+  SPEC  04 §4.5; 02 §2.3.5
+
+=== topic: match ===
+TOPIC match  [core]
+  Pattern-match a scrutinee. Arms are FLAT pattern/body pairs inside ONE [ ].
+
+  FORM
+    (match scrutinee
+      [pattern1 body1
+       pattern2 body2
+       ...])
+
+  EXAMPLE
+    (match (Some 7) [None 0 (Some x) x])            ; :primitives/Int 7
+    (match None [None 0 (Some x) x])                ; :primitives/Int 0
+    ; given (deftype Color Red Green Blue):
+    ;   (match Green [Red "r" Green "g" Blue "b"])   ; -> "g"
+
+  NOT
+    (match x ((Circle r) ...) ((Rect w h) ...))     ; WRONG paren-grouped arms
+      -> (match x [(Circle r) ... (Rect w h) ...])  ; flat pairs in ONE bracket
+    literal patterns (match n [0 "z" _ "o"]) are not supported -> use `case`
+
+  SPEC  06 §6.1; 04 §4.8
+
+=== topic: patterns ===
+TOPIC patterns  [core]
+  Pattern kinds usable in match arms: data-ctor, nullary-ctor, wildcard, variable.
+
+  FORM
+    (Ctor v1 v2 ...)   ; data constructor — binds fields positionally to v1 v2 ...
+    Ctor               ; nullary constructor — matches exactly, binds nothing
+    _                  ; wildcard — matches anything, binds nothing
+    name               ; variable — matches anything, binds the value to `name`
+    ; disambiguation: _ -> wildcard; known ctor -> nullary ctor; else -> variable.
+
+  EXAMPLE
+    (match (Some 9) [None 0 (Some x) (* x 2)])      ; (Some x) binds x=9 -> 18
+    (match 99 [n (* n 2)])                          ; :primitives/Int 198 (var n)
+    (match (Some 1) [(Some x) x _ 0])              ; _ catch-all on the other arm
+
+  NOT
+    a binding name need not match the field name — bindings are positional.
+
+  SPEC  06 §6.2, §6.5
+
+=== topic: annotations ===
+TOPIC annotations  [core]
+  `:Type form` is a type-unifying annotation binding the IMMEDIATELY-FOLLOWING form.
+
+  FORM
+    :Type form               ; e.g. :Int 42, :(Option Int) None
+    :(Applied Type) form     ; e.g. :(primitives/Vec Int) []
+    ; works in ALL positions; it is never a standalone atom.
+    ; REPL displays results as `:Type value` with fully-qualified names.
+
+  EXAMPLE
+    :Int 42                                  ; :primitives/Int 42
+    :(Option Int) None                       ; :(primitives/Option primitives/Int) None
+    (defn double-int [x] :Int (+ x x))      ; annotate body to pin Int
+
+  NOT
+    (:Type form) / (: Type form) -> NOT an annotation; that is an application.
+      Always write the annotation unparenthesised: :Type form.
+
+  SPEC  04 §4.9; 02 §2.3.8; 01 §1.4.5
+
+=== topic: vectors ===
+TOPIC vectors  [core]
+  Vec literal [a b c]: a variadic special form (not a Fn). Elements share one type.
+
+  FORM
+    [e1 e2 ... eN]           ; Vec of N elements (uniform type)
+    []                       ; empty Vec, type (Vec a) — pin with annotation/use
+    ; bare `Vec` type name is not in prelude scope: write :(primitives/Vec Int)
+    ; or (import [primitives [Vec vec-push vec-get vec-len vec-set]]).
+
+  EXAMPLE
+    [1 2 3]                                   ; :(primitives/Vec primitives/Int) [1 2 3]
+    :(primitives/Vec primitives/Int) []      ; empty Vec pinned to Int
+    (import [primitives [vec-get]]) (vec-get [10 20 30] 1)   ; :primitives/Int 20
+
+  NOT
+    [1 "x"]    -> elements must unify to one type (Int and String clash)
+    bare unpinned [] reaching codegen -> ambiguous-element-type error; annotate it
+
+  SPEC  04 §4.10; 02 §2.3.9; 03 §3.2.7
+
+=== topic: recursion-tco ===
+TOPIC recursion-tco  [core]
+  No `recur`: a function is in scope in its own body — call it by name. TCO guaranteed.
+
+  FORM
+    (defn f [args...] ... (f new-args...) ...)   ; direct self-call
+    ; TAIL position = function body, both `if` branches, let/do body, each match arm.
+    ; A self-call in TAIL position is optimized to a loop (constant stack).
+
+  EXAMPLE
+    (defn fib [n]
+      (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))   ; (fib 10) -> 55
+    (defn sum-to [n acc]                                  ; tail-recursive accumulator
+      (if (= n 0) acc (sum-to (- n 1) (+ acc n))))       ; (sum-to 5 0) -> 15
+
+  NOT
+    (recur ...)                  -> call the function by its own name
+    (+ n (sum-to (- n 1)))       -> NOT tail (call is an arg); use an accumulator
+    (zero? n)/(dec n)/(inc n)    -> (= n 0)/(- n 1)/(+ n 1)
+
+  SPEC  04 §4.6; appendix-c (TCO NFR)
+
+=== topic: trace ===
+TOPIC trace  [core]
+  (trace expr) evaluates expr while recording the call tree, returns a Trace value.
+
+  FORM
+    (trace expr)             ; root special form; needs NO import (no primitives/trace)
+    ; the Trace ADT names DO need import to destructure:
+    ; (import [primitives [Trace TraceCall name params result children nanos]])
+
+  EXAMPLE
+    (defn fact [n] (if (= n 0) 1 (* n (fact (- n 1)))))
+    (trace (fact 4))                         ; :primitives/Trace ... (call tree)
+    (import [primitives [nanos]])
+    (nanos (trace (fact 4)))                ; :primitives/Int  (elapsed nanoseconds)
+
+  NOT
+    (trace (trace e))  -> nested/re-entrant trace on one thread is a runtime error
+    trace-nanos        -> the accessor is `nanos` (matches the TraceCall field name)
+
+  SPEC  04 §4.12; 02 §2.3.10
+
+=== topic: types ===
+TOPIC types  [core]
+  Primitives Int/Bool/String/Float; named ADTs; applied types; lowercase type vars.
+
+  FORM
+    Int  Bool  String  Float          ; primitives (from `primitives` module)
+    Point  Color                      ; nullary/named ADTs
+    (Option Int)  (List String)       ; applied type constructors
+    a  b  elem  f                     ; type variables (lowercase)
+    ; bare primitive names come via prelude/import; primitives/Int always works.
+
+  EXAMPLE
+    :Int 42                                  ; :primitives/Int 42
+    :(Option Int) None                       ; :(primitives/Option primitives/Int) None
+
+  NOT
+    internal names like a0/t42 never appear in display — quantified vars show as a b c
+
+  SPEC  03 §3.1, §3.2.2; 02 §2.4
+
+=== topic: fn-type ===
+TOPIC fn-type  [core]
+  Function type syntax: (Fn [arg-types...] return-type). Nullary is (Fn [] R).
+
+  FORM
+    (Fn [T1 T2 ... Tn] R)
+    (Fn [] R)                ; nullary (zero-argument) function type
+
+  EXAMPLE
+    (defn apply1 [:(Fn [Int] Int) f x] (f x))    ; f constrained to Int->Int
+    (apply1 (fn [n] (* n 3)) 5)                  ; :primitives/Int 15
+
+  NOT
+    (Int -> Bool) / Int->Bool   -> (Fn [Int] Bool)        ; no arrow syntax
+    (Fn Int Int)                -> (Fn [Int] Int)         ; arg types in [brackets]
+
+  SPEC  03 §3.2.1; 02 §2.4.5
+
+=== topic: constraints ===
+TOPIC constraints  [core]
+  Constrained polymorphism: a type var carries trait bounds, shown as :Trait var.
+
+  FORM
+    (Fn [:Num a :Num a] a)        ; display form: each constraint precedes the var
+    ; a bound is INFERRED from using a trait operator on a type variable,
+    ; or written explicitly as a :Trait annotation on a parameter.
+
+  EXAMPLE
+    (defn double [a] (+ a a))       ; :(Fn [:Num a] a)  (Num inferred from +)
+    (double 21)                     ; :primitives/Int 42
+    (defn show-it [:Display a] a)  ; explicit Display bound on the parameter
+
+  NOT
+    multiple bounds on one var stack: (Fn [:Num :Eq a] a) — list them before the var
+
+  SPEC  03 §3.4; 07 §7
+
+=== topic: hkt ===
+TOPIC hkt  [core]
+  Higher-kinded types: a trait param ranges over type constructors, applied as (f a).
+
+  FORM
+    (deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))
+    (impl Functor Option (defn fmap [g opt] ...))   ; target is BARE ctor, not (Option a)
+    ; kind/arity is inferred from usage: (f a) => arity 1.
+
+  EXAMPLE
+    (deftrait (Functor f) (fmap [:(Fn [a] b) g :(f a) x] (f b)))
+    (impl Functor Option
+      (defn fmap [g opt] (match opt [None None (Some x) (Some (g x))])))
+    (fmap (fn [n] (* n 2)) (Some 5))         ; (Option.Some 10)
+
+  NOT
+    (impl Functor (Option a) ...)  -> HKT target is the bare constructor: Option
+    Int/Bool/String/Float are rejected as HKT targets (not type constructors)
+
+  SPEC  03 §3.7; 07 §7.2, §7.3.4
+
+=== topic: deftype ===
+TOPIC deftype  [core]
+  Declare an ADT: product (one ctor), sum (many ctors), or enum (all nullary).
+
+  FORM
+    (deftype Name [:T1 f1 :T2 f2 ...])              ; product — Name is the ctor
+    (deftype Name (Ctor1 [:T f]) (Ctor2 ...))       ; sum — each ctor distinct
+    (deftype Name A B C)                            ; enum — all nullary
+    (deftype Name [f1 f2])                          ; shortcut — bare fields get vars
+    (deftype- Name ...)                            ; module-private
+    ; optional docstrings after the head and after each ctor name.
+
+  EXAMPLE
+    (deftype Point [:Int x :Int y])  (Point 3 4)        ; :user/Point (Point 3 4)
+    (x (Point 3 4))                                      ; :primitives/Int 3 (accessor)
+    (deftype Color Red Green Blue)                       ; enum
+    (deftype Pair2 [first second])  (Pair2 1 2)         ; shortcut, inferred vars
+
+  NOT
+    (defstruct ...)/(defrecord ...) -> (deftype ...)
+    fields use [:Type name] pairs in brackets, not (name :Type)
+
+  SPEC  05 §5.2
+
+=== topic: adt ===
+TOPIC adt  [core]
+  Using ADTs: construct values, then take them apart with match. (See deftype to declare.)
+
+  FORM
+    Nullary       -> a value:    None, Red
+    Data ctor     -> a function: (Some 42), (Circle 2.0)
+    Destructure   -> (match v [Ctor1 b1 (Ctor2 x) b2 ...])
+
+  EXAMPLE
+    (defn unwrap-or [opt d] (match opt [None d (Some x) x]))
+    (unwrap-or (Some 7) 0)                   ; :primitives/Int 7
+    (unwrap-or None 0)                       ; :primitives/Int 0
+    (import [primitives [Result Ok Err]])
+    (match (Ok 1) [(Ok v) v (Err e) e])     ; :primitives/Int 1
+
+  NOT
+    Result / Pair / Trace constructors need an explicit (import [primitives ...]).
+    Option (None/Some) is available bare through the prelude.
+
+  SPEC  05 §5.2.2; 06 §6.2
+
+=== topic: traits ===
+TOPIC traits  [core]
+  Declare a trait: method signatures with named params; `self`/bare = implementing type.
+
+  FORM
+    (deftrait Name (method [params...] ReturnType) ...)   ; required method
+    (deftrait Name (method [params...] body) ...)         ; default method (has body)
+    (deftrait (Name f) ...)                               ; higher-kinded trait
+    (deftrait- Name ...)                                 ; module-private
+    ; method sigs are direct children — NO outer [ ] wrapping the method list.
+
+  EXAMPLE
+    (import [primitives [int-to-string]])
+    (deftrait Show (show [a] String))                    ; one required method
+    (impl Show Int (defn show [x] (int-to-string x)))
+    (show 42)                                            ; :primitives/String "42"
+
+  NOT
+    (deftrait Show [(show [a] String)])  -> WRONG outer bracket ("expected list")
+      -> (deftrait Show (show [a] String))               ; sigs are direct children
+    built-ins: Num(+ - * /), Eq(= !=), Ord(< > <= >=), Display(show), Functor(fmap)
+
+  SPEC  07 §7.1, §7.7; 05 §5.3
+
+=== topic: impl ===
+TOPIC impl  [core]
+  Provide method bodies of a trait for a type. No private variant; no method docstrings.
+
+  FORM
+    (impl Trait Type (defn method [params] body) ...)     ; concrete
+    (impl Trait (Type Arg) ...)                          ; concrete ADT instance
+    (impl Trait (Type :Trait a) ...)                     ; polymorphic, constrained
+    (impl Trait Ctor ...)                                ; HKT: bare type constructor
+
+  EXAMPLE
+    (deftype Color Red Green Blue)
+    (deftrait Show (show [a] String))
+    (impl Show Color
+      (defn show [c] (match c [Red "Red" Green "Green" Blue "Blue"])))
+    (show Green)                             ; :primitives/String "Green"
+
+  NOT
+    (impl- Trait Type ...)         -> impl has no private variant (always visible)
+    method docstrings -> not allowed in impl; the docstring lives on the trait
+
+  SPEC  05 §5.4; 07 §7.3
+
+=== topic: defmacro ===
+TOPIC defmacro  [core]
+  Compile-time transform: takes Sexp args, returns Sexp. `&` captures rest; `x#` gensyms.
+
+  FORM
+    (defmacro name [params...] body)              ; single clause
+    (defmacro name ([params1] b1) ([params2] b2)) ; multi-clause (first match wins)
+    (defmacro name [a b & rest] body)             ; & rest captures remaining args
+    (defmacro- name ...)                         ; module-private
+    ; quasiquote: `form  unquote: ~e  unquote-splice: ~@e   auto-gensym: x#
+    ; direct Sexp ctors (SexpInt, SexpList, SCons...) need (import [macros [*]]).
+
+  EXAMPLE
+    (defmacro my-if [c t e] `(if ~c ~t ~e))
+    (my-if (< 1 2) 10 20)                    ; :primitives/Int 10
+    (defmacro my-mul [& args] `(* ~@args))
+    (my-mul 2 3)                             ; :primitives/Int 6
+
+  NOT
+    a macro must return Sexp (returning Int etc. is a compile-time error)
+    defmacro-before-use: a macro must be defined before its first use in source order
+
+  SPEC  09 §9.2, §9.4, §9.8; 05 §5.5
+
+=== topic: modules ===
+TOPIC modules  [core]
+  Modules are namespaces. Qualified name is module/name; dotted is Type.Ctor.
+
+  FORM
+    (mod name)               ; declare a submodule (loads sibling file if present)
+    (mod- name)              ; private submodule
+    module/name              ; qualified reference (always works, no import needed)
+    Type.Ctor  Trait.method  ; dotted member access (parent must be in scope)
+    (platform stdio)         ; entry-module-only: selects the IO platform DLL
+
+  EXAMPLE
+    (primitives/add-i64 4 5)                 ; :primitives/Int 9 (qualified ref)
+    (primitives/str-concat "ab" "cd")        ; :primitives/String "abcd"
+
+  NOT
+    (/ 10 2) stays division — `/` is a qualifier only after an alphabetic module path
+    (mod a.b) / (mod a/b)  -> module name must be a simple symbol
+
+  SPEC  08 §8.1, §8.2, §8.5; 05 §5.8, §5.10
+
+=== topic: import ===
+TOPIC import  [core]
+  Bring names from other modules into bare scope. Many spec shapes; all in one [ ].
+
+  FORM
+    (import [m [a b]])               ; specific names
+    (import [m [*]])                 ; glob — all public names
+    (import [m [Type.*]])            ; member glob — all members of a type/trait
+    (import [(m alias) [...]])       ; module alias -> alias/name
+    (import [m [(src local)]])       ; rename src to local
+    (import [super [*]])             ; parent module (inside a submodule)
+    (import [m []])                  ; null import (e.g. suppress implicit prelude)
+
+  EXAMPLE
+    (import [primitives [str-concat]])
+    (str-concat "ab" "cd")                   ; :primitives/String "abcd"
+
+  NOT
+    (import m [a b])   -> every entry is bracketed: (import [m [a b]])
+    `*` means glob only when it is the sole element; else it is the `*` operator
+
+  SPEC  08 §8.3
+
+=== topic: export ===
+TOPIC export  [core]
+  Re-export names from imported modules as part of the current module's public API.
+
+  FORM
+    (export [m [a b]])               ; re-export specific names
+    (export [m [*]])                 ; glob re-export
+    (export [(m alias) [...]])       ; mount m under current-module.alias + re-export
+    ; same module_spec / names_list grammar as import (renames, member globs, ...).
+
+  EXAMPLE
+    ; in a module that has (import [l [Color Display]]):
+    (export [l [Color Display]])             ; downstream modules now see them
+
+  NOT
+    export shares import's grammar — anything import can rename/alias, export can too.
+
+  SPEC  08 §8.4
+
+=== topic: io ===
+TOPIC io  [core + prelude macros]
+  Effects flow through (IO a). pure/bind compose IO; do/bind! are prelude sugar.
+
+  FORM
+    (Pure x)                                 ; lift a value into IO (no effect)
+    (bind io (fn [x] next-io))              ; chain: x is io's result; build next-io
+    (do e1 e2 ... eN)                       ; [prelude macro] sequence IO, return last
+    (bind! [n1 io1 n2 io2 ...] body)        ; [prelude macro] flatten bind chains
+    (platform stdio) (import [platform.stdio [print]])   ; real effects
+    (defn main [] io-expr)                   ; program entry returns IO
+
+  EXAMPLE  (verified via --run with Pure/bind/print; do/bind! need the prelude loaded)
+    ; file: (platform stdio) (import [primitives [Pure bind]])
+    ;       (import [platform.stdio [print]])
+    (defn main [] (bind (print "hello") (fn [_] (print "world"))))   ; prints two lines
+
+  NOT
+    calling an IO fn from a pure context forces IO into the type -> mismatch error
+    do/bind! are NOT core: absent under an empty prelude (and in free-standing --run files)
+
+  SPEC  10 §10.1-§10.6; 09 §9.10.4-5
+
+=== topic: cond ===
+TOPIC cond  [prelude macro]
+  Multi-way conditional: FLAT test/body pairs + ONE mandatory trailing default.
+  Not core; absent under an empty prelude.
+
+  FORM
+    (cond test1 body1
+          test2 body2
+          ...
+          default)              ; last form is the mandatory default (odd arg count)
+
+  EXAMPLE
+    (defn classify [x]
+      (cond (< x 0) "neg"
+            (= x 0) "zero"
+            "pos"))
+    (classify -5)                            ; :primitives/String "neg"
+    (classify 7)                             ; :primitives/String "pos"
+
+  NOT
+    Clojure/CL clause lists ((test body) ...) -> flat pairs: (cond test body ... default)
+    :else / a missing default -> the trailing default is a bare expr and is MANDATORY
+
+  SPEC  09 §9.10.8
+
+=== topic: threading ===
+TOPIC threading  [prelude macro]
+  Thread a value through forms. -> inserts as first arg; ->> as last arg.
+  Not core; absent under an empty prelude.
+
+  FORM
+    (-> initial form1 form2 ...)     ; each form gets the result as its FIRST argument
+    (->> initial form1 form2 ...)    ; each form gets the result as its LAST argument
+    ; a bare-symbol form `f` is called as (f value).
+
+  EXAMPLE
+    (-> 5 (* 2) (- 1))                       ; (- (* 5 2) 1) -> :primitives/Int 9
+    (->> 5 (- 20))                           ; (- 20 5)      -> :primitives/Int 15
+
+  NOT
+    -> vs ->> differ only in insertion position (first vs last) — pick deliberately
+
+  SPEC  09 §9.10.6-7
+
+=== topic: do-bind ===
+TOPIC do-bind  [prelude macro]
+  do sequences IO actions; bind! flattens nested bind continuations. let vs bind!:
+  let binds pure values; bind! binds the INNER value of an IO action.
+  Not core; absent under an empty prelude (use primitives/bind directly there).
+
+  FORM
+    (do io1 io2 ... ioN)                     ; run in order, return last result
+    (bind! [name1 io1 name2 io2 ...] body)   ; name_i = result of io_i, in scope below
+
+  EXAMPLE  (in the REPL, where the prelude is loaded)
+    (defn seq2 [a b] (do a b))               ; :(Fn [(IO a) (IO b)] (IO b))
+    ; bind! [line (read-line) n (pure (parse-int line))] (print (show n))
+
+  NOT
+    (do (* 1 2) (* 3 4)) on PURE values -> do is IO sequencing; operands must be IO
+    let [x e] for an IO result -> use bind! to unwrap the inner value
+
+  SPEC  09 §9.10.4-5; 10 §10.4-5
+
+=== topic: prelude-sugar ===
+TOPIC prelude-sugar  [prelude macro]
+  Short reference to common prelude macros. All [prelude macro]; absent under empty prelude.
+
+  FORM
+    (def name expr)          ; named value (expr evaluated once)
+    (const NAME value)       ; compile-time inline constant
+    (list e1 e2 ...)         ; build a List (Cons/Nil)
+    (vec e1 e2 ...)          ; build a Vec (expands to [e1 e2 ...])
+    (str a b ...)            ; concat show of each arg into a String
+    (case e v1 b1 v2 b2 default)   ; dispatch by equality; mandatory default
+    (when test body)         ; (if test body None) — body must be (Option a)
+
+  EXAMPLE
+    (defn name-of [c] (case c "r" 1 "g" 2 0))
+    (name-of "g")                            ; :primitives/Int 2
+    (name-of "x")                            ; :primitives/Int 0  (default)
+    (when (< 1 2) (Some 99))                ; (Option.Some 99)
+
+  NOT
+    case/when are macros, not special forms — they are absent under an empty prelude.
+    when has an implicit None else-branch: its body type must be (Option a).
+
+  SPEC  09 §9.10; 05 §5.6, §5.7
