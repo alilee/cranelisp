@@ -802,3 +802,168 @@ fn deftrait_with_docstring_and_method_docstring_does_not_affect_dispatch() {
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
+
+// =============================================================================
+// §5.1.2 — FIXME 0432: multi-clause `defn` self-call (Face B, unannotated)
+//
+// A multi-signature `defn` whose body cross-variant self-calls, with params
+// UNANNOTATED, cannot pin the recursion's type → it is an `ambiguous type`.
+// `design/arch/fixmes/0432-multi-clause-defn-self-call-codegen.md` Face B +
+// `design/typecheck/monomorphisation.md §9`: the CORRECT outcome (both modes)
+// is a clean ambiguous-type error pointing the user at an annotation — NEVER a
+// monomorphiser panic (`monomorphise.rs build_mangled_name` `debug_assert!`).
+//
+// The §9 root fix is an early concreteness gate at `monomorphise_call` P1
+// (before `build_mangled_name`) so REPL and `--run` converge on ONE clean
+// diagnostic. These e2e rows are the cross-mode convergence guards the FIXME's
+// two-face divergence demands (REPL panic-vs-clean / `--run` clean).
+//
+// The repro form is the minimal Face-B shape (no annotations, bare primitive
+// names via the PrimitivesOnly prelude — free-standing, primitives only):
+//   (defn sum-to ([n] (sum-to n 0))
+//                ([n acc] (if (eq-i64 n 0) acc
+//                             (sum-to (sub-i64 n 1) (add-i64 acc n)))))
+// =============================================================================
+
+/// The minimal Face-B repro: unannotated multi-clause `defn` + cross-variant
+/// self-call. Bare primitive names resolve through the PrimitivesOnly prelude.
+const FIXME_0432_FACE_B: &str =
+    "(defn sum-to ([n] (sum-to n 0)) ([n acc] (if (eq-i64 n 0) acc (sum-to (sub-i64 n 1) (add-i64 acc n)))))";
+
+// spec: spec/05-definitions.md §5.1.2 — 0432.E1: the Face-B form via the REPL
+// produces a clean ambiguous-type error AND the session does NOT crash — no
+// panic banner, and a FOLLOWING form still evals. The monomorphiser
+// `debug_assert!` MUST NOT escape the eval thread (it fired in debug builds,
+// crashing the REPL pre-fix). Post-§9-fix: clean error, session alive.
+#[test]
+fn multi_clause_defn_self_call_repl_clean_error_not_panic() {
+    // Follow the failing defn with an independent, well-typed form: if the
+    // session crashed on the defn, this second form never evals.
+    let out = repl_prims(&format!("{FIXME_0432_FACE_B}\n(add-i64 2 3)\n"));
+    let combined = format!("{}{}", out.stdout, out.stderr);
+
+    // (i) the clean ambiguous-type error appears, pointing at an annotation.
+    assert!(
+        combined.contains("ambiguous type"),
+        "the Face-B self-call MUST surface a clean `ambiguous type` error per \
+         §5.1.2 / monomorphisation §9.4; got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+
+    // (ii) NO monomorphiser panic escaped the eval thread — the debug_assert!
+    // (`build_mangled_name … non-concrete param`) and any Rust panic banner
+    // must be absent (the robustness blocker the §9 root fix removes).
+    let lc = combined.to_lowercase();
+    assert!(
+        !lc.contains("panicked")
+            && !combined.contains("build_mangled_name")
+            && !combined.contains("non-concrete param")
+            && !lc.contains("internal error"),
+        "the monomorphiser MUST NOT panic on the Face-B form — a typecheck \
+         panic on user input is a robustness defect (§9.2/§9.3); got stdout={} \
+         stderr={}",
+        out.stdout,
+        out.stderr
+    );
+
+    // (iii) the session survived: the following independent form still evals.
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "after the ambiguous-type error the REPL MUST stay alive — the \
+         following `(add-i64 2 3)` must eval to `:primitives/Int 5` (proves no \
+         crash); got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/05-definitions.md §5.1.2 — 0432.E2: the same Face-B form via
+// `--run` produces the clean ambiguous-type error. This face is the
+// convergence TARGET the REPL face (E1) must match — the `--run` path compiles
+// out the monomorphiser `debug_assert!`, so the §4 ambiguity backstop already
+// reports the clean error (no panic). Pins the target message.
+#[test]
+fn multi_clause_defn_self_call_run_clean_error() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(&format!("{FIXME_0432_FACE_B}\n(defn main [] (Pure 0))"))
+        .output();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+
+    assert!(
+        combined.contains("ambiguous type"),
+        "the Face-B self-call via `--run` MUST surface a clean `ambiguous \
+         type` error per §5.1.2 / monomorphisation §9.4; got stdout={} \
+         stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // No panic / abnormal termination on the batch path.
+    let lc = combined.to_lowercase();
+    assert!(
+        !lc.contains("panicked")
+            && !combined.contains("build_mangled_name")
+            && !combined.contains("non-concrete param"),
+        "the `--run` path MUST report the clean type error with NO panic; got \
+         stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/05-definitions.md §5.1.2 — 0432.E3 (+neg): REPL and `--run`
+// produce the IDENTICAL ambiguous-type diagnostic — the cross-mode convergence
+// the FIXME demands. The +neg is NO REPL/`--run` divergence: neither a panic
+// nor a differing message. (Pre-§9-fix the REPL panicked while `--run` reported
+// the clean error — the exact divergence this guard rejects.)
+#[test]
+fn multi_clause_defn_self_call_repl_equals_run_neg() {
+    // REPL face.
+    let repl_out = repl_prims(&format!("{FIXME_0432_FACE_B}\n"));
+    let repl_combined = format!("{}{}", repl_out.stdout, repl_out.stderr);
+
+    // `--run` face.
+    let run_out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(&format!("{FIXME_0432_FACE_B}\n(defn main [] (Pure 0))"))
+        .output();
+    let run_combined = format!("{}{}", run_out.stdout, run_out.stderr);
+
+    // Both report the ambiguous-type error (neither panics, neither succeeds).
+    assert!(
+        repl_combined.contains("ambiguous type"),
+        "REPL face MUST report `ambiguous type`; got stdout={} stderr={}",
+        repl_out.stdout,
+        repl_out.stderr
+    );
+    assert!(
+        run_combined.contains("ambiguous type"),
+        "`--run` face MUST report `ambiguous type`; got stdout={} stderr={}",
+        run_out.stdout,
+        run_out.stderr
+    );
+
+    // The convergence: the SAME diagnostic core appears in both. Extract the
+    // `ambiguous type …` clause through end-of-line from each mode and assert
+    // they are byte-identical (no message divergence, no panic in one mode).
+    let extract = |s: &str| -> String {
+        s.lines()
+            .find(|l| l.contains("ambiguous type"))
+            .map(|l| {
+                let idx = l.find("ambiguous type").unwrap();
+                l[idx..].to_string()
+            })
+            .unwrap_or_default()
+    };
+    let repl_msg = extract(&repl_combined);
+    let run_msg = extract(&run_combined);
+    assert!(
+        !repl_msg.is_empty() && repl_msg == run_msg,
+        "REPL and `--run` MUST converge on the IDENTICAL ambiguous-type \
+         diagnostic (§9.4) — no divergence, no panic in either mode.\n\
+         repl_msg={repl_msg:?}\nrun_msg={run_msg:?}"
+    );
+}

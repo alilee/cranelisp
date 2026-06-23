@@ -2633,3 +2633,139 @@ fn agent_log_feature_off_byte_identical_reverify() {
          vs unset — the agent-gated log code cannot perturb the default suite (§17.9)"
     );
 }
+
+// ===========================================================================
+// CF.1 — the validator containment floor (R2 layer b)
+//
+// `design/arch/repl-embedded-agent.md §11.3` layer (b): the agent's eval-thread
+// typechecks (the S89 Build validator `validate_forms_dry_run`) call
+// `check_forms` DIRECTLY on the eval thread with NO `catch_unwind` today
+// (`src/worker.rs` `validate_forms_dry_run` → `check_forms`). ANY typechecker
+// panic over uncontrolled (model-proposed) input unwinds the eval thread and
+// CRASHES the REPL. Layer (b) wraps that eval-thread typecheck in
+// `catch_unwind` — converting a caught unwind into a clean "could not validate"
+// outcome so the session stays alive.
+//
+// DURABILITY HAZARD (the subtle one, flagged by /sprint): a CF.1 keyed on the
+// 0432 Face-B form would be VACUOUS. On HEAD the 0432 form does NOT panic
+// through the validator — the §4 ambiguity backstop catches it cleanly (the
+// session already survives, verified live). And once 4d-tc's §9 root fix lands,
+// the 0432 form panics even less. So a 0432-keyed CF.1 passes with NO
+// `catch_unwind` present — it would guard nothing.
+//
+// To durably guard the `catch_unwind` FLOOR independent of the 0432 fix, CF.1
+// must exercise the catch with a panic the root fix does NOT remove. It uses a
+// TEST-ONLY PANIC-INJECTION SEAM (the 4d-int testability obligation, mirroring
+// the S89 `#[cfg(test)]` colour-force seam): an env lever recognized only in
+// test/feature builds that forces the eval-thread validator's `check_forms`
+// path to panic. CF.1 then asserts the injected panic is CAUGHT, converted to a
+// clean outcome, the REPL stays alive, and nothing crashes.
+//
+// 4d-int OBLIGATION (testability seam owed): provide
+// `CRANELISP_AGENT_FORCE_VALIDATOR_PANIC=1` (a `#[cfg(any(test, feature =
+// "agent"))]`-gated hook at the top of `validate_forms_dry_run`, or an
+// equivalent magic-form mechanism) that makes the eval-thread validator
+// `check_forms` panic. Without this seam CF.1 cannot durably guard the catch —
+// it would be a vacuous-after-root-fix guard keyed on a non-panicking form.
+// The §11.3(b) `catch_unwind` is the substantive fix that flips CF.1 green.
+// ===========================================================================
+
+/// The injection env lever (4d-int testability obligation). When set, the
+/// eval-thread validator (`validate_forms_dry_run` → `check_forms`) is forced to
+/// panic on a model-proposed `submit`, so the `catch_unwind` floor is exercised
+/// independent of whether any real form (0432 or otherwise) currently panics.
+#[cfg(feature = "agent")]
+const FORCE_VALIDATOR_PANIC_ENV: &str = "CRANELISP_AGENT_FORCE_VALIDATOR_PANIC";
+
+/// Stub-driven agent REPL with EXTRA env wired (here: the validator
+/// panic-injection lever). Mirrors `stub_repl` but threads additional env vars
+/// onto the spawned binary.
+#[cfg(feature = "agent")]
+fn stub_repl_with_env(
+    script: &str,
+    prelude: PreludeVariant,
+    stdin: &str,
+    extra_env: &[(&str, &str)],
+) -> helpers::e2e::CrOutput {
+    let mut cl = Cranelisp::new().repl().with_prelude(prelude).cli_flag("--agent");
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(&script_path, script).unwrap();
+    cl = cl
+        .env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap());
+    for (k, v) in extra_env {
+        cl = cl.env(k, v);
+    }
+    cl.stdin(stdin).output()
+}
+
+// spec: repl/spec.md §17.14.3 — CF.1: a model-proposed `submit` whose
+// eval-thread validation PANICS does NOT crash the REPL. The §11.3(b)
+// `catch_unwind` floor converts the caught unwind into a clean "could not
+// validate" outcome; the session stays alive (a FOLLOWING input still evals).
+//
+// RED on HEAD: the eval-thread `check_forms` in `validate_forms_dry_run` has no
+// `catch_unwind`, so the injected panic unwinds the eval thread and crashes the
+// REPL (the following input never evals). Green on the §11.3(b) floor.
+//
+// CF.1 uses the panic-INJECTION seam (not the 0432 form) so the guard is NOT
+// vacuous-after-root-fix: the injected validator panic is one the 0432 §9 root
+// fix does NOT remove (defence-in-depth for the NEXT uncontrolled-input panic —
+// a Face-A shape or a future construct).
+#[cfg(feature = "agent")]
+#[test]
+fn agent_validator_malformed_form_does_not_crash_repl() {
+    // A well-formed `submit` that WOULD validate cleanly — but the injection
+    // lever forces the eval-thread validator's `check_forms` to panic, standing
+    // in for any uncontrolled-input typechecker panic. The `done:` is the
+    // terminal turn; `(add-i64 7 8)` after the agent turn is the survival probe.
+    let script = "tool: submit (defn helper [x] (add-i64 x x))\n\
+                  done: I defined helper for you\n";
+    let out = stub_repl_with_env(
+        script,
+        PreludeVariant::PrimitivesOnly,
+        "/ask define helper\n\
+         (add-i64 7 8)\n",
+        &[(FORCE_VALIDATOR_PANIC_ENV, "1")],
+    );
+
+    // (i) the REPL stayed ALIVE: the following independent form still evals.
+    // If the injected validator panic unwound the eval thread (no catch), the
+    // process dies before this form runs and `:primitives/Int 15` is absent.
+    assert!(
+        out.stdout.contains(":primitives/Int 15"),
+        "CF.1: an injected eval-thread validator panic MUST be caught by the \
+         §11.3(b) `catch_unwind` floor — the REPL stays alive and the following \
+         `(add-i64 7 8)` evals to `:primitives/Int 15`. RED on HEAD (no catch → \
+         eval thread unwinds → process dies). stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+
+    // (ii) +neg: no Rust panic banner / abnormal-termination chatter reached the
+    // transcript. The catch converts the unwind into a clean validator outcome;
+    // the user never sees an internal panic (the §16.2 silent contract holds —
+    // a panicking validation is treated like a failed validation, not a crash).
+    let lc = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        !lc.contains("panicked")
+            && !lc.contains("note: run with `rust_backtrace")
+            && !lc.contains("stack backtrace"),
+        "CF.1 +neg: no Rust panic banner may reach the transcript — the caught \
+         validator panic surfaces as a clean outcome, never an internal crash \
+         (§11.3(b) / §16.2). stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+
+    // (iii) the process did not die by signal (it exited cleanly via EOF).
+    assert!(
+        out.status.code().is_some(),
+        "CF.1: the REPL MUST exit cleanly (an exit code, not a signal) — a \
+         caught validator panic does not abort the process. status={:?} \
+         stdout={} stderr={}",
+        out.status,
+        out.stdout,
+        out.stderr
+    );
+}

@@ -648,3 +648,130 @@ per-test tmpdir). No FIXME filed.
 No plan-row shifts (the 5 P4 rows landed exactly as planned); no ledger entry
 (ship-this-sprint RED-first guards are tracked here, not in the carry-forward
 failure ledger).
+
+---
+
+## Execution note — Phase 5 Wave 4 step 4q (`/qa`, 2026-06-23)
+
+0432 e2e rows (§"0432") + the CF.1 containment floor (§"Containment floor")
+authored. The `.rs` rows landed; `/dev` 4d-tc (§9 concreteness gate) and 4d-int
+(§11.3(b) `catch_unwind` + the panic-injection seam) are the resolvers.
+
+**0432 e2e rows authored (3/3), `tests/spec_05_definitions.rs`,
+`PreludeVariant::PrimitivesOnly`, shared `FIXME_0432_FACE_B` const (the minimal
+unannotated multi-clause `defn` + cross-variant self-call):**
+
+- `multi_clause_defn_self_call_repl_clean_error_not_panic` (0432.E1) — the
+  Face-B form via the REPL surfaces a clean `ambiguous type` error AND the
+  session does NOT crash (no panic banner / `build_mangled_name` /
+  `non-concrete param` chatter, and the FOLLOWING `(add-i64 2 3)` evals to
+  `:primitives/Int 5` — the survival probe).
+- `multi_clause_defn_self_call_run_clean_error` (0432.E2) — the same form via
+  `--run` surfaces the clean ambiguous-type error, no panic. The convergence
+  TARGET the REPL face must match.
+- `multi_clause_defn_self_call_repl_equals_run_neg` (0432.E3, +neg) — REPL and
+  `--run` produce the IDENTICAL ambiguous-type diagnostic (extracted
+  `ambiguous type …`-through-EOL clause, asserted byte-equal). The +neg is no
+  REPL/`--run` divergence — neither panic nor differing message.
+
+**MAJOR FINDING — 0432.E1/E2/E3 are ALL GREEN-TODAY, not RED.** The brief states
+the Face-B form panics the REPL live at `monomorphise.rs:1016`. **It does NOT on
+HEAD (SHA `79d14c8`).** Verified live, freshly-rebuilt debug binary, both modes:
+the form produces the clean `ambiguous type; add an annotation to pin the type
+of the polymorphic value bound in `sum-to`` error in REPL AND `--run`, with NO
+panic, NO backtrace, and the following REPL form still evals. The S84+
+monomorphisation re-grounding (the `is_concrete()` slot gate + the §4
+position-complete ambiguity scanner / `find_ambiguous_top_level_form` backstop)
+**already catches the residual `Var` before it reaches `build_mangled_name`** —
+so the `debug_assert!` is unreachable for the 0432 shape today. The three e2e
+rows therefore pass on HEAD; they are durable **convergence guards** (exactly
+0432.E2's planned disposition, now true of all three). They pin the
+REPL==`--run` clean-error convergence the FIXME demands and guard against any
+future regression that re-introduces the panic.
+
+**4d-tc obligation (unchanged record).** The §9.3 `monomorphise_call` P1
+concreteness gate is still the canonical root fix — it fires the clean error one
+step earlier (at the param-vector gate, before mangling) rather than relying on
+the §4 finalisation backstop. **0432.U** (the mandatory unit-per-fix guard, a
+`crates/cranelisp-typecheck` `#[cfg(test)]` test, `/dev`-authored) is its direct
+seam guard: the Face-B form through `check_forms`/`pass4_monomorphise` returns
+`Err(TypeError{ msg contains "ambiguous type" })` — NOT a panic — debug-built.
+4d-tc should verify whether the unit-tier seam still reaches the
+`debug_assert!` (the e2e backstop catches it post-finalisation; the P1 gate
+makes the early-fire explicit and is the belt-and-braces the §9 design intends).
+0432.U is the load-bearing red IF the unit seam still panics; the e2e rows are
+green-today convergence targets regardless.
+
+**CF.1 authored (1/1), `tests/agent.rs` (Lane A, `--features agent`):**
+
+- `agent_validator_malformed_form_does_not_crash_repl` (CF.1) — **RED on HEAD.**
+  A model-proposed `submit` whose eval-thread validation panics does NOT crash
+  the REPL: asserts (i) the session stays alive (following `(add-i64 7 8)` →
+  `:primitives/Int 15`), (ii) +neg no Rust panic banner reaches the transcript,
+  (iii) clean exit (code, not signal).
+
+**CF.1 vacuousness hazard CONFIRMED + designed around.** The brief's hazard is
+real and present TODAY: a CF.1 keyed on the 0432 form is vacuous. Verified live
+— driving a 0432-shaped `submit` through the S89 Build validator
+(`validate_forms_dry_run` → `check_forms`, NO `catch_unwind` on HEAD) does NOT
+crash: the session survives, the framed prose renders, a following form evals.
+The validator's `check_forms` returns the clean ambiguous-type `Err` (the §4
+backstop again), the repair loop consumes it, the session lives — with no catch
+present. So a 0432-keyed CF.1 would pass on HEAD AND after the root fix, guarding
+nothing. **CF.1 is therefore keyed on a panic-INJECTION seam, not the 0432
+form** — exercising the catch with a panic the §9 root fix does NOT remove
+(defence-in-depth for the next uncontrolled-input panic: a Face-A shape or
+future construct).
+
+**4d-int OBLIGATIONS (two):**
+
+1. **The §11.3(b) `catch_unwind` floor** — wrap the eval-thread typecheck in
+   `validate_forms_dry_run` (`src/worker.rs`) in `catch_unwind`, converting a
+   caught unwind into a clean "could not validate" `Err` (drop the throwaway
+   staging, surface a validation failure rather than crashing). This is the
+   substantive fix that flips CF.1 green.
+2. **The panic-INJECTION testability seam (CONFIRMED needed at authoring).**
+   CF.1 sets `CRANELISP_AGENT_FORCE_VALIDATOR_PANIC=1` on the spawned binary
+   (threaded via the new `stub_repl_with_env` helper in `tests/agent.rs`). **This
+   env lever does not exist on HEAD** — so the well-formed `submit` validates
+   cleanly, reaches the confirm gate (which eats the survival probe), and the
+   probe never evals ⇒ CF.1 RED. 4d-int must add a `#[cfg(any(test, feature =
+   "agent"))]`-gated hook at the top of `validate_forms_dry_run` (or an
+   equivalent magic-form mechanism) that forces the eval-thread validator
+   `check_forms` to panic when the env is set — mirroring the S89
+   `#[cfg(test)]` colour-force seam pattern (`src/style.rs::test_support`), but
+   env-driven so it crosses the e2e subprocess boundary. Without this seam CF.1
+   is a vacuous-after-root-fix guard. This is a binary testability gap per
+   `tests/CLAUDE.md §"Two tiers, no middle"` (it cannot surface through I/O
+   without the lever) — flag `target: /int` only if 4d-int finds it genuinely
+   cannot be wired; named here as the obligation. NOTE: on the fixed path the
+   injected panic fires DURING validation (before the confirm gate, `pull.rs:273`
+   precedes `pull.rs:339`) → all 3 repair iterations panic-then-catch → cap
+   exhausted → give-up → NO confirm gate → the survival probe evals cleanly =
+   GREEN. The RED/green split is sound.
+
+**Confirmed RED/green set.** Default `cargo nextest run`: **1544/1544, 0
+failures** (up from the Wave-3 1541 baseline by the 3 green-today 0432 e2e rows;
+the 3 rows are in the default build — not agent-gated). Agent lane
+(`env -u ANTHROPIC_API_KEY -u CRANELISP_AGENT_PROVIDER -u
+CRANELISP_AGENT_STUB_SCRIPT cargo nextest run --features agent --test agent
+--no-fail-fast`): **54 tests run, 53 passed, 1 failed** — the single RED is
+**CF.1** (`agent_validator_malformed_form_does_not_crash_repl`), the load-bearing
+containment-floor guard; no pre-existing agent-lane test regressed.
+`python3 tests/plan/spec_link_check.py` clean on both files
+(spec_05_definitions.rs 42/42 OK; agent.rs 61/61 OK — CF.1 cites
+`repl/spec.md §17.14.3`, the 0432 rows cite `spec/05-definitions.md §5.1.2`).
+
+**Disposition summary:**
+- 0432.E1/E2/E3 — **GREEN-today** convergence guards (the panic is already gone;
+  the §4 backstop catches the Face-B form cleanly in both modes).
+- 0432.U — `/dev`-authored unit (specified in §"0432"); the load-bearing red IF
+  the unit seam still reaches the `debug_assert!`; the §9.3 P1 gate flips it.
+- CF.1 — **RED-today**; flipped green by 4d-int's §11.3(b) `catch_unwind` +
+  the `CRANELISP_AGENT_FORCE_VALIDATOR_PANIC` injection seam.
+
+No plan-row shifts (the 4 rows landed exactly as planned). No carry-forward
+ledger entry (ship-this-sprint RED-first guards tracked here, not in the
+carry-forward failure ledger). No FIXME filed (both 4d-int seams are named in
+the test plan's §"Testability seams" family + re-confirmed here; file
+`target: /int` only if a knob is genuinely unwireable at Phase 5).
