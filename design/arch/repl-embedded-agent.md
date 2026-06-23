@@ -1,6 +1,6 @@
 # Embedding an LLM Agent in the REPL — Exploratory Architectural Design
 
-**Status:** RATIFIED (U1–U6, user 2026-06-21 — §10) + IN DELIVERY. **Phase 1 (Advisor MVP, rungs 0–4) SHIPPED + live-validated S88** (`sprints/archive/sprint-88.md`). **Phase 2 (Build + Document + pre-flight validator, rungs 5–6) is S89.** The implementable int-side plan is `design/int/agent.md`; the REPL experience is `repl/spec.md §17`; the module-preamble form is spec §8.16. This doc remains the master architectural reference; §§ below describe the full target, with phasing in §9.
+**Status:** RATIFIED (U1–U6, user 2026-06-21 — §10) + IN DELIVERY. **Phase 1 (Advisor MVP, rungs 0–4) SHIPPED + live-validated S88** (`sprints/archive/sprint-88.md`). **Phase 2 (Build + Document + pre-flight validator, rungs 5–6) SHIPPED + live-validated S89** (`sprints/archive/sprint-89.md`). **S90 (fluency — reach half of rung 7: `/syntax` cheat-sheet, sig-grain harvest, importable-symbol search, silent greppable log) is APPROVE-WITH-REVISIONS — see §11** (the durable record of the S90 Phase-2 `/arch` review; verdict transcribed into `sprints/SPRINT.md` by `/sprint`). The implementable int-side plan is `design/int/agent.md`; the REPL experience is `repl/spec.md §17`; the module-preamble form is spec §8.16. This doc remains the master architectural reference; §§ below describe the full target, with phasing in §9 and the S90 fluency-phase review in §11.
 **Owner:** `/arch` (crate/feature boundary). Cross-skill: `/repl` (experience), `/int` (dispatch + session wiring), `/spec` (spec-retrieval + module-preamble packaging).
 **Provenance:** Authored by `/arch` (S86) against the user's vision and refined through an `/arch`↔user design conversation. Greenfield — no prior LLM-as-feature design exists; the only adjacent concept is `/learn` (FIXME 0052), a scripted tutorial, not an LLM. First-principles + this codebase; the sketch has no REPL-agent precedent.
 
@@ -261,8 +261,255 @@ All six sign-offs are ratified; the durable record is `sprints/archive/sprint-88
 - **`/arch`** — the `agent` feature boundary/discipline; the ruling that the agent is a REPL-cadence consumer of the existing surface (not a new state window); the three-roles-of-the-in-process-compiler framing (read/write/validate).
 - **`/qa`** — agent-feature tests behind `#[cfg(feature="agent")]` (separate lane): classifier routing, pull-as-command wiring, the validator repair loop, echo-as-typed reproducibility. Default suite stays agent-free.
 
+---
+
+## §11. S90 Phase-2 review — the fluency phase (reach half of rung 7)
+
+**Status:** APPROVE-WITH-REVISIONS (`/arch` Phase-2, 2026-06-23). Verdict transcribed
+into `sprints/SPRINT.md` by `/sprint`; this section is the durable architectural record.
+
+S90 delivers the **"reach"/fluency half of rung 7** as four pillars on the existing
+`agent` feature gate. All four are **REPL-cadence consumers of the existing int surface**
+(§7.1 / BC §6.3) — no pillar opens a new state window, and the **byte-identical-feature-OFF**
+(§7.5) + **zero-new-cross-crate-edge** (§7.5) invariants hold for all four. The pillars:
+
+1. **`/syntax` topic cheat-sheet** — a curated, verified-compiling, topic-keyed
+   core-language reference; a REPL command (human) that is also an agent pull-tool; the
+   primer cross-references the topic *names*. This is the primer-appropriate kind of
+   grounding (core syntax, derived from spec); prelude/stdlib idioms stay harvest-sourced
+   per the `agent-prelude-awareness-via-harvest-not-primer` ruling. Mechanically it is a
+   new read-only `/syntax` command (additive to the §4.2 allowlist) + a static asset; no
+   new machinery.
+2. **Harvest at signature grain** — the harvester (§4.1/§5) surfaces in-scope prelude +
+   imported symbols at **name + type signature + docstring** grain each turn. This is the
+   user-directed way to keep prelude+imports in context (harvest, NOT primer). It reads the
+   same live symbol tables `harvest_context` already reads (`src/agent/harvest.rs`); the
+   only change is the *grain* (add signature + docstring to the export-surface arm). Pure
+   read enrichment of an existing harvest arm — Principle 7 (the symbol table is the
+   source of truth), no copy-store.
+
+### §11.1 Pillar 3 — importable-symbol search: the typecheck-to-index-then-discard seam
+
+Pillar 3 searches symbols **reachable on the lib search path but not yet imported**, by
+name and/or type signature. To know an importable symbol's signature its defining module
+must be typechecked — but it must **not** be imported into the session. The mechanism is
+**typecheck-to-index-then-discard**: typecheck a reachable module against throwaway
+staging, index its public symbols (name + signature + docstring + originating module),
+**discard the typecheck state**, and serve searches from the index.
+
+**Ruling — the seam lives in int and reuses the S88/S89 validator dry-run substrate;
+ZERO new cross-crate edges.** The discard seam already exists: `worker::validate_forms_dry_run`
+(`src/worker.rs:308`) builds a **throwaway `SessionSymbolTable` staging** + a
+`SymbolTableAccess::cluster(...)` view, runs `cranelisp_typecheck::check_forms`, and
+**drops the staging on every path — never commits** (the §16.1 discard arm; the structural
+"zero residue" guarantee). Pillar 3's indexer is a **sibling of this function**, not a new
+seam: it runs the same stage→check pass over a *reachable but unregistered* module's parsed
+forms, but instead of discarding the *result* it **reads the public entries out of the
+staging table** (name + scheme + docstring + module) into an int-side index, *then* drops
+the staging. The typecheck is `check_forms` — the **existing** int→typecheck inward call —
+so no crate's `public-api.txt` moves and `cranelisp-types` is untouched (Principle 3).
+
+**Why zero residue is structural, not disciplinary.** Residue would mean a session
+`DashMap` (`SharedState.symbol_tables` / `module_aliases` / `prelude_fallback` /
+`introspection`) gaining an entry for the indexed module. It cannot, by construction:
+the indexer typechecks into a **locally-owned `staging` value** (not `symbol_tables`),
+exactly as `validate_forms_dry_run` does — the indexed module is **never `register_module`'d**,
+so the scheduler/`ModuleState`/alias/fallback maps never learn it exists. The index itself
+is a **derived read-cache** (§3.3 — "never the source of truth; blow it away and it
+rebuilds"), an int-private `pub(crate)` structure on `SharedState` (or on `AgentState`),
+**not** a symbol table and **not** serialized. The +neg isolation test the acceptance
+demands asserts exactly this: after an index pass, `symbol_tables`/`module_aliases`/
+`prelude_fallback` are unchanged (the same shape as the §16.1 validator-discard guard
+`validate_dry_run_discards_does_not_commit`, `src/agent/pull.rs:1088`).
+
+**Index lifetime / invalidation.** Because the index is a pure cache over files on the
+search path, invalidation is coarse and cheap: rebuild on search-path change or on a
+miss; an indexed entry going stale (a module edited on disk) is a *quality* concern, not
+a *correctness* one (the entry is only a search hint — importing it then re-typechecks
+for real through the live path). MVP: build lazily on first search, hold for the session,
+offer a cheap rebuild. No fine-grained invalidation machinery (Principle 6 — complexity
+has a budget; the index is reconstructible).
+
+### §11.2 One index or two (Pillars 2 + 3)
+
+**Ruling — ONE indexing *value shape*, TWO population paths.** The unit both pillars serve
+is the same: `{ name, signature, docstring, module }` (the searchable/displayable record).
+Pillar 2 (in-scope) populates it from **already-typechecked live tables** — a direct read,
+cheap, every turn, ambient. Pillar 3 (importable) populates it from the
+**typecheck-to-index-then-discard** pass — expensive, lazy, cached. **Share the record
+type and the search/format code; keep the two population paths distinct** — they have
+different cost, lifetime, and trigger, and conflating them would force Pillar 2's cheap
+per-turn read through Pillar 3's typecheck-and-cache lifecycle (a Principle-8 interim
+smell — building heavier machinery than the in-scope case needs). One DTO, one search
+function, two feeders. This is the "derived index is a pure cache" model (§3.3) applied
+twice with different inputs.
+
+### §11.3 Pillar 3 robustness blocker — FIXME 0432 (the index-time typecheck PANIC)
+
+**Ruling — 0432 IS pulled into S90 as a Pillar-3 prerequisite; Pillar 3 MUST NOT ship
+without containment.** The reasoning:
+
+- Pillar 3 runs the **real typechecker** (`check_forms` → monomorphiser) over **arbitrary
+  reachable modules at index time**. FIXME 0432 Face B is a monomorphiser `debug_assert!`
+  (`crates/cranelisp-typecheck/src/traits/monomorphise.rs:1016`) that fires on a
+  multi-clause `defn` + self-call whose params are unannotated — a **common, valid-looking
+  shape** (a public 1-arg entry variant delegating to a private accumulator variant). A
+  library on the search path can easily contain it.
+- The agent's validator (S89) typechecks **one staged user form** on the eval thread. The
+  Pillar-3 indexer typechecks **whole third-party modules** — a strictly *broader* trigger
+  surface for 0432.
+- **Containment gap (verified):** the pool-worker typecheck loop wraps `handle_typecheck_work_shared`
+  in `catch_unwind` (`src/worker.rs:1483` — panic → `notify_module_failed`). But the agent
+  validator and (as designed) the Pillar-3 indexer call `check_forms` **directly on the eval
+  thread with NO `catch_unwind`** (`validate_one_form` → `validate_forms_dry_run`,
+  `src/agent/pull.rs:668` / `src/worker.rs:308`; `s.agent_turn(...)` is called bare from the
+  `main.rs` read loop). A debug-build session (the agent's only build — `cargo run`/`nextest`
+  are debug, so `debug_assert!` is **live**) would therefore **unwind the eval thread and
+  crash the REPL** when the indexer hits a 0432-shaped module. The agent can crash the REPL
+  by *searching the library* — a robustness defect that defeats the whole feature.
+
+**Two-layer containment, both required:**
+
+1. **Fix 0432 Face B at root (`/typecheck`, the priority face per the FIXME).** The
+   monomorphiser must surface the unannotated-self-call ambiguity as a **clean type error**
+   (the §3.11 concrete-types-ambiguity ruling — a residual `Var` reaching the mangler is a
+   type error, never a `debug_assert!` panic), not a non-concrete-param tripwire. This is
+   the durable fix and aligns the mangler with `s84-concrete-types-ambiguity-ruling`. `/qa`
+   already owns the repro obligation (0432 `target: /qa → typecheck`).
+2. **Defence-in-depth: the index-time AND validator typecheck on the eval thread MUST run
+   inside a `catch_unwind`** (`pub(crate)`, int-internal, mirroring the `src/worker.rs:1483`
+   pool-worker pattern — convert a caught unwind to a clean `Err`, drop the throwaway
+   staging, surface "module failed to index/validate" rather than crashing the REPL). This
+   is independently warranted: a typechecker `debug_assert!`/`unreachable!` over *arbitrary
+   third-party library source* is exactly the "panic on input the author did not control"
+   case the eval-thread path currently does not guard. It also retroactively hardens the
+   S89 validator (a model-proposed 0432 form panic-crashing the REPL — the exact hazard the
+   FIXME flags). The catch is the **agent-robustness floor**; the root fix removes the
+   trigger. Ship both.
+
+**Sizing consequence:** because Pillar 3 cannot ship without (2), and is materially safer
+with (1), Pillar 3's full delivery in S90 is gated on the typecheck fire. See §11.5.
+
+### §11.4 Type-signature match semantics (Pillar 3 search)
+
+**Interface is `/arch`'s; the algorithm is `/typecheck`'s.** The index stores each symbol's
+type as its `cranelisp-types` scheme (the existing boundary type — no new DTO). The *match
+predicate* — exact-shape vs. unification/subsumption (Hoogle-style) — is a `/typecheck`
+design detail (it owns inference + unification). **MVP recommendation:** ship **name-fragment
+match + exact-structural-shape match** first (cheap, no unifier invocation — compare the
+query's parsed type-shape against indexed shapes up to alpha-renaming of type vars), and
+record **unification/subsumption match as a `/typecheck`-owned follow-up** (a query
+`(Fn [Int] ?)` subsuming `(Fn [Int] Bool)` needs the real unifier and a ranking model).
+Exact-shape clears the acceptance criterion ("search by type signature, get name + sig +
+module"); Hoogle-style subsumption is a precision upgrade, not an MVP gate. Flagged: whether
+the query *syntax* for a type pattern (holes/wildcards) touches spec is a `/spec` consult,
+not an `/arch` call — name it in the Phase-3 handoffs.
+
+### §11.5 Pillar 3 sizing — DESIGN-THIS-SPRINT, IMPLEMENT-NEXT (the split)
+
+**Ruling (the user-delegated sizing call): SPLIT — Pillars 1, 2, 4 ship fully in S90;
+Pillar 3 is designed this sprint and implemented next, UNLESS the 0432 typecheck fire lands
+early enough to pull its implementation forward in-sprint.** Rationale:
+
+- Pillars 1/2/4 are high-value, low-risk, and self-contained (a static asset + a command; a
+  harvest-arm grain change; a log sink). They ship regardless (Principle 6 — they fit the
+  budget cleanly).
+- Pillar 3 is **gated on a cross-skill typecheck fix** (0432 root fix) **plus** the
+  eval-thread `catch_unwind` hardening (§11.3), **plus** a new index lifecycle, **plus** the
+  match-semantics interface (§11.4). That is materially more surface than 1/2/4 combined, and
+  shipping it half-hardened (indexer without containment) would be a Principle-8 interim
+  implementation that can crash the REPL. The **design** (this §11.1–§11.4) lands in S90 so
+  the seam, the DTO, the discard guarantee, and the containment obligation are pinned; the
+  **implementation** lands once 0432's root fix is in (same sprint if the typecheck fire
+  completes before Pillar-3 implementation is reached; otherwise next sprint). This keeps
+  S90's shippable surface clean and de-risks the one design-risk pillar without discarding
+  its design work.
+
+### §11.6 Pillar 4 — silent greppable agent log
+
+**Ruling — a SIBLING sink to `trace.rs`, not an extension of it; zero public-API /
+`cranelisp-types` impact.** `src/agent/trace.rs` is an **ephemeral stdout/stderr** wire-debug
+trace (env-gated, `eprintln!`, formatting-only, no persistence — verified `src/agent/trace.rs`).
+Pillar 4 is a **persistent, structured, file-backed JSONL** insight log with stable keys
+(event type, symbol, error class, repair-iteration count, module). The two have different
+lifetime, sink, and consumer; folding the persistent log into the ephemeral trace would
+overload one module with two unrelated contracts (Principle 6 — keep concerns separate).
+Add `src/agent/log.rs` (or `telemetry.rs` — the §8 [R5] skeleton slot the int doc already
+reserves) as a new feature-gated sibling that *consumes* the same in-memory event vocabulary
+the agent loop already produces (the repair iterations + triggering errors already flow
+through `pull.rs`; the pulls through `run_pull`; submits/give-ups through `run_submit`). It
+appends one JSON object per event. **Impact: ZERO** — `pub(crate)`, int-private, fully
+`#[cfg(feature="agent")]`, off the default build path (byte-identical feature-OFF), no
+facade/`cranelisp-types`/`public-api.txt` movement, no cache bump. **Log file location** is
+a `/repl`-owned experience detail (env-configurable path, sibling to `CRANELISP_AGENT_TRACE`
+in `repl/spec.md §17.10`); `/arch` rules only that it is a dev-session artifact (NG4 — never
+in a `--link`/`--release` artifact) and writes silently (nothing extra in the REPL).
+
+### §11.7 `/syntax` ownership split
+
+- **Content** (the cheat-sheet topics + verified-compiling examples) — authored by `/docs`
+  (the verified-compiling discipline + token-dense curation is `/docs`' craft), **validated
+  by `/spec`** for accuracy against the normative spec (no normative *change* expected — it
+  is a *projection* of spec, not new language surface). The asset is a static
+  `include_str!` companion in `src/agent/` (sibling to `primer.txt`).
+- **Command UX** (`/syntax` bare = list topics; `/syntax <topic>` = dense content; the
+  agent-pull rendering) — `/repl` (`repl/spec.md §17`).
+- **Tool-wiring** (the `/syntax` `ReplCommand` variant + dispatch + the §4.2 allowlist row +
+  the primer topic-name cross-reference) — `/dev (src/)`.
+
+### §11.8 Public-API / `cranelisp-types` impact (all four pillars)
+
+**Confirmed ZERO across all four pillars.** No baseline moves, no `cranelisp-types` change,
+no `CACHE_SCHEMA_VERSION` bump. Every pillar is `pub(crate)`, int-private, fully
+`#[cfg(feature="agent")]`, byte-identical feature-OFF. Pillar 3's index reuses the existing
+`check_forms` inward call and the existing `cranelisp-types` scheme as its stored type — it
+needs **no new boundary type** (the index record is an int-private struct). The only
+non-int obligation is the **`/typecheck` 0432 root fix** (§11.3), which is a behaviour fix
+inside an existing crate, not an edge change. (If a future Hoogle-style match — §11.4 —
+wants a query-pattern type that does not already have a `cranelisp-types` home, that is a
+`target: /arch` filing at *that* implementation time, not now.)
+
+### §11.9 Revisions to scope (R1..Rn)
+
+- **R1 (binding):** Pillar 3 ships **split — design-this-sprint, implement-next** unless the
+  0432 typecheck fire completes in time to pull implementation forward in-sprint (§11.5).
+  Pillars 1, 2, 4 ship fully in S90 regardless.
+- **R2 (binding):** **FIXME 0432 is pulled into S90** as a Pillar-3 prerequisite. Two-layer
+  containment, both required: (a) `/typecheck` root-fixes Face B to a clean type error
+  (§3.11 / `s84-concrete-types-ambiguity-ruling`); (b) the **eval-thread index-time AND
+  validator typecheck are wrapped in `catch_unwind`** (`pub(crate)`, int-internal, mirroring
+  `src/worker.rs:1483`) — the agent-robustness floor. The catch lands with Pillar 3's
+  implementation (it is also a retroactive S89-validator hardening); the root fix is the
+  `/typecheck` fire. Pillar 3 does not ship without (b).
+- **R3 (binding):** **One index DTO `{ name, signature, docstring, module }`, two population
+  paths** (Pillar 2 live-read; Pillar 3 typecheck-and-discard). Share the record + search +
+  format; keep the feeders distinct (§11.2).
+- **R4 (binding):** Pillar 3's indexer is a **sibling of `validate_forms_dry_run`** — same
+  throwaway-`staging` discard substrate, never `register_module`. Zero residue is structural
+  (the indexed module never enters any `SharedState` map); the +neg isolation test mirrors
+  `validate_dry_run_discards_does_not_commit` (§11.1).
+- **R5 (binding):** Pillar 4 is a **new `#[cfg(feature="agent")]` sibling sink** (`log.rs` /
+  the reserved `telemetry.rs` slot), NOT an extension of `trace.rs` (§11.6).
+- **R6 (binding):** Type-signature match — **MVP = name-fragment + exact-structural-shape**;
+  unification/subsumption (Hoogle-style) is a `/typecheck`-owned follow-up; the query-pattern
+  *syntax* (holes/wildcards) is a `/spec` consult (§11.4).
+- **R7 (binding):** `/syntax` content = `/docs` (`/spec` validates), UX = `/repl`, wiring =
+  `/dev (src/)`; the cheat-sheet is a static `include_str!` asset, NOT primer-baked idioms;
+  prelude/stdlib stays harvest-sourced (§11.7, honouring `agent-prelude-awareness-via-harvest-not-primer`).
+
+---
+
 ### Key file/line citations
 - Dispatch seam: `src/main.rs:240-306`; `src/repl.rs:419/428/433/450`.
+- **Validator dry-run / discard substrate (Pillar-3 indexer reuses):** `src/worker.rs:308`
+  (`validate_forms_dry_run` — throwaway staging, never commits); `src/agent/pull.rs:668`
+  (`validate_one_form`, eval-thread, no `catch_unwind`); `src/agent/pull.rs:1088`
+  (`validate_dry_run_discards_does_not_commit` — the zero-residue guard shape).
+- **0432 panic site + containment:** `crates/cranelisp-typecheck/src/traits/monomorphise.rs:1016`
+  (`debug_assert!` — live in debug/agent builds); `src/worker.rs:1483` (the pool-worker
+  `catch_unwind` pattern the eval-thread path must mirror).
+- **Harvest sig-grain (Pillar 2):** `src/agent/harvest.rs` (`harvest_context`, the export-surface arm).
+- **Pillar-4 sibling-sink reference:** `src/agent/trace.rs` (ephemeral, env-gated — the contrast).
 - Tools-as-strings (pull surface): `src/repl.rs` `handle_*` (all return `String`); `describe_symbol` `:300`.
 - Eval/validate re-entry: `src/eval.rs:72/78`; `:447` (the bare-atom self-documentation gate §5.3 must preserve); cluster-atomic staging (commit-on-Ok/discard-on-Err) — the validator substrate (§6.2).
 - Self-documentation contract not to regress: `repl/spec.md` §4.
