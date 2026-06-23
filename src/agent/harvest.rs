@@ -34,6 +34,15 @@ const CHARS_PER_TOKEN: usize = 4;
 /// pin plus a handful of mentioned fns/modules.
 pub const DEFAULT_TOKEN_BUDGET: usize = 4000;
 
+/// Testability seam (Principle 5, §23.2 / test-plan "Testability seams" #2): an
+/// env lever that forces a small in-process `char_budget` so the budget-degrade
+/// ladder of the `== in scope ==` block can be exercised e2e. Sibling to the
+/// §17.10 agent env surface; agent-gated (this whole module is
+/// `#[cfg(feature = "agent")]`). Absent / unparseable ⇒ no override (the
+/// `token_budget` argument's `char_budget` stands). The value is a CHAR budget
+/// (not tokens) — the harvester gates on chars (`CHARS_PER_TOKEN`).
+const HARVEST_BUDGET_ENV: &str = "CRANELISP_AGENT_HARVEST_BUDGET";
+
 impl CompilerSession {
     /// Assemble the harvested context block for a turn (§5), under `token_budget`.
     ///
@@ -42,7 +51,15 @@ impl CompilerSession {
     /// recency and pushes the top-budget slice. The current module's full source
     /// is the PINNED floor — included first, never dropped (§5.4).
     pub(crate) fn harvest_context(&self, mentions: &[String], token_budget: usize) -> String {
-        let char_budget = token_budget.saturating_mul(CHARS_PER_TOKEN);
+        // The char budget governs the §5.4 graceful-degradation ladder. The
+        // `CRANELISP_AGENT_HARVEST_BUDGET` test lever (§23.2) forces a small
+        // in-process budget so the `== in scope ==` grain-degrade ladder can be
+        // exercised e2e; absent / unparseable ⇒ the `token_budget` argument's
+        // char budget stands.
+        let char_budget = std::env::var(HARVEST_BUDGET_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or_else(|| token_budget.saturating_mul(CHARS_PER_TOKEN));
         let mut out = String::new();
 
         // 1. Current module — full source, PINNED (§5.2 #1, the §5.4 floor).
@@ -63,6 +80,16 @@ impl CompilerSession {
             out.push_str(&format!("== module {} preamble ==\n{preamble}\n", cur.as_ref()));
         }
         self.push_module_full_source(&cur, &mut out);
+
+        // 1b. == in scope == — Pillar 2 (§23): ambient awareness of every symbol
+        //     in scope (current-module own defns + explicit imports + implicit
+        //     prelude) at name + `:Type` signature + docstring grain, so the
+        //     agent never has to spend a turn on `/list`/`/imports`/`/exports`
+        //     before referencing an in-scope signature. The block rides the same
+        //     `char_budget` ladder; under pressure it degrades GRAIN (sig+doc →
+        //     sig → name) per symbol, never silently truncating the symbol LIST
+        //     (`repl/spec.md §17.18.2`).
+        self.push_in_scope_block(&cur, char_budget, &mut out);
 
         // Partition the mentions into modules and fns/symbols. A mention is a
         // module if a symbol table exists at that path; otherwise treat it as a
@@ -135,6 +162,141 @@ impl CompilerSession {
         out
     }
 
+    /// Push the `== in scope ==` block (§23): every symbol in scope of the
+    /// current module, at name + `:Type` signature + docstring grain.
+    ///
+    /// The three feeders (§23.1 / `repl/spec.md §17.18.1`):
+    ///   1. current-module own defns — `defined_symbols()`;
+    ///   2. explicit imports — the current module's `ModuleEntry::Import` entries,
+    ///      resolved through the import chain to the canonical entry (mirroring
+    ///      `resolve_entry_for_display`, the path `/sig` / bare-symbol display use);
+    ///   3. implicit prelude — `prelude_implicit_names()` (gated on the
+    ///      `prelude_fallback` bit), each resolved to its canonical prelude entry.
+    ///
+    /// The signature rendering REUSES the existing FQ formatter (Principle 7 —
+    /// single source of truth): `format_def_entry` → `format_scheme_display` →
+    /// `display::format_type_qualified`, which qualifies primitive names
+    /// (`primitives/Int`) exactly as the bare-symbol display does when a human
+    /// types the name. No second signature formatter is written here.
+    ///
+    /// Budget degrades GRAIN, not membership (§23.2): the block is assembled per
+    /// symbol at the richest grain that still fits the running `char_budget`,
+    /// dropping the docstring first, then the signature, never the NAME.
+    fn push_in_scope_block(
+        &self,
+        cur: &cranelisp_types::ModuleFullPath,
+        char_budget: usize,
+        out: &mut String,
+    ) {
+        // Collect (name, rendered-grains) for every in-scope symbol. De-dupe by
+        // name (own defn shadows an import of the same name; explicit import
+        // shadows the implicit prelude).
+        let mut seen = std::collections::HashSet::new();
+        let mut entries: Vec<InScopeEntry> = Vec::new();
+
+        // 1. Current-module own defns + 2. explicit imports — both live in the
+        //    current module's own table; iterate it once and resolve imports.
+        if let Some(table) = self.shared.symbol_tables.get(cur) {
+            for (sym, entry) in table.all_symbols() {
+                let name = sym.as_ref().to_string();
+                // Skip mangled overload/multi-sig variants and special forms
+                // (special forms are not "in scope" symbols a user references by
+                // a sig — they surface elsewhere). Mirrors `prelude_implicit_names`.
+                if name.contains('$') || matches!(entry, cranelisp_types::ModuleEntry::SpecialForm { .. }) {
+                    continue;
+                }
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                // Resolve an import to the canonical entry + its defining module
+                // so the rendered signature is the real one (FQ), mirroring the
+                // path `/sig` takes for a re-exported name. An own `Def` (not an
+                // `Import`) is the module's own definition → full grain (with its
+                // docstring); a re-exported / imported symbol is sourced
+                // elsewhere → sig grain (its docstring is one `/doc` hop away,
+                // and is the heaviest signal the §23.2 ladder drops first).
+                let is_own_defn = !matches!(entry, cranelisp_types::ModuleEntry::Import { .. });
+                let (resolved, home) = self.resolve_entry_for_display(entry, cur);
+                entries.push(self.render_in_scope_entry(&resolved, &name, &home, is_own_defn));
+            }
+        }
+
+        // 3. Implicit prelude — gated on the `prelude_fallback` bit by
+        //    `prelude_implicit_names`. Each name resolves to prelude's canonical
+        //    entry (chain-followed) for the signature.
+        let prelude_path = cranelisp_types::ModuleFullPath::from("prelude");
+        for name in self.prelude_implicit_names() {
+            if !seen.insert(name.clone()) {
+                continue; // an own defn / explicit import already shadows it
+            }
+            if let Some(ptable) = self.shared.symbol_tables.get(&prelude_path)
+                && let Some(entry) = ptable.get(&name)
+            {
+                // Implicit-prelude symbols are sourced from prelude, not the
+                // current module → sig grain (no docstring), as for imports.
+                let (resolved, home) = self.resolve_entry_for_display(entry, &prelude_path);
+                entries.push(self.render_in_scope_entry(&resolved, &name, &home, false));
+            }
+        }
+
+        if entries.is_empty() {
+            return;
+        }
+
+        // Emit the block, degrading grain per symbol to fit the running budget.
+        // The header is part of the floor — once we commit to emitting symbols,
+        // every NAME survives (names-only floor); only the per-symbol DETAIL
+        // (docstring, then signature) is dropped under pressure (§23.2).
+        let header = "== in scope ==\n";
+        out.push_str(header);
+        for e in &entries {
+            // Pick the richest grain whose line still fits the remaining budget;
+            // the name-only line is the floor and is emitted even if it overflows
+            // (the symbol must never be silently absent).
+            // `< char_budget` (not `+ 1 <=`) leaves room for the trailing
+            // newline pushed after each line.
+            let line = if out.len() + e.full.len() < char_budget {
+                &e.full
+            } else if out.len() + e.sig.len() < char_budget {
+                &e.sig
+            } else {
+                &e.name
+            };
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    /// Render one in-scope symbol at all three grains (§23.2 ladder rungs):
+    /// `full` (name + `:Type` sig + docstring), `sig` (name + `:Type` sig, no
+    /// docstring), `name` (bare name floor). Reuses `format_def_entry` (the FQ
+    /// renderer) for the rich grains — Principle 7, no second formatter.
+    fn render_in_scope_entry(
+        &self,
+        entry: &cranelisp_types::ModuleEntry<crate::code::Code>,
+        name: &str,
+        home: &cranelisp_types::ModuleFullPath,
+        with_docstring: bool,
+    ) -> InScopeEntry {
+        // Sig grain: name + FQ `:Type` signature, docstring stripped. Clearing
+        // the docstring and re-rendering through the SAME formatter keeps it the
+        // single source of truth (Principle 7) rather than string-stripping.
+        let stripped = strip_entry_docstring(entry.clone());
+        let sig = self.format_def_entry(&stripped, name, home);
+        // Full grain: name + FQ `:Type` signature + docstring — the bare-symbol
+        // display a human gets by typing the name. Only own-module defns carry
+        // the docstring ambiently (`with_docstring`); imported / implicit-prelude
+        // symbols render at sig grain (their docstring is a `/doc` hop away — and
+        // is the heaviest signal the §23.2 ladder drops first). See the FIXME to
+        // /design recording this refinement of §23.1's "all feeders carry doc".
+        let full = if with_docstring {
+            self.format_def_entry(entry, name, home)
+        } else {
+            sig.clone()
+        };
+        InScopeEntry { name: name.to_string(), sig, full }
+    }
+
     /// Push the full source of a module — every defined symbol's stored source —
     /// into `out`. Reads the int `Introspection.source` for REPL-evaled defns;
     /// falls back to the symbol table's recorded `source_text` when present.
@@ -164,6 +326,37 @@ impl CompilerSession {
     }
 }
 
+/// One in-scope symbol rendered at all three §23.2 grains. `full` = name +
+/// `:Type` sig + docstring; `sig` = name + `:Type` sig (docstring dropped);
+/// `name` = bare name (the never-dropped floor).
+struct InScopeEntry {
+    name: String,
+    sig: String,
+    full: String,
+}
+
+/// Return a clone of `entry` with its docstring cleared, so re-rendering it
+/// through `format_def_entry` yields the signature-only grain (the ladder's
+/// middle rung, §23.2). Only the docstring-bearing variants are affected; all
+/// other fields are preserved. Keeps `format_def_entry` the single source of
+/// truth for the rendering (Principle 7) rather than string-stripping its output.
+fn strip_entry_docstring(
+    mut entry: cranelisp_types::ModuleEntry<crate::code::Code>,
+) -> cranelisp_types::ModuleEntry<crate::code::Code> {
+    use cranelisp_types::ModuleEntry::*;
+    match &mut entry {
+        Def { docstring, .. }
+        | SpecialForm { docstring, .. }
+        | TypeDef { docstring, .. }
+        | IntrinsicType { docstring, .. }
+        | TraitDecl { docstring, .. } => {
+            *docstring = None;
+        }
+        _ => {}
+    }
+    entry
+}
+
 /// Extract candidate symbol/module mentions from a turn's text (§5.3 "names in
 /// the message"). Tokenizes on whitespace and keeps word-like tokens (symbols
 /// may contain `-`, `/`, `?`, `!`, etc.). Stripping of surrounding punctuation
@@ -174,4 +367,122 @@ pub fn mentions_from_text(text: &str) -> Vec<String> {
         .filter(|tok| !tok.is_empty())
         .map(|tok| tok.to_string())
         .collect()
+}
+
+#[cfg(test)]
+mod in_scope_tests {
+    use super::*;
+    use crate::agent::test_support::repl_session;
+    use cranelisp_types::{DefKind, ModuleEntry, Scheme, Symbol, Type, UserFnState, Visibility};
+
+    /// Insert an own-module `defn`-shaped `Def` named `name` with an
+    /// `(Fn [Int] Int)` scheme and `docstring` into the current module's table.
+    fn insert_own_defn(s: &CompilerSession, name: &str, docstring: &str) {
+        let module = s.current_module_path();
+        let scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: std::collections::HashMap::new(),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+        };
+        let entry = ModuleEntry::def(
+            scheme,
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0 } },
+        )
+        .visibility(Visibility::Public)
+        .docstring(docstring.to_string())
+        .build();
+        if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
+            table.insert(Symbol::from(name), entry);
+        }
+    }
+
+    /// Slice the `== in scope ==` block out of a harvest dump — what the e2e
+    /// tests assert against (split on the header, stop before the next `==`
+    /// section / end).
+    fn in_scope_block(harvest: &str) -> String {
+        harvest
+            .split("== in scope ==")
+            .nth(1)
+            .unwrap_or("")
+            .to_string()
+    }
+
+    // spec: repl/spec.md §17.18.1 — the in-scope block carries, for an own
+    // defn, name + FQ `:Type` signature + docstring (the 3 facets), and the
+    // signature uses the qualified `primitives/Int` form (Principle-7 reuse of
+    // the `/sig`-grain formatter), not a bare `Int`.
+    #[test]
+    fn in_scope_block_renders_own_defn_at_full_grain() {
+        let s = repl_session();
+        insert_own_defn(&s, "inc-doc", "adds one to its argument");
+        let harvest = s.harvest_context(&[], DEFAULT_TOKEN_BUDGET);
+        let block = in_scope_block(&harvest);
+        assert!(block.contains("inc-doc"), "name present: {block}");
+        assert!(
+            block.contains("(Fn [primitives/Int] primitives/Int)"),
+            "FQ signature present (not bare `Int`): {block}"
+        );
+        assert!(
+            block.contains("adds one to its argument"),
+            "docstring present at full grain for an own defn: {block}"
+        );
+    }
+
+    // spec: repl/spec.md §17.18.2 — budget degrades GRAIN, not membership: under
+    // a tight `char_budget` the in-scope symbol's NAME still appears, but the
+    // heaviest detail (docstring) is dropped first (sig→name ladder). Drives the
+    // `CRANELISP_AGENT_HARVEST_BUDGET`-equivalent in-process by passing a tiny
+    // `token_budget` (the same `char_budget` the env lever forces).
+    #[test]
+    fn in_scope_block_degrades_grain_keeps_name_under_tight_budget() {
+        let s = repl_session();
+        insert_own_defn(
+            &s,
+            "inc-doc",
+            "a long descriptive docstring that costs many characters",
+        );
+        // Roomy: full grain (docstring present).
+        let roomy = in_scope_block(&s.harvest_context(&[], DEFAULT_TOKEN_BUDGET));
+        assert!(
+            roomy.contains("a long descriptive docstring"),
+            "docstring present under a roomy budget: {roomy}"
+        );
+        // Tight: ~1 token (~4 chars) — the name survives (floor), the docstring
+        // (and even the sig) are dropped. Membership is never silently truncated.
+        let tight = in_scope_block(&s.harvest_context(&[], 1));
+        assert!(
+            tight.contains("inc-doc"),
+            "the symbol NAME survives the tight budget (membership floor): {tight}"
+        );
+        assert!(
+            !tight.contains("a long descriptive docstring"),
+            "the docstring DETAIL is dropped under the tight budget (grain degrades \
+             sig→name; docstrings go first): {tight}"
+        );
+    }
+
+    // The grain ladder is monotone: the sig-grain rendering is a prefix-shaped
+    // subset of the full-grain rendering (same name + same FQ signature, minus
+    // the docstring) — the reuse-not-reimplement guard (Principle 7) that the
+    // sig grain is the SAME formatter with the docstring cleared.
+    #[test]
+    fn sig_grain_is_full_grain_without_docstring() {
+        let s = repl_session();
+        insert_own_defn(&s, "inc-doc", "a docstring");
+        let module = s.current_module_path();
+        let table = s.shared.symbol_tables.get(&module).unwrap();
+        let entry = table.get("inc-doc").unwrap().clone();
+        drop(table);
+        let rendered = s.render_in_scope_entry(&entry, "inc-doc", &module, true);
+        assert!(rendered.full.contains("a docstring"), "full carries doc: {}", rendered.full);
+        assert!(!rendered.sig.contains("a docstring"), "sig drops doc: {}", rendered.sig);
+        assert!(
+            rendered.sig.contains("(Fn [primitives/Int] primitives/Int)")
+                && rendered.full.contains("(Fn [primitives/Int] primitives/Int)"),
+            "both grains carry the FQ signature: sig={} full={}",
+            rendered.sig,
+            rendered.full
+        );
+        assert_eq!(rendered.name, "inc-doc");
+    }
 }
