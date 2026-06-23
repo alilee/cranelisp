@@ -2072,6 +2072,24 @@ fn harvest_in_scope_shows_name_sig_docstring() {
          sig grain (not name-only) — the harvest-sourced prelude awareness, \
          in_scope={in_scope}"
     );
+    // --- implicit-prelude symbol DOCSTRING (§17.18.1 facet 3, ALL feeders) ---
+    // At roomy budget (no budget constraint here) the §23.2 ladder is at full
+    // grain, so the implicit-prelude feeder MUST also carry its §A.5 Description
+    // docstring — not just OWN defns. `add-i64`'s Description is "Add"; it renders
+    // as the `; <classification> - <docstring>` comment tail (the SAME shape a
+    // bare-symbol display / `/doc` produces). Guarding the exact `; primitive - Add`
+    // suffix (not the bare word "Add") pins the docstring to the prelude symbol's
+    // own line and closes the gap that let docstrings-dropped-from-imports pass
+    // green. RED on HEAD: the import/prelude arm renders at sig grain (docstring
+    // dropped) per `render_in_scope_entry`'s `with_docstring=false` for non-own
+    // defns — the Pillar-2 deviation `/review` (2R) ruled must be reverted.
+    assert!(
+        in_scope.contains("primitives/add-i64 ; primitive - Add"),
+        "the `== in scope ==` block must carry the implicit-prelude symbol \
+         `add-i64`'s §A.5 docstring at full grain (all feeders carry docstrings, \
+         not just OWN defns) — the `; primitive - Add` comment tail, \
+         in_scope={in_scope}"
+    );
 }
 
 // spec: repl/spec.md §17.18 — P2.2 (+neg, fully-qualified): the harvested
@@ -2110,16 +2128,24 @@ fn harvest_sig_is_fully_qualified_neg() {
         "the `== in scope ==` signature must use FQ type names (`primitives/Int`), \
          in_scope={in_scope}"
     );
-    // +neg: no bare `Int` type token leaks into the in-scope block. A bare `Int`
-    // appears only as the tail of `primitives/Int`; stripping every qualified
-    // occurrence must leave no free-standing `Int`.
-    let stripped = in_scope.replace("primitives/Int", "");
-    assert!(
-        !stripped.contains("Int"),
-        "the `== in scope ==` block must NOT carry a bare unqualified `Int` in a \
-         type position — only the FQ `primitives/Int` form (the `/sig`-grain +neg), \
-         in_scope={in_scope}"
-    );
+    // +neg: no bare `Int` type token leaks into a TYPE position. Each in-scope
+    // line is `:<sig> <module>/<name> ; <classification> - <docstring>` — the
+    // type position is the segment BEFORE the `;` comment tail; the docstring
+    // PROSE after the `;` legitimately contains "Int" inside words like
+    // "**Int**eger division" and must NOT trigger this +neg (that false trigger
+    // is exactly what drove the wrong docstring-drop; the check is now scoped to
+    // type position only). For each line, take the pre-`;` segment, strip the FQ
+    // `primitives/Int` occurrences, and assert no free-standing `Int` remains.
+    for line in in_scope.lines() {
+        let type_position = line.split(';').next().unwrap_or("");
+        let stripped = type_position.replace("primitives/Int", "");
+        assert!(
+            !stripped.contains("Int"),
+            "the `== in scope ==` block must NOT carry a bare unqualified `Int` in a \
+             type position — only the FQ `primitives/Int` form (the `/sig`-grain +neg). \
+             Offending line (pre-comment segment)=`{type_position}`, in_scope={in_scope}"
+        );
+    }
 }
 
 // spec: repl/spec.md §17.18 — P2.3 (+neg, budget degrades GRAIN not membership):
