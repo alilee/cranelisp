@@ -1525,3 +1525,59 @@
         assert_eq!(slot_of("reduce-loop"), Some(1), "reduce-loop keeps staged slot 1");
         assert_eq!(slot_of("main"), Some(2), "main keeps staged slot 2");
     }
+
+    // §11.3(b) / §24 (CF.1) unit-tier floor: a panic raised inside the
+    // `checked_check_forms` catch-region is CONVERTED to `Err`, not propagated as
+    // an unwind. This is the unit complement to the e2e CF.1
+    // (`tests/agent.rs::agent_validator_malformed_form_does_not_crash_repl`): the
+    // e2e proves the REPL survives end-to-end; this pins the conversion at the
+    // exact seam where the catch lives (mirroring the pool-worker `catch_unwind`
+    // at `worker.rs:1483`). The §24.3 injection seam
+    // (`CRANELISP_AGENT_FORCE_VALIDATOR_PANIC`) stands in for any uncontrolled-
+    // input typechecker panic, so the guard is durable independent of any
+    // specific defect (e.g. 0432) that the typecheck root fix removes.
+    #[cfg(feature = "agent")]
+    #[test]
+    fn checked_check_forms_converts_panic_to_err_no_unwind_escapes() {
+        use cranelisp_typecheck::SymbolTableAccess;
+
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let module_aliases = cranelisp_types::ModuleAliases::default();
+        let prelude_fallback = cranelisp_typecheck::PreludeFallback::default();
+
+        let mut staging: crate::code::SessionSymbolTable =
+            crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let mut ctx: SymbolTableAccess<'_, crate::code::Code, ()> =
+            SymbolTableAccess::cluster(&symbol_tables, &mut staging, module.clone());
+
+        // Arm the injection seam so the catch-region panics. Env is process-global,
+        // so set it, run the catch, then clear it — keeping the test self-contained.
+        // The serde of this env var is owned by `checked_check_forms`'s seam.
+        unsafe { std::env::set_var("CRANELISP_AGENT_FORCE_VALIDATOR_PANIC", "1") };
+        // `catch_unwind` inside `checked_check_forms` must convert the forced
+        // panic to `Err` — this call MUST NOT itself unwind (no `should_panic`).
+        let result = checked_check_forms(
+            Vec::new(),
+            &mut ctx,
+            &symbol_tables,
+            &module_aliases,
+            &prelude_fallback,
+        );
+        unsafe { std::env::remove_var("CRANELISP_AGENT_FORCE_VALIDATOR_PANIC") };
+
+        match result {
+            Err(cranelisp_typecheck::CheckError::TypeError { message, .. }) => {
+                assert!(
+                    message.contains("compiler internal error"),
+                    "the caught panic must surface as the §24.2 internal-error \
+                     TypeError, got: {message}"
+                );
+            }
+            other => panic!(
+                "checked_check_forms MUST convert a catch-region panic to \
+                 Err(TypeError) (the §11.3(b)/§24 floor), got: {other:?}"
+            ),
+        }
+    }

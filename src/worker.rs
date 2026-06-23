@@ -312,7 +312,7 @@ pub(crate) fn validate_forms_dry_run(
     module: &ModuleFullPath,
     working_program: &[TopLevel],
 ) -> Result<(), CranelispError> {
-    use cranelisp_typecheck::{check_forms, CheckError, SymbolTableAccess};
+    use cranelisp_typecheck::{CheckError, SymbolTableAccess};
 
     let parsed = top_level_to_parsed_entries(working_program);
     if parsed.is_empty() {
@@ -326,7 +326,17 @@ pub(crate) fn validate_forms_dry_run(
         cranelisp_types::SymbolTable::<crate::code::Code, ()>::new_with_params(module.clone());
     let mut ctx: SymbolTableAccess<'_, crate::code::Code, ()> =
         SymbolTableAccess::cluster(symbol_tables, &mut staging, module.clone());
-    let result = check_forms(
+    // §11.3(b) / §24 (CF.1) — the agent-robustness floor. `check_forms` runs on
+    // the EVAL thread here, over model-proposed (uncontrolled) source. A
+    // typechecker `debug_assert!`/`unreachable!`/`panic!` over arbitrary input
+    // would otherwise unwind the eval thread and CRASH the REPL (the pool-worker
+    // loop at `worker.rs:1483` already guards its `check_forms`; this eval-thread
+    // seam did not). `checked_check_forms` mirrors that pool-worker `catch_unwind`
+    // shape (reusing `panic_message`): a caught panic becomes a clean
+    // `CheckError::TypeError`, which the discard arm below folds into the
+    // validator's normal `Err` ("could not validate") → the agent's silent-repair
+    // loop handles it (U5). The user NEVER sees a crash.
+    let result = checked_check_forms(
         parsed,
         &mut ctx,
         symbol_tables,
@@ -1538,6 +1548,87 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
     // `JitWrite` from backend's `compile_to_module` so their thread-local
     // ring buffer must be published before the worker exits.
     crate::got_trace::publish_thread_buffer();
+}
+
+/// `catch_unwind`-floored `check_forms` — the §11.3(b) / §24 (CF.1)
+/// agent-robustness floor (`design/int/agent.md §24.2`). Both
+/// [`validate_forms_dry_run`] (the eval-thread S89 Build validator, today) and the
+/// future Pillar-3 importable-symbol indexer (§25, next sprint) call THIS instead
+/// of `check_forms` directly, so there is ONE catch site, not two divergent ones.
+///
+/// A typechecker panic (`debug_assert!`/`unreachable!`/`panic!`) over uncontrolled
+/// (model-proposed or arbitrary-library) source would otherwise unwind the calling
+/// thread. This wraps the `check_forms` call in
+/// `catch_unwind(AssertUnwindSafe(..))` — **exactly** the pool-worker shape at
+/// [`priority_worker_loop_shared`] (`worker.rs:1483`), reusing [`panic_message`]
+/// — and converts a caught unwind into a clean `Err(CheckError::TypeError)`. The
+/// callers fold any `Err` into their own graceful path (the validator's
+/// silent-repair re-prompt; the indexer's "could not index" note), so a panicking
+/// typecheck NEVER crashes the process.
+///
+/// **Test-only panic-injection seam (§24.3).** When the env lever
+/// `CRANELISP_AGENT_FORCE_VALIDATOR_PANIC` is set, this forces a `panic!` in place
+/// of the real `check_forms` call — so CF.1 (`tests/agent.rs`) durably exercises
+/// the catch independent of whether any specific form (0432 or otherwise)
+/// currently panics. The seam is `#[cfg(any(test, feature = "agent"))]`-gated and
+/// env-driven (it must cross the e2e subprocess boundary); env-unset ⇒ normal
+/// validation. It is INERT in a production / feature-off build.
+#[cfg(feature = "agent")]
+fn checked_check_forms(
+    parsed: Vec<cranelisp_types::ParsedEntry>,
+    ctx: &mut cranelisp_typecheck::SymbolTableAccess<'_, crate::code::Code, ()>,
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+) -> Result<Vec<cranelisp_types::Warning>, cranelisp_typecheck::CheckError> {
+    use std::panic::AssertUnwindSafe;
+    // §16.2 SILENT contract: a caught validator panic is converted to a clean
+    // `Err`, so the default panic hook's stderr banner ("thread … panicked at …",
+    // the backtrace note) MUST NOT reach the transcript — the user sees a graceful
+    // validation outcome, never an internal-crash banner. Swap in a no-op hook for
+    // the duration of the catch and restore the previous hook after. The validator
+    // is the SINGLE synchronous eval-thread caller (no concurrent panic races on
+    // this seam — `validate_forms_dry_run` runs inline on the eval thread), so the
+    // hook swap is local and safe.
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_info| { /* expected caught panic — stay silent */ }));
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        // §24.3 test-only injection seam — forces the catch to fire so CF.1 is
+        // not a vacuous-after-root-fix guard. OFF (env unset) ⇒ real validation;
+        // gated out of production entirely.
+        #[cfg(any(test, feature = "agent"))]
+        if std::env::var_os("CRANELISP_AGENT_FORCE_VALIDATOR_PANIC").is_some() {
+            panic!(
+                "CRANELISP_AGENT_FORCE_VALIDATOR_PANIC — forced eval-thread \
+                 validator panic (test-only injection seam, §24.3)"
+            );
+        }
+        cranelisp_typecheck::check_forms(
+            parsed,
+            ctx,
+            symbol_tables,
+            module_aliases,
+            prelude_fallback,
+        )
+    }));
+    std::panic::set_hook(previous_hook);
+    match result {
+        // The inner `check_forms` ran to completion — propagate its own result.
+        Ok(r) => r,
+        // A panic unwound out of `check_forms` (or the injection seam). Mirror the
+        // pool-worker conversion: a clean `CheckError::TypeError` carrying the
+        // panic payload. The caller's discard arm folds this into its graceful
+        // path; the thread (and REPL) survives.
+        Err(panic) => {
+            let msg = panic_message(&panic);
+            Err(cranelisp_typecheck::CheckError::TypeError {
+                message: format!(
+                    "module/form failed to typecheck (compiler internal error): {msg}"
+                ),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })
+        }
+    }
 }
 
 /// Extract a human-readable message from a caught panic payload (FIXME 0285
