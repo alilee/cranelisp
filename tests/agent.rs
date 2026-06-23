@@ -2267,3 +2267,369 @@ fn harvest_references_actual_sig_no_relist_needed() {
          signature so the agent never needs to relist (§17.18.2), in_scope={in_scope}"
     );
 }
+
+// ===========================================================================
+// Pillar 4 (S90) — silent greppable agent log (tests/plan/s90-test-plan.md §P4
+// rows P4.1–P4.5; repl/spec.md §17.20; design/int/agent.md §27).
+//
+// With `CRANELISP_AGENT_LOG=<path>` set, an `--features agent` session appends
+// one structured JSONL record per agent event to that file — SILENTLY (nothing
+// extra in the REPL), with STABLE GREPPABLE KEYS (event type, symbol, error
+// class, repair-iteration count, module). The log is `#[cfg(feature="agent")]`,
+// off the default build, and feature-OFF stays byte-identical (§17.20.2/§17.9).
+//
+// RED on HEAD: no log sink exists (`src/agent/log.rs` is unbuilt — verified
+// absent), `CRANELISP_AGENT_LOG` is inert, so NO file is ever written and the
+// stable-key assertions fail. Flips green when /dev 3d lands the §27 sibling
+// sink (one-line appends at the existing record sites, env-gated like
+// `trace.rs`, JSONL via `serde_json`, best-effort-discarded write).
+//
+// The Lane-A log-content rows (P4.1/P4.2/P4.4) drive the real binary through
+// the stub-provider-by-config mechanism with `CRANELISP_AGENT_LOG` set on the
+// spawned subprocess (the builder's `.env(...)`). The default-build absence
+// row (P4.3) and the feature-OFF re-verify (P4.5) are default-lane rows
+// (`#[cfg(not(feature = "agent"))]`).
+//
+// We assert the JSONL shape with a `grep`-style structural check (each line is
+// `{...}` carrying the expected key substrings) rather than a `serde_json`
+// parse — the §17.20.3 acceptance is OPERATIONAL ("a one-line `grep`/`jq`
+// extracts every repair event with its triggering symbol/error"), and the test
+// crate has no `serde_json` dep. The grep check IS the spec acceptance.
+//
+// TESTABILITY SEAM owed by /dev 3d: `CRANELISP_AGENT_LOG` honored on the
+// spawned binary (already provided by the `Cranelisp` builder's `.env(...)` —
+// no new seam; noted in the test plan §"Testability seams" #4). Each test uses
+// a FRESH per-test tmpdir path for the log file (fresh-tmp discipline).
+// ===========================================================================
+
+/// A stub-driven agent REPL with `CRANELISP_AGENT_LOG` pointed at `log_path`
+/// (a per-test tmpdir file). Like `stub_repl` but also wires the log env var so
+/// the agent's silent activity log is captured to an observable file. Returns
+/// the captured output; the caller reads `log_path` back.
+#[cfg(feature = "agent")]
+fn stub_repl_logged(
+    script: &str,
+    prelude: PreludeVariant,
+    log_path: &std::path::Path,
+    stdin: &str,
+) -> helpers::e2e::CrOutput {
+    let cl = Cranelisp::new().repl().with_prelude(prelude).cli_flag("--agent");
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(&script_path, script).unwrap();
+    cl.env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        .env("CRANELISP_AGENT_LOG", log_path.to_str().unwrap())
+        .stdin(stdin)
+        .output()
+}
+
+/// A Build script that exercises a PULL, a REPAIR (broken-then-fixed submit),
+/// and a SUBMIT/commit — so the log carries multiple event types including the
+/// keystone `repair` record (the user's primary struggle signal, §17.20.3).
+/// Line 1: a read pull (`/source target`). Lines 2–3: broken-then-fixed submit
+/// (the first fails the validator → a repair iteration; the second is clean →
+/// commit). Line 4: terminal prose.
+#[cfg(feature = "agent")]
+const PULL_REPAIR_SUBMIT_SCRIPT: &str = "tool: source target\n\
+     tool: submit (defn helper [x] (add-i64 x x)\n\
+     tool: submit (defn helper [x] (add-i64 x x))\n\
+     done: defined helper for you\n";
+
+// ---------------------------------------------------------------------------
+// P4.1 — writes JSONL with stable greppable keys (positive).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.20.3 — with `CRANELISP_AGENT_LOG=<tmp path>` set, a
+// stub session that PULLS + REPAIRS + SUBMITS writes a JSONL file: every line
+// parses as a JSON object (`{...}`) and carries the stable greppable keys — an
+// `event` type on every record, plus `symbol`/`module`/`error_class`/
+// `iteration` on the records that have them (a `grep`/`jq` one-liner extracts
+// the repair events + their triggering symbol/error). RED on HEAD: no log sink
+// exists, so NO file is written.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_writes_jsonl_with_stable_keys() {
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
+    // Fresh per-test tmpdir path for the log file (NOT a fixed location).
+    let log_path = cl.tmpdir_path().join("agent-activity.jsonl");
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(&script_path, PULL_REPAIR_SUBMIT_SCRIPT).unwrap();
+    let out = cl
+        .env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        .env("CRANELISP_AGENT_LOG", log_path.to_str().unwrap())
+        .stdin(
+            "(defn target [x] (add-i64 x 1))\n\
+             /ask define a helper\n\
+             y\n",
+        )
+        .output();
+
+    // The log FILE must exist (the env var was honored, the sink wrote to it).
+    assert!(
+        log_path.exists(),
+        "`CRANELISP_AGENT_LOG` set ⇒ the agent must write the JSONL log file; \
+         it does not exist at {log_path:?} (stdout={})",
+        out.stdout
+    );
+    let log = std::fs::read_to_string(&log_path).expect("the log file must be readable");
+    let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(
+        !lines.is_empty(),
+        "the agent log must carry at least one event line, log={log:?}"
+    );
+    // Every line is a JSON OBJECT — JSONL shape (one object per line). The grep
+    // contract: each record is `{...}` and carries an `event` key.
+    for line in &lines {
+        let t = line.trim();
+        assert!(
+            t.starts_with('{') && t.ends_with('}'),
+            "each agent-log line must be a JSON object (`{{...}}`) — JSONL shape; \
+             offending line={t:?}, log={log:?}"
+        );
+        assert!(
+            t.contains("\"event\""),
+            "every agent-log record must carry the stable `event` key (§17.20.3), \
+             offending line={t:?}, log={log:?}"
+        );
+    }
+    // The KEYSTONE: the broken-then-fixed submit produced a REPAIR record
+    // carrying the stable struggle-signal keys — `event=repair`, its triggering
+    // `symbol`, the `module`, an `error_class`, and an `iteration` count. A
+    // one-line `grep '"event":"repair"'` extracts it (§17.20.3 acceptance).
+    let repair_line = lines
+        .iter()
+        .find(|l| l.contains("\"event\":\"repair\"") || l.contains("\"event\": \"repair\""))
+        .unwrap_or_else(|| {
+            panic!(
+                "the broken-then-fixed submit must produce a `repair` event record \
+                 (the keystone struggle signal, §17.20.3) — none found, log={log:?}"
+            )
+        });
+    for key in ["\"symbol\"", "\"module\"", "\"error_class\"", "\"iteration\""] {
+        assert!(
+            repair_line.contains(key),
+            "the `repair` record must carry the stable greppable key {key} (the \
+             triggering symbol/error/module + repair-iteration count, §17.20.3); \
+             repair_line={repair_line:?}"
+        );
+    }
+    // The repair's triggering symbol is the one the agent struggled to define.
+    assert!(
+        repair_line.contains("helper"),
+        "the `repair` record's `symbol` must name the struggled-over definition \
+         (`helper`), so `grep helper` surfaces it (§17.20.3), repair_line={repair_line:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P4.2 — silent: transcript byte-identical with the log ON vs OFF (+neg).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.20.1 — the log is SILENT: the REPL/agent transcript
+// with `CRANELISP_AGENT_LOG` SET is BYTE-IDENTICAL to the same stub session
+// with it UNSET. Turning on the log adds NOTHING to stdout — no "logging to …"
+// banner, no per-event echo, no transcript change. The +neg is the zero-byte
+// perturbation: two real stub transcripts (log-on / log-off) diff to nothing.
+// RED on HEAD: no log sink exists, so today both runs are trivially identical
+// (the var is inert) — but this row is the standing guard that when the sink
+// lands it perturbs the transcript by ZERO bytes (it must NOT regress).
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_is_silent_transcript_unchanged_neg() {
+    // Log OFF: the baseline stub transcript (no `CRANELISP_AGENT_LOG`).
+    let off = stub_repl(
+        PULL_REPAIR_SUBMIT_SCRIPT,
+        PreludeVariant::PrimitivesOnly,
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask define a helper\n\
+         y\n",
+    );
+    // Log ON: the SAME session with `CRANELISP_AGENT_LOG` pointed at a tmp file.
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
+    let log_path = cl.tmpdir_path().join("silent.jsonl");
+    let on = stub_repl_logged(
+        PULL_REPAIR_SUBMIT_SCRIPT,
+        PreludeVariant::PrimitivesOnly,
+        &log_path,
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask define a helper\n\
+         y\n",
+    );
+    // The keystone silent guard: stdout is BYTE-IDENTICAL log-on vs log-off,
+    // AFTER masking the per-prompt elapsed-ms counter (`N+Mms; <mod>> `) — that
+    // counter is independent wall-clock jitter every REPL run differs on, NOT a
+    // log perturbation. The §17.20.1 contract is that the LOG adds nothing; the
+    // mask isolates that from the timing chrome both runs carry regardless.
+    let mask = regex::Regex::new(r"\d+\+\d+ms; (\w+)> ").unwrap();
+    let on_masked = mask.replace_all(&on.stdout, "T+Tms; $1> ");
+    let off_masked = mask.replace_all(&off.stdout, "T+Tms; $1> ");
+    assert_eq!(
+        on_masked, off_masked,
+        "`CRANELISP_AGENT_LOG` must be SILENT — the REPL transcript with the log \
+         ON must be BYTE-IDENTICAL to the log OFF, modulo the wall-clock prompt \
+         counter (§17.20.1: no banner, no per-event echo, nothing extra in stdout)"
+    );
+    // +neg: no "logging" banner ever appears in the log-on transcript.
+    assert!(
+        !on.stdout.to_lowercase().contains("logging to")
+            && !on.stdout.to_lowercase().contains("writing log"),
+        "the silent log must NOT print a `logging to …` banner (§17.20.1), \
+         stdout={}",
+        on.stdout
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P4.4 — graceful on an unwritable path (+neg).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.20.2 — graceful on an unwritable path: with
+// `CRANELISP_AGENT_LOG` set to a path that cannot be written (here a file under
+// a NONEXISTENT parent directory), the session does NOT crash and spews NO
+// error into the REPL — the log degrades SILENTLY (its write is a best-effort
+// `let _ = ...`). The agent runs normally; the failure is swallowed. RED on
+// HEAD: no log sink exists (the path is inert) — this is the standing guard
+// that when the sink lands, an unwritable path can never disturb the session.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_graceful_on_unwritable_path_neg() {
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
+    // A path under a nonexistent parent directory — opening it for append fails.
+    let unwritable = cl
+        .tmpdir_path()
+        .join("no-such-dir")
+        .join("agent.jsonl");
+    let out = stub_repl_logged(
+        PULL_REPAIR_SUBMIT_SCRIPT,
+        PreludeVariant::PrimitivesOnly,
+        &unwritable,
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask define a helper\n\
+         y\n",
+    );
+    // (i) the session runs to completion — a clean exit, NO crash/panic. A
+    // failed log write must never unwind the session (logging is a side channel).
+    assert!(
+        out.status.success(),
+        "an unwritable `CRANELISP_AGENT_LOG` path must NOT crash the session — \
+         logging degrades silently (§17.20.2); exit={:?}, stderr={}",
+        out.status,
+        out.stderr
+    );
+    // (ii) the agent still ran normally: the fixed form committed + the prose
+    // rendered (so the swallowed log failure perturbed nothing observable).
+    assert!(
+        out.stdout.contains('\u{258c}'),
+        "the agent turn must still render — the failed log write must not disturb \
+         the session (§17.20.2), stdout={}",
+        out.stdout
+    );
+    // (iii) +neg: the unwritable-path failure spews NO error into the REPL — no
+    // "could not open", "permission denied", "no such file" log-error chatter.
+    let lc = out.stdout.to_lowercase();
+    assert!(
+        !lc.contains("could not open")
+            && !lc.contains("permission denied")
+            && !lc.contains("failed to write log")
+            && !lc.contains("no such file or directory"),
+        "an unwritable log path must degrade SILENTLY — NO log-error chatter may \
+         reach the REPL (§17.20.2), stdout={}",
+        out.stdout
+    );
+    // (iv) the parent dir is genuinely absent — no file was forced into being.
+    assert!(
+        !unwritable.exists(),
+        "the unwritable log path must not have been written, path={unwritable:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P4.3 — absent on the default build (+neg). DEFAULT-LANE (not feature-gated).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.20.2 — on a DEFAULT (non-`agent`) build, setting
+// `CRANELISP_AGENT_LOG` writes NOTHING: the var is inert and the sink does not
+// exist (the log lives ONLY in an `--features agent` build, §17.9). The +neg
+// absence guard: a default-build session with the env set + an `--agent`-style
+// flow produces NO log file. RED-context: this is the standing Lane-B floor
+// re-confirmed with the log code added — the default build must stay agent-free.
+#[cfg(not(feature = "agent"))]
+#[test]
+fn agent_log_absent_on_default_build_neg() {
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // `--agent` is an accepted no-op on the default build (§0.6.1).
+        .cli_flag("--agent");
+    let log_path = cl.tmpdir_path().join("default-build.jsonl");
+    let out = cl
+        .env("CRANELISP_AGENT_LOG", log_path.to_str().unwrap())
+        .stdin("(add-i64 1 2)\n")
+        .output();
+    // The session evals as today (the agent surface is absent feature-off).
+    assert!(
+        out.stdout.contains("3"),
+        "the default-build session must still eval, stdout={}",
+        out.stdout
+    );
+    // +neg: NO log file was written — the var is inert on the default build.
+    assert!(
+        !log_path.exists(),
+        "`CRANELISP_AGENT_LOG` must be INERT on the default (non-`agent`) build — \
+         NO log file may be written (§17.20.2: the log exists only in an \
+         `--features agent` build), but a file appeared at {log_path:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P4.5 — feature-OFF byte-identical re-verify. DEFAULT-LANE (Lane B floor).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.9 — the standing Lane-B floor re-confirmed for Pillar
+// 4: the default build is UNCHANGED by the log code. A non-agent input on a
+// default build with `CRANELISP_AGENT_LOG` set is byte-identical to the same
+// input with it UNSET — the log code (agent-gated) cannot perturb the default
+// build. This is the test-plan Feature-OFF floor for Pillar 4 (the log adds no surface
+// to the default suite). Green-on-HEAD context (the var is inert today); the
+// standing guard that adding `src/agent/log.rs` must keep the default build
+// byte-identical.
+#[cfg(not(feature = "agent"))]
+#[test]
+fn agent_log_feature_off_byte_identical_reverify() {
+    // The SAME non-agent input, once with the log env set, once without.
+    let with_log = {
+        let cl = Cranelisp::new()
+            .repl()
+            .with_prelude(PreludeVariant::PrimitivesOnly);
+        let log_path = cl.tmpdir_path().join("reverify.jsonl");
+        cl.env("CRANELISP_AGENT_LOG", log_path.to_str().unwrap())
+            .stdin("(add-i64 40 2)\nhow do I define a function\n")
+            .output()
+    };
+    let without_log = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("(add-i64 40 2)\nhow do I define a function\n")
+        .output();
+    // Byte-identical: the agent-gated log code adds NOTHING to the default build
+    // (masking the per-prompt wall-clock counter, as in P4.2 — independent jitter,
+    // not a log perturbation).
+    let mask = regex::Regex::new(r"\d+\+\d+ms; (\w+)> ").unwrap();
+    let with_masked = mask.replace_all(&with_log.stdout, "T+Tms; $1> ");
+    let without_masked = mask.replace_all(&without_log.stdout, "T+Tms; $1> ");
+    assert_eq!(
+        with_masked, without_masked,
+        "the default build must stay BYTE-IDENTICAL with `CRANELISP_AGENT_LOG` set \
+         vs unset — the agent-gated log code cannot perturb the default suite (§17.9)"
+    );
+}

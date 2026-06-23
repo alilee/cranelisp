@@ -572,3 +572,79 @@ is already named in §"Testability seams" #2 and re-confirmed here; file
 No plan-row shifts (the 4 P2 rows landed exactly as planned); no ledger entry
 (ship-this-sprint RED-first guards are tracked here, not in the carry-forward
 failure ledger).
+
+---
+
+## Execution note — Phase 5 Wave 3 step 3q (`/qa`, 2026-06-23)
+
+Pillar-4 (§P4) tests authored in `tests/agent.rs` (Lane A log-content rows +
+the default-lane absence/byte-identical rows). The `.rs` rows landed; `/dev`
+step 3d builds `src/agent/log.rs` (the §27 silent sibling sink) to flip the
+RED row green.
+
+**P4 rows authored (5/5):**
+
+- **`agent_log_writes_jsonl_with_stable_keys` (P4.1, Lane A, `--features agent`)**
+  — `CRANELISP_AGENT_LOG=<fresh tmp path>` set on the spawned binary; a stub
+  session that PULLS (`/source`) + REPAIRS (broken-then-fixed `submit`) +
+  SUBMITS writes a JSONL file. Asserts the file exists, every line is a JSON
+  object (`{...}`) carrying `"event"`, and the broken-then-fixed submit produces
+  a `{"event":"repair",...}` record carrying the stable greppable keys
+  (`symbol`/`module`/`error_class`/`iteration`) with `symbol=helper`. The JSONL
+  shape is checked by a `grep`-style structural assertion (the §17.20.3
+  acceptance is operational `grep`/`jq`-ability; the test crate has no
+  `serde_json` dev-dep, so a substring/`{...}` check IS the spec acceptance —
+  no `Cargo.toml` change). **The load-bearing RED-first row.**
+- **`agent_log_is_silent_transcript_unchanged_neg` (P4.2, +neg, Lane A)** — two
+  stub transcripts (log-ON vs log-OFF), byte-identical AFTER masking the
+  per-prompt wall-clock counter (`N+Mms; <mod>> ` — independent jitter every
+  REPL run differs on, NOT a log perturbation; masked with the `regex` dev-dep).
+  Plus a +neg that no "logging to …" banner appears. **Green-on-HEAD** (the var
+  is inert today ⇒ zero perturbation) — the standing silent-floor guard the sink
+  must not regress (per §27.5 byte-identical guarantee).
+- **`agent_log_graceful_on_unwritable_path_neg` (P4.4, +neg, Lane A)** —
+  `CRANELISP_AGENT_LOG` under a NONEXISTENT parent dir; the session exits clean
+  (no crash/panic), the agent turn still renders (`▌`), NO log-error chatter
+  reaches the REPL, and no file is forced into being. **Green-on-HEAD** (inert
+  var ⇒ no write attempt) — the standing graceful-degradation floor.
+- **`agent_log_absent_on_default_build_neg` (P4.3, +neg, DEFAULT lane,
+  `#[cfg(not(feature = "agent"))]`)** — on a default (non-`agent`) build,
+  `CRANELISP_AGENT_LOG` set ⇒ NO log file written (the var is inert; the sink
+  lives only in an `--features agent` build, §17.20.2). **Green-on-HEAD** —
+  the Lane-B absence floor.
+- **`agent_log_feature_off_byte_identical_reverify` (P4.5, DEFAULT lane)** —
+  the same non-agent input on the default build is byte-identical with
+  `CRANELISP_AGENT_LOG` set vs unset (modulo the masked prompt counter) — the
+  agent-gated log code adds nothing to the default suite (§17.9). **Green-on-HEAD**
+  — the standing Lane-B floor re-confirmed for Pillar 4.
+
+**Confirmed RED count.** Agent lane
+(`env -u ANTHROPIC_API_KEY -u CRANELISP_AGENT_PROVIDER -u CRANELISP_AGENT_STUB_SCRIPT
+cargo nextest run --features agent --test agent --no-fail-fast`): **53 tests run,
+52 passed, 1 failed** — the single RED is `agent_log_writes_jsonl_with_stable_keys`
+(no log sink exists ⇒ no file written), the load-bearing positive guard. P4.2 /
+P4.4 (Lane A) and P4.3 / P4.5 (default lane) are intentionally **green-on-HEAD**:
+they are +neg silence/absence/graceful/byte-identical FLOORS (the var is inert
+today ⇒ trivially no perturbation), exactly the standing-guard pattern of
+`agent_build_non_read_tool_still_refused_neg` (S89) and the Wave-1 P1.8 /
+primer-compile convergence targets — they pin behaviour the sink must NOT
+regress, per design §27.5's byte-identical guarantee. No pre-existing agent-lane
+test regressed. Default `cargo nextest run`: **1541/1541, 0 failures** (up from
+the Wave-2 1539: the two default-lane P4.3 + P4.5 rows are green-on-HEAD absence
+guards; the Lane-A rows are `#[cfg(feature = "agent")]` and compile out).
+`python3 tests/plan/spec_link_check.py --scope agent.rs` clean (60/60 OK; every
+P4 row cites `repl/spec.md §17.20` / §17.9).
+
+**Testability seam owed by 3d.** Per the test plan §"Testability seams" #4:
+`CRANELISP_AGENT_LOG` must be honored on the spawned binary — **already provided**
+by the `Cranelisp` builder's `.env(...)` (no new seam). The single substantive
+obligation is the §27 sink itself (`src/agent/log.rs`): one-line env-gated
+appends at the existing record sites (`pull.rs` repairs/pulls, `run_pull`,
+`run_submit` submits/give-ups), JSONL via `serde_json`, best-effort-discarded
+write — so P4.1's file appears with the stable keys. No in-process log-path
+observation lever is needed beyond the env var (the test reads the file off the
+per-test tmpdir). No FIXME filed.
+
+No plan-row shifts (the 5 P4 rows landed exactly as planned); no ledger entry
+(ship-this-sprint RED-first guards are tracked here, not in the carry-forward
+failure ledger).
