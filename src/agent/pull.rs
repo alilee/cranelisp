@@ -221,6 +221,15 @@ impl CompilerSession {
                         msg
                     }
                 };
+                // Pillar 4 (§27.1) — silent greppable log of this exploration pull
+                // (the read command word + its argument). Off unless
+                // `CRANELISP_AGENT_LOG` is set; never touches stdout.
+                let pull_arg = call.argument.trim();
+                let mut ev = crate::agent::log::LogEvent::new("pull").tool(tool);
+                if !pull_arg.is_empty() {
+                    ev = ev.symbol(pull_arg);
+                }
+                crate::agent::log::record(ev);
                 ToolCallResult {
                     id: call.id.clone(),
                     command: cmd,
@@ -277,6 +286,16 @@ impl CompilerSession {
                 if let Some(state) = self.agent.as_mut() {
                     state.submit_gave_up = true;
                 }
+                // Pillar 4 (§27.1) — silent greppable log of the submit give-up
+                // (the struggled-over symbol + module). Off unless the env is set.
+                crate::agent::log::record({
+                    let mut ev = crate::agent::log::LogEvent::new("give_up")
+                        .module(self.current_module_path().as_ref());
+                    if let Some(sym) = crate::agent::log::defined_symbol(&call.argument) {
+                        ev = ev.symbol(sym);
+                    }
+                    ev
+                });
                 // PAIRING (Phase-6 give-up corner, the CURRENT 400): the repair
                 // loop has recorded a chain of `submit` tool_use turns onto the
                 // transcript, the LAST of which is UNPAIRED (its error feedback
@@ -380,6 +399,16 @@ impl CompilerSession {
                     if let Some(state) = self.agent.as_mut() {
                         state.submit_committed = true;
                     }
+                    // Pillar 4 (§27.1) — silent greppable log of the committed
+                    // submit (the defined symbol + module). Off unless env is set.
+                    crate::agent::log::record({
+                        let mut ev = crate::agent::log::LogEvent::new("submit")
+                            .module(self.current_module_path().as_ref());
+                        if let Some(sym) = crate::agent::log::defined_symbol(clean) {
+                            ev = ev.symbol(sym);
+                        }
+                        ev
+                    });
                     ToolCallResult {
                         id: result_id.to_string(),
                         command: format!("submit {clean}"),
@@ -587,13 +616,28 @@ impl CompilerSession {
         // (the form arrived as prose, not a tool_use), the feedback is a plain user
         // turn. It starts as the outer submit's id (the form being validated now).
         let mut pending_tool_use: Option<String> = Some(submit_id.to_string());
-        for _ in 0..MAX_REPAIR_ITERATIONS {
+        for iteration in 0..MAX_REPAIR_ITERATIONS {
             match self.validate_one_form(&form) {
                 // The clean form's owning tool_use id (`pending_tool_use`) is
                 // returned so the OUTER success tool_result pairs against the
                 // ACTUAL submitted tool_use (the last repair, or the original).
                 Ok(()) => return Ok((form, pending_tool_use)),
                 Err(compiler_error) => {
+                    // Pillar 4 (§27.1) — the KEYSTONE struggle signal: a silent
+                    // greppable `repair` record carrying the struggled-over symbol,
+                    // its module, the triggering compiler `error_class`, and the
+                    // 1-based repair `iteration`. Off unless `CRANELISP_AGENT_LOG`
+                    // is set; never touches stdout (the SILENT contract).
+                    crate::agent::log::record({
+                        let mut ev = crate::agent::log::LogEvent::new("repair")
+                            .module(self.current_module_path().as_ref())
+                            .error_class(crate::agent::log::classify_error(&compiler_error))
+                            .iteration(iteration + 1);
+                        if let Some(sym) = crate::agent::log::defined_symbol(&form) {
+                            ev = ev.symbol(sym);
+                        }
+                        ev
+                    });
                     // SILENT (§16.2): nothing rendered to the transcript. Record a
                     // HIDDEN repair turn on the agent state (so the next request has
                     // context) and re-prompt the model.

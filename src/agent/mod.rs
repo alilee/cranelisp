@@ -19,6 +19,7 @@
 // spec-grep retrieval + the telemetry skeleton (the R5 release valve, §0).
 
 pub mod harvest;
+pub mod log;
 pub mod primer;
 pub mod provider;
 pub mod pull;
@@ -237,8 +238,15 @@ impl CompilerSession {
             state.submit_committed = false;
         }
 
-        for _ in 0..MAX_TURN_ITERATIONS {
+        for turn_step in 0..MAX_TURN_ITERATIONS {
             let req = self.assemble_request(text);
+
+            // Pillar 4 (§27.1) — silent greppable log of the model exchange (the
+            // loop step). Off unless `CRANELISP_AGENT_LOG` is set; never touches
+            // stdout (the SILENT contract — the transcript stays byte-identical).
+            crate::agent::log::record(
+                crate::agent::log::LogEvent::new("exchange").iteration(turn_step + 1),
+            );
 
             // Run the model. Take the handle out across the call so we can mutate
             // `self` (for pulls) without aliasing the borrow.
