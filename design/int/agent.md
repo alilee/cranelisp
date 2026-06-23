@@ -1632,21 +1632,30 @@ command is in the default build (like `/refs`/`/tests-for`, §9). The `/help` te
 `CompilerSession` or a free fn over the `LazyLock` — free fn preferred, no session state read):
 
 - **bare `/syntax`** (empty arg) → the **topic-name index**: the ordered list of topic names
-  plus the one-line hint `Use /syntax <topic> for detail.` (`repl/spec.md §17.17.1`). Rendered
-  through the existing §10.3 `/list`-family palette roles (`/repl` owns the exact bytes); this
-  design fixes only that it lists `topic_names()` in authored order.
-- **`/syntax <topic>`** → `topic_content(name)`: the topic's dense content. Examples in the
-  content are pretty-printed by the **existing** S-expression printer (`crate::pretty`, §3.5 /
-  `repl/spec.md §17.17.2`) so a topic's code reads exactly as REPL output (syntax-highlighted on
-  colour, plain under `--no-color` — degrades through the **existing** `style::is_color_enabled`
-  gate, **no new style role**).
+  plus the one-line hint `Use /syntax <topic> for detail.` (`repl/spec.md §17.17.1`). Emitted as
+  **deterministic plain text** — `;`-prefixed comment lines, carrying **no ANSI escapes** and **no
+  style role**, so it is byte-identical with colour on or under `--no-color`. This design fixes
+  that it lists `topic_names()` in authored order (`render_index`).
+- **`/syntax <topic>`** → `topic_content(name)`: the topic's dense content, emitted **as
+  authored** — deterministic plain text, trimmed of trailing whitespace, with **no second
+  renderer**. The asset is the single source (Principle 7); `handle_syntax` returns the curated
+  block verbatim. It **deliberately does NOT route through `crate::pretty`** (the S-expression
+  pretty-printer): the cheat-sheet's `FORM` lines are **syntactic templates** —
+  `(defn name ([params] body) ...)` with `...` and metavariables — that **do not parse**, so
+  `crate::pretty` cannot render them, and reflowing the verified-compiling forms through a second
+  renderer would buy no agent benefit while coupling the renderer to the cheat-sheet block format.
+  Output is therefore identical with colour on or under `--no-color` (plain either way — no style
+  role is involved). *(Future enhancement, out of scope: selectively syntax-highlight only the
+  concrete `EXAMPLE` lines, which DO parse — deferred because it would couple the renderer to the
+  block layout for modest gain.)*
 - **unknown `/syntax <unknown>`** → re-print the bare index with a short "no such topic" note
   (`repl/spec.md §17.17.1` — self-documenting; never an opaque error). This is the `topic_content
   → None` arm.
 
 **Output framing.** `/syntax` is deterministic REPL output, **not** agent prose — it is **not**
-wrapped in the `▌` agent-prose frame (§3.5 / `repl/spec.md §17.17.2`). It uses the same render
-path `/list`/`/help` use.
+wrapped in the `▌` agent-prose frame (§3.5 / `repl/spec.md §17.17.2`). All three forms (index,
+topic, unknown-topic re-list) return **plain text from `handle_syntax` with no second renderer
+and no style role** — clean under `--no-color`, identical with colour on.
 
 ### 22.3 Read-only allowlist row (the agent pull-tool, gated)
 
