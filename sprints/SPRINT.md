@@ -1,6 +1,6 @@
 # Sprint 90: Agentic-REPL Phase 3 — Fluency (rung 7, reach half)
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Waves 1–4 CLOSED ✅ (shipping pillars done); Wave 5 (Pillar 3) carries to S91; Phase 6 (user-facing) next
+**Status**: PHASE 7 CLOSE (awaiting user approval) — Phases 5–6 complete; Pillar 3 (design-only) carries to S91
 
 **Goal**: Make the embedded REPL agent *fluent* — give it on-demand syntax detail, ambient awareness of what's in scope (prelude + imports at signature grain), and the ability to search reachable-but-unimported library symbols by name and/or type signature — so its first submit typechecks more often and it stops burning repair/exploration turns rediscovering the language and library.
 
@@ -259,4 +259,28 @@ In short: **the fluency pillars (1–3) are what you give the agent; telemetry i
 
 ## Outcome (Phase 7)
 
-*(Pending sprint close.)*
+**Final state:** default `cargo nextest run` **1544/1544, 0 intentional reds**; `--features agent` lane **1672/1672**; **feature-OFF byte-identical** for the agent surfaces (Pillars 2/4); `/syntax` (Pillar 1) is a default-build facility. Committed linearly on `main` (`ca9d5fb` … `145ec3a`); **not pushed**. The embedded agent is now *fluent*: curated syntax on demand, in-scope symbols at signature grain ambiently, and a greppable activity log — plus a hardened validator that can't crash the REPL.
+
+### Delivered
+- **Pillar 1 — `/syntax` topic cheat-sheet** (`src/syntax.rs` + `src/syntax/cheatsheet.txt`, 28 verified-compiling topics): a default-build REPL command (bare = topic index; `/syntax <topic>` = dense content; unknown = re-list) that is also an agent pull. Primer cross-references the topic names; `match`/`deftrait` primer shapes corrected to spec. Live-verified.
+- **Pillar 2 — harvest at signature grain** (`src/agent/harvest.rs` `== in scope ==` block): in-scope prelude + imports + own defns at **name + FQ `:Type` + docstring**, ambient; budget degrades grain (never silent truncation); reuses the `/sig` renderer (Principle 7). Honors `agent-prelude-awareness-via-harvest-not-primer`.
+- **Pillar 4 — silent agent log** (`src/agent/log.rs`): `CRANELISP_AGENT_LOG` → persistent JSONL with stable greppable keys (`event`/`symbol`/`module`/`error_class`/`iteration`); silent, graceful, agent-gated sibling sink (not a `trace.rs` extension).
+- **FIXME 0432 Face-B + CF.1 robustness floor:** the §9 monomorphiser concreteness gate (defence-in-depth — the panic was already non-reproducing on HEAD); the CF.1 `catch_unwind` floor on the eval-thread validator + `CRANELISP_AGENT_FORCE_VALIDATOR_PANIC` injection seam (the agent can't crash the REPL by validating a malformed form); thread-local banner suppression (no global-hook race). Green guards `0432.U` + `0432.E1/E2/E3`.
+- **Pillar 3 `/search` — fully designed** (nice-worker background indexer, two indices, structural-contains partial match, session-facility) across §11 + §17.19 + §25 + signature-match.md — a clean hand-off (implementation = S91).
+
+### Deferred (with rationale)
+- **Pillar 3 implementation → S91** (R1). Design-only this sprint per the /arch sizing ruling; gated on the (now-confirmed-resolved) 0432 work + CF.2 (the new nice-worker indexer catch). Re-pinned mid-sprint to the user's nice-worker/two-index/session-facility model.
+- **Automated curation/push loop + push-transparency header → later rung.** Pillar 4 captures the compensation signal passively (greppable log); automate only once hand-grepping proves the pattern (user direction Q3).
+- **FIXME 0432 Face A** (4R claims an annotated → codegen `undefined function` face) — **UNVERIFIED**; not retargeted to `/backend` on assertion (S89 called "undefined function" a mischaracterization). Needs a repro check. 0432 stays open.
+- **FIXME 0433 (`/spec`)** — literal-pattern §4.8.4-vs-§6.2 contradiction (surfaced authoring the cheat-sheet). **FIXME 0435+** — none filed (no Phase-6 gaps).
+- **Minor /review suggestions** — `give_up` design-table note (§27.1, single canonical origin is correct), `LogEvent` `pub`→`pub(crate)` cosmetic. Non-blocking.
+
+### Findings (methodology + technical)
+- **Repro-before-scope earned its keep AGAIN (twice).** The "0432 monomorphiser panic" — the one cross-skill defect pulled into the sprint — **does not reproduce on HEAD**; the S84 slot-gate + §3.11.1 backstop already catch it, and the FIXME's panic predated that work. `/sprint`'s own earlier live panic was a session-state artifact (bare operators resolving via a polymorphic prelude route). Verifying the alarming claim before scoping turned a "root-fix" into a "confirm-already-fixed + defence-in-depth gate." Separately, `/dev`'s "REPL returns wrong values" never materialized. **Verify the alarming claim before scoping the fix.**
+- **A test can drive a feature *away* from the spec.** Wave 2's Blocker: `/dev` dropped docstrings from imported symbols to satisfy a blunt `_neg` substring check that false-fired on "Int" inside "Integer". The test was the bug; the fix was to refine the test (type-position-only) and restore the spec behavior (docstrings on all feeders, per the user's Q2) — not bless the deviation. `/review` caught it.
+- **"Single synchronous caller" ≠ "single panicker."** The CF.1 silent-banner suppression swapped the *global* panic hook, racing concurrent worker-thread panickers. `/review` caught the conflation; the fix is a thread-local flag honored by the existing chained hook. A reminder that process-global mechanisms (panic hooks, env, OnceLock) need a whole-process concurrency argument, not a local one.
+- **Design over-specification surfaces at implementation.** `/syntax` rendering: the spec promised pretty-printed examples, but the cheat-sheet's `FORM` lines are unparseable templates — plain rendering is correct, and `/repl`+`/design` reconciled the docs to the (correct) impl rather than forcing coupling-heavy selective rendering.
+- **The curated `/syntax` cheat-sheet is a stronger grounding lever than retrieval.** The user's redirect (Q1) from grep/semantic-index to a token-dense topic-keyed asset with a primer cross-reference is higher-precision and ships without an index — and doubles as a human REPL command (self-documenting-REPL).
+
+### Architectural-principles check (per /sprint close prompt)
+The feature-gate discipline held throughout (default build byte-identical + agent-free; Pillar 3 cleanly re-scoped as a *non*-agent session facility without disturbing it). Principle 7 (single source of truth) did real work — sig-grain harvest reused the `/sig` renderer, `/syntax` reused the cheat-sheet asset, CF.1 reused the pool-worker `catch_unwind` shape, the partial-match predicate reuses the exact-match alpha-equivalence. Principle 18 (belt-and-braces) justified the §9 gate even though the assert is unreachable. **No new architectural principle proposed.** The mid-sprint Pillar-3 redesign validated that /arch re-pinning on the merits (incl. correcting the coordinator's "containment inherited" framing against the code) is working as intended.
