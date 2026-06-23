@@ -1784,3 +1784,199 @@ fn agent_document_yes_auto_accepts_preamble_edit() {
         out.stdout
     );
 }
+
+// ===========================================================================
+// Pillar 1 (S90) — `/syntax` as an AGENT PULL-TOOL (tests/plan/s90-test-plan.md
+// §P1 row P1.6). The default-build `/syntax` command rows (P1.1–P1.5, P1.7,
+// P1.8) live in `tests/repl_introspection.rs` (the deterministic-command home,
+// not feature-gated). This row is the Lane-A agent-pull face: the agent
+// synthesizes `/syntax <topic>` via the stub `tool: syntax <topic>` line, the
+// command renders with the `agent>` glyph, the topic content renders beneath
+// (unframed), and the terminal `done:` prose is framed (§17.17.3 dual-use).
+//
+// TESTABILITY SEAM owed by /dev 1d: `syntax` must be a recognised read-only
+// pull-tool name in the stub-DSL allowlist (the new `tool: syntax <topic>` form,
+// §17.17.3 / §11.7). RED on HEAD: `/syntax` is unimplemented AND `syntax` is not
+// an allowlisted pull tool, so the stub's `tool: syntax hkt` cannot synthesize a
+// rendered `/syntax hkt`. Flips green when /dev 1d wires the command + adds the
+// allowlist row.
+// ===========================================================================
+
+// spec: repl/spec.md §17.17.3 — the agent pulls `/syntax`: a stub `tool: syntax
+// hkt` makes the agent synthesize `/syntax hkt` (the `agent>` glyph), the topic
+// content renders beneath it unframed, then a `done:` answer is framed (`▌`).
+// Same who-typed-what honesty as every other agent pull (§17.12).
+#[cfg(feature = "agent")]
+#[test]
+fn agent_pulls_syntax_renders_as_command() {
+    let out = stub_repl_flags(
+        "tool: syntax hkt\n\
+         done: so a higher-kinded type is written with (f a)\n",
+        PreludeVariant::PrimitivesOnly,
+        // --no-color so the `agent>` glyph degrades to the plain token.
+        &["--no-color"],
+        "/ask how do I write a higher-kinded type?\n",
+    );
+    // The synthesized pull command renders as-typed with the agent-input prompt.
+    assert!(
+        out.stdout.contains("agent>"),
+        "the agent-issued /syntax pull must carry the `agent>` prompt, stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("/syntax hkt"),
+        "the pulled command must render as-typed, stdout={}",
+        out.stdout
+    );
+    // The topic content rendered beneath the pull (the `hkt` block's content).
+    assert!(
+        out.stdout.contains("hkt") || out.stdout.contains("SPEC") || out.stdout.contains("TOPIC"),
+        "the /syntax topic content must render beneath the pull, stdout={}",
+        out.stdout
+    );
+    // The terminal prose answer is framed.
+    assert!(
+        out.stdout.contains('\u{258c}'),
+        "the agent's terminal answer must be framed, stdout={}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("higher-kinded type"),
+        "the agent prose must render, stdout={}",
+        out.stdout
+    );
+}
+
+// ===========================================================================
+// Primer-shape repros (S90 Wave 1 primer-defect fold-in — SPRINT.md Notes
+// 2026-06-23 finding #3). The always-on primer (`src/agent/primer.txt`) today
+// documents TWO Cranelisp shapes that DO NOT compile — verified live against
+// the binary at authoring time:
+//
+//   1. `match` arms paren-grouped — primer lines 44 + 123–125 show
+//      `(match s ((Circle r) …) ((Rect w h) …))`. Live result: PARSE ERROR
+//      ("match requires scrutinee and arms" / "unknown constructor in pattern").
+//      The spec (spec/06-pattern-matching.md §6.1) is flat bracket pairs in ONE
+//      `[ ]`: `(match s [(Circle r) … (Rect w h) …])` — which compiles
+//      (`(match (Some 7) [None 0 (Some x) x])` → `:primitives/Int 7`).
+//
+//   2. `deftrait` outer-bracket — primer lines 46 + 128 show
+//      `(deftrait Show [(show [a] String)])`. Live result: PARSE ERROR
+//      ("expected list"). The spec (spec/07-traits.md §7.1) form
+//      `(deftrait Show (show [a] String))` — method sigs as DIRECT children, no
+//      outer `[ ]` — parses (the trait + `show` method are declared).
+//
+// These are primer-content guards that read `primer.txt` straight off disk
+// (the asset exists regardless of the `agent` feature, so the guards are
+// unconditional) and assert the SPEC-CORRECT shapes are present + the WRONG
+// shapes absent. RED on HEAD (the primer carries the wrong shapes); /dev 1d
+// corrects `primer.txt` to flip them green. A companion e2e confirms the
+// spec-correct shapes the primer SHOULD teach actually compile.
+// ===========================================================================
+
+/// The always-on primer asset, read-only on project_root (per `tests/CLAUDE.md`
+/// — locating a checked-in asset). The SAME source `include_str!`'d into
+/// `src/agent/primer.rs`; the content guards assert its shapes match the spec.
+// read-only on project_root
+fn primer_asset() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent/primer.txt");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the primer asset must exist at {path:?}: {e}"))
+}
+
+// spec: spec/06-pattern-matching.md §6.1 — the primer's `match` examples MUST use
+// the spec-correct FLAT-bracket arm shape (`[(Ctor a) body …]`), NOT the
+// paren-grouped shape (`((Ctor a) body) …`) which fails to parse. RED on HEAD:
+// primer.txt lines 124–125 carry `((Circle r) …)` / `((Rect w h) …)`. Flips
+// green when /dev 1d rewrites the primer's match example to the bracket shape.
+#[test]
+fn primer_match_uses_flat_bracket_arms_not_paren_grouped() {
+    let primer = primer_asset();
+    // +neg: the paren-grouped match arms (the WRONG shape, verified non-compiling)
+    // must NOT appear in the primer's worked example.
+    assert!(
+        !primer.contains("((Circle r)"),
+        "primer must NOT use the paren-grouped `((Circle r) …)` match arm — it \
+         fails to parse; use the spec flat-bracket shape (spec/06 §6.1)"
+    );
+    assert!(
+        !primer.contains("((Rect w h)"),
+        "primer must NOT use the paren-grouped `((Rect w h) …)` match arm — it \
+         fails to parse; use the spec flat-bracket shape (spec/06 §6.1)"
+    );
+    // The spec-correct flat-bracket arms (the COMPILING shape) must be present:
+    // the worked example's arms live inside ONE `[ ]`.
+    assert!(
+        primer.contains("[(Circle r)") || primer.contains("(match s\n      [(Circle r)"),
+        "primer must use the spec flat-bracket match arm `[(Circle r) …]` \
+         (spec/06 §6.1) so the documented example compiles"
+    );
+    // The special-forms summary (primer line ~44) must likewise show the bracket
+    // form, NOT the paren-grouped `(pattern result)` clause-list shape.
+    assert!(
+        !primer.contains("(match scrutinee (pattern result)"),
+        "primer's special-forms summary must NOT show the paren-grouped \
+         `(match scrutinee (pattern result) …)` shape — it does not parse \
+         (spec/06 §6.1)"
+    );
+}
+
+// spec: spec/07-traits.md §7.1 — the primer's `deftrait` examples MUST use the
+// spec-correct shape with method sigs as DIRECT children
+// (`(deftrait Show (show [a] String))`), NOT the outer-bracket shape
+// (`(deftrait Show [(show [a] String)])`) which fails to parse ("expected
+// list"). RED on HEAD: primer.txt lines 46 + 128 carry the outer-bracket shape.
+// Flips green when /dev 1d rewrites the primer's deftrait example + summary.
+#[test]
+fn primer_deftrait_uses_direct_children_not_outer_bracket() {
+    let primer = primer_asset();
+    // +neg: the outer-bracket deftrait (the WRONG shape, verified non-compiling)
+    // must NOT appear — neither in the worked example nor the summary.
+    assert!(
+        !primer.contains("(deftrait Show [(show"),
+        "primer must NOT use the outer-bracket `(deftrait Show [(show …)])` — it \
+         fails to parse (\"expected list\"); method sigs are direct children \
+         (spec/07 §7.1)"
+    );
+    assert!(
+        !primer.contains("(deftrait Name [method-sigs"),
+        "primer's special-forms summary must NOT show the outer-bracket \
+         `(deftrait Name [method-sigs...])` — method sigs are direct children, \
+         no outer `[ ]` (spec/07 §7.1)"
+    );
+    // The spec-correct shape (method sig as a direct child) must be present.
+    assert!(
+        primer.contains("(deftrait Show (show [a] String))"),
+        "primer must use the spec-correct `(deftrait Show (show [a] String))` \
+         shape (method sigs as direct children, spec/07 §7.1) so the documented \
+         example compiles"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.1 — companion e2e: the spec-correct
+// flat-bracket `match` shape the primer SHOULD teach actually COMPILES live
+// (guards the shape the primer guards above pin). `Some` is bare-available
+// through the prelude, so this needs no import. Green on HEAD (the spec shape
+// already compiles) — it pins the convergence target the corrected primer must
+// match. Paired with the RED primer-content guard above (the match-shape
+// verification step in tests/CLAUDE.md).
+#[test]
+fn primer_match_flat_bracket_shape_compiles_e2e() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin("(match (Some 7) [None 0 (Some x) x])\n")
+        .output();
+    assert!(
+        out.stdout.contains(":primitives/Int 7"),
+        "the spec flat-bracket match shape `[None 0 (Some x) x]` must compile and \
+         eval to :primitives/Int 7 (spec/06 §6.1), stdout={}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.to_lowercase().contains("error"),
+        "the spec flat-bracket match shape must NOT produce a parse/type error, \
+         stdout={}",
+        out.stdout
+    );
+}

@@ -120,6 +120,43 @@ authored). Default suite unchanged at this phase (1520/1520). Provenance:
 `design/typecheck/{monomorphisation.md §9, signature-match.md}`,
 `user/syntax-cheatsheet-plan.md`, `0432-*.md`.
 
+### Sprint 90 Phase 5 Wave 1 step 1q — Pillar-1 `/syntax` + primer-shape repros authored RED-first (/qa, 2026-06-23)
+
+Commit SHA at authoring: `e4920dc`. The §P1 (`/syntax`) `.rs` tests + the two
+Wave-1 primer-defect fold-in repros landed RED-first; `/dev` step 1d flips green.
+
+**New failing tests (all intended RED, failing-not-ignored, `// spec:`-annotated):**
+
+Default `cargo nextest run` — **8 RED** (1530 run / 1522 passed):
+- `repl_introspection::syntax_bare_lists_topics` — `/syntax` unimplemented → "unknown command '/syntax'". `repl/spec.md §17.17.1`. owner `/dev (src/)`, target S90.
+- `repl_introspection::syntax_topic_returns_content` — same. `§17.17.1`.
+- `repl_introspection::syntax_unknown_topic_relists_no_dead_end_neg` — same. `§17.17.1` (+neg).
+- `repl_introspection::syntax_works_on_default_build_not_feature_gated` — same; the Lane-B default-build-not-gated guard. `§17.17.3`.
+- `repl_introspection::syntax_degrades_clean_under_no_color_neg` — same; the `--no-color` ANSI-leak floor. `§17.17.2` (+neg).
+- `repl_introspection::cheatsheet_asset_parses_by_delimiter` — same (bare-`/syntax` index vs `=== topic: <name> ===` asset cross-check). `§17.17.1`.
+- `agent::primer_deftrait_uses_direct_children_not_outer_bracket` — `src/agent/primer.txt:46,128` carry the non-compiling outer-bracket `(deftrait Show [(show …)])`. `spec/07 §7.1` (+neg). owner `/dev (src/)`, target S90.
+- `agent::primer_match_uses_flat_bracket_arms_not_paren_grouped` — `primer.txt:44,124–125` carry the non-compiling paren-grouped `((Circle r) …)` arms. `spec/06 §6.1` (+neg). owner `/dev (src/)`, target S90.
+
+Agent lane `cargo nextest run --features agent --test agent` — **+1 RED** beyond
+the 2 primer guards above:
+- `agent::agent_pulls_syntax_renders_as_command` (P1.6) — stderr signature: `agent attempted a non-read command 'syntax' — refused (read-only Advise mode)`. `repl/spec.md §17.17.3`. owner `/dev (src/)`, target S90. **Testability seam:** `syntax` must join the read-only pull-tool allowlist (§17.17.3/§11.7, seam #1 in the plan) AND the command must be wired — both needed before this goes green.
+
+**Intentionally GREEN-on-HEAD (convergence targets / mechanism guards, NOT reds):**
+`repl_introspection::cheatsheet_sampled_example_compiles` (P1.8 — sampled `defn`
+example `(square 5)`→`:primitives/Int 25` via TestStandard) and
+`agent::primer_match_flat_bracket_shape_compiles_e2e` (the spec flat-bracket
+`(match (Some 7) [None 0 (Some x) x])`→`7`). Both pin the verified-compiling /
+spec-correct target the corrected primer + wired `/syntax` must match; independent
+of `/syntax` wiring (same pattern as 0432.E2).
+
+Disposition: **under-investigation, target S90** — `/dev` step 1d wires
+`ReplCommand::Syntax` + the `=== topic: <name> ===` parser + the `syntax`
+allowlist row + corrects `primer.txt`'s match/deftrait shapes, in the same
+change-set. Not a regression: the prior 1520 default baseline is intact (no
+pre-existing test changed result). Separately, `agent::agent_on_no_provider_is_dormant`
+(S88) fails on hosts that carry a real `ANTHROPIC_API_KEY` (the "no provider"
+precondition does not hold) — environment-dependent, untouched by this step.
+
 ### Sprint 89 Phase 3 — `/qa` test PLAN authored (no `.rs` yet) + 0429 §1 correction (/qa, 2026-06-22)
 
 S89 Phase-3 deliverable: `tests/plan/s89-test-plan.md` authored — rungs 5–6 +

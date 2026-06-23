@@ -448,3 +448,63 @@ lands.
 names; (2) a harvest-budget test lever; (3) an observable "could not
 validate/index" surfacing for the catch floor; (4) `CRANELISP_AGENT_LOG` honored
 in the test subprocess (already provided by the builder).
+
+---
+
+## Execution note — Phase 5 Wave 1 step 1q (`/qa`, 2026-06-23)
+
+Pillar-1 (§P1) tests + the two Wave-1 primer-shape repros authored RED-first.
+The `.rs` files landed; `/dev` step 1d flips them green.
+
+**P1 rows authored (8/8):**
+
+- **`tests/repl_introspection.rs`** (default build, NOT agent-gated — the §17.17.3
+  "works feature-off" contract): `syntax_bare_lists_topics` (P1.1),
+  `syntax_topic_returns_content` (P1.2),
+  `syntax_unknown_topic_relists_no_dead_end_neg` (P1.3),
+  `syntax_works_on_default_build_not_feature_gated` (P1.4),
+  `syntax_degrades_clean_under_no_color_neg` (P1.5),
+  `cheatsheet_asset_parses_by_delimiter` (P1.7),
+  `cheatsheet_sampled_example_compiles` (P1.8).
+- **`tests/agent.rs`** (Lane A, `--features agent`): `agent_pulls_syntax_renders_as_command`
+  (P1.6).
+
+**Primer-shape repros (Wave-1 fold-in, in `tests/agent.rs`, unconditional —
+they read `src/agent/primer.txt` straight off disk so they run in BOTH lanes):**
+
+- `primer_match_uses_flat_bracket_arms_not_paren_grouped` — +neg the paren-grouped
+  `((Circle r) …)` arms (verified non-compiling live), pin the spec flat-bracket
+  shape (`spec/06 §6.1`). RED on HEAD (primer.txt:124–125 carry the wrong shape).
+- `primer_deftrait_uses_direct_children_not_outer_bracket` — +neg the outer-bracket
+  `(deftrait Show [(show …)])` (verified non-compiling live: "expected list"), pin
+  the spec direct-children shape (`spec/07 §7.1`). RED on HEAD (primer.txt:46,128).
+- `primer_match_flat_bracket_shape_compiles_e2e` — companion convergence-target
+  e2e: the spec flat-bracket shape `(match (Some 7) [None 0 (Some x) x])` → `7`.
+  GREEN on HEAD (the spec shape already compiles); pins the target the corrected
+  primer must match.
+
+**Confirmed RED count.** Default `cargo nextest run`: **1530 tests, 8 RED**
+(prior 1520 baseline + P1.8 green + the primer-compile e2e green = 1522 passed) —
+the 8 are exactly the intended new guards (6 `/syntax` default rows + 2
+primer-content guards); no pre-existing test regressed. Agent lane
+(`cargo nextest run --features agent --test agent`): **3 new RED**
+(`agent_pulls_syntax_renders_as_command` + the 2 primer guards; +
+`primer_match_flat_bracket_shape_compiles_e2e` green). P1.8 + the primer-compile
+e2e are intentionally GREEN-on-HEAD (verified-compiling-mechanism / convergence
+targets, independent of `/syntax` wiring — same pattern as 0432.E2).
+
+**Testability seam owed by 1d (CONFIRMED at authoring).** The `agent_pulls_syntax`
+RED output is precisely `agent attempted a non-read command 'syntax' — refused
+(read-only Advise mode)` — i.e. **`syntax` must be added to the read-only pull-tool
+allowlist** (§17.17.3 / §11.7, seam #1 above) so `tool: syntax <topic>` synthesizes
+a rendered `/syntax <topic>`. Without the allowlist row P1.6 cannot go green even
+once the command is wired. (`lib-search` allowlisting stays design-pinned, P3.)
+
+**Pre-existing, NOT a regression:** `agent_on_no_provider_is_dormant` (S88) fails
+on this host because a real `ANTHROPIC_API_KEY` is present in the environment, so
+the "no provider ⇒ dormant" precondition does not hold (the agent answers instead).
+Environment-dependent; untouched by this step.
+
+No plan-row shifts (the 8 P1 rows landed exactly as planned); the primer-shape
+repros are the SPRINT.md-Notes Wave-1 fold-in (not a new §P1 row). No FIXME filed
+(seam #1 is already named in §"Testability seams" and re-confirmed above).

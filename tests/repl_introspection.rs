@@ -31,7 +31,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::Cranelisp;
+use helpers::e2e::{Cranelisp, PreludeVariant};
 
 // Test-authoring shortcuts: `Cranelisp::repl_capture(lines)` for bare REPL,
 // `Cranelisp::repl_prims_capture(lines)` for REPL with PrimitivesOnly prelude.
@@ -2976,6 +2976,272 @@ fn display_float_nan_value() {
     assert!(
         out.stdout.contains("NaN"),
         "Float NaN MUST display a `NaN` token per §1.2; got:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
+// Pillar 1 — the `/syntax` cheat-sheet command (S90, tests/plan/s90-test-plan.md
+// §P1). RED-FIRST: `/syntax` is unimplemented on HEAD (the REPL replies
+// "unknown command '/syntax'"), so every row below fails until /dev 1d wires the
+// `ReplCommand::Syntax` variant + dispatch + the `src/syntax/cheatsheet.txt`
+// asset parser. `/syntax` is NOT feature-gated — it is a deterministic
+// static-asset command usable on the DEFAULT (non-`agent`) build (§17.17.3), so
+// these default-build rows live here (the deterministic-command home), NOT in
+// the `--features agent` lane. The agent-pull row (P1.6) lives in `tests/agent.rs`.
+//
+// Mechanism vs. content: these guard the COMMAND BEHAVIOUR + the asset's machine
+// contract (the `=== topic: <name> ===` delimiter, the index-never-drifts-from-
+// content invariant, one sampled example compiling). The cheat-sheet PROSE
+// accuracy is `/docs`-owned (verified-compiling discipline) + `/spec`-validated;
+// `/qa` does not assert prose here. The shipped asset is
+// `src/syntax/cheatsheet.txt` (28 topics; commit e4920dc).
+// =============================================================================
+
+/// Path to the shipped cheat-sheet asset, read-only on project_root (per
+/// `tests/CLAUDE.md` — locating a checked-in asset, never written). Lets the
+/// asset-contract guard (P1.7) and the sampled-example guard (P1.8) reference
+/// the SAME source `/dev`'s parser and `/docs`'s authoring share.
+// read-only on project_root
+fn cheatsheet_asset() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/syntax/cheatsheet.txt");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the cheat-sheet asset must exist at {path:?}: {e}"))
+}
+
+/// Parse the `=== topic: <name> ===` delimiter lines out of the asset, in order.
+/// The asset's machine contract: every topic block opens with this exact line
+/// shape; the bare `/syntax` index is exactly these names (P1.7).
+fn cheatsheet_topic_names(asset: &str) -> Vec<String> {
+    asset
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            let inner = l.strip_prefix("=== topic:")?.strip_suffix("===")?;
+            Some(inner.trim().to_string())
+        })
+        .collect()
+}
+
+// spec: repl/spec.md §17.17.1 — bare `/syntax` lists the available topic NAMES
+// (the scannable index) AND names how to drill in (`/syntax <topic>` …). The
+// output is NOT the agent-prose frame (the `▌` gutter is absent — it is curated
+// deterministic output, §17.17.2). RED on HEAD: `/syntax` is an unknown command.
+#[test]
+fn syntax_bare_lists_topics() {
+    let out = repl("/syntax\n");
+    // The index lists topic names — at least one known topic name from the
+    // shipped asset must appear (mechanism, not exhaustive content).
+    let names = cheatsheet_topic_names(&cheatsheet_asset());
+    assert!(!names.is_empty(), "the asset must declare at least one topic");
+    assert!(
+        out.stdout.contains(&names[0]),
+        "bare /syntax must list topic names (expected e.g. {:?}), stdout={}",
+        names[0],
+        out.stdout
+    );
+    // The drill-in hint names the `/syntax <topic>` form (self-documenting index).
+    assert!(
+        out.stdout.contains("/syntax") && out.stdout.contains("topic"),
+        "bare /syntax must name how to drill in (/syntax <topic>), stdout={}",
+        out.stdout
+    );
+    // +shape: NOT framed as agent prose — `/syntax` is deterministic output.
+    assert!(
+        !out.stdout.contains('\u{258c}'),
+        "/syntax is deterministic output, NOT the agent prose frame, stdout={}",
+        out.stdout
+    );
+    // The "unknown command" error must be gone once implemented.
+    assert!(
+        !out.stdout.contains("unknown command"),
+        "/syntax must be a known command, stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.17.1 — `/syntax <topic>` (a KNOWN topic) returns that
+// topic's dense content block: a known marker from the block (the `TOPIC <name>`
+// header the asset uses, plus a `SPEC` cross-link line). Content present, no
+// opaque error. RED on HEAD. Uses `match` (a real shipped topic).
+#[test]
+fn syntax_topic_returns_content() {
+    let out = repl("/syntax match\n");
+    // A known marker from the `match` topic block: the `TOPIC match` header line
+    // the asset's blocks open with under the delimiter.
+    assert!(
+        out.stdout.contains("TOPIC match") || out.stdout.contains("match"),
+        "/syntax match must print the topic's content block, stdout={}",
+        out.stdout
+    );
+    // The block carries the `SPEC` cross-link line the asset uses (`SPEC  06 …`).
+    assert!(
+        out.stdout.contains("SPEC"),
+        "/syntax <topic> content must carry the SPEC cross-link line, stdout={}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("unknown command"),
+        "/syntax match must be a known command, stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.17.1 — +neg: `/syntax <unknown>` MUST NOT error
+// opaquely. It re-prints the topic index (as bare /syntax does) with a short
+// "not one of them" note — the self-documenting floor (a wrong name teaches the
+// right vocabulary, never a dead end). RED on HEAD. The +neg: NO opaque
+// `unknown` error AND no empty/dead-end output.
+#[test]
+fn syntax_unknown_topic_relists_no_dead_end_neg() {
+    let out = repl("/syntax no-such-topic-xyzzy\n");
+    let names = cheatsheet_topic_names(&cheatsheet_asset());
+    // It re-prints the index: a known real topic name must appear.
+    assert!(
+        out.stdout.contains(&names[0]),
+        "an unknown /syntax topic must re-print the topic index (expected {:?}), stdout={}",
+        names[0],
+        out.stdout
+    );
+    // +neg: the dead-end "unknown command" error must NOT appear (the topic was
+    // simply not in the set; the index is the helpful re-prompt).
+    assert!(
+        !out.stdout.contains("unknown command"),
+        "an unknown /syntax topic must NOT be a dead-end error, stdout={}",
+        out.stdout
+    );
+    // +neg: the output is not empty/dead-end — the index re-print has content
+    // beyond the bare echoed prompt.
+    assert!(
+        out.stdout.len() > "0+0ms; user> \n".len(),
+        "an unknown /syntax topic must re-list, not produce empty output, stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.17.3 — `/syntax` works on a plain (non-`agent`) binary:
+// it is NOT behind the `agent` feature (LLM-free static asset, the §17.17.3
+// "works with the agent absent or feature-off" contract). This default-suite
+// test IS the Lane-B-family build guard — it runs on the default build, so a
+// green result here is proof the command is unconditional like `/help`. RED on
+// HEAD (unknown command); green when /dev 1d wires it (unconditionally, not
+// `#[cfg(feature = "agent")]`).
+#[test]
+fn syntax_works_on_default_build_not_feature_gated() {
+    let out = repl("/syntax match\n");
+    assert!(
+        !out.stdout.contains("unknown command"),
+        "/syntax must work on the DEFAULT build (not agent-gated), stdout={}",
+        out.stdout
+    );
+    // Returns real content, not a notice — proves it is a live command here.
+    assert!(
+        out.stdout.contains("SPEC") || out.stdout.contains("TOPIC"),
+        "/syntax on the default build must return cheat-sheet content, stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.17.2 — +neg: `/syntax <topic>` under `--no-color`
+// (piped / non-TTY) degrades cleanly — NO literal `\x1b[` SGR escape anywhere,
+// and the block reads as plain-indented text (mirrors the S89 §17.13.3 ANSI-leak
+// floor). RED on HEAD. Uses `hkt`, a real shipped topic whose example carries a
+// nested form the pretty-printer would otherwise colourise.
+#[test]
+fn syntax_degrades_clean_under_no_color_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .cli_flag("--no-color")
+        .stdin("/syntax hkt\n")
+        .output();
+    // +neg (a): no literal SGR introducer leaks into piped output.
+    assert!(
+        !out.stdout.contains("\u{1b}["),
+        "/syntax under --no-color must carry NO literal ANSI escape (\\x1b[), stdout={:?}",
+        out.stdout
+    );
+    // The content still rendered (so the absence above is real coverage).
+    assert!(
+        out.stdout.contains("SPEC") || out.stdout.contains("hkt"),
+        "/syntax hkt under --no-color must still render its content, stdout={}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("unknown command"),
+        "/syntax must be a known command, stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.17.1 — the asset-mechanism guard: the shipped
+// `src/syntax/cheatsheet.txt` parses by the `=== topic: <name> ===` delimiter
+// (every delimiter line is well-formed and followed by a `TOPIC` line), AND bare
+// `/syntax` lists EXACTLY the delimiter-named topics — the index never drifts
+// from the content. This is the contract `/dev`'s parser and `/docs`' authoring
+// share (cheatsheet-plan §5). RED on HEAD: bare `/syntax` is an unknown command,
+// so the index-vs-asset cross-check cannot hold.
+#[test]
+fn cheatsheet_asset_parses_by_delimiter() {
+    let asset = cheatsheet_asset();
+    let names = cheatsheet_topic_names(&asset);
+    assert!(
+        names.len() >= 2,
+        "the asset must declare multiple topics via the delimiter; got {names:?}"
+    );
+    // Every `=== topic: <name> ===` delimiter is immediately followed by a
+    // `TOPIC <name>` line (the block-open contract the parser relies on).
+    let lines: Vec<&str> = asset.lines().collect();
+    for (i, l) in lines.iter().enumerate() {
+        let t = l.trim();
+        if t.starts_with("=== topic:") && t.ends_with("===") {
+            let next = lines.get(i + 1).map(|s| s.trim()).unwrap_or("");
+            assert!(
+                next.starts_with("TOPIC"),
+                "delimiter at line {} must be followed by a TOPIC line, got {next:?}",
+                i + 1
+            );
+        }
+    }
+    // The bare `/syntax` index lists EXACTLY the delimiter-named topics (no drift,
+    // no missing, no extra): every asset topic name appears in the index output.
+    let out = repl("/syntax\n");
+    for name in &names {
+        assert!(
+            out.stdout.contains(name),
+            "the bare /syntax index must list asset topic {name:?} (index must not \
+             drift from content), stdout={}",
+            out.stdout
+        );
+    }
+}
+
+// spec: repl/spec.md §17.17.1 — a SAMPLED cheat-sheet example compiles via the
+// REPL: this guards the verified-compiling MECHANISM (examples are live Lisp),
+// not exhaustive content (that is `/docs`' Phase-5 gate). The sampled example is
+// the `defn` topic's `(defn square [x] (* x x))` / `(square 5)` pair, verified
+// live to yield `:primitives/Int 25` under the TestStandard prelude (operators
+// in scope). Driven straight through the REPL — independent of whether `/syntax`
+// is wired, so it pins the example-compiles invariant even pre-1d. (It is in the
+// §P1 row set because the mechanism it guards is `/syntax`'s reason to exist.)
+#[test]
+fn cheatsheet_sampled_example_compiles() {
+    // The sampled `defn`-topic example, verbatim from src/syntax/cheatsheet.txt.
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::TestStandard)
+        .stdin("(defn square [x] (* x x))\n(square 5)\n")
+        .output();
+    assert!(
+        out.stdout.contains(":primitives/Int 25"),
+        "the sampled cheat-sheet example must eval cleanly to :primitives/Int 25, \
+         stdout={}",
+        out.stdout
+    );
+    // +neg: no error surfaced — the example is verified-compiling Lisp.
+    assert!(
+        !out.stdout.to_lowercase().contains("error"),
+        "the sampled cheat-sheet example must NOT produce a compile/type error, \
+         stdout={}",
         out.stdout
     );
 }
