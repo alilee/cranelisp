@@ -1550,6 +1550,57 @@ pub fn priority_worker_loop_shared(shared: &crate::session_v4::SharedState) {
     crate::got_trace::publish_thread_buffer();
 }
 
+// Thread-local "the panic on THIS thread is an expected, caught validator
+// panic — suppress the stderr banner" flag (S90 4R Important — replaces the
+// former process-global panic-hook swap).
+//
+// The CF.1 catch-region in `checked_check_forms` runs `check_forms` over
+// uncontrolled (model-proposed) source under `catch_unwind`; a typechecker
+// panic there is converted to a clean `Err`, so the default unwinder's
+// "thread … panicked at …" banner MUST NOT reach the transcript (§16.2 SILENT
+// contract). The PRIOR implementation swapped a no-op into the process-global
+// `std::panic::set_hook` slot around the catch — but the priority/nice worker
+// threads (`priority_worker_loop_shared`, `worker.rs:1483`) run concurrently and
+// CAN panic into their own `catch_unwind`; during the swap window they would (a)
+// hit the no-op hook instead of the startup CHAINED hook → lost trace flushes,
+// and (b) race on the global hook slot. This thread-local replaces that: it is
+// set only on the eval thread for the duration of the catch, and the startup
+// `io_trace::install_panic_hook` chain (the int-owned hook whose `previous` is
+// the default banner-printer) checks it for the current thread. A
+// concurrently-panicking WORKER thread sees the flag `false` on its own thread,
+// so it flushes AND prints its banner normally — no global state is mutated, no
+// race, no lost worker banner/flush.
+#[cfg(feature = "agent")]
+thread_local! {
+    pub(crate) static SUPPRESS_PANIC_BANNER: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard: sets [`SUPPRESS_PANIC_BANNER`] true for the current thread for
+/// the lifetime of the guard, restoring the prior value on drop (so the scope
+/// is exception-safe — the flag clears even if the guarded body unwinds past
+/// the guard, which it does not here because the panic is caught inside).
+#[cfg(feature = "agent")]
+struct SuppressPanicBannerGuard {
+    previous: bool,
+}
+
+#[cfg(feature = "agent")]
+impl SuppressPanicBannerGuard {
+    fn new() -> Self {
+        let previous = SUPPRESS_PANIC_BANNER.with(|c| c.replace(true));
+        Self { previous }
+    }
+}
+
+#[cfg(feature = "agent")]
+impl Drop for SuppressPanicBannerGuard {
+    fn drop(&mut self) {
+        let previous = self.previous;
+        SUPPRESS_PANIC_BANNER.with(|c| c.set(previous));
+    }
+}
+
 /// `catch_unwind`-floored `check_forms` — the §11.3(b) / §24 (CF.1)
 /// agent-robustness floor (`design/int/agent.md §24.2`). Both
 /// [`validate_forms_dry_run`] (the eval-thread S89 Build validator, today) and the
@@ -1585,13 +1636,16 @@ fn checked_check_forms(
     // §16.2 SILENT contract: a caught validator panic is converted to a clean
     // `Err`, so the default panic hook's stderr banner ("thread … panicked at …",
     // the backtrace note) MUST NOT reach the transcript — the user sees a graceful
-    // validation outcome, never an internal-crash banner. Swap in a no-op hook for
-    // the duration of the catch and restore the previous hook after. The validator
-    // is the SINGLE synchronous eval-thread caller (no concurrent panic races on
-    // this seam — `validate_forms_dry_run` runs inline on the eval thread), so the
-    // hook swap is local and safe.
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_info| { /* expected caught panic — stay silent */ }));
+    // validation outcome, never an internal-crash banner. We set a THREAD-LOCAL
+    // suppression flag for the duration of the catch (RAII guard) and the startup
+    // `io_trace::install_panic_hook` chain honours it for THIS thread, skipping the
+    // banner while still flushing all traces. This replaces the former
+    // process-global `set_hook`/`take_hook` swap, which raced with the concurrently
+    // panic-capable priority/nice worker threads (`worker.rs:1483`) — they would
+    // hit the no-op hook (losing their trace flushes) during the swap window (S90
+    // 4R Important). The flag is thread-local, so a concurrent worker panic prints
+    // and flushes normally; only this eval-thread's expected panic is silenced.
+    let _suppress_guard = SuppressPanicBannerGuard::new();
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         // §24.3 test-only injection seam — forces the catch to fire so CF.1 is
         // not a vacuous-after-root-fix guard. OFF (env unset) ⇒ real validation;
@@ -1611,7 +1665,8 @@ fn checked_check_forms(
             prelude_fallback,
         )
     }));
-    std::panic::set_hook(previous_hook);
+    // The thread-local suppression flag is cleared by `_suppress_guard`'s Drop
+    // (no global hook to restore — the chain is untouched).
     match result {
         // The inner `check_forms` ran to completion — propagate its own result.
         Ok(r) => r,

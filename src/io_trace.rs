@@ -426,6 +426,18 @@ pub fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(flush_to_stderr));
+        // This hook's `previous` is the DEFAULT unwinder — the one that prints the
+        // "thread … panicked at …" banner. The agent validator's caught panic
+        // (`worker::checked_check_forms`) sets a thread-local suppression flag on
+        // the eval thread; when set for THIS thread we skip the default banner
+        // (the panic is expected and converted to `Err`), but the io/got/sched
+        // flushes have already run upstream in the chain. The flag is thread-local,
+        // so a concurrently-panicking worker thread (flag false on its thread)
+        // still prints its banner normally (S90 4R Important — no global state).
+        #[cfg(feature = "agent")]
+        if crate::worker::SUPPRESS_PANIC_BANNER.with(|c| c.get()) {
+            return;
+        }
         previous(info);
     }));
 }

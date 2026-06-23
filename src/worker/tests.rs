@@ -1581,3 +1581,58 @@
             ),
         }
     }
+
+    // S90 4R Important: the banner-suppression mechanism is a THREAD-LOCAL flag
+    // (RAII guard), NOT a process-global panic-hook swap. This pins (a) the flag
+    // defaults false, (b) the guard sets it true for its scope and restores the
+    // prior value on drop (nesting-safe), and (c) the flag is thread-local — a
+    // freshly-spawned thread observes false even while this thread holds the guard
+    // true (the core property that makes a concurrently-panicking worker print its
+    // banner normally, with no global race).
+    #[cfg(feature = "agent")]
+    #[test]
+    fn suppress_panic_banner_is_thread_local_and_raii_scoped() {
+        // (a) defaults false on the current thread.
+        assert!(
+            !SUPPRESS_PANIC_BANNER.with(|c| c.get()),
+            "the suppression flag must default false"
+        );
+
+        {
+            let _guard = SuppressPanicBannerGuard::new();
+            // (b) set true inside the guard's scope.
+            assert!(
+                SUPPRESS_PANIC_BANNER.with(|c| c.get()),
+                "the guard must set the flag true for its scope"
+            );
+
+            // (c) thread-local: a concurrent thread sees false while we hold true.
+            let observed_on_other_thread = std::thread::spawn(|| {
+                SUPPRESS_PANIC_BANNER.with(|c| c.get())
+            })
+            .join()
+            .unwrap();
+            assert!(
+                !observed_on_other_thread,
+                "the flag MUST be thread-local — another thread observes false \
+                 even while this thread holds the guard (no global state, no race)"
+            );
+
+            // Nesting restores the prior value (true), not unconditionally false.
+            {
+                let _inner = SuppressPanicBannerGuard::new();
+                assert!(SUPPRESS_PANIC_BANNER.with(|c| c.get()));
+            }
+            assert!(
+                SUPPRESS_PANIC_BANNER.with(|c| c.get()),
+                "dropping a nested guard must restore the outer guard's true, \
+                 not clear to false"
+            );
+        }
+
+        // Guard dropped → flag restored to its pre-guard value (false).
+        assert!(
+            !SUPPRESS_PANIC_BANNER.with(|c| c.get()),
+            "dropping the guard must restore the flag to false"
+        );
+    }
