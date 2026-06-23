@@ -26,6 +26,20 @@ if
 let
 (let [x 10 y 20] (+ x y))
 
+; Don't remember a form's shape? /syntax is the core-language cheat-sheet.
+; Bare, it lists every topic you can drill into:
+
+/syntax
+
+; Pick one for dense, verified-compiling detail — form templates, examples,
+; and the common mistakes to avoid:
+
+/syntax match
+
+; A wrong topic name never dead-ends — it teaches the right vocabulary:
+
+/syntax patten-match
+
 ; Define a function with defn. The REPL echoes its inferred type:
 
 (defn double [x] (* x 2))
