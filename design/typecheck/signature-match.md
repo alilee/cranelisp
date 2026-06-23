@@ -8,12 +8,16 @@ match-predicate interface the `int` indexer will call).
 
 Contract this designs against:
 
-- `design/arch/repl-embedded-agent.md §11.4` (R6) — **the binding interface ruling.**
-  *Interface is `/arch`'s; the algorithm is `/typecheck`'s.* MVP = **name-fragment
-  match + exact-structural-shape match** (alpha-renaming of type vars, **NO unifier
-  call**). Hoogle-style subsumption/unification is a `/typecheck`-owned **follow-up**,
+- `design/arch/repl-embedded-agent.md §11.4` (R6, **re-pinned S90 Phase 3, commit
+  `c699045`**) — **the binding interface ruling.** *Interface is `/arch`'s; the algorithm
+  is `/typecheck`'s.* MVP match is now **exact OR partial** (re-pinned per user direction,
+  superseding the original exact-only MVP): **name-fragment match + exact-structural-shape
+  match (`signature_matches_exact`, §2/§3) + partial structural-CONTAINS match
+  (`signature_matches_partial`, §4)** — both over alpha-renaming of type vars, **NO unifier
+  call**. Hoogle-style subsumption/unification is a `/typecheck`-owned **follow-up** (§5),
   NOT this sprint. The query-pattern *syntax* (holes/wildcards) is a **`/spec`
-  consult**, flagged only if Hoogle is later pursued — **not designed here**.
+  consult**, flagged only if Hoogle is later pursued — **not designed here** (structural
+  -contains needs no wildcard token, §4.5).
 - `design/arch/repl-embedded-agent.md §11.2` (R3) — the one shared DTO
   `{ name, signature, docstring, module }`; **`signature` is the existing
   `cranelisp-types` `Scheme`** (the index stores each symbol's type as its scheme; no
@@ -42,14 +46,19 @@ both a name fragment and a type query are supplied):
 1. **Name-fragment match** — a substring/fragment test over the symbol's bare name.
    This is an ordinary string predicate; it is **not typecheck's** to design (it lives
    in the `int` indexer over the DTO's `name` field). Named here only to scope it OUT.
-2. **Type-signature match** — the predicate this doc designs: given a **query
-   signature** and an **indexed symbol's signature**, decide whether they are
-   **structurally equal up to alpha-renaming of type variables**. This is the
-   `/typecheck`-owned algorithm.
+2. **Type-signature match** — the predicates this doc designs. Re-pinned to **exact OR
+   partial** (S90 Phase 3): given a **query signature** and an **indexed symbol's
+   signature**, decide either (a) whether they are **structurally equal up to
+   alpha-renaming of type variables** (`signature_matches_exact`, §2/§3), or (b) whether
+   the query appears as a **sub-structure of the candidate** up to alpha-renaming
+   (`signature_matches_partial`, structural-contains, §4). These are the two
+   `/typecheck`-owned algorithms; the indexer picks per query mode.
 
 The acceptance criterion (`sprints/SPRINT.md` §"Acceptance (implementation)"): *search
-by exact-shape type signature → name + sig + originating module*. Exact-structural-shape
-clears it. Subsumption (`(Fn [Int] ?)` matching `(Fn [Int] Bool)`) is the §3 follow-up.
+by type signature → name + sig + originating module*. Exact-structural-shape (§2/§3) clears
+the precise-shape lookup; structural-contains (§4) clears the broader partial-discovery
+lookup. Full subsumption (`(Fn [Int] ?)` matching `(Fn [Int] Bool)` via hole-instantiation)
+remains the §5 follow-up.
 
 ## 2. Exact-structural-shape — the precise definition
 
@@ -128,7 +137,7 @@ The signature compared is the scheme's **`ty` (the `Type`)** — the function sh
 `(Fn [a] a)` matches `id` whether or not `a` is `Num`-constrained. Rationale: the
 query a human/agent types is a *shape* (`(Fn [Int] Bool)`), and constraints are not
 part of the surface syntax the agent has to express. Constraint-aware matching (find
-`(Fn [a] a) where a: Num`) is a precision upgrade folded into the §3 subsumption
+`(Fn [a] a) where a: Num`) is a precision upgrade folded into the §5 subsumption
 follow-up, not an MVP gate. The predicate takes the `Type`; the indexer reads it off
 `Scheme.ty`. (`type_vars` is likewise irrelevant under canonicalisation — the free
 vars of `ty` ARE the schematic vars for a stored top-level scheme.)
@@ -209,9 +218,148 @@ indexer; the MVP only *requires* the boolean predicate. Whether to ship the help
 is /dev + `/design (int)`'s call based on the index's access pattern (a session-scoped
 library index is small; a linear scan is likely fine for MVP — Principle 6).
 
-## 4. Future follow-up — Hoogle-style subsumption (NOT this sprint)
+## 4. Partial match — `signature_matches_partial` (structural-contains)
 
-Recorded explicitly per R6 as a **`/typecheck`-owned follow-up**, deferred:
+**Re-pinned (S90 Phase 3, user direction; `/arch` ruling `design/arch/repl-embedded-agent.md
+§11.4`, commit `c699045`).** The match semantics are now **exact OR partial** in the type
+index. The exact predicate (§2/§3) is unchanged; this section adds its **sibling**,
+`signature_matches_partial`, the MVP **partial-scheme** predicate. The two are independent
+free functions — `_exact` is NOT modified (Principle 8 — no interim shape the follow-up
+unwinds; the §5 follow-up subsumption predicate is a third sibling, not a widening of
+either).
+
+### 4.1 What "partial" means at MVP — STRUCTURAL-CONTAINS
+
+The `/arch` ruling (§11.4) pins the MVP partial scheme to **structural-contains**, NOT full
+Hoogle subsumption:
+
+> The query type-shape appears as a **sub-structure of the candidate's scheme**, up to
+> alpha-renaming of type vars.
+
+Precisely: `signature_matches_partial(query, candidate)` is **true iff some subtree of
+`candidate`'s `Type` is alpha-equivalent to `query`** — i.e. `query` matches `candidate`, or
+any of `candidate`'s descendant types, under the §2 alpha-equivalence relation. It is a
+**containment walk** over the candidate's type tree, each visited subtree tested for
+alpha-equivalence (§2) to the whole query.
+
+- Query `(Vec Int)` **matches** candidate `(Fn [(Vec Int)] Bool)` — the query is the
+  first-parameter subtree.
+- Query `Int` **matches** any candidate scheme that mentions `Int` anywhere (a concrete leaf
+  is a subtree).
+- Query `(Fn [a a] a)` still **does NOT match** candidate `(Fn [a b] a)` — no subtree of the
+  candidate is alpha-equivalent to the query (the var-consistency / bijectivity rule of §2 is
+  the per-subtree test, so the sharing-pattern guard carries over verbatim).
+
+This is **weaker than full Hoogle subsumption** (§4 → renumbered §5): no unifier, no
+directional var-instantiation (the candidate's vars are NOT instantiated to match a more
+concrete query), no ranking. A query var only matches a candidate var under the **same**
+consistent bijective renaming `_exact` uses — never a concrete candidate head. So query
+`a` matching candidate `(Fn [Int] Bool)` is **subsumption, not containment** (a single query
+var subsuming a whole concrete subtree needs the unifier) — deferred to §5, not MVP.
+
+### 4.2 Definition — a containment walk reusing the `_exact` alpha-equivalence machinery
+
+No new equivalence judgment is authored. `_partial` is defined **in terms of** the §2
+relation already implemented for `_exact` (Principle 7 — single source of truth; do not fork
+the alpha-equivalence walk):
+
+```
+signature_matches_partial(query, candidate) :=
+    ∃ subtree t of candidate  .  signature_matches_exact(query, t)
+```
+
+where "subtree of `candidate`" enumerates `candidate` itself plus, recursively, every
+positional child of every `Type` node:
+
+- `Type::Fn(params, ret)` — each `param`, and `ret`.
+- `Type::ADT(fqtn, args)` — each `arg` (the `fqtn` head is a leaf, not a separate subtree).
+- `Type::TyConApp(head, args)` — each `arg` (HKT, §2.3; the `head` TypeId is part of the
+  node's shape, not an independently-walkable subtree — a `TyConApp` is tested as a whole
+  against the query under head-renaming, per §2.3).
+- Concrete leaves (`Int`/`Bool`/`String`/`Float`) and `Type::Var` — themselves only (no
+  children).
+
+Each enumerated subtree is tested for **whole-tree alpha-equivalence to the query** via the
+§2 machinery — the same `collect_var_ids_ordered` canonicalisation (`types.rs:251`) the
+`_exact` design reuses (§2.1). Concretely the recommended implementation (the design
+*recommends*; /dev decides) is: canonicalise the query once (§2.1 → `canonical_signature_shape`,
+§3.1 if shipped), then walk the candidate, canonicalising **each subtree independently** and
+comparing for `==`. Each subtree's canonicalisation is fresh (its own first-occurrence var
+numbering) — the candidate's var ids are NOT canonicalised globally, because a sub-shape's
+alpha-equivalence to the query depends only on the var-sharing pattern *within that subtree*.
+
+`_partial` is **pure** — no `CheckState`, no `&mut`, no `TypeCheckEnv`, exactly like `_exact`
+(§3 commitment carries over). It reads only the two `Type`s. This is the whole point of the
+structural-contains MVP over subsumption: containment + per-subtree alpha-equivalence needs no
+inference context, so it is trivially callable from `int` with zero new cross-crate state
+coupling, and unit-testable in isolation over two hand-built `Type`s (Principle 5 — testability
+is structural; Principle 6 — exact-shape-then-contains, no unifier).
+
+### 4.3 Relationship to `_exact` — `_exact ⟹ _partial`
+
+`_exact` is **whole-tree** alpha-equivalence; `_partial` is **any-subtree** alpha-equivalence.
+Since the candidate's whole tree is one of its own subtrees (the walk includes `candidate`
+itself), **every exact match is a partial match**:
+
+```
+signature_matches_exact(q, c)  ⟹  signature_matches_partial(q, c)
+```
+
+The converse does not hold (partial admits proper-subtree matches `_exact` rejects: `(Vec Int)`
+∈ `(Fn [(Vec Int)] Bool)` partially, not exactly). The indexer (Pillar 3, `int`) chooses which
+to call per query mode (exact-shape query → `_exact`; partial/contains query → `_partial`), or
+calls `_partial` as the superset when the query mode is "either". Both are needed because exact
+is the precise-shape lookup and partial is the broader discovery lookup — they answer different
+search intents, and `_partial` alone cannot express "I want *exactly* this shape, nothing that
+merely contains it".
+
+### 4.4 The partial predicate interface — the function signature `int` calls
+
+```rust
+// crates/cranelisp-typecheck/src/<module>.rs  (sibling of signature_matches_exact)
+// Sprint 90 design; Pillar-3 implementation next sprint. NO unifier.
+//
+// Returns true iff some subtree of `candidate` is alpha-equivalent to `query`
+// (structural-contains; see design/typecheck/signature-match.md §4). Pure; no
+// state, no &mut, no CheckState — it reads only the two Types. Sibling of
+// signature_matches_exact; signature_matches_exact(q,c) ⟹ signature_matches_partial(q,c).
+pub fn signature_matches_partial(query: &Type, candidate: &Type) -> bool;
+```
+
+Design commitments (mirror §3, the `_exact` commitments):
+
+- **Takes `&Type`, not `&Scheme`.** Same as `_exact` (§2.2/§3): the shape lives in
+  `Scheme.ty`; the indexer passes `&query.ty` and `&record.signature.ty`. MVP ignores
+  `Scheme.constraints` (§2.2 rationale carries over). Narrowest interface (Principle 2).
+- **Pure, no `CheckState`.** Same as `_exact` (§3) — containment + per-subtree
+  alpha-equivalence is context-free.
+- **Where it lives.** The same typecheck module as `_exact` (`signature_match.rs` or /dev's
+  placement call) — they share the alpha-equivalence machinery.
+- **Public-API:** export from `cranelisp-typecheck` — **`/arch`-ruled (Option A, §11.4 +
+  §11.8, commit `c699045`)**: both predicates export from the type-owning crate (Principle 17
+  module locality + Principle 7 single source of truth). This is **one additive
+  `cranelisp-typecheck/public-api.txt` line for `signature_matches_partial`** (a second new
+  `pub fn`, alongside `_exact`'s line → **two** additive lines total at Pillar-3
+  implementation time), which /dev regenerates per the baseline-diff discipline
+  (`design/arch/CLAUDE.md`). The §6 open item (export site) is therefore **closed by `/arch`**
+  — no longer a flag.
+
+### 4.5 NO wildcard query token — the `/spec` consult is NOT triggered
+
+The structural-contains MVP needs **no hole/wildcard token** in the query: the query is a
+**fully-formed type expression** that must appear as a sub-tree of the candidate. There is no
+`?`/`_` hole to instantiate (that is the subsumption follow-up, §5). Per `/arch §11.4`, the
+`/spec` consult on **query-pattern syntax** (whether/how a wildcard token enters the type-query
+surface) is therefore **only triggered if a later sprint pursues Hoogle subsumption** — it is
+**not triggered by this design** and is **not a `/typecheck` call**. Noted here explicitly so
+the gate is unambiguous: structural-contains MVP = no new query surface, no `/spec` dependency.
+
+## 5. Future follow-up — Hoogle-style subsumption (NOT this sprint)
+
+Recorded explicitly per R6/§11.4 as a **`/typecheck`-owned follow-up**, deferred. This is the
+**third** predicate (a sibling of both `_exact` and `_partial`, not a modification of either) —
+strictly stronger than structural-contains (§4): it instantiates holes/vars via the unifier,
+which structural-contains deliberately does not:
 
 - **Subsumption/unification match** — a query `(Fn [Int] ?)` matching a candidate
   `(Fn [Int] Bool)`, or a query `(Fn [a] a)` matching `id`/`negate`/any
@@ -227,13 +375,16 @@ Recorded explicitly per R6 as a **`/typecheck`-owned follow-up**, deferred:
   is pursued, `/spec` owns whether/how holes enter the type-query surface, and
   `/typecheck` owns the subsumption algorithm against whatever surface `/spec` settles.
 
-The MVP predicate (§3) is the floor; the subsumption predicate is a *sibling* free
-function added later, not a modification of `signature_matches_exact` (Principle 8 — no
-interim shape that the follow-up has to unwind).
+The MVP predicates (§3 exact, §4 partial) are the floor; the subsumption predicate is a
+*third sibling* free function added later, not a modification of `signature_matches_exact`
+or `signature_matches_partial` (Principle 8 — no interim shape that the follow-up has to
+unwind).
 
-## 5. Test seams (Phase-5 authoring by /qa + /dev)
+## 6. Test seams (Phase-5 authoring by /qa + /dev)
 
-Unit tests (typecheck, in-crate — the predicate is pure, no fixture needed):
+Unit tests (typecheck, in-crate — the predicates are pure, no fixture needed):
+
+**`signature_matches_exact` (§2/§3):**
 
 - **Positive alpha-equivalence** — each §2 MATCH row: `(Fn [a] a)` ~ `(Fn [b] b)`;
   `(Fn [Int a] (Vec a))` ~ same with renamed var; `(Fn [a b] a)` ~ `(Fn [x y] x)`.
@@ -247,33 +398,49 @@ Unit tests (typecheck, in-crate — the predicate is pure, no fixture needed):
 - **HKT** (§2.3) — two `TyConApp` shapes match under head renaming; a `TyConApp` head
   does NOT match a concrete `ADT` head.
 
-The predicate's purity makes these table-driven unit tests over hand-built `Type`s —
+**`signature_matches_partial` (§4 — structural-contains):**
+
+- **Positive containment** — query `(Vec Int)` ✓ candidate `(Fn [(Vec Int)] Bool)`
+  (param subtree); query `Int` ✓ any candidate mentioning `Int` (`(Fn [Int] Bool)`,
+  `(Vec Int)`); query `(Option a)` ✓ candidate `(Fn [b] (Option a))` (return subtree,
+  under per-subtree alpha-renaming).
+- **Exact ⟹ partial (§4.3)** — every §2 MATCH row is ALSO a `_partial` match (whole-tree
+  is a subtree): assert `_partial` true wherever `_exact` is true.
+- **Negative (the load-bearing +neg coverage)** — query NOT contained: query
+  `(Fn [a a] a)` ✗ candidate `(Fn [a b] a)` (no subtree alpha-equivalent — sharing-pattern
+  guard carries over); query `(Vec Bool)` ✗ candidate `(Fn [(Vec Int)] Bool)` (concrete
+  leaf differs); **containment is NOT subsumption** — query bare var `a` ✗ candidate
+  `(Fn [Int] Bool)` (a single var must NOT match a concrete subtree; that is the §5
+  subsumption boundary, deliberately excluded at MVP).
+
+The predicates' purity makes these table-driven unit tests over hand-built `Type`s —
 no `check_forms`, no `TestFixture`. (The end-to-end "agent searches importable symbols
-by exact-shape signature" path is `/qa`'s integration test and is **gated on Pillar 3
-implementation**, which is gated on the 0432 fix — not this sprint unless pulled
+by exact-shape OR partial signature" path is `/qa`'s integration test and is **gated on
+Pillar 3 implementation**, which is gated on the 0432 fix — not this sprint unless pulled
 forward.)
 
-## 6. Flags / open items for `/arch` (interface ownership)
+## 7. Interface ownership — export ruling (closed by `/arch`)
 
-- **Predicate export site (confirm).** `/arch §11.8` treats Pillar 3's type matching as
-  int-private over the stored scheme (zero public-API). This design places the
-  *algorithm* in typecheck (it is type-equivalence semantics the crate owns) as a
-  `pub fn` over `&Type`. If exported from typecheck, that is **one additive
-  `cranelisp-typecheck/public-api.txt` line** (a new `pub fn`), which /dev regenerates
-  per the baseline-diff discipline. **Confirm with `/arch`:** is the exact-shape
-  predicate (a) exported from `cranelisp-typecheck` for `int` to call (one new pub-api
-  line — the §3 signature), or (b) inlined int-side over `Type` (zero typecheck
-  pub-api, but the type-equivalence logic lives outside the crate that owns type
-  semantics — a Principle-7/17 tension)? This design **recommends (a)** — type
-  equivalence is typecheck's semantics (module-locality of typecheck logic, Principle
-  17) — and notes the one-line baseline cost. `/arch`'s call.
-- **No `cranelisp-types` change either way** — the predicate consumes the existing
-  `Type`/`Scheme`; no new boundary type (R3/§11.8 hold).
+- **Predicate export site — SETTLED.** `/arch` ruled (S90 Phase 3, `design/arch/
+  repl-embedded-agent.md §11.4 + §11.8`, commit `c699045`) **Option A**: BOTH predicates
+  (`signature_matches_exact` AND `signature_matches_partial`) export from
+  `cranelisp-typecheck` — type equivalence (even pure alpha-equivalence/containment over
+  `Type`) is typecheck's semantics (Principle 17 module locality + Principle 7 single
+  source of truth). Inlining int-side (Option B) was rejected: it would hand-roll a second
+  equivalence judgment that must track typecheck's `Type` representation in lockstep, and a
+  future `Type` variant would silently diverge it with no compile error. **Cost: TWO
+  additive `cranelisp-typecheck/public-api.txt` lines** (one per predicate), regenerated by
+  /dev per the baseline-diff discipline at Pillar-3 implementation time (next sprint). This
+  was the §6 open item in the prior revision; it is now **closed** — no longer a flag.
+- **No `cranelisp-types` change either way** — both predicates consume the existing
+  `Type`/`Scheme`; no new boundary type (R3/§11.8 hold). The `Type` boundary is reused, not
+  changed.
 
-## 7. Cross-references
+## 8. Cross-references
 
-- `design/arch/repl-embedded-agent.md §11.2/§11.4` (R3/R6) — the DTO + match-semantics
-  ruling this doc implements.
+- `design/arch/repl-embedded-agent.md §11.2/§11.4/§11.8` (R3/R6/R8, commit `c699045`) —
+  the DTO + the re-pinned exact-OR-partial match-semantics ruling + the both-predicates
+  export ruling this doc implements.
 - `design/typecheck/monomorphisation.md §9` — the FIXME 0432 root fix; Pillar 3
   implementation (this predicate's consumer) is gated on it (R1/R2).
 - `design/typecheck/hkt.md` — `Type::TyConApp` / HKT (§2.3 head-renaming).
