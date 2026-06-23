@@ -469,6 +469,24 @@ inside an existing crate, not an edge change. (If a future Hoogle-style match �
 wants a query-pattern type that does not already have a `cranelisp-types` home, that is a
 `target: /arch` filing at *that* implementation time, not now.)
 
+**Pillar-3 exact-shape match predicate — export ruling (`/arch`, S90 Phase-3, 2026-06-23).**
+The exact-shape match (R6 MVP) is `pub fn signature_matches_exact(&Type, &Type) -> bool` — pure
+alpha-equivalence, no `CheckState` (`design/typecheck/signature-match.md §6`). **Ruling: export it
+from `cranelisp-typecheck` (the design's Option A), NOT inline it int-side (Option B).** Type
+equivalence is typecheck's semantics — even pure alpha-equivalence over `Type` — so its home is the
+type-owning crate (Principle 17 module locality + Principle 7 single source of truth). Inlining
+int-side would hand-roll a second equivalence judgment that must track typecheck's `Type`
+representation and var-binding rules in lockstep; a future `Type` variant would silently diverge it
+with no compile error. The cost is **one additive `public-api.txt` line in `cranelisp-typecheck`** —
+a narrow `fn(&Type, &Type) -> bool` (Principle 2 narrow interfaces), the narrowest possible export,
+no new DTO (reuses the existing `Type` boundary). **This is a legitimate edge evolution at Pillar-3
+*implementation* time** (next sprint), named + dispositioned in the same change-set per the
+baseline-diff discipline. **It does NOT contradict §11.8's "zero across all four pillars" claim,
+which is scoped to S90 — where Pillar 3 is design-only and nothing implements.** This is the §11.4 /
+R6 anticipated case ("a future match predicate is a `target: /arch` filing at that implementation
+time"), pre-approved here so `/design (cranelisp-typecheck)` can pin Option A now in
+`signature-match.md §6`. Pillars 1, 2, 4 remain zero-impact unconditionally. (Recorded as R8 below.)
+
 ### §11.9 Revisions to scope (R1..Rn)
 
 - **R1 (binding):** Pillar 3 ships **split — design-this-sprint, implement-next** unless the
@@ -496,6 +514,11 @@ wants a query-pattern type that does not already have a `cranelisp-types` home, 
 - **R7 (binding):** `/syntax` content = `/docs` (`/spec` validates), UX = `/repl`, wiring =
   `/dev (src/)`; the cheat-sheet is a static `include_str!` asset, NOT primer-baked idioms;
   prelude/stdlib stays harvest-sourced (§11.7, honouring `agent-prelude-awareness-via-harvest-not-primer`).
+- **R8 (binding):** Pillar-3 exact-shape match predicate `signature_matches_exact(&Type, &Type) -> bool`
+  **exports from `cranelisp-typecheck` (Option A)**, not inlined int-side — type equivalence is
+  typecheck's semantics (Principle 17 + 7). One additive `cranelisp-typecheck/public-api.txt` line at
+  Pillar-3 *implementation* time (next sprint), per the baseline-diff discipline; does NOT move §11.8's
+  S90 "zero impact" claim (Pillar 3 is design-only in S90). See §11.8 end (the export ruling).
 
 ---
 
