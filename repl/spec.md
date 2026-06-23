@@ -463,7 +463,7 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | `/ask <text>` | — | The explicit agent door — routes `<text>` to the embedded agent **unconditionally**, bypassing the resolution-aware classifier (useful even for a *known* symbol's prose; see §17.1); prints "agent not built in" when the feature is off | 4 | [S88] |
 | `/context <path>` | — | **Debug command** — write the agent's full **assembled** next-turn request (system primer, harvested context, tools, transcript, current turn) to `<path>` as readable text, **without calling the model** (works dormant/offline, no key; see §17.11); human-only, not an agent tool; prints "agent not built in" when the feature is off | 4 | [Tested+Neg tests/agent.rs::context_feature_off_prints_not_built_in, tests/agent.rs::agent_on_context_dumps_request_to_file_dormant] |
 | `/syntax [topic]` | — | Core-language syntax cheat-sheet — bare `/syntax` lists topics, `/syntax <topic>` shows that topic's dense, verified-compiling content (see §17.17); a human REPL command **and** an agent pull-tool; LLM-free (a static curated asset, works with the agent absent) | 4 | [S90] |
-| `/lib-search <query>` | — | **Design-pinned S90, implemented later** — search **importable-but-unimported** library symbols by name fragment and/or type signature (see §17.19); human command + agent pull-tool; LLM-free | 4 | [S90 — design only] |
+| `/search <query>` | — | **Design-pinned S90 (re-pin), implemented later** — search **importable-but-unimported** symbols (reachable on the lib search path ∪ the project root) by **name OR scheme, exact OR partial** (see §17.19); a **normal default-build session facility** (not agent-gated); also reached by the agent via the ordinary pull | 4 | [S90 re-pin — design only] |
 | `/quit` | `/q` | Exit REPL | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 
 ### 3.2 `/help` Output [Tested tests/repl_introspection::help_lists_commands]
@@ -1951,9 +1951,9 @@ This section is the **complete** set of additive agent requirements on the REPL 
 - the `/ask`, `/refs`, `/tests-for` command rows and the `/doc <module>` overload (§3.1);
 - the `--agent` / `--no-agent` flags (§0.6.1) and (S89) the `--yes` / `-y` flag (§0.6.2);
 - the "Agent prose frame" style role and (S89) the "Agent-input prompt" style role (§10.3);
-- (S90) the `/syntax` command row (§3.1, §17.17) and the `/lib-search` command row (§3.1, §17.19, *design-pinned*) — both reusing existing §10.3 roles, **no new style role**.
+- (S90) the `/syntax` command row (§3.1, §17.17) and the `/search` command row (§3.1, §17.19, *design-pinned re-pin*) — both reusing existing §10.3 roles, **no new style role**.
 
-The **S90** additions (§17.17–§17.20 — the fluency pillars) introduce **no new style role** and (apart from the two command rows above) stay *inside* the agent surface: `/syntax` (§17.17) is an LLM-free static-asset command that also serves as an agent pull-tool; the signature-grain harvest (§17.18) is ambient agent context with **no command and nothing extra in the REPL**; `/lib-search` (§17.19) is design-pinned-now / implemented-later (gated on the FIXME-0432 fix per §11.5); and the silent agent log (§17.20) is an env-opt-in (`CRANELISP_AGENT_LOG`), feature-gated, off-by-default file sink that produces **nothing extra in the REPL**. Feature-off, none of the four exists (the harvest, the log, and `/lib-search`'s index require the agent; `/syntax` is the lone LLM-free one and works in the default build). [S90]
+The **S90** additions (§17.17–§17.20 — the fluency pillars) introduce **no new style role**. Two of the four are **non-agent, default-build** surfaces (the command rows above) and two stay *inside* the agent surface: `/syntax` (§17.17) is an LLM-free static-asset command that also serves as an agent pull-tool; the signature-grain harvest (§17.18) is ambient agent context with **no command and nothing extra in the REPL**; `/search` (§17.19) is a **non-agent-gated default-build session facility** (re-pinned 2026-06-23 — its background index is built by the nice workers, which run regardless of the `agent` feature; the agent merely reaches it through the ordinary pull) and is **design-pinned-now / implemented-later** (gated on the FIXME-0432 fix + the nice-worker `catch_unwind` floor per §11.3); and the silent agent log (§17.20) is an env-opt-in (`CRANELISP_AGENT_LOG`), feature-gated, off-by-default file sink that produces **nothing extra in the REPL**. The **byte-identical-feature-OFF** invariant therefore scopes to the three agent-gated surfaces (the harvest and the log require the agent); `/syntax` and `/search` are present and functional in the default build. [S90 re-pin]
 
 The **S89** additions (§17.12–§17.16) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14), Document consultative edit (§17.15), and the `--yes` auto-accept (§17.14.5 / §17.15.2a) + autonomous-submit first-use notice (§17.16) only fire when the live agent proposes a write. `--yes` (§0.6.2) is, like `--agent`, a no-op on default builds and when no agent is active. None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so §1–§16 stay byte-identical. [S89]
 
@@ -2361,69 +2361,97 @@ budget elided its detail. The acceptance is experiential: **a fresh agent sessio
 in-scope symbol's actual signature without first having to `/list`/`/exports`** (`SPRINT.md
 §Pillar 2 acceptance`). [S90]
 
-### 17.19 Importable-Symbol Search — `/lib-search` — Pillar 3 (DESIGN-PINNED, IMPLEMENTED LATER) [S90]
+### 17.19 Importable-Symbol Search — `/search` — Pillar 3 (DESIGN-PINNED, IMPLEMENTED LATER) [S90 re-pin]
 
-> **Status: DESIGN-PINNED THIS SPRINT, IMPLEMENTED LATER.** Per the `/arch` Phase-2 ruling
-> (R1/R2; `repl-embedded-agent.md §11.5`), Pillar 3 ships as **design only** in S90; its
-> implementation is gated on the FIXME-0432 typecheck root fix **plus** the eval-thread
-> `catch_unwind` agent-robustness floor (§11.3). This subsection pins the **experience
-> contract** — the command shape, the result row, and the dual human/agent use — so the
-> implementation, whenever it lands, has a fixed target. It carries the `[S90 — design only]`
-> tag and is **not yet a conformance MUST** for a shipping build. [S90]
+> **Status: RE-PINNED, DESIGN-ONLY THIS SPRINT, IMPLEMENTED LATER.** Pillar 3 was
+> redesigned mid-plan (user, 2026-06-23); the authoritative architecture is
+> `repl-embedded-agent.md §11.1–§11.9` (commit `c699045`). The command was **renamed
+> `/lib-search` → `/search`** (R12), is now a **non-agent-gated default-build session
+> facility** (R9), searches symbols reachable on the **lib search path ∪ the project root**
+> (R10), matches by **name OR scheme, exact OR partial on both axes** (R6), and is served by
+> an **eager-but-triggered** background index built by the nice workers (R4/R9b). Per the
+> `/arch` Phase-2 ruling (R1; `repl-embedded-agent.md §11.5`), Pillar 3 still ships as
+> **design only** in S90 — implementation is gated on the FIXME-0432 typecheck root fix
+> **plus** the nice-worker indexer `catch_unwind` floor (CF.2, §11.3). This subsection pins
+> the **experience contract** — the command shape, the result row, the dual human/agent use,
+> the partial-result UX, and the safety floor — so the implementation, whenever it lands, has
+> a fixed target. It carries the `[S90 re-pin]` tag and is **not yet a conformance MUST** for
+> a shipping build. [S90 re-pin]
 
 Pillars 1 and 2 ground the agent in the **core language** (`/syntax`) and **what is already
 in scope** (harvest). Pillar 3 closes the last fluency gap: discovering symbols that are
-**reachable on the library search path but not yet imported** — "importable", not yet in
-scope — by **name fragment and/or type signature**. This is the experience of *"is there
-already a function that does this?"* answered **before** writing the `(import …)`, for both
-the human and the agent. [S90]
+**reachable but not yet imported** — "importable", not yet in scope — by **name and/or type
+signature**. This is the experience of *"is there already a function that does this?"*
+answered **before** writing the `(import …)`, for both the human and the agent. [S90 re-pin]
 
-The mechanism is **typecheck-to-index-then-discard** (`§11.1`): to know an importable
-symbol's signature, its defining module must be typechecked, but it must **not** be imported
-into the session — so the indexer typechecks reachable modules into throwaway staging, reads
-out their public `{ name, signature, docstring, module }` records, and **discards** the
-typecheck state, serving searches from the index. That seam is **int/typecheck-owned**
-(`§11.1–§11.4`); this section owns only the **user-visible** half. [S90]
+**Reachable scope (R10).** `/search` searches symbols reachable on the **lib search path ∪
+the project root** that are **not yet imported** into the session — the same file-resolution
+rules `import` uses. Already-imported, in-scope symbols are surfaced by Pillar 2 (harvest,
+§17.18) and the deterministic `/list` family; `/search` covers what is *importable but not
+yet in scope*. [S90 re-pin]
 
-#### 17.19.1 The Command Shape — `/lib-search <query>` [S90]
+**A normal session facility, not an agent feature (R9).** `/search` is an **ordinary
+default-build REPL command** — it works in **every** REPL session, with or without the
+`agent` feature. The background index that serves it is built by the **nice workers** (the
+low-priority background threads that already do object-file codegen), which run regardless of
+the `agent` feature. The agent reaches `/search` through the **ordinary
+tools-as-visible-REPL-commands pull** (§17.3 / R11), exactly like `/syntax`, `/list`, or
+`/exports` — there is **no special agent path** to it. The byte-identical-feature-OFF framing
+that governs the agent-gated pillars (§17.1, §17.17) therefore does **not** apply to
+`/search`: it is present and functional in the feature-OFF build. [S90 re-pin]
 
-`/lib-search <query>` searches the importable-symbol index and lists matching symbols. The
-query is matched (MVP per R6, `§11.4`) by:
+The mechanism is **typecheck-to-index-then-discard** served from a background index
+(`§11.1–§11.2`): to know an importable symbol's signature, its defining module must be
+typechecked, but it must **not** be imported into the session — so the nice-worker indexer
+typechecks reachable modules into throwaway staging, reads out their public symbols into two
+derived lookup indices (name and scheme), and **discards** the typecheck state, serving
+searches from the indices. That seam is **int/typecheck-owned** (`§11.1–§11.4`); this section
+owns only the **user-visible** half. [S90 re-pin]
 
-- **name fragment** — a case-insensitive substring of the symbol name (e.g. `/lib-search
-  grid` finds `grid-get`, `grid-set`, `make-grid`); and/or [S90]
-- **type signature, exact structural shape** — a type-shaped query matched against indexed
-  signatures **up to alpha-renaming of type variables** (e.g. `/lib-search (Fn [Int Int]
-  Int)` finds symbols of exactly that shape). This is the MVP match (no unifier); Hoogle-style
-  subsumption (a query `(Fn [Int] ?)` subsuming `(Fn [Int] Bool)`) is a **`/typecheck`-owned
-  follow-up**, and the **query-pattern syntax for holes/wildcards** is a **flagged `/spec`
-  consult** (R6, `§11.4`) — *not* specified here. [S90]
+#### 17.19.1 The Command Shape — `/search <query>` [S90 re-pin]
 
-How an implementation distinguishes a name-fragment query from a type-shape query (e.g. a
-leading `(Fn …`, or an explicit flag) is at implementation discretion, but the command MUST
-support **both** match modes and SHOULD allow them in combination (name fragment narrowed by
-shape). An empty or no-match query re-prompts with a short "no importable symbols matched"
-note (self-documenting; never an opaque error). [S90]
+`/search <query>` searches the importable-symbol indices and lists matching symbols. The
+query is matched (per R6, `§11.4`) by either axis, **exact OR partial**:
 
-#### 17.19.2 The Result Row — Name, Signature, Module, How-To-Import [S90]
+- **by name** — `/search <name>`. **Exact** name match, plus **partial** = case-insensitive
+  **substring** of the symbol name (e.g. `/search grid` finds `grid-get`, `grid-set`,
+  `make-grid`); and/or [S90 re-pin]
+- **by scheme** — `/search <scheme>`. **Exact** scheme match (the query type-shape matches an
+  indexed signature **up to alpha-renaming of type variables**, e.g. `/search (Fn [Int Int]
+  Int)` finds symbols of exactly that shape), plus **partial = structural-contains** — the
+  query type-shape appears as a **sub-structure** of a candidate's scheme up to alpha-renaming
+  (e.g. `/search (Vec Int)` matches a symbol of scheme `(Fn [(Vec Int)] Bool)`; `/search Int`
+  matches any scheme mentioning `Int`). This structural-contains partial match is the target
+  (`§11.4`); full Hoogle-style subsumption (a query `(Fn [Int] ?)` *subsuming* `(Fn [Int]
+  Bool)` with hole-instantiation + ranking) is a **`/typecheck`-owned follow-up**, and the
+  **query-pattern syntax for holes/wildcards** is a **flagged `/spec` consult** (R6, `§11.4`)
+  — *not* specified here. [S90 re-pin]
+
+How an implementation distinguishes a name query from a scheme query (e.g. a leading `(Fn …`,
+or an explicit flag) is at implementation discretion, but the command MUST support **both**
+axes and **both** exact and partial matching on each. An empty or no-match query re-prompts
+with a short "no importable symbols matched" note (self-documenting; never an opaque error).
+[S90 re-pin]
+
+#### 17.19.2 The Result Row — Name, Signature, Module, How-To-Import [S90 re-pin]
 
 Each result row MUST show enough for the reader to **decide and act** — four facets:
 
-1. **symbol name** — the importable symbol; [S90]
+1. **symbol name** — the importable symbol; [S90 re-pin]
 2. **type signature** — its full `:Type` signature (canonical cranelisp notation, FQ type
    names, §4.1) — the same grain Pillar 2 surfaces for in-scope symbols, so search results and
-   in-scope listings read identically; [S90]
+   in-scope listings read identically; [S90 re-pin]
 3. **originating module** — the module the symbol lives in (its full path), so the reader knows
-   *where it comes from*; [S90]
+   *where it comes from*; [S90 re-pin]
 4. **how to import it** — the exact `(import …)` form that would bring it into scope (e.g.
    `(import [solver.grid [grid-get]])`) — so a human can copy-paste it and the agent can
    propose-and-submit it (Build mode, §17.14) directly. This is the actionable payoff:
-   search → see the form → import. [S90]
+   search → see the form → import. [S90 re-pin]
 
 Conceptually (rendering `/dev`-owned; this pins the facets):
 
 ```
-user> /lib-search (Fn [Int Int] Int)
+user> /search (Fn [Int Int] Int)
 grid-get :: (Fn [primitives/Int primitives/Int] primitives/Int)
   in solver.grid   — (import [solver.grid [grid-get]])
 gcd :: (Fn [primitives/Int primitives/Int] primitives/Int)
@@ -2432,32 +2460,53 @@ gcd :: (Fn [primitives/Int primitives/Int] primitives/Int)
 
 Results use the **existing §10.3 palette roles** (the `/list` family) and **degrade under
 `--no-color`/non-TTY** (§10.1) to clean plain text — same rule as `/syntax` (§17.17.2) and
-every other deterministic command. [S90]
+every other deterministic command. [S90 re-pin]
 
-#### 17.19.3 Dual Use — Human Command and Agent Pull-Tool [S90]
+#### 17.19.3 Eager-But-Triggered Index — Partial Results While Indexing [S90 re-pin]
 
-`/lib-search` is both a **human REPL command** (typed at the prompt to find a library function
-before importing) and an **agent read-only pull-tool** (§17.3) — the agent issues `/lib-search
-…` to discover a reachable symbol it needs, exactly as it pulls `/syntax` or `/exports`. When
-the agent pulls it, the issued line carries the **`agent>` prompt** (§17.12) and the result
-renders **unframed** below. It is **LLM-free** (the index is deterministic; the command works
-with the agent absent). The natural agent workflow the dual use enables: *search → find the
-symbol + its import form → propose the import (and the using code) through the Build confirm-gate
-(§17.14)* — fluency end-to-end, from "is there a function for this?" to a submitted, importing,
-type-checking form. [S90]
+The background index is **eager-but-triggered** (R4/R9b): it is **not** built unconditionally
+at session start (a session that never searches and never starts the agent should not pay the
+cost of typechecking the whole lib-path ∪ project-root). The nice workers **arm** the index on
+the **first `/search`** (human or agent pull) **or first agent activation**; once armed they
+**race ahead** — burning down the reachable-module worklist eagerly, not one module per query.
 
-#### 17.19.4 Robustness — Searching the Library Must Never Crash the REPL [S90]
+Because the burn-down may still be in progress when a `/search` lands, the experience contract
+is **partial-results-plus-a-note**: a `/search` issued before indexing completes MUST serve
+the matches found **so far** and append a short progress note — `indexing N modules…` (or
+equivalent) — telling the reader the result set is incomplete and more may appear if the
+search is repeated. This is the same self-documenting, never-opaque posture as every other
+deterministic command: a not-yet-complete index is a transient state surfaced plainly, not an
+error and not a silent empty result. A subsequent `/search`, once the burn-down has advanced,
+returns the fuller set. [S90 re-pin]
+
+#### 17.19.4 Dual Use — Human Command and Agent Pull-Tool [S90 re-pin]
+
+`/search` is both a **human REPL command** (typed at the prompt to find a library function
+before importing) and an **agent read-only pull-tool** (§17.3) — the agent issues `/search …`
+to discover a reachable symbol it needs, exactly as it pulls `/syntax` or `/exports`, through
+the **same ordinary tools-as-visible-REPL-commands pull** every other command uses (R11);
+there is no agent-specific search path. When the agent pulls it, the issued line carries the
+**`agent>` prompt** (§17.12) and the result renders **unframed** below. The command is a
+**normal default-build facility** (the index is deterministic and built by the nice workers;
+the command works with the agent absent — §17.19 preamble, R9). The natural agent workflow the
+dual use enables: *search → find the symbol + its import form → propose the import (and the
+using code) through the Build confirm-gate (§17.14)* — fluency end-to-end, from "is there a
+function for this?" to a submitted, importing, type-checking form. [S90 re-pin]
+
+#### 17.19.5 Robustness — Searching the Library Must Never Crash the REPL [S90 re-pin]
 
 Because Pillar 3 typechecks **arbitrary reachable third-party modules** at index time, a
-malformed or 0432-shaped library module on the search path could (today, in a debug/agent build)
-**crash the REPL by being searched** (`§11.3`). The experience contract, pinned now for the
-later implementation: **`/lib-search` MUST NOT crash the REPL or the session**, regardless of
-what it encounters while indexing. A reachable module that fails to typecheck (or trips a
-compiler `debug_assert!`) MUST surface as a **graceful "could not index <module>" search-quality
-note** — the bad module is simply absent from results — never an unwound eval thread, a panic, or
-a lost session. (The two-layer containment that makes this hold — the `/typecheck` 0432 root fix
-plus the eval-thread `catch_unwind` floor — is `§11.3`-owned mechanism; this pins only the
-user-visible floor: **searching the library is always safe**.) [S90]
+malformed or 0432-shaped reachable module on the lib-path ∪ project-root could (today, in a
+debug build) **crash a worker by being indexed** (`§11.3`). The experience contract, pinned
+now for the later implementation: **`/search` MUST NOT crash the REPL or the session**, and
+indexing MUST NOT silently degrade the session, regardless of what a reachable module contains.
+A reachable module that fails to typecheck (or trips a compiler `debug_assert!`) MUST be
+**silently skipped** — it is simply **absent from results** — never an unwound worker thread, a
+panic, or a lost session. The skip is a search-quality note (logged, optionally surfaced as
+"could not index <module>"); the bad module never enters the indices and never reaches the
+reader as an error. (The two-layer containment that makes this hold — the `/typecheck` 0432
+root fix plus the **nice-worker** `catch_unwind` floor, CF.2 — is `§11.3`-owned mechanism;
+this pins only the user-visible floor: **searching the library is always safe**.) [S90 re-pin]
 
 ### 17.20 Silent Agent Activity Log — Pillar 4 [S90]
 
