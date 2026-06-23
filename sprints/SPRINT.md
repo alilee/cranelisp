@@ -1,6 +1,6 @@
 # Sprint 90: Agentic-REPL Phase 3 — Fluency (rung 7, reach half)
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Waves 1–2 CLOSED ✅; Wave 3 (Pillar 4 silent log) next
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Waves 1–3 CLOSED ✅; Wave 4 (0432 root fix + CF.1 floor) next
 
 **Goal**: Make the embedded REPL agent *fluent* — give it on-demand syntax detail, ambient awareness of what's in scope (prelude + imports at signature grain), and the ability to search reachable-but-unimported library symbols by name and/or type signature — so its first submit typechecks more often and it stops burning repair/exploration turns rediscovering the language and library.
 
@@ -200,6 +200,8 @@ Fanned out in two sub-waves (3a interfaces/UX/content/typecheck, then 3b int-int
 | 3q | /qa | tests | P4 rows: `CRANELISP_AGENT_LOG=<path>` → JSONL stable keys; **SILENT** (transcript byte-identical on/off, +neg); **absent on default build** (+neg); graceful-unwritable (+neg); Lane-B feature-OFF |
 | 3d | /dev | src/ | New `src/agent/log.rs` sibling sink (mirrors `trace.rs:38` env-gate); `CRANELISP_AGENT_LOG` path, JSONL via `serde_json`; one-line appends at existing record sites (`mod.rs:241/245/313`, `pull.rs:149/586/359/262`); silent + graceful + off default path. Flip 3q green + unit tests |
 | 3R | /review | all | Sibling sink not a `trace.rs` extension (R5); SILENT (no transcript delta); absent on default build; feature-OFF byte-identical |
+
+**Wave 3 CLOSED ✅** — `3q` `/qa` `b9a1ba2` (1 load-bearing RED P4.1 + 4 green-on-HEAD floors; keys `event`/`symbol`/`module`/`error_class`/`iteration`) → `3d` `/dev` `54e65a0` (new `src/agent/log.rs` sibling sink, `CRANELISP_AGENT_LOG` path env-gate mirroring `trace.rs`, JSONL via existing `serde_json`, best-effort `let _ =` graceful; record sites: exchange/pull/repair/submit/give_up; 6 unit tests) → `3R` `/review` **GATE-READY** (SILENT confirmed via anti-mask probe — P4.1 bites; feature-OFF byte-identical; genuine R5 sibling; graceful non-vacuous). **default 1541/0, agent lane 1666/0.** **2 Suggestions accepted non-blocking:** (1) `give_up` logged at the single canonical `pull.rs run_submit` origin (correct — avoids double-logging vs the §27.1 table's 2 sites; minor design-table drift → fold a 1-line §27.1 note into a later doc-sync); (2) cosmetic `pub`→`pub(crate)` on `LogEvent` fields (optional /dev cleanup). Deferred with rationale.
 
 ### Wave 4 — 0432 root fix + containment floor (SHIPS; serial; safety-critical, unblocks Pillar 3)
 | Step | Skill | Crate | Task |
