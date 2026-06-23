@@ -4574,6 +4574,59 @@
         }
     }
 
+    // spec: spec/05-definitions.md §5.1.2 — multi-clause `defn` self-call (FIXME
+    //   0432 Face B). An UNannotated multi-clause `defn` whose body recursively
+    //   self-calls across variants cannot pin the cross-variant param types; the
+    //   result is a residual `Type::Var` in a codegen-reaching position. This
+    //   MUST be a clean `Err(TypeError{ "ambiguous type" })` — NEVER a monomorphiser
+    //   panic (`s84-concrete-types-ambiguity-ruling`: a residual `Var` at a
+    //   codegen position is a clean type error, never a `build_mangled_name`
+    //   debug panic).
+    //
+    //   0432.U — unit-tier reachability guard. REACHABILITY FINDING: the
+    //   `monomorphise.rs:1016` `debug_assert!` is NOT reachable for this shape at
+    //   unit tier on HEAD. Two independent mechanisms catch the residual `Var`
+    //   first: (1) the S84 slot gate leaves the multi-clause `defn` registered as
+    //   `Overloaded` with per-clause mangled variants (`sum-to$Var`/`sum-to$Int+Int`)
+    //   via the multi-sig variant mangler (`program.rs:627`, which tolerates a
+    //   `Var` param), NOT a single `[Int, Var(N)]` mono instance through
+    //   `build_mangled_name`; (2) the §3.11.1 backstop
+    //   (`find_ambiguous_top_level_form`) rejects the residual var at finalisation.
+    //   So this is a GREEN-today guard, and the §9 concreteness gate at
+    //   `monomorphise_call` P1 is pure defence-in-depth (Principle 18) — it makes
+    //   the `:1016` assert provably unreachable-for-0432 rather than incidentally so.
+    //   The e2e convergence guards 0432.E1/E2/E3 (`tests/spec_05_definitions.rs`)
+    //   are the cross-mode (REPL == `--run`) siblings; both stay green.
+    #[test]
+    fn multi_clause_defn_self_call_is_ambiguous_not_panic() {
+        let mut tc = tc_with_prims();
+        // FIXME 0432 Face B verbatim: unannotated multi-clause `sum-to` whose
+        // 1-arg clause delegates to the 2-arg clause and the 2-arg clause
+        // self-recurses. Qualified `primitives/eq-i64`/`sub-i64`/`add-i64` so the
+        // arithmetic is concrete; the ambiguity is solely the un-pinnable
+        // cross-variant param.
+        let src = "\
+            (defn sum-to ([n] (sum-to n 0))\n\
+                         ([n acc] (if (primitives/eq-i64 n 0) acc\n\
+                                      (sum-to (primitives/sub-i64 n 1) (primitives/add-i64 acc n)))))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+
+        // MUST be a clean Err, NEVER a panic. `check_program_self` drives the full
+        // `check_via_forms`/`pass4_monomorphise` pipeline in a debug build (the
+        // build in which the `:1016` `debug_assert!` is live), so this directly
+        // guards the FIXME's debug-panic divergence.
+        let err = tc
+            .check_program_self(&program)
+            .expect_err("multi-clause self-call with an un-pinnable param must be a clean type error");
+        let msg = format!("{err}").to_lowercase();
+        assert!(
+            msg.contains("ambiguous"),
+            "the residual-var rejection must name 'ambiguous' (the §3.11.1 / §9 \
+             wording), got: {msg}",
+        );
+    }
+
     // spec: spec/03-types.md §3.11 — Ambiguous Types: a generic *definition*
     //   (`(defn id [x] x)`) is NOT ambiguous — its scheme vars are quantified,
     //   not free-at-root — so it lands in the sound slot-less `Polymorphic` arm.

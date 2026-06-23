@@ -114,6 +114,35 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             return Ok(None);
         };
 
+        // === §9 concreteness gate (FIXME 0432, monomorphisation.md §9.3) ===
+        // Defence-in-depth, Principle 18 belt-and-braces. A residual `Type::Var`
+        // in a minted mono-instance param vector (the FIXME's `[Int, Var(N)]`
+        // shape from an unannotated multi-clause `defn` whose cross-variant
+        // self-call cannot pin a param) must NEVER reach `build_mangled_name` as
+        // a debug panic (`:1016` tripwire) — `s84-concrete-types-ambiguity-ruling`:
+        // a residual `Var` at a codegen position is a CLEAN type error, never a
+        // panic. The release path's §3.11.1 backstop
+        // (`find_ambiguous_top_level_form`) already catches this form cleanly AND
+        // the multi-clause variant mangler (`program.rs:627`) tolerates a `Var`
+        // param without reaching this seam — so the `:1016` assert is provably
+        // unreachable-for-0432 today (this gate makes that guarantee structural
+        // rather than incidental). Lift the same `Type::is_concrete()` predicate
+        // the `:1016` `debug_assert!` tests from a release-erased assertion to a
+        // live `Result`-returning check, fired one step earlier — at the
+        // param-vector, before mangling. The error reuses the §3.11.1 /
+        // `finalize_mono_codegen_view` wording so REPL and `--run` produce one
+        // identical diagnostic and the suite's ambiguous-type assertions hold.
+        if !concrete_param_types.iter().all(Type::is_concrete) {
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "ambiguous type; add an annotation to pin the type of \
+                     the polymorphic value monomorphised in `{fn_name}` (a \
+                     residual unbound type variable reached a codegen position)"
+                ),
+                location: ErrorLocation::from_span(call_span),
+            });
+        }
+
         let mangled_name = build_mangled_name(fn_name, &concrete_param_types);
 
         // === P2 — verify constraints (module-switched) ===
