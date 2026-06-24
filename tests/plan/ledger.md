@@ -36,6 +36,30 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 90 Phase-6 — D-qual-impl-target: qualified type path in impl-target position re-rooted under current module (/qa, 2026-06-24)
+
+Agentic-REPL Phase-6 finding. A module-qualified type path in impl-target
+position is re-rooted under the current module, producing a phantom type that no
+real value has. The embedded agent is the first consumer to write the qualified
+form naturally (it mirrors the REPL's `:primitives/Int` value display); the
+entire human-written impl corpus uses bare targets, so the qualified-target
+resolution path was never exercised. Spec is CLEAR (`spec/08-modules.md §8.5`
+qualified names denote canonical types and bypass imports; `spec/07-traits.md
+§7.3` `concrete_target = type_name` carries no impl-target exemption) — this is a
+defect, not a spec gap; no `/spec` FIXME filed. Extent: NOT primitives-specific —
+a qualified user type re-roots identically (double-rooted phantom).
+
+| Field | Value |
+|---|---|
+| Tests | `spec_07_traits::impl_qualified_primitive_type_target_resolves_to_canonical`, `spec_07_traits::impl_qualified_user_type_target_resolves_to_canonical` |
+| Control (green) | `spec_07_traits::impl_bare_type_target_dispatches_control` — bare `Int` target works today, pins the contrast |
+| Commit SHA | (this commit) |
+| Stderr signature (primitive) | `Error: type error at 0..10: no impl of trait Num2 for type Int` (impl registered as `impl user/Num2 for user/primitives/Int`) |
+| Stderr signature (user type) | `codegen error … undefined function: Tagger.tagit$Widget` (impl registered as `impl user/Tagger for user/user/Widget`) |
+| Owning skill | `/frontend` (impl-target type-name resolution / canonicalisation); `/typecheck` if the seam is in impl registration — a `/dev` unit repro pins which |
+| Target sprint | out-of-scope (owner=/frontend) — carry to a future sprint |
+| Disposition | out-of-scope (owner=/frontend) — qualified impl target must canonicalise (resolve like bare), not current-module-prefix; failing-not-ignored repros are the durable record + trigger |
+
 ### Sprint 90 Phase 3 — `/qa` test PLAN authored (no `.rs` yet): fluency pillars + 0432 repro + containment floor (/qa, 2026-06-23)
 
 S90 Phase-3 deliverable: `tests/plan/s90-test-plan.md` authored — the fluency

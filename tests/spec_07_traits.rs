@@ -874,6 +874,107 @@ fn deftrait_method_nameless_annotation_param_rejected_neg() {
 }
 
 // =============================================================================
+// §7.3.1 × §8.5 — Qualified type path in impl-target position MUST resolve to
+//        the canonical type (not be re-rooted under the current module)
+//        — DEFECT D-qual-impl-target (S90, agentic-REPL Phase-6 finding)
+// =============================================================================
+//
+// DEFECT. A module-qualified type path in impl-target position
+// (`(impl Num primitives/Int …)`) is RE-ROOTED under the current module: it
+// registers as `impl user/Num for user/primitives/Int` — a phantom type that
+// no real value ever has. A value `3 : Int` then finds no matching impl, so
+// `(add 3 4)` errors `no impl of trait Num for type Int`. Per spec/08-modules.md
+// §8.5 a qualified name `primitives/Int` denotes the type `Int` in module
+// `primitives` (the canonical primitive) and BYPASSES the import/current-module
+// machinery; the grammar `concrete_target = type_name` (spec/07-traits.md §7.3,
+// EBNF) carries no impl-target exemption. So the qualified target MUST resolve
+// to the SAME canonical type the bare target `Int` does — bare and qualified
+// impl targets must be interchangeable.
+//
+// The trap is that the REPL self-documents values as `:primitives/Int 3`, so a
+// human (or the embedded agent, mirroring the display) NATURALLY writes the
+// qualified form `(impl Num primitives/Int …)`. The agent is the first consumer
+// to hit this latent path — the entire human-written impl corpus uses BARE
+// targets (`impl Trait Int`, `impl Trait MyType`), so the qualified-target
+// resolution path was never exercised.
+//
+// Extent (probed by hand, S90): NOT primitives-specific. A qualified USER type
+// `(impl Tagger user/Widget …)` re-roots to `user/user/Widget` (double-rooted
+// phantom) and fails identically. The bug is general qualified-path re-rooting
+// in impl-target type position — `user/` is prepended to ANY already-qualified
+// path.
+//
+// Owning skill: /frontend (impl-target type-name resolution) — the qualified
+// path must be canonicalised, not current-module-prefixed, at the point the
+// impl target is read/built. If isolation shows the canonicalisation seam is in
+// the typechecker's impl registration, /typecheck owns it instead; a /dev unit
+// repro at the resolution seam will pin which. See the handoff brief in the S90
+// outcome.
+//
+// FAILING-NOT-IGNORED per memory/feedback_failing_not_ignored.md: the qualified
+// test asserts the CORRECT behaviour (qualified resolves like bare → `:a 7`),
+// RED today (`no impl of trait Num for type Int`), GREEN when the qualified
+// impl target canonicalises. The bare control passes TODAY and pins the
+// contrast so the fix target is unambiguous.
+
+// spec: spec/07-traits.md §7.3.1 — CONTROL (green today): a BARE impl target
+// `(impl Num2 Int …)` registers `impl user/Num2 for user/Int`, and `(add2 3 4)`
+// dispatches to the Int impl → `:a 7`. Pins the contrast for the qualified case.
+#[test]
+fn impl_bare_type_target_dispatches_control() {
+    repl_prims(
+        "(deftrait Num2 (add2 [:a x :a y] :a))\n\
+         (impl Num2 Int (defn add2 [x y] (add-i64 x y)))\n\
+         (add2 3 4)\n",
+    )
+    .assert_stdout_contains_all(&["impl user/Num2 for user/Int", ":a 7"]);
+}
+
+// spec: spec/07-traits.md §7.3.1 + spec/08-modules.md §8.5 — a QUALIFIED impl
+// target `(impl Num2 primitives/Int …)` MUST resolve to the canonical primitive
+// `Int` (identically to the bare `Int` control above), so `(add2 3 4)` → `:a 7`.
+// D-qual-impl-target: today it re-roots to `user/primitives/Int` and errors
+// `no impl of trait Num2 for type Int`. FIXME(/frontend).
+#[test]
+fn impl_qualified_primitive_type_target_resolves_to_canonical() {
+    repl_prims(
+        "(deftrait Num2 (add2 [:a x :a y] :a))\n\
+         (impl Num2 primitives/Int (defn add2 [x y] (add-i64 x y)))\n\
+         (add2 3 4)\n",
+    )
+    // CORRECT: qualified target canonicalises to `Int` exactly as the bare
+    // target does; the call dispatches and yields 7. Today this FAILS — the
+    // impl registers for the phantom `user/primitives/Int` and `(add2 3 4)`
+    // errors `no impl of trait Num2 for type Int`.
+    .assert_stdout_contains(":a 7")
+    // Negative: the phantom re-rooted target MUST NOT appear in the impl line.
+    .assert_stdout_does_not_contain("user/primitives/Int");
+}
+
+// spec: spec/07-traits.md §7.3.1 + spec/08-modules.md §8.5 — extent guard: the
+// re-rooting is NOT primitives-specific. A qualified USER type target
+// `(impl Tagger user/Widget …)` MUST resolve to the canonical `user/Widget`
+// (the same type the bare target `Widget` names), so `(tagit Gadget)` → 99.
+// D-qual-impl-target: today it double-roots to `user/user/Widget` and errors
+// `undefined function: Tagger.tagit$Widget` at codegen (the impl was registered
+// for a phantom type). FIXME(/frontend).
+#[test]
+fn impl_qualified_user_type_target_resolves_to_canonical() {
+    repl_prims(
+        "(deftype Widget Gadget)\n\
+         (deftrait Tagger (tagit [x] :Int))\n\
+         (impl Tagger user/Widget (defn tagit [w] 99))\n\
+         (tagit Gadget)\n",
+    )
+    // CORRECT: qualified `user/Widget` canonicalises to the already-current-
+    // module type `Widget`; dispatch yields 99. Today this FAILS — the impl
+    // registers for `user/user/Widget` and the call cannot resolve.
+    .assert_stdout_contains(":primitives/Int 99")
+    // Negative: the double-rooted phantom MUST NOT appear.
+    .assert_stdout_does_not_contain("user/user/Widget");
+}
+
+// =============================================================================
 // §7.4 — Nullary return-type-polymorphic trait method dispatch (D-default)
 // =============================================================================
 
