@@ -80,6 +80,7 @@ fn new_state(model: Option<Box<dyn AgentModel>>, label: &str, auto_accept: bool)
         auto_accept_notice_shown: false,
         submit_gave_up: false,
         submit_committed: false,
+        current_turn: 0,
     }
 }
 
@@ -169,10 +170,13 @@ impl<M: CompletionModel> RigModel<M> {
 
 impl<M: CompletionModel> AgentModel for RigModel<M> {
     fn complete(&mut self, request: &AgentRequest) -> Result<ModelResponse, String> {
-        // Trace mode (`CRANELISP_AGENT_TRACE=1`): log the assembled message
-        // sequence to stderr at the rig boundary so wire-path bugs (the
-        // tool_use↔tool_result pairing 400 class) are directly visible rather
-        // than inferred from a live 400 (off by default — `trace.rs`).
+        // Trace mode (`CRANELISP_AGENT_TRACE=<path>`, §28.1): APPEND the assembled
+        // message sequence (full content) to the trace file at the rig boundary so
+        // wire-path bugs (the tool_use↔tool_result pairing 400 class) are directly
+        // visible rather than inferred from a live 400. Off (no file) unless the
+        // env path is set. The trace fires ONLY on this rig path, not the stub
+        // (§28.2(2) — the persisted trace is a live-provider wire record). The
+        // request's own `turn` id stamps the persisted block (the log↔trace join).
         crate::agent::trace::emit_request(request);
 
         // Build the rig request via the membrane (`request.rs`) + the model's
@@ -196,7 +200,8 @@ impl<M: CompletionModel> AgentModel for RigModel<M> {
             .map_err(|e| format!("completion failed: {e}"))?;
 
         let lowered = agent_request::lower_response(resp.choice);
-        crate::agent::trace::emit_response(&lowered);
+        // The response belongs to the request's turn — stamp the same `turn` id.
+        crate::agent::trace::emit_response(&lowered, request.turn);
         Ok(lowered)
     }
 }
@@ -477,6 +482,7 @@ mod tests {
             auto_accept_notice_shown: false,
             submit_gave_up: false,
             submit_committed: false,
+            current_turn: 0,
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
@@ -600,6 +606,7 @@ mod tests {
             auto_accept_notice_shown: false,
             submit_gave_up: false,
             submit_committed: false,
+            current_turn: 0,
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
@@ -814,6 +821,7 @@ mod tests {
             auto_accept_notice_shown: false,
             submit_gave_up: false,
             submit_committed: false,
+            current_turn: 0,
         });
         let mut sink: Vec<u8> = Vec::new();
         let mut consent = crate::agent::types::NoConsent;
@@ -861,6 +869,219 @@ mod tests {
         assert!(
             s.lookup_with_prelude_fallback("never").is_none(),
             "the cap-exhausted give-up must commit NOTHING"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // S90 §28 — the PERSISTENT TRACE sink, driven through the REAL rig boundary
+    // (`RigModel::complete` → `emit_request`/`emit_response`). These are the
+    // /dev-owned linchpin guards /qa CANNOT write: `emit_*` fires ONLY on the rig
+    // path, never the deterministic stub (§28.2(2)), so only a rig-backed
+    // `MockModel` populates the trace FILE. They assert: (a) the file is written
+    // through the rig boundary; (b) FULL content — a >80-char form survives
+    // VERBATIM (vs the old 80-char `compact()` cut); (c) the per-turn `turn=N`
+    // marker matches `AgentRequest.turn`.
+    // -----------------------------------------------------------------------
+
+    /// A guard that sets `CRANELISP_AGENT_TRACE` for the test body and restores
+    /// the prior value on drop. Env mutation is process-global; nextest runs each
+    /// test in its OWN process (process-per-test), so a per-test set is isolated.
+    struct TraceEnvGuard(Option<String>);
+    impl TraceEnvGuard {
+        fn set(path: &str) -> Self {
+            let prior = std::env::var("CRANELISP_AGENT_TRACE").ok();
+            // SAFETY: unit test, single-threaded within this process at this point.
+            unsafe { std::env::set_var("CRANELISP_AGENT_TRACE", path) };
+            TraceEnvGuard(prior)
+        }
+    }
+    impl Drop for TraceEnvGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => unsafe { std::env::set_var("CRANELISP_AGENT_TRACE", v) },
+                None => unsafe { std::env::remove_var("CRANELISP_AGENT_TRACE") },
+            }
+        }
+    }
+
+    /// Install a session whose agent is a rig-backed `MockModel` running `script`,
+    /// with a defined `f` carrying `f_source` as its introspection source (so a
+    /// real `/source f` pull through `process_commands` yields that text back to
+    /// the model). Returns the session ready to drive a turn.
+    fn rig_session_with_source(
+        script: Vec<Vec<AssistantContent>>,
+        f_source: &str,
+    ) -> crate::session_v4::CompilerSession {
+        let mock = MockModel::new(script);
+        let rig = RigModel::new(mock).expect("tokio current-thread runtime builds");
+        let mut s = crate::agent::test_support::repl_session();
+        let module = s.current_module_path();
+        {
+            use cranelisp_types::{DefKind, ModuleEntry, Symbol, Visibility};
+            if let Some(mut table) = s.shared.symbol_tables.get_mut(&module) {
+                let entry = ModuleEntry::def(
+                    cranelisp_types::Scheme {
+                        type_vars: Vec::new(),
+                        constraints: std::collections::HashMap::new(),
+                        ty: cranelisp_types::Type::Int,
+                    },
+                    DefKind::PrimitiveExtern,
+                )
+                .visibility(Visibility::Public)
+                .build();
+                table.insert(Symbol::from("f"), entry);
+            }
+        }
+        if let Some(intr) = s.shared.introspection.as_ref() {
+            intr.insert(
+                cranelisp_types::FQSymbol {
+                    module: module.clone(),
+                    symbol: cranelisp_types::Symbol::from("f"),
+                },
+                crate::session_v4::Introspection {
+                    source: Some(f_source.to_string()),
+                    sexp: None,
+                    expanded: None,
+                    ast: None,
+                    clif_ir: None,
+                    code_size: None,
+                },
+            );
+        }
+        s.agent = Some(AgentState {
+            transcript: Vec::new(),
+            model: Some(Box::new(rig)),
+            provider_label: "mock (test)".to_string(),
+            auto_accept: false,
+            auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
+            current_turn: 0,
+        });
+        s
+    }
+
+    // spec: repl/spec.md §17.21.1 — `CRANELISP_AGENT_TRACE=<path>` causes the
+    // trace to be WRITTEN to the file through the rig boundary. A single Done turn
+    // drives one `RigModel::complete`, so `emit_request`/`emit_response` append a
+    // `[agent-trace]`-marked request + response block to the file. The stub never
+    // reaches `emit_*`, so this rig-`MockModel` test is the only path that can
+    // observe the file population.
+    #[test]
+    fn trace_file_is_written_through_the_rig_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace_path = tmp.path().join("trace.txt");
+        let _g = TraceEnvGuard::set(trace_path.to_str().unwrap());
+
+        // A single Done turn — one completion, one request+response trace block.
+        let script = vec![vec![AssistantContent::text("f is the identity")]];
+        let mut s = rig_session_with_source(script, "(defn f [x] x)");
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("what is f", &mut sink, &mut consent);
+
+        assert!(trace_path.exists(), "the trace file must be written through the rig boundary");
+        let body = std::fs::read_to_string(&trace_path).expect("trace file readable");
+        assert!(
+            body.contains("[agent-trace]") && body.contains("→request"),
+            "the trace must carry the request block: {body}"
+        );
+        assert!(
+            body.contains("←response") && body.contains("Done[text]: f is the identity"),
+            "the trace must carry the response block (the model's Done prose): {body}"
+        );
+    }
+
+    // spec: repl/spec.md §17.21.1 — FULL, UNTRUNCATED content (§28.1 core
+    // requirement). A >80-char form fed back as a tool_result must survive in the
+    // persisted trace VERBATIM — no `…` cut, no `⏎` newline-collapse — vs the old
+    // `TEXT_TRUNCATE = 80` `compact()` cut. The model pulls `/source f` on turn 1;
+    // turn 2's request transcript carries the long source as a tool_result, which
+    // the rig boundary traces at `Grain::Full`.
+    #[test]
+    fn trace_file_carries_full_untruncated_form() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace_path = tmp.path().join("trace.txt");
+        let _g = TraceEnvGuard::set(trace_path.to_str().unwrap());
+
+        // A >80-char, multi-line source form — exactly what the old compact cut
+        // would have truncated to an 80-char head + `…`.
+        let long_form = "(defn very-long-helper-fn [first-arg second-arg]\n  \
+            (add-i64 (mul-i64 first-arg 1000000) second-arg))";
+        assert!(long_form.len() > 80, "fixture must exceed the old compact cap");
+
+        // Turn 1: pull `/source f`; turn 2: Done (so turn-2's request carries the
+        // fed-back long source as a tool_result that the trace renders Full).
+        let turn1 = vec![AssistantContent::ToolCall(ToolCall::new(
+            "toolu_1".to_string(),
+            ToolFunction::new("source".to_string(), serde_json::json!({"argument": "f"})),
+        ))];
+        let turn2 = vec![AssistantContent::text("that is the helper")];
+        let mut s = rig_session_with_source(vec![turn1, turn2], long_form);
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("show me the source of f", &mut sink, &mut consent);
+
+        let body = std::fs::read_to_string(&trace_path).expect("trace file readable");
+        // VERBATIM: the whole long form is present, newline and all — NOT truncated.
+        assert!(
+            body.contains(long_form),
+            "the persisted trace must carry the long form VERBATIM (Full grain, \
+             §28.1), got: {body}"
+        );
+        // +neg: no compact-grain truncation glyphs leaked into the persisted file.
+        assert!(
+            !body.contains('…'),
+            "the persisted (Full) trace must NOT carry the `…` truncation glyph: {body}"
+        );
+        assert!(
+            !body.contains('⏎'),
+            "the persisted (Full) trace must NOT collapse newlines to `⏎`: {body}"
+        );
+    }
+
+    // spec: repl/spec.md §17.21.3 — the trace's per-turn `turn=N` marker carries
+    // the SAME turn as `AgentRequest.turn` (the log↔trace join key, §28.2). The
+    // first model exchange is turn 1; a pull then Done drives turns 1 and 2, so
+    // the persisted trace must carry BOTH `turn=1` and `turn=2` markers, matching
+    // the 1-based loop-step ids `assemble_request` stamps onto `AgentRequest.turn`.
+    #[test]
+    fn trace_marker_turn_matches_agent_request_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let trace_path = tmp.path().join("trace.txt");
+        let _g = TraceEnvGuard::set(trace_path.to_str().unwrap());
+
+        // Turn 1: pull `/source f`; turn 2: Done — two completions ⇒ turns 1 and 2.
+        let turn1 = vec![AssistantContent::ToolCall(ToolCall::new(
+            "toolu_1".to_string(),
+            ToolFunction::new("source".to_string(), serde_json::json!({"argument": "f"})),
+        ))];
+        let turn2 = vec![AssistantContent::text("done")];
+        let mut s = rig_session_with_source(vec![turn1, turn2], "(defn f [x] x)");
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = crate::agent::types::NoConsent;
+        s.agent_turn("show me the source of f", &mut sink, &mut consent);
+
+        let body = std::fs::read_to_string(&trace_path).expect("trace file readable");
+        // The 1-based per-turn markers — the SAME ids `AgentRequest.turn` carries.
+        assert!(
+            body.contains("turn=1"),
+            "the trace must carry the turn=1 marker (the first exchange): {body}"
+        );
+        assert!(
+            body.contains("turn=2"),
+            "the trace must carry the turn=2 marker (the continuation exchange): {body}"
+        );
+        // The request AND response of one exchange share the turn id (the response
+        // belongs to its request's turn) — both `→request` and `←response` lines
+        // for turn 1 are present and stamped.
+        assert!(
+            body.lines().any(|l| l.contains("turn=1") && l.contains("→request")),
+            "a turn=1 request marker must be present: {body}"
+        );
+        assert!(
+            body.lines().any(|l| l.contains("turn=1") && l.contains("←response")),
+            "a turn=1 response marker must be present (response shares request's turn): {body}"
         );
     }
 }

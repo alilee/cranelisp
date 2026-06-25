@@ -29,28 +29,16 @@
 
 #![cfg(feature = "agent")]
 
-use std::io::Write;
-
 use serde::Serialize;
 
 /// The env var that turns the log on. A PATH (not a `=1` toggle) — set ⇒ append to
 /// that file; unset/empty ⇒ off. Sibling to `trace.rs`'s `CRANELISP_AGENT_TRACE`.
 const LOG_VAR: &str = "CRANELISP_AGENT_LOG";
 
-/// The configured log path, or `None` when logging is off (unset/empty). Mirrors
-/// `trace::trace_enabled`'s env-gate shape — absence is OFF.
+/// The configured log path, or `None` when logging is off (unset/empty). Defers
+/// to the shared `sink::env_path` gate (§28.3) — sibling to `trace::trace_path`.
 fn log_path() -> Option<String> {
-    match std::env::var(LOG_VAR) {
-        Ok(v) => {
-            let v = v.trim();
-            if v.is_empty() {
-                None
-            } else {
-                Some(v.to_string())
-            }
-        }
-        Err(_) => None,
-    }
+    crate::agent::sink::env_path(LOG_VAR)
 }
 
 /// A single agent-activity record (`repl/spec.md §17.20.3`). One per line of JSONL.
@@ -75,6 +63,13 @@ pub(crate) struct LogEvent {
     /// A repair's 1-based iteration count.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iteration: Option<usize>,
+    /// The 1-based `agent_turn` loop-step index (§28.2) — the log↔trace
+    /// correlation key. Its OWN field, NOT the overloaded `iteration` (a repair
+    /// carries both: `turn` for correlation, `iteration` for its repair count).
+    /// Joins each compact log record to the full-content trace block (`turn=N`)
+    /// produced by the same loop iteration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn: Option<usize>,
     /// A pull's tool/command name (e.g. `source`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
@@ -92,6 +87,7 @@ impl LogEvent {
             module: None,
             error_class: None,
             iteration: None,
+            turn: None,
             tool: None,
             ts: now_unix_secs(),
         }
@@ -117,6 +113,13 @@ impl LogEvent {
         self
     }
 
+    /// Stamp the 1-based `agent_turn` loop-step index (§28.2) — the log↔trace
+    /// correlation key. Mirrors `iteration` fluently; the two are distinct.
+    pub(crate) fn turn(mut self, t: usize) -> Self {
+        self.turn = Some(t);
+        self
+    }
+
     pub(crate) fn tool(mut self, t: impl Into<String>) -> Self {
         self.tool = Some(t.into());
         self
@@ -129,22 +132,19 @@ impl LogEvent {
 /// a serialize failure, or anything else degrades silently. NEVER writes to stdout
 /// / the transcript (the SILENT contract, §27.1): the only side effect is the file.
 pub(crate) fn record(event: LogEvent) {
-    let Some(path) = log_path() else {
-        return; // off — no file created, no cost paid.
-    };
+    if log_path().is_none() {
+        return; // off — no file created, no cost paid (early out before serialize).
+    }
     // Serialize to a single JSON line. A serialize failure (should never happen for
     // this flat struct) is swallowed — logging never disturbs the session.
     let Ok(mut line) = serde_json::to_string(&event) else {
         return;
     };
     line.push('\n');
-    // Best-effort append. Any IO error (unwritable path, missing parent dir,
-    // permission) is DISCARDED — exactly as `trace.rs` discards its `eprintln!`.
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut f| f.write_all(line.as_bytes()));
+    // The env-gate + best-effort append + swallow lives ONCE in `sink` (§28.3) —
+    // shared with `trace.rs`. Any IO error (unwritable path, missing parent dir,
+    // permission) is DISCARDED there.
+    crate::agent::sink::append_to_env_path(LOG_VAR, &line);
 }
 
 /// Derive a stable, greppable `error_class` from a compiler-error string. The

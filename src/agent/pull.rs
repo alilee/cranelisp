@@ -225,7 +225,9 @@ impl CompilerSession {
                 // (the read command word + its argument). Off unless
                 // `CRANELISP_AGENT_LOG` is set; never touches stdout.
                 let pull_arg = call.argument.trim();
-                let mut ev = crate::agent::log::LogEvent::new("pull").tool(tool);
+                let mut ev = crate::agent::log::LogEvent::new("pull")
+                    .turn(self.agent_current_turn())
+                    .tool(tool);
                 if !pull_arg.is_empty() {
                     ev = ev.symbol(pull_arg);
                 }
@@ -290,6 +292,7 @@ impl CompilerSession {
                 // (the struggled-over symbol + module). Off unless the env is set.
                 crate::agent::log::record({
                     let mut ev = crate::agent::log::LogEvent::new("give_up")
+                        .turn(self.agent_current_turn())
                         .module(self.current_module_path().as_ref());
                     if let Some(sym) = crate::agent::log::defined_symbol(&call.argument) {
                         ev = ev.symbol(sym);
@@ -403,6 +406,7 @@ impl CompilerSession {
                     // submit (the defined symbol + module). Off unless env is set.
                     crate::agent::log::record({
                         let mut ev = crate::agent::log::LogEvent::new("submit")
+                            .turn(self.agent_current_turn())
                             .module(self.current_module_path().as_ref());
                         if let Some(sym) = crate::agent::log::defined_symbol(clean) {
                             ev = ev.symbol(sym);
@@ -629,7 +633,11 @@ impl CompilerSession {
                     // 1-based repair `iteration`. Off unless `CRANELISP_AGENT_LOG`
                     // is set; never touches stdout (the SILENT contract).
                     crate::agent::log::record({
+                        // The `repair` record carries BOTH `turn` (the §28.2
+                        // log↔trace correlation, distinct field) AND `iteration`
+                        // (its own repair-loop count) — they no longer collide.
                         let mut ev = crate::agent::log::LogEvent::new("repair")
+                            .turn(self.agent_current_turn())
                             .module(self.current_module_path().as_ref())
                             .error_class(crate::agent::log::classify_error(&compiler_error))
                             .iteration(iteration + 1);
@@ -754,6 +762,15 @@ impl CompilerSession {
                 .map(|form| RepairResponse::Prose { prose, form }),
             Err(_) => None,
         }
+    }
+
+    /// The 1-based `agent_turn` loop-step index for the current iteration (§28.2),
+    /// stashed on `AgentState.current_turn` by the `agent_turn` loop. The in-loop
+    /// log record sites read it here to stamp `.turn(current)` — the log↔trace
+    /// correlation key — without a threaded `turn` param (Principle 1). `0` when
+    /// there is no agent (never collides with the 1-based live ids).
+    pub(crate) fn agent_current_turn(&self) -> usize {
+        self.agent.as_ref().map(|a| a.current_turn).unwrap_or(0)
     }
 
     /// `--yes` reader (§20.2). Dormant / feature-off ⇒ `false`. Read ONLY at the
@@ -1053,6 +1070,7 @@ mod tests {
             auto_accept_notice_shown: false,
             submit_gave_up: false,
             submit_committed: false,
+            current_turn: 0,
         });
     }
 

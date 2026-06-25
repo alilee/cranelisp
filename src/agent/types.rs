@@ -124,6 +124,13 @@ pub struct AgentRequest {
     pub tools: Vec<ToolDef>,
     /// The current user turn text.
     pub user: String,
+    /// The 1-based `agent_turn` loop-step index (§28.2) — the log↔trace
+    /// correlation key, set by `assemble_request` from `AgentState.current_turn`.
+    /// `RigModel::complete` forwards it to the trace emitters so the persisted
+    /// trace block carries a `turn=N` marker matching the §27 log's `"turn":N`.
+    /// Derives `Default` ⇒ `0` for test-fixture constructions ("unstamped"; never
+    /// collides with the 1-based live ids).
+    pub turn: usize,
 }
 
 /// The persistent agent state (§3.4) — transcript + the model handle. Lives on
@@ -162,6 +169,14 @@ pub struct AgentState {
     /// Set when a `submit` actually commits a definition this turn (the success
     /// that suppresses the give-up line — the turn "produced something").
     pub submit_committed: bool,
+    /// The 1-based `agent_turn` loop-step index for the CURRENT iteration (§28.2).
+    /// Stashed once per loop step at the top of the `agent_turn` body
+    /// (`state.current_turn = turn_step + 1`); the in-loop log record sites
+    /// (`pull`/`submit`/`repair`/`give_up`) read it off `self.agent` to stamp
+    /// `.turn(current)` — the log↔trace correlation key — WITHOUT threading a
+    /// `turn` param down four call chains (Principle 1). `assemble_request`
+    /// copies it onto `AgentRequest.turn` for the trace side. `0` between turns.
+    pub current_turn: usize,
 }
 
 impl AgentState {

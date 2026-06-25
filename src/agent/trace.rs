@@ -1,117 +1,154 @@
-// agent/trace.rs — the LLM-exchange trace mode (S89 Phase-6, user-requested).
+// agent/trace.rs — the LLM-exchange trace mode (S89 Phase-6; persistent
+// full-content upgrade S90, `design/int/agent.md §28`).
 //
-// A debugging/transparency dev mode that logs the ACTUAL provider exchange at the
-// rig boundary (`provider.rs::RigModel::complete`), so wire-path bugs (the
-// tool_use↔tool_result pairing 400 class) are DIRECTLY visible on stderr instead
-// of inferred from a live 400. The deterministic stub sits above rig and never
+// A debugging/transparency dev mode that records the ACTUAL provider exchange at
+// the rig boundary (`provider.rs::RigModel::complete`), so wire-path bugs (the
+// tool_use↔tool_result pairing 400 class) are DIRECTLY visible instead of
+// inferred from a live 400. The deterministic stub sits above rig and never
 // enforces Anthropic's pairing, so CI stays green while live breaks — this trace
 // is how a human eyeballs the real message sequence the provider receives.
 //
-// Usage: set the env var `CRANELISP_AGENT_TRACE=1` and run the REPL with
-// `--agent`. On each provider completion call the assembled request's message
-// sequence (role + per-block kind: text / tool_use{id,name} / tool_result{id})
-// and the model's response (text / tool_calls{id,name}) are written to stderr,
-// clearly marked `[agent-trace] →request` / `[agent-trace] ←response`. Compact
-// (ids + kinds + truncated text), not a raw JSON dump.
+// S90 persistent + full-content upgrade (§28.1). `CRANELISP_AGENT_TRACE` changed
+// meaning from a `=1` toggle to a PATH (sibling-identical to
+// `CRANELISP_AGENT_LOG`): set ⇒ each request/response trace is APPENDED to that
+// file (persistent across turns + session); unset/empty ⇒ off, no file, no cost.
+// The stderr `eprintln!` sink is REMOVED — there is no longer an ephemeral
+// stderr trace view. The persisted lines carry the WHOLE form/error/prose
+// (`Grain::Full` — no `TEXT_TRUNCATE` cut, no `⏎` newline-collapse): a persisted
+// trace is read IN A FILE, where multi-line forms are an asset, not noise.
+//
+// The trace = CONTENT record; the §27 log = compact INDEX. They join by a shared
+// per-turn `turn` id (§28.2): each persisted block carries a `turn=N` marker that
+// matches the log's `"turn":N` field, so a reader greps the log to find the
+// interesting turn, then reads the trace block for that same N.
 //
 // Off by default; `#[cfg(feature = "agent")]` — feature-off this file does not
-// exist. The trace reads the SAME `AgentRequest` (`types.rs`) the membrane
-// lowers to rig, so it is faithful to what is sent (it traces the request, not a
-// reconstruction). Pure formatting — the only side effect (the `eprintln!`) is
-// confined to `emit_request` / `emit_response`, behind the env gate.
+// exist. The trace reads the SAME `AgentRequest` (`types.rs`) the membrane lowers
+// to rig, so it is faithful to what is sent (it traces the request, not a
+// reconstruction). The only side effect is the silent best-effort file append
+// (via the shared `sink::append_to_env_path`, §28.3), behind the env gate.
 //
-// (Doc note for `/repl`: `repl/spec.md §17.10` should record
-// `CRANELISP_AGENT_TRACE=1` alongside the other agent env config — that file is
-// `/repl`-owned, so it is NOT edited here; this comment is the code-level doc.)
+// (Doc note for `/repl`: `repl/spec.md §17.10` / §17.21 record
+// `CRANELISP_AGENT_TRACE=<path>` as a PATH alongside `CRANELISP_AGENT_LOG` — that
+// file is `/repl`-owned, so it is NOT edited here; this comment is the code-level
+// doc.)
 
 #![cfg(feature = "agent")]
 
 use crate::agent::types::{AgentRequest, ModelResponse, ToolCallRequest, Turn};
 
-/// The env var that turns the trace on. `=1` (or any non-empty, non-`0` value).
+/// The env var that turns the trace on. A PATH (not a `=1` toggle, §28.1) — set ⇒
+/// append the trace to that file; unset/empty ⇒ off. Sibling to `log.rs`'s
+/// `CRANELISP_AGENT_LOG`.
 const TRACE_VAR: &str = "CRANELISP_AGENT_TRACE";
 
-/// Max chars of any text block rendered in a trace line — keep it compact.
+/// Max chars of any text block rendered in a `Grain::Compact` trace line — keeps
+/// the unit-test compact rendering bounded. The persisted (`Grain::Full`) path
+/// does NOT truncate.
 const TEXT_TRUNCATE: usize = 80;
 
-/// Is the trace mode enabled (env `CRANELISP_AGENT_TRACE` set to a truthy value)?
-pub fn trace_enabled() -> bool {
-    match std::env::var(TRACE_VAR) {
-        Ok(v) => {
-            let v = v.trim();
-            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
-        }
-        Err(_) => false,
-    }
+/// The render grain a formatter renders at (§28.1). `Compact` is the one-line,
+/// `TEXT_TRUNCATE`-bounded, `⏎`-collapsed rendering (eyeball-on-one-line — the
+/// unit tests exercise it directly). `Full` is the persisted-file rendering: the
+/// whole form/error/prose verbatim, no cut, no newline-collapse. The two share
+/// ONE formatter (Principle 7) — the grain is a param, not a parallel mirror.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grain {
+    Compact,
+    Full,
 }
 
-/// Emit the request trace to stderr if enabled. Renders the assembled message
-/// sequence (preamble summary + each transcript turn's role and per-block kinds).
+/// The configured trace path, or `None` when the trace is off (unset/empty).
+/// Defers to the shared `sink::env_path` gate (§28.3) — sibling to `log::log_path`.
+pub fn trace_path() -> Option<String> {
+    crate::agent::sink::env_path(TRACE_VAR)
+}
+
+/// Append the request trace to the configured file if enabled. Renders the
+/// assembled message sequence at FULL grain (the whole form/error/prose), stamped
+/// with the request's `turn` (§28.2) so a reader can join it to the §27 log's
+/// `"turn":N`. Silent + best-effort + graceful (the shared `sink` append).
 pub fn emit_request(req: &AgentRequest) {
-    if !trace_enabled() {
-        return;
+    if trace_path().is_none() {
+        return; // off — no file, no cost.
     }
-    for line in format_request_trace(req) {
-        eprintln!("{line}");
+    let mut block = String::new();
+    for line in format_request_trace(req, req.turn, Grain::Full) {
+        block.push_str(&line);
+        block.push('\n');
+    }
+    crate::agent::sink::append_to_env_path(TRACE_VAR, &block);
+}
+
+/// Append the response trace to the configured file if enabled. Carries the same
+/// `turn` as the request it answers (§28.2) — the response belongs to the
+/// request's turn.
+pub fn emit_response(resp: &ModelResponse, turn: usize) {
+    if trace_path().is_none() {
+        return; // off — no file, no cost.
+    }
+    let mut block = String::new();
+    for line in format_response_trace(resp, turn, Grain::Full) {
+        block.push_str(&line);
+        block.push('\n');
+    }
+    crate::agent::sink::append_to_env_path(TRACE_VAR, &block);
+}
+
+/// Render `text` at the given grain. `Compact`: a single line (newlines → `⏎`),
+/// truncated to `TEXT_TRUNCATE` chars with a trailing `…` when cut. `Full`: the
+/// text VERBATIM — no collapse, no cut (the persisted-file rendering, §28.1).
+/// ONE renderer for both grains (Principle 7 — no parallel "full" mirror).
+fn render_text(text: &str, grain: Grain) -> String {
+    match grain {
+        Grain::Full => text.to_string(),
+        Grain::Compact => {
+            let one_line: String =
+                text.chars().map(|c| if c == '\n' { '⏎' } else { c }).collect();
+            if one_line.chars().count() > TEXT_TRUNCATE {
+                let head: String = one_line.chars().take(TEXT_TRUNCATE).collect();
+                format!("{head}…")
+            } else {
+                one_line
+            }
+        }
     }
 }
 
-/// Emit the response trace to stderr if enabled.
-pub fn emit_response(resp: &ModelResponse) {
-    if !trace_enabled() {
-        return;
-    }
-    for line in format_response_trace(resp) {
-        eprintln!("{line}");
-    }
-}
-
-/// Truncate `text` to `TEXT_TRUNCATE` chars on a single line (newlines → `⏎`),
-/// appending `…` when cut. Compact, eyeball-friendly.
-fn compact(text: &str) -> String {
-    let one_line: String = text.chars().map(|c| if c == '\n' { '⏎' } else { c }).collect();
-    if one_line.chars().count() > TEXT_TRUNCATE {
-        let head: String = one_line.chars().take(TEXT_TRUNCATE).collect();
-        format!("{head}…")
-    } else {
-        one_line
-    }
-}
-
-/// Render the request as compact trace lines (the full message sequence). The
-/// FIRST line marks the direction + a system-preamble size note; then one line
-/// per transcript turn (role + per-block kinds), with the LAST turn marked as the
-/// prompt (the message the model answers). Pure — `emit_request` does the I/O.
-pub fn format_request_trace(req: &AgentRequest) -> Vec<String> {
+/// Render the request as trace lines (the full message sequence) at `grain`. The
+/// FIRST line marks the direction + the `turn` id + a system-preamble size note;
+/// then one line per transcript turn (role + per-block kinds), with the LAST turn
+/// marked as the prompt. Pure — `emit_request` does the I/O.
+pub fn format_request_trace(req: &AgentRequest, turn: usize, grain: Grain) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push(format!(
-        "[agent-trace] →request  system(primer {}ch + harvest {}ch)  tools=[{}]  {} turn(s)",
+        "[agent-trace] turn={turn} →request  system(primer {}ch + harvest {}ch)  tools=[{}]  {} turn(s)",
         req.primer.len(),
         req.harvest.len(),
         req.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(","),
         req.transcript.len(),
     ));
     let last = req.transcript.len().saturating_sub(1);
-    for (i, turn) in req.transcript.iter().enumerate() {
+    for (i, t) in req.transcript.iter().enumerate() {
         let marker = if i == last { " (prompt)" } else { "" };
-        lines.push(format!("[agent-trace]   {}{marker}", format_turn(turn)));
+        lines.push(format!("[agent-trace]   {}{marker}", format_turn(t, grain)));
     }
     if req.transcript.is_empty() {
         lines.push(format!(
             "[agent-trace]   user[text]: {} (prompt; transcript empty)",
-            compact(&req.user)
+            render_text(&req.user, grain)
         ));
     }
     lines
 }
 
-/// Render one transcript turn as a compact `role[block,…]` line. The per-block
+/// Render one transcript turn as a `role[block,…]` line at `grain`. The per-block
 /// kind is exactly what the wire carries: `text` / `tool_use{id,name}` /
 /// `tool_result{id}` — so a reader can eyeball the tool_use↔tool_result pairing.
-fn format_turn(turn: &Turn) -> String {
+fn format_turn(turn: &Turn, grain: Grain) -> String {
     match turn {
-        Turn::User(text) => format!("user[text]: {}", compact(text)),
-        Turn::Assistant(text) => format!("assistant[text]: {}", compact(text)),
+        Turn::User(text) => format!("user[text]: {}", render_text(text, grain)),
+        Turn::Assistant(text) => format!("assistant[text]: {}", render_text(text, grain)),
         Turn::AssistantToolCalls(calls) => {
             let blocks: Vec<String> = calls
                 .iter()
@@ -123,7 +160,7 @@ fn format_turn(turn: &Turn) -> String {
             format!(
                 "user[tool_result{{id={}}}]: {}",
                 id_or_empty(&r.id),
-                compact(&r.output)
+                render_text(&r.output, grain)
             )
         }
     }
@@ -135,30 +172,35 @@ fn id_or_empty(id: &str) -> &str {
     if id.is_empty() { "<none>" } else { id }
 }
 
-/// Render the model response as compact trace lines.
-pub fn format_response_trace(resp: &ModelResponse) -> Vec<String> {
+/// Render the model response as trace lines at `grain`, stamped with `turn`.
+pub fn format_response_trace(resp: &ModelResponse, turn: usize, grain: Grain) -> Vec<String> {
     match resp {
         ModelResponse::Done(prose) => {
-            vec![format!("[agent-trace] ←response  Done[text]: {}", compact(prose))]
+            vec![format!(
+                "[agent-trace] turn={turn} ←response  Done[text]: {}",
+                render_text(prose, grain)
+            )]
         }
         ModelResponse::ToolCalls(calls) => {
-            let mut lines =
-                vec![format!("[agent-trace] ←response  ToolCalls ({})", calls.len())];
+            let mut lines = vec![format!(
+                "[agent-trace] turn={turn} ←response  ToolCalls ({})",
+                calls.len()
+            )];
             for c in calls {
-                lines.push(format!("[agent-trace]   {}", format_call(c)));
+                lines.push(format!("[agent-trace]   {}", format_call(c, grain)));
             }
             lines
         }
     }
 }
 
-/// Render one response tool-call as a compact `tool_call{id,name}: arg` line.
-fn format_call(c: &ToolCallRequest) -> String {
+/// Render one response tool-call as a `tool_call{id,name}: arg` line at `grain`.
+fn format_call(c: &ToolCallRequest, grain: Grain) -> String {
     format!(
         "tool_call{{id={},name={}}}: {}",
         id_or_empty(&c.id),
         c.name,
-        compact(&c.argument)
+        render_text(&c.argument, grain)
     )
 }
 
@@ -175,7 +217,7 @@ mod tests {
     // sequence: a header line + one line per turn, each carrying the role and the
     // per-block kind (text / tool_use{id,name} / tool_result{id}) so the
     // tool_use↔tool_result pairing is eyeball-visible. The LAST turn is marked
-    // `(prompt)`.
+    // `(prompt)`. The header carries the `turn` id (§28.2).
     #[test]
     fn request_trace_renders_turns_with_block_kinds() {
         let req = AgentRequest {
@@ -192,11 +234,13 @@ mod tests {
                 }),
             ],
             user: "show me f".to_string(),
+            turn: 3,
         };
-        let lines = format_request_trace(&req);
+        let lines = format_request_trace(&req, req.turn, Grain::Compact);
         // Header + 3 turn lines.
         assert_eq!(lines.len(), 4, "header + one line per turn: {lines:?}");
         assert!(lines[0].contains("→request"), "header marks direction: {}", lines[0]);
+        assert!(lines[0].contains("turn=3"), "header carries the turn id: {}", lines[0]);
         assert!(lines[0].contains("tools=[source]"), "header lists tools: {}", lines[0]);
         assert!(lines[1].contains("user[text]: show me f"), "{}", lines[1]);
         assert!(
@@ -217,15 +261,20 @@ mod tests {
     // and ToolCalls as a header + one tool_call line per call (id + name + arg).
     #[test]
     fn response_trace_renders_done_and_tool_calls() {
-        let done = format_response_trace(&ModelResponse::Done("hello world".to_string()));
+        let done =
+            format_response_trace(&ModelResponse::Done("hello world".to_string()), 1, Grain::Compact);
         assert_eq!(done.len(), 1);
         assert!(done[0].contains("←response  Done[text]: hello world"), "{}", done[0]);
+        assert!(done[0].contains("turn=1"), "response carries the turn id: {}", done[0]);
 
-        let calls = format_response_trace(&ModelResponse::ToolCalls(vec![tc(
-            "toolu_9", "submit", "(defn g [x] x)",
-        )]));
+        let calls = format_response_trace(
+            &ModelResponse::ToolCalls(vec![tc("toolu_9", "submit", "(defn g [x] x)")]),
+            2,
+            Grain::Compact,
+        );
         assert_eq!(calls.len(), 2, "header + one call line: {calls:?}");
         assert!(calls[0].contains("ToolCalls (1)"), "{}", calls[0]);
+        assert!(calls[0].contains("turn=2"), "{}", calls[0]);
         assert!(
             calls[1].contains("tool_call{id=toolu_9,name=submit}: (defn g [x] x)"),
             "{}",
@@ -233,8 +282,9 @@ mod tests {
         );
     }
 
-    // spec: repl/spec.md §17 — long text is truncated on a single line; embedded
-    // newlines collapse to `⏎` so a trace line stays one line.
+    // spec: repl/spec.md §17 — `Grain::Compact`: long text is truncated on a
+    // single line; embedded newlines collapse to `⏎` so a trace line stays one
+    // line (the eyeball rendering — re-pinned as a Compact-grain test, §28.5).
     #[test]
     fn long_text_is_compacted_and_truncated() {
         let long = "a".repeat(200);
@@ -242,7 +292,7 @@ mod tests {
             transcript: vec![Turn::User(format!("line1\n{long}"))],
             ..Default::default()
         };
-        let lines = format_request_trace(&req);
+        let lines = format_request_trace(&req, 0, Grain::Compact);
         let turn_line = &lines[1];
         assert!(turn_line.contains('…'), "truncated with ellipsis: {turn_line}");
         assert!(turn_line.contains('⏎'), "newline collapsed to glyph: {turn_line}");
@@ -255,6 +305,32 @@ mod tests {
         );
     }
 
+    // spec: repl/spec.md §17.21.1 — `Grain::Full`: a >80-char form survives
+    // VERBATIM (no `…` cut, no `⏎` newline-collapse) — the un-truncation guard
+    // for the persisted file (§28.5). This is the new Full-grain companion to the
+    // Compact-grain truncation test above.
+    #[test]
+    fn full_grain_renders_long_text_verbatim() {
+        // A >80-char multi-line form — exactly what the persisted trace must keep.
+        let long_form = "(defn very-long-helper-fn [first-arg second-arg]\n  \
+            (add-i64 (mul-i64 first-arg 1000000) second-arg))";
+        assert!(long_form.len() > TEXT_TRUNCATE, "fixture must exceed the compact cap");
+        let req = AgentRequest {
+            transcript: vec![Turn::User(long_form.to_string())],
+            ..Default::default()
+        };
+        let lines = format_request_trace(&req, 7, Grain::Full);
+        let body: String = lines.join("\n");
+        // VERBATIM: the whole form is present, including its newline + every char.
+        assert!(
+            body.contains(long_form),
+            "Full grain must carry the long form VERBATIM (no truncation): {body}"
+        );
+        assert!(!body.contains('…'), "Full grain must NOT truncate with `…`: {body}");
+        assert!(!body.contains('⏎'), "Full grain must NOT collapse newlines to `⏎`: {body}");
+        assert!(body.contains("turn=7"), "the Full block carries the turn marker: {body}");
+    }
+
     // spec: repl/spec.md §17 — an empty-id tool_use renders `<none>` so a missing
     // id (itself a pairing-bug signal) is visible in the trace.
     #[test]
@@ -263,27 +339,17 @@ mod tests {
             transcript: vec![Turn::AssistantToolCalls(vec![tc("", "source", "f")])],
             ..Default::default()
         };
-        let line = &format_request_trace(&req)[1];
+        let line = &format_request_trace(&req, 0, Grain::Compact)[1];
         assert!(line.contains("id=<none>"), "empty id shown as <none>: {line}");
     }
 
-    // spec: repl/spec.md §17 — the `=0` / unset env value disables the trace.
+    // spec: repl/spec.md §17.21.1 — the `=<empty>` / unset env value disables the
+    // trace (path-gate, §28.1). The pure predicate over the shared sink gate.
     #[test]
-    fn trace_disabled_for_zero_and_unset() {
-        // We cannot reliably mutate process env in parallel tests; assert the
-        // pure predicate over explicit strings instead by reading the same rule.
-        // (trace_enabled reads the live env; here we only exercise the formatters,
-        // which are env-independent — this guards the gate's truthiness rule via
-        // the documented contract.)
-        // A direct unit of the rule:
-        let truthy = |v: &str| {
-            let v = v.trim();
-            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
-        };
-        assert!(!truthy("0"));
-        assert!(!truthy(""));
-        assert!(!truthy("false"));
-        assert!(truthy("1"));
-        assert!(truthy("yes"));
+    fn trace_off_for_empty_and_unset() {
+        // `trace_path()` reads the live env; exercise the documented gate rule via
+        // the shared sink predicate over explicit strings (env-mutation-free, so
+        // it does not race parallel tests).
+        assert!(crate::agent::sink::env_path("CRANELISP_AGENT_TRACE_NEVER_SET").is_none());
     }
 }

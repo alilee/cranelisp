@@ -25,6 +25,7 @@ pub mod provider;
 pub mod pull;
 pub mod render;
 pub mod request;
+pub mod sink;
 pub mod stub;
 pub mod trace;
 pub mod types;
@@ -239,13 +240,26 @@ impl CompilerSession {
         }
 
         for turn_step in 0..MAX_TURN_ITERATIONS {
+            // Stash the 1-based turn id for THIS loop step (§28.2) so the in-loop
+            // log record sites (pull/submit/repair/give_up, one call deep in
+            // `run_pull`/`run_submit`/`validate_and_repair`) can read it off
+            // `self.agent` and stamp `.turn(current)` — the log↔trace join key —
+            // without threading a `turn` param down four call chains (Principle 1).
+            // `assemble_request` copies it onto `AgentRequest.turn` for the trace.
+            let current_turn = turn_step + 1;
+            if let Some(state) = self.agent.as_mut() {
+                state.current_turn = current_turn;
+            }
             let req = self.assemble_request(text);
 
-            // Pillar 4 (§27.1) — silent greppable log of the model exchange (the
-            // loop step). Off unless `CRANELISP_AGENT_LOG` is set; never touches
-            // stdout (the SILENT contract — the transcript stays byte-identical).
+            // Pillar 4 (§27.1 / §28.2) — silent greppable log of the model exchange
+            // (the loop step). The exchange carries the `turn` correlation key on
+            // its OWN field (NOT the overloaded `iteration`) — it joins to the
+            // §17.21 trace block at the same `turn=N`. Off unless
+            // `CRANELISP_AGENT_LOG` is set; never touches stdout (the SILENT
+            // contract — the transcript stays byte-identical).
             crate::agent::log::record(
-                crate::agent::log::LogEvent::new("exchange").iteration(turn_step + 1),
+                crate::agent::log::LogEvent::new("exchange").turn(current_turn),
             );
 
             // Run the model. Take the handle out across the call so we can mutate
@@ -362,12 +376,17 @@ impl CompilerSession {
         if let Err(why) = crate::agent::types::assert_transcript_wire_valid(&transcript) {
             debug_assert!(false, "agent transcript is not wire-valid at assemble_request: {why}");
         }
+        // The current loop-step turn id (§28.2), stashed on `AgentState` by the
+        // `agent_turn` loop. `RigModel::complete` forwards it to the trace
+        // emitters so the persisted block carries `turn=N` matching the log.
+        let turn = self.agent.as_ref().map(|s| s.current_turn).unwrap_or(0);
         AgentRequest {
             primer: crate::agent::primer::language_primer().to_string(),
             harvest,
             transcript,
             tools: crate::agent::pull::tool_defs(),
             user: text.to_string(),
+            turn,
         }
     }
 
@@ -575,6 +594,7 @@ mod tests {
             auto_accept_notice_shown: false,
             submit_gave_up: false,
             submit_committed: false,
+            current_turn: 0,
         });
         (s, capture)
     }
@@ -786,6 +806,7 @@ mod tests {
             auto_accept_notice_shown: false,
             submit_gave_up: false,
             submit_committed: false,
+            current_turn: 0,
         });
         drive(&mut s, "show me the source of f");
 
@@ -977,6 +998,7 @@ mod tests {
             auto_accept_notice_shown: false,
             submit_gave_up: false,
             submit_committed: false,
+            current_turn: 0,
         });
         s
     }
