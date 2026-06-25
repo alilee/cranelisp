@@ -775,3 +775,94 @@ ledger entry (ship-this-sprint RED-first guards tracked here, not in the
 carry-forward failure ledger). No FIXME filed (both 4d-int seams are named in
 the test plan's §"Testability seams" family + re-confirmed here; file
 `target: /int` only if a knob is genuinely unwireable at Phase 5).
+
+## Execution note — Phase 5 step 5q: persistent TRACE + log↔trace `turn` (`/qa`, 2026-06-25)
+
+S90 ADDENDUM (repl/spec.md §17.20 reframed + §17.21 NEW, commit `4b5cabc`;
+design/int/agent.md §28, commit `e54e6b0`). Authored the failing-not-ignored
+tests for the persistent full-content trace sink + the log↔trace `turn`
+correlation. All in `tests/agent.rs` (the S90-addendum section, after the
+existing P4 log section, before CF.1).
+
+**THE RIG-BOUNDARY CONSTRAINT (design §28.2(2)) — VERIFIED LIVE.** The trace
+fires at `provider.rs::RigModel::complete` → `emit_request`/`emit_response`,
+ABOVE the deterministic stub. A freshly-built `--features agent` stub session
+with `CRANELISP_AGENT_TRACE=<path>` set writes **NO trace file** (the stub never
+reaches `emit_*`) — confirmed by probe. So a stub e2e CANNOT populate the trace
+file, and it stays empty even after the §28.1 file-sink fix. Therefore the
+trace-FILE-population + FULL-content + trace-side `turn=N` marker are **NOT**
+authored as stub e2e — they are the rig-`MockModel` UNIT tests in
+`src/agent/provider.rs` `#[cfg(test)]` (the `continuation_request_*`/
+`repair_loop_request_*` S88/S89 pattern), owned by `/dev` (qa.md §"Testing
+ownership" — `/qa` owns `tests/`, not `crates/*/src/`). Flagged as 5d seam (d).
+
+**Authored rows (6) — `tests/agent.rs`:**
+
+- `agent_log_carries_turn_correlation_field` (T1, Lane A, `--features agent`) —
+  **RED on HEAD.** Every log JSONL line must carry the stable `turn` key; the
+  first model exchange carries `turn`:1 (§17.21.3). RED because the `exchange`
+  record carries the overloaded `iteration`, not `turn`, and the pull/submit/
+  repair records carry NO turn (`grep -c '"turn"'` == 0, verified live).
+- `agent_log_turn_joins_record_to_its_exchange` (T2, +join, Lane A) — **RED on
+  HEAD.** The LOG half of the log↔trace join: a non-exchange record (pull/repair/
+  submit) carries the SAME `turn` as the `exchange` record for the loop iteration
+  that produced it. RED (no parseable `turn`). The trace-SIDE `turn=N` marker
+  completing the join is the rig-`MockModel` unit test owed by /dev 5d.
+- `agent_log_stays_compact_no_content_fields_neg` (T3, +neg GUARD, Lane A) —
+  **GREEN on HEAD.** Pins the §28.4 index/content split: the LOG must NOT gain
+  content keys (`form`/`prose`/`request`/`response`/`error_message`/`content`/
+  `text`/`transcript`) and must NOT smuggle the verbatim form body — the trace
+  owns content. Standing guard the §28.1 content work must not regress.
+- `agent_trace_path_is_silent_no_stderr_leak` (T4, GUARD, Lane A) — **GREEN on
+  HEAD.** With `CRANELISP_AGENT_TRACE=<path>` set, the stub transcript is
+  byte-identical to trace-off (masking the prompt counter, as P4.2) AND no
+  `[agent-trace]` line leaks to stderr (§17.21.1 / §28.1 path-only; the stderr
+  sink is removed). Observable half; the file-population half is the /dev unit.
+- `agent_trace_graceful_on_unwritable_path_neg` (T5, +neg GUARD, Lane A) —
+  **GREEN on HEAD.** An unwritable trace path degrades silently — no crash, no
+  REPL chatter, no forced file (§17.21.1, mirrors P4.4). Pins the §28.1
+  best-effort `let _ = …` contract the rig path must honour.
+- `agent_trace_absent_on_default_build_neg` (T6, +neg, DEFAULT lane,
+  `#[cfg(not(feature="agent"))]`) — **GREEN on HEAD.** `CRANELISP_AGENT_TRACE`
+  is inert on the default build — NO trace file written (§17.21.1 / §17.9).
+  Mirrors P4.3 for the trace sink.
+
+**Targeted run** (`--features agent --test agent`, the 5 agent-lane rows):
+2 FAIL (T1, T2 — the load-bearing `turn` reds), 3 PASS (T3/T4/T5 guards). The
+default-lane T6 passes (`--test agent`, 21/21). spec_link_check clean
+(agent.rs 67/67 OK; T1–T5 cite §17.21.x / §17.20.3, T6 cites §17.21.1).
+Default-lane agent suite undisturbed (21/21 green) — the agent-gated reds do not
+appear in the default baseline.
+
+**5d TESTABILITY SEAMS OWED by `/dev` (src/, narrow; design §28.2 / §28.6):**
+1. (a) `Grain { Compact, Full }` formatter param on `format_request_trace`/
+   `format_response_trace` (`src/agent/trace.rs`) — UNIT-testable: a >80-char
+   form survives verbatim under `Full` (no `…`, no `⏎`). The existing
+   `long_text_is_compacted_and_truncated`/`empty_id_renders_as_none` tests stay,
+   re-pinned as `Compact`-grain assertions.
+2. (b) `AgentRequest.turn: usize` (`types.rs`), set by `assemble_request` from
+   `AgentState.current_turn` — so the rig `MockModel` test can read `request.turn`
+   and assert the trace-side `turn=N` marker matches the log's `turn`. Defaults
+   to 0 (`AgentRequest: Default`) for fixture constructions.
+3. (c) `append_to_env_path(var, content)` shared helper (§28.3) — one UNIT test:
+   gate-off / append / unwritable-swallow.
+4. (d) the trace-file-population + trace-side-`turn=N` rig-`MockModel` UNIT tests
+   in `src/agent/provider.rs` — the ONLY deterministic place the trace file is
+   populated (the stub cannot). `/dev` authors these alongside the §28.1/§28.2
+   impl (full untruncated content + the `turn=N` marker matching the log).
+
+A Lane-C LIVE check (real provider, trace file fills through the binary
+end-to-end) is the user's manual confirmation, not CI — the stub-path emptiness
+above is exactly why CI cannot cover it.
+
+**Disposition summary:**
+- T1, T2 — **RED-today** `turn`-correlation reds; flipped green by /dev 5d's
+  `LogEvent.turn` field + the `exchange` `.iteration`→`.turn` swap + the in-loop
+  `.turn(current)` threading (§28.2).
+- T3, T4, T5, T6 — **GREEN-today** standing guards (compact-split, trace silent/
+  no-stderr-leak/graceful, default-build-inert) the §28 work must preserve.
+
+No plan-row shifts. No carry-forward ledger entry beyond the addendum entry in
+`tests/plan/ledger.md` (ship-this-sprint RED-first guards). No FIXME filed (the
+four 5d seams are named here; file `target: /int` only if a knob proves
+unwireable at Phase 5).

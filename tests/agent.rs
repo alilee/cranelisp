@@ -2635,6 +2635,464 @@ fn agent_log_feature_off_byte_identical_reverify() {
 }
 
 // ===========================================================================
+// S90 ADDENDUM (step 5q) — persistent full-content TRACE sink + log↔trace `turn`
+// correlation (repl/spec.md §17.20 reframed + §17.21 NEW; design/int/agent.md
+// §28; tests/plan/s90-test-plan.md §"S90 addendum — persistent trace + turn").
+//
+// The §17.20 LOG is the compact greppable INDEX (metadata-only, gains a `turn`
+// field). Its companion §17.21 TRACE is the persistent FULL-CONTENT sink:
+// `CRANELISP_AGENT_TRACE` becomes a PATH (re-purposed from S89's ephemeral
+// stderr view), appending the full, untruncated request/response transcript;
+// the stderr `eprintln!` sink is REMOVED. The two sinks are joined by a shared
+// per-turn `turn` index, stamped identically in both.
+//
+// ───────────────────────────────────────────────────────────────────────────
+// THE RIG-BOUNDARY TESTABILITY CONSTRAINT (design/int/agent.md §28.2(2)).
+// ───────────────────────────────────────────────────────────────────────────
+// The TRACE fires at the rig boundary (`provider.rs` `RigModel::complete` →
+// `emit_request`/`emit_response`), ABOVE the deterministic stub. The stub
+// (`stub.rs`) NEVER reaches the emit sites. VERIFIED on HEAD: a stub session
+// with `CRANELISP_AGENT_TRACE=<path>` set writes NO trace file (the stub path
+// never calls `emit_*`). Therefore a stub-driven e2e CANNOT populate the trace
+// file — and it stays empty even after the §28.1 file-sink fix lands.
+//
+// Consequently the trace tests split by reachability:
+//
+//   * The TRACE FILE POPULATION + FULL untruncated CONTENT + the trace-side
+//     `turn=N` marker + the `Grain::Full` formatter + `append_to_env_path` are
+//     exercised by the RIG-trait `MockModel` path, which lives in
+//     `src/agent/provider.rs` `#[cfg(test)] mod tests` (the S88/S89
+//     continuation_request_* / repair_loop_request_* pattern that drives a real
+//     `CompletionModel`/`CompletionRequest` below the membrane). Those are
+//     `/dev`-owned UNIT tests in the binary crate's `src/` — NOT authored here
+//     (`/qa` owns `tests/`, not `crates/*/src/`; qa.md §"Testing ownership").
+//     They are flagged below as the 5d testability seam owed.
+//
+//   * The LOG side (incl. the `turn` field) IS stub-reachable — it fires inside
+//     `agent_turn`/`pull.rs`, provider-independent. So the `turn` field, the
+//     log↔trace `turn` correlation (LOG side), and the log-stays-compact guard
+//     ARE authored here as stub e2e.
+//
+//   * The TRACE var's silent / graceful / feature-off contract that IS
+//     observable e2e (no stderr leak, no crash on an unwritable path, inert on
+//     the default build) is authored here — these hold REGARDLESS of whether the
+//     stub reaches emit (they assert ABSENCE of perturbation).
+//
+// RED-FIRST on HEAD (`--features agent`):
+//   - T1 (turn field present): RED — the `exchange` record carries `iteration`,
+//     not `turn`; the pull/submit/repair records carry NO turn at all. VERIFIED
+//     live: `grep -c '"turn"' log.jsonl` == 0 on HEAD.
+//   - T2 (log↔trace turn correlation, LOG side): RED — same reason (no `turn`).
+//   - T3 (log stays compact): a GUARD (passes on HEAD) that pins the index/
+//     content split — the §28.1 trace-content work must NOT thicken the log.
+//   - T4/T5 (trace var silent / no-stderr-leak / graceful / feature-off): on
+//     HEAD the var is the legacy stderr toggle; these pin the §17.21 path-only
+//     contract — RED where HEAD still emits to stderr on a truthy value, GUARD
+//     where they assert absence the fix must preserve.
+//
+// 5d TESTABILITY SEAMS OWED (design/int/agent.md §28.2 / §28.6, flagged to /dev):
+//   (a) the §28.1 `Grain { Compact, Full }` formatter param on
+//       `format_request_trace`/`format_response_trace` — UNIT-testable directly
+//       (a >80-char form survives verbatim under `Full`), `src/agent/trace.rs`.
+//   (b) `AgentRequest.turn: usize` (`types.rs`) set by `assemble_request` from
+//       `AgentState.current_turn` — so the rig `MockModel` test can read
+//       `request.turn` and assert the trace-side `turn=N` marker matches the
+//       log's `turn`. The new `usize` defaults to 0 (`AgentRequest: Default`).
+//   (c) the §28.3 `append_to_env_path(var, content)` shared helper — one UNIT
+//       test for gate-off / append / unwritable-swallow.
+//   (d) the trace-file-population + trace-side-`turn` rig `MockModel` UNIT tests
+//       in `src/agent/provider.rs` — the ONLY place the trace file is populated
+//       deterministically (the stub cannot). `/dev` authors these alongside the
+//       §28.1/§28.2 implementation, per the unit-test-per-fix discipline.
+//
+// (A Lane-C LIVE check against a real provider — where the trace file actually
+// fills end-to-end through the binary — is the user's manual confirmation, not
+// CI; the stub path's emptiness above is exactly why CI cannot cover it.)
+// ===========================================================================
+
+/// A Build script that drives THREE model exchanges in one turn — a PULL
+/// (turn 1), a broken-then-fixed SUBMIT spanning a REPAIR (turns 2 & 3), and a
+/// terminal Done — so the log carries multiple event types across DISTINCT
+/// `turn` indices. Reused by the `turn`-correlation e2e below.
+#[cfg(feature = "agent")]
+const TRACE_TURN_SCRIPT: &str = "tool: source target\n\
+     tool: submit (defn helper [x] (add-i64 x x)\n\
+     tool: submit (defn helper [x] (add-i64 x x))\n\
+     done: defined helper for you\n";
+
+// ---------------------------------------------------------------------------
+// T1 — the LOG JSONL carries a `turn` field (positive). STUB-reachable e2e.
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.21.3 — the §17.20 log JSONL gains a `turn` field on
+// every line: the per-turn/exchange correlation index, monotonic within the
+// session, that joins each compact log line to the full-content trace exchange
+// that produced it. RED on HEAD: the `exchange` record carries `iteration`
+// (overloaded) and the pull/submit/repair records carry NO turn — `grep -c
+// '"turn"'` over the log is 0. Flips green when /dev 5d adds the `LogEvent.turn`
+// field (§28.2) and switches the `exchange` record from `.iteration(turn_step+1)`
+// to `.turn(turn_step+1)` + threads `.turn(current)` onto the in-loop records.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_carries_turn_correlation_field() {
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
+    let log_path = cl.tmpdir_path().join("turn-field.jsonl");
+    let out = stub_repl_logged(
+        TRACE_TURN_SCRIPT,
+        PreludeVariant::PrimitivesOnly,
+        &log_path,
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask define a helper\n\
+         y\n",
+    );
+    assert!(
+        log_path.exists(),
+        "the log file must exist (the sink wrote it), stdout={}",
+        out.stdout
+    );
+    let log = std::fs::read_to_string(&log_path).expect("the log file must be readable");
+    let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert!(!lines.is_empty(), "the log must carry event lines, log={log:?}");
+
+    // EVERY agent-log line must carry the stable `turn` correlation key
+    // (§17.21.3 — "the §17.20 log JSONL gains a `turn` field on every line").
+    for line in &lines {
+        assert!(
+            line.contains("\"turn\""),
+            "every agent-log record must carry the `turn` correlation key \
+             (§17.21.3) — offending line={line:?}, log={log:?}"
+        );
+    }
+    // The first model exchange carries turn 1 (1-based, monotonic): the `turn`
+    // index is the per-exchange key, NOT the overloaded `iteration`.
+    let first_exchange = lines
+        .iter()
+        .find(|l| l.contains("\"event\":\"exchange\"") || l.contains("\"event\": \"exchange\""))
+        .expect("the loop must record an `exchange` event");
+    assert!(
+        first_exchange.contains("\"turn\":1") || first_exchange.contains("\"turn\": 1"),
+        "the first model exchange must carry `turn`:1 (1-based monotonic index, \
+         §17.21.3) — first_exchange={first_exchange:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T2 — log↔trace `turn` correlation (LOG side): the SAME `turn` joins a
+// non-exchange record to the model exchange it belongs to. STUB-reachable e2e.
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.21.3 — the shared `turn` key joins an index record
+// (log) to its content record (trace). On the LOG side this means: a pull /
+// repair / submit record carries the SAME `turn` as the `exchange` record for
+// the loop iteration that produced it (they fire inside one `agent_turn` loop
+// step, after that step's `exchange` record). RED on HEAD: no `turn` field at
+// all, so no join is possible. The trace-SIDE `turn=N` marker that completes the
+// join is the rig-`MockModel` UNIT test owed by /dev 5d (the stub cannot
+// populate the trace — §28.2(2)); this e2e pins the LOG half of the join.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_turn_joins_record_to_its_exchange() {
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
+    let log_path = cl.tmpdir_path().join("turn-join.jsonl");
+    stub_repl_logged(
+        TRACE_TURN_SCRIPT,
+        PreludeVariant::PrimitivesOnly,
+        &log_path,
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask define a helper\n\
+         y\n",
+    );
+    let log = std::fs::read_to_string(&log_path).expect("the log file must be readable");
+    let lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    /// Extract the integer value of the `turn` key from a JSONL line (tolerant
+    /// of `"turn":N` and `"turn": N`). `None` ⇒ the key is absent (RED today).
+    fn turn_of(line: &str) -> Option<u64> {
+        let i = line.find("\"turn\"")?;
+        let rest = &line[i + "\"turn\"".len()..];
+        let rest = rest.trim_start_matches([':', ' ']);
+        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        rest[..end].parse::<u64>().ok()
+    }
+
+    // Walk the JSONL: each `exchange` line sets the "current turn"; every
+    // following NON-exchange record (pull/repair/submit) until the next exchange
+    // must carry that SAME turn — the join key (§17.21.3). At least one
+    // non-exchange record must be checked (the pull) so the assertion is real.
+    let mut current_turn: Option<u64> = None;
+    let mut joined_a_non_exchange = false;
+    for line in &lines {
+        let is_exchange =
+            line.contains("\"event\":\"exchange\"") || line.contains("\"event\": \"exchange\"");
+        let t = turn_of(line);
+        assert!(
+            t.is_some(),
+            "every record must carry a parseable `turn` (§17.21.3); line={line:?}"
+        );
+        if is_exchange {
+            current_turn = t;
+        } else {
+            joined_a_non_exchange = true;
+            assert_eq!(
+                t, current_turn,
+                "a non-exchange record must carry the SAME `turn` as the \
+                 `exchange` it belongs to (the log↔trace join key, §17.21.3); \
+                 line={line:?}, current exchange turn={current_turn:?}"
+            );
+        }
+    }
+    assert!(
+        joined_a_non_exchange,
+        "the script must produce at least one non-exchange record (a pull) so \
+         the turn-join is actually exercised, lines={lines:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T3 — the LOG stays COMPACT: NO content fields (the index/content split).
+// STUB-reachable GUARD. Pins §28.4 "the log stays compact — `turn` is the ONLY
+// field added; no content fields migrate into the log."
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.20.3 — the log "stays the compact index — it carries
+// metadata-only keys (event/symbol/error_class/iteration/module/`turn`) and NO
+// content (no form text, no error message, no model prose)." The §17.21 trace
+// is where the full content lives. This GUARD pins the split: even with the
+// trace-content work landed, the log must NOT gain content fields. It asserts
+// the log carries the metadata keys but NONE of the content keys the trace
+// owns (`form`/`prose`/`request`/`response`/`error_message`/`content`/`text`),
+// and that no log VALUE smuggles the verbatim submitted form text.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_log_stays_compact_no_content_fields_neg() {
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent");
+    let log_path = cl.tmpdir_path().join("compact.jsonl");
+    stub_repl_logged(
+        TRACE_TURN_SCRIPT,
+        PreludeVariant::PrimitivesOnly,
+        &log_path,
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask define a helper\n\
+         y\n",
+    );
+    let log = std::fs::read_to_string(&log_path).expect("the log file must be readable");
+
+    // +neg: NONE of the content-grain keys the trace owns may appear in the log.
+    for content_key in [
+        "\"form\"",
+        "\"prose\"",
+        "\"request\"",
+        "\"response\"",
+        "\"error_message\"",
+        "\"content\"",
+        "\"text\"",
+        "\"transcript\"",
+    ] {
+        assert!(
+            !log.contains(content_key),
+            "the LOG must stay the compact index — content key {content_key} must \
+             NOT appear (it belongs to the §17.21 trace, §17.20.3 / §28.4); log={log:?}"
+        );
+    }
+    // +neg: the verbatim submitted FORM body must NOT leak into the log as a
+    // value — the log records that a submit/repair happened + its `symbol`, never
+    // the form's content (which the trace carries). The body `(add-i64 x x)` is
+    // the form content; the log carries only `helper` (the symbol).
+    assert!(
+        !log.contains("(add-i64 x x)") && !log.contains("(defn helper"),
+        "the LOG must NOT carry the verbatim form content (that is the trace's \
+         job, §28.4) — found form text in log={log:?}"
+    );
+    // Positive sanity: the metadata index keys ARE present (the log still works).
+    assert!(
+        log.contains("\"event\"") && log.contains("\"symbol\""),
+        "the log must still carry its metadata index keys, log={log:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T4 — `CRANELISP_AGENT_TRACE=<path>` is SILENT + does NOT leak to stderr, and
+// the stub session does not crash with the trace var set. Observable-e2e half
+// of §17.21.1 (the trace-FILE-population half is the rig-MockModel UNIT test
+// owed by /dev 5d — the stub never reaches `emit_*`, §28.2(2)).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.21.1 — `CRANELISP_AGENT_TRACE` set to a PATH is SILENT
+// (nothing extra in the REPL — no banner, no per-exchange echo, no transcript
+// change) and PATH-ONLY (the stderr sink is REMOVED — "there is no longer any
+// `eprintln!` trace view"). This pins the observable half: with the var set to a
+// file PATH, the stub session's transcript is byte-identical to the trace-off
+// session AND nothing `[agent-trace]`-shaped leaks to stderr. RED on HEAD for a
+// SUBTLE reason: HEAD treats `CRANELISP_AGENT_TRACE=<path>` as a TRUTHY value and
+// (on the rig path) would `eprintln!` to stderr — the path-only swap (§28.1)
+// removes the stderr sink. On the stub path no `emit_*` fires either way, so the
+// no-stderr-leak holds; the load-bearing guard is the SILENT-transcript + the
+// absence of the legacy `[agent-trace]` stderr marker the §28.1 swap deletes.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_trace_path_is_silent_no_stderr_leak() {
+    // Trace OFF baseline.
+    let off = stub_repl(
+        TRACE_TURN_SCRIPT,
+        PreludeVariant::PrimitivesOnly,
+        "(defn target [x] (add-i64 x 1))\n\
+         /ask define a helper\n\
+         y\n",
+    );
+    // Trace ON: `CRANELISP_AGENT_TRACE` pointed at a per-test tmp file PATH.
+    let cl = Cranelisp::new().repl().with_prelude(PreludeVariant::PrimitivesOnly).cli_flag("--agent");
+    let trace_path = cl.tmpdir_path().join("trace.txt");
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(&script_path, TRACE_TURN_SCRIPT).unwrap();
+    let on = cl
+        .env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        .env("CRANELISP_AGENT_TRACE", trace_path.to_str().unwrap())
+        .stdin(
+            "(defn target [x] (add-i64 x 1))\n\
+             /ask define a helper\n\
+             y\n",
+        )
+        .output();
+
+    // (i) SILENT: stdout byte-identical trace-on vs trace-off (modulo the
+    // wall-clock prompt counter both runs carry regardless — masked as in P4.2).
+    let mask = regex::Regex::new(r"\d+\+\d+ms; (\w+)> ").unwrap();
+    let on_masked = mask.replace_all(&on.stdout, "T+Tms; $1> ");
+    let off_masked = mask.replace_all(&off.stdout, "T+Tms; $1> ");
+    assert_eq!(
+        on_masked, off_masked,
+        "`CRANELISP_AGENT_TRACE=<path>` must be SILENT — the transcript with the \
+         trace ON must be BYTE-IDENTICAL to trace OFF (§17.21.1: no banner, no \
+         per-exchange echo, nothing extra in stdout)"
+    );
+    // (ii) PATH-ONLY: the legacy `[agent-trace]` stderr view is REMOVED (§28.1).
+    // No `[agent-trace]`-marked line may reach stderr with the var set to a path.
+    assert!(
+        !on.stderr.contains("[agent-trace]"),
+        "the stderr trace sink is REMOVED (§17.21.1 / §28.1) — no `[agent-trace]` \
+         line may reach stderr when `CRANELISP_AGENT_TRACE` is a PATH; stderr={}",
+        on.stderr
+    );
+    // (iii) the session ran to completion cleanly with the trace var set.
+    assert!(
+        on.status.success(),
+        "setting `CRANELISP_AGENT_TRACE` must not crash the session, exit={:?}, stderr={}",
+        on.status,
+        on.stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T5 — graceful on an UNWRITABLE trace path (+neg). Observable e2e.
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.21.1 — graceful on an unwritable path: with
+// `CRANELISP_AGENT_TRACE` set to a path that cannot be written (a file under a
+// NONEXISTENT parent directory), the session MUST degrade silently — never crash,
+// never spew errors into the REPL (the trace is a side channel; its failure never
+// disturbs the session — identical to the §17.20.2 log contract). The agent turn
+// still renders. GUARD (the stub never reaches `emit_*`, so the unwritable open
+// is not even attempted on the stub path) — but it pins the contract the §28.1
+// best-effort `let _ = …` append must honour when the rig path DOES write.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_trace_graceful_on_unwritable_path_neg() {
+    let cl = Cranelisp::new().repl().with_prelude(PreludeVariant::PrimitivesOnly).cli_flag("--agent");
+    // A path under a nonexistent parent directory — opening it for append fails.
+    let unwritable = cl.tmpdir_path().join("no-such-dir").join("trace.txt");
+    let script_path = cl.tmpdir_path().join("agent_script.txt");
+    std::fs::write(&script_path, TRACE_TURN_SCRIPT).unwrap();
+    let out = cl
+        .env("CRANELISP_AGENT_PROVIDER", "stub")
+        .env("CRANELISP_AGENT_STUB_SCRIPT", script_path.to_str().unwrap())
+        .env("CRANELISP_AGENT_TRACE", unwritable.to_str().unwrap())
+        .stdin(
+            "(defn target [x] (add-i64 x 1))\n\
+             /ask define a helper\n\
+             y\n",
+        )
+        .output();
+    // (i) the session runs to completion — no crash/panic from a failed trace write.
+    assert!(
+        out.status.success(),
+        "an unwritable `CRANELISP_AGENT_TRACE` path must NOT crash the session \
+         (§17.21.1); exit={:?}, stderr={}",
+        out.status,
+        out.stderr
+    );
+    // (ii) the agent turn still rendered (the swallowed failure perturbed nothing).
+    assert!(
+        out.stdout.contains('\u{258c}'),
+        "the agent turn must still render — a failed trace write must not disturb \
+         the session (§17.21.1), stdout={}",
+        out.stdout
+    );
+    // (iii) +neg: no trace-error chatter reached the REPL.
+    let lc = out.stdout.to_lowercase();
+    assert!(
+        !lc.contains("could not open")
+            && !lc.contains("permission denied")
+            && !lc.contains("failed to write trace")
+            && !lc.contains("no such file or directory"),
+        "an unwritable trace path must degrade SILENTLY — NO trace-error chatter \
+         may reach the REPL (§17.21.1), stdout={}",
+        out.stdout
+    );
+    // (iv) the parent dir is genuinely absent — no file was forced into being.
+    assert!(
+        !unwritable.exists(),
+        "the unwritable trace path must not have been written, path={unwritable:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T6 — `CRANELISP_AGENT_TRACE` is INERT on the DEFAULT (non-`agent`) build
+// (+neg). DEFAULT-LANE (not feature-gated). Mirrors P4.3 for the trace sink.
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.21.1 — on a DEFAULT (non-`agent`) build, setting
+// `CRANELISP_AGENT_TRACE` writes NOTHING: the trace exists ONLY in an
+// `--features agent` build (feature-OFF stays byte-identical, §17.9). The +neg
+// absence guard: a default-build session with the env set to a PATH produces NO
+// trace file. Standing Lane-B floor for the §17.21 trace sink.
+#[cfg(not(feature = "agent"))]
+#[test]
+fn agent_trace_absent_on_default_build_neg() {
+    let cl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // `--agent` is an accepted no-op on the default build (§0.6.1).
+        .cli_flag("--agent");
+    let trace_path = cl.tmpdir_path().join("default-build-trace.txt");
+    let out = cl
+        .env("CRANELISP_AGENT_TRACE", trace_path.to_str().unwrap())
+        .stdin("(add-i64 1 2)\n")
+        .output();
+    assert!(
+        out.stdout.contains("3"),
+        "the default-build session must still eval, stdout={}",
+        out.stdout
+    );
+    // +neg: NO trace file was written — the var is inert on the default build.
+    assert!(
+        !trace_path.exists(),
+        "`CRANELISP_AGENT_TRACE` must be INERT on the default (non-`agent`) build \
+         — NO trace file may be written (§17.21.1: the trace exists only in an \
+         `--features agent` build), but a file appeared at {trace_path:?}"
+    );
+}
+
+// ===========================================================================
 // CF.1 — the validator containment floor (R2 layer b)
 //
 // `design/arch/repl-embedded-agent.md §11.3` layer (b): the agent's eval-thread

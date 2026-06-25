@@ -36,6 +36,22 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 90 step 5q — persistent TRACE sink + log↔trace `turn` correlation: RED-first `turn`-field repros (/qa, 2026-06-25)
+
+S90 addendum (repl/spec.md §17.20 reframed + §17.21 NEW, `4b5cabc`; design/int/agent.md §28, `e54e6b0`). The §17.20 LOG gains a `turn` correlation field joining it to the new §17.21 persistent full-content TRACE. RED-first repros for the LOG-side `turn`; the trace-FILE-population + trace-side `turn=N` marker are rig-`MockModel` UNIT tests owned by `/dev` (the stub never reaches the rig-boundary `emit_*`, verified live — a stub e2e cannot populate the trace file). Full execution note + the four 5d testability seams in `tests/plan/s90-test-plan.md §"step 5q"`.
+
+| Field | Value |
+|---|---|
+| Tests (RED) | `agent::agent_log_carries_turn_correlation_field` (T1 — every log line carries `turn`; first exchange = `turn`:1), `agent::agent_log_turn_joins_record_to_its_exchange` (T2 — a pull/repair/submit record shares its `turn` with the `exchange` it belongs to) |
+| Guards (GREEN-today) | `agent::agent_log_stays_compact_no_content_fields_neg` (T3 — log keeps NO content keys, the index/content split, §28.4), `agent::agent_trace_path_is_silent_no_stderr_leak` (T4 — trace var silent + `[agent-trace]` stderr sink removed), `agent::agent_trace_graceful_on_unwritable_path_neg` (T5), `agent::agent_trace_absent_on_default_build_neg` (T6, default lane) |
+| Build | `--features agent` (T1–T5); default lane (T6) |
+| Commit SHA | (this commit) |
+| Signature (T1) | `every agent-log record must carry the `turn` correlation key (§17.21.3) — offending line="{...,\"iteration\":1,...}"` (the `exchange` record carries `iteration`, not `turn`; pull/submit/repair carry NO turn) |
+| Signature (T2) | `every record must carry a parseable `turn` (§17.21.3); line="{\"event\":\"exchange\",\"iteration\":1,...}"` |
+| Owning skill | `/dev` (src/, narrow) — `LogEvent.turn` field + `exchange` `.iteration`→`.turn` swap + in-loop `.turn(current)` threading (§28.2); the trace sink swap + `Grain::Full` + `AgentRequest.turn` + `append_to_env_path` + the rig-`MockModel` trace unit tests (§28.1/§28.2/§28.3 + seam d) |
+| Target sprint | S90 (in-scope; flips green when /dev 5d lands §28) |
+| Disposition | RED-first ship-this-sprint guards; failing-not-ignored. T1/T2 are the load-bearing `turn` reds; T3–T6 are standing guards the §28 work must preserve. The trace-file-population + full-content + trace-side-`turn` belong to the rig-`MockModel` UNIT tier (`/dev`-owned, `src/agent/provider.rs`) — the stub cannot populate the trace (rig-boundary constraint, §28.2(2)) |
+
 ### Sprint 90 Phase-6 — D-qual-impl-target: qualified type path in impl-target position re-rooted under current module (/qa, 2026-06-24)
 
 Agentic-REPL Phase-6 finding. A module-qualified type path in impl-target
