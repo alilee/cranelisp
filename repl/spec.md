@@ -1953,7 +1953,7 @@ This section is the **complete** set of additive agent requirements on the REPL 
 - the "Agent prose frame" style role and (S89) the "Agent-input prompt" style role (§10.3);
 - (S90) the `/syntax` command row (§3.1, §17.17) and the `/search` command row (§3.1, §17.19, *design-pinned re-pin*) — both reusing existing §10.3 roles, **no new style role**.
 
-The **S90** additions (§17.17–§17.20 — the fluency pillars) introduce **no new style role**. Two of the four are **non-agent, default-build** surfaces (the command rows above) and two stay *inside* the agent surface: `/syntax` (§17.17) is an LLM-free static-asset command that also serves as an agent pull-tool; the signature-grain harvest (§17.18) is ambient agent context with **no command and nothing extra in the REPL**; `/search` (§17.19) is a **non-agent-gated default-build session facility** (re-pinned 2026-06-23 — its background index is built by the nice workers, which run regardless of the `agent` feature; the agent merely reaches it through the ordinary pull) and is **design-pinned-now / implemented-later** (gated on the FIXME-0432 fix + the nice-worker `catch_unwind` floor per §11.3); and the silent agent log (§17.20) is an env-opt-in (`CRANELISP_AGENT_LOG`), feature-gated, off-by-default file sink that produces **nothing extra in the REPL**. The **byte-identical-feature-OFF** invariant therefore scopes to the three agent-gated surfaces (the harvest and the log require the agent); `/syntax` and `/search` are present and functional in the default build. [S90 re-pin]
+The **S90** additions (§17.17–§17.21 — the fluency pillars) introduce **no new style role**. Two of the four are **non-agent, default-build** surfaces (the command rows above) and two stay *inside* the agent surface: `/syntax` (§17.17) is an LLM-free static-asset command that also serves as an agent pull-tool; the signature-grain harvest (§17.18) is ambient agent context with **no command and nothing extra in the REPL**; `/search` (§17.19) is a **non-agent-gated default-build session facility** (re-pinned 2026-06-23 — its background index is built by the nice workers, which run regardless of the `agent` feature; the agent merely reaches it through the ordinary pull) and is **design-pinned-now / implemented-later** (gated on the FIXME-0432 fix + the nice-worker `catch_unwind` floor per §11.3); and the silent agent log (§17.20) is an env-opt-in (`CRANELISP_AGENT_LOG`), feature-gated, off-by-default file sink that produces **nothing extra in the REPL**. Its **companion**, the persistent full-content trace (§17.21, `CRANELISP_AGENT_TRACE=<path>` — re-purposed from S89's ephemeral stderr trace, whose stderr sink is **removed**), is a sibling env-opt-in, feature-gated, off-by-default file sink with the **identical silent/graceful contract**; the two are joined by a shared `turn` key. The **byte-identical-feature-OFF** invariant therefore scopes to the agent-gated surfaces (the harvest, the log, and the trace all require the agent); `/syntax` and `/search` are present and functional in the default build. [S90 re-pin]
 
 The **S89** additions (§17.12–§17.16) are all *inside* the agent surface — the agent-input prompt (§17.12) and markdown/fenced-Lisp rendering (§17.13) only ever affect agent-issued/agent-turn output, and the Build confirm-gate (§17.14), Document consultative edit (§17.15), and the `--yes` auto-accept (§17.14.5 / §17.15.2a) + autonomous-submit first-use notice (§17.16) only fire when the live agent proposes a write. `--yes` (§0.6.2) is, like `--agent`, a no-op on default builds and when no agent is active. None alters the deterministic REPL: feature-off or dormant, no agent line is issued, no agent prose is rendered, and no write gate exists, so §1–§16 stay byte-identical. [S89]
 
@@ -2524,15 +2524,17 @@ this pins only the user-visible floor: **searching the library is always safe**.
 
 ### 17.20 Silent Agent Activity Log — Pillar 4 [S90]
 
-S89's `CRANELISP_AGENT_TRACE` (`src/agent/trace.rs`) is an **ephemeral stderr** debug trace of
-the rig wire-sequence — for watching one session live. Pillar 4 is its complement: a **silent,
-persistent, structured** log of the agent's activity, written to a **file**, with enough
-structure to **`grep`/`jq` "where did the agent struggle"** by hand — the *recording* half of
-self-tuning, captured now so insight can be extracted manually (and automated later)
-(`sprints/SPRINT.md §Pillar 4`; `repl-embedded-agent.md §11.6`, R5). The `/arch` ruling makes it
-a **new feature-gated sibling sink** (`src/agent/log.rs` / the reserved `telemetry.rs` slot),
-**not** a `trace.rs` extension; this section owns the **`/repl` experience details** — that it is
-silent, where it goes, and its format. [S90]
+Pillar 4 is a **two-sink** recording surface: a compact, greppable **index** (this log, §17.20)
+and a full-content **trace** (§17.21), joined by a shared `turn` key (§17.21.3). This section
+specifies the **index** half: a **silent, persistent, structured** log of the agent's activity,
+written to a **file**, with enough structure to **`grep`/`jq` "where did the agent struggle"** by
+hand — the *recording* half of self-tuning, captured now so insight can be extracted manually (and
+automated later) (`sprints/SPRINT.md §Pillar 4`; `repl-embedded-agent.md §11.6`, R5). The `/arch`
+ruling makes it a **new feature-gated sibling sink** (`src/agent/log.rs` / the reserved
+`telemetry.rs` slot); its content companion, the full-content trace, **re-purposes** S89's
+`CRANELISP_AGENT_TRACE` from an ephemeral stderr view into a persistent file sink (§17.21). This
+section owns the **`/repl` experience details** of the index — that it is silent, where it goes,
+its format, and the `turn` key it shares with the trace. [S90]
 
 #### 17.20.1 Silent — Nothing Extra in the REPL [S90]
 
@@ -2579,14 +2581,97 @@ experience requirement** is that the format carry **stable, greppable keys** for
 struggle-signal the user wants to mine — at minimum: an **event type** (e.g. a model exchange, a
 pull, a **validator-repair iteration**, a submit/commit, a give-up), the **symbol** involved when
 there is one, an **error class** for a repair iteration (the triggering compiler error), a
-**repair-iteration count**, and the **module**. (The exact key vocabulary the loop emits is
+**repair-iteration count**, the **module**, and a **`turn`** correlation key (§17.21.3) — the
+per-turn/exchange index shared with the full-content trace (§17.21) so each compact log line
+**joins** to the trace exchange that produced it. (The exact key vocabulary the loop emits is
 `/dev`-owned — it consumes the events `pull.rs`/`run_pull`/`run_submit` already produce; this
 pins the *experience* requirement: the keys are stable enough that a one-line `grep`/`jq`
 extracts "every repair event and its triggering symbol/error" reliably.) The acceptance is
 operational: **`grep`/`jq` over the file extracts the repair events and exploration pulls with
 their triggering symbols/errors** (`SPRINT.md §Pillar 4 acceptance`). [S90]
 
+The log **stays the compact index** — it carries *metadata-only* keys (event/symbol/error_class/
+iteration/module/`turn`) and **no content** (no form text, no error message, no model prose). It is
+the **greppable index** that tells you *where* the agent struggled; the full **content** of each
+exchange lives in the companion trace sink (§17.21), joined by the shared `turn` key (§17.21.3). Do
+**not** thicken the log with content fields — its grain is deliberately thin so a one-line `grep`/`jq`
+stays fast and the file stays scannable. [S90]
+
 This log is the **passive recording** half only. The **automated curation/push loop** that would
 read it back to curate the primer/cheat-sheet — plus the §4.7/U4 push-transparency header — is
 **deferred** (`SPRINT.md §Out of scope`): capture the signal now, extract insight by hand, automate
 once the pattern proves worth it. [S90]
+
+### 17.21 Persistent Full-Content Agent Trace — `CRANELISP_AGENT_TRACE=<path>` — Pillar 4 (companion) [S90]
+
+The §17.20 log is metadata-only — too thin, on its own, to extract insight (it names *where* the
+agent struggled, not *what* it said or saw). Its companion is the **trace**: a **persistent,
+full-content** transcript of every agent exchange — the assembled request and the model's
+response — written the same env-path way, **joined to the log by a shared `turn` key** (§17.21.3).
+Together they form **two complementary sinks**: the log is the compact **index** (grep to *find*
+the trouble spot); the trace is the full **content** (read *what* was sent and returned there). [S90]
+
+This **re-purposes** S89's `CRANELISP_AGENT_TRACE` (`src/agent/trace.rs`). Today that variable is an
+**ephemeral stderr** debug view that **truncates** each form/message to ~80 chars — fine for watching
+one turn live, useless as a durable record. The new normative behaviour: `CRANELISP_AGENT_TRACE` names
+a **path**, and the agent appends the **full, untruncated** transcript to that file. **The stderr sink
+is removed** — there is no longer any `eprintln!` trace view; the trace is **path-only**. [S90]
+
+#### 17.21.1 The Contract — Identical to `CRANELISP_AGENT_LOG`, Full-Content Payload [S90]
+
+`CRANELISP_AGENT_TRACE` is a **sibling sink** to `CRANELISP_AGENT_LOG` (§17.20.2) with the
+**identical env-path / silent / graceful / feature-gated** contract, differing only in payload (full
+content vs. compact metadata):
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `CRANELISP_AGENT_TRACE` | Path to the agent full-content **trace** file. **Set** ⇒ the agent appends the **full, untruncated** request/response transcript per exchange to this file. **Unset/empty** ⇒ **no trace is written** (the default). | — (unset = off) [S90] |
+
+- **Path-only; the stderr sink is REMOVED.** `CRANELISP_AGENT_TRACE` no longer produces an
+  ephemeral stderr view — there is **no `eprintln!` trace** any more. It is **set to a path** (a file
+  sink) or it is off. A bare/legacy `=1`-style toggle is **not** a path and writes **no** trace
+  (treated as off). This deliberately changes the variable's meaning from "stderr debug view" to
+  "persistent full-content file", matching the `CRANELISP_AGENT_LOG` shape. [S90]
+- **Silent — nothing extra in the REPL.** Exactly as §17.20.1: writing the trace produces **no**
+  banner, no "tracing to …" line, no per-exchange echo, no transcript change. The session is
+  **byte-identical** to the same session with tracing off. The trace is a **dev-session artifact**
+  (NG4) — written off to the side, never surfaced, never in a `--link`/`--release` artifact. [S90]
+- **Append, persistent, across turns and the session.** When set, each exchange **appends** to the
+  file; it is the durable content record across the whole session (the old stderr view kept nothing). [S90]
+- **Feature-gated; absent on the default build.** Like `CRANELISP_AGENT_LOG` and the whole agent, the
+  trace exists **only** in an `--features agent` build; on a default build the variable is inert and
+  **no trace is ever written** (feature-OFF stays byte-identical, §17.9). [S90]
+- **Graceful on an unwritable path.** Exactly as §17.20.2: an unwritable `CRANELISP_AGENT_TRACE` path
+  MUST **degrade silently** — never crash the session, never spew errors into the REPL. The trace is a
+  side channel; its failure never disturbs the session. [S90]
+
+#### 17.21.2 The Payload — Full, Untruncated Request/Response Transcript [S90]
+
+Where the log records *that* an exchange happened (§17.20.3), the trace records its **full content**.
+Per exchange it appends, **untruncated** (no ~80-char cap):
+
+- the **assembled request** — the message turns sent to the model: each turn's **role** and, within
+  it, the **block kinds** (system/context/primer/harvest, the user ask, prior tool results, etc.) and
+  their **content** — the actual text, not a length-elided preview; and
+- the **model's response** — the response **prose** and any **tool calls** it issued (pull requests,
+  Build form-submits, Document edits), with their arguments.
+
+The **content grain** of each block is owned by `/dev` (it consumes what the rig already assembles and
+what the provider returns); this section pins the **experience requirement**: what reaches the file is
+the **full** request/response — enough to re-read *exactly* what the agent was shown and what it
+returned for the turn a §17.20 log line points at — with **nothing truncated**. [S90]
+
+#### 17.21.3 The Shared `turn` Correlation Key — Joining Index to Content [S90]
+
+The two sinks are **joined by a shared `turn` key** — a per-turn/exchange index, monotonic within a
+session, stamped identically in both:
+
+- the **§17.20 log** JSONL gains a **`turn`** field on every line (§17.20.3), and
+- the **trace** emits a **matching per-turn marker** delimiting each exchange in the file (e.g. a
+  `--- turn N ---`-style boundary carrying the same index; the exact marker text is `/dev`-owned),
+
+so the **workflow** is: **grep the log** for a `repair`/`give_up`/struggle signal, read its `turn`,
+then **scroll the trace** to that same `turn` marker to read the **full request and response** that
+produced it. The `turn` index is the only coupling required between the sinks — each remains
+independently writable (one may be set without the other), but when **both** are set they share the
+index so the index→content join is mechanical. [S90]
