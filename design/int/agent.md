@@ -2202,6 +2202,195 @@ sinks, not one overloaded module** (Principle 6 — keep concerns separate). Bot
 
 ---
 
+## 28. Persistent TRACE sink + log↔trace correlation (`turn`) (S90 addendum, SHIPS S90)
+
+*User direction (2026-06-25).* Pillar 4's JSONL log (§27) is **metadata-only** — `event`, `symbol`,
+`module`, `error_class`, `iteration`, `tool`, `ts`. That is the right shape for the **index** (a
+`grep`/`jq` skim of *where* the agent struggled) but too thin to *read* what actually happened — the
+full request the model saw, the full response it gave, the full compiler error text. That content
+**already exists** in `trace.rs` (the `format_request_trace`/`format_response_trace` transcript), but
+it is (a) **ephemeral** — `eprintln!` to stderr, gone when the terminal scrolls — and (b)
+**truncated** — `TEXT_TRUNCATE = 80` + `compact()` collapse every form/error/prose to one short line.
+
+The addendum makes the **trace the CONTENT record** the same env-path way the log is the **index**:
+persist the trace to a file, **untruncated**, and **join the two by a shared `turn` id**. The log
+stays compact (you grep it to find the interesting turn); the trace carries the full transcript for
+that turn (you read it once the index pointed you there). This takes the §8 trace slot's
+"persistent" upgrade with **no model, no public-API, no `cranelisp-types` movement** (§11.8) — it is
+two int-private edits (`trace.rs`, `log.rs`) plus a one-field thread-through.
+
+### 28.1 TRACE persistent sink — `CRANELISP_AGENT_TRACE=<path>`, full content, path-only
+
+`CRANELISP_AGENT_TRACE` **changes meaning from a `=1` toggle to a PATH** (sibling-identical to
+`CRANELISP_AGENT_LOG`, §27.2 / `log.rs:36–54`):
+
+- **Set to a path** ⇒ each request/response trace is **appended** to that file (persistent across
+  turns + session). The **stderr `eprintln!` sink is REMOVED** — the two `eprintln!` loops in
+  `trace.rs::emit_request` / `emit_response` (`trace.rs:54–56` / `64–66`) are replaced by a
+  best-effort file append. The persisted trace is **path-only**; there is no longer an ephemeral
+  stderr mode. (This is the deliberate user-directed swap: the §27.4 "ephemeral stderr vs persistent
+  file" distinction collapses — *both* sinks are now persistent file sinks, differentiated by
+  **grain** — log = index, trace = content — not by lifetime.)
+- **Unset/empty** ⇒ off, no file, no cost — the gate becomes `trace_path() -> Option<String>`
+  (byte-for-byte the `log.rs::log_path()` shape, `log.rs:42–54`), replacing the truthy
+  `trace_enabled() -> bool` (`trace.rs:38–46`). `emit_request`/`emit_response` early-return on `None`.
+- **Graceful** — the append is `OpenOptions::new().create(true).append(true).open(path)` +
+  `write_all`, the outcome **discarded** (`let _ = …`) — an unwritable path never crashes the
+  session and never spews into the REPL. Identical to `log.rs::record` (`log.rs:131–148`).
+- **Silent** — like the log, the trace file is the ONLY side effect; the REPL transcript is
+  byte-identical with the trace off. NG4 dev-session artifact, `#[cfg(feature="agent")]`, REPL-only.
+
+**FULL, UNTRUNCATED content (the core requirement).** The persisted lines must carry the **whole**
+form/error/prose — not the `compact()`-collapsed 80-char head. The truncation must move **out of the
+persisted path**:
+
+- `TEXT_TRUNCATE` + `compact()` exist for **eyeball-on-one-line** rendering. With the stderr sink
+  gone, the persisted path has no one-line constraint — a persisted trace is *read in a file*, where
+  multi-line forms are an asset, not noise.
+- **Recommendation: the formatters take a render mode rather than duplicating.** Add a private
+  `Grain { Compact, Full }` (or a `bool full`) param threaded into `format_request_trace` /
+  `format_response_trace` / `format_turn` / `format_call`, and have `compact()` become
+  `render_text(text, grain)` — `Compact` keeps the existing newline-collapse + `TEXT_TRUNCATE` cut;
+  `Full` returns the text verbatim (no collapse, no cut). `emit_request`/`emit_response` (the only
+  persisted callers) pass `Full`. This keeps ONE formatter (Principle 7 — single-source-of-truth: no
+  parallel "full" formatter mirroring the compact one) and preserves the existing unit tests, which
+  exercise the `Compact` grain directly. The `…`-truncation / `⏎`-collapse tests stay as `Compact`
+  assertions; one new `Full`-grain test asserts a >80-char form survives verbatim.
+- (The line **prefix** — `[agent-trace] →request …` / `←response …` — stays; it is the per-turn
+  delimiter a reader and the §28.2 correlation both key on. Only the *body* un-truncates.)
+
+### 28.2 Shared `turn` correlation key — one id in BOTH sinks
+
+A per-turn index joins an index record (log) to its content record (trace). The source is the
+**`agent_turn` loop step** — `turn_step` (`mod.rs:241`), the `0..MAX_TURN_ITERATIONS` counter that
+already drives one model exchange per iteration. The 1-based `turn_step + 1` is the correlation id.
+The §27 `exchange` record already emits it — but on the **`iteration`** field (`mod.rs:248`,
+`LogEvent::new("exchange").iteration(turn_step + 1)`), which is overloaded (a *repair* also uses
+`iteration` for its own per-iteration count, §27.1). The addendum gives correlation its **own**
+field so the two never collide:
+
+- **`log.rs` — add a `turn: Option<usize>` field to `LogEvent`** (`log.rs:62–83`), a
+  `skip_serializing_if = "Option::is_none"` `Option` like the other optionals, with a fluent
+  `turn(usize)` setter (mirroring `iteration`, `log.rs:115–118`). It is the **only** new field; the
+  log stays otherwise compact (§27.3 — no content fields; `turn` is an *index* key, not content).
+- **`trace.rs` — a per-turn marker line.** `emit_request`/`emit_response` gain a `turn: usize` param
+  and stamp it into the trace's header/marker (e.g. `[agent-trace] turn=3 →request …` /
+  `turn=3 ←response …`) — the same id the log carries on its `turn` field. A reader (or a join
+  script) lifts `turn=N` from the trace and `"turn":N` from the log; one grep over each file by the
+  same N reconciles "the agent struggled on `fib` at turn 3" (log) with "here is the exact request
+  the model saw and the exact response it gave at turn 3" (trace).
+
+**Where the id is sourced + threaded.** `turn_step` is local to `agent_turn` (`mod.rs:241`). It must
+reach **both** sinks:
+
+- **Log side (already half-wired).** The `exchange` record at `mod.rs:247–249` switches from
+  `.iteration(turn_step + 1)` to `.turn(turn_step + 1)`. Every OTHER record site that wants
+  correlation (the §27.1 table — `pull` `pull.rs:228`, `repair` `pull.rs:631`, `submit`
+  `pull.rs:404`, `give_up` `pull.rs:291` + the turn-end give-up `mod.rs`) gains `.turn(<current
+  turn>)`. Those sites run **inside the `agent_turn` loop body** (directly, or one call deep in
+  `run_pull`/`run_submit`/`validate_and_repair`), so the current `turn_step + 1` must be **threaded
+  to them**. Recommendation (smallest seam): stash the current 1-based turn on `AgentState` —
+  `current_turn: usize`, set once per loop iteration at the top of the `agent_turn` body
+  (`state.current_turn = turn_step + 1`), read by the record sites via `self.agent` (every record
+  site already holds `&mut self`/`&self`). This avoids threading a `turn` param down four call
+  chains (`run_pull`/`run_submit`/`submit_clean_form`/`validate_and_repair`) — Principle 1
+  (decoupling over convenience): the loop owns the turn, the sites read it off shared state, no
+  signature churn. The repair record keeps BOTH `.turn(current)` (the correlation) AND
+  `.iteration(iteration + 1)` (its own repair-loop count) — they are now distinct fields.
+- **Trace side (the crux — the trace fires at a DIFFERENT seam from the log).** The trace
+  `emit_request`/`emit_response` are called inside `RigModel::complete` at the **rig boundary**
+  (`provider.rs:176` / `199`), one membrane layer below `agent_turn` — and `turn_step` is **not in
+  scope there**. Two consequences the implementer must honour:
+  1. The cleanest thread-through is to **carry the turn on `AgentRequest`** — add `pub turn: usize`
+     to `AgentRequest` (`types.rs:115–127`), set by `assemble_request` (`mod.rs:346`) from the
+     `current_turn` stashed on `AgentState` above (or pass it through). `RigModel::complete` then
+     reads `request.turn` and passes it to `emit_request`; for the response it reuses the same
+     `request.turn` (the response belongs to the request's turn). This keeps the rig membrane
+     ignorant of the loop — it just forwards the request's own turn id. `AgentRequest` derives
+     `Default` (`types.rs:115`), so the new `usize` defaults to `0` for the test-fixture
+     constructions in `trace.rs`/`pull.rs` tests — harmless (turn 0 = "unstamped", never collides
+     with the 1-based live ids).
+  2. **The trace fires ONLY on the rig path, not the stub** (`provider.rs:170` `RigModel` is the
+     sole `emit_*` caller; the deterministic `stub.rs` `AgentModel` never calls them). This is
+     unchanged from today and correct — the persisted trace is a **live-provider** wire record; the
+     stub path is covered by the `#[cfg(test)]` request-capture assertions (`agent/mod.rs`, the
+     CLAUDE.md "stub captures every `AgentRequest`" lane), not by the trace file. Note for `/qa`:
+     the §28 trace-file e2e therefore needs a **rig-backed** model or a stub that also emits — the
+     §27 log e2e (which fires from `agent_turn`/`pull.rs`, provider-independent) does NOT have this
+     constraint. Flag this asymmetry so a §28 trace test is not written against the bare stub
+     expecting a file.
+
+### 28.3 Share a small file-append helper (Principle 7) — RECOMMENDED
+
+With the stderr sink gone, `trace.rs` and `log.rs` now perform the **identical** operation: read an
+env var as a path (absence/empty = off), and best-effort-append text to it, errors discarded. That
+is **one mechanism appearing twice** — exactly the Principle 7 (single-source-of-truth) / Principle 6
+(complexity budget) smell. **Recommendation: extract a shared append helper.** A small free fn —
+`fn append_to_env_path(var: &str, content: &str)` (home: a new tiny `src/agent/sink.rs`, or a
+`pub(crate)` fn on `log.rs` that `trace.rs` calls) — owns the env-gate + `OpenOptions` create/append
++ `write_all` + `let _ =` discard ONE time. Then:
+
+- `log.rs::record` serializes its `LogEvent` to a JSON line and calls
+  `append_to_env_path(LOG_VAR, &line)`.
+- `trace.rs::emit_request`/`emit_response` format their `Vec<String>` (joined by `\n`, trailing `\n`)
+  and call `append_to_env_path(TRACE_VAR, &block)`.
+
+Each module keeps its **own env var const** (`LOG_VAR`/`TRACE_VAR`) and its **own content shape**
+(JSONL vs trace-text) — the helper owns only the **mechanism** (gate + append + swallow), which is
+genuinely identical. This is the right cut: the differing concerns (what to write) stay separate; the
+identical concern (how to append-to-an-env-path silently) is single-sourced. The alternative — each
+module owning its own copy — re-introduces the very duplication the project's CLAUDE.md repeatedly
+calls out (e.g. the retired `resolve_module_alias` byte-identical re-impl, S81 W-G 0303). **Recommend
+the shared helper.** (If the implementer finds the two append shapes diverge — e.g. the trace wants a
+different open-mode — fall back to per-module; but as specified they are identical.)
+
+### 28.4 What §28 does NOT change (zero-movement)
+
+- **No model/public-API/`cranelisp-types` movement** (§11.8). The three edits are int-private:
+  `AgentRequest.turn` (int-private struct, `types.rs`), `LogEvent.turn` (int-private, §27.3), the
+  `trace.rs` grain param + sink swap. No facade delta, no FIXME `target: /arch` anticipated.
+- **The log stays compact** (§27.3) — `turn` is the ONLY field added; no content fields migrate into
+  the log. Content lives in the trace; the log remains the greppable index.
+- **`/repl` owns the env-var semantics wording.** `CRANELISP_AGENT_TRACE` changing from `=1` to a
+  PATH is a user-facing config change recorded in `repl/spec.md §17.10` (the trace env row) +
+  §17.20 (alongside `CRANELISP_AGENT_LOG`) — that file is `/repl`-owned, NOT edited here. Flag to
+  `/repl` (§28.6).
+
+### 28.5 Testability (Principle 5, for `/qa`)
+
+- **Full content (positive):** with `CRANELISP_AGENT_TRACE=<path>` and a >80-char form in the
+  transcript, the trace file carries the form **verbatim** (no `…`, no `⏎` collapse) — the
+  un-truncation guard. (The existing `long_text_is_compacted_and_truncated` /
+  `empty_id_renders_as_none` tests stay, re-pinned as **`Compact`-grain** unit tests of the
+  formatter; one new **`Full`-grain** test asserts verbatim survival.)
+- **Path-only / no stderr (+neg):** the stderr sink is gone — with the env set, **nothing** is
+  written to stderr (a redirect-stderr assertion is empty); the content is in the file only.
+- **Correlation (positive):** a turn that pulls then submits produces, for the SAME `turn=N`, a
+  trace block at `turn=N` and log records carrying `"turn":N` — a join on N reconciles the two.
+  Specifically: the `exchange` log line and the `submit`/`repair` log line for one turn share the
+  same `turn`, and the trace block for that exchange carries the matching `turn=N`.
+- **Off / unset (+neg):** unset/empty ⇒ no trace file, byte-identical session (the silent gate,
+  mirroring §27.5).
+- **Graceful (+neg):** an unwritable trace path degrades silently — session runs to completion,
+  nothing in the REPL.
+- **Shared helper (if extracted):** a single `append_to_env_path` test covers gate-off, append, and
+  unwritable-path-swallow once; `log.rs`/`trace.rs` tests then assert only their content shape.
+
+### 28.6 Coordination points (add to §26 / flag at the Phase-3 exit gate)
+
+- **`/repl`** — `repl/spec.md §17.10` + §17.20: record `CRANELISP_AGENT_TRACE` as a **PATH** (no
+  longer `=1`), persistent + silent + full-content, sibling to `CRANELISP_AGENT_LOG`; note the
+  removal of the stderr trace mode and the `turn` correlation key the two share.
+- **`/qa`** — the §28.5 tests, with the §28.2(2) caveat: the trace-file e2e needs a rig-backed (or
+  emit-capable) model, since `emit_*` fires at the rig boundary, not from the stub path.
+- **`/dev` (src/, narrow)** — implement against §28: the `trace.rs` sink swap + grain param
+  (§28.1), the `turn` field on `LogEvent` + `AgentRequest` + the `AgentState.current_turn` stash and
+  the record-site `.turn(…)` calls (§28.2), the shared `append_to_env_path` helper (§28.3). Serial
+  with the other S90 `/dev` steps (broken worktree isolation). Keep feature-OFF byte-identical.
+- **`/arch`** — none anticipated (zero cross-crate movement, §28.4).
+
+---
+
 ## 13b. Cross-skill handoffs / FIXMEs (S89)
 
 Per the protocol (filed as `design/arch/fixmes/NNNN-*.md` when `/sprint` schedules; not
