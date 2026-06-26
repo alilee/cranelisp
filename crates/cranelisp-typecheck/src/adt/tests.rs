@@ -1,7 +1,7 @@
     use super::*;
     use crate::builtins::FixtureBuilder;
     use crate::checker::TestFixture;
-    use cranelisp_types::{ConstructorDef, ModuleFullPath};
+    use cranelisp_types::{ConstructorDef, ModuleFullPath, TraitName};
 
     /// Minimal fixture for the ADT-registration tests (FIXME 0243 narrowing).
     ///
@@ -302,9 +302,10 @@
         }
     }
 
-    // spec: 05-definitions §5.2.6 — Generated Accessors. A product field
-    // synthesises a free accessor fn `field :: (Fn [ProductType] FieldType)`,
-    // born concrete (UserFn with a GOT slot), registered under the field name.
+    // spec: 05-definitions §5.2.6 — Generated Accessors (INVERTED model §1.6.1).
+    // A product field synthesises a free accessor fn `field :: (Fn [ProductType]
+    // FieldType)`, born concrete (UserFn with a GOT slot), registered under the
+    // CANONICAL key `Type.field` (`Box.v`); bare `field` is its Import alias.
     #[test]
     fn product_field_synthesises_concrete_accessor() {
         let mut tc = tf_with_scalar_imports();
@@ -318,8 +319,13 @@
         )
         .unwrap();
 
-        // `v` is a concrete UserFn accessor with a GOT slot.
-        match tc.symbol_table().get("v") {
+        // Canonical `Box.v` is a concrete UserFn accessor with a GOT slot; bare
+        // `v` is its Import alias.
+        assert!(
+            matches!(tc.symbol_table().get("v"), Some(ModuleEntry::Import { .. })),
+            "bare `v` must be the Import alias onto Box.v"
+        );
+        match tc.symbol_table().get("Box.v") {
             Some(entry @ ModuleEntry::Def { kind, scheme, ast, param_names, .. }) => {
                 assert!(
                     matches!(
@@ -343,7 +349,7 @@
                     other => panic!("accessor scheme must be Fn, got {other:?}"),
                 }
             }
-            other => panic!("accessor `v` must be a Def, got {other:?}"),
+            other => panic!("canonical Box.v must be a Def, got {other:?}"),
         }
     }
 
@@ -419,10 +425,15 @@
         )
         .unwrap();
 
-        // Before the collision, `v` is a normal concrete first-class accessor.
+        // Before the collision, bare `v` is the Import ALIAS onto the canonical
+        // `Box.v` (inverted model §1.6.1); `Box.v` is the real concrete accessor.
+        assert!(
+            matches!(tc.symbol_table().get("v"), Some(ModuleEntry::Import { .. })),
+            "single-type bare `v` is the Import alias onto Box.v before any collision"
+        );
         assert!(
             matches!(
-                tc.symbol_table().get("v"),
+                tc.symbol_table().get("Box.v"),
                 Some(ModuleEntry::Def { kind, .. })
                     if matches!(
                         kind.as_ref(),
@@ -431,7 +442,7 @@
                         }
                     )
             ),
-            "single-type accessor `v` is a concrete UserFn before any collision"
+            "canonical Box.v is the concrete UserFn accessor"
         );
 
         // The SECOND deftype with the same field name MUST NOT be rejected as a
@@ -549,9 +560,15 @@
             Span::SYNTHETIC,
         )
         .unwrap();
+        // Inverted model: bare `v` is the Import alias; canonical `Box.v` is the
+        // concrete accessor `Def`.
+        assert!(
+            matches!(tc.symbol_table().get("v"), Some(ModuleEntry::Import { .. })),
+            "single-type bare `v` is the Import alias after cluster 1"
+        );
         assert!(
             matches!(
-                tc.symbol_table().get("v"),
+                tc.symbol_table().get("Box.v"),
                 Some(ModuleEntry::Def { kind, .. })
                     if matches!(
                         kind.as_ref(),
@@ -560,11 +577,11 @@
                         }
                     )
             ),
-            "single-type accessor `v` is a concrete UserFn after cluster 1"
+            "canonical Box.v is the concrete UserFn accessor after cluster 1"
         );
 
         // Cluster boundary: fresh per-`CheckState` accessor tracking; the live
-        // `v` accessor entry from cluster 1 stays committed.
+        // `Box.v` canonical accessor + `v` alias from cluster 1 stay committed.
         new_cluster(&mut tc);
 
         // Cluster 2: `Cup` with the SAME field name `v`. The set-only classifier
@@ -612,6 +629,122 @@
         assert!(names.contains(&"Cup"), "Cup must be an alternative, got {names:?}");
     }
 
+    // spec: 05-definitions §5.2.6 (S91 Phase 6) — the bare-field-name ambiguity
+    // ERROR MESSAGE must list the canonical alternatives (`Box.v`, `Cup.v`) in
+    // EVERY mode, REPL included (no exemption). At the REPL the BARE USE turn
+    // (`(v …)`) is its OWN cluster with a FRESH `CheckState`, so the per-cluster
+    // `accessor_owning_types` map that `--run` carries is EMPTY by the time the
+    // bare use is checked — the message must re-derive the alternatives from the
+    // durable symbol table. This is the cross-cluster seam the e2e
+    // `bare_field_ambiguity_message_lists_both_alternatives` exercises.
+    #[test]
+    fn cross_cluster_bare_field_ambiguity_message_lists_canonical_alternatives() {
+        let mut tc = tf_with_scalar_imports();
+        // Cluster 1: `Box` with field `v`.
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        // Cluster 2: `Cup` with the SAME field `v` → poisons bare `v`.
+        new_cluster(&mut tc);
+        tc.register_type_def_self(
+            &TypeName::from("Cup"),
+            &None,
+            &[],
+            &[product_int_field("Cup", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        assert!(
+            matches!(tc.symbol_table().get("v"), Some(ModuleEntry::Ambiguous { .. })),
+            "duplicate field `v` must be poisoned after cluster 2"
+        );
+
+        // Cluster 3 (the BARE USE turn): fresh `CheckState` — the per-cluster
+        // owner-tracking map is empty. This is the exact REPL condition where the
+        // pre-fix message truncated to `ambiguous bare name 'v'` with NO
+        // alternatives.
+        new_cluster(&mut tc);
+        assert!(
+            tc.state
+                .accessor_owning_types
+                .get(&Symbol::from("v"))
+                .is_none(),
+            "the bare-use cluster starts with no per-cluster owner record \
+             (the truncation condition)"
+        );
+
+        let mut bare = Expr::var(Symbol::from("v"), Span::SYNTHETIC);
+        let err = tc
+            .infer_expr_for_test(&mut bare)
+            .expect_err("bare use of the poisoned field `v` must be a resolution error");
+        let message = match err {
+            CranelispError::TypeError { message, .. } => message,
+            other => panic!("expected a TypeError for the ambiguous bare name, got {other:?}"),
+        };
+        assert!(
+            message.contains("ambiguous bare name 'v'"),
+            "diagnostic must frame the failure as an ambiguity, got: {message}"
+        );
+        // The REGRESSION GUARD: BOTH canonical alternatives must appear even
+        // though the per-cluster owner map was empty (re-derived from the table).
+        assert!(
+            message.contains("Box.v") && message.contains("Cup.v"),
+            "the ambiguity message must list BOTH canonical alternatives \
+             `Box.v` and `Cup.v` (no REPL exemption, §5.2.6), got: {message}"
+        );
+    }
+
+    // spec: 05-definitions §5.2.6 (S91 Phase 6) — unit-level reconstruction seam:
+    // `reconstruct_accessor_alternatives` re-derives the owning types of a
+    // poisoned bare field name from the durable symbol table when the per-cluster
+    // `accessor_owning_types` map is empty (the cross-cluster REPL case).
+    #[test]
+    fn reconstruct_accessor_alternatives_reads_owners_from_table() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        new_cluster(&mut tc);
+        tc.register_type_def_self(
+            &TypeName::from("Cup"),
+            &None,
+            &[],
+            &[product_int_field("Cup", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        new_cluster(&mut tc); // empty per-cluster map — force the table re-derivation
+
+        let owners = tc.env().reconstruct_accessor_alternatives(&tc.state, "v");
+        let names: Vec<&str> = owners.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            names.contains(&"Box") && names.contains(&"Cup"),
+            "reconstruction must read both owning types from the table, got {names:?}"
+        );
+        // A non-colliding / unknown field name yields no alternatives (the caller
+        // then emits the bare message with no qualified-accessor hint).
+        assert!(
+            tc.env()
+                .reconstruct_accessor_alternatives(&tc.state, "no_such_field")
+                .is_empty(),
+            "a field name with no synthesised accessor must reconstruct to no alternatives"
+        );
+    }
+
     // spec: 05-definitions §5.2.6 (FIXME 0366) — NEGATIVE: a SINGLE product
     // type's accessor synthesised in its own cluster, with no duplicate field
     // name across types, must remain a normal concrete accessor across cluster
@@ -639,11 +772,19 @@
             Span::SYNTHETIC,
         )
         .unwrap();
-        // `v` stays a concrete accessor; `w` is a fresh concrete accessor.
-        for name in ["v", "w"] {
+        // Inverted model: distinct bare fields `v`/`w` each stay a clean Import
+        // ALIAS (no spurious poison) onto their canonical accessors `Box.v` /
+        // `Cup.w` (the real concrete `Def`s).
+        for (bare, canonical) in [("v", "Box.v"), ("w", "Cup.w")] {
+            assert!(
+                matches!(tc.symbol_table().get(bare), Some(ModuleEntry::Import { .. })),
+                "distinct-field bare `{bare}` must remain a clean Import alias \
+                 across clusters (no spurious poison), got {:?}",
+                tc.symbol_table().get(bare)
+            );
             assert!(
                 matches!(
-                    tc.symbol_table().get(name),
+                    tc.symbol_table().get(canonical),
                     Some(ModuleEntry::Def { kind, .. })
                         if matches!(
                             kind.as_ref(),
@@ -652,9 +793,8 @@
                             }
                         )
                 ),
-                "distinct-field accessor `{name}` must remain a concrete UserFn \
-                 across clusters (no spurious poison), got {:?}",
-                tc.symbol_table().get(name)
+                "canonical `{canonical}` must be the concrete UserFn accessor, got {:?}",
+                tc.symbol_table().get(canonical)
             );
         }
     }
@@ -686,21 +826,548 @@
             Span::SYNTHETIC,
         )
         .unwrap();
-        // `v` is still a normal concrete accessor — a same-type redefinition is
-        // not a cross-type duplicate-field collision.
+        // Inverted model: bare `v` stays a clean Import alias (NOT poisoned) — a
+        // same-type redefinition is not a cross-type duplicate-field collision;
+        // the canonical `Box.v` is re-minted and bare `v` re-aliased to it.
         match tc.symbol_table().get("v") {
-            Some(ModuleEntry::Def { kind, .. })
-                if matches!(
-                    kind.as_ref(),
-                    DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { .. }
-                    }
-                ) => {}
+            Some(ModuleEntry::Import { .. }) => {}
             other => panic!(
-                "`v` after a same-type Box redefinition must stay a concrete \
-                 accessor, not be poisoned, got {other:?}"
+                "`v` after a same-type Box redefinition must stay a clean Import \
+                 alias, not be poisoned, got {other:?}"
             ),
         }
+        assert!(
+            matches!(
+                tc.symbol_table().get("Box.v"),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn {
+                            fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                        }
+                    )
+            ),
+            "canonical Box.v stays the concrete UserFn accessor after redefinition"
+        );
+    }
+
+    // =====================================================================
+    // FIXME 0365 Item 1 — `Type.member` dotted field-accessor typing
+    // (spec §8.5.2 / §5.2.6). The dotted form `Box.v` resolves the field
+    // accessor `v` of `Box` directly and is typed by ordinary value-position
+    // scheme instantiation off the accessor's `(Fn [Type] FieldType)` scheme.
+    // =====================================================================
+
+    /// Register a polymorphic single-field product `(Box a) [:a v]`.
+    fn register_poly_box(tc: &mut TestFixture) {
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[Symbol::from("a")],
+            &[ConstructorDef {
+                name: Symbol::from("Box"),
+                docstring: None,
+                fields: vec![cranelisp_types::FieldDef {
+                    name: Symbol::from("v"),
+                    type_expr: cranelisp_types::TypeExpr::TypeVar(Symbol::from("a")),
+                    span: Span::SYNTHETIC,
+                }],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+    }
+
+    // spec: 08-modules §8.5.2 — `Box.v` types as `(Fn [Box] Int)` for a
+    // monomorphic product. Each per-type dotted accessor has a distinct
+    // denotation even when the bare `v` is poisoned by a duplicate field name.
+    #[test]
+    fn dotted_accessor_types_fn_of_type_monomorphic() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let mut expr = Expr::var(Symbol::from("Box.v"), Span::SYNTHETIC);
+        let ty = tc
+            .infer_expr_for_test(&mut expr)
+            .expect("Box.v must type as the field accessor");
+        match ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0], Type::ADT(user_fqtn("Box"), vec![]));
+                assert_eq!(ret.as_ref(), &Type::Int);
+            }
+            other => panic!("Box.v must type as (Fn [Box] Int), got {other:?}"),
+        }
+    }
+
+    // spec: 08-modules §8.5.2 (INVERTED model §1.6.2) — when two types share a
+    // field name, ambiguity lives in the BARE ALIAS: bare `v` becomes the
+    // `Ambiguous` sentinel (error on use), while the canonical `Box.v` / `Cup.v`
+    // accessors keep working unchanged (they were always real — no cliff).
+    #[test]
+    fn dotted_accessor_disambiguates_poisoned_bare_field() {
+        let mut tc = tf_with_scalar_imports();
+        // Add a Bool-field type to give Cup.v a different return type.
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        tc.register_type_def_self(
+            &TypeName::from("Cup"),
+            &None,
+            &[],
+            &[ConstructorDef {
+                name: Symbol::from("Cup"),
+                docstring: None,
+                fields: vec![cranelisp_types::FieldDef {
+                    name: Symbol::from("v"),
+                    type_expr: cranelisp_types::TypeExpr::Named(
+                        cranelisp_types::TypeRef::new(None, TypeName::from("Bool")),
+                    ),
+                    span: Span::SYNTHETIC,
+                }],
+                span: Span::SYNTHETIC,
+            }],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        // Bare `v` is the Ambiguous sentinel (ambiguity lives in the alias).
+        assert!(matches!(
+            tc.symbol_table().get("v"),
+            Some(ModuleEntry::Ambiguous { .. })
+        ));
+        // Using bare `v` is a resolution error (ambiguous).
+        let mut bare = Expr::var(Symbol::from("v"), Span::SYNTHETIC);
+        assert!(
+            tc.infer_expr_for_test(&mut bare).is_err(),
+            "contested bare `v` must be a resolution error (ambiguous alias)"
+        );
+
+        // But the canonical Box.v : (Fn [Box] Int), Cup.v : (Fn [Cup] Bool) —
+        // both still resolve (no cliff; they were always real).
+        let mut box_v = Expr::var(Symbol::from("Box.v"), Span::SYNTHETIC);
+        match tc.infer_expr_for_test(&mut box_v).unwrap() {
+            Type::Fn(p, r) => {
+                assert_eq!(p[0], Type::ADT(user_fqtn("Box"), vec![]));
+                assert_eq!(r.as_ref(), &Type::Int);
+            }
+            other => panic!("Box.v must be (Fn [Box] Int), got {other:?}"),
+        }
+        let mut cup_v = Expr::var(Symbol::from("Cup.v"), Span::SYNTHETIC);
+        match tc.infer_expr_for_test(&mut cup_v).unwrap() {
+            Type::Fn(p, r) => {
+                assert_eq!(p[0], Type::ADT(user_fqtn("Cup"), vec![]));
+                assert_eq!(r.as_ref(), &Type::Bool);
+            }
+            other => panic!("Cup.v must be (Fn [Cup] Bool), got {other:?}"),
+        }
+    }
+
+    // spec: 08-modules §8.5.2 — a polymorphic product's dotted accessor reads
+    // the quantified scheme: `(Box a).v` instantiates to `(Fn [(Box a)] a)`
+    // with the param ADT arg and the return type the SAME fresh var.
+    #[test]
+    fn dotted_accessor_types_polymorphic_scheme() {
+        let mut tc = tf_with_scalar_imports();
+        register_poly_box(&mut tc);
+
+        let mut expr = Expr::var(Symbol::from("Box.v"), Span::SYNTHETIC);
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        match ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 1);
+                match &params[0] {
+                    Type::ADT(fqtn, args) => {
+                        assert_eq!(fqtn, &user_fqtn("Box"));
+                        assert_eq!(args.len(), 1);
+                        // The accessor return type IS the product's type arg
+                        // (the field type `a`).
+                        assert_eq!(&args[0], ret.as_ref());
+                        assert!(matches!(ret.as_ref(), Type::Var(_)));
+                    }
+                    other => panic!("expected (Box a) param, got {other:?}"),
+                }
+            }
+            other => panic!("Box.v must be (Fn [(Box a)] a), got {other:?}"),
+        }
+    }
+
+    // spec: 08-modules §8.5.2 — the dotted accessor is first-class: applying it
+    // to a `(Box 7)` yields the field type (Int), exactly as a bound callable.
+    #[test]
+    fn dotted_accessor_is_first_class_applied() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        // (Box.v (Box 7)) : Int.
+        let construct = Expr::ConstrADT {
+            type_name: user_fqtn("Box"),
+            tag: 0,
+            fields: vec![Expr::IntLit { value: 7, span: Span::SYNTHETIC, inferred_type: None }],
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        };
+        let mut apply = Expr::Apply {
+            callee: Box::new(Expr::var(Symbol::from("Box.v"), Span::SYNTHETIC)),
+            args: vec![construct],
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            inferred_type: None,
+        };
+        let ty = tc.infer_expr_for_test(&mut apply).unwrap();
+        assert_eq!(ty, Type::Int, "(Box.v (Box 7)) must type as Int");
+    }
+
+    // spec: 08-modules §8.5.2 (FIXME 0365 Item 1, INVERTED model §1.6.1/§1.6.5)
+    // — the CANONICAL `Box.v` is the real Public compiled `Def`; bare `v` is the
+    // `Import` ALIAS onto it. Exactly one compiled function per (type, field) —
+    // the bare alias adds NO `defined_symbols()` entry / no second GOT slot.
+    #[test]
+    fn canonical_dotted_is_the_def_bare_is_the_alias() {
+        let mut tc = tf_with_scalar_imports();
+        let before = tc.symbol_table().defined_symbols().count();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        let after = tc.symbol_table().defined_symbols().count();
+
+        // Canonical `Box.v` is the real, uniformly-Public accessor `Def`.
+        match tc.symbol_table().get("Box.v") {
+            Some(entry @ ModuleEntry::Def { kind, .. }) => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn {
+                            fn_state: cranelisp_types::UserFnState::Concrete { .. }
+                        }
+                    ),
+                    "canonical Box.v must be a concrete UserFn Def"
+                );
+                assert!(
+                    entry.is_public(),
+                    "canonical Box.v must be uniformly Public"
+                );
+                assert!(
+                    entry.callable_got_slot().is_some(),
+                    "canonical Box.v carries its own GOT slot"
+                );
+            }
+            other => panic!("Box.v must be the canonical accessor Def, got {other:?}"),
+        }
+        // Bare `v` is the Import ALIAS onto the canonical key (NOT a Def).
+        assert!(
+            matches!(
+                tc.symbol_table().get("v"),
+                Some(ModuleEntry::Import { .. })
+            ),
+            "bare `v` MUST be the Import alias onto Box.v (not a compiled Def), \
+             got {:?}",
+            tc.symbol_table().get("v")
+        );
+        // The deftype adds the product ctor `Box` + the canonical accessor
+        // `Box.v` as codegen targets — delta 2. The bare `v` alias adds ZERO (it
+        // is an Import, excluded from `defined_symbols()`) — exactly one compiled
+        // function per (type, field).
+        assert_eq!(
+            after - before,
+            2,
+            "non-contested deftype must add only the ctor + canonical accessor \
+             as codegen targets — the bare `v` alias must NOT be a \
+             defined_symbols() entry (before={before}, after={after})"
+        );
+    }
+
+    // spec: 08-modules §8.5.2 (INVERTED model §1.6.2) — bare `v` resolves (via
+    // the alias) to the canonical `Box.v` when exactly one type owns the field.
+    #[test]
+    fn bare_alias_resolves_to_canonical_when_unique() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        let mut bare = Expr::var(Symbol::from("v"), Span::SYNTHETIC);
+        match tc.infer_expr_for_test(&mut bare).expect("bare v resolves via alias") {
+            Type::Fn(p, r) => {
+                assert_eq!(p[0], Type::ADT(user_fqtn("Box"), vec![]));
+                assert_eq!(r.as_ref(), &Type::Int);
+            }
+            other => panic!("bare v must type as (Fn [Box] Int) via the alias, got {other:?}"),
+        }
+    }
+
+    // spec: 08-modules §8.5.2 — NEGATIVE: a `Type.member` whose member is not a
+    // field accessor of the type does NOT resolve as a dotted accessor (it is
+    // an undefined variable — the resolver returns None, no spurious type).
+    #[test]
+    fn dotted_accessor_nonfield_member_is_undefined() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+
+        let mut expr = Expr::var(Symbol::from("Box.nonfield"), Span::SYNTHETIC);
+        let result = tc.infer_expr_for_test(&mut expr);
+        assert!(
+            result.is_err(),
+            "Box.nonfield must NOT resolve as a field accessor"
+        );
+    }
+
+    // =====================================================================
+    // FIXME 0365 Item 2 — impl-time field-accessor collision check
+    // (spec §7.3.1). A trait `impl` whose method name equals an existing
+    // field-accessor name of the target type is rejected at impl time,
+    // before the impl enters the symbol table.
+    // =====================================================================
+
+    fn collide_trait_decl(method: &str) -> cranelisp_types::TraitDecl {
+        use cranelisp_types::{TraitDecl, TraitMethodSig};
+        TraitDecl {
+            name: TraitName::from("HasV"),
+            type_params: vec![Symbol::from("Self")],
+            methods: vec![TraitMethodSig {
+                name: Symbol::from(method),
+                docstring: None,
+                params: vec![(Symbol::from("x"), cranelisp_types::TypeExpr::SelfType)],
+                ret_type: cranelisp_types::TypeExpr::Named(
+                    cranelisp_types::TypeRef::new(None, TypeName::from("Int")),
+                ),
+                span: Span::SYNTHETIC,
+                hkt_param_index: None,
+                default_body: None,
+            }],
+            visibility: Visibility::Public,
+            docstring: None,
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    fn collide_impl(target: &str, method: &str) -> cranelisp_types::TraitImpl {
+        use cranelisp_types::{Defn, DefnVariant, TraitImpl, TraitRef, TypeExpr, TypeRef};
+        TraitImpl {
+            trait_name: TraitRef::new(None, TraitName::from("HasV")),
+            target: TypeExpr::Named(TypeRef::new(None, TypeName::from(target))),
+            type_constraints: vec![],
+            methods: vec![Defn {
+                name: Symbol::from(method),
+                docstring: None,
+                variants: vec![DefnVariant {
+                    params: vec![(Symbol::from("x"), None)],
+                    body: Expr::IntLit { value: 99, span: Span::SYNTHETIC, inferred_type: None },
+                    span: Span::SYNTHETIC,
+                }],
+                visibility: Visibility::Public,
+                span: Span::SYNTHETIC,
+            }],
+            span: Span::SYNTHETIC,
+        }
+    }
+
+    // spec: 07-traits §7.3.1 — NEGATIVE (the load-bearing _neg): an impl method
+    // `v` colliding with `Box`'s field accessor `v` is rejected at impl time,
+    // with a diagnostic naming the collision, and produces NO symbol-table side
+    // effect (no TraitImpl entry, no mangled method Def).
+    #[test]
+    fn impl_method_colliding_with_field_accessor_rejected() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        tc.register_trait_decl_self(&collide_trait_decl("v")).unwrap();
+
+        let err = tc
+            .register_trait_impl_self(&collide_impl("Box", "v"))
+            .expect_err("a colliding impl method `v` must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("collides with the field accessor") && msg.contains("v"),
+            "the diagnostic must name the collision and the colliding name; got {msg}"
+        );
+
+        // Structural rejection (Principle 18): no TraitImpl entry, no mangled
+        // method Def landed for the rejected impl.
+        assert!(
+            !tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")),
+            "the rejected impl MUST NOT register a TraitImpl entry"
+        );
+        // The bare `v` accessor is untouched (still the concrete accessor).
+        assert!(matches!(
+            tc.symbol_table().get("v"),
+            Some(ModuleEntry::Def { .. })
+        ));
+    }
+
+    // spec: 07-traits §7.3.1 — POSITIVE: a non-colliding impl method (`show`
+    // != field `v`) registers normally.
+    #[test]
+    fn impl_method_not_colliding_registers() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        tc.register_trait_decl_self(&collide_trait_decl("show")).unwrap();
+
+        tc.register_trait_impl_self(&collide_impl("Box", "show"))
+            .expect("a non-colliding impl method must register");
+        assert!(tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
+    }
+
+    // spec: 07-traits §7.3.1 — POSITIVE (primitive target): `Int` has no field
+    // accessors, so the collision set is empty and the impl registers.
+    #[test]
+    fn impl_on_primitive_target_unaffected_by_collision_check() {
+        let mut tc = tc_with_prims_for_collision();
+        tc.register_trait_decl_self(&collide_trait_decl("v")).unwrap();
+
+        tc.register_trait_impl_self(&collide_impl("Int", "v"))
+            .expect("Int has no field accessors — `v` impl method must register");
+        assert!(tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Int")));
+    }
+
+    /// Fixture for the primitive-target collision test: scalar imports plus the
+    /// Ring 0 primitives the impl body (`99`) and trait decl need. `Int`/`Bool`
+    /// type names are in scope via `tf_with_scalar_imports`.
+    fn tc_with_prims_for_collision() -> TestFixture {
+        tf_with_scalar_imports()
+    }
+
+    // spec: 07-traits §7.3.1 — NEGATIVE (parameterized target): the collision
+    // check resolves a polymorphic `(Box a)` target's FQTypeName the same way,
+    // so an impl method `v` on `Box` is rejected for the poly product too.
+    #[test]
+    fn impl_method_colliding_on_polymorphic_target_rejected() {
+        let mut tc = tf_with_scalar_imports();
+        register_poly_box(&mut tc);
+        tc.register_trait_decl_self(&collide_trait_decl("v")).unwrap();
+
+        let err = tc
+            .register_trait_impl_self(&collide_impl("Box", "v"))
+            .expect_err("a colliding impl method `v` on (Box a) must be rejected");
+        assert!(format!("{err}").contains("collides with the field accessor"));
+        assert!(!tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
+    }
+
+    // spec: 07-traits §7.3.1 (FIXME 0366 cross-cluster) — NEGATIVE: a field `v`
+    // deftype'd in one cluster and a colliding impl in a LATER cluster is still
+    // rejected, because `field_accessor_names_of` reads the committed-live union
+    // view (the qualified `Box.v` accessor survives the cluster boundary).
+    #[test]
+    fn impl_method_colliding_cross_cluster_rejected() {
+        let mut tc = tf_with_scalar_imports();
+        // Cluster 1: deftype Box (registers accessor `v` + `Box.v`).
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        // Cluster boundary: fresh per-CheckState accessor tracking. The live
+        // accessor entries persist.
+        new_cluster(&mut tc);
+        tc.register_trait_decl_self(&collide_trait_decl("v")).unwrap();
+        // Cluster 2: the colliding impl — rejected via the committed-live view.
+        let err = tc
+            .register_trait_impl_self(&collide_impl("Box", "v"))
+            .expect_err("cross-cluster colliding impl `v` must be rejected");
+        assert!(format!("{err}").contains("collides with the field accessor"));
+        assert!(!tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
+    }
+
+    // spec: 07-traits §7.3.1 (§2.6 poisoned case) — NEGATIVE: when bare `v` is
+    // poisoned by a cross-type duplicate field (`Box`/`Cup`), the field name `v`
+    // is still recognised as a field accessor of `Box`, so an impl method `v`
+    // for `Box` is rejected (the qualified `Box.v` accessor + the owner map both
+    // contribute the bare name).
+    #[test]
+    fn impl_method_colliding_with_poisoned_accessor_rejected() {
+        let mut tc = tf_with_scalar_imports();
+        tc.register_type_def_self(
+            &TypeName::from("Box"),
+            &None,
+            &[],
+            &[product_int_field("Box", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        tc.register_type_def_self(
+            &TypeName::from("Cup"),
+            &None,
+            &[],
+            &[product_int_field("Cup", "v")],
+            Visibility::Public,
+            Span::SYNTHETIC,
+        )
+        .unwrap();
+        // Bare `v` is poisoned now.
+        assert!(matches!(
+            tc.symbol_table().get("v"),
+            Some(ModuleEntry::Ambiguous { .. })
+        ));
+        tc.register_trait_decl_self(&collide_trait_decl("v")).unwrap();
+        let err = tc
+            .register_trait_impl_self(&collide_impl("Box", "v"))
+            .expect_err("impl `v` colliding with a poisoned accessor must be rejected");
+        assert!(format!("{err}").contains("collides with the field accessor"));
+        assert!(!tc.has_impl(&TraitName::from("HasV"), &TypeName::from("Box")));
     }
 
     // spec: 06-pattern-matching §6.5.1 — all constructors covered passes exhaustiveness

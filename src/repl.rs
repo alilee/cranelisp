@@ -28,6 +28,14 @@ use crate::session_v4::{
 };
 use crate::worker::ModuleCompiler;
 
+/// Bounded wait for the importable-symbol burn-down to drain before a
+/// `/search` serves results (§25.5 — small projects index promptly; a large
+/// reachable set times out and serves partial results + the progress note).
+const SEARCH_INDEX_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Poll interval while waiting on the `/search` index settle.
+const SEARCH_INDEX_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
 // ---------------------------------------------------------------------------
 // Slash command types + top-level display free functions (relocated)
 // ---------------------------------------------------------------------------
@@ -88,6 +96,12 @@ pub(crate) enum ReplCommand<'a> {
     /// "agent not built in". Human-invoked debug only — NOT in the pull allowlist
     /// (it writes a file; the agent can never issue it).
     Context(&'a str),
+    /// `/search <query>` — Pillar-3 importable-symbol search (repl/spec.md
+    /// §17.19, agent.md §25). A NORMAL default-build session facility (NOT
+    /// agent-gated): searches symbols reachable-but-unimported (lib-path ∪
+    /// project-root) by name OR scheme, exact OR partial. Also reached by the
+    /// agent via the ordinary read-only pull (`src/agent/pull.rs` ALLOWLIST).
+    Search(&'a str),
     Unknown(&'a str),
 }
 
@@ -135,6 +149,7 @@ pub(crate) fn parse_slash_command(input: &str) -> Option<ReplCommand<'_>> {
         "/tests-for" => ReplCommand::TestsFor(arg),
         "/syntax" => ReplCommand::Syntax(arg),
         "/context" => ReplCommand::Context(arg),
+        "/search" => ReplCommand::Search(arg),
         _ => ReplCommand::Unknown(cmd),
     })
 }
@@ -166,6 +181,7 @@ pub(crate) fn print_help(stdout: &mut impl Write) {
     let _ = writeln!(stdout, "  /refs NAME          List definitions whose body references NAME");
     let _ = writeln!(stdout, "  /tests-for NAME     List test functions that reference NAME");
     let _ = writeln!(stdout, "  /syntax [TOPIC]     Core-language syntax cheat-sheet (bare lists topics)");
+    let _ = writeln!(stdout, "  /search QUERY       Find an importable symbol by name or type signature");
     let _ = writeln!(stdout, "  /ask <text>         Ask the embedded agent (if built in)");
     let _ = writeln!(stdout, "  /context <path>     Dump the assembled agent request to a file (debug; if built in)");
     let _ = writeln!(stdout, "  /reset              Clear all state and reload prelude");
@@ -573,6 +589,9 @@ impl CompilerSession {
                     )
                 }
             }
+            ReplCommand::Search(query) => {
+                CommandResult::Final(self.handle_search(query))
+            }
             ReplCommand::Unknown(cmd) => {
                 CommandResult::Final(format!(
                     "error: unknown command '{cmd}'. Type /help for available commands."
@@ -749,6 +768,13 @@ impl CompilerSession {
         let mut macros = Vec::new();
 
         for (name, entry) in table_ref.symbols.iter() {
+            // §3.3: internal compiler artifacts are not user definitions —
+            // `$`-mangled names and the synthetic `__expr` top-level-expression
+            // wrapper are excluded (shared predicate so the filter cannot drift
+            // from the synthesis site).
+            if crate::worker::is_internal_listing_name(name.as_ref()) {
+                continue;
+            }
             match entry {
                 ModuleEntry::Def { kind, .. } => match kind.as_ref() {
                     DefKind::Macro { .. } => macros.push(name.to_string()),
@@ -904,6 +930,162 @@ impl CompilerSession {
         let mut out = format!("; tests referencing {sym}\n");
         out.push_str(&format_symbol_layout(&referers).join("\n"));
         out
+    }
+
+    /// `/search <query>` handler — Pillar-3 importable-symbol search
+    /// (repl/spec.md §17.19, design/int/agent.md §25). A NORMAL default-build
+    /// command (NOT agent-gated). Searches the importable-symbol indices (built
+    /// by the nice-worker burn-down over reachable-but-unimported modules) by
+    /// name OR scheme, exact OR partial, and renders the four-facet result row
+    /// (name + `:Type` signature + originating module + the `(import …)` form).
+    ///
+    /// Name-vs-scheme is distinguished by a leading `(Fn` / `(` (a type-shape
+    /// query → Index B) or a bare fragment (→ Index A) — at implementation
+    /// discretion (§25.6 / spec §17.19.1); both indices are searchable. A query
+    /// landing before the burn-down completes serves partial results + an
+    /// "indexing N modules…" note (§25.5 / spec §17.19.3).
+    pub(crate) fn handle_search(&self, query: &str) -> String {
+        let query = query.trim();
+        if query.is_empty() {
+            return "Usage: /search <name-or-scheme>".to_string();
+        }
+
+        // Wait (bounded) for the burn-down to drain so results are complete for
+        // the common small-project case (§25.5 — "for a small fixture the
+        // burn-down completes promptly"). If the wait times out (a large
+        // reachable set), serve partial results + the "indexing N modules…"
+        // note below (spec §17.19.3) rather than blocking the prompt
+        // indefinitely. The index is armed at REPL startup (R17), so this is a
+        // join on in-flight warm-up, not a trigger.
+        self.wait_for_index_settled(SEARCH_INDEX_SETTLE_TIMEOUT);
+
+        // Distinguish a scheme query (a leading `(` — `(Fn …)`, `(Vec Int)`)
+        // from a name query (a bare fragment, possibly FQ-leaf like
+        // `primitives/Int`). A bare FQ type-leaf (`primitives/Int`) is treated
+        // as a SCHEME query so structural-contains matches schemes mentioning
+        // that type (spec §17.19.1 example). Heuristic: if it parses as a type
+        // expression that resolves to a real `Type`, search Index B; otherwise
+        // fall back to a name (Index A) search.
+        let scheme_hits = self.try_search_by_scheme(query);
+        let hits = match scheme_hits {
+            Some(h) => h,
+            None => self.shared.importable_indices.search_by_name(query),
+        };
+
+        // Filter out symbols already resident in the current session — `/search`
+        // covers what is importable-but-not-yet-in-scope (spec §17.19; the
+        // `_neg` already-imported guard). A name that resolves in the current
+        // module to the SAME originating module is already imported.
+        let current = self.current_module_path();
+        let mut rows: Vec<crate::session_v4::index_worker::SearchHit> = hits
+            .into_iter()
+            .filter(|h| !self.is_already_in_scope(&h.name, &h.module, &current))
+            .collect();
+
+        // Dedup identical (name, module) rows (a symbol may appear once per
+        // index entry); sort for deterministic output.
+        rows.sort_by(|a, b| {
+            (a.module.as_ref(), a.name.as_ref()).cmp(&(b.module.as_ref(), b.name.as_ref()))
+        });
+        rows.dedup_by(|a, b| a.name == b.name && a.module == b.module);
+
+        // Progress note when the burn-down is still in flight (spec §17.19.3).
+        let pending = self.shared.importable_indices.pending_count();
+        let note = if pending > 0 {
+            format!("\n; indexing {pending} module(s)… (results may be incomplete)")
+        } else {
+            String::new()
+        };
+
+        if rows.is_empty() {
+            return format!("; no importable symbols matched '{query}'{note}");
+        }
+
+        let mut out = String::new();
+        for hit in &rows {
+            let sig = crate::display::format_type_qualified(&hit.scheme);
+            // Four facets (spec §17.19.2): name, :Type signature, module, import.
+            out.push_str(&format!(
+                ":{sig} {name}\n  in {module}   — (import [{module} [{name}]])\n",
+                sig = sig,
+                name = hit.name.as_ref(),
+                module = hit.module.as_ref(),
+            ));
+        }
+        out.push_str(note.trim_start_matches('\n'));
+        while out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    }
+
+    /// Bounded wait for the importable-symbol burn-down to drain (pending → 0).
+    /// Polls the worklist count; returns early when settled or when `timeout`
+    /// elapses (then `/search` serves partial results + the progress note). A
+    /// no-op when the index was never armed (batch mode — but `/search` is a
+    /// REPL command, so this only runs in REPL).
+    fn wait_for_index_settled(&self, timeout: std::time::Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        while self.shared.importable_indices.pending_count() > 0 {
+            if std::time::Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(SEARCH_INDEX_SETTLE_POLL);
+        }
+    }
+
+    /// Try to parse `query` as a type-scheme and search Index B (exact OR
+    /// partial). Returns `None` if the query does not parse/resolve as a type
+    /// (→ the caller does a name search instead).
+    fn try_search_by_scheme(
+        &self,
+        query: &str,
+    ) -> Option<Vec<crate::session_v4::index_worker::SearchHit>> {
+        // Only attempt a scheme parse for a query that looks like a type: a
+        // leading `(` (a compound type form) or an FQ type-leaf (`mod/Type`).
+        let looks_like_type = query.starts_with('(') || query.contains('/');
+        if !looks_like_type {
+            return None;
+        }
+        let expr = cranelisp_frontend::parse_type_expr(query).ok()?;
+        let module = self.current_module_path();
+        let mut ctx =
+            cranelisp_typecheck::SymbolTableAccess::live(&self.shared.symbol_tables, module.clone());
+        let ty = cranelisp_typecheck::check_type_expr(
+            &expr,
+            &mut ctx,
+            &self.shared.symbol_tables,
+            &self.shared.module_aliases,
+            &self.shared.prelude_fallback,
+            &module,
+            Span::SYNTHETIC,
+        )
+        .ok()?;
+        Some(self.shared.importable_indices.search_by_scheme(&ty))
+    }
+
+    /// Whether `name` (from originating `module`) is ALREADY in scope in
+    /// `current` — i.e. already imported (resolves locally and chains to the
+    /// same originating module) or natively defined there. Such a symbol is
+    /// resident, not reachable-but-unimported, so `/search` must not re-offer it
+    /// with an `(import …)` form (spec §17.19 — the already-imported `_neg`).
+    fn is_already_in_scope(
+        &self,
+        name: &Symbol,
+        module: &ModuleFullPath,
+        current: &ModuleFullPath,
+    ) -> bool {
+        // A symbol defined natively in / imported into the current module:
+        // resolve it locally; if it resolves to the SAME originating module it
+        // is already in scope.
+        if current == module {
+            return true;
+        }
+        match self.lookup_with_prelude_fallback(name.as_ref()) {
+            Some((ModuleEntry::Import { source, .. }, _)) => &source.module == module,
+            Some((_, resolved_module)) => &resolved_module == module,
+            None => false,
+        }
     }
 
     /// Whether `sym` (a bare name) is bound anywhere in the live session —
@@ -1446,7 +1628,11 @@ impl CompilerSession {
                 continue;
             }
             let name = sym.to_string();
-            if name.contains('$') {
+            // §3.3: exclude `$`-mangled internal names and the synthetic
+            // `__expr` top-level-expression wrapper (the wrapper is
+            // `Visibility::Public`, so the `is_public()` gate above does not
+            // catch it) — shared predicate, single source with the synthesis.
+            if crate::worker::is_internal_listing_name(&name) {
                 continue;
             }
             if !prefix_filter.is_empty()

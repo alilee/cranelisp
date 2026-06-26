@@ -1082,3 +1082,89 @@ pub(super) fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
     }
     false
 }
+
+// ---------------------------------------------------------------------------
+// FIXME 0423 — `(mod …)` extraction write path is lib-dir-relative, not CWD.
+// The source fix landed S88 (commit 5833bd1); this is the owed `/dev`
+// acceptance unit test (design/int/session-persistence.md §10.3).
+// spec: 08-modules.md §8.2.2
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod inline_mod_write_tests {
+    use super::*;
+    use cranelisp_types::ModuleName;
+
+    fn body() -> Vec<Sexp> {
+        // A trivial body sexp: `(defn helper [] 1)` is not needed — any sexp
+        // round-trips through Display; use a single symbol for simplicity.
+        vec![Sexp::Symbol("placeholder".to_string(), Span::SYNTHETIC)]
+    }
+
+    // The backing file lands beside the PARENT module's on-disk file (under the
+    // lib dir), and NO stray file is created under project_root (the CWD-relative
+    // regression guard).
+    #[test]
+    fn writes_relative_to_lib_dir_parent_not_cwd() {
+        // lib dir holds the parent module `accum` → lib/accum.cl.
+        let lib_td = tempfile::tempdir().unwrap();
+        let lib_dir = lib_td.path().to_path_buf();
+        std::fs::write(lib_dir.join("accum.cl"), "(defn seed [] 0)\n").unwrap();
+
+        // project_root is a DIFFERENT tmpdir (the CWD analogue).
+        let proj_td = tempfile::tempdir().unwrap();
+        let project_root = proj_td.path();
+
+        let parent = ModuleFullPath::from("accum");
+        let name = ModuleName::from("test");
+        write_inline_mod_to_disk(&parent, &name, &body(), project_root, std::slice::from_ref(&lib_dir))
+            .expect("write_inline_mod_to_disk");
+
+        // (a) backing file beside the parent, under the lib dir.
+        let expected = lib_dir.join("accum").join("test.cl");
+        assert!(
+            expected.is_file(),
+            "backing file must land at {{lib_dir}}/accum/test.cl; not found at {}",
+            expected.display()
+        );
+
+        // (b) NO stray file under project_root (the CWD-relative bug guard).
+        let stray = project_root.join("accum").join("test.cl");
+        assert!(
+            !stray.exists(),
+            "no stray file may be created under project_root; found {}",
+            stray.display()
+        );
+        assert!(
+            !project_root.join("accum").exists(),
+            "no stray accum/ tree may be created under project_root"
+        );
+    }
+
+    // Recognize-existing: an extraction-stable backing file already on disk is a
+    // no-op (Ok(())) and is left byte-identical (not rewritten). FIXME 0423 pt 2.
+    #[test]
+    fn recognizes_existing_backing_file_no_op() {
+        let lib_td = tempfile::tempdir().unwrap();
+        let lib_dir = lib_td.path().to_path_buf();
+        std::fs::write(lib_dir.join("accum.cl"), "(defn seed [] 0)\n").unwrap();
+
+        // Pre-create an extraction-stable backing file with canonical content.
+        let mod_dir = lib_dir.join("accum");
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        let backing = mod_dir.join("test.cl");
+        let canonical = "(defn canonical [] 42)\n";
+        std::fs::write(&backing, canonical).unwrap();
+
+        let proj_td = tempfile::tempdir().unwrap();
+        let parent = ModuleFullPath::from("accum");
+        let name = ModuleName::from("test");
+        write_inline_mod_to_disk(&parent, &name, &body(), proj_td.path(), std::slice::from_ref(&lib_dir))
+            .expect("no-op write");
+
+        let after = std::fs::read_to_string(&backing).unwrap();
+        assert_eq!(
+            after, canonical,
+            "an existing extraction-stable backing file must be left byte-identical"
+        );
+    }
+}

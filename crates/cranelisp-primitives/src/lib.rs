@@ -340,7 +340,8 @@ fn insert_vec_query_entries(
 fn extern_shims() -> HashMap<&'static str, *const u8> {
     let mut m: HashMap<&'static str, *const u8> = HashMap::new();
 
-    // Ring 0 — arithmetic/comparison/boolean (23 entries; includes `not`).
+    // Ring 0 — arithmetic/comparison/boolean (23 entries; includes `not`)
+    // plus the 7 bitwise ops (FIXME 0416, S91) registered below.
     m.insert("add-i64", ring0::add_i64 as *const u8);
     m.insert("sub-i64", ring0::sub_i64 as *const u8);
     m.insert("mul-i64", ring0::mul_i64 as *const u8);
@@ -364,6 +365,15 @@ fn extern_shims() -> HashMap<&'static str, *const u8> {
     m.insert("not", ring0::not as *const u8);
     m.insert("eq-bool", ring0::eq_bool as *const u8);
     m.insert("neq-bool", ring0::neq_bool as *const u8);
+
+    // Bitwise integer operations (FIXME 0416, S91).
+    m.insert("bit-and", ring0::bit_and as *const u8);
+    m.insert("bit-or", ring0::bit_or as *const u8);
+    m.insert("bit-xor", ring0::bit_xor as *const u8);
+    m.insert("bit-not", ring0::bit_not as *const u8);
+    m.insert("shl", ring0::shl as *const u8);
+    m.insert("shr", ring0::shr as *const u8);
+    m.insert("popcount", ring0::popcount as *const u8);
 
     // Int — int-to-string, parse-int.
     m.insert("int-to-string", int::int_to_string as *const u8);

@@ -73,6 +73,24 @@ Inline primitives compile to inline Cranelift IR instructions — no function ca
 | `le-f64` | Less than or equal | [Tested tests/spec_appendix_a_builtins::primitive_lt_f64]
 | `ge-f64` | Greater than or equal | [Tested tests/spec_appendix_a_builtins::primitive_lt_f64]
 
+**Bitwise integer operations** (FIXME 0416, added S91) — operate on the full 64-bit two's-complement representation of `Int` (§A.1: signed 64-bit). [Tested tests/spec_appendix_a_bitwise::bitwise_run_through_all_modes]
+
+| Function | Type | Description |
+|---|---|---|
+| `bit-and` | `(Fn [Int Int] Int)` | Bitwise AND (CLIF `band`) | [Tested tests/spec_appendix_a_bitwise::bit_and_basic_and_edge]
+| `bit-or` | `(Fn [Int Int] Int)` | Bitwise OR (CLIF `bor`) | [Tested tests/spec_appendix_a_bitwise::bit_or_basic_and_edge]
+| `bit-xor` | `(Fn [Int Int] Int)` | Bitwise XOR (CLIF `bxor`) | [Tested tests/spec_appendix_a_bitwise::bit_xor_basic_and_edge]
+| `bit-not` | `(Fn [Int] Int)` | Bitwise complement over the full 64-bit two's-complement representation; `(bit-not x)` = `(- (- x) 1)` (CLIF `bnot`) | [Tested tests/spec_appendix_a_bitwise::bit_not_full_width_twos_complement]
+| `shl` | `(Fn [Int Int] Int)` | Left shift; vacated low bits are zero-filled (CLIF `ishl`) | [Tested tests/spec_appendix_a_bitwise::shl_zero_fill_and_sign_bit]
+| `shr` | `(Fn [Int Int] Int)` | Right shift; semantics determined by the operand type — for the current signed `Int`, **arithmetic** (the sign bit is replicated into vacated high bits; CLIF `sshr`). Clojure `bit-shift-right`. | [Tested tests/spec_appendix_a_bitwise::shr_arithmetic_signed_int]
+| `popcount` | `(Fn [Int] Int)` | Population count — number of set bits in the 64-bit representation (CLIF `popcnt`) | [Tested tests/spec_appendix_a_bitwise::popcount_basic_and_full_width]
+
+**Normative semantics (FIXME 0416):**
+- **Int width.** All bitwise operations act on `Int` as a 64-bit two's-complement value (the language `Int` is signed 64-bit, §A.1). `bit-not` complements all 64 bits; `popcount` counts set bits across all 64.
+- **Shift count.** The shift amount is taken modulo 64 (Cranelift's `ishl`/`sshr` mask the count to the operand width). Shift counts are not otherwise range-checked. [Tested tests/spec_appendix_a_bitwise::shift_count_mod_64]
+- **`shr` right-shift semantics.** A single `shr` is provided; its behaviour is **defined by the operand type**, not baked into the operator name. On the current signed `Int`, `shr` is **arithmetic** (sign-extending; lowers to `sshr`). Per-type right-shift semantics are defined when other integer types are introduced. `shl` left-shift fills zeros regardless of sign.
+- These are **inline primitives** — each lowers 1:1 to its named CLIF op with no call overhead. They register exactly as `add-i64` does (a `primitives`-module `DefKind::Primitive` entry); the Clojure-aligned convenience names (`bit-shift-left`, `bit-shift-right`, `bit-test`, `bit-set`, `bit-clear`, …) are NON-normative standard-library wrappers (see [Section 11](11-stdlib.md)), not part of the primitive surface.
+
 **Boolean** — `(Fn [Bool] Bool)`:
 
 | Function | Description |

@@ -32,6 +32,14 @@ use super::{
     SymbolInfo, TestRunnerState,
 };
 
+/// Pillar-3 (S91): bounded grace period at shutdown for the in-flight
+/// importable-symbol burn-down to drain (best-effort, never a correctness
+/// gate). Keeps shutdown prompt for a large reachable set.
+const SHUTDOWN_INDEX_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Poll interval while waiting on the shutdown burn-down settle.
+const SHUTDOWN_INDEX_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(5);
+
 impl CompilerSession {
     /// Create a new compiler session (pipeline-v4.md §5).
     ///
@@ -56,7 +64,7 @@ impl CompilerSession {
         let lib_dirs = crate::session_setup::assemble_lib_dirs(&project_root);
 
         // Platform dirs: extra search locations from env var (§8.11.5).
-        let platform_dirs = crate::session_setup::assemble_platform_dirs();
+        let platform_dirs = crate::session_setup::assemble_platform_dirs(&project_root);
 
         let object_cache = Self::build_object_cache(&settings, &project_root);
 
@@ -135,6 +143,18 @@ impl CompilerSession {
             enabled,
             auto_accept,
         ));
+    }
+
+    /// Arm the Pillar-3 importable-symbol burn-down (S91, `agent.md §25.5`).
+    /// REPL-only by construction (R17): `main.rs` calls this from the REPL arm
+    /// ONLY. Enumerates the reachable set (lib-path ∪ project-root) onto the
+    /// `IndexModule` worklist and wakes the nice workers, which drain it BEHIND
+    /// object codegen (index warm-up in the slack). Idempotent. In
+    /// `--run`/`--link`/`--release` this is never called, so the worklist is
+    /// never enumerated and no index-driven `.meta` write ever fires
+    /// (batch-mode-inert, R9).
+    pub fn arm_importable_index(&self) {
+        crate::session_v4::index_worker::arm_burndown(&self.shared);
     }
 
     /// `new` phase (S87 §3.2): build the on-disk `ObjectCache` facade.
@@ -292,6 +312,10 @@ impl CompilerSession {
             // under `RunMode::Repl`, `None` in `--run`/`--link` (no allocation
             // in batch). Same `run_mode` carrier that gates population (D1 §4).
             introspection: run_mode.populates_introspection().then(dashmap::DashMap::new),
+            // Pillar-3 indices start empty + unarmed; the burn-down is armed at
+            // REPL startup only (R17 — REPL-only by construction). In
+            // `--run`/`--link`/`--release` the worklist is never enumerated.
+            importable_indices: crate::session_v4::ImportableIndices::default(),
             run_mode,
             test_runner_state,
         });
@@ -657,6 +681,13 @@ impl CompilerSession {
         let mut out = Vec::new();
         if let Some(table) = self.shared.symbol_tables.get(&current) {
             for (name, entry) in table.all_symbols() {
+                // Skip internal compiler artifacts — `$`-mangled overload/mono
+                // names and the synthetic `__expr` top-level-expression wrapper
+                // are not user definitions (repl/spec.md §3.3; shared predicate
+                // with `handle_list` / `/exports` / the harvest).
+                if crate::worker::is_internal_listing_name(name.as_ref()) {
+                    continue;
+                }
                 // Skip imports / reexports + special forms — those are surfaced
                 // by `/imports` separately.
                 let (category, scheme, docstring) = match entry {
@@ -1366,6 +1397,36 @@ impl CompilerSession {
     /// for tests that never call `shutdown()` explicitly.
     /// Sprint 57 Wave 4 G9 per `persistent-workers.md` §5.2.
     pub fn shutdown(&mut self) {
+        // S91 Pillar 3 — bounded settle for the importable-symbol burn-down
+        // (REPL only; the index is armed only in REPL, R17). Give the in-flight
+        // burn-down a BRIEF chance to finish so a short interactive (or piped)
+        // session over a small reachable set still warms the index `.meta`s
+        // (§25.5 "the small burn-down completes promptly"). This is a bounded
+        // best-effort grace period, NOT a drain-to-completion correctness gate:
+        // R18 (abandon-on-shutdown) holds — atomic `.meta` writes mean a
+        // timeout leaves at worst some modules unindexed (re-derived next
+        // session), never a corrupt `.meta`. The cap keeps shutdown prompt for a
+        // large reachable set (the worklist is simply abandoned).
+        if self.shared.run_mode.is_repl() && self.shared.importable_indices.is_armed() {
+            // Un-promote the nice workers for the settle: `wait_object_complete`
+            // (the pre-shutdown caller) may have set `promote_nice_workers`,
+            // which makes the nice-worker loop object-codegen-scoped (it skips
+            // index work while promoted, R18 abandon-on-flush). Clearing it +
+            // waking the workers lets the in-flight burn-down drain in the grace
+            // window. (Object codegen is already complete by this point — the
+            // REPL loop ran `wait_object_complete`.)
+            self.shared
+                .promote_nice_workers
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            self.shared.scheduler.wake_object_workers();
+            let deadline = std::time::Instant::now() + SHUTDOWN_INDEX_SETTLE_TIMEOUT;
+            while self.shared.importable_indices.pending_count() > 0 {
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(SHUTDOWN_INDEX_SETTLE_POLL);
+            }
+        }
         self.shared.scheduler.shutdown();
         // Sprint 67 Cluster B sub-fire 2a/2b: join routing migrated through
         // `WorkerPool::shutdown` (the facade method-surface landing). The
@@ -1373,6 +1434,18 @@ impl CompilerSession {
         // is the load-bearing entry point — S68 may reshape internals
         // freely without changing this call site.
         self.worker_pool.shutdown();
+    }
+
+    /// Scaffold a default `{project_root}/Cranelisp.toml` if one does not
+    /// already exist (S91 FIXME 0410). REPL-only convenience: the caller
+    /// (`main.rs` REPL arm, gated on the §0.5 rule-3 directory target) renders
+    /// the `[created Cranelisp.toml]` notice from an `Ok(true)` return.
+    ///
+    /// Delegates to `session_setup::scaffold_project_config` against this
+    /// session's own resolved `project_root` — never overwrites, atomic,
+    /// graceful on a read-only dir, resolution-neutral (every key commented).
+    pub fn scaffold_project_config(&self) -> std::io::Result<bool> {
+        crate::session_setup::scaffold_project_config(&self.shared.project_root)
     }
 
     /// §3.1: Register entry module by name. Session resolves the source

@@ -77,6 +77,10 @@ const ALLOWLIST: &[(&str, &str)] = &[
         "syntax",
         "Show core-language syntax: bare for topics, syntax <topic> for detail",
     ),
+    (
+        "search",
+        "Find an importable-but-unimported symbol by name or type: search <name-or-scheme>",
+    ),
 ];
 
 /// The tool definitions offered to the model in every request (§4.2, §6.1).

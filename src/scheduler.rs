@@ -1025,6 +1025,50 @@ impl CompileScheduler {
         }
     }
 
+    /// Non-blocking object-codegen claim (S91 — the nice-worker index
+    /// interleave). Returns a claimed TypecheckDone module needing object
+    /// codegen, or `None` immediately if there is none (NEVER parks). Used by
+    /// the nice-worker loop to prefer object codegen, then fall to index work
+    /// when no object work is pending (object codegen first, index in the slack
+    /// — `design/int/agent.md §25.5` / R17). Returns `None` on shutdown.
+    pub fn try_take_object_codegen(&self) -> Option<ModuleFullPath> {
+        let mut state = self.lock();
+        if state.shutdown {
+            return None;
+        }
+        let found = state.typecheck_done.iter().find_map(|module| {
+            state
+                .modules
+                .get(module)
+                .filter(|ms| !ms.object_done && !ms.object_working)
+                .map(|_| module.clone())
+        });
+        if let Some(module) = found {
+            if let Some(ms) = state.modules.get_mut(&module) {
+                ms.object_working = true;
+            }
+            return Some(module);
+        }
+        None
+    }
+
+    /// Park a nice worker until object-codegen work, index work, or shutdown may
+    /// be available (S91 — the index interleave). Parks on the
+    /// `object_work_available` condvar (woken by `register_module*`,
+    /// `wake_object_workers`, the index-enqueue wake, and `shutdown`). Returns
+    /// `false` on shutdown (the worker should exit), `true` otherwise (re-scan).
+    pub fn park_nice_worker(&self) -> bool {
+        let state = self.lock();
+        if state.shutdown {
+            return false;
+        }
+        let state = self
+            .object_work_available
+            .wait(state)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !state.shutdown
+    }
+
     /// Object codegen for a module is complete (.o written).
     /// Clears `object_working`, sets `object_done`. If completion
     /// condition is met, moves to Complete.

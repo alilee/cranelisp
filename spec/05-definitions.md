@@ -184,19 +184,21 @@ An optional docstring MAY appear after the type head (before the body) and after
   (Some "Wraps a present value" [:a val]))
 ```
 
-### 5.2.6 Generated Accessors [Tested tests/spec_05_definitions::generated_field_accessor_resolves_as_free_callable, tests/spec_05_definitions::accessor_cross_type_duplicate_field_name]
+### 5.2.6 Generated Accessors [Tested+Neg tests/spec_05_definitions::generated_field_accessor_resolves_as_free_callable, tests/spec_05_definitions::accessor_cross_type_duplicate_field_name, tests/spec_field_accessor::bare_alias_resolves_when_field_unique, tests/spec_field_accessor::bare_alias_and_canonical_dispatch_equivalently, tests/spec_field_accessor::bare_alias_ambiguous_canonical_both_work]
 
-For each named field in a type definition, an accessor function is automatically generated in the enclosing scope. The accessor's name is the field name.
+For each named field in a type definition, an accessor function is automatically generated. **The canonical name of the accessor is the dotted form `Type.field`** — e.g. `Box.v`, `Point.x` — always available wherever `Type` is in bare scope (§8.5.2). This mirrors the language's qualified-display convention used everywhere else (`:primitives/Int`, `:(Fn [a] a) user/id`): the fully-qualified `Type.field` is the primary, displayed/reported name of the accessor (FIXME 0365/0439, settled S91).
+
+The **bare field name** (`v`, `x`) is a **convenience alias** to the canonical accessor. It resolves to `Type.field` when exactly one in-scope type owns a field of that name. The bare form is the ordinary way to write an accessor in unambiguous code; it is not a separate function — it is shorthand for the canonical `Type.field`.
 
 **Product type accessors** are total -- they always succeed:
 
 ```clojure
 (deftype Point [:Int x :Int y])
 
-(x (Point 3 4))   ; -> 3
-(y (Point 3 4))   ; -> 4
-;; x :: (Fn [Point] Int)
-;; y :: (Fn [Point] Int)
+(Point.x (Point 3 4))   ; -> 3   (canonical accessor)
+(x (Point 3 4))         ; -> 3   (bare alias — unambiguous here)
+;; Point.x :: (Fn [Point] Int)
+;; Point.y :: (Fn [Point] Int)
 ```
 
 **Sum type accessors** are partial -- they succeed on the matching variant and panic on mismatched variants:
@@ -204,22 +206,24 @@ For each named field in a type definition, an accessor function is automatically
 ```clojure
 (deftype (Option a) None (Some [:a unwrap]))
 
-(unwrap (Some 42))   ; -> 42
-(unwrap None)        ; -> runtime panic
-;; unwrap :: (Fn [(Option a)] a)
+(Option.unwrap (Some 42))   ; -> 42
+(unwrap (Some 42))          ; -> 42  (bare alias)
+(Option.unwrap None)        ; -> runtime panic
+;; Option.unwrap :: (Fn [(Option a)] a)
 ```
 
-Accessor functions are first-class values and can be passed as arguments or bound to variables.
+Accessor functions are first-class values and can be passed as arguments or bound to variables. The canonical `Type.field` form is always first-class; the bare alias is first-class wherever it resolves unambiguously.
 
-**Duplicate field names in the same scope.** Two type definitions in the same module MAY use the same field name (e.g. `(deftype Box [:Int v])` and `(deftype Cup [:Int v])` both generate an accessor named `v`). When this happens, the bare accessor name is **ambiguous** (poisoned) and MUST be treated under the §8.6.5 bare-name ambiguity rule: any use of the bare accessor is a **compile-time error that lists the qualified alternatives**. The compiler MUST NOT silently fold the colliding accessors into a single argument-type-dispatched overload, and MUST NOT silently pick a winner — both are footgun-prone surprises that §8.6.5 exists to prevent.
+**Duplicate field names — the ambiguity lives in the bare alias, not the accessor.** Two type definitions MAY use the same field name (e.g. `(deftype Box [:Int v])` and `(deftype Cup [:Bool v])` both have a field `v`). The two canonical accessors `Box.v` and `Cup.v` are **distinct, always-valid functions** — there is no collision and no "poisoning" at the canonical level. What is contested is the single **bare alias** `v`: when two or more in-scope types own a field named `v`, the bare alias has no unique target, so any use of bare `v` is a **compile-time error that lists the canonical alternatives** (`Box.v`, `Cup.v`) under the §8.6.5 bare-name ambiguity rule. The compiler MUST NOT silently fold the alias into an argument-type-dispatched overload, and MUST NOT silently pick a winner.
 
-The field itself stays reachable:
-- via `match` (§6) — pattern destructuring is unaffected by accessor-name collision and is always available;
-- cross-module, via module-qualified names (§8.5.1) — `m/v` resolves directly, bypassing the ambiguity.
+The field stays reachable in every case — the contest never strands a field:
+- via the canonical accessor `Box.v` / `Cup.v` (§8.5.2) — **always valid**, in both the unique and contested cases, same-module and cross-module. This is the primary form; it is never an "escape hatch" because it is the accessor's real name;
+- via `match` (§6) — pattern destructuring is unaffected by alias contention and is always available;
+- cross-module, via module-qualified names (§8.5.1) — `m/Box.v` (or the bare `m/v` where it resolves) reaches the module's accessor.
 
-A **planned extension** (see `design/arch/fixmes/0365-spec-type-member-accessor-qualification.md`) will extend the `Type.member` dotted syntax (§8.5.2) to also resolve field accessors — e.g. `Box.v` and `Cup.v` — giving a per-type accessor-qualification escape hatch that disambiguates same-module collisions directly. Until that lands, `match` and module-qualification are the means of reaching a poisoned field's value.
+A field accessor can never be shadowed by a same-named trait method: a trait `impl` whose method name collides with an existing field-accessor name of the target type is rejected at impl time (§7.3.1), so the canonical `Type.field` always denotes exactly one thing.
 
-This poisoning is scoped to the colliding name only: accessors whose names are **not** in collision remain unaffected and stay first-class values. An overloaded accessor name has no single first-class denotation (which is the coherence reason it cannot silently become an overload); a non-colliding accessor name still denotes exactly one function and remains passable as an argument or bound to a variable, as above.
+Alias contention is scoped to the colliding bare name only: a bare field name **not** in contention still resolves uniquely to its canonical accessor and remains first-class (passable as an argument or bound to a variable). A contested bare alias has no single denotation (the coherence reason it cannot silently become an overload), but its canonical accessors each do.
 
 ### 5.2.7 Constructor Semantics [Tested tests/spec_05_definitions::deftype_product_constructor_arity_mismatch_neg]
 

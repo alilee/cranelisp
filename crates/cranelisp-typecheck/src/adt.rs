@@ -535,16 +535,30 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let probed = self
             .probe_module_entry_owned(&state.current_module, accessor_name.as_ref());
         let existing_present = probed.is_some();
-        // Structurally classify a COMMITTED (prior-cluster) entry under this name
-        // as a synthesised accessor (FIXME 0366). `CommittedAccessor::Concrete`
-        // carries the owning product type (read off the accessor's `Fn [ADT] _`
-        // scheme + `self$accessor` param marker); `Poisoned` is an already-
-        // ambiguous accessor name (a third colliding type — stays poisoned, no
-        // single owner to read); `None` is a non-accessor / absent entry.
-        let committed = probed
-            .as_ref()
-            .map(committed_accessor_kind)
-            .unwrap_or(CommittedAccessor::NotAccessor);
+        // Structurally classify a COMMITTED (prior-cluster) entry under the bare
+        // name as a synthesised accessor (FIXME 0366). Under the INVERTED model
+        // (§1.6) the bare key is normally an `Import` ALIAS onto the canonical
+        // `Type.field` accessor — so FOLLOW that alias edge to the canonical
+        // `Def` and classify THAT (a bare `Import → m/Box.v` means bare `v` is
+        // already an accessor alias of `Box`, the first owner of a contested
+        // field). `committed_accessor_kind` itself only classifies a `Def`/
+        // `Ambiguous`; the bare-alias follow is added here. `Concrete` carries
+        // the owning product type; `Poisoned` is an already-`Ambiguous` bare name
+        // (third+ colliding type); `NotAccessor` is a genuine non-accessor (user
+        // defn, ctor) or absent entry.
+        let committed = match probed.as_ref() {
+            Some(ModuleEntry::Import { source, .. })
+                if source.module == fqtn.module =>
+            {
+                // Follow the bare alias to its canonical accessor source.
+                self.probe_module_entry_owned(&source.module, source.symbol.as_ref())
+                    .as_ref()
+                    .map(committed_accessor_kind)
+                    .unwrap_or(CommittedAccessor::NotAccessor)
+            }
+            Some(entry) => committed_accessor_kind(entry),
+            None => CommittedAccessor::NotAccessor,
+        };
         // The prior owning type when the committed entry is a single concrete
         // accessor — used to keep the cross-cluster ambiguity hint complete.
         let committed_accessor_owner: Option<FQTypeName> = match &committed {
@@ -577,68 +591,108 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         };
 
+        // Per-type-qualified CANONICAL accessor key (`Box.v`) — the `Type.field`
+        // canonical field accessor (FIXME 0365 Item 1 / spec §8.5.2, INVERTED
+        // model §1.6). `Box.v` is ALWAYS the real, uniformly-Public compiled
+        // accessor `Def`; bare `field` (`v`) is a CONVENIENCE ALIAS onto it.
+        let qualified_key = Symbol::from(format!("{}.{}", fqtn.name, accessor_name).as_str());
+
+        // The CANONICAL accessor `Def` (`Box.v`) is minted UNCONDITIONALLY (in
+        // every arm — fresh, contested, or over a non-accessor bare binding): it
+        // is the real `DefKind::UserFn` with its own GOT slot + body, uniformly
+        // `Visibility::Public`, carrying the `self$accessor` marker so
+        // `committed_accessor_kind` recognises it. One compiled function per
+        // `(type, field)`, keyed `Type.field` (§1.6.1). Because it is always
+        // real, there is NO poison re-mint / reconstruction (the as-built's
+        // `remint_first_accessor_under_qualified_key` + poison-arm `Def`-minting
+        // are DELETED — net deletion, Principle 6).
+        let canonical_slot = self.current_symbol_table_mut(state).allocate_got_slot();
+        let canonical = ModuleEntry::def(
+            scheme,
+            DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: canonical_slot },
+            },
+        )
+        .visibility(Visibility::Public)
+        .param_names(vec![Symbol::from("self$accessor")])
+        .ast(ast)
+        .docstring(format!(
+            "Canonical field accessor `{}.{}` of type `{}`.",
+            fqtn.name, accessor_name, fqtn.name
+        ));
+        self.current_symbol_table_mut(state)
+            .insert(qualified_key.clone(), canonical.build());
+
+        // Track the field's owning type for the bare-alias ambiguity diagnostic.
+        state.synthesised_accessor_names.insert(accessor_name.clone());
+        state
+            .accessor_owning_types
+            .entry(accessor_name.clone())
+            .or_default()
+            .push(fqtn.clone());
+
         match existing_kind {
             None => {
-                // Fresh accessor: a single concrete callable born with its slot.
-                let slot = self.current_symbol_table_mut(state).allocate_got_slot();
-                let builder = ModuleEntry::def(
-                    scheme,
-                    DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: slot },
+                // Bare `field` (`v`) → a CONVENIENCE ALIAS onto the canonical
+                // `Box.v` (§1.6.1). An `ModuleEntry::Import` entry is EXCLUDED
+                // from `defined_symbols()` (no second compiled function) and
+                // carries NO GOT slot of its own; `resolve_got_target`'s
+                // `resolve_chain` FOLLOWS the `Import` edge to the canonical slot
+                // for BOTH call and value-position dispatch, and
+                // `extract_scheme_from_entry_owned` follows it for typing. ZERO
+                // extra compiled function + ZERO extra GOT slot — the alias is
+                // free. When exactly one type owns `field`, the bare alias
+                // resolves cleanly to the canonical accessor.
+                self.current_symbol_table_mut(state).insert(
+                    accessor_name.clone(),
+                    ModuleEntry::Import {
+                        source: cranelisp_types::FQSymbol {
+                            module: fqtn.module.clone(),
+                            symbol: qualified_key.clone(),
+                        },
+                        visibility,
                     },
-                )
-                .visibility(visibility)
-                .param_names(vec![Symbol::from("self$accessor")])
-                .ast(ast)
-                .docstring(format!(
-                    "Field accessor for `{}` of type `{}`.",
-                    accessor_name, fqtn.name
-                ));
-                self.current_symbol_table_mut(state)
-                    .insert(accessor_name.clone(), builder.build());
-                state.synthesised_accessor_names.insert(accessor_name.clone());
-                // Record this name's sole owning type so a later collision can
-                // list all qualified alternatives in the ambiguity error.
-                state
-                    .accessor_owning_types
-                    .entry(accessor_name.clone())
-                    .or_default()
-                    .push(fqtn.clone());
+                );
             }
             Some(AccessorCollision::Accessor) => {
                 // Cross-type duplicate field name (spec §5.2.6 + §8.6.5; user
-                // ruling S83 W2): POISON the bare name. Replace the symbol-table
-                // entry with `ModuleEntry::Ambiguous` — the same sentinel an
-                // import collision installs (§8.6.4). No overload, no winner.
-                // Any later use of bare `v` is a compile-time error listing the
-                // qualified alternatives. The field stays reachable via `match`
-                // and module-qualification.
+                // ruling S83 W2 + the INVERTED model §1.6.2): ambiguity lives in
+                // the BARE ALIAS. The canonical `Box.v`/`Cup.v` `Def`s are each
+                // unconditionally real (minted above) and stay valid — no cliff,
+                // no re-mint, because they were always real. The bare `v` key (an
+                // alias to the FIRST type's `Box.v`) now has two candidate targets
+                // → replace it with the `Ambiguous` sentinel (the same sentinel an
+                // import collision installs, §8.6.4), listing the canonical
+                // alternatives `Box.v` / `Cup.v`. Any later BARE use of `v` is a
+                // compile-time error naming those alternatives.
                 self.current_symbol_table_mut(state).insert(
                     accessor_name.clone(),
                     ModuleEntry::Ambiguous { visibility },
                 );
-                // Extend the alternatives list with this colliding type. The
-                // name is kept in `synthesised_accessor_names` so a third
-                // colliding type re-enters this same poison arm.
-                let alts = state
-                    .accessor_owning_types
-                    .entry(accessor_name.clone())
-                    .or_default();
-                // FIXME 0366 — cross-cluster case: the FIRST owning type was
-                // recorded in a now-discarded prior cluster's state, so seed it
-                // from the committed accessor we just probed before appending
-                // this one, keeping the ambiguity hint's alternatives complete.
-                if let Some(prior) = &committed_accessor_owner
-                    && !alts.contains(prior)
-                {
-                    alts.push(prior.clone());
+                // Seed the FIRST owning type (cross-cluster: recorded in a now-
+                // discarded prior cluster's state, FIXME 0366) before this one so
+                // the ambiguity hint's alternatives are complete. The per-cluster
+                // `accessor_owning_types` push above already added `fqtn`.
+                if let Some(prior) = &committed_accessor_owner {
+                    let alts = state
+                        .accessor_owning_types
+                        .entry(accessor_name.clone())
+                        .or_default();
+                    if !alts.contains(prior) {
+                        // Insert the prior owner ahead of the current one so the
+                        // alternatives read first-defined-first.
+                        alts.insert(0, prior.clone());
+                    }
                 }
-                alts.push(fqtn.clone());
             }
             Some(AccessorCollision::NonAccessor) => {
-                // Refuse: record a deferred collision diagnostic. The accessor
-                // is NOT inserted (no silent shadow / dispatch corruption). The
-                // existing binding is left intact.
+                // A pre-existing NON-accessor bare binding (a user `(defn v …)`,
+                // a ctor, an import): the canonical `Box.v` accessor is still
+                // minted (unconditionally, above), so the field stays reachable
+                // via `Box.v`. The bare alias is NOT installed over the
+                // conflicting user binding (no silent shadow / dispatch
+                // corruption); record a deferred diagnostic and leave bare `v` as
+                // the user's binding (§1.6.2).
                 state.deferred_accessor_collisions.push((
                     accessor_name.clone(),
                     fqtn.name.as_ref().to_string(),
@@ -647,6 +701,92 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         }
     }
 
+    /// Enumerate the **field-accessor names** owned by `fqtn` — the single
+    /// enumeration point for impl-time collision checking (FIXME 0365 Item 2)
+    /// and any future "list this type's accessors" introspection (Principle 7).
+    ///
+    /// The returned names are the BARE field names (`v`): a trait `impl` method
+    /// is written with the bare name, and §7.3.1 scopes the collision to that
+    /// bare name.
+    ///
+    /// **Inverted model (§1.6 / §2.3).** The CANONICAL field accessor of `fqtn`
+    /// is a real Public `Def` keyed `Type.field` (`Box.v`) in `fqtn.module` —
+    /// `committed_accessor_kind` classifies it `Concrete(fqtn)`. The field name
+    /// is the **terminal segment after the last `.`** of the canonical key
+    /// (`Box.v` → `v`). Because the canonical accessor is ALWAYS real (never
+    /// poisoned — poison lives only in the bare alias, §1.6.2), the recognizer
+    /// walk alone is complete: the as-built's `accessor_owning_types` poison-
+    /// consult and the import-alias witness branch both drop out (§2.6,
+    /// Principle 6 — the inversion deletes those special-cases). The enumeration
+    /// reads the **union view** (staging then live) via `for_each_in_module` so
+    /// a REPL `impl` colliding with a canonical accessor defined in an earlier
+    /// cluster is still detected (the FIXME-0366 cross-cluster footgun).
+    pub(crate) fn field_accessor_names_of(
+        &self,
+        _state: &CheckState,
+        fqtn: &FQTypeName,
+    ) -> std::collections::HashSet<Symbol> {
+        let mut names = std::collections::HashSet::new();
+
+        // The recognizer over the owning module's union view: every canonical
+        // `Concrete(fqtn)` accessor `Def`. The field name is the terminal segment
+        // after the last `.` of the canonical key (`Box.v` → `v`); a defensively
+        // bare-keyed accessor (no `.`) contributes its whole key.
+        self.for_each_in_module(&fqtn.module, |name, entry| {
+            if matches!(
+                committed_accessor_kind(entry),
+                CommittedAccessor::Concrete(ref owner) if owner == fqtn
+            ) {
+                let field = name.as_ref().rsplit('.').next().unwrap_or(name.as_ref());
+                names.insert(Symbol::from(field));
+            }
+        });
+
+        names
+    }
+
+    /// Reconstruct the canonical accessor alternatives (`Box.v`, `Cup.v`) for a
+    /// poisoned bare field name from the DURABLE symbol table — the cross-cluster
+    /// (REPL) fallback for the ambiguity diagnostic.
+    ///
+    /// Same-cluster (`--run`) the alternatives are carried on the per-`CheckState`
+    /// `accessor_owning_types` map, populated as each accessor is synthesised in
+    /// the SAME `check_forms` call that later sees the bare use. The REPL drives
+    /// each form as its own cluster with a FRESH `CheckState` (`form.rs`), so by
+    /// the time `(v …)` is checked the map is empty — the `deftype`s that poisoned
+    /// `v` ran in now-discarded prior clusters. The poison itself survives (it is
+    /// the `ModuleEntry::Ambiguous` sentinel in the live table), but the owning-
+    /// type list does not. This re-derives that list structurally, mirroring the
+    /// cross-cluster recognition `committed_accessor_kind` already does for the
+    /// FIXME-0366 impl-collision case: it walks the current module's union view
+    /// for every canonical `Type.field` accessor `Def` whose terminal field
+    /// segment equals `name` and reads each owner off the accessor's
+    /// `(Fn [Owner] _)` scheme. Returns the owners in first-defined order
+    /// (symbol-table iteration is registration-ordered) so the rendered hint reads
+    /// `Box.v or Cup.v`. Empty when `name` owns no synthesised accessor (caller
+    /// then emits the bare ambiguity message with no qualified-accessor hint).
+    pub(crate) fn reconstruct_accessor_alternatives(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Vec<FQTypeName> {
+        let mut owners: Vec<FQTypeName> = Vec::new();
+        self.for_each_in_module(&state.current_module, |key, entry| {
+            // The canonical accessor key is `Type.field`; its terminal segment
+            // (after the last `.`) is the bare field name. A defensively bare-keyed
+            // accessor (no `.`) contributes its whole key.
+            let field = key.as_ref().rsplit('.').next().unwrap_or(key.as_ref());
+            if field != name {
+                return;
+            }
+            if let CommittedAccessor::Concrete(owner) = committed_accessor_kind(entry)
+                && !owners.contains(&owner)
+            {
+                owners.push(owner);
+            }
+        });
+        owners
+    }
 }
 
 /// Classification of a COMMITTED (live, prior-cluster) symbol-table entry as a
@@ -654,7 +794,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 /// per-`CheckState` `synthesised_accessor_names` set; cross-cluster (the REPL)
 /// must instead re-derive the accessor identity structurally from the committed
 /// entry, since the prior accessor was committed in a now-discarded cluster.
-enum CommittedAccessor {
+pub(crate) enum CommittedAccessor {
     /// A single concrete synthesised accessor; carries its owning product type
     /// (read from the accessor's `(Fn [ADT] _)` scheme).
     Concrete(FQTypeName),
@@ -674,7 +814,7 @@ enum CommittedAccessor {
 /// `self$accessor` param + the `Fn [ADT] _` scheme shape together uniquely mark
 /// an accessor and name its owning type — no user `(defn …)` mints that
 /// signature. A poisoned accessor name surfaces as `ModuleEntry::Ambiguous`.
-fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
+pub(crate) fn committed_accessor_kind<C: cranelisp_types::CodeStore>(
     entry: &ModuleEntry<C>,
 ) -> CommittedAccessor {
     match entry {

@@ -142,3 +142,76 @@
         s.shutdown();
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    // spec: repl/spec.md §3.3 (negative) — `/list` shows USER definitions only.
+    // Evaluating a bare top-level expression synthesises an internal zero-arg
+    // `Defn` named `__expr` (see `wrap_exprs_as_defns`); that wrapper MUST NOT
+    // leak into the listing — it is a compiler artifact, not a user definition,
+    // and is filtered exactly like `$`-mangled internal names. Pins the seam
+    // (`worker::is_internal_listing_name`) at the int surface that `handle_list`
+    // and the e2e `list_neg_no_synthetic_expr_wrapper` repro both ride.
+    #[test]
+    fn list_user_definitions_excludes_synthetic_expr_wrapper() {
+        let (mut s, root) = isolated_session();
+        let user = ModuleFullPath::from("user");
+
+        if let Some(mut st) = s.shared.symbol_tables.get_mut(&user) {
+            // The synthetic `__expr` wrapper — a Public zero-arg UserFn, exactly
+            // as `wrap_exprs_as_defns` builds it for a bare top-level Expr.
+            st.insert(
+                Symbol::from("__expr"),
+                ModuleEntry::def(
+                    mono(Type::Int),
+                    DefKind::UserFn {
+                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                    },
+                )
+                .visibility(Visibility::Public)
+                .build(),
+            );
+            // A `$`-mangled mono variant — also an internal artifact.
+            st.insert(
+                Symbol::from("add$Int+Int"),
+                ModuleEntry::def(
+                    mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))),
+                    DefKind::UserFn {
+                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                    },
+                )
+                .visibility(Visibility::Public)
+                .build(),
+            );
+            // A genuine user definition — MUST still appear.
+            st.insert(
+                Symbol::from("g"),
+                ModuleEntry::def(
+                    mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
+                    DefKind::UserFn {
+                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                    },
+                )
+                .visibility(Visibility::Public)
+                .build(),
+            );
+        }
+
+        let defs = s.list_user_definitions();
+        let has = |name: &str| defs.iter().any(|d| d.name.as_ref() == name);
+
+        assert!(
+            !has("__expr"),
+            "negative: the synthetic `__expr` wrapper MUST NOT appear in /list \
+             (repl/spec.md §3.3 — not a user definition)"
+        );
+        assert!(
+            !has("add$Int+Int"),
+            "negative: `$`-mangled internal variants MUST NOT appear in /list"
+        );
+        assert!(
+            has("g"),
+            "positive: a genuine user definition MUST still be listed"
+        );
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }

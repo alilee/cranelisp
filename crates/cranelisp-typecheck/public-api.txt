@@ -117,5 +117,7 @@ pub fn cranelisp_typecheck::check_forms<C, L>(alloc::vec::Vec<cranelisp_types::p
 pub fn cranelisp_typecheck::check_type_expr<C, L>(&cranelisp_types::ast::TypeExpr, &mut cranelisp_typecheck::SymbolTableAccess<'_, C, L>, &cranelisp_types::module::SymbolTables<C, L>, &cranelisp_types::module::ModuleAliases, &cranelisp_typecheck::PreludeFallback, &cranelisp_types::newtype::ModuleFullPath, cranelisp_types::span::Span) -> core::result::Result<cranelisp_types::types::Type, cranelisp_typecheck::CheckError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_typecheck::emit_symbol_table_ensure(&cranelisp_types::newtype::ModuleFullPath, cranelisp_typecheck::SymbolTableEnsureOutcome)
 pub fn cranelisp_typecheck::install_symbol_table_ensure_hook(cranelisp_typecheck::SymbolTableEnsureHook)
+pub fn cranelisp_typecheck::signature_matches_exact(&cranelisp_types::types::Type, &cranelisp_types::types::Type) -> bool
+pub fn cranelisp_typecheck::signature_matches_partial(&cranelisp_types::types::Type, &cranelisp_types::types::Type) -> bool
 pub type cranelisp_typecheck::PreludeFallback = dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, bool>
 pub type cranelisp_typecheck::SymbolTableEnsureHook = fn(&cranelisp_types::newtype::ModuleFullPath, cranelisp_typecheck::SymbolTableEnsureOutcome)

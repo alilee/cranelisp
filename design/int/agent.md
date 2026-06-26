@@ -1787,16 +1787,16 @@ validator). The eval-thread typecheck path calls `check_forms` **directly, with 
 `catch_unwind`** — so a 0432-shaped form (a multi-clause `defn` + unannotated self-call tripping
 the monomorphiser `debug_assert!`, `monomorphise.rs:1016`) **unwinds the eval thread and crashes
 the REPL** in a debug/agent build (the agent's only build). The pool-worker loop already guards
-this (`worker.rs:1483` — `catch_unwind` → `notify_module_failed`); the eval-thread path does not
-(§11.3, verified containment gap).
+this (`worker.rs:1493`/`:1522` — `catch_unwind` → `notify_module_failed`); the eval-thread path
+does not (§11.3, verified containment gap).
 
 ### 24.1 The wrap — mirror the pool-worker pattern at the eval-thread seam
 
 Wrap the **typecheck call inside `validate_forms_dry_run`** (`src/worker.rs:308`, the §16.1
 validator substrate, called from `validate_one_form`, `pull.rs:668`) in
 `std::panic::catch_unwind(AssertUnwindSafe(...))`, converting a caught unwind to a clean
-`Err(CranelispError)` — **exactly** the `worker.rs:1483` shape (reuse `panic_message`,
-`worker.rs:1546`, for the payload string). The wrap goes around the `check_forms(...)` call
+`Err(CranelispError)` — **exactly** the `worker.rs:1493` shape (reuse `panic_message`,
+`worker.rs:1692`, for the payload string). The wrap goes around the `check_forms(...)` call
 (`worker.rs:329`), not the whole function (the staging build is panic-free; only `check_forms` is
 the hazard). On a caught panic: drop the throwaway staging (it drops on every path already —
 §16.1) and return `Err` with a message like *"module/form failed to typecheck (compiler internal
@@ -1823,7 +1823,7 @@ checked_check_forms(parsed, ctx, tables, aliases, fallback) -> Result<Vec<Warnin
 ```
 
 Both `validate_forms_dry_run` (now) and the indexer (next sprint) call **this** instead of
-`check_forms` directly. One catch site, one `panic_message` reuse, mirroring `worker.rs:1483`.
+`check_forms` directly. One catch site, one `panic_message` reuse, mirroring `worker.rs:1493`.
 This is the int-internal half of the two-layer containment (R2-b); the `/typecheck` 0432 root fix
 (R2-a — the durable trigger removal) is the other half, owned by `/typecheck`.
 **Both ship before any Pillar-3 implementation; layer (b) ships THIS sprint regardless** (it is
@@ -1833,7 +1833,7 @@ the S89-validator hardening).
 
 - a 0432-shaped form fed to `validate_one_form` returns `Err` (a graceful give-up), **never
   panics the test process** (the containment guard — the unit-tier home for the §24 floor);
-- the existing `validate_dry_run_discards_does_not_commit` (`pull.rs:1088`) still holds (the wrap
+- the existing `validate_dry_run_discards_does_not_commit` (`pull.rs:1154`) still holds (the wrap
   does not change the discard semantics);
 - (next sprint) the indexer over a 0432-shaped reachable module yields a "could not index" note +
   zero residue, never a crash (the §25 +neg / `repl/spec.md §17.19.4` floor).
@@ -1842,33 +1842,59 @@ the S89-validator hardening).
 
 ## 25. Pillar 3 — nice-worker importable-symbol indexer + `/search` (DESIGN-ONLY S90, IMPLEMENTED NEXT)
 
-**Status: DESIGN-PINNED THIS SPRINT, IMPLEMENTED NEXT** (R1/§11.5). **RE-PINNED 2026-06-23**
-(user-directed mid-plan redesign; `/arch` `c699045`, `design/arch/repl-embedded-agent.md
-§11.1–§11.9`). This section SUPERSEDES the prior eval-thread/lazy/one-shared-DTO/`agent`-gated
-`/lib-search` design — that model is **retracted in full** (see the RETRACTION note below).
+**Status: DESIGN-PINNED, IMPLEMENTED NEXT** (R1/§11.5). **RE-PINNED 2026-06-23** (first redesign:
+nice-worker home) then **REFINED 2026-06-25** (read-or-produce-`.meta` model; `/arch`
+`design/arch/repl-embedded-agent.md §11.1/§11.1a/§11.1b/§11.2` + R13–R16). This section is the
+int-side durable target for the **read-or-produce-`.meta`, one-artifact** indexer. It SUPERSEDES
+both (i) the original eval-thread/lazy/one-shared-DTO/`agent`-gated `/lib-search` design (retracted
+in full — RETRACTION note below) and (ii) the S90 "in-memory, typecheck-and-discard,
+rebuild-every-triggered-session, writes-nothing" framing (superseded by the REFINEMENT note below).
 Gated on the 0432 typecheck root fix (R2-a) + the **new** nice-worker indexer `catch_unwind`
-(CF.2, R2-b). This section pins the **execution home, the two indices, the worklist separation,
-the discard guarantee, the trigger, the containment catch, and the command wiring** so the
-implementation has a fixed target. The UX contract is `repl/spec.md §17.19`; the match algorithm
-is `/typecheck`'s (`design/typecheck/signature-match.md §6`).
+(CF.2, R2-b). It pins the **execution home, the three-branch per-module step, the two indices, the
+worklist↔claim coordination, the residue invariant, the `.meta` persistence, the trigger, the
+containment catch, and the command wiring** so the implementation has a fixed target. The UX
+contract is `repl/spec.md §17.19`; the match algorithm is `/typecheck`'s
+(`design/typecheck/signature-match.md §6`).
 
-> **RETRACTION (what the redesign removes).** The original §25 placed the indexer on the **eval
-> thread** as a sibling of `validate_forms_dry_run`, built **lazily** one module per query, cached
-> **one shared `ImportableSymbol` DTO** on `AgentState` fed by both Pillar 2 and Pillar 3, gated
-> the command behind `#[cfg(feature="agent")]`, and matched **name + exact-shape only**. ALL of
-> that is retracted. What CARRIES: zero-residue-is-structural (now via the same discard substrate,
-> below), 0432 is pulled in as a prerequisite, and Pillar 3 stays design-only this sprint.
+> **RETRACTION (what the first redesign removes).** The original §25 placed the indexer on the
+> **eval thread** as a sibling of `validate_forms_dry_run`, built **lazily** one module per query,
+> cached **one shared `ImportableSymbol` DTO** on `AgentState` fed by both Pillar 2 and Pillar 3,
+> gated the command behind `#[cfg(feature="agent")]`, and matched **name + exact-shape only**. ALL
+> of that is retracted. What CARRIES into the nice-worker model: 0432 is pulled in as a
+> prerequisite, and Pillar 3 stays design-only this sprint.
 
-### 25.1 Execution home — a background task of the NICE WORKERS, separate worklist (R4)
+> **REFINEMENT (2026-06-25 — read-or-produce-`.meta`; `/arch` §11.1 REFINEMENT BOX + R13–R16).**
+> The S90 nice-worker model said the indexer **writes nothing**, typechecks-and-discards
+> **in-memory**, and **re-typechecks lib-path ∪ project-root on every trigger**. A user design
+> review surfaced two real problems: (1) a triggered first-`/search` re-typechecked the *entire*
+> reachable world even when valid `.meta.json` caches already existed — a needless N-module
+> typecheck; (2) a module the indexer typechecked-and-discarded, when later `/import`'d,
+> **re-typechecked from scratch** (the index entry was a throwaway hint). Both dissolve once the
+> indexer **reads from / produces the existing `.meta` cache** rather than an ephemeral discard.
+> **What CHANGED:** the per-module step becomes **skip-if-claimed → read-`.meta`-if-valid → else
+> typecheck-and-**write**-`.meta`** (§25.1); the two indices are **read-derived from `.meta` files**
+> (rebuildable by a cheap `.meta`-scan), so cross-run persistence IS the existing `.meta` cache, not
+> a per-session rebuild (R16, §25.3); the **residue invariant is relaxed** from "writes nothing"
+> to **no session-state residue** — the +neg guard now asserts **no `SharedState` entry, NOT "no
+> disk write"** (R13, §25.3); the `IndexModule` worklist coordinates with the real path by a
+> **module-state check before claiming** — skip any module the real path owns (R15, §25.1b); and a
+> found symbol later `/import`'d is now a **`.meta` cache-hit, no re-typecheck** (R13/§25.5 — problem
+> 2 dissolved). **What CARRIES from S90:** nice-worker home (R4), eager-but-triggered (R9b, §25.5),
+> two indices (R3), exact-OR-partial match (R6, §25.7), default-build facility (R9), CF.2 containment
+> (R2-b, §25.4), and separate-worklist/no-`.o`-entanglement (§25.1).
+
+### 25.1 Execution home — a background task of the NICE WORKERS; read-or-produce-`.meta` burn-down (R4, R13–R16)
 
 Pillar 3 answers `/search <name>|<scheme>` over symbols **reachable but not yet imported**.
 Reachable = **lib-search-path modules ∪ project-root modules** (R10). To know an importable
-symbol's signature its defining module must be typechecked — but **not** imported.
+symbol's signature its defining module must have a typecheck result — which the refined model gets
+either by **reading the module's `.meta` cache** or, on a cache-miss, by **typechecking it once and
+writing the `.meta`** — but the module is **never imported** (never `register_module`'d).
 
 **The indexer rides the nice workers, NOT the eval thread.** `src/session_v4/nice_worker.rs::nice_worker_loop`
 (`nice_worker.rs:65`) is the pool of low-OS-priority threads that already drain background `.o`
 codegen — it parks on `scheduler.take_object_codegen()` (`nice_worker.rs:79`), calls
-`compile_module_object` (`nice_worker.rs:97`), and `notify_object_codegen_complete`
+`compile_module_object` (`nice_worker.rs:121`), and `notify_object_codegen_complete`
 (`nice_worker.rs:101`). The indexer is a **second kind of work** drained by **the same threads
 off a separate worklist** — it is NOT spliced into `compile_module_object`. Recommended shape: a
 distinct **`IndexModule(path)` work variant** (peer to the existing object-codegen claim), with its
@@ -1876,28 +1902,52 @@ own scheduler claim/notify pair alongside `take_object_codegen`. Naming the vari
 this doc's detail; the architectural ruling (§11.1) is fixed: **separate worklist, shared threads,
 no entanglement with the `.o` lifecycle.**
 
+**The Phase-1 `.meta` writer the indexer reuses.** The real object-codegen path already writes a
+module's `.meta` **decoupled from its `.o`** — `write_module_meta` (`nice_worker.rs:176`, the
+typecheck-driven Phase-1 writer landed under FIXME 0387), which calls `cache::write_meta`. The
+indexer reuses **the same `cache::write_meta` edge** (NOT the same call site — `write_module_meta`
+stays the object path's; the indexer writes from its own `IndexModule` branch), producing a `.meta`
+**byte-identical** to what the real path would write for the same module. The object path's
+`take_object_codegen` claim and `compile_module_object` stay separate from the `IndexModule`
+worklist — the indexer never enters that flow.
+
 **NOT entangled with the `.o`-codegen lifecycle (the load-bearing separation).** The object-codegen
 path operates on **`TypecheckDone`-registered** modules (`take_object_codegen`); the indexer
 operates on **reachable-but-unregistered** modules. The `IndexModule` path therefore MUST NOT route
 through `notify_typecheck_done` (`scheduler.rs:823`), `record_compiled` / `append_o_path`
-(`cache.rs:144`/`:186`), or `register_module` (`scheduler.rs:376` / `session_v4/lifecycle.rs:1099`)
-— it **writes no `.o`, registers no module, calls no `notify_object_codegen_complete`**. It only
-typechecks-and-reads, then discards.
+(`cache.rs:144`/`:186`), `notify_object_codegen_complete` (`nice_worker.rs:101`), or
+`register_module` (`scheduler.rs:376`). It **writes no `.o` and registers no module** — it writes
+only the `.meta` via `cache::write_meta` on a cache-miss (branch c below), and reads `.meta` on a
+cache-hit (branch b). The real path always wins for any module it owns (branch a; §25.1b).
 
-**The flow (per `IndexModule(path)` task):**
+**The flow — one of three branches per reachable module (R13–R16):**
 
 ```text
-nice_worker_loop drains an IndexModule(path) task:
-  1. parse path's source into forms (the same reader import uses)
-  2. stage + check + read + discard  (the validate_forms_dry_run discard substrate, §25.2):
-       staging = SymbolTable::new_with_params(path)            // throwaway, locally owned
-       ctx     = SymbolTableAccess::cluster(symbol_tables, &mut staging, path)
-       catch_unwind(|| check_forms(parsed, &mut ctx, symbol_tables, aliases, fallback))  // CF.2 (§25.4)
-         Ok(Ok(()))  -> for each public entry in staging: add TWO index entries (§25.3)
-         Ok(Err(e))  -> logged per-module index-skip; module absent from results
-         Err(panic)  -> logged per-module index-skip; continue burn-down; thread survives
-       drop(staging)  // module is NEVER register_module'd
-  3. mark path indexed; continue draining the IndexModule worklist
+nice_worker_loop drains an IndexModule(path) task; take EXACTLY one branch:
+
+ (a) path is present in the scheduler ModuleState registry in ANY pool state  (§25.1b, R15)
+       -> SKIP. The real path owns it and writes its .meta; the indexer reads
+          that .meta later (late .metas surface via .meta-scan / notify hook).
+          No typecheck, no .meta write.
+
+ (b) .meta present AND valid  (cache::load_meta schema+BUILD_ID gate  AND  int's
+       is_cache_valid source-content gate)                                  (R16)
+       -> deserialise the SymbolTable from the .meta (cache::load_meta /
+          deserialise_meta), populate the TWO index entries from it (§25.3).
+          NO typecheck.
+
+ (c) no .meta, or stale .meta                                               (R13)
+       -> typecheck once on the nice worker against throwaway staging
+          (the validate_forms_dry_run discard substrate, §25.2):
+            staging = SymbolTable::new_with_params(path)        // throwaway, locally owned
+            ctx     = SymbolTableAccess::cluster(symbol_tables, &mut staging, path)
+            catch_unwind(|| check_forms(parsed, &mut ctx, ...))  // CF.2 (§25.4)
+              Ok(Ok(()))  -> cache::write_meta(path, &staging)   // benign .meta, NO .o, NO register
+                             for each public entry: add TWO index entries (§25.3)
+              Ok(Err(e))  -> logged per-module index-skip; module absent from results
+              Err(panic)  -> logged per-module index-skip; continue; thread survives
+            drop(staging)  // module is NEVER register_module'd
+   then: mark path indexed; continue draining the IndexModule worklist
 ```
 
 **Discovery (R10).** The reachable set is enumerated by walking **lib-search-path ∪ project-root**
@@ -1905,42 +1955,64 @@ using the **same file-resolution rules `import` uses** — `pipeline::resolve_mo
 (`src/pipeline.rs:27`); **no new search semantics**. The enumerated set is the indexer's worklist.
 
 **Why the nice workers (not the eval thread).** (a) The work is **exactly the nice workers' shape**
-— low-priority background typecheck over a module worklist, the same threads already burning down
-object codegen; (b) it is **off the eval thread**, so `/search` (human or agent pull) is a
-non-blocking **index read**, never a synchronous typecheck stall on the user's Enter; (c) idle nice
-workers absorb the cost (object codegen and indexing share the below-normal-priority thread budget).
-The cost it commits to: the burn-down is **new background work** (typechecking the whole
-lib-path ∪ project-root) — which is why it is triggered, not unconditional (§25.5).
+— low-priority background typecheck-and-record over a module worklist, the same threads already
+burning down object codegen; (b) it is **off the eval thread**, so `/search` (human or agent pull)
+is a non-blocking **index read**, never a synchronous typecheck stall on the user's Enter; (c) idle
+nice workers absorb the cost (object codegen and indexing share the below-normal-priority thread
+budget). The refinement **lowers** the burn-down's cost: it re-typechecks **only genuine
+cache-misses** (branch c), reads hits straight off the existing `.meta` cache (branch b), and skips
+modules the real path owns (branch a) — so a warm project pays a `.meta`-scan plus a few
+miss-typechecks rather than an N-module re-typecheck (§25.5).
 
-**Zero residue is structural, not disciplinary (§11.1).** The indexed module typechecks into a
-**locally-owned `staging` value**, never `symbol_tables`; it is **never `register_module`'d**, so
-`SharedState.symbol_tables` (`session_v4.rs:193`) / `module_aliases` (`:206`) / `prelude_fallback`
-(`:220`) / `introspection` (`:291`) never learn it exists. Residue is **unconstructable**, exactly
-as for the validator. The +neg isolation test **mirrors `validate_dry_run_discards_does_not_commit`**
-(`pull.rs:1088`): after a burn-down, assert those four `SharedState` maps are byte-unchanged. A
-found symbol, once `/import`'d, **re-typechecks for real** through the live path — the index entry
-was only a search hint.
+### 25.1b Worklist↔claim coordination — module-state check before claiming (R15, §11.1b)
+
+The `IndexModule` worklist must never double-typecheck a module the real path owns, nor race the
+priority/normal/object-codegen path on a module in flight. The coordination mechanism is a
+**module-state check before claiming an `IndexModule` task**, grounded in the scheduler's existing
+per-module registry — `ModuleState` (`scheduler.rs:52`), keyed by `ModuleFullPath`, carrying `pool`
+(`scheduler.rs:53`) + the claim flags `object_working` (`scheduler.rs:81`) / `inmem_claimed`
+(`scheduler.rs:75`) / `eval_owned` (`scheduler.rs:114`). The invariant (architectural; the exact
+claim/notify naming is this doc's detail):
+
+- **A module present in the registry in ANY pool state is owned by the real path → the indexer
+  SKIPS it** (branch a). It is either in-scope (covered by Pillar 2's live-table harvest, §23) or
+  it will be picked up later from the `.meta` the real path's typecheck-driven Phase-1 writer
+  produces (`write_module_meta`, FIXME 0387 — a real-typechecked module always has a `.meta` to
+  read, regardless of `.o` state). The real path always wins.
+- **A reachable module ABSENT from the registry is the indexer's domain** — it reads the `.meta`
+  if valid (branch b), else typechecks-and-writes-`.meta` (branch c), never registering it.
+- **Late-arriving real `.meta`s** (a module typechecked-for-real but outside the indexer's in-scope
+  set — e.g. a transitive dependency the real path loaded after the burn-down began) surface in
+  `/search` because the indexer **reads them from their written `.meta`**: either via the
+  trigger-time `.meta`-scan, or via a re-scan / a notify hook the implementation may add so a
+  `.meta` written after the burn-down still surfaces. The mechanism (re-scan vs notify) is this
+  doc's choice; the ruling is the invariant: **no module is both index-typechecked and
+  real-typechecked concurrently — the real path always wins, and the indexer consumes the real
+  path's `.meta` rather than duplicating its typecheck.**
 
 ### 25.2 The discard substrate it reuses (NOT the execution home)
 
 The stage→check→discard mechanism is **`validate_forms_dry_run`** (`worker.rs:308`): build a
 throwaway `staging` `SymbolTable`, a `SymbolTableAccess::cluster` view, run `check_forms`, drop
-staging on every path. The indexer **reuses this substrate** — the same staging + cluster-view +
-`check_forms` + drop — but **the execution home is the nice-worker loop, not the eval thread**.
-This is the one subtlety the redesign turns on: `validate_forms_dry_run` is the *eval-thread*
-validator (and is where CF.1, §24, lands); the **indexer is a structurally-parallel pass on the
-nice workers** that reuses only the discard *recipe*, reading public entries out of staging
-between the check and the drop. The eval-thread validator (CF.1) and the nice-worker indexer
-(CF.2) are **two homes** for the same staging recipe; they do not share a call site.
+staging on every path. The indexer **reuses this substrate on branch (c) only** — the same staging
++ cluster-view + `check_forms` + drop — but **the execution home is the nice-worker loop, not the
+eval thread**, and between the check and the drop it (i) writes the `.meta` via `cache::write_meta`
+and (ii) reads public entries out of staging into the two indices. Branch (b) does **no** typecheck
+— it deserialises the `SymbolTable` from the `.meta` and populates the indices from that; branch (a)
+does neither. `validate_forms_dry_run` is the *eval-thread* validator (and is where CF.1, §24,
+lands); the **indexer is a structurally-parallel pass on the nice workers** that reuses only the
+discard *recipe* for its cache-miss branch. The eval-thread validator (CF.1) and the nice-worker
+indexer (CF.2) are **two homes** for the same staging recipe; they do not share a call site.
 
-### 25.3 Two purpose-built indices (R3) — Pillar 2 is cleanly SEPARATE
+### 25.3 Two purpose-built indices (R3, R16) — Pillar 2 is cleanly SEPARATE
 
 **Pillar 3 builds TWO lookup indices** (user-specified, §11.2), populated by the nice-worker
-burn-down:
+burn-down — **read-derived from the `.meta` files** (branch b deserialises, branch c reads from
+its own miss-typecheck's staging):
 
 ```rust
-// int-private, pub(crate) — derived read-caches, NOT cranelisp-types boundary types,
-// NOT symbol tables, NOT serialized.
+// int-private, pub(crate) — derived read-caches on SharedState, read-derived from .meta,
+// NOT cranelisp-types boundary types, NOT symbol tables, NOT serialized.
 struct ImportableIndices {
     // Index A — name lookup: /search <symbol>, exact OR partial (partial = substring).
     by_symbol: HashMap<Symbol, Vec<ModuleFullPath>>,
@@ -1958,9 +2030,30 @@ struct ImportableIndices {
 **Placement: `pub(crate)` on `SharedState` / the session** (the nice workers receive `&SharedState`
 — `nice_worker_loop(shared: &SharedState)` — so the indices they populate must live where the
 workers and `/search` both reach them; **NOT on `AgentState`** — the prior placement is retracted,
-since `/search` is now a non-agent default-build command, R9). They are a **derived rebuildable
-cache** (§3.3 — never the source of truth; blow them away and they rebuild from the reachable
-modules); **NOT a symbol table** and **NOT serialized** (no `CACHE_SCHEMA_VERSION` bump).
+since `/search` is now a non-agent default-build command, R9).
+
+**Cross-run persistence IS the `.meta` cache, not a serialized index (R16).** The two indices are
+**derived read-caches** — never the source of truth; blow them away and they rebuild by a cheap
+`.meta`-scan over the reachable modules. They are **NOT a symbol table**, **NOT serialized**, and
+carry **NO `CACHE_SCHEMA_VERSION` bump**. The existing `.meta` cache is the cross-run persistence
+layer; the indices are an in-memory projection over it. (This is the refinement: S90 rebuilt the
+whole index by re-typechecking every triggered session; the refined model reads it from `.meta`.)
+
+**No session-state residue — the `.meta` write is benign (R13).** The S90 "writes nothing" framing
+is **superseded**. On branch (c) the indexer **MAY write a `.meta.json`** for a reachable-uncached
+module it typechecks — a benign, content-hash-/build-id-invalidated cache artifact on the same
+footing as any cache file (a later source edit makes it stale, caught by the existing `CacheStale`
+/ `is_cache_valid` gates; a real recompile overwrites it byte-identically). The invariant that
+**holds unchanged** is *session-state* isolation: the four `SharedState` maps — `symbol_tables`
+(`session_v4.rs:193`), `module_aliases` (`:206`), `prelude_fallback` (`:220`), `introspection`
+(`:291`) — **never gain an entry** for an indexed-but-unimported module (the indexer never calls
+`register_module` / `notify_typecheck_done` / `record_compiled` / `append_o_path` /
+`notify_object_codegen_complete`). **The +neg isolation test asserts the FOUR-`SharedState`-map
+invariant** (mirroring `validate_dry_run_discards_does_not_commit`, `pull.rs:1154`) — assert **no
+`SharedState` entry, NOT "no disk write"**: a produced `.meta` is expected and benign, and asserting
+its absence would contradict the refined model. A found symbol, once `/import`'d, is a **`.meta`
+cache-hit** (§25.5) — the live import path loads it from cache rather than re-typechecking from
+scratch; the index entry was a search hint, the `.meta` is the durable typecheck result.
 
 **Pillar 2 is cleanly SEPARATE (the retracted shared DTO).** The original "one DTO, two feeders"
 coupling is **retracted**. Pillar 2 (in-scope harvest, §23) surfaces in-scope prelude+imports at
@@ -1968,45 +2061,111 @@ sig grain by reading the **live symbol tables directly into the harvest text blo
 (`harvest_context`, `src/agent/harvest.rs`) — those symbols are already typechecked and already in
 `symbol_tables`, so the harvester just reads name+sig+docstring off them each turn. **Pillar 2
 needs no index at all.** So: **Pillar 2 = a live-table read into harvest text; Pillar 3 = two
-persisted lookup indices over typecheck-and-discarded reachable modules.** They share neither a
-structure nor a feeder. (If `/search` and the harvester both format a `{name, sig, module}` line
-identically, that is a trivial shared *formatter*, not a shared index — an implementation detail,
-not an architectural coupling.)
+in-memory lookup indices read-derived from the `.meta` cache over reachable modules.** They share
+neither a structure nor a feeder. (If `/search` and the harvester both format a `{name, sig,
+module}` line identically, that is a trivial shared *formatter*, not a shared index — an
+implementation detail, not an architectural coupling.)
 
-### 25.4 Containment — CF.2, a NEW nice-worker `catch_unwind` (R2, §11.3)
+### 25.4 Containment — CF.2, a NEW nice-worker `catch_unwind` (R2, §11.3) — branch (c) only
 
-**CF.2 is a new catch, NOT inherited.** The priority-worker loop wraps typecheck in `catch_unwind`
-(`worker.rs:1483`), but `nice_worker_loop` runs **bare** — verified: zero `catch_unwind` in
-`nice_worker.rs`. A panic on a nice worker today **silently kills that background thread**
-(degrading object-codegen capacity invisibly). The indexer runs the **real typechecker**
-(`check_forms` → monomorphiser) over **arbitrary reachable lib-path ∪ project-root modules**, so a
-0432-shaped module (a multi-clause `defn` + unannotated self-call tripping the monomorphiser
-`debug_assert!`, `monomorphise.rs:1016`, live in the agent's debug build) would otherwise **kill an
-indexer thread**.
+**CF.2 is a new catch, NOT inherited.** The **priority**-worker loop wraps typecheck in
+`catch_unwind` (`worker.rs:1493`/`:1522`), but `nice_worker_loop` runs **bare** — verified: zero
+`catch_unwind` in `nice_worker.rs`. A panic on a nice worker today **silently kills that background
+thread** (degrading object-codegen capacity invisibly). The indexer runs the **real typechecker**
+(`check_forms` → monomorphiser) **only on branch (c)** (cache-miss) over **arbitrary reachable
+lib-path ∪ project-root modules**, so a 0432-shaped module (a multi-clause `defn` + unannotated
+self-call tripping the monomorphiser `debug_assert!`, `monomorphise.rs:1016`, live in the agent's
+debug build) would otherwise **kill an indexer thread**. Branches (a) and (b) do **no** typecheck,
+so CF.2's wrap scopes to the branch-(c) `check_forms` call.
 
-**The wrap (mirror `worker.rs:1483`).** The `IndexModule` path MUST wrap its `check_forms` in
+**The wrap (mirror `worker.rs:1493`).** The branch-(c) path MUST wrap its `check_forms` in
 `std::panic::catch_unwind(AssertUnwindSafe(…))`, reusing the existing `panic_message`
-(`worker.rs:1546`) helper. On a caught unwind: convert it to a **logged per-module index-skip**
-(record the module in `indexed` with no entries so it is not retried), **drop the throwaway
-staging**, and **continue the burn-down** — **never kill the worker thread**. This is **CF.2**,
-distinct from **CF.1** (the §24 eval-thread validator catch that ships THIS sprint); CF.2 lands
-**with the Pillar-3 implementation** (next sprint). Both mirror the same `worker.rs:1483` pattern at
-two distinct seams; neither is inherited from the other. Searching the library therefore **never
-crashes the REPL and never silently kills a nice worker** — a 0432-shaped module is simply absent
-from results, with a `repl/spec.md §17.19.4` search-quality note.
+(`worker.rs:1692`) helper. On a caught unwind: convert it to a **logged per-module index-skip**
+(record the module in `indexed` with no entries so it is not retried, **and write no `.meta`** —
+the typecheck never completed), **drop the throwaway staging**, and **continue the burn-down** —
+**never kill the worker thread**. This is **CF.2**, distinct from **CF.1** (the §24 eval-thread
+validator catch that ships THIS sprint); CF.2 lands **with the Pillar-3 implementation** (next
+sprint). Both mirror the same priority-worker pattern at two distinct seams; neither is inherited
+from the other. Searching the library therefore **never crashes the REPL and never silently kills a
+nice worker** — a 0432-shaped module is simply absent from results, with a `repl/spec.md §17.19.4`
+search-quality note.
 
-### 25.5 Trigger — eager-but-TRIGGERED, not unconditional (R9b, §11.1a)
+### 25.5 Trigger — eager-from-REPL-startup, REPL-only by construction; burn-down re-typechecks only cache-misses (R9b)
 
-The burn-down runs **eagerly once armed**, but is **armed on first `/search` OR first agent
-activation** — NOT unconditionally at session start. Rationale: indexing the entire
-lib-path ∪ project-root is a real cost (N module typechecks); a session that never searches and
-never starts the agent should not pay it (**Principle 6** — complexity/cost has a budget). On the
-trigger, the indexer enumerates the reachable set (§25.1) onto the `IndexModule` worklist and the
-nice workers **race ahead** — they do NOT lazily index one module per query (the retracted lazy
-model). A `/search` that lands **before** the burn-down completes serves **partial results from the
-indices-so-far + an "indexing N modules…" note** (a `/repl` UX detail, `repl/spec.md §17.19`). This
-preserves the user's "eager burn-down" intent without taxing sessions that never reach for the
-facility.
+> **CORRECTION (2026-06-25 — eager-from-REPL-startup).** This supersedes the S90 §11.1a
+> "eager-but-TRIGGERED on first `/search` OR first agent activation" model (and its Principle-6
+> "a session that never searches should not pay" rationale). **New model: in REPL mode the
+> `IndexModule` burn-down worklist is enqueued eagerly at REPL start-up; in `--run`/`--link`/
+> `--release` it is NEVER enumerated.** Rationale (user): a real-site burn-down takes
+> seconds-to-minutes, so trigger-on-first-`/search` makes the *first* search pay full
+> latency — eager-from-startup instead warms the index during idle interactive time, so the
+> first `/search` is fast. The cost-budget concern the old trigger answered is now answered by
+> (i) REPL-only gating — batch/release pay nothing — and (ii) lower-than-object-codegen
+> priority (below), so warming never delays loaded/prelude codegen.
+
+**Single gate: REPL mode at startup.** When the binary starts in **REPL mode**, the indexer
+enumerates the reachable set (§25.1, lib-path ∪ project-root via `pipeline::resolve_module_file`)
+onto the `IndexModule` worklist **at start-up** and the nice workers **race ahead** — they do NOT
+lazily index one module per query (the retracted lazy model). When the binary runs in
+**`--run` / `--link` / `--release`** (batch/release — no REPL, no `/search`) the worklist is
+**never enumerated**.
+
+**REPL-only invariant — guaranteed by construction (R9).** Because the sole arming point is REPL
+start-up, in batch/release **the indexer never arms → the two indices are never populated →
+branch-(c) `cache::write_meta` index writes never fire.** This makes the REPL-only property of the
+indexer (including its benign branch-(c) `.meta` writes, §25.3) a **structural guarantee, not an
+emergent one**: no batch/release code path reaches the `IndexModule` enumeration, so no
+index-driven side effect is possible there. (This composes with §25.8's default-build-stable
+invariant: the indexer perturbs neither object-codegen behaviour nor any batch/release output.)
+
+**Prioritization — eager but BEHIND object codegen.** The `IndexModule` worklist is drained
+**yielding to the object-codegen worklist** on the shared nice workers: an idle nice worker takes
+object-codegen work first (`take_object_codegen`) and only drains an `IndexModule` task when no
+object-codegen work is pending. The index warm-up is therefore **eager but lower-priority** —
+warming the search index **never delays object codegen of loaded/prelude modules** (preserving the
+R9 default-build-behaviour-stable contract, §25.8). The exact yield mechanism (priority ordering on
+the claim, or a separate condvar checked after `take_object_codegen` drains) is this doc's detail;
+the ruling is the ordering invariant: **object codegen first, index warm-up in the slack.**
+
+**Cost lowered by the refinement (unchanged from §25.1).** The burn-down **re-typechecks only
+genuine `.meta` cache-misses** (branch c); modules with a valid `.meta` are **read off the existing
+cache** (branch b — a deserialise, not a typecheck), and modules the real path owns are **skipped**
+(branch a). So a warm project's start-up burn-down pays a `.meta`-scan plus a few miss-typechecks,
+not an N-module re-typecheck. A `/search` that lands **before** the burn-down completes serves
+**partial results from the indices-so-far + an "indexing N modules…" note** (a `/repl` UX detail,
+`repl/spec.md §17.19`).
+
+**Index → import is now a `.meta` cache-hit (improvement over the retracted S90 model).** Under S90,
+a symbol the indexer found and the user then `/import`'d **re-typechecked from scratch** — the index
+entry was a throwaway hint. Under the refined model, the miss-typecheck (branch c) already wrote the
+module's `.meta` (or branch b read an existing valid one), so a later real `/import` of that module
+is a **`.meta` cache-hit** on the live import path — no re-typecheck. The refinement keeps the
+start-up warm-up cheap on warm projects (mostly `.meta`-reads, §25.5), taxes no batch/release run
+(REPL-only, §25.5), and removes the double-typecheck on subsequent import.
+
+### 25.5b Flush / shutdown — index work is abandon-on-flush, abandon-on-shutdown (R18)
+
+The `IndexModule` burn-down is **best-effort warm-up, never a correctness obligation** — the index
+only serves `/search`, which already tolerates partial results (the "indexing N modules…" note,
+§25.5). Two consequences for the nice-worker lifecycle:
+
+**Excluded from any correctness-gating flush.** The pre-`--link` hot-flush / priority-promotion
+(`nice_worker.rs:70` — the `promote_nice_workers` check that bumps a nice worker to normal priority
+before a link) exists to drain the **object-codegen** worklist to completion so the link/cache has
+every `.o` it needs. The `IndexModule` worklist is **never part of that correctness-gating flush** —
+it is **abandon-on-flush, never drained-to-completion** (the link/cache needs no index). A promoted
+nice worker **prefers object-codegen and defers/abandons index work**: this is the §25.5
+prioritization ruling (object codegen first, index warm-up in the slack) applied at flush time — a
+flush is just the strongest form of "object codegen is pending," so the index worklist yields
+entirely. A flush / `--link` path therefore **never blocks on index work**.
+
+**Abandon-on-shutdown.** The burn-down loop checks the shutdown flag **between `IndexModule`
+tasks** and **exits promptly** — it does NOT finish the whole burn-down first. Because every `.meta`
+write is **atomic** (`cache::write_meta` → `atomic_write`, `cache/object.rs:237` — write-temp +
+rename), an abandoned mid-burn shutdown leaves **some modules unindexed (their `.meta` simply
+re-derived next session, §25.5 cache-miss branch c) and NEVER a corrupt or partial `.meta`**. There
+is no flush-to-completion obligation on the index worklist at shutdown — the index is a derived
+read-cache (§25.3), so an incomplete burn-down is a cheap next-session warm-up, not data loss.
 
 ### 25.6 `/search` command wiring + the result row (R12, R11, `repl/spec.md §17.19`)
 
@@ -2065,22 +2224,54 @@ Pillar 3 implementation is **gated, both required**: (a) the `/typecheck` 0432 r
 removes the trigger) **and** (b) **CF.2**, the new nice-worker indexer `catch_unwind` (R2-b, §25.4
 — the safety net; lands **with** the Pillar-3 implementation, NOT this sprint). Note CF.1 (the
 eval-thread validator catch, §24) ships S90 but does NOT cover the indexer — CF.2 is its own catch
-at its own seam. Pillar 3 also requires the `IndexModule` worklist integration (§25.1) and the two
-predicates (§25.7). If the 0432 fire lands early enough, implementation pulls forward in-sprint;
+at its own seam. Pillar 3 also requires the `IndexModule` worklist integration (§25.1), the
+module-state-check coordination (§25.1b), the read-or-produce-`.meta` branch logic (§25.1), and the
+two predicates (§25.7). If the 0432 fire lands early enough, implementation pulls forward in-sprint;
 otherwise it is next sprint's first item, and **all of §25's design (nice-worker home + separate
-worklist, two indices, discard guarantee, trigger, CF.2, command wiring) is the durable target** —
-the `/qa` +neg isolation test (zero residue, mirroring `validate_dry_run_discards_does_not_commit`)
-and the CF.2 containment test (a 0432-shaped reachable module → graceful index-skip note, no crash,
-no killed worker) are the acceptance.
+worklist, three-branch read-or-produce-`.meta` step, skip-claimed coordination, two `.meta`-derived
+indices, residue invariant, trigger, CF.2, command wiring) is the durable target.**
+
+**Acceptance (what a future `/dev` wave must turn green):**
+
+1. **Three-branch coverage.** A reachable module that is (a) registered in the scheduler is
+   **skipped**, (b) has a valid `.meta` is **read with no typecheck** (assert `check_forms` is not
+   called for it), (c) has no/stale `.meta` is **typechecked once and its `.meta` written** via
+   `cache::write_meta`.
+2. **Session-state residue +neg (R13).** After a burn-down, assert the four `SharedState` maps
+   (`symbol_tables` / `module_aliases` / `prelude_fallback` / `introspection`) are **byte-unchanged**
+   — mirroring `validate_dry_run_discards_does_not_commit` (`pull.rs:1154`). Assert **no
+   `SharedState` entry, NOT "no disk write"** — a branch-(c) `.meta` is expected and benign.
+3. **`.meta` cache-hit on import (R13/§25.5).** A symbol the indexer found (branch b or c) then
+   `/import`'d loads its `.meta` from cache on the live import path — assert **no re-typecheck**
+   (the improvement over the retracted S90 model).
+4. **CF.2 containment.** A 0432-shaped reachable module → graceful per-module index-skip note, **no
+   crash, no killed nice worker, no `.meta` written** for the failed module (§25.4).
+5. **`.meta`-derived index rebuild (R16).** Clearing the in-memory indices and re-scanning `.meta`
+   reproduces the same `/search` results — no `CACHE_SCHEMA_VERSION` bump, no new serialized index.
+6. **Batch-mode-inert `_neg` (§25.5 REPL-only invariant).** A `--run` / `--link` invocation over a
+   tree containing reachable-but-unimported modules produces **NO index and NO index-driven `.meta`
+   writes** — the `IndexModule` worklist is never enumerated outside REPL mode (guaranteed by
+   construction; the single arming gate is REPL start-up).
+7. **Abandon-on-shutdown leaves no corrupt `.meta` (§25.5b).** Shutdown during an in-flight burn-down
+   exits promptly (the loop checks the shutdown flag between `IndexModule` tasks); the resulting cache
+   contains **no corrupt or partial `.meta`** (atomic write-temp+rename), and the **next session
+   rebuilds the index cleanly** (unindexed modules re-derive via branch b/c).
+8. **Flush / `--link` does not block on index work (§25.5b).** A flush / priority-promotion / `--link`
+   path drains only the object-codegen worklist to completion and **abandons the `IndexModule`
+   worklist** — assert the link path does not wait on any in-flight index task.
 
 **Default-build-behaviour-stable invariant (R9, §11).** Because Pillar 3 is a **non-agent
-default-build** facility (the indexer rides nice workers that run in every session), it does NOT
-carry the byte-identical-feature-OFF invariant (that scopes to Pillars 1/2/4). It carries instead:
-**the indexer must not perturb object-codegen behaviour or the default REPL contract.** This is
-satisfied structurally by the §25.1 separation — the `IndexModule` worklist is a distinct claim
-drained by the same threads, never entangled with `take_object_codegen` / the `.o` lifecycle. (This
-sprint the invariant is **trivially satisfied** — Pillar 3 is design-only, nothing is added to the
-default build; it becomes load-bearing at implementation time.)
+default-build** facility, it does NOT carry the byte-identical-feature-OFF invariant (that scopes to
+Pillars 1/2/4). It carries instead **two** structural guarantees: (i) **REPL-only by construction**
+(§25.5) — the `IndexModule` worklist arms only at REPL start-up, so `--run`/`--link`/`--release`
+enumerate no worklist, populate no index, and fire no branch-(c) `.meta` write (the batch-mode-inert
+`_neg`, acceptance 6); and (ii) **the indexer must not perturb object-codegen behaviour or the REPL
+contract** — satisfied structurally by the §25.1 separation (the `IndexModule` worklist is a
+distinct claim, never entangled with `take_object_codegen` / the `.o` lifecycle) **and** by the
+§25.5 prioritization ruling (index warm-up yields to object codegen, so warming the search index
+never delays object codegen of loaded/prelude modules). (This sprint the invariant is **trivially
+satisfied** — Pillar 3 is design-only, nothing is added to the default build; it becomes load-bearing
+at implementation time.)
 
 ---
 
@@ -2104,11 +2295,18 @@ default build; it becomes load-bearing at implementation time.)
 - **`/qa`** — failing tests owed: the §24 (CF.1) containment guard (0432-shaped form → graceful
   `Err`, no panic on the eval thread), the Pillar-2 sig-grain harvest assertions (§23.3), the §22.5
   primer `match`-shape repro (corrected example compiles), and (next sprint) the §25 Pillar-3 tests
-  — the zero-residue +neg (mirrors `validate_dry_run_discards_does_not_commit`), the CF.2
-  nice-worker containment (0432-shaped reachable module → index-skip, no killed worker), and
-  `signature_matches_exact`/`signature_matches_partial` unit suites.
+  — per §25.8 acceptance: the **three-branch coverage** (skip-claimed / read-`.meta` / typecheck-and-
+  write-`.meta`), the **session-state residue +neg** (asserts the four `SharedState` maps unchanged,
+  NOT "no disk write" — mirrors `validate_dry_run_discards_does_not_commit`, R13), the **`.meta`
+  cache-hit on import** (no re-typecheck, R13/§25.5), the **CF.2 nice-worker containment**
+  (0432-shaped reachable module → index-skip, no killed worker, no `.meta` written), the **`.meta`-
+  derived index rebuild** (R16), and `signature_matches_exact`/`signature_matches_partial` unit
+  suites.
 - **`/arch`** — the §25.7 predicate-sourcing ruling is RESOLVED (R8 — export from
-  `cranelisp-typecheck`). No other cross-crate seam anticipated (R1–R12 pin zero S90 movement; §21).
+  `cranelisp-typecheck`). The read-or-produce-`.meta` refinement (R13–R16) adds **zero new
+  cross-crate edge and zero backend baseline movement** (R14 — the `cranelisp_backend::cache`
+  read/write/validate trio is already public; int already depends on it). No other cross-crate seam
+  anticipated (§21).
 - **`/dev` (src/)** — Phase 5: Pillars 1/2/4 + the §24 floor (serial, source-touching). The
   §22.5 primer `match` fix lands with Pillar 1.
 

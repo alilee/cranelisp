@@ -1,0 +1,89 @@
+; Cranelisp — finding what the library already has
+; "Is there already a function for this?" — answered before you import.
+
+; /imports shows what is in scope right now. /list shows what you have
+; defined. But the standard library is much larger than what is imported.
+; /search looks across every module reachable on the lib path that is NOT
+; yet in scope — "importable, but not yet imported".
+
+/imports
+
+; --- Field accessors: every record field is a function -------------------
+; A product type gives you a canonical accessor named Type.field. /list
+; shows what you have defined — here the accessor by its canonical
+; qualified name:
+
+(deftype Box [:primitives/Int v])
+/list
+
+; Box.v is the canonical accessor; the bare field name v is a convenience
+; alias for it. Both pull the field out of a Box:
+
+(Box.v (Box 42))
+(v (Box 42))
+
+; --- Searching the library -----------------------------------------------
+; Search by NAME. An exact name, or any substring of a name, matches.
+; "bit" finds the whole bitwise family in num.bits — and each row tells you
+; four things: the :Type signature, the name, the module it lives in, and
+; the exact (import ...) form to bring it into scope.
+
+/search bit
+
+; A substring need not be a prefix. "count" finds bit-count and popcount —
+; the match is anywhere in the name:
+
+/search count
+
+; Search by TYPE SIGNATURE. Give /search a type shape and it finds every
+; importable symbol of that shape, up to renaming of type variables. Here:
+; every reachable unary Int -> Int function, across two modules.
+
+/search (Fn [primitives/Int] primitives/Int)
+
+; Short type names work too — the query is matched structurally, not as
+; text. (Fn [Int Int] Int) finds the same set as the fully-qualified form:
+
+/search (Fn [Int Int] Int)
+
+; A type need not be the whole signature — a partial shape matches any
+; signature that CONTAINS it. "String" finds anything whose type mentions
+; String anywhere:
+
+/search String
+
+; Found one you want? Copy the import form straight from the result row.
+; /search told us popcount lives in num.bits:
+
+(import [num.bits [popcount]])
+(popcount 255)
+
+; Now popcount is in scope — so it is no longer "importable but not in
+; scope", and /search stops listing it. /search only ever shows what you
+; could still pull in:
+
+/search popcount
+
+; A query that matches nothing is answered plainly — never an opaque error:
+
+/search no-such-function-anywhere
+
+; --- New project? The config template writes itself ----------------------
+; Point cranelisp at a fresh project directory and it scaffolds a
+; Cranelisp.toml for you — the cargo-new / git-init ergonomic. The notice
+; appears at startup. (Shown here via a shell escape spawning a nested REPL;
+; the nested banner is filtered so only the scaffold notice shows.)
+
+/sh mkdir -p myproject && printf '/quit\n' | $CRANELISP_PLATFORM_PATH/cranelisp myproject 2>&1 | grep created
+
+; The generated file is a teaching template: a commented header and a
+; commented-out lib-dirs example. Because the lib-dir model is additive,
+; an all-commented file changes resolution by exactly nothing — it is a
+; pure template, safe by construction:
+
+/sh sed -n '1,9p' myproject/Cranelisp.toml
+
+; Launch on the same project again and it is a silent no-op — an existing
+; config is never overwritten. No create notice the second time:
+
+/sh printf '/quit\n' | $CRANELISP_PLATFORM_PATH/cranelisp myproject 2>&1 | grep created || echo '(no second create — existing config left untouched)'

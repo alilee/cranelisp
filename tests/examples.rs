@@ -155,6 +155,9 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // 30: self-parallelising map-reduce (lenient eval). main returns
         // 8 * fib(38) / 1_000_000 = 312; process exit truncates to u8 => 56.
         ("30-parallel-map-reduce.cl", &[56]),
+        // 31: bitwise integer operations. main returns the sum of sub-test
+        // pass counts = 19 → exit 19.
+        ("31-bitwise.cl", &[19]),
     ]
 }
 

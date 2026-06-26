@@ -133,6 +133,9 @@
             introspection: crate::session_v4::RunMode::Repl
                 .populates_introspection()
                 .then(dashmap::DashMap::new),
+            // S91 Pillar-3: importable-symbol indices (empty/unarmed default —
+            // this scheduler unit test does not arm the burn-down).
+            importable_indices: crate::session_v4::ImportableIndices::default(),
             // D1 ruling §4: run-mode carrier. This scheduler unit test does not
             // exercise the introspection gate or the layout-hash gate; `Repl`
             // is an inert default here.

@@ -206,6 +206,54 @@ pub(crate) extern "C" fn neq_bool(a: i64, b: i64) -> i64 {
 }
 
 // =============================================================================
+// Bitwise integer operations (FIXME 0416, S91) — operate on the full 64-bit
+// two's-complement representation of `Int`. These are the fallback shims for
+// the mappable/by-value path and `--link`; the inline path emits the matching
+// Cranelift instruction directly (`primitives_inline.rs`). Shift counts are
+// masked mod 64 to match Cranelift's `ishl`/`sshr` (the only int type today is
+// signed `Int`, so `shr` is arithmetic — Rust's `>>` on i64 is arithmetic).
+// =============================================================================
+
+#[unsafe(export_name = "bit-and")]
+pub(crate) extern "C" fn bit_and(a: i64, b: i64) -> i64 {
+    a & b
+}
+
+#[unsafe(export_name = "bit-or")]
+pub(crate) extern "C" fn bit_or(a: i64, b: i64) -> i64 {
+    a | b
+}
+
+#[unsafe(export_name = "bit-xor")]
+pub(crate) extern "C" fn bit_xor(a: i64, b: i64) -> i64 {
+    a ^ b
+}
+
+#[unsafe(export_name = "bit-not")]
+pub(crate) extern "C" fn bit_not(x: i64) -> i64 {
+    !x
+}
+
+#[unsafe(export_name = "shl")]
+pub(crate) extern "C" fn shl(v: i64, amt: i64) -> i64 {
+    // Mask the count mod 64 to match Cranelift's `ishl` (and the underlying
+    // hardware shift). `wrapping_shl` masks the count to the operand width.
+    v.wrapping_shl(amt as u32)
+}
+
+#[unsafe(export_name = "shr")]
+pub(crate) extern "C" fn shr(v: i64, amt: i64) -> i64 {
+    // Arithmetic right shift (sign-extending) — i64 `>>` / `wrapping_shr` is
+    // arithmetic in Rust; matches Cranelift `sshr`. Count masked mod 64.
+    v.wrapping_shr(amt as u32)
+}
+
+#[unsafe(export_name = "popcount")]
+pub(crate) extern "C" fn popcount(x: i64) -> i64 {
+    x.count_ones() as i64
+}
+
+// =============================================================================
 // JIT-registration table — RETIRED at S68 Wave 4.
 //
 // `ring0_jit_symbols()` is gone. The (kebab-case symbol name → raw fn ptr)

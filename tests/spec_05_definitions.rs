@@ -659,6 +659,56 @@ fn repl_cross_cluster_duplicate_field_accessor_is_ambiguous() {
     );
 }
 
+// spec: spec/05-definitions.md §5.2.6 — Generated Accessors, bare-field
+// ambiguity DIAGNOSTIC QUALITY (S91 Phase 6, defect surfaced by /docs).
+// FAILING-NOT-IGNORED defect repro — routes to /typecheck to improve the
+// REPL ambiguity message.
+//
+// §5.2.6 requires that when two types share a field name, a BARE use of that
+// field name produces "a compile-time error that lists the canonical
+// alternatives (`Box.v`, `Cup.v`)". With `(deftype Box [:primitives/Int v])`
+// and `(deftype Cup [:primitives/Bool v])` both defined, the BEHAVIOUR is
+// already correct (bare `v` is rejected; canonical `Box.v`/`Cup.v` both work —
+// see `type_member_field_accessor_disambiguates_poisoned_field`). Only the
+// DIAGNOSTIC is below spec: the `--run` path lists both alternatives
+// (`ambiguous bare name 'v' — use a qualified accessor (Box.v or Cup.v)`,
+// guarded green by `accessor_cross_type_duplicate_field_name`), but the **REPL**
+// path truncates the message to a bare `ambiguous bare name 'v'` with NEITHER
+// canonical alternative listed. §5.2.6 gives the REPL no exemption — the error
+// MUST list BOTH `Box.v` AND `Cup.v` in every mode so the user is told how to
+// disambiguate. This is RED today (REPL message names neither alternative) and
+// flips green when /typecheck threads the canonical-alternative list into the
+// REPL-path diagnostic. The field types here differ (Int vs Bool) to match the
+// exact shape /docs reported.
+#[test]
+fn bare_field_ambiguity_message_lists_both_alternatives() {
+    let out = repl_prims(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftype Cup [:primitives/Bool v])\n\
+         (v (Box 7))\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    // The diagnostic MUST be framed as an ambiguity (not "undefined variable").
+    assert!(
+        combined.contains("ambiguous"),
+        "bare use of the duplicate-field accessor `v` MUST be framed as an \
+         ambiguity error (not \"undefined variable\") per §5.2.6; got stdout={} \
+         stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // RED today (REPL path): the message MUST list BOTH canonical alternatives
+    // `Box.v` AND `Cup.v` so the user learns how to disambiguate. The REPL today
+    // emits only the bare `ambiguous bare name 'v'` with neither name.
+    assert!(
+        combined.contains("Box.v") && combined.contains("Cup.v"),
+        "the ambiguity error MUST list BOTH canonical alternatives `Box.v` and \
+         `Cup.v` per §5.2.6 (no REPL exemption); got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+}
+
 // spec: spec/05-definitions.md §5.2.7 — constructor arity rejection:
 // `(Point 1)` where Point expects two args. No prior spec_05 test
 // isolated ADT-constructor arity rejection; `defn_multi_clause_arity`
@@ -966,4 +1016,217 @@ fn multi_clause_defn_self_call_repl_equals_run_neg() {
          diagnostic (§9.4) — no divergence, no panic in either mode.\n\
          repl_msg={repl_msg:?}\nrun_msg={run_msg:?}"
     );
+}
+
+// =============================================================================
+// §5.1.2 — FIXME 0432 Face A: ANNOTATED multi-clause `defn` self-call (S91
+// Thread C repro-check)
+// =============================================================================
+//
+// Face A (distinct from Face B above): a multi-clause `defn` whose params ARE
+// annotated, so the recursion's type IS pinned (no ambiguity) — the form
+// type-checks. The S89 flag was that the in-body self-call may lower to an
+// `undefined function` at codegen (a possible mischaracterisation of the symptom).
+// This is the cross-skill-handoff minimal repro (CLAUDE.md §"Cross-skill defect
+// handoff requires minimal repro"): its result decides disposition —
+//   RED  → a real codegen defect → retarget FIXME 0432 to /backend, carry the
+//          repro as a known-red guard;
+//   GREEN→ the annotated→codegen variant does NOT reproduce → close FIXME 0432
+//          with the repro-pass record (Face B already closed S90).
+// Authored RED-first per the plan; the run determines truth (the `defn_multi_
+// clause_arity` floor above already proves multi-clause-with-no-self-call works).
+
+// spec: spec/05-definitions.md §5.1.2 — 0432.FaceA: an ANNOTATED multi-clause
+// `defn` with a cross-variant self-call compiles and runs. The in-body self-call
+// `(sum-to n 0)` must lower to the dispatched mangled variant symbol, not an
+// `undefined function`. `(sum-to 5)` = 5+4+3+2+1+0 = 15.
+//
+// REPRODUCES (S91 Wave-7 narrowing): RED with `codegen error: undefined function:
+// sum-to`. The repro is REAL (Face A was previously unverified; this confirms it).
+// See the minimal-repro + dimension controls below + the handoff brief.
+#[test]
+fn defn_multi_clause_annotated_self_call() {
+    let out = repl_prims(
+        "(defn sum-to \
+            ([:primitives/Int n] (sum-to n 0)) \
+            ([:primitives/Int n :primitives/Int acc] \
+               (if (eq-i64 n 0) acc (sum-to (sub-i64 n 1) (add-i64 acc n)))))\n\
+         (sum-to 5)\n",
+    );
+    // CORRECT: the annotated self-call dispatches and the recursion sums to 15.
+    out.assert_stdout_contains(":primitives/Int 15");
+}
+
+// =============================================================================
+// §5.1.2 — FIXME 0432 Face A: minimal repro + dimension narrowing (S91 Wave-7)
+//
+// The narrowing pins the EXACT triggering combination and the passing controls,
+// per CLAUDE.md §"Cross-compiler-skill defect handoff requires minimal repro" +
+// tests/CLAUDE.md §"Isolating Cross-Crate Failures". Each dimension was varied:
+//
+//   | shape                                            | result                  |
+//   |--------------------------------------------------|-------------------------|
+//   | single-clause annotated self-call (recursion)    | WORKS (control below)   |
+//   | multi-clause annotated, NO self-call             | WORKS (`defn_multi_     |
+//   |                                                  |  clause_arity` above)   |
+//   | multi-clause UNannotated self-call               | clean `ambiguous type`  |
+//   |                                                  | (Face B — not this bug) |
+//   | multi-clause ANNOTATED + self-call (any clause)  | **`undefined function`  |
+//   |                                                  | at codegen — THE BUG**  |
+//
+// All three of {multi-clause, annotated, self-call} are REQUIRED to trigger it;
+// removing any one makes it pass (or gives the clean Face-B ambiguous-type error).
+// The self-call fails identically in the first clause, a later clause, same-arity,
+// or cross-arity — so the trigger is "any self-reference inside any clause body of
+// a multi-clause annotated defn," not a specific clause position.
+//
+// LAYER DIAGNOSIS (handoff brief): the call REACHES codegen (typecheck succeeded —
+// so this is NOT a typecheck *rejection* / frontend resolution error that would
+// error pre-codegen). The visible error is `/backend`
+// (`crates/cranelisp-backend/src/compiler/apply.rs` `undefined function`) because
+// the self-call lowers to a call against the BARE name (`sum-to`) while the
+// multi-clause clauses are compiled+registered ONLY under MANGLED variant names
+// (`sum-to$Int` etc.) — so the bare name is never defined in the codegen module.
+// The ROOT, however, is `/typecheck`: the in-body self-call's dispatch annotation
+// (`resolved_call` / `SigDispatch { mangled_name }`) is never written back onto
+// the self-call AST node, so the backend has nothing telling it which mangled
+// variant to call and falls back to the bare name. Suspected seam:
+// `crates/cranelisp-typecheck/src/program.rs` — the multi-sig re-annotation block
+// looks up each variant by its INTERNAL name (`{name}__v{i}`) AFTER
+// `register_mangled_variants` has already removed-and-reinserted those entries
+// under their MANGLED names, so the lookup misses and the self-call resolution is
+// never propagated into the AST. This is the "visible error belongs to one skill;
+// underlying failure belongs to another" pattern (CLAUDE.md) — visible at
+// /backend, owned by /typecheck. `/dev` should confirm at the seam with an
+// isolating unit test (parse → build_program → check, assert the self-call node
+// carries the `SigDispatch`/mangled `resolved_call`).
+//
+// SUSPECTED OWNING SKILL FOR THE FIX: /typecheck (the missing re-annotation),
+// NOT /backend (the bare-name fallback is correct given no annotation). Disposition
+// per FIXME 0432: REPRODUCES → routes to the owning skill; FIXME 0432 does NOT
+// close as a non-repro.
+// =============================================================================
+
+// spec: spec/05-definitions.md §5.1.2 — MINIMAL REPRO. The smallest shape that
+// triggers `undefined function`: a 2-clause annotated `defn` whose first clause
+// self-calls the other. `(h 5)` should = `(add-i64 5 5)` = 10. RED today:
+// `codegen error: undefined function: h`. FIXME(/typecheck) — the in-body
+// self-call's mangled-variant dispatch is not re-annotated onto the AST (see the
+// brief above); the backend falls back to the undefined bare name `h`.
+#[test]
+fn defn_multi_clause_annotated_self_call_minimal_repro() {
+    let out = repl_prims(
+        "(defn h \
+            ([:primitives/Int n] (h n n)) \
+            ([:primitives/Int a :primitives/Int b] (add-i64 a b)))\n\
+         (h 5)\n",
+    );
+    out.assert_stdout_contains(":primitives/Int 10");
+}
+
+// spec: spec/05-definitions.md §5.1.2 — DIMENSION CONTROL (passes today): a
+// SINGLE-clause annotated self-call (ordinary recursion) compiles and runs —
+// `(fac 5)` = 120. Proves the self-call alone is NOT the trigger; the bug needs
+// MULTIPLE clauses. (If this ever goes RED, the defect has widened beyond the
+// multi-clause case — a stronger regression.)
+#[test]
+fn defn_single_clause_annotated_self_call_control() {
+    let out = repl_prims(
+        "(defn fac [:primitives/Int n] \
+           (if (eq-i64 n 0) 1 (mul-i64 n (fac (sub-i64 n 1)))))\n\
+         (fac 5)\n",
+    );
+    out.assert_stdout_contains(":primitives/Int 120");
+}
+
+// spec: spec/05-definitions.md §5.1.2 — DIMENSION CONTROL (passes today): a
+// multi-clause annotated `defn` with NO self-call compiles and dispatches both
+// arities — `(pick 5)` = 5, `(pick 5 10)` = 15. Proves multi-clause + annotations
+// alone are NOT the trigger; the bug needs the self-call. (Companion to the
+// `defn_multi_clause_arity` floor; this one carries explicit annotations to
+// isolate the annotation dimension from the bug.)
+#[test]
+fn defn_multi_clause_annotated_no_self_call_control() {
+    let out = repl_prims(
+        "(defn pick \
+            ([:primitives/Int n] n) \
+            ([:primitives/Int n :primitives/Int acc] (add-i64 n acc)))\n\
+         (pick 5)\n\
+         (pick 5 10)\n",
+    );
+    out.assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 15"]);
+}
+
+// =============================================================================
+// §8.5.2 / §5.2.6 / §7.3.1 — FIXME 0365: `Type.member` field accessors +
+// impl-time collision rejection (S91 Thread C)
+// =============================================================================
+//
+// The dotted form `Box.v` resolves the field accessor `v` of `Box` directly,
+// bypassing bare-name lookup — the per-type escape hatch for same-module
+// duplicate-field-name ambiguity (the bare `v` is poisoned when two types in one
+// module each carry a field `v`; see `accessor_cross_type_duplicate_field_name`
+// above for the bare-poison guard that still holds). RED-first: `Box.v` does not
+// yet resolve as a field accessor (Wave 1 frontend transport + Wave 3 typecheck
+// land it). Free-standing: PrimitivesOnly prelude, decimal literals only.
+
+// spec: spec/08-modules.md §8.5.2 — `Type.member` field accessor disambiguates a
+// poisoned duplicate field. With `(deftype Box [:Int v])` + `(deftype Cup [:Int
+// v])` the bare `v` is poisoned, but `(Box.v (Box 5))` = 5 and `(Cup.v (Cup 9))`
+// = 9 resolve directly to the per-type accessors.
+#[test]
+fn type_member_field_accessor_disambiguates_poisoned_field() {
+    repl_prims(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftype Cup [:primitives/Int v])\n\
+         (Box.v (Box 5))\n\
+         (Cup.v (Cup 9))\n",
+    )
+    .assert_stdout_contains_all(&[":primitives/Int 5", ":primitives/Int 9"]);
+}
+
+// spec: spec/08-modules.md §8.5.2 — a `Type.member` field accessor is first-class:
+// typed `(Fn [Type] FieldType)`, may be bound to a variable and applied. `Box.v`
+// bound via `let` and applied to `(Box 7)` yields 7.
+#[test]
+fn type_member_accessor_typed_fn_of_type() {
+    repl_prims(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftype Cup [:primitives/Int v])\n\
+         (let [g Box.v] (g (Box 7)))\n",
+    )
+    .assert_stdout_contains(":primitives/Int 7");
+}
+
+// spec: spec/07-traits.md §7.3.1 — impl-time collision rejection (FIXME 0365,
+// R3). A trait `impl` whose method name collides with the target type's existing
+// field-accessor name MUST be rejected at impl time with a diagnostic naming the
+// collision — the program does NOT run. Here `Box` has a field accessor `v`, and
+// the impl tries to define a method `v` for `Box` → compile-time error.
+#[test]
+fn impl_method_colliding_with_field_accessor_rejected_neg() {
+    let out = repl_prims(
+        "(deftype Box [:primitives/Int v])\n\
+         (deftrait HasV (v [x] :primitives/Int))\n\
+         (impl HasV Box (defn v [x] 99))\n\
+         (Box.v (Box 5))\n",
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    // The collision MUST be surfaced as a compile-time error naming the clash.
+    assert!(
+        combined.contains("collision")
+            || combined.contains("collide")
+            || combined.contains("conflict")
+            || combined.contains("already")
+            || (combined.contains("error") && combined.contains("accessor")),
+        "an impl method `v` colliding with `Box`'s field accessor `v` MUST be \
+         rejected at impl time with a diagnostic naming the collision (§7.3.1, \
+         FIXME 0365); got stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // Negative: the colliding impl MUST NOT silently win — `(Box.v (Box 5))`
+    // MUST NOT return the method's `99` (the field accessor's 5 is the only
+    // correct value, and only if the impl is rejected rather than overriding).
+    out.assert_stdout_does_not_contain(":primitives/Int 99");
 }

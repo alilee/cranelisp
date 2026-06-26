@@ -2,23 +2,37 @@
 
 Standard library for Cranelisp. Owned by `/stdlib` skill.
 
-## Current State (Sprint 87 hygiene — `num.bits` bitwise module)
+## Current State (Sprint 91 Phase 6 — `num.bits` rewritten over S91 native primitives)
 
-Added `stdlib/num/bits.cl` (module `num.bits`; registered `(mod bits)` in
-`num.cl`) — the bitwise API (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/
-`bit-shift-left`/`bit-shift-right`/`bit-test`/`bit-set`/`bit-clear`/`bit-flip`/
-`popcount` + `pow2`/`full-mask`/`width`/`bit-at`) composed entirely from Ring 0
-arithmetic primitives. **WIDTH = 30 bits** for the fixed-width ops (`bit-not` is
-one's-complement within the low 30 bits, not machine two's-complement — keeps
-intermediates positive). Clojure-aligned names; none reserved by §11.4a; reached
-module-qualified / import-on-demand — **NOT bare-promoted**. 23 self-tests in
-`num/bits/test.cl` (bare `(mod test)` parent, extraction-stable), **all green**
-via the in-language runner (`(discover-tests ["num.bits.test"])` →
-`23 passed, 0 failed, 0 panicked`). This is the STDLIB coverage of FIXME 0416's
-need; the COMPILER-intrinsics version of 0416 stays DEFERRED/OPEN (future
-perf-driven /arch+/backend decision). See `plan-stdlib.md §26.8`. The exemplar's
-`grid.cl` C3 bit layer can now adopt `num.bits/*` (a future `/port` `.cl` swap).
-`cargo nextest run --workspace` = **2865 passed / 0 failed / 0 skipped** (unchanged).
+`stdlib/num/bits.cl` (module `num.bits`; `(mod bits)` registered in `num.cl`)
+was **rewritten as a curated, thin convenience layer over the 7 S91 native
+bitwise primitives** (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/
+`popcount`; spec appendix-a-builtins §A.3, FIXME 0416 — now RESOLVED as
+primitives, not stdlib). This **replaces** the pre-S91 arithmetic-simulation
+module (`pow2`/`full-mask`/`width`/`bit-at` fold helpers; **WIDTH = 30 bits**,
+one's-complement). The new module is full **64-bit two's-complement** — `bit-not
+0 = -1`, the sign bit participates, `popcount -1 = 64`.
+
+Surface exposed (Clojure `clojure.core` bit-* aligned):
+- Direct (thin pass-through with curated docstrings/sigs): `bit-and`, `bit-or`,
+  `bit-xor`, `bit-not`.
+- Shifts: `bit-shift-left` (= `shl`, zero-fill), `bit-shift-right` (= `shr`,
+  **arithmetic**/sign-extending). **No `unsigned-bit-shift-right`** — S91 ships
+  only the arithmetic `shr` (a logical variant is a future per-int-type concern,
+  §A.3); do not invent one.
+- Single-bit helpers (composed via `(shl 1 n)`): `bit-test` (→ Bool), `bit-set`,
+  `bit-clear`, `bit-flip`.
+- Population count: `popcount` + Clojure alias `bit-count`.
+
+Names none-reserved by §11.4a; reached module-qualified / import-on-demand —
+**NOT bare-promoted**. 27 self-tests in `num/bits/test.cl` (bare `(mod test)`
+parent, extraction-stable), **all green** via the in-language runner
+(`(discover-tests ["num.bits.test"])` → `27 passed, 0 failed, 0 panicked`).
+Also validated end-to-end under `--run` (18-check driver, exit 18). The
+exemplar's `grid.cl` C3 bit contortion can now adopt `num.bits/*` (a future
+`/port` `.cl` swap) — surface note for `/port`: the dropped helpers
+(`pow2`/`full-mask`/`width`/`bit-at`) were 30-bit-WIDTH artifacts; `(shl 1 n)`
+and `bit-test`/`bit-set`/etc. replace them with no width cap.
 
 ## Current State (Sprint 87 Phase 5 Wave 1d — Stage C.2 rollout)
 

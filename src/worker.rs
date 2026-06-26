@@ -114,7 +114,7 @@ pub(crate) fn leading_annotation_len(sexps: &[Sexp]) -> usize {
 /// `cranelisp_typecheck::check_forms`. The worker pipeline still operates in
 /// `TopLevel` shapes downstream of build_form for codegen + display info; we
 /// transcode again here at the typecheck-dispatch boundary.
-fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::ParsedEntry> {
+pub(crate) fn top_level_to_parsed_entries(program: &[TopLevel]) -> Vec<cranelisp_types::ParsedEntry> {
     use cranelisp_types::ParsedEntry;
 
     let mut out = Vec::with_capacity(program.len());
@@ -1035,6 +1035,25 @@ pub fn inline_jit_codegen_for_names(
 /// elsewhere so any future REPL-only extern inherits both the promise and the
 /// rejection from one edit.
 pub(crate) const DEV_SESSION_ONLY_EXTERNS: &[&str] = &["discover-tests"];
+
+/// The name of the synthetic zero-arg `Defn` that wraps a bare top-level
+/// `TopLevel::Expr` for typecheck + codegen dispatch (see `wrap_exprs_as_defns`
+/// in `process_form/form_dispatch.rs` and `derive_codegen_batch` above). It is
+/// an internal compiler artifact, NOT a user definition — every user-facing
+/// symbol listing (`/list`, `/exports`, the agent harvest) MUST exclude it, the
+/// same way `$`-mangled internal names and `SpecialForm` entries are excluded
+/// (`repl/spec.md §3.3`). Single source of the literal so the filters cannot
+/// drift from the synthesis site.
+pub(crate) const SYNTHETIC_EXPR_WRAPPER: &str = "__expr";
+
+/// True when `name` is an internal compiler artifact that MUST NOT appear in a
+/// user-facing symbol listing — a `$`-mangled overload/mono/specialisation name
+/// or the synthetic top-level-expression wrapper (`SYNTHETIC_EXPR_WRAPPER`).
+/// Shared by `/list`, `/exports`, and the agent harvest so the exclusion is
+/// uniform (one predicate, not three drifting copies).
+pub(crate) fn is_internal_listing_name(name: &str) -> bool {
+    name.contains('$') || name == SYNTHETIC_EXPR_WRAPPER
+}
 
 /// Build the session JIT from the symbol tables (the unified `Jit::new`
 /// boundary, BC §3), then register the host-promised dev-session-only externs.

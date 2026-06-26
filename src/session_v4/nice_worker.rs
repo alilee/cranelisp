@@ -68,38 +68,65 @@ pub(crate) fn nice_worker_loop(shared: &SharedState) {
 
     loop {
         // Check for priority promotion (hot flush before --link).
-        if shared.promote_nice_workers.load(
-            std::sync::atomic::Ordering::Relaxed,
-        ) {
+        let promoted = shared
+            .promote_nice_workers
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if promoted {
             crate::thread_util::set_normal_priority();
         }
 
-        // Park until a TypecheckDone module with object_done == false
-        // is available, or shutdown is signaled.
-        let module = match shared.scheduler.take_object_codegen() {
-            Some(m) => m,
-            None => {
-                // Observability: publish this nice-worker thread's
-                // scheduler-trace ring buffer so the main thread's
-                // `flush_to_stderr` can merge it into the dump
-                // (design/int/observability.md §7). No-op when disabled.
-                crate::observability::publish_thread_buffer();
-                // GOT trace events (FIXME 0099) — nice workers also emit
-                // GOT events (LinkerWrite during cache-hit load).
-                crate::got_trace::publish_thread_buffer();
-                return; // Shutdown signaled.
+        // Object codegen FIRST (the correctness path), index work in the slack
+        // (S91 §25.5 / R17 — object codegen first, index warm-up yields to it).
+        // Non-blocking claim so the loop can fall through to index work when no
+        // object work is pending, rather than parking forever.
+        if let Some(module) = shared.scheduler.try_take_object_codegen() {
+            // Attempt .o compilation if caching is enabled. Sprint 67 Cluster B
+            // sub-fire 3: cache dir via ObjectCache facade.
+            if let Some(cache_dir) = shared.cache.cache_dir() {
+                compile_module_object(shared, &module, &cache_dir);
             }
-        };
-
-        // Attempt .o compilation if caching is enabled. Sprint 67 Cluster B
-        // sub-fire 3: cache dir via ObjectCache facade.
-        if let Some(cache_dir) = shared.cache.cache_dir() {
-            compile_module_object(shared, &module, &cache_dir);
+            // Notify scheduler that object codegen is done for this module.
+            shared.scheduler.notify_object_codegen_complete(&module);
+            continue;
         }
 
-        // Notify scheduler that object codegen is done for this module.
-        shared.scheduler.notify_object_codegen_complete(&module);
+        // No object work pending. S91 — the index burn-down (R18:
+        // abandon-on-flush). A PROMOTED nice worker (pre-`--link` hot flush) is
+        // object-codegen-scoped: it does NOT drain index work — the link needs
+        // no index, and the index worklist yields entirely (the flush-time face
+        // of R17's yield-to-codegen). It parks (re-checking object work) instead.
+        if !promoted {
+            // R18 abandon-on-shutdown: check the shutdown flag BETWEEN
+            // `IndexModule` tasks (here, before claiming the next one) and exit
+            // promptly — never "finish the whole burn-down first". A task
+            // already claimed runs to completion (atomic `.meta` ⇒ no corrupt
+            // file even if the next task is abandoned).
+            if shared.scheduler.is_shutdown() {
+                break;
+            }
+            if crate::session_v4::index_worker::run_one_index_task(shared) {
+                continue;
+            }
+        }
+
+        // No object work AND (promoted OR no index work) — park until woken by a
+        // new TypecheckDone module, an index-worklist arm, or shutdown.
+        if !shared.scheduler.park_nice_worker() {
+            // Observability: publish this nice-worker thread's scheduler-trace
+            // ring buffer so the main thread's `flush_to_stderr` can merge it
+            // into the dump (design/int/observability.md §7). No-op when
+            // disabled.
+            crate::observability::publish_thread_buffer();
+            // GOT trace events (FIXME 0099) — nice workers also emit GOT events
+            // (LinkerWrite during cache-hit load).
+            crate::got_trace::publish_thread_buffer();
+            return; // Shutdown signaled.
+        }
     }
+
+    // Promoted-path shutdown break exits here (after the `break` above).
+    crate::observability::publish_thread_buffer();
+    crate::got_trace::publish_thread_buffer();
 }
 
 /// Compile a single module to `.o` and `.meta.json` files in the cache directory.

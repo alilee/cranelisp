@@ -239,6 +239,8 @@ The simplest form targets a specific concrete type.
 
 Each `defn` in the impl block MUST correspond to a method declared in the trait. The parameter count MUST match the number of parameters in the trait's method signature. An impl block MUST provide definitions for all methods in the trait that do not have default implementations (see 7.1.5). Methods with defaults are automatically synthesized if not explicitly provided.
 
+**Method-name vs field-accessor collision (FIXME 0365/0439, settled S91).** [Tested+Neg tests/spec_05_definitions::impl_method_colliding_with_field_accessor_rejected_neg] An `impl` whose method name equals an existing **field-accessor** name of the impl target type MUST be **rejected at impl time**, with a diagnostic naming the colliding name and both definition sites (the `deftype` field and the `impl` method). For example, given `(deftype Box [:Int v])` (whose canonical accessor is `Box.v`, §5.2.6), an `(impl SomeTrait Box (defn v [x] …))` is a compile-time error. This is the no-silent-overload-consistent resolution: it prevents the target type from having two distinct `(Fn [Box] …)` denotations for the same dotted name, so the canonical accessor `Box.v` (§8.5.2) always names exactly one thing and never has to disambiguate field-accessor-vs-trait-method. Casing makes the rule's scope exact and complete: constructors are uppercase (§1.4), while field accessors and trait methods are both lowercase, so a field-accessor name can collide *only* with a trait-method name — precisely the case this check covers; a constructor name can never collide with either.
+
 ### 7.3.2 Concrete Parameterized Implementation
 
 An impl MAY target a fully applied parameterized type:

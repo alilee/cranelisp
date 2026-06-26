@@ -177,6 +177,53 @@ pub(crate) fn ring0_primitives() -> Vec<PrimitiveDef> {
             param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
             docstring: "Equality",
         },
+        // --- Bitwise integer operations (FIXME 0416, S91) ---
+        // Operate on the full 64-bit two's-complement representation of `Int`
+        // (§A.3). The three binary ops + `shl`/`shr` are `(Fn [Int Int] Int)`;
+        // `bit-not`/`popcount` are `(Fn [Int] Int)`. Backend lowers each 1:1 to a
+        // Cranelift instruction (`primitives_inline.rs`).
+        PrimitiveDef {
+            name: Symbol::from("bit-and"),
+            ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Bitwise AND",
+        },
+        PrimitiveDef {
+            name: Symbol::from("bit-or"),
+            ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Bitwise OR",
+        },
+        PrimitiveDef {
+            name: Symbol::from("bit-xor"),
+            ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            param_names: vec![Symbol::from("lhs"), Symbol::from("rhs")],
+            docstring: "Bitwise XOR",
+        },
+        PrimitiveDef {
+            name: Symbol::from("bit-not"),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            param_names: vec![Symbol::from("x")],
+            docstring: "Bitwise complement over the full 64-bit two's-complement representation",
+        },
+        PrimitiveDef {
+            name: Symbol::from("shl"),
+            ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            param_names: vec![Symbol::from("v"), Symbol::from("amt")],
+            docstring: "Left shift; vacated low bits are zero-filled",
+        },
+        PrimitiveDef {
+            name: Symbol::from("shr"),
+            ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            param_names: vec![Symbol::from("v"), Symbol::from("amt")],
+            docstring: "Right shift; arithmetic (sign-extending) for signed Int",
+        },
+        PrimitiveDef {
+            name: Symbol::from("popcount"),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+            param_names: vec![Symbol::from("x")],
+            docstring: "Population count — number of set bits in the 64-bit representation",
+        },
     ]
 }
 

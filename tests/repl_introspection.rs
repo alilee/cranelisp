@@ -245,6 +245,29 @@ fn list_neg_empty_categories_omitted() {
     );
 }
 
+// spec: repl/spec.md §3.3 (negative) — /list MUST NOT show the synthetic
+// `__expr` top-level-expression wrapper (S91 Phase 6, defect surfaced by /repl).
+// FAILING-NOT-IGNORED defect repro — routes to /int to filter `__expr`.
+//
+// §3.3 says `/list` shows USER definitions. A bare top-level expression eval
+// (e.g. `3`, `(foo)`) creates a synthetic `__expr` binding internally; that
+// internal wrapper then leaks into the `/list` "Fns:" category. After evaluating
+// a single bare expression and nothing else, `/list` MUST report `(no
+// definitions)` — there are none. Today it instead renders `Fns:\n  __expr`,
+// exposing an internal name the user never wrote. The fix (in /int) filters
+// `__expr` from the listing exactly as `$`-mangled internal names are filtered.
+// RED today: `/list` contains `__expr`; flips green when the wrapper is filtered.
+#[test]
+fn list_neg_no_synthetic_expr_wrapper() {
+    let out = repl("3\n/list\n");
+    assert!(
+        !out.stdout.contains("__expr"),
+        "/list MUST NOT show the internal `__expr` top-level-expression wrapper \
+         per §3.3 (it is not a user definition); got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: repl/spec.md §3.3 (negative) — /list does NOT show special forms
 // Special forms belong to /imports, not /list.
 // (carry: legacy/e2e.rs::e2e_s3_3_list_neg_no_special_forms)

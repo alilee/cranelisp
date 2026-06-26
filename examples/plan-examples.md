@@ -41,7 +41,7 @@ skill; the authoritative inventory is the on-disk file set itself.
 
 ## 2. The Learning Sequence (current on-disk set)
 
-30 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
+31 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
 is the **capability taught**. Exit code is the documented `main` return
 (sum of sub-test passes); it is the value `tests/examples.rs` asserts.
 
@@ -77,6 +77,7 @@ is the **capability taught**. Exit code is the documented `main` return
 | 28 | `28-parallel.cl` | Parallel evaluation (`par-let`, `bind!`) | 67 |
 | 29 | `29-annotations.cl` | The `:Type` annotation model (capstone): constraining function typing + disambiguating expressions | 119 |
 | 30 | `30-parallel-map-reduce.cl` | Toward a parallel `par-map` over a Functor: self-parallelising `let`-spark map-reduce + honest apply-arg-sparking gap (FIXME 0424) | 56 |
+| 31 | `31-bitwise.cl` | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) as bitmask set operations; inline single-bit helpers (`bit-test`/`bit-set`/`bit-clear`/`bit-flip`) and a permission bitmask | 19 |
 
 ### Notes on specific entries
 
@@ -197,6 +198,7 @@ the spec when annotating coverage.)
 | IO model (`Pure`, `bind`, platform IO, `read-line`) | 21, 22, 23, 24 |
 | Parallel evaluation (`par-let`, lenient eval) | 28, 30 |
 | `:Type` annotation model | 29 |
+| Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) | 31 |
 
 ## 5. Verification
 
@@ -218,7 +220,9 @@ to reconcile that table.
 
 ## Next skills
 
-- `/qa` — reconcile the `tests/examples.rs` expected-exit table for the S86
-  changes (08-floats 9→10, 22-io-hello 11→99); replay `tests/examples.rs`.
+- `/qa` — reconcile the `tests/examples.rs` expected-exit table: ADD
+  `31-bitwise.cl => 19` (S91 bitwise primitives example). Also (pre-existing)
+  the S86 changes (08-floats 9→10, 22-io-hello 11→99); replay
+  `tests/examples.rs`.
 - `/docs` — getting-started can lead with `01-integers` and reference the
   platform-symlink note here for the IO examples.

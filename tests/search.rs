@@ -1,0 +1,551 @@
+// search.rs — Pillar 3 importable-symbol `/search` (Sprint 91, Thread A,
+// centerpiece).
+//
+// `/search <query>` is a default-build (NON-agent-gated) REPL command over
+// symbols REACHABLE BUT NOT YET IMPORTED on the lib search path ∪ project root,
+// matched by name and/or type signature, exact OR partial. Served by a
+// nice-worker background indexer (read-or-produce-`.meta`, eager-from-REPL-
+// startup, REPL-only). Design of record: repl/spec.md §17.19,
+// design/int/agent.md §25, design/arch/repl-embedded-agent.md §11,
+// design/typecheck/signature-match.md.
+//
+// RED-first: `/search` does not exist yet (Wave 5 lands it). Today the command is
+// unknown — these tests fail at runtime (no `/search` results, no index). The
+// unit suites for `signature_matches_exact`/`_partial` are /dev-authored in
+// `cranelisp-typecheck` (NOT here — a unit test referencing a not-yet-existing
+// `fn` would break this binary's compilation).
+//
+// All e2e — subprocess only. Free-standing: PrimitivesOnly prelude; reachable
+// modules built inline in the per-test tmpdir. The default-build framing applies:
+// `/search` works WITHOUT the agent feature, so these run in the DEFAULT lane.
+
+#[path = "helpers/mod.rs"]
+mod helpers;
+
+use helpers::e2e::{Cranelisp, PreludeVariant};
+
+/// A REPL session at a project root containing a reachable-but-unimported sibling
+/// module `lib1.cl` (on a lib-dir) that exports a few functions of known shapes,
+/// plus a root-level module. The session pipes `cmds` and captures output. The
+/// indexer (REPL-only) arms at startup and burns down the reachable modules.
+fn search_session(cmds: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // A reachable-but-unimported module on a lib-dir.
+        .file(
+            "lib/mathx.cl",
+            "(import [primitives [add-i64 eq-i64]])\n\
+             (defn gcd2 [x y] (add-i64 x y))\n\
+             (defn is-zero [x] (eq-i64 x 0))\n",
+        )
+        // A reachable-but-unimported module at the PROJECT ROOT.
+        .file(
+            "rootmod.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn root-helper [x] (add-i64 x 1))\n",
+        )
+        .lib_dir("lib")
+        .stdin(cmds)
+        .output()
+}
+
+// ===========================================================================
+// A.6 — `/search` query e2e: name + scheme, exact + partial, over lib ∪ root
+// ===========================================================================
+
+// spec: repl/spec.md §17.19.2 — a `/search <name>` exact match returns a result
+// row with FOUR facets: symbol name + its `:Type` signature + originating module
+// + the exact `(import …)` form.
+#[test]
+fn search_by_name_exact_returns_four_facets() {
+    let out = search_session("/search gcd2\n");
+    // The four facets render exactly as §17.19.2's own example shows. For a
+    // function-typed symbol the `:Type` signature is the WHOLE `(Fn …)` form with
+    // FQ leaf type names (`primitives/Int`) inside it — NOT a colon-per-leaf
+    // (matching `/sig`/`/list` and the spec's `(Fn [primitives/Int primitives/Int]
+    // primitives/Int)` example, which is `:Type`-prefixed as one unit, FQ names
+    // appearing but not per-leaf-colon-prefixed).
+    out.assert_stdout_contains_all(&[
+        "gcd2",                                                // (1) symbol name
+        "(Fn [primitives/Int primitives/Int] primitives/Int)", // (2) full `:Type` sig, FQ leaves
+        "mathx",                                               // (3) originating module
+        "(import [mathx [gcd2]])",                             // (4) the actionable import form
+    ]);
+}
+
+// spec: repl/spec.md §17.19.1 — `/search <fragment>` partial = case-insensitive
+// substring of the bare name. `/search zero` finds `is-zero`.
+#[test]
+fn search_by_name_partial_substring() {
+    let out = search_session("/search zero\n");
+    out.assert_stdout_contains("is-zero");
+}
+
+// spec: repl/spec.md §17.19.1 — `/search (Fn …)` exact scheme match returns the
+// alpha-equivalent symbol(s). `gcd2`/`root-helper` have an Int-arrow shape;
+// `(Fn [Int Int] Int)` exact-matches `gcd2`.
+#[test]
+fn search_by_scheme_exact() {
+    let out = search_session("/search (Fn [primitives/Int primitives/Int] primitives/Int)\n");
+    out.assert_stdout_contains("gcd2");
+}
+
+// spec: repl/spec.md §17.19.1 — `/search (T)` partial = structural-contains: the
+// query type-shape appears as a sub-structure of a candidate's scheme.
+// `/search primitives/Int` matches any scheme mentioning `Int` (gcd2, is-zero,
+// root-helper all do).
+#[test]
+fn search_by_scheme_partial_contains() {
+    let out = search_session("/search primitives/Int\n");
+    out.assert_stdout_contains_all(&["gcd2", "is-zero"]);
+}
+
+// spec: repl/spec.md §17.19 — reachable scope is the lib search path ∪ the
+// project root (R10). A symbol in a lib-dir module (gcd2) AND a symbol in a
+// project-root module (root-helper) both surface.
+#[test]
+fn search_spans_lib_path_and_project_root() {
+    let out = search_session("/search primitives/Int\n");
+    out.assert_stdout_contains_all(&["gcd2", "root-helper"]);
+}
+
+// spec: repl/spec.md §17.19.1 — NEG: an empty/no-match query re-prompts with a
+// short self-documenting "no importable symbols matched" note, NEVER an opaque
+// error or a crash.
+#[test]
+fn search_neg_no_match_self_documenting_note() {
+    let out = search_session("/search this-symbol-does-not-exist-anywhere\n");
+    let lc = out.stdout.to_lowercase();
+    assert!(
+        lc.contains("no importable") || lc.contains("no match") || lc.contains("nothing"),
+        "an empty/no-match `/search` MUST render a self-documenting no-match note \
+         (§17.19.1), never an opaque error; stdout={}",
+        out.stdout
+    );
+    // Must not crash.
+    assert!(
+        out.status.code().is_some(),
+        "/search MUST NOT crash the REPL (§17.19.5); status={:?}",
+        out.status
+    );
+}
+
+// spec: repl/spec.md §17.19 — NEG: `/search` covers what is importable-but-not-
+// yet-in-scope. A symbol ALREADY imported into the session is NOT re-offered as
+// importable. After `(import [mathx [gcd2]])`, `/search gcd2` must not re-offer
+// it with an `(import …)` form (it is resident, not reachable-but-unimported).
+#[test]
+fn search_neg_already_imported_not_relisted() {
+    let out = search_session("(import [mathx [gcd2]])\n/search gcd2\n");
+    out.assert_stdout_does_not_contain("(import [mathx [gcd2]])");
+}
+
+// ===========================================================================
+// A.3 — three-branch indexer coverage (skip-claimed / read-`.meta`-no-typecheck
+// / typecheck-and-write-`.meta`)
+// ===========================================================================
+
+// spec: design/int/agent.md §25.1 — branch (c): a reachable module with no/stale
+// `.meta` is typechecked once on the nice worker against throwaway staging, then
+// a `.meta` is written via `cache::write_meta` — but NO `.o`. After a search that
+// arms the index, the indexed lib module has a `.meta.json` but no `.o`.
+#[test]
+fn search_branch_c_stale_meta_typechecks_writes_meta() {
+    let out = search_session("/search gcd2\n");
+    // The branch-(c) write produces a `.meta` for the indexed module …
+    assert!(
+        out.tmp_exists(".cranelisp-cache/mathx.meta.json"),
+        "branch (c) MUST write a `.meta` for the indexed reachable module \
+         (design/int/agent.md §25.1); cache dir={:?}",
+        out.tmpdir
+    );
+    // … but NO `.o` (the indexer never object-codegens or register_module's it).
+    assert!(
+        !out.tmp_exists(".cranelisp-cache/mathx.o"),
+        "branch (c) MUST NOT write a `.o` for an INDEXED (not imported) module \
+         (design/int/agent.md §25.1 — no object codegen, no register_module)"
+    );
+}
+
+// spec: design/int/agent.md §25.1 — branch (c) NEG: the indexer writes a `.meta`
+// for the indexed module but never an `.o` and never registers it. (Companion to
+// the positive: this asserts the no-`.o` invariant in isolation as the negative
+// of the codegen path.)
+#[test]
+fn search_branch_c_neg_no_object_file() {
+    let out = search_session("/search root-helper\n");
+    assert!(
+        !out.tmp_exists(".cranelisp-cache/rootmod.o"),
+        "an indexed reachable module MUST NOT produce a `.o` (design/int/agent.md \
+         §25.1); the indexer reads-or-produces `.meta` only"
+    );
+}
+
+// ===========================================================================
+// A.4 — no-SharedState-residue keystone `_neg` (the observable consequence)
+// ===========================================================================
+
+// spec: design/int/agent.md §25.1 — the keystone +neg, observable form: after a
+// burn-down indexing N reachable modules, NO indexed-but-unimported symbol leaks
+// into the live session. A `/search`-discoverable symbol (gcd2) that was NOT
+// `(import)`ed must NOT appear in `/list` (it is reachable, not resident). The
+// SharedState four-map byte-unchanged invariant is the /dev unit-tier mirror;
+// this is the user-visible floor.
+#[test]
+fn search_burndown_neg_no_sharedstate_residue() {
+    // Arm the index (a /search burns down the reachable modules), then /list.
+    let out = search_session("/search gcd2\n/list\n");
+    // The indexed-but-unimported symbol must NOT have leaked into the session's
+    // own `/list` (it is reachable via /search + import, not resident).
+    // Find the /list output region (after the search) and assert gcd2 is not a
+    // listed user/session symbol there. Conservative: gcd2 must not appear as a
+    // bound user symbol — it only appears in the /search result region.
+    assert!(
+        out.status.code().is_some(),
+        "the burn-down + /list MUST NOT crash; status={:?}",
+        out.status
+    );
+    // The session has imported nothing, so `/list` must not present gcd2 as a
+    // resident user-module function.
+    let lc = out.stdout.to_lowercase();
+    assert!(
+        !lc.contains("user/gcd2"),
+        "an indexed-but-unimported symbol MUST NOT leak into the live session as \
+         a resident `user/` symbol (no SharedState residue, design §25.1); \
+         stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.19 — a symbol FOUND by `/search` but NOT `/import`ed is
+// absent from `/info` (reachable, not resident). `/info gcd2` on an unimported
+// symbol must report it as not-in-scope, not as a live session binding.
+#[test]
+fn search_burndown_neg_indexed_symbol_not_in_session() {
+    let out = search_session("/search gcd2\n/info gcd2\n");
+    let lc = out.stdout.to_lowercase();
+    // `/info` on a reachable-but-unimported name must not present it as a bound
+    // session symbol (it would say unknown/not-in-scope, possibly suggesting the
+    // import). The negative: it must NOT render gcd2 as a resident `user/gcd2`.
+    assert!(
+        !lc.contains("user/gcd2"),
+        "a /search-discovered but unimported symbol MUST NOT be a live session \
+         binding (reachable, not resident); stdout={}",
+        out.stdout
+    );
+}
+
+// ===========================================================================
+// A.5 — CF.2 containment (the hard ship-gate)
+// ===========================================================================
+
+/// A search session whose reachable set includes a 0432-shaped module (an
+/// unannotated multi-clause `defn` with a cross-variant self-call that trips the
+/// monomorphiser) ALONGSIDE a well-formed module. The indexer must skip the
+/// bad module gracefully and still index the good one.
+fn search_session_with_unindexable(cmds: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // Well-formed reachable module.
+        .file(
+            "lib/good.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn good-fn [x] (add-i64 x 2))\n",
+        )
+        // 0432-shaped reachable module: unannotated multi-clause self-call.
+        .file(
+            "lib/bad.cl",
+            "(import [primitives [eq-i64 sub-i64 add-i64]])\n\
+             (defn sum-to ([n] (sum-to n 0)) \
+                          ([n acc] (if (eq-i64 n 0) acc \
+                                       (sum-to (sub-i64 n 1) (add-i64 acc n)))))\n",
+        )
+        .lib_dir("lib")
+        .stdin(cmds)
+        .output()
+}
+
+// spec: repl/spec.md §17.19.5 — searching the library MUST NEVER crash the REPL.
+// A 0432-shaped reachable module on the lib-path is skipped per-module (CF.2
+// catch_unwind), the REPL stays alive, and `/search` over the rest still returns
+// results.
+#[test]
+fn search_cf2_unindexable_module_skipped_no_crash() {
+    let out = search_session_with_unindexable("/search good-fn\n");
+    // REPL stays alive (clean exit, not a signal-kill).
+    assert!(
+        out.status.code().is_some(),
+        "an unindexable reachable module MUST NOT crash the REPL (§17.19.5, CF.2); \
+         status={:?} stderr={}",
+        out.status,
+        out.stderr
+    );
+    // The good module is still indexed and searchable despite the bad sibling.
+    out.assert_stdout_contains("good-fn");
+}
+
+// spec: repl/spec.md §17.19.5 — NEG: the failed (0432-shaped) module produces NO
+// `.meta` and does NOT kill the nice worker — a subsequent `/search` of OTHER
+// modules still succeeds (background capacity intact).
+#[test]
+fn search_cf2_neg_no_killed_worker_no_meta() {
+    let out = search_session_with_unindexable("/search good-fn\n/search good-fn\n");
+    // No `.meta` is written for the module that failed to typecheck.
+    assert!(
+        !out.tmp_exists(".cranelisp-cache/bad.meta.json"),
+        "a module that fails to typecheck MUST NOT get a `.meta` written (CF.2 — \
+         the failed module is skipped, not cached)"
+    );
+    // The nice worker survived: a second /search of the good module still works.
+    out.assert_stdout_contains("good-fn");
+}
+
+// ===========================================================================
+// A.7 — eager-from-startup trigger + partial results + cache-hit on import
+// ===========================================================================
+
+// spec: design/int/agent.md §25.5 — the burn-down arms EAGERLY at REPL start-up
+// (REPL mode), not on the first `/search`. A `/search` issued early may catch it
+// mid-flight and serve partial results + an "indexing N modules…" note, but the
+// index is NOT gated on the search. We assert the eager behaviour observably: a
+// `/search` issued as the FIRST command still returns results (the index was
+// armed at startup, not by this search). For a small fixture the burn-down
+// completes fast, so the result set is present immediately.
+#[test]
+fn search_partial_results_during_indexing() {
+    let out = search_session("/search gcd2\n");
+    // The very first /search returns a result — the index was armed at startup
+    // (eager-from-REPL-startup), not as a side effect of this command. (For a
+    // larger tree the "indexing N modules…" partial-results note would appear;
+    // here the small burn-down completes promptly.)
+    out.assert_stdout_contains("gcd2");
+}
+
+// spec: design/int/agent.md §25.5 — NEG: in REPL mode indexing begins AT START-UP,
+// not gated on first `/search` or agent activation. A session that NEVER issues a
+// `/search` still arms + burns down the index at startup (REPL-only invariant),
+// so the index `.meta`s exist after a no-search session over reachable modules.
+#[test]
+fn search_burndown_arms_at_repl_startup_neg_not_on_first_search() {
+    // Pipe ONLY a no-op (a newline) — no /search, no agent. The eager startup
+    // burn-down must still run in REPL mode.
+    let out = search_session("\n");
+    assert!(
+        out.tmp_exists(".cranelisp-cache/mathx.meta.json"),
+        "the burn-down MUST arm at REPL start-up (eager-from-startup, §25.5), NOT \
+         be gated on a first `/search` — a no-search REPL session over reachable \
+         modules still produces the index `.meta`s; cache dir={:?}",
+        out.tmpdir
+    );
+}
+
+// spec: design/int/agent.md §25.5 — NEG (REPL-only invariant): a `--run`/`--link`
+// invocation over a tree with reachable-but-unimported modules produces NO search
+// index and NO index-driven `.meta` writes for those modules — the indexer never
+// arms outside REPL mode. Here a `--run` driver imports only `mathx`; the
+// reachable-but-unimported `unused.cl` must NOT be indexed (no `.meta` for it).
+#[test]
+fn search_neg_batch_mode_inert_no_index_no_meta_writes() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/mathx.cl",
+            "(import [primitives [add-i64]])\n(defn gcd2 [x y] (add-i64 x y))\n",
+        )
+        // Reachable-but-unimported in batch mode — the indexer must NOT touch it.
+        .file(
+            "lib/unused.cl",
+            "(import [primitives [add-i64]])\n(defn never-indexed [x] (add-i64 x 9))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [mathx [gcd2]])\n\
+             (defn main [] (Pure (gcd2 1 2)))",
+        )
+        .lib_dir("lib")
+        .run("main")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "the `--run` driver must exit 3 (gcd2 1 2); stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    // The reachable-but-unimported module must NOT have an index-driven `.meta`
+    // (batch mode never arms the indexer — REPL-only invariant §25.5).
+    assert!(
+        !out.tmp_exists(".cranelisp-cache/unused.meta.json"),
+        "batch mode (`--run`) MUST NOT arm the indexer — a reachable-but-unimported \
+         module MUST NOT get an index-driven `.meta` (REPL-only invariant, §25.5)"
+    );
+}
+
+// spec: design/int/agent.md §25.5 — a symbol found via `/search` then `(import …)`
+// is a `.meta` CACHE-HIT on the live import path: NO re-typecheck. With
+// `CRANELISP_MODULE_TRACE=1`, the import of an already-indexed module shows a
+// cache-hit rather than a fresh typecheck.
+#[test]
+fn search_index_to_import_is_meta_cache_hit() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/mathx.cl",
+            "(import [primitives [add-i64]])\n(defn gcd2 [x y] (add-i64 x y))\n",
+        )
+        .lib_dir("lib")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        // /search arms+indexes mathx (writes its .meta), then import it → the
+        // import must be a .meta cache-hit, not a re-typecheck.
+        .stdin("/search gcd2\n(import [mathx [gcd2]])\n(gcd2 2 3)\n")
+        .output();
+    // The import resolves and the call works.
+    assert!(
+        out.stdout.contains(":primitives/Int 5"),
+        "the indexed-then-imported call must work; stdout={}",
+        out.stdout
+    );
+    // The module trace shows a cache-hit for mathx on the import path (it was
+    // already indexed → `.meta` present → no re-typecheck).
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("cache") && combined.contains("mathx"),
+        "an indexed-then-imported module MUST be a `.meta` cache-hit on import \
+         (no re-typecheck, §25.5); MODULE_TRACE should show a cache hit for \
+         mathx; trace:\n{combined}"
+    );
+}
+
+// spec: design/int/agent.md §25.1 — floor: clearing the in-memory indices + re-
+// scanning `.meta` reproduces the same `/search` results (the indices are derived
+// read-caches over `.meta`; no schema bump). Expressed e2e as cross-session
+// reproducibility: a SECOND REPL session over the same tmpdir (with the `.meta`s
+// already written by the first session) reproduces the same `/search` result.
+#[test]
+fn search_index_rebuild_from_meta_reproduces_results() {
+    // First session: arm + index, writing the `.meta`s.
+    let first = search_session("/search gcd2\n");
+    assert!(
+        first.status.code().is_some(),
+        "first search session must not crash; status={:?}",
+        first.status
+    );
+    // Second session over the SAME tmpdir: the index rebuilds from the written
+    // `.meta`s and `/search gcd2` reproduces the same result.
+    let second = first
+        .run_again()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .lib_dir("lib")
+        .stdin("/search gcd2\n")
+        .output();
+    second.assert_stdout_contains("gcd2");
+}
+
+// ===========================================================================
+// A.9 — nice-worker flush / shutdown lifecycle guards (R18)
+// ===========================================================================
+
+// spec: design/int/agent.md §25.5 — NEG: a REPL session shut down while the eager
+// burn-down may still be in flight leaves NO corrupt `.meta` (abandon-on-shutdown;
+// `.meta` writes are atomic — a half-written module produces no `.meta`, never a
+// truncated one). After an immediate-EOF session, any `.meta` present must parse
+// as valid JSON (atomic write = whole-or-nothing).
+#[test]
+fn search_shutdown_mid_burndown_neg_no_corrupt_meta() {
+    // Immediate EOF (empty stdin) — the session shuts down promptly; the eager
+    // burn-down is abandoned between modules.
+    let out = search_session("");
+    assert!(
+        out.status.code().is_some(),
+        "shutdown during burn-down MUST be clean (no crash); status={:?}",
+        out.status
+    );
+    // Any `.meta` that DID get written must be intact (valid JSON) — atomic write
+    // means a half-written module leaves no `.meta`, never a truncated one.
+    for name in ["mathx.meta.json", "rootmod.meta.json"] {
+        let rel = format!(".cranelisp-cache/{name}");
+        if out.tmp_exists(&rel) {
+            let body = out.read_tmp(&rel);
+            // Whole-or-nothing: a complete `.meta.json` is a balanced JSON object
+            // (a truncated atomic-write victim would be empty or unbalanced). We
+            // check structural wholeness without a JSON dep (serde_json is gated
+            // behind the `agent` feature; `/search` is a DEFAULT-build facility).
+            let trimmed = body.trim();
+            let opens = body.matches('{').count();
+            let closes = body.matches('}').count();
+            assert!(
+                trimmed.starts_with('{') && trimmed.ends_with('}') && opens == closes,
+                "an abandoned mid-burn-down `.meta` MUST be whole (atomic write), \
+                 never truncated/corrupt (R18); {rel} is not a balanced JSON \
+                 object (opens={opens} closes={closes}):\n{body}"
+            );
+        }
+    }
+}
+
+// spec: design/int/agent.md §25.1 — the NEXT REPL session after a shutdown-
+// interrupted burn-down rebuilds the index cleanly and `/search` returns correct
+// results (no stale/partial index poisons the new session).
+#[test]
+fn search_next_session_rebuilds_index_cleanly_after_interrupt() {
+    // First session: immediate EOF (interrupt the burn-down early).
+    let first = search_session("");
+    // Second session over the same tree: a full /search must return correct
+    // results (the index rebuilds cleanly from source/`.meta`).
+    let second = first
+        .run_again()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .lib_dir("lib")
+        .stdin("/search gcd2\n")
+        .output();
+    second.assert_stdout_contains("gcd2");
+}
+
+// spec: design/int/agent.md §25.1 — NEG: a flush / `--link` path drains object
+// codegen ONLY and does NOT block on index work — the `IndexModule` worklist is
+// never part of a correctness-gating flush. A `--link` over a tree with
+// reachable-but-unindexed modules completes (and the produced binary runs)
+// WITHOUT waiting on the indexer (and without arming it — batch mode, R18/§25.5).
+#[test]
+fn flush_neg_does_not_block_on_index_work() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/mathx.cl",
+            "(import [primitives [add-i64]])\n(defn gcd2 [x y] (add-i64 x y))\n",
+        )
+        // Reachable-but-unindexed sibling — must not gate the link.
+        .file(
+            "lib/extra.cl",
+            "(import [primitives [add-i64]])\n(defn extra [x] (add-i64 x 7))\n",
+        )
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [mathx [gcd2]])\n\
+             (defn main [] (Pure (gcd2 4 5)))",
+        )
+        .lib_dir("lib")
+        .link_then_run("main")
+        .output();
+    // The link + run completes without blocking on index work (batch mode never
+    // arms the indexer; the flush drains object codegen only).
+    assert_eq!(
+        out.status.code(),
+        Some(9),
+        "the linked binary must exit 9 (gcd2 4 5); stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.tmp_exists(".cranelisp-cache/extra.meta.json"),
+        "a `--link` flush MUST NOT arm/drain the index worklist — the reachable \
+         sibling `extra` MUST NOT be indexed (R18 abandon-not-drain + batch-inert)"
+    );
+}

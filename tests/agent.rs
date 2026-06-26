@@ -1329,6 +1329,77 @@ fn agent_build_cap_exhausted_give_up_stays_wire_valid() {
     );
 }
 
+/// The turn-produces-nothing give-up script (S91 FIXME 0431 new fixture): a long
+/// run of consecutive broken `submit`s with NO terminal `done:` answer — so every
+/// outer turn-step gives up on its submit and the turn exhausts its iteration
+/// budget (`MAX_TURN_ITERATIONS`, each step's repair loop also consuming scripted
+/// completions) with no commit and no answer. This is the EXACT shape the impl's
+/// own unit guard `give_up_line_shown_once_when_turn_produces_nothing` uses (64
+/// repeated broken submits) — provisioned generously so the script never runs dry
+/// before the turn budget is reached. Contrast `CAP_EXHAUSTED_GIVE_UP` above,
+/// which ends on a `done:` (so the give-up line is ABSENT there — the corrected
+/// Phase-6 semantics). A four-submit script (the prior shape) under-provisions the
+/// turn loop and the give-up path never fires — the fixture, not the impl, was the
+/// fault (FIXME 0431; the impl is correct, proven by the unit guard).
+#[cfg(feature = "agent")]
+const TURN_PRODUCES_NOTHING_LINE: &str = "tool: submit (defn never [x] x\n";
+
+// spec: repl/spec.md §17.14.4 — the give-up notice is decided at TRUE turn-end and
+// ONLY when the turn produced nothing. NEW (S91, FIXME 0431): the complement of
+// the corrected `agent_build_cap_exhausted_give_up_stays_wire_valid` — a turn that
+// ends WITHOUT a terminal `done:` answer (the repair cap exhausts with no answer)
+// MUST render the give-up notice EXACTLY ONCE, and MUST commit nothing. This pins
+// the "exactly once at turn-end" arm that the corrected semantics introduced (the
+// other test pins the "absent when the turn ends on an answer" arm). RED-first
+// until /dev's §16/§17.14.4 turn-end give-up decision lands.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_turn_produces_nothing_shows_give_up_once() {
+    // 64 consecutive broken submits, no terminal `done:` — enough to exhaust the
+    // turn iteration budget with no answer (mirrors the impl's unit guard).
+    let script = TURN_PRODUCES_NOTHING_LINE.repeat(64);
+    let out = stub_repl_flags(
+        &script,
+        PreludeVariant::PrimitivesOnly,
+        &["--yes"],
+        "/ask define never\n\
+         (never 1)\n",
+    );
+    // (i) the give-up notice renders — the turn produced no answer, so the
+    // turn-end decision is "could not produce" (the substring /dev's wording uses,
+    // matching the sibling test's negative assertion).
+    let lc = out.stdout.to_lowercase();
+    assert!(
+        lc.contains("couldn't produce a definition"),
+        "a turn that ends with NO answer (cap exhausted) MUST render the give-up \
+         notice at turn-end (§17.14.4), stdout={}",
+        out.stdout
+    );
+    // (ii) EXACTLY ONCE — the notice must not print per-failed-submit mid-turn
+    // (the live defect FIXME 0431 fixed). Count occurrences of the give-up phrase.
+    let occurrences = lc.matches("couldn't produce a definition").count();
+    assert_eq!(
+        occurrences, 1,
+        "the give-up notice MUST render EXACTLY ONCE at turn-end, not per-failed \
+         submit (FIXME 0431); found {occurrences} occurrences, stdout={}",
+        out.stdout
+    );
+    // (iii) committed NOTHING — `never` stays unbound.
+    assert!(
+        lc.contains("unbound") || lc.contains("undefined") || lc.contains("unknown"),
+        "a give-up must write NOTHING — `never` must stay unbound, stdout={}",
+        out.stdout
+    );
+    // (iv) the subprocess stayed wire-valid (clean exit; debug-binary
+    // assemble_request guard fired green on the give-up follow-up).
+    assert!(
+        !out.stderr.contains("not wire-valid") && out.status.success(),
+        "the give-up path must keep the transcript wire-valid; exit={:?} stderr={}",
+        out.status,
+        out.stderr
+    );
+}
+
 // ---------------------------------------------------------------------------
 // B.2 — read-only floor +neg: declined submit makes no change; non-read tool
 // never reaches `eval` (§15.4).

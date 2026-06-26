@@ -3,7 +3,37 @@
     #[test]
     fn test_ring0_primitive_count() {
         let prims = ring0_primitives();
-        assert_eq!(prims.len(), 20, "Ring 0 should define exactly 20 primitives (19 + eq-bool)");
+        assert_eq!(
+            prims.len(),
+            27,
+            "Ring 0 should define exactly 27 primitives (19 + eq-bool + 7 bitwise, FIXME 0416)"
+        );
+    }
+
+    // spec: appendix-a-builtins §A.3 — bitwise integer ops (FIXME 0416, S91).
+    // bit-and/bit-or/bit-xor/shl/shr are (Fn [Int Int] Int); bit-not/popcount
+    // are (Fn [Int] Int).
+    #[test]
+    fn test_bitwise_types() {
+        let prims = ring0_primitives();
+        let binary = ["bit-and", "bit-or", "bit-xor", "shl", "shr"];
+        let unary = ["bit-not", "popcount"];
+        for name in binary {
+            let p = prims.iter().find(|p| p.name.as_ref() == name).unwrap();
+            assert_eq!(
+                p.ty,
+                Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+                "{name}: (Fn [Int Int] Int)"
+            );
+        }
+        for name in unary {
+            let p = prims.iter().find(|p| p.name.as_ref() == name).unwrap();
+            assert_eq!(
+                p.ty,
+                Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+                "{name}: (Fn [Int] Int)"
+            );
+        }
     }
 
     #[test]

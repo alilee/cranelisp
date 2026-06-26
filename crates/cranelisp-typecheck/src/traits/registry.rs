@@ -266,7 +266,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         span: Span,
     ) -> Result<(), CranelispError> {
         let method_type =
-            self.build_method_type(method, type_var_id, trait_type_params, span)?;
+            self.build_method_type(state, method, type_var_id, trait_type_params, span)?;
 
         // Build FQTraitName using the current module (where the trait is being defined)
         let fq_trait_name = FQTraitName::new(state.current_module.clone(), trait_name.clone());
@@ -309,6 +309,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// other TypeVars get fresh type variables (I3 fix).
     fn build_method_type(
         &self,
+        state: &CheckState,
         method: &TraitMethodSig,
         type_var_id: TypeId,
         trait_type_params: &[Symbol],
@@ -323,14 +324,32 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             var_map.insert(param.clone(), self_type.clone());
         }
 
+        // A qualified type ref in a method signature (`:primitives/Int`)
+        // resolves canonically against the named module — the same
+        // `resolve_type_expr_in_module` path the `defn`/`deftype`-field type
+        // refs use (FIXME 0436 / spec §8.5). Bare names keep the intrinsic
+        // fast-path inside `resolve_trait_type_expr`.
+        let resolve_qualified =
+            |tref: &cranelisp_types::TypeRef| -> Option<Type> {
+                self.resolve_qualified_method_sig_type(state, tref, span)
+            };
+
         let param_types: Vec<Type> = method
             .params
             .iter()
-            .map(|(_, p)| resolve_trait_type_expr(p, &self_type, span, &mut var_map, &mut local_next_id))
+            .map(|(_, p)| {
+                resolve_trait_type_expr(p, &self_type, span, &mut var_map, &mut local_next_id, &resolve_qualified)
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let ret_type =
-            resolve_trait_type_expr(&method.ret_type, &self_type, span, &mut var_map, &mut local_next_id)?;
+        let ret_type = resolve_trait_type_expr(
+            &method.ret_type,
+            &self_type,
+            span,
+            &mut var_map,
+            &mut local_next_id,
+            &resolve_qualified,
+        )?;
 
         self.commit_next_id(local_next_id);
         Ok(Type::Fn(param_types, Box::new(ret_type)))

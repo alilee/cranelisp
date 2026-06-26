@@ -579,6 +579,7 @@
             Span::SYNTHETIC,
             &mut var_map,
             &mut next_id,
+            &|_| None,
         )
         .unwrap();
         assert_eq!(result, Type::Int);
@@ -595,6 +596,7 @@
             Span::SYNTHETIC,
             &mut var_map,
             &mut next_id,
+            &|_| None,
         )
         .unwrap();
         assert_eq!(result, Type::Bool);
@@ -611,6 +613,7 @@
             Span::SYNTHETIC,
             &mut var_map,
             &mut next_id,
+            &|_| None,
         )
         .unwrap();
         assert!(matches!(result, Type::Var(_)));
@@ -629,6 +632,7 @@
             Span::SYNTHETIC,
             &mut var_map,
             &mut next_id,
+            &|_| None,
         )
         .unwrap();
         assert_eq!(result, Type::Int);
@@ -645,6 +649,7 @@
             Span::SYNTHETIC,
             &mut var_map,
             &mut next_id,
+            &|_| None,
         )
         .unwrap();
         let r2 = resolve_trait_type_expr(
@@ -653,6 +658,7 @@
             Span::SYNTHETIC,
             &mut var_map,
             &mut next_id,
+            &|_| None,
         )
         .unwrap();
         assert_eq!(r1, r2);

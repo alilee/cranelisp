@@ -389,3 +389,182 @@ Before implementing session persistence:
    import spec must be appended to the current module's `ModuleStructure`.
    Currently imports are processed and installed as `ModuleEntry::Import`
    but the original spec may not be retained.
+
+---
+
+## 10. `(mod …)` extraction write path — lib-dir-relative, not CWD (FIXME 0423)
+
+### 10.1 Root cause
+
+`(mod name form…)` extraction (spec §8.2.2 step 1) writes the inline body to a
+child backing file `{parent_dir}/{stem}/{name}.cl`. The pre-S88 writer computed
+`{parent_dir}` by joining `project_root` to the dotted module path. But
+`project_root` is the *process CWD* for a run-from-elsewhere invocation (e.g. the
+in-language stdlib self-test runner launched from the repo root rather than from
+inside `stdlib/`). For a **lib-dir** module (`stdlib/num/int.cl`) the parent's real
+on-disk directory is under `stdlib/`, not under the CWD — so the writer emitted
+stray `./num/int/test.cl` (and `./collections/`, `./compare/`, `./fn/`, `./text/`)
+trees at the repo root, mirroring the lib layout but holding only `…/test.cl`
+bodies. 14 such files were accidentally committed in the S87 checkpoint; the
+interim band-aid was a `.gitignore` entry. The write was non-destructive but rotted
+the repo root — concrete evidence the CWD-relative write happens.
+
+**Secondary symptom (same regen path):** the regen pretty-printer emitted
+`: (Option String)` (space after the colon) where the source has `:(Option String)`
+— violating the "`:Type` binds the immediately-following form with NO space"
+reader-macro semantics (`memory/annotation-reader-macro-binds-following-form`).
+
+### 10.2 Chosen approach (landed S88, commit 5833bd1)
+
+The fix is the FIXME 0423 resolution, in `src/process_form/dependency.rs::
+write_inline_mod_to_disk`:
+
+1. **Resolve the backing-file directory against the PARENT module's own on-disk
+   file**, located via the same `pipeline::resolve_module_file(parent_module,
+   project_root, lib_dirs)` rules the loader uses (project-root, then lib-dirs).
+   The backing dir is `{parent_file.parent()}/{parent_stem}/` — for a lib-dir
+   parent that lands under `stdlib/`, independent of CWD. Only when the parent
+   file cannot be located (it always should — it is what declared the `(mod …)`)
+   does it fall back to `project_root.join(dotted_path)` so the run is not blocked.
+2. **Prefer recognizing an existing extraction-stable backing file** over
+   re-emitting it: `if file_path.is_file() { return Ok(()); }` — the
+   hand-authored / previously-extracted `stdlib/` copy is canonical and read, not
+   rewritten (FIXME 0423 point 2).
+3. **Annotation spacing fixed** in `save.rs` — `render_decl_flat` /
+   `render_children_flat` / `render_decl_sexp_indented` suppress the separator
+   *after* a bare `:` colon marker so `:Type` binds its following form with no
+   space, both flat and at line breaks (FIXME 0423 point 3).
+
+The signature carries `lib_dirs: &[PathBuf]` (threaded from `ModuleCompiler`) so
+resolution is lib-dir-aware; the function is a pure-ish FS writer with a clear
+fallback, fitting `src/CLAUDE.md` testability discipline.
+
+### 10.3 `/dev` acceptance (the unit test still owed)
+
+The source fix landed in S88; **no unit test guards it yet** — this is the owed
+`/dev` acceptance:
+
+- **Unit (`dependency.rs` `#[cfg(test)]`):** set up a tmpdir with a lib-dir
+  `lib/accum.cl` parent and a `project_root` (= CWD analogue) that is a *different*
+  tmpdir. Call `write_inline_mod_to_disk(parent="accum", name="test", body, project_root, lib_dirs=[lib_dir])` and assert (a) the backing file appears at
+  `{lib_dir}/accum/test.cl` (next to the parent), and (b) **no** stray file is
+  created under `project_root` — the regression guard for the CWD-relative bug.
+- **Unit (recognize-existing):** with an extraction-stable `{lib_dir}/accum/test.cl`
+  already present, the call is a no-op (`Ok(())`) and the existing file is
+  byte-identical (not rewritten) — FIXME 0423 point 2.
+- **Unit (annotation spacing, `save.rs`):** a stored sexp carrying a compound
+  type annotation round-trips through `render_decl_sexp` as `:(Option String)`
+  (no space), never `: (Option String)` — FIXME 0423 point 3. (May already be
+  covered by the existing colon-binding tests in `save.rs`; if so, cite them.)
+
+The `.gitignore` band-aid for `/collections/ /compare/ /fn/ /num/ /text/` at the
+repo root may be retired once the unit test is the durable guard (`/dev`+`/qa`
+call at landing).
+
+Principle citations: **Principle 7 (single source of truth)** — the writer
+resolves through the *same* `resolve_module_file` the loader uses, not a parallel
+path computation. **Principle 5 (testability is structural)** — the writer takes
+`project_root` + `lib_dirs` as parameters, so the CWD-independence is unit-testable
+without changing the process CWD.
+
+---
+
+## 11. `set-doc` docstring-into-source regen (FIXME 0430) — DESIGN
+
+### 11.1 The gap
+
+`set-doc <symbol> <text>` (Document mode, descoped S89 W3) set the live
+`ModuleEntry::Def.docstring` field. But the regen path
+(`save::generate_fns_and_macros` → `render_decl_sexp`) re-renders each def from its
+**stored sexp** (sourced from the `Introspection` record, or `macro_sexp` for
+macros) and **never reads the live `docstring` field**. A spec §5.12 docstring is
+syntactically a string literal *inside* the `defn` form
+(`(defn name "doc" params body)`), so the stored sexp carries whatever docstring the
+def was *authored* with — not a later `set-doc` edit. Result: a `set-doc` edit
+vanishes on session restart (regen re-emits the stale/absent docstring from the
+stored sexp), breaking §17.15.3's durable-memory promise. A non-persisting
+half-feature is worse than none — hence the S89 descope.
+
+`set-preamble` (the Document keystone) IS correct: its edit is a byte-stable
+section-0 round-trip (`save::apply_preamble_edit`) the regen path honours. Only the
+**docstring** facet lacks a persistence path.
+
+### 11.2 The two candidate designs
+
+**Option 1 — docstring-aware `render_decl_sexp`.** Teach `generate_fns_and_macros`
+to thread the entry's live `Def.docstring` into rendering: after selecting the
+stored sexp for a `UserFn`, if `entry.docstring` is `Some`, **splice/replace** the
+docstring slot in the rendered `defn` form (insert a string literal between the
+name and the params, or replace an existing leading string literal). The live field
+becomes canonical for the emitted docstring; the stored sexp supplies everything
+else (params, body, attached comments).
+
+- *Pro:* the live `Def.docstring` is the single source of truth (matches the
+  module.rs canonical-field comment: "the entry's own `docstring` field is canonical
+  for that metadata" — Principle 7). One edit point; the stored sexp stays a pure
+  capture of authored source and is never mutated.
+- *Con:* `render_decl_sexp` (currently sexp-pure — `&Sexp -> String`) must take an
+  extra `docstring: Option<&str>` argument and learn the §5.12 docstring slot
+  position (between name and params for single-sig; between name and first variant
+  for multi-sig). It must distinguish "first string child IS a docstring" from "first
+  string child is a body string expression" — the parser already encodes this
+  (a leading string in the docstring slot is the docstring), so the renderer mirrors
+  the parser's slot rule. Modest renderer complexity.
+
+**Option 2 — re-inject at edit time.** At `set-doc` apply time
+(`apply_docstring_edit`, to be re-landed), rewrite the def's **stored sexp** to
+carry the new docstring (insert/replace the string literal in the `defn` form), so
+the existing sexp-based regen path picks it up unchanged.
+
+- *Pro:* `render_decl_sexp` and `generate_fns_and_macros` stay untouched — zero
+  regen-path change.
+- *Con:* mutates stored AST (the `Introspection` record / `macro_sexp`), making the
+  stored sexp no longer a faithful capture of authored source — two writers of the
+  same field (original load + `set-doc` re-inject), drifting from Principle 7. The
+  splice logic (find/replace the docstring slot in a `Sexp::List`) lives at edit
+  time *and* must handle the same slot-position cases as Option 1 — so it is not
+  actually simpler, just relocated, and it loses the "stored sexp == source" invariant
+  that the regen path and `/source` both rely on.
+
+### 11.3 Recommendation — Option 1 (docstring-aware render)
+
+**Pick Option 1.** Rationale:
+
+1. **Single source of truth (Principle 7).** `Def.docstring` is *already* declared
+   canonical for the docstring metadata (module.rs §"narrowed from Defn"). Option 1
+   makes regen *read* that canonical field; Option 2 creates a second writer of the
+   stored sexp and lets the canonical field and the stored sexp disagree.
+2. **Stored-sexp invariant preserved.** The regen path, `/source`, and the
+   on-demand macro-clause recompile all treat the stored sexp as a faithful capture
+   of authored source. Option 2 violates that; Option 1 keeps it.
+3. **The slot logic is required either way** — Option 2 does not avoid it, only
+   moves it to a worse place (edit-time mutation vs. render-time read).
+4. **Symmetry with `set-preamble`.** The preamble keystone persists by having the
+   regen path *read* the live `module_preamble` field at section-0 generation. A
+   docstring-aware renderer makes `set-doc` persist by the *same shape* — regen reads
+   the live field — rather than a one-off stored-AST rewrite.
+
+### 11.4 `/dev` acceptance (the re-land, a later sprint)
+
+This section closes the DESIGN half of 0430; the `/dev` re-land follows a later
+sprint. The acceptance the re-land must meet:
+
+- **e2e (the keystone):** in a REPL session, `set-doc <symbol> "new doc"`, then
+  restart the session against the regenerated backing file, then `/doc <symbol>`
+  shows `"new doc"` — the §17.15.3 durable promise `set-preamble` already satisfies.
+- **Unit (`save.rs`):** `generate_fns_and_macros` over a table whose
+  `Def.docstring = Some("new doc")` (with a stored sexp that has a *different* or
+  *absent* docstring) emits a `defn` form carrying `"new doc"` in the §5.12 docstring
+  slot — the regen-reads-live-field assertion.
+- **Unit (round-trip):** the emitted `defn` re-parses with the new docstring in the
+  right slot (no double docstring, no body-string confusion) for both single-sig and
+  multi-sig defns.
+- **Unit (no-docstring unchanged):** a `Def.docstring = None` emits the `defn`
+  exactly as before (no spurious empty string literal) — Option 1 is a no-op when
+  there is nothing to inject.
+
+Principle citations: **Principle 7 (single source of truth)** — regen reads the
+canonical `Def.docstring`; the stored sexp stays a faithful source capture.
+**Principle 6 (complexity has a budget)** — the renderer gains one optional slot
+argument + the §5.12 slot rule (already encoded in the parser), not a new edit-time
+mutation path.

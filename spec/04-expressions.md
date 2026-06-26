@@ -554,10 +554,12 @@ All arm bodies MUST have the same type. This is enforced at compile time via uni
 **Wildcard and variable patterns**:
 
 ```clojure
-(match x
-  [0 "zero"]
-  [_ "nonzero"])            ; _ matches anything, binds nothing
+(match opt
+  [(Some x) x]             ; variable pattern binds the field
+  [_ 0])                   ; _ matches anything, binds nothing
 ```
+
+> **Patterns are constructor / wildcard / variable only.** `match` does NOT support literal patterns — an integer, float, string, or boolean literal MUST NOT appear in pattern position (see [§6.2](06-pattern-matching.md#62-pattern-kinds) for the authoritative grammar and [§6.6.2](06-pattern-matching.md#662-no-literal-patterns) for the prohibition). To dispatch on a scalar value, use `if`/`case` in the arm body or as the surrounding form. (FIXME 0433 reconciled this example to the §6.2 grammar — a prior revision showed a literal-`0` pattern that the grammar forbids.)
 
 See [section 6: Pattern Matching](06-pattern-matching.md) for the complete pattern syntax, including constructor patterns, wildcard patterns, and variable patterns.
 

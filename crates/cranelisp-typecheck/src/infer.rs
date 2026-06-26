@@ -208,17 +208,28 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Some(ModuleEntry::Ambiguous { .. })
             )
         {
-            let hint = state
-                .accessor_owning_types
-                .get(name)
-                .map(|tys| {
-                    let alts: Vec<String> = tys
-                        .iter()
-                        .map(|t| format!("{}.{}", t.name, name))
-                        .collect();
-                    format!(" — use a qualified accessor ({})", alts.join(" or "))
-                })
-                .unwrap_or_default();
+            // Same-cluster (`--run`): the owners were recorded on `CheckState`
+            // as each accessor was synthesised in this `check_forms` call.
+            // Cross-cluster (the REPL drives each form as its own cluster with a
+            // FRESH `CheckState`), the map is empty by the time the bare use is
+            // checked — the poisoning `deftype`s ran in now-discarded prior
+            // clusters. Re-derive the owners structurally from the durable symbol
+            // table so BOTH paths list the canonical alternatives (§5.2.6 gives
+            // the REPL no exemption).
+            let owners: Vec<cranelisp_types::FQTypeName> = match state.accessor_owning_types.get(name)
+            {
+                Some(tys) if !tys.is_empty() => tys.clone(),
+                _ => self.reconstruct_accessor_alternatives(state, name),
+            };
+            let hint = if owners.is_empty() {
+                String::new()
+            } else {
+                let alts: Vec<String> = owners
+                    .iter()
+                    .map(|t| format!("{}.{}", t.name, name))
+                    .collect();
+                format!(" — use a qualified accessor ({})", alts.join(" or "))
+            };
             return Err(CranelispError::TypeError {
                 message: format!("ambiguous bare name '{name}'{hint}"),
                 location: ErrorLocation::from_span(span),

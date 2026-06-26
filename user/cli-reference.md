@@ -45,6 +45,41 @@ display formats, commands, error presentation, cache and file-watch behaviour �
 specified in [`repl/spec.md`](../repl/spec.md); the slash-command catalogue is in
 [`repl/spec.md §3`](../repl/spec.md).
 
+#### Finding a function before importing it — `/search`
+
+`/list` and `/imports` show what is already in scope. `/search` answers the other
+question — *"is there already a function that does this, somewhere I could import
+from?"* — by searching every module reachable on the lib search path **and** the
+project root that you have **not yet imported**.
+
+Search by **name** or by **type signature**, exact or partial:
+
+```
+user> /search filter
+:(Fn [(Fn [a] primitives/Bool) (seq.lazy/Seq a)] (seq.lazy/Seq a)) seq-filter
+  in seq.lazy   — (import [seq.lazy [seq-filter]])
+
+user> /search (Fn [Int Int] Int)
+```
+
+- **By name** — exact, or a case-insensitive substring (`/search grid` finds
+  `grid-get`, `grid-set`, `make-grid`).
+- **By signature** — a type shape, matched up to renaming of type variables;
+  partial match means the shape appears *anywhere* inside a candidate's type (so
+  `/search (Vec Int)` matches a function taking a `(Vec Int)`, and `/search Int`
+  matches any signature mentioning `Int`).
+
+Each result row gives you everything you need to decide and act: the symbol name,
+its full `:Type` signature, the **module it comes from**, and — the payoff — the
+exact **`(import …)` form to copy-paste** to bring it into scope. The workflow is:
+search, see the import line, paste it.
+
+If nothing matches you get a plain `no importable symbols matched '<query>'` note,
+never an error. The library index builds in the background, so a `/search` issued
+the moment the REPL starts may report partial results with an `indexing N modules…`
+note — repeat the search a moment later for the fuller set. The full contract is in
+[`repl/spec.md §17.19`](../repl/spec.md).
+
 **Artifact:** none on disk beyond the regenerated entry-module source file; the
 session is interactive.
 
@@ -138,6 +173,78 @@ is why a project whose entry declares submodules still compiles with a bare
 The full resolution rules, the directory-component detection edge cases, and the
 ambiguity/error handling are normatively specified in
 [`repl/spec.md §0.5`](../repl/spec.md).
+
+## Where Cranelisp looks for libraries (`Cranelisp.toml`)
+
+When a program imports a module — the prelude, the standard library, or one of your
+own shared modules — the binary resolves the name against a **lib search path**.
+Understanding how that path is built matters as soon as you reach for `stdlib/`.
+
+### The search path is additive — sources only ever *add*
+
+The resolved lib-directory set is the **union** of every source below; no source
+replaces or suppresses another. A directory listed anywhere is searched.
+
+1. A directory passed programmatically / via a CLI lib-dir flag.
+2. The `CRANELISP_LIB` environment variable — a colon-separated list of directories.
+3. A `Cranelisp.toml` `lib-dirs` entry in the project root.
+4. The default `{project-root}/stdlib/`, if that directory exists.
+
+When the same module name resolves in more than one of these, the **first match
+wins**, in the order above (command line → `CRANELISP_LIB` → `Cranelisp.toml` →
+`{project-root}/stdlib/` last). Note `CRANELISP_LIB` is searched **before**
+`Cranelisp.toml` — environment over config file, matching Cargo's precedence.
+
+The key consequence: **a `Cranelisp.toml` can only add paths, never turn one off.**
+An absent file, an empty file, and `lib-dirs = []` all mean exactly the same thing —
+they contribute nothing and suppress nothing. The normative rules are in
+[`spec/08-modules.md §8.11.4`](../spec/08-modules.md) (lib dirs) and `§8.11.5`
+(platform DLL dirs, which follow the same additive model under `platform-dirs`).
+
+A minimal `Cranelisp.toml` looks like this:
+
+```toml
+# Paths are relative to this file, or absolute. Entries are ADDED to whatever
+# CRANELISP_LIB and {project-root}/stdlib/ already contribute.
+lib-dirs = ["../shared-lib"]
+platform-dirs = ["target/debug"]
+```
+
+### The REPL scaffolds one for you
+
+When you open the REPL **on a project-root directory** — `cranelisp myproject`
+where `myproject/` exists and there is no `myproject.cl` beside it (resolution rule
+3 above) — and that directory has no `Cranelisp.toml`, the REPL writes a commented
+template there and tells you:
+
+```
+$ cranelisp myproject
+[created Cranelisp.toml]
+cranelisp REPL — type /help for help
+0+0ms; user>
+```
+
+This is the `cargo new` / `git init` ergonomic: pointing the tool at a fresh project
+directory leaves behind a discoverable config you can edit. The generated file is
+**all comments** — it changes resolution by nothing until you uncomment a key — which
+is safe precisely because the model is additive (there is no tier for an empty file
+to accidentally switch off).
+
+Three things to know about the scaffold:
+
+- **REPL only.** `--run` and `--link` never write a config file — a batch compile
+  must not mutate your project tree. The scaffold fires only when you open the REPL.
+- **Project-root directory only.** Plain `cranelisp` (no target) and bare-module
+  targets (`cranelisp app`) do **not** scaffold — otherwise every launch would litter
+  the current directory. Only the explicit "treat this directory as a project"
+  gesture triggers it.
+- **Never overwrites.** If a `Cranelisp.toml` already exists, the REPL leaves it
+  byte-for-byte untouched and prints no notice — a second launch is a silent no-op.
+  If the directory is read-only, the REPL warns to stderr and starts normally; the
+  config is a convenience, never a requirement.
+
+The trigger, mode, notice, and safety guarantees are specified in
+[`repl/spec.md §0.5.7`](../repl/spec.md).
 
 ## Cross-links
 

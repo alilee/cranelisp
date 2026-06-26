@@ -6,6 +6,29 @@ The **committed showcase target is the stdio CLI** — `user.cl` tells the full
 story end-to-end. The web platform is a designed-but-unbuilt future stretch
 (FIXME 0405, `/platform`); see `plan-exemplar.md`.
 
+## Current State (Sprint 91 Phase 6 — `grid.cl` bit layer on native primitives)
+
+Five Cranelisp files: four pure-core modules (`grid`, `solver`, `html`,
+`form`), the headline `user.cl` entry, plus a free-standing `tests.cl` runner.
+All compile cleanly under the reimplementation compiler and run through the
+stdio platform.
+
+**S91 Phase 6 swap (this sprint).** S91 landed native bitwise primitives
+(`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`; FIXME 0416
+RESOLVED) and `stdlib/num/bits.cl` was rewritten as a thin curated layer over
+them — **dropping** the pre-S91 arithmetic-sim helpers `pow2`/`full-mask`/
+`width`/`bit-at`. The S88 `grid.cl` adapters delegated to those dropped names
+(`num.bits/pow2`, etc.) via FQ module-qualified calls, so the exemplar was
+broken against the S91 stdlib. `grid.cl` now imports the live `num.bits`
+primitives **by name** (`bit-shift-left`/`bit-test`/`bit-and`/`bit-or`/
+`bit-not`/`popcount`) and its digit-domain adapters use them directly:
+`pow2 n` → `(bit-shift-left 1 n)`, `bit-set? mask d` → `(bit-test mask (- d 1))`,
+`bit-clear`/`bit-set` composed locally (avoiding the `num.bits` name collision),
+`bit-count` → `popcount`; `bit-lowest` keeps its 1-9 scan. Behaviour verified
+identical to the old arithmetic sim across all 512 masks × 9 digits (0
+mismatches). Full 9×9 solve + 39/39 tests stay green. This is the end-to-end
+validation that FIXME 0416 achieved its purpose.
+
 ## Current State (Sprint 88 Phase 5 Wave 4 / Stage D — stdlib-adoption refresh)
 
 Five Cranelisp files: four pure-core modules (`grid`, `solver`, `html`,
@@ -22,11 +45,13 @@ see `notes-stdlib-adequacy-s87.md §FULL` G1–G10):
   Step 3.1 confirmed `conj` is RC-identical to the bare `vec-push` (the earlier
   corruption was the collateral-fixed 0417 defect). Full 9×9 solve + 39/39 tests
   stay green.
-- **G1-adoption — `grid.cl` bit layer → `num.bits`.** The ~55-line hand-rolled
-  9-bit mask simulation (`pow2`/`bit-set?`/`bit-clear`/`bit-set`/`bit-count`/
-  `bit-lowest`) is replaced by thin *digit-1-9* domain adapters over the stdlib
-  `num.bits` module (`bit-test`/`bit-clear`/`bit-set`/`popcount`/`pow2`, which
-  speak *bit-position-0-8*). The solver and tests are unchanged at grid's
+- **G1-adoption — `grid.cl` bit layer → `num.bits`** *(refreshed S91 Phase 6 —
+  see the top section)*. The ~55-line hand-rolled 9-bit mask simulation
+  (`pow2`/`bit-set?`/`bit-clear`/`bit-set`/`bit-count`/`bit-lowest`) is replaced
+  by thin *digit-1-9* domain adapters over `num.bits` — which is now the thin
+  curated layer over the S91 native bitwise primitives (the S88-era delegation
+  to the old arithmetic-sim `num.bits/pow2`/etc. is gone; those names were
+  dropped in the S91 rewrite). The solver and tests are unchanged at grid's
   boundary.
 - **G6 — `solver.cl` `digit-string`** 10-arm `if` → `(if (= v 0) "."
   (text.string/digit-to-char v))`.
@@ -136,16 +161,29 @@ the `eliminate`/`unsolvable` tests cover the solver path in the runner.
 - **Bitmask representation**: Candidates stored as a 9-bit integer mask (bits
   0-8 for digits 1-9), not a `(Vec Int)`. Avoids heap allocation for candidate
   tracking; operations are O(1).
-- **Bitwise via `num.bits` (stdlib)** *(S88 G1-adoption — was "No bitwise
-  primitives")*: Cranelisp still has no bitwise *primitives*, but the stdlib
-  `num.bits` module (landed S87) provides the full surface
-  (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`bit-shift-left`/`bit-shift-right`/
-  `bit-test`/`bit-set`/`bit-clear`/`bit-flip`/`popcount`) composed from Ring 0
-  arithmetic. `grid.cl` adopts `num.bits` and keeps only thin *digit-1-9*
-  domain adapters (`bit-set?`/`bit-clear`/`bit-set`/`bit-count`/`bit-lowest`/
-  `pow2`) over the *bit-position-0-8* module verbs. The earlier inline ~55-line
-  arithmetic simulation is gone. (`num.bits` documents WIDTH = 30 bits, more
-  than enough for the 9-bit mask.)
+- **Bitwise via `num.bits` (stdlib, native-primitive-backed)** *(S91 Phase 6;
+  was S88 "Bitwise via num.bits", originally "No bitwise primitives")*:
+  **Cranelisp now HAS native bitwise primitives** (S91, FIXME 0416 RESOLVED:
+  `bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`, each lowering
+  1:1 to a CLIF op — spec appendix-a-builtins §A.3). The stdlib `num.bits`
+  module is now a thin curated layer over those primitives (full surface:
+  `bit-and`/`bit-or`/`bit-xor`/`bit-not`/`bit-shift-left`/`bit-shift-right`/
+  `bit-test`/`bit-set`/`bit-clear`/`bit-flip`/`popcount`/`bit-count`). `grid.cl`
+  imports `bit-shift-left`/`bit-test`/`bit-and`/`bit-or`/`bit-not`/`popcount`
+  by name and keeps only thin *digit-1-9* domain adapters
+  (`pow2`/`bit-set?`/`bit-clear`/`bit-set`/`bit-count`/`bit-lowest`) over the
+  *bit-position-0-8* primitives. The earlier inline ~55-line arithmetic
+  simulation is gone (the S88 adapters that delegated to the old
+  arithmetic-sim `num.bits` are gone too — that module was retired in S91).
+  **Width note:** the native ops are full **64-bit two's-complement** (no WIDTH
+  cap; `bit-not 0 = -1`, the sign bit participates). The Sudoku candidate masks
+  are always **9-bit (bits 0-8, positive)**, so the sign bit never participates.
+  Verified behaviour-identical to the old arithmetic sim across the entire
+  domain — all **512 masks × 9 digits** plus `pow2 0..8`: **0 mismatches**.
+  Grid's `bit-clear`/`bit-set` are composed locally
+  (`(bit-and mask (bit-not (shl 1 (- d 1))))` / `(bit-or mask (shl 1 (- d 1)))`)
+  rather than imported, because `num.bits`'s position-domain `bit-clear`/
+  `bit-set` names would collide with grid's digit-domain ones.
 - **No `mod`/`rem` operator — `rem-i64` kept inline (G7, deliberate
   non-adoption)**: `num.int/rem` exists with identical semantics, but `rem-i64`
   is kept as a documented domain helper, defined inline as

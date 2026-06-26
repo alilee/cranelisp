@@ -152,6 +152,55 @@ The positional target supports only file-system paths (`/`-separated), not Crane
 
 Dotted names (e.g. `core.str`) MUST be treated as a single module name, not as a path separator. If a user passes `core.str`, the binary resolves it as entry module `core.str` in cwd — which will fail if no file `core.str.cl` exists.
 
+#### 0.5.7 Project-Root `Cranelisp.toml` Scaffold [S91]
+
+When the REPL is invoked with a **project-root-directory target** — the §0.5.1 rule 3 case (`cranelisp myproject` where `myproject/` exists in cwd and `myproject.cl` does **not** exist beside it, resolving to project root `myproject/`, entry module `user`) — and that directory does **not** already contain a `Cranelisp.toml`, the REPL SHOULD scaffold a default `Cranelisp.toml` in the resolved project root. This is the `cargo new` / `git init` ergonomic: pointing the tool at a fresh project directory leaves behind a discoverable, editable configuration template. [S91]
+
+This scaffold is **always safe by construction** because the lib-directory model is additive (`spec/08-modules.md §8.11.4`, settled S91): the resolved lib-dir set is the UNION of all sources, and a `Cranelisp.toml` `lib-dirs` value only ever **adds** paths — it can never suppress `CRANELISP_LIB`, the programmatic/CLI additions, or the `{project_root}/stdlib/` default. A scaffold that ships an empty or all-commented-out `lib-dirs` therefore changes resolution by exactly nothing; it cannot turn off a tier that an absent file would have used. (This is what dissolves the original §8.11.4 footgun — there is no replacing tier to trip over — and is the precondition that makes auto-scaffolding correct rather than a behaviour-changing side effect.) [S91]
+
+##### Trigger condition [S91]
+
+The scaffold MUST be created **only** in the §0.5.1 rule 3 case (explicit project-root directory, entry module `user`, no `{target}.cl` beside the directory). It MUST NOT be created in any other resolution case:
+
+| Resolution case | Scaffold? | Why |
+|---|---|---|
+| Rule 1 — no target (cwd default) | **MUST NOT** | Writing `Cranelisp.toml` into an arbitrary cwd on every bare `cranelisp` launch would litter unrelated directories. The user did not point at a project. |
+| Rule 2 — directory component (`dir/mymod`) | MUST NOT | The target names an entry *module* in a root, not a "treat this directory as a new project" gesture; no scaffold. |
+| Rule 3 — project-root directory (`myproject`, `myproject/` exists, no `myproject.cl`) | **SHOULD** | The explicit project-root gesture — the intended trigger. |
+| Rule 4 — bare entry-module name (file wins) | MUST NOT | Root is cwd; same litter concern as rule 1. |
+
+##### Mode [S91]
+
+The scaffold is a **REPL-mode-only** behaviour. In `--run` and `--link` mode the REPL MUST NOT scaffold a `Cranelisp.toml` (or write any file as a configuration side effect): a batch compile/link MUST NOT mutate the project tree as a side effect of compiling. The trigger gates on REPL mode **and** rule 3 together; both conditions MUST hold. [S91]
+
+##### Notice [S91]
+
+On a successful create, the REPL MUST emit a one-line notice in the existing bracketed-notification format (§14.3):
+
+```
+[created Cranelisp.toml]
+```
+
+The notice mirrors the `[updated: <file>]` / `[errors: <file>]` family and satisfies the self-documenting-REPL principle: the user is told the project root was recognised and a config template now exists to edit. The notice MUST appear at startup, before the first primary prompt (alongside the banner/startup notices), not deferred until the first evaluation. The `<file>` is the bare name `Cranelisp.toml` (the file always lives at the project root, so no path prefix is needed; consistent with §14.3's project-root-relative rendering). Silent-create is the rejected alternative — it leaves a file in the user's tree with no signal, which violates the self-documenting principle. [S91]
+
+##### Safety and idempotence [S91]
+
+The scaffold MUST observe the following invariants:
+
+1. **Never overwrite.** If `{project_root}/Cranelisp.toml` already exists (as a file, symlink, or directory), the REPL MUST NOT write to it and MUST NOT emit the `[created …]` notice. An existing config is left byte-for-byte untouched. This makes the behaviour **idempotent**: a second launch on the same project root is a silent no-op. [S91]
+2. **Never write outside the project root.** The file MUST be created at exactly `{resolved_project_root}/Cranelisp.toml` (the absolute path from §0.5.1). No parent-directory walk, no cwd write, no symlink-target escape. [S91]
+3. **Graceful on a read-only / unwritable directory.** If the project root is not writable (permissions, read-only filesystem, etc.), the REPL MUST NOT fail the session launch. It SHOULD emit a single non-fatal warning to stderr naming the directory and the reason (e.g. `[warning: could not create Cranelisp.toml in <dir>: <reason>]`), then proceed to a normal REPL exactly as if no scaffold were attempted. A scaffold failure is never fatal — the config file is a convenience, not a requirement (the optional-prelude / empty-config principle). [S91]
+4. **Benign on resolution.** Because the model is additive (above), a freshly-scaffolded default file MUST resolve identically to its absence — launching, scaffolding, and immediately re-resolving the lib path MUST yield the same lib-directory set as launching with no file at all. The scaffold is a pure documentation/template artefact, not a resolution change. [S91]
+
+##### Scaffold content (cross-skill) [S91]
+
+The literal byte content of the generated file and the file-writing mechanics are **not** part of this experience contract — they are owned by `/int` (the writer lives in `src/session_setup.rs`, beside `load_project_config_lib_dirs`; see `design/int/cranelisp-toml.md`). This section pins only the experience constraints the content MUST satisfy:
+
+- The generated file MUST be valid TOML that parses without error (a self-inflicted malformed config would defeat the purpose).
+- It SHOULD be a **teaching template**: a commented header naming the file's purpose, plus a **commented-out** `lib-dirs` example (and `platform-dirs`, §8.11.5) showing the schema — so the user sees the keys to uncomment, not an active `lib-dirs` that silently injects paths. Any *active* (uncommented) `lib-dirs` it ships MUST be limited to the directories the current resolution already contributes (e.g. echoing the live `CRANELISP_LIB` paths as commented examples), so invariant 4 (benign on resolution) holds. The recommended form ships **no active `lib-dirs` key** — all examples commented — which is trivially benign.
+
+The §0.5.7 contract is the trigger + mode + notice + safety; `/int` owns what is written. [S91]
+
 ### 0.6 Modifier and Worker Flags
 
 These flags modify behaviour but do not select a mode. They may appear in any mode (subject to the noted incompatibility) and in any position relative to the target.
@@ -494,9 +543,13 @@ Commands not yet available (due to ring) SHOULD be omitted or marked as unavaila
 | Macros | Macro definitions (`defmacro`) | 3 | [Tested+Neg tests/repl_introspection::list_empty_session] |
 | Traits | Trait declarations (`deftrait`) | 2 | [Tested tests/repl_introspection::list_empty_session] |
 | Types | User-defined types and constructors (`deftype`) | 0 | [Tested+Neg tests/repl_introspection::list_empty_session] |
-| Fns | User-defined functions and trait method implementations | 0 | [Tested tests/repl_introspection::list_empty_session] |
+| Fns | User-defined functions, trait method implementations, and field accessors | 0 | [Tested tests/repl_introspection::list_empty_session] |
 
 Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitted. [Tested+Neg tests/repl_introspection::list_empty_session]
+
+**Field accessors — canonical qualified form (`Type.field`).** Each field of a `deftype` produces a field accessor. Under the field-accessor model (`spec/05-definitions.md §5.2.6`, `spec/08-modules.md §8.5.2`), the accessor's **canonical** name is the qualified `Type.field` form (e.g. `Box.v`): a real, Public definition that `/list` MUST display under **Fns**, using the qualified `Type.field` form — consistent with the REPL's qualified-display convention (`:primitives/Int`, `:(Fn [a] a) user/id`; the §"Design Principle" rule that names are always fully qualified to teach the module system). [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
+
+The **bare** field name (e.g. `v`) is a **convenience alias** to the canonical accessor — it resolves when unambiguous and is an ambiguity error when two in-scope types share the field name. The bare alias is **NOT separately listed** by `/list` (option A — show canonical only): listing both `Box.v` and a bare `v` would double-count every field, and the bare alias is import-class (an alias into the current scope), so it falls under the existing "imported/alias names MUST NOT appear on `/list`" scope rule above. `/list` shows the canonical accessor exactly once, under its `Type.field` name. [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
 
 **Empty module:** When no definitions exist in the current module, `/list` MUST print `(no definitions)`. [Tested tests/repl_introspection::list_empty_session] This distinguishes "command worked on empty module" from a failed command.
 
@@ -506,6 +559,7 @@ Category order: Modules, Macros, Traits, Types, Fns. Empty categories are omitte
 - No category should contain special forms (those belong on `/imports`) [Tested+Neg tests/repl_introspection::list_empty_session]
 - No category should contain compiler-internal symbols (`__macro_*`, `$`-mangled names) [R4 S15]
 - Constructors MUST appear in Types, not in Fns [Tested+Neg tests/repl_introspection::list_empty_session]
+- A field accessor MUST appear only once, under its canonical `Type.field` name; the bare-field alias (`v`) MUST NOT appear as a second, separate accessor entry [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
 
 **Filter argument:** `/list <text>` performs a case-insensitive prefix match on symbol names across all categories, showing matching symbols with full type info. [Tested tests/repl_introspection::list_prefix_filter_matches_names] `/list` with no argument shows all definitions. [Tested tests/repl_introspection::list_empty_session]
 
@@ -599,6 +653,8 @@ Fns:
 Categories follow the same order as `/list`: Modules, Macros, Traits, Types, Fns. Names sorted alphabetically within categories.
 
 **What counts as public:** Definitions with public visibility — `Def`, `Constructor`, `TraitDecl`, `TypeDef`, `Macro`. Import and Reexport entries in the target module are NOT shown (those are the module's own imports, not its exports).
+
+**Field accessors in `/exports`.** A module's field accessors are public definitions and MUST be listed by `/exports` under their **canonical qualified `Type.field`** form (e.g. `Box.v`) — the same canonical/alias rule as `/list` (§3.3, "Field accessors — canonical qualified form"): the canonical accessor is the real Public `Def` shown by `/exports`; the bare-field name (`v`) is a convenience alias (import-class) and is NOT separately listed (option A — show canonical only), consistent with the "Import and Reexport entries are NOT shown" rule above. A field accessor appears in a module's exports exactly once, under its `Type.field` name. [S91 tests/spec_field_accessor.rs::list_shows_canonical_qualified_accessor]
 
 **Empty module:** If the module has no public symbols, print `Module '<name>' has no public symbols`. [R4 S15]
 

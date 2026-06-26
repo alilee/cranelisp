@@ -481,6 +481,13 @@ type ResolvedVariant = (Vec<Type>, Type, Symbol, usize);
 /// Mangled variant info: (concrete_params, concrete_ret, mangled_name).
 type MangledVariantInfo = (Vec<Type>, Type, Symbol);
 
+/// Map from a multi-sig defn's base name to the MANGLED variant names that
+/// `register_mangled_variants` inserted for it (S91 Wave-7, FIXME 0432 Face A).
+/// Drives the finalize re-annotation + return-type refresh, both of which must
+/// key variant entries by their live mangled names, not the removed internal
+/// `{name}__v{i}` keys.
+type MangledNamesByBase = HashMap<Symbol, Vec<Symbol>>;
+
 // --- Name mangling for multi-sig overload dispatch ---
 
 /// Mangle a function name with its parameter type signature.
@@ -1819,10 +1826,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Side effect: registers mangled variants on the symbol table.
         // The returned Vec<Defn> was carried on CheckResult.default_method_defns
         // pre-slim; no longer needed — mangled entries live on SymbolTable.
+        // `multi_sig_mangled_names` (base → [mangled]) IS needed below: the
+        // re-annotation block re-keys multi-sig variant entries by their mangled
+        // names (the internal `{name}__v{i}` keys are gone post-registration).
+        let mut multi_sig_mangled_names = MangledNamesByBase::new();
         let _multi_sig_defns = self.resolve_multi_sig_overloads(
             state,
             working_program,
             &accumulator.defn_type_vars,
+            &mut multi_sig_mangled_names,
         )?;
 
         // Pass 3: detect constrained polymorphic functions
@@ -1927,6 +1939,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         self.resolve_pending_overloads(state)?;
         self.resolve_auto_curry(state);
 
+        // S91 Wave-7 (FIXME 0432 Face A): a multi-sig variant whose body
+        // contains an in-body self-call has a return type that is only pinned
+        // once `resolve_pending_overloads` resolves that self-call. But the
+        // variant return types were captured into `resolved_overloads`, the
+        // persisted `DefKind::Overloaded` base entry, and the mangled entries'
+        // schemes back in `resolve_multi_sig_overloads` (Pass 2.5) — BEFORE
+        // that resolution. Without this refresh the variant return stays a free
+        // var: a later REPL cluster rehydrates `resolved_overloads` from the
+        // stale persisted `OverloadVariant.ret_type` and a call to the variant
+        // displays an unresolved type (`:a` instead of `:primitives/Int`).
+        self.refresh_multi_sig_variant_ret_types(state, &multi_sig_mangled_names);
+
         // Surface any field-accessor synthesis collisions with a NON-accessor
         // binding (FIXME 0351(a), spec §5.2.6 safe disposition): the accessor
         // was suppressed (the existing binding wins) and the clash is reported
@@ -2027,16 +2051,26 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             for top in working_program {
                 match top {
                     TopLevel::Defn(defn) if defn.is_multi_sig() => {
-                        for (i, _variant) in defn.variants.iter().enumerate() {
-                            let internal_name = Symbol::from(format!("{}__v{}", defn.name, i));
-                            if let Some(entry) = sym_table.symbols.get_mut(&internal_name) {
-                                reannotate_and_refresh_view(
-                                    &internal_name,
-                                    entry,
-                                    &resolved_expr_types,
-                                    &accumulator.method_resolutions,
-                                    &state.subst,
-                                );
+                        // S91 Wave-7 (FIXME 0432 Face A): re-annotate each
+                        // variant body under its MANGLED key. The internal
+                        // `{name}__v{i}` entries were removed-and-reinserted as
+                        // mangled names by `register_mangled_variants` (Pass
+                        // 2.5), so a stale internal-key lookup misses and an
+                        // in-body self-call's `SigDispatch` resolution (written
+                        // by `resolve_pending_overloads`) never lands on the
+                        // body — the backend then falls back to the undefined
+                        // bare name. Look up the live mangled keys instead.
+                        if let Some(mangled_names) = multi_sig_mangled_names.get(&defn.name) {
+                            for mangled_name in mangled_names {
+                                if let Some(entry) = sym_table.symbols.get_mut(mangled_name) {
+                                    reannotate_and_refresh_view(
+                                        mangled_name,
+                                        entry,
+                                        &resolved_expr_types,
+                                        &accumulator.method_resolutions,
+                                        &state.subst,
+                                    );
+                                }
                             }
                         }
                     }
@@ -2290,11 +2324,21 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// table, and populate `resolved_overloads`.
     ///
     /// Returns a list of mangled Defn objects that the backend should compile.
+    /// `mangled_by_base` is an OUT-parameter: for each multi-sig base name it
+    /// receives the MANGLED variant names that `register_mangled_variants`
+    /// inserted (S91 Wave-7, FIXME 0432 Face A). The finalize re-annotation block
+    /// and the return-type refresh need these keys: the internal `{name}__v{i}`
+    /// entries no longer exist (they were removed-and-reinserted under the
+    /// mangled names here), so a stale internal-key lookup misses and an in-body
+    /// self-call's `SigDispatch` resolution never reaches the variant body —
+    /// leaving the backend to fall back to the undefined bare name. (Out-param,
+    /// not a return-tuple, to keep this fn's `Result` Ok-type unchanged.)
     fn resolve_multi_sig_overloads(
         &self,
         state: &mut CheckState,
         program: &[TopLevel],
         type_vars: &HashMap<Symbol, (Vec<Type>, Type)>,
+        mangled_by_base: &mut MangledNamesByBase,
     ) -> Result<Vec<Defn>, CranelispError> {
         let mut result_defns = Vec::new();
 
@@ -2307,12 +2351,70 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 let resolved = self.resolve_variant_types(state, defn, type_vars)?;
                 let (mangled_defns, resolved_info) =
                     self.register_mangled_variants(state, defn, &resolved);
+                mangled_by_base
+                    .entry(defn.name.clone())
+                    .or_default()
+                    .extend(resolved_info.iter().map(|(_, _, mangled)| mangled.clone()));
                 result_defns.extend(mangled_defns);
                 self.register_overloaded_base(state, defn, resolved_info);
             }
         }
 
         Ok(result_defns)
+    }
+
+    /// S91 Wave-7 (FIXME 0432 Face A): re-apply the final substitution to each
+    /// multi-sig variant's stored return type, after `resolve_pending_overloads`
+    /// has resolved any in-body self-calls.
+    ///
+    /// `resolve_multi_sig_overloads` (Pass 2.5) captures variant return types
+    /// into `state.resolved_overloads`, the persisted `DefKind::Overloaded` base
+    /// entry's `OverloadVariant.ret_type`, and each mangled entry's scheme — but
+    /// it runs BEFORE `resolve_pending_overloads`. A variant whose body
+    /// self-calls another variant has a return type that is only pinned by that
+    /// later resolution, so the captured value is a free var. This refresh walks
+    /// the final subst over those stored return types so a later REPL cluster
+    /// (which rehydrates `resolved_overloads` from the persisted base entry) sees
+    /// the concrete return type rather than an unresolved var.
+    fn refresh_multi_sig_variant_ret_types(
+        &self,
+        state: &mut CheckState,
+        multi_sig_mangled_names: &MangledNamesByBase,
+    ) {
+        if multi_sig_mangled_names.is_empty() {
+            return;
+        }
+
+        let subst = state.subst.clone();
+
+        // 1. Refresh the in-memory `resolved_overloads` (read by
+        //    `resolve_pending_overloads` for any still-pending calls and the
+        //    source of truth for the persisted base entry below).
+        for variants in state.resolved_overloads.values_mut() {
+            for (_params, ret, _mangled) in variants.iter_mut() {
+                *ret = apply(&subst, ret);
+            }
+        }
+
+        // 2. Refresh the persisted symbol-table entries: the `Overloaded` base
+        //    (its `OverloadVariant.ret_type` is what a later REPL cluster
+        //    rehydrates from) and each mangled variant entry's scheme return
+        //    type (read for direct mangled-call typing and display).
+        let mut st = self.current_symbol_table_mut(state);
+        for (base, mangled_names) in multi_sig_mangled_names {
+            if let Some(ModuleEntry::Def { kind, .. }) = st.symbols.get_mut(base.as_ref())
+                && let DefKind::Overloaded { variants } = kind.as_mut()
+            {
+                for v in variants.iter_mut() {
+                    v.ret_type = apply(&subst, &v.ret_type);
+                }
+            }
+            for mangled in mangled_names {
+                if let Some(ModuleEntry::Def { scheme, .. }) = st.symbols.get_mut(mangled) {
+                    scheme.ty = apply(&subst, &scheme.ty);
+                }
+            }
+        }
     }
 
     /// For a single multi-sig defn, resolve each variant's concrete param/return

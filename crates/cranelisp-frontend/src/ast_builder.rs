@@ -826,7 +826,7 @@ fn build_method_sig(
     if ret_pos >= children.len() {
         return Err(parse_err("method signature missing return type", span));
     }
-    let ret_type = build_type_expr(&children[ret_pos])?;
+    let ret_type = build_ret_type(&children[ret_pos])?;
 
     let has_default_body = ret_pos + 1 < children.len();
 
@@ -915,7 +915,7 @@ pub(crate) fn parse_impl(
 
     Ok(ParsedEntry::TraitImpl {
         impl_: TraitImpl {
-            trait_name: TraitRef::new(None, TraitName::from(trait_name)),
+            trait_name: trait_ref_from_name(trait_name),
             target,
             type_constraints,
             methods,
@@ -926,12 +926,18 @@ pub(crate) fn parse_impl(
 
 /// Parsed impl target: (target type expression, trait constraints).
 ///
-/// Per S69 Submission 27 (`TraitImpl.target: TypeExpr` unified):
-/// - `Type` lowers to `TypeExpr::Named(TypeRef::new(None, TypeName::from(name)))`
+/// Per S69 Submission 27 (`TraitImpl.target: TypeExpr` unified). Every name
+/// position routes through the §8.5 splitters (`type_ref_from_name` /
+/// `trait_ref_from_name`) so a qualified `module/Name` is canonicalised into
+/// `Some(module)` rather than left whole with `module: None` (which would
+/// re-root it under the current module — the D-qual defect class, S91 Thread B):
+/// - `Type` (or `module/Type`) lowers to
+///   `TypeExpr::Named(type_ref_from_name(name))`
 /// - `(Type :Constraint var ...)` / `(Type var ...)` lowers to
-///   `TypeExpr::Applied(TypeRef::new(None, head), args)` where each
-///   bare-symbol arg becomes `TypeExpr::TypeVar(name)` (or, if uppercase,
-///   `TypeExpr::Named(...)`); constraints carry on the side.
+///   `TypeExpr::Applied(type_ref_from_name(head), args)` where each bare-symbol
+///   arg becomes `TypeExpr::TypeVar(name)` (or, if uppercase,
+///   `TypeExpr::Named(type_ref_from_name(name))`); each constraint trait carries
+///   on the side as `trait_ref_from_name(constraint_name)`.
 type ImplTarget = (TypeExpr, Vec<(Symbol, TraitRef)>);
 
 /// Parse an impl target. Three forms:
@@ -943,7 +949,10 @@ fn build_impl_target(
 ) -> Result<ImplTarget, CranelispError> {
     match sexp {
         Sexp::Symbol(name, _) if is_uppercase_start(name) => {
-            let target = TypeExpr::Named(TypeRef::new(None, TypeName::from(name.as_str())));
+            // §8.5: a qualified target (`primitives/Int`) is canonical — split it
+            // through the shared splitter rather than stuffing the whole slash-name
+            // into the bare-name slot (which re-roots it under the current module).
+            let target = TypeExpr::Named(type_ref_from_name(name.as_str()));
             Ok((target, vec![]))
         }
         Sexp::List(children, span) => {
@@ -976,15 +985,23 @@ fn build_impl_target(
                         }
                         let (var_name, _) = expect_symbol(&children[i])?;
                         type_args.push(TypeExpr::TypeVar(Symbol::from(var_name)));
+                        // §8.5: a qualified constraint trait (`:fmt/Eq a`,
+                        // spec/07-traits.md:749) is canonical — split through the
+                        // shared splitter rather than stuffing the slash-name into
+                        // the bare-name slot (which re-roots the trait under the
+                        // current module). Same root-cause class as the impl
+                        // trait-name and target sites.
                         type_constraints.push((
                             Symbol::from(var_name),
-                            TraitRef::new(None, TraitName::from(constraint_name)),
+                            trait_ref_from_name(constraint_name),
                         ));
                         i += 1;
                     } else {
-                        // Bare type arg — uppercase becomes Named, lowercase TypeVar
+                        // Bare type arg — uppercase becomes Named, lowercase TypeVar.
+                        // §8.5: a qualified uppercase arg (`(Option primitives/Int)`)
+                        // is canonical — split through the shared splitter.
                         let arg = if is_uppercase_start(s) {
-                            TypeExpr::Named(TypeRef::new(None, TypeName::from(s.as_str())))
+                            TypeExpr::Named(type_ref_from_name(s.as_str()))
                         } else {
                             TypeExpr::TypeVar(Symbol::from(s.as_str()))
                         };
@@ -999,8 +1016,11 @@ fn build_impl_target(
                 }
             }
 
+            // §8.5: a qualified applied head (`(primitives/Map K V)`) is canonical —
+            // split through the shared splitter rather than stuffing the slash-name
+            // into the bare-name slot.
             let target = TypeExpr::Applied(
-                TypeRef::new(None, TypeName::from(type_name)),
+                type_ref_from_name(type_name),
                 type_args,
             );
             Ok((target, type_constraints))
@@ -1514,6 +1534,22 @@ fn type_ref_from_name(name: &str) -> TypeRef {
     }
 }
 
+/// Split an as-written trait name `module/Trait` into its `(module, name)` parts
+/// for a `TraitRef`, mirroring [`type_ref_from_name`]. This is the §8.5
+/// canonicalisation rule applied at the **trait-name** position of an `impl`:
+/// a qualified trait (`(impl primitives/Num Int …)`) must arrive at typecheck as
+/// `TraitRef { module: Some("primitives"), name: "Num" }`, not as the un-split
+/// `TraitRef { module: None, name: "primitives/Num" }` (which would re-root the
+/// trait under the current module the same way the impl-target defect did).
+fn trait_ref_from_name(name: &str) -> TraitRef {
+    match name.rsplit_once('/') {
+        Some((m, n)) if !m.is_empty() && !n.is_empty() => {
+            TraitRef::new(Some(ModuleFullPath::from(m)), TraitName::from(n))
+        }
+        _ => TraitRef::new(None, TraitName::from(name)),
+    }
+}
+
 fn parse_annotation_name(name: &str) -> TypeExpr {
     if name == "self" {
         TypeExpr::SelfType
@@ -1684,6 +1720,33 @@ fn type_expr_to_trait_ref(te: TypeExpr) -> TraitRef {
 // ---------------------------------------------------------------------------
 // Type expression builders
 // ---------------------------------------------------------------------------
+
+/// Build a method-signature return type. A return type is a type expression
+/// (spec/07-traits.md §7.1 — `self`, a named type, an applied type, or a type
+/// variable), written either bare (`Int`) or with the annotation colon
+/// (`:Int`, `:primitives/Int`).
+///
+/// For a colon-prefixed **named** return type (`:Int`, `:primitives/Int` —
+/// uppercase after any final `/`), strip the annotation colon and route the
+/// remaining name through `parse_annotation_name` so a qualified return type is
+/// canonicalised through the §8.5 splitter — exactly as the param-annotation
+/// path already does — rather than reaching `type_ref_from_name` with the colon
+/// still attached (which would make the module side `:primitives` and yield
+/// "unknown type"). The colon-prefixed **type-variable** form (`:a`) is left to
+/// `build_type_expr` unchanged: it stays a `TypeExpr::TypeVar` carrying the
+/// as-written token, preserving the established return-type-var display. Compound
+/// annotation forms (`(Fn …)`, `(Option self)`) and bare type expressions also
+/// fall through to `build_type_expr`.
+fn build_ret_type(sexp: &Sexp) -> Result<TypeExpr, CranelispError> {
+    if let Sexp::Symbol(s, _) = sexp
+        && let Some(rest) = s.strip_prefix(':')
+        && !rest.is_empty()
+        && is_uppercase_start(rest)
+    {
+        return Ok(parse_annotation_name(rest));
+    }
+    build_type_expr(sexp)
+}
 
 fn build_type_expr(sexp: &Sexp) -> Result<TypeExpr, CranelispError> {
     match sexp {

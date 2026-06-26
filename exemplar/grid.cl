@@ -24,19 +24,25 @@
 ;; S88 adoption (Stage D): the DEF-2 carve-out is RETIRED — heap-ADT (`Cell`)
 ;; accumulators now use the curated `collections.vec/conj` (S88 confirmed it
 ;; is RC-identical to the bare `vec-push`; the earlier corruption was the
-;; collateral-fixed 0417 defect). The hand-rolled 9-bit mask layer (~55 lines
-;; of `pow2`/`bit-set?`/`bit-clear`/`bit-set`/`bit-count`/`bit-lowest`
-;; simulating `<< >> & ~ popcount` in `+ - * /`) is replaced by the stdlib
-;; `num.bits` module (landed S87). grid keeps thin *digit-1-9* domain
+;; collateral-fixed 0417 defect).
+;;
+;; S91 adoption (Phase 6): the hand-rolled 9-bit mask layer (~55 lines of
+;; `pow2`/`bit-set?`/`bit-clear`/`bit-set`/`bit-count`/`bit-lowest` simulating
+;; `<< >> & ~ popcount` in `+ - * /`) is replaced by the stdlib `num.bits`
+;; module, which is now a thin curated layer over the S91 native bitwise
+;; primitives (FIXME 0416, RESOLVED). grid keeps thin *digit-1-9* domain
 ;; adapters over the *bit-position-0-8* `num.bits` verbs so the solver and
-;; tests are unchanged at their boundary.
+;; tests are unchanged at their boundary. The native ops are full 64-bit
+;; two's-complement, but the candidate masks are always 9-bit (bits 0-8,
+;; positive), so the sign bit never participates — verified behaviour-identical
+;; to the old arithmetic sim across all 512 masks × 9 digits.
 
 (import [collections.vec [count get assoc conj]])
 (import [primitives [char-at str-len not]])
-;; num.bits is reached module-qualified inside the digit-domain adapters
-;; below (its `bit-clear`/`bit-set` names would collide with grid's
-;; digit-domain `bit-clear`/`bit-set`, so it is NOT imported bare).
-(import [num.bits []])
+;; num.bits primitives — imported by name. The position-domain `bit-clear`/
+;; `bit-set` are NOT imported (they would collide with grid's digit-domain
+;; `bit-clear`/`bit-set`); grid composes those two from the primitives below.
+(import [num.bits [bit-shift-left bit-test bit-and bit-or bit-not popcount]])
 
 ;; ── Data Types ──────────────────────────────────────────────────────────
 
@@ -77,29 +83,31 @@
 ;;
 ;; Candidates are a 9-bit mask: digit d (1-9) occupies bit position (d-1).
 ;; The arithmetic bit simulation that used to live here is now provided by
-;; the stdlib `num.bits` module (composed from Ring 0 `+ - * /`). grid keeps
-;; these thin adapters so the rest of the exemplar speaks in *digits 1-9*
-;; while `num.bits` speaks in *bit positions 0-8*.
+;; the stdlib `num.bits` module (a thin layer over the S91 native bitwise
+;; primitives). grid keeps these thin adapters so the rest of the exemplar
+;; speaks in *digits 1-9* while `num.bits` speaks in *bit positions 0-8*.
 
-;; 2^n — re-exported from num.bits (kept as a grid name for the test that
-;; exercises it directly).
-(defn pow2 [n] (num.bits/pow2 n))
+;; 2^n — single set bit at position n. (kept as a grid name for the test that
+;; exercises it directly.)
+(defn pow2 [n] (bit-shift-left 1 n))
 
 ;; Test if digit d (1-9) is set in bitmask.
 (defn bit-set? [mask d]
-  (num.bits/bit-test mask (- d 1)))
+  (bit-test mask (- d 1)))
 
 ;; Clear digit d (1-9) from bitmask.
+;; (Composed locally — num.bits/bit-clear would collide with this name.)
 (defn bit-clear [mask d]
-  (num.bits/bit-clear mask (- d 1)))
+  (bit-and mask (bit-not (bit-shift-left 1 (- d 1)))))
 
 ;; Set digit d (1-9) in bitmask.
+;; (Composed locally — num.bits/bit-set would collide with this name.)
 (defn bit-set [mask d]
-  (num.bits/bit-set mask (- d 1)))
+  (bit-or mask (bit-shift-left 1 (- d 1))))
 
 ;; Count number of set bits in the 9-bit mask (popcount).
 (defn bit-count [mask]
-  (num.bits/popcount mask))
+  (popcount mask))
 
 ;; Return the lowest set digit (1-9) in a bitmask. Returns 0 if mask is empty.
 (defn bit-lowest-helper [mask d]

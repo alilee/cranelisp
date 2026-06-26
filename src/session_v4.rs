@@ -68,6 +68,13 @@ pub(crate) use self::nice_worker::nice_worker_loop;
 #[cfg(test)]
 pub use self::nice_worker::spawn_nice_workers;
 
+// index_worker.rs — the Pillar-3 importable-symbol indexer (S91): the
+// `ImportableIndices` (the two `.meta`-derived lookup indices on `SharedState`)
+// + the three-branch per-module index pass drained by the nice workers off a
+// SEPARATE worklist. Default-build (NOT agent-gated); backs `/search`.
+pub(crate) mod index_worker;
+pub(crate) use self::index_worker::ImportableIndices;
+
 // shared_state.rs — `ReadOnlyMacroResolver` (the `/expand` read-only recognizer),
 // the one `SharedState`-adjacent behavior that is neither a `CompilerSession`
 // method nor a DTO (S87 §2.1). The `SharedState` struct definition itself stays
@@ -289,6 +296,18 @@ pub struct SharedState {
     /// read it; absent ⇒ they no-op. (`/disasm` re-derives on demand via
     /// `produce_disasm` — it does NOT read this store.)
     pub introspection: Option<dashmap::DashMap<FQSymbol, Introspection>>,
+
+    /// Pillar-3 importable-symbol indices (S91, `design/int/agent.md §25.3`).
+    /// The two `.meta`-derived lookup indices + the `IndexModule` worklist that
+    /// back `/search` over reachable-but-unimported modules. A FIFTH structure,
+    /// SEPARATE from the four session-state maps above (`symbol_tables` /
+    /// `module_aliases` / `prelude_fallback` / `introspection`) — the indexer
+    /// never writes those (R13 no-session-state-residue). Populated by the
+    /// nice-worker burn-down (REPL-only by construction, R17) off a worklist
+    /// distinct from the object-codegen worklist (no `.o` entanglement, §25.1).
+    /// NOT serialized, NO `CACHE_SCHEMA_VERSION` bump (rebuildable from `.meta`,
+    /// R16). `pub(crate)`, guard-excluded.
+    pub(crate) importable_indices: ImportableIndices,
 
     /// Which CLI verb launched this session (D1 ruling §4). The explicit
     /// REPL-vs-batch signal: `run_mode.populates_introspection()` gates

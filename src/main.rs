@@ -88,7 +88,8 @@ fn main() {
     let _got_flush = got_trace::GotTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
 
-    let (action, project_root, entry_module, settings, agent_enabled, auto_accept) = parse_args();
+    let (action, project_root, entry_module, settings, agent_enabled, auto_accept, is_rule3) =
+        parse_args();
     cranelisp::style::init_color(settings.no_color);
 
     if let Err(e) = run(
@@ -98,6 +99,7 @@ fn main() {
         settings,
         agent_enabled,
         auto_accept,
+        is_rule3,
     ) {
         let entry_file = project_root.join(format!("{entry_module}.cl"));
         eprintln!("{}", format_error(&e, &entry_file));
@@ -194,6 +196,7 @@ fn run(
     settings: SessionSettings,
     agent_enabled: bool,
     auto_accept: bool,
+    is_rule3: bool,
 ) -> Result<(), CranelispError> {
     use std::io::{self, BufRead, Write};
 
@@ -260,6 +263,15 @@ fn run(
             // Initialize file watcher now that modules are loaded.
             s.init_watcher();
 
+            // S91 Pillar 3: arm the importable-symbol burn-down EAGERLY at REPL
+            // start-up (R17 — eager-from-REPL-startup). REPL-only by
+            // construction: this is the SOLE arming point, so `--run`/`--link`/
+            // `--release` never enumerate the worklist (batch-mode-inert, R9).
+            // The nice workers drain it BEHIND object codegen (index warm-up in
+            // the slack); a `/search` issued before the burn-down completes
+            // serves partial results + an "indexing N modules…" note.
+            s.arm_importable_index();
+
             // S88 W3: wire the embedded agent (the S1 `_agent_enabled` seam).
             // REPL-only; selects the runtime provider (anthropic / ollama / stub
             // by config) or stays dormant. Feature-off this call does not exist
@@ -267,6 +279,20 @@ fn run(
             // still recognised so a script written for an agent build runs).
             #[cfg(feature = "agent")]
             s.enable_agent(agent_enabled, auto_accept);
+
+            // S91 FIXME 0410: scaffold a default `Cranelisp.toml` when the REPL
+            // is pointed at a §0.5 rule-3 project-root directory lacking one.
+            // REPL-only (this arm) + rule-3-only (the `is_rule3` gate) + never
+            // overwrite + graceful on a read-only dir — all enforced by
+            // `scaffold_project_config`. A new file emits the §0.5.7
+            // `[created Cranelisp.toml]` notice; an existing file is a silent
+            // no-op. The scaffold is resolution-neutral (every key commented).
+            // A newly-created file (Ok(true)) emits the §0.5.7 notice; an
+            // existing file (Ok(false)) or a graceful write failure is a
+            // silent no-op — never fatal, the REPL launch proceeds regardless.
+            if is_rule3 && matches!(s.scaffold_project_config(), Ok(true)) {
+                let _ = writeln!(stdout, "[created Cranelisp.toml]");
+            }
 
             s.print_banner(&mut stdout);
 
@@ -439,7 +465,7 @@ fn run(
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool) {
+fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool) {
     let args: Vec<String> = std::env::args().collect();
     let mut no_color = false;
     let mut no_cache = false;
@@ -586,8 +612,9 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool) {
     // (this resolves to `false` and the consuming `enable_agent` is `#[cfg]`-gated).
     let auto_accept = yes && agent_enabled;
 
-    // Resolve (project_root, entry_module) per spec §0.5.1.
-    let (project_root, entry_module) = resolve_target(target.as_deref());
+    // Resolve (project_root, entry_module) per spec §0.5.1. `is_rule3` flags
+    // the directory-as-project launch (the §0.5.7 scaffold trigger).
+    let (project_root, entry_module, is_rule3) = resolve_target(target.as_deref());
 
     let codegen_behaviour = action.codegen_behaviour();
     let run_mode = action.run_mode();
@@ -601,7 +628,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool) {
         run_mode,
     };
 
-    (action, project_root, entry_module, settings, agent_enabled, auto_accept)
+    (action, project_root, entry_module, settings, agent_enabled, auto_accept, is_rule3)
 }
 
 /// Resolve a positional target to (project_root, entry_module) per spec §0.5.1.
@@ -614,7 +641,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool) {
 ///
 /// The `.cl` extension is stripped if present. Project root is resolved to
 /// an absolute path.
-fn resolve_target(target: Option<&str>) -> (PathBuf, String) {
+fn resolve_target(target: Option<&str>) -> (PathBuf, String, bool) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     resolve_target_from(target, &cwd)
 }
@@ -631,9 +658,13 @@ fn resolve_target(target: Option<&str>) -> (PathBuf, String) {
 /// — which creates a sibling `<entry>/` directory — would be misread as a
 /// directory target and the compiler would hunt for a non-existent
 /// `<entry>/user.cl` (FIXME 0121).
-fn resolve_target_from(target: Option<&str>, cwd: &Path) -> (PathBuf, String) {
+///
+/// The third tuple element is `true` only when Rule 3 (directory-as-project)
+/// fired — the §0.5.7 scaffold trigger. Rules 1/2/4 return `false` (the bare
+/// no-target REPL and entry-`.cl` launches MUST NOT scaffold).
+fn resolve_target_from(target: Option<&str>, cwd: &Path) -> (PathBuf, String, bool) {
     let target = match target {
-        None => return (cwd.to_path_buf(), "user".to_string()),
+        None => return (cwd.to_path_buf(), "user".to_string(), false),
         Some(t) => t,
     };
 
@@ -651,16 +682,17 @@ fn resolve_target_from(target: Option<&str>, cwd: &Path) -> (PathBuf, String) {
             .unwrap_or("user")
             .to_string();
         let project_root = make_absolute(dir, cwd);
-        (project_root, module)
+        (project_root, module, false)
     } else if cwd.join(target).is_dir() && !cwd.join(format!("{target}.cl")).is_file() {
-        // Rule 3: existing directory with no same-named entry file.
+        // Rule 3: existing directory with no same-named entry file. This is the
+        // §0.5.7 scaffold trigger (`is_rule3 = true`).
         let project_root = make_absolute(Path::new(target), cwd);
-        (project_root, "user".to_string())
+        (project_root, "user".to_string(), true)
     } else {
         // Rule 4: bare name (resolves to `{cwd}/{target}.cl`), which also
         // covers the case where both `{target}.cl` and `{target}/` exist —
         // the file is the entry, the directory holds its submodules.
-        (cwd.to_path_buf(), target.to_string())
+        (cwd.to_path_buf(), target.to_string(), false)
     }
 }
 
@@ -713,9 +745,13 @@ mod tests {
         // Both `main.cl` (with extension) and bare `main` must resolve to the
         // FILE as the entry, with project root = cwd.
         for target in ["main.cl", "main"] {
-            let (root, module) = resolve_target_from(Some(target), cwd);
+            let (root, module, is_rule3) = resolve_target_from(Some(target), cwd);
             assert_eq!(root, cwd, "target {target:?}: project root must be cwd");
             assert_eq!(module, "main", "target {target:?}: entry module must be 'main'");
+            assert!(
+                !is_rule3,
+                "target {target:?}: an entry-`.cl` launch is NOT a rule-3 scaffold trigger"
+            );
         }
     }
 
@@ -728,39 +764,48 @@ mod tests {
         std::fs::create_dir(cwd.join("myproj")).unwrap();
         std::fs::write(cwd.join("myproj/user.cl"), "(defn main [] 0)").unwrap();
 
-        let (root, module) = resolve_target_from(Some("myproj"), cwd);
+        let (root, module, is_rule3) = resolve_target_from(Some("myproj"), cwd);
         assert_eq!(root, cwd.join("myproj"));
         assert_eq!(module, "user");
+        assert!(
+            is_rule3,
+            "a directory-as-project target IS the §0.5.7 scaffold trigger"
+        );
     }
 
-    /// Rule 1: no target → (cwd, "user").
+    /// Rule 1: no target → (cwd, "user"). NOT a scaffold trigger — the bare
+    /// no-target REPL launch MUST NOT scaffold (§0.5.7 rule-1 MUST NOT).
     #[test]
     fn no_target_resolves_to_cwd_user() {
         let tmp = tempfile::tempdir().unwrap();
-        let (root, module) = resolve_target_from(None, tmp.path());
+        let (root, module, is_rule3) = resolve_target_from(None, tmp.path());
         assert_eq!(root, tmp.path());
         assert_eq!(module, "user");
+        assert!(!is_rule3, "the bare no-target launch is NOT a rule-3 trigger");
     }
 
     /// Rule 2: a target with a directory component splits into
-    /// (directory, final-component).
+    /// (directory, final-component). NOT a rule-3 scaffold trigger.
     #[test]
     fn target_with_directory_component_splits() {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path();
-        let (root, module) = resolve_target_from(Some("examples/hello.cl"), cwd);
+        let (root, module, is_rule3) = resolve_target_from(Some("examples/hello.cl"), cwd);
         assert_eq!(root, cwd.join("examples"));
         assert_eq!(module, "hello");
+        assert!(!is_rule3, "a directory-component target is NOT a rule-3 trigger");
     }
 
     /// Rule 4: a bare name that matches neither a directory nor a file still
     /// resolves to (cwd, name) — the session reports the missing file later.
+    /// NOT a rule-3 scaffold trigger.
     #[test]
     fn bare_name_resolves_to_cwd_module() {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path();
-        let (root, module) = resolve_target_from(Some("nope"), cwd);
+        let (root, module, is_rule3) = resolve_target_from(Some("nope"), cwd);
         assert_eq!(root, cwd);
         assert_eq!(module, "nope");
+        assert!(!is_rule3, "a bare missing-name target is NOT a rule-3 trigger");
     }
 }

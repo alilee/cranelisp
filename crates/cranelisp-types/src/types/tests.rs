@@ -378,3 +378,38 @@ fn test_type_var_names_ordering() {
     assert_eq!(names.get(&99), Some(&"a".to_string()));
     assert_eq!(names.get(&50), Some(&"b".to_string()));
 }
+
+// FIXME 0437: the canonical first-occurrence walk MUST number the `TyConApp`
+// head (a type-constructor variable), not only its args, so HKT
+// alpha-equivalence / display stays correct.
+#[test]
+fn test_collect_var_ids_ordered_numbers_tyconapp_head() {
+    // (TyCon t7 t3): head 7 is seen first (first occurrence), then arg 3.
+    let ty = Type::TyConApp(7, vec![Type::Var(3)]);
+    let mut ids = Vec::new();
+    collect_var_ids_ordered(&ty, &mut ids);
+    assert_eq!(ids, vec![7, 3], "head must be numbered before its args");
+}
+
+#[test]
+fn test_collect_var_ids_ordered_head_shared_with_var_seen_once() {
+    // (Fn [t5] (TyCon t5 t9)): the head id 5 also appears as a `Var` arg; it is
+    // numbered once, at its first occurrence (the param), and not re-pushed.
+    let ty = Type::Fn(
+        vec![Type::Var(5)],
+        Box::new(Type::TyConApp(5, vec![Type::Var(9)])),
+    );
+    let mut ids = Vec::new();
+    collect_var_ids_ordered(&ty, &mut ids);
+    assert_eq!(ids, vec![5, 9]);
+}
+
+#[test]
+fn test_type_var_names_assigns_letter_to_tyconapp_head() {
+    // The head var becomes nameable like any other var (strict display
+    // improvement — pre-0437 the head got no name and fell back to `t{id}`).
+    let ty = Type::TyConApp(11, vec![Type::Var(4)]);
+    let names = type_var_names(&ty);
+    assert_eq!(names.get(&11), Some(&"a".to_string()));
+    assert_eq!(names.get(&4), Some(&"b".to_string()));
+}

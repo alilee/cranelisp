@@ -4499,6 +4499,92 @@
         }
     }
 
+    // spec: spec/05-definitions.md §5.1.2 — FIXME 0432 Face A (S91 Wave-7):
+    //   a multi-clause annotated `defn` whose body contains an in-body self-call
+    //   must carry that self-call's mangled `SigDispatch` resolution ON the AST
+    //   node of the MANGLED variant entry. The seam: `register_mangled_variants`
+    //   removes the internal `{name}__v{i}` keys and reinserts the variant
+    //   entries under their mangled names; the finalize re-annotation block must
+    //   re-annotate under the MANGLED keys (not the stale internal keys) so the
+    //   self-call's `SigDispatch` (written by `resolve_pending_overloads`) lands
+    //   on the body. Before the fix the lookup missed and the body's self-call
+    //   node carried NO `resolved_call` — the backend then fell back to the
+    //   undefined bare name `h` (`undefined function: h` at codegen).
+    //
+    // This is the unit-tier guard for the e2e
+    // `tests/spec_05_definitions::defn_multi_clause_annotated_self_call_minimal_repro`.
+    #[test]
+    fn multi_sig_self_call_carries_mangled_sig_dispatch() {
+        let mut tc = tc_with_prims();
+        // `h` variant 1 = `[:Int n] (h n n)`; the in-body 2-arg self-call must
+        // dispatch to variant 2 (`h$Int+Int`). The mangled entry for variant 1
+        // is `h$Int`; its body Apply node must carry SigDispatch{h$Int+Int}.
+        let src = "\
+            (defn h \
+                ([:primitives/Int n] (h n n)) \
+                ([:primitives/Int a :primitives/Int b] (add-i64 a b)))";
+        let sexps = cranelisp_frontend::parse(src).expect("parse");
+        let program = cranelisp_frontend::build_forms(&sexps).expect("build_forms");
+        tc.check_program_self(&program).unwrap();
+
+        // Walk a body Expr tree collecting every `SigDispatch` mangled name.
+        fn collect_sig_dispatch(expr: &Expr, out: &mut Vec<String>) {
+            let rc = match expr {
+                Expr::Apply { callee, args, resolved_call, .. } => {
+                    collect_sig_dispatch(callee, out);
+                    for a in args {
+                        collect_sig_dispatch(a, out);
+                    }
+                    resolved_call.as_deref()
+                }
+                Expr::Var { resolved_call, .. } => resolved_call.as_deref(),
+                Expr::If { cond, then_branch, else_branch, .. } => {
+                    collect_sig_dispatch(cond, out);
+                    collect_sig_dispatch(then_branch, out);
+                    collect_sig_dispatch(else_branch, out);
+                    None
+                }
+                Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                    for (_, b) in bindings {
+                        collect_sig_dispatch(b, out);
+                    }
+                    collect_sig_dispatch(body, out);
+                    None
+                }
+                Expr::Lambda { body, .. }
+                | Expr::Annotate { expr: body, .. }
+                | Expr::Trace { body, .. } => {
+                    collect_sig_dispatch(body, out);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(ResolvedCall::SigDispatch { mangled_name }) = rc {
+                out.push(mangled_name.as_ref().to_string());
+            }
+        }
+
+        // The variant-1 entry lives under the MANGLED key `h$Int` (the internal
+        // `h__v0` key was removed by `register_mangled_variants`).
+        let st = tc.symbol_table();
+        let entry = st
+            .get("h$Int")
+            .expect("mangled variant `h$Int` must be registered");
+        let body = match entry {
+            ModuleEntry::Def { ast: Some(variant), .. } => &variant.body,
+            other => panic!("h$Int must carry an annotated ast: {other:?}"),
+        };
+
+        let mut dispatches = Vec::new();
+        collect_sig_dispatch(body, &mut dispatches);
+        assert!(
+            dispatches.iter().any(|d| d == "h$Int+Int"),
+            "the in-body self-call `(h n n)` must carry SigDispatch{{h$Int+Int}} \
+             on the mangled variant body (not a bare unresolved name); \
+             found dispatches: {dispatches:?}",
+        );
+    }
+
     // spec: spec/12-runtime.md §12.1 — no unresolved type variable reaches code
     //   generation: a polymorphic fn passed THROUGH a HOF whose result is a
     //   generic ADT carrying a `Type::Var` field is monomorphised to a concrete

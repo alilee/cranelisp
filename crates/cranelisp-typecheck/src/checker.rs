@@ -1156,6 +1156,16 @@ where
             return (Some(scheme), None);
         }
 
+        // Try the dotted `Type.member` field-accessor form (FIXME 0365 / spec
+        // §8.5.2). `Box.v` resolves the field accessor `v` of `Box` directly,
+        // bypassing the (possibly poisoned) bare-name lookup. The accessor is
+        // an ordinary concrete `Def`; typing it is plain value-position scheme
+        // instantiation (the read here returns its `Scheme`; the caller
+        // instantiates with fresh vars).
+        if let Some(scheme) = self.resolve_dotted_field_accessor(state, name) {
+            return (Some(scheme), None);
+        }
+
         // Try qualified name resolution: "module/name" -> resolve_qualified
         if let Some(slash_pos) = name.find('/') {
             let module_part = &name[..slash_pos];
@@ -1198,6 +1208,70 @@ where
         }
 
         (None, None)
+    }
+
+    /// Resolve a dotted `Type.member` field-accessor reference to its accessor
+    /// `Scheme` (FIXME 0365 Item 1 / spec §8.5.2, INVERTED model §1.6).
+    ///
+    /// `Box.v` is the **canonical** field accessor of type `Box` — a real,
+    /// uniformly-Public `Def` keyed `Type.field` in `Box`'s home module. It
+    /// resolves directly and unconditionally (no ambiguity ever): `Box.v` always
+    /// names exactly the `Box`-`v` accessor, even when the bare alias `v` is
+    /// contested (the bare `v` is the convenience alias whose ambiguity is the
+    /// resolution concern, never the canonical dotted form). The split is on the
+    /// FIRST `.`: the head (`Box`) is a type name in bare scope, the tail (`v`)
+    /// the field.
+    ///
+    /// The read is the canonical accessor `Def.scheme` (Principle 7 — the
+    /// `Def.scheme` is the single source of the accessor's type;
+    /// `committed_accessor_kind` is the single "is this an accessor of this
+    /// type" judgment). The caller (`lookup`) instantiates the returned scheme
+    /// with fresh vars, so the dotted form is an ordinary first-class callable
+    /// typed `(Fn [Type] FieldType)` — no special value-position handling. (The
+    /// bare alias `v` resolves via the ordinary `Import`-chain-follow path in
+    /// `lookup_in_current_module`, not here.)
+    ///
+    /// Returns `None` when `name` is not a `Type.member` form, the head does not
+    /// name a type in scope, or `member` is not a field accessor of that type
+    /// (the caller then proceeds to the `/`-split / undefined-variable path).
+    fn resolve_dotted_field_accessor(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<Scheme> {
+        // A `Type.member` form: exactly one `.`, both sides non-empty. A
+        // module-qualified `m/Type` head carries a `/`, which the `/`-split
+        // path owns — restrict the dotted accessor to a bare type head here.
+        let dot = name.find('.')?;
+        let type_part = &name[..dot];
+        let member_part = &name[dot + 1..];
+        if type_part.is_empty() || member_part.is_empty() || member_part.contains('.')
+            || type_part.contains('/') || member_part.contains('/')
+        {
+            return None;
+        }
+
+        // Resolve the head to its `FQTypeName` (current-module-or-prelude). A
+        // non-type head (a value `Var`, an unknown name) yields `None` — not an
+        // accessor reference.
+        let resolved = self
+            .resolve_current_or_prelude(state, type_part, Span::default())
+            .ok()?;
+        let fqtn = type_def_view_of(&resolved.entry)?.name.clone();
+
+        // Probe the CANONICAL key `Type.field` directly (the real Public accessor
+        // `Def`, inverted model §1.6.1) in the type's home module, union-view
+        // (staging then live). Accept it only when `committed_accessor_kind`
+        // classifies it `Concrete(fqtn)` (a synthesised accessor owned by this
+        // exact type), then read its scheme.
+        let qualified_key = format!("{}.{member_part}", fqtn.name);
+        let entry = self.probe_module_entry_owned(&fqtn.module, &qualified_key)?;
+        match crate::adt::committed_accessor_kind(&entry) {
+            crate::adt::CommittedAccessor::Concrete(owner) if owner == fqtn => {
+                self.extract_scheme_from_entry_owned(&entry, 0)
+            }
+            _ => None,
+        }
     }
 
     /// Look up a name in the current module's symbol table, following
@@ -2205,6 +2279,26 @@ where
             }
         };
         crate::resolve::resolve_type_expr(texpr, var_map, &resolve_terminal, span)
+    }
+
+    /// Resolve a **qualified** `TypeRef` (`module: Some(..)`) appearing in a
+    /// trait-method signature to its `Type`, via the canonical
+    /// `resolve_type_expr_in_module` path (the same resolution `defn`/`deftype`
+    /// type refs use). Returns `None` if the qualified name does not resolve to
+    /// a type — the caller (`resolve_trait_type_expr`) then raises the
+    /// "unknown type" diagnostic. FIXME 0436 / spec §8.5: a qualified type ref
+    /// is the canonical form of the bare type, resolved against the named
+    /// module.
+    pub(crate) fn resolve_qualified_method_sig_type(
+        &self,
+        state: &CheckState,
+        tref: &cranelisp_types::TypeRef,
+        span: Span,
+    ) -> Option<Type> {
+        let texpr = cranelisp_types::TypeExpr::Named(tref.clone());
+        let empty_var_map = std::collections::HashMap::new();
+        self.resolve_type_expr_in_module(&texpr, &empty_var_map, &state.current_module, span)
+            .ok()
     }
 
     /// Check whether a constructor name refers to an internal constructor.

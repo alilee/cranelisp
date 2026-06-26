@@ -25,6 +25,40 @@
 mod helpers;
 
 use helpers::e2e::Cranelisp;
+use std::path::PathBuf;
+
+/// The platform DLL file extension for the host OS (mirrors
+/// `src/platform.rs::PLATFORM_EXT`). The platform-dir resolver
+/// (`resolve_platform_path`) looks for `libcranelisp_{name}.{ext}` using this
+/// extension, so the union fixtures below copy the workspace `stdio` DLL under
+/// the same host-correct name.
+#[cfg(target_os = "linux")]
+const PLATFORM_EXT: &str = "so";
+#[cfg(target_os = "macos")]
+const PLATFORM_EXT: &str = "dylib";
+#[cfg(target_os = "windows")]
+const PLATFORM_EXT: &str = "dll";
+
+/// Cargo's artifact file name for the workspace `stdio` platform cdylib, e.g.
+/// `libcranelisp_stdio.so`. This is exactly the name `resolve_platform_path`'s
+/// `check_dir` matches (`libcranelisp_{name}.{ext}`), so a directory containing
+/// a copy of this file resolves `(platform stdio)`.
+fn stdio_dll_filename() -> String {
+    format!("libcranelisp_stdio.{PLATFORM_EXT}")
+}
+
+/// Absolute path to the workspace `stdio` platform cdylib in `target/debug/`.
+/// The nextest setup-script (`tests/scripts/build-link-prereqs.sh`, wired in
+/// `.config/nextest.toml`) builds `cranelisp-stdio` into `target/debug` before
+/// any test runs, so this artifact is present without the test shelling out to
+/// `cargo build` (forbidden per `tests/CLAUDE.md`).
+fn workspace_stdio_dll() -> PathBuf {
+    // read-only on project_root: locating the prebuilt workspace cdylib.
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("debug")
+        .join(stdio_dll_filename())
+}
 
 // =============================================================================
 // §2.2.9 / §11.1 — `print` integrates via the declared platform DLL
@@ -115,24 +149,30 @@ fn cranelisp_toml_lib_dirs_resolves_module() {
         .assert_exit(42);
 }
 
-// spec: spec/08-modules.md §8.11.4 — project-config tier (item 2) takes
-// precedence over CRANELISP_LIB env-var tier (item 3). When both point
-// at modules of the same name, the config wins.
+// spec: spec/08-modules.md §8.11.4 — the lib-dir model is an additive UNION and
+// the search order places `CRANELISP_LIB` (env, source 2) BEFORE the
+// `Cranelisp.toml lib-dirs` config tier (source 3). When BOTH provide a module of
+// the same name, the env path is searched first and WINS (env > config — the S91
+// settled additive model, REVERSING the old config > env precedence). BOTH tiers
+// also contribute to the resolved set: a module present ONLY in the config tier
+// still resolves (proving the union is additive, not env-replaces-config).
 //
-// REGRESSION-GUARD: explicit `assert_ne!(exit, 13)` (env-var path
-// shadow). Preserves the load-bearing precedence-regression check from
-// the legacy test's negative companion.
-// (carry: legacy/e2e.rs::e2e_cranelisp_toml_overrides_cranelisp_lib_env)
+// SUPERSEDED-FLOOR RE-ALIGN (S91, Wave-6): this test formerly asserted the old
+// config > env precedence (`cranelisp_toml_takes_precedence_over_cranelisp_lib_env`);
+// it correctly went RED when `/dev`'s additive `assemble_lib_dirs` landed. This is
+// the spec ruling superseding an existing floor, NOT a regression. Renamed to fit.
+// (carry: legacy/e2e.rs::e2e_cranelisp_toml_overrides_cranelisp_lib_env, re-aligned)
 #[test]
-fn cranelisp_toml_takes_precedence_over_cranelisp_lib_env() {
-    // Build the env-tier lib in a sibling tempdir (separate from the
-    // project root). `lose-lib` defines `(pick) -> 13`; the project-tier
-    // `conflict-lib` defines `(pick) -> 99`. Config tier MUST win.
+fn cranelisp_lib_env_searched_before_toml_lib_dirs() {
+    // Env-tier lib in a sibling tempdir, with TWO modules:
+    //   `foo.cl` (pick -> 13)  — SHADOWS the same-named config-tier module
+    //   (no `bar` here)         — so `bar` can only come from the config tier
     let env_lib_td = tempfile::tempdir().expect("env_lib TempDir");
     std::fs::write(env_lib_td.path().join("foo.cl"), "(defn pick [] 13)\n")
         .expect("write env_lib/foo.cl");
 
-    let out = Cranelisp::new()
+    // (1) Same-module shadow: env tier wins (env > config under the S91 order).
+    let shadow = Cranelisp::new()
         .file("Cranelisp.toml", r#"lib-dirs = ["./conflict-lib"]"#)
         .file(
             "main.cl",
@@ -145,19 +185,46 @@ fn cranelisp_toml_takes_precedence_over_cranelisp_lib_env() {
         )
         .run("main")
         .output();
-
-    let exit = out.status.code();
+    let exit = shadow.status.code();
     assert_eq!(
         exit,
-        Some(99),
-        "Cranelisp.toml MUST take precedence over CRANELISP_LIB; expected exit 99 (config), got {exit:?}\nstdout: {}\nstderr: {}",
-        out.stdout, out.stderr
+        Some(13),
+        "on a same-module shadow, CRANELISP_LIB (env) MUST be searched before the \
+         Cranelisp.toml config tier and WIN (env > config, S91 §8.11.4); expected \
+         exit 13 (env), got {exit:?}\nstdout: {}\nstderr: {}",
+        shadow.stdout, shadow.stderr
     );
-    // Negative companion: env-var module value (13) MUST NOT win.
+    // Negative companion: the config-tier module value (99) MUST NOT win the shadow.
     assert_ne!(
         exit,
-        Some(13),
-        "env-var module MUST NOT shadow project-config module"
+        Some(99),
+        "config-tier module MUST NOT shadow the env-tier module (the S91 order \
+         reverses the old config > env precedence)"
+    );
+
+    // (2) Additive union: a module present ONLY in the config tier still resolves
+    // (the env tier does not REPLACE the config tier — both contribute). `bar`
+    // lives only under `conflict-lib` (config tier); it must resolve to 42.
+    let additive = Cranelisp::new()
+        .file("Cranelisp.toml", r#"lib-dirs = ["./conflict-lib"]"#)
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n(import [bar [val]])\n(defn main [] (Pure (val)))\n",
+        )
+        .file("conflict-lib/bar.cl", "(defn val [] 42)\n")
+        .env(
+            "CRANELISP_LIB",
+            env_lib_td.path().to_str().expect("env_lib path utf8"),
+        )
+        .run("main")
+        .output();
+    assert_eq!(
+        additive.status.code(),
+        Some(42),
+        "a config-tier-only module MUST still resolve under the additive union — \
+         the env tier does not suppress the config tier (S91 §8.11.4); expected \
+         exit 42\nstdout: {}\nstderr: {}",
+        additive.stdout, additive.stderr
     );
 }
 
@@ -226,6 +293,173 @@ fn cranelisp_toml_malformed_does_not_crash() {
         "malformed Cranelisp.toml MUST NOT cause abnormal termination; exit code {code}\nstderr: {}",
         out.stderr
     );
+}
+
+// =============================================================================
+// §8.11.5 — Platform Directory Configuration: additive UNION of
+// `CRANELISP_PLATFORM_PATH` (env, tier 3 ②) and `Cranelisp.toml` `platform-dirs`
+// (tier 3 ③). Mirrors the §8.11.4 lib-dir union test
+// (`cranelisp_lib_env_searched_before_toml_lib_dirs` +
+// `lib_dir_union_neg_empty_toml_does_not_suppress`) for the platform tier.
+//
+// The §8.11.5 union semantics, mirroring §8.11.4:
+//   - BOTH sources contribute; neither replaces nor suppresses the other.
+//   - Search order on a same-name shadow is env (`CRANELISP_PLATFORM_PATH`)
+//     BEFORE config (`Cranelisp.toml` `platform-dirs`).
+//   - An absent `platform-dirs` key, `platform-dirs = []`, and an absent
+//     `Cranelisp.toml` are equivalent: each contributes nothing and removes
+//     nothing — the env tier is NOT suppressed.
+//
+// Witness: the workspace `stdio` cdylib is copied into per-test tier dirs; a
+// `(platform stdio)` program that resolves the DLL prints via stdio (observable
+// on stdout) and exits 0. A non-resolving / mis-resolving config tier is shown
+// by a garbage same-name file that loads only if it is searched first.
+//
+// E2E SHADOW LIMIT: a true "env value WINS the shadow with DIFFERENT behaviour"
+// witness (the lib-dir test's `pick -> 13 vs 99`) is NOT expressible at the e2e
+// tier for platforms. A platform DLL's manifest export is namespaced by name
+// (`cranelisp_platform_manifest_<name>`, src/platform.rs §5.5.5), so two
+// physically-distinct DLLs cannot both answer to the SAME platform name without
+// recompilation — there is no pair of differing-behaviour `stdio` DLLs to copy.
+// The shadow is instead proven by ORDER OF SELECTION: a valid env-tier DLL beats
+// a garbage config-tier file of the same resolvable name (env searched first =>
+// loads cleanly; control with only the garbage config file => load fails),
+// which is the §8.11.5 first-match-env-before-config guarantee.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.11.5 — `CRANELISP_PLATFORM_PATH` (env) and
+// `Cranelisp.toml` `platform-dirs` (config) form an additive UNION; the env tier
+// is searched FIRST on a same-name shadow; an empty/absent `platform-dirs` key
+// does not suppress the env tier.
+#[test]
+fn platform_path_env_searched_before_toml_platform_dirs() {
+    let stdio_src = workspace_stdio_dll();
+    assert!(
+        stdio_src.is_file(),
+        "workspace stdio cdylib not found at {stdio_src:?} — the nextest \
+         setup-script (build-link-prereqs.sh) should have built it"
+    );
+    let dll_name = stdio_dll_filename();
+
+    // The program prints via stdio (observable on stdout) and returns Pure 0.
+    let prog = "(platform stdio)\n\
+                (import [platform.stdio [print]])\n\
+                (import [primitives [bind Pure]])\n\
+                (defn main [] (bind (print \"plat-union\") (fn [_] (Pure 0))))\n";
+
+    // (1) Config tier alone resolves — `platform-dirs` CONTRIBUTES to the union
+    //     even with NO `CRANELISP_PLATFORM_PATH` set. (Proves the union is not
+    //     env-only.)
+    let cfg_only = Cranelisp::new()
+        .file("Cranelisp.toml", r#"platform-dirs = ["./platdir"]"#)
+        .file("main.cl", prog);
+    let cfg_dir = cfg_only.tmpdir_path().join("platdir");
+    std::fs::create_dir_all(&cfg_dir).expect("mkdir platdir");
+    std::fs::copy(&stdio_src, cfg_dir.join(&dll_name)).expect("copy stdio -> platdir");
+    cfg_only
+        .run("main.cl")
+        .output()
+        .assert_exit(0)
+        .assert_stdout_contains("plat-union");
+
+    // (2) Env tier alone resolves with an ABSENT `platform-dirs` key — the env
+    //     tier is NOT suppressed by a config file that omits `platform-dirs`.
+    //     (Negative companion: absent key contributes nothing AND removes
+    //     nothing.)
+    let env_only = Cranelisp::new()
+        .file("Cranelisp.toml", "# no platform-dirs key\n")
+        .file("main.cl", prog);
+    let env_dir = env_only.tmpdir_path().join("envdir");
+    std::fs::create_dir_all(&env_dir).expect("mkdir envdir");
+    std::fs::copy(&stdio_src, env_dir.join(&dll_name)).expect("copy stdio -> envdir");
+    env_only
+        .env("CRANELISP_PLATFORM_PATH", env_dir.to_str().expect("envdir utf8"))
+        .run("main.cl")
+        .output()
+        .assert_exit(0)
+        .assert_stdout_contains("plat-union");
+
+    // (2b) Same, but with an EXPLICITLY EMPTY `platform-dirs = []` — equivalent
+    //      to absent: the env tier still resolves.
+    let env_empty = Cranelisp::new()
+        .file("Cranelisp.toml", "platform-dirs = []\n")
+        .file("main.cl", prog);
+    let env_empty_dir = env_empty.tmpdir_path().join("envdir");
+    std::fs::create_dir_all(&env_empty_dir).expect("mkdir envdir");
+    std::fs::copy(&stdio_src, env_empty_dir.join(&dll_name)).expect("copy stdio -> envdir");
+    env_empty
+        .env(
+            "CRANELISP_PLATFORM_PATH",
+            env_empty_dir.to_str().expect("envdir utf8"),
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(0)
+        .assert_stdout_contains("plat-union");
+
+    // (3) Shadow: env tier is searched BEFORE config. A VALID env-tier DLL beats
+    //     a GARBAGE config-tier file of the same resolvable name. Because env is
+    //     searched first, the valid DLL is selected and the program runs cleanly.
+    let shadow = Cranelisp::new()
+        .file("Cranelisp.toml", r#"platform-dirs = ["./cfgdir"]"#)
+        .file("main.cl", prog);
+    let shadow_env = shadow.tmpdir_path().join("envdir");
+    let shadow_cfg = shadow.tmpdir_path().join("cfgdir");
+    std::fs::create_dir_all(&shadow_env).expect("mkdir envdir");
+    std::fs::create_dir_all(&shadow_cfg).expect("mkdir cfgdir");
+    std::fs::copy(&stdio_src, shadow_env.join(&dll_name)).expect("copy stdio -> envdir");
+    // Garbage same-name file in the config tier: it IS a file (so it would be
+    // selected if config were searched first) but is NOT a loadable DLL.
+    std::fs::write(shadow_cfg.join(&dll_name), b"not a real dll\n").expect("write garbage cfg dll");
+    shadow
+        .env(
+            "CRANELISP_PLATFORM_PATH",
+            shadow_env.to_str().expect("envdir utf8"),
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(0)
+        .assert_stdout_contains("plat-union");
+}
+
+// spec: spec/08-modules.md §8.11.5 — negative control proving the shadow above
+// is genuinely env-FIRST and not merely "the valid DLL wins regardless of tier":
+// with ONLY the garbage config-tier file on the search path (no
+// `CRANELISP_PLATFORM_PATH`), the config-tier file IS selected (it is the only
+// candidate) and the load FAILS — the binary surfaces a platform-load error and
+// does not exit 0. If the resolver searched env-before-config but the shadow
+// test passed only because some OTHER valid `stdio` was found, this control
+// would still pass spuriously; it fails precisely because the config tier is
+// reached and yields the garbage file.
+#[test]
+fn platform_dirs_neg_config_only_garbage_fails_to_load() {
+    let dll_name = stdio_dll_filename();
+
+    let proj = Cranelisp::new()
+        .file("Cranelisp.toml", r#"platform-dirs = ["./cfgdir"]"#)
+        .file(
+            "main.cl",
+            "(platform stdio)\n\
+             (import [platform.stdio [print]])\n\
+             (defn main [] (print \"unreached\"))\n",
+        );
+    let cfg_dir = proj.tmpdir_path().join("cfgdir");
+    std::fs::create_dir_all(&cfg_dir).expect("mkdir cfgdir");
+    std::fs::write(cfg_dir.join(&dll_name), b"not a real dll\n").expect("write garbage cfg dll");
+
+    let out = proj.run("main.cl").output();
+    // The garbage config-tier file is selected (config tier IS reached and
+    // contributes) and the DLL load fails. Must NOT exit 0, and must NOT have
+    // printed the program's output.
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "a garbage config-tier platform DLL MUST fail to load, not exit 0; \
+         stdout: {}\nstderr: {}",
+        out.stdout,
+        out.stderr
+    );
+    out.assert_stdout_does_not_contain("unreached");
 }
 
 // =============================================================================

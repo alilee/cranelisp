@@ -6,6 +6,24 @@ name and/or type signature). **Design-only this sprint** (R1 — Pillar 3 implem
 is gated on the FIXME 0432 root fix, `monomorphisation.md §9`; this doc pins the
 match-predicate interface the `int` indexer will call).
 
+> **S91 CONFIRMATION (Phase 3, 2026-06-25).** This sprint **ships** the two predicates
+> (Pillar 3 is no longer design-only — the 0432 root fix landed S90, `monomorphisation.md §9`;
+> S91 Thread A is the implementation, `sprints/SPRINT.md §"Thread A"`). **Re-reviewed against
+> the implementation problem — the S90 design HOLDS, no algorithm change.** Confirmed:
+> (1) the structural-contains algorithm (§4) is pinned precisely — a containment walk over the
+> candidate's `Type` tree, each subtree tested for whole-tree alpha-equivalence (§2) to the
+> query, reusing the `_exact` machinery (Principle 7); (2) both predicates are the **two and
+> only two** additive `cranelisp-typecheck/public-api.txt` lines this sprint (the sole baseline
+> movement in S91, `sprints/SPRINT.md §"Exactly TWO baseline lines move"`), both `&Type → bool`,
+> both `pub` from `cranelisp-typecheck` (`/arch` Option A, §7); (3) zero `cranelisp-types`
+> change (R3/§11.8 hold — both consume existing `Type`). **Nothing stale.** The §6 test seams
+> are the `/dev` acceptance (unit suites for exact + partial, table-driven over hand-built
+> `Type`s; the e2e is `/qa`'s Pillar-3 integration test). One implementation note pulled to the
+> top for `/dev`: the §2.3 HKT extension — `collect_var_ids_ordered` (`types.rs:251`) does NOT
+> currently number the `TyConApp` **head**, only its args; the canonicalisation walk MUST
+> include the head to keep HKT alpha-equivalence correct (§2.3) — a one-line extension, flagged
+> so it is not missed at impl time.
+
 Contract this designs against:
 
 - `design/arch/repl-embedded-agent.md §11.4` (R6, **re-pinned S90 Phase 3, commit

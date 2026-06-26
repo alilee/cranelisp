@@ -529,6 +529,60 @@ fn inline_mod_test_extraction_writes_lib_dir_relative_not_cwd() {
     );
 }
 
+// spec: spec/08-modules.md §8.2.2 — extraction step 1 formats the inline body as
+// source text. FIXME 0423 secondary symptom: the regen pretty-printer must emit
+// `:Type` (NO space after the colon), not `: Type`. Per
+// `memory/annotation-reader-macro-binds-following-form`, `:Type` is a
+// reader-macro-like annotation that binds the immediately-following form with no
+// intervening space. The extracted backing file MUST preserve that spacing.
+//
+// RED-first: the regen path inserts a space (`: Type`) today (the latent
+// formatting divergence noted in FIXME 0423). The lib-dir-relative write fix and
+// the spacing fix land together in /int's regen pass (Wave 6 / S88-landed source).
+#[test]
+fn regen_annotation_spacing_no_space_after_colon() {
+    let out = Cranelisp::new()
+        .file(
+            "lib/annot.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn double [x] (add-i64 x x))\n\
+             (mod test \
+               (import [primitives [add-i64]]) \
+               (defn check [:primitives/Int x] (add-i64 x 1)))",
+        )
+        .file(
+            "driver.cl",
+            "(import [annot [double]])\n\
+             (import [primitives [Pure]])\n\
+             (defn main [] (Pure (double 21)))",
+        )
+        .lib_dir("lib")
+        .run("driver.cl")
+        .output()
+        .assert_exit(42);
+
+    // The extracted backing file must exist lib-dir-relative (the 0423 primary
+    // fix); read it and assert the annotation spacing is `:Type`, not `: Type`.
+    if out.tmp_exists("lib/annot/test.cl") {
+        let body = out.read_tmp("lib/annot/test.cl");
+        assert!(
+            body.contains(":primitives/Int") && !body.contains(": primitives/Int"),
+            "regen MUST emit `:Type` (no space), not `: Type` — the reader-macro \
+             binds the following form with no intervening space (FIXME 0423 \
+             secondary); extracted body:\n{body}"
+        );
+    } else {
+        // The lib-dir-relative backing file is not written yet (the 0423 primary
+        // defect); the spacing cannot be checked until that lands. Fail loudly so
+        // this is a visible RED guard, not a vacuous pass.
+        panic!(
+            "the extracted `(mod test)` backing file MUST be written lib-dir-relative \
+             at lib/annot/test.cl before the regen annotation-spacing can be \
+             verified (FIXME 0423 primary + secondary land together)"
+        );
+    }
+}
+
 // =============================================================================
 // §8.10.3 Whole-Module Compilation — explicit (mod ...) declaration
 //

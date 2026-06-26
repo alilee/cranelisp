@@ -150,10 +150,17 @@ impl CacheState {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct ProjectConfig {
     /// Lib directory list. Paths are relative to the project root or
-    /// absolute. When `Cranelisp.toml` is present, the resolved list
-    /// fully replaces the env/default tiers per spec §8.11.4 item 2.
+    /// absolute. Under the additive model (FIXME 0410, spec §8.11.4),
+    /// entries here are ADDED to the resolved set — they never replace or
+    /// suppress `CRANELISP_LIB`, the programmatic additions, or the
+    /// `{project_root}/stdlib/` default. An absent key / absent file /
+    /// `lib-dirs = []` all contribute nothing and remove nothing.
     #[serde(default, rename = "lib-dirs")]
     lib_dirs: Vec<PathBuf>,
+    /// Platform DLL search directory list (§8.11.5). Same additive
+    /// semantics as `lib_dirs` — entries are ADDED to the platform-dir set.
+    #[serde(default, rename = "platform-dirs")]
+    platform_dirs: Vec<PathBuf>,
 }
 
 /// Read `{project_root}/Cranelisp.toml` and return its `lib-dirs` resolved
@@ -209,63 +216,226 @@ pub fn load_project_config_lib_dirs(
     Ok(Some(resolved))
 }
 
-/// Assemble the list of library directories for module resolution.
+/// Render the default `Cranelisp.toml` scaffold contents.
 ///
-/// Per spec section 8.11.4, lib directory locations are assembled from
-/// (in precedence order; first hit fully controls):
-/// 1. **Project configuration file** (`Cranelisp.toml`): when present,
-///    its `lib-dirs` fully replaces the lower tiers. Spec §8.11.4 item 2.
-/// 2. `CRANELISP_LIB` environment variable (colon-separated list of paths).
-///    Spec §8.11.4 item 3.
-/// 3. Fallback: `{project_root}/stdlib/` if it exists. Spec §8.11.4 item 4.
-///
-/// Tier 1 (explicit programmatic additions) is layered on top by callers
-/// via `SharedState.lib_dirs` setters; this function returns the
-/// configuration-derived baseline only.
-///
-/// On project-config parse error: returns the env/default tiers and
-/// silently ignores the malformed file. Callers that want the parse
-/// error surfaced should call `load_project_config_lib_dirs` directly.
-pub fn assemble_lib_dirs(project_root: &Path) -> Vec<PathBuf> {
-    // Tier 2 (highest non-programmatic): project config file.
-    if let Ok(Some(dirs)) = load_project_config_lib_dirs(project_root) {
-        return dirs;
-    }
+/// Every key is COMMENTED OUT, so `toml::from_str` of the result yields
+/// `ProjectConfig::default()` (all-empty) — the scaffold is resolution-neutral
+/// by construction (the additive model's guarantee). The current
+/// `CRANELISP_LIB` paths (if any) are captured on a commented line so the user
+/// can see what was in effect at scaffold time and uncomment to pin it; no
+/// machine-specific path is ever written as live config.
+fn render_scaffold_contents(env_lib: Option<&str>) -> String {
+    let mut out = String::new();
+    out.push_str("# Cranelisp.toml — project configuration (auto-created)\n");
+    out.push_str("#\n");
+    out.push_str("# Lib directories. Paths are relative to this file's directory, or absolute.\n");
+    out.push_str("# Under the additive model (spec §8.11.4), entries here are ADDED to the set\n");
+    out.push_str("# already resolved from CRANELISP_LIB and {project-root}/stdlib/ — they never\n");
+    out.push_str("# replace or suppress those sources. Uncomment to make a path permanent.\n");
+    out.push_str("#\n");
+    out.push_str("# lib-dirs = [\n");
+    out.push_str("#   \"stdlib\",          # example: a vendored stdlib beside this file\n");
+    out.push_str("# ]\n");
 
-    // Tier 3: CRANELISP_LIB environment variable.
-    if let Ok(env_val) = std::env::var("CRANELISP_LIB") {
-        return env_val
-            .split(':')
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
+    // Capture the current CRANELISP_LIB paths, commented, only when set+non-empty.
+    let captured: Vec<PathBuf> = match env_lib {
+        Some(v) if !v.is_empty() => split_env_path_list(v),
+        _ => Vec::new(),
+    };
+    if !captured.is_empty() {
+        out.push('\n');
+        out.push_str(
+            "# Captured from CRANELISP_LIB at scaffold time (commented — uncomment to pin):\n",
+        );
+        let rendered: Vec<String> = captured
+            .iter()
+            .map(|p| format!("\"{}\"", p.display()))
             .collect();
+        out.push_str(&format!("# lib-dirs = [{}]\n", rendered.join(", ")));
     }
 
-    // Tier 4: {project_root}/stdlib/ if it exists.
-    let candidate = project_root.join("stdlib");
-    if candidate.is_dir() {
-        vec![candidate]
-    } else {
-        Vec::new()
+    out.push('\n');
+    out.push_str("# Platform DLL search dirs (§8.11.5). Same additive semantics.\n");
+    out.push_str("# platform-dirs = [\"target/debug\"]\n");
+    out
+}
+
+/// Scaffold a default `{project_root}/Cranelisp.toml` if (and only if) one
+/// does not already exist.
+///
+/// Returns `Ok(true)` if a file was newly created, `Ok(false)` if one already
+/// existed (no-op) OR a write failure was caught gracefully (the scaffold is a
+/// convenience — never a launch gate). This function emits NO output; the
+/// caller (the REPL §0.5-rule-3 path only) renders the `[created …]` notice
+/// from an `Ok(true)` return.
+///
+/// Invariants (per `design/int/cranelisp-toml.md §12.3`):
+/// - **Never overwrite** — the exists-check is the first statement; an existing
+///   file (any content) is left verbatim. Idempotent.
+/// - **Never write outside the resolved project root** — a single
+///   non-recursive `project_root.join(...)`.
+/// - **Atomic** — temp-then-rename via `save::atomic_write`.
+/// - **Graceful on read-only dir** — a write failure returns `Ok(false)`, not
+///   an error, so the caller never fails the REPL launch.
+/// - **REPL-only** — called from the REPL §0.5-rule-3 path; never from
+///   `--run` / `--link`.
+///
+/// Spec: 08-modules.md §8.11.4 (additive model) + repl/spec.md §0.5 rule 3.
+pub fn scaffold_project_config(project_root: &Path) -> std::io::Result<bool> {
+    let candidate = project_root.join("Cranelisp.toml");
+    // Never overwrite: an existing file (any content) is left verbatim.
+    if candidate.exists() {
+        return Ok(false);
+    }
+    let env_lib = std::env::var("CRANELISP_LIB").ok();
+    let contents = render_scaffold_contents(env_lib.as_deref());
+    // Atomic write; graceful on a read-only directory — a write failure is
+    // non-fatal (the absent-file resolution path is well-defined and unchanged).
+    match crate::save::atomic_write(&candidate, &contents) {
+        Ok(()) => Ok(true),
+        Err(_) => Ok(false),
     }
 }
 
-/// Assemble extra platform DLL search directories (§8.11.5 tier 3).
-///
-/// Sources, in order:
-/// 1. `CRANELISP_PLATFORM_PATH` environment variable (colon-separated).
-///
-/// Project-root and lib-dir platform subdirectories (tiers 1-2) are handled
-/// by `resolve_platform_path` directly — they don't need to be in this list.
-pub fn assemble_platform_dirs() -> Vec<PathBuf> {
-    if let Ok(env_val) = std::env::var("CRANELISP_PLATFORM_PATH") {
-        return env_val
-            .split(':')
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .collect();
+/// Split a colon-separated environment variable value into path entries,
+/// dropping empty segments.
+fn split_env_path_list(env_val: &str) -> Vec<PathBuf> {
+    env_val
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Order-preserving dedup: keep each path at its FIRST (highest-precedence)
+/// occurrence, so first-match search order is preserved.
+fn dedup_preserve_order(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut out: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for p in paths {
+        if seen.insert(p.clone()) {
+            out.push(p);
+        }
     }
-    Vec::new()
+    out
+}
+
+/// Read `{project_root}/Cranelisp.toml`'s `platform-dirs`, resolved against
+/// `project_root` (relative) or used verbatim (absolute).
+///
+/// Returns `Ok(None)` when the file is absent, `Ok(Some(dirs))` when present
+/// (possibly empty), `Err` when malformed. Mirrors
+/// `load_project_config_lib_dirs` shape — the additive caller folds the result.
+///
+/// Spec: 08-modules.md §8.11.5.
+pub fn load_project_config_platform_dirs(
+    project_root: &Path,
+) -> Result<Option<Vec<PathBuf>>, CranelispError> {
+    let candidate = project_root.join("Cranelisp.toml");
+    if !candidate.is_file() {
+        return Ok(None);
+    }
+    let contents = std::fs::read_to_string(&candidate).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!(
+                "cannot read project config '{}': {}",
+                candidate.display(),
+                e
+            ),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(candidate.clone())),
+        }
+    })?;
+    let config: ProjectConfig = toml::from_str(&contents).map_err(|e| {
+        CranelispError::ModuleError {
+            message: format!(
+                "malformed project config '{}': {} (spec §8.11.5)",
+                candidate.display(),
+                e
+            ),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, Some(candidate.clone())),
+        }
+    })?;
+    let resolved: Vec<PathBuf> = config
+        .platform_dirs
+        .iter()
+        .map(|p| {
+            if p.is_absolute() {
+                p.clone()
+            } else {
+                project_root.join(p)
+            }
+        })
+        .collect();
+    Ok(Some(resolved))
+}
+
+/// Assemble the list of library directories for module resolution.
+///
+/// Additive model (FIXME 0410, spec §8.11.4): the resolved set is the
+/// order-preserving, deduplicated UNION of all sources, in **search order**
+/// (first-match precedence on a name present in more than one dir):
+///
+/// 1. `CRANELISP_LIB` environment variable (colon-separated). §8.11.4 item 3.
+/// 2. `Cranelisp.toml` `lib-dirs` (resolved against the project root). Only
+///    ADDS paths — an absent key / absent file / `lib-dirs = []` contribute
+///    nothing and suppress nothing. §8.11.4 item 2.
+/// 3. `{project_root}/stdlib/` default, if it exists. Always contributes
+///    when present — it is no longer a fallback an earlier source turns off.
+///    §8.11.4 item 4.
+///
+/// The highest-precedence tier (explicit programmatic / CLI additions) is
+/// layered on top by callers via `SharedState.lib_dirs` setters; this
+/// function returns the configuration-derived baseline only, in the order
+/// above so the caller's prepended additions remain highest-precedence.
+///
+/// On project-config parse error: the malformed config contributes nothing
+/// and is silently ignored. Callers that want the parse error surfaced
+/// should call `load_project_config_lib_dirs` directly.
+pub fn assemble_lib_dirs(project_root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    // Tier: CRANELISP_LIB env var (search-first among config sources).
+    if let Ok(env_val) = std::env::var("CRANELISP_LIB") {
+        dirs.extend(split_env_path_list(&env_val));
+    }
+
+    // Tier: Cranelisp.toml lib-dirs (additive — only ever adds).
+    if let Ok(Some(config_dirs)) = load_project_config_lib_dirs(project_root) {
+        dirs.extend(config_dirs);
+    }
+
+    // Tier: {project_root}/stdlib/ default, searched last, when present.
+    let candidate = project_root.join("stdlib");
+    if candidate.is_dir() {
+        dirs.push(candidate);
+    }
+
+    dedup_preserve_order(dirs)
+}
+
+/// Assemble extra platform DLL search directories (§8.11.5).
+///
+/// Additive model (FIXME 0410), mirroring `assemble_lib_dirs` in search order:
+///
+/// 1. `CRANELISP_PLATFORM_PATH` environment variable (colon-separated).
+/// 2. `Cranelisp.toml` `platform-dirs` (resolved against `project_root`) —
+///    additive; only ever adds.
+///
+/// There is no default tier here (project-root and lib-dir platform
+/// subdirectories — §8.11.5 tiers 1-2 — are handled by `resolve_platform_path`
+/// directly). A malformed config contributes nothing.
+pub fn assemble_platform_dirs(project_root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    if let Ok(env_val) = std::env::var("CRANELISP_PLATFORM_PATH") {
+        dirs.extend(split_env_path_list(&env_val));
+    }
+
+    if let Ok(Some(config_dirs)) = load_project_config_platform_dirs(project_root) {
+        dirs.extend(config_dirs);
+    }
+
+    dedup_preserve_order(dirs)
 }
 
 /// Resolve the prelude module file, if it exists.
@@ -466,35 +636,87 @@ mod project_config_tests {
         );
     }
 
-    // Precedence: project config takes precedence over CRANELISP_LIB.
-    // Marked #[serial] because it manipulates the process-global CRANELISP_LIB.
-    #[test]
-    #[serial]
-    fn assemble_lib_dirs_project_config_overrides_env_var() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_project_config(tmp.path(), r#"lib-dirs = ["vendor"]"#);
-
-        // Save and restore CRANELISP_LIB. SAFETY: the test is `#[serial]`
-        // so no concurrent test reads/writes the env var.
+    // Helper: run `f` with CRANELISP_LIB set to `val`, restoring the prior
+    // value afterward. SAFETY: callers are `#[serial]`, so no concurrent test
+    // reads/writes the env var.
+    fn with_env_lib<T>(val: Option<&str>, f: impl FnOnce() -> T) -> T {
         let prev = std::env::var("CRANELISP_LIB").ok();
-        // SAFETY: serial_test serializes env mutations; no race with
-        // other Rust threads observing CRANELISP_LIB during this test.
         unsafe {
-            std::env::set_var("CRANELISP_LIB", "/should/be/overridden");
+            match val {
+                Some(v) => std::env::set_var("CRANELISP_LIB", v),
+                None => std::env::remove_var("CRANELISP_LIB"),
+            }
         }
-        let dirs = assemble_lib_dirs(tmp.path());
-        // Restore (and only after capturing dirs).
+        let out = f();
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("CRANELISP_LIB", v),
                 None => std::env::remove_var("CRANELISP_LIB"),
             }
         }
-        assert_eq!(dirs.len(), 1, "project config must fully replace env tier");
+        out
+    }
+
+    // Additive model (FIXME 0410): `assemble_lib_dirs` returns the UNION of
+    // CRANELISP_LIB + Cranelisp.toml lib-dirs + {root}/stdlib/, in search
+    // order. The config dir does NOT replace the env tier — both contribute.
+    #[test]
+    #[serial]
+    fn assemble_lib_dirs_unions_env_config_and_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(tmp.path(), r#"lib-dirs = ["vendor"]"#);
+        let stdlib = tmp.path().join("stdlib");
+        std::fs::create_dir_all(&stdlib).unwrap();
+
+        let dirs = with_env_lib(Some("/env/dir"), || assemble_lib_dirs(tmp.path()));
+
+        // All three sources contribute, in §11.1 search order:
+        // env → toml config → {root}/stdlib.
         assert_eq!(
-            dirs[0],
-            tmp.path().join("vendor"),
-            "project-config dir must win over CRANELISP_LIB"
+            dirs,
+            vec![
+                PathBuf::from("/env/dir"),
+                tmp.path().join("vendor"),
+                stdlib,
+            ],
+            "additive union must include all three tiers in search order"
+        );
+    }
+
+    // Additive NEG: an empty `lib-dirs` (and equivalently an absent key)
+    // removes nothing — the env tier is still present.
+    #[test]
+    #[serial]
+    fn assemble_lib_dirs_empty_config_does_not_suppress_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(tmp.path(), "lib-dirs = []\n");
+
+        let dirs = with_env_lib(Some("/env/dir"), || assemble_lib_dirs(tmp.path()));
+        assert!(
+            dirs.contains(&PathBuf::from("/env/dir")),
+            "an empty lib-dirs must not suppress the env tier; got {dirs:?}"
+        );
+    }
+
+    // Additive dedup: a directory named by BOTH CRANELISP_LIB and the config
+    // file appears once, at its EARLIEST (env) position — first-match order.
+    #[test]
+    #[serial]
+    fn assemble_lib_dirs_dedups_at_earliest_position() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shared = tmp.path().join("shared");
+        // Config names the same absolute path as the env var.
+        let cfg = format!(r#"lib-dirs = ["{}"]"#, shared.display());
+        write_project_config(tmp.path(), &cfg);
+
+        let dirs = with_env_lib(Some(shared.to_str().unwrap()), || {
+            assemble_lib_dirs(tmp.path())
+        });
+        let count = dirs.iter().filter(|p| **p == shared).count();
+        assert_eq!(count, 1, "a dir in both env+config must appear once; got {dirs:?}");
+        assert_eq!(
+            dirs[0], shared,
+            "the deduped entry must sit at its earliest (env) position"
         );
     }
 
@@ -540,5 +762,145 @@ mod project_config_tests {
         }
         assert_eq!(dirs.len(), 1);
         assert_eq!(dirs[0], stdlib);
+    }
+
+    // -------------------------------------------------------------------
+    // FIXME 0410 — additive platform-dirs union (§8.11.5).
+    // -------------------------------------------------------------------
+
+    // Additive: `assemble_platform_dirs` unions CRANELISP_PLATFORM_PATH +
+    // Cranelisp.toml platform-dirs, in search order, deduped.
+    #[test]
+    #[serial]
+    fn assemble_platform_dirs_unions_env_and_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_project_config(tmp.path(), r#"platform-dirs = ["plat"]"#);
+
+        let prev = std::env::var("CRANELISP_PLATFORM_PATH").ok();
+        unsafe {
+            std::env::set_var("CRANELISP_PLATFORM_PATH", "/env/plat");
+        }
+        let dirs = assemble_platform_dirs(tmp.path());
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("CRANELISP_PLATFORM_PATH", v),
+                None => std::env::remove_var("CRANELISP_PLATFORM_PATH"),
+            }
+        }
+        assert_eq!(
+            dirs,
+            vec![PathBuf::from("/env/plat"), tmp.path().join("plat")],
+            "platform-dirs union: env then config, additive"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // FIXME 0410 — `scaffold_project_config` writer (§12.4 acceptance).
+    // -------------------------------------------------------------------
+
+    // Creates: on a dir with no Cranelisp.toml, scaffold writes one that
+    // parses to ProjectConfig::default() (every key commented ⇒ all-empty).
+    #[test]
+    #[serial]
+    fn scaffold_creates_default_neutral_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let created = with_env_lib(None, || scaffold_project_config(tmp.path()).unwrap());
+        assert!(created, "scaffold of a fresh dir must return Ok(true)");
+
+        let path = tmp.path().join("Cranelisp.toml");
+        assert!(path.is_file(), "the file must now exist");
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let config: ProjectConfig = toml::from_str(&contents).unwrap();
+        assert!(
+            config.lib_dirs.is_empty() && config.platform_dirs.is_empty(),
+            "every key is commented ⇒ scaffold parses to the empty default"
+        );
+    }
+
+    // No-overwrite / idempotent: a pre-existing file (any content) is left
+    // byte-identical, and the call returns Ok(false). A second call after a
+    // create is also Ok(false).
+    #[test]
+    #[serial]
+    fn scaffold_never_overwrites_existing_byte_identical() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sentinel = "# hand-written\nlib-dirs = [\"keep\"]\n";
+        std::fs::write(tmp.path().join("Cranelisp.toml"), sentinel).unwrap();
+
+        let created = scaffold_project_config(tmp.path()).unwrap();
+        assert!(!created, "an existing file must return Ok(false)");
+        let after = std::fs::read_to_string(tmp.path().join("Cranelisp.toml")).unwrap();
+        assert_eq!(after, sentinel, "existing file must be byte-identical");
+
+        // Idempotent: a second call on a now-existing file is also Ok(false).
+        let again = scaffold_project_config(tmp.path()).unwrap();
+        assert!(!again, "second call after create must be Ok(false)");
+    }
+
+    // CRANELISP_LIB capture: when set, the scaffold carries the paths on a
+    // COMMENTED line; when unset, no such commented machine-path line appears.
+    #[test]
+    #[serial]
+    fn scaffold_captures_cranelisp_lib_commented() {
+        // Set: the paths appear, but only on comment lines.
+        let tmp = tempfile::tempdir().unwrap();
+        with_env_lib(Some("/x:/y"), || {
+            assert!(scaffold_project_config(tmp.path()).unwrap());
+        });
+        let contents = std::fs::read_to_string(tmp.path().join("Cranelisp.toml")).unwrap();
+        for needle in ["/x", "/y"] {
+            let on_comment = contents
+                .lines()
+                .filter(|l| l.contains(needle))
+                .all(|l| l.trim_start().starts_with('#'));
+            let present = contents.contains(needle);
+            assert!(present, "captured env path {needle} must appear");
+            assert!(
+                on_comment,
+                "captured env path {needle} must appear only COMMENTED"
+            );
+        }
+
+        // Unset: no captured machine-path block at all.
+        let tmp2 = tempfile::tempdir().unwrap();
+        with_env_lib(None, || {
+            assert!(scaffold_project_config(tmp2.path()).unwrap());
+        });
+        let contents2 = std::fs::read_to_string(tmp2.path().join("Cranelisp.toml")).unwrap();
+        assert!(
+            !contents2.contains("Captured from CRANELISP_LIB"),
+            "no capture block when CRANELISP_LIB is unset"
+        );
+    }
+
+    // Read-only dir: scaffolding into a read-only directory does not panic and
+    // does not return a launch-fatal error — it returns the graceful Ok(false)
+    // and writes no file.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn scaffold_graceful_on_read_only_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let ro = tmp.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        // Make the directory read-only (no write/execute-create).
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = with_env_lib(None, || scaffold_project_config(&ro));
+        // Graceful: Ok(false), never an Err that would fail the REPL launch.
+        assert_eq!(
+            result.ok(),
+            Some(false),
+            "read-only dir must yield the graceful Ok(false), not Err"
+        );
+        assert!(
+            !ro.join("Cranelisp.toml").is_file(),
+            "no file is written into a read-only dir"
+        );
+
+        // Restore perms so the tempdir can be cleaned up.
+        let _ = std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o700));
     }
 }

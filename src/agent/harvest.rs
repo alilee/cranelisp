@@ -199,10 +199,14 @@ impl CompilerSession {
         if let Some(table) = self.shared.symbol_tables.get(cur) {
             for (sym, entry) in table.all_symbols() {
                 let name = sym.as_ref().to_string();
-                // Skip mangled overload/multi-sig variants and special forms
+                // Skip mangled overload/multi-sig variants, the synthetic
+                // `__expr` top-level-expression wrapper, and special forms
                 // (special forms are not "in scope" symbols a user references by
-                // a sig — they surface elsewhere). Mirrors `prelude_implicit_names`.
-                if name.contains('$') || matches!(entry, cranelisp_types::ModuleEntry::SpecialForm { .. }) {
+                // a sig — they surface elsewhere). Mirrors `prelude_implicit_names`
+                // / the `/list` filter (shared `is_internal_listing_name`).
+                if crate::worker::is_internal_listing_name(&name)
+                    || matches!(entry, cranelisp_types::ModuleEntry::SpecialForm { .. })
+                {
                     continue;
                 }
                 if !seen.insert(name.clone()) {
@@ -301,6 +305,9 @@ impl CompilerSession {
         if let Some(table) = self.shared.symbol_tables.get(module) {
             let names: Vec<String> = table
                 .defined_symbols()
+                // Exclude internal compiler artifacts ($-mangled names + the
+                // synthetic `__expr` wrapper) from the harvested module source.
+                .filter(|(s, _)| !crate::worker::is_internal_listing_name(s.as_ref()))
                 .map(|(s, _)| s.as_ref().to_string())
                 .collect();
             for name in names {

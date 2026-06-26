@@ -319,6 +319,77 @@
     }
 
     // -----------------------------------------------------------------------
+    // Bitwise integer operations (FIXME 0416, S91). The fallback GOT shims
+    // (`ring0::bit_and` … `ring0::popcount`) back the mappable/by-value and
+    // `--link` paths; these behavioural tests drive them through the GOT slot
+    // exactly as the arithmetic ops above. The inline-CLIF path is unit-tested
+    // separately in `cranelisp-backend::primitives_inline::tests`.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn behavioural_ring0_bitwise() {
+        // spec: appendix-a-builtins §A.3 — binary bitwise + shifts.
+        assert_eq!(call_i64_i64("bit-and", 12, 10), 8);
+        assert_eq!(call_i64_i64("bit-or", 12, 10), 14);
+        assert_eq!(call_i64_i64("bit-xor", 12, 10), 6);
+        assert_eq!(call_i64_i64("shl", 1, 4), 16);
+        assert_eq!(call_i64_i64("shr", 16, 2), 4);
+        // Arithmetic right shift: the sign bit replicates (NOT logical).
+        assert_eq!(call_i64_i64("shr", -8, 1), -4);
+        assert_eq!(call_i64_i64("shr", -1, 63), -1);
+        // Shift count masked mod 64 (matches the inline Cranelift path).
+        assert_eq!(call_i64_i64("shl", 1, 64), 1);
+        assert_eq!(call_i64_i64("shr", 256, 64), 256);
+        assert_eq!(call_i64_i64("shl", 1, 65), 2);
+    }
+
+    #[test]
+    fn behavioural_ring0_bitwise_unary() {
+        // spec: appendix-a-builtins §A.3 — bit-not (full 64-bit) + popcount.
+        assert_eq!(call_i64("bit-not", 0), -1);
+        assert_eq!(call_i64("bit-not", 5), -6);
+        assert_eq!(call_i64("bit-not", -1), 0);
+        assert_eq!(call_i64("popcount", 0), 0);
+        assert_eq!(call_i64("popcount", 7), 3);
+        assert_eq!(call_i64("popcount", -1), 64);
+    }
+
+    #[test]
+    fn registration_parity_bitwise_ops() {
+        // spec: appendix-a-builtins §A.3 — each new bitwise primitive registers
+        // identically to `add-i64`: a `DefKind::Primitive` entry with a
+        // populated GOT slot and the right `(Fn …)` scheme. Mirrors the
+        // `content_harness_*` / `add-i64` assertions above.
+        use cranelisp_types::Type;
+        let int_int_int = Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int));
+        let int_int = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+        assert_content_row("bit-and", &int_int_int, &["lhs", "rhs"]);
+        assert_content_row("bit-or", &int_int_int, &["lhs", "rhs"]);
+        assert_content_row("bit-xor", &int_int_int, &["lhs", "rhs"]);
+        assert_content_row("shl", &int_int_int, &["v", "amt"]);
+        assert_content_row("shr", &int_int_int, &["v", "amt"]);
+        assert_content_row("bit-not", &int_int, &["x"]);
+        assert_content_row("popcount", &int_int, &["x"]);
+
+        // Each GOT slot holds its harvested extern shim address (mappable /
+        // `--link` resolution), exactly as `add-i64`'s slot does.
+        let shims = extern_shims();
+        for name in [
+            "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr", "popcount",
+        ] {
+            let entry = PRIMITIVES_TABLE.get(name).unwrap();
+            let slot = entry.callable_got_slot().unwrap();
+            let stored = PRIMITIVES_TABLE.got.load_slot(slot);
+            assert!(!stored.is_null(), "GOT slot for {name} is null");
+            assert_eq!(
+                stored,
+                *shims.get(name).unwrap(),
+                "GOT slot for {name} must hold its extern shim address"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Static-backing harness (FIXME 0280) — the primitives GOT is constructed
     // over the exported `__cranelisp_got_primitives` static slab, not a heap
     // allocation, so it is addressable as a link-time symbol in `--link` mode.

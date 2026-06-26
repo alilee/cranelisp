@@ -1542,6 +1542,7 @@ impl<T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static> 
 pub trait cranelisp_types::MacroExpander: core::marker::Send + core::marker::Sync
 pub fn cranelisp_types::MacroExpander::invoke(&self, &cranelisp_types::FQSymbol, &[cranelisp_types::Sexp], cranelisp_types::Span) -> core::result::Result<cranelisp_types::Sexp, cranelisp_types::MacroInvokeError>
 pub fn cranelisp_types::apply(&cranelisp_types::Subst, &cranelisp_types::Type) -> cranelisp_types::Type
+pub fn cranelisp_types::collect_var_ids_ordered(&cranelisp_types::Type, &mut alloc::vec::Vec<cranelisp_types::TypeId>)
 pub fn cranelisp_types::ensure_module_exists<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath) -> cranelisp_types::EnsureOutcome where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::for_each_in_module<C, L, F>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, F) where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore, F: core::ops::function::FnMut(&cranelisp_types::Symbol, &cranelisp_types::ModuleEntry<C>)
 pub fn cranelisp_types::free_vars(&cranelisp_types::Type) -> std::collections::hash::set::HashSet<cranelisp_types::TypeId>

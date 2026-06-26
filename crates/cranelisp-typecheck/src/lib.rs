@@ -227,6 +227,7 @@ mod program;
 mod resolve;
 mod result;
 mod scheme;
+mod signature_match;
 mod scope;
 mod trace;
 mod traits;
@@ -245,6 +246,7 @@ pub use checker::{CheckState, PreludeFallback, TypeCheckEnv, advance_next_id_pas
 pub use cluster::{SymbolTableAccess, SymbolTableMut, SymbolTableRead};
 pub use form::{check_forms, check_type_expr};
 pub use result::{CheckError, CheckResult};
+pub use signature_match::{signature_matches_exact, signature_matches_partial};
 pub use trace::{
     SymbolTableEnsureHook, SymbolTableEnsureOutcome, emit_symbol_table_ensure,
     install_symbol_table_ensure_hook,

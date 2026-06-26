@@ -167,22 +167,47 @@ pub(super) fn type_from_intrinsic_ref(name: &cranelisp_types::TypeRef) -> Option
 }
 
 /// Resolve a TypeExpr in a trait context, substituting SelfType with the given type.
+///
+/// `resolve_qualified` resolves a **qualified** `TypeExpr::Named` (a `TypeRef`
+/// carrying `module: Some(..)`) to a `Type` via the caller's symbol-table /
+/// `resolve_type_expr_in_module` path — the SAME canonical resolution the
+/// `defn`/`deftype`-field paths use (§8.5: a qualified type ref == the bare
+/// type, resolved against the named module). Bare names keep the intrinsic
+/// fast-path (`type_from_intrinsic_ref`); a qualified ref the resolver cannot
+/// place is the caller's "unknown type" error (FIXME 0436).
 pub(crate) fn resolve_trait_type_expr(
     texpr: &cranelisp_types::TypeExpr,
     self_type: &Type,
     span: Span,
     var_map: &mut HashMap<Symbol, Type>,
     next_id: &mut TypeId,
+    resolve_qualified: &dyn Fn(&cranelisp_types::TypeRef) -> Option<Type>,
 ) -> Result<Type, CranelispError> {
     use cranelisp_types::TypeExpr;
 
     match texpr {
         TypeExpr::SelfType => Ok(self_type.clone()),
-        TypeExpr::Named(name) => type_from_intrinsic_ref(name)
-            .ok_or_else(|| CranelispError::TypeError {
+        TypeExpr::Named(name) => {
+            // Bare intrinsic scalar → fast-path. A qualified ref
+            // (`:primitives/Int`) is NOT an intrinsic-bare name, so
+            // `type_from_intrinsic_ref` returns `None` for it (it rejects
+            // `module.is_some()`); route it through the caller's symbol-table
+            // resolver so a qualified type in a trait method-sig resolves
+            // canonically, exactly as `defn`/`deftype`-field type refs do
+            // (FIXME 0436 / spec §8.5).
+            if let Some(ty) = type_from_intrinsic_ref(name) {
+                return Ok(ty);
+            }
+            if name.module.is_some()
+                && let Some(ty) = resolve_qualified(name)
+            {
+                return Ok(ty);
+            }
+            Err(CranelispError::TypeError {
                 message: format!("unknown type: {name}"),
                 location: ErrorLocation::from_span(span),
-            }),
+            })
+        }
         TypeExpr::TypeVar(name) => {
             if let Some(ty) = var_map.get(name) {
                 Ok(ty.clone())
@@ -195,9 +220,9 @@ pub(crate) fn resolve_trait_type_expr(
         TypeExpr::FnType(params, ret) => {
             let ps: Vec<Type> = params
                 .iter()
-                .map(|p| resolve_trait_type_expr(p, self_type, span, var_map, next_id))
+                .map(|p| resolve_trait_type_expr(p, self_type, span, var_map, next_id, resolve_qualified))
                 .collect::<Result<Vec<_>, _>>()?;
-            let r = resolve_trait_type_expr(ret, self_type, span, var_map, next_id)?;
+            let r = resolve_trait_type_expr(ret, self_type, span, var_map, next_id, resolve_qualified)?;
             Ok(Type::Fn(ps, Box::new(r)))
         }
         TypeExpr::Applied(name, args) => {
@@ -207,7 +232,7 @@ pub(crate) fn resolve_trait_type_expr(
             let fqtn = FQTypeName::new(ModuleFullPath::from(""), name.name.clone());
             let resolved_args: Vec<Type> = args
                 .iter()
-                .map(|a| resolve_trait_type_expr(a, self_type, span, var_map, next_id))
+                .map(|a| resolve_trait_type_expr(a, self_type, span, var_map, next_id, resolve_qualified))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Type::ADT(fqtn, resolved_args))
         }

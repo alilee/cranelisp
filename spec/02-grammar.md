@@ -778,12 +778,12 @@ The number of bindings MUST match the number of fields in the constructor.
 The symbol `_` matches any value and binds nothing.
 
 ```clojure
-(match x
-  [0 "zero"
-   _ "other"])
+(match opt
+  [(Some x) x
+   _        0])
 ```
 
-Note: An integer literal like `0` in a match arm is actually parsed as an expression, not a pattern. The example above is illustrative -- in practice, matching on integer values requires `if` chains or equality checks, not pattern matching. Pattern matching only works with ADT constructors, wildcards, and variable bindings.
+Note: Patterns are **constructor / wildcard / variable only** — there are no literal patterns. An integer, float, string, or boolean literal MUST NOT appear in pattern position (§6.2, §6.6.2). To dispatch on a scalar value, use `if`/`case` chains or equality checks in the arm body, not pattern matching. (FIXME 0433: a prior revision showed a literal-`0` pattern here, which the grammar forbids.)
 
 ### 2.5.3 Variable Pattern
 

@@ -1,121 +1,100 @@
-;; num/bits.cl — Bitwise operations on non-negative integers
+;; num/bits.cl — Bitwise operations on 64-bit integers
 ;;
-;; Cranelisp has no bitwise primitives (band/bor/bxor/bnot/ishl/ushr/popcnt).
-;; FIXME 0416 proposes adding them as COMPILER intrinsics; that decision is
-;; DEFERRED (a future perf-driven call by /arch + /backend). This module
-;; provides the same surface NOW, composed entirely from existing Ring 0
-;; arithmetic primitives (`+ - * / rem`), so the bitmask/flags/sets-as-masks
-;; domain has a clean, reusable `num.bits` API today.
+;; A curated, Clojure-aligned convenience layer over the S91 native bitwise
+;; primitives (`bit-and`, `bit-or`, `bit-xor`, `bit-not`, `shl`, `shr`,
+;; `popcount`; spec appendix-a-builtins §A.3, FIXME 0416). The primitives do
+;; all the work — each lowers 1:1 to a CLIF op (`band`/`bor`/`bxor`/`bnot`/
+;; `ishl`/`sshr`/`popcnt`) with no call overhead. This module is the thin
+;; convenience shell on top.
 ;;
 ;; ── WIDTH ──────────────────────────────────────────────────────────────
-;; The fixed-width ops — `bit-and`, `bit-or`, `bit-xor`, `bit-not`, and
-;; `popcount` — operate over a documented WIDTH of **30 bits** (bit positions
-;; 0..29). 30 keeps every intermediate (incl. `(pow2 WIDTH)` and a fully-set
-;; mask) comfortably inside the positive Int range, so the arithmetic
-;; simulation never touches the sign bit — `bit-not x` is the *one's
-;; complement within the low 30 bits*, NOT a machine two's-complement. This
-;; is the right model for bitmask domains (flags, candidate sets, small bit
-;; fields); operands are expected non-negative and < 2^30.
+;; Operations act on `Int` as a **full 64-bit two's-complement** value
+;; (the language `Int` is signed 64-bit, §A.1). This is a deliberate change
+;; from the pre-S91 arithmetic-simulation module, which clamped to a 30-bit
+;; one's-complement WIDTH to keep intermediates positive. With native ops
+;; there is no width limit: `bit-not` complements all 64 bits, `popcount`
+;; counts across all 64, and the sign bit participates like any other.
+;;   (bit-not x)  =  (- (- x) 1)         ; full two's-complement: ~0 = -1
 ;;
-;; ── COMPOSITION ────────────────────────────────────────────────────────
-;;   (1 << n)      ≡  (pow2 n)                     ; repeated *2
-;;   (x << n)      ≡  (* x (pow2 n))               ; bit-shift-left
-;;   (x >> n)      ≡  (/ x (pow2 n))               ; bit-shift-right (logical)
-;;   bit n of x    ≡  (rem (/ x (pow2 n)) 2)       ; 0 or 1
-;;   and/or/xor    ≡  bit-by-bit fold over 0..WIDTH, re-weighting each result
-;;                    bit by its place value (pow2 i)
-;;   bit-not x     ≡  (- (full-mask) x)            ; one's complement in WIDTH
-;;   popcount x    ≡  count of set bits over 0..WIDTH
+;; ── SHIFTS ─────────────────────────────────────────────────────────────
+;;   bit-shift-left  = shl  (zero-fills vacated low bits)
+;;   bit-shift-right = shr  (ARITHMETIC: sign bit replicated into high bits)
+;; Clojure also has `unsigned-bit-shift-right`; S91 ships only the arithmetic
+;; `shr` (a logical/unsigned variant is a future per-integer-type concern,
+;; §A.3 note), so this module intentionally provides no unsigned variant.
+;; The shift count is taken modulo 64 (§A.3).
 ;;
-;; These match the Clojure standard-library names (`bit-and`, `bit-or`,
-;; `bit-xor`, `bit-not`, `bit-shift-left`, `bit-shift-right`, `bit-test`,
-;; `bit-set`, `bit-clear`, `bit-flip`). None are reserved by
-;; spec/11-stdlib.md §11.4a, so they are safe to define here (reached
-;; module-qualified / via import — NOT bare-promoted to the prelude).
+;; ── BIT-AT-POSITION HELPERS ────────────────────────────────────────────
+;; `bit-test`/`bit-set`/`bit-clear`/`bit-flip` are composed from the
+;; primitives via the single-bit mask `(shl 1 n)`:
+;;   bit-test  mask n  =  (not (= 0 (bit-and mask (shl 1 n))))
+;;   bit-set   mask n  =  (bit-or  mask        (shl 1 n))
+;;   bit-clear mask n  =  (bit-and mask (bit-not (shl 1 n)))
+;;   bit-flip  mask n  =  (bit-xor mask        (shl 1 n))
 ;;
-;; Spec: plan-stdlib.md §3.3, §26.4 (gap G1 / FIXME 0416 stdlib coverage)
+;; ── NAMING ─────────────────────────────────────────────────────────────
+;; All names follow Clojure's `clojure.core` bit-* surface. The primitive
+;; names `bit-and`/`bit-or`/`bit-xor`/`bit-not` already match Clojure, so
+;; they are re-presented here as thin pass-throughs (giving each a curated
+;; docstring + the module's signature convention). None are reserved by
+;; spec/11-stdlib.md §11.4a; all are reached module-qualified / via import —
+;; NOT bare-promoted to the prelude.
+;;
+;; Spec: appendix-a-builtins §A.3, plan-stdlib.md §3.3, §26.8
 
 (import [prelude []])
 (import [primitives [*]])
 
-;; The fixed bit width for the closed-over (and/or/xor/not/popcount) ops.
-(defn width "Bit width of the fixed-width ops (30)" [] :Int 30)
+;; ── Direct logical ops (thin pass-throughs over the primitives) ───────────
 
-;; 2^n by repeated multiplication. Defined for n >= 0.
-(defn pow2 "Compute 2^n for n >= 0" [:Int n] :Int
-  (if (eq-i64 n 0) 1
-    (mul-i64 2 (pow2 (sub-i64 n 1)))))
+(defn bit-and "Bitwise AND of a and b (all 64 bits)" [:Int a :Int b] :Int
+  (primitives/bit-and a b))
 
-;; All low-WIDTH bits set: 2^WIDTH - 1. Used as the bit-not complement base.
-(defn full-mask "Mask with all low `width` bits set (2^width - 1)" [] :Int
-  (sub-i64 (pow2 (width)) 1))
+(defn bit-or "Bitwise OR of a and b (all 64 bits)" [:Int a :Int b] :Int
+  (primitives/bit-or a b))
+
+(defn bit-xor "Bitwise XOR of a and b (all 64 bits)" [:Int a :Int b] :Int
+  (primitives/bit-xor a b))
+
+(defn bit-not "Bitwise complement of x (all 64 bits; ~0 = -1)" [:Int x] :Int
+  (primitives/bit-not x))
 
 ;; ── Shifts ───────────────────────────────────────────────────────────────
 
-(defn bit-shift-left "Logical left shift: x << n  (x * 2^n)"
+(defn bit-shift-left "Left shift: x << n  (zero-fills vacated low bits)"
   [:Int x :Int n] :Int
-  (mul-i64 x (pow2 n)))
+  (shl x n))
 
-(defn bit-shift-right "Logical right shift: x >> n  (x / 2^n), x >= 0"
+(defn bit-shift-right "Arithmetic right shift: x >> n  (sign-extending)"
   [:Int x :Int n] :Int
-  (div-i64 x (pow2 n)))
+  (shr x n))
 
-;; ── Single-bit operations ─────────────────────────────────────────────────
+;; ── Single-bit operations (composed from the primitives) ──────────────────
 
-;; Value (0 or 1) of bit at position n.
-(defn bit-at "The value (0 or 1) of bit n of x" [:Int x :Int n] :Int
-  (sub-i64 (div-i64 x (pow2 n)) (mul-i64 2 (div-i64 x (pow2 (add-i64 n 1))))))
+(defn bit-test "True iff bit n of mask is set" [:Int mask :Int n] :Bool
+  (not (eq-i64 0 (primitives/bit-and mask (shl 1 n)))))
 
-(defn bit-test "True iff bit n of x is set" [:Int x :Int n] :Bool
-  (eq-i64 (bit-at x n) 1))
+(defn bit-set "Set bit n of mask to 1" [:Int mask :Int n] :Int
+  (primitives/bit-or mask (shl 1 n)))
 
-(defn bit-set "Set bit n of x to 1" [:Int x :Int n] :Int
-  (if (bit-test x n) x (add-i64 x (pow2 n))))
+(defn bit-clear "Clear bit n of mask to 0" [:Int mask :Int n] :Int
+  (primitives/bit-and mask (primitives/bit-not (shl 1 n))))
 
-(defn bit-clear "Clear bit n of x to 0" [:Int x :Int n] :Int
-  (if (bit-test x n) (sub-i64 x (pow2 n)) x))
+(defn bit-flip "Toggle bit n of mask" [:Int mask :Int n] :Int
+  (primitives/bit-xor mask (shl 1 n)))
 
-(defn bit-flip "Toggle bit n of x" [:Int x :Int n] :Int
-  (if (bit-test x n) (sub-i64 x (pow2 n)) (add-i64 x (pow2 n))))
+;; ── Population count ──────────────────────────────────────────────────────
 
-;; ── Fixed-width logical ops (fold over bit positions 0..width) ────────────
+(defn popcount "Number of set bits in the 64-bit representation of x" [:Int x] :Int
+  (primitives/popcount x))
 
-;; Per-bit combine of a and b under op `f` (each f arg is 0/1, result 0/1),
-;; re-weighting bit i by its place value (pow2 i), accumulating from bit i up.
-(defn- bit-fold2 [f :Int a :Int b :Int i :Int acc] :Int
-  (if (ge-i64 i (width)) acc
-    (bit-fold2 f a b (add-i64 i 1)
-      (add-i64 acc (mul-i64 (f (bit-at a i) (bit-at b i)) (pow2 i))))))
-
-(defn- and-bit [:Int p :Int q] :Int (if (eq-i64 (add-i64 p q) 2) 1 0))
-(defn- or-bit  [:Int p :Int q] :Int (if (eq-i64 (add-i64 p q) 0) 0 1))
-(defn- xor-bit [:Int p :Int q] :Int (if (eq-i64 (add-i64 p q) 1) 1 0))
-
-(defn bit-and "Bitwise AND of a and b (low `width` bits)" [:Int a :Int b] :Int
-  (bit-fold2 and-bit a b 0 0))
-
-(defn bit-or "Bitwise OR of a and b (low `width` bits)" [:Int a :Int b] :Int
-  (bit-fold2 or-bit a b 0 0))
-
-(defn bit-xor "Bitwise XOR of a and b (low `width` bits)" [:Int a :Int b] :Int
-  (bit-fold2 xor-bit a b 0 0))
-
-;; One's complement within the low `width` bits (NOT machine two's-complement).
-(defn bit-not "Bitwise NOT of x within the low `width` bits" [:Int x] :Int
-  (sub-i64 (full-mask) x))
-
-;; ── Popcount ──────────────────────────────────────────────────────────────
-
-(defn- popcount-from [:Int x :Int i :Int acc] :Int
-  (if (ge-i64 i (width)) acc
-    (popcount-from x (add-i64 i 1) (add-i64 acc (bit-at x i)))))
-
-(defn popcount "Number of set bits in the low `width` bits of x" [:Int x] :Int
-  (popcount-from x 0 0))
+;; Clojure-style alias for popcount.
+(defn bit-count "Number of set bits in x (Clojure alias for popcount)" [:Int x] :Int
+  (primitives/popcount x))
 
 ;; ── Self-tests ───────────────────────────────────────────────────────
-;; `(mod test …)` submodule (S87 hygiene): exercises every op against known
-;; values via the in-language harness. Body in bits/test.cl (extraction-stable
-;; backing file, spec §8.2.5).
+;; `(mod test …)` submodule (S87 hygiene): exercises every wrapper against
+;; known values via the in-language harness. Body in bits/test.cl
+;; (extraction-stable backing file, spec §8.2.5).
 
 (mod test)

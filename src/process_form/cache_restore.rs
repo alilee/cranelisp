@@ -112,6 +112,17 @@ fn cache_validity_check(
         return None;
     }
 
+    // `CRANELISP_MODULE_TRACE` — the module-discovery / compile-order / cache-hit
+    // observability channel (tests/CLAUDE.md §"Diagnostic Logging"). The `.meta`
+    // is valid here: the module's typecheck result is cached (a cache HIT on the
+    // typecheck artifact), so the import path reuses it rather than re-deriving
+    // it from scratch. This is the S91 index→import cache-hit signal (§25.5): a
+    // module the indexer wrote a `.meta` for (no `.o`) validates here and its
+    // typecheck is reused on a later real `/import`.
+    if std::env::var("CRANELISP_MODULE_TRACE").is_ok() {
+        eprintln!("module-trace: cache hit (.meta valid) for {dep}");
+    }
+
     // 2. Load metadata from disk.
     let cached = match cache::try_load_cached_module(&cache_dir, dep) {
         Ok(Some(c)) => c,

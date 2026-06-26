@@ -131,8 +131,13 @@ normatively in [`spec/`](../spec/).
 
 - [`examples/`](../examples/) — the numbered learning sequence, from
   `01-integers` through `30-parallel-map-reduce`. Work through it in order.
-- [`cli-reference.md`](cli-reference.md) — every command-line mode and option, and
-  how the entry-module target is resolved.
+- [`cli-reference.md`](cli-reference.md) — every command-line mode and option, how
+  the entry-module target is resolved, how the lib search path / `Cranelisp.toml`
+  works, and the `/search` command for finding an importable function.
+- **Guide** — feature-by-feature pages: [`guide/bitwise.md`](guide/bitwise.md)
+  (bit-level arithmetic and the `num.bits` module),
+  [`guide/field-accessors.md`](guide/field-accessors.md) (`Type.field` accessors and
+  the bare-name alias).
 - [`repl/spec.md`](../repl/spec.md) — the normative REPL experience: display
   formats, slash commands, errors, caching.
 - [`spec/`](../spec/) — the language specification.

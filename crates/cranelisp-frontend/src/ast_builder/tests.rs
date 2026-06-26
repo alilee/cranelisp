@@ -1342,6 +1342,248 @@
         }
     }
 
+    // -- Qualified impl-target / trait-name / method-sig type refs (D-qual, S91) --
+
+    // spec: spec/08-modules.md §8.5 — a module-qualified concrete impl target
+    // `primitives/Int` is canonical: it MUST lower to
+    // `TypeRef { module: Some("primitives"), name: "Int" }`, NOT the un-split
+    // `TypeRef { module: None, name: "primitives/Int" }` (which re-roots the impl
+    // under the current module → phantom `user/primitives/Int`). Seam guard for
+    // the D-qual-impl-target fix; the e2e
+    // tests/spec_07_traits.rs::impl_qualified_primitive_type_target_resolves_to_canonical
+    // is the end-to-end half.
+    #[test]
+    fn build_impl_qualified_primitive_target_splits_typeref() {
+        let prog = parse_and_build_program(
+            "(impl Num primitives/Int (defn + [x y] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => match &imp.target {
+                TypeExpr::Named(n) => {
+                    assert_eq!(n.module.as_deref(), Some("primitives"));
+                    assert_eq!(n.name.as_ref(), "Int");
+                }
+                other => panic!("expected Named, got {other:?}"),
+            },
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5 — extent guard: the qualified-target split is
+    // not primitives-specific. A `user/`-qualified target `user/Widget` lowers to
+    // `TypeRef { module: Some("user"), name: "Widget" }`, NOT the double-rooted
+    // `{ module: None, name: "user/Widget" }` → `user/user/Widget`. Companion to
+    // tests/spec_07_traits.rs::impl_qualified_user_type_target_resolves_to_canonical.
+    #[test]
+    fn build_impl_qualified_user_target_splits_typeref() {
+        let prog = parse_and_build_program(
+            "(impl Tagger user/Widget (defn tagit [w] 99))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => match &imp.target {
+                TypeExpr::Named(n) => {
+                    assert_eq!(n.module.as_deref(), Some("user"));
+                    assert_eq!(n.name.as_ref(), "Widget");
+                }
+                other => panic!("expected Named, got {other:?}"),
+            },
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5 — control: a BARE concrete impl target stays
+    // `module: None`. Pins that the splitter only adds a module when a `/` is
+    // present (no spurious re-rooting of bare targets).
+    #[test]
+    fn build_impl_bare_target_keeps_no_module() {
+        let prog = parse_and_build_program(
+            "(impl Num Int (defn + [x y] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => match &imp.target {
+                TypeExpr::Named(n) => {
+                    assert_eq!(n.module, None);
+                    assert_eq!(n.name.as_ref(), "Int");
+                }
+                other => panic!("expected Named, got {other:?}"),
+            },
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5 — qualified type-ARG inside a parameterised
+    // impl target (`(impl Display (Option primitives/Int))`) is the same
+    // re-rooting class as the head: the uppercase arg `primitives/Int` MUST split
+    // to `TypeRef { module: Some("primitives"), name: "Int" }`.
+    #[test]
+    fn build_impl_qualified_type_arg_splits_typeref() {
+        let prog = parse_and_build_program(
+            "(impl Display (Option primitives/Int) (defn show [x] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => match &imp.target {
+                TypeExpr::Applied(head, args) => {
+                    assert_eq!(head.name.as_ref(), "Option");
+                    assert_eq!(args.len(), 1);
+                    match &args[0] {
+                        TypeExpr::Named(n) => {
+                            assert_eq!(n.module.as_deref(), Some("primitives"));
+                            assert_eq!(n.name.as_ref(), "Int");
+                        }
+                        other => panic!("expected Named arg, got {other:?}"),
+                    }
+                }
+                other => panic!("expected Applied, got {other:?}"),
+            },
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5 + spec/07-traits.md:749 — the CONSTRAINT-trait
+    // side of a parameterised impl target (`(impl Display (Option :fmt/Eq a) …)`)
+    // is the same hand-rolled-no-split shape. A qualified constraint `:fmt/Eq`
+    // MUST split to `TraitRef { module: Some("fmt"), name: "Eq" }`, not the
+    // re-rooted `{ module: None, name: "fmt/Eq" }`. Completes the root-cause class.
+    #[test]
+    fn build_impl_qualified_constraint_splits_traitref() {
+        let prog = parse_and_build_program(
+            "(impl Display (Option :fmt/Eq a) (defn show [x] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.type_constraints.len(), 1);
+                assert_eq!(imp.type_constraints[0].0, "a");
+                let tr = &imp.type_constraints[0].1;
+                assert_eq!(tr.module.as_deref(), Some("fmt"));
+                assert_eq!(tr.name.as_ref(), "Eq");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5 — control: a BARE constraint trait stays
+    // `module: None`. Pins that the constraint splitter only adds a module when a
+    // `/` is present (no spurious re-rooting of bare constraints).
+    #[test]
+    fn build_impl_bare_constraint_keeps_no_module() {
+        let prog = parse_and_build_program(
+            "(impl Display (Option :Eq a) (defn show [x] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.type_constraints.len(), 1);
+                let tr = &imp.type_constraints[0].1;
+                assert_eq!(tr.module, None);
+                assert_eq!(tr.name.as_ref(), "Eq");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5 — the TRAIT-name side of `impl` has the same
+    // hand-rolled-no-split shape. A qualified trait `(impl primitives/Num Int …)`
+    // MUST split to `TraitRef { module: Some("primitives"), name: "Num" }`, not
+    // `{ module: None, name: "primitives/Num" }` (root-cause class, same fix).
+    #[test]
+    fn build_impl_qualified_trait_name_splits_traitref() {
+        let prog = parse_and_build_program(
+            "(impl primitives/Num Int (defn + [x y] x))",
+        ).unwrap();
+        match &prog[0] {
+            TopLevel::TraitImpl(imp) => {
+                assert_eq!(imp.trait_name.module.as_deref(), Some("primitives"));
+                assert_eq!(imp.trait_name.name.as_ref(), "Num");
+            }
+            other => panic!("expected TraitImpl, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5 — a qualified type reference in a `deftrait`
+    // method signature (both param-annotation and return-type position) is
+    // canonical: `:primitives/Int` MUST split to
+    // `TypeRef { module: Some("primitives"), name: "Int" }` at both seams, not the
+    // un-split `{ module: None, name: "primitives/Int" }`. Frontend half of the
+    // Wave-0 sweep finding
+    // (tests/spec_qualified_name_sweep.rs::deftrait_method_qualified_type_ref_equals_bare).
+    #[test]
+    fn build_deftrait_method_qualified_type_refs_split() {
+        let decl = match parse_and_build_repl(
+            "(deftrait Scaler (scale [:primitives/Int x] :primitives/Int))",
+        ).unwrap() {
+            TopLevel::TraitDecl(decl) => decl,
+            other => panic!("expected TraitDecl, got {other:?}"),
+        };
+        assert_eq!(decl.methods.len(), 1);
+        let sig = &decl.methods[0];
+        // Param annotation type ref split.
+        assert_eq!(sig.params.len(), 1);
+        match &sig.params[0].1 {
+            TypeExpr::Named(n) => {
+                assert_eq!(n.module.as_deref(), Some("primitives"));
+                assert_eq!(n.name.as_ref(), "Int");
+            }
+            other => panic!("expected Named param type, got {other:?}"),
+        }
+        // Return type ref split.
+        match &sig.ret_type {
+            TypeExpr::Named(n) => {
+                assert_eq!(n.module.as_deref(), Some("primitives"));
+                assert_eq!(n.name.as_ref(), "Int");
+            }
+            other => panic!("expected Named ret type, got {other:?}"),
+        }
+    }
+
+    // -- 0365 dotted-accessor transport invariance (frontend pass-through) --
+
+    // spec: spec/08-modules.md §8.5.2 — the frontend transports a dotted member
+    // name VERBATIM: `(Box.v b)` reads as a head `Sexp::Symbol("Box.v")` and
+    // lowers to a head `Expr::Var { name: "Box.v" }`, un-split and un-rejected.
+    // Field-accessor resolution is typecheck's; the frontend must never rewrite
+    // the dotted form (the resolver in later waves depends on this transport).
+    #[test]
+    fn build_dotted_field_accessor_transports_verbatim() {
+        // Reader: one symbol head with the dot retained.
+        let sexps = crate::reader::parse("(Box.v b)").unwrap();
+        match &sexps[0] {
+            Sexp::List(children, _) => match &children[0] {
+                Sexp::Symbol(s, _) => assert_eq!(s, "Box.v"),
+                other => panic!("expected Symbol head, got {other:?}"),
+            },
+            other => panic!("expected List, got {other:?}"),
+        }
+        // Builder: head lowers to Expr::Var verbatim.
+        match parse_and_build_expr("(Box.v b)").unwrap() {
+            Expr::Apply { callee, .. } => match callee.as_ref() {
+                Expr::Var { name, .. } => assert_eq!(name.as_ref(), "Box.v"),
+                other => panic!("expected Var head, got {other:?}"),
+            },
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.5.2 — companion: the constructor dotted case
+    // (`Option.Some`) and the operator-member case (`Num.+`) ride the identical
+    // member-agnostic transport, documenting that the lowercase field-accessor
+    // member is not special-cased relative to existing dotted forms.
+    #[test]
+    fn build_dotted_constructor_and_operator_members_transport_verbatim() {
+        match parse_and_build_expr("(Option.Some 1)").unwrap() {
+            Expr::Apply { callee, .. } => match callee.as_ref() {
+                Expr::Var { name, .. } => assert_eq!(name.as_ref(), "Option.Some"),
+                other => panic!("expected Var head, got {other:?}"),
+            },
+            other => panic!("expected Apply, got {other:?}"),
+        }
+        match parse_and_build_expr("(Num.+ 1 2)").unwrap() {
+            Expr::Apply { callee, .. } => match callee.as_ref() {
+                Expr::Var { name, .. } => assert_eq!(name.as_ref(), "Num.+"),
+                other => panic!("expected Var head, got {other:?}"),
+            },
+            other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
     // -- Type annotations --
 
     // spec: 02-grammar §2.8.2 — simple named type annotation on param

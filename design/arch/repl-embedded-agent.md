@@ -268,6 +268,9 @@ All six sign-offs are ratified; the durable record is `sprints/archive/sprint-88
 **Status:** APPROVE-WITH-REVISIONS (`/arch` Phase-2, 2026-06-23) — **Pillar-3 REDESIGNED at
 Phase-3 (user, 2026-06-23): nice-worker background indexer + two indices + `/search` default-build
 session facility; §11.1–§11.5 + R3/R4/R6 re-pinned, R9–R12 added** (see the REDESIGN BOX in §11.1).
+**REFINED at S91 Phase-3 (user design review, 2026-06-25): read-or-produce-`.meta`, one-artifact
+indexer + eager-from-REPL-startup + abandon-on-flush — §11.1/§11.1a/§11.1b/§11.2 refined,
+R13–R18 added** (see the REFINEMENT BOX in §11.1).
 Verdict transcribed into `sprints/SPRINT.md` by `/sprint`; this section is the durable
 architectural record.
 
@@ -314,25 +317,61 @@ or the default REPL contract — §11.1). The pillars:
 
 ### §11.1 Pillar 3 — importable-symbol search: the nice-worker background indexer
 
+> **REFINEMENT BOX (user design review, S91 Phase-3, 2026-06-25).** §11.1's burn-down model is
+> refined from **in-memory typecheck-and-discard, zero-residue, rebuild-the-whole-index-every-
+> triggered-session** to **read-or-produce-`.meta`, one-artifact**. The S90 framing said the
+> indexer *writes nothing* and **re-typechecks** lib-path ∪ project-root on every trigger; a
+> design review surfaced two real problems: (1) a triggered first-`/search` re-typechecked the
+> *entire* world even when valid `.meta.json` caches already existed for those modules — a
+> needless N-module typecheck; (2) a module the indexer typechecked-and-discarded, when later
+> `/import`'d, **re-typechecked from scratch** (the index entry was a throwaway hint). Both
+> dissolve once the indexer **reads from / produces the existing `.meta` cache** instead of an
+> ephemeral discard. What CHANGES: the per-module step becomes **skip-if-claimed → read-`.meta`-
+> if-valid → else-typecheck-and-**write**-`.meta`**, and the two indices are **read-derived from
+> `.meta` files** (rebuildable by a cheap `.meta`-scan), so cross-run persistence IS the existing
+> `.meta` cache (R13–R16 below). **Two follow-up user corrections** then pinned the trigger
+> (R17 — eager-from-REPL-startup) and nice-worker flush handling (R18 — abandon-not-drain); both
+> are folded into §11.1a / §11.1a-flush below. What CARRIES: nice-worker home (R4), eager
+> burn-down (now eager-from-REPL-startup per R17 — see §11.1a),
+> two indices (R3), exact-OR-partial match (R6), default-build facility (R9), CF.2 containment
+> (R2-b), separate-worklist-no-`.o`-entanglement (§11.1 coupling), and — **restated, not dropped**
+> — the isolation invariant: **no session-state residue** (the four `SharedState` maps stay
+> byte-unchanged). The S90 phrase "the indexer writes nothing" is the part that is **superseded** —
+> see the restated invariant in "No session-state residue (the `.meta` write is benign)" below.
+
 Pillar 3 answers `/search <symbol>|<scheme>` over symbols that are **reachable but not yet
 imported** — reachable = **lib-search-path modules ∪ project-root modules** (user
 clarification 1). `/search` is a **normal user-facing REPL command** (a session facility,
 NOT agent-gated — user clarification 2); the agent reaches it through the ordinary
 pull/tools-as-visible-REPL-commands mechanism (§4.4), exactly like `/syntax`/`/list`/`/exports`.
 
-**Execution model — a background task of the nice workers; eager burn-down.** The indexer
-rides `src/session_v4/nice_worker.rs::nice_worker_loop` — the low-OS-priority threads that
-already do background `.o` codegen on `TypecheckDone` modules. The flow:
+**Execution model — a background task of the nice workers; read-or-produce-`.meta` burn-down.**
+The indexer rides `src/session_v4/nice_worker.rs::nice_worker_loop` — the low-OS-priority
+threads that already do background `.o` codegen on `TypecheckDone` modules. The flow:
 
 1. **Discovery.** Once reachable modules are enumerated (lib-search-path walk ∪ project-root
    walk — the same file-resolution rules `import` uses, `pipeline::resolve_module_file`; no
    new search semantics), the reachable set is the indexer's worklist.
-2. **Eager burn-down.** The nice workers **burn down the list**, typechecking each reachable
-   module against **throwaway staging** (the `validate_forms_dry_run` substrate — build
-   staging + `SymbolTableAccess::cluster(...)` + `check_forms`, never `register_module`), and
-   for each public symbol **add two index entries** (§11.2), then **discard the staging**.
+2. **Read-or-produce-`.meta` burn-down.** The nice workers **drain the worklist**, and for
+   **each reachable module** take exactly one of three branches (the refinement's center):
+   - **already claimed / registered / in-flight** (present in the scheduler's `ModuleState`
+     registry in any pool state — a normal/priority/object-codegen module the real path owns)
+     → **SKIP.** If it is in-scope it is covered by Pillar 2; otherwise the indexer picks it
+     up later from the `.meta` the real path writes (the real path's Phase-1 writer is
+     typecheck-driven and decoupled from `.o` — `nice_worker.rs` `write_module_meta`, FIXME
+     0387 — so a real-typechecked module always has a `.meta` to read).
+   - **`.meta` present and valid** (the existing `cache::load_meta` schema+`BUILD_ID` gate +
+     int's existing `is_cache_valid` source-content gate) → **read the `SymbolTable` from the
+     `.meta`, populate the two index entries from it, NO typecheck.**
+   - **no `.meta` (or stale)** → typecheck on the nice worker against **throwaway staging**
+     (the `validate_forms_dry_run` substrate — build staging + `SymbolTableAccess::cluster(...)`
+     + `check_forms`, never `register_module`), then **write `.meta` via the existing Phase-1
+     writer** (`cache::write_meta` — **no `.o`, no `register_module`, no
+     `notify_object_codegen_complete`**), then populate the index entries from staging.
 3. **Serve.** `/search` reads the two indices (built or building); a search is a pure index
-   lookup, never a typecheck.
+   lookup, never a typecheck. The indices are **read-derived from the `.meta` files** —
+   rebuildable by scanning `.meta` (cheap), so still in-memory, **no new serialized index, no
+   `CACHE_SCHEMA_VERSION` bump** (R16). Cross-run persistence IS the `.meta` cache.
 
 **Why the nice workers (not the eval thread).** This is the *better* home the original
 eval-thread/lazy model missed: (a) the work is **exactly the nice workers' shape** — low-priority
@@ -340,46 +379,162 @@ background typecheck-and-record over a module worklist, the same threads already
 object codegen; (b) it is **off the eval thread**, so `/search` (and the agent's pull of it) is
 a non-blocking index read, never a synchronous typecheck stall on the user's Enter; (c) idle
 nice workers absorb the cost (object codegen and indexing share the same below-normal-priority
-thread budget). The one real commitment this makes: **the burn-down is a new behaviour/perf
-cost** — typechecking the whole lib-path ∪ project-root in the background (see §11.1a trigger).
+thread budget). The refinement **lowers** the burn-down's cost: it re-typechecks only genuine
+cache-misses (no `.meta`), reading hits straight off the existing `.meta` cache — so a warm
+project pays a `.meta`-scan, not an N-module re-typecheck (see §11.1a trigger).
 
-**§11.1a — eager-but-TRIGGERED, not unconditional-every-session (RULING on the coordinator's
-question b).** The burn-down runs **eagerly once triggered**, but the trigger is **first
-`/search` invocation OR first agent activation** — NOT unconditionally at every session start.
-Rationale: indexing the entire lib-path ∪ project-root is a real cost (N module typechecks);
-a session that never searches and never starts the agent should not pay it (Principle 6 —
-complexity/cost has a budget). On the first `/search` (human or agent pull) the indexer arms
-the nice-worker worklist and burns it down eagerly; subsequent `/search`es read the
-now-warming index. This preserves the user's "eager burn-down" intent (once armed, the workers
-race ahead — they do not lazily index one module per query) while not taxing sessions that
-never reach for the facility. A first `/search` that lands before the burn-down completes
-serves partial results + a "indexing N modules…" note (a `/repl` UX detail).
+**No session-state residue (the `.meta` write is benign) — RESTATED invariant (R13).** The S90
+"the indexer writes nothing" framing is superseded. The refined indexer **MAY write a
+`.meta.json`** for a reachable-uncached module it typechecks — through the **existing Phase-1
+writer** (`cache::write_meta`), producing a file **byte-identical to what the real
+object-codegen path's Phase-1 writer produces** for the same module (the writer is already
+typecheck-driven and `.o`-decoupled, FIXME 0387). The invariant that **holds unchanged** is
+*session-state* isolation: the four `SharedState` maps — `symbol_tables`, `module_aliases`,
+`prelude_fallback`, `introspection` — **never gain an entry** for an indexed-but-unimported
+module (the indexer still never calls `register_module` / `notify_typecheck_done` /
+`record_compiled` / `append_o_path` / `notify_object_codegen_complete`). The two indices are
+**derived read-caches** (§3.3 — never the source of truth; blow them away and they rebuild from
+the `.meta` files), int-private `pub(crate)` structures on `SharedState`. The `.meta` write is a
+**benign, content-hash-/build-id-invalidated cache artifact** on the same footing as any cache
+file: a later source edit makes it stale (caught by the existing `CacheStale` / `is_cache_valid`
+gates) and a real recompile overwrites it. It is NOT a new state window and changes no
+deterministic REPL/`--run`/`--link` behaviour (a `.meta` the indexer writes is one the next real
+typecheck of that module would have written identically). **The +neg isolation test obligation
+is the four-`SharedState`-map assertion** (mirroring `validate_dry_run_discards_does_not_commit`,
+`src/agent/pull.rs:1088`) — assert **no `SharedState` entry**, NOT "no disk write." A produced
+`.meta` is expected and benign; asserting its absence would contradict the refined model.
 
-**Zero residue still holds (structural).** The burn-down typechecks into **locally-owned
-staging**, never `register_module` — so `SharedState.symbol_tables`/`module_aliases`/
-`prelude_fallback`/`introspection` never gain an entry for an indexed-but-unimported module.
-The two indices are **derived read-caches** (§3.3 — never the source of truth; blow them away
-and they rebuild), int-private `pub(crate)` structures on `SharedState`, **not** symbol tables
-and **not** serialized. The +neg isolation test asserts: after a burn-down, the four session
-maps are unchanged (the shape of the `validate_dry_run_discards_does_not_commit` guard,
-`src/agent/pull.rs:1088`). **A found symbol, once `/import`'d, re-typechecks for real through
-the live path** — the index entry was only a search hint.
+**§11.1a — eager-from-REPL-startup; REPL-only is an EXPLICIT invariant (RULING, S91 Phase-3
+revision — R17; SUPERSEDES the prior eager-but-TRIGGERED ruling).** The burn-down is **enqueued
+eagerly at REPL start-up** — there is **no** first-`/search`/first-agent-activation trigger. The
+single gate is **"REPL mode at startup"**: in REPL mode the `IndexModule` worklist is enumerated
+and enqueued at session start; in **`--run` / `--link` / `--release` mode the worklist is NEVER
+enumerated** (no REPL, no `/search`, nothing to serve). This makes the REPL-only property an
+**explicit, single-gated invariant** — not the emergent-from-trigger property it was under the
+prior ruling (resolving the earlier emergent-vs-explicit point): one mode check at startup, not a
+trigger that *happened* to imply REPL-only.
 
-**Cross-context / coupling (RULING on the coordinator's edges question).** The nice workers
-live in `src/` (the binary), so there is **no new crate edge** — the indexer reuses the
-existing int→typecheck `check_forms` inward call and the existing `pipeline::resolve_module_file`
-discovery. **One new internal coupling, bounded:** the indexer reads the scheduler's
-reachable-module discovery and adds a *second kind of nice-worker work* (index-a-reachable-module)
-beside the existing object-codegen work. This MUST stay **cleanly separated from the
-object-codegen path** — the object-codegen path operates on `TypecheckDone`-registered modules
-(`take_object_codegen`); the indexer operates on reachable-but-**un**registered modules and
-must NOT route them through `notify_typecheck_done`/`record_compiled`/`append_o_path` (it
-writes no `.o`, registers no module). Recommended shape: a distinct nice-worker work variant
-(an `IndexModule(path)` peer to the object-codegen claim) so the two never entangle — the
-indexer's burn-down is a separate worklist drained by the same threads, not a hook spliced
-into `compile_module_object`. (Naming the work-variant + the scheduler claim is a
-`/design (src/)` detail; the architectural ruling is: **separate worklist, shared threads,
-no entanglement with the `.o` lifecycle**.)
+**Override of the S90 Principle-6 "don't tax sessions that never search" rationale (recorded, not
+silently dropped).** The prior §11.1a ruling armed the burn-down only on first `/search` / agent
+activation, reasoning (Principle 6) that a session which never searches should pay no indexing
+cost. **That rationale is SUPERSEDED.** The user's correction: on a real site the burn-down takes
+**seconds-to-minutes**; triggering at first `/search` makes the *first search pay the full
+latency* (the worst possible time — the user is blocked, waiting on a result). Eager-from-startup
+instead **warms the index while the user does other things**, so it is ready (or nearly so) by the
+first search. The Principle-6 concern (don't waste work) is addressed by *prioritization*, not by
+*deferral* — see the yield-to-codegen ruling next.
+
+**Prioritization — the index worklist YIELDS to object codegen (preserves the R9
+default-build-behaviour-stable invariant).** The nice workers drain the `IndexModule` worklist
+**behind / yielding to the object-codegen worklist** — object-codegen work (`take_object_codegen`)
+is claimed first; the indexer fills **idle** nice-worker capacity only. Eager, but non-competing:
+warming the search index **never delays** making the loaded / prelude modules fast (object codegen
+always wins the thread). This is the mechanism that keeps the R9 invariant "the indexer must not
+perturb object-codegen behaviour" — eager-from-startup is safe *because* the index work is
+strictly lower-priority than the `.o` lifecycle, not because it is deferred. (The exact claim
+ordering — e.g. `take_object_codegen` attempted before a peer `take_index_module` — is
+`/design (src/)`'s detail; the architectural ruling is the **yield-to-codegen priority**.)
+
+**§11.1a-flush — the index worklist is NEVER part of a correctness-gating flush;
+abandon-on-flush / abandon-on-shutdown (RULING, S91 Phase-3 — R18).** Because the eager burn-down
+is REPL-only throwaway work (R17) and never serves a `--link`/`--run`/`--release` artifact, it is
+**abandoned, not drained**, at both nice-worker flush points. Neither flush waits on the index
+worklist:
+
+1. **Pre-`--link` hot-flush / priority-promotion** (`src/session_v4/nice_worker.rs:70` — "Check
+   for priority promotion (hot flush before --link)"). The promotion exists so all `.o`s exist
+   before linking; it is **object-codegen-scoped by construction** and **MUST NOT drain or block
+   on the index worklist** (the link needs no index — the index is a REPL search aid, never a
+   build input). A promoted nice worker **prefers object codegen and defers/abandons index work**
+   — the flush-time face of the R17 "index yields to object codegen" prioritization. Any
+   in-progress `IndexModule` task may be left incomplete; the link is unaffected.
+2. **Shutdown join** (`src/worker_pool.rs:74-86` — `WorkerPool::shutdown` joins all `nice_handles`
+   after the shutdown signal; verified: a nice worker observes shutdown via `take_object_codegen()`
+   returning `None` at the loop top and exits). The index burn-down is **abandon-on-shutdown**: the
+   loop checks the shutdown flag **between `IndexModule` tasks** and exits promptly — it **never**
+   "finishes the whole burn-down before exiting." Because `.meta` writes are **atomic**
+   (`crates/cranelisp-backend/src/cache/object.rs` `atomic_write` — temp-file-then-rename, verified),
+   an abandoned mid-burn leaves at worst some reachable modules **unindexed** (re-derived next
+   session from the `.meta` cache + the miss-typecheck path) and **never a corrupt `.meta`** (a
+   half-written file never replaces a good one).
+
+**Invariant: the index worklist is never on a correctness-gating path.** It is abandon-on-flush
+(promotion) and abandon-on-shutdown (join), never drained-to-completion; promotion prefers object
+codegen. (The exact shutdown-flag check placement + the promotion's claim preference are
+`/design (src/)`'s; the architectural ruling is the abandon-not-drain invariant.)
+
+**Cost LOWERED by the read-or-produce-`.meta` refinement (unchanged).** The burn-down
+re-typechecks **only genuine cache-misses** (reachable modules with no valid `.meta`); modules
+with a valid `.meta` are **read off the existing cache** (a deserialise, not a typecheck), and
+modules the real path owns are **skipped**. So a warm project (most `.meta`s present) pays a
+`.meta`-scan + a few miss-typechecks rather than an N-module re-typecheck — the design review's
+problem (1). A `/search` that lands **before** the burn-down completes serves partial results + an
+"indexing N modules…" note (a `/repl` UX detail) — **more relevant now** than under the trigger
+model, since an early search on a big site may catch the eager-from-startup burn-down mid-flight.
+**The `/import`-re-typecheck problem (2) is also dissolved:** a found symbol the user later
+`/import`s is a **`.meta` cache-hit** (the indexer wrote the `.meta` on its miss-typecheck, or
+read an existing one) — the live import path loads it from cache rather than re-typechecking from
+scratch.
+
+**Session-state residue invariant — see "No session-state residue (the `.meta` write is
+benign)" in §11.1 above (R13).** The refinement supersedes the S90 "writes nothing" phrasing:
+the indexer writes a benign `.meta` cache artifact for miss-typechecked modules, but the four
+`SharedState` maps stay byte-unchanged (the +neg guard, restated as the SharedState-map
+assertion). A found symbol, once `/import`'d, loads its `.meta` from cache (problem 2 above) —
+the index entry was a search hint; the `.meta` is the durable typecheck result.
+
+**Cross-context / coupling (RULING on the coordinator's edges question; refined for the `.meta`
+read+write).** The nice workers live in `src/` (the binary), so there is **no new crate edge** —
+the indexer reuses the existing int→typecheck `check_forms` inward call, the existing
+`pipeline::resolve_module_file` discovery, **and the existing int→backend cache API** that int
+already depends on (`cranelisp_backend::cache` — `cache_writer.rs` already consumes it). The
+refined indexer both **reads** `.meta` (`cache::load_meta` → `SymbolTable`, plus `module_cache_path`
+to locate it; `CacheStale` discriminates schema/build-id staleness) and **writes** `.meta`
+(`cache::write_meta`) through that **already-public** backend cache edge. **No new `public-api.txt`
+movement results** (RULING, R14): `write_meta`, `load_meta`, `deserialise_meta`,
+`module_cache_path`, `CacheStale`, and `CACHE_SCHEMA_VERSION` are **already on
+`cranelisp-backend`'s public surface** (verified against `crates/cranelisp-backend/public-api.txt`
+— the serialize-module entries), int already imports from `cranelisp_backend::cache`, and the
+indexer's reuse is an **additive use of an existing edge**, not a new pub item. If a future
+implementation finds it needs a backend cache item that is currently `pub(crate)` (it should not —
+the read/write/validate trio is fully public), that would be a `target: /arch` filing with the
+baseline-diff obligation at that time; **no such item is anticipated**.
+
+**One new internal coupling, bounded:** the indexer reads the scheduler's reachable-module
+discovery and adds a *second kind of nice-worker work* (index-a-reachable-module) beside the
+existing object-codegen work. This MUST stay **cleanly separated from the object-codegen path** —
+the object-codegen path operates on `TypecheckDone`-registered modules (`take_object_codegen`);
+the indexer operates on reachable-but-**un**registered modules and must NOT route them through
+`notify_typecheck_done`/`record_compiled`/`append_o_path`/`notify_object_codegen_complete`/
+`register_module` (it writes only the `.meta` via `write_meta`, registers no module). Recommended
+shape: a distinct nice-worker work variant (an `IndexModule(path)` peer to the object-codegen
+claim) so the two never entangle — the indexer's burn-down is a separate worklist drained by the
+same threads, not a hook spliced into `compile_module_object`. (Naming the work-variant + the
+scheduler claim is a `/design (src/)` detail; the architectural ruling is: **separate worklist,
+shared threads, no entanglement with the `.o` lifecycle**.)
+
+**§11.1b — worklist↔claim coordination (RULING on the refinement's race question, R15).** The
+indexer must never double-typecheck a module the real path owns, nor race the priority/normal/
+object-codegen path on a module in flight. The coordination mechanism is **a module-state check
+before claiming an `IndexModule` task**, grounded in the scheduler's existing per-module registry
+(`ModuleState` keyed by `ModuleFullPath`, carrying `pool` + the claim flags `object_working` /
+`inmem_claimed` / `eval_owned`). The invariant (architectural; exact claim/notify naming is
+`/design (src/)`'s):
+
+- **A module present in the scheduler registry in ANY pool state is owned by the real path → the
+  indexer SKIPS it.** It is either in-scope (covered by Pillar 2) or it will be picked up from
+  the `.meta` the real path's typecheck-driven Phase-1 writer produces (FIXME 0387 — `.meta` is
+  written whenever a module typechecks, regardless of `.o`). The real path always wins.
+- **A reachable module ABSENT from the registry is the indexer's domain** — it reads the `.meta`
+  if valid, else typechecks-and-writes-`.meta` (§11.1 step 2), never registering it.
+- **Late-arriving real `.meta`s** (a module typechecked-for-real but not in the indexer's in-scope
+  set — e.g. a transitive dependency the real path loaded) appear in `/search` because the
+  indexer **reads them from their written `.meta`**: either via the startup `.meta`-scan, or
+  via a re-scan / a notify hook the implementation may add so a `.meta` written after the
+  burn-down still surfaces. The mechanism (re-scan vs notify) is `/design (src/)`'s; the ruling
+  is the invariant: **no module is both index-typechecked and real-typechecked concurrently — the
+  real path always wins, and the indexer consumes the real path's `.meta` rather than duplicating
+  its typecheck.**
 
 ### §11.2 Two indices (the lookup structures) + Pillar-2 reconciliation
 
@@ -398,12 +553,15 @@ Pillar 2 surfaces in-scope prelude+imports at sig grain by reading the **live sy
 directly into the **harvest text block** (`harvest_context`, `src/agent/harvest.rs`) — it
 needs no index at all (the in-scope symbols are already typechecked and already in
 `symbol_tables`; the harvester just reads name+sig+docstring off them each turn). So:
-**Pillar 2 = a live-table read into harvest text; Pillar 3 = two persisted lookup indices over
-typecheck-and-discarded reachable modules.** They share neither a structure nor a feeder —
-the original "shared record shape" coupling was an artifact of the retracted lazy-eval-thread
-model. (If `/search` and the harvester both want to *format* a `{name, sig, module}` line the
-same way, that is a trivial shared formatter, not a shared index — a `/design (src/)` detail,
-not an architectural coupling.)
+**Pillar 2 = a live-table read into harvest text; Pillar 3 = two in-memory lookup indices
+read-derived from the `.meta` cache over reachable modules** (each module's `.meta` either
+read-if-valid or produced-by-a-miss-typecheck — §11.1 refinement). They share neither a
+structure nor a feeder — the original "shared record shape" coupling was an artifact of the
+retracted lazy-eval-thread model. (If `/search` and the harvester both want to *format* a
+`{name, sig, module}` line the same way, that is a trivial shared formatter, not a shared
+index — a `/design (src/)` detail, not an architectural coupling.) The indices themselves are
+**not serialized** — they are rebuildable by re-scanning the `.meta` files (R16); the `.meta`
+cache is the persistence layer, not a second serialized index.
 
 ### §11.3 Pillar 3 robustness blocker — FIXME 0432 (index-time typecheck PANIC) — re-pinned
 
@@ -539,6 +697,14 @@ lines** — `signature_matches_exact(&Type, &Type) -> bool` AND its `_partial` s
 `signature_matches_partial(&Type, &Type) -> bool` (§11.4). Both are narrow free functions
 (Principle 2), no new DTO (the `Type` boundary already exists), and they are **legitimate edge
 evolutions** named + dispositioned in the same change-set per the baseline-diff discipline.
+
+**The S91-P3 read-or-produce-`.meta` refinement adds ZERO further baseline movement (R14).** The
+indexer's `.meta` read+write reuses the **already-public** `cranelisp_backend::cache` surface int
+already depends on (`write_meta`/`load_meta`/`deserialise_meta`/`module_cache_path`/`CacheStale`/
+`CACHE_SCHEMA_VERSION` — verified present in `crates/cranelisp-backend/public-api.txt`); it is an
+additive use of an existing edge, not a new pub item, so **no `cranelisp-backend` baseline line
+moves** and **no `CACHE_SCHEMA_VERSION` bump** (the two indices are not serialized — R16). The only
+implementation-time baseline movement remains the two `cranelisp-typecheck` predicate lines above.
 **`cranelisp-types` itself is untouched**; the export is from `cranelisp-typecheck` (type
 equivalence is its semantics — Principle 17). The other non-int obligation is the **`/typecheck`
 0432 root fix** (§11.3) — a behaviour fix inside an existing crate, not an edge change.
@@ -589,14 +755,19 @@ carry with edits.**
   purpose-built lookup indices** — Index A `symbol → modulepath`, Index B `scheme → (symbol, modulepath)`.
   **Pillar 2 is cleanly SEPARATE** — a live-table read into the harvest text block, no shared index
   (§11.2).
-- **R4 (binding, SUPERSEDED → re-pinned):** ~~Eval-thread, lazy, sibling of `validate_forms_dry_run`.~~
-  The indexer is a **background task of the NICE WORKERS** (`nice_worker_loop`), **eager burn-down**
-  over the reachable worklist (lib-search-path ∪ project-root), **TRIGGERED** by first `/search` or
-  first agent activation (NOT unconditional-every-session — §11.1a). It reuses the
-  `validate_forms_dry_run` *discard substrate* (staging + `check_forms`, never `register_module`) — so
-  **zero residue is structural** (+neg test mirrors `validate_dry_run_discards_does_not_commit`). The
-  indexer is a **separate nice-worker worklist** that must NOT entangle with the `.o`-codegen lifecycle
-  (§11.1 coupling ruling).
+- **R4 (binding, SUPERSEDED → re-pinned → REFINED S91-P3 by R13 + R17):** ~~Eval-thread, lazy, sibling of
+  `validate_forms_dry_run`.~~ The indexer is a **background task of the NICE WORKERS**
+  (`nice_worker_loop`), **eager burn-down** over the reachable worklist (lib-search-path ∪
+  project-root), **enqueued eagerly at REPL start-up** (R17 — SUPERSEDES the prior
+  "TRIGGERED by first `/search`/agent activation"; the worklist is never enumerated in
+  `--run`/`--link`/`--release` — §11.1a). **REFINED (R13, S91 Phase-3):** the per-module step is no
+  longer "always typecheck-and-discard" — it is **skip-if-real-path-owns → read-`.meta`-if-valid →
+  else typecheck-and-**write**-`.meta`** (read-or-produce-`.meta`, one artifact). It still reuses the
+  `validate_forms_dry_run` *discard substrate* (staging + `check_forms`, never `register_module`) on
+  the miss-typecheck branch. **Session-state residue stays structural-zero** (the four `SharedState`
+  maps unchanged; +neg test mirrors `validate_dry_run_discards_does_not_commit`) — but the indexer
+  **MAY write a benign `.meta`** (R13). Separate nice-worker worklist, no entanglement with the
+  `.o`-codegen lifecycle (§11.1 coupling ruling).
 - **R5 (binding, unchanged):** Pillar 4 is a **new `#[cfg(feature="agent")]` sibling sink** (`log.rs` /
   the reserved `telemetry.rs` slot), NOT an extension of `trace.rs` (§11.6).
 - **R6 (binding, SUPERSEDED → re-pinned):** ~~MVP = name + exact-shape only.~~ Match is **exact OR
@@ -628,6 +799,75 @@ carry with edits.**
 - **R12 (binding, NEW):** **Command name is `/search`** (was `/lib-search`) — `/repl` updates
   `repl/spec.md §17.19` (the rename + the session-facility framing + the "indexing N modules…" partial-result
   note).
+
+**S91 Phase-3 design-refinement rulings (R13–R18) — the read-or-produce-`.meta`, one-artifact model + eager-from-REPL-startup + abandon-on-flush.**
+
+- **R13 (binding, NEW — residue relaxation):** The S90 "indexer writes nothing / structural zero
+  residue" invariant is **relaxed to *no session-state residue*.** The refined indexer **MAY write a
+  `.meta.json`** for a reachable-uncached module it typechecks — via the **existing Phase-1 writer**
+  (`cache::write_meta`; **no `.o`, no `register_module`, no `notify_object_codegen_complete`, no
+  `symbol_tables`/`module_aliases`/`prelude_fallback`/`introspection` entry**), producing a file
+  **byte-identical** to what the real object-codegen path's typecheck-driven, `.o`-decoupled Phase-1
+  writer produces (FIXME 0387). The *session-state* isolation invariant is **unchanged** — the four
+  `SharedState` maps stay byte-unchanged. **No Principle violation:** the `.meta` is a benign,
+  content-hash-/build-id-invalidated cache artifact (Principle 7 holds — the symbol table / source is
+  the truth, `.meta` is a derived cache; Principle 6 — the write *lowers* cost by avoiding re-typecheck).
+  **+neg test obligation reworded:** assert **no `SharedState` entry** (the four-map assertion mirroring
+  `validate_dry_run_discards_does_not_commit`), **NOT** "no disk write" — a produced `.meta` is expected
+  and benign (§11.1 "No session-state residue").
+
+- **R14 (binding, NEW — indexer↔cache coupling, zero new edge):** The indexer **reads** `.meta`
+  (`cache::load_meta`/`module_cache_path`/`deserialise_meta`/`CacheStale`) and **writes** `.meta`
+  (`cache::write_meta`) through the **existing** `cranelisp_backend::cache` edge int already depends on
+  (`cache_writer.rs`). **Zero NEW cross-crate edge** (int→backend cache pre-exists) and **zero
+  `public-api.txt` movement** beyond the two already-dispositioned `cranelisp-typecheck` predicate lines
+  (R8) — verified: `write_meta`/`load_meta`/`deserialise_meta`/`module_cache_path`/`CacheStale`/
+  `CACHE_SCHEMA_VERSION` are **already public** on `cranelisp-backend` (`crates/cranelisp-backend/public-api.txt`).
+  No new pub item at the backend edge is required; if a future impl found one needed (it should not), that
+  is a `target: /arch` filing with the baseline-diff obligation at that time.
+
+- **R15 (binding, NEW — worklist↔claim coordination):** The `IndexModule` worklist coordinates with the
+  existing claims by a **module-state check before claiming** (the scheduler's `ModuleState` registry —
+  `pool` + `object_working`/`inmem_claimed`/`eval_owned`). **A module present in the registry in any pool
+  state → SKIP (the real path owns it; the indexer reads its `.meta` later).** A reachable module absent
+  from the registry → the indexer's domain. **Late-arriving real `.meta`s** (real-typechecked but
+  out-of-scope modules) surface in `/search` because the indexer reads them from their written `.meta`
+  (re-scan or notify hook — `/design (src/)`'s choice). Invariant: **no module is both index-typechecked
+  and real-typechecked concurrently; the real path always wins** (§11.1b).
+
+- **R16 (binding, NEW — cross-run persistence):** The two indices stay **in-memory**, rebuilt by a
+  `.meta`-scan, with **no new serialized index and no `CACHE_SCHEMA_VERSION` bump.** The `.meta` cache IS
+  the cross-run persistence — the indices are derived read-caches (§3.3) over the `.meta` files.
+
+- **R17 (binding, NEW — eager-from-REPL-startup; SUPERSEDES the prior "eager-but-TRIGGERED" §11.1a
+  ruling):** The burn-down is **enqueued eagerly at REPL start-up** — no first-`/search`/first-agent
+  trigger. Single gate = **"REPL mode at startup"**: in REPL mode the `IndexModule` worklist is
+  enumerated + enqueued at session start; in **`--run`/`--link`/`--release` the worklist is NEVER
+  enumerated**. This makes REPL-only an **explicit single-gated invariant** (not the emergent-from-trigger
+  property the prior ruling implied). **Override recorded:** the S90 Principle-6 "don't tax sessions that
+  never search" rationale is **SUPERSEDED** — on a real site the burn-down is seconds-to-minutes, so a
+  first-`/search` trigger would make the *first search pay the full latency* (worst time); eager-from-startup
+  warms the index while the user works. The Principle-6 concern (don't waste work / don't perturb the
+  default REPL) is addressed by **prioritization, not deferral**: the index worklist is drained **behind /
+  yielding to the object-codegen worklist** (object codegen claims the thread first; the indexer fills idle
+  nice-worker capacity), which is the mechanism that preserves the R9 default-build-behaviour-stable
+  invariant ("must not perturb object-codegen behaviour"). The partial-results "indexing N modules…" UX
+  (§11.1a / `repl/spec.md §17.19`) is retained and is **more relevant** now (an early search may catch the
+  startup burn-down mid-flight). Claim-ordering detail is `/design (src/)`'s; the ruling is: eager-from-REPL-
+  startup, batch/release never, explicit REPL-only gate, index-yields-to-codegen priority.
+
+- **R18 (binding, NEW — nice-worker flush handling; abandon-not-drain):** The index worklist is
+  **NEVER part of a correctness-gating flush** — it is **abandon-on-flush / abandon-on-shutdown**, never
+  drained-to-completion. At the **pre-`--link` hot-flush / priority-promotion** (`nice_worker.rs:70`) the
+  promotion is **object-codegen-scoped by construction** and MUST NOT drain or block on the index worklist
+  (the link needs no index); a promoted nice worker **prefers object codegen and defers/abandons index
+  work** (the flush-time face of R17's yield-to-codegen). At **shutdown join** (`worker_pool.rs:74-86`) the
+  burn-down checks the shutdown flag **between `IndexModule` tasks** and exits promptly — never "finish the
+  whole burn-down first." **Atomic `.meta` writes** (`crates/cranelisp-backend/src/cache/object.rs`
+  `atomic_write`) mean an abandoned mid-burn leaves at worst some modules unindexed (re-derived next
+  session) and **never a corrupt `.meta`**. Shutdown-flag check placement + promotion claim preference are
+  `/design (src/)`'s; the architectural ruling is the **abandon-not-drain invariant** (the index is never on
+  a correctness path — it is a REPL search aid, never a build input, §11.1a-flush).
 
 ---
 

@@ -247,8 +247,17 @@ pub fn type_var_names(ty: &Type) -> HashMap<TypeId, String> {
         .collect()
 }
 
-/// Collect Var ids in order of first occurrence (left-to-right, depth-first).
-fn collect_var_ids_ordered(ty: &Type, ids: &mut Vec<TypeId>) {
+/// Collect var ids — including the `Type::TyConApp` **head** — in order of first
+/// occurrence (left-to-right, depth-first).
+///
+/// The `TyConApp` head is a type-**constructor variable** (a `TypeId`), so it
+/// participates in the same first-occurrence numbering as any `Type::Var`. This
+/// keeps the canonical var ordering HKT-aware: two `TyConApp`s with distinct
+/// heads number distinctly, and a head sharing an id with a `Var` elsewhere is
+/// seen once. The shared canonicalisation walk consumed by the typecheck
+/// signature-match predicates (`cranelisp-typecheck::signature_match`) and by
+/// `type_var_names` display both depend on the head being numbered (FIXME 0437).
+pub fn collect_var_ids_ordered(ty: &Type, ids: &mut Vec<TypeId>) {
     match ty {
         Type::Var(id) => {
             if !ids.contains(id) {
@@ -261,7 +270,15 @@ fn collect_var_ids_ordered(ty: &Type, ids: &mut Vec<TypeId>) {
             }
             collect_var_ids_ordered(ret, ids);
         }
-        Type::ADT(_, args) | Type::TyConApp(_, args) => {
+        Type::ADT(_, args) => {
+            for a in args {
+                collect_var_ids_ordered(a, ids);
+            }
+        }
+        Type::TyConApp(head, args) => {
+            if !ids.contains(head) {
+                ids.push(*head);
+            }
             for a in args {
                 collect_var_ids_ordered(a, ids);
             }

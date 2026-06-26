@@ -16,7 +16,7 @@
 //! site is in the inline table — the inline path is a code-size + dispatch-cost
 //! win, not a correctness requirement.
 //!
-//! Ring 0 primitives covered (the 23 names that participate in inline
+//! Ring 0 primitives covered (the 30 names that participate in inline
 //! substitution):
 //! ```text
 //!   add-i64, sub-i64, mul-i64, div-i64
@@ -24,6 +24,7 @@
 //!   eq-i64, lt-i64, gt-i64, le-i64, ge-i64, neq-i64
 //!   eq-f64, lt-f64, gt-f64, le-f64, ge-f64, neq-f64
 //!   not, eq-bool, neq-bool
+//!   bit-and, bit-or, bit-xor, bit-not, shl, shr, popcount
 //! ```
 
 use cranelift::prelude::*;
@@ -101,6 +102,23 @@ pub(crate) fn try_emit_inline_primitive<M: Module>(
         "neq-f64" => emit_float_cmp(builder, name, args, FloatCC::NotEqual, span),
         "neq-bool" => emit_int_cmp(builder, name, args, IntCC::NotEqual, span),
 
+        // Bitwise integer operations (FIXME 0416, S91). Each maps 1:1 to a
+        // Cranelift instruction over i64 (the `Int` representation; no bitcast).
+        // All are total over i64 — no panic guard, `module`/`panic_func_id`
+        // unused. Shift counts are masked mod 64 by Cranelift's `ishl`/`sshr`,
+        // so codegen does NOT emit an explicit `band(amt, 63)`.
+        "bit-and" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().band(l, r)),
+        "bit-or" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().bor(l, r)),
+        "bit-xor" => emit_binary_int(builder, name, args, span, |b, l, r| b.ins().bxor(l, r)),
+        "shl" => emit_binary_int(builder, name, args, span, |b, v, amt| b.ins().ishl(v, amt)),
+        // `shr` → arithmetic (sign-extending) shift, because the only int type
+        // today is signed `Int`. The right-shift kind is determined by operand
+        // representation, not the op name — a future unsigned type mints its own
+        // monomorphic name (e.g. `ushr-u64` → `ushr`).
+        "shr" => emit_binary_int(builder, name, args, span, |b, v, amt| b.ins().sshr(v, amt)),
+        "bit-not" => emit_unary_int(builder, name, args, span, |b, x| b.ins().bnot(x)),
+        "popcount" => emit_unary_int(builder, name, args, span, |b, x| b.ins().popcnt(x)),
+
         // Not in the inline table — caller falls through to GOT-indirect.
         _ => return None,
     };
@@ -146,6 +164,13 @@ pub(crate) fn is_known_builtin(name: &str) -> bool {
             | "neq-i64"
             | "neq-f64"
             | "neq-bool"
+            | "bit-and"
+            | "bit-or"
+            | "bit-xor"
+            | "bit-not"
+            | "shl"
+            | "shr"
+            | "popcount"
     )
 }
 
@@ -214,6 +239,21 @@ fn emit_float_cmp(
 }
 
 // --- Unary operations ---
+
+/// Emit a unary integer operation. The closure receives the builder and one
+/// i64 operand and returns the i64 result. Sibling of `emit_binary_int` for the
+/// 1-arg bitwise ops (`bit-not`, `popcount`); mirrors `emit_not` minus the
+/// boolean XOR-with-1 specialisation.
+fn emit_unary_int(
+    builder: &mut FunctionBuilder,
+    name: &str,
+    args: &[Value],
+    span: Span,
+    op: impl FnOnce(&mut FunctionBuilder, Value) -> Value,
+) -> Result<Value, CranelispError> {
+    require_args(name, args, 1, span)?;
+    Ok(op(builder, args[0]))
+}
 
 /// Emit boolean `not`: XOR with 1 flips 0↔1.
 fn emit_not(
@@ -370,3 +410,203 @@ fn require_args(name: &str, args: &[Value], expected: usize, span: Span) -> Resu
 // no trait knowledge, so test coverage for the `(TraitName, Symbol,
 // TypeName)` mapping moves to whichever crate owns the resolution
 // (typecheck, per FIXME 0185).
+
+#[cfg(test)]
+mod tests {
+    //! Inline-primitive lowering tests (FIXME 0416, S91 — bitwise intrinsics).
+    //!
+    //! Each test builds a tiny standalone JIT function whose body is exactly the
+    //! `try_emit_inline_primitive` emission for one bitwise op over the function
+    //! parameters, finalises it, and executes it on the host. This exercises the
+    //! real CLIF lowering (`band`/`bor`/`bxor`/`ishl`/`sshr`/`bnot`/`popcnt`)
+    //! end-to-end — including the Cranelift-implicit shift-count masking, which
+    //! is the whole point of the mod-64 edge cases.
+
+    use super::*;
+    use crate::jit::build_isa;
+    use cranelift_jit::{JITBuilder, JITModule};
+    use cranelift_module::Linkage;
+
+    /// Build a fresh, empty JITModule for a one-off test function.
+    fn fresh_module() -> JITModule {
+        let isa = build_isa().expect("host ISA");
+        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        JITModule::new(builder)
+    }
+
+    /// JIT-compile and run `(name a b)` for a binary inline primitive.
+    fn run_binary(name: &str, a: i64, b: i64) -> i64 {
+        let mut module = fresh_module();
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let func_id = module
+            .declare_function("test_binary", Linkage::Export, &sig)
+            .unwrap();
+
+        let mut ctx = module.make_context();
+        ctx.func.signature = sig;
+        let mut fb_ctx = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let params: Vec<Value> = builder.block_params(block).to_vec();
+            let result = try_emit_inline_primitive(
+                &mut builder,
+                name,
+                &params,
+                Span::new(0, 0),
+                &mut module,
+                None,
+            )
+            .expect("name in inline table")
+            .expect("inline emission succeeds");
+            builder.ins().return_(&[result]);
+            builder.finalize();
+        }
+        module.define_function(func_id, &mut ctx).unwrap();
+        module.clear_context(&mut ctx);
+        module.finalize_definitions().unwrap();
+        let code = module.get_finalized_function(func_id);
+        let f: extern "C" fn(i64, i64) -> i64 = unsafe { std::mem::transmute(code) };
+        f(a, b)
+    }
+
+    /// JIT-compile and run `(name x)` for a unary inline primitive.
+    fn run_unary(name: &str, x: i64) -> i64 {
+        let mut module = fresh_module();
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let func_id = module
+            .declare_function("test_unary", Linkage::Export, &sig)
+            .unwrap();
+
+        let mut ctx = module.make_context();
+        ctx.func.signature = sig;
+        let mut fb_ctx = FunctionBuilderContext::new();
+        {
+            let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let params: Vec<Value> = builder.block_params(block).to_vec();
+            let result = try_emit_inline_primitive(
+                &mut builder,
+                name,
+                &params,
+                Span::new(0, 0),
+                &mut module,
+                None,
+            )
+            .expect("name in inline table")
+            .expect("inline emission succeeds");
+            builder.ins().return_(&[result]);
+            builder.finalize();
+        }
+        module.define_function(func_id, &mut ctx).unwrap();
+        module.clear_context(&mut ctx);
+        module.finalize_definitions().unwrap();
+        let code = module.get_finalized_function(func_id);
+        let f: extern "C" fn(i64) -> i64 = unsafe { std::mem::transmute(code) };
+        f(x)
+    }
+
+    // --- Per-op happy path (one each) ---
+
+    // spec: appendix-a-builtins §A.3 — bit-and → CLIF band. 12 & 10 = 8.
+    #[test]
+    fn bit_and_happy() {
+        assert_eq!(run_binary("bit-and", 12, 10), 8);
+    }
+
+    // spec: appendix-a-builtins §A.3 — bit-or → CLIF bor. 12 | 10 = 14.
+    #[test]
+    fn bit_or_happy() {
+        assert_eq!(run_binary("bit-or", 12, 10), 14);
+    }
+
+    // spec: appendix-a-builtins §A.3 — bit-xor → CLIF bxor. 12 ^ 10 = 6.
+    #[test]
+    fn bit_xor_happy() {
+        assert_eq!(run_binary("bit-xor", 12, 10), 6);
+    }
+
+    // spec: appendix-a-builtins §A.3 — shl → CLIF ishl. 1 << 4 = 16.
+    #[test]
+    fn shl_happy() {
+        assert_eq!(run_binary("shl", 1, 4), 16);
+    }
+
+    // spec: appendix-a-builtins §A.3 — shr → CLIF sshr. 16 >> 2 = 4.
+    #[test]
+    fn shr_happy() {
+        assert_eq!(run_binary("shr", 16, 2), 4);
+    }
+
+    // spec: appendix-a-builtins §A.3 — bit-not → CLIF bnot. ~0 = -1.
+    #[test]
+    fn bit_not_happy() {
+        assert_eq!(run_unary("bit-not", 0), -1);
+    }
+
+    // spec: appendix-a-builtins §A.3 — popcount → CLIF popcnt. popcount(7) = 3.
+    #[test]
+    fn popcount_happy() {
+        assert_eq!(run_unary("popcount", 7), 3);
+    }
+
+    // --- Sign-bit / arithmetic shr (sshr, NOT ushr) ---
+
+    // spec: appendix-a-builtins §A.3 — shr is ARITHMETIC for signed Int: the
+    // sign bit replicates. (shr -8 1) = -4 (a logical shift would give a huge
+    // positive); (shr -1 63) = -1.
+    #[test]
+    fn shr_arithmetic_sign_bit() {
+        assert_eq!(run_binary("shr", -8, 1), -4);
+        assert_eq!(run_binary("shr", -1, 63), -1);
+    }
+
+    // --- bit-not full 64-bit width ---
+
+    // spec: appendix-a-builtins §A.3 — bit-not complements all 64 bits;
+    // (bit-not x) = (- (- x) 1). (bit-not 0) = -1, (bit-not 5) = -6,
+    // (bit-not -1) = 0.
+    #[test]
+    fn bit_not_full_width() {
+        assert_eq!(run_unary("bit-not", 0), -1);
+        assert_eq!(run_unary("bit-not", 5), -6);
+        assert_eq!(run_unary("bit-not", -1), 0);
+    }
+
+    // --- Shift count mod 64 (Cranelift-implicit masking) ---
+
+    // spec: appendix-a-builtins §A.3 — "Shift count" is taken modulo 64.
+    // (shl 1 64) = (shl 1 0) = 1; (shr 256 64) = 256; (shl 1 65) = (shl 1 1) = 2.
+    // If a target ISA diverged, these would fail and an explicit band(amt,63)
+    // would be needed in the shift emit closures.
+    #[test]
+    fn shift_count_mod_64() {
+        assert_eq!(run_binary("shl", 1, 64), 1);
+        assert_eq!(run_binary("shr", 256, 64), 256);
+        assert_eq!(run_binary("shl", 1, 65), 2);
+    }
+
+    // --- is_known_builtin coverage for the new names ---
+
+    // spec: appendix-a-builtins §A.3 — the seven bitwise names are recognised
+    // inline builtins (drives the arg-compilation strategy branch).
+    #[test]
+    fn bitwise_names_are_known_builtins() {
+        for name in [
+            "bit-and", "bit-or", "bit-xor", "bit-not", "shl", "shr", "popcount",
+        ] {
+            assert!(is_known_builtin(name), "{name} should be a known builtin");
+        }
+    }
+}

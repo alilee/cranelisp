@@ -4,7 +4,7 @@
 ;;   num.num   — Num trait + impls
 ;;   num.int   — Int operations
 ;;   num.float — Float operations
-;;   num.bits  — Bitwise operations (composed from arithmetic; FIXME 0416)
+;;   num.bits  — Bitwise operations (curated layer over S91 native primitives)
 
 (import [prelude []])
 
