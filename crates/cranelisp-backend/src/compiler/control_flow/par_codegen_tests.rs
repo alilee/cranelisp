@@ -74,6 +74,24 @@ fn int_lit(v: i64) -> Expr {
     }
 }
 
+/// A zero-arg call to the declared probe function `par_codegen_probe`. It is a
+/// non-cheap, non-constructor `Apply`, so `is_worth_sparking` returns true —
+/// useful as a sparkable binding value in the create-gate tests below.
+fn probe_call(span: Span) -> Expr {
+    Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from("par_codegen_probe"),
+            span,
+            resolved_call: None,
+            inferred_type: Some(Box::new(Type::Int)),
+        }),
+        args: vec![],
+        span,
+        resolved_call: None,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
 // spec: spec/10-io.md §10.12.1 + design/backend/io-scheduling.md §4 —
 //       an `Expr::ParBind` with N independent bindings emits a Par node
 //       (IO_TAG_PAR=3) carrying N branch pointers, wrapped by a Bind node
@@ -172,5 +190,83 @@ fn sequential_let_emits_no_par_node() {
     assert!(
         !clif.contains("iconst.i64 3"),
         "a sequential `let` must NOT emit an IO_TAG_PAR=3 Par node; CLIF:\n{clif}"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §3.6.2 — the create-gate. A `let` with
+//       ≥2 independent sparkable bindings must emit the runtime budget branch:
+//       a call to `cranelisp_spark_budget_try_reserve` guarding a lenient arm
+//       (which calls `cranelisp_ivar_create`/`_spark`) and a direct arm. Pins
+//       that the static sparkability decision compiles to a *runtime* gate, not
+//       an unconditional spark.
+#[test]
+fn create_gate_emitted_for_two_sparkable_let_bindings() {
+    let body = Expr::Let {
+        bindings: vec![
+            (Symbol::from("a"), probe_call(Span::new(1, 2))),
+            (Symbol::from("b"), probe_call(Span::new(3, 4))),
+        ],
+        body: Box::new(int_lit(0)),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let clif = clif_of_body(body);
+
+    // Externs are referenced by module index (`u0:N`), not symbol name, in the
+    // CLIF text — so the gate is pinned structurally. The create-gate is a
+    // runtime branch (`brif`) whose guard is `try_reserve(n)`: just before the
+    // FIRST branch the body reserves the count `n = 2` (the two sparkable
+    // bindings) via a call. This is the `v0 = iconst.i64 2; v1 = call fnX(v0);
+    // brif v1, lenient, direct` shape (lenient-eval.md §3.6.2).
+    assert!(
+        clif.contains("brif"),
+        "the create-gate must emit a runtime branch (brif); CLIF:\n{clif}"
+    );
+    let before_first_brif = clif.split("brif").next().unwrap_or("");
+    assert!(
+        before_first_brif.contains("iconst.i64 2"),
+        "the create-gate must reserve n=2 (the two sparkable bindings) before \
+         branching; CLIF:\n{clif}"
+    );
+    assert!(
+        before_first_brif.contains("call "),
+        "the create-gate must call try_reserve before branching; CLIF:\n{clif}"
+    );
+    // The lenient arm allocates+sparks IVars while the direct arm does not, so a
+    // gated site emits markedly more calls than the equivalent non-gated
+    // sequential path (which would be just the two binding calls). This pins that
+    // the lenient (allocating) arm is actually emitted.
+    let call_count = clif.matches("= call ").count() + clif.matches(" call ").count();
+    assert!(
+        call_count >= 6,
+        "the create-gate's lenient arm (create+spark+force per binding) must emit \
+         the spark machinery; found only {call_count} calls. CLIF:\n{clif}"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §3.6.2 — NEGATIVE guard. A single
+//       sparkable binding (< the ≥2 gate) must NOT emit the create-gate: no
+//       try_reserve, no IVar create/spark. The binding compiles on the ordinary
+//       sequential path. Pins that the gate is keyed off the ≥2-candidate
+//       threshold, not "any sparkable binding".
+#[test]
+fn create_gate_not_emitted_for_single_sparkable_binding() {
+    let body = Expr::Let {
+        // One sparkable binding + one literal (never sparkable) ⇒ < 2 candidates.
+        bindings: vec![
+            (Symbol::from("a"), probe_call(Span::new(1, 2))),
+            (Symbol::from("b"), int_lit(7)),
+        ],
+        body: Box::new(int_lit(0)),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let clif = clif_of_body(body);
+
+    // No gate ⇒ no runtime branch (the single probe call + the literal compile on
+    // the ordinary sequential path; Int bindings emit no rc-dec brif either).
+    assert!(
+        !clif.contains("brif"),
+        "< 2 sparkable bindings must NOT emit a create-gate runtime branch; CLIF:\n{clif}"
     );
 }

@@ -1,157 +1,145 @@
-;; 30-parallel-map-reduce.cl -- Toward a parallel `par-map` over a Functor
+;; 30-parallel-map-reduce.cl -- A general parallel `par-map` over a Functor
 ;;
 ;; Example 28 introduced lenient evaluation: INDEPENDENT `let` bindings are
-;; sparked onto a thread pool automatically, with no `par-let`, no `spawn`,
-;; no threads in the source. This example pushes that building block as far
-;; as it goes today -- a self-parallelising map-reduce over a Vec -- and then
-;; is HONEST about where the road currently ends: a fully general `par-map`
-;; (map a function over a collection, every application in parallel) is NOT
-;; yet expressible, because of two concrete limits in the current analysis.
-;; We name both, show what `par-map` over a Functor WOULD look like, and show
-;; the manual workaround the let-spark building block does support.
+;; sparked onto a thread pool automatically -- no `par-let`, no `spawn`, no
+;; threads in the source. This example shows the building block in its full
+;; reach: lenient evaluation also sparks independent, individually-expensive
+;; **arguments of a function application**. That single widening is enough to
+;; make a fully general parallel `par-map` (map a function over a collection,
+;; every application running in parallel) just `fmap` of an expensive function
+;; -- no manual per-shape workaround required.
 ;;
 ;; ---------------------------------------------------------------------------
-;; WHAT ACTUALLY SPARKS TODAY (verified against the compiler, not assumed)
+;; WHAT SPARKS TODAY (verified against the compiler, not assumed)
 ;;
-;; The sparkability pass (cranelisp-backend control_flow/sparkability.rs)
-;; sparks a binding only when ALL of these hold:
+;; The sparkability pass (cranelisp-backend control_flow/sparkability.rs) runs
+;; at TWO call sites with one shared cost heuristic:
 ;;
-;;   * It is a `let` binding. ONLY `let` bindings are analysed. Arguments to
-;;     an apply are NOT sparked -- `(f a b)` does NOT evaluate `a` and `b`
-;;     in parallel, even when they are independent and expensive. (Limit #2.)
+;;   * `let` bindings -- an independent, non-trivial binding sparks (example 28).
 ;;
-;;   * Its right-hand side does NOT reference any name bound EARLIER in the
-;;     same `let` block. A binding that depends on an earlier one is left
-;;     SERIAL. (Limit #1.) This is a CONSERVATIVE-ANALYSIS limit, not a hard
-;;     semantic one: the underlying IVar machinery could spark the dependent
-;;     binding and force the dependency on demand. The analysis simply
-;;     chooses not to today.
+;;   * apply ARGUMENTS -- in `(f a b)`, each argument that is itself a
+;;     non-trivial call sparks. Arguments share no binding scope, so they are
+;;     mutually independent by construction. This means:
+;;       - `(combine (recur left) (recur right))` runs both recursions in
+;;         PARALLEL -- the obvious divide-and-conquer form, no `let` lifting.
+;;       - `(Pair (func a) (func b))` runs both applications in PARALLEL --
+;;         so `fmap` of an expensive function IS a parallel map.
 ;;
-;;   * It is non-trivial: cheap builtins (+ - * / and the comparisons) and
-;;     bare constructors/var-refs are never sparked -- only real work is.
+;; The shared gates (both sites):
+;;   * Non-trivial: cheap builtins (+ - * / and the comparisons) and bare
+;;     constructors / var-refs / literals are never sparked -- only real calls.
+;;   * At least TWO candidates at the site (one spark buys nothing).
+;;   * A tail self-call is left to TCO and never sparked -- so a tail-recursive
+;;     accumulator loop does its work serially in-place (this is exactly why the
+;;     `work` leaf below is a safe, non-over-sparking unit of parallel work).
 ;;
-;;   * At least TWO bindings in the block qualify (one spark buys nothing).
+;; Runtime safety net: a global in-flight-spark budget (default 4x threads,
+;; override with CRANELISP_SPARK_BUDGET=N) caps how many sparks are live at
+;; once -- over-budget sites resolve inline, so deep recursion can't explode.
 ;;
-;; A/B any timing claim yourself with the CRANELISP_NO_LENIENT=1 env var,
-;; which forces every binding serial.
+;; A/B any timing claim yourself: CRANELISP_NO_LENIENT=1 forces every binding
+;; AND every argument serial; CRANELISP_SPARK_BUDGET=0 is the equivalent
+;; runtime escape hatch for an already-compiled binary. Same result either way
+;; -- parallelism is semantically transparent because the code is pure.
 ;; ---------------------------------------------------------------------------
 
-;; --- The per-element "map" function: an expensive pure computation ---------
-;; fib is deliberately costly so that each application is real work worth
-;; sparking. This is the function we want to map over a collection.
-(defn fib [:Int n]
-  (if (lt-i64 n 2)
-      n
-      (add-i64 (fib (sub-i64 n 1))
-               (fib (sub-i64 n 2)))))
+;; --- The per-element work leaf: real work, single tail-recursive self-call ---
+;; `work` is a tail-recursive accumulator: it burns `n` iterations of genuine
+;; work and returns the count. Because its self-call is in TAIL position it is
+;; left to TCO and never sparks internally -- so it is a clean unit of parallel
+;; work, with NO internal over-spark. The top-level divide-and-conquer is the
+;; only source of parallelism, which is exactly the teaching signal.
+(defn work [:Int n :Int acc]
+  (if (le-i64 n 0)
+      acc
+      (work (sub-i64 n 1) (add-i64 acc 1))))
 
-;; --- Cheap split point: midpoint of the half-open range [lo, hi) ----------
-;; Pure integer arithmetic -- never sparked, and because it is cheap we can
-;; safely RECOMPUTE it in each half rather than binding it once (which would
-;; make both halves depend on it and serialise them -- Limit #1).
+;; `heavy` is an EXPENSIVE IDENTITY: it does ~1,000,000 iterations of real work
+;; via `work`, then returns its argument unchanged (it adds the work result and
+;; subtracts the same constant back out). This separates "real work worth
+;; running in parallel" from "the value", so the arithmetic below stays simple
+;; and the parallel result is trivially checkable: `heavy x == x`, always.
+(defn heavy [:Int x]
+  (add-i64 x (sub-i64 (work 1000000 0) 1000000)))       ;; -> x, after real work
+
+;; --- Cheap split point: midpoint of the half-open range [lo, hi) ------------
+;; Pure integer arithmetic -- cheap, so never sparked, and safely RECOMPUTED in
+;; each half rather than bound once.
 (defn mid-of [:Int lo :Int hi]
   (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))
 
 ;; ===========================================================================
-;; STAGE 1 -- The building block: a self-parallelising map-reduce on a Vec
+;; STAGE 1 -- Recursive divide-and-conquer map-reduce on a Vec
 ;; ===========================================================================
 ;;
-;; We cannot spark apply-arguments, so we cannot write the obvious
-;; `(combine (recur left) (recur right))` and expect the two recursions to
-;; run in parallel -- they are apply-args, and apply-args don't spark
-;; (Limit #2). The standard workaround is DIVIDE-AND-CONQUER expressed with
-;; `let`: bind each half to a `let` name, and the two halves spark because
-;; they are independent let bindings.
-;;
-;; v, lo and hi are PARAMETERS, not same-block `let` bindings, so both halves
-;; may freely reference them without triggering Limit #1. The two halves are
-;; the only `let` bindings here and neither depends on the other => both
-;; spark.
+;; The OBVIOUS recursive form now parallelises directly: the two recursive
+;; halves are arguments to `add-i64`, and independent apply-arguments spark.
+;; No `let` lifting, no manual workaround -- `(add-i64 (recur left)
+;; (recur right))` runs the two halves in parallel automatically.
 (defn par-map-reduce [v :Int lo :Int hi]
   (if (le-i64 (sub-i64 hi lo) 1)
-      (fib (vec-get v lo))                                 ;; leaf: map one element
-      (let [left  (par-map-reduce v lo (mid-of lo hi))     ;; sparkable: indep half
-            right (par-map-reduce v (mid-of lo hi) hi)]    ;; sparkable: indep half
-        (add-i64 left right))))                            ;; combine (barrier here)
+      (heavy (vec-get v lo))                              ;; leaf: map one element
+      (add-i64 (par-map-reduce v lo (mid-of lo hi))       ;; sparked apply-arg
+               (par-map-reduce v (mid-of lo hi) hi))))    ;; sparked apply-arg
 
-;; Wall-clock A/B (8 leaves, each fib(38) ~= 39,088,169):
-;;     lenient ON  : two halves at each level run in parallel
+;; Wall-clock A/B (8 leaves, ~1,000,000 work iterations each):
+;;     lenient ON  : the two halves at each level run in parallel
 ;;     lenient OFF : halves run sequentially  (CRANELISP_NO_LENIENT=1)
-;; Same result either way -- parallelism is semantically transparent because
-;; the code is pure.
+;; Same total either way -- parallelism is semantically transparent (pure code).
 
 ;; ===========================================================================
-;; STAGE 2 -- What a general `par-map` over a Functor WOULD look like
+;; STAGE 2 -- A general `par-map` over a Functor
 ;; ===========================================================================
 ;;
 ;; The natural generalisation is `par-map`: map a function over ANY container
-;; (a Functor), running every application in parallel. We define the Functor
-;; shape inline (free-standing -- no stdlib) over a small fixed-size box so
-;; the example stays self-contained.
+;; (a Functor), running every application in parallel. Because independent
+;; apply-arguments spark, this is simply `fmap` of an expensive function -- no
+;; dedicated primitive, no per-shape workaround. We define the Functor inline
+;; (free-standing -- no stdlib) over a small fixed-size box.
 
 ;; A 2-cell container we can be a Functor over.
 (deftype (Pair a) (Pair [:a fst :a snd]))
 
-;; The Functor trait: fmap applies a function inside the container,
-;; preserving its structure (same shape introduced in example 26).
+;; The Functor trait: fmap applies a function inside the container, preserving
+;; its structure (same shape introduced in example 26).
 (deftrait (Functor f)
   (fmap [:(Fn [a] b) func :(f a) x] (f b)))
 
-;; SERIAL fmap for Pair. Note the two applications `(func a)` and `(func b)`
-;; are APPLY-ARGUMENTS to the `Pair` constructor -- so even though they are
-;; independent and (with `fib`) expensive, they do NOT spark. This is the
-;; honest current state: `fmap` here is sequential.
+;; Functor for Pair. The body `(Pair (func a) (func b))` has TWO independent
+;; apply-arguments -- `(func a)` and `(func b)` -- so both applications spark
+;; and run in parallel. This `fmap` IS a parallel map: there is nothing extra
+;; to write.
 (impl Functor Pair
   (defn fmap [func p]
     (match p
-      [(Pair a b) (Pair (func a) (func b))])))            ;; <- apply-args: NOT sparked
+      [(Pair a b) (Pair (func a) (func b))])))           ;; both apps spark
 
-;; The general `par-map` we WANT is just `fmap` of an expensive function:
+;; A general `par-map` is therefore just `fmap` of an expensive function:
 ;;
-;;     (par-map fib some-functor)   ;; every application in parallel
+;;     (fmap heavy some-functor)   ;; every application runs in parallel
 ;;
-;; For this to be PARALLEL, the language would need either
-;;   (i)  sparking of independent APPLY-ARGUMENTS (so `(Pair (fib a) (fib b))`
-;;        sparks both fibs -- lifting Limit #2), or
-;;   (ii) a dedicated `par-map` / parallel-fmap primitive that the runtime
-;;        sparks element-wise.
-;; Neither exists today, so `fmap fib` is correct but SERIAL.
-
-;; --- The manual workaround: lift the applications into independent lets -----
-;; We can recover parallelism for a KNOWN-ARITY container by hand: bind each
-;; element-application to its own independent `let` name (Stage-1 trick), then
-;; rebuild the container. This is a manual, per-shape `par-map` -- it works,
-;; but it does not generalise to arbitrary collections, which is exactly the
-;; gap a real `par-map` would close.
-(defn par-fmap-pair [func p]
-  (match p
-    [(Pair a b)
-     (let [fa (func a)                                     ;; sparkable: indep
-           fb (func b)]                                    ;; sparkable: indep
-       (Pair fa fb))]))                                    ;; rebuild (barrier)
+;; (If an explicit-`let` spelling is ever preferred for a known-arity shape,
+;;  `(let [fa (func a) fb (func b)] (Pair fa fb))` is the equivalent that the
+;;  example-28 `let`-spark building block already covered -- but it is now
+;;  redundant: the direct constructor form above sparks identically.)
 
 (defn pair-sum [p]
   (match p [(Pair a b) (add-i64 a b)]))
 
-;; Demonstrate the manual par-map: map fib over a Pair of 38s, in parallel.
-;; 2 * fib(38) = 2 * 39,088,169 = 78,176,338.
-(defn manual-par-map-pair []
-  (pair-sum (par-fmap-pair fib (Pair 38 38))))            ;; -> 78,176,338
-
 ;; ===========================================================================
 ;; Driver
 ;; ===========================================================================
-;; Stage 1: map fib over eight 38s via divide-and-conquer and sum them:
-;;   8 * fib(38) = 8 * 39,088,169 = 312,705,352.
-;; Cross-check against the manual Pair par-map (Stage 2): four Pairs of 38s
-;; mapped in parallel also total 8 * fib(38). We assert the two agree, then
-;; scale the Stage-1 total down to a small exit code:
-;;   312,705,352 / 1,000,000 = 312  (exit byte 56).
+;; Stage 1: map `heavy` over eight 39s via divide-and-conquer and sum them.
+;;   heavy is the identity, so the total is 8 * 39 = 312.
+;; Cross-check against the general par-map (Stage 2): `fmap heavy` over a Pair
+;; of 39s, summed and scaled by 4, also totals 8 * 39 = 312. We assert the two
+;; agree and return the total directly:
+;;   312  (exit byte 56).
 (defn main []
-  (let [v          [38 38 38 38 38 38 38 38]
-        dc-total   (par-map-reduce v 0 (vec-len v))        ;; sparkable: indep
-        pair-total (mul-i64 (manual-par-map-pair) 4)]      ;; sparkable: indep
-    ;; The divide-and-conquer reduce and the manual Pair par-map must agree.
+  (let [v          [39 39 39 39 39 39 39 39]
+        dc-total   (par-map-reduce v 0 (vec-len v))       ;; 8 * heavy(39) = 312
+        pair-total (mul-i64 (pair-sum (fmap heavy (Pair 39 39))) 4)]  ;; 4*78 = 312
+    ;; The recursive divide-and-conquer reduce and the general par-map agree.
     (if (eq-i64 dc-total pair-total)
-        (Pure (div-i64 dc-total 1000000))                  ;; -> 312  (exit 56)
+        (Pure dc-total)                                   ;; -> 312  (exit 56)
         (Pure 0))))

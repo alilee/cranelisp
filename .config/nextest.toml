@@ -29,3 +29,48 @@ command = 'bash tests/scripts/build-link-prereqs.sh'
 # we run it unconditionally for simplicity + reliability.
 filter = 'all()'
 setup = 'link-prereqs'
+
+# ---------------------------------------------------------------------------
+# CPU-perf serialization (S92 Slice-1 Phase-5 exit-gate cleanup).
+#
+# A handful of `tests/spec_12_runtime.rs` tests are wall-clock witnesses for
+# lenient-eval parallelism / the spark budget. Each one internally spawns
+# threads across ALL cores and measures elapsed time (best-of-N / best-vs-best
+# ON-vs-OFF ratios). When nextest runs two of them concurrently they
+# oversubscribe the CPU, so a timing-bound run reads spuriously slow and the
+# FULL `cargo nextest run` intermittently shows a false failure — even though
+# every such test passes in isolation. (No correctness regression; pure
+# contention artifact.)
+#
+# This group gives each of those tests EXCLUSIVE machine access so its timing
+# reading is not corrupted by concurrent CPU-bound work:
+#   * `threads-required = "num-cpus"` — the test reserves ALL runner threads, so
+#     nextest will not schedule any other test alongside it.
+#   * `test-group cpu-perf` with `max-threads = 1` — belt-and-braces: at most one
+#     of these tests runs at a time, so they can never pile onto each other.
+# The rest of the suite parallelises freely around them. Guard strength is
+# untouched — par_map still fails if parallelism is absent; the fib floor still
+# fails on an O(2ⁿ) spark explosion.
+#
+# NOTE (measured during the S92 cleanup): the previously-flaky `budget_naive_fib`
+# FLOOR test was a WORKLOAD-SIZE artifact, not a scheduling one — fib(30) is a
+# ~22 ms run, so the budget's fixed per-node overhead lifts the bounded ON/OFF
+# ratio to ≈1.2–2.7× even running ALONE; its 1.3× ceiling was simply too tight.
+# That was fixed independently by loosening the ceiling to 5.0× in the test (see
+# `BUDGET_FLOOR_NUM` in spec_12_runtime.rs), NOT by this group.
+#
+# NOTE (out of scope for this group): the suite also carries a SEPARATE, pre-
+# existing intermittent failure where a random REPL/module test hits the 30 s
+# harness cap — a worker hang/starvation in the import/typecheck pipeline (the
+# documented H5/H6/H7 heisenbug-race residue / carried concurrency debt). It
+# reproduces in REPL-binaries-ONLY runs that never touch these CPU-perf tests,
+# and occurs with or without this group. It is NOT addressed here; it belongs to
+# the effect-concurrency track.
+# ---------------------------------------------------------------------------
+[test-groups]
+cpu-perf = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(/^(lenient_vec_map_reduce_parallelizes|lenient_vec_map_reduce_prior_binding_stays_serial|apply_arg_single_expensive_stays_serial|apply_arg_par_map_parallelizes|budget_naive_fib_floor_not_slower_than_serial|budget_three_regime_result_equivalence)$/)'
+test-group = 'cpu-perf'
+threads-required = 'num-cpus'

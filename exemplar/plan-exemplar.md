@@ -32,7 +32,78 @@ Assessment by `/port` — 2026-03-24. Evaluates the Sudoku solver exemplar for
 parallelism opportunities: lenient evaluation, commutative IO, and operators
 as values.
 
-### 1. Lenient Evaluation (Independent Let Bindings)
+> **SUPERSEDED IN PART — S92 (FIXME 0408), `/port`.** The §1 "inherently
+> sequential / no measurable benefit" verdict and the Summary's "useful
+> *counterexample*" framing were **wrong for the search dimension** and are
+> superseded below (see "### 1bis"). The original §1 text reasoned only about
+> constraint **propagation** (`propagate`/`eliminate`/`find-min`), which *is*
+> genuinely sequential — each step depends on the prior grid. But it conflated
+> propagation with the whole solver and never examined the backtracking
+> **search**, which is **embarrassingly parallel**: at a guess node the
+> candidate-digit branches are fully independent (each tries a different digit
+> on its own grid). Sudoku is therefore a showcase of **budget-bounded
+> speculative parallel search**, not a parallelism counterexample. §2
+> (commutative IO) and §3 (operators-as-values) verdicts **stand** — with one
+> reframing: §2's "Model B" web concurrency is now the **effect-concurrency
+> track** (`design/arch/effect-concurrency.md`; control-half combinators
+> `race`/`select`/`timeout` + supervised launch-and-continue), a distinct axis
+> from the inferred dataflow parallelism the search now exercises. The original
+> §1–§3 prose is retained below as the historical record.
+
+### 1bis. Lenient Evaluation — CORRECTED: backtracking search is parallel (S92)
+
+**Corrected finding: the backtracking search auto-parallelises; propagation is
+the sequential half.** The original §1 (below) is right that the *propagation*
+hot path is sequential and that the *formatting* `let` bindings are
+asymmetric/cheap. What it missed: the **search** is the exemplar's real parallel
+opportunity.
+
+Two language facts make it land with **zero `spark`/`par` in the source**:
+
+1. **Slice-1 lenient eval (S92)** widened automatic sparking from independent
+   `let` bindings to independent **apply-arguments** (`design/backend/lenient-eval.md`
+   §2.5): the two individually-expensive, independent arguments of a function
+   application are sparked. A `vec-map`-style cons-walk does **not** qualify
+   (one expensive arg per node); only a **divide-and-conquer** shape (two
+   independent expensive recursive calls at a node) does.
+2. The candidate branches at a guess node are independent and pure, so a D&C
+   split over the candidate digits exposes exactly that two-expensive-arg shape.
+
+**The reshape (S92, `solver.cl`).** The sequential digit loop (`try-digits`)
+is replaced by:
+- `mask-to-digits` — enumerate the set digits of a candidate mask → `(Vec Int)`;
+- `first-success a b` — `(match a (Success s) (Success s) _ b)`: take `a` if it
+  solved, else `b`; **correct even when `b` was computed speculatively** (pure
+  branches — the loser's work is discarded);
+- `solve-range g idx digits lo hi` — copy-free index-range D&C: base
+  `hi-lo == 1` commits the one digit and `solve`s; else split at `mid` and
+  `(first-success (solve-range … lo mid) (solve-range … mid hi))`. **The two
+  `solve-range` calls are the independent expensive apply-args** that slice-1
+  sparks. `solve`'s guess arm calls `solve-range` over the candidate Vec;
+  `solve`/`solve-range` are mutually recursive.
+
+The **spark-budget create-gate** (`lenient-eval.md` §3.6) makes this degrade
+gracefully: over budget → the apply takes its serial (direct) arm, so the
+exponential search tail runs at ≈ serial cost rather than sparking `O(2ⁿ)`
+IVars.
+
+**Mechanism + baseline (measured S92, debug backend, this VM).**
+- *Equivalence verified:* a backtracking-requiring puzzle solves to its unique
+  solution **identically** under default (parallel) and `CRANELISP_NO_LENIENT=1`
+  (serial). Guarded by `solver/test-solve-parallel-equiv` (pinned full solution)
+  + the whole 40-test suite passing **40/40 in both modes**.
+- *Baseline (the carried perf half):* the search puzzle solves in ~8.5 s; the
+  earlier easy-9×9 web baseline was ~3.3 s (FIXME 0408). **Net wall-clock
+  speedup is not yet observable** because the **copy-per-guess** grid
+  representation (`set-cell`/`assoc` copy the full 81-cell Vec per guess —
+  quadratic, allocation-dominated: `sys`≈`real`, `user`>`real` from
+  allocator/runtime threads in *both* modes) masks the parallel gain. Removing
+  that quadratic copy (FIXME 0408 perf half — persistent/structural-share Vec
+  or in-place candidate masks) + a release/Tier-2 backend (Phase H) is what will
+  let the parallel search *show* a speedup number. S92 delivers the parallel
+  **expression**; the perf carry remains open.
+
+### 1. Lenient Evaluation (Independent Let Bindings) — original 2026-03-24 (superseded by 1bis for the search dimension)
 
 **Finding: minimal benefit for hot paths; some benefit in formatting/IO code.**
 
@@ -136,19 +207,27 @@ is not motivated by the current architecture.
 
 ### Summary
 
+**S92 correction (see §1bis):** the row below is the original 2026-03-24
+assessment; the lenient-evaluation row is **superseded** — the backtracking
+search *is* exploitable parallelism.
+
 | Feature | Applicable? | Impact | Notes |
 |---|---|---|---|
-| Lenient evaluation | Marginal | None measurable | Algorithm is inherently sequential |
-| Commutative IO | No | None | Compute-bound; concurrency via Model B |
+| ~~Lenient evaluation~~ → **Lenient eval (search)** | ~~Marginal~~ → **Yes** | ~~None measurable~~ → **parallel search (perf gated on copy-per-guess carry)** | ~~Algorithm is inherently sequential~~ → propagation is sequential; **search is embarrassingly parallel** (D&C over candidate digits, slice-1 apply-arg sparking, S92) |
+| Commutative IO | No (current); web → effect-concurrency track | None (current) | Compute-bound; per-request web concurrency is the effect-concurrency track (`design/arch/effect-concurrency.md`), not commutative-IO scheduling |
 | Operators as values | No | None | Uses monomorphic primitives by design |
 
-The exemplar is a useful *counterexample* for Wave 4 parallelism features: it
-shows a realistic application where these features provide no benefit. Not every
-program has exploitable parallelism, and the Sudoku solver's value lies in
-demonstrating algorithmic expressiveness (ADTs, pattern matching, recursion)
-rather than parallel execution. The exemplar validates that the cost heuristic
-for lenient evaluation must be conservative — blindly parallelizing all
-independent let bindings would add overhead for no gain here.
+~~The exemplar is a useful *counterexample* for Wave 4 parallelism features.~~
+**Superseded (S92).** The exemplar is now a **showcase of budget-bounded
+speculative parallel search**: the backtracking search auto-parallelises via
+slice-1 apply-arg sparking with zero `spark`/`par` in the source (the D&C shape
+in `solver.cl`'s `solve-range`/`first-success`), while constraint propagation
+stays correctly sequential. The original "no exploitable parallelism /
+counterexample" conclusion was an artefact of examining only the propagation
+half. The conservative-cost-heuristic observation still holds (and is now
+enforced by the create-gate's budget): the *vec-map cons-walk* shape genuinely
+does **not** parallelise — only the two-independent-expensive-args D&C shape
+does, which is exactly why the reshape uses D&C.
 
 ## Sprint 24 HKT/Lazy Evaluation: Exemplar Impact Assessment
 
@@ -399,10 +478,13 @@ exemplar/
 - `propagate :: (Fn [Grid] (Option Grid))` — iterate elimination until fixed point; return `None` on contradiction (any cell has empty candidates)
 - `naked-singles :: (Fn [Grid] Grid)` — if a candidate appears in only one cell of a row/col/box, fix it
 
-### Backtracking Search (`solver.cl`)
+### Backtracking Search (`solver.cl`) — parallel divide-and-conquer (S92)
 
 - `find-min-candidates :: (Fn [Grid] (Option Int))` — index of unfixed cell with fewest candidates (MRV heuristic)
-- `solve :: (Fn [Grid] SolveResult)` — propagate, then if unsolved: pick min-candidate cell, try each candidate recursively, backtrack on contradiction
+- `mask-to-digits :: (Fn [Int] (Vec Int))` — enumerate the set digits (1-9) of a candidate mask
+- `first-success :: (Fn [SolveResult SolveResult] SolveResult)` — `(match a (Success s) (Success s) _ b)`; take `a` if solved else `b` (correct even when `b` was computed speculatively — pure branches)
+- `solve-range :: (Fn [Grid Int (Vec Int) Int Int] SolveResult)` — copy-free index-range D&C over the candidate-digit Vec: base `hi-lo==1` commits one digit and `solve`s; else split at `mid` and combine the two **independent expensive recursive solves** with `first-success` (the two `solve-range` calls are the apply-args slice-1 lenient eval sparks — `design/backend/lenient-eval.md` §2.5)
+- `solve :: (Fn [Grid] SolveResult)` — propagate, then if unsolved: pick min-candidate cell (MRV), `solve-range` over its candidate digits; `solve`/`solve-range` mutually recursive. The earlier sequential `try-digits` early-exit loop is retired (S92, FIXME 0408)
 
 ### HTML Generation (`html.cl`)
 

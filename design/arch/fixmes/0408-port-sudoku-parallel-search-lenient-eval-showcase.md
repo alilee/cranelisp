@@ -4,74 +4,88 @@ target: /port
 filed_by: /sprint
 filed_at: 2026-06-18
 sprint_filed: 86
-refers_to: exemplar/plan-exemplar.md §"Wave 4 Parallelism Opportunities Assessment", exemplar/solver.cl, exemplar/CLAUDE.md §"Known Issues"
+narrowed_at: 2026-06-27
+sprint_narrowed: 92
+refers_to: exemplar/solver.cl, exemplar/grid.cl, exemplar/plan-exemplar.md §"Wave 4 Parallelism Opportunities Assessment", exemplar/CLAUDE.md §"Known Issues", exemplar/tests.cl
 status: open
 ---
 
-# Sudoku exemplar — make the showcase actually demonstrate lenient-eval parallel search (and be fast)
+# Sudoku exemplar — make the showcase fast (the perf carry)
 
-## Issue
+> **NARROWED — S92 (Phase 6b), `/port`. The parallel-search EXPRESSION half is
+> DONE; this FIXME now tracks the PERF half only.** Do not re-add the
+> parallel-search work below — see "## Done (S92)". The Issue / Proposed
+> resolution sections have been rewritten to the perf-half scope.
 
-The Sudoku exemplar is now THE showcase centerpiece (S86) and is meant to
-*demonstrate the language*. But as measured during S86 UAT it:
+## Done (S92) — parallel-search expression (the contained half)
 
-1. **Does not exercise the language's flagship lenient-eval / auto-IO
-   parallelism at all** — zero `spark`/`par`/`Par`/commutative constructs; the
-   solve is strictly sequential and the web serve loop handles one request at a
-   time.
-2. **Is slow**: `POST /solve` for an *easy* 9×9 measures **~3.3 s** (standalone
-   stripped exe, live HTTP); hard puzzles "run for minutes" (`test-hard-puzzle`
-   is excluded from the test runner for this reason).
+The backtracking search in `exemplar/solver.cl` was reshaped from the
+sequential `try-digits` early-exit digit loop into a **divide-and-conquer**
+search over the candidate digits (~40 lines, `solver.cl` only; `grid.cl`
+untouched):
 
-The exemplar's own Wave-4 assessment (`plan-exemplar.md §29`) dismissed
-parallelism as inapplicable and framed Sudoku as a "useful counterexample."
-That conclusion is **only valid for constraint *propagation*** (each
-propagation step depends on the prior grid state). It **misses that the
-backtracking *search* is embarrassingly parallel**: at each guess point the
-candidate-digit branches are fully independent (each tries a different digit on
-its own grid), so they are exactly the independent-`let`-binding /
-sparkable-IO shape lenient eval was built for. The "counterexample" framing was
-acceptable when Sudoku was *an* exemplar; it is at odds with Sudoku being *the*
-language showcase.
+- `mask-to-digits` — enumerate the set digits (1-9) of a candidate mask → `(Vec Int)`;
+- `first-success a b` — `(match a (Success s) (Success s) _ b)`: take `a` if it
+  solved, else `b` (correct even when `b` was computed speculatively — pure
+  branches, the loser's work is discarded);
+- `solve-range g idx digits lo hi` — copy-free index-range D&C: base `hi-lo==1`
+  commits the digit and `solve`s; else split at `mid` and combine the two
+  **independent expensive recursive solves** with `first-success`.
 
-The slowness has two compounding causes:
-- **Immutable copy-per-edit grid**: `eliminate`/`set-cell`/`assoc` copy the full
-  81-cell Vec on every modification (quadratic; documented in
-  `exemplar/CLAUDE.md §"Known Issues"`).
+The two `solve-range` calls are the independent expensive **apply-arguments** of
+`first-success`, which **slice-1 lenient eval (S92) auto-sparks** — the search
+parallelises with zero `spark`/`par` in the source, and the spark-budget
+create-gate bounds over-sparking (over budget → serial arm). See
+`design/backend/lenient-eval.md` §2.5.
+
+Validated: easy 9×9 solves end-to-end; exemplar suite **40/40 green under both
+default (parallel) and `CRANELISP_NO_LENIENT=1` (serial)** — the parallel ≡
+serial equivalence guard (`solver/test-solve-parallel-equiv`, full solution
+pinned). The Wave-4 "inherently sequential / counterexample" verdict in
+`plan-exemplar.md` was superseded (constraint *propagation* is sequential;
+backtracking *search* is embarrassingly parallel — Sudoku is a showcase of
+**budget-bounded speculative parallel search**). The web-side per-request
+concurrency moved to the **effect-concurrency track**
+(`design/arch/effect-concurrency.md`), distinct from this inferred-parallelism
+axis.
+
+## Issue (perf half — carried)
+
+The reshape parallelises the search *structurally*, but **net wall-clock
+speedup is not yet observable** because the **immutable copy-per-edit grid**
+dominates: `eliminate`/`set-cell`/`assoc` copy the full 81-cell Vec on every
+modification (quadratic; allocation-dominated — `sys`≈`real`, `user`>`real`
+from allocator/runtime threads in *both* parallel and serial modes). Measured
+baselines (debug backend): the search-requiring equivalence puzzle ~8.5 s; the
+earlier easy-9×9 live-HTTP baseline ~3.3 s; genuinely-hard puzzles still run
+for minutes, so `solver/test-hard-puzzle` stays excluded from the runner.
+
+Two compounding causes, unchanged from the original filing:
+- **Copy-per-guess representation** (the dominant, fixable cause).
 - **Unoptimized debug backend** (no release/Tier-2 backend until Phase H).
 
-## Proposed resolution
+## Proposed resolution (perf half)
 
-A demo-quality rework of the solver (and the plan-doc verdict):
-
-1. **Parallel backtracking search (the lenient-eval showcase).** At each guess
-   point, evaluate the recursive solve for each candidate digit as **independent
-   `let` bindings** (sparkable → lenient-eval parallel), then take the first
-   `Success`. This genuinely exercises the flagship feature and speeds up hard
-   puzzles. (Speculative branches do work pruning would skip, but with
-   work-stealing this is a net win on deep search and — crucially — it makes the
-   centerpiece *show* parallelism.) Consider also a parallel-propagation pass
-   over independent units where the data-flow allows.
-2. **Fix the copy-per-guess representation** so each guess is not a full 81-cell
-   Vec copy — an in-place candidate-mask scheme or a persistent/structural-share
-   Vec. (DEF-2's curated-`conj` RC bug is fixed as of S86, so the curated Vec
-   verbs are usable in the rework.)
-3. **Supersede the Wave-4 verdict**: update `plan-exemplar.md §"Wave 4
-   Parallelism Opportunities Assessment"` — the "inherently sequential /
-   counterexample" conclusion is wrong for the search dimension; record the
-   parallel-search opportunity and the measured baseline (~3.3 s easy 9×9).
+1. **Fix the copy-per-guess representation** so each guess is not a full
+   81-cell Vec copy — a persistent / structural-share Vec, or an in-place
+   candidate-mask scheme. This is the change that lets the already-present
+   parallel search *show* a speedup. (DEF-2's curated-`conj` RC bug was fixed
+   in S86; the curated Vec verbs are usable here.)
+2. **Phase-H benchmark.** Once the quadratic copy is gone, measure the parallel
+   search under a release/Tier-2 backend and record the speedup number against
+   the ~3.3 s / ~8.5 s baselines. Coordinate timing with Phase H — a release
+   build is the right moment to land the perf numbers.
+3. **Re-include `test-hard-puzzle`** in `exemplar/tests.cl` once a hard puzzle
+   solves in fast-test time, and refresh the `/repl` `sudoku.demo` showcase to
+   highlight a *measured* parallel speedup.
 
 ## Operational implication / Context
 
-- This is a **demo / showcase-quality** improvement, deliberately deferred out
-  of S86 (the user's call: "a fixme for demo"). S86 delivered the *working* web
-  front-end (`--run` + standalone `--link`, DEF-4/5/6 fixed); this makes the
-  centerpiece a *good* showcase of the language's parallelism and performance.
-- Depends on: lenient eval (live since S25) + auto-IO scheduling (S85). Raw
-  speed also benefits from the Phase-H release/Tier-2 backend — coordinate
-  timing (a release build may be the better moment to land the perf numbers).
-- Downstream: the `/repl` `sudoku.demo` showcase demo should be refreshed to
-  highlight the parallel search once it lands; the `tests.cl` runner can then
-  re-include a (now-fast) hard-puzzle test.
-- Web-side concurrency (serving requests in parallel) is a *separate* axis,
-  tracked by FIXME 0407 (Model B closure-callback) — not this FIXME.
+- **Demo / showcase-quality** perf improvement, deliberately carried. The
+  parallel-search *expression* (S92) makes the centerpiece *show* the language's
+  inferred parallelism; this carry makes it *fast*.
+- Depends on: a non-copying grid representation (the actionable trigger now) +
+  the Phase-H release/Tier-2 backend (for the headline numbers).
+- The equivalence guard (`test-solve-parallel-equiv`) and the 40/40 two-mode
+  green run are the regression guards that protect the reshape while the perf
+  carry is open.

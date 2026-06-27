@@ -74,9 +74,9 @@ is the **capability taught**. Exit code is the documented `main` return
 | 25 | `25-curry.cl` | Multi-signature dispatch and auto-currying | 118 |
 | 26 | `26-functor.cl` | The `Functor` trait (higher-kinded `fmap`) | 91 |
 | 27 | `27-lazy-seq.cl` | Lazy sequences (`take`, `filter`, `iterate`) | 183 |
-| 28 | `28-parallel.cl` | Parallel evaluation (`par-let`, `bind!`) | 67 |
+| 28 | `28-parallel.cl` | Parallel evaluation: automatic sparking of independent `let` bindings (lenient eval) | 67 |
 | 29 | `29-annotations.cl` | The `:Type` annotation model (capstone): constraining function typing + disambiguating expressions | 119 |
-| 30 | `30-parallel-map-reduce.cl` | Toward a parallel `par-map` over a Functor: self-parallelising `let`-spark map-reduce + honest apply-arg-sparking gap (FIXME 0424) | 56 |
+| 30 | `30-parallel-map-reduce.cl` | A general parallel `par-map` over a Functor: apply-argument sparking makes recursive divide-and-conquer and `fmap` of an expensive function parallelise automatically | 56 |
 | 31 | `31-bitwise.cl` | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) as bitmask set operations; inline single-bit helpers (`bit-test`/`bit-set`/`bit-clear`/`bit-flip`) and a permission bitmask | 19 |
 
 ### Notes on specific entries
@@ -108,22 +108,25 @@ is the **capability taught**. Exit code is the documented `main` return
   annotate-a-bare-literal framing is demoted to a single "simplest form"
   line, since it does no inference work.
 
-- **30-parallel-map-reduce** — reworked (S87) to be accurate about the
-  current sparkability limits and to carry the progression toward a general
-  `par-map`. Stage 1 is the working building block: a self-parallelising
-  divide-and-conquer map-reduce over a `Vec`, which parallelises by lifting
-  each half into an independent `let` binding (apply-args don't spark, so the
-  obvious recursive form would be serial). Stage 2 defines a `Functor`
-  (`Pair`) inline and shows what a general `par-map` WOULD look like
-  (`fmap fib`) and WHY it is serial today — apply-arguments are not sparked
-  (limit #2) — then gives a manual per-shape `par-fmap-pair` that recovers
-  parallelism by hand-lifting each element-application into an independent
-  `let`. The example is honest that dependent `let` bindings are left serial
-  by a conservative analysis (limit #1, not a hard semantic limit — IVars
-  could force the dependency). The capability gap is filed as
-  `design/arch/fixmes/0424-spark-apply-args-for-general-par-map.md`
-  (`target: /arch`): spark independent apply-arguments and/or add a `par-map`
-  primitive to enable a general parallel map over a Functor.
+- **30-parallel-map-reduce** — reworked (S92 Phase 6b) for the post-slice-1
+  world: lenient evaluation now sparks independent, individually-expensive
+  **apply-arguments**, not just `let` bindings (`design/backend/lenient-eval.md`
+  §2.5; FIXME 0424 option (i) shipped). That widening is enough to make a
+  fully general parallel `par-map` expressible with no per-shape workaround.
+  Stage 1 is a recursive divide-and-conquer map-reduce over a `Vec` whose
+  obvious form `(add-i64 (recur left) (recur right))` parallelises directly —
+  the two recursive halves are independent apply-arguments, so both spark; the
+  earlier `let`-lifting workaround is gone. Stage 2 defines a `Functor`
+  (`Pair`) inline and shows that a general `par-map` is simply `fmap` of an
+  expensive function: the `fmap` body `(Pair (func a) (func b))` has two
+  independent apply-arguments, so both applications spark and run in parallel.
+  The per-element leaf is a tail-recursive accumulator `work` (single tail
+  self-call, gated off sparking by TCO) wrapped as an expensive identity
+  `heavy`, so the only parallelism is the top-level divide-and-conquer — the
+  teaching signal — and there is no internal over-spark. The A/B comments
+  reference `CRANELISP_NO_LENIENT=1` (codegen escape hatch) and
+  `CRANELISP_SPARK_BUDGET` (runtime in-flight cap). Exit 56 unchanged
+  (`main` returns 312 = 8 × 39, cross-checked between the two stages).
 
 ## 3. Platform / IO examples (21–24) — running without an env var
 
@@ -196,7 +199,7 @@ the spec when annotating coverage.)
 | Higher-kinded traits (Functor) | 26 |
 | Lazy sequences | 27 |
 | IO model (`Pure`, `bind`, platform IO, `read-line`) | 21, 22, 23, 24 |
-| Parallel evaluation (`par-let`, lenient eval) | 28, 30 |
+| Parallel evaluation (lenient eval: independent `let` bindings + apply-arguments) | 28, 30 |
 | `:Type` annotation model | 29 |
 | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) | 31 |
 

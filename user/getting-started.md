@@ -108,14 +108,35 @@ ultimately calls — `print`, `read-line`, and so on. Different platforms provid
 different capabilities (a CLI `stdio` platform, a web platform, and so on), which is
 why an IO program names the platform it needs and the runtime loads the matching DLL.
 
-Independent IO actions run **in parallel automatically** (auto-IO): when the
-compiler can see that two effects do not depend on one another, it schedules them
-concurrently — you write straight-line effectful code and get the parallelism for
-free, without threads or futures in the source. See
-[`examples/28-parallel.cl`](../examples/28-parallel.cl) and
-[`examples/30-parallel-map-reduce.cl`](../examples/30-parallel-map-reduce.cl) for
-worked cases. The IO model and the effect/parallelism semantics are specified
-normatively in [`spec/`](../spec/).
+## Automatic parallelism
+
+Cranelisp parallelizes work for you — you never write threads, futures, or locks in
+the source. It applies in two places:
+
+- **Independent IO actions run concurrently.** When the compiler can see that two
+  effects do not depend on one another, it schedules them at the same time. You write
+  straight-line effectful code and the parallelism comes for free. See
+  [`examples/28-parallel.cl`](../examples/28-parallel.cl).
+- **Independent pure computations run in parallel too.** The arguments of a call that
+  do not depend on each other can be evaluated at the same time. So the two recursive
+  branches of a divide-and-conquer function run at once, and **mapping an expensive
+  function over a collection (`par-map`) parallelizes element-wise** — written as a
+  divide-and-conquer that splits the collection, processes the halves in parallel, and
+  recombines. See [`examples/30-parallel-map-reduce.cl`](../examples/30-parallel-map-reduce.cl)
+  for the worked `par-map` case.
+
+**When it pays off.** Parallelism is worth it when each piece of work is substantial —
+roughly a microsecond or more per element gives real speedup (around 2–3× has been
+observed on the map-reduce example). For very fine-grained work the bookkeeping can
+outweigh the gain, but the compiler bounds that overhead, so turning a problem loose on
+the parallel machinery never blows up — at worst it runs about as fast as serial. You
+can cap or disable the parallelism with environment variables; see
+[`cli-reference.md`](cli-reference.md#environment-variables).
+
+This is all semantically invisible: a parallel run computes exactly what a sequential
+left-to-right run would. The effect and evaluation semantics are specified normatively
+in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) and the
+[`spec/`](../spec/) IO model.
 
 ## Where to go next
 

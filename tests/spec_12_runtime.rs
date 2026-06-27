@@ -918,22 +918,34 @@ fn lenient_binding_panic_surfaces_with_no_lenient_control() {
 // speedup) while still failing loudly if the prior-binding case were wrongly
 // sparked (which would show the speedup in all/most attempts).
 //
-// The leaf cost is `fib(35)` (Vec of 8 elements): big enough that real parallel
-// work dominates spark overhead, small enough that even the worst case
-// (best-of-N exhausting all N attempts for the positive test, plus the
-// majority-N negative control) stays within the 30 s suite budget. With N=4 and
-// early-exit, the common case is ~2 runs (positive) + 4 runs (negative) ~= 1.4s.
+// The leaf cost is `work(30_000_000)` (Vec of 8 elements): a TAIL-RECURSIVE
+// accumulator, NOT naive `fib` (Sprint-92 re-leaf — see PMR_LEAF). Big enough
+// that real parallel work dominates spark overhead, small enough that even the
+// worst case (best-of-N exhausting all N attempts for the positive test, plus
+// the majority-N negative control) stays within the 30 s suite budget. The leaf
+// is single-self-call + cheap-args, so it is TCO'd and NEVER apply-arg-sparked —
+// the perf signal is the top-level `let`-half D&C, not internal over-spark noise.
 // =============================================================================
 
-/// Vec leaf cost: `fib(35)` per element. Tuned so parallel work dominates spark
-/// overhead (>=2.4x at >=fib(33)/Vec>=8 in the S85 probe) while keeping each run
-/// short (~0.28 s lenient-OFF). Shared by the positive witness and the negative
-/// control so they compute the identical value (exit code 73) and differ ONLY in
-/// `let`-block structure.
-const PMR_LEAF: i64 = 35;
+/// Vec leaf cost: `work(N)` iterations per element, where the per-element leaf is
+/// a TAIL-RECURSIVE accumulator (`work`), NOT naive `fib`.
+///
+/// **Sprint 92 re-leaf (the deferred Stage-2 task).** The original leaf was naive
+/// `fib(35)`. Once apply-arg sparking ships (Slice 1), `fib`'s internal
+/// `(add-i64 (fib …) (fib …))` is a two-expensive-apply-arg site that sparks at
+/// EVERY recursion node — and because `pmr_run_elapsed_ms` pins
+/// `CRANELISP_SPARK_BUDGET` very high (so every `let`-half spawns), that over-spark
+/// is NOT inline-bounded and explodes to `O(2³⁵)` IVars (memory blow-up, far
+/// slower than serial — it flips the negative control into a spurious speedup and
+/// OOMs the positive run). The faithful fix (risk-callout pt.2): a leaf with NO
+/// internal ≥2-expensive-apply-arg shape, so the perf signal is the TOP-LEVEL
+/// `let`-half D&C and not internal over-spark noise. `work` is tail-recursive
+/// (single self-call, TCO-gated off sparking) with cheap args — it never sparks.
+/// `work(N) = N` (acc += 1), so 8 leaves sum to `8·N`.
+const PMR_LEAF: i64 = 30_000_000;
 /// Vec width — 8 elements give a balanced 3-level D&C tree (full parallel fan-out
-/// across the thread pool).
-const PMR_VEC: &str = "35 35 35 35 35 35 35 35";
+/// across the thread pool). Each element is the `work` iteration count.
+const PMR_VEC: &str = "30000000 30000000 30000000 30000000 30000000 30000000 30000000 30000000";
 /// Conservative speedup factor: lenient-ON wall-clock MUST be below this fraction
 /// of lenient-OFF. 0.7 => a >=1.43x speedup is required; the observed ~2.8-3.1x
 /// clears it by a wide margin, leaving headroom for slow/low-core CI.
@@ -957,6 +969,29 @@ fn pmr_run_elapsed_ms(src: &str, lenient_off: bool) -> (u128, Option<i32>) {
     let mut b = Cranelisp::new()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .run("user.cl")
+        // SPRINT 92 re-pin (§3.6 + risk-callout pt.1). Slice 1 adds a global
+        // in-flight-spark BUDGET (default 4×threads). The two `let`-path perf
+        // tests below assume ALL their independent same-block bindings spawn
+        // concurrently; a workload that sparks more than `cap` bindings at once
+        // would resolve the excess INLINE under the default cap and shift the
+        // timing signal. Pinning the budget very high keeps every binding on the
+        // spawn path, restoring byte-for-byte the pre-budget behaviour these
+        // tests were written against. The env is UNRECOGNISED (a harmless no-op)
+        // until the budget lands in Stage 2, so this is safe to set now.
+        //
+        // The OTHER axis the risk callout flags (apply-arg over-spark from the
+        // naive-`fib` leaf, risk-callout pt.1) is NOT addressed by pinning — a
+        // high budget means MORE spawning, not less. The faithful fix there is a
+        // leaf re-leaf to a non-over-sparking tail-recursive shape, but that
+        // de-tunes the carefully-tuned fib(35) timing (the comment above records
+        // the >=2.4x@fib(33)/Vec>=8 probe), which cannot be reliably re-validated
+        // under Stage 1's saturated VM harness. Apply-arg sparking does not exist
+        // on HEAD, so the leaf does NOT over-spark yet (the §2.5 pass never runs
+        // on `(add-i64 (fib…)(fib…))`); the leaf-swap therefore belongs with the
+        // Stage 2 change-set that introduces apply-arg sparking, where /qa+/dev
+        // re-validate the timing together. Per the plan, "final green-validation
+        // happens after Stage 2."
+        .env("CRANELISP_SPARK_BUDGET", "1000000000")
         .user(src);
     if lenient_off {
         b = b.env("CRANELISP_NO_LENIENT", "1");
@@ -987,12 +1022,12 @@ fn lenient_vec_map_reduce_parallelizes() {
     // whose free vars reference NO earlier binding in that block => both
     // sparkable => the halves run in parallel.
     let src = format!(
-        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 lt-i64 vec-get vec-len Pure]])\n\
-         (defn fib [:Int n]\n\
-           (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))\n\
+        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-len Pure]])\n\
+         (defn work [:Int n :Int acc]\n\
+           (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
          (defn pmr [v :Int lo :Int hi]\n\
            (if (le-i64 (sub-i64 hi lo) 1)\n\
-               (fib (vec-get v lo))\n\
+               (work (vec-get v lo) 0)\n\
                (let [left  (pmr v lo (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))\n\
                      right (pmr v (add-i64 lo (div-i64 (sub-i64 hi lo) 2)) hi)]\n\
                  (add-i64 left right))))\n\
@@ -1058,12 +1093,12 @@ fn lenient_vec_map_reduce_prior_binding_stays_serial() {
     // `mid`, `left`, `right` share ONE `let` block; `left`/`right` both
     // reference the earlier same-block `mid` => not sparkable => serial.
     let src = format!(
-        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 lt-i64 vec-get vec-len Pure]])\n\
-         (defn fib [:Int n]\n\
-           (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))\n\
+        "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-len Pure]])\n\
+         (defn work [:Int n :Int acc]\n\
+           (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
          (defn pmr [v :Int lo :Int hi]\n\
            (if (le-i64 (sub-i64 hi lo) 1)\n\
-               (fib (vec-get v lo))\n\
+               (work (vec-get v lo) 0)\n\
                (let [mid   (add-i64 lo (div-i64 (sub-i64 hi lo) 2))\n\
                      left  (pmr v lo mid)\n\
                      right (pmr v mid hi)]\n\
@@ -2190,4 +2225,589 @@ fn conj_wrapper_multivariant_cell_vec_built_correctly_run() {
         .output()
         // (1+2+…+30) - 30 + 100 = 535; 535 mod 256 = 23.
         .assert_exit(23);
+}
+
+// =============================================================================
+// Sprint 92 Slice 1 — APPLY-ARGUMENT SPARKING + SPARK BUDGET (e2e tier)
+//
+// QA-first (Phase 5 Stage 1). These are the 13 apply-arg + 4 budget e2e rows
+// from `tests/plan/sprint-92.md`. Apply-arg sparking and the in-flight-spark
+// budget do NOT exist on HEAD; the cost heuristic + ferry + budget are added in
+// Stage 2 by /dev (`cranelisp-backend` sparkability sibling `find_sparkable_args`
+// + apply-site barrier; `cranelisp-intrinsics` `ivar_spark` budget). Trace:
+// `design/backend/lenient-eval.md` §2.5 / §3.6 / §4.4 / §5 / §8 / §9; spec
+// `spec/12-runtime.md` §12.4.3 (widened) / §12.4.1, `spec/04-expressions.md`
+// §4.11.
+//
+// RED-FIRST POSTURE NOTE (load-bearing for the reviewer). Lenient evaluation is
+// SEMANTICALLY TRANSPARENT (§12.4.3): the opt-out (`CRANELISP_NO_LENIENT=1`) IS
+// the equivalence oracle, so serial evaluation already produces the correct
+// result, already aborts-on-first-error left-to-right, and is already
+// deterministic. Consequently the correctness / equivalence / ferry / determinism
+// rows below are GREEN on HEAD (serial eval is correct) — they are durable
+// REGRESSION GUARDS that pin "Stage 2 must not break correctness / ferry /
+// first-error-wins / TCO," and they STAY green through Stage 2. The only rows
+// genuinely RED-on-HEAD are the ones that assert an OBSERVABLE SPEEDUP
+// (`apply_arg_par_map_parallelizes`), because parallelism is the single
+// observable the feature adds. See the QA report for the per-row RED/GREEN split.
+// All rows are correct against the *target* (post-Stage-2) behaviour.
+//
+// Free-standing: zero stdlib; PrimitivesOnly (or explicit `primitives` imports
+// for the ferry programs); `fib`/`work`/`pmr` defined inline with primitives +
+// special forms. The naive `fib` is the over-sparking shape (risk callout); the
+// tail-recursive `work` accumulator is the non-over-sparking leaf (single
+// self-call, TCO-gated off sparking).
+// =============================================================================
+
+/// Naive recursive fib — the canonical OVER-SPARKING shape: its internal
+/// `(add-i64 (fib …) (fib …))` is a two-expensive-apply-arg site that sparks at
+/// every recursion node once apply-arg sparking ships. Correctness rows keep it
+/// at small `n` (over-sparking is still *correct*, it only matters for timing).
+const AA_FIB_DEF: &str = "(defn fib [:Int n]\n\
+       (if (lt-i64 n 2) n (add-i64 (fib (sub-i64 n 1)) (fib (sub-i64 n 2)))))\n";
+
+/// Tail-recursive accumulator leaf — NON-over-sparking (one self-call, TCO'd,
+/// all args cheap, never sparked). Linear cost `n`; `acc += 1` avoids i64
+/// overflow at large `n` (unlike sum-of-squares). The perf-row leaf so the
+/// timing signal is the top-level apply-arg D&C, not internal over-spark noise.
+const AA_WORK_DEF: &str = "(defn work [:Int n :Int acc]\n\
+       (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n";
+
+/// Per-element work iterations for the apply-arg D&C perf witness. Tuned (Sprint
+/// 92 Stage 2) so the per-element COMPUTE dominates fixed process/JIT overhead:
+/// at 10M the ~35 ms process+compile floor swamped the ~27 ms compute and the
+/// best-vs-best ratio was noise-dominated (a single fast OFF outlier false-failed
+/// the witness). At 60M, lenient-OFF is a consistent ~148 ms and lenient-ON
+/// ~60 ms (~2.5×) on the 10-core CI VM — robust against OFF-outlier noise in the
+/// strict min-ON < 0.7·min-OFF comparison while each serial run stays short.
+const AA_PERF_N: i64 = 60_000_000;
+
+/// `--run` a PrimitivesOnly program with extra env vars; return `(elapsed_ms,
+/// exit_code)`. Asserts a clean run so a crash can't masquerade as a fast run.
+fn aa_run_elapsed(src: &str, envs: &[(&str, &str)]) -> (u128, Option<i32>) {
+    let mut b = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(src);
+    for (k, v) in envs {
+        b = b.env(k, v);
+    }
+    let out = b.output();
+    assert!(
+        !out.stderr.to_lowercase().contains("panic")
+            && !out.stderr.to_lowercase().contains("error"),
+        "envs={envs:?}: expected a clean run, got stderr:\n{}\nstdout:\n{}",
+        out.stderr,
+        out.stdout
+    );
+    (out.elapsed.as_millis(), out.status.code())
+}
+
+/// `--run` a PrimitivesOnly program with extra env vars; return the exit code.
+fn aa_run_exit(src: &str, envs: &[(&str, &str)]) -> Option<i32> {
+    let mut b = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .run("user.cl")
+        .user(src);
+    for (k, v) in envs {
+        b = b.env(k, v);
+    }
+    b.output().status.code()
+}
+
+/// Pipe `input` to a fresh PrimitivesOnly REPL with extra env vars; capture stdout.
+fn aa_repl_stdout(input: &str, envs: &[(&str, &str)]) -> String {
+    let mut b = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .repl()
+        .stdin(input);
+    for (k, v) in envs {
+        b = b.env(k, v);
+    }
+    b.output().stdout
+}
+
+/// Strip the REPL prompt's per-turn timing prefix (`<n>+<n>ms; user> `) so two
+/// runs are comparable byte-for-byte on their MEANINGFUL output. The wall-clock
+/// figures in the prompt are nondeterministic noise, not observable program
+/// output — the determinism oracle compares the result lines, not the latency.
+fn strip_repl_timing(s: &str) -> String {
+    s.lines()
+        .map(|l| match l.find("user> ") {
+            Some(i) => l[i + "user> ".len()..].to_string(),
+            None => l.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// --- Positive equivalence (5) — correctness AND the determinism oracle -------
+
+// spec: spec/12-runtime.md §12.4.3 — a two-expensive-apply-arg site
+// `(add-i64 (fib a) (fib b))` (the `(Pair (fib a)(fib b))` destructured-sum)
+// produces the identical result lenient-ON (default) and lenient-OFF
+// (CRANELISP_NO_LENIENT=1), equal to the known value, under `--run`. Closes the
+// positive half of the §12.4.3 widening. Also exercises §12.4.1 (arguments
+// evaluate observably-as-if left-to-right) and §4.11 (apply-arg concurrency
+// permitted under observable L-to-R).
+#[test]
+fn apply_arg_pair_equiv_run() {
+    // fib(10)=55, fib(9)=34 → 89. Both args are fib Applys → ≥2 sparkable.
+    let src = format!(
+        "{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n"
+    );
+    let on = aa_run_exit(&src, &[]);
+    let off = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
+    assert_eq!(
+        on, off,
+        "§12.4.3 semantic transparency: lenient ON vs OFF differ ({on:?} vs {off:?})"
+    );
+    assert_eq!(on, Some(89), "expected fib(10)+fib(9)=89; got {on:?}");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — same two-expensive-apply-arg program under
+// `--link` (linked standalone binary): ON exit == OFF exit == known value
+// (ferry + barrier sound across modes).
+#[test]
+fn apply_arg_pair_equiv_link() {
+    let src = format!(
+        "{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n"
+    );
+    let on = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(&src)
+        .link_then_run("user.cl")
+        .output()
+        .status
+        .code();
+    let off = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(&src)
+        .env("CRANELISP_NO_LENIENT", "1")
+        .link_then_run("user.cl")
+        .output()
+        .status
+        .code();
+    assert_eq!(on, off, "§12.4.3: --link lenient ON vs OFF differ ({on:?} vs {off:?})");
+    assert_eq!(on, Some(89), "expected fib(10)+fib(9)=89 under --link; got {on:?}");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — same constructor-arg apply at the REPL top
+// level prints `:primitives/Int 89` lenient-ON and lenient-OFF identically.
+#[test]
+fn apply_arg_pair_equiv_repl() {
+    let input = format!(
+        "{AA_FIB_DEF}(add-i64 (fib 10) (fib 9))\n"
+    );
+    let on = aa_repl_stdout(&input, &[]);
+    let off = aa_repl_stdout(&input, &[("CRANELISP_NO_LENIENT", "1")]);
+    assert!(
+        on.contains(":primitives/Int 89"),
+        "REPL lenient-ON: expected `:primitives/Int 89`; got:\n{on}"
+    );
+    assert!(
+        off.contains(":primitives/Int 89"),
+        "REPL lenient-OFF: expected `:primitives/Int 89`; got:\n{off}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — a divide-and-conquer par-map whose two
+// recursive halves are APPLY-ARGUMENTS `(add-i64 (pmr v lo mid) (pmr v mid hi))`
+// (both spark) produces the identical result ON vs OFF, equal to the known sum.
+// This is the general `par-map` shape — closes FIXME 0424(i).
+#[test]
+fn apply_arg_dc_map_reduce_equiv_run() {
+    // mid INLINED (no `let`, so the parallelism source is purely the apply-arg
+    // pmr halves, not a `let` binding). Leaf fib(10)=55; 4 elements → 220.
+    let src = format!(
+        "{AA_FIB_DEF}\
+         (defn pmr [v :Int lo :Int hi]\n\
+           (if (le-i64 (sub-i64 hi lo) 1)\n\
+               (fib (vec-get v lo))\n\
+               (add-i64 (pmr v lo (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))\n\
+                        (pmr v (add-i64 lo (div-i64 (sub-i64 hi lo) 2)) hi))))\n\
+         (defn main [] (let [v [10 10 10 10]] (Pure (pmr v 0 (vec-len v)))))\n"
+    );
+    let on = aa_run_exit(&src, &[]);
+    let off = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
+    assert_eq!(on, off, "§12.4.3 par-map transparency: ON vs OFF differ ({on:?} vs {off:?})");
+    assert_eq!(on, Some(220), "expected 4×fib(10)=220; got {on:?}");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — the governing transparency invariant as an
+// explicit oracle: a representative apply-arg program produces BYTE-IDENTICAL
+// stdout lenient-ON vs lenient-OFF.
+#[test]
+fn apply_arg_no_lenient_determinism_oracle() {
+    // fib(12)=144, fib(11)=89 → 233. REPL stdout carries `:primitives/Int 233`.
+    let input = format!(
+        "{AA_FIB_DEF}(add-i64 (fib 12) (fib 11))\n"
+    );
+    let on = strip_repl_timing(&aa_repl_stdout(&input, &[]));
+    let off = strip_repl_timing(&aa_repl_stdout(&input, &[("CRANELISP_NO_LENIENT", "1")]));
+    assert!(
+        on.contains(":primitives/Int 233"),
+        "determinism oracle: expected `:primitives/Int 233` lenient-ON; got:\n{on}"
+    );
+    assert_eq!(
+        on, off,
+        "§12.4.3 determinism oracle: lenient ON vs OFF observable output differ.\nON:\n{on}\nOFF:\n{off}"
+    );
+}
+
+// --- Negative / gating (2) — the [Tested+Neg] half ---------------------------
+
+// spec: spec/12-runtime.md §12.4.3 — NEGATIVE gating: an apply with only ONE
+// expensive argument `(add-i64 (work big 0) 7)` (the other is a literal) is
+// below the ≥2 gate → NOT sparked → no speedup (majority-of-N) + same result.
+// The apply-site analogue of `lenient_vec_map_reduce_prior_binding_stays_serial`.
+#[test]
+fn apply_arg_single_expensive_stays_serial() {
+    let src = format!(
+        "{AA_WORK_DEF}(defn main [] (Pure (div-i64 (add-i64 (work 40000000 0) 7) 1000000)))\n"
+    );
+    let majority = PMR_ATTEMPTS / 2 + 1;
+    let mut no_speedup = 0u32;
+    let mut observed: Vec<(u128, u128, u128)> = Vec::new();
+    for attempt in 0..PMR_ATTEMPTS {
+        let (on_ms, on_exit) = aa_run_elapsed(&src, &[]);
+        let (off_ms, off_exit) = aa_run_elapsed(&src, &[("CRANELISP_NO_LENIENT", "1")]);
+        assert_eq!(
+            on_exit, off_exit,
+            "attempt {attempt}: single-expensive ON vs OFF differ ({on_exit:?} vs {off_exit:?})"
+        );
+        let threshold = off_ms * PMR_SPEEDUP_NUM / PMR_SPEEDUP_DEN;
+        observed.push((on_ms, off_ms, threshold));
+        if on_ms >= threshold {
+            no_speedup += 1;
+            if no_speedup >= majority {
+                break;
+            }
+        }
+    }
+    assert!(
+        no_speedup >= majority,
+        "expected NO speedup (ON >= 0.7·OFF) in the majority of {PMR_ATTEMPTS} attempts \
+         — a single expensive apply-arg must NOT be sparked (≥2 gate, §12.4.3). \
+         Attempts (on_ms, off_ms, threshold): {observed:?}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — NEGATIVE gating: an apply whose arguments
+// are all TRIVIAL (literals / var refs, never `Apply`) has zero sparkable
+// candidates → never sparked → unchanged + correct (the cost-heuristic floor,
+// never-slower-than-serial). NOTE: the plan's `(add-i64 (add-i64 a b) (mul-i64 c
+// d))` example is inconsistent with the as-built CHEAP_BUILTINS set, which is the
+// operator symbols `+ - * /` (etc.), NOT the `*-i64` primitive names — so
+// `(add-i64 a b)` as an ARGUMENT would actually be "worth sparking". Trivial
+// (non-Apply) args are the faithful, impl-correct way to express "no sparkable
+// candidates"; filed nothing — the design's cheap-list is normative.
+#[test]
+fn apply_arg_all_cheap_stays_serial() {
+    let src = "(defn cheapsum [:Int a :Int b] (add-i64 a b))\n\
+               (defn main [] (Pure (cheapsum 20 22)))\n";
+    let on = aa_run_exit(src, &[]);
+    let off = aa_run_exit(src, &[("CRANELISP_NO_LENIENT", "1")]);
+    assert_eq!(on, off, "§12.4.3: trivial-arg apply ON vs OFF differ ({on:?} vs {off:?})");
+    assert_eq!(on, Some(42), "expected 20+22=42; got {on:?}");
+}
+
+// --- Ferry at the NEW apply entry point (4) — lenient-eval.md §5, §9 ----------
+
+// Ferry programs use explicit `primitives` imports (the ferry combinator set)
+// and the naive imports needed; the default (None) prelude, matching the
+// existing CATCH_ERR_PROGRAM convention.
+const AA_FERRY_CAUGHT_PROGRAM: &str =
+    "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
+     (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
+     (defn main []\n\
+       (Pure (match (catch-runtime-error (fn [] (add-i64 (div-i64 10 0) (work 100000 0))))\n\
+               [(Ok v)  1\n\
+                (Err m) 0])))\n";
+
+// spec: spec/12-runtime.md §12.4.3 — a div-by-zero in ONE of ≥2 sparked
+// apply-arguments is FERRIED to the joining thread (the barrier-force) and
+// surfaces into the enclosing `catch-runtime-error` → the `Err` arm fires (exit
+// 0 proves caught, not silently dropped), under `--run`. New ferry entry point.
+#[test]
+fn apply_arg_panic_ferried_caught_run() {
+    Cranelisp::new()
+        .file("user.cl", AA_FERRY_CAUGHT_PROGRAM)
+        .run("user.cl")
+        .output()
+        .assert_exit(0);
+}
+
+// spec: spec/12-runtime.md §12.4.3 — same sparked-apply-arg ferry under `--link`
+// (ferry sound across modes); the `Err` arm fires → exit 0.
+#[test]
+fn apply_arg_panic_ferried_caught_link() {
+    Cranelisp::new()
+        .file("user.cl", AA_FERRY_CAUGHT_PROGRAM)
+        .link_then_run("user.cl")
+        .output()
+        .assert_exit(0);
+}
+
+// spec: spec/12-runtime.md §12.4.3 — NEGATIVE: an UNCAUGHT div-by-zero in a
+// sparked apply-argument MUST NOT be silently discarded — it surfaces "division
+// by zero" on the joining thread. (A swallowed spark panic would let the program
+// complete with the sentinel value — the failure mode the ferry exists to prevent.)
+#[test]
+fn apply_arg_panic_not_swallowed_neg() {
+    let src = "(import [primitives [div-i64 add-i64 sub-i64 le-i64 Int Pure]])\n\
+               (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
+               (defn main [] (Pure (add-i64 (div-i64 10 0) (work 100000 0))))\n";
+    let out = Cranelisp::new().file("user.cl", src).run("user.cl").output();
+    assert!(
+        out.stderr.contains("division by zero") || out.stdout.contains("division by zero"),
+        "uncaught sparked-arg div-by-zero MUST surface 'division by zero' (§12.4.3, not swallowed).\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout, out.stderr
+    );
+    assert_ne!(out.status.code(), Some(0), "uncaught panic must NOT exit 0");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — first-error-wins: when BOTH sparked
+// apply-arguments would panic with DISTINCT messages, the LEFT (first
+// left-to-right) error wins — the barrier forces arguments in source order, so
+// `set_runtime_error` first-error-wins is deterministic regardless of worker
+// finish order, matching a sequential L-to-R evaluation. Left `(div-i64 10 0)`
+// ("division by zero") beats right `(vec-get [1 2 3] 9)` ("vec-get: index out of
+// bounds"). P+N: the division message appears; the out-of-bounds message does NOT.
+#[test]
+fn apply_arg_dual_panic_first_error_wins() {
+    let src = "(import [primitives [div-i64 vec-get add-i64 Pure]])\n\
+               (defn main [] (Pure (add-i64 (div-i64 10 0) (vec-get [1 2 3] 9))))\n";
+    let out = Cranelisp::new().file("user.cl", src).run("user.cl").output();
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    assert!(
+        combined.contains("division by zero"),
+        "first-error-wins: expected the LEFT 'division by zero' (§12.4.3).\n{combined}"
+    );
+    assert!(
+        !combined.contains("out of bounds"),
+        "first-error-wins NEGATIVE: the RIGHT 'index out of bounds' must NOT win (§12.4.3).\n{combined}"
+    );
+}
+
+// --- Barrier / TCO-gating invariant (2) — §4.4 Phase 2, §2.5.3 ---------------
+
+// spec: spec/12-runtime.md §12.4.3 — a TAIL-position (non-self) sparking apply
+// `(add-i64 (div-i64 10 0) (work n 0))` as `f`'s whole body, wrapped in
+// `catch-runtime-error` → `Err` arm. Fails (panic dropped / wrong exit) if any
+// path reaches the call with an unforced argument IVar — pins barrier-before-call
+// in tail position.
+#[test]
+fn apply_arg_tail_panic_ferried() {
+    let src = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
+               (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
+               (defn f [:Int n] (add-i64 (div-i64 10 0) (work n 0)))\n\
+               (defn main []\n\
+                 (Pure (match (catch-runtime-error (fn [] (f 100000)))\n\
+                         [(Ok v)  1\n\
+                          (Err m) 0])))\n";
+    Cranelisp::new().file("user.cl", src).run("user.cl").output().assert_exit(0);
+}
+
+// spec: spec/12-runtime.md §12.5 — a TAIL SELF-recursive call carrying ≥2
+// expensive arguments `(loop2 (sub-i64 n 1) (work x 0) (work y 0))` at large `n`
+// MUST still TCO (no stack overflow) + correct result. Proves apply-arg sparking
+// is gated OFF the TCO self-call fast path (§2.5.3) so the barrier is never
+// bypassed by the loop-header jump. A regression that sparked the self-call args
+// would either overflow the stack or drop the barrier.
+#[test]
+fn apply_arg_tco_self_call_not_sparked() {
+    // work(x,0)=x, work(y,0)=y; x,y are invariant → loop2 just counts n down,
+    // returning x+y=7 after 1,000,000 TCO iterations. No TCO ⇒ stack overflow.
+    let src = "(import [primitives [add-i64 sub-i64 le-i64 Int Pure]])\n\
+               (defn work [:Int n :Int acc] (if (le-i64 n 0) acc (work (sub-i64 n 1) (add-i64 acc 1))))\n\
+               (defn loop2 [:Int n :Int x :Int y]\n\
+                 (if (le-i64 n 0) (add-i64 x y)\n\
+                     (loop2 (sub-i64 n 1) (work x 0) (work y 0))))\n\
+               (defn main [] (Pure (loop2 1000000 3 4)))\n";
+    Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("user.cl", src)
+        .run("user.cl")
+        .output()
+        .assert_exit(7);
+}
+
+// --- Performance evidence (1) — the GENUINELY RED-on-HEAD witness ------------
+
+// spec: spec/12-runtime.md §12.4.3 — best-of-N wall-clock witness that the
+// divide-and-conquer apply-arg map-reduce PARALLELISES: lenient-ON beats
+// lenient-OFF by ≥1.43× (ON < 0.7·OFF) in ≥1 of N attempts, with the
+// NON-over-sparking `work` leaf so the signal is the top-level apply-arg D&C.
+// Semantic-transparency (ON exit == OFF exit) asserted on EVERY attempt. This is
+// the one row RED on HEAD for the right reason: with no apply-arg sparking the
+// two `pmr` halves run serially → ON ≈ OFF → no attempt qualifies. A purely
+// sequential impl can never qualify in ANY attempt.
+#[test]
+fn apply_arg_par_map_parallelizes() {
+    let src = format!(
+        "{AA_WORK_DEF}\
+         (defn pmr [v :Int lo :Int hi]\n\
+           (if (le-i64 (sub-i64 hi lo) 1)\n\
+               (work (vec-get v lo) 0)\n\
+               (add-i64 (pmr v lo (add-i64 lo (div-i64 (sub-i64 hi lo) 2)))\n\
+                        (pmr v (add-i64 lo (div-i64 (sub-i64 hi lo) 2)) hi))))\n\
+         (defn main []\n\
+           (let [v [{N} {N} {N} {N} {N} {N} {N} {N}]]\n\
+             (Pure (div-i64 (pmr v 0 (vec-len v)) 1000000))))\n",
+        N = AA_PERF_N,
+    );
+    // BEST-vs-BEST (min ON vs min OFF), NOT "any attempt qualifies". A
+    // speedup-witness phrased as best-of-N ("any attempt where ON < 0.7·OFF")
+    // is designed to be EASY to pass — so a single contention blip where OFF
+    // reads spuriously slow false-passes it even with no parallelism. Comparing
+    // the BEST (least-contended) ON run against 0.7× the BEST OFF run removes the
+    // asymmetric-noise false-pass: on a serial impl both bests are the same fair
+    // serial time ⇒ ratio ≈ 1.0 ⇒ the assertion fails reliably; a genuine
+    // parallel impl drives the best ON to ~OFF/cores ⇒ it passes reliably. The
+    // semantic-transparency check (ON exit == OFF exit) runs on EVERY attempt.
+    let mut observed: Vec<(u128, u128)> = Vec::new();
+    let mut min_on = u128::MAX;
+    let mut min_off = u128::MAX;
+    for _ in 0..PMR_ATTEMPTS {
+        let (on_ms, on_exit) = aa_run_elapsed(&src, &[]);
+        let (off_ms, off_exit) = aa_run_elapsed(&src, &[("CRANELISP_NO_LENIENT", "1")]);
+        assert_eq!(
+            on_exit, off_exit,
+            "apply-arg D&C ON vs OFF produced different results ({on_exit:?} vs {off_exit:?}) \
+             — §12.4.3 semantic transparency"
+        );
+        observed.push((on_ms, off_ms));
+        min_on = min_on.min(on_ms);
+        min_off = min_off.min(off_ms);
+    }
+    let threshold = min_off * PMR_SPEEDUP_NUM / PMR_SPEEDUP_DEN;
+    assert!(
+        min_on < threshold,
+        "expected best lenient-ON ({min_on} ms) < 0.7·best lenient-OFF ({min_off} ms => \
+         threshold {threshold} ms) over {PMR_ATTEMPTS} attempts — the apply-arg \
+         divide-and-conquer map-reduce did not parallelise its two independent apply-arguments \
+         (§12.4.3). Attempts (on_ms, off_ms): {observed:?}"
+    );
+}
+
+// --- Spark budget (4) — global in-flight-spark cap, lenient-eval.md §3.6 ------
+
+/// Floor ratio for the budget regression guard: ON must stay below 5.0·OFF.
+/// Deliberately LOOSE — the assertion is "the budget kept the O(2ⁿ) spark
+/// explosion bounded," not "it sped up" (naive fib is NOT expected to speed up).
+/// fib(30) is a tiny ~22 ms workload, so the budget's FIXED per-node overhead
+/// (one atomic try-reserve per spark site + the first ≈cap real spawns) lifts
+/// the steady-state ON/OFF ratio to ≈1.2–2.7× even running ALONE — the 1.3×
+/// ceiling this guard originally carried false-failed ~25% of suite runs. The
+/// regression it actually exists to catch is an UNBOUNDED explosion: design
+/// `lenient-eval.md §3.6` measured the budget-off shape at ≈140× serial. A 5.0×
+/// ceiling clears the ≈2.7× steady-state with margin AND still trips at ~28× the
+/// observed overhead floor — it cannot miss an order-of-magnitude spark blowup.
+const BUDGET_FLOOR_NUM: u128 = 50;
+const BUDGET_FLOOR_DEN: u128 = 10;
+
+// spec: spec/12-runtime.md §12.4.3 — FLOOR guard: the over-sparking shape
+// `(add-i64 (fib …) (fib …))` with the DEFAULT budget on is not dramatically
+// slower than serial (CRANELISP_NO_LENIENT=1) — best-of-N, loose ON < 5.0·OFF
+// witness (the regression the budget exists to prevent: an O(2ⁿ) spark explosion
+// would be many-× slower — ≈140× per §3.6 — not 5×). Result equality asserted
+// every attempt.
+// GREEN on HEAD (no apply-arg sparking ⇒ both serial ⇒ ratio ≈ 1.0); would go RED
+// in an apply-arg-sparking-WITHOUT-budget intermediate state.
+#[test]
+fn budget_naive_fib_floor_not_slower_than_serial() {
+    let src = format!(
+        "{AA_FIB_DEF}(defn main [] (Pure (div-i64 (fib 30) 1)))\n"
+    );
+    // BEST-OF-N (not majority): an O(2ⁿ) spark explosion is SYSTEMATIC — it makes
+    // ON many-× OFF in EVERY attempt, so it fails best-of-N too. On a bounded
+    // (HEAD-serial or budget-capped) run, a FAIR attempt has ON < 5.0·OFF (fib(30)
+    // is tiny, so the budget's fixed per-node overhead lifts the bounded ratio to
+    // ≈1.2–2.7× even alone — see BUDGET_FLOOR_NUM); contention only makes individual
+    // readings jitter further, so the loose ceiling + best-of-N needs one fair
+    // attempt. Majority-of-N is the wrong tool here — a single OFF-fast/ON-slow blip
+    // under the saturated suite breaks the majority while the floor genuinely holds.
+    const FLOOR_ATTEMPTS: u32 = 6;
+    let mut within_floor = false;
+    let mut observed: Vec<(u128, u128, u128)> = Vec::new();
+    for attempt in 0..FLOOR_ATTEMPTS {
+        let (on_ms, on_exit) = aa_run_elapsed(&src, &[]);
+        let (off_ms, off_exit) = aa_run_elapsed(&src, &[("CRANELISP_NO_LENIENT", "1")]);
+        assert_eq!(
+            on_exit, off_exit,
+            "attempt {attempt}: naive-fib budget ON vs OFF differ ({on_exit:?} vs {off_exit:?})"
+        );
+        let ceiling = off_ms * BUDGET_FLOOR_NUM / BUDGET_FLOOR_DEN;
+        observed.push((on_ms, off_ms, ceiling));
+        if on_ms < ceiling.max(1) {
+            within_floor = true;
+            break;
+        }
+    }
+    assert!(
+        within_floor,
+        "expected ON < 5.0·OFF (floor restored by the spark budget) in ≥1 of \
+         {FLOOR_ATTEMPTS} attempts; none held — an unbounded O(2ⁿ) spark \
+         explosion (§3.6) is systematic across all attempts. \
+         Attempts (on_ms, off_ms, ceiling): {observed:?}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — the SAME program run three ways —
+// INLINE (cap saturated, CRANELISP_SPARK_BUDGET=1), UNDER-CAP (spawned,
+// CRANELISP_SPARK_BUDGET high), and SERIAL (CRANELISP_NO_LENIENT=1) — yields one
+// identical result. Proves the budget is SCHEDULING-ONLY (observational
+// equivalence): inline-vs-spawned never changes the answer.
+#[test]
+fn budget_three_regime_result_equivalence() {
+    let src = format!(
+        "{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 12) (fib 11))))\n"
+    );
+    let inline = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "1")]);
+    let under_cap = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "1000000000")]);
+    let serial = aa_run_exit(&src, &[("CRANELISP_NO_LENIENT", "1")]);
+    assert_eq!(inline, Some(233), "inline (BUDGET=1): expected fib(12)+fib(11)=233; got {inline:?}");
+    assert_eq!(under_cap, inline, "under-cap (BUDGET high) result differs from inline");
+    assert_eq!(serial, inline, "serial (NO_LENIENT) result differs from inline");
+}
+
+// spec: spec/12-runtime.md §12.4.3 — the two degenerate-to-serial paths coincide
+// observationally: CRANELISP_SPARK_BUDGET=0 (runtime-layer serial — every spark
+// resolves inline) produces byte-identical stdout to CRANELISP_NO_LENIENT=1
+// (codegen-layer serial — no spark emitted).
+#[test]
+fn budget_zero_equiv_no_lenient() {
+    let input = format!(
+        "{AA_FIB_DEF}(add-i64 (fib 12) (fib 11))\n"
+    );
+    let budget_zero = strip_repl_timing(&aa_repl_stdout(&input, &[("CRANELISP_SPARK_BUDGET", "0")]));
+    let no_lenient = strip_repl_timing(&aa_repl_stdout(&input, &[("CRANELISP_NO_LENIENT", "1")]));
+    assert!(
+        budget_zero.contains(":primitives/Int 233"),
+        "BUDGET=0: expected `:primitives/Int 233`; got:\n{budget_zero}"
+    );
+    assert_eq!(
+        budget_zero, no_lenient,
+        "BUDGET=0 (runtime serial) vs NO_LENIENT=1 (codegen serial) stdout differ.\n\
+         BUDGET=0:\n{budget_zero}\nNO_LENIENT=1:\n{no_lenient}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.4.3 — knob behaviour: unset ⇒ default cap applies
+// (correct result); CRANELISP_SPARK_BUDGET=N respected (correct result); a
+// NON-PARSING value (`banana`) falls back to default — NO crash, correct result.
+// P+N: the garbage value must not crash and must still produce the right answer.
+#[test]
+fn budget_knob_default_override_and_garbage() {
+    let src = format!(
+        "{AA_FIB_DEF}(defn main [] (Pure (add-i64 (fib 10) (fib 9))))\n"
+    );
+    let unset = aa_run_exit(&src, &[]);
+    let override_n = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "8")]);
+    let garbage = aa_run_exit(&src, &[("CRANELISP_SPARK_BUDGET", "banana")]);
+    assert_eq!(unset, Some(89), "unset (default cap): expected 89; got {unset:?}");
+    assert_eq!(override_n, Some(89), "BUDGET=8: expected 89; got {override_n:?}");
+    assert_eq!(garbage, Some(89), "BUDGET=banana (fallback to default, no crash): expected 89; got {garbage:?}");
 }

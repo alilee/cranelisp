@@ -123,7 +123,36 @@ The language-level concurrency model is scheduled as its **own track**, sequence
 - **Why before `--release` (a dependency, not a priority):** Phase H's release-tier RC/memory optimizations — non-atomic RC, escape→stack/region, Perceus in-place reuse, RC-fusion — are sound only relative to a settled concurrency model, because the model determines which values cross thread boundaries (atomic RC exists *because* of lenient/Par parallelism, Decision 13). If `--release` lands first it optimizes against a model the scheduler-trampoline will change. This edge is fixed.
 - **Why after agentic-repl (a priority, not a dependency):** the two tracks are independent (neither needs the other); the order is the user's product-priority call and is re-orderable if priorities shift.
 - **Scope moved out of Phase H:** the runtime-concurrency direction decision and `0424` (spark apply-args / `par-map`) leave the Phase H gate and live under this track. `0407` is reframed (Model B = escape hatch, NOT this track — see its reframing box); `0408` (lenient-eval showcase) exercises the pure-value half.
-- **Design input ready:** `design/arch/effect-concurrency.md` (thin platforms + scheduler-trampoline + inferred-effect-concurrency; the explicit-combinator boundary drawn at completion-timing). Implementation sprints not yet decomposed. *(Scheduled per FIXME 0427, now resolved.)*
+- **Design ratified + decomposed (S92 design conversation, user-led 2026-06-26):** `design/arch/effect-concurrency.md` rewritten to ratified target state. The delivery sequence is decomposed below. *(Scheduled per FIXME 0427, now resolved.)*
+
+### Effect-concurrency track — delivery sequence (ratified S92)
+
+The **language-level** concurrency model (`design/arch/effect-concurrency.md`). Thesis: **throughput is free; control is explicit** — the inferred half (dataflow + resource metadata → automatic concurrency, results provably identical to sequential) and the control half (timing-dependent combinators — cancellation/deadlines/races/supervision) are committed peers. Substrate: **async/await over a host-owned, feature-gated runtime** (enabled by IO-as-reified-data → the trampoline is an `async fn`; no hand-rolled fibers); **two non-unifiable pools** (rayon CPU sparks + reactor I/O). **Platform ABI v4 (A2):** host owns the reactor, platforms are C-ABI async *leaves* (own the *what*; host owns the *when* via a `HostCtx` vtable + C-ABI waker); binary-decoupled deployment preserved (prebuilt artifact + bundled `.cl` on the search path, no Rust for the cranelisp user). **Observability** (strand-correlated trampoline event stream + strand-id plumbing, built on `IoObserver`/`trace`) is first-class groundwork from slice 2. Reference workload: **web**; floor: **never slower than sequential**.
+
+Vertical-slice delivery — each slice ships a witnessable artifact; risk + observability front-loaded:
+
+| Slice | Sprint | Capability | Demo / acceptance | Depends on |
+|---|---|---|---|---|
+| **1** ✅ | **S92** | CPU-parallelism widening — spark independent apply-arguments / general `par-map` (FIXME 0424(i)) **+ spark-budget create-gate** (floor restored ~140×→~2.7×). **SHIPPED** (`sprints/archive/sprint-92.md`): par_map ~2.5×; ferry first-error-wins conformance fix; spec §12.4.3 widened (0441); effect-concurrency.md ratified + this sequence decomposed; example 30 + parallel D&C Sudoku (0408 expr-half) + ring4j demo + docs. 1648 pass/0 fail. | `par-map` ~2.5× to N cores; floor overhead-bounded | — (existing rayon/IVar) |
+| 2 | — | Async substrate + minimal host-reactor + one async-leaf effect + **observability framework** (strand-correlated event stream; strand-id plumbing). **Riskiest slice — front-loaded.** | two slow reads overlap on the reactor, no thread-per-read; strand trace visible | 1 indep. |
+| 3 | — | Concurrency descriptor + token-cardinality pool (`Semaphore`). | concurrent GETs vs serial file reads on real tokens; (N+1)th parks | 2 |
+| 4 | — | Backpressure (bounded admission). | saturate-not-oversaturate; bounded in-flight + memory | 3 |
+| 5 | — | Launch-and-continue + supervisor (co-landed). | §10 static file server with **no `spawn`**; panicking handler → 500, server lives | 4 |
+| 6 | — | Blocking/CPU two-pool routing. | mixed CPU+IO workload hits core-utilization standard (first measurement vs the bar) | 5 |
+| 7 | — | Cancellation + combinator layer (`race`/`select`/`timeout`) — **committed** (separable/additive, not deferred). | per-request timeout, cancel-on-disconnect, graceful shutdown | 5 |
+| 8 | — | *(optional)* Concurrency-diagnostics consolidation — dev-facing strand inspector. | replay a strand; see parks/cancels | 7 |
+
+**Cascade prerequisites for slices ≥ 2** (flagged in `effect-concurrency.md`, not yet actioned): `platform-interface.md` ABI v3→v4 (poll-shape GOT effect fns, descriptor in manifest, host-reactor C-ABI); spec §10.12/§12; `bounded-contexts.md` §3/§5/§6; a candidate new principle ("confine mutable-state concurrency to the interpreter"); a `sequences/` concurrency-scheduler diagram. These are design groundwork for slice 2's sprint, not S92.
+
+### Compiler-internal concurrency race — PRIORITISED (S93, before slice 2)
+
+**Reframed (user direction, S92 close):** FIXME **0425** is NOT "compiler-internal concurrency debt / dependency-service extraction" (that framing reads as optional cleanup and is why it has rolled S62 → S92 unfixed). It is an **unisolated recurring test suite failure** — the **H6/H7 import/typecheck-pipeline race** (`'helper-val' not found in module 'helper'` signature; tracked: `tests/repl_persist_race.rs` active surface, `design/int/heisenbug-race-closure.md` §7.10/§8.3, `tests/plan/ledger.md:2118`). It fires ~5–10% under thread contention, is **load-sensitive**, and **S92 evidence shows it worsening as the track adds CPU-parallel work** (slice-1 perf load surfaced it ~1/14 full runs). FIXME 0426 (D0030 mutual-import deadlock) couples.
+
+**Why before slice 2 (sequencing):** slices 2+ add the async runtime + more CPU-parallel work → more contention → the race surfaces *more* and would contaminate slice-2+ test results (a real new concurrency bug becomes indistinguishable from this pre-existing noise). Stabilising the compiler-internal coordination first gives the language-level slices a clean noise floor — the same "settle the substrate before building on it" logic that puts the whole track before Phase H.
+
+**S93 shape (isolate-then-fix):** (1) `/qa` **isolates** the race into a deterministic/stress repro (the ledger-flagged loom / structured-interleaving methodology — turning "unisolated" into a pinned failing test); (2) the **structural fix** (0425's dependency-service extraction — make the publish/readiness/block/resume invariant structural, not convention; "separating signature resolution from body checking is the candidate fix"); (3) `/arch` retitles FIXME 0425 to the reframed description when actioning it. Per `memory/feedback_close_fixmes_each_sprint`: this is a deliberate prioritisation, not another habitual deferral.
+
+Linear order updates to: **agentic-repl ✅ → effect-concurrency slice 1 (S92) ✅ → compiler-internal race fix (S93) → effect-concurrency slices 2–8 → Phase H.**
 
 ### Pipeline v3 migration — COMPLETE (Sprints 29-38)
 

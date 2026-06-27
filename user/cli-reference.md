@@ -246,6 +246,30 @@ Three things to know about the scaffold:
 The trigger, mode, notice, and safety guarantees are specified in
 [`repl/spec.md §0.5.7`](../repl/spec.md).
 
+## Environment variables
+
+A few environment variables tune behaviour outside the flag set. The path-related
+ones (`CRANELISP_LIB`, `CRANELISP_PLATFORM_PATH`) are covered inline above and in
+[`getting-started.md`](getting-started.md); this is their consolidated home.
+
+| Variable | Effect |
+|---|---|
+| `CRANELISP_LIB` | Colon-separated list of extra lib directories, searched before `Cranelisp.toml` and `{project-root}/stdlib/`. See [the lib search path](#where-cranelisp-looks-for-libraries-cranelisptoml). |
+| `CRANELISP_PLATFORM_PATH` | Directory to find the platform DLL when no checked-in symlink is present (e.g. `target/debug`). See [getting-started](getting-started.md). |
+| `CRANELISP_SPARK_BUDGET=N` | Caps how much pure computation runs in parallel at once (see [automatic parallelism](getting-started.md#automatic-parallelism)). `0` disables auto-parallelism entirely (everything runs serially). Unset uses a sensible default scaled to the number of cores. |
+| `CRANELISP_NO_LENIENT=1` | Also disables auto-parallelism, forcing strictly serial left-to-right evaluation. Useful for a serial baseline when measuring or for debugging. |
+
+`CRANELISP_SPARK_BUDGET` and `CRANELISP_NO_LENIENT` are user-facing knobs over the
+parallel evaluation described in
+[`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation); because
+that parallelism is semantically invisible, neither variable changes what a program
+computes — only how it is scheduled.
+
+> **As-built note.** These variables are documented here as the binary implements
+> them today; their normative home in the CLI contract is still being settled (a
+> FIXME tracks adding them to the contract listing). When that lands, this section
+> will cross-link it.
+
 ## Cross-links
 
 - **REPL experience** — display formats, prompts, exit conditions, and the CLI

@@ -137,6 +137,53 @@ where
     /// When true, sparkability analysis is disabled — trace bodies must
     /// execute sequentially to produce deterministic trace trees.
     pub(crate) in_trace_body: bool,
+
+    /// Sparked apply-arguments for the function application currently being
+    /// dispatched (lenient-eval.md §4.4). When `Some((args_ptr, map))`, the
+    /// apply whose argument slice has base pointer `args_ptr` had its arguments
+    /// at the indices in `map` sparked into IVars by the lenient pre-pass; the
+    /// arg-list compilation FORCES those positions (at the left-to-right
+    /// barrier) instead of recompiling them, with no consuming inc (the forced
+    /// value is an rc=1 temporary that transfers into the callee).
+    ///
+    /// Keyed by the argument-slice base pointer so a nested apply / constructor
+    /// whose own argument slice differs (different allocation ⇒ different
+    /// pointer) can never consult an enclosing apply's index→IVar map — the
+    /// pointer-identity guard makes cross-apply leakage structurally impossible
+    /// (Principle 18). Set/restored around each lenient `compile_apply` dispatch.
+    pub(crate) sparked_args: Option<(*const MonoExpr, HashMap<usize, Value>)>,
+
+    /// Accumulated create-gate **arm discriminator** for span-derived inner-
+    /// function names (lenient-eval.md §3.6.2). The create-gate compiles the
+    /// *same* source expressions on BOTH its lenient and direct arms, so without
+    /// a per-arm component the two arms would re-emit identical span-derived
+    /// inner-function names (`__lambda_<span>__`, `__wrap_…`) and the second
+    /// `define_function` would collide (`Duplicate definition of identifier`).
+    /// `emit_create_gate` appends a `g{id}{L|D}_` token here around each arm's
+    /// compilation (saved/restored, so nesting accumulates); `inner_fn_discriminator`
+    /// folds it into every inner-function name, making the two arms' (and nested
+    /// gates') copies distinct. Empty outside any gate arm.
+    pub(crate) gate_arm_disc: String,
+
+    /// Monotonic per-compiler counter handing out unique create-gate ids, so
+    /// nested gates within one function body get distinct arm discriminators.
+    pub(crate) gate_counter: u32,
+
+    /// When true, the create-gate (lenient-eval.md §3.6.2) is suppressed —
+    /// sparkable apply/`let` sites compile fully sequentially with no runtime
+    /// budget branch. Set for the duration of a gate's **direct (over-budget)
+    /// arm** so its lowering does not emit nested gates.
+    ///
+    /// Without this, the gate compiles the same lowering on BOTH arms, so a
+    /// STATICALLY nested chain of sparkable sites — e.g. `(add-i64 a (add-i64 b
+    /// (add-i64 c …)))`, every pair sparkable — would re-compile its tail on
+    /// each arm, giving `O(2^depth)` codegen (observed: a deep nested-add hung
+    /// the compiler). Suppressing gates inside the over-budget arm is both the
+    /// fix and the intended semantics: over budget at a site ⇒ evaluate that
+    /// whole subexpression serially (§3.6.3 floor). Runtime recursion through a
+    /// function whose body has ONE gate is unaffected (the body is compiled
+    /// once); only static source nesting was the blowup.
+    pub(crate) suppress_spark_gate: bool,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -178,6 +225,10 @@ where
             drop_glue_depth: 0,
             pending_closure_drop_glue: None,
             in_trace_body: false,
+            sparked_args: None,
+            gate_arm_disc: String::new(),
+            gate_counter: 0,
+            suppress_spark_gate: false,
         }
     }
 
@@ -199,7 +250,15 @@ where
     /// Non-`[A-Za-z0-9_]` chars in the enclosing name (`$`, `+`, `/`, `.`) are
     /// mapped to `_` so the result is a clean Cranelift symbol.
     pub(crate) fn inner_fn_discriminator(&self) -> String {
-        inner_fn_discriminator_for(self.current_fn_name.as_ref())
+        // Fold in the create-gate arm discriminator (§3.6.2): the gate compiles
+        // the same expressions on both arms, so the per-arm `g{id}{L|D}_` token
+        // is what keeps the two arms' span-derived inner-function names distinct.
+        // Empty outside any gate arm ⇒ byte-identical names to the pre-gate path.
+        format!(
+            "{}{}",
+            inner_fn_discriminator_for(self.current_fn_name.as_ref()),
+            self.gate_arm_disc,
+        )
     }
 
     /// Compile a function definition body into Cranelift IR.
@@ -260,6 +319,10 @@ where
             drop_glue_depth: 0,
             pending_closure_drop_glue: None,
             in_trace_body: false,
+            sparked_args: None,
+            gate_arm_disc: String::new(),
+            gate_counter: 0,
+            suppress_spark_gate: false,
         };
 
         // Seed the function's parameters into scope + variable_types.

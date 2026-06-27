@@ -152,20 +152,52 @@
 (defn find-min-candidates [g]
   (find-min-helper g 0 -1 10))
 
-;; ── Backtracking Solver ────────────────────────────────────────────────
+;; ── Parallel Backtracking Search (lenient-eval showcase) ────────────────
+;;
+;; S92 (FIXME 0408, contained half): the sequential digit loop is replaced by
+;; a divide-and-conquer search over the candidate digits. At a guess node the
+;; candidate branches are fully independent — each tries a different digit on
+;; its own grid — so the two recursive halves of a binary split are the
+;; independent, individually-expensive *apply-arguments* of `first-success`.
+;; Slice-1 lenient eval (apply-arg sparking, S92) auto-sparks them: the search
+;; tree parallelises with no `spark`/`par` in the source, and the spark-budget
+;; create-gate bounds over-sparking (over budget → serial arm). See
+;; `design/backend/lenient-eval.md` §2.5.
+;;
+;; This is *budget-bounded speculative parallel search*: `first-success` is
+;; correct even when its second argument was evaluated speculatively, because
+;; the branches are pure (the loser's work is simply discarded).
 
-;; Try each digit d from lo to 9 at the given cell index.
-;; Returns the first successful solution or Unsolvable.
-(defn try-digits [g idx mask d]
-  (if (> d 9) Unsolvable
-    (if (not (bit-set? mask d))
-      ;; Digit not a candidate, skip
-      (try-digits g idx mask (+ d 1))
-      ;; Try setting this cell to d and solving
-      (let [g2 (set-cell g idx (Solved d))]
-        (match (solve g2)
-          [(Success solution) (Success solution)
-           Unsolvable (try-digits g idx mask (+ d 1))])))))
+;; Enumerate the set digits (1-9) of a candidate mask into a (Vec Int), using
+;; the digit-domain `bit-set?` adapter. (`bit-count mask` == the length of the
+;; result; the D&C range `0..(count digits)` is split over that cardinality.)
+(defn mask-to-digits-helper [mask d acc]
+  (if (> d 9) acc
+    (if (bit-set? mask d)
+      (mask-to-digits-helper mask (+ d 1) (conj acc d))
+      (mask-to-digits-helper mask (+ d 1) acc))))
+
+(defn mask-to-digits [mask]
+  (mask-to-digits-helper mask 1 []))
+
+;; Pick the first branch that solved; otherwise take the second. Correct even
+;; if `b` was computed speculatively (pure branches — the loser is discarded).
+(defn first-success [a b]
+  (match a
+    [(Success s) (Success s)
+     _ b]))
+
+;; Copy-free index-range divide-and-conquer over the candidate-digit Vec.
+;; Base (hi-lo == 1): commit the single digit and solve. Else: split at mid
+;; and combine the two independent recursive solves with `first-success`. The
+;; two `solve-range` calls are the independent expensive apply-args → sparked.
+(defn solve-range [g idx digits lo hi]
+  (if (= (- hi lo) 1)
+    (solve (set-cell g idx (Solved (get digits lo))))
+    (let [mid (/ (+ lo hi) 2)]
+      (first-success
+        (solve-range g idx digits lo mid)
+        (solve-range g idx digits mid hi)))))
 
 ;; Main solver: propagate, then backtrack if needed.
 ;;
@@ -190,7 +222,12 @@
             (Some idx)
               (let [cell (cell-at g2 idx)]
                 (match cell
-                  [(Candidates mask) (try-digits g2 idx mask 1)
+                  [(Candidates mask)
+                     ;; Guess: divide-and-conquer over the candidate digits.
+                     (let [digits (mask-to-digits mask)]
+                       (if (= (count digits) 0)
+                         Unsolvable
+                         (solve-range g2 idx digits 0 (count digits))))
                    _ Unsolvable]))]))]))
 
 ;; ── Board Formatting ──────────────────────────────────────────────────
@@ -426,6 +463,43 @@
               (Some "easy puzzle should be fully determined"))
           Unsolvable (Some "easy puzzle should be solvable")])
      None (Some "make-grid should accept the easy puzzle string")]))
+
+;; --- Parallel-search equivalence self-test (S92, FIXME 0408) ---
+;;
+;; The divide-and-conquer search auto-parallelises via slice-1 apply-arg
+;; sparking. Because a proper Sudoku has a UNIQUE solution and the branches are
+;; pure, the parallel (speculative) search MUST return the same grid a serial
+;; search returns. This test pins the full 81-digit solution string; running
+;; the suite under both default (parallel) and `CRANELISP_NO_LENIENT=1`
+;; (serial) and getting the identical green run is the parallel ≡ serial guard.
+;; The puzzle is chosen to require backtracking (so `solve-range`/`first-success`
+;; — the sparked path — actually runs), not just constraint propagation.
+
+;; Flatten a solved grid to its bare 81-digit string (no separators).
+(defn solution-digits-helper [g i acc]
+  (if (= i 81) acc
+    (solution-digits-helper g (+ i 1)
+      (str-concat acc (digit-string (cell-value (cell-at g i)))))))
+
+(defn solution-digits [g]
+  (solution-digits-helper g 0 ""))
+
+(defn test-solve-parallel-equiv []
+  ;; A puzzle that genuinely requires backtracking (constraint propagation
+  ;; alone gets stuck), so the divide-and-conquer `solve-range`/`first-success`
+  ;; — the sparked path — actually runs. Its unique solution is pinned below;
+  ;; the parallel (default) search and a serial (`CRANELISP_NO_LENIENT=1`)
+  ;; search MUST both produce it. Verified identical under both modes (S92).
+  (match (make-grid "..3.2.6..9..3.5..1..18.64....81.29..7.......8..67.82....26.95..8..2.3..9..5.1.3..")
+    [(Some g)
+       (match (solve g)
+         [(Success solution)
+            (let [s (solution-digits solution)]
+              (if (= s "483921657967345821251876493548132976729564138136798245372689514814253769695417382")
+                None
+                (Some (str-concat "parallel solve produced an unexpected solution: " s))))
+          Unsolvable (Some "equivalence puzzle should be solvable")])
+     None (Some "make-grid should accept the equivalence puzzle")]))
 
 (defn test-hard-puzzle []
   (match (make-grid "800000000003600000070090200050007000000045700000100030001000068008500010090000400")

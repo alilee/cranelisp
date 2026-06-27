@@ -453,7 +453,7 @@ all relocate from `src/trace.rs` to `crates/cranelisp-intrinsics/src/trace.rs` w
 ### 4.1 All twelve bodies live in `cranelisp-intrinsics`
 
 Per the user ruling, **all 12 trace bodies relocate to `cranelisp-intrinsics`** and publish through
-`intrinsics_table()` (these 12 join the catalog — its as-built 29 entries, authoritative count in
+`intrinsics_table()` (these 12 join the catalog — authoritative count in
 BC §4b invariant 11 / the catalog test constant; the catalog's "trace deliberately ABSENT"
 scope text flips — §4.2). The twelve:
 

@@ -20,6 +20,36 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
+    /// Collect the set of known ADT constructor names in the current module.
+    ///
+    /// Constructor calls are alloc+tag, not real work, so they are excluded from
+    /// sparking. Single-source (Principle 7) for both lenient decision sites —
+    /// the `let` path (`compile_let`) and the apply-argument path
+    /// (`compile_apply`, lenient-eval.md §4.4).
+    pub(crate) fn collect_module_constructors(&self) -> HashSet<Symbol> {
+        self.ctx
+            .symbol_tables
+            .get(&self.ctx.current_module)
+            .map(|table| {
+                table
+                    .symbols
+                    .iter()
+                    .filter(|(_, entry)| {
+                        matches!(
+                            entry,
+                            cranelisp_types::ModuleEntry::Def { kind, .. }
+                                if matches!(
+                                    **kind,
+                                    cranelisp_types::DefKind::Constructor { .. }
+                                )
+                        )
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     // --- Let expression ---
 
     pub(crate) fn compile_let(
@@ -31,28 +61,23 @@ where
         // Check if lenient evaluation applies.
         // Skip sparkability analysis inside trace bodies — trace must
         // execute sequentially to produce deterministic trace trees.
-        if !*LENIENT_DISABLED && !self.in_trace_body {
-            // Collect known constructor names to exclude from sparking.
-            // Collect constructor names from the current module's symbol table.
-            let constructors: HashSet<Symbol> = self
-                .ctx
-                .symbol_tables
-                .get(&self.ctx.current_module)
-                .map(|table| {
-                    table.symbols.iter()
-                        .filter(|(_, entry)| matches!(
-                            entry,
-                            cranelisp_types::ModuleEntry::Def {
-                                kind, ..
-                            } if matches!(**kind, cranelisp_types::DefKind::Constructor { .. })
-                        ))
-                        .map(|(name, _)| name.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
+        if !*LENIENT_DISABLED && !self.in_trace_body && !self.suppress_spark_gate {
+            // Collect known constructor names to exclude from sparking (shared
+            // with the apply-arg lenient site, Principle 7).
+            let constructors = self.collect_module_constructors();
             let sparkable = find_sparkable_bindings(bindings, &constructors);
             if sparkable.len() >= 2 {
-                return self.compile_let_lenient(bindings, body, &sparkable, span);
+                // Create-gate (§3.6.2): a runtime budget branch wraps the site.
+                // Lenient arm = the spark path; direct arm = the existing
+                // fully-sequential `let` (no IVars, no allocation) when over
+                // budget. Both arms produce the body result; the gate joins them.
+                let n = sparkable.len();
+                return self.emit_create_gate(
+                    n,
+                    span,
+                    |this| this.compile_let_lenient(bindings, body, &sparkable, span),
+                    |this| this.compile_let_sequential(bindings, body, span),
+                );
             }
         }
 
@@ -205,6 +230,102 @@ where
         Ok(result)
     }
 
+    /// Emit the **create-gate** around a spark site (lenient-eval.md §3.6.2).
+    ///
+    /// At a sparkable site with `n` sparkable positions (`n ≥ 2`), the static
+    /// sparkability decision is necessary but not sufficient — it cannot see
+    /// dynamic recursion depth, so a naive over-sparking recursion would allocate
+    /// `O(nodes)` IVars/thunks. The gate moves the budget decision *before*
+    /// allocation: it calls `cranelisp_spark_budget_try_reserve(n)` and branches
+    /// into a **lenient arm** (the caller's `lenient` closure — create+spark+force
+    /// barrier, the only place allocation happens) on a granted batch, or a
+    /// **direct arm** (the caller's `direct` closure — the existing fully-sequential
+    /// lowering, zero allocation) when over budget. Both arms produce the site's
+    /// result `Value` and `jump join_block(result)`; the gate returns the join
+    /// param. This bounds total spark allocation to `O(cap)` regardless of tree
+    /// size (§3.6.3 floor argument).
+    ///
+    /// Single-source (Principle 7) for both spark clients — the apply-argument
+    /// site (`compile_apply`, §4.4) and the `let` site (`compile_let`, §4.2). The
+    /// two call sites differ only in *which* lowering each arm runs; the gate
+    /// shape (try_reserve → brif → two arms → join-with-param) is shared here.
+    ///
+    /// `CRANELISP_NO_LENIENT` / trace-body suppression and the TCO self-call fast
+    /// paths are handled by the callers *above* the gate, so a suppressed or TCO
+    /// site never reaches this helper (§2.5.3, §3.6.2).
+    pub(crate) fn emit_create_gate(
+        &mut self,
+        n: usize,
+        span: Span,
+        lenient: impl FnOnce(&mut Self) -> Result<Value, CranelispError>,
+        direct: impl FnOnce(&mut Self) -> Result<Value, CranelispError>,
+    ) -> Result<Value, CranelispError> {
+        // granted = call cranelisp_spark_budget_try_reserve(n)  (1 = lenient, 0 = direct)
+        let n_val = self.builder.ins().iconst(types::I64, n as i64);
+        let granted =
+            self.emit_extern_call("cranelisp_spark_budget_try_reserve", &[n_val], span)?;
+
+        let lenient_block = self.builder.create_block();
+        let direct_block = self.builder.create_block();
+        let join_block = self.builder.create_block();
+        self.builder.append_block_param(join_block, types::I64);
+
+        self.builder
+            .ins()
+            .brif(granted, lenient_block, &[], direct_block, &[]);
+
+        // Both arms compile the SAME source expressions, so each arm gets a unique
+        // discriminator token appended to `gate_arm_disc` for the duration of its
+        // compilation (saved/restored, so nested gates accumulate). This keeps the
+        // two arms' span-derived inner-function names (`__lambda_…`, `__wrap_…`)
+        // distinct — without it the second arm's `define_function` collides.
+        let gate_id = self.gate_counter;
+        self.gate_counter += 1;
+        let saved_disc = self.gate_arm_disc.clone();
+
+        // Both arms must start from the SAME tail-position state — the value the
+        // caller established at the gate site (false for the apply site, since
+        // `compile_apply` clears it before the gate; the let's body tail-position
+        // for the let site). The first arm's lowering mutates `in_tail_position`
+        // (e.g. `dispatch_apply` restores it to `saved_tail` for the call), so
+        // without restoring it the SECOND arm would compile under the wrong
+        // tail-position — turning a non-tail recursive arg into a spurious TCO
+        // self-jump to the loop header (observed: the direct arm of a recursive
+        // `(add-i64 (f …) (f …))` jumped to the loop header instead of calling).
+        let saved_itp = self.in_tail_position;
+
+        // Lenient arm: budget granted — create+spark IVars, force barrier, dispatch.
+        self.builder.switch_to_block(lenient_block);
+        self.builder.seal_block(lenient_block);
+        self.gate_arm_disc = format!("{saved_disc}g{gate_id}L_");
+        self.in_tail_position = saved_itp;
+        let val_l = lenient(&mut *self)?;
+        self.gate_arm_disc = saved_disc.clone();
+        self.builder.ins().jump(join_block, &[val_l]);
+
+        // Direct arm: over budget — the existing sequential lowering, no
+        // allocation. Suppress nested gates for the whole subtree: over budget at
+        // this site ⇒ evaluate the subexpression serially (§3.6.3 floor), AND
+        // this is what bounds codegen — without it a statically nested chain of
+        // sparkable sites would re-compile its tail on both arms at every level,
+        // giving O(2^depth) compile time.
+        self.builder.switch_to_block(direct_block);
+        self.builder.seal_block(direct_block);
+        self.gate_arm_disc = format!("{saved_disc}g{gate_id}D_");
+        self.in_tail_position = saved_itp;
+        let saved_suppress = self.suppress_spark_gate;
+        self.suppress_spark_gate = true;
+        let val_d = direct(&mut *self)?;
+        self.suppress_spark_gate = saved_suppress;
+        self.gate_arm_disc = saved_disc;
+        self.builder.ins().jump(join_block, &[val_d]);
+
+        // Join: both arms produce the site's result as a single i64 Value.
+        self.builder.switch_to_block(join_block);
+        self.builder.seal_block(join_block);
+        Ok(self.builder.block_params(join_block)[0])
+    }
+
     /// Emit an inline RC dec for an IVar pointer.
     ///
     /// IVars use atomic RC at offset +8. When dec brings RC to 0, call
@@ -213,7 +334,7 @@ where
     /// fork-join error-slot ferry (a panicked thunk's message). Plain
     /// `runtime/dealloc` would leak that String; `cranelisp_ivar_dealloc` is the
     /// IVar-aware drop path (`ivar.rs`, test-discovery.md §6).
-    fn emit_rc_dec_for_ivar(&mut self, ivar_val: Value, span: Span) -> Result<(), CranelispError> {
+    pub(crate) fn emit_rc_dec_for_ivar(&mut self, ivar_val: Value, span: Span) -> Result<(), CranelispError> {
         // Load current RC from ivar + 8
         let rc_offset = self.builder.ins().iconst(types::I64, 8);
         let rc_addr = self.builder.ins().iadd(ivar_val, rc_offset);

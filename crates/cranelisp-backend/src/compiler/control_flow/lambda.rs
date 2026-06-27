@@ -88,6 +88,7 @@ where
         // Compile the inner function body using a new Cranelift context.
         self.compile_lambda_body(
             inner_func_id,
+            &inner_name,
             params,
             &captures,
             body,
@@ -342,9 +343,11 @@ where
     ///
     /// The inner function has signature (env_ptr, params...) -> i64.
     /// Captured values are loaded from the environment.
+    #[allow(clippy::too_many_arguments)] // +inner_name seeds the body compiler's discriminator
     fn compile_lambda_body(
         &mut self,
         func_id: cranelift_module::FuncId,
+        inner_name: &str,
         params: &[Symbol],
         captures: &[Symbol],
         body: &MonoExpr,
@@ -380,6 +383,22 @@ where
             params.len(),
             last_uses,
         );
+
+        // Seed the inner compiler's discriminator with this lambda's
+        // globally-unique name. Inner functions emitted within the body
+        // (nested lambdas, spark thunks, fn-as-value/gate wrappers) are named by
+        // `inner_fn_discriminator()`, which keys off `current_fn_name`. Without a
+        // seed the inner compiler resets it to `None`, so the same source span
+        // reached via two distinct compilation paths — e.g. the create-gate
+        // (lenient-eval.md §3.6.2) compiles the same subexpression on BOTH arms,
+        // and each gate arm's all-lenient thunk descent re-enters fresh inner
+        // compilers — would re-emit identical module-global names and the second
+        // `define_function` would collide (`Duplicate definition of identifier`).
+        // Seeding with the unique lambda name makes every name within the body
+        // uniquely prefixed. TCO self-call detection is unaffected: inner
+        // compilers have `tail_loop_block = None`, which gates the self-call fast
+        // path regardless of `current_fn_name`.
+        inner_compiler.current_fn_name = Some(Symbol::from(inner_name));
 
         // Bind captured variables from the environment.
         //

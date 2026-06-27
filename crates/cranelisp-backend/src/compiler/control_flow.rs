@@ -32,6 +32,11 @@ mod sparkability;
 // flagged unused.
 pub(crate) use capture_rc::emit_capture_inc_into;
 pub(crate) use free_vars::find_free_vars;
+// `find_sparkable_args` + `LENIENT_DISABLED` are reached by `compiler::apply`
+// (the apply-argument lenient pre-pass, lenient-eval.md §4.4) through this hub —
+// the `sparkability` submodule itself is private to `control_flow`. The unit
+// tests reach `find_sparkable_args` via `super::` on the same re-export.
+pub(crate) use sparkability::{find_sparkable_args, LENIENT_DISABLED};
 // Only the `sparkability_tests` sibling reaches this via `super::`.
 #[cfg(test)]
 pub(crate) use sparkability::find_sparkable_bindings;

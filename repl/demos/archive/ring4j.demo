@@ -20,6 +20,31 @@
 
 ; CRANELISP_NO_LENIENT=1 disables automatic sparking for debugging
 
+; Sprint 92: lenient eval widens to APPLY ARGUMENTS — independent, expensive
+; arguments of one call are sparked too, so (Pair (fib a) (fib b)) runs the
+; two fibs in parallel instead of serially.
+
+(deftype Pair (Pair [:Int a :Int b]))
+(defn pairfib [:Int a :Int b] (Pair (fib a) (fib b)))
+
+; /clif surfaces the spark-budget CREATE-GATE: `call fn0(iconst 2)` is
+; cranelisp_spark_budget_try_reserve(2), then `brif` forks into the lenient
+; arm (ivar_create / ivar_spark / ivar_force on each arg) and the direct arm
+; (sequential calls, no allocation), joining on a block param.
+
+/clif pairfib
+
+; Same result as a serial build — only the schedule differs (both fibs at once)
+
+(pairfib 25 26)
+
+; The >=2 gate holds: a single expensive argument is NOT worth sparking, so
+; /clif shows NO gate — just a plain sequential call, no try_reserve, no brif.
+
+(defn onefib [:Int a :Int b] (Pair (fib a) b))
+
+/clif onefib
+
 ; Auto IO scheduling — commutative bind! chains run in parallel
 
 (platform stdio)

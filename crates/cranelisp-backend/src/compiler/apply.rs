@@ -4,6 +4,8 @@
 // emit_adt_construct, compile_extern_call,
 // compile_closure_call
 
+use std::collections::HashMap;
+
 use cranelift::prelude::*;
 use cranelift_module::Module;
 
@@ -13,6 +15,7 @@ use crate::heap::HeapCategory;
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
 
+use super::control_flow::{find_sparkable_args, LENIENT_DISABLED};
 use super::{signature_heap_category, FnCompiler};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
@@ -79,6 +82,118 @@ where
         let saved_tail = self.in_tail_position;
         self.in_tail_position = false;
 
+        // --- Lenient apply-argument pre-pass (lenient-eval.md §2.5, §4.4) ---
+        //
+        // This is reached ONLY on the non-tail, non-TCO-self-call arm: the two
+        // TCO self-call fast paths above `return` early, so a tail self-jump can
+        // never reach the spark/force barrier (§2.5.3 — a jump to the loop header
+        // would bypass the force). Trace bodies and `CRANELISP_NO_LENIENT` suppress
+        // sparking exactly as the `let` site does (§2.3, §2.4). When ≥2 arguments
+        // are independently worth sparking, create+spark an IVar per sparkable
+        // argument here (Phase 1); the dispatch below then FORCES each at its
+        // left-to-right position (Phase 2, the barrier) before any call code is
+        // emitted, and feeds the forced values through the unchanged apply
+        // lowering (Phase 3). See `maybe_force_sparked_arg`.
+        if !*LENIENT_DISABLED && !self.in_trace_body && !self.suppress_spark_gate {
+            let constructors = self.collect_module_constructors();
+            let sparkable = find_sparkable_args(args, &constructors);
+            if sparkable.len() >= 2 {
+                // Create-gate (§3.6.2): a runtime budget branch wraps the site,
+                // shared with the `let` site via `emit_create_gate`. The lenient
+                // arm runs the three-phase spark path (create+spark, force
+                // barrier, dispatch); the direct arm runs the unchanged
+                // sequential apply (no `sparked_args` installed ⇒ every argument
+                // is `compile_expr`'d in place, nothing allocated). Both arms
+                // dispatch the *same* call and produce its result Value; the gate
+                // joins them. The TCO self-call fast paths `return` early ABOVE
+                // this point, so a tail self-jump never reaches the gate (§2.5.3).
+                let n = sparkable.len();
+                return self.emit_create_gate(
+                    n,
+                    span,
+                    // Lenient arm — budget granted.
+                    |this| {
+                        // Phase 1: create + spark an IVar per sparkable argument —
+                        // verbatim the §4.2 Phase-1 emission applied to argument
+                        // positions. Thunk bodies compile in fresh inner
+                        // FnCompilers (no leakage). This is the ONLY arm that
+                        // allocates IVars/thunks.
+                        let mut map: HashMap<usize, Value> =
+                            HashMap::with_capacity(sparkable.len());
+                        for idx in sparkable {
+                            let arg = &args[idx];
+                            let thunk_expr = MonoExpr::Lambda {
+                                params: vec![],
+                                body: Box::new(arg.clone()),
+                                span: arg.span(),
+                                ty: ConcreteType::Fn(vec![], Box::new(arg.ty().clone())),
+                            };
+                            let thunk_val = this.compile_expr(&thunk_expr)?;
+                            let ivar_val = this.emit_extern_call(
+                                "cranelisp_ivar_create",
+                                &[thunk_val],
+                                span,
+                            )?;
+                            this.emit_extern_call("cranelisp_ivar_spark", &[ivar_val], span)?;
+                            map.insert(idx, ivar_val);
+                        }
+
+                        // Install this apply's spark context (keyed by the
+                        // argument-slice base pointer), dispatch through the
+                        // unchanged lowering (Phase 2 barrier-forces each sparked
+                        // position at its left-to-right slot, Phase 3 calls), then
+                        // restore the enclosing apply's context. The pointer key
+                        // makes a nested apply / constructor incapable of
+                        // consulting this map.
+                        let saved_spark = this.sparked_args.replace((args.as_ptr(), map));
+                        let result = this.dispatch_apply(
+                            callee,
+                            args,
+                            span,
+                            resolved_call,
+                            apply_type,
+                            saved_tail,
+                        );
+                        this.sparked_args = saved_spark;
+                        result
+                    },
+                    // Direct arm — over budget. The existing sequential apply,
+                    // NO `sparked_args` installed ⇒ every argument `compile_expr`'d
+                    // in place; nothing allocated (§3.6.3 floor).
+                    |this| {
+                        this.dispatch_apply(
+                            callee,
+                            args,
+                            span,
+                            resolved_call,
+                            apply_type,
+                            saved_tail,
+                        )
+                    },
+                );
+            }
+        }
+
+        // Sequential apply (no sparkable arguments): dispatch unchanged. A
+        // non-lenient apply does NOT touch `sparked_args`; the pointer-identity
+        // guard in `maybe_force_sparked_arg` ensures its own argument slice never
+        // matches an enclosing apply's installed map.
+        self.dispatch_apply(callee, args, span, resolved_call, apply_type, saved_tail)
+    }
+
+    /// Dispatch a (non-TCO, args-not-in-tail) application through the resolved-
+    /// call / var-apply / closure-call lowering. Shared by the sequential and
+    /// lenient apply paths so the lenient pre-pass reuses the *unchanged* apply
+    /// lowering (lenient-eval.md §4.4 Phase 3) rather than forking it.
+    fn dispatch_apply(
+        &mut self,
+        callee: &MonoExpr,
+        args: &[MonoExpr],
+        span: Span,
+        resolved_call: Option<&ResolvedCall>,
+        apply_type: Option<&cranelisp_types::Type>,
+        saved_tail: bool,
+    ) -> Result<Value, CranelispError> {
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
             return self.compile_resolved_call(resolved.clone(), args, span, saved_tail);
@@ -460,9 +575,54 @@ where
     /// Decision 24 (uniform consuming) the plain form has a narrow role:
     /// pure-value builtins where RC does not apply.
     fn compile_arg_list(&mut self, args: &[MonoExpr]) -> Result<Vec<Value>, CranelispError> {
-        args.iter()
-            .map(|arg| self.compile_expr(arg))
-            .collect()
+        let args_ptr = args.as_ptr();
+        let mut vals = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            // A sparked argument is forced at this position (the left-to-right
+            // barrier) instead of recompiled; otherwise compile normally.
+            if let Some(forced) = self.maybe_force_sparked_arg(i, args_ptr, arg.span())? {
+                vals.push(forced);
+            } else {
+                vals.push(self.compile_expr(arg)?);
+            }
+        }
+        Ok(vals)
+    }
+
+    /// If argument `idx` of the application whose argument slice has base pointer
+    /// `args_ptr` was sparked by the lenient apply-arg pre-pass (lenient-eval.md
+    /// §4.4), force its IVar HERE (the left-to-right Phase-2 barrier), dec the
+    /// calling thread's cell reference (`emit_rc_dec_for_ivar` → the IVar-aware
+    /// dealloc that also frees any ferried error String), and return the forced
+    /// rc=1 temporary. Returns `None` for a non-sparked position (compile
+    /// normally).
+    ///
+    /// The `args_ptr` pointer-identity check is load-bearing: `self.sparked_args`
+    /// is set only for the duration of the owning apply's dispatch, but a nested
+    /// apply / constructor compiled while it is set has a *different* argument
+    /// slice (distinct allocation ⇒ distinct base pointer), so it can never match
+    /// and never force the wrong IVar by index collision (Principle 18).
+    ///
+    /// No consuming inc is owed for a sparked position: the cost heuristic
+    /// guarantees a non-trivial `Apply`, so the forced value is an rc=1 temporary
+    /// that transfers into the callee exactly like a sequentially-compiled
+    /// temporary argument (lenient-eval.md §4.4 "RC / consuming convention").
+    fn maybe_force_sparked_arg(
+        &mut self,
+        idx: usize,
+        args_ptr: *const MonoExpr,
+        span: Span,
+    ) -> Result<Option<Value>, CranelispError> {
+        let ivar_val = match &self.sparked_args {
+            Some((ptr, map)) if std::ptr::eq(*ptr, args_ptr) => map.get(&idx).copied(),
+            _ => None,
+        };
+        let Some(ivar_val) = ivar_val else {
+            return Ok(None);
+        };
+        let forced = self.emit_extern_call("cranelisp_ivar_force", &[ivar_val], span)?;
+        self.emit_rc_dec_for_ivar(ivar_val, span)?;
+        Ok(Some(forced))
     }
 
     /// Compile args for a consuming callee (user-defined function).
@@ -475,8 +635,17 @@ where
         &mut self,
         args: &[MonoExpr],
     ) -> Result<Vec<Value>, CranelispError> {
+        let args_ptr = args.as_ptr();
         let mut vals = Vec::with_capacity(args.len());
-        for arg in args {
+        for (i, arg) in args.iter().enumerate() {
+            // Sparked argument: force at this position (left-to-right barrier),
+            // dec our cell reference, and push the forced rc=1 temporary with NO
+            // consuming inc (it transfers into the callee like any temporary).
+            if let Some(forced) = self.maybe_force_sparked_arg(i, args_ptr, arg.span())? {
+                vals.push(forced);
+                continue;
+            }
+
             let val = self.compile_expr(arg)?;
 
             // Inc heap-typed variable arguments for consuming convention.

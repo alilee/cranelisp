@@ -6,6 +6,47 @@ The **committed showcase target is the stdio CLI** — `user.cl` tells the full
 story end-to-end. The web platform is a designed-but-unbuilt future stretch
 (FIXME 0405, `/platform`); see `plan-exemplar.md`.
 
+## Current State (Sprint 92 Phase 6b — parallel divide-and-conquer search)
+
+The solver's backtracking search is now a **parallel divide-and-conquer** over
+the candidate digits (FIXME 0408, *contained half* — the parallel-search
+**expression**). The sequential `try-digits` early-exit loop in `solver.cl` is
+retired and replaced by three new functions (~40 lines, all in `solver.cl`,
+`grid.cl` untouched):
+
+- `mask-to-digits` — enumerate the set digits (1-9) of a candidate mask → `(Vec Int)`;
+- `first-success a b` — `(match a (Success s) (Success s) _ b)`: take `a` if it
+  solved, else `b`; correct even when `b` was computed speculatively (pure
+  branches — the loser's work is discarded);
+- `solve-range g idx digits lo hi` — copy-free index-range D&C: base `hi-lo==1`
+  commits the digit and `solve`s; else split at `mid` and combine the two
+  **independent expensive recursive solves** with `first-success`.
+
+The two `solve-range` calls are the independent expensive **apply-arguments** of
+`first-success`, which **slice-1 lenient eval (S92) auto-sparks** — the search
+tree parallelises with **zero `spark`/`par` in the source**, and the
+spark-budget create-gate bounds over-sparking (over budget → serial arm). See
+`design/backend/lenient-eval.md` §2.5. (A `vec-map`-style cons-walk does **not**
+parallelise — one expensive arg per node; only the two-expensive-arg D&C shape
+does, which is why the reshape is D&C.) `solve`/`solve-range` are mutually
+recursive; `solve`'s guess arm calls `solve-range` over the candidate Vec.
+
+**Validation.** Full easy 9×9 solves end-to-end (`user.cl`). The exemplar suite
+is **40/40 green** (added `solver/test-solve-parallel-equiv`, a
+backtracking-requiring puzzle pinned to its unique solution) under **both**
+default (parallel) and `CRANELISP_NO_LENIENT=1` (serial) — the **parallel ≡
+serial** equivalence guard for the reshape. **Net wall-clock speedup is not yet
+observable**: the copy-per-guess grid representation (quadratic, allocation-
+dominated) masks the parallel gain — that is the **carried perf half** of FIXME
+0408 (persistent/structural-share Vec or in-place candidate masks + a Phase-H
+release backend). S92 delivers the parallel **expression**; the perf carry
+stays open, and `test-hard-puzzle` stays excluded.
+
+The Wave-4 "inherently sequential / counterexample" verdict in
+`plan-exemplar.md` is superseded (constraint *propagation* is sequential, but
+backtracking *search* is embarrassingly parallel — Sudoku is a showcase of
+**budget-bounded speculative parallel search**).
+
 ## Current State (Sprint 91 Phase 6 — `grid.cl` bit layer on native primitives)
 
 Five Cranelisp files: four pure-core modules (`grid`, `solver`, `html`,
@@ -92,7 +133,7 @@ kept but route their arithmetic through the operators. String primitives
 | `html.cl` | HTML generation (form page, solution page, error page) | Complete (10 tests) |
 | `form.cl` | URL-encoded form body parsing | Complete (8 tests) |
 | `user.cl` | **Headline entry** — full pipeline through stdio IO | Complete |
-| `tests.cl` | Free-standing test runner (exit code = pass count) | Complete (39/39 green) |
+| `tests.cl` | Free-standing test runner (exit code = pass count) | Complete (40/40 green; parallel ≡ serial) |
 | `main.cl` | Web routing + IO models | Not started (FIXME 0405, `/platform`) |
 
 ## Headline entry
@@ -131,13 +172,20 @@ them directly, and returns the number of passes as the process exit code.
 ```bash
 CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib \
   cargo run -- --run exemplar/tests.cl
-echo $?   # => 39  (all green)
+echo $?   # => 40  (all green)
 ```
 
-`solver/test-hard-puzzle` is excluded from the runner (kept in `solver.cl` as
-documentation): it is *correct* but the genuinely-hard backtracking copies the
-whole 81-cell Vec on every guess, so it runs for minutes. The easy puzzle plus
-the `eliminate`/`unsolvable` tests cover the solver path in the runner.
+The suite is green **40/40 under both default (parallel) and
+`CRANELISP_NO_LENIENT=1` (serial)** — that two-mode green run is the
+parallel ≡ serial equivalence guard for the S92 D&C search reshape
+(`solver/test-solve-parallel-equiv`, a backtracking-requiring puzzle pinned to
+its unique solution; ~8-9s, the carried copy-per-guess cost).
+
+`solver/test-hard-puzzle` is still excluded from the runner (kept in
+`solver.cl` as documentation): it is *correct* but the genuinely-hard
+backtracking copies the whole 81-cell Vec on every guess, so it runs for
+minutes. The easy puzzle, the `test-solve-parallel-equiv` search guard, and the
+`eliminate`/`unsolvable` tests cover the solver path in the runner.
 
 ## Known Issues
 
@@ -151,10 +199,16 @@ the `eliminate`/`unsolvable` tests cover the solver path in the runner.
   collateral-fixed **0417** defect; S88 Step 3.1 confirmed `conj` is
   RC-identical to the bare `vec-push` (full 9×9 solve + 39/39 tests green with
   `conj`). The exemplar no longer reaches for the bare `vec-push` primitive.
-- **Hard-puzzle backtracking is quadratic** (performance, not correctness).
-  `set-cell`/`assoc` copy the full 81-cell Vec per guess; deep backtracking on
-  hard puzzles is slow. A future representation (persistent Vec, or in-place
-  candidate masks) would fix it. Not blocking the showcase.
+- **Hard-puzzle backtracking is quadratic** (performance, not correctness) —
+  **the carried perf half of FIXME 0408**. `set-cell`/`assoc` copy the full
+  81-cell Vec per guess; deep backtracking on hard puzzles is slow, and this
+  copy cost dominates so heavily it **masks the parallel-search speedup** (the
+  S92 D&C reshape parallelises structurally but shows no net wall-clock gain
+  until this is fixed). A future representation (persistent/structural-share
+  Vec, or in-place candidate masks) would fix it, alongside a Phase-H
+  release/Tier-2 backend. Not blocking the showcase. `test-hard-puzzle` stays
+  excluded from the runner until then; `test-solve-parallel-equiv` (a
+  shallower-search puzzle, ~8-9s) is the in-suite search guard.
 
 ## Design Decisions
 

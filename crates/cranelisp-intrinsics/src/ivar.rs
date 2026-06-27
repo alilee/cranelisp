@@ -38,7 +38,8 @@
 //!
 //! See `design/backend/lenient-eval.md` for the full design.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::LazyLock;
+use std::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
 
 use crate::alloc::{alloc_with_rc, dealloc};
 
@@ -46,6 +47,98 @@ use crate::alloc::{alloc_with_rc, dealloc};
 const PENDING: i64 = 0;
 const EVALUATING: i64 = 1;
 const RESOLVED: i64 = 2;
+
+/// Global in-flight-spark counter — the reservation half of the backend
+/// create-gate budget (`design/backend/lenient-eval.md` §3.6, Sprint 92).
+///
+/// Counts spark permits currently reserved against the pool. The backend's
+/// create-gate calls [`spark_budget_try_reserve`] *before* allocating any
+/// IVar/thunk: a granted batch of `n` permits commits `n` spawns (the lenient
+/// arm); an over-budget reject commits zero (the direct arm — no allocation).
+/// Each spawned spark releases exactly one permit on completion via
+/// [`InFlightGuard`]'s drop, so `reserve(n)` ↔ `n` spawns ↔ `n` guard drops is
+/// balanced by construction. This bounds *total* in-flight sparks (and thus
+/// IVar/thunk allocation) to `O(cap)` regardless of recursion depth, restoring
+/// the never-slower-than-serial floor for over-sparking shapes (e.g. naive
+/// recursive `(add-i64 (fib …) (fib …))`).
+///
+/// `AtomicIsize` (not `Usize`): a stray over-decrement goes negative (still
+/// `< cap` ⇒ keeps granting) rather than wrapping to a huge value that would
+/// silently wedge the budget to permanent-direct.
+///
+/// The decision is invisible to the program result: the gate's lenient and
+/// direct arms produce byte-for-byte identical values (spawned-vs-direct is a
+/// scheduling choice only); only the allocation/concurrency profile differs.
+static IN_FLIGHT_SPARKS: AtomicIsize = AtomicIsize::new(0);
+
+/// The cap on [`IN_FLIGHT_SPARKS`]. Default `4 × rayon::current_num_threads()`
+/// (a small multiple of the pool width — enough slack for load imbalance while
+/// keeping live IVar/thunk memory and scheduler pressure `O(threads)`). The env
+/// override `CRANELISP_SPARK_BUDGET=N` sets it explicitly (style consistent with
+/// `CRANELISP_NO_LENIENT`); a non-parsing value falls back to the default; `=0`
+/// makes [`spark_budget_try_reserve`] always reject ⇒ every gate site takes the
+/// direct arm (≡ fully serial at the runtime layer). Read once per process via
+/// `LazyLock`.
+static SPARK_BUDGET: LazyLock<usize> = LazyLock::new(|| {
+    std::env::var("CRANELISP_SPARK_BUDGET")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or_else(|| 4 * rayon::current_num_threads())
+});
+
+/// RAII release of one [`IN_FLIGHT_SPARKS`] permit. Placed at the top of the
+/// spawned rayon closure so the permit reserved by the create-gate's
+/// [`spark_budget_try_reserve`] is released exactly once per spark — even on a
+/// Rust unwind (an allocation failure or internal bug), not just on normal
+/// completion. A *leaked* permit is the dangerous direction: it would
+/// permanently lower the effective budget, drifting the system toward
+/// permanent-direct (silent serial degradation no test would obviously catch).
+/// See `design/backend/lenient-eval.md` §3.6 "Release accounting".
+struct InFlightGuard;
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        IN_FLIGHT_SPARKS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Try to reserve `n` permits for the `n` sparkable arguments/bindings of one
+/// backend create-gate site (`design/backend/lenient-eval.md` §3.6.1).
+///
+/// Returns `1` if the **whole** batch was granted — the caller MUST then
+/// create+spark exactly `n` IVars, each of which releases one permit on
+/// completion via [`InFlightGuard`]'s drop. Returns `0` if over budget — the
+/// caller MUST take the direct arm and allocate nothing.
+///
+/// All-or-nothing and TOCTOU-free: the `n` permits are committed in a single CAS
+/// so `cap` is a genuine bound, not a soft target that N concurrent sites each
+/// blow past. The over-budget path is **load-only** (no RMW) — keeping the
+/// per-node floor residual tiny under an over-sparking explosion. `cap == 0`
+/// (env `CRANELISP_SPARK_BUDGET=0`) ⇒ `cur + n > 0` for all `n ≥ 1` ⇒ always
+/// rejects ⇒ every site takes the direct arm (≡ fully serial at the runtime
+/// layer). SeqCst throughout (Decision 13).
+#[unsafe(export_name = "cranelisp_spark_budget_try_reserve")]
+pub extern "C" fn spark_budget_try_reserve(n: i64) -> i64 {
+    let cap = *SPARK_BUDGET as isize;
+    let n = n as isize;
+    // Fast reject (the common case under explosion): a single load, no RMW.
+    if IN_FLIGHT_SPARKS.load(Ordering::SeqCst) + n > cap {
+        return 0;
+    }
+    // Commit the whole batch atomically (CAS loop) — all-or-nothing.
+    loop {
+        let cur = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+        if cur + n > cap {
+            return 0;
+        }
+        if IN_FLIGHT_SPARKS
+            .compare_exchange(cur, cur + n, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return 1;
+        }
+    }
+}
 
 /// Field offsets from base pointer (base-pointer convention).
 const STATE_OFFSET: isize = 16;
@@ -87,6 +180,14 @@ pub extern "C" fn ivar_create(thunk: i64) -> i64 {
 /// Increment the IVar's RC and submit a force-and-dec task to the rayon
 /// global thread pool.
 ///
+/// **Always spawns** (`design/backend/lenient-eval.md` §3.4, Sprint 92). The
+/// spawn-vs-direct decision is no longer taken here — the backend's create-gate
+/// (§3.6) already decided this cell is worth sparking, via a runtime
+/// [`spark_budget_try_reserve`] check emitted *before* the IVar was even
+/// allocated. By the time `ivar_spark` runs, the lenient arm has been chosen, so
+/// the only correct action is to spawn. The spawn task releases its one reserved
+/// spark-budget permit on completion (or unwind) via [`InFlightGuard`]'s drop.
+///
 /// # Safety
 /// `ivar` must be a valid base pointer to an IVar with rc > 0.
 #[unsafe(export_name = "cranelisp_ivar_spark")]
@@ -111,6 +212,11 @@ pub extern "C" fn ivar_spark(ivar: i64) -> i64 {
     }
 
     rayon::spawn(move || {
+        // Release the in-flight-spark reservation on normal completion OR on a
+        // Rust unwind (§3.6). Placed FIRST so its `drop` runs last, after the
+        // RC dec below — and runs even if anything in this closure unwinds.
+        let _in_flight_guard = InFlightGuard;
+
         // Force the IVar (evaluate thunk if still PENDING).
         ivar_force(ivar);
 
@@ -208,6 +314,22 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
             // Load code_ptr from the closure (offset 16 from base pointer).
             let code_ptr = unsafe { *((thunk as isize + CLOSURE_CODE_PTR_OFFSET) as *const i64) };
 
+            // First-error-wins protection for INLINE thunk execution (§12.4.3,
+            // `design/backend/lenient-eval.md` §3.6 "Ferry soundness — inline
+            // spark"). On the inline-claim path (the budget's over-cap branch,
+            // or any time the consuming thread itself wins this CAS) the calling
+            // thread IS the consumer, so its runtime-error slot may already hold
+            // a FIRST error set by an earlier barrier-forced sibling. The thunk
+            // about to run calls `runtime_panic`, which UNCONDITIONALLY
+            // overwrites that slot; the `take_runtime_error` below would then
+            // clear it — clobbering first-error-wins. Save the caller's slot
+            // before the thunk and restore it (first-error-wins) afterward so an
+            // inline panic can never stomp an already-set first error. On the
+            // spawn path the thunk runs on a throwaway worker slot (empty),
+            // making this save/restore a harmless no-op there — keeping
+            // `ivar_force` uniform across the inline and spawned paths.
+            let saved_caller_error = crate::panic::take_runtime_error();
+
             // Call code_ptr(env_ptr) where env_ptr is the thunk's base pointer.
             let call: extern "C" fn(i64) -> i64 =
                 unsafe { std::mem::transmute(code_ptr as *const ()) };
@@ -221,6 +343,13 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
                 Some(msg) => crate::heap_string::alloc_string(msg.as_bytes()) as i64,
                 None => 0,
             };
+
+            // Restore the caller's pre-existing first error (first-error-wins):
+            // if the slot already held a first error, it goes back BEFORE the
+            // join-side re-raise, so this cell's later error cannot displace it.
+            if let Some(msg) = saved_caller_error {
+                crate::panic::set_runtime_error(msg);
+            }
 
             // Store result + error, then publish RESOLVED state (the release of
             // both fields to spin-waiters).

@@ -9,7 +9,7 @@
 ;;
 ;; Each `test-*` returns `(Option String)`: `None` = pass, `(Some why)` =
 ;; fail (repl/spec.md §16.1). `score` maps None→1, Some→0; the run is green
-;; when the exit code equals the total test count (39).
+;; when the exit code equals the total test count (40).
 ;;
 ;; EXCLUDED: `solver/test-hard-puzzle`. It is correct (it solves), but the
 ;; genuinely-hard backtracking search copies the whole 81-cell Vec on every
@@ -22,7 +22,15 @@
 ;; Run it:
 ;;   CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib \
 ;;     cargo run -- --run exemplar/tests.cl
-;;   echo $?   # => 39  (all green)
+;;   echo $?   # => 40  (all green)
+;;
+;; The suite now includes `solver/test-solve-parallel-equiv` (S92, FIXME 0408):
+;; a backtracking-requiring puzzle solved through the parallel divide-and-conquer
+;; search, pinned to its unique solution. Running the suite under both default
+;; (parallel) and `CRANELISP_NO_LENIENT=1` (serial) and getting the same green
+;; 40 is the parallel ≡ serial equivalence guard for the reshape. That one test
+;; adds ~8-9s to the run (the carried copy-per-guess cost — FIXME 0408 perf
+;; half); `test-hard-puzzle` stays excluded (it would run for minutes).
 
 (import [primitives [Pure]])
 
@@ -34,7 +42,7 @@
 ;; test-hard-puzzle is deliberately NOT imported here — see header note.
 (import [solver [test-eliminate-removes-digit test-eliminate-no-effect-on-given
                  test-eliminate-determines-cell test-eliminate-contradiction
-                 test-easy-puzzle test-unsolvable]])
+                 test-easy-puzzle test-unsolvable test-solve-parallel-equiv]])
 (import [html [test-form-page-has-inputs test-form-page-has-action
                test-form-page-has-table test-wrap-tag test-td
                test-error-page-has-message test-error-page-has-link
@@ -74,6 +82,7 @@
     (+ (score (test-eliminate-contradiction))
     (+ (score (test-easy-puzzle))
     (+ (score (test-unsolvable))
+    (+ (score (test-solve-parallel-equiv))
     (+ (score (test-form-page-has-inputs))
     (+ (score (test-form-page-has-action))
     (+ (score (test-form-page-has-table))
@@ -91,4 +100,4 @@
     (+ (score (test-field-index-valid))
     (+ (score (test-field-index-invalid))
     (+ (score (test-last-position))
-       (score (test-multiple-digits))))))))))))))))))))))))))))))))))))))))))
+       (score (test-multiple-digits)))))))))))))))))))))))))))))))))))))))))))

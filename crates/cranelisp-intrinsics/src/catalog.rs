@@ -70,10 +70,12 @@
 //! The 12 `cranelisp_trace_*` entries (incl. the pure descriptor-driven
 //! `cranelisp_trace_format`) ARE in this catalog — the 2026-06-04 user ruling
 //! retracted D40's trace-relocation-to-int and hosts the bodies here (BC §4b
-//! invariant 12; `design/arch/tracing.md`). The table is 29 entries (16 core +
+//! invariant 12; `design/arch/tracing.md`). The table is 30 entries (17 core +
 //! 12 trace + `catch-runtime-error`, the protected-call combinator,
-//! `design/arch/test-discovery.md` §6). The catalog + its tests are the single
-//! owner of the trace name-agreement contract (closing the prior no-owner gap).
+//! `design/arch/test-discovery.md` §6). The 17th core entry is
+//! `cranelisp_spark_budget_try_reserve` (the create-gate reservation primitive,
+//! lenient-eval.md §3.6.1, S92). The catalog + its tests are the single owner of
+//! the trace name-agreement contract (closing the prior no-owner gap).
 
 /// One backend-emitted-call target in the published intrinsics catalog.
 ///
@@ -103,9 +105,10 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 29 entries — 16 core (relocated verbatim
+/// Returns a `'static` slice of the 30 entries — 17 core (relocated verbatim
 /// from the retired `cranelisp_backend::jit::intrinsic_symbols()`, plus
-/// `cranelisp_ivar_dealloc`, the IVar-aware drop path) plus the 12
+/// `cranelisp_ivar_dealloc`, the IVar-aware drop path, and
+/// `cranelisp_spark_budget_try_reserve`, the create-gate primitive) plus the 12
 /// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12) plus
 /// `catch-runtime-error` (the protected-call combinator, test-discovery.md §6).
 /// See this module's `//!` for the consumer contract, the ABI guardrail, and the
@@ -132,6 +135,10 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
         IntrinsicEntry { name: "cranelisp_ivar_spark", ptr: crate::ivar::ivar_spark as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "cranelisp_ivar_force", ptr: crate::ivar::ivar_force as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "cranelisp_ivar_dealloc", ptr: crate::ivar::ivar_dealloc as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        // The backend create-gate's reservation primitive (lenient-eval.md §3.6.1,
+        // S92). Emitted at each spark site BEFORE any IVar/thunk allocation:
+        // returns 1 (granted ⇒ lenient arm) or 0 (over budget ⇒ direct arm).
+        IntrinsicEntry { name: "cranelisp_spark_budget_try_reserve", ptr: crate::ivar::spark_budget_try_reserve as *const u8, param_count: 1, has_return: true, is_runtime: true },
         // Vec COW backend-emitted-call targets (internal, not user-callable via
         // the primitives module — `vec-len` is user-callable and rides the GOT
         // via PRIMITIVES_TABLE, not this catalog).

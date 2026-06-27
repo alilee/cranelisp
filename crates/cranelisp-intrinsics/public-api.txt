@@ -129,6 +129,7 @@ pub mod cranelisp_intrinsics::ivar
 #[export_name = "cranelisp_ivar_dealloc"] pub c fn cranelisp_intrinsics::ivar::ivar_dealloc(i64) -> i64
 #[export_name = "cranelisp_ivar_force"] pub c fn cranelisp_intrinsics::ivar::ivar_force(i64) -> i64
 #[export_name = "cranelisp_ivar_spark"] pub c fn cranelisp_intrinsics::ivar::ivar_spark(i64) -> i64
+#[export_name = "cranelisp_spark_budget_try_reserve"] pub c fn cranelisp_intrinsics::ivar::spark_budget_try_reserve(i64) -> i64
 pub mod cranelisp_intrinsics::layout
 #[export_name = "cranelisp_check_layout_hash"] pub c fn cranelisp_intrinsics::layout::cranelisp_check_layout_hash(*const u8, *const u8, *const u8)
 pub mod cranelisp_intrinsics::panic

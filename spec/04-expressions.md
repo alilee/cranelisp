@@ -689,6 +689,8 @@ Cranelisp uses **strict (eager) evaluation** throughout. All sub-expressions are
 - Lambda bodies are NOT evaluated at creation time -- only when the closure is called.
 - The `Seq` type provides explicit opt-in laziness via thunks (zero-argument closures). This is a library-level construct, not a change to the evaluation model. See [section 12.4.2](12-runtime.md#1242-lazy-sequences).
 
+The left-to-right order shown above for `let` bindings and function arguments is the **observable** evaluation order — it constrains effect sequencing and first-error selection, and a conforming implementation MUST behave as if it holds. Because cranelisp binding values and arguments are pure (effects are sequenced through `IO`/`bind!`, never through raw evaluation), the actual order in which *independent* pure sub-expressions are evaluated is unobservable. Per [§12.4.3](12-runtime.md#1243-lenient-evaluation) (lenient evaluation), an implementation MAY therefore evaluate independent `let` bindings and independent apply-arguments concurrently — exactly because doing so cannot be observed — without weakening this left-to-right guarantee. [S92]
+
 ## 4.12 Trace Expression [Tested+Neg tests/spec_04_expressions::trace_returns_trace_type]
 
 ```clojure

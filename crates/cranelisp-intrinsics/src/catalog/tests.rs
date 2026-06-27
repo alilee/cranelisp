@@ -18,6 +18,7 @@ const EXPECTED_NAMES: &[&str] = &[
     "cranelisp_ivar_spark",
     "cranelisp_ivar_force",
     "cranelisp_ivar_dealloc",
+    "cranelisp_spark_budget_try_reserve",
     "vec-set-copy",
     "vec-push-copy",
     "vec-push-grow",
@@ -36,13 +37,13 @@ const EXPECTED_NAMES: &[&str] = &[
     "cranelisp_trace_format",
 ];
 
-/// Name-set completeness + uniqueness: the table contains exactly the 29
+/// Name-set completeness + uniqueness: the table contains exactly the 30
 /// expected names — no more, no fewer — and no name repeats (BC §6
 /// guardrail; positive + negative coverage).
 #[test]
-fn name_set_is_exactly_the_expected_29() {
+fn name_set_is_exactly_the_expected_30() {
     let names: Vec<&str> = intrinsics_table().iter().map(|e| e.name).collect();
-    assert_eq!(names.len(), 29, "table must hold exactly 29 entries");
+    assert_eq!(names.len(), 30, "table must hold exactly 30 entries");
     assert_eq!(names.len(), EXPECTED_NAMES.len());
 
     // Every expected name present (no drop).
@@ -93,6 +94,7 @@ fn arity_matches_historical_signature() {
         ("cranelisp_ivar_spark", 1, true),
         ("cranelisp_ivar_force", 1, true),
         ("cranelisp_ivar_dealloc", 1, true),
+        ("cranelisp_spark_budget_try_reserve", 1, true),
         ("vec-set-copy", 4, true),
         ("vec-push-copy", 3, true),
         ("vec-push-grow", 2, true),
@@ -130,7 +132,8 @@ fn is_runtime_classification() {
         let want = e.name.starts_with("runtime/")
             || e.name.starts_with("cranelisp_ivar_")
             || e.name.starts_with("cranelisp_trace_")
-            || e.name == "cranelisp_collect_trace";
+            || e.name == "cranelisp_collect_trace"
+            || e.name == "cranelisp_spark_budget_try_reserve";
         assert_eq!(
             e.is_runtime, want,
             "{} is_runtime classification (runtime/ + ivar + trace are true; vec COW false)",

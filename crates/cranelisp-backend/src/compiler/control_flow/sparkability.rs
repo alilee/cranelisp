@@ -62,10 +62,52 @@ pub(crate) fn find_sparkable_bindings(
     }
 }
 
+/// Find indices of sparkable arguments in a function application `(f a₁ … aₙ)`.
+///
+/// Sibling of [`find_sparkable_bindings`] for the apply-argument call site
+/// (`design/backend/lenient-eval.md` §2.5). Per Principle 7 it shares the gate
+/// helpers verbatim — [`is_worth_sparking`], `CHEAP_BUILTINS`, the constructor
+/// set, and the ≥2-candidate gate — differing only in its independence rule:
+///
+/// Apply arguments bind nothing into sibling scope (`a₂` cannot reference a name
+/// bound by evaluating `a₁`), so **all arguments are mutually independent by
+/// construction** as pure expressions (§2.5.2). There is therefore no
+/// `depends_on_earlier` free-var check — the `let` path's sequential-prefix rule
+/// has no apply analogue. Independence collapses to "is this argument
+/// individually worth sparking" (the cost heuristic) plus the ≥2 gate.
+///
+/// `constructors` is the set of known ADT constructor names (their args are
+/// excluded exactly as in the `let` path — a constructor callee is alloc+tag,
+/// not real work).
+///
+/// Returns an empty vec if fewer than 2 sparkable arguments are found — a single
+/// expensive argument never pays IVar/thread-pool overhead for no concurrency.
+pub(crate) fn find_sparkable_args(
+    args: &[MonoExpr],
+    constructors: &HashSet<Symbol>,
+) -> Vec<usize> {
+    let sparkable: Vec<usize> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| is_worth_sparking(arg, constructors))
+        .map(|(i, _)| i)
+        .collect();
+
+    if sparkable.len() < 2 {
+        Vec::new()
+    } else {
+        sparkable
+    }
+}
+
 /// Check if an expression is worth sparking (non-trivial function call).
 ///
 /// Excludes: cheap builtins (+, -, etc.), data constructors (Some, Cons),
 /// literals, variable references.
+///
+/// Shared (single-source, Principle 7) by both lenient decision sites:
+/// [`find_sparkable_bindings`] (the `let` path) and [`find_sparkable_args`]
+/// (the apply-argument path).
 fn is_worth_sparking(expr: &MonoExpr, constructors: &HashSet<Symbol>) -> bool {
     match expr {
         MonoExpr::Apply { callee, .. } => {

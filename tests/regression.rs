@@ -3033,6 +3033,57 @@ fn regression_0179_cluster_union_read_staging_and_live() {
 }
 
 // =============================================================================
+// S92 Slice-1 advisory (review → /qa) — latent mono-nested-lambda JIT-symbol
+// collision, closed by /dev(cranelisp-backend)'s `current_fn_name`-seed fix.
+// =============================================================================
+//
+// A DOUBLY-nested lambda (a lambda inside a lambda) in the body of a
+// MONOMORPHISED (generic) function instantiated at ≥2 DISTINCT types previously
+// dropped the monomorphisation discriminator on the inner-compiler descent, so
+// the two instantiations' inner lambdas resolved to the SAME JIT symbol name.
+// The collision produced wrong codegen (one instantiation's body silently
+// served the other) — observable as a wrong result or a symbol clash.
+//
+// `twice-thunk` is generic (inferred `(Fn [(Fn [a] a) a] a)`). Its body holds a
+// doubly-nested lambda `(fn [] (fn [] (f x)))` that captures the generic `f`/`x`,
+// so the nested lambdas are part of the monomorphised body and are specialised
+// per instantiation. It is instantiated at TWO distinct types:
+//   - Int : f = `(fn [n] (add-i64 n 1))`, x = 10  ⇒ 11
+//   - Bool: f = `(fn [p] (not p))`,        x = false ⇒ true
+// `main` folds both into one exit code: `(if b a 0)` = `(if true 11 0)` = 11.
+// Under the collision, the Bool instantiation's inner lambda would run the Int
+// body (or vice versa) ⇒ `b` is not a valid Bool ⇒ exit ≠ 11 (or a crash).
+//
+// Free-standing: PrimitivesOnly, no stdlib, helpers inline. GREEN on HEAD (the
+// fix is in); it is the durable guard so the seed fix is not silently reverted.
+//
+// spec: design/typecheck/monomorphisation.md §3.5 — dedup keyed on the mangled
+//       name; the per-instantiation mangled/JIT symbol name is what keeps two
+//       monomorphisations (here, of nested lambdas) from colliding. The
+//       user-observable surface is "a nested lambda in a generic fn produces
+//       correct results at every instantiation"; this is a backend
+//       codegen-regression guard for the inner-descent discriminator fix.
+#[test]
+fn regression_s92_mono_doubly_nested_lambda_no_symbol_collision() {
+    let src = "(import [primitives [add-i64 not Pure]])\n\
+               (defn twice-thunk [f x]\n\
+                 (let [g (fn [] (fn [] (f x)))]\n\
+                   ((g))))\n\
+               (defn main []\n\
+                 (let [a (twice-thunk (fn [n] (add-i64 n 1)) 10)\n\
+                       b (twice-thunk (fn [p] (not p)) false)]\n\
+                   (Pure (if b a 0))))\n";
+    Cranelisp::new()
+        .run("user.cl")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("user.cl", src)
+        .output()
+        // Exit 11 holds iff BOTH the Int and Bool instantiations of the
+        // doubly-nested lambda compiled to distinct, correct JIT symbols.
+        .assert_exit(11);
+}
+
+// =============================================================================
 // FIXME 0279 reduction — cross-module monomorphisation of a POLYMORPHIC
 // imported function overflows the compiler (infinite `apply` recursion).
 // =============================================================================

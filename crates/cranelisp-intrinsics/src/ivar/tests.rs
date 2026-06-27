@@ -1,5 +1,7 @@
 use super::*;
 use crate::alloc::alloc_with_rc;
+use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 
 /// Build a minimal closure that returns a constant value.
 /// Layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | capture(8)]
@@ -241,5 +243,272 @@ fn test_ivar_force_clean_thunk_leaves_slot_clean() {
         let err_str = *((ivar as isize + ERROR_OFFSET) as *const i64);
         assert_eq!(err_str, 0, "error field must be 0 for a clean thunk");
         dealloc(ivar as *mut u8);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spark budget — the create-gate reservation primitive (lenient-eval.md §3.6,
+// S92). The budget is a `cranelisp-intrinsics`-internal mechanism: a
+// module-static `IN_FLIGHT_SPARKS` (AtomicIsize), a `SPARK_BUDGET` cap, the
+// `spark_budget_try_reserve` reservation primitive (called by the backend
+// create-gate BEFORE any IVar allocation), and the `InFlightGuard` RAII release
+// (one permit per completing spark) — all reachable here via `use super::*`.
+//
+// As of S92 the spawn-vs-direct decision is taken by the backend gate, NOT in
+// `ivar_spark` (which always spawns). The gate reserves `n` permits up front;
+// each of the `n` spawned sparks releases one on completion. These tests exercise
+// the primitive + release accounting directly (no session, no codegen). They
+// mutate a process global, so they rely on nextest's process-per-test isolation
+// (the project's mandated runner); each restores the counter to its observed
+// baseline as cargo-test-fallback hygiene.
+// ---------------------------------------------------------------------------
+
+/// Spin until `pred()` holds or `timeout` elapses; returns whether it held.
+fn spin_until(mut pred: impl FnMut() -> bool, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if pred() {
+            return true;
+        }
+        std::hint::spin_loop();
+    }
+    pred()
+}
+
+// spec: 12-runtime §12.4.3 — `try_reserve` grants a batch that fits under the
+// cap, denies one that does not, and is atomic (all-or-nothing) for n>1: a batch
+// that overflows the cap by even 1 commits NOTHING (no partial reservation). The
+// arithmetic is driven off the live `SPARK_BUDGET` cap so it is independent of
+// the LazyLock's actual value (default 4×threads ≥ 4 in a fresh process).
+#[test]
+fn spark_budget_try_reserve_grants_denies_and_is_atomic() {
+    let cap = *SPARK_BUDGET as isize;
+    assert!(
+        cap >= 2,
+        "test precondition: default cap (4×threads) is ≥ 2 in a fresh process"
+    );
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+
+    // Grant under cap: reserve(1) commits exactly 1 permit.
+    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+    assert_eq!(spark_budget_try_reserve(1), 1, "1 permit fits under cap");
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        1,
+        "a grant commits exactly n permits"
+    );
+
+    // Deny at cap: a full counter rejects reserve(1) and leaves it unchanged.
+    IN_FLIGHT_SPARKS.store(cap, Ordering::SeqCst);
+    assert_eq!(spark_budget_try_reserve(1), 0, "no room at the cap");
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        cap,
+        "a rejected reservation must not mutate the counter"
+    );
+
+    // Atomic batch (n>1): leave exactly 1 slot, request 2 ⇒ reject wholesale,
+    // counter unchanged (no partial commit of the 1 that would have fit).
+    IN_FLIGHT_SPARKS.store(cap - 1, Ordering::SeqCst);
+    assert_eq!(
+        spark_budget_try_reserve(2),
+        0,
+        "a batch overflowing the cap by 1 is rejected all-or-nothing"
+    );
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        cap - 1,
+        "a rejected n>1 batch commits nothing (no partial reservation)"
+    );
+
+    // Exact fit: request exactly the remaining 1 ⇒ grant, counter reaches cap.
+    assert_eq!(spark_budget_try_reserve(1), 1, "an exact-fit batch grants");
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        cap,
+        "an exact-fit grant commits the whole batch"
+    );
+
+    IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
+}
+
+// spec: 12-runtime §12.4.3 — MANDATORY: the `InFlightGuard` release runs on a
+// Rust unwind, so a spawned closure that panics releases its permit and leaves
+// `IN_FLIGHT_SPARKS` back at its baseline. A leaked permit would drift the cap
+// toward permanent-direct (silent serial degradation no other test catches). A
+// real sparked thunk cannot be made to Rust-unwind safely (the thunk is
+// `extern "C"` — unwinding out of it aborts the process), so this pins the actual
+// mechanism — the guard + counter — under a simulated closure unwind via
+// `catch_unwind`, which is exactly the path the spawn closure takes on an
+// internal panic.
+#[test]
+fn spark_budget_panicking_spawned_thunk_counter_returns_to_baseline() {
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+    // Simulate the gate reservation (+1) the spawned task holds via its guard.
+    IN_FLIGHT_SPARKS.fetch_add(1, Ordering::SeqCst);
+    let outcome = std::panic::catch_unwind(|| {
+        let _in_flight_guard = InFlightGuard;
+        panic!("simulated unwind inside the spawned rayon closure");
+    });
+    assert!(outcome.is_err(), "the simulated closure must have unwound");
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        base,
+        "InFlightGuard::drop must release the permit on the unwind path"
+    );
+}
+
+// spec: 12-runtime §12.4.3 — release-on-completion: the gate reserves a permit;
+// `ivar_spark` (always-spawn) holds it while the task is in flight and does NOT
+// itself touch the counter; the spawned worker's `InFlightGuard` drop releases
+// exactly that permit on completion ⇒ reserve(1) + 1 spawn + 1 completion nets
+// zero against the counter.
+#[test]
+fn spark_budget_reserve_then_spawn_releases_net_zero() {
+    // A gated thunk: the rayon worker spins inside the thunk until we release it,
+    // so we can observe the counter while the task is genuinely in flight.
+    static GATE: AtomicBool = AtomicBool::new(false);
+    GATE.store(false, Ordering::SeqCst);
+    extern "C" fn gated_fn(_env_ptr: i64) -> i64 {
+        while !GATE.load(Ordering::SeqCst) {
+            std::hint::spin_loop();
+        }
+        55
+    }
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+
+    // The create-gate's reservation (what the backend emits before allocating).
+    assert_eq!(spark_budget_try_reserve(1), 1, "1 permit fits under cap");
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        base + 1,
+        "the gate reservation raises the counter by 1"
+    );
+
+    let thunk = {
+        let b = alloc_with_rc(16); // code_ptr + drop_glue, no captures
+        unsafe {
+            *((b as isize + 16) as *mut i64) = gated_fn as *const () as i64;
+            *((b as isize + 24) as *mut i64) = 0;
+        }
+        b as i64
+    };
+    let ivar = ivar_create(thunk);
+
+    ivar_spark(ivar);
+    // `ivar_spark` always spawns and does NOT reserve (the gate already did), so
+    // the counter is still the gate's base+1 while the worker is in flight.
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        base + 1,
+        "ivar_spark must not reserve (the create-gate owns reservation)"
+    );
+
+    // Release the gate; the worker finishes, RC-decs, and the guard releases.
+    GATE.store(true, Ordering::SeqCst);
+    assert!(
+        spin_until(
+            || IN_FLIGHT_SPARKS.load(Ordering::SeqCst) == base,
+            Duration::from_secs(5),
+        ),
+        "InFlightGuard::drop must release the permit on completion (net zero)"
+    );
+
+    // Cleanup: the worker already dec'd its reference; force + dec ours.
+    let result = ivar_force(ivar);
+    assert_eq!(result, 55);
+    let old_rc = unsafe {
+        let rc_ptr = (ivar as isize + RC_OFFSET) as *const AtomicI64;
+        (*rc_ptr).fetch_sub(1, Ordering::SeqCst)
+    };
+    if old_rc == 1 {
+        std::sync::atomic::fence(Ordering::Acquire);
+        unsafe { dealloc(ivar as *mut u8) };
+    }
+}
+
+// spec: 12-runtime §12.4.3 — CRANELISP_SPARK_BUDGET=0 ⇒ cap 0 ⇒ `cur + n > 0`
+// for all n ≥ 1 ⇒ `try_reserve` rejects every batch (every gate site takes the
+// direct arm, no allocation). Relies on nextest process-per-test isolation: the
+// env var is set before `SPARK_BUDGET` is first read in THIS fresh process.
+#[test]
+fn spark_budget_zero_try_reserve_always_rejects() {
+    // SAFETY: single-threaded at this point in the test, before any reserve reads
+    // the LazyLock; nextest isolates each test in its own process.
+    unsafe { std::env::set_var("CRANELISP_SPARK_BUDGET", "0") };
+    assert_eq!(
+        *SPARK_BUDGET, 0,
+        "CRANELISP_SPARK_BUDGET=0 must parse to cap 0 (fresh process precondition)"
+    );
+
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+    for n in [1, 2, 5, 100] {
+        assert_eq!(
+            spark_budget_try_reserve(n),
+            0,
+            "budget=0 must reject reserve({n})"
+        );
+    }
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        base,
+        "rejected reservations commit nothing"
+    );
+}
+
+/// Build a panicking thunk carrying a custom message (for the dual-panic test).
+fn make_panicking_thunk_msg(msg: &'static str) -> i64 {
+    // We bake the message pointer/len into two captures so one generic body
+    // serves both distinct messages.
+    extern "C" fn boom_fn(env_ptr: i64) -> i64 {
+        let ptr = unsafe { *((env_ptr as isize + 32) as *const i64) } as *const u8;
+        let len = unsafe { *((env_ptr as isize + 40) as *const i64) } as usize;
+        crate::panic::runtime_panic(ptr, len);
+        0
+    }
+    let base = alloc_with_rc(32); // code_ptr + drop_glue + 2 captures
+    unsafe {
+        *((base as isize + 16) as *mut i64) = boom_fn as *const () as i64;
+        *((base as isize + 24) as *mut i64) = 0; // no drop glue
+        *((base as isize + 32) as *mut i64) = msg.as_ptr() as i64;
+        *((base as isize + 40) as *mut i64) = msg.len() as i64;
+    }
+    base as i64
+}
+
+// spec: 12-runtime §12.4.3 — Task B: first-error-wins on the INLINE-claim path.
+// Two thunks panic with DISTINCT messages. Forcing the first inline sets the
+// caller's slot to "first boom"; forcing the second inline must NOT clobber it —
+// the save/restore around the inline thunk keeps the FIRST error (matching a
+// sequential left-to-right evaluation that aborts on the first). Run many times
+// to prove the outcome is deterministic, not racy. This is the `let`-path /
+// inline-claim analogue of the apply-path `apply_arg_dual_panic_first_error_wins`
+// e2e — the bug lived in the inline path polluting the caller's error slot.
+#[test]
+fn ivar_inline_claim_dual_panic_first_error_wins() {
+    for i in 0..2000 {
+        let _ = crate::panic::take_runtime_error(); // clear the slot
+
+        let a = ivar_create(make_panicking_thunk_msg("first boom"));
+        let b = ivar_create(make_panicking_thunk_msg("second boom"));
+
+        // Barrier order: force A first (sets the first error), then B.
+        let _ = ivar_force(a);
+        let _ = ivar_force(b);
+
+        let err = crate::panic::take_runtime_error();
+        let msg = err.unwrap_or_default();
+        assert!(
+            msg.contains("first boom"),
+            "iter {i}: first-error-wins — expected 'first boom', got {msg:?}"
+        );
+        assert!(
+            !msg.contains("second boom"),
+            "iter {i}: the second (inline) panic must NOT clobber the first, got {msg:?}"
+        );
+
+        // Cleanup both cells (each holds a ferried error String).
+        ivar_dealloc(a);
+        ivar_dealloc(b);
     }
 }
