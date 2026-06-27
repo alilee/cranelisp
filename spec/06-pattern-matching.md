@@ -266,19 +266,23 @@ Patterns MUST NOT contain sub-patterns. Each binding position in a constructor p
 
 Use nested `match` expressions as a workaround (see Section 6.7.6).
 
-### 6.6.2 No Literal Patterns [Tested tests/spec_06_pattern_matching::pattern_int_match_with_wildcard]
+### 6.6.2 No Literal Patterns [Tested tests/spec_06_pattern_matching::pattern_int_match_with_wildcard (positive workaround); Neg owed S93 — literal-pattern rejection (FIXME 0433)]
 
-Integer, float, string, and boolean literals MUST NOT appear as patterns.
+Integer, float, string, and boolean literals MUST NOT appear as patterns. A
+literal in pattern position is rejected at compile time (the implementation
+reports `invalid pattern`).
 
 ```clojure
 ;; NOT VALID: literal pattern
 (match n
   [0 "zero"
    1 "one"
-   _ "other"])    ; compile-time error
+   _ "other"])    ; compile-time error: invalid pattern
 ```
 
-Use `if` expressions or constructor-based wrappers instead.
+Use `if` expressions, `case`, or constructor-based wrappers instead. To match
+on a scalar, bind it with a variable pattern and dispatch in the arm body (see
+[§6.5.2](#652-non-adt-scrutinee-types)).
 
 ### 6.6.3 No Or-Patterns [Tested tests/spec_06_pattern_matching::pattern_first_match_wins]
 

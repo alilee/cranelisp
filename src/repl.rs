@@ -363,22 +363,18 @@ impl CompilerSession {
             module: resolved_module.clone(),
             symbol: Symbol::from(name),
         };
-        let (category, scheme, docstring) = match &entry {
-            ModuleEntry::Def { scheme, docstring, kind, .. } => {
-                let cat = match kind.as_ref() {
-                    DefKind::Constructor { .. } => SymbolCategory::Constructor,
-                    DefKind::Macro { .. } => SymbolCategory::Macro,
-                    _ => SymbolCategory::Fn,
-                };
-                (cat, Some(scheme.clone()), docstring.clone())
-            }
+        // Bucketing is the shared `classify_listing_entry` classifier (FIXME
+        // 0440) — single-symbol describe surfaces every category incl.
+        // SpecialForm. The scheme/docstring facets are pulled per-entry below.
+        let category = crate::worker::classify_listing_entry(&entry)?;
+        let (scheme, docstring) = match &entry {
+            ModuleEntry::Def { scheme, docstring, .. } =>
+                (Some(scheme.clone()), docstring.clone()),
             ModuleEntry::SpecialForm { scheme, docstring, .. } =>
-                (SymbolCategory::SpecialForm, Some(scheme.clone()), docstring.clone()),
-            ModuleEntry::TypeDef { .. } =>
-                (SymbolCategory::Type, None, None),
+                (Some(scheme.clone()), docstring.clone()),
             ModuleEntry::TraitDecl { docstring, .. } =>
-                (SymbolCategory::Trait, None, docstring.clone()),
-            _ => return None,
+                (None, docstring.clone()),
+            _ => (None, None),
         };
         let source = self.shared.introspection.as_ref()
             .and_then(|m| m.get(&fq))
@@ -775,27 +771,21 @@ impl CompilerSession {
             if crate::worker::is_internal_listing_name(name.as_ref()) {
                 continue;
             }
-            match entry {
-                ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                    DefKind::Macro { .. } => macros.push(name.to_string()),
-                    // Constructors are part of their type — not listed
-                    // separately.
-                    DefKind::Constructor { .. } => {}
-                    // §3.3: names only, no `: type` suffix — the layout block is
-                    // shared verbatim with /imports and /exports (which are
-                    // names-only), so cross-command byte-identity requires
-                    // /list be names-only too. Type detail is on `/sig`/`/info`
-                    // or by typing the bare name.
-                    _ => fns.push(name.to_string()),
-                },
-                ModuleEntry::TypeDef { .. } => {
-                    types.push(name.to_string());
-                }
-                ModuleEntry::TraitDecl { .. } => {
-                    traits.push(name.to_string());
-                }
-                // SpecialForm, Import, Ambiguous: not listed (special forms +
-                // imports are shown by /imports).
+            // §3.3: names only, no `: type` suffix — the layout block is shared
+            // verbatim with /imports and /exports (which are names-only), so
+            // cross-command byte-identity requires /list be names-only too. Type
+            // detail is on `/sig`/`/info` or by typing the bare name. Bucketing
+            // is the shared `classify_listing_entry` classifier (FIXME 0440);
+            // /list's only presentation concern is dropping Constructors (part of
+            // their type, not listed separately) and SpecialForms/Imports (shown
+            // by /imports).
+            match crate::worker::classify_listing_entry(entry) {
+                Some(SymbolCategory::Macro) => macros.push(name.to_string()),
+                Some(SymbolCategory::Trait) => traits.push(name.to_string()),
+                Some(SymbolCategory::Type) => types.push(name.to_string()),
+                Some(SymbolCategory::Fn) => fns.push(name.to_string()),
+                // Constructors are part of their type; special forms + imports
+                // are shown by /imports.
                 _ => {}
             }
         }
@@ -1640,18 +1630,15 @@ impl CompilerSession {
             {
                 continue;
             }
-            match entry {
-                ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }) => {
-                    macros.push(name)
-                }
-                ModuleEntry::Def { kind, .. }
-                    if matches!(kind.as_ref(), DefKind::Constructor { .. }) =>
-                {
-                    types.push(name)
-                }
-                ModuleEntry::TraitDecl { .. } => traits.push(name),
-                ModuleEntry::TypeDef { .. } => types.push(name),
-                ModuleEntry::Def { .. } => fns.push(name),
+            // Bucketing is the shared `classify_listing_entry` classifier (FIXME
+            // 0440); /exports's only presentation concern is folding the
+            // Constructor category into Types (a public ctor is listed under its
+            // type) and dropping special forms.
+            match crate::worker::classify_listing_entry(entry) {
+                Some(SymbolCategory::Macro) => macros.push(name),
+                Some(SymbolCategory::Trait) => traits.push(name),
+                Some(SymbolCategory::Type) | Some(SymbolCategory::Constructor) => types.push(name),
+                Some(SymbolCategory::Fn) => fns.push(name),
                 _ => {}
             }
         }
@@ -1779,6 +1766,8 @@ impl CompilerSession {
                 platform_dirs: &platform_dirs_snap,
                 project_root: &self.shared.project_root,
                 shared_state: Some(&self.shared),
+                // S93 Invariant SW: REPL eval thread driving the entry module.
+                eval_driven: true,
             };
 
             crate::process_form::compile_macro_for_repl(

@@ -854,3 +854,26 @@ fn polymorphic_accumulator_fold_does_not_over_unify() {
         // `type mismatch: expected (primitives/Vec t…), got Int`.
         .assert_exit(6);
 }
+
+// =============================================================================
+// FIXME 0434 sweep (this sprint) — type-annotation name-position, qualified vs
+// bare. verify-on-HEAD: a passing row is a standing [Tested+Neg] guard on the
+// qualified type-annotation path; a failing row is a surfaced sibling defect
+// handed to /frontend with this minimal repro.
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.9 + spec/08-modules.md §8.5 — a type
+// annotation written with a QUALIFIED type name (`:primitives/Int`) MUST infer
+// the SAME canonical type as the bare form (`:Int`); the qualified form MUST NOT
+// be re-rooted (to a phantom `user/primitives/Int`). Both display identically.
+#[test]
+fn type_annotation_qualified_and_bare_resolve_identically() {
+    // Bare control: `:Int 42` annotates the literal as Int → `:primitives/Int 42`.
+    repl_prims(":Int 42\n").assert_stdout_contains(":primitives/Int 42");
+
+    // Qualified: `:primitives/Int 42` MUST resolve to the same canonical Int and
+    // display identically — NOT re-rooted to `user/primitives/Int`.
+    repl_prims(":primitives/Int 42\n")
+        .assert_stdout_contains(":primitives/Int 42")
+        .assert_stdout_does_not_contain("user/primitives/Int");
+}

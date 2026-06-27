@@ -677,6 +677,7 @@
             platform_dirs: &[],
             project_root: Path::new("/"),
             shared_state: None,
+            eval_driven: false,
         }
     }
 
@@ -1635,4 +1636,121 @@
             !SUPPRESS_PANIC_BANNER.with(|c| c.get()),
             "dropping the guard must restore the flag to false"
         );
+    }
+
+    // spec: repl/spec.md §3.3 — listing-surface category bucketing (FIXME 0440).
+    // `classify_listing_entry` is the SINGLE `ModuleEntry`/`DefKind` → category
+    // classifier shared by `/list`, `/exports`, `list_user_definitions`, and
+    // `describe_symbol`. This pins the bucket for one representative entry of
+    // every category the four formerly-independent sites covered, so a new
+    // `DefKind` variant or a re-bucketing change is a one-site edit (Principle
+    // 7) rather than the N-site drift that produced the S91 `__expr` bug.
+    #[test]
+    fn classify_listing_entry_buckets_every_category() {
+        use crate::session_v4::SymbolCategory;
+        use cranelisp_types::{
+            FQTypeName, MacroClauseInfo, Sexp, TraitDeclInfo, TraitName, TypeDefInfo, TypeName,
+        };
+
+        let module = ModuleFullPath::from("user");
+
+        // Def(UserFn) → Fn
+        let user_fn = mk_def_with_got(
+            DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+            Some(trivial_variant()),
+            Some(0),
+        );
+        assert_eq!(
+            classify_listing_entry(&user_fn),
+            Some(SymbolCategory::Fn),
+            "an ordinary user fn is the Fn category"
+        );
+
+        // Def(Macro) → Macro
+        let mac = ModuleEntry::def(
+            synthetic_scheme(),
+            DefKind::Macro {
+                clauses_meta: Vec::<MacroClauseInfo>::new(),
+                macro_sexp: Sexp::Symbol("m".to_string(), Span::SYNTHETIC),
+            },
+        )
+        .visibility(Visibility::Public)
+        .build();
+        assert_eq!(classify_listing_entry(&mac), Some(SymbolCategory::Macro));
+
+        // Def(Constructor) → Constructor
+        let ctor = mk_def_with_got(
+            DefKind::Constructor {
+                got_slot: 0,
+                type_name: FQTypeName::new(module.clone(), TypeName::from("Option")),
+                tag: 1,
+                field_count: 1,
+                internal: false,
+                type_def: None,
+            },
+            Some(trivial_variant()),
+            Some(0),
+        );
+        assert_eq!(
+            classify_listing_entry(&ctor),
+            Some(SymbolCategory::Constructor),
+            "a constructor Def is the Constructor category (callers fold/drop it)"
+        );
+
+        // TypeDef → Type
+        let type_def = ModuleEntry::TypeDef {
+            info: TypeDefInfo {
+                name: FQTypeName::new(module.clone(), TypeName::from("Point")),
+                type_params: Vec::new(),
+                constructors: vec![Symbol::from("Point")],
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+        };
+        assert_eq!(classify_listing_entry(&type_def), Some(SymbolCategory::Type));
+
+        // TraitDecl → Trait
+        let trait_decl = ModuleEntry::TraitDecl {
+            info: TraitDeclInfo {
+                name: TraitName::from("Display"),
+                type_params: Vec::new(),
+                methods: Vec::new(),
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+        };
+        assert_eq!(classify_listing_entry(&trait_decl), Some(SymbolCategory::Trait));
+
+        // SpecialForm → SpecialForm (surfaced by describe_symbol; listings drop it)
+        let special = ModuleEntry::SpecialForm {
+            scheme: synthetic_scheme(),
+            param_names: Vec::new(),
+            docstring: None,
+            description: "let".to_string(),
+            visibility: Visibility::Public,
+        };
+        assert_eq!(
+            classify_listing_entry(&special),
+            Some(SymbolCategory::SpecialForm)
+        );
+
+        // Import → None (never a user definition; surfaced by /imports)
+        let import = ModuleEntry::<crate::code::Code>::Import {
+            source: FQSymbol {
+                module: ModuleFullPath::from("other"),
+                symbol: Symbol::from("x"),
+            },
+            visibility: Visibility::Private,
+        };
+        assert_eq!(
+            classify_listing_entry(&import),
+            None,
+            "an import is not a user definition"
+        );
+
+        // Ambiguous → None
+        let ambiguous = ModuleEntry::<crate::code::Code>::Ambiguous {
+            visibility: Visibility::Public,
+        };
+        assert_eq!(classify_listing_entry(&ambiguous), None);
     }

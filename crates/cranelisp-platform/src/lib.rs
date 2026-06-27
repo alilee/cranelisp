@@ -143,6 +143,19 @@ pub use schema::{Ctor, Field, FieldType, ParseLoc, Schema, SchemaParseError, Typ
 mod adt;
 pub use adt::{set_global_schema, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType};
 
+// ABI-v7 host-reactor C-ABI (effect-concurrency track, slice 2). Gated behind
+// the off-by-default `concurrency` feature — landed as the layout contract
+// `/dev` implements next sprint/stretch, out of the default build and the
+// `public-api.txt` frozen edge until then. See
+// `design/arch/effect-concurrency.md` §12 + `design/arch/platform-interface.md`
+// §6.8 (the ABI 6→7 cascade).
+#[cfg(feature = "concurrency")]
+mod concurrency;
+#[cfg(feature = "concurrency")]
+pub use concurrency::{
+    ConcurrencyDescriptor, ConcurrentPlatformFn, HostCtx, Poll, PollFn, Waker, WakerVTable,
+};
+
 // The `declare_platform!` three-exports emitter + its compile-time
 // `extract_layout_hash` helper. The macros are `#[macro_export]` (crate-root
 // resolution); `extract_layout_hash` is re-exported here so the macro's
@@ -226,7 +239,23 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// [`platform_manifest_symbol`] helper computes the suffixed name on the consume
 /// side. The three-exports model, manifest content, and schema are unchanged —
 /// naming only. See `design/arch/platform-interface.md` §5.5.5 / §6.7.
-pub const ABI_VERSION: u32 = 6;
+///
+/// v7 (Sprint 93, effect-concurrency track slice 2 — `design/arch/effect-concurrency.md`
+/// §12 + `design/arch/platform-interface.md` §6.8) — the **ABI-v4 cascade**, recorded
+/// numerically as 6→7 (the "v4" is the doc-label for the async-leaf model, NOT the
+/// numeric version). v7 reserves the poll-shape async-leaf boundary: blocking
+/// `extern "C"` effect fns become poll-shape ([`PollFn`] / [`ConcurrentPlatformFn`],
+/// dispatched GOT-indirect exactly as before — only the *signature shape* changes);
+/// `scheduling_class: u32` is subsumed by [`ConcurrencyDescriptor`] (token +
+/// cardinality + global_budget + blocking, §5); and the new host-reactor C-ABI
+/// ([`HostCtx`] vtable + C-ABI [`Waker`]) is the one genuinely new designed artifact.
+/// The three-exports deployment model (GOT + manifest + schema+layout-hash) is
+/// unchanged. **The v7 layout types are landed-and-dormant behind the off-by-default
+/// `concurrency` feature**; the `declare_platform!` macro + host loader still emit /
+/// read the v6 `PlatformFn` shape until the slice-2 reactor wires the migration
+/// (`/dev`). Bumping the stamp now keeps in-workspace host + DLLs (which rebuild
+/// together) consistent and signals the cascade target.
+pub const ABI_VERSION: u32 = 7;
 
 /// The exported-symbol name of a platform's manifest entry point, namespaced by
 /// the platform's raw `name:` literal (`cranelisp_platform_manifest_<name>`).

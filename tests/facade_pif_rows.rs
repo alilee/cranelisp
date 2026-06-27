@@ -845,3 +845,75 @@ fn platform_send_sync_claims_match_invariants() {
         "FIXME 0228 (audit C5): PlatformManifest unexpectedly became Sync."
     );
 }
+
+// =============================================================================
+// S93 §2B `_neg` — ABI-v7 dormant types ABSENT from the default (feature-off)
+// public-api edge.
+//
+// The `concurrency` feature is off-by-default; the `public-api.txt` baselines
+// are generated WITHOUT it (root CLAUDE.md / arch baseline-diff discipline). So
+// the v7 layout contracts (`ConcurrencyDescriptor`, `ConcurrentPlatformFn`,
+// `Poll`, `Waker*`, `HostCtx`, `StrandId`/`StrandEvent`) MUST NOT appear on the
+// frozen default edge — they enter only under `cargo nt-concurrency`. This is
+// the negative half of the §2B coverage (its positive half is the gated unit
+// guards): the lane never pulls the dormant types into the default/production
+// build, so the frozen edge stays byte-identical-when-off.
+//
+// Posture: PASS-on-HEAD (verify-the-frozen-edge). It flips RED only if a future
+// change leaks a gated type into the default baseline — the regression this
+// guards against.
+// =============================================================================
+
+// spec: design/arch/effect-concurrency.md §11/§12 + design/arch/CLAUDE.md
+// (the `concurrency`-feature out-of-baseline discipline) — the ABI-v7 dormant
+// layout contracts are ABSENT from every default-build `public-api.txt`.
+#[test]
+fn concurrency_descriptor_absent_from_default_public_api_neg() {
+    let types_api = read_pub_api("cranelisp-types");
+    let platform_api = read_pub_api("cranelisp-platform");
+    let intrinsics_api = read_pub_api("cranelisp-intrinsics");
+
+    for (crate_name, api, names) in [
+        (
+            "cranelisp-types",
+            &types_api,
+            &["ConcurrencyDescriptor", "PollFn"][..],
+        ),
+        (
+            "cranelisp-platform",
+            &platform_api,
+            &[
+                "ConcurrencyDescriptor",
+                "ConcurrentPlatformFn",
+                "HostCtx",
+                "WakerVTable",
+            ][..],
+        ),
+        (
+            "cranelisp-intrinsics",
+            &intrinsics_api,
+            &["StrandId", "StrandEvent"][..],
+        ),
+    ] {
+        for n in names {
+            assert!(
+                !api.contains(n),
+                "ABI-v7 dormant type `{n}` leaked into the default (feature-off) \
+                 {crate_name}/public-api.txt — it MUST stay behind the off-by-default \
+                 `concurrency` feature (the frozen edge is byte-identical-when-off)."
+            );
+        }
+    }
+    // `Poll` is a short token — assert its FULLY-QUALIFIED forms are absent so an
+    // unrelated identifier substring cannot mask a real leak.
+    for fq in [
+        "cranelisp_types::Poll",
+        "cranelisp_platform::Poll",
+    ] {
+        let combined = format!("{types_api}{platform_api}");
+        assert!(
+            !combined.contains(fq),
+            "ABI-v7 `{fq}` leaked into a default public-api.txt edge."
+        );
+    }
+}

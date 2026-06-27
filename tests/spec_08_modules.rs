@@ -2018,3 +2018,100 @@ fn def1_prelude_provided_defn_explicit_import_works_control() {
         .output()
         .assert_exit(3);
 }
+
+// =============================================================================
+// §1D — D0030 mutual-import: cycle-error, NOT a hang (S93 race gate)
+//
+// Design of record: design/int/signature-body-prepass.md §4 — the ratified
+// user ruling (S93 Phase-3, coarse reading / FIXME 0448 closed) is that MUTUAL
+// IMPORTS ARE A COMPILE-TIME CYCLE-ERROR — they are NOT compiled. The module-
+// atomic signature/body pre-pass barrier converts the D0030 deadlock (a HANG)
+// into a deterministic cycle-detected error at the import site (a strict
+// improvement: a hang is the worst failure mode).
+//
+// Posture: RED-first on HEAD via a BOUNDED TIMEOUT. HEAD deadlocks (FIXME 0426),
+// so `try_output()` returns `CrError::Timeout` — the test fails its assertion
+// but is bounded (it does NOT wedge `cargo nextest`; the harness kills the child
+// at the bound). Post-fix (the barrier): a clean cycle diagnostic → GREEN.
+// =============================================================================
+
+// spec: design/int/signature-body-prepass.md §4 — two modules that each
+// `(import …)` the other MUST terminate with a cycle-detected diagnostic at the
+// import site within a bounded time, NOT hang and NOT panic.
+#[test]
+fn mutual_import_pair_diagnoses_cycle_not_hang() {
+    // a.cl imports b; b.cl imports a — a 2-cycle in the static import closure.
+    let result = Cranelisp::new()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "a.cl",
+            "(import [b [bb]])\n\
+             (defn aa [] 1)\n\
+             (defn main [] (add-i64 (aa) (bb)))\n",
+        )
+        .file("b.cl", "(import [a [aa]])\n(defn bb [] 2)\n")
+        // Bounded so a HEAD deadlock surfaces as a Timeout error rather than
+        // wedging the suite. Post-fix the cycle diagnostic is near-instant.
+        .timeout(Duration::from_secs(8))
+        .run("a.cl")
+        .try_output();
+
+    let out = match result {
+        Ok(o) => o,
+        Err(e) => panic!(
+            "mutual import MUST terminate with a cycle diagnostic, not hang — \
+             the process did not exit within the bound ({e}). This is the HEAD \
+             D0030 deadlock (FIXME 0426); the signature/body pre-pass barrier \
+             (signature-body-prepass.md §4) flips this GREEN."
+        ),
+    };
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    // POST-FIX target (signature-body-prepass.md §4): the module-atomic barrier's
+    // `dependency_closure` finds a 2-cycle with no topological order and emits a
+    // clean CYCLE-detected diagnostic at the import site. RED-first on HEAD: the
+    // form-by-form resolver instead surfaces a confusing dependency error
+    // (`'aa' not found in module 'a'`) — neither a clean cycle diagnostic nor (for
+    // this specific-import shape) a deadlock. The bounded timeout above still
+    // guards the deadlock shape from wedging the suite.
+    assert!(
+        combined.contains("cycle") || combined.contains("circular"),
+        "mutual import MUST surface a CYCLE diagnostic (signature-body-prepass.md \
+         §4). HEAD emits a confusing non-cycle error instead — RED-first, GREEN \
+         when the pre-pass barrier lands. got: {combined}"
+    );
+    assert!(
+        !combined.contains("panic"),
+        "mutual import MUST be a clean cycle diagnostic, not a panic, got: {combined}"
+    );
+}
+
+// =============================================================================
+// FIXME 0434 sweep (this sprint) — import / `(mod)` target, qualified vs bare.
+// verify-on-HEAD: a passing row is a standing [Tested+Neg] regression guard on
+// the qualified module-target path; a failing row is a surfaced sibling defect
+// handed to /frontend with this minimal repro.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.2.6 + §8.5.1 — a `(mod child)` submodule is
+// referable BOTH by its bare short-name alias (`child/val`) AND by its full
+// qualified path (`app.child/val`); the two MUST resolve to the same loaded
+// submodule symbol. The REPL displays the full qualified module path, so the
+// bare alias and the qualified form must be interchangeable name-positions.
+#[test]
+fn import_mod_target_qualified_and_bare_equiv() {
+    // Entry module `app` (the `--run app.cl` target) declares an inline
+    // submodule `child`; `app.child` is its full identity, `child` the alias.
+    // `child/val` (bare alias) and `app.child/val` (qualified) MUST both
+    // resolve to the same defn → 7 + 7 = 14.
+    Cranelisp::new()
+        .file(
+            "app.cl",
+            "(import [primitives [add-i64]])\n\
+             (import [primitives [Pure]])\n\
+             (mod child (defn val [] 7))\n\
+             (defn main [] (Pure (add-i64 (child/val) (app.child/val))))\n",
+        )
+        .run("app.cl")
+        .output()
+        .assert_exit(14);
+}

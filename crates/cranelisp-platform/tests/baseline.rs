@@ -58,19 +58,21 @@ fn read_source(rel: &str) -> String {
 // T23 per tests/plan/sprint71-platform.md row T23.
 #[test]
 fn sprint71_abi_version_baseline_co_regen() {
-    // (1) Source-side: ABI_VERSION must read `= 6;` after the DEF-5 bump (the
-    //     manifest export is namespaced per platform name, §5.5.5 / §6.7). Was
-    //     `= 5;` at FIXME 0327 Option-A (the DLL-local dispatch-funnel
-    //     fault-catch; call_effect_thunk returns EffectOutcome), `= 4;` at the
-    //     step-1 node-widen, `= 3;` at FIXME 0286 (the three-exports macro
-    //     rework).
+    // (1) Source-side: ABI_VERSION must read `= 7;` after the Sprint 93 ABI-v4
+    //     cascade (recorded numerically 6→7: poll-shape async-leaf effect fns +
+    //     ConcurrencyDescriptor in the manifest + the host-reactor C-ABI; the v7
+    //     layout types are landed-and-dormant behind the `concurrency` feature,
+    //     §6.8). Was `= 6;` at DEF-5 (the manifest export namespaced per platform
+    //     name, §5.5.5 / §6.7), `= 5;` at FIXME 0327 Option-A (the DLL-local
+    //     dispatch-funnel fault-catch), `= 4;` at the step-1 node-widen, `= 3;`
+    //     at FIXME 0286 (the three-exports macro rework).
     let lib_rs = read_source("src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 6;"),
-        "expected `pub const ABI_VERSION: u32 = 6;` in \
-         crates/cranelisp-platform/src/lib.rs (DEF-5: the manifest export is \
-         namespaced per platform name, bumping the ABI from 5 to 6). If you \
-         see this failure the source change was skipped or reverted."
+        lib_rs.contains("pub const ABI_VERSION: u32 = 7;"),
+        "expected `pub const ABI_VERSION: u32 = 7;` in \
+         crates/cranelisp-platform/src/lib.rs (Sprint 93: the ABI-v4 cascade \
+         bumps the ABI from 6 to 7). If you see this failure the source change \
+         was skipped or reverted."
     );
 
     // (2) Baseline-side: the `public-api.txt` baseline must enumerate the

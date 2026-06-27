@@ -55,7 +55,17 @@ impl CompilerSession {
         // (user module) is in TypecheckBlocked state and can only be resumed by
         // the eval thread's retry loop, not by a persistent worker — so a
         // whole-world wait would deadlock on the user module.
-        match self.shared.scheduler.wait_module_inmem_complete_blocking(dep_module) {
+        let result = self.shared.scheduler.wait_module_inmem_complete_blocking(dep_module);
+
+        // S93 Invariant SW: the eval thread recorded a `current → dep`
+        // cycle-check edge (`register_dep_edge_for_cycle_check`, via `block_dep`)
+        // but never moved its entry to `TypecheckBlocked`. The wait is over —
+        // clear the forward edge so the terminal entry carries no stale
+        // `blocked_on` into the next REPL form (which could otherwise mislead a
+        // future reverse-direction cycle check).
+        self.shared.scheduler.clear_dep_edge(&self.current_module_path());
+
+        match result {
             Ok(()) => Ok(()),
             Err(e) => {
                 self.shared.scheduler.reset_all_failed_modules();
@@ -251,6 +261,11 @@ impl CompilerSession {
                     platform_dirs: &platform_dirs_snap,
                     project_root: &self.shared.project_root,
                     shared_state: Some(&self.shared),
+                    // S93 Invariant SW: the REPL eval thread is the sole
+                    // orchestrator of its entry module — a dependency gap must
+                    // NOT move the entry to TypecheckBlocked (the eval thread
+                    // waits on the dep itself and re-runs from the top).
+                    eval_driven: true,
                 };
 
                 let res = process_form::process_cluster_once(

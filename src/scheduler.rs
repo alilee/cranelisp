@@ -86,6 +86,21 @@ pub struct ModuleState {
     /// Error that caused this module to fail, if any.
     pub error: Option<CranelispError>,
 
+    /// **Memoised static import closure (S93, Task-3 per-cluster cache).** The
+    /// signature-body pre-pass computes this cluster's static import closure
+    /// (`dependency::static_import_closure`) at the top of EVERY
+    /// `process_cluster_once` pass — including every retry-from-top a dependency
+    /// gap triggers. That walk does an `fs::read_to_string` + `parse` for every
+    /// transitively-imported module, so recomputing it once per attempt is
+    /// O(retries × closure-size) redundant IO. This memo caches the computed
+    /// `ClosureOrder` keyed by a cheap fingerprint of the cluster's *direct*
+    /// import declarations (the closure's root set): a cache hit reuses the walk;
+    /// a fingerprint miss (a different cluster on the same module scope — e.g. a
+    /// new REPL form) recomputes. Reset to `None` by `re_register_module` (source
+    /// changed → closure must be re-walked). `None` = not yet computed for the
+    /// current cluster.
+    pub static_closure_memo: Option<(u64, ClosureOrder)>,
+
     /// The cluster sexps this module typechecks from (S78 packet model). Held
     /// here so the requeue path (`try_unblock_locked`) can reconstruct the
     /// `PriorityWork::Typecheck { module, sexps }` packet after the dep this
@@ -94,28 +109,22 @@ pub struct ModuleState {
     /// (registered at `TypecheckDone`, never typechecked from source).
     pub sexps: Option<std::sync::Arc<[Sexp]>>,
 
-    /// **Orchestration ownership (S78 §3 / B1).** `true` once the eval thread
-    /// (the REPL) becomes this module's *sole* orchestrator — it is the entry
-    /// module and the REPL loop has taken it over after startup. While
-    /// `eval_owned`, the scheduler MUST NOT requeue this module onto the pool
-    /// for a fresh typecheck of its own sexps (`try_unblock_locked` early-
-    /// returns): the eval thread drives every retry itself (it blocks on the
-    /// *dependency* via `wait_module_inmem_complete_blocking` and re-runs the
-    /// cluster from the top). Two orchestrators on one module is the
-    /// in-progress-sharing class the S78 restructure removed; the role flag
-    /// keeps the single-owner invariant *structurally* — keyed on the module's
-    /// orchestration ROLE carried as data, NEVER on a `"user"`/name match.
-    ///
-    /// `false` for every pool-orchestrated module: `--run`/`--link` entry
-    /// modules (the pool drives them; requeue is correct there) and all
-    /// dependency modules. The entry module is `eval_owned` only in REPL mode,
-    /// and only after its startup content has been pool-typechecked (ownership
-    /// transfers pool → eval thread when the REPL loop begins).
-    pub eval_owned: bool,
-
     /// Module this module is currently blocked on (forward edge).
     /// Set when entering TypecheckBlocked, cleared when unblocked.
     /// Used for cycle detection.
+    ///
+    /// **Single-writer / exclusive-claim (S93, Invariant SW).** The former
+    /// `eval_owned` role-flag (S78 §3 / B1) is RETIRED. The entry module's
+    /// single-orchestrator property is now structural, not a convention flag:
+    /// the eval thread (REPL) drives its entry module's body WITHOUT ever moving
+    /// it to `TypecheckBlocked` — on a dependency gap it records a *cycle-check*
+    /// `blocked_on` edge via [`Self::register_dep_edge_for_cycle_check`] but
+    /// leaves the entry in its terminal pool (never claimable from a typecheck
+    /// queue), then waits on the *dependency* itself and re-runs the cluster
+    /// from the top. Because the entry never enters `TypecheckBlocked`,
+    /// `try_unblock_locked`'s existing `pool != TypecheckBlocked` guard already
+    /// makes a stray requeue impossible — there is no second orchestrator to
+    /// suppress, so no flag is needed (claimable XOR owned, by construction).
     pub blocked_on: Option<ModuleFullPath>,
 }
 
@@ -130,8 +139,8 @@ impl ModuleState {
             object_working: false,
             object_done: false,
             error: None,
+            static_closure_memo: None,
             sexps,
-            eval_owned: false,
             blocked_on: None,
         }
     }
@@ -150,8 +159,8 @@ impl ModuleState {
             object_working: false,
             object_done: true,
             error: None,
+            static_closure_memo: None,
             sexps: None,
-            eval_owned: false,
             blocked_on: None,
         }
     }
@@ -173,8 +182,8 @@ impl ModuleState {
             object_working: false,
             object_done: true,
             error: None,
+            static_closure_memo: None,
             sexps: None,
-            eval_owned: false,
             blocked_on: None,
         }
     }
@@ -550,21 +559,20 @@ impl CompileScheduler {
         state.cached_modules.remove(module);
 
         // Reset ModuleState for re-processing. Keep waiters — other
-        // modules may still be waiting on this module's symbols. Preserve the
-        // `eval_owned` orchestration role across re-register (S78 §3): if the
-        // REPL entry module's source is re-registered by the watcher, the
-        // post-reload dependency-completion requeues still skip the eval-owned
-        // module (`try_unblock_locked` early-return). Note this DOES reset the
-        // pool to TypecheckFirst + restores `sexps` + pushes the module onto
-        // `typecheck_first`, so a POOL worker re-typechecks it on this reload
-        // pass — that is SAFE because the watcher reload runs synchronously on
-        // the eval thread (`poll_and_reload` / `reload_module`), blocking the
-        // eval loop, so there is no concurrent eval claim. The reload pass
-        // itself is pool-driven but eval-synchronous; the B1 dual-orchestration
-        // defect (concurrent pool claim during eval) stays closed.
+        // modules may still be waiting on this module's symbols. The watcher
+        // reload is **pool-driven but eval-synchronous** (S93, Invariant SW):
+        // this DOES reset the pool to TypecheckFirst + restores `sexps` + pushes
+        // the module onto `typecheck_first`, so a POOL worker re-typechecks it
+        // on this reload pass with the uniform block/requeue discipline — that
+        // is SAFE because the watcher reload runs synchronously on the eval
+        // thread (`poll_and_reload` / `reload_module`, which blocks on
+        // `wait_inmem_complete_blocking`), so the eval thread holds NO
+        // concurrent claim while the pool drives the reload. No `eval_owned`
+        // role-flag is preserved or needed: the entry funnels through the same
+        // exclusive claim as any other pool-driven module (B1 stays closed by
+        // construction, not by a per-role early-return).
         if let Some(ms) = state.modules.get_mut(module) {
             let waiters = std::mem::take(&mut ms.waiters);
-            let eval_owned = ms.eval_owned;
             *ms = ModuleState {
                 pool: ModulePool::TypecheckFirst,
                 waiters,
@@ -574,8 +582,9 @@ impl CompileScheduler {
                 object_working: false,
                 object_done: false,
                 error: None,
+                // Source changed — the static closure must be re-walked.
+                static_closure_memo: None,
                 sexps: Some(sexps),
-                eval_owned,
                 blocked_on: None,
             };
         }
@@ -719,30 +728,13 @@ impl CompileScheduler {
         None
     }
 
-    /// Report that a symbol in the working module has been typechecked.
-    /// Checks the module's waiter map: if any module was waiting on
-    /// this symbol for WaitKind::Typecheck, removes the waiter and
-    /// evaluates whether to unblock the waiting module.
-    pub fn notify_symbol_typechecked(
-        &self,
-        module: &ModuleFullPath,
-        symbol: &Symbol,
-    ) {
-        let mut state = self.lock();
-        let waiters = Self::take_waiters_for_symbol_locked(
-            &mut state, module, symbol, WaitKind::Typecheck,
-        );
-        let had_waiters = !waiters.is_empty();
-        for waiter_module in waiters {
-            Self::try_unblock_locked(&mut state, &waiter_module);
-        }
-
-        // Wake priority workers if any module was unblocked.
-        if had_waiters {
-            drop(state);
-            self.priority_work_available.notify_all();
-        }
-    }
+    // `notify_symbol_typechecked` (the per-symbol signature-readiness path) was
+    // RETIRED in S93 (`signature-body-prepass.md` §6 net-neutral subtraction).
+    // Every live `block_for_typecheck` registers a `"*"` whole-module waiter
+    // satisfied by `notify_typecheck_done`'s sweep — the per-symbol notify
+    // matched no waiter and was a no-op in the live pipeline. The module-atomic
+    // signature barrier (Invariant PP) is the single signature-readiness
+    // protocol; keeping a second one was a Principle 7 violation.
 
     /// Typechecking needs a symbol from another module that hasn't
     /// been typechecked yet. Moves the current module to TypecheckBlocked.
@@ -836,6 +828,12 @@ impl CompileScheduler {
             return;
         }
         Self::set_pool_locked(&mut state, module, ModulePool::TypecheckDone);
+        // Phase-A barrier (S93): the terminal pool transition IS the signature
+        // publication edge. `notify_typecheck_done` runs post-`finalize_cluster`
+        // (the cluster's Defs are already installed in `symbol_tables[module]`),
+        // so `pool → TypecheckDone` happens-after publication — the barrier
+        // predicate (`signatures_ready_locked`) reads the pool directly, with no
+        // separate bit. Waking `completion` below releases any barrier waiter.
         state.typecheck_done.push_back(module.clone());
 
         // Sweep: collect all modules waiting for typecheck on any symbol
@@ -1319,23 +1317,305 @@ impl CompileScheduler {
         state.modules.contains_key(module)
     }
 
-    /// Transfer orchestration ownership of a module to the eval thread (S78 §3
-    /// / B1). Marks the module `eval_owned` and drops its stored cluster sexps.
+    // -----------------------------------------------------------------------
+    // Signature pre-pass barrier (S93, `signature-body-prepass.md` §3.1)
+    // -----------------------------------------------------------------------
+
+    /// Whether module `m`'s signatures are wholly published.
     ///
-    /// Called by the REPL once startup typecheck of the entry module has
-    /// completed and the eval loop is about to take over: from this point the
-    /// eval thread is the module's *sole* orchestrator. The `eval_owned` flag
-    /// makes `try_unblock_locked` refuse to requeue the module onto the pool
-    /// (the eval thread drives its own retries); clearing `sexps` is belt-and-
-    /// braces so even a stray dispatch finds an empty cluster (no-op) rather
-    /// than re-typechecking stale forms. Idempotent; a no-op for an
-    /// unregistered module (e.g. a fresh empty REPL whose entry was never
-    /// pool-registered with content). Keyed on the caller's knowledge of which
-    /// module is eval-owned — the scheduler never inspects the module's name.
-    pub fn mark_eval_owned(&self, module: &ModuleFullPath) {
+    /// `true` when the module has reached a terminal typecheck state
+    /// (`TypecheckDone`/`Complete`), OR is not registered with the scheduler at
+    /// all (a compiler-seeded synthetic module — `primitives`, `macros` — whose
+    /// Defs the symbol table already holds). Mirrors [`Self::is_typechecked`]'s
+    /// None-as-ready fallthrough.
+    ///
+    /// **The terminal pool transition IS the publication edge (S93 / /arch
+    /// ruling).** `notify_typecheck_done` runs post-`finalize_cluster`, after the
+    /// cluster's Defs are installed in `symbol_tables[m]`; the
+    /// release-acquire chain on the state lock carries `pool → TypecheckDone`
+    /// happens-after publication. So there is no separate `signatures_ready` bit —
+    /// reading the pool directly is correct (the live-dead bit + its explicit
+    /// `register_module_signatures` driver were removed, FIXME 0452 / /arch
+    /// option i).
+    fn signatures_ready_locked(state: &SchedulerState, m: &ModuleFullPath) -> bool {
+        match state.modules.get(m) {
+            Some(ms) => matches!(ms.pool, ModulePool::TypecheckDone | ModulePool::Complete),
+            None => true,
+        }
+    }
+
+    /// Park the caller until **every** module in `closure` has its signatures
+    /// published (the Phase-A barrier gate). Returns when the barrier opens, or
+    /// `Err` if any closure module failed.
+    ///
+    /// Workers do NOT poll — they wait inside the scheduler on the `completion`
+    /// condvar (woken by `notify_typecheck_done` / `notify_module_failed` /
+    /// `shutdown`). When this returns `Ok`, the state-lock release-acquire chain
+    /// carries the happens-before edge from each dependency's terminal-pool
+    /// transition (its publication edge — see [`Self::signatures_ready_locked`])
+    /// to here, and on to the body's read of `symbol_tables[sibling]` (§3.3). No
+    /// body is admitted to Phase B until this opens, so the §3.6 publish/read
+    /// window cannot occur.
+    pub fn await_signature_barrier(
+        &self,
+        closure: &ClosureOrder,
+    ) -> Result<(), SchedulerError> {
+        let mut state = self.lock();
+        loop {
+            if state.shutdown {
+                return Ok(());
+            }
+            // Fail fast if any closure module errored — otherwise we would park
+            // forever on a dep that will never become ready.
+            for m in &closure.order {
+                if let Some(ms) = state.modules.get(m)
+                    && ms.pool == ModulePool::Failed
+                {
+                    return Err(SchedulerError::ModuleFailed {
+                        module: m.clone(),
+                        message: ms
+                            .error
+                            .as_ref()
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "unknown error".to_string()),
+                    });
+                }
+            }
+            let all_ready = closure
+                .order
+                .iter()
+                .all(|m| Self::signatures_ready_locked(&state, m));
+            if all_ready {
+                return Ok(());
+            }
+            state = self
+                .completion
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Atomic check-and-block at the body-boundary signature barrier (S93,
+    /// Invariant PP — the requeue-gate predicate; BC §6 ruling B). This is the
+    /// **single-lock** operation a **pool worker** uses at the body boundary, and
+    /// the structural fix for the lost-wakeup Blocker (FIXME 0452 / /review).
+    ///
+    /// Under ONE state-lock acquisition: scan `closure.order` for the first
+    /// member whose signatures are not yet published (not terminal — see
+    /// [`Self::signatures_ready_locked`]). If found, atomically register `module`
+    /// as a `"*"` whole-module waiter on that member (the `block_for_typecheck`
+    /// requeue-kernel transition: move `module` to `TypecheckBlocked`, record the
+    /// `blocked_on` edge, run the acyclicity check) and return `Ok(Some(member))`.
+    /// If every member is already terminal, return `Ok(None)` (barrier open — the
+    /// body proceeds). On a transitive cycle back to `module`, fail `module` and
+    /// return `Err` (the standard circular-dependency error).
+    ///
+    /// A pool worker MUST NOT park its thread on the barrier (that would
+    /// re-introduce the starvation/deadlock axis the S78 free-back-to-pool model
+    /// deleted): on `Some(member)` it surfaces a `Gap` and frees back to the
+    /// pool; the scheduler requeues its body work when `member` reaches
+    /// `notify_typecheck_done` → `try_unblock_locked`. The eval thread — the one
+    /// genuine waiter, which consumes no pool slot — uses the blocking
+    /// [`Self::await_signature_barrier`] instead.
+    ///
+    /// **Why one lock (the lost-wakeup fix).** The former two-call shape —
+    /// `first_unready_closure_member` (lock, scan, release) THEN `block_dep` →
+    /// `block_for_typecheck` (re-lock, register the waiter) — had a window: if
+    /// `member` reached `notify_typecheck_done` *between* the two locks, its
+    /// waiter-sweep ran BEFORE `module` registered as a waiter, so `module` parked
+    /// in `TypecheckBlocked` on an already-terminal member that never notifies
+    /// again → a permanent lost wakeup (the exact deadlock class this gate claims
+    /// to eliminate by construction). Scanning and registering under the same lock
+    /// closes the window: `notify_typecheck_done(member)` either runs entirely
+    /// before this call (the scan sees `member` terminal and skips it) or entirely
+    /// after (it sweeps the waiter this call just registered). There is no gap.
+    pub fn block_on_first_unready_closure_member(
+        &self,
+        module: &ModuleFullPath,
+        closure: &ClosureOrder,
+    ) -> Result<Option<ModuleFullPath>, CranelispError> {
+        let mut state = self.lock();
+        let member = closure
+            .order
+            .iter()
+            .find(|m| !Self::signatures_ready_locked(&state, m))
+            .cloned();
+        let Some(member) = member else {
+            return Ok(None); // barrier open — every member is terminal
+        };
+
+        observability::record_module_event(
+            SchedulerTraceTag::ModuleStateBlocked,
+            module.as_ref(),
+        );
+        // Inline the `block_for_typecheck` transition under THIS lock — the scan
+        // above and this waiter registration must not have a gap.
+        Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
+        if let Some(ms) = state.modules.get_mut(module) {
+            ms.blocked_on = Some(member.clone());
+        }
+        // Acyclicity check FIRST (before adding the waiter), mirroring
+        // `block_for_typecheck`: a transitive cycle back to `module` fails it
+        // with the standard diagnostic.
+        if let Some(cycle) = Self::detect_cycle_locked(&state, module) {
+            let cycle_str = cycle
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            let msg = format!("circular dependency detected: {}", cycle_str);
+            Self::notify_module_failed_locked(
+                &mut state,
+                module,
+                CranelispError::ModuleError {
+                    message: msg.clone(),
+                    location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+                },
+            );
+            return Err(CranelispError::ModuleError {
+                message: msg,
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            });
+        }
+        Self::add_waiter_locked(
+            &mut state,
+            &member,
+            &Symbol::from("*"),
+            Waiter {
+                module: module.clone(),
+                need: WaitKind::Typecheck,
+            },
+        );
+        Ok(Some(member))
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-cluster static-closure memo (S93 Task-3 — recover redundant IO)
+    // -----------------------------------------------------------------------
+
+    /// Read the memoised static import closure for `module` if its fingerprint
+    /// matches (S93 Task-3 per-cluster cache). `Some(closure)` on a hit — the
+    /// same cluster (same direct-import root set) as a prior attempt — `None` on
+    /// a miss (no memo yet, the fingerprint differs, or the module is
+    /// unregistered).
+    ///
+    /// The closure walk in `dependency::static_import_closure` does an
+    /// `fs::read_to_string` + `parse` for every transitively-imported module and
+    /// runs at the top of EVERY `process_cluster_once` pass — including every
+    /// retry-from-top a dependency gap triggers. This memo makes that walk run
+    /// ONCE per cluster instead of once per attempt.
+    pub fn cached_static_closure(
+        &self,
+        module: &ModuleFullPath,
+        fingerprint: u64,
+    ) -> Option<ClosureOrder> {
+        let state = self.lock();
+        state
+            .modules
+            .get(module)
+            .and_then(|ms| match &ms.static_closure_memo {
+                Some((fp, closure)) if *fp == fingerprint => Some(closure.clone()),
+                _ => None,
+            })
+    }
+
+    /// Memoise the static import closure for `module` under `fingerprint` (S93
+    /// Task-3). Subsequent attempts of the same cluster (retry-from-top after a
+    /// dependency gap) reuse it instead of re-walking + re-parsing the transitive
+    /// import tree. Reset by `re_register_module` (source changed → re-walk).
+    /// No-op for an unregistered module.
+    pub fn cache_static_closure(
+        &self,
+        module: &ModuleFullPath,
+        fingerprint: u64,
+        closure: &ClosureOrder,
+    ) {
         let mut state = self.lock();
         if let Some(ms) = state.modules.get_mut(module) {
-            ms.eval_owned = true;
+            ms.static_closure_memo = Some((fingerprint, closure.clone()));
+        }
+    }
+
+    /// Test accessor (S93 §6): force a registered module into `TypecheckWorking`
+    /// (claimed, not yet done) without going through `take_priority_work` — so a
+    /// barrier test can model an in-flight orchestrator that has NOT yet
+    /// published signatures. No-op for an unregistered module.
+    #[cfg(test)]
+    pub fn force_typecheck_working_for_test(&self, m: &ModuleFullPath) {
+        let mut state = self.lock();
+        Self::set_pool_locked(&mut state, m, ModulePool::TypecheckWorking);
+    }
+
+    /// Record a `holder → dep` cycle-detection edge **without** moving `holder`
+    /// to `TypecheckBlocked` (S93, Invariant SW — the structural replacement for
+    /// the `eval_owned` flag).
+    ///
+    /// The eval thread (REPL) is the **sole** orchestrator of its entry module:
+    /// it drives the entry's body itself and waits on a gapping dependency via
+    /// `wait_module_inmem_complete_blocking`, then re-runs the cluster from the
+    /// top. Unlike a pool worker (which moves the gapping module to
+    /// `TypecheckBlocked` so the scheduler can requeue it), the eval thread must
+    /// NOT let its entry become re-claimable by a pool worker — that is the B1
+    /// dual-orchestration this retires. So the entry keeps its terminal pool
+    /// (never enters a typecheck queue) while the eval thread drives.
+    ///
+    /// This call records the forward `blocked_on` edge so the **reverse**-
+    /// direction cycle check still fires (if `dep`, while compiling, imports
+    /// `holder` back, `block_for_typecheck(dep, holder)` will detect the cycle
+    /// against this edge and fail `dep` — the eval thread's wait then surfaces a
+    /// clean circular-dependency error). On a cycle it returns `Err` WITHOUT
+    /// failing `holder` (the REPL entry is not a session-killer — a bad import
+    /// is an eval error). The edge is cleared by the eval thread after its wait
+    /// (`register_dep_for_eval`) so no stale edge lingers on the terminal entry.
+    /// No-op for an unregistered module.
+    pub fn register_dep_edge_for_cycle_check(
+        &self,
+        holder: &ModuleFullPath,
+        dep: &ModuleFullPath,
+    ) -> Result<(), CranelispError> {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(holder) {
+            ms.blocked_on = Some(dep.clone());
+        }
+        if let Some(cycle) = Self::detect_cycle_locked(&state, holder) {
+            // Clear the edge — `holder` is eval-owned and is NOT failed.
+            if let Some(ms) = state.modules.get_mut(holder) {
+                ms.blocked_on = None;
+            }
+            let cycle_str = cycle
+                .iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            return Err(CranelispError::ModuleError {
+                message: format!("circular dependency detected: {}", cycle_str),
+                location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+            });
+        }
+        Ok(())
+    }
+
+    /// Clear a module's `blocked_on` cycle-check edge (S93, Invariant SW). The
+    /// eval thread calls this after waiting on a dependency it recorded via
+    /// [`Self::register_dep_edge_for_cycle_check`], so the terminal entry module
+    /// carries no stale forward edge into the next REPL form. No-op when unset
+    /// or unregistered.
+    pub fn clear_dep_edge(&self, holder: &ModuleFullPath) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(holder) {
+            ms.blocked_on = None;
+        }
+    }
+
+    /// Drop a module's stored cluster sexps (S93, Invariant SW). Called by the
+    /// REPL once the eval thread takes over the entry module: the entry sits in
+    /// its terminal pool, the eval thread owns its content via its own
+    /// `CheckState`, so the scheduler-held startup sexps are no longer needed —
+    /// dropping them means even a stray dispatch would find an empty cluster.
+    /// No-op for an unregistered module.
+    pub fn release_entry_sexps(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        if let Some(ms) = state.modules.get_mut(module) {
             ms.sexps = None;
         }
     }
@@ -1593,20 +1873,15 @@ impl CompileScheduler {
         module: &ModuleFullPath,
     ) {
         let Some(ms) = state.modules.get(module) else { return };
+        // S93 Invariant SW: the entry module's single-orchestrator property is
+        // structural, not a flag. The eval thread NEVER moves its entry to
+        // `TypecheckBlocked` (it records a cycle-check edge via
+        // `register_dep_edge_for_cycle_check` and drives its own retry while the
+        // entry stays in its terminal pool). So this `pool != TypecheckBlocked`
+        // guard already makes a stray requeue of the entry impossible — there is
+        // no second orchestrator to suppress, and the retired `eval_owned`
+        // early-return is gone (claimable XOR owned, by construction).
         if ms.pool != ModulePool::TypecheckBlocked {
-            return;
-        }
-        // S78 §3 / B1: an eval-owned module (the REPL entry module, once the
-        // eval thread is its sole orchestrator) is NEVER requeued onto the pool
-        // for a fresh typecheck of its own sexps. The eval thread drives every
-        // retry itself — it blocks on the *dependency* and re-runs the cluster
-        // from the top. Requeuing here would hand a second orchestrator (a pool
-        // worker) the entry's sexps to re-typecheck concurrently with the eval
-        // thread (the dual-orchestration the restructure removed). The skip is
-        // keyed on the orchestration ROLE (`eval_owned`), carried as data on the
-        // ModuleState — NOT on the module's name. The eval thread clears the
-        // blocked_on edge through its own wait/retry path.
-        if ms.eval_owned {
             return;
         }
 
@@ -1809,6 +2084,140 @@ impl std::fmt::Display for SchedulerError {
 }
 
 impl std::error::Error for SchedulerError {}
+
+// ---------------------------------------------------------------------------
+// Signature/body pre-pass — static dependency closure + cycle error (S93)
+//
+// `design/int/signature-body-prepass.md` §3.1 / §7 step 1. The barrier's
+// Phase-A unit of work is the *static* import closure: the modules a cluster
+// transitively imports, computed purely from Pass-0 structural import
+// declarations (no inference needed to know WHICH modules the closure
+// contains). A cycle in that closure has no topological order — it is the
+// D0030 mutual-import disposition (§4): mutual imports are a compile-time
+// cycle-error, NOT compiled.
+// ---------------------------------------------------------------------------
+
+/// A topologically ordered static import closure — leaves (deepest deps) first,
+/// the root last. Computed by [`dependency_closure`] from Pass-0 import
+/// declarations. The ordering guarantee: for any module `m` in `order`, every
+/// module `m` imports appears *before* `m`. This is the order in which Phase-A
+/// signature registration drives the closure so a dependent's body never reads
+/// a not-yet-registered sibling (the §3.3 ordering guarantee).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosureOrder {
+    /// Modules in dependency (topological) order: imports precede importers.
+    pub order: Vec<ModuleFullPath>,
+}
+
+/// A static import cycle — the closure has no topological order, so the
+/// signature pre-pass cannot register it (mutual imports are not compiled;
+/// `signature-body-prepass.md` §4 ratified user ruling). Carries the modules on
+/// the back-edge path for a clean cycle diagnostic at the import site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CycleError {
+    /// The modules forming the cycle, in discovery order, terminated by the
+    /// repeated back-edge module (e.g. `[a, b, a]` for a 2-cycle).
+    pub cycle: Vec<ModuleFullPath>,
+}
+
+impl CycleError {
+    /// Render the cycle as `a -> b -> a` for a diagnostic message.
+    pub fn render(&self) -> String {
+        self.cycle
+            .iter()
+            .map(|m| m.to_string())
+            .collect::<Vec<_>>()
+            .join(" -> ")
+    }
+}
+
+/// Topologically order the static import closure rooted at `root`.
+///
+/// `import_decls` is the adjacency list: each entry `(m, deps)` names a module
+/// `m` and the modules it directly imports (its Pass-0 import declarations).
+/// Modules reachable from `root` but absent from `import_decls` are treated as
+/// leaves (no outgoing edges) — e.g. already-loaded or compiler-seeded modules
+/// whose decls the caller did not enumerate.
+///
+/// Returns [`ClosureOrder`] (leaves first, `root` last) on success, or
+/// [`CycleError`] when a back-edge is found (the D0030 disposition — §4).
+///
+/// Pure over the edge list (no scheduler state). This is the static-graph
+/// analogue of [`CompileScheduler::detect_cycle_locked`], which detects cycles
+/// on the *live* `blocked_on` graph; here the graph is the *declared* import
+/// graph, known before any body typechecks.
+pub fn dependency_closure(
+    root: &ModuleFullPath,
+    import_decls: &[(ModuleFullPath, Vec<ModuleFullPath>)],
+) -> Result<ClosureOrder, CycleError> {
+    let adjacency: HashMap<&ModuleFullPath, &[ModuleFullPath]> = import_decls
+        .iter()
+        .map(|(m, deps)| (m, deps.as_slice()))
+        .collect();
+
+    // Three-colour DFS: White (unvisited) / Gray (on the current stack) /
+    // Black (finished). A Gray re-visit is a back-edge → cycle. Post-order
+    // emission yields a topological order with imports before importers.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Colour {
+        Gray,
+        Black,
+    }
+    let mut colour: HashMap<ModuleFullPath, Colour> = HashMap::new();
+    let mut order: Vec<ModuleFullPath> = Vec::new();
+    // Explicit stack of (node, parent-path-prefix-len) to recover the cycle
+    // path without recursion (deep closures must not blow the call stack).
+    let mut path: Vec<ModuleFullPath> = Vec::new();
+    // Work stack entries: Enter(node) pushes children; Exit(node) emits.
+    enum Step {
+        Enter(ModuleFullPath),
+        Exit(ModuleFullPath),
+    }
+    let mut work: Vec<Step> = vec![Step::Enter(root.clone())];
+
+    while let Some(step) = work.pop() {
+        match step {
+            Step::Enter(node) => {
+                match colour.get(&node) {
+                    Some(Colour::Black) => continue, // already finished
+                    Some(Colour::Gray) => {
+                        // Back-edge — reconstruct the cycle from `path`.
+                        let start = path.iter().position(|m| *m == node)
+                            .unwrap_or(0);
+                        let mut cycle: Vec<ModuleFullPath> =
+                            path[start..].to_vec();
+                        cycle.push(node);
+                        return Err(CycleError { cycle });
+                    }
+                    None => {}
+                }
+                colour.insert(node.clone(), Colour::Gray);
+                path.push(node.clone());
+                work.push(Step::Exit(node.clone()));
+                if let Some(deps) = adjacency.get(&node) {
+                    for dep in deps.iter() {
+                        if colour.get(dep) != Some(&Colour::Black) {
+                            work.push(Step::Enter(dep.clone()));
+                        }
+                    }
+                }
+            }
+            Step::Exit(node) => {
+                // Only emit/pop on the first Exit for this node.
+                if colour.get(&node) == Some(&Colour::Gray) {
+                    colour.insert(node.clone(), Colour::Black);
+                    // Pop the matching path entry (it is the last occurrence).
+                    if let Some(pos) = path.iter().rposition(|m| *m == node) {
+                        path.remove(pos);
+                    }
+                    order.push(node);
+                }
+            }
+        }
+    }
+
+    Ok(ClosureOrder { order })
+}
 
 impl From<SchedulerError> for CranelispError {
     fn from(e: SchedulerError) -> Self {

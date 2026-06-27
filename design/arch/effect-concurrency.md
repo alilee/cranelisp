@@ -19,8 +19,13 @@ priority choice; the two are independent.
 no mechanism. This document is the **language-level** axis: how a *program* gets
 concurrency over its effects. The **compiler-internal** axis (how the compiler
 schedules its own typecheck/codegen work — scheduler, worker pool, `SharedState`) is
-a different subject, inventoried in `design/int/concurrency-architecture.md` and
-debt-tracked by FIXME 0425. Do not conflate them.
+a different subject, inventoried in `design/int/concurrency-architecture.md`. (Its
+highest-leverage item — the dependency-service single-writer race + the D0030
+mutual-import deadlock — was resolved structurally by the S93 signature/body
+pre-pass and the resolving FIXMEs 0425 item 1 + 0426 deleted; the residual
+lower-value structure debt of 0425 items 2–4 — `SharedState` per-field ownership,
+`cached_modules` dual-store, priority/nice worker unification — remains as
+inventory in that doc, untracked by a FIXME.) Do not conflate them.
 
 ---
 
@@ -234,6 +239,37 @@ does BOTH pure sparks and I/O `Par` (the limitation: blocking I/O ties up CPU th
 The async split **moves I/O onto the reactor and leaves the pure-spark path on rayon
 UNCHANGED.** So CPU-spark widening (pure-value sparks, apply-arg sparking — FIXME 0424)
 is a rayon-side increment that can land independently of the I/O-runtime work.
+
+**Verdict on `par-map`/`par-reduce` — no PRIMITIVE, but they ARE stdlib functions
+(FIXME 0424(ii) / 0445, S93 /arch; user-ratified S93 Phase-3 review).** Two halves:
+
+- **No explicit parallel-map/-reduce *primitive* / no new language surface.** A dedicated
+  `par-map` *compiler primitive* or new syntax cuts directly against the ratified thesis
+  (§1, §3): the programmer writes **zero concurrency primitives**, and parallelism is
+  extracted from dataflow. Declined — and stays declined.
+
+- **`par-map` / `par-reduce` / `par-map-reduce` ARE legitimate stdlib functions.** They are
+  ordinary `.cl` library definitions that `/stdlib` writes and owns — **not** compiler
+  primitives, adding **no language surface or syntax**. What makes them parallel is the
+  **inferred apply-arg sparking substrate**, NOT any magic: a stdlib `par-map` is an
+  ordinary `map`/`fmap` whose per-element applications spark because their apply-arguments
+  are independent and individually expensive. 0424(i)'s generalization — spark independent
+  apply-arguments fully — is the substrate these functions build on; once it lands, a plain
+  `(map f xs)` over an expensive `f` already auto-parallelizes, and `par-map` is the
+  intention-revealing, divide-and-conquer-shaped stdlib name for that behaviour (the D&C
+  lifting recovers parallelism today even before the full generalization, by lifting each
+  half into an independent `let`). They are **not magic primitives** — a reader can open
+  the `.cl` source and see ordinary recursion + `let` independence.
+
+The on-track inferred path is **0424(i)'s generalization** — 0424(i) (the divide-and-conquer
+apply-arg shape) shipped S92, and its full-independence generalization is a rayon-side
+increment that can land anytime. **0424 stays open** for that generalization (+ limit #2,
+dependent-binding sparks) — the stdlib `par-*` functions depend on it as their substrate.
+The *(ii)-as-primitive* sub-question is **closed (declined)**. **0445 (the stdlib
+divide-and-conquer interim-or-reserve question) is resolved the STDLIB-PROVIDES way:**
+`/stdlib` provides `par-map`/`par-reduce`/`par-map-reduce` as ordinary `.cl` definitions
+over the sparking substrate (superseding the earlier "names merely reserved / `/stdlib`
+holds" disposition). `/stdlib` owns the implementation and its sprint placement.
 
 ## 8. The resource-token model under async — preserved and generalized
 
@@ -471,6 +507,21 @@ is filed: per the project's manifestation-site discipline, the cascade is record
 at its natural home and actioned when the track opens (the trigger — implementation — is
 unmet, so an open FIXME would merely idle across sprints).
 
+**STATUS — ACTIONING (S93, effect-concurrency slice 2).** The track has opened; the
+cascade is **being executed**, recorded at its natural home in
+`platform-interface.md` **§6.8**. Two corrections to the pre-implementation text
+above: (1) the numeric stamp steps **`ABI_VERSION` 6 → 7**, NOT "3 → 4" — the "3→4"
+above was written when the live stamp was 3; the stamp is 6 at slice-2 open, so the
+bump is 6→7 (sprint R5; "v4" is the doc-label for the async-leaf *model*, not the
+numeric version). (2) The **layout contracts are landed this sprint** (S93), gated
+behind an off-by-default `concurrency` feature (byte-identical-when-off): `Poll` /
+`PollFn` / `ConcurrencyDescriptor` in `cranelisp-types`; `HostCtx` / `Waker` /
+`WakerVTable` / `PollFn` / `ConcurrentPlatformFn` in `cranelisp-platform`. The
+poll-shape effect fns + descriptor-in-manifest + host-reactor C-ABI are all reserved
+in those types; the **wiring** (macro emit, host loader, host reactor) is the slice-2
+reactor implementation. See `platform-interface.md` §6.8 for the per-crate change
+list and the landed-and-dormant disposition.
+
 ## 14. Build sequencing (the implied roadmap, lightly)
 
 The dependency order the architecture implies:
@@ -630,6 +681,178 @@ The thin-platforms thesis, the dataflow-extraction facts (§4), the resource-tok
 platform-owned-loop degeneration all carry forward unchanged.
 
 ## Appendix B — Implementation status (as-built ↔ target)
+
+**Slice 2 has opened (S93).** The async-substrate slice is in flight. As of S93 the
+**ABI-v7 layout contracts are landed** (gated behind an off-by-default `concurrency`
+feature — out of the default build and the `public-api.txt` edge until the reactor
+wires them; see `platform-interface.md` §6.8):
+
+- `cranelisp_types::{ConcurrencyDescriptor, Poll, PollFn}` — the descriptor (§5,
+  incl. the inert-until-slice-4 `global_budget` field) + the poll-ABI primitives;
+- `cranelisp_platform::{HostCtx, Waker, WakerVTable, PollFn, ConcurrentPlatformFn}` —
+  the host-reactor C-ABI (§12, the one genuinely new designed artifact) + the v7
+  poll-shape manifest entry; `ABI_VERSION` bumped 6 → 7;
+- `cranelisp_intrinsics::{StrandId, StrandEvent}` — the strand-identity correlation
+  newtype + the (slice-2-kinds-only) observability event enum (§11; the
+  expensive-to-retrofit groundwork that lands *with* the substrate).
+
+What remains in slice 2 (the reactor *implementation*, feature-gated /
+byte-identical-when-off, cleanly spillable to S94): the feature-gated host async
+runtime + the trampoline-as-`async fn`; the host reactor implementing the `HostCtx`
+vtable; one async-leaf effect demonstrating two slow reads overlapping on the reactor
+(no thread-per-read); and the trampoline emit-hooks feeding the strand-correlated
+event stream. Slices ≥ 3 (token-cardinality pool, backpressure, launch-and-continue +
+supervisor, two-pool routing, the combinator layer) follow per §14.
+
+### Slice-2 reactor — the implementable plan (decisions, S93 Phase-5 Wave-3, /arch)
+
+DESIGN settled, implementation pending — this is the `/dev` brief. Five decisions,
+the per-crate step list, the spill marker.
+
+**Substrate — `mio` (reactor) + `futures` (executor), NOT tokio.** §6's
+"tokio-or-equivalent" resolves to the *or-equivalent*: a thin host reactor over
+`mio` (the cross-platform epoll/kqueue/IOCP abstraction) driven by a
+`futures::executor::block_on` single-future executor. Rationale: (1) the landed
+host-reactor C-ABI is **mio-shaped, not tokio-shaped** — `HostCtx` is "register a
+raw fd + this `std::task::Waker` projection," which is exactly
+`mio::Registry::register(SourceFd, Token, Interest)` + a waker; tokio hides its
+reactor behind `AsyncFd` + its own task waker, so we would fight it to surface the
+raw-fd/raw-waker registration the ABI already commits to. (2) Dependency weight —
+`mio` + `futures` are two small single-purpose crates, trivially `dep:`-gated;
+tokio is a large runtime. (3) `--link` — a smaller gated dep is a cleaner
+byte-identical-off guarantee. (4) Extends cleanly — slices 3–8 need
+`Semaphore`/bounded-channel/`select!`/`join!`, all in the `futures` ecosystem
+without tokio; and the C-ABI **insulates platforms from the executor choice**, so a
+later swap (even to tokio) is gate-local and ABI-invisible. (5) Principle 8 — not
+throwaway: the mio reactor implementing `HostCtx` is the permanent host reactor;
+`block_on` is the canonical std-adjacent executor, and the suspension mechanism is
+genuine Rust `async`/`.await` (a compiler-generated state machine) — exactly what
+"no hand-rolled fibers" requires (a hand-written *executor* loop that calls
+`Future::poll` is not a fiber; a stackful coroutine with manual stack-switching is).
+
+**Feature topology — two features; `--link` links neither.**
+
+- `concurrency` (exists, KEEP) — the ABI-v7 **layout contracts only** (the v7 types
+  in `cranelisp-types`/`cranelisp-platform`/`cranelisp-intrinsics`;
+  `StrandId`/`StrandEvent`). ZERO runtime deps. This is the C-ABI surface a platform
+  compiles against — a platform enabling it pulls in **no executor** (the A2
+  "platforms carry no runtime" thesis preserved *structurally*).
+- `concurrency-runtime` (NEW, in `cranelisp-intrinsics`):
+  `concurrency-runtime = ["concurrency", "dep:mio", "dep:futures"]`. Gates the async
+  trampoline + the `block_on` executor + the mio-backed `HostCtx` reactor + the
+  strand sink. Forwarded by a root passthrough and (for the dev-sink surface)
+  `src/`. NOT in default features; NOT enabled by the exe-bundle `--link` path.
+- **`--link`-links-no-executor guarantee is structural**: `mio`/`futures` are
+  `dep:`-gated optional dependencies, so with the feature off cargo never compiles
+  or links them. The exe-bundle build path must never request `concurrency-runtime`;
+  off ⇒ a linked binary is byte-identical and executor-free. **Backend needs no
+  feature** for the minimal slice (see step list).
+
+**Trampoline-async-fn restructure — ONE await boundary.** The sync
+`run_io_trampoline_inner` (`crates/cranelisp-intrinsics/src/io.rs`) already unwinds
+to itself at every effect (the continuation stack is explicit + heap-valued; IO is
+reified as data), so the restructure is narrow:
+
+- Add an async twin `async fn run_io_trampoline_inner_async(io_ptr, host: &HostCtx,
+  sink, strand: StrandId) -> i64`. Its loop body is the sync body **verbatim except
+  the Effect arm**. Factor the per-node step logic (tag read, `Bind` push, `Pure`
+  unwrap, the `call_continuation` feed) into shared **sync** helpers so the sync and
+  async loops differ ONLY at the Effect arm (no node-logic duplication — Principle 7).
+- **The single await boundary is the Effect leaf.** The Effect arm `.await`s an
+  `EffectPoll` future whose `Future::poll(cx)` builds a C-ABI `Waker` projecting
+  `cx.waker()`, calls the platform poll-fn `poll(state, *HostCtx, *Waker) -> Poll`,
+  and maps `Poll::Ready` → `Ready(value-from-state)`, `Poll::Pending` → `Pending`
+  (the platform has registered its fd/timer with the reactor via `HostCtx`).
+- `call_continuation`, `Bind`, `Pure` STAY synchronous (straight-line code between
+  awaits). CPU sparks (`ivar_spark` → rayon) STAY on rayon — unchanged (the §7
+  two-pool split: rayon = CPU, reactor = I/O).
+- The C-ABI entry `cranelisp_run_io(io_ptr) -> i64` keeps its signature; it
+  cfg-splits — runtime-on constructs the mio reactor + `HostCtx` and `block_on`s the
+  async trampoline; runtime-off is today's sync `run_io_trampoline_inner`,
+  **byte-identical**.
+- **Overlap (the "two reads" acceptance) needs a SECOND async point: the `Par`
+  arm.** For I/O-effect `Par` branches, runtime-on lowers the branches to
+  `futures::future::join_all` of `run_io_trampoline_inner_async(branch, host, sink,
+  fresh_strand)` on the executor (concurrent futures on the single reactor — NO
+  thread-per-read), instead of the rayon `dispatch_par_branches_with_trace`. The
+  rayon dispatcher STAYS as the feature-off path AND the CPU-spark path. Token
+  grouping / `Semaphore`-per-token is DEFERRED to slice ≥ 3 — minimal Par-async =
+  `join_all` over token-disjoint branches.
+
+> **As-built caveat (S93).** In the minimal landed slice the async twin
+> `run_io_trampoline_inner_async` delegates straight to the proven sync stepper, so
+> the `EffectPoll` `.await` boundary is exercised **only by the fixture demo leaf**
+> (below) and is **NOT yet reachable through `cranelisp_run_io` for real IO-tree
+> effect nodes** — production effects still run synchronously and do not suspend on
+> the reactor. Routing real poll-shape effect *nodes* through the await needs the
+> deferred backend poll-emission (the `declare_platform!` poll-fns + the GOT-indirect
+> dispatch arm — the deferred column of the per-crate table below), a later slice. See
+> `design/int/reactor.md` §4 for the as-built detail.
+
+**Demo leaf — `async-read` (poll-shape, fd + `register_readable`).** A
+built-in/fixture poll-shape effect whose `state` holds a non-blocking raw fd + a
+result buffer; `poll` does `recv(fd, …, NONBLOCK)` → on bytes, write the result +
+`Ready`; on `EWOULDBLOCK`, `register_readable(host, fd, waker)` + `Pending`.
+Acceptance: two `async-read`s over two socketpairs whose write side is fed after a
+delay (driven by the host reactor's `register_timer`, so still single-reactor, NO
+per-read OS thread) run as two `Par` branches → complete in ≈ **max**(delay) not
+sum, on ONE reactor thread, and the `StrandEvent` stream shows
+`EffectDispatched → EffectSuspended → EffectResumed` interleaved for the two
+distinct strands. The poll-fn is HAND-WRITTEN (fixture/built-in) — the
+`declare_platform!` macro poll-emission is a later slice (`platform-interface.md`
+§6.8 deferred), so NO backend / platform-macro change is needed to demo the
+mechanism.
+
+**Strand observability hook — minimal, feature-gated sink.** A thread-safe
+`StrandEvent` sink (sibling to `IoObserver`, hosted in
+`crates/cranelisp-intrinsics/src/strand.rs` behind `concurrency-runtime`; a
+registration fn like `io_observer`). The trampoline emits via `emit_strand_event(ev)`
+that compiles to a no-op when off. Emit sites (minimal): `EffectDispatched{strand}`
+in the Effect arm before the await; `EffectSuspended{strand}` in `EffectPoll::poll`
+on `Poll::Pending`; `EffectResumed{strand}` in `EffectPoll::poll` on a re-poll.
+Strand identity: the async `Par` arm mints a fresh `StrandId` per branch (a monotonic
+`AtomicU64`, child of the current strand) so the demo's two reads are
+distinguishable; the root is `StrandId::ROOT`. (`SparkCreated`/`SparkForced` on the
+rayon path are present in the enum; their emit is slice ≥ 3, once spark strands
+matter.)
+
+**Reactor IMPLEMENTATION location — `cranelisp-intrinsics`, not `src/` (sharpens BC
+§6 + the scheduler diagram).** For the *policy* (construction parameters, pool
+sizing, backpressure, the dev sink, feature-gating) "the reactor is int's" holds. But
+the reactor *implementation* (the mio loop + the `HostCtx` impl + the `block_on`
+executor) MUST be hosted in `cranelisp-intrinsics`, because (1) the C-ABI entry
+`cranelisp_run_io` / `cranelisp_run_program` that drives the trampoline lives in
+intrinsics and cannot depend on int (`int` → intrinsics, never the inverse); and
+decisively (2) **a `--link`'d program does not contain `src/` at runtime** — int is
+the compiler binary, not linked into the output — so a reactor hosted in int could
+never drive a linked program's effects. Hosting it in intrinsics
+(runtime-feature-gated, linked into `--link` output) serves `--run`/REPL now AND is
+the only placement that can serve `--link` concurrency later. This mirrors the
+`io_observer` split (int owns the ring buffer/policy; the registration API is hosted
+in intrinsics). The minimal slice targets `--run`/REPL; `--link` concurrency is a
+later slice, but the placement makes it reachable without a relocation.
+
+**Per-crate `/dev` step list (platform → backend → int; intrinsics carries the
+substrate):**
+
+| # | Crate | MINIMAL step | Seam | Unit-test hook | Deferred to slice ≥ 3 |
+|---|---|---|---|---|---|
+| 1 | `cranelisp-platform` | NONE for the mechanism — the C-ABI types are landed. A hand-written fixture poll-fn for the demo leaf (or `/qa` owns it). | `src/concurrency.rs` (landed) | fixture poll-fn returns Pending-then-Ready; assert `HostCtx::register_readable` called | `declare_platform!` emits poll-fns + `ConcurrencyDescriptor`; manifest `PlatformFn`→`ConcurrentPlatformFn` |
+| 2 | `cranelisp-intrinsics` | **the substrate.** (a) `concurrency-runtime` feature + mio/futures deps; (b) the mio reactor + `HostCtx` impl (new `reactor.rs`); (c) `run_io_trampoline_inner_async` + `EffectPoll` (the one await boundary); (d) async `Par` `join_all` path; (e) `cranelisp_run_io` cfg-split `block_on`; (f) the `StrandEvent` sink + emit hooks + per-branch `StrandId`. | `io.rs`, new `reactor.rs`, `strand.rs` | `EffectPoll` suspend/resume on a fixture reactor; two-branch overlap completes in ≈ max; strand events emitted in order | `Semaphore`-per-token `Par` grouping; `SparkCreated`/`Forced` emit; launch-and-continue |
+| 3 | `cranelisp-backend` | **NONE.** The minimal demo's poll-fn is invoked intrinsics-side (fixture/built-in effect); effect-node codegen is unchanged. | — | existing baseline stays green (feature-off) | the GOT-indirect dispatch arm emits the poll-call shape (passing `HostCtx`/`Waker`) when real platforms emit poll-fns |
+| 4 | `src/` (int) | feature passthrough (`concurrency-runtime` forward); ensure default + exe-bundle/`--link` never enable it; wire the dev-sink surface (a `/strand` dump is OPTIONAL/spillable). | Cargo features; exe-bundle build path | feature-off baseline tests stay byte-identical | backpressure/supervisor/pool-sizing policy; reactor construction parameterization; `--link` concurrency |
+
+**Spill marker — the spillable stretch (what `/dev` drops FIRST if it runs long):**
+
+1. FIRST to drop: the **`Par`-async overlap** (step 2d) + per-branch strand minting +
+   the richer sink. Landing just the **single-leaf suspend/resume** (steps 2a–2c +
+   2e + one `EffectDispatched/Suspended/Resumed` on `ROOT`) still proves the spine:
+   async trampoline + mio reactor + the `HostCtx`/`Waker` C-ABI + one `StrandId`
+   path. The "two reads overlap" acceptance then carries to S94.
+2. SECOND to drop: the `/strand` REPL dump (step 4 sink surface) — the sink can land
+   as a registration-API + in-memory buffer with a test-only reader, no REPL command.
+3. The reactor itself (the load-bearing new artifact) is NOT spillable — it is the
+   point of the slice.
 
 **Exists today** (the building blocks):
 

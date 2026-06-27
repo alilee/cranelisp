@@ -12,9 +12,10 @@ Each diagram makes one concurrency invariant visible. The actor grain is the *un
 |---|---|
 | `concurrency-symbol-table-entry.svg` | A symbol-table entry has at most one writer per phase. Typecheck and codegen of the same entry never overlap. |
 | `concurrency-got-slot.svg` | A GOT slot is single-writer per slot, atomic-readable by many. The atomic store is the cross-thread publication primitive. |
-| `concurrency-dependency-service.svg` | The dependency service is the sole writer of dependency state. Workers do not poll or read shared state. |
+| `concurrency-dependency-service.svg` | The dependency service is the sole writer of dependency state. Workers do not poll or read shared state. **Reconciled S93** to the signature/body **pre-pass barrier** (resolved-by-deletion S93; was FIXME 0425 item 1 + 0426): all signatures register before any body typechecks, retiring the per-symbol wait/notify race window. |
 | `concurrency-watcher-channel.svg` | The watcher channel is single-writer (OS callback thread) and single-reader (REPL thread, at prompt boundary). |
 | `concurrency-jit-retention.svg` | JIT pages free only when no derivative code pointer is reachable. The Arc-wrapped Jit is the retention root; swap-before-drop ordering preserves safety. |
+| `concurrency-scheduler.svg` | **(S93, effect-concurrency slice-2 TARGET)** The async trampoline scheduler over a host-owned reactor — the single serializing interpreter (`async fn`) polls C-ABI async-leaf platforms (`cranelisp_platform::PollFn`), which register interest via the host `HostCtx` vtable + `Waker` on `WouldBlock`; the host reactor re-polls. Each arrow is the annotation site for the strand-correlated `cranelisp_intrinsics::StrandEvent` observability stream (§11). |
 
 ## Execution-flow diagrams
 

@@ -198,6 +198,23 @@ pub mod trace;
 pub mod trace_format;
 pub mod vec_runtime;
 
+// Strand identity + the trampoline observability event stream
+// (effect-concurrency track, slice 2 — observability §11). Gated behind the
+// off-by-default `concurrency` feature: byte-identical-when-off; the strand-id
+// plumbing is expensive-to-retrofit groundwork that lands WITH the async
+// substrate. The sink + trampoline emit-hooks are the slice-2 reactor work.
+#[cfg(feature = "concurrency")]
+pub mod strand;
+
+// The slice-2 host reactor IMPLEMENTATION — the mio `HostCtx` reactor + the
+// C-ABI waker + the `block_on` executor + the `EffectPoll` await boundary + the
+// hand-written demo leaves (`design/arch/effect-concurrency.md` App. B). Gated
+// behind `concurrency-runtime` (which pulls the `mio`/`futures` deps); with the
+// feature off cargo links neither — byte-identical, executor-free. NOT in
+// default features; the exe-bundle/`--link` path never enables it.
+#[cfg(feature = "concurrency-runtime")]
+pub mod reactor;
+
 // Root re-exports — only the names with a verified root-form Rust consumer.
 //
 // Every per-module `pub fn`/`pub extern`/`pub const`/`pub mod` stays public on

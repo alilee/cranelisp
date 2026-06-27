@@ -5,8 +5,19 @@ filed_by: /dev
 filed_at: 2026-06-22
 sprint_filed: 89
 refers_to: src/save.rs::generate_fns_and_macros, design/int/agent.md §17, repl/spec.md §17.15
-status: open
+status: deferred
+deferred_by: /dev
+deferred_at: 2026-06-27
+sprint_deferred: 93
+target_sprint: 94
+recommended_candidate: "1 — docstring-aware render_decl_sexp"
 ---
+
+> **DEFERRAL (S93 Wave 4, /dev int).** Genuine design fork — not actioned this
+> sprint. See the `## /dev S93 assessment` section at the bottom for the
+> recommended candidate, rationale, and re-land scope. `/design` ratifies the
+> renderer contract; the re-land is a future agent Document-write-mode wave.
+
 
 # Document-mode `set-doc` — spec the docstring-into-source regen increment
 
@@ -61,3 +72,54 @@ design decision (regen renderer vs. stored-sexp rewrite) — it is a `/design`
 call (the regen-path shape crosses the `save.rs` renderer contract), not a `/dev`
 implementation choice. Until specced, the agent's Document write surface is
 `set-preamble` alone.
+
+## /dev S93 assessment (deferral rationale)
+
+Confirmed this is a genuine design fork, not a small obvious-approach increment,
+so it is deferred per the `/dev` dispatch rather than guessed:
+
+**Why it is a fork, not a one-liner.** The regen path
+(`save::generate_fns_and_macros`) re-renders each def from its **stored source** —
+preferring the introspection record's *verbatim REPL text*
+(`introspection_sexp`) and falling back to `DefKind::Macro.macro_sexp` — via
+`render_decl_sexp(&Sexp)`. The renderer receives **only a `&Sexp`**; it has no
+access to the symbol-table entry, and therefore no access to the live
+`ModuleEntry::Def.docstring` field a `set-doc` writes. Closing the gap changes
+the `render_decl_sexp` contract (the FIXME's stated reason this is a `/design`
+call). Additionally, the `set-doc` surface itself was fully descoped in S89 W3
+(tool const + `tool_defs` registration + `run_pull` routing + `apply_docstring_edit`
++ `run_document_edit`'s `is_preamble` branch + 4 test sites) — re-landing is a
+multi-file, `#[cfg(feature = "agent")]` Document-write-mode increment, not a
+renderer tweak.
+
+**Recommended candidate: 1 — docstring-aware `render_decl_sexp`.** Rationale:
+
+- **Single source of truth (Principle 7).** `set-doc` already sets the live
+  `ModuleEntry::Def.docstring`. Making regen *read* that field keeps ONE
+  authoritative docstring. Candidate 2 (re-inject into the stored sexp/verbatim
+  text at edit time) duplicates the docstring into a second location that can
+  drift from the live field.
+- **Candidate 2 is the brittle path.** The regen prefers the introspection
+  **verbatim text** over the symbol-table sexp, so candidate 2 would have to do
+  string-level surgery on the captured REPL source to be picked up on regen —
+  exactly the `include_str!`-style "lexical text vs. resolved truth" brittleness
+  `/arch` rejected for the platform-schema design (`platform-interface.md`).
+- **Candidate 1 localizes the change.** Thread the entry's `docstring`
+  (`Option<&str>`) from the `generate_fns_and_macros` loop — which already holds
+  the `entry` — into `render_decl_sexp`; the renderer inserts/replaces the
+  docstring form immediately after the param vector.
+
+**The one question `/design` must settle** (the reconciliation rule): when the
+stored sexp ALREADY carries a docstring form (from the original `(defn name [..]
+"doc" ..)` source) AND the live field is `Some`, which wins? Recommendation: the
+live `Def.docstring` is authoritative — always emit it when `Some`, and drop any
+sexp-embedded docstring so it is never duplicated; emit the sexp's own docstring
+only when the live field is `None`. That rule makes `set-doc` → restart →
+`/doc` round-trip the live edit (the §17.15.3 durable promise) without a
+double-docstring hazard.
+
+**Target sprint: S94** (or whenever the agent Document-write-mode track next
+opens), gated on `/design` ratifying candidate 1 + the reconciliation rule above.
+The re-land then re-adds the S89-W3-removed `set-doc` surface against the ratified
+renderer contract, with a `/qa` e2e pinning set-doc→restart→`/doc` persistence and
+a `save.rs` unit test on the renderer's docstring insert/replace/reconcile arms.

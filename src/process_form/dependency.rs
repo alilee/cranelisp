@@ -235,12 +235,11 @@ pub(super) fn handle_import(
         // registered). The sexps ride the dep's work packet (S78).
         ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
 
-        // Block for typecheck (F1: called inside handle_import).
-        ctx.scheduler.block_for_typecheck(
-            module,
-            dep,
-            &Symbol::from("*"),
-        )?;
+        // Record the dependency edge (F1: called inside handle_import).
+        // Pool path blocks + requeues; eval path records a cycle-check edge only
+        // (S93 Invariant SW — the entry module is never moved to
+        // TypecheckBlocked).
+        block_dep(ctx, module, dep)?;
 
         return Ok(BlockAction::Block {
             dep_module: dep.clone(),
@@ -283,6 +282,33 @@ pub(super) fn fq_module_is_loaded(ctx: &ModuleCompiler, dep: &ModuleFullPath) ->
 /// reference re-expands and the recogniser's on-demand clause compile finds the
 /// clause code already JIT'd by `dep`'s own Pass-2 codegen. No speculative
 /// function JIT push.
+/// Record the `module → dep` typecheck dependency edge (S93, Invariant SW —
+/// the single seam that decides pool-block vs eval-cycle-edge).
+///
+/// **Pool path** (`ctx.eval_driven == false`): the full `block_for_typecheck` —
+/// moves `module` to `TypecheckBlocked`, registers a whole-module waiter, runs
+/// the acyclicity check; the scheduler requeues `module` when `dep` completes
+/// (`notify_typecheck_done` → `try_unblock_locked`).
+///
+/// **Eval path** (`ctx.eval_driven == true`): the REPL eval thread is the sole
+/// orchestrator of `module` (its entry) and waits on `dep` itself, re-running
+/// the cluster from the top — so `module` MUST NOT enter `TypecheckBlocked`
+/// (that would make it pool-reclaimable: the retired-`eval_owned` B1 race).
+/// Records only the cycle-check edge; the eval wrapper (`register_dep_for_eval`)
+/// clears it after the wait.
+pub(super) fn block_dep(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    dep: &ModuleFullPath,
+) -> Result<(), CranelispError> {
+    if ctx.eval_driven {
+        ctx.scheduler.register_dep_edge_for_cycle_check(module, dep)
+    } else {
+        ctx.scheduler
+            .block_for_typecheck(module, dep, &Symbol::from("*"))
+    }
+}
+
 pub(super) fn drive_module_dep(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
@@ -290,10 +316,14 @@ pub(super) fn drive_module_dep(
     span: Span,
 ) -> Result<(), CranelispError> {
     // Already loaded — block-then-unblock to re-queue the referencing module
-    // without a file load (no future notify sweep would fire).
+    // without a file load (no future notify sweep would fire). On the eval path
+    // the eval thread retries itself, so no requeue is needed and the entry is
+    // never blocked (S93 Invariant SW); the dep is loaded so there is no cycle.
     if fq_module_is_loaded(ctx, dep) {
-        ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
-        ctx.scheduler.unblock_module(module);
+        if !ctx.eval_driven {
+            ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+            ctx.scheduler.unblock_module(module);
+        }
         return Ok(());
     }
 
@@ -322,8 +352,10 @@ pub(super) fn drive_module_dep(
     // import). On a cache hit `dep` is registered `TypecheckDone` synchronously
     // — block-then-immediately-unblock to re-queue the referencing module.
     if try_cache_hit_load(ctx, dep, &dep_file) {
-        ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
-        ctx.scheduler.unblock_module(module);
+        if !ctx.eval_driven {
+            ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+            ctx.scheduler.unblock_module(module);
+        }
         return Ok(());
     }
 
@@ -340,11 +372,12 @@ pub(super) fn drive_module_dep(
         location: ErrorLocation::from_span_file(span, Some(dep_file_for_err.clone())),
     })?;
 
-    // Register dep with scheduler (sexps ride the packet) and block on it.
-    // `block_for_typecheck` runs the acyclicity check, so a transitive cycle
-    // back to `module` is rejected with the standard error.
+    // Register dep with scheduler (sexps ride the packet) and record the edge.
+    // `block_dep` runs the acyclicity check, so a transitive cycle back to
+    // `module` is rejected with the standard error (pool path blocks+requeues;
+    // eval path records a cycle-check edge only — S93 Invariant SW).
     ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
-    ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+    block_dep(ctx, module, dep)?;
 
     Ok(())
 }
@@ -442,6 +475,236 @@ pub(super) fn register_dep(
     Ok(dep_sexps)
 }
 
+// ---------------------------------------------------------------------------
+// Static import-closure cycle gate (S93 — signature/body pre-pass Phase-A)
+//
+// `design/int/signature-body-prepass.md` §3.1 / §4 / §7 step 1+4. Before any
+// body typechecks, compute the cluster's STATIC import closure from the Pass-0
+// `(import …)` declarations (resolvable without inference — the decls name the
+// modules directly) and reject a cycle with a clean diagnostic at the import
+// site. This is the D0030 mutual-import disposition: mutual imports are a
+// compile-time cycle-error, NOT compiled (ratified user ruling, §4). It runs at
+// the uniform `process_cluster_once` entry seam (worker + REPL), upstream of the
+// form-by-form dep drive — so a 2-cycle surfaces as `circular dependency
+// detected: a -> b -> a` instead of the H6/H7-era `'aa' not found in module 'a'`
+// (the is_typechecked fast-path reading a half-published sibling).
+// ---------------------------------------------------------------------------
+
+/// Extract the directly-imported module paths from a module's parsed forms (its
+/// Pass-0 `(import …)` declarations). Null imports (`ImportNames::None`,
+/// §8.3.6 — suppress loading) contribute no edge. Returns the dep paths plus the
+/// span of the first import form (for the cycle diagnostic).
+fn direct_import_deps(
+    sexps: &[Sexp],
+    module: &ModuleFullPath,
+) -> (Vec<ModuleFullPath>, Option<Span>) {
+    let mut deps = Vec::new();
+    let mut first_span: Option<Span> = None;
+    for sexp in sexps {
+        if let Ok(super::form_dispatch::FormKind::Import(specs)) =
+            super::form_dispatch::classify_form(sexp, module)
+        {
+            for spec in specs {
+                if matches!(spec.names, cranelisp_types::ImportNames::None) {
+                    continue;
+                }
+                first_span.get_or_insert(spec.span);
+                deps.push(spec.module_path.clone());
+            }
+        }
+    }
+    (deps, first_span)
+}
+
+/// Compute the static import closure rooted at `module` (topologically ordered,
+/// imports-first), returning a clean `ModuleError` cycle diagnostic if the
+/// declared import graph has a cycle (the D0030 disposition — mutual imports are
+/// a compile-time cycle-error, NOT compiled; `signature-body-prepass.md` §4).
+///
+/// Returns `None` when the cluster declares no imports (no closure → fast exit).
+/// The returned [`ClosureOrder`] is reused by the body-boundary signature
+/// barrier (S93 Invariant PP) — so the closure walk runs ONCE per cluster, both
+/// the cycle check and the barrier gate consuming it.
+///
+/// Side-effect free: it reads + parses each transitively-imported module's
+/// source ONLY to peel its Pass-0 import decls — it does NOT register, block,
+/// typecheck, or mutate any shared state. A dependency whose file cannot be
+/// resolved or parsed is treated as an edge-free leaf (conservative — the gate
+/// reports a cycle only when one is definitively present in the declared import
+/// graph, never a false positive that would block a legitimate build).
+pub(super) fn static_import_closure(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    sexps: &[Sexp],
+) -> Result<Option<crate::scheduler::ClosureOrder>, CranelispError> {
+    let (root_deps, first_span) = direct_import_deps(sexps, module);
+    if root_deps.is_empty() {
+        return Ok(None); // no imports → no closure → no cycle (fast exit).
+    }
+
+    // S93 Task-3 — per-cluster memo. The transitive walk below does an
+    // `fs::read_to_string` + `parse` for every transitively-imported module, and
+    // `process_cluster_once` re-enters this function at the top of EVERY pass
+    // (including every retry-from-top a dependency gap triggers). Memo the
+    // computed `ClosureOrder` keyed by a cheap fingerprint of the cluster's
+    // DIRECT imports (the closure's root set, computed above without any IO): a
+    // hit reuses the walk; a different cluster on the same module scope (a new
+    // REPL form with different imports) misses on the fingerprint and recomputes.
+    // The filesystem is stable across a single cluster's retry sequence, so the
+    // root-set fingerprint is a sound key; `re_register_module` resets the memo
+    // when a module's source changes. A cycle (Err below) is NOT memoised — it
+    // aborts the cluster, so there is no retry to serve.
+    let fingerprint = closure_fingerprint(&root_deps);
+    if let Some(cached) = ctx.scheduler.cached_static_closure(module, fingerprint) {
+        return Ok(Some(cached));
+    }
+
+    let mut edges: Vec<(ModuleFullPath, Vec<ModuleFullPath>)> = Vec::new();
+    let mut visited: std::collections::HashSet<ModuleFullPath> =
+        std::collections::HashSet::new();
+    edges.push((module.clone(), root_deps.clone()));
+    visited.insert(module.clone());
+
+    let mut queue: std::collections::VecDeque<ModuleFullPath> =
+        root_deps.into_iter().collect();
+    while let Some(dep) = queue.pop_front() {
+        if !visited.insert(dep.clone()) {
+            continue; // already walked
+        }
+        // Resolve + parse the dep's source to peel ITS imports. Any failure
+        // (unresolvable file, parse error) → treat as a leaf.
+        let Some(dep_file) =
+            crate::pipeline::resolve_module_file(&dep, ctx.project_root, ctx.lib_dirs)
+        else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(&dep_file) else {
+            continue;
+        };
+        let Ok(parsed) = cranelisp_frontend::parse(&source) else {
+            continue;
+        };
+        let (dep_deps, _) = direct_import_deps(&parsed, &dep);
+        for d in &dep_deps {
+            if !visited.contains(d) {
+                queue.push_back(d.clone());
+            }
+        }
+        edges.push((dep, dep_deps));
+    }
+
+    match crate::scheduler::dependency_closure(module, &edges) {
+        Ok(closure) => {
+            // Memoise for this cluster's subsequent retry-from-top passes.
+            ctx.scheduler
+                .cache_static_closure(module, fingerprint, &closure);
+            Ok(Some(closure))
+        }
+        Err(cycle) => Err(CranelispError::ModuleError {
+            message: format!("circular dependency detected: {}", cycle.render()),
+            location: ErrorLocation::from_span_file(
+                first_span.unwrap_or(Span::SYNTHETIC),
+                None,
+            ),
+        }),
+    }
+}
+
+/// Cheap order-sensitive fingerprint of a cluster's DIRECT import dep paths —
+/// the key for the per-cluster static-closure memo (S93 Task-3). Hashing the
+/// direct-import root set (a handful of module paths) is orders of magnitude
+/// cheaper than the transitive `fs::read_to_string` + `parse` walk it gates, so
+/// the memo turns O(retries × closure-size) redundant IO into a single walk per
+/// cluster. The order is significant (it reflects the declared import order),
+/// which is fine — the same cluster re-peels its imports in the same order every
+/// retry, so the fingerprint is stable across a cluster's retry sequence.
+fn closure_fingerprint(root_deps: &[ModuleFullPath]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    root_deps.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Gate the cluster's body (Pass-1/Pass-2) on the signature barrier (S93,
+/// Invariant PP; BC §6 ruling B). Returns `Ok(Some(member))` when a static
+/// closure module's signatures are not yet published (the member has not reached
+/// a terminal typecheck pool) — the caller frees back to the pool (worker) or
+/// waits (eval) and retries from the top; `Ok(None)` when the barrier is open and
+/// the body may proceed.
+///
+/// **Worker path** (`ctx.eval_driven == false`): a pool worker MUST NOT park its
+/// thread on the barrier. It calls the ATOMIC
+/// `block_on_first_unready_closure_member` — which, under a SINGLE scheduler lock,
+/// scans for the first unready member AND registers `module` as its waiter (the
+/// requeue kernel), with no gap for `notify_typecheck_done(member)` to slip the
+/// waiter-sweep through (the lost-wakeup Blocker fix) — and surfaces a `Gap`; the
+/// scheduler requeues the body work when the member completes
+/// (`notify_typecheck_done` → `try_unblock_locked`).
+///
+/// **Eval path** (`ctx.eval_driven == true`): the eval thread is the one genuine
+/// waiter (it consumes no pool slot), so it blocks inside the scheduler on
+/// `await_signature_barrier` until the whole closure is published, then proceeds
+/// — no `Gap`, no requeue.
+///
+/// Because Pass-0 already drove every direct import to its terminal (done) state
+/// — and a done import implies ITS imports were done — the barrier is, in the
+/// common case, already open when the body boundary is reached; the gate is the
+/// *structural* enforcement of "no body reads a sibling until the whole closure
+/// is published" (§3.3), now locally verifiable in `process_cluster_once`
+/// rather than only emergent from the per-dep Pass-0 convention.
+pub(super) fn gate_body_on_signature_barrier(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    closure: &crate::scheduler::ClosureOrder,
+) -> Result<Option<ModuleFullPath>, CranelispError> {
+    // Gate on the root's FORWARD dependencies only — never on the root itself
+    // nor on any ANCESTOR of the root. The root (`module`) is the cluster being
+    // typechecked NOW; its own signatures are not yet registered (that is Pass-1
+    // below). An ancestor is a `(mod …)` parent reached by a `super` import: the
+    // submodule drive order commits the parent's signatures BEFORE driving the
+    // child (`drive_submodules` runs after the parent's `finalize_cluster`), and
+    // the parent is then intentionally mid-flight (blocked waiting on the child)
+    // — it is NOT a forward dependency to barrier-wait on, and gating on it
+    // would both false-deadlock and trip a false runtime cycle (parent ⇄ child).
+    // So exclude the root and every ancestor (`module` == ancestor or starts
+    // with `ancestor + "."`).
+    let is_self_or_ancestor = |m: &ModuleFullPath| -> bool {
+        m == module
+            || module
+                .as_ref()
+                .strip_prefix(m.as_ref())
+                .is_some_and(|rest| rest.starts_with('.'))
+    };
+    let deps = crate::scheduler::ClosureOrder {
+        order: closure
+            .order
+            .iter()
+            .filter(|m| !is_self_or_ancestor(m))
+            .cloned()
+            .collect(),
+    };
+    if deps.order.is_empty() {
+        return Ok(None);
+    }
+    if ctx.eval_driven {
+        // The eval thread genuinely waits — returns immediately when open.
+        ctx.scheduler
+            .await_signature_barrier(&deps)
+            .map_err(CranelispError::from)?;
+        return Ok(None);
+    }
+    // Pool worker: ATOMIC check-and-block (Blocker fix — single lock acquisition,
+    // no lost-wakeup window). Under one scheduler lock the method scans for the
+    // first unready member AND registers `module` as its waiter; there is no gap
+    // for `notify_typecheck_done(member)` to slip the waiter-sweep through. On a
+    // `Some(member)` the worker surfaces a `Gap` and frees back to the pool (the
+    // requeue kernel re-queues it when the member completes); never parks a pool
+    // thread. The former two-call `first_unready_closure_member` + `block_dep`
+    // shape — a check-then-act across two lock acquisitions — is retired.
+    ctx.scheduler
+        .block_on_first_unready_closure_member(module, &deps)
+}
+
 /// Handle export forms: register export metadata in the typechecker.
 /// Handle export forms: ensure source modules are loaded, then register re-exports.
 ///
@@ -506,9 +769,9 @@ pub(super) fn handle_export(
             }
         })?;
 
-        // Register dep with scheduler (sexps ride the packet) and block.
+        // Register dep with scheduler (sexps ride the packet) and record edge.
         ctx.scheduler.register_module(dep.clone(), dep_sexps, true);
-        ctx.scheduler.block_for_typecheck(module, dep, &Symbol::from("*"))?;
+        block_dep(ctx, module, dep)?;
 
         return Ok(BlockAction::Block {
             dep_module: dep.clone(),
@@ -687,13 +950,9 @@ fn drive_submodule(
         }
     })?;
 
-    // Register dep with scheduler (sexps ride the packet) and block.
+    // Register dep with scheduler (sexps ride the packet) and record edge.
     ctx.scheduler.register_module(sub_path.clone(), dep_sexps, true);
-    ctx.scheduler.block_for_typecheck(
-        module,
-        &sub_path,
-        &Symbol::from("*"),
-    )?;
+    block_dep(ctx, module, &sub_path)?;
 
     Ok(BlockAction::Block {
         dep_module: sub_path,
@@ -1020,11 +1279,7 @@ pub(super) fn inject_prelude_if_needed(
             })?;
 
             ctx.scheduler.register_module(prelude_path.clone(), prelude_sexps, true);
-            ctx.scheduler.block_for_typecheck(
-                module,
-                &prelude_path,
-                &Symbol::from("*"),
-            )?;
+            block_dep(ctx, module, &prelude_path)?;
 
             return Ok(Some(prelude_path));
         }

@@ -448,3 +448,86 @@ fn pattern_constructor_arity_mismatch_neg() {
         "Point ctor pattern with too many bindings MUST be rejected per §6.2.1, got: {combined_many}"
     );
 }
+
+// =============================================================================
+// §6.6.2 No Literal Patterns — rejection coverage (S93, FIXME 0433 owed Neg)
+//
+// §6.6.2: "Integer, float, string, and boolean literals MUST NOT appear as
+// patterns. A literal in pattern position is rejected at compile time (the
+// implementation reports `invalid pattern`)." The existing coverage was the
+// positive workaround only; these are the owed `_neg` rejection guards that
+// upgrade §6.6.2 toward [Tested+Neg]. COVERAGE posture: HEAD already rejects, so
+// these pass on HEAD — that is the correct outcome (the spec MUST is honoured).
+// =============================================================================
+
+// spec: spec/06-pattern-matching.md §6.6.2 — an INTEGER literal in pattern
+// position MUST be rejected at compile time with `invalid pattern`.
+#[test]
+fn match_literal_pattern_int_rejected_neg() {
+    let out = repl_prims("(match 0 [0 \"zero\" _ \"other\"])\n");
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("invalid pattern"),
+        "an integer literal pattern MUST be rejected with `invalid pattern` per \
+         §6.6.2, got: {combined}"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.6.2 — a STRING literal in pattern
+// position MUST be rejected at compile time with `invalid pattern`.
+#[test]
+fn match_literal_pattern_string_rejected_neg() {
+    let out = repl_prims("(match \"x\" [\"x\" 1 _ 0])\n");
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("invalid pattern"),
+        "a string literal pattern MUST be rejected with `invalid pattern` per \
+         §6.6.2, got: {combined}"
+    );
+}
+
+// spec: spec/06-pattern-matching.md §6.6.2 — a BOOLEAN literal in pattern
+// position MUST be rejected at compile time with `invalid pattern`. (§6.5.2
+// cross-ref: a Bool scrutinee MUST use a wildcard/variable pattern.)
+#[test]
+fn match_literal_pattern_bool_rejected_neg() {
+    let out = repl_prims("(match true [true 1 _ 0])\n");
+    let combined = format!("{}{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        combined.contains("invalid pattern"),
+        "a boolean literal pattern MUST be rejected with `invalid pattern` per \
+         §6.6.2, got: {combined}"
+    );
+}
+
+// =============================================================================
+// FIXME 0434 sweep (this sprint) — qualified-AND-bare name positions the REPL
+// displays qualified. Constructor-pattern position. verify-on-HEAD: a row that
+// passes is a standing [Tested+Neg] guard against re-rooting regression of the
+// qualified path; a row that FAILS is a newly-surfaced sibling defect → handed
+// to /frontend (the D-qual-impl-target resolver) with this minimal repro.
+// =============================================================================
+
+// spec: spec/06-pattern-matching.md §6.2 + spec/08-modules.md §8.5 — a
+// MODULE-QUALIFIED constructor pattern (`user/Green`) in `match` MUST resolve
+// identically to the bare constructor pattern (`Green`); the qualified form MUST
+// NOT be re-rooted (to a phantom `user/user/Green`). Both forms select the same
+// arm and yield the same value.
+#[test]
+fn match_qualified_constructor_pattern_resolves() {
+    // Bare control: `Green` selects arm → 1.
+    repl_prims(
+        "(deftype Color Red Green Blue)\n\
+         (match Green [Red 0 Green 1 Blue 2])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 1");
+
+    // Qualified: `user/Green` MUST resolve to the same canonical ctor and select
+    // the same arm → 1. The phantom double-root MUST NOT appear.
+    repl_prims(
+        "(deftype Color Red Green Blue)\n\
+         (match Green [Red 0 user/Green 1 Blue 2])\n",
+    )
+    .assert_stdout_contains(":primitives/Int 1")
+    .assert_stdout_does_not_contain("user/user/");
+}

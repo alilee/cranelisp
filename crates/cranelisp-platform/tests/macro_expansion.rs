@@ -82,16 +82,19 @@ fn invoke_manifest() -> cranelisp_platform::PlatformManifest {
 
 // spec: design/arch/platform-interface.md §5.1 — the macro exports the GOT
 // `__cranelisp_got_platform_<name>` and populates slot i with functions[i]'s
-// pointer (manifest order IS GOT slot order). ABI v6.
+// pointer (manifest order IS GOT slot order). ABI v7.
 #[test]
 fn macro_exports_got_in_manifest_order() {
     let manifest = invoke_manifest();
     assert_eq!(
-        manifest.abi_version, 6,
-        "ABI v6 (DEF-5 — the manifest export is namespaced per platform name; \
-         was v5 at FIXME 0327 Option A — the DLL-local dispatch-funnel \
-         fault-catch returning EffectOutcome, v4 at the step-1 node-widen, v3 \
-         at FIXME 0286)"
+        manifest.abi_version, 7,
+        "ABI v7 (Sprint 93 — the ABI-v4 cascade recorded numerically 6→7: \
+         poll-shape async-leaf effect fns + ConcurrencyDescriptor in the \
+         manifest + the host-reactor C-ABI; v7 layout types landed-and-dormant \
+         behind the `concurrency` feature, the macro still emits the v6 \
+         PlatformFn shape until the reactor wires them. Was v6 at DEF-5 — the \
+         manifest export is namespaced per platform name; v5 at FIXME 0327 \
+         Option A; v4 at the step-1 node-widen; v3 at FIXME 0286)"
     );
     assert_eq!(manifest.function_count, 2);
 

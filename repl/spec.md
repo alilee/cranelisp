@@ -238,6 +238,31 @@ The default with no flag is **agent off**, even on an agent-built binary with a 
 
 When `--yes` is active and the agent first wants to write, the REPL MUST present a one-time first-use notice (§17.16) — the autonomy-escalation disclosure, sibling to the §17.8.1 transmit disclosure.
 
+### 0.7 Execution Environment Variables [S93]
+
+The `cranelisp` binary reads a small set of **environment variables** that tune execution outside the flag set. This subsection is the **normative home** for the *execution* knobs — the ones that affect how a program is scheduled and run in every invocation mode. They are part of the CLI contract on equal footing with the flags of §0.6, and `user/cli-reference.md` cross-links this table rather than originating the contract.
+
+The execution knobs govern the runtime layer (the backend), so — unlike the REPL-only flags of §0.6 — they apply identically in **REPL, `--run`, and `--link`** modes. Each is read **once per process** (no per-evaluation re-read; an in-session `setenv` has no effect on an already-running binary). Both are **semantically invisible**: per `spec/12-runtime.md §12.4.3` (lenient evaluation / observational equivalence), neither changes what a program *computes* — only how the computation is scheduled. [S93]
+
+| Variable | Effect | Default | Scope |
+|---|---|---|---|
+| `CRANELISP_SPARK_BUDGET=N` | Caps the number of concurrently in-flight lenient-evaluation **sparks** (parallel sub-computations) at `N`. `N=0` makes every spark create-gate take the direct arm ⇒ execution is **fully serial at the runtime layer**. A non-parsing / out-of-range value falls back to the default (it is never an error). | `4 × <worker-pool width>` (a small multiple of `rayon::current_num_threads()`) | Process-global; all modes [S93] |
+| `CRANELISP_NO_LENIENT=1` | When set to **exactly** `1`, disables lenient evaluation entirely: nothing is marked sparkable, so evaluation is strictly **serial left-to-right** (the serial baseline — useful for measurement and debugging). Any other value (or unset) leaves lenient evaluation enabled. | unset (lenient evaluation **on**) | Process-global; all modes [S93] |
+
+Both knobs ultimately produce the same user-visible effect — serial execution — but at different layers: `CRANELISP_NO_LENIENT=1` suppresses spark *emission* (no spark is ever created), while `CRANELISP_SPARK_BUDGET=0` suppresses spark *admission* at the runtime gate (sparks are emitted but every gate takes the direct arm). `CRANELISP_NO_LENIENT=1` therefore subsumes `CRANELISP_SPARK_BUDGET=0` for the serial-baseline use; the budget knob additionally allows a *bounded* (non-zero) degree of parallelism. [S93]
+
+**Other `cranelisp` environment variables** have their normative homes elsewhere in this spec or in the language spec; this subsection is the execution-knob home and an index to the rest:
+
+| Variable(s) | Purpose | Normative home |
+|---|---|---|
+| `NO_COLOR` | Suppress ANSI styling. | §10.1 |
+| `CRANELISP_AGENT_PROVIDER`, `CRANELISP_AGENT_MODEL`, `CRANELISP_AGENT_KEY` / `ANTHROPIC_API_KEY`, `CRANELISP_AGENT_STUB_SCRIPT` | Embedded-agent provider/model/key configuration (dev-session, feature-gated). | §17.10.2 |
+| `CRANELISP_AGENT_LOG` | Agent activity-log file sink (opt-in, feature-gated). | §17.20.2 |
+| `CRANELISP_AGENT_TRACE` | Persistent full-content agent trace file sink (opt-in, feature-gated). | §17.21 |
+| `CRANELISP_LIB`, `CRANELISP_PLATFORM_PATH` | Library / platform-DLL search paths. | `spec/08-modules.md §8.11` (+ `user/cli-reference.md` consolidated user-facing home) |
+
+Trace/diagnostic-dump variables (e.g. `CRANELISP_CODEGEN_TRACE`, `CRANELISP_IO_TRACE`, `CRANELISP_SCHEDULER_TRACE`, `CRANELISP_RC_TRACE`, `CRANELISP_GOT_TRACE`, `CRANELISP_MODULE_TRACE`) are **internal developer instrumentation**, not part of the user-facing CLI contract, and are intentionally out of scope here. [S93]
+
 ## Design Principle
 
 > **The REPL reinforces the syntax of the language.** Every output teaches the user how to write Cranelisp.

@@ -233,6 +233,9 @@ pub fn process_cluster(
         platform_dirs: &platform_dirs,
         project_root: &shared.project_root,
         shared_state: Some(shared),
+        // Pool-orchestrated (worker): a dependency gap moves the module to
+        // TypecheckBlocked and the scheduler requeues it — NOT eval-driven.
+        eval_driven: false,
     };
 
     match process_form::process_cluster_once(

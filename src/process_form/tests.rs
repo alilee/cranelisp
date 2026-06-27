@@ -524,6 +524,7 @@
             platform_dirs: &[],
             project_root: Path::new("/"),
             shared_state: None,
+            eval_driven: false,
         }
     }
 

@@ -1,0 +1,30 @@
+sequenceDiagram
+    title Effect-concurrency slice 2 — the async trampoline scheduler over a host-owned reactor — TARGET, effect-concurrency.md §6/§12. The trampoline is the single serializing interpreter, an async fn, platforms are C-ABI async leaves, the host owns the reactor. Every arrow is also the annotation site for the strand-correlated observability event stream §11 — the StrandEvent each step emits is the Note beneath it.
+
+    participant Tramp as Trampoline<br/>cranelisp-backend / intrinsics<br/>(the single serializing interpreter — an async fn over the IO tree)
+    participant Leaf as Platform async leaf<br/>cranelisp_platform::PollFn (GOT slot)<br/>poll(state, *HostCtx, *Waker) -> Poll
+    participant Reactor as Host reactor<br/>cranelisp-intrinsics — single epoll/kqueue via mio (runtime-feature-gated)<br/>impl cranelisp_platform::HostCtx vtable — hosted in intrinsics so it LINKS INTO --link output (int is absent at a linked program's runtime). int owns construction-for-REPL/--run + policy + feature-gating.
+    participant Obs as Observability sink<br/>cranelisp_intrinsics::StrandEvent stream<br/>(feature-gated, byte-identical-when-off — §11)
+
+    Note over Tramp,Obs: invariant: the trampoline unwinds to itself at every effect (IO is reified as data — the continuation is a heap value, never a suspended native frame). All awaiting lives in Rust. A strand id (cranelisp_intrinsics::StrandId, the `turn` precedent) is threaded through every dispatch/suspend/resume.
+
+    Tramp ->> Leaf: poll(state, host_ctx: *const HostCtx, waker: *const Waker) -> Poll
+    Note over Obs: StrandEvent::EffectDispatched { strand }<br/>(effect, token, blocking?/CPU, pool)
+
+    alt would block (Poll::Pending)
+        Leaf ->> Reactor: HostCtx::register_readable(host, fd, waker)  [or register_writable / register_timer]
+        Leaf -->> Tramp: Poll::Pending
+        Note over Obs: StrandEvent::EffectSuspended { strand } — parked on fd/timer, consumes no core while waiting
+        Note over Tramp: trampoline awaits, the native stack is unwound — the continuation is a heap value, not a frame.<br/>Other strands run meanwhile (the reactor holds thousands of pending futures).
+        Reactor ->> Reactor: epoll_wait — fd becomes ready
+        Reactor ->> Tramp: Waker::wake(data)  (via WakerVTable) — re-schedule the strand
+        Note over Obs: StrandEvent::EffectResumed { strand } — woken
+        Tramp ->> Leaf: poll(state, host_ctx, waker) -> Poll  (re-poll)
+    end
+
+    Leaf -->> Tramp: Poll::Ready  (result written through `state` — sync / non-blocking effects return Ready on the first poll)
+    Note over Tramp: call_continuation resumes the IO tree with the effect's value, folding it into the world-state in source order (within-token ordering preserved — §8).
+
+    Note over Tramp,Obs: CPU sparks (lenient-eval, apply-arg sparking) fork onto rayon, NOT the reactor (the two-pool split, §7) — StrandEvent::SparkCreated { strand } at fork, StrandEvent::SparkForced { strand } at join. Slices >= 3 add token acquire/release, supervisor action (500+log+drop), and cancellation (race loser / timeout) events into this same stream.
+
+    Note over Reactor: cancellation = the host ceases to poll + calls the effect's drop_state export — we never truly block, so nothing is stuck in a syscall (§12).

@@ -495,7 +495,9 @@ version = "0.1.0"
 dependencies = [
  "cranelisp-platform",
  "cranelisp-types",
+ "futures",
  "libc",
+ "mio",
  "rayon",
  "serde",
 ]

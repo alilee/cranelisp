@@ -73,7 +73,7 @@ const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16
 /// `runtime/run_io` via function pointer (not linker name).
 #[unsafe(no_mangle)]
 pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
-    let result = run_io_trampoline(io_ptr);
+    let result = drive_io(io_ptr);
     // Decision 24: release the caller's tree. `consume_io_tree` transitively
     // walks Pure/Effect/Bind/Par and dec's every heap-typed sub-ref
     // (including continuation closures still owned by Bind nodes).
@@ -82,6 +82,51 @@ pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
     // the trampoline, so this dec is not a double-free.
     crate::drop::consume_io_tree(io_ptr);
     result
+}
+
+/// Drive an IO tree to its result value — the cfg-split between the sync
+/// trampoline (the default / `--link` path) and the async-substrate executor.
+///
+/// **Feature off (the default, byte-identical):** today's synchronous
+/// [`run_io_trampoline`] — unchanged. The exe-bundle / `--link` build never
+/// enables `concurrency-runtime`, so a linked binary links no executor.
+///
+/// **Feature on:** the async trampoline twin is `block_on`'d on the host
+/// reactor's single-future executor ([`crate::reactor::block_on_reactor`]). The
+/// `Pure` / `Bind` / thunk-`Effect` / `Par` node walk is the proven sync stepper
+/// (result-equivalent — thunk effects force synchronously, they do not suspend);
+/// the genuine await boundary ([`crate::reactor::EffectPoll`]) + the `Par`-async
+/// overlap ([`crate::reactor::join_io_leaves`]) are exercised by the hand-written
+/// demo leaves (App. B "Demo leaf"). Wiring real poll-shape effect *nodes*
+/// through the await boundary is the deferred backend slice (the
+/// `declare_platform!` poll-emission), so the minimal twin's node walk stays
+/// synchronous while the executor + reactor + await-boundary mechanism are live
+/// and demonstrated.
+#[cfg(not(feature = "concurrency-runtime"))]
+#[inline]
+fn drive_io(io_ptr: i64) -> i64 {
+    run_io_trampoline(io_ptr)
+}
+
+#[cfg(feature = "concurrency-runtime")]
+fn drive_io(io_ptr: i64) -> i64 {
+    crate::reactor::block_on_reactor(async |_host| run_io_trampoline_inner_async(io_ptr).await)
+        .expect("reactor init failed")
+}
+
+/// The async twin of [`run_io_trampoline`] (App. B step 2c). An `async fn` so it
+/// is driven on the reactor executor.
+///
+/// In the minimal slice the body is fully synchronous (the node walk delegates to
+/// the proven sync stepper; poll-shape await nodes are a later backend slice), so
+/// it delegates to [`run_io_trampoline`] outright — reusing its
+/// `TrampolineEnter`/`TrampolineExit` bookend rather than re-emitting an identical
+/// one (I3 / Principle 7 — single source of truth; the IO trace stays identical
+/// across the cfg-split because it IS the same bookend). When the `.await` Effect
+/// arm lands, this regains a real async body around that same shared bookend.
+#[cfg(feature = "concurrency-runtime")]
+async fn run_io_trampoline_inner_async(io_ptr: i64) -> i64 {
+    run_io_trampoline(io_ptr)
 }
 
 /// Core trampoline implementation. Separate from the extern "C" wrapper

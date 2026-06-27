@@ -2661,6 +2661,64 @@ Four entries resolved by the H(4-1'') fix landed in Wave 4 step 4e — a new bac
 - **`sprint61_observability_io::io_trace_hello_io_observes_core_sequential_event_types`** (Wave 1 Slice-4-dependent, SHA `a9028c0`) — PASSING post-fix. Full sequential taxonomy (`TrampolineEnter`, `TrampolineExit`, `PlatformEffect`, `BindEnter`, `ContPush`, `ContPop`) observable.
 - **`sprint61_observability_io::io_trace_platformeffect_carries_scheduling_class_byte`** (Wave 1 Slice-4-dependent, SHA `a9028c0`) — PASSING post-fix. `PlatformEffect` event with `scheduling_class: u8` now reaches stderr before process exit.
 
+### Sprint 93 Phase-5 Stage-1 — Reactor-gate failing tests (QA-first, `/qa` 2026-06-27)
+
+Sprint-wide failing/coverage tests authored before the per-crate D/D/R cycles, per
+`tests/plan/sprint-93.md`. Full default suite **1657 run / 1656 passed / 1 failed**
+(was 1648/0; +9 new e2e). Concurrency lane `cargo nt-concurrency` **330 / 330**
+(was 325; +5 new gated guards). The single default-lane RED is the gate's e2e pin:
+
+- **`spec_08_modules::mutual_import_pair_diagnoses_cycle_not_hang`** — **RED-first**
+  (the gate's e2e regression pin). Two modules each `(import …)` the other MUST
+  surface a clean **CYCLE** diagnostic per `design/int/signature-body-prepass.md §4`
+  (mutual imports = compile-time cycle-error, ratified user ruling S93). HEAD emits a
+  confusing non-cycle error (`'aa' not found in module 'a'`) — neither a clean cycle
+  diagnostic nor (for this specific-import shape) a deadlock; it terminates fast
+  (0.023s, bounded 8s timeout guards the deadlock shape from wedging). GREEN when the
+  signature/body pre-pass barrier lands (`/dev` Wave 2). Owner: `/dev` (int / `src/scheduler.rs`).
+
+ABI-v7 dormant-contract guards (§2B, **gated `#[cfg(feature="concurrency")]`**, run
+only under `cargo nt-concurrency`; all PASS — verify-landed-contract):
+`cranelisp-types scheduling::tests::{concurrency_descriptor_from_scheduling_class_bridges_three_classes,
+concurrency_descriptor_repr_c_layout_and_inert_budget_present, poll_repr_i32_ready_zero_pending_one}`;
+`cranelisp-platform tests::concurrent_platform_fn_repr_c_field_order_v7`;
+`cranelisp-intrinsics strand::tests::strand_id_root_is_zero_and_event_kinds_present`;
+plus the default-build `_neg` absence guard `facade_pif_rows::concurrency_descriptor_absent_from_default_public_api_neg`
+(feature-off; PASS — the frozen edge stays byte-identical-when-off).
+
+Coverage / verify-on-HEAD (all PASS):
+- **0433 literal-pattern rejection** (§6.6.2 Neg owed) —
+  `spec_06_pattern_matching::{match_literal_pattern_int_rejected_neg,
+  _string_rejected_neg, _bool_rejected_neg}` — HEAD rejects with `invalid pattern`
+  (upgrades §6.6.2 toward [Tested+Neg]; spec-side flip owed → coordinate with `/spec`).
+- **0434 qualified-vs-bare sweep** — `spec_04_expressions::type_annotation_qualified_and_bare_resolve_identically`,
+  `spec_07_traits::deftype_deftrait_reference_qualified_and_bare_equiv`,
+  `spec_06_pattern_matching::match_qualified_constructor_pattern_resolves`,
+  `spec_08_modules::import_mod_target_qualified_and_bare_equiv` — all PASS on HEAD:
+  standing [Tested+Neg] guards against re-rooting regression of the qualified path
+  (the structural blind spot D-qual-impl-target named, fixed S91). Spec-side §7.3.1
+  [Tested+Neg] flip owed → coordinate with `/spec`.
+- **0423 regen lib-dir-relative + `:Type` spacing** — already covered by the
+  existing pair `spec_08_modules::{inline_mod_test_extraction_writes_lib_dir_relative_not_cwd,
+  regen_annotation_spacing_no_space_after_colon}`; **both PASS on HEAD** (the
+  lib-dir-relative write + `:Type` no-space regen fixes are landed in `src/process_form/dependency.rs`).
+  No duplicate authored (plan-proposed `regression.rs::regen_writes_lib_dir_relative_not_cwd_neg`
+  is subsumed). 0423 disposition: **resolved on HEAD**, guarded.
+
+**Not authored — `/dev` Wave-2 seam blocker.** The §1A/1B/1C scheduler-internal unit
+pins (`scheduler_race_read_inside_publish_window_finds_sibling_symbol`, the loom
+variant, the per-step structural seams) cannot be authored by `/qa`: the injection
+seam (`signatures_ready_for_test` + the `P_publish`/`P_read` pause-gates +
+`dependency_closure`/`await_signature_barrier`/`ModuleState.signatures_ready`) does
+**not exist on HEAD**, so the tests would fail to COMPILE and wedge the entire
+`cranelisp` test binary (worse than a hang — `#[ignore]` does not help a compile
+failure). These are `/dev`-authored in the same change-set as each pre-pass step
+(per `sprint-93.md §1` and `signature-body-prepass.md §6/§7`); `/dev` Wave 2 must land
+the `#[cfg(test)]` seam first. The e2e cycle-error pin (above) + the existing
+contention guard `repl_persist_race::heisenbug_race_reduced_concurrent_import_pairs`
+(load-guard; deterministic 20/20 under load is the post-fix acceptance) are the
+`/qa`-side gate contributions.
+
 ## Close-time Verification Protocol
 
 `/sprint` MUST re-verify every entry in this file at sprint close:

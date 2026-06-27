@@ -1009,3 +1009,39 @@ fn nullary_return_poly_trait_method_dispatches_at_codegen() {
     )
     .assert_stdout_contains(":primitives/Int 5");
 }
+
+// =============================================================================
+// FIXME 0434 sweep (this sprint) — deftrait/deftype TYPE REFERENCE name-position,
+// qualified vs bare. The impl-TARGET position was already covered by the S91
+// D-qual-impl-target repros (above); this sweeps the type-reference position
+// INSIDE a signature. verify-on-HEAD: a passing row is a standing [Tested+Neg]
+// guard; a failing row is a surfaced sibling defect handed to /frontend.
+// =============================================================================
+
+// spec: spec/07-traits.md §7.3.1 + spec/08-modules.md §8.5 — a `deftrait`
+// method's return-type REFERENCE written QUALIFIED (`:primitives/Int`) MUST
+// resolve to the same canonical type as the bare reference (`:Int`); the
+// qualified form MUST NOT be re-rooted (to `user/primitives/Int`). Both dispatch
+// and yield 5.
+#[test]
+fn deftype_deftrait_reference_qualified_and_bare_equiv() {
+    // Bare control: a deftrait method return-type reference `:Int`.
+    repl_prims(
+        "(deftype W Wv)\n\
+         (deftrait Qb (qb [x] :Int))\n\
+         (impl Qb W (defn qb [w] 5))\n\
+         (qb Wv)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5");
+
+    // Qualified: the SAME return-type reference written `:primitives/Int` MUST
+    // resolve to the canonical Int — dispatch yields 5, no phantom re-root.
+    repl_prims(
+        "(deftype W Wv)\n\
+         (deftrait Qq (qq [x] :primitives/Int))\n\
+         (impl Qq W (defn qq [w] 5))\n\
+         (qq Wv)\n",
+    )
+    .assert_stdout_contains(":primitives/Int 5")
+    .assert_stdout_does_not_contain("user/primitives/Int");
+}

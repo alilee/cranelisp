@@ -259,6 +259,12 @@ pub use check::{
 // the `pub mod code` block above for the rationale; the integration
 // layer's `Code` enum at `src/code.rs` is the replacement.
 pub use scheduling::SchedulingClass;
+// ABI-v7 effect-concurrency layout contracts (gated; out of the default
+// `public-api.txt` edge until the slice-2 reactor wires them). See
+// `crates/cranelisp-types/src/scheduling.rs` and
+// `design/arch/effect-concurrency.md` §5/§6/§12.
+#[cfg(feature = "concurrency")]
+pub use scheduling::{ConcurrencyDescriptor, Poll, PollFn};
 pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,

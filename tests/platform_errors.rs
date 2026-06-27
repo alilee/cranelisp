@@ -282,9 +282,9 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     // BOTH versions MUST surface so the user sees what they have (the DLL's
-    // stale `found` = 2) vs. what the runtime requires (`expected` = 6 as of
-    // Sprint 86 / DEF-5 — the namespaced-manifest export bump took host ABI
-    // 5 → 6, recorded in design/arch/platform-interface.md §5.5.5). The
+    // stale `found` = 2) vs. what the runtime requires (`expected` = 7 as of
+    // Sprint 93 — the ABI-v4 cascade took host ABI 6 → 7, recorded in
+    // design/arch/platform-interface.md §6.8; was 6 at S86/DEF-5 §5.5.5). The
     // `PlatformError::AbiVersionMismatch` Display
     // (`crates/cranelisp-types/src/error.rs:327`) renders
     // `DLL <path> ABI version <found> does not match expected <expected>` — it
@@ -299,9 +299,9 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     assert!(
-        out.stderr.contains("2") && out.stderr.contains("6"),
+        out.stderr.contains("2") && out.stderr.contains("7"),
         "ABI-version-mismatch error MUST report BOTH the DLL's stale version (2) \
-         and the runtime's required version (6) so the user sees what they have \
+         and the runtime's required version (7) so the user sees what they have \
          vs. what is required; got stderr:\n{}",
         out.stderr
     );

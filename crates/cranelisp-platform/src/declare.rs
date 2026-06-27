@@ -121,6 +121,30 @@ pub const fn extract_layout_hash(artifact: &str) -> &str {
 /// (docstring), `params:` (named-parameter ident list), `scheduling:`
 /// ([`SchedulingClass`] expression).
 ///
+/// # ABI v7 — authoring is unchanged (Sprint 93)
+///
+/// [`crate::ABI_VERSION`] is now **7**: the effect-concurrency track landed the
+/// v7 host-reactor C-ABI layout contracts (`ConcurrentPlatformFn`,
+/// `HostCtx` / `Waker` / `WakerVTable`, the poll-shape `PollFn`). **Those
+/// contracts are landed-but-dormant behind the off-by-default `concurrency`
+/// feature** — they are out of the default build and the `public-api.txt`
+/// frozen edge. For a platform author, **nothing about `declare_platform!`
+/// changed**: this macro still emits the v6 [`crate::PlatformFn`] shape, effect
+/// fns are still **blocking** `extern "C"` functions returning [`crate::CLIO`],
+/// and each fn still declares a `scheduling:` [`crate::SchedulingClass`]. The
+/// poll-shape async-leaf
+/// model — where blocking effect fns become `PollFn`s the host reactor drives,
+/// and `scheduling:` is subsumed by `ConcurrencyDescriptor` — wires in a later
+/// slice; until then write platforms exactly as the examples below.
+///
+/// The 6→7 bump matters only for the load-time ABI gate: a DLL built from this
+/// crate now stamps `abi_version: 7` in its manifest, and the host rejects a
+/// mismatched stamp with [`crate::PlatformError`]`::AbiVersionMismatch`. In-workspace
+/// host + platform DLLs rebuild together, so the stamp stays consistent; an
+/// externally pre-built v6 DLL would need a rebuild against this crate to load
+/// against a v7 host (there are no such external DLLs today — every platform is
+/// a workspace member).
+///
 /// # Example — no schema (scalar-only platform)
 ///
 /// ```ignore

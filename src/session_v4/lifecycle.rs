@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::{Arc, Mutex};
 
 use cranelisp_types::{
-    CranelispError, DefKind, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span,
+    CranelispError, ErrorLocation, FQSymbol, ModuleEntry, ModuleFullPath, Sexp, Span,
     Symbol, Type, Warning,
 };
 
@@ -688,23 +688,20 @@ impl CompilerSession {
                 if crate::worker::is_internal_listing_name(name.as_ref()) {
                     continue;
                 }
-                // Skip imports / reexports + special forms — those are surfaced
-                // by `/imports` separately.
-                let (category, scheme, docstring) = match entry {
-                    ModuleEntry::Def { scheme, docstring, kind, .. } => {
-                        let cat = match kind.as_ref() {
-                            DefKind::Constructor { .. } => SymbolCategory::Constructor,
-                            DefKind::Macro { .. } => SymbolCategory::Macro,
-                            _ => SymbolCategory::Fn,
-                        };
-                        (cat, Some(scheme.clone()), docstring.clone())
-                    }
-                    ModuleEntry::TypeDef { .. } =>
-                        (SymbolCategory::Type, None, None),
+                // Bucketing is the shared `classify_listing_entry` classifier
+                // (FIXME 0440); `/list`'s structured surface skips special forms
+                // + imports — those are surfaced by `/imports` separately. The
+                // scheme/docstring facets are pulled per-entry below.
+                let category = match crate::worker::classify_listing_entry(entry) {
+                    Some(SymbolCategory::SpecialForm) | None => continue,
+                    Some(c) => c,
+                };
+                let (scheme, docstring) = match entry {
+                    ModuleEntry::Def { scheme, docstring, .. } =>
+                        (Some(scheme.clone()), docstring.clone()),
                     ModuleEntry::TraitDecl { docstring, .. } =>
-                        (SymbolCategory::Trait, None, docstring.clone()),
-                    // Special forms + imports are surfaced by `/imports`.
-                    _ => continue,
+                        (None, docstring.clone()),
+                    _ => (None, None),
                 };
                 out.push(SymbolInfo {
                     name: name.clone(),
@@ -1338,19 +1335,24 @@ impl CompilerSession {
         self.shared.scheduler.wait_inmem_complete()
     }
 
-    /// Transfer orchestration ownership of the ENTRY module to the eval thread
-    /// (S78 §3 / B1). Called by the REPL driver (`main.rs`) once startup
-    /// typecheck has completed and the eval loop is about to take over.
+    /// Hand the ENTRY module over to the eval thread (S93, Invariant SW —
+    /// structural successor to the retired `eval_owned` flag). Called by the
+    /// REPL driver (`main.rs`) once startup typecheck has completed and the eval
+    /// loop is about to take over.
     ///
-    /// After this, the eval thread is the entry module's *sole* orchestrator:
-    /// a dependency gap the eval thread hits during a REPL form is driven by
-    /// the eval thread's own wait+retry (`register_dep_for_eval`), and the
-    /// scheduler will NOT requeue the entry onto the pool for a concurrent
-    /// re-typecheck of its own sexps. This closes the B1 dual-orchestration —
-    /// keyed on the entry module's orchestration role (`eval_owned`), carried
-    /// as data on its `ModuleState`, never on the name `"user"`.
+    /// After startup the entry module sits in its terminal pool
+    /// (`TypecheckDone`) — it is NOT in any typecheck queue, so no pool worker
+    /// can re-claim it for typecheck. The eval thread is therefore its sole
+    /// orchestrator *by construction*: a dependency gap the eval thread hits
+    /// during a REPL form is driven by the eval thread's own wait+retry
+    /// (`register_dep_for_eval`), and the entry never enters `TypecheckBlocked`
+    /// (the eval path records a cycle-check edge via
+    /// `register_dep_edge_for_cycle_check` instead), so `try_unblock_locked`
+    /// cannot requeue it. This closes the B1 dual-orchestration with no role
+    /// flag. The call drops the entry's startup sexps so even a stray dispatch
+    /// would find an empty cluster (belt-and-braces).
     pub fn mark_entry_eval_owned(&self) {
-        self.shared.scheduler.mark_eval_owned(&self.entry_module);
+        self.shared.scheduler.release_entry_sexps(&self.entry_module);
     }
 
     /// Promotes nice workers to normal priority before blocking, ensuring

@@ -263,12 +263,11 @@ ones (`CRANELISP_LIB`, `CRANELISP_PLATFORM_PATH`) are covered inline above and i
 parallel evaluation described in
 [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation); because
 that parallelism is semantically invisible, neither variable changes what a program
-computes — only how it is scheduled.
-
-> **As-built note.** These variables are documented here as the binary implements
-> them today; their normative home in the CLI contract is still being settled (a
-> FIXME tracks adding them to the contract listing). When that lands, this section
-> will cross-link it.
+computes — only how it is scheduled. They apply identically in **REPL, `--run`, and
+`--link`** modes, and each is read **once per process**. Their normative home — exact
+effect, defaults, and scope — is
+[`repl/spec.md §0.7`](../repl/spec.md) (Execution Environment Variables); the rows
+above re-present that contract for everyday use.
 
 ## Cross-links
 

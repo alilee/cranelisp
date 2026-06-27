@@ -159,10 +159,22 @@ pub fn process_cluster_once(
     let mut accumulator = ModuleCheckAccumulator::new();
     let mut expanded_program: Vec<TopLevel> = Vec::new();
 
+    // S93 signature/body pre-pass — the cluster's STATIC import closure
+    // (`signature-body-prepass.md` §3.1/§4). Computed ONCE from this cluster's
+    // Pass-0 `(import …)` decls; a cycle is a clean compile-time error (D0030
+    // mutual-import disposition: NOT compiled), surfaced at the import site
+    // instead of the H6/H7-era half-published `'sym' not found in module 'x'`.
+    // The same `ClosureOrder` is reused by the body-boundary signature barrier
+    // (Invariant PP) below. `None` when the cluster declares no imports.
+    let closure;
+
     if strategy == ModuleStrategy::Replace {
         // Set active module. Symbol table is preserved for slot reuse
         // and type-change detection.
         ctx.set_current_module(module.clone());
+
+        // Static cycle gate — fast-exits when the cluster has no imports.
+        closure = dependency::static_import_closure(ctx, module, sexps)?;
 
         // Zero GOT slots and clear codegen artifacts for this module's
         // symbols. Slot assignments are preserved so re-compiled code
@@ -188,6 +200,12 @@ pub fn process_cluster_once(
         if sexps_reference_prelude(sexps) {
             ctx.prelude_fallback.insert(module.clone(), false);
         }
+
+        // Static cycle gate for the eval path too (S93 Invariant PP). The eval
+        // thread is the genuine barrier waiter; a REPL `(import …)` whose static
+        // closure is cyclic is rejected up front, and the closure is reused by
+        // the body-boundary barrier below.
+        closure = dependency::static_import_closure(ctx, module, sexps)?;
     }
 
     // --- Pass 0: structural-form peel (import/export/mod/platform) ---
@@ -234,6 +252,26 @@ pub fn process_cluster_once(
             }
             _ => {} // Regular, Defmacro — handled in Pass 1 / Pass 2.
         }
+    }
+
+    // --- Signature barrier (S93 Invariant PP; BC §6 ruling B) ---
+    // No body (Pass-1/Pass-2) is admitted until EVERY module in the static
+    // import closure has published its signatures (reached a terminal typecheck
+    // pool — the publication edge; FIXME 0452 removed the redundant
+    // `signatures_ready` bit). This makes "a body never reads an
+    // incompletely-published sibling" a structurally-verifiable property of
+    // `process_cluster_once` (§3.3), rather than an invariant only emergent from
+    // the per-dep Pass-0 convention — and it covers TRANSITIVE closure members
+    // Pass-0's direct-import peel does not. The worker check-and-blocks ATOMICALLY
+    // (single lock, no lost-wakeup gap) on the first unready member and frees its
+    // thread back to the pool (Gap → requeue-when-ready, the requeue kernel); the
+    // eval thread — the sole genuine waiter — blocks inside the scheduler and
+    // proceeds when the barrier opens. A signature dependency therefore never
+    // reaches the body as a half-published read.
+    if let Some(ref c) = closure
+        && let Some(member) = dependency::gate_body_on_signature_barrier(ctx, module, c)?
+    {
+        return Ok(ClusterOnce::Gap { dep: member });
     }
 
     // --- Pass 1: register signatures / macros / default methods ---
@@ -585,9 +623,14 @@ fn process_regular_form(
                 }
                 entry.ast = Some(defn.clone());
             }
-        if let TopLevel::Defn(defn) = form {
-            ctx.scheduler.notify_symbol_typechecked(module, &defn.name);
-        }
+        // S93 net-neutral subtraction (`signature-body-prepass.md` §6): the
+        // former per-symbol `notify_symbol_typechecked(module, defn.name)` is
+        // RETIRED. It satisfied only specific-symbol typecheck waiters, but every
+        // live `block_for_typecheck` registers a `"*"` (whole-module) waiter
+        // satisfied by `notify_typecheck_done`'s sweep — so the per-symbol notify
+        // matched no waiter and was a no-op. Removing it deletes one of the two
+        // signature-readiness protocols (Principle 7) that the module-atomic
+        // barrier subsumes.
     }
 
     expanded_program.extend(built);

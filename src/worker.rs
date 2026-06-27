@@ -558,6 +558,18 @@ pub struct ModuleCompiler<'a> {
     /// codegen input stashing for nice workers.
     /// None for REPL contexts where caching is not used.
     pub shared_state: Option<&'a crate::session_v4::SharedState>,
+    /// **Eval-thread orchestration mode (S93, Invariant SW).** `true` ONLY on
+    /// the REPL eval thread driving its own entry module (the Additive path in
+    /// `eval.rs`). When set, a dependency gap records a *cycle-check* edge via
+    /// `register_dep_edge_for_cycle_check` and leaves the orchestrated module in
+    /// its terminal pool — the eval thread is the sole orchestrator and waits on
+    /// the dependency itself (`register_dep_for_eval`), so the module must NEVER
+    /// be moved to `TypecheckBlocked` (which would make it pool-reclaimable —
+    /// the B1 dual-orchestration the retired `eval_owned` flag patched). `false`
+    /// for every pool-orchestrated context (`--run`/`--link`, dependency
+    /// modules, watcher reload), where `block_for_typecheck` + scheduler requeue
+    /// is the correct discipline.
+    pub eval_driven: bool,
 }
 
 impl<'a> ModuleCompiler<'a> {
@@ -1053,6 +1065,38 @@ pub(crate) const SYNTHETIC_EXPR_WRAPPER: &str = "__expr";
 /// uniform (one predicate, not three drifting copies).
 pub(crate) fn is_internal_listing_name(name: &str) -> bool {
     name.contains('$') || name == SYNTHETIC_EXPR_WRAPPER
+}
+
+/// The single user-facing category of a symbol-table entry — the ONE
+/// `ModuleEntry`/`DefKind` → category mapping shared by every int
+/// listing/introspection surface (`/list`, `/exports`,
+/// `list_user_definitions`, `describe_symbol`). Returns `None` for entries
+/// that are never surfaced as a user definition (`Import`, `Ambiguous`,
+/// `TraitImpl`).
+///
+/// Before FIXME 0440 each of those four sites transcribed this match
+/// independently; a new `DefKind` variant or a "should constructors appear
+/// in listing X" change was an N-site drift waiting to happen — the same
+/// shape that produced the S91 `__expr` filter bug, one level up from the
+/// `is_internal_listing_name` filter (Principle 7, single source of truth).
+/// The callers keep ONLY their presentation concerns: `/list` drops the
+/// `Constructor` category, `/exports` folds it into `Type`, and
+/// `list_user_definitions` skips `SpecialForm`.
+pub(crate) fn classify_listing_entry(
+    entry: &ModuleEntry<crate::code::Code>,
+) -> Option<crate::session_v4::SymbolCategory> {
+    use crate::session_v4::SymbolCategory;
+    Some(match entry {
+        ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+            DefKind::Macro { .. } => SymbolCategory::Macro,
+            DefKind::Constructor { .. } => SymbolCategory::Constructor,
+            _ => SymbolCategory::Fn,
+        },
+        ModuleEntry::TypeDef { .. } => SymbolCategory::Type,
+        ModuleEntry::TraitDecl { .. } => SymbolCategory::Trait,
+        ModuleEntry::SpecialForm { .. } => SymbolCategory::SpecialForm,
+        _ => return None,
+    })
 }
 
 /// Build the session JIT from the symbol tables (the unified `Jit::new`

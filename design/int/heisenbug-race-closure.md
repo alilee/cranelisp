@@ -1,7 +1,18 @@
 # Heisenbug race closure: Slice 3 of Sprint 61
 
+> **SUPERSEDED AS THE FIX STRATEGY (S93).** This document is the **tactical
+> lineage** (H4→H5→H6→H7) — a treadmill of per-interleaving patches, each closing
+> one window while the race resurfaced through the next. With `eval_in_flight`
+> deleted (S78) and `ensure_module_exists` already atomic (H6 landed), the race
+> still fires ~5–10% under contention — confirming the failure is **structural**,
+> not a sequence of isolated micro-bugs. The S93 reactor gate replaces this whole
+> approach with the **signature/body pre-pass barrier**:
+> **`design/int/signature-body-prepass.md`** (the arch-blessed structure, BC §6 +
+> `sequences/concurrency-dependency-service.mmd`). Read this doc only for the
+> evidence trail / historical hypotheses; read the pre-pass doc for the live fix.
+
 **Owner**: `/int`
-**Status**: DESIGN — SKELETON (Sprint 61 Phase 3, 2026-04-22)
+**Status**: DESIGN — SKELETON (Sprint 61 Phase 3, 2026-04-22) — **superseded by `signature-body-prepass.md` (S93)**
 **Reviewers**: `/arch` (boundary-type hygiene)
 
 **Evidence-gated discipline** (per `/arch` Phase 2 FIXME item #3, see

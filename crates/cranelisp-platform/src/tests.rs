@@ -293,16 +293,19 @@
     // `tests/plan/sprint71-platform.md`.
     // ---------------------------------------------------------------------
 
-    // ABI_VERSION is 6 (Sprint 86, DEF-5 — the manifest export namespacing).
-    // Was 5 at FIXME 0327 Option A (the DLL-local dispatch-funnel fault-catch;
-    // `call_effect_thunk` returns `EffectOutcome` and the `CLIO::effect*`
-    // wrapper catches DLL-side), 4 at the FIXME 0327 step-1 node-widen (the
-    // IO_TAG_EFFECT fourth-field add), 3 at FIXME 0286 (the three-exports macro
-    // rework).
-    // spec: design/arch/bounded-contexts.md §5 invariant 9
+    // ABI_VERSION is 7 (Sprint 93, effect-concurrency slice 2 — the ABI-v4
+    // cascade recorded numerically 6→7: poll-shape async-leaf effect fns +
+    // ConcurrencyDescriptor in the manifest + the host-reactor C-ABI; the v7
+    // layout types are landed-and-dormant behind the `concurrency` feature, the
+    // emitter/loader still use the v6 PlatformFn shape until the reactor wires
+    // them). Was 6 (Sprint 86, DEF-5 — manifest export namespacing), 5 at FIXME
+    // 0327 Option A (DLL-local dispatch-funnel fault-catch), 4 at the FIXME 0327
+    // step-1 node-widen, 3 at FIXME 0286 (three-exports macro rework).
+    // spec: design/arch/bounded-contexts.md §5 invariant 9;
+    //       design/arch/platform-interface.md §6.8
     #[test]
-    fn abi_version_is_6() {
-        assert_eq!(ABI_VERSION, 6);
+    fn abi_version_is_7() {
+        assert_eq!(ABI_VERSION, 7);
     }
 
     // The macro's `concat!("cranelisp_platform_manifest_", name)` export-name
@@ -1008,5 +1011,55 @@
         assert_eq!(
             default_tok, 0,
             "a token-less effect carries the unscheduled token 0"
+        );
+    }
+
+    // ======================================================================
+    // S93 §2B — ABI-v7 dormant-contract guard (/qa, Phase-5 Stage-1).
+    // Gated `#[cfg(feature = "concurrency")]`; runs only under
+    // `cargo nt-concurrency` (the FIXME-0449 lane). Verifies the LANDED v7
+    // contract — the poll-shape successor to v6 `PlatformFn`.
+    // ======================================================================
+
+    // spec: design/arch/platform-interface.md §6.8 + effect-concurrency.md §12 —
+    // `ConcurrentPlatformFn` is the ABI-v7 manifest entry that crosses the
+    // platform-DLL C-ABI as raw bytes. Its `#[repr(C)]` field order is the
+    // FROZEN v7 byte layout (governed by ABI_VERSION = 7). This pins the
+    // declaration order via monotonic field offsets — the poll fn replaces v6's
+    // blocking `ptr`, and `concurrency: ConcurrencyDescriptor` subsumes v6's
+    // `scheduling_class: u32`. A reorder breaks the GOT-indirect manifest read.
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_platform_fn_repr_c_field_order_v7() {
+        use core::mem::offset_of;
+        // Field declaration order, pinned by strictly-increasing offsets.
+        let offs = [
+            offset_of!(ConcurrentPlatformFn, name),
+            offset_of!(ConcurrentPlatformFn, name_len),
+            offset_of!(ConcurrentPlatformFn, poll),
+            offset_of!(ConcurrentPlatformFn, param_count),
+            offset_of!(ConcurrentPlatformFn, type_sig),
+            offset_of!(ConcurrentPlatformFn, type_sig_len),
+            offset_of!(ConcurrentPlatformFn, docstring),
+            offset_of!(ConcurrentPlatformFn, docstring_len),
+            offset_of!(ConcurrentPlatformFn, param_names),
+            offset_of!(ConcurrentPlatformFn, param_name_lens),
+            offset_of!(ConcurrentPlatformFn, param_name_count),
+            offset_of!(ConcurrentPlatformFn, concurrency),
+        ];
+        assert_eq!(offset_of!(ConcurrentPlatformFn, name), 0, "name leads the v7 layout");
+        for w in offs.windows(2) {
+            assert!(
+                w[0] < w[1],
+                "v7 ConcurrentPlatformFn field order frozen: offsets must be \
+                 strictly increasing in declaration order, got {offs:?}"
+            );
+        }
+        // The concurrency descriptor is the trailing field (subsumes v6
+        // scheduling_class) and is the embedded v7 descriptor type.
+        assert_eq!(
+            offset_of!(ConcurrentPlatformFn, concurrency),
+            *offs.iter().max().unwrap(),
+            "concurrency descriptor is the last field"
         );
     }

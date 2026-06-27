@@ -1229,6 +1229,109 @@ to be sourced from the declaration, not the manifest. The GOT + layout-hash dlsy
 the dual gate, the `--link` startup-stub hash bake — all unaffected. The hash symbol was
 already namespaced; the schema model does not change. Only the manifest fn's name moves.
 
+### 6.8 The ABI-v4 cascade — numeric `ABI_VERSION` 6→7 (S93, effect-concurrency slice 2)
+
+**Framing — "v4" is a doc-label, the version is numeric.** The
+`design/arch/effect-concurrency.md` §12 / §13 cascade is named the **A2
+C-ABI-async-leaf model**, colloquially "ABI v4". The *operative* instruction is the
+same `current + 1` rule §6.7 used: the numeric `ABI_VERSION` steps **6 → 7**. The
+"v4" label denotes the async-leaf model relative to the three-exports baseline; it
+is **not** the numeric stamp. (Recorded explicitly because the pre-implementation
+`effect-concurrency.md` §13 still says "`ABI_VERSION` 3 → 4" — that was written when
+the stamp was 3; the live stamp at this sprint is 6, so the bump is 6→7, sprint R5.)
+
+**What v7 changes — the effect-call shape, not the deployment model.** The
+three-exports model (GOT + manifest + schema+layout-hash), the dual-artifact
+cdylib/rlib deployment, the GOT-indirect dispatch, the per-platform export
+namespacing (§5.5.5 / §6.7) — all carry forward **unchanged**. Three additions, all
+governed by Principle 14 (explicit ABI bump, not source-evolution guards):
+
+1. **Poll-shape effect fns GO through the GOT (mechanism unchanged; signature
+   shape changes).** A v6 effect fn is a blocking `extern "C" fn(...) -> i64`; a v7
+   effect fn is the **poll-shape** `unsafe extern "C" fn(state, *HostCtx, *Waker)
+   -> Poll` (`cranelisp_platform::PollFn`). It still lives in the platform GOT and is
+   still dispatched GOT-indirect against `__cranelisp_got_platform_<name>` — only the
+   slot's *signature* changes. Sync / non-blocking effects return `Poll::Ready`
+   immediately, so blocking-style and poll-style coexist (§12). Cancellation is the
+   host ceasing to poll + a `drop_state` export — the platform never truly blocks.
+
+2. **The concurrency descriptor joins the manifest, subsuming `scheduling_class`.**
+   The v6 `PlatformFn.scheduling_class: u32` is generalized by
+   `cranelisp_types::ConcurrencyDescriptor` (token + cardinality + global_budget +
+   blocking — §5). The v7 manifest entry is
+   `cranelisp_platform::ConcurrentPlatformFn` (the poll-shape successor to
+   `PlatformFn`: `ptr` → `poll: PollFn`, `scheduling_class: u32` → `concurrency:
+   ConcurrencyDescriptor`). **The `global_budget` field is reserved-but-inert until
+   slice 4** (backpressure; FIXME 0442) — present now solely so slice 4 does not force
+   a second bump 7→8 (sprint R5/§6). `jit_name` was already retired at v3 (FIXME
+   0288); there is nothing further to drop.
+
+3. **The host-reactor C-ABI — the one genuinely new designed artifact.** A
+   host-provided `cranelisp_platform::HostCtx` vtable (`register_readable` /
+   `register_writable` / `register_timer` + an opaque host reactor handle) + a C-ABI
+   `cranelisp_platform::Waker` (`(data, vtable)` fat-pointer pair projecting
+   `std::task::Waker`). On `WouldBlock` the platform registers interest through these
+   and returns `Poll::Pending`; the host's single reactor (epoll / io_uring / kqueue)
+   owns the *when* and re-polls via the Waker. "Platforms own the *what*; the host
+   owns the *when*" (§12). It is small, stable, Unix-reactor-shaped.
+
+**Landed this sprint (S93) — the layout contracts only.** The v7 types
+(`ConcurrencyDescriptor`, `Poll`, `PollFn` in `cranelisp-types`; `HostCtx`,
+`Waker`, `WakerVTable`, `PollFn`, `ConcurrentPlatformFn` in `cranelisp-platform`;
+`StrandId`, `StrandEvent` in `cranelisp-intrinsics`) are landed as code **gated
+behind an off-by-default `concurrency` feature** — out of the default build and the
+`public-api.txt` frozen edge (so the v6 `PlatformFn` / `PlatformManifest` /
+`HostCallbacks` field-order tables in `tests/facade_pif_rows.rs` stay green), exactly
+the "landed-and-dormant" pattern §6.2 used for the GOT-indirect dispatch arm at v3.
+The numeric `ABI_VERSION` stamp is bumped to **7** now (the `declare_platform!` macro
++ host loader still emit / read the v6 `PlatformFn` shape; in-workspace host + DLLs
+rebuild together, so the stamp stays consistent). **The wiring** — the macro emitting
+poll-fns + descriptors, the host loader reading `ConcurrentPlatformFn` + adopting
+`got_slot`, and the host reactor implementing the `HostCtx` vtable — **is the
+slice-2 reactor implementation** (`/dev`, next sprint/stretch), feature-gated and
+byte-identical-when-off.
+
+**Per-crate change list when the wiring lands (not actioned this sprint):**
+
+- **`/platform` — `cranelisp-platform`** (`src/declare.rs`, `src/concurrency.rs`):
+  the `declare_platform!` macro emits each effect fn in poll-shape and a
+  `ConcurrencyDescriptor` per fn; the manifest entry array switches `PlatformFn` →
+  `ConcurrentPlatformFn`. The host-reactor C-ABI types are already landed in
+  `src/concurrency.rs` (gated).
+- **`/backend` — `cranelisp-backend`**: the GOT-indirect dispatch arm emits a poll
+  call (passing the `HostCtx` / `Waker`) instead of a blocking call; the trampoline
+  is the `async fn` that owns the await (`effect-concurrency.md` §6).
+- **`/int` — `src/`** (host reactor): implements the `HostCtx` vtable over the host's
+  single reactor + the feature-gated host async runtime; the loader reads
+  `ConcurrentPlatformFn` and adopts `got_slot = manifest index` as today.
+
+**Host substrate + feature topology (S93 Phase-5 Wave-3, /arch — the reactor-gate
+decision).** The host that drives the v7 poll-fns is **`mio` (reactor) + `futures`
+(`block_on` executor), NOT tokio** — `effect-concurrency.md` §6's
+"tokio-or-equivalent" resolved to the *or-equivalent* because the landed
+host-reactor C-ABI (`HostCtx` = "register a raw fd + a `std::task::Waker`
+projection") is **mio-shaped, not tokio-shaped**, and the C-ABI insulates platforms
+from the executor choice entirely (a later swap is gate-local + ABI-invisible). The
+runtime is gated by a **new `concurrency-runtime` feature** in
+`cranelisp-intrinsics` (`= ["concurrency", "dep:mio", "dep:futures"]`) — distinct
+from the existing `concurrency` feature, which stays **layout-contracts-only / zero
+runtime deps** so a *platform* enabling it pulls in **no executor** (the A2
+"platforms carry no runtime" thesis, preserved structurally). The
+`--link`-links-no-executor guarantee is structural (the runtime deps are
+`dep:`-gated optional; the exe-bundle `--link` path never requests
+`concurrency-runtime`). The reactor *implementation* is hosted in
+`cranelisp-intrinsics` (not `src/`) so it links into `--link` output — int owns
+construction-for-REPL/`--run` + policy + the dev sink + feature-gating. The full
+implementable slice-2 plan (the one async await boundary, the demo `async-read`
+leaf, the strand hook, the per-crate `/dev` step list + spill marker) lives at
+`effect-concurrency.md` Appendix B §"Slice-2 reactor — the implementable plan."
+
+**Status: ACTIONING (S93).** The pre-implementation §13 "flagged, not executed"
+state is superseded — slice 2 has opened, the layout contracts are landed, and this
+§6.8 is the cascade record. The remaining wiring is tracked by the slice-2 work in
+`sprints/ROADMAP.md`, not a separate FIXME (the manifestation-site discipline: the
+cascade lives here at its natural home, actioned by the open track).
+
 ---
 
 ## 7. Data structures, functions & sequence

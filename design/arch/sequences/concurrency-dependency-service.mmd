@@ -1,33 +1,30 @@
 sequenceDiagram
-    title Invariant — CompileScheduler is the sole writer of per-symbol/per-module readiness state
+    title Invariant — the signature/body pre-pass barrier — S93 reactor gate (resolved-by-deletion S93, was FIXME 0425 item 1 + 0426). CompileScheduler is the sole writer of per-symbol/per-module readiness state, signatures are ALL registered before ANY body typechecks, making the publish→readiness→resume ordering structural, not convention.
 
     participant PWa as Priority Worker A<br/>::worker::priority_worker_loop
     participant PWb as Priority Worker B<br/>::worker::priority_worker_loop
     participant PWc as Priority Worker C<br/>::worker::priority_worker_loop
-    participant Sched as CompileScheduler<br/>::scheduler::CompileScheduler<br/>(work dispatch + per-symbol/per-module readiness — sole coordination authority per facades/int.md BC §4)
+    participant Sched as CompileScheduler<br/>::scheduler::CompileScheduler<br/>(work dispatch + per-symbol/per-module readiness — sole coordination authority)
 
-    Note over Sched: invariant: only Sched mutates readiness state.<br/>workers call wait_for_* and notify_* — never reach into the state directly.<br/>Per facades/int.md "Scheduler is sole coordination authority" — there is no separate DependencyService.
+    Note over Sched: invariant: only Sched mutates readiness state.<br/>workers call wait_for_* and notify_* — never reach into the state directly.<br/>The pre-pass barrier removes the body-vs-half-published-signature race (H6/H7) by construction: a body cannot observe a sibling whose signature is not yet registered.<br/>It also converts the mutual-import DEADLOCK (D0030, a hang) into a deterministic CYCLE-ERROR — Phase A registers signatures in topological order, so a cyclic import has no topological order (user ruling S93: mutual imports are a compile-time error, NOT compiled).
 
-    Note over Sched: Phase 1 — many workers wait for m/foo
+    Note over Sched,PWc: Phase A — SIGNATURE PRE-PASS. Every module's signatures register before any body typechecks.
 
-    PWb ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
-    Note over Sched: per-symbol readiness state[fq] = pending<br/>waiters[fq] += PWb
-    PWc ->> Sched: CompileScheduler::wait_for_typecheck_symbol(fq: &FQSymbol) -> Result[(), SchedulerError]
-    Note over Sched: waiters[fq] += PWc
+    PWa ->> Sched: CompileScheduler::register_module_signatures(m: &ModuleFullPath)
+    Note over Sched: exclusive write — signature readiness[m] = ready for ALL of m's symbols at once<br/>(no per-symbol publish window, a sibling sig is either wholly present or wholly absent)
+    PWb ->> Sched: CompileScheduler::register_module_signatures(m2: &ModuleFullPath)
+    Note over Sched: exclusive write — signature readiness[m2] = ready
 
-    Note over PWb,PWc: parked inside the scheduler's wait_for_* call —<br/>workers do not poll, do not read shared symbol-table state for readiness
+    PWc ->> Sched: CompileScheduler::await_signature_barrier() -> Result[(), SchedulerError]
+    Note over PWc: barrier = the S78 REQUEUE gate, NOT a literal thread-park (ruling: bounded-contexts.md §6 "Signature-barrier worker-pool model").<br/>A pool worker registers the unregistered closure members + FREES its thread back to the pool,<br/>requeued to be re-claimed when the LAST module's signatures register (try_unblock_locked gates the requeue<br/>on the closure-barrier predicate, not per-dep blocked_on) — pool workers never block a thread on a signature.<br/>Only the eval thread (the REPL main thread, NOT a pool slot) genuinely waits, holding its exclusive entry claim.<br/>workers do not poll, do not read shared symbol-table state for signature readiness.
+    Sched -->> PWc: Ok(()) — all signatures registered, barrier opens (requeue swept / eval thread woken)
 
-    Note over Sched: Phase 2 — PWa publishes m/foo
+    Note over Sched,PWc: Phase B — BODY TYPECHECK. Bodies typecheck against a now-complete signature table. NOTE: mutual (cyclic) imports do NOT reach Phase B — Phase A registers signatures in topological order, so a cycle has no topological order and yields a deterministic CycleError at the import site (user ruling S93: mutual imports are a compile-time cycle-error — the pre-pass converts the D0030 deadlock into a diagnosed cycle, it does NOT compile mutually-importing modules).
 
-    PWa ->> Sched: CompileScheduler::notify_symbol_typechecked(fq: &FQSymbol)
-    Note over Sched: exclusive write —<br/>readiness[fq] = ready<br/>waiters[fq] drained — wakes parked workers
-
-    Sched -->> PWb: Ok(()) — wait_for_typecheck_symbol returns
-    Sched -->> PWc: Ok(()) — wait_for_typecheck_symbol returns
-
-    Note over Sched: Phase 3 — late waiter sees ready immediately
-
-    PWb ->> Sched: CompileScheduler::wait_for_inmem(fq: &FQSymbol) -> Result[(), SchedulerError] [later, different dep]
-    Note over Sched: in-mem readiness[fq] = pending — PWb parked
+    PWb ->> Sched: CompileScheduler::wait_for_inmem(fq: &FQSymbol) -> Result[(), SchedulerError]
+    Note over Sched: in-mem (codegen) readiness[fq] = pending — PWb parked.<br/>NOTE: only codegen/in-mem readiness is awaited in Phase B —<br/>signature readiness is already total, so the body never blocks on a sibling SIGNATURE (the race window is gone).
     PWa ->> Sched: CompileScheduler::notify_inmem_codegen_complete(fq: &FQSymbol)
+    Note over Sched: exclusive write — in-mem readiness[fq] = ready<br/>waiters[fq] drained — wakes parked workers
     Sched -->> PWb: Ok(()) — wait_for_inmem returns
+
+    Note over Sched: as-built reconciliation (S93 /arch): this diagram tracks the structural pre-pass<br/>the race fix implements (internal to src/, owned by /design+/dev int). The prior per-symbol<br/>wait_for_typecheck_symbol / notify_symbol_typechecked race window is retired by the Phase-A barrier.

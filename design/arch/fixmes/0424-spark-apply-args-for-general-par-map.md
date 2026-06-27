@@ -4,9 +4,29 @@ target: /arch
 filed_by: /examples
 filed_at: 2026-06-21
 sprint_filed: 87
-refers_to: examples/30-parallel-map-reduce.cl, crates/cranelisp-backend/src/compiler/control_flow/sparkability.rs, design/backend/lenient-eval.md
+refers_to: examples/30-parallel-map-reduce.cl, crates/cranelisp-backend/src/compiler/control_flow/sparkability.rs, design/backend/lenient-eval.md, design/arch/effect-concurrency.md §7
 status: open
 ---
+
+> **/arch verdict (S93, CORRECTED by user S93 Phase-3 review) — no PRIMITIVE (declined, stands); `par-map` IS a /stdlib function; status stays open for (i)'s generalization.**
+> A dedicated `par-map`/`par-reduce` **compiler primitive** is **not** sanctioned: an explicit
+> parallel-map *primitive*/syntax cuts directly against the ratified effect-concurrency thesis
+> (`design/arch/effect-concurrency.md` §1/§3 — the programmer writes ZERO concurrency
+> primitives; parallelism is extracted from dataflow). **The (ii)-as-primitive sub-question
+> is closed (declined).** BUT `par-map` / `par-reduce` / `par-map-reduce` **ARE legitimate
+> /stdlib functions** — ordinary `.cl` library definitions over the inferred apply-arg
+> sparking substrate, NOT compiler primitives, adding NO language surface. **`/stdlib` owns
+> them** (this REVERSES the earlier "`/stdlib` holds / names merely reserved" disposition; the
+> user keeps "no primitive" but rules stdlib provides the functions). What makes them parallel
+> is exactly (i)'s apply-arg sparking — a stdlib `par-map` is an ordinary `map`/`fmap` whose
+> per-element applications spark when independent + expensive, NOT a magic primitive. (i)'s
+> divide-and-conquer apply-arg shape **shipped S92**; this FIXME stays **OPEN** for the
+> full-independence generalization of (i) (+ limit #2, dependent-binding sparks), which is
+> the substrate the stdlib `par-*` functions build on — a rayon-side increment (§7 de-risking)
+> that can land anytime. **Companion FIXME 0445 (the stdlib D&C interim-or-reserve question) is
+> resolved the STDLIB-PROVIDES way** (not "hold"): `/stdlib` provides the `par-*` functions and
+> owns their sprint placement. See `design/arch/effect-concurrency.md` §7 "Verdict on
+> `par-map`/`par-reduce` — no PRIMITIVE, but they ARE stdlib functions".
 
 # Spark independent apply-arguments (and/or a par-map primitive) to enable a general parallel map over a Functor
 

@@ -1,0 +1,440 @@
+//! Reactor spine + Par-async overlap tests (slice-2 reactor; gated
+//! `concurrency-runtime`, run under `cargo nt-concurrency-runtime`).
+//!
+//! These prove the load-bearing artifact of the effect-concurrency track
+//! (`design/arch/effect-concurrency.md` App. B acceptance):
+//!   1. the **spine** — a single effect leaf suspends (`Pending` → parks on the
+//!      reactor) and resumes (`wake` → `Ready`) through the mio reactor + the
+//!      `HostCtx` / C-ABI `Waker`, emitting `EffectDispatched`/`Suspended`/
+//!      `Resumed`;
+//!   2. the **overlap** — two slow `async-read`s complete in ≈max(d1,d2), NOT
+//!      d1+d2, on ONE reactor thread (no thread-per-read).
+
+use super::*;
+use crate::strand::{drain_strand_events, next_strand, start_strand_recording, StrandEvent};
+use std::collections::HashSet;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+// ---------------------------------------------------------------------------
+// socketpair helpers
+// ---------------------------------------------------------------------------
+
+/// A connected pair of AF_UNIX stream fds; `read_end` is set non-blocking so the
+/// `async-read` poll-fn observes `EWOULDBLOCK` and parks rather than blocking.
+struct SockPair {
+    read_end: i32,
+    write_end: i32,
+}
+
+impl SockPair {
+    fn new() -> Self {
+        let mut fds = [0i32; 2];
+        // SAFETY: standard socketpair call with a valid 2-element out array.
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "socketpair failed");
+        // Make the read end non-blocking.
+        // SAFETY: fds[0] is a valid fd just returned by socketpair.
+        let flags = unsafe { libc::fcntl(fds[0], libc::F_GETFL) };
+        unsafe { libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        SockPair {
+            read_end: fds[0],
+            write_end: fds[1],
+        }
+    }
+}
+
+impl Drop for SockPair {
+    fn drop(&mut self) {
+        // SAFETY: both fds are owned by this pair and closed exactly once.
+        unsafe {
+            libc::close(self.read_end);
+            libc::close(self.write_end);
+        }
+    }
+}
+
+/// Build an `async-read` leaf reading from `state.fd`.
+unsafe fn read_leaf<'h>(
+    state: *mut AsyncReadState,
+    host: &'h HostCtx,
+    strand: StrandId,
+) -> EffectPoll<'h> {
+    unsafe {
+        EffectPoll::new(
+            state as *mut c_void,
+            async_read_pollfn,
+            host,
+            async_read_result,
+            strand,
+        )
+    }
+}
+
+/// Build a timer-feeder leaf that writes to `state.peer_fd` after its deadline.
+unsafe fn feeder_leaf<'h>(
+    state: *mut TimerWriteState,
+    host: &'h HostCtx,
+    strand: StrandId,
+) -> EffectPoll<'h> {
+    unsafe {
+        EffectPoll::new(
+            state as *mut c_void,
+            timer_write_pollfn,
+            host,
+            timer_write_result,
+            strand,
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Spine — a single leaf suspends + resumes through the reactor (timer path).
+// ---------------------------------------------------------------------------
+
+// spec: design/arch/effect-concurrency.md App. B "Strand observability hook" +
+// spill marker (1) — the single-leaf suspend/resume proves the spine: async
+// trampoline + mio reactor + the `HostCtx`/`Waker` C-ABI + one `StrandId` path.
+// A timer leaf registers a `register_timer` interest (Pending → parks), the
+// reactor blocks in `mio::poll` until the deadline, fires the waker, and the
+// leaf resumes to `Ready`.
+#[test]
+fn single_leaf_suspend_resume_through_reactor() {
+    start_strand_recording();
+    let strand = next_strand();
+    let pair = SockPair::new();
+    let delay_ms = 40u64;
+    let deadline = monotonic_nanos() + delay_ms * 1_000_000;
+
+    let start = Instant::now();
+    let result = block_on_reactor(async |host| {
+        let mut fstate = TimerWriteState {
+            peer_fd: pair.write_end,
+            deadline_nanos: deadline,
+            registered: false,
+        };
+        let leaf = unsafe { feeder_leaf(&mut fstate, host, strand) };
+        leaf.await
+    })
+    .expect("reactor");
+    let elapsed = start.elapsed();
+
+    assert_eq!(result, 0, "feeder leaf returns unit (0)");
+    // It genuinely PARKED on the reactor timer — not a busy spin.
+    assert!(
+        elapsed.as_millis() as u64 >= delay_ms - 10,
+        "leaf should suspend until ≈deadline, got {elapsed:?}"
+    );
+
+    let events = drain_strand_events();
+    assert_eq!(
+        events,
+        vec![
+            StrandEvent::EffectDispatched { strand },
+            StrandEvent::EffectSuspended { strand },
+            StrandEvent::EffectResumed { strand },
+        ],
+        "single-leaf strand trace must be Dispatched → Suspended → Resumed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2. The `async-read` fd path — suspend on register_readable, resume on the byte.
+// ---------------------------------------------------------------------------
+
+// spec: design/arch/effect-concurrency.md App. B "Demo leaf — async-read" — the
+// `recv` → `EWOULDBLOCK` → `register_readable` + `Pending`, then resume on the
+// fed byte. One read + one timer feeder, both on the single reactor.
+#[test]
+fn async_read_suspends_on_ewouldblock_and_resumes_on_byte() {
+    start_strand_recording();
+    let read_strand = next_strand();
+    let feed_strand = next_strand();
+    let pair = SockPair::new();
+    let deadline = monotonic_nanos() + 40 * 1_000_000;
+
+    let results = block_on_reactor(async |host| {
+        let mut rstate = AsyncReadState {
+            fd: pair.read_end,
+            result: 0,
+            registered: false,
+        };
+        let mut fstate = TimerWriteState {
+            peer_fd: pair.write_end,
+            deadline_nanos: deadline,
+            registered: false,
+        };
+        let read = unsafe { read_leaf(&mut rstate, host, read_strand) };
+        let feed = unsafe { feeder_leaf(&mut fstate, host, feed_strand) };
+        join_io_leaves(vec![read, feed]).await
+    })
+    .expect("reactor");
+
+    assert_eq!(results[0], 1, "the async-read received the 1 fed byte");
+
+    let events = drain_strand_events();
+    // The read strand must have parked on the fd and resumed.
+    assert!(events.contains(&StrandEvent::EffectDispatched { strand: read_strand }));
+    assert!(events.contains(&StrandEvent::EffectSuspended { strand: read_strand }));
+    assert!(events.contains(&StrandEvent::EffectResumed { strand: read_strand }));
+}
+
+// ---------------------------------------------------------------------------
+// 3. Overlap — two slow reads complete in ≈max(d1,d2), on ONE reactor thread.
+// ---------------------------------------------------------------------------
+
+/// Thread ids every fixture poll-fn ran on, for the "no thread-per-read"
+/// assertion. The recording wrappers below push into this; the overlap test
+/// asserts the set is a single thread.
+///
+/// M3: process-global state — correctness relies on nextest's process-per-test
+/// isolation (each `#[test]` runs in its own process, so this static is private
+/// to the one overlap test that uses it).
+static POLL_THREADS: Mutex<Option<HashSet<std::thread::ThreadId>>> = Mutex::new(None);
+
+fn record_thread() {
+    if let Some(set) = POLL_THREADS.lock().unwrap().as_mut() {
+        set.insert(std::thread::current().id());
+    }
+}
+
+unsafe extern "C" fn rec_read_pollfn(
+    state: *mut c_void,
+    host: *const HostCtx,
+    waker: *const CWaker,
+) -> CPoll {
+    record_thread();
+    unsafe { async_read_pollfn(state, host, waker) }
+}
+
+unsafe extern "C" fn rec_timer_pollfn(
+    state: *mut c_void,
+    host: *const HostCtx,
+    waker: *const CWaker,
+) -> CPoll {
+    record_thread();
+    unsafe { timer_write_pollfn(state, host, waker) }
+}
+
+// spec: design/arch/effect-concurrency.md App. B acceptance #1 — two `async-read`s
+// with delays d1, d2 complete in ≈max(d1,d2), NOT d1+d2, on ONE reactor thread
+// (assert no thread-per-read). The feeds are driven by the host reactor's timer
+// wheel, so the whole demo is single-reactor with no per-read OS thread.
+#[test]
+fn two_async_reads_overlap_max_not_sum_one_thread() {
+    *POLL_THREADS.lock().unwrap() = Some(HashSet::new());
+    start_strand_recording();
+
+    let d1_ms = 100u64;
+    let d2_ms = 200u64;
+    let s_read1 = next_strand();
+    let s_read2 = next_strand();
+    let s_feed1 = next_strand();
+    let s_feed2 = next_strand();
+    let p1 = SockPair::new();
+    let p2 = SockPair::new();
+    let now = monotonic_nanos();
+    let dl1 = now + d1_ms * 1_000_000;
+    let dl2 = now + d2_ms * 1_000_000;
+
+    let start = Instant::now();
+    let results = block_on_reactor(async |host| {
+        let mut r1 = AsyncReadState { fd: p1.read_end, result: 0, registered: false };
+        let mut r2 = AsyncReadState { fd: p2.read_end, result: 0, registered: false };
+        let mut f1 = TimerWriteState { peer_fd: p1.write_end, deadline_nanos: dl1, registered: false };
+        let mut f2 = TimerWriteState { peer_fd: p2.write_end, deadline_nanos: dl2, registered: false };
+        // Reads use the thread-recording wrappers so the test can prove no
+        // read ran on a thread other than the reactor's.
+        let read1 = unsafe {
+            EffectPoll::new(&mut r1 as *mut _ as *mut c_void, rec_read_pollfn, host, async_read_result, s_read1)
+        };
+        let read2 = unsafe {
+            EffectPoll::new(&mut r2 as *mut _ as *mut c_void, rec_read_pollfn, host, async_read_result, s_read2)
+        };
+        let feed1 = unsafe {
+            EffectPoll::new(&mut f1 as *mut _ as *mut c_void, rec_timer_pollfn, host, timer_write_result, s_feed1)
+        };
+        let feed2 = unsafe {
+            EffectPoll::new(&mut f2 as *mut _ as *mut c_void, rec_timer_pollfn, host, timer_write_result, s_feed2)
+        };
+        join_io_leaves(vec![read1, read2, feed1, feed2]).await
+    })
+    .expect("reactor");
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    // Both reads got their byte.
+    assert_eq!(results[0], 1, "read1 received its byte");
+    assert_eq!(results[1], 1, "read2 received its byte");
+
+    // OVERLAP: completed in ≈max(d1,d2)=200ms, strictly under the d1+d2=300ms a
+    // sequential (thread-per-read serialized, or non-overlapping) run would take.
+    assert!(
+        elapsed_ms >= d2_ms - 40,
+        "must wait for the slower read (~{d2_ms}ms), got {elapsed_ms}ms"
+    );
+    assert!(
+        elapsed_ms < d1_ms + d2_ms - 40,
+        "two reads must OVERLAP (≈max {d2_ms}ms, NOT sum {}ms): got {elapsed_ms}ms",
+        d1_ms + d2_ms
+    );
+
+    // NO thread-per-read: every poll-fn ran on exactly one thread (the reactor's).
+    let threads = POLL_THREADS.lock().unwrap().take().unwrap();
+    assert_eq!(
+        threads.len(),
+        1,
+        "all leaf polls must run on ONE reactor thread (no thread-per-read), saw {}",
+        threads.len()
+    );
+    assert!(
+        threads.contains(&std::thread::current().id()),
+        "the single reactor thread is the calling (block_on) thread"
+    );
+
+    // STRAND TRACE: both reads dispatched, suspended, and resumed — and the two
+    // strands are interleaved (join_all dispatches all leaves in the first poll).
+    let events = drain_strand_events();
+    for s in [s_read1, s_read2] {
+        assert!(events.contains(&StrandEvent::EffectDispatched { strand: s }), "dispatched {s:?}");
+        assert!(events.contains(&StrandEvent::EffectSuspended { strand: s }), "suspended {s:?}");
+        assert!(events.contains(&StrandEvent::EffectResumed { strand: s }), "resumed {s:?}");
+    }
+    // Interleaving: read2's dispatch lands before read1's resume (the strands are
+    // in flight concurrently, not run one-after-the-other).
+    let read2_dispatch = events
+        .iter()
+        .position(|e| *e == StrandEvent::EffectDispatched { strand: s_read2 })
+        .unwrap();
+    let read1_resume = events
+        .iter()
+        .position(|e| *e == StrandEvent::EffectResumed { strand: s_read1 })
+        .unwrap();
+    assert!(
+        read2_dispatch < read1_resume,
+        "the two read strands must be interleaved (concurrent), not sequential"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 4. I2 — re-registration after a one-shot fire (no lost wakeup).
+// ---------------------------------------------------------------------------
+
+/// State for a leaf that needs TWO separate fires to complete: it consumes one
+/// byte per poll and only returns `Ready` once it has seen two bytes. The first
+/// fire delivers byte 1 and does NOT satisfy it, so it returns `Pending` a second
+/// time — and must re-arm interest to receive the second byte's wakeup.
+#[repr(C)]
+struct TwoFireReadState {
+    fd: i32,
+    bytes_seen: i64,
+    result: i64,
+}
+
+fn two_fire_result(state: *mut c_void) -> i64 {
+    // SAFETY: `state` is a live `TwoFireReadState` (constructor obligation).
+    unsafe { (*(state as *const TwoFireReadState)).result }
+}
+
+/// Poll-fn that recv's ONE byte at a time and needs two bytes (two distinct
+/// fires) to complete. It re-registers interest on EVERY `Pending` — the I2
+/// contract. With the old `registered`-latch gate this second registration would
+/// be skipped after the first fire's one-shot deregister, and the second byte's
+/// wakeup would be lost (the leaf would never re-poll, or `block_on_reactor`
+/// would trip its "Pending with no reactor waiters" panic). With the fix it
+/// re-arms and completes.
+unsafe extern "C" fn two_fire_read_pollfn(
+    state: *mut c_void,
+    host: *const HostCtx,
+    waker: *const CWaker,
+) -> CPoll {
+    let st = unsafe { &mut *(state as *mut TwoFireReadState) };
+    // ONE byte per recv so two fed bytes genuinely require two fires.
+    let mut buf = [0u8; 1];
+    // SAFETY: `st.fd` is a valid non-blocking fd; `buf` is a valid 1-byte out-buf.
+    let n = unsafe { libc::recv(st.fd, buf.as_mut_ptr() as *mut c_void, 1, 0) };
+    if n > 0 {
+        st.bytes_seen += n as i64;
+        if st.bytes_seen >= 2 {
+            st.result = st.bytes_seen;
+            return CPoll::Ready;
+        }
+        // Got a byte but NOT done — fall through to re-register + Pending.
+    }
+    // Re-register interest on every Pending (the I2 re-registration obligation):
+    // after the first fire the reactor has one-shot-deregistered us, so this is
+    // the ONLY thing that re-arms the wakeup for the second byte.
+    let hc = unsafe { &*host };
+    unsafe { (hc.register_readable)(hc.host, st.fd, waker) };
+    CPoll::Pending
+}
+
+// spec: design/arch/effect-concurrency.md App. B "Demo leaf" + reactor
+// one-shot-deregister contract — a leaf that returns `Pending` a SECOND time
+// (its first fire did not satisfy it: a short read) must still be re-woken and
+// complete. Proves I2: the poll-fn re-registers on every `Pending` and the
+// reactor's idempotent `register_fd` re-arms the one-shot waiter, so the second
+// byte's readiness is delivered — no lost wakeup.
+#[test]
+fn leaf_pending_twice_re_registers_and_completes_no_lost_wakeup() {
+    start_strand_recording();
+    let strand = next_strand();
+    let pair = SockPair::new();
+    let write_fd = pair.write_end;
+
+    // A peer that feeds two bytes with a gap, so the read leaf observes two
+    // DISTINCT fd-readiness fires (byte 1, then — after the leaf has already
+    // re-parked — byte 2). This simulates the foreign peer; it is NOT a
+    // per-read worker (the reactor is still single-threaded — the read leaf
+    // polls only on the block_on thread).
+    let feeder = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        // SAFETY: `write_fd` is the live write end of the socketpair.
+        unsafe { libc::send(write_fd, [1u8].as_ptr() as *const c_void, 1, 0) };
+        std::thread::sleep(Duration::from_millis(70));
+        unsafe { libc::send(write_fd, [1u8].as_ptr() as *const c_void, 1, 0) };
+    });
+
+    let result = block_on_reactor(async |host| {
+        let mut st = TwoFireReadState {
+            fd: pair.read_end,
+            bytes_seen: 0,
+            result: 0,
+        };
+        let leaf = unsafe {
+            EffectPoll::new(
+                &mut st as *mut _ as *mut c_void,
+                two_fire_read_pollfn,
+                host,
+                two_fire_result,
+                strand,
+            )
+        };
+        leaf.await
+    })
+    .expect("reactor");
+
+    feeder.join().expect("feeder thread");
+
+    assert_eq!(result, 2, "the leaf completed only after BOTH bytes (two fires)");
+
+    // The leaf must have SUSPENDED at least twice (it returned `Pending` after
+    // the first fire too) and RESUMED each time — the direct evidence that the
+    // second wakeup was not lost.
+    let events = drain_strand_events();
+    let suspends = events
+        .iter()
+        .filter(|e| **e == StrandEvent::EffectSuspended { strand })
+        .count();
+    let resumes = events
+        .iter()
+        .filter(|e| **e == StrandEvent::EffectResumed { strand })
+        .count();
+    assert!(
+        suspends >= 2,
+        "leaf must park at least twice (Pending after the first fire), saw {suspends}"
+    );
+    assert!(
+        resumes >= 2,
+        "leaf must be re-woken at least twice (no lost wakeup), saw {resumes}"
+    );
+}
