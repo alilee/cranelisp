@@ -138,6 +138,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::CLFloat
 impl<CL: cranelisp_platform::CLType> cranelisp_platform::CLIO<CL>
 pub fn cranelisp_platform::CLIO<CL>::effect(impl core::ops::function::FnOnce() -> CL + 'static) -> Self
 pub fn cranelisp_platform::CLIO<CL>::effect_on_resource(i64, impl core::ops::function::FnOnce() -> CL + 'static) -> Self
+pub fn cranelisp_platform::CLIO<CL>::effect_on_resource_with_capacity(i64, i64, impl core::ops::function::FnOnce() -> CL + 'static) -> Self
 pub fn cranelisp_platform::CLIO<CL>::pure(CL) -> Self
 impl core::convert::From<alloc::string::String> for cranelisp_platform::CLIO<cranelisp_platform::CLString>
 pub fn cranelisp_platform::CLIO<cranelisp_platform::CLString>::from(alloc::string::String) -> Self
@@ -370,6 +371,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::TypeShape
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::TypeShape
 pub const cranelisp_platform::ABI_VERSION: u32
 pub const cranelisp_platform::HEAP_HEADER_SIZE: i64
+pub const cranelisp_platform::IO_EFFECT_CAPACITY_OFFSET: i64
 pub const cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET: i64
 pub const cranelisp_platform::IO_EFFECT_RESOURCE_OFFSET: i64
 pub const cranelisp_platform::IO_TAG_BIND: i64

@@ -10,6 +10,57 @@ status: deferred
 
 # Spec cascade for the async-leaf effect + host-reactor concurrency model (effect-concurrency slice 2)
 
+## Disposition (S95 /spec — slice-3 token-CAPACITY pool ACTIONED; combinator/supervisor half stays deferred)
+
+Sprint 95 lands slice 3 (the concurrency descriptor + host-owned token-capacity
+`Semaphore` pool). `/arch` ruled (Phase 2 gate) that native **capacity-N parking**
+is **user-observable** — wall-clock latency of the (N+1)th effect, plus the dev-facing
+strand stream — and is **NOT** covered by §10.12.4's serial-only (capacity-1) model
+or the three-class trichotomy of §10.12.2. The trigger was therefore **MET**, and (per
+the S94 lesson — do not reflexively defer) `/spec` **actioned** it this sprint rather
+than carrying it forward.
+
+**Landed (S95; revised post /arch re-bless against `effect-concurrency.md` §8.1/§8.2):** new
+**`spec/10-io.md §10.12.4.1` "Resource Capacity — Token Pools"** (`[S95]`) specifying the
+token-capacity pool **observationally and mechanism-neutrally** (it constrains what a program
+observes, not the `Semaphore` impl):
+- **capacity** *N* — the platform-asserted safe-concurrency ceiling — attaches to the
+  **resource (the token), NOT the effect** (the load-bearing per-token / sharing semantics):
+  **distinct** tokens have **independent** capacities; effects sharing **one** token share that
+  resource's single pool — sum in flight across all effects on the token ≤ *N* (the DB
+  connection-pool case: `query`/`execute`/`begin` over one pool of *N*); the (N+1)th **parks**;
+- up to *N* same-token effects MAY run concurrently; the **(N+1)th parks** — MUST NOT begin
+  until an in-flight effect frees a permit (observable as wall-clock latency; informatively as
+  strand park/resume);
+- **capacity 1 = today's `ResourceSerial`** — serial **and source-ordered** (exclusion *and*
+  order, the §8.2 `SerialGroup` invariant, carried deliberately because permits give exclusion
+  not order);
+- **capacity *N* ≥ 2** — the admitted effects MAY overlap and complete in any order; source
+  ordering is guaranteed only at capacity 1;
+- **trust boundary** — the platform *asserts* the capacity (continuous with the existing
+  `ResourceSerial`/`Commutative` non-verification); the compiler does not check it.
+- a deferred **forward note** records the program-chosen throttle **degree** (effective limit
+  `min(capacity, degree)`) as slice-4 backpressure — name reserved, mechanism deferred.
+- §10.12.4's tail gains one sentence framing its serialisation as the capacity-1 limiting
+  case of §10.12.4.1.
+
+Naming follows the user-ratified `capacity` (platform ceiling) / `degree` (program throttle)
+split (`effect-concurrency.md` §5/§8.1) — the prior `cardinality`/`global-budget` framing is
+retired. No renumbering (added as a `.1` sub-subsection); §10.12.5/§10.12.6 unchanged. `/qa`
+owes the `[S95]` slice-3 coverage (N distinct-token overlap; distinct effects sharing one
+capacity-N token bounded to *N* with the (N+1)th parking; capacity-1 serial-and-ordered)
+against the new §10.12.4.1 rows.
+
+**Still deferred (combinator/supervisor half — 0447 stays OPEN):** the typed control-combinator
+layer (`race`/`select`/`timeout` + structured cancellation), launch-and-continue (un-joined)
+effects, and the per-effect-kind supervisor policy — these introduce genuinely user-visible
+language semantics and are specced WITH their behavioural delivery (slices 4/5/7 → S96+). The
+§12 cascades listed in the S93/S94 dispositions below are unchanged. This FIXME remains the
+durable cascade record for that remaining half; `/sprint` re-triggers it when slice-4/5/7
+delivery lands.
+
+---
+
 ## Disposition (S94 /spec — slice-2 surfaced half now FULLY actioned; remaining scope narrowed to later slices)
 
 S93 ruled on slice 2 against **landed-dormant** ABI-v7 contracts (reactor not yet

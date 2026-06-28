@@ -158,6 +158,48 @@ fn poll_shape_true_builds_io_tag_effect_poll_with_closure_env() {
     );
 }
 
+// spec: design/backend/io-trampoline.md §13.3 (S95 slice 3 — reserved (token,
+// capacity) carrier) — a poll-shape effect's `IO_TAG_EFFECT_POLL` node reserves
+// the symmetric `(token, capacity)` slots: the node alloc widens to
+// `payload_size(3)` (= 32-byte payload), the state-closure is stored at
+// `field_offset(0)` (= +24), a token sentinel `0` is stored at `field_offset(1)`
+// (= +32, symmetric with the blocking node's token), and a capacity sentinel `1`
+// at `field_offset(2)` (= +40). Pins the reserved offsets + sentinel values so the
+// Wave-4 trampoline reads `(token, capacity)` uniformly off any IO node.
+#[test]
+fn poll_node_reserves_token_capacity_slots_with_sentinels() {
+    use crate::heap::HeapAdt;
+    let clif = clif_of_effect_call(true, Type::Int, int_lit(55));
+
+    // The widened node alloc: payload_size(3) = 8 + 3*8 = 32 bytes.
+    assert_eq!(HeapAdt::payload_size(3), 32);
+    assert!(
+        clif.contains("iconst.i64 32"),
+        "the widened poll node must alloc payload_size(3) = 32 bytes; CLIF:\n{clif}"
+    );
+
+    // Capacity sentinel `1` — distinctive (the only `iconst.i64 1` the poll arm
+    // emits; args are 55, token + result sentinels are 0).
+    assert!(
+        clif.contains("iconst.i64 1\n") || clif.contains("iconst.i64 1 "),
+        "the poll node must reserve a capacity sentinel of 1; CLIF:\n{clif}"
+    );
+
+    // The reserved fields land at the symmetric offsets: token @ field_offset(1)
+    // (= +32), capacity @ field_offset(2) (= +40). Assert stores at those offsets.
+    assert_eq!(HeapAdt::field_offset(1), 32);
+    assert_eq!(HeapAdt::field_offset(2), 40);
+    assert!(
+        clif.contains("+32"),
+        "token sentinel must be stored at field_offset(1) = +32 (symmetric with \
+         the blocking node's token); CLIF:\n{clif}"
+    );
+    assert!(
+        clif.contains("+40"),
+        "capacity sentinel must be stored at field_offset(2) = +40; CLIF:\n{clif}"
+    );
+}
+
 // spec: design/backend/io-trampoline.md §12.7 (GOT load, not call) — the poll arm
 // LOADS the poll-fn from the platform GOT slot (baking it as the state-closure
 // `code_ptr`) and does NOT `call_indirect` it at the construction site (the call

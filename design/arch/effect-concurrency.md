@@ -219,9 +219,13 @@ extraction analysis**; the async substrate (§6) changes *execution*, not *extra
    effects sharing a token serialize (the `ResourceSerial` mechanism, spec §10.12.4).
    An accept loop yields a stream of *distinct* connection tokens, so different
    requests are concurrent **by construction**, with no annotation in the handler.
-3. **Pool cardinality** — a resource exposes N tokens; the (N+1)th effect parks until
-   one frees. **A connection-pool bound is simply the token count** — there is no pool
-   code in the platform.
+3. **Pool capacity** — a resource (one token) sustains at most N concurrent ops; the
+   (N+1)th effect parks until one frees. **A connection-pool bound is the token's
+   capacity** — `query`/`execute`/`begin` over one pool share *one* token of capacity N
+   (sum in-flight ≤ N), and there is no pool code in the platform. Capacity attaches to
+   the **resource (token), not the effect** — distinct tokens have independent capacity
+   (the per-effect special case); a shared token is a shared pool (the DB case). One
+   mechanism (§8).
 
 Two consequences make the classic server fall out with **no `spawn`**:
 
@@ -251,19 +255,46 @@ The platform declares, per effect, a **concurrency descriptor** — a finite, de
 generalization of today's scheduling classes (`Sequential` / `Commutative` /
 `ResourceSerial`):
 
-| Field | Meaning | Async substrate mapping |
-|---|---|---|
-| **token** | what the effect conflicts on (0 = unrestricted) | which `Semaphore` |
-| **cardinality** | how many tokens exist = safe parallelism / pool size (new) | number of permits |
-| **global budget** | optional cap on total in-flight effects of this kind = the backpressure threshold (new) | bounded channel / `Semaphore` |
-| **blocking?** | does it block, or yield on `WouldBlock`? — selects the worker pool (inferable) | CPU pool (rayon) vs reactor routing |
+| Field | Meaning | Owner | Async substrate mapping | Slice |
+|---|---|---|---|---|
+| **token** | what the effect conflicts on = the resource identity (0 = unrestricted) | platform (dynamic) | which `Semaphore` | 3 |
+| **capacity** | the resource's safe-concurrency *ceiling* — "this token correctly sustains ≤ N concurrent ops"; exceeding it is a correctness violation | platform (trust) | number of permits on the token's `Semaphore` | 3 |
+| **degree** | the *program's* chosen in-flight throttle (memory / fairness / politeness), always ≤ capacity = the backpressure threshold | program (policy) | bounded channel / `Semaphore` | **4 — reserve only** |
+| **blocking?** | does it block, or yield on `WouldBlock`? — selects the worker pool (inferable) | platform | CPU pool (rayon) vs reactor routing | 6 |
+
+**capacity vs degree — two concepts the prior `cardinality`/`global-budget` framing
+conflated, split by owner (user-ratified S95).** *capacity* is a **platform** attribute
+of the **resource**: the ceiling the resource correctly sustains; the platform asserts
+it (the trust boundary). *degree* is a **program** attribute: the application's chosen
+throttle, for policy reasons, always ≤ capacity. **Effective limit = `min(capacity,
+degree)`.** S95 slice 3 handles **capacity only**; *degree* is slice 4 (backpressure /
+the former "global budget", FIXME 0442) — the name is reserved now, the mechanism
+deferred.
+
+**Capacity is per-RESOURCE (per-token), not per-effect — sharing is the central case,
+not an edge.** The DB connection pool is canonical: `query`/`execute`/`begin` are
+*distinct* effects that all draw from **one** pool of N connections (sum in-flight ≤ N).
+Per-effect capacity cannot express it (it would yield N+N+N). So capacity attaches to
+the **token** (the resource identity); effects *reference* the token. **Distinct token ⇒
+independent capacity** (the per-effect special case); **shared token ⇒ shared pool** (the
+DB case) — one mechanism, no special-casing. (This is why a per-symbol carrier such as a
+`got_slot`-derived token is not merely inelegant but *incorrect*: per-symbol forecloses
+sharing and so violates the pool bound. It is retired — §8.)
+
+**Capacity rides WITH the token, platform-supplied dynamically at the effect site** —
+not declared statically per-effect-kind. A connection pool's size is a *config* value
+(`(connect-pool url :size 16)`), known only at runtime when the pool opens — exactly when
+the per-connection token is minted. So capacity travels with the token, on the node
+(§8). The descriptor's *static* `token`/`capacity` fields are **defaults + documentation
++ the v6 `from_scheduling_class` bridge** only; the **live** values are platform-supplied
+at the effect site.
 
 This is the platform's entire concurrency contract: declarative, finite, evolutionary
 from the auto-IO machinery — not a new subsystem. It is also a **trust boundary**,
 continuous with the existing one: the compiler does not verify that a `Commutative`
-effect truly has no shared state, exactly as it does not verify a `ResourceSerial`
-token is correct. The platform author asserts safety; the language takes it on faith
-(the platform's `unsafe`).
+effect truly has no shared state, nor that an asserted *capacity* is the resource's true
+ceiling, exactly as it does not verify a `ResourceSerial` token is correct. The platform
+author asserts safety; the language takes it on faith (the platform's `unsafe`).
 
 ## 6. Execution substrate — async/await over a host-owned async runtime
 
@@ -289,7 +320,7 @@ The combinators and the inferred dispatch map directly onto host-runtime primiti
 | `Par` (inferred fork-join) | `join!` |
 | cancellation | drop the future |
 | launch-and-continue | spawn the handler future, don't await; `JoinSet` for supervision |
-| token-cardinality pool | `Semaphore(N)` per token |
+| token-capacity pool | `Semaphore(capacity)` keyed by token |
 | backpressure | bounded channel / `Semaphore` |
 | blocking/CPU split | reactor (I/O effects) + rayon (CPU sparks) |
 | supervisor | `JoinSet` + catch the spawned handler's outcome |
@@ -380,25 +411,76 @@ and **no concurrency is lost** — the available parallelism widens:
 | Compile-time fact | Async execution |
 |---|---|
 | token-disjoint effects (independent) | separate concurrent futures — scales from ~hundreds of rayon threads to **thousands of pending futures** |
-| same-token, cardinality 1 (`ResourceSerial`) | `Semaphore(1)` / a sequential `await` chain |
-| same-token, cardinality N (new) | `Semaphore(N)` — the bounded pool you could not express before |
-| global budget | bounded channel / `Semaphore` |
+| same-token, capacity 1 (`ResourceSerial`) | `Semaphore(1)` / a sequential `await` chain |
+| same-token, capacity N (new) | `Semaphore(N)` keyed by the token — the bounded pool you could not express before |
+| degree (program throttle) | bounded channel / `Semaphore` — **slice 4** |
 | blocking? | CPU-vs-reactor pool routing (the one **new** decision the descriptor drives) |
 
 The bespoke "group-by-token, groups-parallel, within-group-serial" dispatcher
 (`dispatch_par_branches_with_trace`) **dissolves into** "every effect acquires its
 token's permit." That is a net mechanism simplification.
 
+### 8.1 The slice-3 carrier — `(token, capacity)` dynamic on the node (the ratified seam)
+
+Capacity reaches the runtime the *same way the token already does* — **dynamically, on
+the IO node, platform-supplied at the effect site** — not via a static `DefKind` field
+or a synthesized per-symbol token. The mechanism is a one-field generalization of the
+*existing* `ResourceSerial` carrier:
+
+- **Today** the blocking constructor `CLIO::effect_on_resource(token, f)` bakes a dynamic
+  `resource_token` onto the `IO_TAG_EFFECT` node (payload offset 16); the trampoline
+  reads it (`read_resource_token`) and serializes same-token branches (`SerialGroup` =
+  capacity 1).
+- **Slice 3** generalizes this to carry a `(token, capacity)` **pair**: an additive
+  sibling constructor `effect_on_resource_with_capacity(token, capacity, f)` appends
+  `capacity` as a new node field (payload offset 32; the node widens 32 → 40 bytes,
+  **append-only — no existing offset moves**, so the fn-name handle stays at offset 24).
+  `effect_on_resource(token, f)` stays as `…_with_capacity(token, 1, f)` — today's
+  serial-within-token. Symmetrically, an `IO_TAG_EFFECT_POLL` node reserves the same
+  `(token, capacity)` slots (env or node — interior choice, §8.2), so both effect kinds
+  feed one pool.
+- **The trampoline keeps a `Semaphore(capacity)` keyed by token** (a host-owned
+  `HashMap<token, Semaphore>`). An effect acquires its token's permit before dispatch and
+  releases on completion; effects sharing a token share the semaphore; the (capacity+1)th
+  **parks**. `token == 0` ⇒ no acquire (unrestricted). The slice-3 mechanism reduces to:
+  *read `(token, capacity)` off the node; run a `Semaphore(capacity)` per token.*
+
+**Consequences (the retirements this ratifies):** **no `DefKind.cardinality`/`capacity`
+field, no loader lift of a static capacity, no `got_slot`-derived token, no two
+token-notions.** The static descriptor `capacity`/`token` become documentation + the v6
+default bridge (Sequential ⇒ token 1 / capacity 1; Commutative ⇒ token 0 / unbounded;
+ResourceSerial ⇒ per-instance token / capacity 1); live values are platform-supplied.
+This **removes the one `cranelisp-types` (`DefKind`) edge touch** the prior gate-(b)
+verdict anticipated.
+
+**Reconciliation rule (pinned): same token, different capacity ⇒ first-writer-wins
+(the value that created the token's semaphore), and a dev-facing strand event records the
+disagreement.** Rationale: capacity is a property of the *resource*, so all effects on
+one token *should* assert the same N (the DB case reads N from one pool handle — they
+agree by construction); a disagreement is a platform bug. An `assert`/abort is too harsh
+for a trust-boundary violation that does not corrupt memory (it only mis-sizes a pool);
+silently taking the max would *raise* the bound past a capacity the platform declared
+unsafe. First-writer-wins is the conservative, deterministic choice (it never exceeds a
+declared ceiling), and the recorded event surfaces the bug to the observability sink
+(§11) rather than hiding it. (Later, the slice-4 *degree* throttle composes by
+`min(capacity, degree)` regardless.)
+
+### 8.2 Within-token source ordering — carried deliberately
+
 **One invariant to carry deliberately: within-token source ordering.** A bare semaphore
 gives *exclusion* but not *order*, and order is observable for same-resource effects
-(e.g. log appends to one file must land in source order). So a same-token group is
-modelled as a **sequential async block**, mirroring today's `SerialGroup` — exclusion
-*and* order. This must be carried into the async lowering on purpose; it does not fall
-out of permits alone.
+(e.g. log appends to one file must land in source order). So a **capacity-1** same-token
+group is modelled as a **sequential async block**, mirroring today's `SerialGroup` —
+exclusion *and* order. This must be carried into the async lowering on purpose; it does
+not fall out of permits alone. (For capacity ≥ 2 the pool is explicitly concurrent within
+the token, so ordering is not promised beyond the permit discipline — a capacity-N pool
+is by definition an unordered bag of N slots.)
 
 The worked example: concurrent HTTP GETs draw **distinct** connection tokens → run
-concurrently; serial file block reads share **one** file token → serialize in source
-order. Both behaviors are preserved exactly; only the mechanism underneath simplifies.
+concurrently; serial file block reads share **one** file token of capacity 1 → serialize
+in source order; a DB pool's `query`/`execute` share **one** pool token of capacity N →
+run up to N concurrently, the (N+1)th parks. All behaviors are preserved/extended exactly;
+only the mechanism underneath simplifies.
 
 ## 9. The control half — the combinators
 
@@ -677,8 +759,9 @@ is recorded in `platform-interface.md` §6.8). The four decisions:
 The dependency order the architecture implies:
 
 1. **descriptor (design)** — §5, the declarative contract.
-2. **token-cardinality pool** — `Semaphore` per token (§8).
-3. **backpressure** — bounded channel / global budget (§5).
+2. **token-capacity pool** — `Semaphore(capacity)` keyed by token (§8); capacity is
+   per-resource, platform-supplied dynamically on the node (§8.1).
+3. **backpressure** — the program *degree* throttle; bounded channel / `Semaphore` (§5).
 4. **launch-and-continue + supervisor** — **co-landed**, gated on backpressure so
    fan-out is bounded (§4, §10).
 5. **blocking/CPU two-pool routing** — the `blocking?` descriptor drives reactor-vs-rayon
@@ -768,7 +851,7 @@ comment marked `⟂` notes a place the trampoline extracts concurrency on its ow
 ;;   accept  — ResourceSerial on the listener token; yields a FRESH conn token
 ;;   respond — ResourceSerial on the *connection* token
 ;; sql : query, execute
-;;   both    — ResourceSerial on a connection-pool token of cardinality N
+;;   both    — ResourceSerial on a connection-pool token of capacity N
 ;;             (pool size IS the token count; the platform has no pool code)
 ;; Neither platform knows anything about concurrency. The descriptors above
 ;; (§5) are all the metadata the scheduler needs.
@@ -787,7 +870,7 @@ comment marked `⟂` notes a place the trampoline extracts concurrency on its ow
 (defn handle-get [path]
   (let [id (path-param path "id")]
     ;; ⟂ `user` and `orders` are data-independent and draw two DIFFERENT pool
-    ;;   tokens (cardinality N ≥ 2) → the two queries run concurrently.
+    ;;   tokens (capacity N ≥ 2) → the two queries run concurrently.
     ;;   No annotation; the scheduler reads it off the dataflow + tokens.
     (bind! [user   (query "SELECT * FROM users  WHERE id = ?" id)
             orders (query "SELECT * FROM orders WHERE user-id = ?" id)]
@@ -871,7 +954,7 @@ byte-identical-when-off, cleanly spillable to S94): the feature-gated host async
 runtime + the trampoline-as-`async fn`; the host reactor implementing the `HostCtx`
 vtable; one async-leaf effect demonstrating two slow reads overlapping on the reactor
 (no thread-per-read); and the trampoline emit-hooks feeding the strand-correlated
-event stream. Slices ≥ 3 (token-cardinality pool, backpressure, launch-and-continue +
+event stream. Slices ≥ 3 (token-capacity pool, backpressure, launch-and-continue +
 supervisor, two-pool routing, the combinator layer) follow per §14.
 
 ### Slice-2 reactor — the implementable plan (decisions, S93 Phase-5 Wave-3, /arch)
@@ -1119,8 +1202,9 @@ substrate):**
 - a **feature-gated host async runtime** (tokio-or-equivalent) the trampoline runs as an
   `async fn`;
 - the **concurrency descriptor** (§5) as a manifest-declared per-effect contract;
-- the **token-cardinality pool** (`Semaphore(N)`) and **backpressure** (bounded channel
-  / budget) — today cardinality is implicitly 1 per token value;
+- the **token-capacity pool** (`Semaphore(capacity)` keyed by token, capacity dynamic on
+  the node — §8.1) and **backpressure** (the program *degree* throttle; bounded channel /
+  `Semaphore`) — today capacity is implicitly 1 per non-zero token value;
 - unstructured **launch-and-continue** (today's `Par` is strictly lexical fork-join) +
   **supervisor policy** (§10), co-landed;
 - the **blocking/CPU two-pool routing** driven by the `blocking?` descriptor (§7);

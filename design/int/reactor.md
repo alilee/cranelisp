@@ -1,12 +1,24 @@
 # The slice-2 effect reactor — interior design (int / intrinsics-hosted)
 
-**Owner**: `/design` (int). **Status**: S94 DESIGN REFRESH — slice-2 completion
-(real effect-node await). The S93 substrate is AS-BUILT; S94 **closes the as-built
-boundary** (§4) by routing real poll-shape effect nodes through the `EffectPoll`
-await, per the R1-ratified backend↔intrinsics poll-shape Effect-node seam
+**Owner**: `/design` (int). **Status**: S95 DESIGN REFRESH — *complete the IO
+transition* (slices 3 + 6). The S94 substrate (real poll-shape effect-node await
+through `cranelisp_run_io`) is AS-BUILT; S95 adds, all `concurrency`-gated and
+byte-identical-off: the **host token-capacity `Semaphore` pool** (§2.8 — `(token,
+capacity)` **dynamic on the IO node**, platform-supplied at the effect site via
+`effect_on_resource_with_capacity`, keyed `HashMap<token, Semaphore>`; capacity-1 =
+today's `SerialGroup`, capacity-N = the bounded pool, token-0 = no-acquire, with
+first-writer-wins reconciliation + within-token capacity-1 ordering carried on purpose);
+and the **two-pool join** (§2.6 refresh — the async `Par` arm partitions by node tag,
+admission wraps **both** partitions, and the rayon CPU pool + reactor I/O pool run
+concurrently across a **wakeable** rayon→reactor bridge). **Carrier re-blessed by /arch**
+(`effect-concurrency.md` §8.1/§8.2): capacity rides dynamic on the node — **no
+`DefKind.cardinality` field, no loader lift, no `cranelisp-types` edge touch** (this
+supersedes the earlier static-field gate-(b) plan). `/dev` implements in Phase 5. **Prior layer**: S94 DESIGN REFRESH —
+slice-2 completion (real effect-node await), the S93 substrate AS-BUILT, per the
+R1-ratified backend↔intrinsics poll-shape Effect-node seam
 (`design/arch/effect-concurrency.md` Appendix B §"the ratified backend↔intrinsics
-poll-shape Effect-node seam" + §13 "S94 R1"). This doc is refreshed to the S94 design
-target; `/dev` implements in Phase 5. **Subordinate to**:
+poll-shape Effect-node seam" + §13 "S94 R1"). This doc is refreshed to the S95 design
+target. **Subordinate to**:
 `design/arch/effect-concurrency.md` Appendix B (the implementable plan — canonical,
 `/arch`-owned),
 `design/arch/bounded-contexts.md` §6 (int reactor policy + impl-location) / §4b
@@ -96,7 +108,9 @@ in time — sound under Stacked/Tree Borrows (the B1 provenance invariant, `:384
 `*mut Reactor`, build the `HostCtx`, `Box::pin(make_future(&host))`, then loop —
 poll the future; on `Pending` call `reactor.turn(MAX_TURN_BLOCK)` (between polls
 only). Liveness guards: `MAX_TURN_BLOCK = 5s` per mio block, `MAX_TOTAL_BLOCK = 30s`
-total.
+total. **`MAX_TOTAL_BLOCK` is a poll-leaf-hang backstop, NOT a blocking-I/O ceiling** —
+it does not fire while a rayon→reactor bridge is outstanding (`pending_bridges > 0`); see
+§2.6 "Blocking-I/O ceiling" for the ruling and rationale.
 
 ### 2.5 The one await boundary — `EffectPoll` (S94: generic over the node seam)
 
@@ -136,14 +150,103 @@ Bind / Pure / `call_continuation` stay **synchronous** (straight-line between aw
 `IO_TAG_EFFECT` (R3 byte-identical-off — the sync stepper only ever sees
 `IO_TAG_EFFECT`).
 
-### 2.6 The `Par`-overlap path
+### 2.6 The async `Par` arm — two-pool join (slice 6) + token-capacity admission (slice 3)
 
 `join_io_leaves(leaves: Vec<EffectPoll<'_>>) -> Vec<i64>` (`:720`) is
 `futures::future::join_all(leaves).await` — concurrent I/O-effect leaves on the **one**
-reactor thread (no thread-per-read). This is the async `Par` overlap. It is distinct
-from the retained CPU-spark path: feature-off `Par` and CPU sparks still dispatch via
-rayon `dispatch_par_branches_with_trace` (`io.rs:530`) — the two pools (rayon CPU +
-reactor I/O) are not unifiable (Appendix B).
+reactor thread (no thread-per-read).
+
+**S95 refresh (slice 6 — close the feature-on regression).** The S94-minimal
+`run_par_node_async` (`:281`) was `join_all` over **every** branch on the one reactor
+thread — correct for poll-shape leaves, but a regression for **blocking** effects: a
+blocking `Par` serialized through the single reactor thread instead of parallelizing on
+rayon (the 3 RED `nt-reactor-e2e` guards). Slice 6 closes this by partitioning the arm
+by **node tag** and driving **both** pools concurrently; slice 3 adds the
+token-capacity admission gate (§2.8) **wrapping both partitions** (the
+`(token, capacity)` pair is node-read for blocking *and* poll effects alike — arch
+`effect-concurrency.md` §8.1). The refreshed `run_par_node_async`:
+
+1. Read `branch_ptrs` in source/binding order (the existing `read_par_branches`).
+2. **Partition by dispatch tag** (gate (c) — the tag is already on the node, no symbol
+   back-ref): `IO_TAG_EFFECT_POLL`-rooted branches → the **reactor** partition;
+   everything else (`IO_TAG_EFFECT` blocking, `Bind`, `Pure`, nested `Par`) → the
+   **rayon** partition. Original binding indices ride along so results re-merge in order.
+3. **Token-capacity admission wraps BOTH partitions (§2.8).** Each branch acquires its
+   node-read `(token, capacity)` permit from the **one shared** host-owned
+   `HashMap<token, Semaphore>` **before** dispatch and releases on completion; `token ==
+   0` ⇒ no acquire. Admission runs on the **reactor thread** for both partitions (that is
+   what keeps the §2.8 permit map non-atomic): a poll leaf is admitted before its first
+   `EffectPoll` poll; a blocking branch is admitted before its `rayon::spawn`, the permit
+   held across the bridge and released when the bridge completion wakes back.
+4. **Blocking partition → inline per-branch `rayon::spawn` + a wakeable `oneshot`
+   error-ferry** (`io.rs::run_blocking_branch`), across a **wakeable rayon→reactor
+   bridge**: each blocking branch is `rayon::spawn`'d and its completion is signalled
+   through a `futures` `oneshot` **woken via `cx.waker()`**; the runtime error produced on
+   the rayon worker is carried back across the bridge by a `take_runtime_error` (worker
+   side) → `set_runtime_error` (reactor side) **ferry**. **Why not reuse
+   `dispatch_par_branches_with_trace` verbatim:** that dispatcher does a **blocking
+   `into_par_iter().collect()`**, which cannot be made wakeable without a
+   `block_on(rayon_join)` on the reactor thread — the exact forbidden blocking-join (gate
+   (c), load-bearing) that re-introduces the starvation slice 6 removes. So the as-built
+   does **not** call that dispatcher; it inlines the **pieces** that carry over — the
+   per-branch `rayon::spawn` and the error-ferry — beneath the wakeable bridge instead.
+   **This is not a third dispatcher** (gate (c) holds): the §2.8 token-capacity semaphore
+   *is* the scheduler; only the dispatcher's rayon-spawn + error-ferry plumbing is what
+   carries over, not a new admission/grouping policy. **Still forbidden (gate (c)):**
+   `block_on(rayon_join)` on the reactor thread, and a bespoke third dispatcher that
+   re-implements admission. The wakeable bridge is the permanent §7 cross-pool handoff
+   every later joined-pool slice reuses. The dispatcher's internal `SerialGroup`
+   token-grouping is the capacity-1 degenerate the shared §2.8 pool now subsumes — it
+   **dissolves toward** the uniform permit-acquire (arch §8).
+
+   > **P7 watch-item — the fork-join error-ferry is now mirrored in two sites.** The
+   > `take_runtime_error` → `set_runtime_error` ferry pattern lives in **both**
+   > `dispatch_par_branches_with_trace` (the sync / feature-off and the
+   > `concurrency`-feature-disabled blocking-`Par` path) **and** `run_blocking_branch`
+   > (the async bridge path). A future change to ferry semantics must touch **both**
+   > sites. Extract a shared `spawn-branch-and-ferry` helper **only if a third caller
+   > appears** (Principle 6 — complexity has a budget; do not pre-abstract a two-site
+   > mirror). Until then this is a recorded, accepted duplication, not silent drift.
+5. **Poll-shape partition → the reactor `join_all`** of admitted leaves.
+6. **Top-level join** the two partition-futures concurrently on the reactor thread
+   (`futures::join!`), then **merge by original binding index** into the single
+   `alloc_with_rc` results buffer the continuation consumes (the shape the sync
+   `run_par_node` produces).
+
+**Feature-off / `--link`:** byte-identical — the sync stepper + the rayon
+`dispatch_par_branches_with_trace` are unchanged, no `IO_TAG_EFFECT_POLL` node is ever
+constructed, no partition runs, and no executor links (§1). The two pools (rayon CPU +
+reactor I/O) remain **not unifiable** (Appendix B §7): blocking work that occupies a
+thread must not sit on the reactor; the reactor holds many pending poll futures no rayon
+worker could.
+
+**Blocking-I/O ceiling — UNCAPPED by design (the `MAX_TOTAL_BLOCK` ruling).** The
+`block_on_reactor` liveness backstop `MAX_TOTAL_BLOCK = 5s`/`30s` (§2.4) exists to bound a
+**genuinely-stuck** reactor — a *poll leaf that never completes* (a hang with no fd/timer
+readiness ever arriving). It MUST NOT bound a legitimate **slow-but-completing** blocking
+I/O branch running on rayon across the wakeable bridge (item 4): a long DB query or a slow
+socket read that *will* finish is not a hang, and capping it would make **feature-on worse
+than feature-off** — feature-off runs blocking I/O on rayon **uncapped** (it just blocks a
+worker thread to completion). The cap firing on a healthy in-flight blocking branch is a
+divergence, not a safety property. **Ruling (landing in parallel in
+`cranelisp-intrinsics`): the `MAX_TOTAL_BLOCK` cap does not fire while
+`pending_bridges > 0`** — i.e. it fires only for the genuinely-stuck case (**no bridge
+pending AND no poll progress**). While any rayon→reactor bridge is outstanding the reactor
+is legitimately waiting on off-thread work, exactly as feature-off would block. This is the
+intended **blocking-I/O ceiling**: blocking branches are uncapped to match feature-off
+parity (Principle 8 — no mode divergence); the backstop is reserved for the poll-leaf hang
+it was designed for. Recorded here as a deliberate, documented decision so the divergence
+from "everything is capped" is not silent.
+
+> **backend↔intrinsics boundary.** The partition reads only the **node tag** baked by
+> the backend (`IO_TAG_EFFECT` vs `IO_TAG_EFFECT_POLL`) — no descriptor, no symbol
+> lookup. A branch that is a `Bind` chain mixing blocking and poll-shape effects is
+> dispatched by its **root** tag for the minimal slice (the auto-IO independence
+> analysis yields effect-rooted branches); a poll-rooted branch's nested blocking
+> effects still force synchronously inside `run_io_trampoline_inner_async`'s
+> `IO_TAG_EFFECT` arm. Refining mixed-chain routing (a nested blocking effect on a
+> poll-rooted branch also offloading to rayon) is a later-slice question — coordinate
+> with /design backend; out of scope for the S95 minimal two-pool join.
 
 ### 2.7 The demo leaf — S94: a real `declare_platform!`-emitted in-tree leaf (R2)
 
@@ -176,6 +279,139 @@ intrinsics unit tests) continue to prove the reactor + waker projection + `Effec
 + `Par` overlap in isolation of the macro/backend/loader path — the lower-tier guard
 beneath the new R2 end-to-end leaf.
 
+### 2.8 The token-capacity `Semaphore` pool (slice 3)
+
+**Authority: `effect-concurrency.md` §8.1 (the ratified carrier) + §8.2 (ordering).**
+The async analogue of the CPU-spark create-gate: a host-owned `Semaphore`-per-token that
+bounds how many of a token's effects are concurrently in flight. It **generalizes**
+today's `SerialGroup` (`dispatch_par_branches_with_trace`, io.rs — exactly capacity 1)
+to an arbitrary pool size, and is the mechanism the bespoke group-by-token dispatcher
+**dissolves toward**: *every effect acquires its token's permit before dispatch and
+releases on completion* (arch §8).
+
+**The carrier — `(token, capacity)` DYNAMIC on the node, platform-supplied at the effect
+site (NOT a `DefKind` field, NOT a loader lift).** Capacity reaches the runtime the same
+way the token already does — on the IO node, supplied by the platform at the effect site
+(arch §8.1):
+
+- Today `CLIO::effect_on_resource(token, f)` bakes a dynamic `resource_token` onto the
+  `IO_TAG_EFFECT` node (payload offset 16); the trampoline reads it (`read_resource_token`).
+- Slice 3 adds an additive sibling `effect_on_resource_with_capacity(token, capacity, f)`
+  that appends `capacity` at **payload offset 32** (the node widens 32 → 40 bytes,
+  **append-only — no existing offset moves**, so the fn-name handle stays at offset 24).
+  `effect_on_resource(token, f)` becomes `…_with_capacity(token, 1, f)` — today's
+  serial-within-token. An `IO_TAG_EFFECT_POLL` node reserves the **same**
+  `(token, capacity)` slots (env-vs-node carrier is the interior choice — coordinate with
+  /design backend), so **both effect kinds feed one pool**.
+- The trampoline reduces to: *read `(token, capacity)` off the node; run a
+  `Semaphore(capacity)` per token.* **No `DefKind.cardinality`/`capacity` field, no loader
+  lift, no `cranelisp-types` edge touch** (this supersedes the prior gate-(b) static-field
+  design; arch §8.1 "Consequences"). The static descriptor `token`/`capacity` become
+  documentation + the v6 default bridge (Sequential ⇒ token 1/capacity 1; Commutative ⇒
+  token 0/unbounded; ResourceSerial ⇒ per-instance token/capacity 1); the **live** values
+  are platform-supplied.
+
+> **S95 demo scope — capacity-N proven on the BLOCKING carrier; poll-shape live capacity
+> → S96 (user-confirmed).** The §2.8 pool design is **carrier-agnostic** (it reads
+> `(token, capacity)` off either node kind and runs one `Semaphore(capacity)` per token),
+> and that design is what lands. But the S95 **demonstration** of capacity-N (pool sizing,
+> first-writer-wins, parking) runs on the **blocking carrier** — `effect_on_resource_with_capacity`
+> on blocking effects, admitted before `rayon::spawn` (§2.6). **Poll-shape nodes RESERVE
+> the `(token, capacity)` slots at the sentinel (capacity 1) in S95**; live poll-shape
+> capacity-N supply + the **acquire-around-poll lifecycle** (the permit wrapping the
+> establish→ready arc of an `EffectPoll`, not just a one-shot dispatch) is an **S96 item**,
+> co-landing with the web-platform rewrite — its real consumer — which is why /design
+> backend deferred it as a Phase-3 refinement. So this sprint: the pool MECHANISM is fully
+> proven on blocking (capacity-N, parking, reconciliation); the poll/reactor side proves
+> only **distinct-token overlap** (the slice-2 mechanism, capacity 1), not capacity-N.
+> Admission still wraps both partitions in S95 — poll branches simply run at the sentinel
+> capacity 1.
+
+**Semantics:**
+
+| `(token, capacity)` | Behaviour | Maps to |
+|---|---|---|
+| `token == 0` | no acquire — full overlap | `Commutative` / unrestricted |
+| `token T`, capacity 1 | strictly serial **and source-ordered** within `T` | today's `ResourceSerial` / `SerialGroup` |
+| `token T`, capacity N≥2 | ≤ N concurrent on `T`; the (N+1)th **parks** until a permit frees | the bounded pool not previously expressible |
+
+**Reconciliation — same token, different capacity ⇒ FIRST-WRITER-WINS (/arch-pinned,
+§8.1).** Capacity is a property of the *resource*, so all effects on one token should
+declare the same N (the DB case reads N from one pool handle — they agree by
+construction); a disagreement is a platform (trust-boundary) bug. The semaphore for a
+token is sized by the **first** value that creates it; later disagreeing values do **not**
+resize it, and a dev-facing `TokenCapacityMismatch` strand event (§3) records the
+disagreement. This is conservative and deterministic: it **never exceeds a declared
+ceiling** (unlike taking the `max`, which would raise the bound past a capacity the
+platform declared unsafe) and is not an `assert`/abort (the violation mis-sizes a pool, it
+does not corrupt memory). The slice-4 *degree* throttle later composes as
+`min(capacity, degree)` regardless.
+
+**Placement — intrinsics-side mechanism, int-side policy (the BC §6 / S94 split).** The
+`Semaphore` machinery lives in `cranelisp-intrinsics` (with the reactor), NOT `src/`, for
+the same decisive reason the reactor does: a `--link`'d program does not contain `src/` at
+runtime, so a pool hosted in int could never gate a linked program's effects. The pool is
+created **single-sited in `block_on_reactor`** alongside the `Reactor` and `HostCtx` (§6.2
+— divergence-proof by the same intrinsics-hosting argument; int grows no parallel pool
+builder) and threaded through the async trampoline. **int's policy role shrinks to
+feature-gating + the dev surface** — there is **no loader lift** now: the `concurrency-runtime`
+gating (default + exe-bundle/`--link` never enable it) and the OPTIONAL `/strand` dev dump
+(§3) that renders token acquire/park/release + the capacity-mismatch event. The capacity
+VALUE never crosses the int boundary — it is platform-supplied at the effect site and
+node-read by the trampoline.
+
+**Mechanism — a single-threaded permit map (no atomics, no `Mutex`).** Admission runs on
+the **one reactor thread** for both partitions (§2.6 item 3 — a blocking branch is admitted
+on the reactor thread *before* its `rayon::spawn`, the permit held across the wakeable
+bridge), so the pool is a plain `RefCell<HashMap<u64, TokenSlot>>` where `TokenSlot {
+permits: u32, waiters: VecDeque<Waker> }` — no locking needed (mirroring the reactor's own
+`fd_waiters` map, §2.1). An `AcquirePermit` future: `poll` ⇒ if `permits > 0`, decrement +
+`Ready(Permit)`; else push `cx.waker()` into `waiters` (FIFO) + `Pending`. `Permit`-on-drop
+increments `permits` and wakes the **front** waiter. The token's slot is created on first
+acquire, sized to that first node-read capacity (first-writer-wins, above). (`futures`
+ships no `Semaphore`; this hand-rolled single-threaded permit-counter is smaller and avoids
+an added dep — coordinate the exact home/shape with /design backend, who owns the
+node-keying half. If cross-thread admission is ever needed instead of reactor-thread
+admission, the fallback is a `Mutex`/atomic-permit map — but reactor-thread admission keeps
+it lock-free.)
+
+**Within-token source ordering — carried on purpose, NOT a free consequence of permits
+(arch §8.2).** A bare semaphore gives *exclusion* but not *order*, and order is observable
+for same-resource effects (log appends to one file must land in source order):
+
+- **Capacity 1 = the `SerialGroup` equivalent.** A capacity-1 same-token group is a
+  **sequential async block** — exclusion *and* source order — mirroring today's
+  `SerialGroup`. With one permit the token admits exactly one effect at a time, in FIFO
+  order; the async `Par` arm constructs the leaf futures in source/binding order and
+  `join_all`'s first poll visits them in that order (the leaf's **first** action is the
+  acquire, before any suspension point), so admission/FIFO order = source order. This is
+  the case §8.2 names as requiring deliberate ordering.
+- **Capacity ≥ 2 promises no order beyond the permit discipline.** Arch §8.2: a
+  capacity-N pool is "by definition an unordered bag of N slots" — the effects genuinely
+  overlap, so ordering is not promised past exclusion. (The `VecDeque` admits FIFO for
+  fairness, but that is an implementation nicety, not a guarantee callers may rely on at
+  N ≥ 2.)
+
+> **Robustness note for /dev.** The capacity-1 "first-poll enqueue = source order" leans
+> on `join_all` polling its vec in order on the first poll. If that proves fragile, the
+> fallback is to stamp each branch with a source sequence number at construction and admit
+> in sequence order — but this matters **only** for capacity 1 (N ≥ 2 promises no order).
+> Coordinate the carrier with /design backend; the FIFO form is the minimal design.
+
+### 2.9 Testability seams (/dev unit + /qa e2e)
+
+| Seam | Tier | What it pins |
+|---|---|---|
+| node-read `(token, capacity)` carrier | intrinsics unit | a node built by `effect_on_resource_with_capacity(T, N, f)` reads back `token == T` (offset 16) + `capacity == N` (offset 32); `effect_on_resource(T, f)` reads `capacity == 1`; **append-only** — the fn-name handle still at offset 24 |
+| `AcquirePermit` over a fixture pool | intrinsics unit | capacity N: N acquires return `Ready`, the (N+1)th `Pending` until a `Permit` drops |
+| **capacity-N parking** (S95: **blocking carrier**) | qa e2e | a **blocking** effect declaring `token T`, `capacity N` (via `effect_on_resource_with_capacity` on a blocking effect), with N+1 `Par` branches ⇒ the (N+1)th completes only after one frees; strand stream shows `TokenParked → TokenAcquired`. **Blocking-carrier only this sprint** — admission wraps both partitions (§2.6), but live poll-shape capacity-N is S96 (see §2.8 "S95 demo scope") |
+| **distinct-token overlap** (poll/reactor) | qa e2e | N poll-shape effects on **distinct** tokens overlap on the reactor (≈max(delay) not sum). This is the slice-2 reactor mechanism — the poll side proves distinct-token overlap, NOT capacity-N, this sprint |
+| **within-token order** | intrinsics unit + qa e2e | same-token **capacity-1** effects run serial **and** in source order (an ordered-append / admission-witness leaf); capacity ≥ 2 promises no order |
+| **capacity-mismatch reconciliation** | intrinsics unit | two effects on one token with different capacities ⇒ the semaphore is sized by the **first** value (never resized), and a `TokenCapacityMismatch` strand event is emitted |
+| **two-pool overlap** (slice 6) | qa e2e | a mixed blocking + poll-shape `Par` overlaps on **both** pools (≈max not sum); the 3 RED guards (`resource_serial_diff_token_parallelizes`, `auto_io_independent_diff_token_parallelizes_e2e`, `auto_io_par_grouping_uniform_across_modes`) flip green |
+| **byte-identical-off** | qa e2e + int unit | feature-off: no `IO_TAG_EFFECT_POLL` / no pool constructed; the v6 rayon `SerialGroup` path is unchanged and blocking-`Par` parallelizes |
+| **`--link` no executor** | qa e2e | the linked binary links no mio/futures/pool (the `dep:`-gated optional-dep guarantee, §1) |
+
 ---
 
 ## 3. The strand observability sink (`strand.rs`)
@@ -197,6 +433,20 @@ current strand; root is `ROOT`). Emit sites: `EffectDispatched` before the await
 Effect arm, `EffectSuspended` in `EffectPoll::poll` on `Pending`, `EffectResumed` on
 re-poll. int owns the dev surface (an OPTIONAL/spillable `/strand` dump); the buffer +
 emit are intrinsics-owned.
+
+**S95 — token-pool events.** Slice 3's admission gate (§2.8) adds four `StrandEvent`
+variants (the §11 "token acquired / released — pool contention" surface):
+`TokenAcquired { strand, token }` (permit granted), `TokenParked { strand, token }`
+(the (N+1)th effect blocked on a full token — the user-observable capacity-N park,
+FIXME 0447), `TokenReleased { strand, token }` (permit returned), and
+`TokenCapacityMismatch { strand, token }` (a same-token capacity disagreement, recorded
+under first-writer-wins reconciliation — §2.8 / arch §8.1; carries the first vs
+disagreeing capacity for the dev sink, not an abort). Emit sites: `AcquirePermit::poll`
+(granted vs parked), `Permit`-drop, and the pool's first-writer-wins check. The enum is
+`#[non_exhaustive]`, so they join without breaking consumers. These are what /qa asserts
+for the park/resume + reconciliation acceptance and what int's OPTIONAL `/strand` dump
+renders. (The variant set + emit is intrinsics-owned, in `strand.rs`, behind
+`concurrency-runtime`; coordinate the carrier with /design backend.)
 
 ---
 
@@ -251,22 +501,45 @@ The shared `TrampolineEnter`/`TrampolineExit` bookend reused across the cfg-spli
 feature-on path stays observationally identical to feature-off for **blocking**
 effects, and adds suspend/resume strand events only for genuine poll-shape effects.
 
+### 4.1 Note — `capacity` does NOT ride this loader channel (the re-blessed slice-3 seam)
+
+The channel above lifts **only `poll_shape`** (the blocking-vs-poll routing axis) onto
+`DefKind::PlatformEffect`. It does **NOT** lift capacity. The /arch re-blessing of the
+slice-3 seam (`effect-concurrency.md` §8.1) **retired** the earlier plan to lift a static
+`DefKind.cardinality` field: there is **no `DefKind.cardinality`/`capacity` field, no
+loader lift of capacity, and no `cranelisp-types` edge touch** this sprint. Capacity rides
+**dynamically on the IO node**, platform-supplied at the effect site via
+`effect_on_resource_with_capacity(token, capacity, f)` (node payload offset 32,
+append-only), node-read by the trampoline to size the token's `Semaphore` — see §2.8 "The
+carrier". The static descriptor `token`/`capacity` fields remain documentation + the v6
+default bridge only; live values are platform-supplied. (`poll_shape`'s loader lift is
+unaffected — it is the orthogonal routing axis, not the capacity carrier.)
+
 ---
 
 ## 5. What later slices (≥3) add — forward-looking, NOT designed here
 
-> **Done in slice-2 completion (S94), no longer a "slice 3" item:** *real effect-node
-> await* — `declare_platform!` poll-fn emission + the backend poll-construction arm +
-> the real async Effect arm in `run_io_trampoline_inner_async` — is the headline of
-> S94 (§2.5, §2.7, §4) per the R1-ratified seam. The naming reconciliation (App-B / §13
-> / §6.8 previously labelled this "slice 3 / deferred") is /arch's R3 land-time task.
+> **Done in slice-2 completion (S94):** *real effect-node await* — `declare_platform!`
+> poll-fn emission + the backend poll-construction arm + the real async Effect arm in
+> `run_io_trampoline_inner_async` — per the R1-ratified seam (§2.5, §2.7, §4).
+>
+> **Done in S95 (this refresh), no longer "later slices":** the **token-capacity
+> `Semaphore` pool** (slice 3 — §2.8; carrier = `(token, capacity)` dynamic on the node,
+> no loader lift, per the re-blessed §8.1 seam) and the **blocking/CPU two-pool routing**
+> (slice 6 — §2.6). Both are designed above; `/dev` implements in Phase 5. **Demo-scope
+> caveat:** S95 proves capacity-N (sizing, parking, first-writer-wins) on the **blocking
+> carrier**; live **poll-shape capacity-N + the acquire-around-poll lifecycle** is an
+> **S96 item** co-landing with the web-platform rewrite (poll nodes reserve the slots at
+> sentinel capacity 1 this sprint — see §2.8 "S95 demo scope").
 
-One line each; these remain arch-track items, elaborated when their slice opens:
+One line each; these remain arch-track items, elaborated when their slice opens
+(S96/S97 per `sprints/SPRINT.md`):
 
-- **Token-cardinality `Semaphore`**: per-resource-token `Par` grouping/admission
-  (the CPU-spark create-gate's I/O analogue) — bounds concurrent leaves per token.
-- **Backpressure**: a per-kind in-flight budget table generalizing the S92 CPU
-  spark-budget counter (FIXME 0442) into the reactor's I/O dimension.
+- **Backpressure / *degree* throttle** (slice 4 → S96): the *program's* in-flight cap
+  (memory/fairness), always ≤ capacity — composes with the §2.8 pool as
+  `min(capacity, degree)` (arch §5/§8.1). Generalizes the S92 CPU spark-budget counter
+  (FIXME 0442) into the reactor's I/O dimension; the descriptor's inert `global_budget`
+  field rides here.
 - **Supervisor**: launch-and-continue + the 500/log/drop policy for detached strands,
   co-landing with structured cancellation.
 - **Cancellation**: structured cancellation (the `race`/`select`/`timeout` combinator
@@ -321,6 +594,14 @@ There are two distinct host-built values at the platform/host boundary; they hav
    reactor-adjacent code; neither constructs host-callback values. This keeps the
    reactor's host-construction divergence-proof-by-hosting — the property 0419 seeks,
    already held, must not be eroded by pulling reactor construction up into int.
+   **S95 preserves this for the token pool.** The token-capacity `Semaphore` pool
+   (§2.8) is constructed **single-sited in `block_on_reactor`** alongside the `Reactor`
+   and `HostCtx` — int grows no parallel pool builder in `src/` or `cranelisp-exe-bundle`.
+   It is a host-internal value (not a `HostCallbacks` field — it is reached through the
+   trampoline, not the platform poll-fn at construction), so it adds nothing to the
+   hand-mirrored callbacks and inherits the same single-source property by hosting;
+   `--link` concurrency reaches it through the same `cranelisp_run_io` → `block_on_reactor`
+   entry with no new mirror.
 
 2. **Do NOT widen the hand-mirrored `HostCallbacks` for the reactor.** The R1-ratified
    seam deliberately adds **no** new host-callback the platform poll-fn calls back
@@ -367,7 +648,12 @@ same host values by calling the same code, not by hand-mirroring.
 
 ## 7. Cross-references
 
-- `design/arch/effect-concurrency.md` Appendix B — the implementable plan (canonical).
+- `sprints/SPRINT.md` — S95 scope (slices 3 + 6) + the Phase-2 architecture review
+  (gate (c) two-pool wakeable bridge). **Carrier re-blessed post-review** — see §8.1.
+- `design/arch/effect-concurrency.md` **§8.1 (the ratified slice-3 carrier — `(token,
+  capacity)` dynamic on the node, first-writer-wins reconciliation; the AUTHORITY for
+  §2.8 / §2.6)** + §8.2 (within-token ordering), §5 (capacity vs *degree*), §7 (the
+  two-pool model), Appendix B — the implementable plan (canonical).
 - `design/arch/bounded-contexts.md` §6 (int reactor policy + impl-location), §4b
   (intrinsics hosting), §5 (platform C-ABI async leaf).
 - `design/arch/platform-interface.md` §6.8 — ABI-v7 layout contracts (`ConcurrencyDescriptor`,

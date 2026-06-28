@@ -105,7 +105,8 @@ fn single_leaf_suspend_resume_through_reactor() {
     let deadline = monotonic_nanos() + delay_ms * 1_000_000;
 
     let start = Instant::now();
-    let result = block_on_reactor(async |host| {
+    let result = block_on_reactor(async |env| {
+        let host = env.host;
         let mut fstate = TimerWriteState {
             result: 0,
             peer_fd: pair.write_end,
@@ -152,7 +153,8 @@ fn async_read_suspends_on_ewouldblock_and_resumes_on_byte() {
     let pair = SockPair::new();
     let deadline = monotonic_nanos() + 40 * 1_000_000;
 
-    let results = block_on_reactor(async |host| {
+    let results = block_on_reactor(async |env| {
+        let host = env.host;
         let mut rstate = AsyncReadState {
             fd: pair.read_end,
             result: 0,
@@ -238,7 +240,8 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
     let dl2 = now + d2_ms * 1_000_000;
 
     let start = Instant::now();
-    let results = block_on_reactor(async |host| {
+    let results = block_on_reactor(async |env| {
+        let host = env.host;
         let mut r1 = AsyncReadState { result: 0, fd: p1.read_end, registered: false };
         let mut r2 = AsyncReadState { result: 0, fd: p2.read_end, registered: false };
         let mut f1 = TimerWriteState { result: 0, peer_fd: p1.write_end, deadline_nanos: dl1, registered: false };
@@ -391,7 +394,8 @@ fn leaf_pending_twice_re_registers_and_completes_no_lost_wakeup() {
         unsafe { libc::send(write_fd, [1u8].as_ptr() as *const c_void, 1, 0) };
     });
 
-    let result = block_on_reactor(async |host| {
+    let result = block_on_reactor(async |env| {
+        let host = env.host;
         let mut st = TwoFireReadState {
             result: 0,
             fd: pair.read_end,
@@ -432,5 +436,263 @@ fn leaf_pending_twice_re_registers_and_completes_no_lost_wakeup() {
     assert!(
         resumes >= 2,
         "leaf must be re-woken at least twice (no lost wakeup), saw {resumes}"
+    );
+}
+
+// ===========================================================================
+// Slice 3 — the token-capacity `Semaphore` pool (§2.8 / arch §8.1/§8.2).
+//
+// These drive the `TokenPool` / `AcquirePermit` / `Permit` directly (the test
+// module sees the parent module's private items), manually polling with a noop
+// context so a parked acquire can be observed WITHOUT hanging.
+// ===========================================================================
+
+use std::future::Future as _Future;
+use std::pin::Pin as _Pin;
+use std::task::{Context as _Context, Poll as _Poll};
+
+/// Poll an `Unpin` future once with a noop waker — `Ready(v)` or `Pending`.
+fn poll_once<F: _Future + Unpin>(f: &mut F) -> _Poll<F::Output> {
+    let waker = futures::task::noop_waker();
+    let mut cx = _Context::from_waker(&waker);
+    _Pin::new(f).poll(&mut cx)
+}
+
+// spec: design/int/reactor.md §2.8 / §2.9 (the `AcquirePermit` seam) — a pool
+// keyed by token, each slot sized from the node-read `capacity`: capacity-N ⇒ N
+// acquires return `Ready`, the (N+1)th `Pending` until a `Permit` drops. Distinct
+// tokens have independent slots.
+#[test]
+fn semaphore_pool_keyed_by_token_sized_from_node_capacity() {
+    let pool = TokenPool::new();
+
+    // Token 7, capacity 2: two acquires succeed, the third parks.
+    let mut a1 = pool.acquire(7, 2, StrandId(1));
+    let mut a2 = pool.acquire(7, 2, StrandId(2));
+    let mut a3 = pool.acquire(7, 2, StrandId(3));
+    let p1 = match poll_once(&mut a1) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("1st acquire on a capacity-2 token must be Ready"),
+    };
+    let _p2 = match poll_once(&mut a2) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("2nd acquire on a capacity-2 token must be Ready"),
+    };
+    assert!(
+        matches!(poll_once(&mut a3), _Poll::Pending),
+        "the 3rd (capacity+1) acquire on a full token must PARK (Pending)"
+    );
+
+    // A DISTINCT token has its own slot — not blocked by token 7 being full.
+    let mut b1 = pool.acquire(9, 1, StrandId(4));
+    assert!(
+        matches!(poll_once(&mut b1), _Poll::Ready(_)),
+        "a distinct token's pool is independent — acquire must be Ready"
+    );
+
+    // Release one permit on token 7 ⇒ the parked 3rd acquires.
+    drop(p1);
+    assert!(
+        matches!(poll_once(&mut a3), _Poll::Ready(_)),
+        "after a permit frees, the parked acquire must become Ready"
+    );
+
+    // token 0 ⇒ unrestricted: always Ready, regardless of any pool state.
+    let mut z = pool.acquire(0, 1, StrandId(5));
+    assert!(
+        matches!(poll_once(&mut z), _Poll::Ready(_)),
+        "token 0 is unrestricted — acquire is always immediately Ready"
+    );
+}
+
+// spec: design/int/reactor.md §2.8 / §3 (token-pool strand events) — capacity-N
+// parking is observable in the strand stream: the (N+1)th effect emits
+// `TokenParked`, then `TokenAcquired` when a permit frees (the resume), and the
+// releaser emits `TokenReleased`.
+#[test]
+fn capacity_n_park_resume_recorded_in_strand_stream() {
+    start_strand_recording();
+    let pool = TokenPool::new();
+
+    // Capacity 1 on token 5: the 2nd acquire parks, then resumes on release.
+    let mut a1 = pool.acquire(5, 1, StrandId(1));
+    let mut a2 = pool.acquire(5, 1, StrandId(2));
+    let p1 = match poll_once(&mut a1) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("1st acquire must be Ready"),
+    };
+    assert!(matches!(poll_once(&mut a2), _Poll::Pending), "2nd must park");
+    drop(p1); // release ⇒ wake the parked waiter
+    assert!(
+        matches!(poll_once(&mut a2), _Poll::Ready(_)),
+        "parked acquire resumes after release"
+    );
+
+    let events = drain_strand_events();
+    let strand2 = StrandId(2);
+    // The parked strand parked then acquired (resumed); the releaser released.
+    let parked_at = events
+        .iter()
+        .position(|e| *e == StrandEvent::TokenParked { strand: strand2, token: 5 });
+    let acquired_at = events
+        .iter()
+        .position(|e| *e == StrandEvent::TokenAcquired { strand: strand2, token: 5 });
+    assert!(parked_at.is_some(), "the (N+1)th effect must record TokenParked: {events:?}");
+    assert!(
+        acquired_at.is_some(),
+        "the parked effect must record TokenAcquired on resume: {events:?}"
+    );
+    assert!(
+        parked_at < acquired_at,
+        "TokenParked must precede the resuming TokenAcquired: {events:?}"
+    );
+    assert!(
+        events.contains(&StrandEvent::TokenReleased { strand: StrandId(1), token: 5 }),
+        "the releaser must record TokenReleased: {events:?}"
+    );
+}
+
+// spec: design/int/reactor.md §2.8 (reconciliation) / arch §8.1 — same token,
+// different capacity ⇒ FIRST-WRITER-WINS: the slot is sized by the value that
+// created it (never resized), and a `TokenCapacityMismatch` strand event records
+// the disagreement (NOT an abort, NOT a max).
+#[test]
+fn same_token_conflicting_capacity_first_writer_wins_and_records_event() {
+    start_strand_recording();
+    let pool = TokenPool::new();
+
+    // First writer sizes token 3 to capacity 1.
+    let mut a1 = pool.acquire(3, 1, StrandId(1));
+    let p1 = match poll_once(&mut a1) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("first acquire sizes + grants"),
+    };
+
+    // A later, DISAGREEING capacity (5) must NOT resize the pool: the slot is
+    // still capacity 1, so this second acquire PARKS (it would be Ready if the
+    // pool had been resized to 5).
+    let mut a2 = pool.acquire(3, 5, StrandId(2));
+    assert!(
+        matches!(poll_once(&mut a2), _Poll::Pending),
+        "first-writer-wins: capacity stays 1, so the 2nd acquire parks (NOT resized to 5)"
+    );
+
+    let events = drain_strand_events();
+    assert!(
+        events.contains(&StrandEvent::TokenCapacityMismatch {
+            strand: StrandId(2),
+            token: 3,
+            first_capacity: 1,
+            requested_capacity: 5,
+        }),
+        "a same-token capacity disagreement must record TokenCapacityMismatch \
+         (first=1, requested=5): {events:?}"
+    );
+
+    drop(p1);
+    let _ = poll_once(&mut a2); // drain (now Ready) — no assertion needed.
+}
+
+// ===========================================================================
+// I1 — the no-progress cap is held off while a blocking branch is in flight.
+//
+// `MAX_TOTAL_BLOCK` is a no-progress backstop for a genuinely-stuck poll leaf,
+// NOT a cap on total drive time. A legitimately slow blocking I/O branch on
+// rayon (the wakeable bridge) must run UNCAPPED — matching feature-off — because
+// `pending_bridges > 0` holds the deadline off. The backstop is still preserved
+// for a never-completing poll leaf with no bridge pending.
+// ===========================================================================
+
+/// A poll-fn that NEVER completes but re-arms a short timer on every `Pending`,
+/// so the reactor turns quickly (a few ms per turn) and the no-progress cap is
+/// reached promptly. Used to prove the backstop still fires for a stuck leaf
+/// WITHOUT a 5s `MAX_TURN_BLOCK` wait.
+#[repr(C)]
+struct NeverReadyState {
+    /// FIRST field ⇒ the generic result slot (never written — this leaf never
+    /// returns `Ready`).
+    result: i64,
+}
+
+unsafe extern "C" fn never_ready_short_timer_pollfn(
+    _state: *mut c_void,
+    host: *const HostCtx,
+    waker: *const CWaker,
+) -> CPoll {
+    // Re-arm a ~5ms timer on every poll and always park. A fresh heap entry per
+    // poll is fine for a bounded test run (cap/5ms ≈ a handful of entries).
+    let hc = unsafe { &*host };
+    let deadline = monotonic_nanos() + 5 * 1_000_000;
+    unsafe { (hc.register_timer)(hc.host, deadline, waker) };
+    CPoll::Pending
+}
+
+// spec: design/int/reactor.md §2.6 — blocking I/O is uncapped by design. A
+// blocking branch whose rayon work OUTLASTS the no-progress cap still completes
+// (no panic), because `pending_bridges > 0` resets the no-progress deadline on
+// every turn while the bridge is outstanding. This is the feature-on ≥
+// feature-off thesis: feature-off runs such a branch uncapped, so feature-on must
+// too.
+#[test]
+fn cap_held_off_while_blocking_bridge_in_flight() {
+    // A cap far SHORTER than the branch's rayon work: with the old fixed-anchor
+    // cap this would panic at ~80ms; with the I1 fix it completes at ~240ms.
+    let cap = Duration::from_millis(80);
+    let work = Duration::from_millis(240); // ~3× the cap
+
+    let start = Instant::now();
+    let result = block_on_reactor_capped(
+        async |env| {
+            // Mirror `run_blocking_branch`: bump the bridge counter, offload to
+            // rayon across the wakeable `oneshot`, await, then drop the counter.
+            let (tx, rx) = futures::channel::oneshot::channel::<i64>();
+            env.pending_bridges.set(env.pending_bridges.get() + 1);
+            rayon::spawn(move || {
+                std::thread::sleep(work);
+                let _ = tx.send(42);
+            });
+            let v = rx.await.unwrap_or(-1);
+            env.pending_bridges.set(env.pending_bridges.get() - 1);
+            v
+        },
+        cap,
+    )
+    .expect("reactor");
+
+    assert_eq!(
+        result, 42,
+        "a blocking branch outlasting the cap must still complete (uncapped while a bridge is pending)"
+    );
+    assert!(
+        start.elapsed() >= work - Duration::from_millis(40),
+        "the drive genuinely waited for the slow branch (~{work:?}), not the cap"
+    );
+}
+
+// spec: design/int/reactor.md §2.6 — the backstop is PRESERVED. A poll leaf that
+// never completes with NO blocking bridge pending still trips the no-progress cap
+// (panics), so a genuine hang surfaces as a panic rather than wedging forever.
+#[test]
+#[should_panic(expected = "leaf never completed")]
+fn cap_still_trips_for_stuck_poll_leaf_no_bridge() {
+    let cap = Duration::from_millis(80);
+    let strand = next_strand();
+    let _ = block_on_reactor_capped(
+        async |env| {
+            let host = env.host;
+            let mut st = NeverReadyState { result: 0 };
+            // pending_bridges stays 0 throughout: this is the genuinely-stuck
+            // case the backstop exists for.
+            let leaf = unsafe {
+                EffectPoll::new(
+                    &mut st as *mut _ as *mut c_void,
+                    never_ready_short_timer_pollfn,
+                    host,
+                    strand,
+                )
+            };
+            leaf.await
+        },
+        cap,
     );
 }

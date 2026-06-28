@@ -6,6 +6,51 @@ The **committed showcase target is the stdio CLI** — `user.cl` tells the full
 story end-to-end. The web platform is a designed-but-unbuilt future stretch
 (FIXME 0405, `/platform`); see `plan-exemplar.md`.
 
+## Current State (Sprint 95 Phase 6a — assessment: exemplar untouched, web rewrite is S96)
+
+**No S95 exemplar work — confirmed read-only.** S95 advanced only the
+**Concurrency axis** (token-capacity `Semaphore` pool + two-pool routing,
+`concurrency-runtime`-gated, default build byte-identical). The pool was proven
+on the **BLOCKING carrier** using a synthetic `pool-demo` fixture *inside*
+`cranelisp-platform` — **not** the exemplar. The exemplar's `web` platform
+(`exemplar/platforms/web/src/lib.rs`) is **still v6 blocking**, verified:
+`declare_platform!` (not `declare_concurrent_platform!`), three
+`SchedulingClass::Sequential` effects (`listen`/`accept`/`send`), single
+in-flight accepted stream, no poll-shape / token / capacity. The S94 parallel
+Sudoku solver (0424 spark substrate, `par-map-reduce` search) is **unchanged**
+by S95 — the perf carry (FIXME 0408 perf half: copy-per-guess contention) is a
+**Parallelism-axis** problem re-scoped to **S97** (the floor/atomic-RC knot),
+with raw-speed numbers still wanting `--release` (Phase H).
+
+**The exemplar's capacity/web work is entirely S96** — the natural consumer of
+the capacity-on-token model is the web platform's reactor **connection pool**,
+which needs three things S95 explicitly deferred: (1) **poll-shape live capacity
+supply + acquire-around-poll** (the permit wrapping the `EffectPoll`
+establish→ready arc), (2) the **`poll_support` ergonomics** suite (typed env
+accessor, fd-readiness/timer scaffold, converged platform macro), and (3)
+**slice 5** (launch-and-continue + supervisor) so the "server with no `spawn`"
+demo can exercise it. All three are S96; co-scheduling the web rewrite with
+slice 5 is deliberate (a server demo is only meaningful on real poll
+`accept`/`read` leaves). No S95-surfaced gap to file — the S96 web-rewrite
+milestone is already in `sprints/ROADMAP.md`, and the only open FIXME targeting
+`/port` is **0408** (perf half, deferred Phase H).
+
+### S96 Phase 6b plan (the web v7 rewrite)
+
+Rewrite `exemplar/platforms/web/` from a v6 blocking `declare_platform!`
+platform into a **model v7 concurrent platform**: replace the single-stream
+blocking `accept`/`send` with **poll-shape `accept` and `read`** leaves (over
+the `poll_support` env-accessor + host/waker vtable extracted evidence-first in
+S96), introduce a **reactor connection-pool token of capacity N** so up to N
+in-flight connections overlap on the one reactor thread while the (N+1)th parks
+(the real **capacity-on-poll** consumer that lights up S95's deferred
+acquire-around-poll half), and wire it to the **slice-5 server-with-no-`spawn`**
+demo (a panicking handler → 500 while the server survives) so the existing pure
+core (`handle`/`solution-page`/`parse-form-body`, already complete and tested)
+drives a genuinely concurrent server — validating the capacity-on-token model at
+the §10/§16 reference workload end-to-end, with the v6 path coexisting via the
+additive ABI (no version flip). Owner: `/port` + `/platform`.
+
 ## Current State (Sprint 94 Phase 6 — parallel search via stdlib `par-map-reduce`)
 
 The parallel backtracking search is now expressed with the **stdlib

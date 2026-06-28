@@ -126,8 +126,8 @@ pub(crate) fn drive_io(io_ptr: i64) -> i64 {
         IoEventTag::TrampolineEnter,
         &IoEvent::TrampolineEnter { io_ptr },
     );
-    let result = crate::reactor::block_on_reactor(async |host| {
-        run_io_trampoline_inner_async(io_ptr, host, crate::strand::StrandId::ROOT).await
+    let result = crate::reactor::block_on_reactor(async |env| {
+        run_io_trampoline_inner_async(io_ptr, env, crate::strand::StrandId::ROOT).await
     })
     .expect("reactor init failed");
     io_observer::emit(
@@ -157,7 +157,7 @@ pub(crate) fn drive_io(io_ptr: i64) -> i64 {
 #[cfg(feature = "concurrency-runtime")]
 fn run_io_trampoline_inner_async<'h>(
     io_ptr: i64,
-    host: &'h cranelisp_platform::HostCtx,
+    env: &'h crate::reactor::ReactorEnv<'h>,
     strand: crate::strand::StrandId,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = i64> + 'h>> {
     Box::pin(async move {
@@ -184,7 +184,7 @@ fn run_io_trampoline_inner_async<'h>(
                 // S94 R1 — the real async Effect arm: a poll-shape effect node
                 // suspends/resumes on the reactor via `EffectPoll`.
                 t if t == IO_TAG_EFFECT_POLL => {
-                    await_poll_node(current, host, strand).await
+                    await_poll_node(current, env.host, strand).await
                 }
                 t if t == IO_TAG_BIND => {
                     let inner = unsafe { read_node_field(current, FIELD_0_OFFSET) };
@@ -212,7 +212,7 @@ fn run_io_trampoline_inner_async<'h>(
                     current = inner;
                     continue;
                 }
-                t if t == IO_TAG_PAR => run_par_node_async(current, host).await,
+                t if t == IO_TAG_PAR => run_par_node_async(current, env).await,
                 _ => panic!("cranelisp_run_io: unknown IO tag {tag}"),
             };
 
@@ -268,25 +268,60 @@ async fn await_poll_node(
     leaf.await
 }
 
-/// The async `Par` overlap arm — run every branch as a concurrent future on the
-/// ONE reactor (`futures::future::join_all`), so I/O-effect leaves overlap in
-/// ≈max(delay) not sum with NO thread-per-read (vs the sync stepper's rayon
-/// dispatch, which stays the feature-off + CPU-spark path). Each branch gets a
-/// fresh child [`crate::strand::StrandId`] so concurrent leaves are
-/// distinguishable in the strand stream. Results are marshaled into a fresh
-/// `alloc_with_rc` buffer (the value fed to the continuation) — the same shape
-/// the sync `run_par_node` produces. Token-cardinality grouping is deferred to a
-/// later slice (S94 minimal = `join_all` over the branches).
+/// The async `Par` overlap arm — the **two-pool join** (slice 6) wrapping the
+/// **token-capacity admission** gate (slice 3), per `design/int/reactor.md` §2.6
+/// / §2.8.
+///
+/// Branches are **partitioned by node tag** (gate (c) — the tag is already on the
+/// node; no descriptor, no symbol back-ref): `IO_TAG_EFFECT_POLL`-rooted branches
+/// route to the **reactor** partition (`join_all` of `EffectPoll` leaves on the
+/// ONE reactor thread); everything else (`IO_TAG_EFFECT` blocking, `Bind`,
+/// `Pure`, nested `Par`) routes to the **rayon** partition (run-to-completion on
+/// a worker thread). Original binding indices ride along so results re-merge in
+/// source/binding order — the same buffer shape the sync `run_par_node` produces.
+///
+/// **Both partitions run concurrently** (`futures::join!`) and **both wrap the
+/// §2.8 admission gate**: each branch acquires its node-read `(token, capacity)`
+/// permit before dispatch and releases on completion (`token == 0` ⇒ no acquire).
+/// The blocking partition is how capacity-N is realized this sprint — a blocking
+/// branch is admitted on the reactor thread, then `rayon::spawn`'d across a
+/// **wakeable rayon→reactor bridge** (a `futures` `oneshot` woken via the
+/// executor's mio-backed waker — never `block_on(rayon_join)` on the reactor
+/// thread, the load-bearing Principle-8 constraint that keeps the blocking branch
+/// from starving the reactor). The dispatcher's bespoke `SerialGroup`
+/// token-grouping **dissolves into** this uniform per-branch permit-acquire (arch
+/// §8); the rayon-spawn + worker→join error-ferry plumbing is what carries over.
+/// Poll branches read the sentinel token 0 this sprint (poll-shape capacity-N is
+/// S96), so their acquire is an inert no-op — admission still wraps both
+/// partitions structurally.
 #[cfg(feature = "concurrency-runtime")]
-async fn run_par_node_async(parent_ptr: i64, host: &cranelisp_platform::HostCtx) -> i64 {
+async fn run_par_node_async(parent_ptr: i64, env: &crate::reactor::ReactorEnv<'_>) -> i64 {
     // SAFETY: `parent_ptr` is the live `current` Par node base pointer.
     let branch_ptrs = unsafe { read_par_branches(parent_ptr) };
     let count = branch_ptrs.len();
-    let futs: Vec<_> = branch_ptrs
-        .iter()
-        .map(|&b| run_io_trampoline_inner_async(b, host, crate::strand::next_strand()))
-        .collect();
-    let results = futures::future::join_all(futs).await;
+
+    // Partition by reachable effect-leaf tag (minimal slice = root tag; the
+    // auto-IO independence analysis yields effect-rooted branches). Poll-shape →
+    // reactor; everything else → rayon. Indices ride along for in-order merge.
+    let mut blocking: Vec<(usize, i64)> = Vec::new();
+    let mut pollshape: Vec<(usize, i64)> = Vec::new();
+    for (i, &b) in branch_ptrs.iter().enumerate() {
+        // SAFETY: `b` is a live branch base pointer from `read_par_branches`.
+        let tag = unsafe { read_node_tag(b) };
+        if tag == IO_TAG_EFFECT_POLL {
+            pollshape.push((i, b));
+        } else {
+            blocking.push((i, b));
+        }
+    }
+
+    // Drive both pools CONCURRENTLY on the reactor thread (the wakeable bridge
+    // frees the reactor while rayon runs, so the poll partition progresses).
+    let (blocking_results, poll_results) = futures::join!(
+        run_blocking_partition(blocking, env),
+        run_poll_partition(pollshape, env),
+    );
+
     io_observer::emit(
         IoEventTag::ParJoin,
         &IoEvent::ParJoin {
@@ -294,12 +329,116 @@ async fn run_par_node_async(parent_ptr: i64, host: &cranelisp_platform::HostCtx)
             count: count as u32,
         },
     );
+
+    // Merge by original binding index into the single results buffer.
+    let mut merged = vec![0i64; count];
+    for (idx, val) in blocking_results.into_iter().chain(poll_results) {
+        merged[idx] = val;
+    }
     let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
-    for (i, &val) in results.iter().enumerate() {
+    for (i, &val) in merged.iter().enumerate() {
         // SAFETY: `results_buf` was just allocated with `count` field slots.
         unsafe { crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val) };
     }
     results_buf
+}
+
+/// The blocking partition of the two-pool join: each branch acquires its
+/// `(token, capacity)` permit on the reactor thread, then runs to completion on
+/// rayon across the wakeable bridge, then releases. `join_all` on the reactor
+/// thread so capacity-N branches overlap (the first N acquire + spawn; the
+/// (N+1)th parks on the token's `Semaphore` until a permit frees).
+#[cfg(feature = "concurrency-runtime")]
+async fn run_blocking_partition(
+    branches: Vec<(usize, i64)>,
+    env: &crate::reactor::ReactorEnv<'_>,
+) -> Vec<(usize, i64)> {
+    let futs = branches
+        .into_iter()
+        .map(|(idx, b)| run_blocking_branch(idx, b, env));
+    futures::future::join_all(futs).await
+}
+
+/// One blocking branch: admit → `rayon::spawn` run-to-completion → await the
+/// wakeable `oneshot` → ferry any worker-thread runtime error → release the
+/// permit (waking the front parked waiter). The permit is **held across the
+/// bridge** (acquired before the spawn, released after completion), which is what
+/// bounds same-token concurrency to the pool's capacity.
+#[cfg(feature = "concurrency-runtime")]
+async fn run_blocking_branch(
+    idx: usize,
+    branch: i64,
+    env: &crate::reactor::ReactorEnv<'_>,
+) -> (usize, i64) {
+    let token = read_resource_token(branch) as u64;
+    let capacity = read_capacity(branch).max(1) as u32;
+    let strand = crate::strand::next_strand();
+
+    // 1. Admit on the reactor thread (capacity-N parking; capacity-1 FIFO =
+    //    source order). `token == 0` ⇒ inert no-op permit.
+    let permit = env.acquire(token, capacity, strand).await;
+
+    // 2. Offload run-to-completion to rayon across the wakeable bridge. The
+    //    reactor thread is freed while the worker runs; the `oneshot` send wakes
+    //    the reactor through the executor's mio-backed waker (NOT block_on).
+    let (tx, rx) = futures::channel::oneshot::channel::<(i64, Option<String>)>();
+    env.pending_bridges.set(env.pending_bridges.get() + 1);
+    rayon::spawn(move || {
+        // Non-consuming run on the worker (the Par node owns the branch; freed
+        // later by `consume_io_tree`) — the same model as the sync dispatcher.
+        let result = run_io_trampoline(branch);
+        // Worker-side: capture + clear this thread's runtime-error slot (a
+        // different thread-local than the reactor thread reads) so it can be
+        // ferried back — the fork-join error-slot ferry (test-discovery.md §6).
+        let err = crate::panic::take_runtime_error();
+        let _ = tx.send((result, err));
+    });
+
+    // 3. Await completion (reactor thread parks here, freed for the poll
+    //    partition). A dropped sender (rayon panic) yields the sentinel 0.
+    let (result, err) = rx.await.unwrap_or((0, None));
+    env.pending_bridges.set(env.pending_bridges.get() - 1);
+
+    // 4. Re-raise the ferried error into the reactor thread's slot. This is
+    //    first-to-*complete*-wins: across distinct-token concurrent blocking
+    //    branches the winner is whichever rayon worker resolves first (NOT source
+    //    order) — inherently racy, the same as the sync path for concurrent work.
+    //    It is deterministic only for same-token capacity-1 branches, which run
+    //    serial+ordered (the permit holds them to source order).
+    if let Some(msg) = err
+        && !crate::panic::has_runtime_error()
+    {
+        crate::panic::set_runtime_error(msg);
+    }
+
+    // 5. Release the permit (drop) — increments the pool + wakes the FRONT
+    //    (FIFO) parked waiter, which re-polls and acquires.
+    drop(permit);
+    (idx, result)
+}
+
+/// The poll-shape partition of the two-pool join: each poll leaf is admitted
+/// (sentinel token 0 ⇒ no-op acquire this sprint — poll-shape capacity-N + the
+/// acquire-around-poll lifecycle is S96) then awaited on the reactor via the
+/// existing async trampoline. `join_all` so distinct-token poll leaves overlap on
+/// the ONE reactor thread (≈max not sum).
+#[cfg(feature = "concurrency-runtime")]
+async fn run_poll_partition(
+    branches: Vec<(usize, i64)>,
+    env: &crate::reactor::ReactorEnv<'_>,
+) -> Vec<(usize, i64)> {
+    let futs = branches.into_iter().map(|(idx, b)| async move {
+        let token = read_resource_token(b) as u64;
+        let capacity = read_capacity(b).max(1) as u32;
+        let strand = crate::strand::next_strand();
+        // Admission wraps the poll partition too (§2.6 item 3); the reserved
+        // sentinel token 0 makes it an inert no-op this sprint. The permit is
+        // held across the leaf's establish→ready arc.
+        let _permit = env.acquire(token, capacity, strand).await;
+        let result = run_io_trampoline_inner_async(b, env, strand).await;
+        (idx, result)
+    });
+    futures::future::join_all(futs).await
 }
 
 /// Core trampoline implementation. Separate from the extern "C" wrapper
@@ -635,16 +774,53 @@ fn call_continuation(cont_ptr: i64, val: i64, cont_is_fresh: bool) -> i64 {
 
 // --- Par dispatch with resource token serialization ---
 
-/// Read the resource token from an IO node.
-///
-/// Effect nodes store the token at FIELD_1_OFFSET (offset 32).
-/// Non-Effect nodes (Pure, Bind, Par) return 0 (unrestricted).
+/// Read the resource token from an IO node — tag-agnostic over the two effect
+/// kinds (§2.6 / §13.4): BOTH `IO_TAG_EFFECT` (blocking) and `IO_TAG_EFFECT_POLL`
+/// (poll-shape) store the token at FIELD_1_OFFSET (abs offset 32). Non-effect
+/// nodes (Pure, Bind, Par) return 0 (unrestricted). The poll node's token is the
+/// reserved sentinel 0 this sprint (§13.3), so a poll branch reads 0 ⇒ no acquire.
 fn read_resource_token(io_ptr: i64) -> i64 {
     let tag = unsafe { crate::heap_access::read_i64(io_ptr, TAG_OFFSET) };
-    if tag == IO_TAG_EFFECT {
+    let is_effect = tag == IO_TAG_EFFECT;
+    // `IO_TAG_EFFECT_POLL` is only constructed (and only in scope) under
+    // `concurrency-runtime`; both effect tags carry the token at FIELD_1.
+    #[cfg(feature = "concurrency-runtime")]
+    let is_effect = is_effect || tag == IO_TAG_EFFECT_POLL;
+    if is_effect {
         unsafe { crate::heap_access::read_i64(io_ptr, FIELD_1_OFFSET) }
     } else {
         0
+    }
+}
+
+/// Absolute byte offset of the **blocking** `IO_TAG_EFFECT` node's `capacity`
+/// field — appended (append-only) at payload offset 32 by the platform
+/// constructor `effect_on_resource_with_capacity` (`io-trampoline.md` §13.2). Abs
+/// = header(16) + payload-offset(32) = 48.
+#[cfg(feature = "concurrency-runtime")]
+const IO_EFFECT_CAPACITY_ABS_OFFSET: isize =
+    HeapHeader::SIZE as isize + cranelisp_platform::IO_EFFECT_CAPACITY_OFFSET as isize; // 16 + 32 = 48
+
+/// Absolute byte offset of the **poll** `IO_TAG_EFFECT_POLL` node's `capacity`
+/// field — the symmetric reserved slot the backend bakes at `field_offset(2)`
+/// (`io-trampoline.md` §13.3). Abs = FIELD_1_OFFSET + 8 = 40.
+#[cfg(feature = "concurrency-runtime")]
+const POLL_CAPACITY_ABS_OFFSET: isize = FIELD_1_OFFSET + 8; // 32 + 8 = 40
+
+/// Read the token-pool `capacity` from an IO node — **tag-branched** (§2.6 /
+/// §13.4): `IO_TAG_EFFECT` (blocking) reads payload offset 32 (abs 48);
+/// `IO_TAG_EFFECT_POLL` (poll-shape) reads `field_offset(2)` (abs 40). Non-effect
+/// nodes default to capacity 1 (they carry no pool). The poll node's capacity is
+/// the reserved sentinel 1 this sprint (§13.3).
+#[cfg(feature = "concurrency-runtime")]
+fn read_capacity(io_ptr: i64) -> i64 {
+    let tag = unsafe { crate::heap_access::read_i64(io_ptr, TAG_OFFSET) };
+    if tag == IO_TAG_EFFECT {
+        unsafe { crate::heap_access::read_i64(io_ptr, IO_EFFECT_CAPACITY_ABS_OFFSET) }
+    } else if tag == IO_TAG_EFFECT_POLL {
+        unsafe { crate::heap_access::read_i64(io_ptr, POLL_CAPACITY_ABS_OFFSET) }
+    } else {
+        1
     }
 }
 

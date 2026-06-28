@@ -425,17 +425,20 @@
         }
     }
 
-    // spec: design/arch/bounded-contexts.md §5 invariant 9 — the IO_TAG_EFFECT
-    // node widened from 24 → 32 bytes with a fourth i64 field (the baked
-    // fn-name handle, FIXME 0327 step 1/4). `CLIO::effect*` must allocate 32
-    // payload bytes and reserve field-3 as null (the backend stamps it
-    // post-call; until then it reads null → fn_name "<unknown>"). This test
-    // installs a synthetic host allocator that records the requested size and
-    // hands back a real allocation, builds an Effect node via
+    // spec: design/arch/bounded-contexts.md §5 invariant 9 + io-trampoline.md §13.2
+    // — the IO_TAG_EFFECT node carries a fourth i64 field (the baked fn-name
+    // handle, FIXME 0327 step 1/4) and, after the slice-3 capacity append (S95),
+    // a fifth i64 field (`capacity` at offset 32). `CLIO::effect*` must allocate
+    // 40 payload bytes, reserve field-3 (fn-name) as null (the backend stamps it
+    // post-call; until then it reads null → fn_name "<unknown>"), and write
+    // `capacity` at offset 32 (1 for the plain `effect_on_resource` path). This
+    // test installs a synthetic host allocator that records the requested size
+    // and hands back a real allocation, builds an Effect node via
     // `CLIO::effect_on_resource`, then asserts the node carries tag /
-    // resource-token correctly and that field-3 is reserved-and-null.
+    // resource-token correctly, that field-3 is reserved-and-null, and that
+    // field-4 (capacity) is 1.
     #[test]
-    fn effect_node_is_32_bytes_with_null_fn_name_field() {
+    fn effect_node_is_40_bytes_with_null_fn_name_and_capacity_1() {
         use std::sync::atomic::AtomicI64;
 
         // Synthetic host allocator: leak a zeroed 16-byte-header allocation of
@@ -467,11 +470,13 @@
         let io: CLIO<CLInt> = CLIO::effect_on_resource(token, || CLInt::from(0i64));
         let base: i64 = io.into();
 
-        // The DLL allocated 32 payload bytes (tag + thunk + token + fn_name).
+        // The DLL allocated 40 payload bytes (tag + thunk + token + fn_name +
+        // capacity) — the slice-3 capacity append (S95) widened 32 → 40.
         assert_eq!(
             LAST_ALLOC_SIZE.load(Ordering::SeqCst),
-            32,
-            "Effect node payload must be 32 bytes (ABI v4 node-widen, FIXME 0327)"
+            40,
+            "Effect node payload must be 40 bytes (ABI v4 node-widen FIXME 0327 \
+             + slice-3 capacity append at offset 32)"
         );
 
         // Inspect the node fields at the documented offsets. The node base is
@@ -481,6 +486,7 @@
             let tag = *(payload as *const i64);
             let tok = *((payload + IO_EFFECT_RESOURCE_OFFSET) as *const i64);
             let fn_name = *((payload + IO_EFFECT_FN_NAME_OFFSET) as *const i64);
+            let capacity = *((payload + IO_EFFECT_CAPACITY_OFFSET) as *const i64);
             assert_eq!(tag, IO_TAG_EFFECT, "tag field");
             assert_eq!(tok, token, "resource-token field at offset 16");
             assert_eq!(
@@ -488,11 +494,142 @@
                 "field-3 (fn-name handle) must be reserved-and-null at offset 24 \
                  — the backend stamps it post-call (step 2)"
             );
+            assert_eq!(
+                capacity, 1,
+                "field-4 (capacity) must be 1 at offset 32 — `effect_on_resource` \
+                 lowers to `…_with_capacity(token, 1, f)` (ResourceSerial)"
+            );
         }
         // Note: the thunk_ptr (field-0, offset 8) holds a leaked
         // Box<Box<dyn FnOnce>> that the trampoline would consume; we do not
         // force it here, so the closure box is intentionally left unfreed
         // (a one-shot leak bounded to this test).
+    }
+
+    // =====================================================================
+    // Slice-3 capacity carrier (S95) — the additive `(token, capacity)`
+    // node carrier. `effect-concurrency.md` §8.1 / `io-trampoline.md` §13.2 /
+    // `tests/plan/sprint-95.md` §1A rows 145 + 146.
+    // =====================================================================
+
+    // spec: crates/cranelisp-platform/public-api.txt + io-trampoline.md §13.9 —
+    // the new `CLIO::effect_on_resource_with_capacity(token, capacity, f)`
+    // constructor + the `IO_EFFECT_CAPACITY_OFFSET` const are on the DEFAULT
+    // (ungated — no `concurrency` feature) public-api edge, as an ADDITIVE sibling
+    // of `effect_on_resource`. This test compiles + runs in the plain `nt` lane
+    // (this `tests` module is built feature-off by default), so its mere
+    // compilation proves the items are ungated; it also pins the const value and
+    // the append-only offset relationship (capacity sits immediately after the
+    // 32-byte v4 node). The baseline `public-api.txt` is regenerated in the same
+    // /dev change-set (baseline-diff discipline).
+    #[test]
+    #[allow(clippy::type_complexity)] // the fn-pointer types are the assertion
+    fn clio_effect_on_resource_with_capacity_additive_public_api_edge() {
+        // (1) The const is on the default edge with the append-only value. The
+        //     append sits immediately after the 32-byte ABI-v4 node (token@16,
+        //     fn_name@24), so no existing offset moved.
+        assert_eq!(
+            IO_EFFECT_CAPACITY_OFFSET, 32,
+            "capacity is appended at payload offset 32 (append-only)"
+        );
+        assert_eq!(IO_EFFECT_FN_NAME_OFFSET, 24, "fn_name offset unchanged");
+        assert_eq!(IO_EFFECT_RESOURCE_OFFSET, 16, "token offset unchanged");
+
+        // (2) The constructor is callable on the default edge. We take a fn
+        //     pointer to the monomorphised constructor (no host wired ⇒ we do not
+        //     CALL it here — `get_global_alloc` would assert), proving the symbol
+        //     exists + is `pub` on the ungated edge. The sibling `effect_on_resource`
+        //     is the additive base it generalises.
+        let _ctor: fn(i64, i64, fn() -> CLInt) -> CLIO<CLInt> =
+            CLIO::<CLInt>::effect_on_resource_with_capacity;
+        let _sibling: fn(i64, fn() -> CLInt) -> CLIO<CLInt> =
+            CLIO::<CLInt>::effect_on_resource;
+    }
+
+    // spec: io-trampoline.md §13.2 + effect-concurrency.md §8.1 —
+    // `…_with_capacity(token, cap, f)` writes `capacity` at IO_TAG_EFFECT payload
+    // offset 32 (append-only: fn-name handle stays at 24, resource_token at 16);
+    // the node widens 32 → 40. `effect_on_resource(token, f)` lowers IDENTICALLY
+    // to `…_with_capacity(token, 1, f)`, so the existing cap-1 / ResourceSerial
+    // node bytes at offsets 0–24 are unchanged (byte-identical for the old path).
+    #[test]
+    fn effect_on_resource_with_capacity_appends_capacity_at_offset_32_byte_identical() {
+        // A recording allocator that captures EVERY node it hands out so the two
+        // construction paths can be compared field-by-field.
+        static LAST_SIZE: AtomicI64 = AtomicI64::new(0);
+        extern "C" fn rec_alloc(size: i64) -> i64 {
+            LAST_SIZE.store(size, Ordering::SeqCst);
+            let total = HEAP_HEADER_SIZE as usize + size as usize;
+            unsafe {
+                let layout = std::alloc::Layout::from_size_align_unchecked(total, 8);
+                let base = std::alloc::alloc_zeroed(layout);
+                *(base as *mut i64) = total as i64; // alloc_size
+                *((base as *mut i64).add(1)) = 1; // rc = 1
+                (base as i64) + HEAP_HEADER_SIZE
+            }
+        }
+        let cb = HostCallbacks {
+            alloc: rec_alloc,
+            alloc_with_tag: null_alloc_with_tag,
+        };
+        let host = HostContext::new();
+        // SAFETY: `&cb` is a valid HostCallbacks for the duration of init.
+        unsafe { host.init(&cb) };
+
+        let token = 7i64;
+
+        // Helper: read the four stable fields (tag, token, fn_name) + capacity off
+        // a node base. (We deliberately do NOT read the thunk_ptr — it is a fresh
+        // boxed closure pointer per call, never byte-identical.)
+        let read_fields = |base: i64| -> (i64, i64, i64, i64) {
+            let payload = base + HEAP_HEADER_SIZE;
+            unsafe {
+                (
+                    *(payload as *const i64),                                  // tag
+                    *((payload + IO_EFFECT_RESOURCE_OFFSET) as *const i64),    // token
+                    *((payload + IO_EFFECT_FN_NAME_OFFSET) as *const i64),     // fn_name
+                    *((payload + IO_EFFECT_CAPACITY_OFFSET) as *const i64),    // capacity
+                )
+            }
+        };
+
+        // Path A: the explicit capacity constructor, capacity N = 4.
+        let a: CLIO<CLInt> = CLIO::effect_on_resource_with_capacity(token, 4, || CLInt::from(0i64));
+        let a_base: i64 = a.into();
+        assert_eq!(
+            LAST_SIZE.load(Ordering::SeqCst),
+            40,
+            "capacity append widens the node payload 32 → 40 bytes"
+        );
+        let (a_tag, a_tok, a_fn, a_cap) = read_fields(a_base);
+        assert_eq!(a_tag, IO_TAG_EFFECT, "tag@0");
+        assert_eq!(a_tok, token, "token@16 unchanged (append-only)");
+        assert_eq!(a_fn, 0, "fn_name@24 reserved-null, unchanged (append-only)");
+        assert_eq!(a_cap, 4, "capacity@32 carries the supplied N");
+
+        // Path B: the plain constructor, which MUST lower to `…_with_capacity(_, 1, _)`.
+        let b: CLIO<CLInt> = CLIO::effect_on_resource(token, || CLInt::from(0i64));
+        let b_base: i64 = b.into();
+        let (b_tag, b_tok, b_fn, b_cap) = read_fields(b_base);
+
+        // Byte-identical for the old path: the cap-1 node's stable fields match the
+        // explicit `…_with_capacity(token, 1, _)` node exactly, and capacity is 1.
+        assert_eq!((b_tag, b_tok, b_fn), (a_tag, a_tok, a_fn),
+            "the plain-path node's stable fields (tag/token/fn_name) are identical \
+             to the capacity-path node — the append moved no existing offset");
+        assert_eq!(b_cap, 1, "effect_on_resource ⇒ capacity 1 (ResourceSerial)");
+
+        // Direct equivalence: effect_on_resource(token,f) == …_with_capacity(token,1,f).
+        let c: CLIO<CLInt> = CLIO::effect_on_resource_with_capacity(token, 1, || CLInt::from(0i64));
+        let c_base: i64 = c.into();
+        let (c_tag, c_tok, c_fn, c_cap) = read_fields(c_base);
+        assert_eq!(
+            (b_tag, b_tok, b_fn, b_cap),
+            (c_tag, c_tok, c_fn, c_cap),
+            "effect_on_resource(token, f) is byte-identical to \
+             effect_on_resource_with_capacity(token, 1, f) on all stable fields"
+        );
+        // (thunk_ptr boxes intentionally leaked — bounded to this test.)
     }
 
     // ---------------------------------------------------------------------
@@ -622,12 +759,12 @@
             );
         }
 
-        // Effect node: payload 32 bytes; same invariant.
+        // Effect node: payload 40 bytes (slice-3 capacity append); same invariant.
         let eff: CLIO<CLInt> = CLIO::effect(|| CLInt::from(0i64));
         let ebase: i64 = eff.into();
         // SAFETY: as above.
         unsafe {
-            assert_eq!(peek(ebase, 0), 48, "Effect node total_size = 16 + 32");
+            assert_eq!(peek(ebase, 0), 56, "Effect node total_size = 16 + 40");
             assert_eq!(peek(ebase, 8), 1, "Effect node rc=1 at base+8");
             assert_eq!(
                 peek(ebase, HEAP_HEADER_SIZE),
@@ -715,8 +852,8 @@
             unsafe {
                 let total = peek(base, 0);
                 assert!(
-                    total == 32 || total == 48,
-                    "iter {i}: node total_size must be 32 (Pure) or 48 (Effect), \
+                    total == 32 || total == 56,
+                    "iter {i}: node total_size must be 32 (Pure) or 56 (Effect), \
                      got {total} — a corrupted header would show here"
                 );
                 assert_eq!(peek(base, 8), 1, "iter {i}: rc=1 header intact");

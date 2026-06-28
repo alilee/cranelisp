@@ -244,6 +244,100 @@ bound. PRE-EXISTING and INDEPENDENT of sparking / lenient eval / limit #2 — th
 | Also | Updated the stale cross-reference comment in `apply_arg_single_expensive_stays_serial` (the apply-site negative gate, still valid). Deleted `design/arch/fixmes/0458` (target `/qa`; the inverted test is the durable record). |
 | Disposition | Default `nt` lane back to GREEN (0458 was the sole RED after limit #2 landed). |
 
+### Sprint 95 Phase-5 Wave-1 — QA-first e2e for token-capacity pool (slice 3) + two-pool routing (slice 6) (/qa, 2026-06-28)
+
+Phase-5 Wave-1 (QA-first, e2e/integration only). Authored the **e2e rows** of
+`tests/plan/sprint-95.md` as real failing-not-ignored tests in a new file
+`tests/concurrency_capacity.rs` (whole-file gated `#![cfg(feature =
+"concurrency-runtime")]` → runs ONLY in `nt-reactor-e2e`, compiled OUT of default
+`nt` so zero collateral). The **9 unit rows are NOT authored here** — each lands
+WITH its `/dev` wave per the mandatory-unit-test-per-fix discipline (owed-by-wave
+table below). The **`PollState` row moved to S96** (the blocking-carrier decision
+removed its S95 consumer). The **3 two-pool guards already existed as RED** and were
+NOT rewritten — confirmed as the expected RED (they flip GREEN in Wave 4).
+
+Commit SHA at authoring: `4672e3f` (working tree).
+
+| Field | Value |
+|---|---|
+| New file | `tests/concurrency_capacity.rs` (5 e2e: §1B/§1C/§1D/§1F/§2B) |
+| Default `nt` after | **1700 passed / 1 skipped / 0 failed** (45s; the new file is feature-gated to 0 tests in the default lane — no collateral; the 1 skipped is the standing CPU-floor benchmark) |
+
+**GREEN (verify-on-HEAD) — the unchanged slice-2 poll-overlap mechanism:**
+- `concurrency_capacity::n_distinct_token_poll_leaves_overlap_max_not_sum` (§1B) —
+  three independent `async-demo`/`async-read` poll leaves overlap on one reactor
+  thread (≈max not 3×); exit 180. GREEN in `nt-reactor-e2e` (poll capacity-N is S96;
+  the poll node only reserves the `(token, capacity)` slots at the sentinel — this
+  row exercises only the independent-overlap path, not the capacity pool).
+
+**RED-first (intended, `nt-reactor-e2e` lane only — gated OUT of default `nt`):**
+
+§1C/§1D/§1F drive the **intended `pool-demo` blocking capacity leaf** (the Wave-2
+`/platform` + `/dev` deliverable declaring `(token, capacity)` via
+`effect_on_resource_with_capacity`); RED today with `platform 'pool-demo' not found`
+(the leaf is absent — a meaningful runtime-RED against the intended shape, NOT a
+parse/compile failure). Flip GREEN when Wave 2 (`pool-demo`) + Wave 4 (the
+`HashMap<token, Semaphore>` acquire/park) land:
+- `concurrency_capacity::same_token_capacity_n_blocking_admits_n_concurrent_nplus1_parks`
+  (§1C) — N=2, 3 same-token blocking effects; two-sided window (>1.5·D parked, <2.5·D
+  overlapped). Signature: `expected exit 180, got Some(1) … platform 'pool-demo' not found`.
+- `concurrency_capacity::same_token_capacity_1_blocking_serial_and_source_ordered`
+  (§1D) — capacity-1 serial (≈3·D) AND source-ordered (stdout a<b<c). Same signature.
+- `concurrency_capacity::distinct_blocking_effects_sharing_one_token_share_one_pool_nplus1_parks`
+  (§1F) — two distinct kinds (`pool-read`+`pool-write`) sharing one capacity-2 token
+  (the DB-pool case). Same signature.
+
+§2B drives **existing** platforms (`test-capture` blocking + `async-demo` poll), so it
+fails by **behaviour** not platform-absence: feature-on today the blocking branch
+routes through the single reactor thread and starves the poll branch ⇒ serialises:
+- `concurrency_capacity::mixed_blocking_and_poll_par_overlaps_on_both_pools` (§2B) —
+  exit 120 (both ran) but wall-clock ~157ms ≈2·D (serialised). Signature:
+  `a mixed blocking+poll Par must OVERLAP on BOTH pools … measured 157ms >= 90ms`.
+  Flips GREEN when Wave 4 two-pool routing sends the blocking branch to rayon.
+
+**Pre-existing RED, NOT rewritten (slice-6 acceptance — flip GREEN in Wave 4):**
+- `spec_10_io::resource_serial_diff_token_parallelizes`,
+  `spec_10_io::auto_io_independent_diff_token_parallelizes_e2e`,
+  `spec_10_io::auto_io_par_grouping_uniform_across_modes` — the 3 named two-pool guards
+  (S94 entry above). Confirmed still the expected RED in `nt-reactor-e2e` (~422ms
+  serialised). On slice-6 land the S94 entry resolves/removes per the close-time protocol.
+
+| Field | Value |
+|---|---|
+| Owning skills (flip green) | §1C/§1D/§1F → `/platform` (`pool-demo` blocking leaf + `effect_on_resource_with_capacity` declaration, Wave 2) + `/dev` (node-widen bake @32 + `HashMap<token, Semaphore>` acquire/park, Wave 4); §2B + the 3 guards → `/dev` (two-pool routing — blocking→rayon, poll→reactor, wakeable bridge, Wave 4) |
+| Target sprint | S95 |
+| Disposition | RED-first ship-this-sprint guards, failing-not-ignored (`memory/feedback_failing_not_ignored`). §1B is the GREEN verify-on-HEAD poll-overlap floor; the 4 new REDs + the 3 pre-existing guards are the slice-3/slice-6 acceptance. |
+
+**Owed-by-wave unit rows (9, NOT authored Wave-1 — land WITH the /dev fix per
+unit-test-per-fix; named in `sprint-95.md` §6 for surface completeness):**
+- **Wave 2 (`cranelisp-platform`):** `clio_effect_on_resource_with_capacity_additive_public_api_edge`,
+  `effect_on_resource_with_capacity_appends_capacity_at_offset_32_byte_identical`
+  (§1A — constructor + 32→40 node-widen; baseline-diff regen of
+  `crates/cranelisp-platform/public-api.txt`).
+- **Wave 4 (`cranelisp-intrinsics`):** `semaphore_pool_keyed_by_token_sized_from_node_capacity`,
+  `capacity_n_park_resume_recorded_in_strand_stream` (§1E),
+  `same_token_conflicting_capacity_first_writer_wins_and_records_event` (§1G),
+  `two_pool_join_blocking_branch_does_not_starve_reactor` (§2C).
+- **Wave-1/4 invariant units:** `blocking_par_default_build_constructs_no_semaphore_path_neg`
+  (§3, backend/intrinsics), `link_path_does_not_enable_concurrency_runtime_neg` (§3, src/ —
+  EXISTS S94, stays-green). The `real_io_program_default_build_output_unchanged` +
+  `link_io_program_runs_without_executor` e2e replays (§3) stay GREEN on HEAD.
+- **Moved to S96:** `poll_state_env_accessor_arg_scratch_set_result_round_trip` (§4 `PollState`
+  — the blocking-carrier decision removed its S95 consumer; rejoins the `poll_support` suite).
+
+**Expected lane state (the named baseline — a genuine regression is any RED beyond these):**
+- **Default `cargo nt`** — **1700 passed / 1 skipped / 0 failed**. The new file is
+  compiled out (feature off).
+- **`nt-reactor-e2e` (`--no-fail-fast`)** — **1700 passed / 8 failed / 1 skipped**. The 8:
+  the **7 named guards** (4 new `concurrency_capacity` REDs + 3 pre-existing `spec_10_io`
+  two-pool guards) PLUS **1 known intermittent** — `repl_negative::info_unknown_name_graceful`
+  hit the **30.023s harness cap** (the documented `.config/nextest.toml` REPL/module
+  heisenbug-race that randomly trips the 30s cap under full-suite concurrent load —
+  **passes in isolation in 0.025s**, occurs with or without this change, belongs to the
+  effect-concurrency track). NOT a regression; NOT caused by `concurrency_capacity`. The
+  5 S94 `concurrency_reactor` rows + §1B stay GREEN. **Any RED beyond the 7 named guards
+  (other than the known REPL-cap intermittent) is a genuine regression.**
+
 ### Sprint 91 — Wave-7: FIXME 0432 Face A REPRODUCES — minimal repro + layer diagnosis (/qa, 2026-06-26)
 
 Face A (previously UNVERIFIED) **reproduces**: `codegen error: undefined function: <name>` for a multi-clause ANNOTATED `defn` with a self-call. Narrowed each dimension; all three of {multi-clause, annotated, self-call} are required.

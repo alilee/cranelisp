@@ -45,13 +45,17 @@
 //! are `dep:`-gated, so with the feature off cargo links neither).
 
 use core::ffi::c_void;
+use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::os::fd::RawFd;
 use std::pin::Pin;
-use std::task::{Context, Poll as TaskPoll};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::task::{Context, Poll as TaskPoll, Wake, Waker};
 use std::time::Duration;
 
 use mio::unix::SourceFd;
@@ -60,6 +64,13 @@ use mio::{Events, Interest, Token};
 use cranelisp_platform::{HostCtx, Poll as CPoll, PollFn, Waker as CWaker, WakerVTable};
 
 use crate::strand::{emit_strand_event, StrandEvent, StrandId};
+
+/// The reserved mio `Token` for the reactor's cross-thread wakeup
+/// ([`Reactor::bridge_waker`]). fd registrations hand out tokens from
+/// `next_fd_token = 1`, so token `0` never collides with an fd waiter and a
+/// `Token(0)` event in [`Reactor::turn`] simply finds no `fd_waiters` entry and
+/// is ignored (it served only to unblock the `mio::poll`).
+const BRIDGE_WAKE_TOKEN: Token = Token(0);
 
 // ===========================================================================
 // Monotonic clock — the one clock shared by the reactor's timer wheel and the
@@ -230,20 +241,41 @@ pub struct Reactor {
     /// Live timer waiters: `id → waker-to-fire-on-expiry`.
     timer_waiters: HashMap<u64, OwnedCWaker>,
     next_timer_id: u64,
+    /// The cross-thread wakeup (slice 6): a `mio::Waker` on the reserved
+    /// [`BRIDGE_WAKE_TOKEN`] that unblocks a `mio::poll` in [`Reactor::turn`]
+    /// from another thread. This is what lets the **wakeable rayon→reactor
+    /// bridge** (the blocking partition of [`crate::io::run_par_node_async`])
+    /// wake the reactor when a `rayon`-offloaded branch completes — without it a
+    /// blocking-only `Par` (no fd/timer waiters) would block in `turn` for the
+    /// full `MAX_TURN_BLOCK` instead of resuming on completion. It backs the
+    /// executor's task `Waker` ([`ExecutorWaker`]) so a `futures` `oneshot` send
+    /// from a `rayon` worker wakes the reactor through the normal waker path.
+    bridge_waker: Arc<mio::Waker>,
 }
 
 impl Reactor {
     /// Build a fresh reactor (one `mio::Poll`).
     pub fn new() -> std::io::Result<Self> {
+        let poll = mio::Poll::new()?;
+        // The cross-thread wakeup on the reserved token (slice 6 — the wakeable
+        // rayon→reactor bridge). Registered once here; `wake()` is thread-safe.
+        let bridge_waker = Arc::new(mio::Waker::new(poll.registry(), BRIDGE_WAKE_TOKEN)?);
         Ok(Reactor {
-            poll: mio::Poll::new()?,
+            poll,
             events: Events::with_capacity(64),
             next_fd_token: 1,
             fd_waiters: HashMap::new(),
             timer_heap: BinaryHeap::new(),
             timer_waiters: HashMap::new(),
             next_timer_id: 1,
+            bridge_waker,
         })
+    }
+
+    /// A clone of the cross-thread wakeup handle ([`Reactor::bridge_waker`]) for
+    /// the executor's task `Waker` ([`ExecutorWaker`]).
+    fn bridge_waker(&self) -> Arc<mio::Waker> {
+        Arc::clone(&self.bridge_waker)
     }
 
     /// `true` while any fd or timer waiter is outstanding (the executor must keep
@@ -507,16 +539,264 @@ impl Future for EffectPoll<'_> {
 }
 
 // ===========================================================================
+// The token-capacity `Semaphore` pool (slice 3) — §2.8 / arch §8.1/§8.2.
+//
+// A host-owned permit map that bounds how many of a token's effects are in
+// flight at once. It generalizes the rayon dispatcher's capacity-1 `SerialGroup`
+// to an arbitrary pool size: *every effect acquires its token's permit before
+// dispatch and releases on completion.*
+//
+// **Single-threaded, no atomics, no `Mutex`.** Admission runs on the ONE reactor
+// thread for both partitions (a blocking branch is admitted *before* its
+// `rayon::spawn`, the permit held across the wakeable bridge — see
+// `io::run_par_node_async`), so the map is a plain `RefCell<HashMap<…>>`,
+// mirroring the reactor's own `fd_waiters` map.
+// ===========================================================================
+
+/// One token's permit slot: `permits` free of `capacity`, plus a FIFO queue of
+/// parked waiters' wakers. Created on the token's first acquire, sized to that
+/// first `capacity` (first-writer-wins, §2.8) and never resized.
+struct TokenSlot {
+    /// Free permits remaining (`0..=capacity`).
+    permits: u32,
+    /// The capacity the FIRST acquirer sized this slot to (the value that
+    /// stands under first-writer-wins reconciliation).
+    capacity: u32,
+    /// Parked waiters in FIFO order — the (capacity+1)th and beyond. A permit
+    /// release wakes the FRONT (source order for capacity 1, §8.2).
+    waiters: VecDeque<Waker>,
+}
+
+/// The host-owned token-capacity pool: `token → TokenSlot`. Keyed on the
+/// **node-read** `(token, capacity)` (`io::read_resource_token` / `read_capacity`).
+/// Constructed single-sited in [`block_on_reactor`] alongside the [`Reactor`]
+/// (§6.2 — divergence-proof by the intrinsics-hosting argument; int grows no
+/// parallel pool builder).
+pub(crate) struct TokenPool {
+    slots: RefCell<HashMap<u64, TokenSlot>>,
+}
+
+impl TokenPool {
+    /// A fresh empty pool (no tokens yet — slots are created lazily on first
+    /// acquire).
+    pub(crate) fn new() -> Rc<Self> {
+        Rc::new(TokenPool {
+            slots: RefCell::new(HashMap::new()),
+        })
+    }
+
+    /// Acquire a permit on `token` (sized `capacity` on first sight), charged to
+    /// `strand`. `token == 0` ⇒ no acquire (unrestricted — full overlap). The
+    /// returned [`AcquirePermit`] future resolves to a [`Permit`] whose drop
+    /// releases the permit and wakes the front waiter.
+    fn acquire(self: &Rc<Self>, token: u64, capacity: u32, strand: StrandId) -> AcquirePermit {
+        AcquirePermit {
+            pool: Rc::clone(self),
+            token,
+            capacity,
+            strand,
+            parked: false,
+        }
+    }
+}
+
+/// The await boundary for a token permit (§2.8). `poll`: if a permit is free,
+/// decrement + `Ready(Permit)` (emitting `TokenAcquired`); else enqueue
+/// `cx.waker()` (FIFO) + `Pending` (emitting `TokenParked` once). `token == 0`
+/// resolves immediately with an inert permit (no map entry).
+pub(crate) struct AcquirePermit {
+    pool: Rc<TokenPool>,
+    token: u64,
+    capacity: u32,
+    strand: StrandId,
+    /// `true` once this future has emitted `TokenParked` — so a re-poll that is
+    /// still blocked does not re-emit the park event.
+    parked: bool,
+}
+
+impl Future for AcquirePermit {
+    type Output = Permit;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> TaskPoll<Permit> {
+        let this = self.get_mut();
+
+        // token 0 ⇒ unrestricted: resolve immediately with an inert permit.
+        if this.token == 0 {
+            return TaskPoll::Ready(Permit {
+                pool: Rc::clone(&this.pool),
+                token: 0,
+                strand: this.strand,
+            });
+        }
+
+        let mut slots = this.pool.slots.borrow_mut();
+        let slot = slots.entry(this.token).or_insert_with(|| TokenSlot {
+            // First-writer-wins: this acquirer sizes the slot.
+            permits: this.capacity.max(1),
+            capacity: this.capacity.max(1),
+            waiters: VecDeque::new(),
+        });
+
+        // First-writer-wins reconciliation: a later, disagreeing capacity is
+        // recorded (dev-facing) but does NOT resize the pool (§2.8 / arch §8.1).
+        let declared = this.capacity.max(1);
+        if declared != slot.capacity {
+            emit_strand_event(StrandEvent::TokenCapacityMismatch {
+                strand: this.strand,
+                token: this.token,
+                first_capacity: slot.capacity,
+                requested_capacity: declared,
+            });
+        }
+
+        if slot.permits > 0 {
+            slot.permits -= 1;
+            emit_strand_event(StrandEvent::TokenAcquired {
+                strand: this.strand,
+                token: this.token,
+            });
+            TaskPoll::Ready(Permit {
+                pool: Rc::clone(&this.pool),
+                token: this.token,
+                strand: this.strand,
+            })
+        } else {
+            // Park: enqueue our waker in FIFO order. A permit release wakes the
+            // front (capacity-1 ⇒ source order, since first-poll enqueue order =
+            // source order, §8.2).
+            slot.waiters.push_back(cx.waker().clone());
+            if !this.parked {
+                this.parked = true;
+                emit_strand_event(StrandEvent::TokenParked {
+                    strand: this.strand,
+                    token: this.token,
+                });
+            }
+            TaskPoll::Pending
+        }
+    }
+}
+
+/// An acquired permit. Dropping it returns the permit to the token's pool and
+/// wakes the front (FIFO) parked waiter. An inert permit (`token == 0`) is a
+/// no-op on drop.
+pub(crate) struct Permit {
+    pool: Rc<TokenPool>,
+    token: u64,
+    strand: StrandId,
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        if self.token == 0 {
+            return; // unrestricted: nothing to release.
+        }
+        // Return the permit and detach the front waiter UNDER the borrow, then
+        // DROP the borrow before `wake()` (S2 hardening). The `ExecutorWaker` only
+        // writes an eventfd today, but waking outside the `slots` borrow keeps this
+        // sound against any future re-entrant waker that might re-enter the pool.
+        let waker = {
+            let mut slots = self.pool.slots.borrow_mut();
+            let Some(slot) = slots.get_mut(&self.token) else {
+                return;
+            };
+            slot.permits += 1;
+            emit_strand_event(StrandEvent::TokenReleased {
+                strand: self.strand,
+                token: self.token,
+            });
+            // Detach the front waiter (FIFO). It will re-poll, find a free permit,
+            // and acquire (re-establishing exclusion).
+            slot.waiters.pop_front()
+        }; // `slots` borrow dropped here.
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
+// ===========================================================================
 // The executor — block_on over the reactor.
 // ===========================================================================
+
+/// The executor's task `Waker`, backed by the reactor's cross-thread
+/// [`mio::Waker`]. Waking it unblocks a `mio::poll` in [`Reactor::turn`] — so a
+/// `futures` `oneshot` send from a `rayon` worker (the wakeable rayon→reactor
+/// bridge) resumes the reactor, and a [`Permit`]-release wake of a parked
+/// `AcquirePermit` is observed on the next poll. (Both `Future::poll` calls and
+/// `turn()` run on the reactor thread; this waker is the ONE thing the rayon
+/// pool touches, and `mio::Waker::wake` is explicitly cross-thread-safe.)
+///
+/// **Load-bearing invariant — DO NOT BREAK (S4).** Both *no-lost-wake* and
+/// *no-spin* on the bridge eventfd path depend on TWO things holding together:
+///
+/// 1. `mio` registers its `Waker`'s eventfd **edge-triggered** (`EPOLLET`) — its
+///    documented Linux implementation; and
+/// 2. the reactor **never drains** the bridge eventfd — a `Token(0)`
+///    ([`BRIDGE_WAKE_TOKEN`]) event in [`Reactor::turn`] finds no `fd_waiters`
+///    entry and is deliberately ignored (it served only to unblock `mio::poll`);
+///    `mio::Waker` itself resets the eventfd counter on the next `wake()`.
+///
+/// A future switch to **level-triggered** registration, OR adding an explicit
+/// drain/read of the bridge eventfd, breaks this: level-triggered + undrained
+/// would **spin** (every `mio::poll` returns the still-signalled token), and
+/// adding a drain under edge-triggered risks a **lost edge** (a `wake()` racing
+/// the drain is swallowed, parking the reactor forever). The next maintainer must
+/// not introduce either.
+struct ExecutorWaker {
+    mio: Arc<mio::Waker>,
+}
+
+impl Wake for ExecutorWaker {
+    fn wake(self: Arc<Self>) {
+        let _ = self.mio.wake();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        let _ = self.mio.wake();
+    }
+}
+
+/// The host-side context threaded through the async trampoline: the reactor's
+/// [`HostCtx`] (for poll-fns), the token-capacity [`TokenPool`] (for the
+/// per-branch permit acquire), and the in-flight blocking-bridge counter (so the
+/// executor knows a `rayon`-offloaded branch is outstanding even when no fd/timer
+/// waiter is registered). Constructed single-sited in [`block_on_reactor`].
+pub(crate) struct ReactorEnv<'h> {
+    /// The reactor host vtable the platform poll-fns register against.
+    pub host: &'h HostCtx,
+    /// The shared token-capacity pool (§2.8).
+    pub pool: &'h Rc<TokenPool>,
+    /// Count of `rayon`-offloaded blocking branches currently in flight. The
+    /// async `Par` arm bumps it before `rayon::spawn` and drops it on completion
+    /// (see `io::run_par_node_async`); [`block_on_reactor`] treats a positive
+    /// count as "keep turning" so a blocking-only `Par` is not mistaken for a
+    /// hung future with no waiters.
+    pub pending_bridges: &'h Rc<Cell<usize>>,
+}
+
+impl ReactorEnv<'_> {
+    /// Acquire a permit on `(token, capacity)` charged to `strand` (the §2.8
+    /// gate). `token == 0` ⇒ no acquire.
+    pub(crate) fn acquire(&self, token: u64, capacity: u32, strand: StrandId) -> AcquirePermit {
+        self.pool.acquire(token, capacity, strand)
+    }
+}
 
 /// Default upper bound on a single `mio::poll` block — a liveness backstop so a
 /// misbehaving leaf can never wedge the reactor (acceptance: no deadlock/hang).
 const MAX_TURN_BLOCK: Duration = Duration::from_secs(5);
 
-/// Default upper bound on total wall-clock for one `block_on_reactor` — bounds the
-/// whole drive (acceptance #5: bounded test timeouts; a leaf that never completes
-/// surfaces as a panic, not a hang).
+/// Default upper bound on **no-progress** wall-clock for one `block_on_reactor` —
+/// a liveness backstop catching a poll leaf that never completes (acceptance #5:
+/// bounded test timeouts; a genuinely-stuck leaf surfaces as a panic, not a hang).
+///
+/// **This is NOT a cap on total drive time.** It measures only time during which
+/// NO blocking branch is in flight (`pending_bridges == 0`). A legitimately slow
+/// blocking I/O branch on rayon (the wakeable bridge) holds the no-progress
+/// deadline off for as long as the branch runs, so blocking I/O is **uncapped by
+/// design** — matching the feature-off sync stepper, which runs such a branch
+/// uncapped. The backstop fires only for the genuinely-stuck case: no bridge
+/// pending AND no poll progress for `MAX_TOTAL_BLOCK`. (`reactor.md` §2.6.)
 const MAX_TOTAL_BLOCK: Duration = Duration::from_secs(30);
 
 /// Drive `make_future` to completion on a fresh reactor, turning the mio loop
@@ -528,11 +808,41 @@ const MAX_TOTAL_BLOCK: Duration = Duration::from_secs(30);
 /// register against this reactor. The closure indirection is what lets the
 /// future borrow the `HostCtx` (which borrows the reactor) without a
 /// self-referential struct.
-pub fn block_on_reactor<F, T>(make_future: F) -> std::io::Result<T>
+pub(crate) fn block_on_reactor<F, T>(make_future: F) -> std::io::Result<T>
 where
-    F: AsyncFnOnce(&HostCtx) -> T,
+    F: AsyncFnOnce(&ReactorEnv<'_>) -> T,
+{
+    block_on_reactor_capped(make_future, MAX_TOTAL_BLOCK)
+}
+
+/// [`block_on_reactor`] with an injectable no-progress cap — the seam the I1 unit
+/// tests drive with a lowered cap (the production entry point passes
+/// [`MAX_TOTAL_BLOCK`]). The cap is a **no-progress** backstop: it is held off
+/// while any blocking branch is in flight (`pending_bridges > 0`), so a slow
+/// blocking I/O branch is uncapped (matching feature-off), and it fires only for a
+/// genuinely-stuck poll leaf with no bridge pending.
+fn block_on_reactor_capped<F, T>(make_future: F, max_total_block: Duration) -> std::io::Result<T>
+where
+    F: AsyncFnOnce(&ReactorEnv<'_>) -> T,
 {
     let mut reactor = Reactor::new()?;
+    // The mio-backed task waker: a `oneshot` send from a rayon worker (the
+    // wakeable bridge) or a `Permit`-release wake of a parked acquire wakes this,
+    // which unblocks `turn()`'s `mio::poll`. (Replaces the former noop waker; the
+    // turn-loop still re-polls after every turn, so the fd/timer path is
+    // unchanged — this only ADDS the ability for cross-thread/park wakeups to
+    // shorten a blocking `mio::poll`.)
+    let task_waker: Waker = Arc::new(ExecutorWaker {
+        mio: reactor.bridge_waker(),
+    })
+    .into();
+
+    // The token-capacity pool + the in-flight blocking-bridge counter, both
+    // single-sited here alongside the reactor (§2.8 / §6.2). Single-threaded:
+    // every mutation runs on THIS reactor thread.
+    let pool = TokenPool::new();
+    let pending_bridges: Rc<Cell<usize>> = Rc::new(Cell::new(0));
+
     // Raw self pointer for the poll-fns. Discipline: after this we touch the
     // reactor ONLY through `reactor_ptr` (in `turn`) or through the `HostCtx`
     // host handle (in the poll-fns) — never as a live `&mut reactor` across a
@@ -544,11 +854,21 @@ where
     // non-overlapping lifetimes (see `make_host_ctx`).
     let host_ctx = make_host_ctx(reactor_ptr);
 
-    let mut future = Box::pin(make_future(&host_ctx));
-    let waker = futures::task::noop_waker();
-    let mut cx = Context::from_waker(&waker);
+    let env = ReactorEnv {
+        host: &host_ctx,
+        pool: &pool,
+        pending_bridges: &pending_bridges,
+    };
+    let mut future = Box::pin(make_future(&env));
+    let mut cx = Context::from_waker(&task_waker);
 
-    let start = std::time::Instant::now();
+    // The no-progress deadline anchor. It is RESET to "now" on every iteration in
+    // which a blocking branch is in flight (`pending_bridges > 0`), so the cap
+    // never accumulates time against a legitimately-slow blocking I/O branch on
+    // rayon — blocking I/O is uncapped by design (matching feature-off). The cap
+    // therefore measures only contiguous no-bridge time and fires solely for a
+    // genuinely-stuck poll leaf (I1; `reactor.md` §2.6).
+    let mut no_progress_since = std::time::Instant::now();
     loop {
         // Poll the future. The leaf poll-fns mutate the reactor through the
         // `HostCtx` host handle during this call; no `&mut reactor` is held here.
@@ -557,18 +877,24 @@ where
             TaskPoll::Pending => {}
         }
 
-        if start.elapsed() > MAX_TOTAL_BLOCK {
-            panic!("block_on_reactor: exceeded {MAX_TOTAL_BLOCK:?} — leaf never completed");
+        if pending_bridges.get() > 0 {
+            // A blocking branch is legitimately in flight — hold the no-progress
+            // deadline off (blocking I/O is uncapped). The backstop resumes
+            // measuring once the last bridge completes.
+            no_progress_since = std::time::Instant::now();
+        } else if no_progress_since.elapsed() > max_total_block {
+            panic!("block_on_reactor: exceeded {max_total_block:?} — leaf never completed");
         }
 
         // Turn the reactor BETWEEN polls (the only place a `&mut reactor` is
         // live). SAFETY: the future is not being polled here, so the host-handle
         // raw alias is dormant; no two `&mut` coexist.
         let r = unsafe { &mut *reactor_ptr };
-        if !r.has_waiters() {
-            // Pending with nothing registered would spin forever. With our
-            // re-poll-every-turn model this should not happen for a well-formed
-            // leaf; treat it as a bug rather than a silent hang.
+        if !r.has_waiters() && pending_bridges.get() == 0 {
+            // Pending with nothing registered (no fd/timer waiter AND no rayon
+            // bridge outstanding) would spin forever. With our re-poll-every-turn
+            // model this should not happen for a well-formed future; treat it as
+            // a bug rather than a silent hang.
             panic!("block_on_reactor: future Pending with no reactor waiters (would hang)");
         }
         r.turn(MAX_TURN_BLOCK);

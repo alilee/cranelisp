@@ -15,6 +15,7 @@ members = [
     "platforms/shapes-badabi",
     "platforms/boom",
     "platforms/async-demo",
+    "platforms/pool-demo",
     "exemplar/platforms/web",
 ]
 resolver = "2"

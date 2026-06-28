@@ -733,6 +733,53 @@ fn trampoline_clean_effect_leaves_no_fault() {
     unsafe { crate::alloc::dealloc(io as *mut u8) };
 }
 
+/// Build a BLOCKING `IO_TAG_EFFECT` node carrying the §13.2 widened capacity
+/// field (payload tag+thunk+token+fn_name+capacity = 40 bytes), instant thunk.
+/// Used by the feature-off negative guard to prove the default build's sync path
+/// is unchanged by the capacity append (it ignores capacity — no pool exists).
+#[cfg(not(feature = "concurrency-runtime"))]
+fn make_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
+    let thunk_ptr = clean_effect_thunk(value);
+    let base = alloc_with_rc(40) as i64;
+    unsafe {
+        crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT); // abs 16
+        crate::heap_access::write_i64(base, FIELD_0_OFFSET, thunk_ptr); // abs 24
+        crate::heap_access::write_i64(base, FIELD_1_OFFSET, token); // abs 32
+        crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0); // abs 40 fn_name
+        crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, capacity); // abs 48 capacity
+    }
+    base
+}
+
+// spec: design/int/reactor.md §2.9 / §13.8 (byte-identical-off negative guard) —
+// the DEFAULT build (`concurrency-runtime` OFF) constructs NO semaphore/pool
+// path: a blocking `Par` runs through the unchanged sync rayon dispatcher
+// (`dispatch_par_branches_with_trace`), and the appended `capacity` field is
+// simply ignored (same-token branches serialise via `SerialGroup`, capacity-1 —
+// no `Semaphore`, no parking). This is the negative face of the feature gate: the
+// pool types are `cfg`'d out entirely, so this path CANNOT touch them.
+#[cfg(not(feature = "concurrency-runtime"))]
+#[test]
+fn blocking_par_default_build_constructs_no_semaphore_path_neg() {
+    // Two same-token (token 5) capacity-2 blocking effects in a Par. Feature-off,
+    // capacity is inert — the sync dispatcher token-groups them (SerialGroup) and
+    // runs them; the results are marshaled into the Par buffer in binding order.
+    let a = make_capacity_effect_node(5, 2, 10);
+    let b = make_capacity_effect_node(5, 2, 20);
+    let par = make_par_node(&[a, b]);
+
+    // The SYNC trampoline — the only path that exists feature-off. No reactor, no
+    // pool, no `block_on_reactor`; `drive_io` resolves to `run_io_trampoline`.
+    let results_buf = run_par_node(par);
+    let r0 = unsafe { crate::heap_access::read_i64(results_buf, FIELD_0_OFFSET) };
+    let r1 = unsafe { crate::heap_access::read_i64(results_buf, FIELD_0_OFFSET + 8) };
+    assert_eq!(r0, 10, "blocking branch 0 result via the sync dispatcher");
+    assert_eq!(r1, 20, "blocking branch 1 result via the sync dispatcher");
+
+    crate::drop::dec_shallow_io(results_buf);
+    crate::drop::consume_io_tree(par);
+}
+
 // ===========================================================================
 // S94 R1 (FIXME 0457) — the real async Effect arm over `IO_TAG_EFFECT_POLL`.
 // Gated `concurrency-runtime` (runs under `cargo nt-concurrency-runtime`).
@@ -773,7 +820,10 @@ mod poll_arm {
 
     /// Build an `IO_TAG_EFFECT_POLL` node over a host-built state-closure whose
     /// `code_ptr` is `test_timer_poll`, `drop_glue` is null, env = `[result=0 |
-    /// arg=n]` — exactly the shape the backend's poll-construction arm emits.
+    /// arg=n]` — exactly the shape the backend's poll-construction arm emits,
+    /// INCLUDING the Wave-3 reserved `(token, capacity)` carrier slots at
+    /// `field_offset(1)` (abs 32, sentinel 0) and `field_offset(2)` (abs 40,
+    /// sentinel 1) — `io-trampoline.md` §13.3.
     fn build_poll_node(n: i64) -> i64 {
         // closure payload: code_ptr(8) + drop_glue(8) + result(8) + arg(8) = 32
         let clo = alloc_with_rc(32) as i64;
@@ -783,11 +833,14 @@ mod poll_arm {
             crate::heap_access::write_i64(clo, 32, 0); // env: result slot sentinel
             crate::heap_access::write_i64(clo, 40, n); // env: arg 0 = N
         }
-        // node payload: tag(8) + state_closure(8) = 16
-        let node = alloc_with_rc(16) as i64;
+        // node payload: tag(8) + state_closure(8) + token(8) + capacity(8) = 32
+        // (payload_size(3) — the widened poll node, §13.3).
+        let node = alloc_with_rc(32) as i64;
         unsafe {
-            crate::heap_access::write_i64(node, TAG_OFFSET, IO_TAG_EFFECT_POLL);
-            crate::heap_access::write_i64(node, FIELD_0_OFFSET, clo);
+            crate::heap_access::write_i64(node, TAG_OFFSET, IO_TAG_EFFECT_POLL); // abs 16
+            crate::heap_access::write_i64(node, FIELD_0_OFFSET, clo); // abs 24 — state closure
+            crate::heap_access::write_i64(node, FIELD_1_OFFSET, 0); // abs 32 — token sentinel
+            crate::heap_access::write_i64(node, FIELD_1_OFFSET + 8, 1); // abs 40 — capacity sentinel
         }
         node
     }
@@ -802,8 +855,8 @@ mod poll_arm {
     fn run_io_async_effect_arm_awaits_effectpoll_and_reads_generic_result() {
         start_strand_recording();
         let node = build_poll_node(55);
-        let result = crate::reactor::block_on_reactor(async |host| {
-            run_io_trampoline_inner_async(node, host, StrandId::ROOT).await
+        let result = crate::reactor::block_on_reactor(async |env| {
+            run_io_trampoline_inner_async(node, env, StrandId::ROOT).await
         })
         .expect("reactor");
         assert_eq!(result, 55, "poll node result reads back via the generic env slot");
@@ -832,5 +885,125 @@ mod poll_arm {
         let result = drive_io(node);
         assert_eq!(result, 42, "drive_io routes a poll node through the reactor");
         crate::drop::consume_io_tree(node);
+    }
+
+    /// A poll fixture with a CALLER-CHOSEN timer delay (vs `test_timer_poll`'s
+    /// fixed ~2ms). env = `[result/scratch@0 | delay_ms@8 | retval@16]`: first
+    /// poll arms a `delay_ms` reactor timer ⇒ `Pending`; the timer-driven re-poll
+    /// writes `retval` ⇒ `Ready`. Used to make the poll branch take a meaningful,
+    /// overlap-observable time.
+    unsafe extern "C" fn slow_timer_poll(
+        state: *mut core::ffi::c_void,
+        host: *const HostCtx,
+        waker: *const CWaker,
+    ) -> CPoll {
+        let result_ptr = state as *mut i64;
+        let delay_ms = unsafe { *(state as *mut i64).add(1) };
+        let retval = unsafe { *(state as *mut i64).add(2) };
+        let slot = unsafe { *result_ptr };
+        if slot == 0 {
+            let deadline = crate::reactor::monotonic_nanos() + (delay_ms as u64) * 1_000_000;
+            unsafe { *result_ptr = deadline as i64 };
+            let hc = unsafe { &*host };
+            unsafe { (hc.register_timer)(hc.host, deadline, waker) };
+            CPoll::Pending
+        } else if crate::reactor::monotonic_nanos() >= slot as u64 {
+            unsafe { *result_ptr = retval };
+            CPoll::Ready
+        } else {
+            CPoll::Pending
+        }
+    }
+
+    /// Build a poll node over `slow_timer_poll` with a `delay_ms` timer returning
+    /// `retval`. Widened poll node (reserved `(token, capacity)` sentinels, §13.3).
+    fn build_slow_poll_node(delay_ms: i64, retval: i64) -> i64 {
+        // closure payload: code_ptr(8)+drop_glue(8)+result(8)+delay(8)+retval(8)=40
+        let clo = alloc_with_rc(40) as i64;
+        unsafe {
+            crate::heap_access::write_i64(clo, 16, slow_timer_poll as *const () as i64);
+            crate::heap_access::write_i64(clo, 24, 0); // drop_glue null
+            crate::heap_access::write_i64(clo, 32, 0); // env: result slot sentinel
+            crate::heap_access::write_i64(clo, 40, delay_ms); // env: delay
+            crate::heap_access::write_i64(clo, 48, retval); // env: retval
+        }
+        let node = alloc_with_rc(32) as i64; // payload_size(3) widened poll node
+        unsafe {
+            crate::heap_access::write_i64(node, TAG_OFFSET, IO_TAG_EFFECT_POLL);
+            crate::heap_access::write_i64(node, FIELD_0_OFFSET, clo);
+            crate::heap_access::write_i64(node, FIELD_1_OFFSET, 0); // token sentinel
+            crate::heap_access::write_i64(node, FIELD_1_OFFSET + 8, 1); // capacity sentinel
+        }
+        node
+    }
+
+    /// Build a BLOCKING `IO_TAG_EFFECT` node (widened with the §13.2 capacity
+    /// field) whose thunk SLEEPS `sleep_ms` then returns `value`. Models the
+    /// `pool-demo` blocking leaf at the unit tier.
+    fn build_sleeping_blocking_effect(token: i64, capacity: i64, sleep_ms: u64, value: i64) -> i64 {
+        let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
+            Box::new(Box::new(move || {
+                std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+                cranelisp_platform::EffectOutcome {
+                    value,
+                    fault_cause: std::ptr::null(),
+                    fault_len: 0,
+                }
+            }));
+        let thunk_ptr = Box::into_raw(thunk) as i64;
+        // payload: tag+thunk+token+fn_name+capacity = 40 bytes (§13.2 widened).
+        let base = alloc_with_rc(40) as i64;
+        unsafe {
+            crate::heap_access::write_i64(base, TAG_OFFSET, IO_TAG_EFFECT); // abs 16
+            crate::heap_access::write_i64(base, FIELD_0_OFFSET, thunk_ptr); // abs 24 thunk
+            crate::heap_access::write_i64(base, FIELD_1_OFFSET, token); // abs 32 token
+            crate::heap_access::write_i64(base, FIELD_2_OFFSET, 0); // abs 40 fn_name
+            crate::heap_access::write_i64(base, FIELD_2_OFFSET + 8, capacity); // abs 48 capacity
+        }
+        base
+    }
+
+    // spec: design/int/reactor.md §2.6 (two-pool join) — a mixed `Par` of one
+    // BLOCKING branch (→ rayon, across the wakeable bridge) and one POLL branch
+    // (→ reactor) overlaps on BOTH pools: the blocking branch offloaded to rayon
+    // does NOT starve the reactor, so the poll branch progresses concurrently and
+    // the join completes in ≈max(delay) not sum. The load-bearing Principle-8
+    // guard against the slice-6 starvation regression.
+    #[test]
+    fn two_pool_join_blocking_branch_does_not_starve_reactor() {
+        const DELAY_MS: u64 = 50;
+        // Branch 0: blocking, sleeps 50ms on rayon, token 0 (no acquire), → 7.
+        let blocking = build_sleeping_blocking_effect(0, 1, DELAY_MS, 7);
+        // Branch 1: poll, 50ms reactor timer, → 9.
+        let poll = build_slow_poll_node(DELAY_MS as i64, 9);
+        let par = make_par_node(&[blocking, poll]);
+
+        let start = std::time::Instant::now();
+        let results_buf = crate::reactor::block_on_reactor(async |env| {
+            run_par_node_async(par, env).await
+        })
+        .expect("reactor");
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        // Both branches ran; results merged in binding order.
+        let r0 = unsafe { crate::heap_access::read_i64(results_buf, FIELD_0_OFFSET) };
+        let r1 = unsafe { crate::heap_access::read_i64(results_buf, FIELD_0_OFFSET + 8) };
+        assert_eq!(r0, 7, "blocking branch (idx 0) result");
+        assert_eq!(r1, 9, "poll branch (idx 1) result");
+
+        // OVERLAP: ≈max(50ms) not sum(100ms). If the blocking branch starved the
+        // reactor (ran ON the reactor thread / block_on'd the rayon join), the
+        // poll's 50ms timer would only start AFTER the 50ms sleep ⇒ ≈100ms.
+        assert!(
+            elapsed_ms < DELAY_MS * 3 / 2,
+            "mixed blocking+poll Par must OVERLAP on both pools (≈{DELAY_MS}ms, \
+             not sum {}ms); measured {elapsed_ms}ms — the blocking branch is \
+             starving the reactor",
+            DELAY_MS * 2,
+        );
+
+        // Cleanup: free the merged results buffer + the Par tree.
+        crate::drop::dec_shallow_io(results_buf);
+        crate::drop::consume_io_tree(par);
     }
 }

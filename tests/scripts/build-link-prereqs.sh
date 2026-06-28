@@ -12,6 +12,7 @@
 #   * `cranelisp-test-capture`-> target/debug/libcranelisp_test_capture.{rlib,so}
 #   * `cranelisp-shapes`      -> target/debug/libcranelisp_shapes.{rlib,so}  (ADT platform fixture)
 #   * `cranelisp-shapes-badabi`-> target/debug/libcranelisp_shapes_badabi.{rlib,so}
+#   * `cranelisp-pool-demo`   -> target/debug/libcranelisp_pool_demo.{rlib,so}  (blocking capacity leaf; S95 slice-3 nt-reactor-e2e)
 #   * `cranelisp-async-demo`  -> target/debug/libcranelisp_async_demo.{rlib,so}  (poll-shape reactor leaf; nt-reactor-e2e)
 #   * `cranelisp-web`          -> target/debug/libcranelisp_web.{rlib,so}  (HTTP platform; exemplar/platforms/web)
 #
@@ -41,6 +42,7 @@ cargo build \
   -p cranelisp-shapes \
   -p cranelisp-shapes-badabi \
   -p cranelisp-boom \
+  -p cranelisp-pool-demo \
   -p cranelisp-web
 
 # `cranelisp-async-demo` (the S94 poll-shape reactor leaf) is built in a SEPARATE

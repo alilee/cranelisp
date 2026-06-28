@@ -83,6 +83,48 @@ pub enum StrandEvent {
         /// The strand whose spark was forced.
         strand: StrandId,
     },
+    /// A token-capacity permit was granted (the effect was admitted to the
+    /// token's `Semaphore(capacity)` pool — slice 3, §2.8 / arch §8.1).
+    TokenAcquired {
+        /// The strand the admitted effect belongs to.
+        strand: StrandId,
+        /// The resource token whose pool granted the permit.
+        token: u64,
+    },
+    /// An effect parked on a full token pool — the (capacity+1)th effect on a
+    /// token, blocked until a permit frees (the user-observable capacity-N park,
+    /// FIXME 0447). Followed by a [`StrandEvent::TokenAcquired`] when a permit
+    /// frees and this strand is woken from the FIFO waiter queue.
+    TokenParked {
+        /// The strand that parked on the full pool.
+        strand: StrandId,
+        /// The resource token whose pool was full.
+        token: u64,
+    },
+    /// A token-capacity permit was returned to the pool (the effect completed),
+    /// possibly waking a parked waiter (§2.8).
+    TokenReleased {
+        /// The strand whose permit was released.
+        strand: StrandId,
+        /// The resource token whose pool the permit returned to.
+        token: u64,
+    },
+    /// A same-token capacity disagreement, recorded under first-writer-wins
+    /// reconciliation (§2.8 / arch §8.1): a later effect declared a `capacity`
+    /// different from the value that first sized the token's pool. The pool is
+    /// **not** resized (the first value stands, never exceeding a declared
+    /// ceiling); this event surfaces the platform bug to the dev sink rather
+    /// than aborting.
+    TokenCapacityMismatch {
+        /// The strand whose effect declared the disagreeing capacity.
+        strand: StrandId,
+        /// The resource token with conflicting capacity declarations.
+        token: u64,
+        /// The capacity that first sized the pool (the value that stands).
+        first_capacity: u32,
+        /// The disagreeing capacity this effect declared (ignored, recorded).
+        requested_capacity: u32,
+    },
 }
 
 impl StrandEvent {
@@ -93,7 +135,11 @@ impl StrandEvent {
             | StrandEvent::EffectSuspended { strand }
             | StrandEvent::EffectResumed { strand }
             | StrandEvent::SparkCreated { strand }
-            | StrandEvent::SparkForced { strand } => *strand,
+            | StrandEvent::SparkForced { strand }
+            | StrandEvent::TokenAcquired { strand, .. }
+            | StrandEvent::TokenParked { strand, .. }
+            | StrandEvent::TokenReleased { strand, .. }
+            | StrandEvent::TokenCapacityMismatch { strand, .. } => *strand,
         }
     }
 }

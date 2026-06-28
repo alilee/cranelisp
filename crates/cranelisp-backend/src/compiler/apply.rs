@@ -914,7 +914,9 @@ where
     ///   `capture(0)` = result slot (sentinel `0`, the poll-fn writes its result),
     ///   `capture(1+i)` = effect arg `i`. The trampoline passes the env base
     ///   (`closure + 32`) as `state`, so the poll-fn sees result at `state+0`,
-    ///   arg0 at `state+8`. The thin node holds tag + the state-closure pointer.
+    ///   arg0 at `state+8`. The node holds tag + the state-closure pointer
+    ///   (field 0) + the reserved `(token, capacity)` carrier (fields 1 and 2,
+    ///   sentinel-initialised `0`/`1` — S95 slice 3, `io-trampoline.md §13.3`).
     ///
     /// RC: args reach here via the consuming convention (`compile_consuming_arg_list`
     /// in the platform-effect dispatch arm), so storing them into the env is an
@@ -974,16 +976,35 @@ where
             heap::heap_store(&mut self.builder, arg, clo, HeapClosure::capture_offset(1 + i));
         }
 
-        // 3. Build the IO_TAG_EFFECT_POLL node: [header | tag=4 | state_closure].
-        let node_size = HeapAdt::payload_size(1) as i64;
+        // 3. Build the IO_TAG_EFFECT_POLL node:
+        //    [header | tag=4 | state_closure | token | capacity].
+        //
+        // S95 slice 3 (`io-trampoline.md §13.3`): reserve the symmetric
+        // `(token, capacity)` carrier on the poll node so the Wave-4 trampoline
+        // reads `(token, capacity)` uniformly off ANY IO node — a poll branch
+        // reads `token == 0` ⇒ no acquire. The node fields keep `token` at
+        // `field_offset(1)` — symmetric with the blocking node's token (also
+        // field 1) — so `read_resource_token` stays one tag-agnostic field-1 read.
+        // S95 only RESERVES the slots with safe sentinels (`token = 0` ⇒
+        // unrestricted; `capacity = 1` ⇒ serial); the live poll-shape value
+        // supply + acquire-around-poll wiring is a deferred Phase-3 refinement.
+        // The widened node is still a one-heap-field ADT (only field 0, the
+        // state-closure, is heap-typed), so drop glue is unchanged in shape.
+        let node_size = HeapAdt::payload_size(3) as i64;
         let node = heap::emit_alloc(&mut self.builder, self.module, alloc_id, node_size);
         // IO_TAG_EFFECT_POLL = 4 (the `cranelisp-platform` gated constant; a
         // literal here because the backend carries no `concurrency` feature —
         // same convention as the `IO_TAG_PAR = 3` literal in `par_bind.rs`).
         let tag = self.builder.ins().iconst(types::I64, 4);
         heap::heap_store(&mut self.builder, tag, node, HeapAdt::TAG_OFFSET);
-        // Ownership transfer of the state-closure (rc=1) into the node, no inc.
+        // field 0: ownership transfer of the state-closure (rc=1) into the node, no inc.
         heap::heap_store(&mut self.builder, clo, node, HeapAdt::field_offset(0));
+        // field 1: token sentinel `0` (⇒ unrestricted / no-acquire).
+        let token_sentinel = self.builder.ins().iconst(types::I64, 0);
+        heap::heap_store(&mut self.builder, token_sentinel, node, HeapAdt::field_offset(1));
+        // field 2: capacity sentinel `1` (⇒ serial-within-token).
+        let capacity_sentinel = self.builder.ins().iconst(types::I64, 1);
+        heap::heap_store(&mut self.builder, capacity_sentinel, node, HeapAdt::field_offset(2));
 
         Ok(node)
     }

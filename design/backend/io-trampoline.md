@@ -766,3 +766,325 @@ and are not backend-unit-tier.
   emits an inspectable node shape, so it is unit-testable at the CLIF seam without a
   running reactor; the reactor-dependent behaviour is cleanly the trampoline's, tested
   separately.
+
+## 13. Slice 3 + 6 — `(token, capacity)` node carrier, two-pool partition (S95)
+
+Sprint 95 completes the IO transition (effect-concurrency slices 3 + 6).
+
+> **REVISED 2026-06-28 (`/arch` re-blessed the slice-3 carrier — `effect-concurrency.md`
+> §8.1/§8.2).** The earlier draft of this section (static `DefKind.cardinality` bake +
+> a `scheduling_class`/`got_slot`-derived token) is **superseded and deleted.** The
+> ratified seam is simpler: **capacity rides *with* the token — dynamic, on the IO node,
+> platform-supplied at the effect site** — a one-field additive generalization of the
+> *existing* `ResourceSerial` dynamic-token mechanism. Retired by that ruling: the
+> `DefKind.cardinality`/`capacity` field, the loader lift of a static capacity, the
+> `got_slot`-derived token (per-symbol forecloses the shared DB-pool case and is
+> incorrect), and the two token-notions. The static descriptor `(token, capacity)` become
+> documentation + the v6 default bridge; live values are platform-supplied at the effect
+> site.
+
+The slice-3 carrier is therefore **not** a backend bake of a symbol-table field. It is:
+
+- **blocking `IO_TAG_EFFECT`:** an **additive** platform constructor
+  `CLIO::effect_on_resource_with_capacity(token, capacity, f)` that appends a `capacity`
+  field to the node (platform-crate code — `/platform`-owned; the backend's blocking-path
+  codegen is **unchanged**). §13.2.
+- **poll-shape `IO_TAG_EFFECT_POLL`:** the backend reserves the symmetric
+  `(token, capacity)` slots on the node it builds (the one backend change). §13.3.
+- the **token-keyed `Semaphore` pool** survives, but keys on the **node-read**
+  `(token, capacity)` — not a symbol-table field. §13.4 (intrinsics/int-owned).
+- the **two-pool partition + wakeable join** (slice 6) is unchanged from the prior draft —
+  keyed on the node tag, no new backend codegen. §13.5 (intrinsics/int-owned).
+
+This section is the `/dev` design for the (small) backend half and the precise statement
+of where each boundary sits. It builds against `effect-concurrency.md` §8.1 (the ratified
+`(token, capacity)` carrier + the first-writer-wins reconciliation rule), §8.2 (within-token
+ordering), §7 (two-pool non-unifiability + coarse handoff).
+
+### 13.1 What is new vs. S94 (and what is unchanged)
+
+| Aspect | S94 (slice 2) | S95 (slices 3 + 6, ratified carrier) |
+|---|---|---|
+| Blocking `IO_TAG_EFFECT` node | `[tag \| thunk \| token \| fn_name]` (32-byte payload) | `[tag \| thunk \| token \| fn_name \| capacity]` (40-byte payload) — **capacity appended at payload offset 32, append-only**; built by the new platform constructor |
+| Blocking-path backend codegen | GOT-indirect call + fn-name stamp (§7) | **unchanged**; the fn-name stamp stays at payload offset 24, unaffected by the append |
+| `IO_TAG_EFFECT_POLL` node | thin: `[tag \| state_closure]` (1 payload field) | `[tag \| state_closure \| token \| capacity]` (3 payload fields) — backend **reserves** the symmetric `(token, capacity)` slots |
+| Capacity source | — | **platform-supplied at the effect site** (dynamic), NOT a `DefKind` field, NOT `got_slot`-derived |
+| Async `Par` arm | `join_all` of **all** branches on the one reactor (blocking effects serialize — the 3 RED guards) | **partitioned** by node tag: blocking → rayon dispatcher, poll-shape → reactor `join_all`; joined via a wakeable bridge |
+
+The backend's whole slice-3 job is **reserving the poll node's `(token, capacity)`
+slots** (§13.3) — the blocking carrier is platform-side, the pool read is intrinsics-side.
+The backend's whole slice-6 job is **nothing new in codegen** — the partition key (which
+pool a branch routes to) is the *node tag the existing two arms already emit*. See §13.5.
+
+### 13.2 The blocking carrier — `effect_on_resource_with_capacity` (platform-owned; backend unaffected)
+
+The blocking `IO_TAG_EFFECT` node is DLL-built: the user's `(some-effect args)` compiles
+to a GOT-indirect call (§7) whose platform fn internally calls a `CLIO::effect*`
+constructor that allocates + returns the node. Slice 3 adds an **additive sibling
+constructor** in `cranelisp-platform`:
+
+```
+CLIO::effect_on_resource_with_capacity(token, capacity, f)
+```
+
+It appends a `capacity` field to the node payload — **append-only, no existing offset
+moves**:
+
+```
+IO_TAG_EFFECT payload (offsets RELATIVE to the payload, after the 16-byte header):
+   0   tag
+   8   thunk_ptr
+  16   resource_token           IO_EFFECT_RESOURCE_OFFSET   (unchanged)
+  24   fn_name_handle           IO_EFFECT_FN_NAME_OFFSET    (unchanged)
+  32   capacity                 IO_EFFECT_CAPACITY_OFFSET   (NEW — appended)
+
+payload widens 32 → 40 bytes (total alloc 48 → 56 bytes).
+```
+
+`CLIO::effect_on_resource(token, f)` becomes exactly `…_with_capacity(token, 1, f)` —
+today's serial-within-token (`ResourceSerial`, capacity 1) preserved by construction. This
+is a one-field additive generalization of the **existing** dynamic-token mechanism: capacity
+reaches the runtime the *same way the token already does* — dynamically, platform-supplied at
+the effect site.
+
+**The backend's blocking-path codegen is UNCHANGED.** The constructor is platform-crate
+code called *inside* the DLL, not emitted by the backend. The backend's only blocking-path
+write is the fn-name stamp (`stamp_platform_fn_name`, §7) at payload offset 24
+(`IO_EFFECT_FN_NAME_OFFSET`, abs offset 40); the capacity append sits *after* it at payload
+offset 32 (abs 48), so the stamp is **unaffected** — append-only is precisely what keeps the
+backend's existing store correct. The capacity carrier on the blocking node is `/platform`'s
+deliverable, recorded here only to pin the boundary; the backend touches none of it.
+
+`capacity` is a plain `NeverHeap` i64 — the blocking node's DLL-side drop glue (which never
+dec'd the token or fn-name fields) is unchanged.
+
+### 13.3 The poll carrier — reserve the symmetric `(token, capacity)` slots (the one backend change)
+
+The poll-shape `IO_TAG_EFFECT_POLL` node is **backend-built** (`compile_poll_effect`, §12.3),
+so the backend reserves the symmetric `(token, capacity)` carrier on it. The seam left this
+an interior choice (env reserved-slots vs. node fields, governed by the v7 env-layout
+convention like the result-slot); **the recommendation is node fields**, for two reasons:
+
+1. it keeps `token` at `FIELD_1_OFFSET` — **symmetric with the blocking node's token** (also
+   field 1 / abs offset 32) — so `read_resource_token` is one tag-agnostic field-1 read for
+   both effect tags;
+2. it leaves the state-closure **env layout undisturbed** (result-slot @ env 0 + the
+   marshaled args at `capture_offset(1+i)`, §12.2), so the **S94 poll demo's arg offsets are
+   unbroken** — reserving env slots before the args would shift every arg.
+
+Widened poll node:
+
+```
+Base pointer →
+  +0   alloc_size: i64       (= 48)
+  +8   rc: i64               (atomic)
+  +16  tag: i64             (= IO_TAG_EFFECT_POLL = 4)   HeapAdt::TAG_OFFSET
+  +24  state_closure: i64    (field 0 — host-built state-closure, §12.2)  field_offset(0)
+  +32  token: i64            (field 1 — symmetric with the blocking node)  field_offset(1)
+  +40  capacity: i64         (field 2 — permits on `token`)                field_offset(2)
+
+Total allocation: 48 bytes (16 header + 32 payload = HeapAdt::payload_size(3))
+```
+
+Construction extends `compile_poll_effect` minimally — node alloc `payload_size(1)` →
+`payload_size(3)`, plus two stores after the state-closure store (Principle 7 — same
+construction site, no new arm):
+
+```
+;; (steps 1+2 unchanged: GOT-load the poll-fn, build the state-closure `clo`)
+
+node = emit_alloc(HeapAdt::payload_size(3))
+store IO_TAG_EFFECT_POLL at node + HeapAdt::TAG_OFFSET   ; tag = 4 (literal, §12.3)
+store clo                at node + field_offset(0)       ; state-closure (rc=1, no inc)
+
+;; (NEW, slice 3) RESERVE the (token, capacity) slots, sentinel-initialised.
+store iconst(0)          at node + field_offset(1)       ; token   = 0 sentinel
+store iconst(1)          at node + field_offset(2)       ; capacity = 1 sentinel
+
+return node
+```
+
+**S95 reserves these slots; it does not yet wire live poll-shape values.** Capacity is
+platform-supplied at the effect site (§8.1); for the *blocking* carrier that supplier is the
+new constructor, and **the slice-3 acceptance is demonstrated on the blocking carrier**
+(`effect-concurrency.md` §8.2). For the *poll* carrier the live-value supply (the poll-fn or
+the reactor narrows `(token, capacity)` at first poll — the poll-fn sees only `state`, so a
+dynamic narrowing rides the env) **plus the acquire-around-poll ordering is a Phase-3
+refinement, NOT required for S95 acceptance** (`/arch`, §8.1/§8.2). So the backend's S95
+deliverable is to **reserve the carrier** at the symmetric offsets with safe sentinels
+(`token = 0` ⇒ unrestricted / no-acquire; `capacity = 1` ⇒ serial); the live narrowing +
+acquire wiring lands with the poll-shape refinement. This is the shaped-to-be-subsumed move
+(Principle 8): the slots exist at their final offsets, so the refinement fills them without a
+layout change.
+
+Both reserved fields are `NeverHeap` scalars — the node's drop glue is unchanged in shape
+(§13.6).
+
+### 13.4 The token-keyed `Semaphore` pool — node-read `(token, capacity)` (intrinsics/int-owned)
+
+The pool core **survives** the carrier revision; it now keys on the **node-read**
+`(token, capacity)` rather than any symbol-table field:
+
+| Half | Owner | What |
+|---|---|---|
+| Blocking node *carries* `(token, capacity)` | **`/platform`** (`effect_on_resource_with_capacity`, §13.2) | the constructor + the appended field |
+| Poll node *reserves* `(token, capacity)` | **`/backend`** (`compile_poll_effect`, §13.3) | the two sentinel stores at `field_offset(1/2)` + the `payload_size(3)` widening |
+| Trampoline *reads* `(token, capacity)` off the node + sizes the `Semaphore` | **`/design int`** (`reactor.md`, `io.rs`) | generalize `read_resource_token` to read field 1 for **both** effect tags; a `read_capacity` for the blocking carrier (payload offset 32) / poll carrier (`field_offset(2)`); the host-owned `HashMap<token, Semaphore>`; acquire-before-dispatch / release-on-completion; within-token source ordering (the capacity-1 sequential async block, §8.2) |
+| Permit semantics | **`/design int`** | `token == 0 ⇒ no acquire (unrestricted)`; otherwise a `Semaphore(capacity)` keyed by token; the (capacity+1)th **parks** |
+| Reconciliation: same token, different capacity | **`/design int`** | **first-writer-wins** (the value that created the token's semaphore) + a dev-facing strand event records the disagreement (`effect-concurrency.md` §8.1 — a capacity disagreement is a platform bug; first-writer never exceeds a declared ceiling) |
+
+The backend emits **no concurrency primitive** (Principle 1 — it constructs a value; all
+acquire/park/release lives in the trampoline). The node is self-describing —
+`(token, capacity)` on the node — so the trampoline stays a pure function of the node, the
+same property that already makes the blocking node carry its own token.
+
+### 13.5 Two-pool partition + the wakeable join (slice 6) — node-shape is backend, the join is intrinsics/int
+
+Slice 6 closes the feature-on regression: today's async `Par` arm
+(`io.rs::run_par_node_async`) routes **all** branches through the single-reactor
+`join_all`, so blocking effects serialize through the one reactor thread (3 RED
+`nt-reactor-e2e` guards). The fix partitions branches and drives **both** pools.
+
+**The partition key is the node tag the backend already emits** — there is **no new
+backend codegen for slice 6**. A blocking effect compiles (unchanged, §7) to an
+`IO_TAG_EFFECT` node; a poll-shape effect compiles (§12 + §13.3) to an
+`IO_TAG_EFFECT_POLL` node. That tag *is* the `blocking?` axis (the routing axis is the node
+tag — no new carrier; `effect-concurrency.md` §7/§8). The backend's slice-6 contribution
+is the guarantee that a mixed `Par`'s branches carry the correct effect-leaf tags so the
+trampoline can partition them — which the two existing arms already do.
+
+**The join is intrinsics/int-owned (the load-bearing Principle-8 constraint).** Stated
+here only to pin the boundary precisely; the authoritative design is `/design int`'s
+(`reactor.md` §`run_par_node_async`). `run_par_node_async` partitions its branches by the
+reachable effect-leaf tag, then **composes the two existing dispatchers** (gate (c) —
+**do not fork a third dispatcher**):
+
+- **blocking partition** (`IO_TAG_EFFECT` branches) → the **existing** rayon
+  `dispatch_par_branches_with_trace` (it already does token-grouping +
+  `SerialGroup` ordering + the worker-side `take_runtime_error()` → join-side
+  `set_runtime_error()` error-ferry — nothing to re-build);
+- **poll-shape partition** (`IO_TAG_EFFECT_POLL` branches) → the **existing** reactor
+  `futures::future::join_all` of `run_io_trampoline_inner_async`;
+- **top-level join** merges the two partition-futures by binding index.
+
+**The rayon→reactor completion signal MUST be a wakeable future** (gate (c)): the rayon
+partition runs on the rayon pool (`spawn`), and its completion is surfaced to the reactor
+through a `futures` oneshot/channel **woken via `cx.waker()`** — so the reactor thread
+`.await`s the rayon result without occupying its single thread. **`block_on(rayon_join)`
+on the reactor thread is explicitly forbidden** — it re-introduces the exact starvation
+slice 6 fixes (a non-yielding blocking wait pinning the one reactor thread). That wakeable
+bridge is the permanent §7 cross-pool handoff (kept **coarse**, at the effect→render
+boundary) reused by every later joined-pool slice — it is shaped-to-last (Principle 8),
+not a throwaway.
+
+**Branch classification is int-owned.** A `Par` branch can be a `Bind` chain rooted at
+`IO_TAG_BIND`, not a bare effect node, so "partition by tag" is *classify by the branch's
+reachable effect leaf*, not a naive root-tag read — an `io.rs`/`reactor.md` detail. The
+backend guarantees the **leaf** tags are correct; the trampoline's classification of a
+branch is `/design int`'s. This is the boundary item to coordinate for slice 6.
+
+### 13.6 Drop glue — unchanged in shape
+
+The widened poll node is still a standard ADT with exactly **one** heap-typed field
+(field 0, the state-closure); the reserved `token` and `capacity` are `NeverHeap` scalars
+(§13.3). The node's drop glue (the `consume_io_tree` walk reaching field 0 and running the
+state-closure's `drop_glue_ptr`, §12.5) is therefore unchanged — the two reserved fields add
+no dec. `build_poll_state_drop_glue` (the state-closure capture-dec glue) is likewise
+untouched: the reserved fields live on the *node*, not the closure env. The `drop_state`
+hook remains reserved-but-inert (§12.5; cancellation slice). The blocking node's appended
+`capacity` (§13.2) is likewise `NeverHeap` — the DLL-side blocking drop glue is unchanged.
+
+### 13.7 Implementation steps (by crate)
+
+1. **`/platform`** — add `CLIO::effect_on_resource_with_capacity(token, capacity, f)`
+   appending `capacity` at payload offset 32 (`IO_EFFECT_CAPACITY_OFFSET`, the new
+   constant); redefine `effect_on_resource(token, f)` as `…_with_capacity(token, 1, f)`;
+   widen the node alloc by one i64 (§13.2). **Backend unaffected.**
+2. **`/backend`** (the one backend change) — widen `compile_poll_effect` (§13.3): node
+   alloc `payload_size(1)` → `payload_size(3)`; add the two sentinel stores
+   (`token = 0` at `field_offset(1)`, `capacity = 1` at `field_offset(2)`). **No
+   `DefKind` read, no `cardinality`/`got_slot` derivation** — those are deleted.
+3. **`/design int` + intrinsics** — the pool read (§13.4): generalize `read_resource_token`
+   to both effect tags; add `read_capacity`; the `HashMap<token, Semaphore>`; acquire /
+   release / park; the first-writer-wins capacity reconciliation + the strand event;
+   within-token ordering for capacity-1 (§8.2).
+4. **No backend change for the two-pool partition** (§13.5) — the partition key is the
+   existing node tags; the partition + wakeable join are `io.rs`/`reactor.md`.
+5. The **poll-shape live `(token, capacity)` supply + acquire-around-poll is deferred** to
+   the Phase-3 refinement (`/arch`, §8.1/§8.2) — not in S95 scope; the backend only
+   reserves the carrier.
+
+### 13.8 Unit-test seams for Phase 5 (by tier)
+
+Per the unit-test-per-fix discipline. **NO `DefKind`-bake test, NO `got_slot` test** — both
+retired with the static-carrier design.
+
+**Backend tier** (inspect via CLIF, `CRANELISP_CODEGEN_TRACE=1`, on a shrunk single-arg poll
+effect — small repro → small CLIF readable by eye):
+
+- **Poll-node reserved-slots CLIF shape.** A poll effect constructs an `IO_TAG_EFFECT_POLL`
+  node of `payload_size(3)` (48 bytes) with the state-closure at `field_offset(0)`, an
+  `iconst 0` (token sentinel) at `field_offset(1)`, and an `iconst 1` (capacity sentinel)
+  at `field_offset(2)`. Assert the widened alloc + the two sentinel stores at the symmetric
+  offsets.
+- **Two-pool partition by tag.** A mixed `Par` of one blocking effect + one poll effect
+  emits exactly one `IO_TAG_EFFECT` node and one `IO_TAG_EFFECT_POLL` node — the partition
+  key. Assert both tag constants appear in the `Par` branch CLIF (the backend's slice-6
+  contribution: correct leaf tags; the partition logic itself is int-tested).
+- **Byte-identical-off (the load-bearing negative guard).** A blocking effect constructs an
+  unchanged `IO_TAG_EFFECT` node via the §7 dispatch+stamp; the fn-name stamp still lands at
+  payload offset 24 and **no `IO_TAG_EFFECT_POLL` node is constructed**; the emitted backend
+  CLIF for a representative blocking effect call is unchanged vs. S94. (The capacity append
+  is platform-side, not backend CLIF — see the platform tier.)
+
+**Platform tier** (`/platform`-owned, `cranelisp-platform`):
+
+- **Capacity-append @ payload offset 32 + node-widen 32 → 40, append-only.**
+  `effect_on_resource_with_capacity(token, N, f)` writes `capacity = N` at payload offset 32;
+  `resource_token` (offset 16) and `fn_name_handle` (offset 24) are **unmoved**.
+- **`effect_on_resource` cap-1 path unchanged.** `effect_on_resource(token, f)` produces a
+  node with `capacity = 1` (today's serial-within-token) — the byte-identical generalization.
+
+**Integration / int tier** (`/qa` + `/design int`, driven through `cranelisp_run_io`):
+N effects on distinct tokens overlap; N on one token of capacity N run concurrently + the
+(N+1)th parks; same-token capacity-1 serial + ordered; same-token capacity-disagreement →
+first-writer-wins + strand event; a mixed blocking+poll `Par` overlaps on both pools in
+≈max not sum; the 3 `nt-reactor-e2e` guards flip green; `--link` links no executor. These
+exercise the **blocking carrier** (slice-3 acceptance is demonstrable there, §8.2), not the
+deferred poll-shape acquire.
+
+### 13.9 Public-API / baseline-diff impact (the `cranelisp-types` edge touch is GONE)
+
+The ratified carrier **removes the `cranelisp-types` (`DefKind`) edge touch** the earlier
+draft anticipated — there is **no `DefKind.cardinality` field**. The surface that moves is
+`crates/cranelisp-platform/public-api.txt`:
+
+- the new `CLIO::effect_on_resource_with_capacity` constructor (additive, **ungated**);
+- the new `IO_EFFECT_CAPACITY_OFFSET` constant (additive, ungated).
+
+Both are **additive** to the platform crate's public surface. **Flag for `/dev`** (the
+`/platform`-side implementing change): regenerate `crates/cranelisp-platform/public-api.txt`
+in the same change-set per the baseline-diff discipline, and name the two added items in the
+platform crate's source rustdoc (BC §5 surface). The poll-node widening is an in-process
+backend↔intrinsics convention — **no `cranelisp-types` edge, no `public-api` move on the
+backend side, no `ABI_VERSION` bump** (the appended blocking field is governed by the v6/v7
+node-layout convention, not a struct ABI freeze). The `_neg` gated-edge guard stays green.
+
+### 13.10 Quality attributes touched
+
+- **Simplicity / complexity budget (Principle 6).** The ratified carrier is *simpler* than
+  the superseded draft: a one-field additive generalization of the existing dynamic-token
+  mechanism, no static `DefKind` field, no loader lift, no two token-notions. The backend's
+  contribution shrinks to two sentinel stores; slice 6 adds **zero** backend codegen.
+- **Maintainability / single source of truth (Principle 7).** Capacity reaches the runtime
+  the *same way the token already does* — one carrier, one read site per node kind;
+  `compile_poll_effect` stays the single poll-node construction site; the two-pool join
+  reuses the two existing dispatchers (no third dispatcher).
+- **Concurrency-safety (Principle 1).** The backend emits no concurrency primitive — it
+  reserves a self-describing `(token, capacity)` carrier. All acquire/park/release/wake lives
+  in the trampoline; the wakeable rayon→reactor bridge (no `block_on` on the reactor thread)
+  is the structural guard against re-starvation; the first-writer-wins reconciliation never
+  exceeds a platform-declared capacity ceiling.
+- **Testability (Principle 5).** The reserved carrier emits an inspectable node shape
+  (offsets + sentinel constants), unit-testable at the CLIF seam without a running reactor;
+  the pool/routing behaviour is cleanly the trampoline's, tested separately by `/qa`.

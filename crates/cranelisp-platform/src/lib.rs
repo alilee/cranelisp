@@ -300,8 +300,11 @@ pub const IO_TAG_PAR: i64 = 3;
 pub const IO_TAG_EFFECT_POLL: i64 = 4;
 
 /// Byte offset of the resource token within an Effect node payload.
-/// Effect layout: [tag i64][thunk_ptr i64][resource_token i64][fn_name_handle i64]
-/// -- 32 bytes (ABI v4; widened from 24 by FIXME 0327, the dispatch funnel).
+/// Effect layout (slice-3 / S95, ABI v4 node):
+/// `[tag i64][thunk_ptr i64][resource_token i64][fn_name_handle i64][capacity i64]`
+/// -- 40 bytes (widened 32 → 40 by the slice-3 capacity append, itself widened
+/// from 24 by FIXME 0327, the dispatch funnel). All offsets are append-only — no
+/// existing field moves — so `resource_token` stays at offset 16.
 pub const IO_EFFECT_RESOURCE_OFFSET: i64 = 16;
 
 /// Byte offset of the baked fn-name handle within an Effect node payload
@@ -311,6 +314,30 @@ pub const IO_EFFECT_RESOURCE_OFFSET: i64 = 16;
 /// the platform-fn call returns (step 2), and the intrinsics IO trampoline
 /// reads it in the fault guard (step 3). A null handle ⇒ `fn_name: "<unknown>"`.
 pub const IO_EFFECT_FN_NAME_OFFSET: i64 = 24;
+
+/// Byte offset of the **resource capacity** within an Effect node payload (the
+/// fifth `i64` field — the token's safe-concurrency ceiling, "this token
+/// correctly sustains ≤ N concurrent ops"). Appended by the effect-concurrency
+/// slice-3 capacity carrier (S95, `effect-concurrency.md` §8.1 / `io-trampoline.md`
+/// §13.2): the node widens **32 → 40 bytes, append-only** — `resource_token` (16)
+/// and `fn_name_handle` (24) do not move, so the backend's fn-name stamp is
+/// unaffected.
+///
+/// Capacity rides **with the token, dynamically, on the node** — platform-supplied
+/// at the effect site via [`CLIO::effect_on_resource_with_capacity`] — exactly as
+/// the token already does (NOT a static `DefKind` field). `effect_on_resource(token,
+/// f)` ⇒ `…_with_capacity(token, 1, f)`, so a plain [`CLIO::effect_on_resource`]
+/// node carries `capacity = 1` (today's serial-within-token / `ResourceSerial`).
+/// The trampoline reads `(token, capacity)` off the node and runs a
+/// `Semaphore(capacity)` keyed by token (the (capacity+1)th parks); `token == 0`
+/// ⇒ no acquire (unrestricted). `capacity` is a plain `NeverHeap` i64 — the
+/// blocking node's DLL-side drop glue is unchanged.
+///
+/// The node layout is an **in-process** backend↔intrinsics convention; the append
+/// is **not** an [`ABI_VERSION`] bump (the in-workspace host + DLLs rebuild
+/// together, and the feature-off trampoline never reads this field —
+/// byte-identical-when-off). See `io-trampoline.md` §13.9.
+pub const IO_EFFECT_CAPACITY_OFFSET: i64 = 32;
 
 /// Scheduling class for a platform function, declared in the platform manifest.
 ///
@@ -827,7 +854,42 @@ impl<CL: CLType> CLIO<CL> {
     ///
     /// The `token` identifies a shared resource. Two Effect nodes with the same
     /// non-zero token in a Par group will be serialized by the trampoline.
+    ///
+    /// This is exactly [`effect_on_resource_with_capacity`](Self::effect_on_resource_with_capacity)
+    /// with `capacity = 1` — today's serial-within-token (`ResourceSerial`)
+    /// semantics, preserved by construction. The node it builds is byte-identical
+    /// to the pre-slice-3 node at offsets 0–24 and carries `capacity = 1` at the
+    /// appended offset 32 ([`IO_EFFECT_CAPACITY_OFFSET`]).
     pub fn effect_on_resource(token: i64, f: impl FnOnce() -> CL + 'static) -> Self {
+        Self::effect_on_resource_with_capacity(token, 1, f)
+    }
+
+    /// Wrap a Rust closure as a deferred IO Effect node carrying a
+    /// `(token, capacity)` pair — the effect-concurrency slice-3 capacity carrier
+    /// (S95, `effect-concurrency.md` §8.1 / `io-trampoline.md` §13.2).
+    ///
+    /// `capacity` is the token's safe-concurrency *ceiling*: the platform asserts
+    /// "this resource correctly sustains ≤ `capacity` concurrent ops." It is
+    /// appended to the node at payload [`IO_EFFECT_CAPACITY_OFFSET`] (offset 32) —
+    /// **append-only**, so `resource_token` (16) and the backend-stamped
+    /// `fn_name_handle` (24) do not move; the node widens 32 → 40 payload bytes.
+    /// The trampoline reads `(token, capacity)` off the node and runs a host-owned
+    /// `Semaphore(capacity)` keyed by token (effects **sharing** a token share one
+    /// pool — the DB connection-pool case; the (capacity+1)th **parks**). `token ==
+    /// 0` ⇒ no acquire (unrestricted); `capacity == 1` ⇒ `ResourceSerial`
+    /// (exclusion + within-token source order); `capacity == N` ⇒ the bounded
+    /// pool. Capacity rides *with the token, dynamically, on the node* — exactly
+    /// the way the token already does — NOT a static per-effect/`DefKind` field.
+    ///
+    /// Additive sibling of [`effect_on_resource`](Self::effect_on_resource), which
+    /// is `…_with_capacity(token, 1, f)`. On the **default (ungated)** public-api
+    /// edge — no `concurrency` feature gate; the runtime that *consumes* the
+    /// capacity is feature-gated, but the carrier the platform writes is not.
+    pub fn effect_on_resource_with_capacity(
+        token: i64,
+        capacity: i64,
+        f: impl FnOnce() -> CL + 'static,
+    ) -> Self {
         // DLL-LOCAL fault catch (FIXME 0327 Option A). This wrapper closure is
         // monomorphised at the `CLIO::effect*` call site — i.e. INTO the DLL
         // that owns `f` — so the `catch_unwind` below executes in DLL-compiled
@@ -866,23 +928,27 @@ impl<CL: CLType> CLIO<CL> {
         let thunk_ptr = Box::into_raw(thunk) as i64;
 
         let alloc = get_global_alloc();
-        // 4 x i64: tag + thunk_ptr + resource_token + fn_name_handle (ABI v4 —
-        // node widened 24 → 32 by FIXME 0327, the dispatch funnel). Field-3
-        // (the baked fn-name handle) is RESERVED here and init to null: the DLL
-        // cannot know the cranelisp-level fn-name, so the backend stamps it
-        // post-call (step 2) and the intrinsics trampoline reads it (step 3).
-        let payload = alloc(32);
+        // 5 x i64: tag + thunk_ptr + resource_token + fn_name_handle + capacity.
+        // The first four are the ABI-v4 node (widened 24 → 32 by FIXME 0327, the
+        // dispatch funnel); `capacity` is the slice-3 append (S95) at payload
+        // offset 32 (IO_EFFECT_CAPACITY_OFFSET) — append-only, node widens 32 → 40,
+        // so no existing offset moves. Field-3 (the baked fn-name handle) is
+        // RESERVED here and init to null: the DLL cannot know the cranelisp-level
+        // fn-name, so the backend stamps it post-call (step 2) and the intrinsics
+        // trampoline reads it (step 3).
+        let payload = alloc(40);
         // SAFETY: `payload` is a valid pointer returned by the host allocator for
-        // at least 32 bytes. We write four i64 fields (tag, thunk_ptr, token,
-        // fn_name_handle) at offsets 0, 8, 16, 24 within that allocation.
-        // `thunk_ptr` is a valid pointer from `Box::into_raw` and will be
-        // consumed exactly once by `call_effect_thunk`. Field-3 is null — the
+        // at least 40 bytes. We write five i64 fields (tag, thunk_ptr, token,
+        // fn_name_handle, capacity) at offsets 0, 8, 16, 24, 32 within that
+        // allocation. `thunk_ptr` is a valid pointer from `Box::into_raw` and will
+        // be consumed exactly once by `call_effect_thunk`. Field-3 is null — the
         // backend stamps the real handle after this node is returned.
         unsafe {
             *(payload as *mut i64) = IO_TAG_EFFECT;
             *((payload + 8) as *mut i64) = thunk_ptr;
-            *((payload + 16) as *mut i64) = token;
-            *((payload + 24) as *mut i64) = 0; // fn_name_handle — reserved, null
+            *((payload + IO_EFFECT_RESOURCE_OFFSET) as *mut i64) = token;
+            *((payload + IO_EFFECT_FN_NAME_OFFSET) as *mut i64) = 0; // fn_name — reserved, null
+            *((payload + IO_EFFECT_CAPACITY_OFFSET) as *mut i64) = capacity;
         }
         // Return base pointer (payload - header) for trampoline compatibility.
         CLIO(payload - HEAP_HEADER_SIZE, std::marker::PhantomData)
