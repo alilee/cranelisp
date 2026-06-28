@@ -65,7 +65,6 @@ unsafe fn read_leaf<'h>(
             state as *mut c_void,
             async_read_pollfn,
             host,
-            async_read_result,
             strand,
         )
     }
@@ -82,7 +81,6 @@ unsafe fn feeder_leaf<'h>(
             state as *mut c_void,
             timer_write_pollfn,
             host,
-            timer_write_result,
             strand,
         )
     }
@@ -109,6 +107,7 @@ fn single_leaf_suspend_resume_through_reactor() {
     let start = Instant::now();
     let result = block_on_reactor(async |host| {
         let mut fstate = TimerWriteState {
+            result: 0,
             peer_fd: pair.write_end,
             deadline_nanos: deadline,
             registered: false,
@@ -160,6 +159,7 @@ fn async_read_suspends_on_ewouldblock_and_resumes_on_byte() {
             registered: false,
         };
         let mut fstate = TimerWriteState {
+            result: 0,
             peer_fd: pair.write_end,
             deadline_nanos: deadline,
             registered: false,
@@ -239,23 +239,23 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
 
     let start = Instant::now();
     let results = block_on_reactor(async |host| {
-        let mut r1 = AsyncReadState { fd: p1.read_end, result: 0, registered: false };
-        let mut r2 = AsyncReadState { fd: p2.read_end, result: 0, registered: false };
-        let mut f1 = TimerWriteState { peer_fd: p1.write_end, deadline_nanos: dl1, registered: false };
-        let mut f2 = TimerWriteState { peer_fd: p2.write_end, deadline_nanos: dl2, registered: false };
+        let mut r1 = AsyncReadState { result: 0, fd: p1.read_end, registered: false };
+        let mut r2 = AsyncReadState { result: 0, fd: p2.read_end, registered: false };
+        let mut f1 = TimerWriteState { result: 0, peer_fd: p1.write_end, deadline_nanos: dl1, registered: false };
+        let mut f2 = TimerWriteState { result: 0, peer_fd: p2.write_end, deadline_nanos: dl2, registered: false };
         // Reads use the thread-recording wrappers so the test can prove no
         // read ran on a thread other than the reactor's.
         let read1 = unsafe {
-            EffectPoll::new(&mut r1 as *mut _ as *mut c_void, rec_read_pollfn, host, async_read_result, s_read1)
+            EffectPoll::new(&mut r1 as *mut _ as *mut c_void, rec_read_pollfn, host, s_read1)
         };
         let read2 = unsafe {
-            EffectPoll::new(&mut r2 as *mut _ as *mut c_void, rec_read_pollfn, host, async_read_result, s_read2)
+            EffectPoll::new(&mut r2 as *mut _ as *mut c_void, rec_read_pollfn, host, s_read2)
         };
         let feed1 = unsafe {
-            EffectPoll::new(&mut f1 as *mut _ as *mut c_void, rec_timer_pollfn, host, timer_write_result, s_feed1)
+            EffectPoll::new(&mut f1 as *mut _ as *mut c_void, rec_timer_pollfn, host, s_feed1)
         };
         let feed2 = unsafe {
-            EffectPoll::new(&mut f2 as *mut _ as *mut c_void, rec_timer_pollfn, host, timer_write_result, s_feed2)
+            EffectPoll::new(&mut f2 as *mut _ as *mut c_void, rec_timer_pollfn, host, s_feed2)
         };
         join_io_leaves(vec![read1, read2, feed1, feed2]).await
     })
@@ -325,14 +325,11 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
 /// time — and must re-arm interest to receive the second byte's wakeup.
 #[repr(C)]
 struct TwoFireReadState {
+    /// FIRST field ⇒ at the generic [`super::RESULT_SLOT_OFFSET`] `EffectPoll`
+    /// reads on `Ready` (S94 generic env-offset result read).
+    result: i64,
     fd: i32,
     bytes_seen: i64,
-    result: i64,
-}
-
-fn two_fire_result(state: *mut c_void) -> i64 {
-    // SAFETY: `state` is a live `TwoFireReadState` (constructor obligation).
-    unsafe { (*(state as *const TwoFireReadState)).result }
 }
 
 /// Poll-fn that recv's ONE byte at a time and needs two bytes (two distinct
@@ -396,16 +393,15 @@ fn leaf_pending_twice_re_registers_and_completes_no_lost_wakeup() {
 
     let result = block_on_reactor(async |host| {
         let mut st = TwoFireReadState {
+            result: 0,
             fd: pair.read_end,
             bytes_seen: 0,
-            result: 0,
         };
         let leaf = unsafe {
             EffectPoll::new(
                 &mut st as *mut _ as *mut c_void,
                 two_fire_read_pollfn,
                 host,
-                two_fire_result,
                 strand,
             )
         };

@@ -153,7 +153,8 @@ pub use adt::{set_global_schema, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldT
 mod concurrency;
 #[cfg(feature = "concurrency")]
 pub use concurrency::{
-    ConcurrencyDescriptor, ConcurrentPlatformFn, HostCtx, Poll, PollFn, Waker, WakerVTable,
+    ConcurrencyDescriptor, ConcurrentPlatformFn, ConcurrentPlatformManifest, HostCtx, Poll, PollFn,
+    Waker, WakerVTable,
 };
 
 // The `declare_platform!` three-exports emitter + its compile-time
@@ -283,6 +284,20 @@ pub const IO_TAG_BIND: i64 = 2;
 /// Parallel IO dispatch: branches run concurrently with resource token serialization.
 /// See spec §10.12 (Automatic IO Scheduling).
 pub const IO_TAG_PAR: i64 = 3;
+
+/// Poll-shape effect node (ABI-v7 effect-concurrency seam, S94 R1). Field-0 is a
+/// host-built **state-closure** (`code_ptr` = the GOT-loaded poll-fn,
+/// `drop_glue_ptr` = state teardown, env = result-slot + marshaled i64 args +
+/// scratch); the trampoline's async Effect arm `.await`s an `EffectPoll` over it.
+/// Distinct from [`IO_TAG_EFFECT`] (= 1, the v6 blocking-thunk node, untouched):
+/// the poll node is constructed ONLY for poll-shape (`blocking == 0`) effects,
+/// which exist only in a `concurrency`-built toolchain — so the feature-off
+/// trampoline never sees this tag (byte-identical-when-off, sprint S94 R3).
+/// Gated behind `concurrency` (off the default `public-api.txt` edge) alongside
+/// the other v7 layout contracts. See `design/arch/effect-concurrency.md`
+/// Appendix B §"ratified backend↔intrinsics seam" + `platform-interface.md` §6.8.
+#[cfg(feature = "concurrency")]
+pub const IO_TAG_EFFECT_POLL: i64 = 4;
 
 /// Byte offset of the resource token within an Effect node payload.
 /// Effect layout: [tag i64][thunk_ptr i64][resource_token i64][fn_name_handle i64]
@@ -1348,6 +1363,15 @@ pub struct OwnedPlatformFnDescriptor {
     pub docstring: String,
     pub param_names: Vec<String>,
     pub scheduling_class: SchedulingClass,
+    /// The v7 per-effect concurrency contract, lifted from a
+    /// [`ConcurrentPlatformFn`] by [`concurrent_manifest_to_descriptors`].
+    /// `Some` for a v7-loaded poll-shape effect; `None` for a v6
+    /// (`manifest_to_descriptors`) blocking effect. Gated `concurrency` so the
+    /// default edge is unchanged (the struct is `#[non_exhaustive]`). The loader
+    /// reads `concurrency.blocking == 0` to set `DefKind::PlatformEffect.poll_shape`
+    /// (FIXME 0457; `platform-interface.md` §6.8).
+    #[cfg(feature = "concurrency")]
+    pub concurrency: Option<ConcurrencyDescriptor>,
 }
 
 /// Convert a C-ABI manifest into safe Rust descriptors.
@@ -1459,6 +1483,110 @@ pub unsafe fn manifest_to_descriptors(
             docstring: func_docstring,
             param_names,
             scheduling_class: SchedulingClass::from_u32(func.scheduling_class),
+            // v6 blocking effects carry no concurrency descriptor.
+            #[cfg(feature = "concurrency")]
+            concurrency: None,
+        });
+    }
+
+    Ok((name, version, descriptors))
+}
+
+/// Convert a C-ABI **concurrent** manifest (ABI v7) into safe Rust descriptors —
+/// the gated sibling of [`manifest_to_descriptors`] (FIXME 0457,
+/// `platform-interface.md` §6.8).
+///
+/// Lifts each [`ConcurrentPlatformFn`] into an [`OwnedPlatformFnDescriptor`],
+/// carrying its [`ConcurrencyDescriptor`] on the `concurrency` field (`Some`).
+/// The still-required `scheduling_class` (the conflict-domain axis the host keeps
+/// on `DefKind::PlatformEffect`) is derived from the descriptor via
+/// [`ConcurrencyDescriptor::nearest_scheduling_class`]. The `poll`-fn pointer is
+/// stored in `ptr` exactly as the v6 path stores the blocking fn pointer — both
+/// are the GOT-indirect dispatch address; what differs is the *shape* the slot
+/// holds, decided downstream by `poll_shape` on the symbol-table entry.
+///
+/// # Safety
+/// All pointers in the manifest must be valid and point to UTF-8 data.
+///
+/// # Errors
+/// UTF-8 validation failures construct [`PlatformError::LoadFailed`] with
+/// `ErrorLocation::unknown()`; the caller rewrites `dll`/`location` at the call
+/// site (same convention as [`manifest_to_descriptors`]).
+#[cfg(feature = "concurrency")]
+pub unsafe fn concurrent_manifest_to_descriptors(
+    manifest: &ConcurrentPlatformManifest,
+) -> Result<(String, String, Vec<OwnedPlatformFnDescriptor>), PlatformError> {
+    let utf8_err = |what: &str, e: std::str::Utf8Error| PlatformError::LoadFailed {
+        dll: std::path::PathBuf::new(),
+        cause: format!("invalid UTF-8 in {what}: {e}"),
+        location: ErrorLocation::unknown(),
+    };
+
+    let name = unsafe {
+        let bytes = std::slice::from_raw_parts(manifest.name, manifest.name_len);
+        std::str::from_utf8(bytes)
+            .map_err(|e| utf8_err("platform name", e))?
+            .to_string()
+    };
+    let version = unsafe {
+        let bytes = std::slice::from_raw_parts(manifest.version, manifest.version_len);
+        std::str::from_utf8(bytes)
+            .map_err(|e| utf8_err("platform version", e))?
+            .to_string()
+    };
+
+    let functions =
+        unsafe { std::slice::from_raw_parts(manifest.functions, manifest.function_count) };
+
+    let mut descriptors = Vec::with_capacity(manifest.function_count);
+    for func in functions {
+        let func_name = unsafe {
+            let bytes = std::slice::from_raw_parts(func.name, func.name_len);
+            std::str::from_utf8(bytes)
+                .map_err(|e| utf8_err("function name", e))?
+                .to_string()
+        };
+        let func_type_sig = unsafe {
+            let bytes = std::slice::from_raw_parts(func.type_sig, func.type_sig_len);
+            std::str::from_utf8(bytes)
+                .map_err(|e| utf8_err("function type_sig", e))?
+                .to_string()
+        };
+        let func_docstring = unsafe {
+            let bytes = std::slice::from_raw_parts(func.docstring, func.docstring_len);
+            std::str::from_utf8(bytes)
+                .map_err(|e| utf8_err("function docstring", e))?
+                .to_string()
+        };
+
+        let mut param_names = Vec::with_capacity(func.param_name_count);
+        if func.param_name_count > 0 {
+            let name_ptrs =
+                unsafe { std::slice::from_raw_parts(func.param_names, func.param_name_count) };
+            let name_lens =
+                unsafe { std::slice::from_raw_parts(func.param_name_lens, func.param_name_count) };
+            for i in 0..func.param_name_count {
+                let pname = unsafe {
+                    let bytes = std::slice::from_raw_parts(name_ptrs[i], name_lens[i]);
+                    std::str::from_utf8(bytes)
+                        .map_err(|e| utf8_err(&format!("param name {i}"), e))?
+                        .to_string()
+                };
+                param_names.push(pname);
+            }
+        }
+
+        descriptors.push(OwnedPlatformFnDescriptor {
+            name: func_name,
+            // The poll-fn pointer is the GOT-indirect dispatch address (the
+            // backend bakes it as the state-closure `code_ptr`).
+            ptr: func.poll as *const u8,
+            param_count: func.param_count as usize,
+            type_sig: func_type_sig,
+            docstring: func_docstring,
+            param_names,
+            scheduling_class: func.concurrency.nearest_scheduling_class(),
+            concurrency: Some(func.concurrency),
         });
     }
 

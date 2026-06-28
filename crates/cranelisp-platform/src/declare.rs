@@ -431,3 +431,138 @@ macro_rules! __declare_platform_body {
         }
     };
 }
+
+/// Declare a **poll-shape (concurrent) platform** — the ABI-v7 sibling of
+/// [`declare_platform!`] for platforms whose effects are host-reactor poll
+/// leaves (`blocking == 0`), not v6 blocking `CLIO` thunks (FIXME 0457,
+/// `platform-interface.md` §6.8).
+///
+/// Each function is a [`crate::PollFn`] (`unsafe extern "C" fn(state, *HostCtx,
+/// *Waker) -> Poll`) — NOT a `CLIO`-returning blocking fn — and carries a
+/// [`crate::ConcurrencyDescriptor`] (the `descriptor:` key) instead of a
+/// `SchedulingClass`. The macro emits TWO exports, deliberately on the **v7
+/// channel only** (it does NOT emit the v6 `cranelisp_platform_manifest_<name>`
+/// — these functions are not blocking effects, so they have no v6 shape):
+///
+/// 1. `__cranelisp_got_platform_<name>` — the exported GOT (poll-fn pointers,
+///    manifest order = slot order), identical in shape + symbol to the v6 GOT so
+///    the host's existing dlsym + `GotTable::with_static_backing` wiring works
+///    unchanged.
+/// 2. `cranelisp_concurrent_manifest` — a fn taking `HostCallbacks`, returning a
+///    [`crate::ConcurrentPlatformManifest`]; it inits the host context, populates
+///    the GOT, and builds the [`crate::ConcurrentPlatformFn`] array. The
+///    concurrency-built host dlsym-probes this symbol FIRST (`src/platform.rs`).
+///
+/// Gated usage: the platform crate must enable `cranelisp-platform/concurrency`
+/// (so the v7 types resolve). `drop_state` is `None` for S94 (the reserved-inert
+/// hook; the in-tree demo's state is host-known — `effect-concurrency.md` §13
+/// decision 4).
+#[macro_export]
+macro_rules! declare_concurrent_platform {
+    (
+        name: $platform_name:literal,
+        version: $platform_version:literal,
+        host: $host:ident,
+        functions: [
+            $(
+                $fn_ident:ident {
+                    cl_name: $cl_name:literal,
+                    sig: $sig:literal,
+                    doc: $doc:literal,
+                    params: [$($param:ident),* $(,)?],
+                    descriptor: $descriptor:expr,
+                }
+            ),* $(,)?
+        ]
+    ) => {
+        // The exported platform GOT (§5.1) — slot i holds poll-fn i's pointer.
+        // Same symbol + shape as the v6 GOT (the host dlsyms it by name).
+        #[unsafe(export_name = concat!("__cranelisp_got_platform_", $platform_name))]
+        pub static __CRANELISP_PLATFORM_GOT:
+            [$crate::MacroAtomicPtr<u8>; $crate::GOT_TABLE_SIZE] =
+            [const { $crate::MacroAtomicPtr::new(::std::ptr::null_mut()) };
+                $crate::GOT_TABLE_SIZE];
+
+        // The v7 concurrent manifest export. NOT namespaced by platform name: a
+        // concurrent platform is dlopened as its own library and the host
+        // dlsyms this symbol in that specific handle (FIXME 0457).
+        #[unsafe(export_name = "cranelisp_concurrent_manifest")]
+        pub unsafe extern "C" fn cranelisp_concurrent_manifest(
+            callbacks: *const $crate::HostCallbacks,
+        ) -> $crate::ConcurrentPlatformManifest {
+            // Initialize the host context (stores callbacks, sets global alloc).
+            unsafe { $host.init(callbacks); }
+
+            // Populate the exported GOT: slot i ← poll-fn i (manifest order IS
+            // GOT slot order, §5.1).
+            {
+                let mut __got_slot: usize = 0;
+                $(
+                    __CRANELISP_PLATFORM_GOT[__got_slot].store(
+                        $fn_ident as *const u8 as *mut u8,
+                        ::std::sync::atomic::Ordering::Release,
+                    );
+                    __got_slot += 1;
+                )*
+                let _ = __got_slot;
+            }
+
+            // Phase 1: capture each poll-fn pointer + param info before shadowing.
+            $(
+                #[allow(unused)]
+                let $fn_ident = {
+                    let poll: $crate::PollFn = $fn_ident;
+                    let param_names_vec: Vec<&'static [u8]> = vec![
+                        $( stringify!($param).as_bytes(), )*
+                    ];
+                    let param_count = param_names_vec.len();
+                    let (name_ptrs_ptr, name_lens_ptr) = if param_count > 0 {
+                        let name_ptrs: Vec<*const u8> =
+                            param_names_vec.iter().map(|b| b.as_ptr()).collect();
+                        let name_lens: Vec<usize> =
+                            param_names_vec.iter().map(|b| b.len()).collect();
+                        let ptrs = Box::leak(name_ptrs.into_boxed_slice());
+                        let lens = Box::leak(name_lens.into_boxed_slice());
+                        (ptrs.as_ptr(), lens.as_ptr())
+                    } else {
+                        (std::ptr::null::<*const u8>(), std::ptr::null::<usize>())
+                    };
+                    let descriptor: $crate::ConcurrencyDescriptor = $descriptor;
+                    (poll, name_ptrs_ptr, name_lens_ptr, param_count, descriptor)
+                };
+            )*
+
+            // Phase 2: build the ConcurrentPlatformFn array.
+            let functions: &'static [$crate::ConcurrentPlatformFn] = Box::leak(vec![
+                $(
+                    $crate::ConcurrentPlatformFn {
+                        name: $cl_name.as_ptr(),
+                        name_len: $cl_name.len(),
+                        poll: ($fn_ident).0,
+                        // RESERVED-but-inert (S94): host-known state, no leaf hook.
+                        drop_state: ::core::option::Option::None,
+                        param_count: ($fn_ident).3 as u32,
+                        type_sig: $sig.as_ptr(),
+                        type_sig_len: $sig.len(),
+                        docstring: $doc.as_ptr(),
+                        docstring_len: $doc.len(),
+                        param_names: ($fn_ident).1,
+                        param_name_lens: ($fn_ident).2,
+                        param_name_count: ($fn_ident).3,
+                        concurrency: ($fn_ident).4,
+                    },
+                )*
+            ].into_boxed_slice());
+
+            $crate::ConcurrentPlatformManifest {
+                abi_version: $crate::ABI_VERSION,
+                name: $platform_name.as_ptr(),
+                name_len: $platform_name.len(),
+                version: $platform_version.as_ptr(),
+                version_len: $platform_version.len(),
+                functions: functions.as_ptr(),
+                function_count: functions.len(),
+            }
+        }
+    };
+}

@@ -207,6 +207,7 @@ fn platform_effect_def_new_shape(slot: usize) -> ModuleEntry {
         param_names: vec![],
         kind: Box::new(DefKind::PlatformEffect {
             scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+            poll_shape: false,
             got_slot: slot,
         }),
         callees: vec![],
@@ -324,6 +325,69 @@ fn resolve_platform_effect_target_discriminates_kind_and_follows_imports() {
     assert_eq!(
         resolve_platform_effect_target(&tables, &aliases, &user, &Symbol::from("nonesuch")),
         None,
+    );
+}
+
+/// A poll-shape `DefKind::PlatformEffect` (`poll_shape: true`, `blocking == 0`)
+/// with a one-param `Fn` scheme, so `resolve_poll_effect_target` can lift its
+/// param types for the state-closure drop glue (FIXME 0457, S94 R1).
+fn poll_effect_def(slot: usize) -> ModuleEntry {
+    ModuleEntry::Def {
+        scheme: Scheme {
+            type_vars: vec![],
+            constraints: std::collections::HashMap::new(),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+        },
+        visibility: Visibility::Public,
+        docstring: None,
+        param_names: vec![Symbol::from("n")],
+        kind: Box::new(DefKind::PlatformEffect {
+            scheduling_class: cranelisp_types::SchedulingClass::Commutative,
+            poll_shape: true,
+            got_slot: slot,
+        }),
+        callees: vec![],
+        trait_origin: None,
+        seq: 0,
+        ast: None,
+        codegen_view: None,
+        code: None,
+    }
+}
+
+// spec: design/arch/effect-concurrency.md §"The ratified backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)" (a)
+// + design/backend/io-trampoline.md §12.6 — `resolve_poll_effect_target` is the
+// keying discriminator for the backend's poll-construction arm: it returns
+// `Some((module, slot, param_types))` ONLY for a `poll_shape: true`
+// PlatformEffect (so that effect builds an `IO_TAG_EFFECT_POLL` node), and
+// `None` for a `poll_shape: false` blocking effect (so it takes the unchanged
+// GOT-indirect call path — the default build constructs no poll node,
+// byte-identical-off). No cargo feature: the arm is data-keyed (Principle 11).
+#[test]
+fn resolve_poll_effect_target_keys_on_poll_shape() {
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    let plat = ModuleFullPath::from("platform.async-demo");
+    {
+        let mut st = SymbolTable::new(plat.clone());
+        // poll-shape (blocking==0) → keys the poll-construction arm.
+        st.insert(Symbol::from("async-read"), poll_effect_def(3));
+        // blocking (poll_shape:false, every v6 platform) → must NOT key it.
+        st.insert(Symbol::from("print"), platform_effect_def_new_shape(2));
+        tables.insert(plat.clone(), st);
+    }
+    let aliases: ModuleAliases = DashMap::new();
+
+    // poll-shape resolves to (defining module, slot, param types) — the keying.
+    let got = resolve_poll_effect_target(&tables, &aliases, &plat, &Symbol::from("async-read"));
+    assert!(
+        matches!(&got, Some((m, 3, params)) if m == &plat && params.len() == 1),
+        "poll-shape effect must key the poll arm with its param types, got {got:?}",
+    );
+    // blocking effect → None (unchanged call path; byte-identical-off).
+    assert_eq!(
+        resolve_poll_effect_target(&tables, &aliases, &plat, &Symbol::from("print")),
+        None,
+        "a blocking (poll_shape:false) effect must NOT key the poll-construction arm",
     );
 }
 

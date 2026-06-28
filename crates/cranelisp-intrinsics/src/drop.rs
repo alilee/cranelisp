@@ -310,6 +310,14 @@ pub fn consume_io_tree(ptr: i64) {
                 consume_io_tree(branch);
             }
         }
+        // IO_TAG_EFFECT_POLL (= 4, the S94 poll-shape node; literal here because
+        // the constant is `concurrency`-gated in cranelisp-platform and this file
+        // is ungated). field0 is the host-built state-closure — its embedded
+        // drop glue dec's the captured i64 args; `consume_closure` runs it +
+        // deallocs the closure. The result slot is a plain i64 (no dec).
+        4 => {
+            consume_closure(field0);
+        }
         _ => {
             // Unknown IO tag — treat conservatively as scalar fields.
         }
@@ -351,12 +359,27 @@ pub fn dec_shallow_io(ptr: i64) {
     if ptr < NULLARY_THRESHOLD {
         return;
     }
+    // An `IO_TAG_EFFECT_POLL` node (= 4) is the one exception to "shallow": its
+    // field0 state-closure is NOT re-owned elsewhere (unlike a Bind's inner /
+    // cont, which transfer to `current` / `cont_stack`), so a last-ref shallow
+    // dec MUST also release the closure or it leaks. (Literal 4 — the constant is
+    // `concurrency`-gated; this file is ungated.)
+    let tag = unsafe { read_i64(ptr, TAG_OFFSET) };
+    let poll_closure = if tag == 4 {
+        unsafe { read_i64(ptr, FIELD0_OFFSET) }
+    } else {
+        0
+    };
     // SAFETY: caller guarantees `ptr` is a valid heap base with rc > 0.
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {
         return; // other references remain; outer allocation stays live.
     }
     std::sync::atomic::fence(Ordering::Acquire);
+    // A poll node owns its state-closure outright — release it before the node.
+    if poll_closure != 0 {
+        consume_closure(poll_closure);
+    }
     // Last ref — free the outer allocation only. Fields are intentionally
     // NOT walked; the caller has transferred ownership of every heap-typed
     // field to another holder (see §3.5.4).

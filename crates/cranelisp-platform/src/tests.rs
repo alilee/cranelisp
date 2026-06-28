@@ -1037,6 +1037,11 @@
             offset_of!(ConcurrentPlatformFn, name),
             offset_of!(ConcurrentPlatformFn, name_len),
             offset_of!(ConcurrentPlatformFn, poll),
+            // S94 R1 — the reserved-but-inert `drop_state` hook is appended in
+            // place between `poll` and `param_count` (no `ABI_VERSION` bump; the
+            // v7 contract is not yet frozen). Pin it so a future reorder/removal
+            // is caught (QA Wave-1 carry (e), `tests/plan/sprint-94.md` §1E).
+            offset_of!(ConcurrentPlatformFn, drop_state),
             offset_of!(ConcurrentPlatformFn, param_count),
             offset_of!(ConcurrentPlatformFn, type_sig),
             offset_of!(ConcurrentPlatformFn, type_sig_len),
@@ -1055,6 +1060,15 @@
                  strictly increasing in declaration order, got {offs:?}"
             );
         }
+        // S94 R1 — `drop_state` is positioned strictly between `poll` and
+        // `param_count` (the landed layout, `concurrency.rs:148`).
+        assert!(
+            offset_of!(ConcurrentPlatformFn, poll)
+                < offset_of!(ConcurrentPlatformFn, drop_state)
+                && offset_of!(ConcurrentPlatformFn, drop_state)
+                    < offset_of!(ConcurrentPlatformFn, param_count),
+            "drop_state must sit between poll and param_count"
+        );
         // The concurrency descriptor is the trailing field (subsumes v6
         // scheduling_class) and is the embedded v7 descriptor type.
         assert_eq!(
@@ -1062,4 +1076,82 @@
             *offs.iter().max().unwrap(),
             "concurrency descriptor is the last field"
         );
+    }
+
+    // A no-op poll-fn for the manifest-lift test (never called).
+    #[cfg(feature = "concurrency")]
+    unsafe extern "C" fn dummy_poll(
+        _state: *mut core::ffi::c_void,
+        _host: *const crate::HostCtx,
+        _waker: *const crate::Waker,
+    ) -> crate::Poll {
+        crate::Poll::Ready
+    }
+
+    // spec: design/arch/platform-interface.md §6.8 (FIXME 0457) —
+    // `concurrent_manifest_to_descriptors` lifts a v7 `ConcurrentPlatformManifest`
+    // into `OwnedPlatformFnDescriptor`s, carrying each effect's
+    // `ConcurrencyDescriptor` on `concurrency` (`Some`) and deriving the
+    // still-required `scheduling_class` via `nearest_scheduling_class`. The
+    // poll-fn pointer lands in `ptr` (the GOT-indirect dispatch address). This is
+    // the platform-side half of the manifest→loader→backend poll channel.
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn concurrent_manifest_to_descriptors_lifts_concurrency_and_derives_class() {
+        let name = b"async-read";
+        let sig = b"(Fn [primitives/Int] (primitives/IO primitives/Int))";
+        let doc = b"demo";
+        let pname = b"n";
+        let pname_ptr: [*const u8; 1] = [pname.as_ptr()];
+        let pname_len: [usize; 1] = [pname.len()];
+        let desc = crate::ConcurrencyDescriptor {
+            token: 0,
+            cardinality: 0,
+            global_budget: 0,
+            blocking: 0, // poll-shape
+            _reserved: [0; 3],
+        };
+        let funcs = [crate::ConcurrentPlatformFn {
+            name: name.as_ptr(),
+            name_len: name.len(),
+            poll: dummy_poll,
+            drop_state: None,
+            param_count: 1,
+            type_sig: sig.as_ptr(),
+            type_sig_len: sig.len(),
+            docstring: doc.as_ptr(),
+            docstring_len: doc.len(),
+            param_names: pname_ptr.as_ptr(),
+            param_name_lens: pname_len.as_ptr(),
+            param_name_count: 1,
+            concurrency: desc,
+        }];
+        let plat = b"async-demo";
+        let ver = b"0.1.0";
+        let manifest = crate::ConcurrentPlatformManifest {
+            abi_version: crate::ABI_VERSION,
+            name: plat.as_ptr(),
+            name_len: plat.len(),
+            version: ver.as_ptr(),
+            version_len: ver.len(),
+            functions: funcs.as_ptr(),
+            function_count: funcs.len(),
+        };
+
+        let (pname_s, pver_s, descs) =
+            unsafe { crate::concurrent_manifest_to_descriptors(&manifest) }.expect("lift");
+        assert_eq!(pname_s, "async-demo");
+        assert_eq!(pver_s, "0.1.0");
+        assert_eq!(descs.len(), 1);
+        let d = &descs[0];
+        assert_eq!(d.name, "async-read");
+        assert_eq!(d.param_count, 1);
+        assert_eq!(d.param_names, vec!["n".to_string()]);
+        // The poll-fn pointer is carried in `ptr` (GOT-indirect dispatch address).
+        assert_eq!(d.ptr, dummy_poll as *const u8);
+        // The descriptor is carried (Some) and is poll-shape.
+        assert_eq!(d.concurrency, Some(desc));
+        assert_eq!(d.concurrency.unwrap().blocking, 0);
+        // scheduling_class derived from token:0,cardinality:0 → Commutative.
+        assert_eq!(d.scheduling_class, crate::SchedulingClass::Commutative);
     }

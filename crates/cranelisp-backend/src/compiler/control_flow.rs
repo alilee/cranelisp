@@ -19,6 +19,7 @@
 use super::FnCompiler;
 
 mod capture_rc;
+mod dependent_spark;
 mod fn_as_value;
 mod free_vars;
 mod lambda;
@@ -46,3 +47,6 @@ mod sparkability_tests;
 
 #[cfg(test)]
 mod par_codegen_tests;
+
+#[cfg(test)]
+mod poll_codegen_tests;

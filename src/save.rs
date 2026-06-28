@@ -178,8 +178,60 @@ pub fn generate_module_source(
 /// child with no separating space (flat or indented). It is the regen path's
 /// renderer; the generic `format_indented` is left untouched (it is
 /// `cranelisp-types`-owned; the colon-binding round-trip is a regen concern).
-fn render_decl_sexp(sexp: &Sexp) -> String {
-    render_decl_sexp_indented(sexp, 0)
+///
+/// Docstring-aware (FIXME 0430, `design/int/session-persistence.md §11.3a`,
+/// RATIFIED Option 1): `docstring` carries the LIVE `ModuleEntry::Def.docstring`,
+/// which is AUTHORITATIVE. When `Some(text)`, the §5.12 docstring slot in the
+/// `defn` form (a string literal between the function name and the param vector /
+/// first variant) is emitted/replaced with `text`, and any docstring already
+/// embedded in the stored sexp is DROPPED — the form never carries two docstrings.
+/// When `None`, the stored sexp is rendered verbatim, so a never-`set-doc`'d def
+/// keeps its own authored docstring (and a def with none stays byte-identical).
+/// The stored sexp is NEVER mutated — the reconciler builds a fresh `Sexp` locally
+/// (Principle 7: `set-doc` → `Def.docstring` is the one writer of the metadata).
+fn render_decl_sexp(sexp: &Sexp, docstring: Option<&str>) -> String {
+    match reconcile_docstring(sexp, docstring) {
+        Some(reconciled) => render_decl_sexp_indented(&reconciled, 0),
+        None => render_decl_sexp_indented(sexp, 0),
+    }
+}
+
+/// Reconcile a live `Def.docstring` into a `(defn …)` / `(defn- …)` sexp per the
+/// §11.3a authoritative-live rule. Returns:
+///   - `Some(new_sexp)` — a freshly-built `defn` with `text` spliced into the
+///     §5.12 docstring slot (replacing any existing leading docstring), when
+///     `docstring == Some(text)` and `sexp` is a `defn`/`defn-` form.
+///   - `None` — render the input unchanged: either `docstring == None` (the
+///     stored sexp's own docstring, if any, round-trips), or `sexp` is not a
+///     `defn` form (traits/types/macros pass `None` anyway).
+///
+/// The §5.12 slot rule MIRRORS the parser (`ast_builder::extract_optional_docstring`
+/// at index 2): `children[2]` is the docstring iff it is a `Sexp::Str` (the param
+/// vector / first variant always follows it, so there is no body-string ambiguity
+/// at this position). The input sexp is cloned, never mutated.
+fn reconcile_docstring(sexp: &Sexp, docstring: Option<&str>) -> Option<Sexp> {
+    let text = docstring?;
+    let (children, span) = match sexp {
+        Sexp::List(c, s) => (c, *s),
+        _ => return None,
+    };
+    let is_defn = matches!(
+        children.first(),
+        Some(Sexp::Symbol(head, _)) if head == "defn" || head == "defn-"
+    );
+    if !is_defn || children.len() < 2 {
+        return None;
+    }
+    // Does the docstring slot (index 2) already hold a string literal?
+    let existing_is_docstring = matches!(children.get(2), Some(Sexp::Str(..)));
+    let mut new_children: Vec<Sexp> = Vec::with_capacity(children.len() + 1);
+    new_children.push(children[0].clone()); // defn / defn-
+    new_children.push(children[1].clone()); // name
+    new_children.push(Sexp::Str(text.to_string(), span)); // live docstring (authoritative)
+    // Skip the stored sexp's own docstring if present (never double-emit, §11.3a).
+    let rest_start = if existing_is_docstring { 3 } else { 2 };
+    new_children.extend(children[rest_start..].iter().cloned());
+    Some(Sexp::List(new_children, span))
 }
 
 /// `true` iff `s` is the bare colon-annotation marker symbol (`":"`), the
@@ -507,7 +559,7 @@ fn generate_traits(
         if let ModuleEntry::TraitDecl { .. } = entry
             && let Some(sexp) = introspection_sexp(introspection, module_path, name)
         {
-            items.push((name.to_string(), render_decl_sexp(&sexp)));
+            items.push((name.to_string(), render_decl_sexp(&sexp, None)));
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
@@ -528,7 +580,7 @@ fn generate_types(
         if let ModuleEntry::TypeDef { .. } = entry
             && let Some(sexp) = introspection_sexp(introspection, module_path, name)
         {
-            items.push((name.to_string(), render_decl_sexp(&sexp)));
+            items.push((name.to_string(), render_decl_sexp(&sexp, None)));
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
@@ -570,6 +622,13 @@ fn generate_fns_and_macros(
     // first is always valid; functions then see every macro defined above them.
     let mut macro_items: Vec<(String, Sexp)> = Vec::new();
     let mut fn_items: Vec<(String, Sexp)> = Vec::new();
+    // Live docstrings, keyed by symbol name (FIXME 0430, §11.3a). The live
+    // `ModuleEntry::Def.docstring` is AUTHORITATIVE — threaded into the renderer
+    // at emit time so a `set-doc` edit round-trips through regen. Only `UserFn`
+    // entries with a `Some` docstring are recorded; macros are out of scope for
+    // S94 (a `defmacro` has no `set-doc` surface — they render with `None`).
+    let mut docstrings: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     for (name, entry) in st.all_symbols() {
         // Skip mangled names (impl methods like `show$Int`, macro clause
@@ -588,11 +647,18 @@ fn generate_fns_and_macros(
         // fallback `regenerate_backing_file` would silently DROP the macro from
         // the regenerated `.cl`, breaking a cached REPL restart that uses it.
         let (is_macro, macro_table_sexp) = match entry {
-            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+            ModuleEntry::Def { kind, docstring, .. } => match kind.as_ref() {
                 cranelisp_types::DefKind::Macro { macro_sexp, .. } => {
                     (true, Some(macro_sexp.clone()))
                 }
-                cranelisp_types::DefKind::UserFn { .. } => (false, None),
+                cranelisp_types::DefKind::UserFn { .. } => {
+                    // Capture the live, authoritative docstring (§11.3a) so regen
+                    // re-emits a `set-doc` edit into the §5.12 slot.
+                    if let Some(doc) = docstring {
+                        docstrings.insert(name.to_string(), doc.clone());
+                    }
+                    (false, None)
+                }
                 _ => continue,
             },
             _ => continue,
@@ -617,7 +683,10 @@ fn generate_fns_and_macros(
     macros_sorted
         .into_iter()
         .chain(fns_sorted)
-        .map(|(_, sexp)| render_decl_sexp(&sexp))
+        // Macros carry `None` (they are absent from `docstrings`); UserFns thread
+        // their live, authoritative docstring (§11.3a). The renderer is a strict
+        // no-op when the lookup misses — a never-`set-doc`'d def stays unchanged.
+        .map(|(name, sexp)| render_decl_sexp(&sexp, docstrings.get(&name).map(String::as_str)))
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -1047,7 +1116,7 @@ mod tests {
     #[test]
     fn render_decl_compound_annotation_no_space_after_colon() {
         let sexp = parse1("(defn f [x] :(Option String) x)");
-        let rendered = render_decl_sexp(&sexp);
+        let rendered = render_decl_sexp(&sexp, None);
         assert!(
             rendered.contains(":(Option String)"),
             "compound annotation must render with NO space after `:`: {rendered:?}"
@@ -1064,7 +1133,7 @@ mod tests {
     #[test]
     fn render_decl_simple_annotation_unchanged() {
         let sexp = parse1("(defn g [] :Int 3)");
-        let rendered = render_decl_sexp(&sexp);
+        let rendered = render_decl_sexp(&sexp, None);
         assert_eq!(rendered, "(defn g [] :Int 3)", "got {rendered:?}");
     }
 
@@ -1077,7 +1146,7 @@ mod tests {
             "(defn h [:Int x] :(Option String) \
              (longerbody aaaaaaaa bbbbbbbb cccccccc dddddddd eeeeeeee))",
         );
-        let rendered = render_decl_sexp(&sexp);
+        let rendered = render_decl_sexp(&sexp, None);
         assert!(
             rendered.contains(":(Option String)"),
             "indented compound annotation must glue `:` to its form: {rendered:?}"
@@ -1085,6 +1154,169 @@ mod tests {
         assert!(
             !rendered.contains(": (Option String)"),
             "no space after `:` even when indented: {rendered:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0430 — docstring-aware render_decl_sexp (§11.3a reconciliation)
+    // -----------------------------------------------------------------------
+
+    // Unit (regen reads live field, §11.4): a stored sexp with NO docstring +
+    // a live `Def.docstring = Some("new doc")` emits a `defn` form carrying the
+    // docstring in the §5.12 slot (a string literal between name and params).
+    // spec: design/int/session-persistence.md §11.3a — live docstring authoritative
+    #[test]
+    fn render_decl_injects_live_docstring_when_sexp_has_none() {
+        let sexp = parse1("(defn double [x] (add-i64 x x))");
+        let rendered = render_decl_sexp(&sexp, Some("doubles its argument"));
+        assert_eq!(
+            rendered, "(defn double \"doubles its argument\" [x] (add-i64 x x))",
+            "live docstring must be spliced into the §5.12 slot: {rendered:?}"
+        );
+    }
+
+    // Unit (reconcile arm — the §11.3a load-bearing rule): a stored sexp that
+    // ALREADY carries a docstring + a live `Def.docstring = Some("new")` emits the
+    // NEW docstring ONLY — the old is dropped, exactly one docstring, never two.
+    // spec: design/int/session-persistence.md §11.3a — no double-docstring hazard
+    #[test]
+    fn render_decl_live_docstring_replaces_sexp_docstring_no_duplicate() {
+        let sexp = parse1("(defn f \"old doc\" [x] x)");
+        let rendered = render_decl_sexp(&sexp, Some("new doc"));
+        assert!(
+            rendered.contains("\"new doc\""),
+            "the live docstring must win: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("old doc"),
+            "the superseded stored-sexp docstring must be dropped: {rendered:?}"
+        );
+        assert_eq!(
+            rendered.matches("new doc").count(),
+            1,
+            "the docstring must appear exactly once (no double-emit): {rendered:?}"
+        );
+    }
+
+    // Unit (live None, sexp has docstring): a never-`set-doc`'d def with `None`
+    // keeps its own authored docstring (the sexp round-trips unchanged).
+    // spec: design/int/session-persistence.md §11.3a — None falls back to the sexp
+    #[test]
+    fn render_decl_none_keeps_sexp_docstring() {
+        let sexp = parse1("(defn f \"authored doc\" [x] x)");
+        let rendered = render_decl_sexp(&sexp, None);
+        assert_eq!(
+            rendered, "(defn f \"authored doc\" [x] x)",
+            "with None the stored docstring round-trips: {rendered:?}"
+        );
+    }
+
+    // Unit (no-docstring unchanged): `None` + a stored sexp with NO docstring
+    // emits the `defn` exactly as before — a strict no-op (no spurious empty
+    // string literal). Guards that Option 1 never injects when there is nothing.
+    // spec: design/int/session-persistence.md §11.3a — strict no-op
+    #[test]
+    fn render_decl_none_no_docstring_unchanged() {
+        let sexp = parse1("(defn f [x] x)");
+        let rendered = render_decl_sexp(&sexp, None);
+        assert_eq!(rendered, "(defn f [x] x)", "no-op when nothing to inject: {rendered:?}");
+        assert!(!rendered.contains("\"\""), "no spurious empty docstring: {rendered:?}");
+    }
+
+    // Unit (round-trip): the emitted single-sig `defn` re-parses with the
+    // docstring recovered in the right slot (no double docstring, no body-string
+    // confusion). Mirrors the parser's `extract_optional_docstring` at index 2.
+    // spec: design/int/session-persistence.md §11.3a — round-trip
+    #[test]
+    fn render_decl_injected_docstring_round_trips_single_sig() {
+        let sexp = parse1("(defn double [x] (add-i64 x x))");
+        let rendered = render_decl_sexp(&sexp, Some("the doc"));
+        let reparsed = parse1(&rendered);
+        let entry = cranelisp_frontend::build_form(&reparsed).expect("re-parses");
+        let doc = match &entry[0] {
+            cranelisp_types::ParsedEntry::Def { docstring, .. } => docstring.clone(),
+            other => panic!("expected Def, got {other:?}"),
+        };
+        assert_eq!(doc.as_deref(), Some("the doc"), "docstring recovered in slot");
+    }
+
+    // Unit (round-trip, multi-sig): the docstring slot sits between the name and
+    // the FIRST variant for a multi-clause defn, and re-parses correctly.
+    // spec: design/int/session-persistence.md §11.3a — multi-sig slot
+    #[test]
+    fn render_decl_injected_docstring_round_trips_multi_sig() {
+        let sexp = parse1("(defn f ([x] x) ([x y] x))");
+        let rendered = render_decl_sexp(&sexp, Some("multi doc"));
+        assert!(
+            rendered.starts_with("(defn f \"multi doc\" ("),
+            "docstring precedes the first variant: {rendered:?}"
+        );
+        let reparsed = parse1(&rendered);
+        let entry = cranelisp_frontend::build_form(&reparsed).expect("re-parses");
+        match &entry[0] {
+            cranelisp_types::ParsedEntry::Def { docstring, variants, .. } => {
+                assert_eq!(docstring.as_deref(), Some("multi doc"));
+                assert_eq!(variants.len(), 2, "both variants preserved");
+            }
+            other => panic!("expected Def, got {other:?}"),
+        }
+    }
+
+    // The reconciler only touches `defn`/`defn-` forms — a non-defn sexp (e.g. a
+    // deftype) is never modified even if a docstring is passed (defensive; the
+    // fns/macros loop only threads docstrings for UserFn defns).
+    // spec: design/int/session-persistence.md §11.3a — defn-only slot rule
+    #[test]
+    fn render_decl_docstring_ignored_for_non_defn() {
+        let sexp = parse1("(deftype Point [:Int x])");
+        let rendered = render_decl_sexp(&sexp, Some("ignored"));
+        assert!(!rendered.contains("ignored"), "non-defn must be untouched: {rendered:?}");
+    }
+
+    // End-to-end via `generate_module_source`: a UserFn whose live `Def.docstring`
+    // is set but whose stored (introspection) sexp has NO docstring regenerates
+    // WITH the docstring — the §17.15.3 durable promise at the regen seam.
+    // spec: design/int/session-persistence.md §11.3a — set-doc persists via regen
+    #[test]
+    fn generate_module_source_emits_live_docstring() {
+        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
+        use std::collections::HashMap;
+
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let scheme = Scheme {
+            type_vars: vec![],
+            constraints: HashMap::new(),
+            ty: Type::Int,
+        };
+        st.insert(
+            "double".into(),
+            ModuleEntry::def(
+                scheme,
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot: 0 },
+                },
+            )
+            .docstring("doubles its argument")
+            .build(),
+        );
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: "double".into(),
+        };
+        introspection.entry(fq).or_default().sexp =
+            Some(parse1("(defn double [x] (add-i64 x x))"));
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains("(defn double \"doubles its argument\" [x] (add-i64 x x))"),
+            "regen must emit the live docstring in the §5.12 slot: {out:?}"
+        );
+        assert_eq!(
+            out.matches("doubles its argument").count(),
+            1,
+            "exactly one docstring in the regenerated source: {out:?}"
         );
     }
 

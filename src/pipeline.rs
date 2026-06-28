@@ -192,14 +192,16 @@ fn unwrap_io_inline(raw_value: i64, ty: Type) -> (i64, Type) {
         // field; a non-IO value here would indicate a typechecker bug, not
         // a safety bug in this function. Behaviour mirrors
         // `CompilerSession::trampoline`.
-        let inner_value = cranelisp_intrinsics::run_io_trampoline(raw_value);
-        // Decision 24: release the caller's tree. `consume_io_tree`
-        // transitively walks Pure/Effect/Bind/Par and dec's every
-        // heap-typed sub-ref (including continuation closures still owned
-        // by Bind nodes). Intermediate nodes produced *inside* the
-        // trampoline by continuations were already released there via
-        // `dec_shallow_io` — so this final walk is not a double-free.
-        cranelisp_intrinsics::drop::consume_io_tree(raw_value);
+        // Drive the IO tree through `cranelisp_run_io` — the single entry that
+        // cfg-splits to the host reactor under `concurrency-runtime` (so real
+        // poll-shape effect nodes suspend/resume on the reactor, FIXME 0457) and
+        // to the synchronous stepper otherwise (byte-identical). It ALSO releases
+        // the caller's tree internally (Decision 24 consuming convention —
+        // `drive_io` + `consume_io_tree`), so no separate consume is needed here.
+        // Routing `--run`/REPL through this same entry as `--link` keeps the IO
+        // forcing single-sited (the reactor is never re-driven by a parallel int
+        // path; 0419 divergence-proofing).
+        let inner_value = cranelisp_intrinsics::io::cranelisp_run_io(raw_value);
         let inner_type = ty.unwrap_io().clone();
         (inner_value, inner_type)
     } else {

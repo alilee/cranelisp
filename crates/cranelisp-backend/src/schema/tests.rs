@@ -181,6 +181,7 @@ fn platform_effect_roots_excludes_scalars() {
             param_names: vec![Symbol::from("r")],
             kind: Box::new(DefKind::PlatformEffect {
                 scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+                poll_shape: false,
                 got_slot: 0,
             }),
             callees: vec![],

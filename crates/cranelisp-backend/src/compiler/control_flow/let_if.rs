@@ -157,20 +157,53 @@ where
         self.in_tail_position = false;
 
         // Phase 1: Create and spark IVars for sparkable bindings.
+        //
+        // Processed in `sparkable` order (ascending = source = topological
+        // order, lenient-eval.md §2.6.1), so when a *dependent* binding's thunk
+        // is built every IVar it depends on has already been created and recorded
+        // in `sparked_name_to_ivar`.
         let mut ivar_map: std::collections::HashMap<usize, Value> = std::collections::HashMap::new();
+        // Earlier sparked bindings: name -> (IVar pointer, value type). Used to
+        // resolve a dependent binding's dependencies to their IVars (§4.5).
+        let mut sparked_name_to_ivar: std::collections::HashMap<Symbol, (Value, ConcreteType)> =
+            std::collections::HashMap::new();
 
         for &idx in sparkable {
-            let (_name, val_expr) = &bindings[idx];
+            let (name, val_expr) = &bindings[idx];
 
-            // Wrap the value expression in a zero-arg lambda (thunk). The thunk's
-            // concrete type is `(Fn [] T)` where `T` is the binding value's type.
-            let thunk_expr = MonoExpr::Lambda {
-                params: vec![],
-                body: Box::new(val_expr.clone()),
-                span: val_expr.span(),
-                ty: ConcreteType::Fn(vec![], Box::new(val_expr.ty().clone())),
+            // A dependent binding references one or more EARLIER sparked
+            // bindings. The relaxed admission rule (sparkability.rs §2.6)
+            // guarantees every earlier-bound free var of a sparkable binding is
+            // itself sparked, so any free var found in `sparked_name_to_ivar` is
+            // a dependency to force on demand. Sorted for deterministic capture
+            // layout.
+            let mut deps: Vec<(Symbol, Value, cranelisp_types::Type)> =
+                super::find_free_vars(val_expr, &[])
+                    .into_iter()
+                    .filter_map(|v| {
+                        sparked_name_to_ivar
+                            .get(&v)
+                            .map(|(ivar, ty)| (v.clone(), *ivar, ty.to_type()))
+                    })
+                    .collect();
+            deps.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let thunk_val = if deps.is_empty() {
+                // Independent binding: wrap the value expression in a zero-arg
+                // lambda (thunk). The thunk's concrete type is `(Fn [] T)` where
+                // `T` is the binding value's type.
+                let thunk_expr = MonoExpr::Lambda {
+                    params: vec![],
+                    body: Box::new(val_expr.clone()),
+                    span: val_expr.span(),
+                    ty: ConcreteType::Fn(vec![], Box::new(val_expr.ty().clone())),
+                };
+                self.compile_expr(&thunk_expr)?
+            } else {
+                // Dependent binding: build the thunk manually with a force
+                // prologue that forces each dependency IVar on demand (§4.5).
+                self.compile_dependent_thunk(val_expr, &deps, span)?
             };
-            let thunk_val = self.compile_expr(&thunk_expr)?;
 
             // Call cranelisp_ivar_create(thunk_ptr) -> ivar_ptr
             let ivar_val = self.emit_extern_call(
@@ -183,6 +216,7 @@ where
             )?;
 
             ivar_map.insert(idx, ivar_val);
+            sparked_name_to_ivar.insert(name.clone(), (ivar_val, val_expr.ty().clone()));
         }
 
         // Phase 2: Process all bindings in order.

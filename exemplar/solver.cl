@@ -25,6 +25,7 @@
 ;; retired — see grid.cl header). `digit-to-char` replaces the 10-arm
 ;; `digit-string` ladder.
 (import [collections.vec [count get assoc conj]])
+(import [collections.parallel [par-map-reduce]])
 (import [primitives [char-at str-concat str-len not bind Pure]])
 (import [text.string [digit-to-char]])
 
@@ -154,23 +155,38 @@
 
 ;; ── Parallel Backtracking Search (lenient-eval showcase) ────────────────
 ;;
-;; S92 (FIXME 0408, contained half): the sequential digit loop is replaced by
-;; a divide-and-conquer search over the candidate digits. At a guess node the
-;; candidate branches are fully independent — each tries a different digit on
-;; its own grid — so the two recursive halves of a binary split are the
-;; independent, individually-expensive *apply-arguments* of `first-success`.
-;; Slice-1 lenient eval (apply-arg sparking, S92) auto-sparks them: the search
-;; tree parallelises with no `spark`/`par` in the source, and the spark-budget
-;; create-gate bounds over-sparking (over budget → serial arm). See
-;; `design/backend/lenient-eval.md` §2.5.
+;; The backtracking search is, at heart, a **map-reduce over the candidate
+;; digits** of the chosen cell:
 ;;
-;; This is *budget-bounded speculative parallel search*: `first-success` is
-;; correct even when its second argument was evaluated speculatively, because
-;; the branches are pure (the loser's work is simply discarded).
+;;   - MAP   each candidate digit `d` to the result of committing `d` and
+;;           recursively solving the resulting grid — `(solve (set-cell …))`;
+;;   - REDUCE the per-digit results with `first-success`, an associative
+;;           combiner (identity `Unsolvable`) that takes the first branch that
+;;           solved.
+;;
+;; Because the candidate branches are fully independent (each tries a different
+;; digit on its own grid) and individually expensive, this map-reduce is
+;; embarrassingly parallel. We express it with the stdlib
+;; `collections.parallel/par-map-reduce` (S94, FIXME 0424 — D&C over the
+;; lenient-eval spark substrate). `par-map-reduce` splits the digit Vec at its
+;; midpoint and binds the two halves to **independent `let` bindings**, which
+;; the sparkability analysis auto-sparks onto the thread pool — so the search
+;; tree parallelises with **no `spark`/`par`/threads in the source**. The
+;; spark-budget create-gate bounds over-sparking (over budget → serial arm),
+;; preserving the never-slower-than-serial floor. See
+;; `design/backend/lenient-eval.md` §2.1 and `stdlib/collections/parallel.cl`.
+;;
+;; This is *budget-bounded speculative parallel search*: `par-map-reduce`
+;; evaluates every branch (the search is speculative — losing branches' work is
+;; simply discarded), and `first-success` is correct regardless of evaluation
+;; order because the branches are pure. CORRECTNESS IS THE CONTRACT (the
+;; parallel search returns the SAME solution as a serial one — a Sudoku has a
+;; unique solution); PARALLELISM IS A PERFORMANCE PROPERTY. Run under
+;; `CRANELISP_NO_LENIENT=1` to force everything serial and get the same answer.
 
 ;; Enumerate the set digits (1-9) of a candidate mask into a (Vec Int), using
-;; the digit-domain `bit-set?` adapter. (`bit-count mask` == the length of the
-;; result; the D&C range `0..(count digits)` is split over that cardinality.)
+;; the digit-domain `bit-set?` adapter. This is the collection `par-map-reduce`
+;; maps the per-digit solve over.
 (defn mask-to-digits-helper [mask d acc]
   (if (> d 9) acc
     (if (bit-set? mask d)
@@ -180,24 +196,14 @@
 (defn mask-to-digits [mask]
   (mask-to-digits-helper mask 1 []))
 
-;; Pick the first branch that solved; otherwise take the second. Correct even
-;; if `b` was computed speculatively (pure branches — the loser is discarded).
+;; The associative reduce combiner: pick the first branch that solved, else the
+;; second. Identity is `Unsolvable` (a two-sided identity: it never wins over a
+;; Success, and `first-success Unsolvable b == b`). Correct even when `b` was
+;; computed speculatively (pure branches — the loser is discarded).
 (defn first-success [a b]
   (match a
     [(Success s) (Success s)
      _ b]))
-
-;; Copy-free index-range divide-and-conquer over the candidate-digit Vec.
-;; Base (hi-lo == 1): commit the single digit and solve. Else: split at mid
-;; and combine the two independent recursive solves with `first-success`. The
-;; two `solve-range` calls are the independent expensive apply-args → sparked.
-(defn solve-range [g idx digits lo hi]
-  (if (= (- hi lo) 1)
-    (solve (set-cell g idx (Solved (get digits lo))))
-    (let [mid (/ (+ lo hi) 2)]
-      (first-success
-        (solve-range g idx digits lo mid)
-        (solve-range g idx digits mid hi)))))
 
 ;; Main solver: propagate, then backtrack if needed.
 ;;
@@ -223,11 +229,19 @@
               (let [cell (cell-at g2 idx)]
                 (match cell
                   [(Candidates mask)
-                     ;; Guess: divide-and-conquer over the candidate digits.
+                     ;; Guess: parallel map-reduce over the candidate digits —
+                     ;; map each digit to its recursive solve, reduce the
+                     ;; results with `first-success` (identity `Unsolvable`).
+                     ;; `par-map-reduce`'s independent halves spark the per-digit
+                     ;; subtrees onto the thread pool (no `spark` in the source).
                      (let [digits (mask-to-digits mask)]
                        (if (= (count digits) 0)
                          Unsolvable
-                         (solve-range g2 idx digits 0 (count digits))))
+                         (par-map-reduce
+                           (fn [d] (solve (set-cell g2 idx (Solved d))))
+                           first-success
+                           Unsolvable
+                           digits)))
                    _ Unsolvable]))]))]))
 
 ;; ── Board Formatting ──────────────────────────────────────────────────
@@ -472,8 +486,8 @@
 ;; search returns. This test pins the full 81-digit solution string; running
 ;; the suite under both default (parallel) and `CRANELISP_NO_LENIENT=1`
 ;; (serial) and getting the identical green run is the parallel ≡ serial guard.
-;; The puzzle is chosen to require backtracking (so `solve-range`/`first-success`
-;; — the sparked path — actually runs), not just constraint propagation.
+;; The puzzle is chosen to require backtracking (so the `par-map-reduce` /
+;; `first-success` sparked path actually runs), not just constraint propagation.
 
 ;; Flatten a solved grid to its bare 81-digit string (no separators).
 (defn solution-digits-helper [g i acc]
@@ -486,10 +500,10 @@
 
 (defn test-solve-parallel-equiv []
   ;; A puzzle that genuinely requires backtracking (constraint propagation
-  ;; alone gets stuck), so the divide-and-conquer `solve-range`/`first-success`
-  ;; — the sparked path — actually runs. Its unique solution is pinned below;
-  ;; the parallel (default) search and a serial (`CRANELISP_NO_LENIENT=1`)
-  ;; search MUST both produce it. Verified identical under both modes (S92).
+  ;; alone gets stuck), so the `par-map-reduce` / `first-success` sparked path
+  ;; actually runs. Its unique solution is pinned below; the parallel (default)
+  ;; search and a serial (`CRANELISP_NO_LENIENT=1`) search MUST both produce it.
+  ;; Verified identical under both modes (S92 D&C; S94 par-map-reduce reshape).
   (match (make-grid "..3.2.6..9..3.5..1..18.64....81.29..7.......8..67.82....26.95..8..2.3..9..5.1.3..")
     [(Some g)
        (match (solve g)

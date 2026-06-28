@@ -491,6 +491,7 @@ fn def_kind_platform_effect_carries_scheduling_class() {
     let entry = mk_def(
         DefKind::PlatformEffect {
             scheduling_class: crate::SchedulingClass::Commutative,
+            poll_shape: false,
             got_slot: 0,
         },
         None,
@@ -534,6 +535,7 @@ fn platform_effect_scheduling_class_round_trips() {
         param_names: vec![],
         kind: Box::new(DefKind::PlatformEffect {
             scheduling_class: crate::SchedulingClass::ResourceSerial,
+            poll_shape: true,
             got_slot: 0,
         }),
         callees: Vec::new(),
@@ -567,11 +569,18 @@ fn platform_effect_scheduling_class_round_trips() {
             // scheduling_class (on the variant) MUST round-trip — it is static
             // manifest data, not a runtime pointer.
             match *kind {
-                DefKind::PlatformEffect { scheduling_class, .. } => {
+                DefKind::PlatformEffect { scheduling_class, poll_shape, .. } => {
                     assert_eq!(
                         scheduling_class,
                         crate::SchedulingClass::ResourceSerial,
                         "scheduling_class inside DefKind::PlatformEffect must survive serde roundtrip"
+                    );
+                    // S94 R1 (FIXME 0457): poll_shape rides alongside and must
+                    // survive serde too — it is the backend's poll-vs-blocking
+                    // emission key.
+                    assert!(
+                        poll_shape,
+                        "poll_shape inside DefKind::PlatformEffect must survive serde roundtrip"
                     );
                 }
                 other => panic!(
@@ -581,6 +590,33 @@ fn platform_effect_scheduling_class_round_trips() {
             }
         }
         other => panic!("expected ModuleEntry::Def, got {:?}", other),
+    }
+}
+
+// spec: design/arch/effect-concurrency.md §13 "S94 R1" (FIXME 0457) — the
+//       `poll_shape` field is `#[serde(default)]`, and its default polarity is
+//       chosen so a PRE-S94 cached `.meta.json` (whose serialized
+//       `PlatformEffect` has no `poll_shape` key) deserializes as a v6 BLOCKING
+//       effect (`poll_shape == false`). This is the cache-back-compat guard:
+//       old caches keep their byte-identical blocking behaviour, no rebuild
+//       forced by the field addition.
+#[test]
+fn platform_effect_poll_shape_defaults_to_false_for_pre_s94_cache() {
+    // A pre-S94 serialized DefKind::PlatformEffect: externally-tagged enum with
+    // the two fields that existed before the poll_shape addition. No poll_shape.
+    let legacy_json = r#"{"PlatformEffect":{"scheduling_class":"Commutative","got_slot":3}}"#;
+    let kind: DefKind =
+        serde_json::from_str(legacy_json).expect("pre-S94 PlatformEffect must still deserialize");
+    match kind {
+        DefKind::PlatformEffect { scheduling_class, poll_shape, got_slot } => {
+            assert_eq!(scheduling_class, crate::SchedulingClass::Commutative);
+            assert_eq!(got_slot, 3);
+            assert!(
+                !poll_shape,
+                "a pre-S94 cache (no poll_shape key) MUST default to blocking (false)"
+            );
+        }
+        other => panic!("expected DefKind::PlatformEffect, got {:?}", other),
     }
 }
 

@@ -2,6 +2,7 @@ pub mod cranelisp_platform
 pub use cranelisp_platform::GOT_TABLE_SIZE
 pub use cranelisp_platform::PlatformError
 pub use cranelisp_platform::SchedulingClass
+pub macro cranelisp_platform::declare_concurrent_platform!
 pub macro cranelisp_platform::declare_platform!
 pub enum cranelisp_platform::ExpectedFieldType
 pub cranelisp_platform::ExpectedFieldType::Adt(&'static str)

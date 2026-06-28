@@ -123,3 +123,26 @@ opens), gated on `/design` ratifying candidate 1 + the reconciliation rule above
 The re-land then re-adds the S89-W3-removed `set-doc` surface against the ratified
 renderer contract, with a `/qa` e2e pinning set-doc→restart→`/doc` persistence and
 a `save.rs` unit test on the renderer's docstring insert/replace/reconcile arms.
+
+## /dev S94 status — BOTH halves done; CLOSE-READY
+
+The `/dev` re-land landed S94 Wave 4 against the §11.3a ratified contract:
+
+- **Renderer (`src/save.rs`, default `nt` lane):** `render_decl_sexp` gained the
+  `docstring: Option<&str>` arg; `generate_fns_and_macros` threads the live
+  `UserFn` `Def.docstring`; `reconcile_docstring` implements the §11.3a
+  authoritative-live rule (Some splices/replaces the §5.12 slot, dropping any
+  sexp-embedded docstring; None renders verbatim) without mutating the stored
+  sexp. Trait/type/macro call sites pass `None`. 9 unit tests added
+  (insert / reconcile-no-duplicate / None-keeps-sexp / None-no-op /
+  single+multi-sig round-trip / non-defn-ignored / `generate_module_source` e2e).
+- **`set-doc` write surface (`src/agent/{pull,stub}.rs`, `#[cfg(feature="agent")]`):**
+  re-added `SET_DOC_TOOL` const + `tool_defs` registration + `run_pull` routing +
+  `apply_docstring_edit` (live-field setter) + `run_document_edit`'s docstring arm +
+  the 3 S89-W3-removed test sites.
+- **Tests GREEN:** the 2 Wave-1 e2e (`set_doc_docstring_survives_session_restart`,
+  `set_doc_does_not_duplicate_docstring_on_restart_neg`) flip green; agent lane
+  62 e2e + 99 lib; default `nt` 1699. No public-api movement.
+
+The `/design` half (§11 ratification) and the `/dev` half (renderer + re-land) are
+both complete. This FIXME is CLOSE-READY — `/design` or `/sprint` deletes it.

@@ -469,7 +469,14 @@ without changing the process CWD.
 
 ---
 
-## 11. `set-doc` docstring-into-source regen (FIXME 0430) — DESIGN
+## 11. `set-doc` docstring-into-source regen (FIXME 0430) — RATIFIED (S94)
+
+**Status: RATIFIED (S94 `/design`).** Candidate 1 (docstring-aware `render_decl_sexp`)
+is the contract `/dev` re-lands against; the reconciliation rule (§11.3a) is settled.
+This closes the `/design` half of FIXME 0430. The `/dev` re-land of the S89-W3-removed
+`set-doc` Document-write surface + the `/qa` e2e are a future agent-write wave (§11.4);
+the FIXME stays open until that lands (the design ratification is its precondition, not
+its closure — `/sprint` may carry it to the re-land wave).
 
 ### 11.1 The gap
 
@@ -526,9 +533,9 @@ the existing sexp-based regen path picks it up unchanged.
   actually simpler, just relocated, and it loses the "stored sexp == source" invariant
   that the regen path and `/source` both rely on.
 
-### 11.3 Recommendation — Option 1 (docstring-aware render)
+### 11.3 RATIFIED — Option 1 (docstring-aware render)
 
-**Pick Option 1.** Rationale:
+**Option 1 is ratified as the renderer contract.** Rationale:
 
 1. **Single source of truth (Principle 7).** `Def.docstring` is *already* declared
    canonical for the docstring metadata (module.rs §"narrowed from Defn"). Option 1
@@ -544,6 +551,47 @@ the existing sexp-based regen path picks it up unchanged.
    docstring-aware renderer makes `set-doc` persist by the *same shape* — regen reads
    the live field — rather than a one-off stored-AST rewrite.
 
+### 11.3a The ratified renderer contract (what `/dev` re-lands against)
+
+The contract `/dev` implements, stated precisely so the re-land is unambiguous:
+
+1. **`generate_fns_and_macros` threads the live docstring.** The loop already holds the
+   `(name, entry)` pair (`src/save.rs::generate_fns_and_macros`). For a
+   `ModuleEntry::Def { kind: DefKind::UserFn, docstring, .. }` it passes
+   `docstring.as_deref()` (`Option<&str>`) alongside the selected stored sexp into the
+   renderer. (Macros: out of scope for S94 — a `defmacro` has no `set-doc` surface;
+   pass `None`.)
+
+2. **`render_decl_sexp` gains one optional argument** —
+   `render_decl_sexp(sexp: &Sexp, docstring: Option<&str>) -> String`. All existing
+   call sites pass `None` (mechanical; the colon-binding round-trip is unchanged). The
+   renderer, when `docstring` is `Some`, emits/replaces the §5.12 docstring slot in the
+   `defn` form: a string literal between the function **name** and the **param vector**
+   (single-sig), or between the name and the **first variant** (multi-sig). It
+   distinguishes "first string child IS a docstring" (the §5.12 slot) from "first
+   string child is a body expression" using the parser's slot rule (a leading string in
+   the docstring slot is the docstring) — the renderer mirrors the parser, it does not
+   invent a new rule.
+
+3. **The reconciliation rule (§11.3a — the one question the 0430 `/dev` assessment
+   flagged): the live `Def.docstring` is AUTHORITATIVE.**
+   - `docstring == Some(text)` ⇒ emit `text` in the §5.12 slot, and **drop any
+     docstring already embedded in the stored sexp** (from the original
+     `(defn name "old" …)` source) so the form never carries two docstrings.
+   - `docstring == None` ⇒ emit the stored sexp's own docstring **if it has one**
+     (a def authored with a docstring but never `set-doc`'d round-trips its original
+     docstring), and emit **no** string literal if it does not (no spurious empty
+     docstring — Option 1 is a strict no-op when there is nothing to inject).
+
+   This makes `set-doc` → restart → `/doc` round-trip the live edit (the §17.15.3
+   durable promise) with **no double-docstring hazard**, and leaves a never-edited def
+   byte-identical to today.
+
+4. **Stored sexp stays a faithful source capture.** The renderer *reads* the live field;
+   it does **not** mutate the `Introspection` record or `macro_sexp`. `/source` and the
+   on-demand macro-clause recompile continue to see the authored sexp unchanged
+   (Principle 7 — one writer of the docstring metadata: `set-doc` → `Def.docstring`).
+
 ### 11.4 `/dev` acceptance (the re-land, a later sprint)
 
 This section closes the DESIGN half of 0430; the `/dev` re-land follows a later
@@ -552,16 +600,25 @@ sprint. The acceptance the re-land must meet:
 - **e2e (the keystone):** in a REPL session, `set-doc <symbol> "new doc"`, then
   restart the session against the regenerated backing file, then `/doc <symbol>`
   shows `"new doc"` — the §17.15.3 durable promise `set-preamble` already satisfies.
-- **Unit (`save.rs`):** `generate_fns_and_macros` over a table whose
-  `Def.docstring = Some("new doc")` (with a stored sexp that has a *different* or
-  *absent* docstring) emits a `defn` form carrying `"new doc"` in the §5.12 docstring
-  slot — the regen-reads-live-field assertion.
-- **Unit (round-trip):** the emitted `defn` re-parses with the new docstring in the
-  right slot (no double docstring, no body-string confusion) for both single-sig and
+- **Unit (regen reads live field — `save.rs`):** `generate_fns_and_macros` (or
+  `render_decl_sexp` directly) over a `Def.docstring = Some("new doc")` with a stored
+  sexp that has **no** docstring emits a `defn` form carrying `"new doc"` in the §5.12
+  slot.
+- **Unit (reconcile arm — the §11.3a rule):** stored sexp **already carries** a
+  docstring (`(defn f "old" [x] …)`) **and** `Def.docstring = Some("new doc")` ⇒ the
+  emitted form carries **`"new doc"` only** — the `"old"` is dropped, exactly one
+  docstring, never two. This is the load-bearing reconciliation test the 0430 `/dev`
+  assessment asked `/design` to settle.
+- **Unit (live `None`, sexp has docstring):** `Def.docstring = None` with a stored
+  sexp that has a docstring ⇒ the sexp's own docstring round-trips unchanged (a
+  never-`set-doc`'d def keeps its authored docstring).
+- **Unit (round-trip):** the emitted `defn` re-parses with the docstring in the right
+  slot (no double docstring, no body-string confusion) for both single-sig and
   multi-sig defns.
-- **Unit (no-docstring unchanged):** a `Def.docstring = None` emits the `defn`
-  exactly as before (no spurious empty string literal) — Option 1 is a no-op when
-  there is nothing to inject.
+- **Unit (no-docstring unchanged):** `Def.docstring = None` with a stored sexp that
+  has **no** docstring emits the `defn` exactly as before (no spurious empty string
+  literal) — Option 1 is a strict no-op when there is nothing to inject; the existing
+  colon-binding tests stay green.
 
 Principle citations: **Principle 7 (single source of truth)** — regen reads the
 canonical `Def.docstring`; the stored sexp stays a faithful source capture.

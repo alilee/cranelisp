@@ -4631,6 +4631,7 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
                 param_names: vec![],
                 kind: Box::new(DefKind::PlatformEffect {
                     scheduling_class: Default::default(),
+                    poll_shape: false,
                     got_slot: 0,
                 }),
                 callees: vec![],

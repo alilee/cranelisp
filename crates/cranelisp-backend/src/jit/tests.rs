@@ -492,6 +492,7 @@ fn platform_effect_def(slot: usize) -> ModuleEntry {
         param_names: vec![],
         kind: Box::new(DefKind::PlatformEffect {
             scheduling_class: SchedulingClass::Sequential,
+            poll_shape: false,
             got_slot: slot,
         }),
         callees: vec![],

@@ -95,9 +95,16 @@ Two distinct axes the trampoline fills:
   while it waits** (the reactor; thousands of pending I/O futures).
 
 **"Maximum concurrency" is a direction, not a spec.** The standard is **per-workload
-acceptance benchmarks**, with a universal floor beneath all of them: **never slower
-than sequential** (overhead-bounded — the inferred machinery must not cost more than it
-saves on workloads with no exploitable parallelism).
+acceptance benchmarks**, with a floor beneath all of them: **never *dramatically* slower
+than sequential, modulo the shared memory substrate.** Two costs the floor bounds: the
+inferred machinery must not cost more than it saves on workloads with no exploitable
+parallelism, AND sparking must not drive shared-substrate contention (the global
+allocator lock + atomic RC, Decision 13) past the point where the contention cost exceeds
+the parallel-compute gain. The floor holds **unconditionally for compute-bound sparks**
+(allocation-light, RC-light branches); it is **contention-bounded — not yet guaranteed —
+for allocation-/RC-heavy sparks** until the contention-aware gate (§3.1) lands. The
+earlier unqualified "never slower than sequential" wording over-stated the guarantee; see
+§3.1 for the scope correction and the path back.
 
 - **Web is the reference / lead workload.** The model is a natural fit (independent
   requests, per-connection tokens, I/O-bound). The §10 server example is the worked
@@ -110,6 +117,95 @@ saves on workloads with no exploitable parallelism).
   graph** (independent systems within a frame, extracted automatically), but hostile to
   the stateful, deadline-bound hot loop — possibly out of scope. They are named here to
   set expectations, not as a target the floor must clear.
+
+### 3.1 Floor scope — contention is the boundary, not compute (S94 /port finding)
+
+**The finding.** /port measured the floor *violated* for allocation-/RC-heavy parallel
+workloads (Sprint 94, Phase 6). The ladder, parallel-vs-serial wall-clock:
+
+| Workload | Parallel | Serial | Floor |
+|---|---|---|---|
+| pure compute (examples/30) | 1.3s | 0.9s | holds |
+| int-Vec copy divide-and-conquer | 3.1s | 2.85s | holds, thin |
+| ADT-Vec copy D&C | 6.9s | 5.0s | violated |
+| Sudoku (copy-per-guess 81-elem Vec of RC'd `Cell` ADTs) | ~20s | ~1.9s | **~10× violated** |
+
+The penalty scales with **heap allocation + atomic-RC traffic**, not compute. The parallel
+branches *are* genuinely data-independent (the inference is correct), but each spawned
+branch hammers two shared, *serializing* resources — the **global allocator lock** and
+**atomic-RC cache lines bouncing across workers** (Decision 13). The Sudoku case is worst
+because copy-per-guess allocates a fresh 81-element Vec of RC-managed `Cell` ADTs per
+branch: allocation-dominated, RC-dominated, compute-trivial. **Independent dataflow does
+not imply independent memory traffic** — and the inference sees only the former.
+
+**The verdict (BOTH — scope the claim AND specify the gate).** The "never slower than
+sequential" floor was over-stated as a universal guarantee, and the spark-budget
+create-gate meant to secure it (`design/backend/lenient-eval.md` §3.6.3) is incomplete:
+
+- **Scope correction (honesty, now).** The floor is scoped in §3 above: unconditional for
+  compute-bound sparks, contention-bounded for allocation-/RC-heavy sparks. The create-gate
+  bounds spark **count** — so the *spark-machinery* overhead (IVar/thunk allocation) is
+  `O(cap)`, the `fib` explosion it was built for. It does **not** bound the **per-branch
+  user-level** allocation + atomic-RC traffic each of the (bounded) `cap` live branches
+  generates concurrently. Count is the wrong signal for contention.
+
+- **Gap correction (the path back, in-track, without Phase H).** The create-gate is the
+  right *locus* but needs a **contention-aware signal**. The floor is restorable
+  *conservatively*: an allocation-/RC-dominated branch should simply **not spark** — it
+  takes the sequential arm, which is exactly "never slower than serial" for that branch.
+  This is a refinement of the existing sparkability cost heuristic + create-gate, not a new
+  subsystem.
+
+**Where the gate lives + what it gates on.** Backend (`design/backend/lenient-eval.md` —
+the sparkability cost heuristic §2.2 + the create-gate §3.6.2), with this section as its
+arch-thesis scope authority. Two layers, cheap-first:
+
+1. **Static (first).** Extend the cost heuristic from a *compute-cost* axis to also carry
+   an **allocation/RC-density** axis: a branch dominated by constructors / Vec copies / RC
+   traffic on captured shared structure is declined for sparking even when its compute cost
+   clears the "expensive Apply" bar. "Expensive *and* allocation-light" sparks; "expensive
+   *but* allocation-dominated" stays sequential.
+2. **Dynamic (later, only if static is insufficient).** Gate the runtime create-gate on a
+   shared-substrate contention signal (allocator / atomic-RC hotness) *in addition to*
+   in-flight spark count — back off when the substrate is hot. Same family as the
+   unified-budget / backpressure work (`lenient-eval.md` §3.6.4, FIXME 0442); it belongs
+   *with* that, not ahead of it.
+
+**Relationship to atomic RC (Decision 13) and Phase H — this REINFORCES the sequencing.**
+Atomic RC exists *because* of parallelism (it is the cost of values crossing spark
+threads); the /port finding is the empirical confirmation that atomic-RC contention is
+*the* parallel bottleneck for stateful workloads. Phase H's memory work —
+non-atomic-RC-where-thread-local, escape→stack/region, Perceus reuse + RC-fusion — attacks
+this contention **at its source**: thread-local values drop the atomic, non-escaping values
+leave the allocator entirely, and in-place reuse removes the copy-per-guess alloc/free
+churn (the Sudoku pattern is exactly the in-place-reuse case §3's data-processing bar
+already flags as Phase-H-dependent). But Phase H stays **after** the concurrency track, and
+this finding **reinforces that edge rather than pulling memory work forward**:
+
+- Non-atomic-where-thread-local is *defined by* which values cross threads — exactly what
+  the concurrency model determines and has not yet settled (§Sequencing, top of doc).
+  Pulling the RC opt forward would implement it against a moving target — a Principle-8
+  interim-implementation defect. The dependency is real, not a priority preference.
+- So the three layers compose cleanly: **(a)** scope the claim now (honesty); **(b)** the
+  in-track contention-aware gate restores the floor *conservatively* by declining to spark
+  contention-heavy branches (serial fallback = floor met); **(c)** Phase H later *widens*
+  the profitably-parallel set by removing the contention at its source, so the gate's
+  conservative declines become admits. The interim gate is shaped-to-be-subsumed
+  (Principle 8): the same cost-heuristic + create-gate it refines is what Phase H's
+  escape/thread-locality analysis later feeds a sharper signal into.
+
+**Sequencing — who owns the fix.** The conservative **static contention heuristic** is a
+**rayon-side CPU-spark increment** (§7 de-risking: the CPU-spark path is independent of the
+I/O-runtime work), so it can land in the concurrency track without waiting on the reactor
+slices — placed as a **create-gate refinement in the backpressure-family slice** (slice
+3/4, alongside the §3.6.4 / FIXME-0442 budget work it shares a locus with), or pulled
+earlier as a standalone perf increment if a user-facing workload (the Sudoku exemplar,
+FIXME 0408) forces it. The **dynamic** substrate-contention signal rides with the
+unified-budget / backpressure slice (FIXME 0442). The **structural cure** is **Phase H**
+(after the track), unchanged in sequence. The backend-side correction to
+`design/backend/lenient-eval.md` §2.6.2 / §3.6.3 (the floor claim those sections state is
+scoped to *spark-machinery* overhead, not per-branch user contention) is filed as FIXME
+`target: /backend` (0459).
 
 ## 4. The inferred half — how concurrency is extracted
 
@@ -263,8 +359,13 @@ is a rayon-side increment that can land independently of the I/O-runtime work.
 
 The on-track inferred path is **0424(i)'s generalization** — 0424(i) (the divide-and-conquer
 apply-arg shape) shipped S92, and its full-independence generalization is a rayon-side
-increment that can land anytime. **0424 stays open** for that generalization (+ limit #2,
-dependent-binding sparks) — the stdlib `par-*` functions depend on it as their substrate.
+increment. **0424 is now CLOSED (S94).** The substrate generalization that kept it open
+shipped: apply-arg sparking (S92) + the dependent-binding spark (limit #2, S94 — a general
+backend capability pinned by `tests/concurrency_spark.rs`) + the spark-budget create-gate;
+`/stdlib` layered `par-map` / `par-reduce` / `par-map-reduce` as ordinary `.cl` functions
+(`stdlib/collections/parallel.cl`, combine-in-body so they rely on §2.1 apply-arg
+independence). The FIXME file was deleted; this paragraph is the historical record of the
+arc.
 The *(ii)-as-primitive* sub-question is **closed (declined)**. **0445 (the stdlib
 divide-and-conquer interim-or-reserve question) is resolved the STDLIB-PROVIDES way:**
 `/stdlib` provides `par-map`/`par-reduce`/`par-map-reduce` as ordinary `.cl` definitions
@@ -522,6 +623,55 @@ in those types; the **wiring** (macro emit, host loader, host reactor) is the sl
 reactor implementation. See `platform-interface.md` §6.8 for the per-crate change
 list and the landed-and-dormant disposition.
 
+**S94 R1 — the backend↔intrinsics poll-shape Effect-node seam, RATIFIED.** The S93
+contracts cover the platform↔host seam (the ABI-v7 `ConcurrentPlatformFn` / `HostCtx`
+/ `Waker` types) but left the *runtime representation of a poll-shape Effect node*
+undefined. S94 ratifies it (the canonical /dev contract lives in Appendix B §"the
+ratified backend↔intrinsics poll-shape Effect-node seam"; the ABI-field consequence
+is recorded in `platform-interface.md` §6.8). The four decisions:
+
+1. **Node representation — the closure-env model (chosen over a poll-descriptor).** A
+   poll-shape effect is a new `IO_TAG_EFFECT_POLL` node whose field-0 points at a
+   **host-built state-closure** reusing the existing heap-closure layout
+   (`[header | code_ptr | drop_glue_ptr | env…]`): `code_ptr` = the GOT-loaded
+   poll-fn, `drop_glue_ptr` = the state teardown, `env` = the marshaled args + a
+   result slot + leaf scratch. Chosen because it inherits RC + drop for free (the
+   trampoline's existing `consume_io_tree` drop walk releases the closure and runs
+   its `drop_glue_ptr`), adds **no new platform-DLL type** for state/poll/drop (the
+   closure layout is an in-process contract, not a DLL-ABI one), and honours
+   Principles 7 (reuse) + 20 (a callable-with-state IS a closure). A
+   `#[repr(C)] PollDescriptor` was rejected: it is a new DLL-crossing struct with
+   hand-rolled RC/drop and more ABI churn.
+2. **State construction / arg-marshaling — backend-built, host-internal (NO
+   `make_state` export).** The backend's poll-construction arm loads the poll-fn from
+   the GOT and **builds the state-closure directly**, marshaling the effect's i64
+   args as closure captures — the established closure-construction codegen, pointed at
+   a GOT-loaded `code_ptr`. This is structurally enabled because the poll-fn is a
+   *named GOT export* (not an anonymous thunk like the blocking path's DLL-built
+   node), so the host has everything it needs (poll-fn address + arg values) to
+   construct the node itself. The poll-fn does first-poll setup (open fd, etc.) from
+   the captured args. Consequence (R1 decision rule): state construction adds **no
+   platform-DLL field** — nothing to reserve.
+3. **Result extraction — generic offset read (NO per-effect `ResultReader`
+   fn-pointer, NO platform-DLL field).** The poll-fn writes its single i64 result
+   (scalar or heap base pointer) into a reserved result slot in the state-closure
+   env; the generalized `EffectPoll` reads it generically once `Poll::Ready`. The
+   result location is host-known (a baked node field or a fixed env offset — the
+   carrier is /design backend+int's interior choice; the env layout is a v7
+   host↔platform convention governed by `ABI_VERSION`). The S93 fixture's
+   `ResultReader` fn-pointer collapses to this offset read.
+4. **drop_state / cancellation — RESERVED NOW (the one platform-DLL field this seam
+   adds).** Per the R1 reserve-now rule (the `global_budget` precedent), a
+   `drop_state: Option<unsafe extern "C" fn(*mut c_void)>` field is appended to the
+   dormant `ConcurrentPlatformFn` **this sprint, with no `ABI_VERSION` bump** (v7 is
+   not yet frozen — no real cdylib has shipped against it), inert until the
+   cancellation slice. The *primary* drop path is the host-side closure
+   `drop_glue_ptr` (releases RC'd captured args); `drop_state` is the platform's
+   optional hook the host bakes into that glue for **leaf-private heap** a host
+   cannot know how to free — `None` when the inline env suffices (the S94 in-tree
+   demo's case). Decisions (1)/(2)/(3) stay host-internal (no ABI field); (4) is the
+   sole reserve, avoiding a future 7→8 bump.
+
 ## 14. Build sequencing (the implied roadmap, lightly)
 
 The dependency order the architecture implies:
@@ -579,6 +729,26 @@ manifests at:
 - **A candidate new principle** — *"confine mutable-state concurrency to the
   interpreter; platforms are thin stateless effect vocabularies"* — file per
   `design/arch/principles/CLAUDE.md` if/when ratified as binding.
+
+  **Disposition (S94 Phase-7 close, /arch) — DEFERRED, not added. A hand-off to
+  next-sprint design, NOT a final resolution.** The candidate was carried from S93
+  (arch R6) and is now *sharpened* by the S94 floor finding (§3.1 / FIXME 0459):
+  atomic-RC + allocator contention is THE parallel bottleneck for stateful workloads,
+  which is exactly the empirical case *for* confining mutable-state concurrency to the
+  single-threaded interpreter (parallelism only over independent, allocation-/RC-light
+  dataflow). The evidence now strongly supports the principle. It is **not added at
+  this close** because its precise *boundary and wording* are coupled to design work
+  that has not settled: (a) the **contention-aware-gate design** (FIXME 0459 — the
+  static allocation/RC-density axis + the dynamic substrate-contention signal) decides
+  operationally *what* counts as "mutable-state concurrency" the gate must keep on the
+  interpreter; and (b) the **Phase-H structural cure** (thread-local RC / escape→stack
+  / region / reuse) is *defined by* which values cross threads — which the concurrency
+  model must settle first (Principle 8, the reinforced sequencing edge of §3.1).
+  Pinning principle wording ahead of (a)/(b) would be reactive rule-making (the
+  discipline the close-review guards against). **Hand-off: `/design` picks this up
+  next sprint (S95) alongside the 0459 contention-aware-gate design; the principle is
+  added/refined at THAT sprint's close once the boundary is concrete.** Recorded here,
+  not in `design/arch/principles/`, precisely because it is not yet binding.
 
 A **concurrency-scheduler sequence diagram** under `design/arch/sequences/` is warranted
 when this moves from target to design — flagged sequence-diagram-pending; not drawn
@@ -779,15 +949,89 @@ reified as data), so the restructure is narrow:
   grouping / `Semaphore`-per-token is DEFERRED to slice ≥ 3 — minimal Par-async =
   `join_all` over token-disjoint branches.
 
-> **As-built caveat (S93).** In the minimal landed slice the async twin
-> `run_io_trampoline_inner_async` delegates straight to the proven sync stepper, so
-> the `EffectPoll` `.await` boundary is exercised **only by the fixture demo leaf**
-> (below) and is **NOT yet reachable through `cranelisp_run_io` for real IO-tree
-> effect nodes** — production effects still run synchronously and do not suspend on
-> the reactor. Routing real poll-shape effect *nodes* through the await needs the
-> deferred backend poll-emission (the `declare_platform!` poll-fns + the GOT-indirect
-> dispatch arm — the deferred column of the per-crate table below), a later slice. See
-> `design/int/reactor.md` §4 for the as-built detail.
+> **CLOSED in S94 — real poll-shape effect nodes now suspend on the reactor through
+> `cranelisp_run_io`.** S93 landed only the spine (the `EffectPoll` `.await` boundary
+> reachable only by the fixture demo leaf). S94 ratified the backend↔intrinsics node
+> seam (next subsection) and wired it end-to-end: the real async Effect arm over
+> `IO_TAG_EFFECT_POLL` + the backend poll-construction arm (keyed on
+> `DefKind::PlatformEffect.poll_shape`) + the `ConcurrentPlatformManifest` /
+> `cranelisp_concurrent_manifest` / dlsym-probe channel (FIXME 0457) + a real
+> `declare_platform!`-emitted in-tree async leaf. The 5 reactor e2e rows
+> (`tests/concurrency_reactor.rs`) are green: two **real** leaves overlap in ≈max(delay)
+> on one reactor thread, the i64 result reads back, and the strand stream shows
+> `Dispatched → Suspended → Resumed`. The S93 fixture-leaf demo remains as the substrate
+> regression guard. **Caveat carried to slice ≥3 — the §7 two-pool routing is NOT yet
+> wired:** under `concurrency-runtime`, *blocking* effects in a `Par` route through the
+> single-threaded reactor `join_all` rather than rayon/`spawn_blocking`, so they no
+> longer overlap (poll-shape leaves do). Feature-OFF (the production default) is
+> unaffected — blocking-effect `Par` still parallelizes on rayon. This regresses
+> feature-on blocking-`Par` throughput until two-pool routing lands; it surfaces as 3
+> RED wall-clock witnesses in the `nt-reactor-e2e` lane
+> (`resource_serial_diff_token_parallelizes`,
+> `auto_io_independent_diff_token_parallelizes_e2e`,
+> `auto_io_par_grouping_uniform_across_modes`) — a known slice-3 gap (§7 / §14 item 5),
+> not a 0457 regression. See `design/int/reactor.md` §4 for the as-built reactor
+> interior.
+
+### The ratified backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)
+
+This is the canonical `/dev` brief for slice-2 completion — the concrete representation
+/design backend + /design int + /qa build against. Four decisions (rationale in §13
+"S94 R1"):
+
+1. **Node = closure-env.** A new `IO_TAG_EFFECT_POLL` node (pinned `= 4` —
+   `IO_TAG_PAR` is the current max `3`; homed in `cranelisp-platform/src/lib.rs`
+   alongside the other `IO_TAG_*` constants, `#[cfg(feature = "concurrency")]` so it
+   stays off the default `public-api.txt` edge); field-0 → a **host-built
+   state-closure** in the existing layout `[header(16) | code_ptr@16 = poll-fn |
+   drop_glue_ptr@24 = state teardown | env@32 = result-slot + i64 args + scratch]`.
+   The blocking `IO_TAG_EFFECT` node is **untouched** (R3 byte-identical-off): it is
+   only ever constructed for blocking effects, which is every real platform today; the
+   poll node is only ever constructed for poll-shape (`blocking == 0`) effects, which
+   only exist in a `concurrency`-built toolchain. The backend needs **no cargo
+   feature** — its second arm is keyed on the effect's declared shape and is reached
+   only by concurrency-gated poll effects.
+2. **State = backend-built, host-internal.** The backend's poll-construction arm loads
+   the poll-fn from `__cranelisp_got_platform_<name>` (GOT-indirect dispatch
+   preserved — the load happens once at construction, baked as `code_ptr`) and builds
+   the state-closure, marshaling the effect's i64 args as captures — the existing
+   closure-construction codegen. **No `make_state` platform export**; no eager call to
+   platform code at the effect site (unlike the blocking path, which calls the DLL fn
+   to build its node). The trampoline (not the backend) supplies `HostCtx`/`Waker` —
+   at poll time, in `EffectPoll::poll(state=env, host, waker)`.
+3. **Result = generic offset read.** The poll-fn writes its i64 result into the env
+   result slot; `EffectPoll` reads it at a host-known location (baked node field or
+   fixed env offset — /design backend+int choose) on `Poll::Ready`. The fixture's
+   `ResultReader` fn-pointer collapses to this.
+4. **drop_state = reserved-but-inert** (`ConcurrentPlatformFn.drop_state`,
+   `Option<unsafe extern "C" fn(*mut c_void)>`, landed S94, no `ABI_VERSION` bump).
+   Primary drop = the closure `drop_glue_ptr` on `consume_io_tree`; `drop_state` is
+   the platform's optional hook for leaf-private heap, `None` for the in-tree demo.
+
+**The poll-discriminator channel (S94 R1, FIXME 0457) — how `poll_shape` reaches the
+backend arm.** The backend keys decision (1) on `DefKind::PlatformEffect.poll_shape:
+bool` (landed in `cranelisp-types`, `#[serde(default)]` = `false` = blocking). The
+loader populates it: a v7 platform exports a separate `cranelisp_concurrent_manifest`
+(a gated `ConcurrentPlatformManifest` carrying a `ConcurrentPlatformFn` array); the
+concurrency-built host dlsym-probes it, lifts each entry's `concurrency:
+ConcurrencyDescriptor`, and sets `poll_shape = (descriptor.blocking == 0)`. v6
+platforms (no v7 export) ⇒ `poll_shape = false`, byte-identical. The full descriptor is
+**not** stored on `DefKind` (it stays `concurrency`-gated, off the frozen edge);
+`poll_shape` is the orthogonal dispatch axis beside the existing `scheduling_class`
+conflict-domain axis. Full per-crate channel spec + sequencing:
+`platform-interface.md` §6.8 "S94 R1 (FIXME 0457)" (0457 resolved + deleted S94 — the
+channel is as-built; see `design/int/reactor.md` for the as-built reactor interior).
+
+**Trampoline.** Both node kinds flow through `run_io_trampoline_inner_async`; the
+Effect arm `.await`s an `EffectPoll` for `IO_TAG_EFFECT_POLL` and forces synchronously
+(no await) for `IO_TAG_EFFECT`. The sync stepper (feature-off) only ever sees
+`IO_TAG_EFFECT`. **What /qa can assert:** (a) feature-off: no `IO_TAG_EFFECT_POLL` is
+ever constructed; the v6 blocking path is byte-identical; (b) feature-on: a real
+`declare_platform!`-emitted in-tree poll leaf, driven through `cranelisp_run_io`,
+suspends and resumes on the reactor (strand `Dispatched→Suspended→Resumed`); two such
+leaves in a `Par` overlap in ≈max not sum on one reactor thread; (c) the leaf's i64
+result is read back correctly via the generic offset read; (d) `--link` links no
+executor.
 
 **Demo leaf — `async-read` (poll-shape, fd + `register_readable`).** A
 built-in/fixture poll-shape effect whose `state` holds a non-blocking raw fd + a
@@ -839,7 +1083,7 @@ substrate):**
 |---|---|---|---|---|---|
 | 1 | `cranelisp-platform` | NONE for the mechanism — the C-ABI types are landed. A hand-written fixture poll-fn for the demo leaf (or `/qa` owns it). | `src/concurrency.rs` (landed) | fixture poll-fn returns Pending-then-Ready; assert `HostCtx::register_readable` called | `declare_platform!` emits poll-fns + `ConcurrencyDescriptor`; manifest `PlatformFn`→`ConcurrentPlatformFn` |
 | 2 | `cranelisp-intrinsics` | **the substrate.** (a) `concurrency-runtime` feature + mio/futures deps; (b) the mio reactor + `HostCtx` impl (new `reactor.rs`); (c) `run_io_trampoline_inner_async` + `EffectPoll` (the one await boundary); (d) async `Par` `join_all` path; (e) `cranelisp_run_io` cfg-split `block_on`; (f) the `StrandEvent` sink + emit hooks + per-branch `StrandId`. | `io.rs`, new `reactor.rs`, `strand.rs` | `EffectPoll` suspend/resume on a fixture reactor; two-branch overlap completes in ≈ max; strand events emitted in order | `Semaphore`-per-token `Par` grouping; `SparkCreated`/`Forced` emit; launch-and-continue |
-| 3 | `cranelisp-backend` | **NONE.** The minimal demo's poll-fn is invoked intrinsics-side (fixture/built-in effect); effect-node codegen is unchanged. | — | existing baseline stays green (feature-off) | the GOT-indirect dispatch arm emits the poll-call shape (passing `HostCtx`/`Waker`) when real platforms emit poll-fns |
+| 3 | `cranelisp-backend` | **(S94, was "NONE" for the S93 spine.)** A second, additive **poll-construction arm**, keyed on the effect's declared shape (no cargo feature): for a `blocking == 0` effect, load the poll-fn from the GOT and build an `IO_TAG_EFFECT_POLL` node over a host-built state-closure (`code_ptr` = poll-fn, captures = marshaled i64 args, reserved result slot). Blocking effects take the unchanged v6 arm (R3 byte-identical-off). | `compiler/` effect-site codegen; reuse closure-construction codegen | feature-off baseline stays byte-identical (no poll node constructed); a poll effect builds the `IO_TAG_EFFECT_POLL` node with the expected closure layout | `Semaphore`-per-token grouping; the `drop_state` glue contribution (cancellation slice) |
 | 4 | `src/` (int) | feature passthrough (`concurrency-runtime` forward); ensure default + exe-bundle/`--link` never enable it; wire the dev-sink surface (a `/strand` dump is OPTIONAL/spillable). | Cargo features; exe-bundle build path | feature-off baseline tests stay byte-identical | backpressure/supervisor/pool-sizing policy; reactor construction parameterization; `--link` concurrency |
 
 **Spill marker — the spillable stretch (what `/dev` drops FIRST if it runs long):**

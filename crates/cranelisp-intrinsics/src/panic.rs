@@ -280,8 +280,14 @@ pub extern "C" fn cranelisp_run_program(
 
     // 4. IO trampoline (if main returns IO).
     let exit_code = if main_returns_io {
-        let inner = crate::io::run_io_trampoline(main_result);
-        // Decision 24: release the caller's tree (non-consuming trampoline).
+        // Drive through the cfg-split driver: the host reactor under
+        // `concurrency-runtime` (real poll-shape effect nodes suspend/resume,
+        // FIXME 0457), the synchronous stepper otherwise (byte-identical). This
+        // is the single `--run`/`--link` IO-forcing site (the `--link` startup
+        // stub calls this same `cranelisp_run_program`), so both modes reach the
+        // reactor through one entry — no second forcing site (0419-aligned).
+        let inner = crate::io::drive_io(main_result);
+        // Decision 24: release the caller's tree (non-consuming driver).
         crate::drop::consume_io_tree(main_result);
         inner
     } else {
@@ -386,7 +392,10 @@ pub extern "C" fn cranelisp_check_runtime_error() {
 /// 2. load `code_ptr` from the thunk closure (offset `CLOSURE_CODE_PTR_OFFSET`)
 ///    and call `extern "C" fn(env_ptr) -> i64` with the closure pointer as
 ///    `env_ptr` (the `io::call_continuation` / `ivar::ivar_force` precedent —
-///    every `(fn [] …)` thunk is a closure, even with zero captures);
+///    every `(fn [] …)` thunk is a closure, even with zero captures), then
+///    `consume_closure` the thunk — it is a fresh, one-shot, by-move closure the
+///    backend does NOT dec post-call, so the combinator owns its teardown (else
+///    a catch-in-a-loop leaks one closure cell per call);
 /// 3. read the slot via `take_runtime_error()`;
 /// 4. `Some(msg)` → heap `(Err message)`; `None` → heap `(Ok result)`. Both
 ///    `Result` variants carry data, so both are heap ADTs `[header | tag | field]`.
@@ -416,6 +425,15 @@ pub extern "C" fn catch_runtime_error(thunk_closure: i64) -> i64 {
     let call: extern "C" fn(i64) -> i64 =
         unsafe { std::mem::transmute(code_ptr as *const ()) };
     let result = call(thunk_closure);
+
+    // 2b. Release the thunk. It is a fresh, one-shot closure the caller hands us
+    //     by move — the backend emits NO post-call dec for it (the
+    //     `io::call_continuation` `cont_is_fresh=true` precedent). Consuming it
+    //     here on EVERY path (Ok and Err alike) is what keeps a catch-in-a-loop
+    //     from leaking exactly one closure cell per call. `consume_closure` runs
+    //     the embedded drop glue on last ref (dec'ing any heap captures) before
+    //     deallocating; a zero-capture thunk is a bare dealloc.
+    crate::drop::consume_closure(thunk_closure);
 
     // 3. Read-and-clear the slot (covers both this thread's panic and any
     //    worker error ferried into it by the join paths).

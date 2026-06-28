@@ -85,7 +85,18 @@
 ;; Wall-clock A/B (8 leaves, ~1,000,000 work iterations each):
 ;;     lenient ON  : the two halves at each level run in parallel
 ;;     lenient OFF : halves run sequentially  (CRANELISP_NO_LENIENT=1)
-;; Same total either way -- parallelism is semantically transparent (pure code).
+;; Same RESULT either way -- parallelism is semantically transparent (pure code).
+;;
+;; HONESTY ON SPEED -- parallel is NOT an unconditional win. Sparking costs real
+;; overhead (per-branch IVar/thunk allocation + atomic RC + allocator contention
+;; on a shared substrate), so a wall-clock payoff only materialises for coarse,
+;; compute-bound branches. Even THIS pure-compute workload measured only
+;; break-even-to-slightly-slower at this granularity (S94 /port: ~1.3s parallel
+;; vs ~0.9s serial). The guarantee is "never DRAMATICALLY slower than serial",
+;; not "always faster"; for allocation-/RC-heavy work parallel can be much slower
+;; until the contention-aware gate lands (design/arch/effect-concurrency.md §3.1).
+;; The teaching signal here is the SHAPE -- independent work sparks with zero
+;; thread plumbing in the source -- not a promised speedup.
 
 ;; ===========================================================================
 ;; STAGE 2 -- A general `par-map` over a Functor

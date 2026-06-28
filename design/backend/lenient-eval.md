@@ -2,6 +2,7 @@
 
 Sprint 25 — automatic parallelization of independent `let` bindings.
 Sprint 92 (slice 1 of the effect-concurrency track) — widened to independent **apply-arguments** (see §2.5, §4.4), making a general parallel `par-map` expressible.
+Sprint 94 (FIXME 0424 limit #2) — widened the `let` path to **dependent bindings** (RHS references an earlier *sparked* binding), sparked as IVars whose dependency references are substituted with on-demand `ivar_force` reads (see §2.6, §4.5). Backend-only, no new runtime, no public-API impact (arch R5). This is the substrate the stdlib `par-*` functions build on.
 
 ## 1. Problem
 
@@ -108,6 +109,75 @@ Each argument is a sparkable candidate iff `is_worth_sparking(arg, constructors)
 Sparkability is decided over the **argument `MonoExpr`s only**; the callee is never sparked (it is evaluated on the calling thread as today). The pass runs at the apply site **before** the existing dispatch fork in `compile_apply` (TCO check, `ResolvedCall` lowering, constructor construction, closure/direct call). A sparked-argument apply must **not** also take the TCO self-call fast path in the same step — a tail self-call jumps to the loop header and would bypass the force barrier — so apply-arg sparking is gated to the non-tail, non-TCO arm (when `find_sparkable_args` returns ≥2 indices and the apply is not a tail self-call). Trace-body exclusion (§2.3) and `CRANELISP_NO_LENIENT` (§2.4) apply unchanged — both are checked at the apply site exactly as at the `let` site.
 
 When `find_sparkable_args` returns ≥2 indices, the sparking is no longer *unconditional*: the backend emits a **create-gate** (§3.6.2) — a runtime `try_reserve` branch that allocates the IVars/thunks only on the budget-granted arm and falls back to the existing sequential arg codegen on the over-budget arm. This is what restores the never-slower-than-serial floor for over-sparking recursion (§3.6.3); the *static* sparkability decision (≥2 expensive args) is necessary but not sufficient, because it cannot see dynamic recursion depth.
+
+### 2.6 Dependent-binding sparks — the `let`-path limit #2 (S94, FIXME 0424)
+
+Apply-arg sparking (§2.5) and the `let`-path independence rule (§2.1) both spark only
+**independent** work: the `let` rule rejects a binding whose RHS references an earlier
+binding (`depends_on_earlier`). FIXME 0424's remaining generalization (arch R5, S93
+user ruling) relaxes exactly this rejection — **limit #2: admit a *dependent* binding
+by sparking it as an IVar and forcing its dependency on demand.** This is the substrate
+the stdlib `par-map`/`par-reduce`/`par-map-reduce` functions (`/stdlib`, separate wave)
+build on for the divide-and-conquer shape, where the second half's binding references
+the first. It is **backend-only — no new runtime, no public-API impact** (arch R5): it
+reuses the existing IVar create/spark/force machinery (§3) and the create-gate (§3.6)
+verbatim; only the sparkability admission rule and the dependent-thunk emission change.
+
+#### 2.6.1 The relaxed admission rule
+
+Today `find_sparkable_bindings` (§2.1) sets `depends_on_earlier` and excludes any
+binding whose free vars touch an earlier-bound name. The relaxation keeps the rule but
+adds a **dependency-on-sparked carve-out**:
+
+> A binding at index `i` is **sparkable** if it is worth sparking (§2.2) AND every
+> earlier-bound free var it references is *itself in the sparkable set* (already
+> admitted as a spark at some index `j < i`).
+
+In one pass, left to right, maintaining the running `sparkable` set:
+
+- An **independent** binding (no earlier-bound free var) is admitted iff
+  `is_worth_sparking` — unchanged from §2.1.
+- A **dependent** binding (references earlier-bound names) is admitted iff
+  `is_worth_sparking` AND **all** of its earlier-bound free-var dependencies are
+  already in `sparkable`. If it depends on any **non-sparked** earlier binding (a
+  cheap one excluded by the cost heuristic, or a literal/var binding), it is **not
+  sparkable** — its dependency is bound only as an ordinary `Value` in Phase 2, which a
+  concurrently-running thunk created in Phase 1 cannot see (§2.6.3). This is the precise
+  minimal relaxation: a dependent spark is admissible exactly when its dependencies are
+  available *as IVars to force*.
+
+Because `let` bindings are sequential, dependencies only point backward — there are no
+cycles, and source order is already a valid topological order. The ≥2 gate (§2.1) and
+the cost heuristic (§2.2) are unchanged and stay single-source.
+
+`find_sparkable_args` (§2.5, the apply path) is **unaffected** — apply arguments bind
+nothing into sibling scope, so there is no dependent-argument analogue. Limit #2 is a
+`let`-path-only generalization.
+
+#### 2.6.2 The parallelism this actually extracts (and the floor)
+
+For a binding whose RHS depends *entirely and immediately* on one earlier spark
+(`(b (f a))` where `a` is sparked), the dependent thunk blocks at the force of `a`
+almost immediately — little is gained beyond `a`'s own parallelism. The real win is
+**partially-dependent** RHS: in `(b (g (f a) (h c)))` where `c` is independent, the
+`(h c)` sub-work runs concurrently while `a` is still computing; the thunk blocks only
+at the `(f a)` force. The dependent spark pipelines the independent sub-work of `b`
+against `a`'s computation. The never-slower-than-serial floor (§3.6.3) is preserved:
+forcing `a` is the same work sequential evaluation does, and the create-gate still
+bounds total IVar allocation to `O(cap)` (the dependent thunks count toward the same
+budget batch).
+
+#### 2.6.3 Why the dependency must be forced, not captured
+
+The current lenient `let` (§4.2) creates+sparks all IVars in **Phase 1** *before* any
+binding value is bound (Phase 2). So at the moment a dependent binding's thunk is
+built, its dependency `a` is **not yet a `Value` in scope** — it is an unforced IVar.
+The thunk therefore cannot capture `a`'s value; it must capture `a`'s **IVar pointer**
+and force it on demand. Forcing is safe to do concurrently from both the dependent
+thunk and Phase 2's own force of `a`: `ivar_force` (§3.5) is idempotent under its
+CAS+spin state machine (whoever wins computes; the other reads the resolved value —
+work conservation). The substitution `a → ivar_force(ivar_a)` is the mechanism the arch
+brief names; §4.5 is the codegen.
 
 ## 3. IVar Runtime Primitives
 
@@ -412,6 +482,84 @@ The **create-gate is the structural change Sprint 92 Slice 1 (create-gate fix) l
 
 **Scope of the change.** The backend half is contained in `cranelisp-backend` (the sparkability sibling in `sparkability.rs`, the create-gate + lenient pre-pass in `apply.rs`/`compile_apply`, and the symmetric gate at the `let` site in `let_if.rs`). The IVar machinery (`cranelisp-intrinsics`) is reused unchanged except for the create-gate's budget primitive: `ivar_spark` reverts to always-spawn (§3.4), the in-`ivar_spark` budget is removed, and **one** new C-ABI symbol `cranelisp_spark_budget_try_reserve` is added (§3.6.1, §3.6.4). That new export is a `cranelisp-intrinsics` `public-api.txt` diff — routed to `/arch` per the baseline-diff discipline (§3.6.4); it is the *only* public-API change and is expected. The sparkability pass and the gate emission stay `pub(crate)` in backend (no backend `public-api.txt` diff).
 
+### 4.5 Dependent-binding emission (S94, FIXME 0424 limit #2)
+
+`compile_let_lenient` (§4.2) grows to handle sparkable bindings whose thunks reference
+earlier sparked bindings. The three-phase barrier model is **unchanged**; only Phase 1
+thunk construction changes, and it changes only for *dependent* sparks.
+
+**Phase 1 processes sparkable bindings in source order** (already the case) — this is
+the topological order (§2.6.1), so when binding `b`'s thunk is built, every IVar it
+depends on (`ivar_a`, …) has already been created in `ivar_map`. For a dependent
+sparkable binding `b` at index `i` with sparked dependencies `{a, …}`:
+
+1. **Make each dependency IVar addressable inside the thunk.** The dependency `a` is
+   not a `Value` in scope at Phase 1, so the generic `compile_lambda` capture path
+   (which captures only names already in `self.variables`) cannot capture it. Bind a
+   fresh synthetic capture name per dependency (e.g. `§ivar_a`) to the IVar `Value`
+   already in `ivar_map[idx_a]`, marked `AlwaysHeap` so the capture inc fires.
+2. **Force the dependencies in a thunk-body prologue, then compile the *unmodified*
+   RHS.** **Stay backend-internal — do NOT introduce a new `MonoExpr` variant or a
+   synthetic intrinsic-call node.** A new `MonoExpr` shape would touch `cranelisp-types`
+   (arch-owned) and risk a public-API edit, breaching R5's "no public-API impact."
+   Instead, build the dependent thunk's inner fn the way `par_bind.rs` builds its
+   continuation closure — **manually**, not via `compile_expr(Lambda)`: capture the
+   `§ivar_a` IVar pointers, and at the inner-fn entry emit, per dependency, a force +
+   bind:
+
+   ```
+   §ivar_a_cap = load capture(§ivar_a)         ; the captured IVar pointer
+   a_val       = call cranelisp_ivar_force(§ivar_a_cap)   ; the SAME extern the barrier emits
+   bind a -> a_val in the inner-fn variable env
+   ```
+
+   then `compile_expr` the **original, unrewritten** RHS, whose `Var(a)` now resolves to
+   the forced `a_val`. This reuses the existing `cranelisp_ivar_force` extern (IVar
+   machinery single-source, §3.5) with **zero** boundary-type change, and it is the same
+   manual-inner-fn pattern `par_bind.rs` already establishes. (If a future refactor
+   prefers a MonoExpr-level rewrite, it must be confirmed with `/arch` first — it is not
+   needed for limit #2 and is explicitly avoided here to honour R5.)
+3. **Create+spark the thunk's IVar** exactly as §4.2 Phase 1 — the only difference is
+   the prologue-forcing inner fn and its IVar-pointer captures.
+
+**RC discipline for the captured IVar pointer (the one new rule /dev MUST get right).**
+A dependent thunk captures `ivar_a` (a heap-allocated, atomic-RC IVar cell), so:
+
+- The capture must **inc** `ivar_a`'s RC when stored into the thunk env (the closure
+  env holds its own reference) — the standard `emit_capture_inc` for a heap-typed
+  capture (`lambda.rs`). Treat the synthetic `§ivar_a` as `AlwaysHeap` so the inc fires.
+- The thunk's **drop glue must dec** `ivar_a` (standard `build_closure_drop_glue`
+  capture-dec). This balances the capture inc.
+- This inc is what keeps `ivar_a` alive for the dependent thunk even though Phase 2
+  dec's the main thread's `ivar_a` reference after forcing `a` for `a`'s own binding
+  (§4.2). With the capture inc, `a`'s Phase-2 dec brings rc from (1 main + 1 spark-task
+  + 1 per dependent capture) down by one — the cell survives until the dependent
+  thunk(s) and the spark task have all dec'd. The existing RC-to-0 dealloc path
+  (`dealloc_ivar`, §5) frees the cell (and any ferried error String) when the last
+  reference goes.
+
+**Phase 2 and Phase 3 are unchanged.** Phase 2 still forces every sparked IVar in
+source order and binds the forced value to its name; a dependent binding `b` is forced
+exactly like any other spark (its thunk, when it runs, forces its own dependencies). The
+barrier (force-all-before-body) is intact, so the structured fork-join invariant (§5)
+holds and the ferry stays sound (§2.6.4 below).
+
+#### 4.5.1 Observational equivalence + ferry soundness (restating §5/§8 for the dependent case)
+
+A dependent spark is observationally equivalent to sequential evaluation:
+
+- **Value.** Forcing `ivar_a` yields the identical value sequential evaluation of `a`
+  produces; the dependent thunk computes `b` from that same value. Pure args, no
+  order-observable difference (§8).
+- **First-error-wins.** If `a`'s thunk panics, both Phase 2's force of `a` (at index
+  `idx_a < i`) and the dependent thunk's force of `ivar_a` observe the ferried error
+  (§5). Because the barrier forces in **source order**, `a` (earlier index) surfaces
+  its error before `b` — matching a left-to-right sequential evaluation that aborts on
+  `a` first. No new ferry mechanism is needed; the dependent force is just another
+  reader of `ivar_a`'s resolved/errored cell.
+- **Non-termination** preserved: if `a` diverges, the dependent thunk's force of
+  `ivar_a` never completes, exactly where sequential evaluation of `a` would hang.
+
 ## 5. IVar Drop Glue
 
 **Not needed under the barrier model.** All IVars are created, sparked, and then forced within the same `let` compilation. After forcing, the main thread dec's the IVar (Phase 2). The spark task also dec's the IVar when it finishes (§3.4). One of these dec's brings the RC to zero and frees the cell.
@@ -528,3 +676,34 @@ What `/qa` and `/dev` should target (unit test mandatory per fix; e2e assessed a
 - *Try-reserve unit (`ivar` tests):* `try_reserve(n)` returns 1 and bumps the counter by `n` when `cur + n ≤ cap`; returns 0 and leaves the counter unchanged when `cur + n > cap` (the atomic all-or-nothing batch property — no TOCTOU partial grant); each spawned spark releases exactly one permit on completion.
 - *Gate unit (`/dev`(backend) sparkability/codegen tier):* a ≥2-sparkable-arg apply emits the `try_reserve` branch with a lenient arm (create+spark) and a direct arm (no IVar emission); a `<2` apply emits neither gate nor IVars (the existing sequential path).
 - *`let`-path regression re-validation:* per §3.6, confirm the existing `let` perf tests are not perturbed by the gate's direct arm (or re-pin their budget) — same surface SPRINT.md flags for naive-fib.
+
+**Dependent-binding spark — limit #2 (§2.6, §4.5; S94 FIXME 0424 — `/dev`(backend)+`/qa` targets):**
+
+- *Sparkability unit (`sparkability_tests.rs`, mandatory):* `find_sparkable_bindings`
+  now admits a dependent binding when **all** its earlier-bound dependencies are
+  themselves sparked (`[(a (fib n)) (b (g a (fib m)))]` → both `a` and `b` sparkable);
+  and **excludes** a dependent binding when any dependency is non-sparked
+  (`[(a (id x)) (b (g a (fib m)))]` where `a` is a cheap/var binding → `b` not
+  sparkable). The ≥2 gate and cost heuristic still hold (a lone dependent spark → empty).
+- *Sequential identity (equivalence oracle, `/qa` integration):* a `let` with a
+  dependent sparkable binding produces the **byte-identical** result to the same program
+  under `CRANELISP_NO_LENIENT=1` and to a hand-sequentialized rewrite — across `--run`
+  and REPL. Granted-vs-direct (under-cap vs over-cap budget) and serial all agree
+  (§3.6 three-regime equivalence, extended to the dependent shape).
+- *Parallelism achieved (acceptance):* a partially-dependent binding whose independent
+  sub-work is expensive (`(b (g (h c) (f a)))`, `c` independent, `a` sparked) overlaps
+  `(h c)` with `a`'s computation — measured faster than serial for ≥1µs/element work,
+  never slower than serial (the §2.6.2 floor).
+- *Captured-IVar RC (unit, mandatory — the one new RC rule, §4.5):* after a workload
+  with a dependent spark (including one whose **dependency thunk panics**),
+  `IN_FLIGHT_SPARKS` returns to 0 and no IVar cell leaks — the dependent thunk's capture
+  inc is balanced by its drop-glue dec, and the dependency cell is freed exactly once
+  when its last reference (main Phase-2 dec / spark-task dec / dependent-capture dec)
+  goes. Inspect the dependent thunk's CLIF on a shrunk single-dependency repro to
+  confirm the captured `§ivar_a` is inc'd once at capture and the thunk inner-fn
+  prologue forces it via `cranelisp_ivar_force` before the RHS uses `a` (not a stale
+  value load).
+- *Ferry first-error-wins for the dependent case (`/qa` integration):* when a sparked
+  dependency `a` panics, the error surfaces at the source-order barrier (before the
+  dependent binding), and a `catch-runtime-error` enclosing the `let` observes it —
+  identical to sequential left-to-right (§4.5.1).

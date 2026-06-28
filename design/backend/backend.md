@@ -385,10 +385,10 @@ The existing docs under `design/backend/` (this `backend.md` is the master; 5 in
 | Module caching | `module-caching.md` | **Live**. Read alongside Decisions 25, 34, 37 |
 | Executable generation | `executable-generation.md` | **Live**. `--link` mode; backend's `exe.rs` (231 lines) |
 | HKT codegen | `hkt-codegen.md` | **Partial / stale**. Sprint 24 era; check against current monomorphisation pipeline before extending |
-| IO trampoline | `io-trampoline.md` | **Live**. Backend's IO trampoline design |
+| IO trampoline | `io-trampoline.md` | **Live**. Backend's IO trampoline design. **§12 (S94)** = the poll-shape effect-node construction arm (`IO_TAG_EFFECT_POLL`, effect-concurrency slice 2; ratified seam in `design/arch/effect-concurrency.md` §13 "S94 R1") |
 | IO scheduling | `io-scheduling.md` | **Live**. Overlaps with §10.12 spec |
 | IO trampoline trace | `archive/io-trampoline-trace.md` | **Archived (S75 W5, FIXME 0096)**. Incident-debug residue. Reference only |
-| Lenient eval | `lenient-eval.md` | **Live**. Spec §12.4.3 + §10.12 backend story |
+| Lenient eval | `lenient-eval.md` | **Live**. Spec §12.4.3 + §10.12 backend story. **§2.6/§4.5 (S94)** = dependent-binding sparks (FIXME 0424 limit #2 — `let`-path substrate for stdlib `par-*`) |
 | FQTypeName cache | `sprint51-fqtypename-cache.md` | **Partially stale**. Sprint 51 era; Decision 34's `schema_version` replaces the pre-S58 manifest hashing for shape changes |
 | Sprint 19 panic boundary | `sprint19-panic-boundary.md` | **Live**. Catchable runtime panics. Check against current `runtime_panic` extern declared in facade §"Consumed surface" |
 | AST-sourced codegen | `ast-sourced-codegen.md` | **Partially superseded** by Decision 25 (the `Def.ast` field). Cite cautiously |

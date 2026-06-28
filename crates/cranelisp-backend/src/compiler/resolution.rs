@@ -12,7 +12,7 @@
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, ModuleEntry, ModuleFullPath, Symbol, SymbolTable,
+    DefKind, ModuleEntry, ModuleFullPath, Symbol, SymbolTable, Type,
 };
 
 /// GOT data symbol name for a module. Single source of truth.
@@ -258,6 +258,47 @@ where
                 };
                 Some((module.clone(), *got_slot, Symbol::from(bare)))
             }
+            _ => None,
+        }
+    })
+}
+
+/// Resolve a callee name to `(defining_module, slot)` **iff** the resolved entry
+/// is a **poll-shape** `DefKind::PlatformEffect { poll_shape: true, .. }` — the
+/// keying for the backend's poll-construction arm (FIXME 0457, S94 R1;
+/// `design/backend/io-trampoline.md §12`). A blocking effect
+/// (`poll_shape: false`, every v6 platform) returns `None`, so it takes the
+/// unchanged GOT-indirect blocking-call path — the default build constructs no
+/// `IO_TAG_EFFECT_POLL` node and stays byte-identical. No cargo feature: the arm
+/// is selected on the data field (Principle 11).
+pub(crate) fn resolve_poll_effect_target<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    current_module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<(ModuleFullPath, usize, Vec<Type>)>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    resolve_driven(symbol_tables, module_aliases, current_module, name, |module, _bare, entry| {
+        match entry {
+            ModuleEntry::Def { kind, scheme, .. } => match kind.as_ref() {
+                DefKind::PlatformEffect {
+                    poll_shape: true,
+                    got_slot,
+                    ..
+                } => {
+                    // The effect's param types (for the state-closure capture-dec
+                    // glue). A platform effect's scheme is a concrete `Fn`.
+                    let params = match &scheme.ty {
+                        Type::Fn(ps, _ret) => ps.clone(),
+                        _ => Vec::new(),
+                    };
+                    Some((module.clone(), *got_slot, params))
+                }
+                _ => None,
+            },
             _ => None,
         }
     })

@@ -2149,8 +2149,11 @@ impl CompilerSession {
                     // Decision 24's consuming convention: `run_io_trampoline` is
                     // non-consuming, so `consume_io_tree` must release the outer
                     // tree afterwards. See `pipeline::unwrap_io_inline`.
-                    let inner_value = cranelisp_intrinsics::run_io_trampoline(*value);
-                    cranelisp_intrinsics::drop::consume_io_tree(*value);
+                    // Drive through `cranelisp_run_io` (the reactor-driving entry
+                    // under `concurrency-runtime`, byte-identical otherwise; it
+                    // also consumes the tree internally) — same entry as
+                    // `unwrap_io_inline` (FIXME 0457).
+                    let inner_value = cranelisp_intrinsics::io::cranelisp_run_io(*value);
                     let inner_type = ty.unwrap_io().clone();
                     format_result_value(
                         inner_value, &inner_type, &self.shared.symbol_tables,

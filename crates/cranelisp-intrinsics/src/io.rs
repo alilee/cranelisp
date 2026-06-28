@@ -8,6 +8,8 @@
 //! See `design/backend/io-trampoline.md` for the full design.
 
 use cranelisp_platform::{IO_TAG_BIND, IO_TAG_EFFECT, IO_TAG_PAR, IO_TAG_PURE};
+#[cfg(feature = "concurrency-runtime")]
+use cranelisp_platform::IO_TAG_EFFECT_POLL;
 use cranelisp_types::HeapHeader;
 
 use crate::alloc::alloc_with_rc;
@@ -43,6 +45,13 @@ const FIELD_2_OFFSET: isize =
 /// Byte offset of the code pointer within a closure from the base pointer.
 /// Closure layout: [header(16) | code_ptr(8) | drop_glue_ptr(8) | captures...]
 const CLOSURE_CODE_PTR_OFFSET: isize = HeapHeader::SIZE as isize; // 16
+
+/// Byte offset of a closure's first env slot (its captures) from the base
+/// pointer — past the header, code_ptr, and drop_glue_ptr. For a poll-shape
+/// effect's state-closure this is the env base the trampoline passes to the
+/// poll-fn as `state` (its first i64 is the reserved result slot). (S94 R1.)
+#[cfg(feature = "concurrency-runtime")]
+const CLOSURE_ENV_OFFSET: i64 = HeapHeader::SIZE as i64 + 16; // 32
 
 /// Force an IO task tree to completion (extern "C" entry point).
 ///
@@ -104,29 +113,193 @@ pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64 {
 /// and demonstrated.
 #[cfg(not(feature = "concurrency-runtime"))]
 #[inline]
-fn drive_io(io_ptr: i64) -> i64 {
+pub(crate) fn drive_io(io_ptr: i64) -> i64 {
     run_io_trampoline(io_ptr)
 }
 
 #[cfg(feature = "concurrency-runtime")]
-fn drive_io(io_ptr: i64) -> i64 {
-    crate::reactor::block_on_reactor(async |_host| run_io_trampoline_inner_async(io_ptr).await)
-        .expect("reactor init failed")
+pub(crate) fn drive_io(io_ptr: i64) -> i64 {
+    // Same `TrampolineEnter`/`TrampolineExit` bookend as `run_io_trampoline`
+    // (Principle 7 — the IO trace stays identical across the cfg-split for the
+    // synchronous node kinds; poll nodes add suspend/resume strand events only).
+    io_observer::emit(
+        IoEventTag::TrampolineEnter,
+        &IoEvent::TrampolineEnter { io_ptr },
+    );
+    let result = crate::reactor::block_on_reactor(async |host| {
+        run_io_trampoline_inner_async(io_ptr, host, crate::strand::StrandId::ROOT).await
+    })
+    .expect("reactor init failed");
+    io_observer::emit(
+        IoEventTag::TrampolineExit,
+        &IoEvent::TrampolineExit { result },
+    );
+    result
 }
 
-/// The async twin of [`run_io_trampoline`] (App. B step 2c). An `async fn` so it
-/// is driven on the reactor executor.
+/// The async twin of [`run_io_trampoline_inner`] (App. B step 2c; S94 R1 — the
+/// real async Effect arm, FIXME 0457). Its loop is the sync body **verbatim
+/// except the Effect arm**, reusing the shared `feed_continuation` /
+/// `force_effect_node` helpers (Principle 7):
 ///
-/// In the minimal slice the body is fully synchronous (the node walk delegates to
-/// the proven sync stepper; poll-shape await nodes are a later backend slice), so
-/// it delegates to [`run_io_trampoline`] outright — reusing its
-/// `TrampolineEnter`/`TrampolineExit` bookend rather than re-emitting an identical
-/// one (I3 / Principle 7 — single source of truth; the IO trace stays identical
-/// across the cfg-split because it IS the same bookend). When the `.await` Effect
-/// arm lands, this regains a real async body around that same shared bookend.
+/// - `IO_TAG_EFFECT_POLL` (a real poll-shape effect node, host-built by the
+///   backend's poll-construction arm) ⇒ `.await` an [`crate::reactor::EffectPoll`]
+///   over the node's state-closure — the leaf suspends/resumes on the reactor.
+/// - `IO_TAG_EFFECT` (the v6 blocking thunk) ⇒ the synchronous force, exactly as
+///   the sync stepper. The feature-off sync stepper only ever sees this kind.
+/// - `IO_TAG_PAR` ⇒ [`run_par_node_async`] (`join_all` of the branches on the ONE
+///   reactor — concurrent I/O leaves overlap in ≈max not sum), vs the sync
+///   stepper's rayon dispatch.
+///
+/// Returns a boxed future so the `IO_TAG_PAR` arm can recurse per branch (async
+/// recursion). The `strand` charges this walk's effect events; `IO_TAG_PAR` mints
+/// a fresh child strand per branch so concurrent leaves are distinguishable.
 #[cfg(feature = "concurrency-runtime")]
-async fn run_io_trampoline_inner_async(io_ptr: i64) -> i64 {
-    run_io_trampoline(io_ptr)
+fn run_io_trampoline_inner_async<'h>(
+    io_ptr: i64,
+    host: &'h cranelisp_platform::HostCtx,
+    strand: crate::strand::StrandId,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = i64> + 'h>> {
+    Box::pin(async move {
+        let mut cont_stack: Vec<(i64, bool)> = Vec::new();
+        let mut current: i64 = io_ptr;
+        let mut current_is_fresh: bool = false;
+
+        loop {
+            let tag = unsafe { read_node_tag(current) };
+
+            let produced: i64 = match tag {
+                t if t == IO_TAG_PURE => {
+                    let val = unsafe { read_node_field(current, FIELD_0_OFFSET) };
+                    io_observer::emit(
+                        IoEventTag::PureStep,
+                        &IoEvent::PureStep { value: val, is_fresh: current_is_fresh },
+                    );
+                    val
+                }
+                t if t == IO_TAG_EFFECT => match force_effect_node(current) {
+                    EffectStep::Value(v) => v,
+                    EffectStep::Aborted => return 0,
+                },
+                // S94 R1 — the real async Effect arm: a poll-shape effect node
+                // suspends/resumes on the reactor via `EffectPoll`.
+                t if t == IO_TAG_EFFECT_POLL => {
+                    await_poll_node(current, host, strand).await
+                }
+                t if t == IO_TAG_BIND => {
+                    let inner = unsafe { read_node_field(current, FIELD_0_OFFSET) };
+                    let cont = unsafe { read_node_field(current, FIELD_1_OFFSET) };
+                    io_observer::emit(
+                        IoEventTag::BindEnter,
+                        &IoEvent::BindEnter {
+                            inner_ptr: inner,
+                            cont_ptr: cont,
+                            is_fresh: current_is_fresh,
+                        },
+                    );
+                    cont_stack.push((cont, current_is_fresh));
+                    io_observer::emit(
+                        IoEventTag::ContPush,
+                        &IoEvent::Cont {
+                            cont_ptr: cont,
+                            is_fresh: current_is_fresh,
+                            new_depth: cont_stack.len() as u32,
+                        },
+                    );
+                    if current_is_fresh {
+                        crate::drop::dec_shallow_io(current);
+                    }
+                    current = inner;
+                    continue;
+                }
+                t if t == IO_TAG_PAR => run_par_node_async(current, host).await,
+                _ => panic!("cranelisp_run_io: unknown IO tag {tag}"),
+            };
+
+            match feed_continuation(&mut cont_stack, current, current_is_fresh, produced) {
+                Step::Advance(new_io) => {
+                    if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
+                        return 0;
+                    }
+                    current = new_io;
+                    current_is_fresh = true;
+                }
+                Step::Finish(value) => return value,
+            }
+        }
+    })
+}
+
+/// Await a single `IO_TAG_EFFECT_POLL` node on the reactor — read its state-closure
+/// (field-0), bake an [`crate::reactor::EffectPoll`] over the GOT-loaded poll-fn
+/// (`closure + 16`) and the env base (`closure + 32`), and `.await` it. The
+/// poll-fn writes its result into the env's reserved result slot (env offset 0),
+/// which `EffectPoll` reads on `Ready` (the generic env-offset read).
+#[cfg(feature = "concurrency-runtime")]
+async fn await_poll_node(
+    node: i64,
+    host: &cranelisp_platform::HostCtx,
+    strand: crate::strand::StrandId,
+) -> i64 {
+    // The state-closure pointer (the node's only payload field).
+    let clo = unsafe { read_node_field(node, FIELD_0_OFFSET) };
+    // code_ptr = the GOT-loaded poll-fn (closure offset 16).
+    let poll_fn_ptr = unsafe { crate::heap_access::read_i64(clo, CLOSURE_CODE_PTR_OFFSET) };
+    // SAFETY: `poll_fn_ptr` is a code pointer the backend's poll-construction arm
+    // baked as the state-closure's `code_ptr` (`compile_poll_effect`,
+    // `io-trampoline.md §12.3`): it is `emit_got_slot_load`'d from
+    // `__cranelisp_got_platform_<name>`, whose slot the platform loader populated
+    // at DLL load with a `declare_concurrent_platform!`-exported function of the
+    // v7 `PollFn` C-ABI (`unsafe extern "C" fn(*mut c_void, *const HostCtx,
+    // *const Waker) -> Poll`). So it is non-null (a populated GOT slot), points at
+    // finalized code (the DLL is mapped for the session — BC §5 invariant 6), and
+    // has exactly the `PollFn` ABI we transmute to. This is the same "read a code
+    // pointer out of a heap closure and transmute to its known ABI" pattern as
+    // `call_continuation` (which transmutes the continuation's `code_ptr` to
+    // `extern "C" fn(i64,i64) -> i64`).
+    let poll_fn: cranelisp_platform::PollFn =
+        unsafe { std::mem::transmute::<*const (), cranelisp_platform::PollFn>(poll_fn_ptr as *const ()) };
+    // The env base is `closure + 32` (past header + code_ptr + drop_glue); the
+    // reserved result slot is its first i64 (env offset 0).
+    let env = (clo + CLOSURE_ENV_OFFSET) as *mut core::ffi::c_void;
+    // SAFETY: `env` points at the backend-built env (result slot + i64 args);
+    // `poll_fn` obeys the v7 poll-fn contract.
+    let leaf = unsafe { crate::reactor::EffectPoll::new(env, poll_fn, host, strand) };
+    leaf.await
+}
+
+/// The async `Par` overlap arm — run every branch as a concurrent future on the
+/// ONE reactor (`futures::future::join_all`), so I/O-effect leaves overlap in
+/// ≈max(delay) not sum with NO thread-per-read (vs the sync stepper's rayon
+/// dispatch, which stays the feature-off + CPU-spark path). Each branch gets a
+/// fresh child [`crate::strand::StrandId`] so concurrent leaves are
+/// distinguishable in the strand stream. Results are marshaled into a fresh
+/// `alloc_with_rc` buffer (the value fed to the continuation) — the same shape
+/// the sync `run_par_node` produces. Token-cardinality grouping is deferred to a
+/// later slice (S94 minimal = `join_all` over the branches).
+#[cfg(feature = "concurrency-runtime")]
+async fn run_par_node_async(parent_ptr: i64, host: &cranelisp_platform::HostCtx) -> i64 {
+    // SAFETY: `parent_ptr` is the live `current` Par node base pointer.
+    let branch_ptrs = unsafe { read_par_branches(parent_ptr) };
+    let count = branch_ptrs.len();
+    let futs: Vec<_> = branch_ptrs
+        .iter()
+        .map(|&b| run_io_trampoline_inner_async(b, host, crate::strand::next_strand()))
+        .collect();
+    let results = futures::future::join_all(futs).await;
+    io_observer::emit(
+        IoEventTag::ParJoin,
+        &IoEvent::ParJoin {
+            parent_ptr,
+            count: count as u32,
+        },
+    );
+    let results_buf = alloc_with_rc(8 + count * 8) as i64; // payload: padding(8) + N*8
+    for (i, &val) in results.iter().enumerate() {
+        // SAFETY: `results_buf` was just allocated with `count` field slots.
+        unsafe { crate::heap_access::write_i64(results_buf, FIELD_0_OFFSET + (i as isize) * 8, val) };
+    }
+    results_buf
 }
 
 /// Core trampoline implementation. Separate from the extern "C" wrapper

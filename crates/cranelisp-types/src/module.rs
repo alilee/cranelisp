@@ -1516,8 +1516,38 @@ pub enum DefKind {
     /// Decision 26 (scheduling-class lives on the platform-effect variant
     /// so ill-formed states — "a user fn with a scheduling class" — are
     /// unrepresentable).
+    ///
+    /// **S94 R1 — the poll-shape discriminator (`poll_shape`, FIXME 0457).**
+    /// The effect-concurrency seam (`effect-concurrency.md` §13 "S94 R1") keys
+    /// the backend's two emission arms on whether the effect is a poll-shape
+    /// async leaf vs a v6 blocking effect. That bit cannot be recovered from
+    /// `scheduling_class` (`ConcurrencyDescriptor::from_scheduling_class` maps
+    /// **all three** classes to `blocking == 1`), so it rides here as its own
+    /// orthogonal field. `scheduling_class` is the *conflict-domain* axis
+    /// (token/cardinality semantics for the three classes); `poll_shape` is the
+    /// orthogonal *dispatch* axis (reactor poll-leaf vs blocking call) — exactly
+    /// the orthogonality `ConcurrencyDescriptor` documents between
+    /// `{token,cardinality}` and `blocking`. The full `ConcurrencyDescriptor` is
+    /// **not** carried here because that type is `#[cfg(feature="concurrency")]`
+    /// (a dormant C-ABI contract, off the frozen `public-api.txt` edge) while
+    /// `DefKind` is core/ungated; graduating it onto the symbol table is a later,
+    /// deliberate step gated on lifting that dormancy (a native cardinality-N
+    /// pool + `global_budget` — both slice-≥4 / unbuilt — are the only surface
+    /// `{scheduling_class, poll_shape}` does not already cover).
     PlatformEffect {
         scheduling_class: SchedulingClass,
+        /// `true` ⇒ a poll-shape async leaf (the loader lifted
+        /// `ConcurrencyDescriptor.blocking == 0` from a v7
+        /// `ConcurrentPlatformFn`); backend emits the poll-construction arm
+        /// (`IO_TAG_EFFECT_POLL` + host-built state-closure). `false` ⇒ a v6
+        /// blocking effect; backend emits the unchanged blocking call. Polarity
+        /// is inverted from the C-ABI `blocking` field so that the serde default
+        /// (`false`) is the byte-identical v6 world — a cached pre-S94
+        /// `PlatformEffect` (no field in its JSON) deserializes as a blocking
+        /// effect, exactly as before. (FIXME 0457; `effect-concurrency.md`
+        /// §13 "S94 R1" + Appendix B "ratified backend↔intrinsics seam".)
+        #[serde(default)]
+        poll_shape: bool,
         /// The GOT slot through which this platform effect is invoked
         /// (manifest index, §5.3). A platform effect is a GOT-addressable
         /// callable — backend dispatches it GOT-indirect and the platform DLL
@@ -1525,7 +1555,8 @@ pub enum DefKind {
         /// slot, so the slot is **mandatory** (not `Option`), same as
         /// [`DefKind::Primitive`]. (S83, FIXME 0358 — PlatformEffect was
         /// incorrectly placed in the slot-less set by the Option-A reshape;
-        /// pending `/arch` ratification.)
+        /// pending `/arch` ratification.) `poll_shape` does not affect slotting:
+        /// poll-shape and blocking effects are both GOT-addressable callables.
         got_slot: usize,
     },
     /// A host-promised extern primitive.

@@ -10,6 +10,23 @@ status: open
 
 # Shared consumer-side `HostCallbacks` builder — DEF-6 root-enabler closure + 0407 prerequisite
 
+## Scope confirmation (S94, /arch — reactor construction is OUT)
+
+/design int's S94 Phase-3 finding: the **reactor** `HostCtx`/`Waker` construction is
+**already divergence-proof by construction** — `make_host_ctx` is single-sited in
+`cranelisp-intrinsics` (`reactor.rs`) and reached by ALL modes through the one C-ABI
+entry `cranelisp_run_io` (which lives in intrinsics and links into `--link` output).
+There is no second hand-mirrored site to diverge from, so it carries no DEF-6 hazard.
+
+**Ruling:** 0419 stays **narrowly the platform-DLL `HostCallbacks` consolidation** —
+the two hand-mirrored sites `src/platform.rs:253` + `crates/cranelisp-exe-bundle/src/lib.rs:131`
+(+ the test mirror). **Reactor / `HostCtx` construction is explicitly OUT of 0419's
+scope** — do NOT fold it into the shared builder; over-generalizing the sound,
+single-sited reactor path would manufacture coupling where none exists (the opposite
+of this FIXME's intent). S94 leaves the reactor construction exactly as /design int
+built it. 0419 remains off the S94 critical path (only the `--run`/REPL
+host-construction site is active this sprint; `--link` concurrency is a later slice).
+
 ## Issue
 
 The S87 Stage-B audit confirmed, from **both** consumer crates (src/ F-B +

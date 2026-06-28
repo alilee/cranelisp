@@ -73,20 +73,68 @@ fn single_sparkable_below_threshold_returns_empty() {
     assert!(find_sparkable_bindings(&bindings, &ctors).is_empty());
 }
 
-// spec: design/backend/lenient-eval.md §2 — dependent bindings are not sparkable
+// spec: design/backend/lenient-eval.md §2.6 — dependent-on-sparked is admitted
 //
-// The second binding references the first (`b` uses `a`), so it depends on
-// an earlier binding and is excluded — leaving fewer than 2, so empty.
+// FIXME 0424 limit #2: the second binding references the first (`b` uses `a`),
+// and `a` is itself sparked (an independent non-trivial call), so `b` is
+// admitted as a *dependent* spark — its dependency `a` is available as an IVar
+// to force on demand. Both indices spark. (Pre-S94 this returned empty; the
+// relaxed admission rule is what the par-reduce/divide-and-conquer substrate
+// needs.)
 #[test]
-fn dependent_binding_is_not_sparkable() {
+fn dependent_binding_on_sparked_is_admitted() {
     let bindings = vec![
         (sym("a"), call("compute")),
         (sym("b"), call_with_arg("derive", "a")),
     ];
     let ctors = HashSet::new();
+    assert_eq!(
+        find_sparkable_bindings(&bindings, &ctors),
+        vec![0, 1],
+        "a dependent binding whose dependency is sparked must itself be sparkable"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §2.6 — dependent-on-NON-sparked excluded
+//
+// Negative face of the carve-out: `a` is a cheap builtin (`+`) → NOT sparked, so
+// it is bound only as an ordinary `Value` in Phase 2 that a concurrent thunk
+// cannot see. The dependent `b` (which references `a`) is therefore EXCLUDED even
+// though it is itself worth sparking. The two independent expensive calls `c`/`d`
+// keep the set above the ≥2 gate, isolating that `b` (index 1) is dropped
+// specifically because its dependency is non-sparked — not by the threshold.
+#[test]
+fn dependent_binding_on_non_sparked_is_excluded() {
+    let bindings = vec![
+        (sym("a"), call("+")),                      // cheap → not sparked
+        (sym("b"), call_with_arg("derive", "a")),   // dep on non-sparked → excluded
+        (sym("c"), call("compute")),                // independent → sparked
+        (sym("d"), call("evaluate")),               // independent → sparked
+    ];
+    let ctors = HashSet::new();
+    assert_eq!(
+        find_sparkable_bindings(&bindings, &ctors),
+        vec![2, 3],
+        "a dependent binding whose dependency is NOT sparked must be excluded"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §2.6 — the cost heuristic still gates
+//
+// A dependent binding that is itself a cheap builtin is excluded by the cost
+// heuristic regardless of its dependency being sparked: `b` = `(+ a)` references
+// the sparked `a` but is not worth sparking, so only `a` remains → below the ≥2
+// gate → empty. Confirms §2.2 is unchanged by the limit-#2 relaxation.
+#[test]
+fn dependent_but_cheap_binding_is_excluded() {
+    let bindings = vec![
+        (sym("a"), call("compute")),
+        (sym("b"), call_with_arg("+", "a")), // cheap callee → not worth sparking
+    ];
+    let ctors = HashSet::new();
     assert!(
         find_sparkable_bindings(&bindings, &ctors).is_empty(),
-        "a dependent binding must drop the set below the spark threshold"
+        "a cheap dependent binding must not be sparked even when its dep is sparked"
     );
 }
 
@@ -135,21 +183,22 @@ fn literals_and_var_refs_are_not_sparkable() {
     assert!(find_sparkable_bindings(&bindings, &ctors).is_empty());
 }
 
-// spec: design/backend/lenient-eval.md §2 — independence is positional, not global
+// spec: design/backend/lenient-eval.md §2.6 — a dependent chain over sparked deps
 //
-// A later binding that does NOT reference an earlier one stays sparkable;
-// mixing a sparkable independent pair around a dependent middle binding
-// returns exactly the independent indices.
+// FIXME 0424 limit #2: `a` is independent (sparked); `b` depends on the sparked
+// `a` (admitted as a dependent spark); `c` is independent (sparked). All three
+// are sparkable — the chain pipelines `b`'s independent sub-work against `a`'s
+// computation while `b`'s thunk forces `a` on demand. (Pre-S94 the dependent `b`
+// was excluded and this returned `[0, 2]`.)
 #[test]
-fn mixed_independent_and_dependent_returns_only_independent() {
+fn dependent_chain_over_sparked_deps_all_admitted() {
     let bindings = vec![
         (sym("a"), call("compute")),
-        (sym("b"), call_with_arg("derive", "a")), // depends on a → excluded
-        (sym("c"), call("evaluate")),             // independent → sparkable
+        (sym("b"), call_with_arg("derive", "a")), // dep on sparked a → admitted
+        (sym("c"), call("evaluate")),             // independent → sparked
     ];
     let ctors = HashSet::new();
-    // a (idx 0) and c (idx 2) are independent + non-trivial → both sparked.
-    assert_eq!(find_sparkable_bindings(&bindings, &ctors), vec![0, 2]);
+    assert_eq!(find_sparkable_bindings(&bindings, &ctors), vec![0, 1, 2]);
 }
 
 // ===== `find_sparkable_args` — the apply-argument sibling (Sprint 92,

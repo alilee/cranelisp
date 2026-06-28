@@ -10,6 +10,59 @@ status: deferred
 
 # Spec cascade for the async-leaf effect + host-reactor concurrency model (effect-concurrency slice 2)
 
+## Disposition (S94 /spec — slice-2 surfaced half now FULLY actioned; remaining scope narrowed to later slices)
+
+S93 ruled on slice 2 against **landed-dormant** ABI-v7 contracts (reactor not yet
+wired). S94 slice-2 completion made the substrate **real**: poll-shape platform
+effect nodes (`IO_TAG_EFFECT_POLL`) now suspend/resume on a host-owned reactor
+through `cranelisp_run_io`, and two real leaves overlap (≈max not sum) on one
+reactor thread (feature-gated `concurrency-runtime`, byte-identical off; async
+leaves are **platform-authored** via `declare_platform!`, never user-written). At
+the user's instruction `/spec` **re-evaluated** the deferral rather than carrying
+it forward — and confirmed the substance of the S93 ruling **while finding and
+actioning one concrete gap the live reactor surfaced.**
+
+**Re-affirmed: slice 2 surfaces NO new user-observable language surface.** No new
+results, types, syntax, or error behaviour. A `.cl` program is written and behaves
+identically; any platform function returns `IO a` regardless of whether its leaf is
+blocking or poll-shape — the poll-shape/async-leaf distinction is **language-invisible**
+(a `platform-interface.md` ABI/design concern + §10.10.4 implementation-defined, not a
+language-spec concern). The reactor is feature-gated dev substrate. The auto-overlap's
+observable contract (results observationally identical to sequential) was already pinned
+normatively in §12.4.3 (final paragraph, fork-join propagation extends to §10.12) +
+§10.12.4 (within-token source ordering) + §10.6.3 (mode-output equivalence), and
+informatively in §10.12.6 (authored S93, written slice-agnostically — still accurate).
+The token-cardinality pool (slice 3), backpressure (slice 4), launch-and-continue +
+supervisor (slice 4), and the combinator layer (slice 6) are NOT shipped, so the
+§10.12.2 scheduling-class trichotomy and §12 remain accurate as-is for the user surface.
+
+**One real gap actioned (S94):** §10.12.1 / §10.12.4-step-2 / §10.12.5 named the
+concurrency **mechanism** as a "thread pool." Pre-slice-2 that was accurate (rayon
+only); slice 2 added a *second, non-thread-pool* mechanism (single-threaded reactor
+suspend/resume), so the wording was both factually incomplete AND over-committed to a
+mechanism, contradicting §12.1's non-prescriptive runtime stance. **Made
+mechanism-neutral** (`[S94]`): the trampoline MAY execute `Par` branches concurrently
+via thread pool, reactor suspension, any combination, or sequentially (all conform);
+observable behaviour is fixed by §10.12.1–§10.12.4 + the observational equivalence of
+§12.4.3, not by the mechanism. This is a **behaviour-preserving accuracy pin** (like the
+S93 §10.12.4 within-token ordering pin) — not new user surface. Also replaced the stale
+`docs/concurrency.md` reference with `design/arch/effect-concurrency.md`.
+
+**Remaining scope (deferred — genuinely user-visible, specced WITH their behavioural delivery):**
+the two substantive §12 cascades below are unchanged from the S93 list. This FIXME stays
+**open-as-deferred** (target `/spec`) as their durable cascade record; `/sprint`
+re-triggers it when build-step-4 / build-step-6 behavioural delivery lands.
+
+**/qa coverage owed (informational, for /qa — no test authored here):** the
+mechanism-neutral §10.12.5 invariant ("observationally identical to sequential
+regardless of mechanism") is already covered by the existing auto-IO output-equivalence
+rows; the slice-2 reactor's *as-built* witnesses (two real leaves overlap ≈max; strand
+`Dispatched→Suspended→Resumed`; feature-off byte-identical / `--link` links no executor)
+live in `tests/concurrency_reactor.rs` (per `effect-concurrency.md` Appendix B) and are
+feature-gated — no spec-side test is newly owed by these edits.
+
+---
+
 ## Disposition (S93 /spec — slice-2 half actioned, substance deferred)
 
 `/spec` evaluated the slice-2 question — **what, if anything, is user-visible in the

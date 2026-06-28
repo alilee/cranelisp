@@ -51,18 +51,48 @@ axis.
 
 ## Issue (perf half — carried)
 
-The reshape parallelises the search *structurally*, but **net wall-clock
-speedup is not yet observable** because the **immutable copy-per-edit grid**
-dominates: `eliminate`/`set-cell`/`assoc` copy the full 81-cell Vec on every
-modification (quadratic; allocation-dominated — `sys`≈`real`, `user`>`real`
-from allocator/runtime threads in *both* parallel and serial modes). Measured
-baselines (debug backend): the search-requiring equivalence puzzle ~8.5 s; the
-earlier easy-9×9 live-HTTP baseline ~3.3 s; genuinely-hard puzzles still run
-for minutes, so `solver/test-hard-puzzle` stays excluded from the runner.
+The reshape parallelises the search *structurally*, but parallel is currently
+**~10× SLOWER than serial** — a never-slower-than-serial **floor VIOLATION**,
+not merely "no speedup" (S94 measurement, /port). Debug-backend A/B of the
+exemplar suite: **~20 s parallel vs ~1.9 s serial**, **sys-time dominated**
+(~21 s sys parallel vs ~0.05 s serial; user ~43 s = many cores busy spinning).
+This is **shape-independent** — the retired S92 `solve-range` apply-arg shape
+and the S94 stdlib-`par-map-reduce` shape measure identically (~19.5 s / ~1.7 s).
+
+**Mechanism (S94, isolated with a free-standing repro ladder).** The
+**immutable copy-per-edit grid** dominates — `eliminate`/`set-cell`/`assoc`
+copy the full 81-cell Vec on every modification (quadratic), and the Vec holds
+**heap-allocated RC-managed `Cell` ADTs**, so each copy also atomically bumps
+81 element RCs and each guess allocates fresh `Cell`s. Under the spark
+substrate this generates **allocator-lock + atomic-RC contention** across the
+worker threads, and that contention — not the create-gate's spark *count*,
+which it does bound — is what blows up `sys` time and breaks the floor. A repro
+ladder confirms the penalty scales with allocation/RC, not compute:
+
+| Workload | parallel real | serial real | parallel user | parallel sys |
+|---|---|---|---|---|
+| pure compute (examples/30) | 1.3 s | 0.9 s | 1.9 s | 0.04 s |
+| int-Vec copy (D&C) | 3.1 s | 2.85 s | 16.4 s | 0.87 s |
+| ADT-Vec copy (D&C) | 6.9 s | 5.0 s | 45.8 s | 2.3 s |
+| Sudoku suite | ~20 s | ~1.9 s | ~43 s | ~21 s |
+
+Pure-compute parallel ≈ serial with sys≈0 (floor holds); adding per-node Vec
+copy then heap-ADT copy walks the penalty up to the Sudoku's 10×. Repro `.cl`
+ladder handed to `/qa` for a narrow guard (S94). Genuinely-hard puzzles still
+run for minutes, so `solver/test-hard-puzzle` stays excluded from the runner.
 
 Two compounding causes, unchanged from the original filing:
-- **Copy-per-guess representation** (the dominant, fixable cause).
+- **Copy-per-guess representation** (the dominant, fixable cause) — now
+  understood as allocator/atomic-RC contention under parallelism, which is
+  *why* parallel is actively slower, not just flat.
 - **Unoptimized debug backend** (no release/Tier-2 backend until Phase H).
+
+**Cross-skill note (`/backend`):** the create-gate's never-slower-than-serial
+floor (`design/backend/lenient-eval.md` §3.6.3) holds for compute-bound sparks
+but is violated by allocation-bound sparks, because the gate bounds spark
+*count* but not the global-allocator / shared-value-atomic-RC contention each
+sparked branch generates. Worth assessing whether the floor claim should be
+scoped, or whether a contention-aware / per-arena gate is warranted.
 
 ## Proposed resolution (perf half)
 

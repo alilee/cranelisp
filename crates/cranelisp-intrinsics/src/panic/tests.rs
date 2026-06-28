@@ -174,8 +174,9 @@ fn test_catch_runtime_error_ok() {
     }
     // Slot left clean after the call.
     assert!(take_runtime_error().is_none(), "slot must be clean after Ok");
+    // The combinator consumed the thunk (one-shot, by-move) — only the Result
+    // is ours to free here. Freeing the thunk would double-free.
     unsafe { crate::alloc::dealloc(res as *mut u8) };
-    unsafe { crate::alloc::dealloc(thunk as *mut u8) };
 }
 
 // spec: 12-runtime §12.7.2 — a panicking thunk yields (Err message)
@@ -196,13 +197,55 @@ fn test_catch_runtime_error_err() {
         take_runtime_error().is_none(),
         "slot must be clean after the combinator consumes the panic"
     );
-    // Free the Err string then the Result, then the thunk.
+    // Free the Err string then the Result. The combinator already consumed the
+    // thunk (one-shot, by-move) — freeing it here would double-free.
     unsafe {
         let field0 = *((res as isize + ADT_FIELD_0_OFFSET) as *const i64);
         crate::alloc::dealloc(field0 as *mut u8);
         crate::alloc::dealloc(res as *mut u8);
-        crate::alloc::dealloc(thunk as *mut u8);
     }
+}
+
+// spec: spec/12-runtime.md §12.7.2 / §12.3 — the combinator CONSUMES its
+// one-shot thunk closure (the `io::call_continuation` `cont_is_fresh=true`
+// precedent). The backend hands the thunk by move and emits no post-call dec,
+// so the combinator owns its teardown; without it a catch-in-a-loop leaks
+// exactly one closure cell per call (S94 Wave-3b defect, e2e repro
+// `spec_12_runtime::catch_runtime_error_caught_leaks_one_heap_cell_per_catch_neg`).
+// Proven deterministically by the thunk's embedded drop glue running — an
+// `is_live` check is unreliable here because the freed thunk's same-size slot is
+// reused by the `(Ok …)` Result allocation.
+#[test]
+fn test_catch_runtime_error_consumes_thunk() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DROPPED: AtomicBool = AtomicBool::new(false);
+    extern "C" fn flag_drop_glue(_closure: i64) {
+        DROPPED.store(true, Ordering::SeqCst);
+    }
+    extern "C" fn body(_env: i64) -> i64 {
+        7
+    }
+
+    let _ = take_runtime_error();
+    DROPPED.store(false, Ordering::SeqCst);
+    // A fresh rc=1 thunk WITH drop glue so its consumption is observable.
+    let thunk = {
+        let base = crate::alloc::alloc_with_rc(16);
+        unsafe {
+            *((base as isize + 16) as *mut i64) = body as *const () as i64;
+            *((base as isize + 24) as *mut i64) = flag_drop_glue as *const () as i64;
+        }
+        base as i64
+    };
+    // NB: the test must NOT free the thunk — the combinator owns its teardown
+    // (freeing it here would double-free).
+    let res = catch_runtime_error(thunk);
+    assert!(
+        DROPPED.load(Ordering::SeqCst),
+        "catch-runtime-error must consume the one-shot thunk (run its drop glue \
+         + free the cell) — else a catch-in-a-loop leaks one closure cell per call"
+    );
+    unsafe { crate::alloc::dealloc(res as *mut u8) };
 }
 
 // ---------------------------------------------------------------------
@@ -379,6 +422,6 @@ fn test_catch_runtime_error_clears_stale() {
         let tag = *((res as isize + ADT_TAG_OFFSET) as *const i64);
         assert_eq!(tag, RESULT_TAG_OK, "stale error must not produce Err");
     }
+    // Thunk consumed by the combinator; only the Result is ours to free.
     unsafe { crate::alloc::dealloc(res as *mut u8) };
-    unsafe { crate::alloc::dealloc(thunk as *mut u8) };
 }

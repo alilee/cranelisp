@@ -3298,3 +3298,143 @@ fn agent_validator_malformed_form_does_not_crash_repl() {
         out.stderr
     );
 }
+
+// ===========================================================================
+// Sprint 94 — FIXME 0430: docstring-into-source regen (the S89-W3-descoped
+// `set-doc`). Plan: tests/plan/sprint-94.md §3. Candidate-1 ratified by /design:
+// docstring-aware `render_decl_sexp` + the reconciliation rule (live
+// `Def.docstring` authoritative when `Some`; the sexp's own docstring emitted
+// only when the live field is `None`; never double-emit). /dev (src/) re-lands
+// the `set-doc` Document-write surface against that contract.
+//
+// This is a DEFECT-grade persistence repro (the §17.15.3 durable-memory promise
+// the S89 half-feature failed to deliver): the e2e rows owe a failing-not-ignored
+// guard. The `set-doc` write tool is `#[cfg(feature = "agent")]` (descoped from
+// `src/agent/{pull,stub}.rs` in S89 W3), so these run in the `agent` lane beside
+// the existing Document-mode coverage, driven through the stub-provider-by-config
+// mechanism.
+//
+// THE set-doc STUB-SCRIPT DSL (the /dev contract, also documented at the
+// Cluster-C header above): `tool: set-doc <SYMBOL> <TEXT>` → a `set-doc`
+// ToolCalls response. The argument is split on the FIRST whitespace: the first
+// token is <SYMBOL> (the definition whose docstring to record); the REST of the
+// line, verbatim, is <TEXT> — the docstring prose. The Document consultative gate
+// fires ("record this as <symbol>'s docstring?"); on confirm the agent calls
+// `apply_doc_edit(SYMBOL, TEXT)` + regenerates the backing `.cl` byte-stably so
+// the live `Def.docstring` is rendered after the param vector (candidate 1).
+// ---------------------------------------------------------------------------
+
+/// The docstring prose the agent records via `set-doc` (must equal the TEXT in
+/// `SET_DOC_DOUBLE`'s `tool:` line).
+#[cfg(feature = "agent")]
+const SET_DOC_DOCSTRING: &str = "doubles its argument by adding it to itself";
+
+/// A stub script that records a docstring on `double`, then finishes.
+#[cfg(feature = "agent")]
+const SET_DOC_DOUBLE: &str =
+    "tool: set-doc double doubles its argument by adding it to itself\n\
+     done: recorded the docstring for you\n";
+
+// spec: repl/spec.md §17.15.3 — the durable-memory promise ("next session it
+// remembers") for a `set-doc` docstring edit. Session 1: the user defines
+// `double` (no docstring), the agent records a docstring via `set-doc` (the
+// consultative gate is confirmed with `y`), and the backing `user.cl` is
+// regenerated with the docstring (docstring-aware `render_decl_sexp`, candidate
+// 1). Session 2 (run_again — a FRESH binary over the SAME tmpdir, so `user.cl`
+// is loaded from disk): `/doc double` shows the recorded docstring. RED-FIRST:
+// the `set-doc` Document write surface + `apply_doc_edit` + docstring-aware
+// renderer do not exist on HEAD (descoped S89 W3), so the docstring is never
+// recorded and the fresh session's `/doc double` reports "no docstring".
+#[cfg(feature = "agent")]
+#[test]
+fn set_doc_docstring_survives_session_restart() {
+    // Session 1: define `double` (no docstring), then the agent records one.
+    let first = stub_repl(
+        SET_DOC_DOUBLE,
+        PreludeVariant::PrimitivesOnly,
+        "(defn double [x] (add-i64 x x))\n\
+         /ask add a docstring to double\n\
+         y\n",
+    );
+    // Sanity: session 1 left a backing file (the defn persists via regen) so the
+    // read-back below is a genuine cross-session test, not an empty start.
+    let user_cl = std::fs::read_to_string(first.tmpdir.join("user.cl"))
+        .expect("session 1 must leave a `user.cl` backing file");
+    assert!(
+        user_cl.contains("double"),
+        "session 1 must persist `double` to user.cl, user.cl={user_cl:?}"
+    );
+
+    // Session 2: a FRESH binary over the same tmpdir loads the regenerated
+    // `user.cl`; `/doc double` must surface the recorded docstring (§17.15.3).
+    let out = first
+        .run_again()
+        .repl()
+        .stdin("/doc double\n/quit\n")
+        .output();
+    assert!(
+        out.stdout.contains(SET_DOC_DOCSTRING),
+        "the fresh session's `/doc double` must show the docstring recorded by \
+         `set-doc` in the prior session (durable memory, §17.15.3); stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.15.3 + FIXME 0430 reconciliation rule (the negative
+// face): a symbol whose original `(defn …)` source ALREADY carried a docstring,
+// after `set-doc` OVERWRITES it then the session restarts, shows the NEW
+// docstring EXACTLY ONCE — the live `Def.docstring` is authoritative and the
+// stored sexp's docstring is dropped (never double-emitted). RED-FIRST: the
+// `set-doc` write surface is descoped on HEAD, so the overwrite never applies —
+// the fresh session shows the OLD docstring, not the new one.
+#[cfg(feature = "agent")]
+#[test]
+fn set_doc_does_not_duplicate_docstring_on_restart_neg() {
+    let old_doc = "old docstring before the agent edit";
+    let new_doc = "new docstring after the agent edit";
+    let set_doc_new = format!("tool: set-doc double {new_doc}\ndone: updated the docstring\n");
+
+    // Session 1: define `double` WITH an original docstring, then overwrite it.
+    let first = stub_repl(
+        &set_doc_new,
+        PreludeVariant::PrimitivesOnly,
+        &format!(
+            "(defn double \"{old_doc}\" [x] (add-i64 x x))\n\
+             /ask change the docstring on double\n\
+             y\n"
+        ),
+    );
+    let _ = std::fs::read_to_string(first.tmpdir.join("user.cl"))
+        .expect("session 1 must leave a `user.cl` backing file");
+
+    // Session 2: the fresh session shows the NEW docstring exactly once.
+    let out = first
+        .run_again()
+        .repl()
+        .stdin("/doc double\n/quit\n")
+        .output();
+    // (i) the live (new) docstring won the reconciliation.
+    assert!(
+        out.stdout.contains(new_doc),
+        "after `set-doc` overwrites the original docstring, the fresh session's \
+         `/doc double` must show the NEW docstring (live `Def.docstring` wins, \
+         §17.15.3 reconciliation); stdout={}",
+        out.stdout
+    );
+    // (ii) +neg: the regenerated source carries the docstring EXACTLY ONCE — the
+    // stored sexp's docstring is not double-emitted alongside the live one.
+    let regen = std::fs::read_to_string(out.tmpdir.join("user.cl")).unwrap_or_default();
+    assert_eq!(
+        regen.matches(new_doc).count(),
+        1,
+        "the regenerated `user.cl` must carry the new docstring exactly ONCE — no \
+         double-emit (reconciliation rule); user.cl={regen:?}"
+    );
+    // (iii) +neg: the superseded original docstring is gone (the live field, not
+    // the stored sexp, is authoritative).
+    assert!(
+        !regen.contains(old_doc),
+        "the superseded original docstring must NOT survive the overwrite — the \
+         live `Def.docstring` is authoritative (§17.15.3); user.cl={regen:?}"
+    );
+}

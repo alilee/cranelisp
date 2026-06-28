@@ -410,12 +410,18 @@ fn make_host_ctx(reactor_ptr: *mut Reactor) -> HostCtx {
 // EffectPoll — the one await boundary (App. B).
 // ===========================================================================
 
-/// Reads an effect's result `i64` out of its poll-fn `state` once `Poll::Ready`.
-pub type ResultReader = fn(*mut c_void) -> i64;
+/// Byte offset of the reserved **result slot** within a poll-fn `state` — the
+/// generic env-offset result read (S94 R1 seam decision 3, FIXME 0457). `state`
+/// is the env base of the host-built state-closure (`closure + 32`), and the
+/// result slot is the FIRST env slot, so the result is at `state + 0`. The S93
+/// per-effect `ResultReader` fn-pointer collapses to this one offset read.
+/// (`design/int/reactor.md §2.5`, `design/backend/io-trampoline.md §12.2`.)
+const RESULT_SLOT_OFFSET: isize = 0;
 
 /// The async leaf future: `poll` calls the platform poll-fn, maps `Ready` → the
-/// value (read from `state`) and `Pending` → a park on the reactor, and emits the
-/// strand observability events.
+/// value (read generically from the env result slot at [`RESULT_SLOT_OFFSET`])
+/// and `Pending` → a park on the reactor, and emits the strand observability
+/// events.
 ///
 /// All fields are `Copy`/pointer ⇒ `EffectPoll: Unpin`, so it polls through a
 /// plain `&mut`. The lifetime ties the borrowed `HostCtx` to the future.
@@ -423,7 +429,6 @@ pub struct EffectPoll<'h> {
     state: *mut c_void,
     poll_fn: PollFn,
     host: &'h HostCtx,
-    result_fn: ResultReader,
     strand: StrandId,
     /// Number of times `poll` has run — distinguishes dispatch (0) from a resume
     /// (>0) for the strand events.
@@ -434,21 +439,20 @@ impl<'h> EffectPoll<'h> {
     /// Build an effect leaf over a poll-fn + its state, charged to `strand`.
     ///
     /// # Safety
-    /// `state` must be valid for the poll-fn for the future's lifetime;
-    /// `poll_fn` must obey the v7 poll-fn contract; `result_fn` must read a valid
-    /// `i64` result out of `state` once the poll-fn has returned `Ready`.
+    /// `state` must be valid for the poll-fn for the future's lifetime, and must
+    /// point at an env whose first `i64` slot ([`RESULT_SLOT_OFFSET`]) is the
+    /// reserved result slot the poll-fn writes before returning `Ready`;
+    /// `poll_fn` must obey the v7 poll-fn contract.
     pub unsafe fn new(
         state: *mut c_void,
         poll_fn: PollFn,
         host: &'h HostCtx,
-        result_fn: ResultReader,
         strand: StrandId,
     ) -> Self {
         EffectPoll {
             state,
             poll_fn,
             host,
-            result_fn,
             strand,
             polls: 0,
         }
@@ -482,7 +486,14 @@ impl Future for EffectPoll<'_> {
 
         match result {
             CPoll::Ready => {
-                let value = (this.result_fn)(this.state);
+                // Generic env-offset result read (S94 R1 seam decision 3): the
+                // poll-fn has written its i64 result into the reserved result
+                // slot at `state + RESULT_SLOT_OFFSET`.
+                // SAFETY: `state` points at the env whose first `i64` slot is the
+                // result slot (constructor obligation).
+                let value = unsafe {
+                    *((this.state as *const i64).byte_offset(RESULT_SLOT_OFFSET))
+                };
                 TaskPoll::Ready(value)
             }
             CPoll::Pending => {
@@ -572,12 +583,19 @@ where
 // ===========================================================================
 
 /// State for the `async-read` demo leaf: a non-blocking raw fd + the recv result.
+///
+/// **`result` is the FIRST field (offset 0)** so it sits at the generic
+/// [`RESULT_SLOT_OFFSET`] `EffectPoll` reads on `Ready` (S94 R1 seam decision 3,
+/// FIXME 0457) — the same env-result-slot convention the real backend-built
+/// state-closure obeys. The S93 per-effect `ResultReader` is gone; this fixture
+/// proves the reactor + `EffectPoll` substrate against the generic offset read.
 #[repr(C)]
 pub struct AsyncReadState {
+    /// Bytes received (the leaf's `i64` result), or `-1` on a hard error. FIRST
+    /// field ⇒ at the generic result-slot offset `EffectPoll` reads.
+    pub result: i64,
     /// The non-blocking fd to read from.
     pub fd: i32,
-    /// Bytes received (the leaf's `i64` result), or `-1` on a hard error.
-    pub result: i64,
     /// Observability flag: `true` once interest has been registered at least
     /// once. **Not** a re-registration gate — the poll-fn re-registers on EVERY
     /// `Pending` (the v7 poll-fn contract); the reactor's one-shot deregister
@@ -586,13 +604,6 @@ pub struct AsyncReadState {
     /// lost (I2). `register_fd` is idempotent (EEXIST), so re-registering while
     /// still parked is a safe no-op.
     pub registered: bool,
-}
-
-/// Read the `result` field out of an [`AsyncReadState`] (the [`ResultReader`] for
-/// `async-read`).
-pub fn async_read_result(state: *mut c_void) -> i64 {
-    // SAFETY: `state` is an `AsyncReadState` (constructor obligation).
-    unsafe { (*(state as *const AsyncReadState)).result }
 }
 
 /// The `async-read` poll-fn (hand-written fixture). `recv` the fd non-blocking;
@@ -653,6 +664,10 @@ pub unsafe extern "C" fn async_read_pollfn(
 /// per-read OS thread.
 #[repr(C)]
 pub struct TimerWriteState {
+    /// Unit result (`0`) at the generic [`RESULT_SLOT_OFFSET`] — the feeder
+    /// produces no meaningful value, but `EffectPoll` reads `state + 0` on `Ready`
+    /// (the generic env-offset read), so the slot is reserved first and left `0`.
+    pub result: i64,
     /// The fd to send a wake-byte to once the timer fires.
     pub peer_fd: i32,
     /// Monotonic-nanos deadline at which to perform the write.
@@ -667,11 +682,6 @@ pub struct TimerWriteState {
     /// poll. `register_timer` has no natural dedup key, so the per-leaf latch is
     /// the idempotency guard here.
     pub registered: bool,
-}
-
-/// Result reader for the feeder — it produces no meaningful value (unit `0`).
-pub fn timer_write_result(_state: *mut c_void) -> i64 {
-    0
 }
 
 /// The timer-feeder poll-fn. Before the deadline → `register_timer` + `Pending`;

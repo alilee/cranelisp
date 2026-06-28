@@ -680,6 +680,23 @@ where
         arg_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
+        // --- Poll-construction arm (FIXME 0457 / S94 R1, byte-identical-off) ---
+        // A poll-shape platform effect (`DefKind::PlatformEffect { poll_shape:
+        // true }`) is NOT called at the site; instead the backend loads its
+        // poll-fn from the GOT and builds an `IO_TAG_EFFECT_POLL` node over a
+        // host-built state-closure (`design/backend/io-trampoline.md §12`). Keyed
+        // on the data field, no cargo feature; a blocking effect (every v6
+        // platform) returns `None` here and takes the unchanged call path below,
+        // so the default build constructs no poll node and is byte-identical.
+        if let Some((module_path, slot, param_types)) = crate::compiler::resolve_poll_effect_target(
+            self.ctx.symbol_tables,
+            self.ctx.module_aliases,
+            &self.ctx.current_module,
+            name,
+        ) {
+            return self.compile_poll_effect(&module_path, slot, &param_types, arg_vals, span);
+        }
+
         // --- Unified GOT path (target: works for both JIT and object codegen) ---
         // Uses global_value(DataId) which Cranelift lowers to:
         //   JIT (is_pic=false): movz+movk (absolute address)
@@ -841,26 +858,36 @@ where
     ///   slab_base = global_value(data_id)         // ADRP+LDR via system GOT
     ///   fn_ptr    = load(slab_base + slot * 8)    // load slot from slab
     ///   call_indirect(fn_ptr, args)
+    /// Load a function pointer out of a platform/module GOT slot — the shared
+    /// load prefix of GOT-indirect dispatch (Principle 7). `emit_got_indirect_call_via_data_id`
+    /// LOADs then `call_indirect`s; the poll-construction arm
+    /// (`compile_poll_effect`) LOADs then bakes the pointer as the state-closure
+    /// `code_ptr` (no call at the site). Both flow through this one helper so the
+    /// GOT mechanism stays single-source (`design/backend/io-trampoline.md §12.3`).
+    fn emit_got_slot_load(
+        &mut self,
+        data_id: cranelift_module::DataId,
+        slot: usize,
+    ) -> Value {
+        // The symbol address IS the slab base (Decision 23 — unified shape).
+        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
+        let slab_base = self.builder.ins().global_value(types::I64, gv);
+        // Compute slot address: slab_base + slot * 8.
+        let slot_addr = self.builder.ins().iadd_imm(slab_base, (slot * 8) as i64);
+        // Load the function pointer from the GOT slot.
+        self.builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), slot_addr, 0)
+    }
+
     fn emit_got_indirect_call_via_data_id(
         &mut self,
         data_id: cranelift_module::DataId,
         slot: usize,
         arg_vals: &[Value],
     ) -> Result<Value, CranelispError> {
-        // The symbol address IS the slab base (Decision 23 — unified shape).
-        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
-        let slab_base = self.builder.ins().global_value(types::I64, gv);
-
-        // Compute slot address: slab_base + slot * 8
-        let slot_addr = self.builder.ins().iadd_imm(slab_base, (slot * 8) as i64);
-
-        // Load the function pointer from the GOT slot.
-        let func_ptr = self.builder.ins().load(
-            types::I64,
-            MemFlags::trusted(),
-            slot_addr,
-            0,
-        );
+        // Load the function pointer from the GOT slot (the shared load prefix).
+        let func_ptr = self.emit_got_slot_load(data_id, slot);
 
         // Build signature: all params and return are i64.
         let mut sig = self.module.make_signature();
@@ -872,6 +899,192 @@ where
 
         let call = self.builder.ins().call_indirect(sig_ref, func_ptr, arg_vals);
         Ok(self.builder.inst_results(call)[0])
+    }
+
+    /// Poll-construction arm (FIXME 0457 / S94 R1) — build an `IO_TAG_EFFECT_POLL`
+    /// node over a host-built state-closure for a poll-shape platform effect,
+    /// instead of CALLING the effect fn (the blocking arm's behaviour). The
+    /// poll-fn is LOADed from the platform GOT (`emit_got_slot_load`, the shared
+    /// load prefix — Principle 7) and baked as the state-closure `code_ptr`; the
+    /// effect's i64 args are marshaled as the closure's env captures; the
+    /// trampoline supplies `HostCtx`/`Waker` and calls the poll-fn later
+    /// (`design/backend/io-trampoline.md §12`, `design/int/reactor.md §2.5`).
+    ///
+    /// State-closure (standard `HeapClosure`) env layout:
+    ///   `capture(0)` = result slot (sentinel `0`, the poll-fn writes its result),
+    ///   `capture(1+i)` = effect arg `i`. The trampoline passes the env base
+    ///   (`closure + 32`) as `state`, so the poll-fn sees result at `state+0`,
+    ///   arg0 at `state+8`. The thin node holds tag + the state-closure pointer.
+    ///
+    /// RC: args reach here via the consuming convention (`compile_consuming_arg_list`
+    /// in the platform-effect dispatch arm), so storing them into the env is an
+    /// ownership transfer (no inc — like `ParBind`/`Bind` constructor convention);
+    /// the state-closure drop glue (`build_poll_state_drop_glue`) dec's the
+    /// heap-typed arg slots when the node is consumed (`consume_io_tree`).
+    fn compile_poll_effect(
+        &mut self,
+        module_path: &cranelisp_types::ModuleFullPath,
+        slot: usize,
+        param_types: &[cranelisp_types::Type],
+        arg_vals: &[Value],
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let alloc_id = self.ctx.alloc_func_id.ok_or_else(|| CranelispError::CodegenError {
+            message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+            location: ErrorLocation::from_span(span),
+        })?;
+
+        // 1. GOT-load the poll-fn (the shared load prefix — NO call at the site).
+        let got_sym = crate::compiler::got_data_symbol_name(module_path);
+        let data_id = self
+            .module
+            .declare_data(&got_sym, cranelift_module::Linkage::Import, false, false)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare platform GOT data '{got_sym}': {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let poll_fn = self.emit_got_slot_load(data_id, slot);
+
+        // 2. Build the state-closure: env = result-slot + k arg captures.
+        let k = arg_vals.len();
+        let env_slots = 1 + k;
+        let closure_size = HeapClosure::payload_size(env_slots) as i64;
+        let clo = heap::emit_alloc(&mut self.builder, self.module, alloc_id, closure_size);
+
+        // code_ptr = the GOT-loaded poll-fn.
+        heap::heap_store(&mut self.builder, poll_fn, clo, HeapClosure::CODE_PTR_OFFSET);
+
+        // drop_glue_ptr = capture-dec glue (null when no arg is heap-typed).
+        let drop_glue = self.build_poll_state_drop_glue(param_types, span)?;
+        let drop_glue_val = if let Some(glue_id) = drop_glue {
+            let glue_ref = self.module.declare_func_in_func(glue_id, self.builder.func);
+            self.builder.ins().func_addr(types::I64, glue_ref)
+        } else {
+            self.builder.ins().iconst(types::I64, 0)
+        };
+        heap::heap_store(&mut self.builder, drop_glue_val, clo, HeapClosure::DROP_GLUE_PTR_OFFSET);
+
+        // env(0) = result slot, init to the `0` sentinel (the poll-fn reads `0`
+        // as "not yet armed"; `EffectPoll` reads the result here on Ready).
+        let sentinel = self.builder.ins().iconst(types::I64, 0);
+        heap::heap_store(&mut self.builder, sentinel, clo, HeapClosure::capture_offset(0));
+
+        // env(1+i) = effect arg i (ownership transfer, no inc — consuming conv).
+        for (i, &arg) in arg_vals.iter().enumerate() {
+            heap::heap_store(&mut self.builder, arg, clo, HeapClosure::capture_offset(1 + i));
+        }
+
+        // 3. Build the IO_TAG_EFFECT_POLL node: [header | tag=4 | state_closure].
+        let node_size = HeapAdt::payload_size(1) as i64;
+        let node = heap::emit_alloc(&mut self.builder, self.module, alloc_id, node_size);
+        // IO_TAG_EFFECT_POLL = 4 (the `cranelisp-platform` gated constant; a
+        // literal here because the backend carries no `concurrency` feature —
+        // same convention as the `IO_TAG_PAR = 3` literal in `par_bind.rs`).
+        let tag = self.builder.ins().iconst(types::I64, 4);
+        heap::heap_store(&mut self.builder, tag, node, HeapAdt::TAG_OFFSET);
+        // Ownership transfer of the state-closure (rc=1) into the node, no inc.
+        heap::heap_store(&mut self.builder, clo, node, HeapAdt::field_offset(0));
+
+        Ok(node)
+    }
+
+    /// Build the state-closure drop glue for a poll-shape effect node — dec's each
+    /// heap-typed arg capture (at `capture_offset(1+i)`) when the node is consumed.
+    /// Returns `None` when no arg is heap-typed (all-scalar effects, e.g. the
+    /// `async-demo` `(Fn [Int] (IO Int))` leaf) — the node's closure-dec then just
+    /// deallocs (null `drop_glue_ptr`). The result slot (`capture(0)`) is a plain
+    /// i64 and is never dec'd here (per `io-trampoline.md §12.5`; the demo's result
+    /// is `NeverHeap`). Mirrors `build_closure_drop_glue`, keyed on the effect's
+    /// param types rather than captured-variable names.
+    fn build_poll_state_drop_glue(
+        &mut self,
+        param_types: &[cranelisp_types::Type],
+        span: Span,
+    ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
+        let dealloc_id = self.ctx.dealloc_func_id;
+
+        let heap_args: Vec<(usize, HeapCategory)> = param_types
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ty)| {
+                let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+                match category {
+                    HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
+                    HeapCategory::NeverHeap => None,
+                }
+            })
+            .collect();
+
+        if heap_args.is_empty() {
+            return Ok(None);
+        }
+
+        let glue_name = format!(
+            "runtime/poll_state_drop_glue_{}{}_{}",
+            self.inner_fn_discriminator(),
+            span.start,
+            span.end
+        );
+
+        let mut sig = self.module.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // state-closure ptr
+
+        let glue_func_id = self
+            .module
+            .declare_function(&glue_name, cranelift_module::Linkage::Local, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare poll-state drop glue fn: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+
+        let mut ctx = self.module.make_context();
+        let mut func_ctx = FunctionBuilderContext::new();
+        ctx.func.signature = sig;
+
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let closure_ptr = builder.block_params(entry)[0];
+
+        // Heap arg `i` lives at `capture_offset(1 + i)` (env slot 0 is the result).
+        for (arg_idx, category) in &heap_args {
+            let cap_val = heap::heap_load(
+                &mut builder,
+                closure_ptr,
+                HeapClosure::capture_offset(1 + *arg_idx),
+            );
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_dec(&mut builder, self.module, cap_val, dealloc_id, None);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_dec_guarded(
+                        &mut builder,
+                        self.module,
+                        cap_val,
+                        dealloc_id,
+                        None,
+                        true,
+                    );
+                }
+                HeapCategory::NeverHeap => {} // filtered above
+            }
+        }
+
+        builder.ins().return_(&[]);
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(glue_func_id, &mut ctx)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to define poll-state drop glue fn: {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+
+        Ok(Some(glue_func_id))
     }
 
     /// Resolve a function name to `(defining_module, slot_index)` by walking

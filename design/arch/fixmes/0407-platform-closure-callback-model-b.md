@@ -10,6 +10,29 @@ status: open
 
 # Platform-model GAP: a platform DLL cannot call back into a cranelisp closure (Model B)
 
+## Reframing update (S94, 2026-06-27 — reactor now real, R4)
+
+The S87 reframing (below) is **confirmed and sharpened** now that the effect-concurrency
+reactor is no longer a paper design: slice 2 has opened (S93 spine; S94 routes real
+poll-shape effect nodes through the `EffectPoll` await). The reactor **structurally
+obviates Model B as a concurrency mechanism** — a continuation is the trampoline's own
+suspended state, not a host-held cranelisp closure the platform calls back; the
+platform-owned event loop calling pure handlers (Model B) is exactly the
+platform-owned-loop degeneration the A2 host-owned-reactor model rejects. The
+concurrent-server-loop motivation for this FIXME is therefore **declared dead**.
+
+**Narrowed residual:** the host-mediated closure-call capability is genuinely needed
+only for **synchronous C-reentrancy** — a native library that *forces* nested
+synchronous re-entry into a cranelisp callback within a single blocking call: a `qsort`
+comparator, a GUI/event library with an un-invertible internal dispatcher, a signal
+handler. This is **reactor-orthogonal** (no suspension, no strand, no await — a
+straight-line nested call), so it neither competes with nor depends on the reactor
+work. **KEEP PARKED** (not deleted): build only on demand, and when built its
+capture/RC/error-slot-ferry contract aligns with `effect-concurrency.md` §7 supervisor
+semantics + the §8 fork-join ferry. (The separable host-construction-builder concern —
+DEF-6 divergence-proofing — is **0419**, kept open and decoupled from this FIXME per
+R4.)
+
 ## Reframing (S87, 2026-06-21 — see `design/arch/effect-concurrency.md`)
 
 An `/arch` concurrency design pass concluded that **Model B is the direction we are

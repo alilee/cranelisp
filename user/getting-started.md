@@ -119,19 +119,29 @@ the source. It applies in two places:
   [`examples/28-parallel.cl`](../examples/28-parallel.cl).
 - **Independent pure computations run in parallel too.** The arguments of a call that
   do not depend on each other can be evaluated at the same time. So the two recursive
-  branches of a divide-and-conquer function run at once, and **mapping an expensive
-  function over a collection (`par-map`) parallelizes element-wise** — written as a
-  divide-and-conquer that splits the collection, processes the halves in parallel, and
-  recombines. See [`examples/30-parallel-map-reduce.cl`](../examples/30-parallel-map-reduce.cl)
-  for the worked `par-map` case.
+  branches of a divide-and-conquer function run at once. The standard library packages
+  this for collections as **`par-map`, `par-reduce`, and `par-map-reduce`** (in the
+  `collections.parallel` module) — ordinary functions that map/reduce element-wise in
+  parallel and return exactly what their sequential twins do. See
+  [`guide/parallel-collections.md`](guide/parallel-collections.md) for how to use them
+  and [`examples/30-parallel-map-reduce.cl`](../examples/30-parallel-map-reduce.cl) for
+  the worked divide-and-conquer case.
 
-**When it pays off.** Parallelism is worth it when each piece of work is substantial —
-roughly a microsecond or more per element gives real speedup (around 2–3× has been
-observed on the map-reduce example). For very fine-grained work the bookkeeping can
-outweigh the gain, but the compiler bounds that overhead, so turning a problem loose on
-the parallel machinery never blows up — at worst it runs about as fast as serial. You
-can cap or disable the parallelism with environment variables; see
-[`cli-reference.md`](cli-reference.md#environment-variables).
+**When it pays off — and when it does not.** Parallelism is a performance property with
+a known limit, not a blanket speedup. It is worth it when each piece of work is
+**compute-bound and substantial** — roughly a microsecond or more of arithmetic-style
+work per element gives real speedup (around 2–3× has been observed on the compute-bound
+map-reduce example), and on that kind of work it is never meaningfully slower than
+serial. For **allocation-heavy or reference-counting-heavy** work, though — code that
+copies or builds large heap structures per element rather than crunching numbers — the
+parallel run can currently be **slower** than serial, because independent branches
+contend on the shared allocator and atomic reference counts. So the "never slower than
+serial" floor holds unconditionally only for compute-bound work; for allocation-/RC-heavy
+work, measure against a serial baseline (`CRANELISP_NO_LENIENT=1`) before relying on it.
+You can cap or disable the parallelism with environment variables; see
+[`cli-reference.md`](cli-reference.md#environment-variables). The floor, its scope, and
+the known contention limit are documented in
+[`design/arch/effect-concurrency.md §3.1`](../design/arch/effect-concurrency.md).
 
 This is all semantically invisible: a parallel run computes exactly what a sequential
 left-to-right run would. The effect and evaluation semantics are specified normatively
@@ -158,7 +168,9 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
 - **Guide** — feature-by-feature pages: [`guide/bitwise.md`](guide/bitwise.md)
   (bit-level arithmetic and the `num.bits` module),
   [`guide/field-accessors.md`](guide/field-accessors.md) (`Type.field` accessors and
-  the bare-name alias).
+  the bare-name alias), and
+  [`guide/parallel-collections.md`](guide/parallel-collections.md) (`par-map`,
+  `par-reduce`, `par-map-reduce`).
 - [`repl/spec.md`](../repl/spec.md) — the normative REPL experience: display
   formats, slash commands, errors, caching.
 - [`spec/`](../spec/) — the language specification.

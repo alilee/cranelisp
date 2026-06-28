@@ -6,6 +6,57 @@ The **committed showcase target is the stdio CLI** — `user.cl` tells the full
 story end-to-end. The web platform is a designed-but-unbuilt future stretch
 (FIXME 0405, `/platform`); see `plan-exemplar.md`.
 
+## Current State (Sprint 94 Phase 6 — parallel search via stdlib `par-map-reduce`)
+
+The parallel backtracking search is now expressed with the **stdlib
+`collections.parallel/par-map-reduce`** instead of the hand-rolled
+`solve-range` divide-and-conquer. The Sudoku search *is* a map-reduce over the
+candidate digits: **map** each candidate `d` to its recursive solve
+`(solve (set-cell g2 idx (Solved d)))`, **reduce** the per-digit results with
+the associative `first-success` (identity `Unsolvable`). The `solve` guess arm
+(`solver.cl`) now reads:
+
+```
+(par-map-reduce
+  (fn [d] (solve (set-cell g2 idx (Solved d))))
+  first-success
+  Unsolvable
+  digits)
+```
+
+`par-map-reduce` splits the digit Vec at its midpoint into two **independent
+`let` bindings** that the sparkability analysis auto-sparks (lenient-eval §2.1)
+— so the search tree still parallelises with **no `spark`/`par` in the
+source**, and the create-gate still bounds in-flight sparks. `solve-range` is
+**retired**; `mask-to-digits` and `first-success` stay (now the map collection
+and the associative reducer). This adopts the canonical library the substrate
+shipped this sprint and is the cleaner showcase ("search = parallel map-reduce
+over candidates"). `grid.cl` untouched.
+
+**Correctness floor re-verified.** Exemplar suite **40/40 green under both
+default (parallel) and `CRANELISP_NO_LENIENT=1` (serial)**; `solver.cl` and
+`user.cl` produce the **identical** solution to the pre-change baseline (the
+parallel ≡ serial equivalence guard, `solver/test-solve-parallel-equiv`).
+
+**Perf finding (the carried half of FIXME 0408, now QUANTIFIED as a floor
+violation).** A/B timing shows the parallel search is currently ~**10× SLOWER**
+than serial on the debug backend, not merely "no speedup": the full suite runs
+~20 s parallel vs ~1.9 s serial, and the slowdown is **sys-time dominated**
+(~21 s sys parallel vs ~0.05 s serial; user ~43 s = many cores busy). This is
+**not** introduced by the `par-map-reduce` reshape — the retired `solve-range`
+shape measured identically (~19.5 s / ~1.7 s). Root cause, isolated with a
+free-standing repro ladder (pure compute → int-Vec copy → ADT-Vec copy): the
+**copy-per-guess + heap-`Cell` allocation** generates **allocator-lock and
+atomic-RC contention** that scales the parallel penalty (pure compute: parallel
+≈ serial, sys≈0; ADT-Vec copy: parallel 1.4× slower, 9× user CPU, elevated
+sys; Sudoku: 10× slower, sys-saturated). The create-gate bounds spark *count*
+but not the *shared-resource contention each sparked branch generates*, so
+allocation-dominated parallel work violates the never-slower-than-serial floor.
+The fix is unchanged (FIXME 0408 perf half): a non-copying grid representation
+(persistent / structural-share Vec, or in-place candidate masks) + a Phase-H
+release backend. Repro handed to `/qa` (see report); `test-hard-puzzle` stays
+excluded.
+
 ## Current State (Sprint 92 Phase 6b — parallel divide-and-conquer search)
 
 The solver's backtracking search is now a **parallel divide-and-conquer** over

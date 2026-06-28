@@ -732,3 +732,105 @@ fn trampoline_clean_effect_leaves_no_fault() {
     );
     unsafe { crate::alloc::dealloc(io as *mut u8) };
 }
+
+// ===========================================================================
+// S94 R1 (FIXME 0457) — the real async Effect arm over `IO_TAG_EFFECT_POLL`.
+// Gated `concurrency-runtime` (runs under `cargo nt-concurrency-runtime`).
+// ===========================================================================
+
+#[cfg(feature = "concurrency-runtime")]
+mod poll_arm {
+    use super::*;
+    use crate::strand::{drain_strand_events, start_strand_recording, StrandEvent, StrandId};
+    use cranelisp_platform::{HostCtx, Poll as CPoll, Waker as CWaker};
+
+    /// A minimal poll-shape leaf: env `[result@0 | arg(N)@8]`. First poll stashes
+    /// the absolute deadline in the result slot (a huge value != the `0`
+    /// sentinel) and arms a short reactor timer ⇒ `Pending`; on the timer-driven
+    /// re-poll it writes `N` to the result slot ⇒ `Ready`. Same shape as the real
+    /// `async-demo` leaf, exercising the generic env-offset result read.
+    unsafe extern "C" fn test_timer_poll(
+        state: *mut core::ffi::c_void,
+        host: *const HostCtx,
+        waker: *const CWaker,
+    ) -> CPoll {
+        let result_ptr = state as *mut i64; // env+0 = result slot (also scratch)
+        let n = unsafe { *(state as *mut i64).add(1) }; // env+8 = arg N
+        let slot = unsafe { *result_ptr };
+        if slot == 0 {
+            let deadline = crate::reactor::monotonic_nanos() + 2_000_000; // ~2ms
+            unsafe { *result_ptr = deadline as i64 };
+            let hc = unsafe { &*host };
+            unsafe { (hc.register_timer)(hc.host, deadline, waker) };
+            CPoll::Pending
+        } else if crate::reactor::monotonic_nanos() >= slot as u64 {
+            unsafe { *result_ptr = n };
+            CPoll::Ready
+        } else {
+            CPoll::Pending
+        }
+    }
+
+    /// Build an `IO_TAG_EFFECT_POLL` node over a host-built state-closure whose
+    /// `code_ptr` is `test_timer_poll`, `drop_glue` is null, env = `[result=0 |
+    /// arg=n]` — exactly the shape the backend's poll-construction arm emits.
+    fn build_poll_node(n: i64) -> i64 {
+        // closure payload: code_ptr(8) + drop_glue(8) + result(8) + arg(8) = 32
+        let clo = alloc_with_rc(32) as i64;
+        unsafe {
+            crate::heap_access::write_i64(clo, 16, test_timer_poll as *const () as i64); // code_ptr
+            crate::heap_access::write_i64(clo, 24, 0); // drop_glue null
+            crate::heap_access::write_i64(clo, 32, 0); // env: result slot sentinel
+            crate::heap_access::write_i64(clo, 40, n); // env: arg 0 = N
+        }
+        // node payload: tag(8) + state_closure(8) = 16
+        let node = alloc_with_rc(16) as i64;
+        unsafe {
+            crate::heap_access::write_i64(node, TAG_OFFSET, IO_TAG_EFFECT_POLL);
+            crate::heap_access::write_i64(node, FIELD_0_OFFSET, clo);
+        }
+        node
+    }
+
+    // spec: design/arch/effect-concurrency.md §"The ratified backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)" (b)/(c)
+    // — `run_io_trampoline_inner_async` routes an `IO_TAG_EFFECT_POLL` node
+    // through an `EffectPoll` await (it suspends on the reactor timer then
+    // resumes) and reads the leaf's i64 result generically from the env result
+    // slot on `Ready` (no per-effect `ResultReader`). Proves the §4 as-built
+    // boundary is closed: the async arm exists + awaits for poll nodes.
+    #[test]
+    fn run_io_async_effect_arm_awaits_effectpoll_and_reads_generic_result() {
+        start_strand_recording();
+        let node = build_poll_node(55);
+        let result = crate::reactor::block_on_reactor(async |host| {
+            run_io_trampoline_inner_async(node, host, StrandId::ROOT).await
+        })
+        .expect("reactor");
+        assert_eq!(result, 55, "poll node result reads back via the generic env slot");
+        let events = drain_strand_events();
+        assert!(
+            events.contains(&StrandEvent::EffectDispatched { strand: StrandId::ROOT }),
+            "async arm must dispatch an EffectPoll for IO_TAG_EFFECT_POLL: {events:?}"
+        );
+        assert!(
+            events.contains(&StrandEvent::EffectSuspended { strand: StrandId::ROOT }),
+            "poll node must suspend on the reactor: {events:?}"
+        );
+        assert!(
+            events.contains(&StrandEvent::EffectResumed { strand: StrandId::ROOT }),
+            "poll node must resume: {events:?}"
+        );
+        crate::drop::consume_io_tree(node); // tag-4 consume path frees node + closure
+    }
+
+    // spec: design/arch/effect-concurrency.md §"The ratified backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)" (b)
+    // — the public cfg-on driver `drive_io` (the entry `cranelisp_run_program` /
+    // `cranelisp_run_io` route through) forces a poll node through the reactor.
+    #[test]
+    fn drive_io_routes_poll_node_through_reactor() {
+        let node = build_poll_node(42);
+        let result = drive_io(node);
+        assert_eq!(result, 42, "drive_io routes a poll node through the reactor");
+        crate::drop::consume_io_tree(node);
+    }
+}

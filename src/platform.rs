@@ -219,65 +219,104 @@ pub fn load_platform_dll(
         })?
     };
 
-    // Step 2: Look up the manifest function. The export is namespaced by
-    // platform name (`cranelisp_platform_manifest_<name>`, §5.5.5 / §6.7 /
-    // DEF-5) — the name is known here from the declaration, before the manifest
-    // is read, so we compute the symbol via the shared helper (never an inline
-    // `format!`).
-    let manifest_sym_name = cranelisp_platform::platform_manifest_symbol(platform_name);
-    type ManifestFn = unsafe extern "C" fn(*const HostCallbacks) -> PlatformManifest;
-    let manifest_fn: libloading::Symbol<ManifestFn> = unsafe {
-        library
-            .get(manifest_sym_name.as_bytes())
-            .map_err(|_e| {
-                CranelispError::Platform(cranelisp_types::PlatformError::ManifestNotFound {
-                    dll: dll_path.to_path_buf(),
-                    location: location(),
-                })
-            })?
-    };
-
-    // Step 3: Call the manifest function with host callbacks.
+    // Steps 2–5: obtain `(name, version, descriptors)` from the platform's
+    // manifest. Calling a manifest fn ALSO inits the host context (allocator)
+    // and populates the DLL's exported GOT slab (manifest order IS GOT slot
+    // order, §5.1), which we dlsym in step 6.
     //
-    // `alloc_with_tag` is wired to the real intrinsic (S76 W3, FIXME 0229
-    // step 1): `cranelisp_intrinsics::cranelisp_alloc_with_tag` allocates a
-    // tagged heap ADT (`[total_size][rc=1][tag|pad][fields...]`, returns the
-    // alloc base) over `alloc::alloc_with_rc`. This removes the R1 gate —
-    // `CLAdt::<T>::construct(...)` no longer panics. The `validate_schema`
-    // callback channel is gone (FIXME 0288): schema validation is superseded
-    // by the layout-hash gate (§5.5.4) — the host regenerates the schema from
-    // its live tables and compares the canonical hash to the DLL's exported
-    // `__cranelisp_layout_hash_<name>`. Calling the manifest fn ALSO populates
-    // the DLL's exported GOT slab (manifest order IS GOT slot order, §5.1),
-    // which we dlsym below.
+    // `alloc_with_tag` is wired to the real intrinsic (S76 W3, FIXME 0229):
+    // `cranelisp_alloc_with_tag` allocates a tagged heap ADT over
+    // `alloc::alloc_with_rc`. The `validate_schema` callback is gone (FIXME
+    // 0288): schema validation is superseded by the layout-hash gate (§5.5.4).
     let callbacks = HostCallbacks {
         alloc: cranelisp_intrinsics::heap_alloc_payload,
         alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
     };
-    let manifest = unsafe { manifest_fn(&callbacks) };
 
-    // Step 4: Validate ABI version.
-    check_abi_version(manifest.abi_version, dll_path, location())?;
-
-    // Step 5: Convert to safe Rust types.
-    //
-    // `manifest_to_descriptors` constructs `PlatformError::LoadFailed` with
-    // `ErrorLocation::unknown()` and an empty `dll` path because it has no
-    // call-site coordinates; rewrite both at this call site so the user
-    // sees the form span.
-    let (name, version, descriptors) = unsafe {
-        cranelisp_platform::manifest_to_descriptors(&manifest).map_err(|e| match e {
-            cranelisp_types::PlatformError::LoadFailed { cause, .. } => {
-                CranelispError::Platform(cranelisp_types::PlatformError::LoadFailed {
-                    dll: dll_path.to_path_buf(),
-                    cause,
-                    location: location(),
-                })
+    // v7 channel (FIXME 0457, `platform-interface.md` §6.8): a concurrency-built
+    // host probes the v7 `cranelisp_concurrent_manifest` export FIRST. A
+    // poll-shape platform (e.g. `async-demo`) exposes its effects ONLY through
+    // this separate manifest type + symbol; on a hit we lift them via
+    // `concurrent_manifest_to_descriptors` (which carries each effect's
+    // `ConcurrencyDescriptor`). The default (non-concurrency) host compiles this
+    // probe out entirely, so v6 platforms + the default host stay byte-identical.
+    #[cfg(feature = "concurrency")]
+    let concurrent: Option<(String, String, Vec<OwnedPlatformFnDescriptor>)> = {
+        let probe: Result<
+            libloading::Symbol<
+                unsafe extern "C" fn(
+                    *const HostCallbacks,
+                )
+                    -> cranelisp_platform::ConcurrentPlatformManifest,
+            >,
+            _,
+        > = unsafe { library.get(b"cranelisp_concurrent_manifest") };
+        match probe {
+            Ok(cm_fn) => {
+                let manifest = unsafe { cm_fn(&callbacks) };
+                check_abi_version(manifest.abi_version, dll_path, location())?;
+                let triple = unsafe {
+                    cranelisp_platform::concurrent_manifest_to_descriptors(&manifest).map_err(
+                        |e| match e {
+                            cranelisp_types::PlatformError::LoadFailed { cause, .. } => {
+                                CranelispError::Platform(
+                                    cranelisp_types::PlatformError::LoadFailed {
+                                        dll: dll_path.to_path_buf(),
+                                        cause,
+                                        location: location(),
+                                    },
+                                )
+                            }
+                            other => CranelispError::Platform(other),
+                        },
+                    )?
+                };
+                Some(triple)
             }
-            // Defensive: forward any non-LoadFailed variant the platform
-            // crate may emit in future.
-            other => CranelispError::Platform(other),
-        })?
+            // No v7 export ⇒ a v6 blocking platform; fall through.
+            Err(_) => None,
+        }
+    };
+    #[cfg(not(feature = "concurrency"))]
+    let concurrent: Option<(String, String, Vec<OwnedPlatformFnDescriptor>)> = None;
+
+    let (name, version, descriptors) = match concurrent {
+        Some(triple) => triple,
+        None => {
+            // v6 path: the per-platform-namespaced manifest fn
+            // (`cranelisp_platform_manifest_<name>`, §5.5.5 / §6.7 / DEF-5). The
+            // name is known here from the declaration, computed via the shared
+            // helper (never an inline `format!`).
+            let manifest_sym_name =
+                cranelisp_platform::platform_manifest_symbol(platform_name);
+            type ManifestFn = unsafe extern "C" fn(*const HostCallbacks) -> PlatformManifest;
+            let manifest_fn: libloading::Symbol<ManifestFn> = unsafe {
+                library.get(manifest_sym_name.as_bytes()).map_err(|_e| {
+                    CranelispError::Platform(cranelisp_types::PlatformError::ManifestNotFound {
+                        dll: dll_path.to_path_buf(),
+                        location: location(),
+                    })
+                })?
+            };
+            let manifest = unsafe { manifest_fn(&callbacks) };
+            check_abi_version(manifest.abi_version, dll_path, location())?;
+            // `manifest_to_descriptors` constructs `PlatformError::LoadFailed`
+            // with `ErrorLocation::unknown()`; rewrite both at this call site so
+            // the user sees the `(platform "name")` form span.
+            unsafe {
+                cranelisp_platform::manifest_to_descriptors(&manifest).map_err(|e| match e {
+                    cranelisp_types::PlatformError::LoadFailed { cause, .. } => {
+                        CranelispError::Platform(cranelisp_types::PlatformError::LoadFailed {
+                            dll: dll_path.to_path_buf(),
+                            cause,
+                            location: location(),
+                        })
+                    }
+                    // Defensive: forward any non-LoadFailed variant.
+                    other => CranelispError::Platform(other),
+                })?
+            }
+        }
     };
 
     // Step 6: dlsym the exported GOT slab + the layout-hash data symbol
@@ -404,10 +443,21 @@ pub fn register_platform_in_tc(
         // the GOT-indirect dispatch arm in backend (`apply.rs`) activates on
         // the variant's `got_slot`.
         if let Some(mut table) = symbol_tables.get_mut(&module_path) {
+            // FIXME 0457 (S94): the poll-shape dispatch axis. Ungated (v6 /
+            // default host) ⇒ always `false` (byte-identical blocking). The
+            // concurrency host lifts it from the v7 descriptor:
+            // `concurrency.blocking == 0` ⇒ a poll-shape async leaf ⇒ the
+            // backend's poll-construction arm.
+            #[cfg(feature = "concurrency")]
+            let poll_shape = desc.concurrency.map_or(false, |c| c.blocking == 0);
+            #[cfg(not(feature = "concurrency"))]
+            let poll_shape = false;
+
             let mut builder = ModuleEntry::def(
                 scheme,
                 DefKind::PlatformEffect {
                     scheduling_class: desc.scheduling_class,
+                    poll_shape,
                     got_slot: slot,
                 },
             )

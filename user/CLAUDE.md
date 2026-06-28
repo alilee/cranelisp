@@ -27,7 +27,7 @@ spec wins and the user doc is the bug.
 | `cli-reference.md` | The `cranelisp` command-line reference: modes, options, target resolution, lib search path / `Cranelisp.toml`, `/search` | live |
 | `getting-started.md` | Install, REPL basics, first program (pure + IO), platforms/IO model, showcase pointer | live |
 | `tutorial/` | Progressive introduction paralleling `examples/`; target surface for the forthcoming `/learn` tutorial | not yet authored (forward input for `/learn`, FIXME 0052) |
-| `guide/` | Feature-by-feature user-facing reference paralleling `spec/` | started — `bitwise.md`, `field-accessors.md` live |
+| `guide/` | Feature-by-feature user-facing reference paralleling `spec/` | started — `bitwise.md`, `field-accessors.md`, `parallel-collections.md` live |
 | `errors/` | Error-message catalogue, written as each error is confirmed | not yet authored |
 
 ## Writing conventions

@@ -56,6 +56,7 @@ pub(crate) use rc_emission::{
 pub(crate) use resolution::{
     got_data_symbol_name, inner_fn_discriminator_for, resolve_extern_target,
     resolve_func_arity, resolve_got_target, resolve_platform_effect_target,
+    resolve_poll_effect_target,
 };
 
 /// Information about a single function to be traced by `(trace ...)`.

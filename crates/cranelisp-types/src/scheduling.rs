@@ -173,6 +173,35 @@ impl ConcurrencyDescriptor {
             },
         }
     }
+
+    /// Best-effort inverse of [`from_scheduling_class`](Self::from_scheduling_class):
+    /// map a descriptor's `token`/`cardinality` conflict-domain axis onto the
+    /// nearest [`SchedulingClass`]. The host still carries `scheduling_class` on
+    /// `DefKind::PlatformEffect` (the conflict-domain axis, orthogonal to the
+    /// `poll_shape` dispatch axis), so the v7 loader derives it from the lifted
+    /// descriptor through this map (FIXME 0457; `platform-interface.md` §6.8).
+    ///
+    /// `blocking` is deliberately ignored — it is the orthogonal dispatch axis,
+    /// carried separately as `poll_shape`, and says nothing about conflict domain.
+    /// The map is the inverse of the three `from_scheduling_class` images, with a
+    /// conservative default for shapes those images do not cover (a native
+    /// cardinality-N pool ⇒ `Commutative`, the closest unbounded-parallel class):
+    ///
+    /// - `token != 0`              ⇒ `Sequential`    (a shared conflict domain)
+    /// - `token == 0, cardinality == 0` ⇒ `Commutative`   (unbounded, no conflict)
+    /// - `token == 0, cardinality == 1` ⇒ `ResourceSerial` (serial within a token)
+    /// - `token == 0, cardinality >= 2` ⇒ `Commutative`   (bounded pool — nearest)
+    pub const fn nearest_scheduling_class(&self) -> SchedulingClass {
+        if self.token != 0 {
+            SchedulingClass::Sequential
+        } else if self.cardinality == 0 {
+            SchedulingClass::Commutative
+        } else if self.cardinality == 1 {
+            SchedulingClass::ResourceSerial
+        } else {
+            SchedulingClass::Commutative
+        }
+    }
 }
 
 /// C-ABI poll result (ABI v7) — the return of a poll-shape effect fn.
@@ -252,6 +281,48 @@ mod tests {
     fn concurrency_lane_executes_gated_tests_smoke() {
         let d = ConcurrencyDescriptor::from_scheduling_class(SchedulingClass::Sequential);
         assert_eq!(d._reserved, [0u8; 3]);
+    }
+
+    // spec: design/arch/platform-interface.md §6.8 (FIXME 0457) —
+    // `nearest_scheduling_class` is the best-effort inverse of
+    // `from_scheduling_class` (token/cardinality → nearest class), the v7
+    // loader's derivation of the still-required `scheduling_class`. Round-trips
+    // the three canonical images; ignores `blocking` (the orthogonal axis); maps
+    // a cardinality-N pool to the nearest unbounded-parallel class.
+    #[cfg(feature = "concurrency")]
+    #[test]
+    fn nearest_scheduling_class_inverts_from_scheduling_class() {
+        for cls in [
+            SchedulingClass::Sequential,
+            SchedulingClass::Commutative,
+            SchedulingClass::ResourceSerial,
+        ] {
+            let d = ConcurrencyDescriptor::from_scheduling_class(cls);
+            assert_eq!(
+                d.nearest_scheduling_class(),
+                cls,
+                "round-trip must recover the source class for {cls:?}"
+            );
+        }
+        // `blocking` is ignored — a poll-shape (blocking == 0) Commutative-shaped
+        // descriptor still maps to Commutative.
+        let poll = ConcurrencyDescriptor {
+            token: 0,
+            cardinality: 0,
+            global_budget: 0,
+            blocking: 0,
+            _reserved: [0; 3],
+        };
+        assert_eq!(poll.nearest_scheduling_class(), SchedulingClass::Commutative);
+        // A native cardinality-N pool maps to the nearest unbounded class.
+        let pool = ConcurrencyDescriptor {
+            token: 0,
+            cardinality: 4,
+            global_budget: 0,
+            blocking: 0,
+            _reserved: [0; 3],
+        };
+        assert_eq!(pool.nearest_scheduling_class(), SchedulingClass::Commutative);
     }
 
     // ======================================================================

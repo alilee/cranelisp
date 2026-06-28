@@ -441,6 +441,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cranelisp-async-demo"
+version = "0.1.0"
+dependencies = [
+ "cranelisp-platform",
+ "libc",
+]
+
+[[package]]
 name = "cranelisp-backend"
 version = "0.1.0"
 dependencies = [

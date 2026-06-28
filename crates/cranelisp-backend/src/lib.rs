@@ -1462,6 +1462,7 @@ mod concrete_boundary_phase3_tests {
         assert!(!requires_codegen_view(&DefKind::PrimitiveExtern));
         assert!(!requires_codegen_view(&DefKind::PlatformEffect {
             scheduling_class: cranelisp_types::SchedulingClass::Sequential,
+            poll_shape: false,
             got_slot: 0,
         }));
     }

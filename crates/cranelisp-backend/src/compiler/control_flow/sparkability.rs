@@ -26,9 +26,22 @@ const CHEAP_BUILTINS: &[&str] = &[
 /// Find indices of sparkable bindings in a `let` block.
 ///
 /// A binding is sparkable if:
-/// 1. Its free variables do not reference any earlier binding in the same block.
-/// 2. It is a non-trivial function call (not a cheap builtin, literal,
-///    constructor, or var ref).
+/// 1. It is a non-trivial function call (not a cheap builtin, literal,
+///    constructor, or var ref) — the cost heuristic (§2.2).
+/// 2. **Dependency-on-sparked carve-out (§2.6, FIXME 0424 limit #2).** Every
+///    earlier-bound free var it references is *itself* already in the sparkable
+///    set. An *independent* binding (no earlier-bound free var) trivially
+///    satisfies this. A *dependent* binding is admitted iff all of its
+///    earlier-bound dependencies are themselves sparked — they are then
+///    available as IVars to force on demand inside its thunk (`let_if.rs`
+///    `compile_dependent_thunk`, lenient-eval.md §4.5). A dependent binding that
+///    touches a *non-sparked* earlier binding (a cheap one, or a literal/var
+///    binding bound only as an ordinary `Value` in Phase 2) is NOT sparkable —
+///    a concurrently-running thunk cannot see that `Value`.
+///
+/// Because `let` bindings are sequential, dependencies only point backward (no
+/// cycles), so source order is already a valid topological order and a single
+/// left-to-right pass suffices.
 ///
 /// `constructors` is the set of known ADT constructor names.
 ///
@@ -38,18 +51,27 @@ pub(crate) fn find_sparkable_bindings(
     constructors: &HashSet<Symbol>,
 ) -> Vec<usize> {
     let mut bound_names: HashSet<Symbol> = HashSet::new();
+    // Names of earlier bindings that were themselves admitted as sparks — the
+    // dependency-on-sparked carve-out tests membership here.
+    let mut sparked_names: HashSet<Symbol> = HashSet::new();
     let mut sparkable: Vec<usize> = Vec::new();
 
     // Free-variable traversal over `MonoExpr` (the in-crate `find_free_vars`,
     // mirroring `cranelisp_types::free_vars_expr` over the post-mono AST).
     for (i, (name, val_expr)) in bindings.iter().enumerate() {
         let fv = find_free_vars(val_expr, &[]);
-        // Filter to only those free vars that are bound by earlier bindings
-        // in this let block (not globals or outer scope).
-        let depends_on_earlier = fv.iter().any(|v| bound_names.contains(v));
+        // Admit iff worth sparking AND every earlier-bound dependency it
+        // references is itself already sparked (so it is available as an IVar to
+        // force on demand). Independent bindings (no earlier-bound free var)
+        // satisfy the `all` vacuously.
+        let deps_all_sparked = fv
+            .iter()
+            .filter(|v| bound_names.contains(*v))
+            .all(|v| sparked_names.contains(v));
 
-        if !depends_on_earlier && is_worth_sparking(val_expr, constructors) {
+        if is_worth_sparking(val_expr, constructors) && deps_all_sparked {
             sparkable.push(i);
+            sparked_names.insert(name.clone());
         }
 
         bound_names.insert(name.clone());

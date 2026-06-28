@@ -462,6 +462,65 @@ fn catch_runtime_error_err_arm_link() {
         .assert_exit(0);
 }
 
+// spec: spec/12-runtime.md §12.3 — RC discipline: every heap allocation is freed
+// exactly once; a caught runtime error must not leak. DEFECT (surfaced S94 Wave 3
+// while authoring the dependent-spark RC guards in `concurrency_spark.rs`): each
+// `catch-runtime-error` that takes the `Err` arm LEAKS exactly one heap cell
+// (almost certainly the ferried error-message String / `Err` payload not freed
+// when its binding goes out of scope unused). The leak scales linearly with the
+// number of catches (N catches ⇒ N leaked cells), so a long-running program that
+// catches errors in a loop (a retry loop) leaks without bound.
+//
+// PRE-EXISTING and INDEPENDENT of sparking / lenient eval / limit #2: this minimal
+// repro has NO `let`, no sparkable bindings, no IVars — just a bare
+// `(catch-runtime-error (fn [] (div-i64 10 0)))` driven N times. Observed N=20 ⇒
+// 20-cell imbalance (e.g. 51 allocs / 31 frees). The dependent-spark guards in
+// `concurrency_spark.rs` use a RELATIVE-to-this-baseline assertion to isolate
+// limit #2's (zero) contribution, precisely because this baseline leak exists.
+//
+// OBSERVABILITY: a pure leak has no value/exit witness (the program computes the
+// right answer and exits cleanly), so the only signal is the `CRANELISP_RC_TRACE=1`
+// alloc/free balance (the DEF-3 precedent for allocation-imbalance defects).
+//
+// FAILING-NOT-IGNORED per `memory/feedback_failing_not_ignored.md`: asserts the
+// CORRECT behaviour (alloc == free), RED today, GREEN when the caught error cell is
+// freed. Owner: /dev (likely `cranelisp-intrinsics` error-ferry / the match-arm
+// drop of an unused `(Err m)` binding, or `cranelisp-backend` drop codegen).
+#[test]
+fn catch_runtime_error_caught_leaks_one_heap_cell_per_catch_neg() {
+    let src = "(import [primitives [catch-runtime-error div-i64 add-i64 sub-i64 le-i64 Int Result Ok Err Pure]])\n\
+               (defn step [:Int acc]\n\
+                 (match (catch-runtime-error (fn [] (div-i64 10 0)))\n\
+                   [(Ok v)  acc\n\
+                    (Err m) (add-i64 acc 1)]))\n\
+               (defn drive [:Int n :Int acc]\n\
+                 (if (le-i64 n 0) acc (drive (sub-i64 n 1) (step acc))))\n\
+               (defn main [] (Pure (drive 20 0)))\n";
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .env("CRANELISP_RC_TRACE", "1")
+        .file("user.cl", src)
+        .run("user.cl")
+        .output();
+    // The program completes correctly even under the leak (the observability
+    // limitation): acc reaches 20, exit 20. The only witness is the imbalance.
+    assert_eq!(
+        out.status.code(),
+        Some(20),
+        "expected exit 20 (20 catches)\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
+    assert_eq!(
+        allocs, frees,
+        "every caught runtime error must be alloc/free balanced — `catch-runtime-error` \
+         leaks one heap cell per caught error (§12.3 RC discipline); got {allocs} allocs / \
+         {frees} frees over 20 catches (≈20-cell leak).\nstderr:\n{}",
+        out.stderr
+    );
+}
+
 // =============================================================================
 // FIXME 0399 — `--link` runtime-panic surfacing parity with `--run`.
 //
@@ -1080,18 +1139,32 @@ fn lenient_vec_map_reduce_parallelizes() {
     );
 }
 
-// spec: spec/12-runtime.md §12.4.3 — NEGATIVE CONTROL pinning the sparkability
-// rule. The SAME computation, but `mid` is bound FIRST in the SAME `let` block
-// and BOTH halves reference it (an earlier same-block binding). A binding whose
-// free vars reference an earlier same-block binding is NOT sparkable, so neither
-// `left` nor `right` is sparked (<2 sparkable bindings) and the two halves run
-// SERIALLY. Witness: lenient ON ~= OFF (no meaningful speedup) AND the same
-// result. This proves the parallelism in `lenient_vec_map_reduce_parallelizes`
-// comes from the sparkability rule, not incidentally.
+// spec: spec/12-runtime.md §12.4.3 — POSITIVE CONTROL (the never-wrong floor) for
+// the Sprint-94 dependent-binding spark (FIXME 0424 limit #2;
+// `design/backend/lenient-eval.md` §2.6 / §2.6.2). The SAME computation as
+// `lenient_vec_map_reduce_parallelizes`, but written in the divide-and-conquer
+// shape stdlib `par-reduce`/`par-map-reduce` actually emit: `mid` is bound FIRST
+// in the SAME `let` block and BOTH halves reference it. Under the pre-S94 rule a
+// binding whose free vars touched an earlier same-block binding was rejected as
+// "stays serial"; §2.6.1 deliberately relaxes that — a dependent binding IS
+// sparkable when every earlier dependency it references is itself sparked, so
+// `left`/`right` spark as IVars that force `mid` on demand (§2.6.3). This is the
+// intended behaviour, NOT a violation, so the obsolete "stays serial" negative
+// control was inverted (FIXME 0458). What it now pins is observational
+// equivalence — the dependent-binding spark MUST compute the IDENTICAL result the
+// forced-sequential oracle does. Timing is contention-prone and is NOT asserted
+// here; the parallelism WITNESS lives in `lenient_vec_map_reduce_parallelizes`
+// and the admission-rule mechanics in `cranelisp-backend`
+// `sparkability_tests::*`. Mirrors `concurrency_spark.rs::
+// par_reduce_shaped_inline_results_identical_to_sequential` (the never-wrong
+// correctness floor).
 #[test]
-fn lenient_vec_map_reduce_prior_binding_stays_serial() {
-    // `mid`, `left`, `right` share ONE `let` block; `left`/`right` both
-    // reference the earlier same-block `mid` => not sparkable => serial.
+fn lenient_vec_map_reduce_prior_binding_result_identical_to_sequential() {
+    // `mid`, `left`, `right` share ONE `let` block; `left`/`right` both reference
+    // the earlier same-block `mid` => DEPENDENT bindings, now admitted as
+    // dependent sparks (limit #2). Same leaf cost / Vec as the positive timing
+    // witness — only the block shape differs — so the value is identical: the
+    // 8-element Vec sums to 8·30_000_000 = 240_000_000; div by 1_000_000 = 240.
     let src = format!(
         "(import [primitives [Int add-i64 sub-i64 div-i64 le-i64 vec-get vec-len Pure]])\n\
          (defn work [:Int n :Int acc]\n\
@@ -1109,57 +1182,24 @@ fn lenient_vec_map_reduce_prior_binding_stays_serial() {
         PMR_VEC = PMR_VEC,
     );
 
-    // MAJORITY-OF-N: a genuinely serial case shows ON ~= OFF on every attempt, so
-    // we require the MAJORITY of attempts to show NO speedup (ON >= 0.7*OFF). This
-    // tolerates a single contention blip — an OFF-slow reading that spuriously
-    // looks like a speedup — while still failing loudly if the prior-binding case
-    // were wrongly sparked (which would show the speedup in all/most attempts).
-    // Semantic transparency is asserted on EVERY attempt and never relaxed.
-    let majority = PMR_ATTEMPTS / 2 + 1;
-    let mut no_speedup_count = 0u32;
-    let mut observed: Vec<(u128, u128, u128)> = Vec::new(); // (on_ms, off_ms, threshold)
-    for attempt in 0..PMR_ATTEMPTS {
-        let (on_ms, on_exit) = pmr_run_elapsed_ms(&src, false);
-        let (off_ms, off_exit) = pmr_run_elapsed_ms(&src, true);
+    // Three-regime observational equivalence: lenient ON (dependent sparks fire)
+    // and the forced-sequential oracle (`CRANELISP_NO_LENIENT=1`) MUST produce the
+    // identical value, and it MUST be the known sequential result. Contention-
+    // immune — a single ON/OFF pair suffices (no timing dimension to denoise).
+    let (_on_ms, on_exit) = pmr_run_elapsed_ms(&src, false);
+    let (_off_ms, off_exit) = pmr_run_elapsed_ms(&src, true);
 
-        // Same value with and without the opt-out (and the SAME value the positive
-        // test computes — identical leaf cost / Vec, only the block shape differs).
-        assert_eq!(
-            on_exit, off_exit,
-            "negative control attempt {attempt}: lenient ON vs OFF produced \
-             different results (exit {on_exit:?} vs {off_exit:?}) — §12.4.3 \
-             semantic transparency"
-        );
-
-        let parallel_threshold = off_ms * PMR_SPEEDUP_NUM / PMR_SPEEDUP_DEN;
-        observed.push((on_ms, off_ms, parallel_threshold));
-        if on_ms >= parallel_threshold {
-            no_speedup_count += 1;
-            // Early-exit: once a strict majority shows no speedup, the pass
-            // outcome is locked in — no remaining attempt can change it. This
-            // shaves the common-case runtime (the serial case reaches the
-            // majority in the first `majority` attempts).
-            if no_speedup_count >= majority {
-                break;
-            }
-        }
-    }
-
-    // NO meaningful speedup in the MAJORITY of attempts: the inverse of the
-    // positive assertion. If the prior-binding case were wrongly sparked, the
-    // speedup (ON < 0.7*OFF) would appear in all/most attempts and the
-    // no-speedup count would fall to the minority — failing this guard. Requiring
-    // a strict majority (> N/2) tolerates one contention-induced false-speedup
-    // reading without weakening the sparkability-rule proof.
-    assert!(
-        no_speedup_count >= majority,
-        "negative control: expected NO meaningful speedup (lenient-ON \
-         wall-clock >= 0.7 * lenient-OFF) in the majority ({majority} of \
-         {PMR_ATTEMPTS}) of attempts; only {no_speedup_count} showed no speedup \
-         — the prior-same-block-binding case is being wrongly parallelised; the \
-         sparkability rule (free vars must not reference an earlier same-block \
-         binding) is being violated (§12.4.3). Attempts (on_ms, off_ms, \
-         threshold_ms): {observed:?}"
+    assert_eq!(
+        on_exit, off_exit,
+        "lenient ON vs OFF produced different results (exit {on_exit:?} vs \
+         {off_exit:?}) — the dependent-binding spark (§2.6) violated §12.4.3 \
+         observational equivalence on the divide-and-conquer prior-binding shape"
+    );
+    assert_eq!(
+        on_exit,
+        Some(240),
+        "expected the known sequential value 240 (8·30_000_000 / 1_000_000); \
+         the dependent-binding spark computed a wrong result: {on_exit:?}"
     );
 }
 
@@ -2460,7 +2500,8 @@ fn apply_arg_no_lenient_determinism_oracle() {
 // spec: spec/12-runtime.md §12.4.3 — NEGATIVE gating: an apply with only ONE
 // expensive argument `(add-i64 (work big 0) 7)` (the other is a literal) is
 // below the ≥2 gate → NOT sparked → no speedup (majority-of-N) + same result.
-// The apply-site analogue of `lenient_vec_map_reduce_prior_binding_stays_serial`.
+// The apply-site negative gate (≥2-expensive-arg rule); the let-path positive
+// analogue is `lenient_vec_map_reduce_prior_binding_result_identical_to_sequential`.
 #[test]
 fn apply_arg_single_expensive_stays_serial() {
     let src = format!(

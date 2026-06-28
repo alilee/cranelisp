@@ -470,3 +470,299 @@ Adding a `drop_effect_thunk` extern that the Effect node's drop glue calls (to p
 | `sketch/platforms/stdio/src/lib.rs` | `print_string` using `s.own()` for capture RC, `CLIO::effect(move \|\| ...)` |
 | `sketch/src/repl/input.rs:796-810` | REPL IO detection and trampoline invocation |
 | `sketch/src/jit.rs:1227-1236` | Batch IO detection and trampoline invocation |
+
+## 12. Poll-shape Effect node construction — the backend poll-construction arm (S94, effect-concurrency slice 2)
+
+Sprint 94 completes effect-concurrency slice 2: real poll-shape platform effect
+*nodes* flow through the reactor's `EffectPoll` await. The backend's half is a
+single, additive **poll-construction arm** at the effect site. This section is the
+`/dev` design for that arm. It builds against the **ratified backend↔intrinsics
+poll-shape Effect-node seam** (`design/arch/effect-concurrency.md` §13 "S94 R1" +
+Appendix B §"the ratified backend↔intrinsics poll-shape Effect-node seam"; ABI-field
+consequence in `design/arch/platform-interface.md` §6.8) — that seam is the contract,
+this section is the codegen that realizes it. It reuses the closure-construction
+codegen of `design/backend/ring2-rc.md` / `lambda.rs` (Principle 7 reuse) and the
+GOT-indirect dispatch mechanism of §7 here + `apply.rs::emit_got_indirect_call_via_data_id`.
+
+### 12.1 What is new vs. the blocking path (and what is byte-identical)
+
+The blocking `IO_TAG_EFFECT` path (§1.2, §7) is **untouched** (arch R3,
+byte-identical-when-off). It works by *calling* the platform DLL fn at the effect
+site (`compile_direct_call` → `emit_got_indirect_call_via_data_id`); the DLL fn
+allocates the Effect node, double-boxes its thunk, and returns the node pointer,
+which the backend then fn-name-stamps (§7 / `apply.rs::stamp_platform_fn_name`). Every
+real platform today is blocking, so this is every effect node constructed today.
+
+The poll-shape arm is structurally different — it **does not call the platform fn**:
+
+| Aspect | Blocking arm (`IO_TAG_EFFECT`, unchanged) | Poll-construction arm (`IO_TAG_EFFECT_POLL`, new) |
+|---|---|---|
+| Effect fn role | **called** at the site; returns the node | **loaded** from the GOT; baked as the node's `code_ptr`; called later by the trampoline's `EffectPoll::poll` |
+| Who builds the node | the platform DLL (host-opaque thunk) | the **backend**, in-process, as a host-built state-closure |
+| Node field-0 | thunk_ptr (a `Box<Box<dyn FnOnce>>`) | a **state-closure** pointer in the standard `HeapClosure` layout |
+| Args | passed in the C-ABI call | **marshaled as closure captures** (poll takes only `(state, host, waker)`) |
+| Result | returned by the call | written by the poll-fn into a **reserved result slot** in the closure env; read generically by `EffectPoll` on `Poll::Ready` |
+| `HostCtx`/`Waker` | n/a | supplied by the **trampoline** at poll time, never at the backend site |
+
+**Keying — no cargo feature (arch R3).** The arm is selected on the effect's
+**declared shape**, read from the symbol table as `DefKind::PlatformEffect.poll_shape:
+bool` (a `cranelisp-types` field; FIXME 0457): `poll_shape == true` ⇒ the
+poll-construction arm, `poll_shape == false` ⇒ the unchanged blocking arm. The
+`poll_shape` discriminator is **derived at platform-load time** (`poll_shape =
+(descriptor.blocking == 0)`) and stamped onto the `DefKind`; the full
+`ConcurrencyDescriptor` is deliberately **NOT carried on the symbol table** (it stays
+`concurrency`-gated, off the frozen `cranelisp-types` edge — see
+`effect-concurrency.md` §13 "S94 R1" + `platform-interface.md` §6.8). The backend
+therefore never reads `ConcurrencyDescriptor` at the dispatch site; it reads only the
+boolean `poll_shape`. Because poll-shape effects only exist in a `concurrency`-built
+toolchain (the v7 `declare_platform!` poll-emission is itself feature-gated), the new
+arm is *reachable* only when concurrency is in play; with a stock (blocking-only)
+platform set every effect has `poll_shape == false`, so **no `IO_TAG_EFFECT_POLL`
+node is ever constructed** and the emitted code is byte-identical to today's. The
+backend needs **no `#[cfg]`** — the dual path is a data-driven branch on the
+`poll_shape` field, not a compile-time fork (Principle 11 — mode by parameter, not by
+build flag).
+
+### 12.2 `IO_TAG_EFFECT_POLL` node layout
+
+A new IO tag, `IO_TAG_EFFECT_POLL` (next free tag — `IO_TAG_PAR` is 3, so this is **4**;
+the constant joins the others in `cranelisp-platform` / `cranelisp-types` per §1.4,
+gated with the `concurrency` layout contracts). The node is deliberately *thin*: it
+holds the tag plus a single pointer to the host-built state-closure, mirroring how the
+Effect node holds a single thunk pointer.
+
+```
+Base pointer →
+  +0   alloc_size: i64   (= 32)
+  +8   rc: i64           (initial 1, atomic)
+  +16  tag: i64          (= IO_TAG_EFFECT_POLL = 4)
+  +24  state_closure: i64 (pointer to the state-closure, below)
+
+Total allocation: 32 bytes (16 header + 16 payload)
+```
+
+The **state-closure** is an ordinary heap closure in the standard layout
+(Decision 11; `lambda.rs`, `ring2-rc.md`), so it inherits RC + drop for free:
+
+```
+Base pointer →
+  +0   alloc_size: i64
+  +8   rc: i64
+  +16  code_ptr: i64        (= the GOT-loaded poll-fn; PollFn ABI)
+  +24  drop_glue_ptr: i64   (state-teardown glue — see §12.5)
+  +32  env_0: result_slot: i64   (poll-fn writes its i64 result here)
+  +40  env_1: arg_0 : i64        (marshaled effect arg 0)
+  +48  env_2: arg_1 : i64        (marshaled effect arg 1)
+  ...                            (one slot per effect arg)
+  +N   scratch...                (optional leaf-private scratch)
+```
+
+This is exactly the ratified closure-env model (§13 decision 1): `code_ptr` = the
+poll-fn, `drop_glue_ptr` = state teardown, `env` = result-slot + i64 args + scratch.
+It adds **no new platform-DLL type** — the closure layout is an in-process host
+convention, not a DLL-ABI struct (arch rejected a `#[repr(C)] PollDescriptor` for
+exactly this reason). The result slot is placed **first in the env** (offset 32) so its
+location is a fixed, descriptor-independent offset both the backend and `EffectPoll`
+agree on; the args follow. (Result-slot *placement* — first-env-slot vs. a baked node
+field — is the host↔intrinsics interior convention the seam left to /design backend +
+int; **first-env-slot at offset 32 is the recommendation**: it needs no extra node
+field, and `EffectPoll` already holds the state pointer, so `state + 32` is the read.)
+
+### 12.3 Codegen — the construction sequence
+
+At the effect site, after the dispatch fork in `compile_apply` recognizes a
+`DefKind::PlatformEffect` target (the same recognition `compile_direct_call` /
+`resolve_platform_effect_target` already do for the blocking stamp, §7), the backend
+branches on the `DefKind::PlatformEffect.poll_shape` field. For `poll_shape == true`
+(`resolve_poll_effect_target` returns the target):
+
+```
+;; args already compiled to Values via compile_consuming_arg_list (arg_0..arg_{k-1})
+
+;; 1. Load the poll-fn pointer from the platform GOT — the SAME slab_base + slot
+;;    load as emit_got_indirect_call_via_data_id, but LOAD ONLY (no call_indirect).
+slab_base = global_value(__cranelisp_got_platform_<module>)   ; one relocation
+slot_addr = iadd_imm slab_base, slot*8
+poll_fn   = load.i64 slot_addr                                ; the PollFn pointer
+
+;; 2. Allocate + populate the state-closure (reuse closure-construction codegen).
+env_slots = 1 (result) + k (args) + scratch
+clo = emit_alloc(16 + 8*(2 + env_slots))      ; header + code_ptr + drop_glue + env
+store poll_fn       at clo + 16               ; code_ptr  = poll-fn
+store drop_glue     at clo + 24               ; state-teardown glue (§12.5)
+store 0             at clo + 32               ; result slot init (sentinel)
+store arg_0         at clo + 40               ; marshal arg captures...
+store arg_1         at clo + 48
+...
+;; RC: NO inc at the store. The args reached this arm via
+;;     compile_consuming_arg_list, which ALREADY inc'd heap-typed Var args
+;;     (and transfers temporaries directly). Storing them into the env is a
+;;     plain ownership transfer (the Bind/ParBind constructor convention). The
+;;     state-closure drop glue (§12.5) dec's each heap-typed arg slot when the
+;;     node is consumed. Do NOT also run the borrowing emit_capture_inc loop —
+;;     that double-incs every heap-typed Var arg and leaks it.
+
+;; 3. Allocate + populate the IO_TAG_EFFECT_POLL node.
+node = emit_alloc(16)                          ; header + tag + state_closure
+store IO_TAG_EFFECT_POLL at node + 16
+store clo                at node + 24          ; ownership transfer (rc=1), no inc
+
+return node
+```
+
+Two reuse anchors, both load-bearing (Principle 7):
+
+- **Step 1 is the GOT load already written** — `emit_got_indirect_call_via_data_id`
+  loads `poll_fn` from `slab_base + slot*8` then `call_indirect`s it. The poll arm
+  factors out the *load* (everything up to and including the `load.i64`) and **stops
+  before the call**, baking `poll_fn` as the closure `code_ptr` instead. The
+  recommendation is to extract a `emit_got_slot_load(data_id, slot) -> Value` helper
+  that both the call path and the poll-construction path call, so the GOT-indirect
+  mechanism stays single-source. The load is done **once at construction**; the baked
+  `code_ptr` is the dispatch target — GOT-indirect dispatch is preserved, just deferred
+  to poll time (§13 decision 2).
+- **Step 2 is the closure-construction codegen already written** — the alloc + store
+  `code_ptr` + store `drop_glue_ptr` + store-captures sequence is precisely
+  `compile_lambda`'s closure-site emission (`lambda.rs` lines ~110–162). Three
+  differences: `code_ptr` is the GOT-loaded poll-fn (not a `func_addr` of a generated
+  inner fn); env slot 0 is a reserved result slot (not a capture); and the arg slots
+  are stored under the **consuming convention** — a plain store with **no per-capture
+  inc**, because the args were already inc'd upstream by `compile_consuming_arg_list`.
+  This is the `Bind`/`ParBind` constructor convention (the node's field-store inherits
+  ownership from the consuming arg list), **NOT** `compile_lambda`'s *borrowing*
+  `emit_capture_inc` loop. Reusing that inc loop here would **double-inc** every
+  heap-typed Var arg (once in the consuming list, once in the loop) and leak it. /dev
+  reuses the capture-*store* sequence verbatim, but **omits the `emit_capture_inc`**.
+
+**Arg marshaling = closure captures (§13 decision 2).** The effect's i64 args become
+the closure's captures. The poll-fn does its first-poll setup (open fd, issue the
+non-blocking syscall) from these captured args on its first `poll` call. This is why
+there is **no `make_state` platform export** — the host marshals the args itself using
+established closure codegen; the poll-fn reads them out of `state` (= the env). RC of
+heap-typed args follows the **consuming convention**: the args arrive already inc'd
+from `compile_consuming_arg_list`, the env stores them with **no further inc**
+(ownership transfer), and the state-closure drop glue dec's each heap-typed arg slot
+when the node is consumed (§12.5). Scalar/temporary args carry no glue.
+
+**No fn-name stamp on this arm.** The §7 `stamp_platform_fn_name` exists so the
+intrinsics fault guard can name a *blocking* effect whose DLL-built node faulted. The
+poll node is host-built and its dispatch failure surfaces through the reactor's
+`EffectPoll`, not the blocking fault guard; the stamp is a blocking-arm concern and is
+**not** emitted here. (If a poll-arm diagnostic name is later wanted, it rides the
+state-closure env as another reserved slot — not in scope for S94.)
+
+### 12.4 Trampoline interaction (intrinsics-owned — stated here for the contract)
+
+The node construction is the backend's whole job; the **call** is the trampoline's
+(`run_io_trampoline_inner_async`, `cranelisp-intrinsics`, intrinsics-owned — see
+`design/int/reactor.md`). Stated here only so the seam is unambiguous: the async
+Effect arm `.await`s an `EffectPoll` future whose `Future::poll(cx)` builds a C-ABI
+`Waker` over `cx.waker()` and calls `poll(state = clo, host, waker) -> Poll`. On
+`Poll::Ready` it reads the i64 result generically from `state + 32` (the reserved
+result slot, §12.2) — the S93 fixture's per-effect `ResultReader` fn-pointer collapses
+to this single generic offset read (§13 decision 3). The sync (feature-off) stepper
+only ever sees `IO_TAG_EFFECT`; it never encounters `IO_TAG_EFFECT_POLL` because none
+is ever constructed without concurrency.
+
+### 12.5 Drop glue — RC + the reserved `drop_state` hook
+
+The poll node is a standard ADT (one tag, one heap-typed field), so its drop glue
+(§3) dec's `state_closure` when the node reaches rc=0; the trampoline's existing
+`consume_io_tree` drop walk reaches it for free (§13 decision 1 — "inherits RC + drop").
+
+The state-closure's `drop_glue_ptr` is the **primary** teardown path: generated by the
+backend exactly as `build_closure_drop_glue` (`lambda.rs`) — it dec's each heap-typed
+arg capture. The result slot is a plain i64 written by the poll-fn; whether it needs a
+dec depends on the effect's result type (`AlwaysHeap`/`Mixed`/`NeverHeap` — same
+classification as Pure's value field, §3.1). For the S94 in-tree demo (`async-read`
+returns an `Int` byte count) the result slot is `NeverHeap` — no dec.
+
+The platform's optional `ConcurrentPlatformFn.drop_state` hook (the one reserved-inert
+ABI field, §13 decision 4 / `platform-interface.md` §6.8) is the leaf's contribution
+to this glue, for **leaf-private heap a host cannot free** (a libc buffer, a connection
+struct). When present, the backend bakes a call to it into the state-closure's
+`drop_glue_ptr` (passing `state = env`); when `None` (the C-ABI null fn-ptr — the S94
+demo's case) the host glue alone suffices. **`drop_state` is RESERVED-BUT-INERT for
+S94** — the demo passes `None`, so the backend's S94 deliverable bakes only the
+capture-dec glue and **does not** emit a `drop_state` call. The hook's wiring lands
+with the cancellation slice (≥ 7); designing the glue to *accept* it now (a null-check
++ conditional call, mirroring the closure `drop_glue_ptr != 0` guard in
+`rc_emission.rs`) is the cheap shape-to-be-subsumed move (Principle 8) but is itself
+deferrable — S94 may bake pure capture-dec glue and add the `drop_state` branch in the
+cancellation slice.
+
+### 12.6 Implementation steps for /dev
+
+1. Add `IO_TAG_EFFECT_POLL = 4` to the IO tag constants (`cranelisp-platform` /
+   `cranelisp-types`, gated with the `concurrency` layout contracts, §1.4).
+2. Extract `emit_got_slot_load(data_id, slot) -> Value` from
+   `emit_got_indirect_call_via_data_id` (the load prefix); have the existing call path
+   call it (no behaviour change — refactor + its own equivalence is covered by the
+   unchanged blocking tests).
+3. At the `DefKind::PlatformEffect` dispatch recognition site, read the effect's
+   `DefKind::PlatformEffect.poll_shape` field (via `resolve_poll_effect_target`).
+   `poll_shape == false` → the unchanged blocking arm (§7). `poll_shape == true` →
+   the poll-construction arm (§12.3). The backend reads only this boolean; the full
+   `ConcurrencyDescriptor` is not on the symbol table (§12.1).
+4. Implement the poll-construction arm: GOT-load the poll-fn (step 2), build the
+   state-closure reusing the `compile_lambda` closure-site emission — but store the arg
+   captures under the **consuming convention** (a plain store, **no**
+   `emit_capture_inc`; the args are already inc'd by `compile_consuming_arg_list`),
+   build the `IO_TAG_EFFECT_POLL` node (§12.3).
+5. Generate the state-closure drop glue via the existing `build_closure_drop_glue`
+   path (capture-dec only for S94; the `drop_state` branch is deferred, §12.5).
+6. Confirm the blocking arm is reached for every stock-platform effect (every effect
+   has `poll_shape == false` in a non-concurrency toolchain) so the default build is
+   byte-identical (the negative guard, §12.7).
+
+### 12.7 Unit-test seams for /dev (backend tier)
+
+Per the project's unit-test-per-fix discipline, the mandatory backend-tier seams:
+
+- **Byte-identical-off (the load-bearing negative guard).** A blocking effect
+  (`poll_shape == false` — the only kind in a stock platform set) constructs an
+  `IO_TAG_EFFECT` node and emits the unchanged §7 dispatch+stamp; **no
+  `IO_TAG_EFFECT_POLL` node is constructed** and the emitted CLIF for a representative
+  blocking effect call is unchanged. This is the R3 obligation expressed as a test.
+- **Poll-node shape.** A `poll_shape == true` effect constructs an `IO_TAG_EFFECT_POLL`
+  node whose field-0 points at a closure with `code_ptr` = the GOT-loaded poll-fn,
+  whose env slot 0 is the (sentinel-initialized) result slot, and whose env slots 1..k
+  hold the k marshaled args in order. Inspect via CLIF (`CRANELISP_CODEGEN_TRACE=1`) on
+  a shrunk single-arg poll effect — the small repro produces small CLIF readable by eye
+  (per root `CLAUDE.md` "keep reductions small").
+- **GOT load, not call.** The poll arm emits a `load` of the GOT slot and **no
+  `call_indirect`** of the poll-fn at the construction site (the call belongs to the
+  trampoline). Asserts the load/call distinction that is the whole point of the arm.
+- **Arg-capture RC (consuming, not borrowing).** A heap-typed effect arg (e.g. a
+  `String`) reaches the arm already inc'd by `compile_consuming_arg_list`, is stored
+  into the state-closure env with **no further inc** (ownership transfer), and the
+  generated state-closure drop glue dec's it exactly once — the consuming RC balance
+  (`ring2-rc.md`). The test must assert there is **no** second inc at the store site
+  (the double-inc the borrowing `emit_capture_inc` loop would otherwise introduce).
+- **`emit_got_slot_load` refactor parity.** The extracted load helper produces the
+  same GOT-slot load the inline call path produced (guards the Principle-7 extraction).
+
+End-to-end overlap/strand assertions (two poll leaves overlapping in ≈max on one
+reactor; `EffectDispatched→Suspended→Resumed`; `--link` links no executor) are
+`/qa` integration seams driven through `cranelisp_run_io` (the intrinsics + reactor
+half); they are listed in `effect-concurrency.md` Appendix B §"What /qa can assert"
+and are not backend-unit-tier.
+
+### 12.8 Quality attributes touched
+
+- **Simplicity / complexity budget (Principle 6).** The arm adds one tag, one thin
+  node, and one data-driven branch; it reuses the GOT-load and closure-construction
+  codegen wholesale rather than standing up a parallel mechanism. No `#[cfg]`, no mode
+  fork.
+- **Maintainability / single source of truth (Principle 7).** The GOT-indirect
+  mechanism stays single-source via the extracted `emit_got_slot_load`; the closure
+  build stays single-source via reuse of `compile_lambda`'s emission. A future ABI
+  change to the GOT or closure layout lands in one place each.
+- **Concurrency-safety (Principle 1).** The backend emits no concurrency primitive —
+  it constructs a value (the node). All await/poll/wake lives in the trampoline. RC of
+  the captured args is atomic (Decision 13) because the state-closure can be read on a
+  reactor thread.
+- **Testability (Principle 5).** The arm is decided on a data field (`blocking`) and
+  emits an inspectable node shape, so it is unit-testable at the CLIF seam without a
+  running reactor; the reactor-dependent behaviour is cleanly the trampoline's, tested
+  separately.

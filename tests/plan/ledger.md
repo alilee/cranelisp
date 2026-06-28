@@ -36,6 +36,214 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 94 Phase 6 — /port floor-violation: alloc/RC-heavy parallel workload runs slower than serial (DEMOTED to ignored benchmark — durable record here) (/qa, 2026-06-28)
+
+`/port` (Phase 6) found the effect-concurrency thesis floor — "never slower than
+sequential" (`design/backend/lenient-eval.md` §3.6.3,
+`design/arch/effect-concurrency.md` §3.1) — **violated for alloc/RC-heavy parallel
+workloads**. This ledger entry + §3.1 are the **durable record** (no FIXME per
+`memory/feedback_no_fixme_with_failing_test.md`).
+
+By-symptom framing: **an alloc/RC-heavy parallel workload runs slower than serial —
+atomic-RC + allocator-lock contention across workers; the spark-budget create-gate
+bounds spark COUNT, not per-branch contention.** Repro: a binary divide-and-conquer
+tree (`dac`) with two independent sparking recursive branches, each leaf churning
+`vec-set` copies of a SHARED `(Vec Box)` (81 single-field heap-ADT elements). Because
+the Vec is shared (rc > 1 across workers), every COW copy deep-copies the backing store
+AND atomically inc/dec's every retained `Box`'s RC — all workers hammer the same
+allocator lock + the same RC cache lines.
+
+**Why DEMOTED (not a failing-not-ignored default-suite guard).** The first cut asserted
+a CPU-time floor (`parallel_cpu <= 3·serial_cpu`) in the default lane, believing CPU
+time to be load-independent. It is NOT: the contention CPU cost is **scheduling-
+dependent** — it only materialises when the spark workers get REAL concurrent cores.
+Measured on this 10-core box: idle ⇒ ~6.5x (RED); under saturating background load ⇒
+~3.1x (right at K=3); inside the full 1700-test concurrent `cargo nt` ⇒ dips below 3x ⇒
+GREEN. A hard CPU-ratio assert in the default lane therefore flips RED↔GREEN with
+machine load — exactly the `flaky`/`timing-sensitive` disposition this ledger bans, and
+it would surface a spurious "regression" on a loaded CI box. Deterministic-RED-in-the-
+concurrent-suite is infeasible from `tests/` alone (would need a nextest test-group in
+`.config/nextest.toml` for exclusive core scheduling, outside `/qa`'s edit scope; a
+bigger workload does not help — both arms scale together, so the ratio is set by the
+contention factor, which load erodes). User decision (coordinator-relayed): fix to be
+deterministic OR demote. → DEMOTED.
+
+Commit SHA: `a060029`.
+
+| Field | Value |
+|---|---|
+| Default-suite test (GREEN, deterministic) | `cranelisp::concurrency_spark::alloc_rc_heavy_parallel_result_equals_sequential` — the never-WRONG floor: parallel result == forced-sequential (`CRANELISP_NO_LENIENT=1`) == known value. Load-immune (no timing dimension). |
+| On-demand benchmark (`#[ignore]`'d) | `cranelisp::concurrency_spark::alloc_rc_heavy_parallel_cpu_floor_benchmark_ignored` — keeps the CPU-floor assert (`parallel_cpu <= 3·serial_cpu`; parallel=MIN of 5, serial=MAX of 3, via `/usr/bin/time -v`). Run on an IDLE box: `cargo nextest run --test concurrency_spark --run-ignored ignored-only`. |
+| Benchmark signature (idle, on demand) | `FLOOR VIOLATED (design/backend/lenient-eval.md §3.6.3 'never slower than sequential'): alloc/RC-heavy parallel workload burns 0.89s CPU (best-of-5) vs 0.15s serial (worst-of-3) = 5.9x (> 3x margin)` |
+| Default-suite impact | NONE — the benchmark is `#[ignore]`'d (reported as 1 skipped); the default lane stays deterministic. |
+| Limit | whole-process CPU (incl. ~0.05s fixed JIT/startup, negligible); cannot localise allocator-lock vs atomic-RC cache-line (both in scope of the same floor). Resource-consumption floor, not a wall-clock SLA. |
+| Owner | `/backend` + `/arch` (a contention-aware create-gate, a non-copying / single-owner Vec path, or Phase-H memory work) |
+| Target sprint | unscheduled (Phase-H / effect-concurrency memory work) — the benchmark flips GREEN when the floor is restored. |
+| Disposition | finding recorded HERE + `effect-concurrency.md` §3.1 (durable record); correctness floor is a normal GREEN default-suite test; timing floor is an on-demand ignored benchmark. NOT a flaky default-suite RED. |
+
+Expected default-`cargo nt` state after this entry: **1700 run / 1700 passed / 1 skipped**
+(prior 1699 passed + the new deterministic correctness test; the CPU benchmark is the
+1 skipped/ignored). A genuine regression is any RED.
+
+### Sprint 94 — 3 named known-failing slice-6 two-pool-routing guards (`nt-reactor-e2e` feature-on lane) (/qa, 2026-06-28)
+
+Three existing `spec_10_io` wall-clock witnesses for **blocking-effect** auto-IO `Par`
+overlap are classified here as **named known-failing slice-6 two-pool-routing guards
+for the `nt-reactor-e2e` (feature-on) lane**. They are correct production guards
+feature-OFF and are simply also-run feature-ON, where the deferred gap shows. User
+decision (S94): KEEP them as visible failing guards — do **not** narrow the lane, do
+**not** `#[ignore]`, do **not** change the test code. This ledger entry is the durable
+record (no FIXME — the failing tests ARE the record, per
+`memory/feedback_no_fixme_with_failing_test.md`).
+
+Commit SHA: `a060029`.
+
+| Field | Value |
+|---|---|
+| Tests (the 3) | `cranelisp::spec_10_io::resource_serial_diff_token_parallelizes`, `cranelisp::spec_10_io::auto_io_independent_diff_token_parallelizes_e2e`, `cranelisp::spec_10_io::auto_io_par_grouping_uniform_across_modes` |
+| Lane | `nt-reactor-e2e` = `cargo nextest run -p cranelisp --features concurrency-runtime` (runs the whole `cranelisp` suite WITH the reactor runtime on) |
+| Status feature-OFF (default `cargo nt`) | **GREEN** — these PASS; they are the production blocking-effect `Par` overlap witnesses (rayon thread-pool path). |
+| Status feature-ON (`nt-reactor-e2e`) | **RED** — wall-clock ~422 ms ≥ 300 ms midpoint (expected <300 ms ≈ 1×200 ms). |
+| Signature (symptom) | `--run … data-independent Commutative program did not parallelise (wall-clock 422ms >= 300ms)` / `--run diff-token: expected concurrent wall-clock < 300ms (~= 1*200ms), got 422ms` |
+| By-symptom framing | feature-on blocking-effect `Par` serializes through the single reactor thread — the minimal slice-2 reactor routes blocking effects through its one thread (`join_all`) instead of rayon. **Flips green when slice-6 two-pool routing lands** (roadmap "slice 6: Blocking/CPU two-pool routing"). |
+| NOT a | regression, and NOT a defect in the shipped poll-shape channel. The poll-shape channel (`concurrency_reactor.rs`) is green feature-on; this is the deferred blocking/CPU two-pool split. |
+| Owner | `/dev` + `/platform` (slice-6 two-pool routing — route blocking effects to the rayon/blocking pool rather than the single reactor thread) |
+| Target sprint | slice-6 (deferred; named-known-failing carry until then) |
+| Disposition | out-of-scope (owner=/dev) — named known-failing slice-6 two-pool-routing guards, failing-not-ignored per `memory/feedback_failing_not_ignored.md` + `feedback_frame_recurring_failure_by_symptom.md`. Asserts correct behaviour (concurrent < midpoint), RED feature-on today, GREEN when slice-6 lands. |
+
+**Expected lane state (the named baseline — a genuine regression is any RED beyond these):**
+
+- **Default `cargo nt`** — **fully GREEN** (verified at `a060029`: **1699 run / 1699 passed / 0 failed**). These 3 pass feature-off; the reactor runtime is compiled out.
+- **`nt-reactor-e2e` (feature-on)** — **1699 passed / 3 failed** (verified `--no-fail-fast` at `a060029`: 1702 run / 1699 passed / 3 failed). The 3 reds are **exactly** these named guards; the **5 poll-shape `concurrency_reactor.rs` rows are GREEN**
+  (`real_io_program_default_build_output_unchanged`, `link_io_program_runs_without_executor`,
+  `real_leaf_suspends_and_resumes_through_run_io`,
+  `two_real_leaves_in_par_overlap_max_not_sum_one_thread`,
+  `real_leaf_i64_result_reads_back_correctly`).
+  **Any RED beyond these 3 named blocking-effect guards is a genuine regression.**
+
+> Note: the `nt-reactor-e2e` lane uses nextest's default fail-fast and so STOPS at
+> the first batch of failures (~1394/1702) — that is the lane behaving normally, NOT
+> a 308-test regression. Use `--no-fail-fast` to confirm the full 1699-pass/3-fail
+> baseline (i.e. that the only reds are the 3 named blocking-effect guards).
+
+### Sprint 94 Phase-5 Stage-1 — QA-first e2e for real effect-node await + 0424 + 0430 (/qa, 2026-06-28)
+
+Phase-5 Stage-1 (QA-first, sprint-wide). The **9 e2e rows /qa owns** authored
+failing-not-ignored, grouped per `tests/plan/sprint-94.md` (a)–(g). The **10
+unit-tier rows are /dev-authored** (landed in the owning crate's `#[cfg(test)]`
+with the fix per the mandatory-unit-per-fix discipline) — NOT written this Stage
+(the (e) ABI guard EXTEND included: it lives at
+`crates/cranelisp-platform/src/tests.rs:1033`, inside `crates/`, off-limits to the
+"tests + tests/plan/ only" constraint). Named for surface completeness in
+`sprint-94.md` §6.
+
+Commit SHA at authoring: `a060029`.
+
+| Field | Value |
+|---|---|
+| New files | `tests/concurrency_reactor.rs` (Scope-1 (a)/(b)/(c)/(d)), `tests/concurrency_spark.rs` (0424 (f)); EXTEND `tests/agent.rs` (0430 (g)) |
+| Default `nt` after | **1682 passed / 0 failed** (1677 S93 baseline + 5 new GREEN floors; no collateral regression) |
+
+**GREEN floors / regression-replays (default `nt` lane):**
+- `concurrency_reactor::real_io_program_default_build_output_unchanged` (a) — feature-off byte-identical IO output (stdio `print` via `--run`). GREEN.
+- `concurrency_reactor::link_io_program_runs_without_executor` (d) — `--link`+RUN IO program exits with computed value; executor-free linked binary runs. GREEN.
+- `concurrency_spark::par_map_shaped_inline_results_identical_to_sequential` (f) — 4×fib(26)=exit 196; parallel-eligible sum == sequential. GREEN (correctness floor; apply-arg spark already ships).
+- `concurrency_spark::par_reduce_shaped_inline_results_identical_to_sequential` (f) — dependent-let accumulator 3×fib(26)=exit 147. GREEN (correctness floor; the let-path dependent-binding spark must keep it green).
+- `concurrency_spark::par_map_shaped_inline_not_slower_than_sequential` (f) — parallel(best-of-5) ≤ sequential(best-of-3)×2 over equal work (4×fib(30)=exit 160). GREEN (floor sentinel; generous margin).
+
+**RED-first (gated lanes only — compiled OUT of default `nt`, so no collateral):**
+
+`nt-reactor-e2e` (`cargo nextest run -p cranelisp --features concurrency-runtime`), gated `#[cfg(feature="concurrency-runtime")]`:
+- `concurrency_reactor::real_leaf_suspends_and_resumes_through_run_io` (b single-leaf) — RED. Signature: `expected exit 55, got Some(1)` / `module error … platform 'async-demo' not found`.
+- `concurrency_reactor::two_real_leaves_in_par_overlap_max_not_sum_one_thread` (b two-leaf P+N) — RED. `expected exit 120, got Some(1)` / `platform 'async-demo' not found`.
+- `concurrency_reactor::real_leaf_i64_result_reads_back_correctly` (c) — RED. `expected exit 42, got Some(1)` / `platform 'async-demo' not found`.
+
+`agent` lane (`cargo nextest run --features agent --test agent`), gated `#[cfg(feature="agent")]`:
+- `agent::set_doc_docstring_survives_session_restart` (g) — RED. Session-2 `/doc double` → `double: no docstring` (set-doc never persisted the docstring).
+- `agent::set_doc_does_not_duplicate_docstring_on_restart_neg` (g N) — RED. Session-2 `/doc double` → `double: "old docstring before the agent edit"` (the live-field overwrite never applied; reconciliation rule unrealised).
+
+| Field | Value |
+|---|---|
+| Owning skills (flip green) | (b)/(c) reactor-e2e → /platform (`declare_platform!` async leaf) + /dev (backend poll arm, intrinsics async Effect arm, src/ loader+host) Wave 2; (g) → /dev src/ (`set-doc` write surface + `apply_doc_edit` + docstring-aware `render_decl_sexp`) Wave 4 |
+| Target sprint | S94 |
+| Disposition | RED-first ship-this-sprint guards, failing-not-ignored. The (a)/(d)/(f) GREEN floors are the never-wrong/never-slower guards the spark + reactor work must preserve. |
+
+**Provisional surface (flag for /dev Wave 2):** the (b)/(c) reactor-e2e programs
+target the intended in-tree async leaf via the `ASYNC_LEAF_PLATFORM` /
+`ASYNC_LEAF_EFFECT` consts (`async-demo` / `async-read`, `reactor.md` §2.7). The
+exact `.cl` platform/effect name + arg signature is the /platform + /dev Wave-2
+deliverable; reconcile the two consts when the `declare_platform!`-emitted leaf
+lands. The `Dispatched→Suspended→Resumed` strand stream is NOT subprocess-
+observable (in-memory sink, `/strand` dump deferred — `reactor.md` §3), so these
+e2e rows assert the observable proxy (result read-back + Par overlap timing); the
+strand-event assertions remain the intrinsics-unit regression-replays (/dev,
+`reactor/tests.rs`).
+
+### Sprint 94 Wave-3 — design-§9 dependent-spark guards authored + a pre-existing catch leak surfaced (/qa, 2026-06-28)
+
+`/review` (findings I1/I2/I3) flagged that the `design/backend/lenient-eval.md` §9-mandated
+**dependent-binding spark** (FIXME 0424 limit #2) guards did not exist — the "green suite hides a
+leak" class. Since the stdlib `par-*` were rewritten to combine-in-body, limit #2 is now a GENERAL
+capability that ONLY these tests pin (load-bearing). Authored in `tests/concurrency_spark.rs`
+(inline, free-standing, ZERO stdlib):
+
+**GREEN regression guards (verify-on-HEAD, all PASS at SHA `a060029`):**
+- **I1 — three-regime equivalence (dependent shape):** `dependent_spark_three_regime_result_equivalence`
+  — a `let` with 2 independent expensive sparks + a dependent-on-sparked binding (`c (add-i64 a (fib 26))`)
+  is byte-identical (exit 196 = 4·fib(26)) across default lenient, `CRANELISP_NO_LENIENT=1`, AND
+  `CRANELISP_SPARK_BUDGET=0` (the create-gate direct/serial arm for the dependent let — previously
+  unexercised). §2.6/§3.6.
+- **I2 — dependent-panic ferry:** `dependent_spark_dependency_panic_ferried_caught_{run,link}` (Err arm
+  fires → exit 0 across `--run`/`--link`) + `dependent_spark_dependency_panic_not_swallowed_neg` (uncaught
+  div-by-zero in the sparked dependency surfaces "division by zero", exit≠0). §4.5.1 first-error-wins /
+  source-order barrier; the existing apply/`let` ferry tests did NOT cover the dependent case.
+- **I3 — captured-IVar no-leak:** `dependent_spark_rc_alloc_free_balanced` (clean path: absolute
+  `[RC] alloc`==`free`); `dependent_spark_panic_adds_no_leak_over_catch_baseline` (panic path: leak
+  differenced against the NO-SPARK catch baseline ⇒ limit #2 adds ZERO captured-IVar leak even when the
+  dependency panics); `dependent_spark_panic_sustained_no_abort` (200× caught-panic in one process ⇒ no
+  double-free abort, acc=200). Mechanism: `CRANELISP_RC_TRACE=1` alloc/free balance (IVar cells go through
+  `alloc_with_rc`/`dealloc`). LIMIT: whole-program balance (cannot localise a cell); `IN_FLIGHT_SPARKS`
+  is a runtime static not observable e2e (covered by `cranelisp-intrinsics` unit tests).
+- **limit-#2 WIN:** `dependent_spark_partial_dependency_win` — the §2.6.2 partial-dependency shape
+  (3 independent `work` sparks + a dependent spark with real independent sub-work; `work` leaf so no
+  internal over-spark). Result identical to the sequential oracle (exit 4) AND a not-slower-than-sequential
+  timing witness (best-of-N, generous ×2 margin). Observed ~1.5× speedup (parallel ~101 ms vs sequential
+  ~153 ms) — demonstrating limit #2 extracts real concurrency, which the inert stdlib shape did not.
+
+**DEFECT surfaced while authoring I3 (failing-not-ignored RED):** see the failure-ledger entry below.
+
+### Sprint 94 Wave-3 — DEFECT: `catch-runtime-error` leaks one heap cell per caught error (RED) (/qa, 2026-06-28)
+
+Surfaced while authoring the I3 dependent-spark RC guards: every `catch-runtime-error` that takes the
+`Err` arm leaks exactly one heap cell (almost certainly the ferried error-message String / unused
+`(Err m)` payload). The leak scales linearly (N catches ⇒ N leaked cells), so a retry loop leaks without
+bound. PRE-EXISTING and INDEPENDENT of sparking / lenient eval / limit #2 — the minimal repro has no
+`let`, no sparks, no IVars. (This is why the I3 panic guard uses a relative-to-baseline assertion.)
+
+| Field | Value |
+|---|---|
+| Test | `cranelisp::spec_12_runtime::catch_runtime_error_caught_leaks_one_heap_cell_per_catch_neg` |
+| SHA | `a060029` |
+| Signature | `assertion left == right failed … got 61 allocs / 41 frees over 20 catches (≈20-cell leak)` (left: 61, right: 41) |
+| Owner | `/dev` (likely `cranelisp-intrinsics` error-ferry, OR `cranelisp-backend` drop codegen for an unused `(Err m)` match binding) |
+| Target sprint | S95 |
+| Disposition | out-of-scope (owner=/dev) — a genuine unbounded-leak defect outside the S94 limit-#2 scope; the failing-not-ignored repro is the durable record + trigger. Asserts correct behaviour (alloc==free), RED today, GREEN when the caught error cell is freed. |
+| Observability | pure leak — no value/exit witness (program exits 20 correctly); only signal is `CRANELISP_RC_TRACE=1` alloc/free balance (DEF-3 precedent). |
+| Repro reduction | minimal: bare `(catch-runtime-error (fn [] (div-i64 10 0)))` driven 20×; leak == catch count (scales 1/5/10/20 → 1/5/10/20). Apply-arg / independent-spark / dependent-spark catch variants ALL leak exactly N — i.e. NOT spark-related. |
+
+### Sprint 94 Wave-3 — FIXME 0458 RESOLVED: obsolete "prior-binding stays serial" control inverted (/qa, 2026-06-28)
+
+`/dev` landed FIXME 0424 **limit #2** (dependent-binding spark; `design/backend/lenient-eval.md` §2.6/§2.6.2): a `let` binding whose RHS references an EARLIER *sparked* binding now itself sparks as an IVar forced on demand. This is the divide-and-conquer shape stdlib `par-reduce`/`par-map-reduce` build on. The negative control `spec_12_runtime::lenient_vec_map_reduce_prior_binding_stays_serial` pinned the **pre-S94** rule (dependent same-block bindings "stay serial") — its `pmr` body is exactly the shape §2.6.2 now intends to parallelize, so it went RED on HEAD as an **obsolete negative control, NOT a regression** (the impl matches the ratified design).
+
+| Field | Value |
+|---|---|
+| Action | INVERTED the obsolete negative control to a positive result-identity floor. Renamed `lenient_vec_map_reduce_prior_binding_stays_serial` → `lenient_vec_map_reduce_prior_binding_result_identical_to_sequential`. |
+| New assertion | The prior-binding D&C `pmr` shape (dependent sparks fire) computes the IDENTICAL value under lenient ON vs `CRANELISP_NO_LENIENT=1`, AND that value is the known sequential result (exit 240 = 8·30_000_000 / 1_000_000). No timing dimension (contention-immune never-wrong floor); mirrors `concurrency_spark::par_reduce_shaped_inline_results_identical_to_sequential`. |
+| Spec anchor | `spec/12-runtime.md §12.4.3` (lenient-eval observational equivalence) — unchanged file, corrected reading (the "stays serial" interpretation retired). |
+| Coverage split | Timing parallelism WITNESS stays in `lenient_vec_map_reduce_parallelizes`; dependent-binding admission-rule mechanics in `cranelisp-backend sparkability_tests::*` (landed Wave-1). |
+| Also | Updated the stale cross-reference comment in `apply_arg_single_expensive_stays_serial` (the apply-site negative gate, still valid). Deleted `design/arch/fixmes/0458` (target `/qa`; the inverted test is the durable record). |
+| Disposition | Default `nt` lane back to GREEN (0458 was the sole RED after limit #2 landed). |
+
 ### Sprint 91 — Wave-7: FIXME 0432 Face A REPRODUCES — minimal repro + layer diagnosis (/qa, 2026-06-26)
 
 Face A (previously UNVERIFIED) **reproduces**: `codegen error: undefined function: <name>` for a multi-clause ANNOTATED `defn` with a self-call. Narrowed each dimension; all three of {multi-clause, annotated, self-call} are required.

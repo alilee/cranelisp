@@ -18,7 +18,7 @@
 // unit; the backend's contract is "given a ParBind, emit a Par node".
 
 use crate::jit::Jit;
-use cranelisp_types::{Defn, DefnVariant, Expr, Span, Symbol, Type, Visibility};
+use cranelisp_types::{Defn, DefnVariant, Expr, ResolvedCall, Span, Symbol, Type, Visibility};
 use std::collections::HashMap;
 
 /// Compile a zero-arg `defn` whose body is the given `Expr`, returning the
@@ -90,6 +90,116 @@ fn probe_call(span: Span) -> Expr {
         resolved_call: None,
         inferred_type: Some(Box::new(Type::Int)),
     }
+}
+
+/// A bare variable reference of type Int.
+fn var_ref(name: &str, span: Span) -> Expr {
+    Expr::Var {
+        name: Symbol::from(name),
+        span,
+        resolved_call: None,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+/// An inline-primitive `(add-i64 lhs rhs)` apply. `add-i64` is NOT a cheap
+/// builtin (CHEAP_BUILTINS holds the operator SYMBOLS `+`/`-`/…, not the `*-i64`
+/// primitive names) and not a constructor, so `is_worth_sparking` returns true.
+/// The `BuiltinFn` resolution drives inline `iadd` emission.
+fn add_i64(lhs: Expr, rhs: Expr, span: Span) -> Expr {
+    Expr::Apply {
+        callee: Box::new(var_ref("add-i64", span)),
+        args: vec![lhs, rhs],
+        span,
+        resolved_call: Some(Box::new(ResolvedCall::BuiltinFn {
+            name: Symbol::from("add-i64"),
+        })),
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+// spec: design/backend/lenient-eval.md §2.6 + §4.5 — the limit-#2 seam. A `let`
+//       whose SECOND binding depends on its sparked FIRST binding
+//       (`[(a (probe)) (b (add-i64 a a))]`) sparks BOTH: `b` is admitted as a
+//       *dependent* spark whose thunk captures `a`'s IVar pointer and forces it
+//       on demand. The structural signature in the enclosing function's CLIF is
+//       (1) the create-gate (try_reserve → brif) and (2) an `atomic_rmw … add`
+//       at the dependent thunk's closure site — the IVar-CAPTURE INC. No other
+//       lenient-`let` codegen path inc's an IVar pointer, so its presence proves
+//       `b`'s dependency was captured as an IVar (to force on demand), not bound
+//       as a plain value. The negative companion below confirms the inc is
+//       absent for a purely-independent pair.
+#[test]
+fn let_path_dependent_binding_sparks_as_ivar_forced_on_demand() {
+    let body = Expr::Let {
+        bindings: vec![
+            (Symbol::from("a"), probe_call(Span::new(1, 2))),
+            (
+                Symbol::from("b"),
+                add_i64(var_ref("a", Span::new(3, 4)), var_ref("a", Span::new(5, 6)), Span::new(3, 6)),
+            ),
+        ],
+        body: Box::new(int_lit(0)),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let clif = clif_of_body(body);
+
+    // (1) The create-gate runtime branch is emitted (both bindings sparked ⇒
+    // n=2 reserved before the first brif), exactly as the independent two-spark
+    // case — the dependent binding really sparks, it does not fall back to
+    // sequential.
+    assert!(
+        clif.contains("brif"),
+        "a dependent-binding spark must still emit the create-gate; CLIF:\n{clif}"
+    );
+    let before_first_brif = clif.split("brif").next().unwrap_or("");
+    assert!(
+        before_first_brif.contains("iconst.i64 2"),
+        "the gate must reserve n=2 (both bindings spark); CLIF:\n{clif}"
+    );
+
+    // (2) The IVar-capture inc: the dependent thunk's closure site inc's the
+    // captured dependency IVar pointer (`heap::emit_rc_inc`), an atomic RMW add.
+    // The gate's try_reserve is a `call`; the IVar dec is an atomic RMW *sub*;
+    // the only atomic RMW *add* in a lenient `let` of Int bindings is this
+    // IVar-capture inc. Its presence is the limit-#2 mechanism (capture the IVar,
+    // force on demand).
+    assert!(
+        clif.contains("atomic_rmw") && clif.contains(" add "),
+        "a dependent spark must inc the captured dependency IVar (atomic_rmw add); \
+         CLIF:\n{clif}"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §4.5 — NEGATIVE companion. Two
+//       INDEPENDENT sparkable bindings (`[(a (probe)) (b (probe))]`) still spark
+//       (the gate is emitted) but neither captures an IVar — independent thunks
+//       are built via the simple `compile_expr(Lambda)` path, which inc's no IVar
+//       pointer. So no `atomic_rmw … add` appears. This isolates the capture-inc
+//       in the positive test to the DEPENDENT path specifically.
+#[test]
+fn independent_let_bindings_do_not_inc_an_ivar_capture() {
+    let body = Expr::Let {
+        bindings: vec![
+            (Symbol::from("a"), probe_call(Span::new(1, 2))),
+            (Symbol::from("b"), probe_call(Span::new(3, 4))),
+        ],
+        body: Box::new(int_lit(0)),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let clif = clif_of_body(body);
+
+    assert!(
+        clif.contains("brif"),
+        "two independent sparkable bindings must still emit the create-gate; CLIF:\n{clif}"
+    );
+    // No IVar-capture inc on the independent path.
+    assert!(
+        !clif.contains(" add "),
+        "independent bindings must NOT inc an IVar capture (no atomic_rmw add); CLIF:\n{clif}"
+    );
 }
 
 // spec: spec/10-io.md §10.12.1 + design/backend/io-scheduling.md §4 —

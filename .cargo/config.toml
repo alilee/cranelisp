@@ -38,3 +38,19 @@ nt-concurrency = "nextest run -p cranelisp-types -p cranelisp-platform -p cranel
 #
 #   cargo nt-concurrency-runtime   # run the slice-2 reactor tests
 nt-concurrency-runtime = "nextest run -p cranelisp-intrinsics --features cranelisp-intrinsics/concurrency-runtime"
+
+# Reactor end-to-end test lane (Sprint 94 Phase 5, reactor-e2e track, `/dev` S94).
+#
+# The slice-2 reactor's END-TO-END path runs through the `cranelisp` binary
+# crate: the int loader reads the `ConcurrentPlatformFn` manifest, constructs the
+# host reactor, and drives a real in-tree async leaf through `cranelisp_run_io`.
+# Those e2e tests need the runtime linked into the binary, which the root
+# crate's `concurrency-runtime` passthrough feature (root `Cargo.toml`) provides
+# by forwarding to `cranelisp-intrinsics/concurrency-runtime`. This lane turns it
+# ON for the `cranelisp` package and runs the reactor e2e tests. ADDITIVE — a
+# companion to `cargo nt`, NOT a replacement: the default run + the api-check
+# stay feature-OFF so the frozen `public-api.txt` edge and the dormant-contract
+# absence guards remain asserted without mio/futures and with no runtime linked.
+#
+#   cargo nt-reactor-e2e   # run the reactor end-to-end tests
+nt-reactor-e2e = "nextest run -p cranelisp --features concurrency-runtime"
