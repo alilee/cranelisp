@@ -149,6 +149,19 @@ pub fn load_and_register_platform(
 Steps:
 1. **Resolve path**: Call `resolve_platform_path(platform_name, project_root)`.
 2. **Load DLL**: Call `jit.load_platform(&dll_path)` — this is a backend method that uses `libloading` to open the shared library, calls the `cranelisp_platform_manifest` entry point, validates ABI version, initializes host callbacks, and extracts `OwnedPlatformFnDescriptor` values.
+
+   > **ABI v9 cutover (S97, FIXME 0482) — `ABI_VERSION = 9`; refuse v8 manifests.** The
+   > "validates ABI version" step compares the manifest's self-reported ABI version against
+   > the host's `ABI_VERSION`, which the v9 cut bumps **8 → 9** (the `ResourceDesc`/`ResourceRole`/
+   > `ConcurrencyDescriptor.role`/`PollFn += desc_out` layout-breaking changes land atomically in
+   > the same change-set; `platform-interface.md §6.8.0b`). A v8 DLL is **refused** with a
+   > `PlatformError` (version mismatch) — a **clean cutover, no backward-compat shim**: the v8
+   > leading-pair `(token, capacity)` positional convention is gone, so a v8 leaf cannot be driven
+   > by a v9 trampoline, and there are **no users** to migrate (the "no users" rationale the S96
+   > v8 jump already established). The constant itself lives in `cranelisp-platform`/`-backend`
+   > (arch/platform-owned); int's loader merely propagates the refusal. **Design-level note;
+   > `/dev` executes** the bump + the refusal-error wiring in the v9 change-set. The trampoline
+   > runtime half (the v9 split/stamp/read this version gates) is `design/int/reactor.md §7`.
 3. **Validate manifest name**: Check that the DLL's self-reported name matches `platform_name`.
 4. **Register with typechecker**: Call `tc.register_platform(platform_name, &descriptors)` — creates a `platform.{name}` module with `Def` entries for each function, typed as `PrimitiveKind::PlatformEffect`.
 5. **Insert `PlatformDecl` entry**: In the declaring module's symbol table, insert a `ModuleEntry::PlatformDecl` so `/list` and `/exports` can show it.

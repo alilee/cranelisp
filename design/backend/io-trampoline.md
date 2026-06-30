@@ -525,6 +525,13 @@ build flag).
 
 ### 12.2 `IO_TAG_EFFECT_POLL` node layout
 
+> **v9 note (S97, FIXME 0482; §17).** The node's two admission slots (field 1 = token @
+> abs 32, field 2 = capacity @ abs 40 in v8) are **repurposed under v9**: field 1 holds the
+> baked manifest `role`, fields 2–3 hold a 16-byte `ResourceDesc` region (the `desc_out`
+> slot). The v8 `(token, capacity)`-from-positional-args bake is **deleted** (§14 superseded).
+> The env layout below is **unchanged in shape** (result @ env+0, args follow) but the args
+> are now `arg_vals[0..]` directly — no leading-pair peel. See §17 for the v9 node shape.
+
 A new IO tag, `IO_TAG_EFFECT_POLL` (next free tag — `IO_TAG_PAR` is 3, so this is **4**;
 the constant joins the others in `cranelisp-platform` / `cranelisp-types` per §1.4,
 gated with the `concurrency` layout contracts). The node is deliberately *thin*: it
@@ -1098,6 +1105,20 @@ node-layout convention, not a struct ABI freeze). The `_neg` gated-edge guard st
   the pool/routing behaviour is cleanly the trampoline's, tested separately by `/qa`.
 
 ## 14. Poll-node LIVE `(token, capacity)` bake (S96 Chunk A, item 3)
+
+> **SUPERSEDED by ABI v9 (S97, FIXME 0482) — see §17.** This entire section designs the
+> **v8 leading-pair bake**: the poll-shape lowering supplies `(token, capacity)` as the two
+> leading operands of every poll effect (`arg_vals = [token, capacity, leaf_0, …]`) and the
+> backend bakes them from those positional args into the poll node's offset-32/40 slots
+> (§14.2–§14.4). **v9 deletes this mechanism.** The resource descriptor `(token, capacity)`
+> is no longer a cranelisp operand, no longer a leaf argument, and the backend **stops baking
+> from positional args** — `compile_poll_effect`'s leaf-arg list is `arg_vals[0..]` directly
+> (no leading-pair peel). The descriptor now lives in the **resource-handle ADT's header
+> slot** (stamped by the trampoline from a produce leaf's `desc_out`, read by the trampoline
+> before a consume leaf polls). §14 is retained as the historical v8 design record (the model
+> the v8 server shipped on); read it for provenance, not as the live contract. The v9 emit
+> reshape — the deleted positional bake, the reserved header slot, the `desc_out` slot, and
+> the per-role stamp/read hooks — is **§17**.
 
 Sprint 96 Chunk A lights up the **live** poll-shape `(token, capacity)` carrier — the
 deferred half of §13.3. S95 reserved the poll node's `(token, capacity)` slots at
@@ -2034,3 +2055,246 @@ and are **not** backend-unit-tier.
 - **Testability (Principle 5).** The arm emits an inspectable node shape (tag + one field +
   an unconditional dec), unit-testable at the CLIF seam without a running reactor; the
   first-ready/cancel/timeout behaviour is cleanly the reactor's, tested separately by `/qa`.
+
+> **§16.12 — Fresh-continuation-produced `select`/`par` node leak (S97, FIXME 0474).** The
+> §16.5/§16.7 RC model (node owns the branch list; drop glue cascades to free every branch
+> exactly once) is correct for **caller-tree** select/par nodes — `consume_io_tree`'s
+> `IO_TAG_SELECT`/`IO_TAG_PAR` arms walk the branch container. A node produced **fresh by a
+> bind continuation** (`(bind X (fn [_] (select […])))`) is instead released by the
+> trampoline's *shallow* fresh-node path (`dec_shallow_io`), which frees the node header but
+> **not** its branch container → the branches leak. The ruling (apply to **BOTH** tags) is
+> **`ring2-rc.md §3.5.10`** — the fresh-node release path becomes shape-aware for these two
+> multi-child tags and deep-frees the branch container (reusing the `consume_io_tree` branch
+> arm), keeping the spine tags (Pure/Effect/Bind) shallow. See there for the full design call.
+
+---
+
+## 17. ABI v9 — resource-descriptor side-band: poll-node emit reshape (S97, FIXME 0482)
+
+> **Status: `/design` (backend) Phase-3 intent, RATIFIED arch shape.** Conforms to
+> `platform-interface.md` §6.8.0b, `effect-concurrency.md` §4.1.1, `interfaces.md`
+> §"Resource descriptor", and the platform-side leaf-authoring contract
+> `design/platform/poll-support.md` §3.5/§3.6. The v9 cut lands as **ONE atomic cross-surface
+> change-set** (`ABI_VERSION` 8 → 9); this section is the **backend codegen** half:
+> reserve-slots + bake-role + emit-the-poll-node. The runtime stamp/read is the trampoline's
+> (`/design int`); §17.5 pins the boundary.
+
+### 17.1 What changes, in one paragraph
+
+The per-connection scheduling descriptor `(token, capacity)` stops being a cranelisp value.
+v8 baked it into the poll node from the **two leading positional leaf args** (§14, the
+`inject_poll_leading_pair` convention); **v9 deletes that bake entirely** — the backend no
+longer reads the leading two operands. The descriptor becomes **trampoline-owned
+representation overhead, like the RC/heap header**: it rides a **fixed-offset header slot on
+resource-handle ADTs** (§17.2), is written by a *produce* leaf through a new `desc_out`
+out-param slot the backend allocates on the poll node (§17.3), and is read by the trampoline
+off the consumed handle's header before a *consume* leaf polls (§17.5). The backend's four
+jobs: **(a)** reserve the header slot on resource-handle ADTs; **(b)** allocate the `desc_out`
+slot + bake the per-effect `role` on the poll node; **(c)** delete the positional bake; **(d)**
+emit the node shape so the trampoline can run the per-role stamp/read hooks.
+
+### 17.2 Job (a) — reserve the `ResourceDesc` header slot on resource-handle ADTs
+
+**Which ADTs.** A type `T` is a **resource handle** iff a loaded platform manifest marks some
+effect `Produce`/`Consume` (`ConcurrencyDescriptor.role`) with `T` as the produced/consumed
+handle type — e.g. `web/Connection` (produced by `accept-conn`, consumed by `read-conn`/
+`send-conn`). The backend computes this **resource-handle type set** from the loaded manifests
+and consults it at ADT layout + field-access codegen. (Wiring note — §17.7: the set is
+derived where the backend already resolves effect targets; this is the one new piece of
+manifest-derived state the backend reads.)
+
+**The slot — fixed offset 24, uniform across all resource-handle types.** A resource-handle
+ADT lays out as the standard `HeapAdt` (`header(16)` + ctor-`tag @ 16`) **plus a 16-byte
+`ResourceDesc` region immediately after the tag**, with logical fields shifted to start
+after it:
+
+```
+resource-handle ADT (e.g. web/Connection):
+  +0   alloc_size : i64        HeapHeader
+  +8   rc         : i64        HeapHeader
+  +16  ctor tag   : i64        HeapAdt::TAG_OFFSET (unchanged — every ADT has it)
+  +24  ResourceDesc.token    : u64    ⟍ the fixed-offset DESCRIPTOR HEADER SLOT
+  +32  ResourceDesc.capacity : u32    │ (16 bytes; RESOURCE_DESC_OFFSET = 24, uniform)
+  +36  ResourceDesc._pad     : [u8;4] ⟋
+  +40  logical field 0 …             (RESOURCE_HANDLE_FIELDS_START = 40, NOT 24)
+```
+
+`RESOURCE_DESC_OFFSET = HeapAdt::FIELDS_START = 24` is the **single fixed offset** the
+trampoline reads with **no per-ADT "token is field N" knowledge** (the property the arch
+ruling requires; `interfaces.md` §"Resource descriptor"). For a resource-handle ADT the
+logical fields shift to `FIELDS_START + 16 = 40`; field-access codegen for these types uses
+`40` (only these types — every other ADT is unchanged at `24`). **web `Connection` is empty
+(`deftype Connection []`)**, so it has **zero** logical fields → a 40-byte object
+(`header 16 + tag 8 + ResourceDesc 16`); nothing shifts this sprint. The escape-hatch
+(`token != fd`, a future `Connection [fd]`) puts its genuine datum at the shifted `40` —
+the descriptor region and logical fields **never share a slot** (`poll-support.md` §3.5.1).
+
+**Construction zero-inits the slot.** When the backend emits a resource-handle ADT
+constructor (e.g. `accept-conn`'s ready-phase `CLAdt::<Connection>::construct`), it
+**zero-inits** the 16-byte descriptor region (`token = 0, capacity = 0`). The trampoline
+**stamps** the real `(token, capacity)` into it later from the produce leaf's `desc_out`
+(§17.5); a handle is "born unstamped" and becomes stamped at production. **No RC** on the
+region — both fields are `NeverHeap` scalars (an opaque identity + a count), so the slot adds
+**no drop-glue obligation** (the ADT's logical-field drop glue is unchanged).
+
+**Rejected:** placing the descriptor **after** the logical fields (offset = `24 + 8·n`) — it
+would make the slot a per-type offset the trampoline must compute from field count, defeating
+"uniform, no per-ADT knowledge." Offset 24 (between tag and logical fields) is the only fixed
+uniform choice that leaves the header + ctor-tag undisturbed.
+
+### 17.3 Job (b) — the v9 poll-node shape: `role` + the `desc_out` `ResourceDesc` slot
+
+The poll node grows from the v8 3-field (48-byte) shape to a 4-field (56-byte) shape; the
+v8 `(token, capacity)` slots are repurposed. **The poll node is an in-process backend↔
+intrinsics convention (not a struct ABI freeze — §14.7), so this shape change is free of any
+`cranelisp-types`/`public-api` touch** — it costs only a `CACHE_SCHEMA_VERSION` bump (§17.6).
+
+```
+v9 IO_TAG_EFFECT_POLL node — payload_size(4) = 56 bytes:
+  +16  tag           : i64   (= IO_TAG_EFFECT_POLL = 4)        HeapAdt::TAG_OFFSET
+  +24  field 0: state_closure : i64   (heap, RC'd)             — UNCHANGED from v8
+  +32  field 1: role          : i64   (baked from manifest ConcurrencyDescriptor.role: 0/1/2)
+  +40  field 2: desc.token     : u64    ⟍ the 16-byte ResourceDesc region = the `desc_out` slot
+  +48  field 3: desc.capacity  : u32    │ (RESOURCE_DESC fields baked-or-zero per role, §17.4)
+  +52         desc._pad        : [u8;4] ⟋   POLL_DESC_OUT_OFFSET = HeapAdt::field_offset(2) = 40
+```
+
+- **`role` (field 1, abs 32)** is the per-effect static `ResourceRole {None=0, Produce=1,
+  Consume=2}` read off the effect's manifest `ConcurrencyDescriptor.role`, baked as a literal
+  `iconst`. It tells the trampoline stamp-vs-read-vs-nothing **without a manifest lookup at
+  poll time** — the node stays self-describing for admission, exactly the v8 philosophy (the
+  node carried `(token, capacity)`; it now carries `role` + the descriptor region).
+- **The `ResourceDesc` region (fields 2–3, abs 40–55)** is the **`desc_out` slot**: the
+  trampoline passes `node + 40` as the `desc_out: *mut ResourceDesc` argument to the poll-fn
+  (`poll(state, host, waker, desc_out) -> Poll`). What the backend bakes into it depends on
+  role (§17.4). Both descriptor fields are `NeverHeap` scalars → **no RC, no drop-glue change**
+  — the node remains a one-heap-field ADT (only field 0, the state-closure, is heap-typed), so
+  §13.6/§14.6's drop glue is untouched.
+
+### 17.4 Job (c) — delete the positional bake; what the backend stores per role
+
+`compile_poll_effect` (§12.3 / `apply.rs`) **stops** peeling `arg_vals[0]`/`arg_vals[1]` as
+`(token, capacity)`. Leaf args are `arg_vals[0..]` directly, marshaled into the state-closure
+env at `capture(1+i)` (result @ `capture(0)`) — **the leading-pair peel of §14.2/§14.3 is
+removed**; `inject_poll_leading_pair` no longer prepends anything (the pass is deleted, not
+re-keyed — its `scheduling_class` discriminator and its `(0,1)` synthesis go away with it).
+
+What the backend bakes into the node, by the effect's manifest `role` (a compile-time
+constant from the resolved effect target — **not** from any operand):
+
+| `role` | field 1 (`role`) | `ResourceDesc` region (fields 2–3) at construction |
+|---|---|---|
+| **Produce** (`accept-conn`) | `iconst 1` | **zero-init** — the produce leaf writes it through `desc_out`; the trampoline reads it back on `Ready` to stamp (§17.5) |
+| **Consume** (`read-conn`/`send-conn`; `read-line`) | `iconst 2` | **bake the effect's manifest-static `ConcurrencyDescriptor {token, capacity}`** — `token == 0` (the per-value `ResourceSerial` default, `read-conn`) signals the trampoline to read the **dynamic** descriptor off the consumed handle's header; `token ≠ 0` (a singleton, `read-line`'s `{STDIN_TOKEN, 1}`) signals it to acquire the **manifest-static** token directly with no handle to read (`poll-support.md` §3.1/§3.6.1) |
+| **None** (bare timer, `bind-listener`) | `iconst 0` | **zero-init** — never read |
+
+This is the v9 replacement for §14's "synthesize `(0,1)` for tokenless / bake live pair for
+resource": **one uniform construction site**, role-keyed, **no positional peel**, **no per-leaf
+node-shape branch**. The two Consume cases are the **same** bake — the manifest-static
+descriptor — distinguished only by the baked `token`'s zero-ness (effect-concurrency §5:
+"token 0 = unrestricted/dynamic"), not by a second node field or a codegen branch.
+
+### 17.5 Job (d) — the per-role hooks: who does the stamp, who does the read (the codegen↔trampoline boundary)
+
+**The backend reserves slots and emits the node; the trampoline does the runtime stamp/read.**
+This is the load-bearing boundary `/design int` and Phase-5 `/dev` implement against. Crisply:
+
+**Codegen (backend) owns:**
+1. the `RESOURCE_DESC_OFFSET = 24` header slot on resource-handle ADTs + the shifted
+   `FIELDS_START = 40` field-access; zero-init at construction (§17.2);
+2. the poll-node `role` bake + the `desc_out` `ResourceDesc` region at `POLL_DESC_OUT_OFFSET =
+   40`, baked-or-zero per §17.4 (§17.3);
+3. deletion of the positional `(token, capacity)` bake / `inject_poll_leading_pair` (§17.4);
+4. the resource-handle type set derived from manifests (§17.7).
+   The backend emits **no acquire, no stamp, no header write** — it only lays out storage.
+
+**Trampoline (int, runtime) owns** — reading `role` off `node + 32` and acting:
+- **`role == Produce`:** pass `node + 40` (the `desc_out` slot) to `poll(…, desc_out)`. The
+  leaf writes `*desc_out = {token, capacity}` before `Ready`. On `Ready` the trampoline reads
+  `node + 40` and **stamps** it into the produced value's header (`produced_value +
+  RESOURCE_DESC_OFFSET(24)`) — the produced value is a resource-handle ADT (`Connection`) the
+  backend laid out with the slot. No pre-poll acquire (accept is structurally serial,
+  `poll-support.md` §3.5.2).
+- **`role == Consume`:** read the node's baked `ResourceDesc` (`node + 40`). If `token ≠ 0`
+  (singleton, §17.4) acquire that manifest-static token. If `token == 0` (dynamic), **read**
+  the descriptor off the **consumed handle's header** — the handle is the first leaf arg
+  (`arg(0)`), marshaled as the state-closure's `capture(1)` = env offset `state + 8` (the
+  poll-fn's `PollEnv::arg(0)`, §12.2: `state` = env base, result @ `state+0`, arg_0 @
+  `state+8`); the trampoline reads that handle pointer, then `handle +
+  RESOURCE_DESC_OFFSET(24)` → `(token, capacity)` → acquire. Acquire
+  **before** the first poll (acquire-around-poll, §14.1 ordering unchanged); release on `Ready`/
+  drop (RAII `Permit`). `desc_out` is passed but the leaf ignores it.
+- **`role == None`:** poll with a `desc_out` pointer the leaf ignores; no acquire, no stamp.
+
+The **cross-crate offset contract** (the §14.4-style frozen seam — the class that silently
+breaks if the two sides disagree):
+
+| Constant | Value | Backend site | Trampoline site |
+|---|---|---|---|
+| `RESOURCE_DESC_OFFSET` (handle header slot) | **24** | resource-handle ADT layout + construct zero-init | `handle + 24` read (consume); `produced + 24` write (produce-stamp) |
+| poll-node `role` | `field_offset(1)` = **32** | `role` bake | `node + 32` read |
+| `POLL_DESC_OUT_OFFSET` (= `desc_out`) | `field_offset(2)` = **40** | `desc_out` region bake/zero | `node + 40` passed as `desc_out`; read-back on Produce `Ready` |
+
+### 17.6 Job (e) — cache invalidation + baseline regen (design-level note; `/dev` executes)
+
+- **`CACHE_SCHEMA_VERSION` bump (required).** Both baked shapes change vs v8: the poll node
+  grows `48 → 56` bytes with a new field meaning (`role` + `desc_out` region, no positional
+  `(token, capacity)`), and resource-handle ADTs gain the 16-byte header slot + shifted
+  fields. A stale `.o` cached under the v8 shape would mis-read the node/handle at the new
+  offsets. The cutover change-set bumps `CACHE_SCHEMA_VERSION` so every cached artifact
+  re-derives (`module-caching.md` — the schema-version gate).
+- **`public-api.txt` baseline regen rides the cutover (baseline-diff discipline,
+  `design/arch/CLAUDE.md`).** `cranelisp-backend`'s baseline is regenerated in the **same**
+  change-set as the source reshape (`cargo public-api --omit … -p cranelisp-backend >
+  crates/cranelisp-backend/public-api.txt`) and the diff is included alongside. Whether the
+  backend edge actually moves depends on what `/dev` exposes (e.g. a new `RESOURCE_DESC_OFFSET`
+  const); the discipline is to regen + include the diff regardless, side-by-side with the
+  `cranelisp-types`/`cranelisp-platform` regen the arch ruling already names (`ABI_VERSION`
+  8 → 9 surface). `/review` (backend) confirms the regen is present in the diff.
+
+### 17.7 Phase-5 watch items + the resource-handle type-set wiring
+
+- **Resource-handle type set.** The backend must know, at ADT layout + field-access codegen,
+  which ADTs are resource handles. Derive it once per session from the loaded manifests where
+  the backend already resolves effect targets (`resolve_poll_effect_target` /
+  `DefKind::PlatformEffect`): a type is a resource handle iff some effect's
+  `ConcurrencyDescriptor.role ∈ {Produce, Consume}` names it as the produced/consumed handle
+  type. This is the one new manifest-derived input to layout. **If this set cannot be made
+  available at ADT-layout time without a cross-crate interface change, STOP and file a FIXME
+  `target: /arch`** — the layout shift (§17.2) depends on it.
+- **Empty-bodied `Connection []` marshalling** through `CLAdt`/`web.platform-schema` (the
+  platform doc's flagged watch item, `poll-support.md` §3.5.7): the schema regen
+  (`/platform-schema web`) must accept a zero-logical-field resource handle whose only
+  in-object storage is the descriptor header slot. Confirm `CLAdt::<Connection>::construct`
+  emits a 40-byte object (header + tag + descriptor region, no field stores) and that schema
+  derivation does not treat the descriptor region as a logical field.
+- **`set_result` value still flows the old path.** v9 adds **only** the descriptor channel;
+  the leaf's i64 result still lands in the env result slot (`state + 0`) read generically on
+  `Ready` (§12.4). The produced `Connection` pointer is that result; the trampoline stamps its
+  header after reading it — `set_result` and the stamp are two independent writes (the result
+  slot vs the value header), neither widening `Poll` (still single-register `#[repr(i32)]`).
+
+### 17.8 Quality attributes touched
+
+- **Simplicity / complexity budget (Principle 6).** v9 is a **net subtraction**: it deletes
+  `inject_poll_leading_pair` (a whole codegen pass + its `scheduling_class` keying + its
+  `(0,1)` synthesis) and the leading-pair peel. What it adds — a fixed-offset header slot, a
+  role-keyed node bake — is **less** machinery than the pass it removes (Principle 8 — v9
+  removes an interim, it is not one).
+- **Maintainability / single source of truth (Principle 7).** Both new offsets
+  (`RESOURCE_DESC_OFFSET = 24`, `POLL_DESC_OUT_OFFSET = 40`) are frozen cross-crate constants
+  (§17.5) — one backend write site, one trampoline read site each. The descriptor-slot offset
+  lives in **one** place per side (`PollEnv::desc_of`/`set_desc` on the platform side,
+  `poll-support.md` §3.6.2; the layout const on the backend side), so a slot move is a single
+  edit, not a per-leaf drift — the same discipline §12.2's result-slot offset already has.
+- **Concurrency-safety (Principle 1).** The backend still emits **no concurrency primitive** —
+  it lays out a self-describing carrier (header slot + role + `desc_out`); all
+  acquire/stamp/read/park/release/RAII-drop lives in the trampoline. The descriptor is a value
+  the backend reserves space for, never one it manipulates.
+- **Testability (Principle 5).** Both reshapes are inspectable at the CLIF seam on a shrunk
+  repro (`CRANELISP_CODEGEN_TRACE=1`): a resource-handle ADT construct stores zero into
+  `+24/+32` and (for `Connection []`) no logical fields; a poll effect bakes `role` at `+32`
+  and zero/static into the `+40` region with **no `arg_vals[0]/[1]` positional store** (the
+  deleted bake is the negative guard). A non-resource ADT keeps `FIELDS_START = 24`
+  unchanged (the byte-identical-off witness). The runtime stamp/read is the trampoline's,
+  tested separately by `/qa`.

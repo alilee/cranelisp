@@ -429,6 +429,79 @@ Rationale for divergence: Decision 24's uniform consuming convention makes every
 - `§3.3 Extern Consumption Audit` — the row for `cranelisp_run_io` that describes the top-level `consume_io_tree(io_ptr)` behaviour; remains accurate after the fix.
 - `design/arch/CLAUDE.md` Decision 24 — the uniform consuming convention.
 - `design/arch/CLAUDE.md` Decision 29 — `rc::dec_shallow_io` primitive introduced by the Wave 3 fix.
+
+#### 3.5.10 Fresh-continuation-produced `SELECT`/`PAR` node release — the deep-free ruling (S97, FIXME 0474)
+
+**The defect.** The Wave-3 fresh-node release path (`current_is_fresh` + `dec_shallow_io`,
+§3.5.4) is **shallow** by design: it frees a fresh node's *own* allocation and relies on the
+trampoline's spine walk to reach the node's children (a fresh `Bind`'s `inner` is descended
+to and shallow-dec'd separately; its `cont` is released via `consume_closure`). This is correct
+for the **single-spine** tags — `Pure`, `Effect`, `Bind` — because every child is on a path the
+walk visits.
+
+It is **wrong for the multi-child tags** `IO_TAG_PAR` (3) and `IO_TAG_SELECT` (6). Their
+branches live in a **branch container** (the `List (IO a)` / branch `Vec`) at field 0, **not**
+on the `current` spine — the trampoline dispatches them to recursive trampolines (Par) or the
+reactor partition (Select) and, per `io-trampoline.md` §16.5, deliberately **leaves the branch
+heap sub-trees for the node's drop glue** (`consume_io_tree`'s `IO_TAG_PAR`/`IO_TAG_SELECT`
+arms walk the container and free each branch exactly once). For a **caller-tree** par/select
+node that drop glue runs (the post-return `consume_io_tree(io_ptr)`); for a **fresh** par/select
+node — one a bind continuation built, e.g. `(bind X (fn [_] (select […])))` — the node is
+released by `dec_shallow_io`, which **never walks field 0**, so the branch container + every
+branch sub-tree **leak** (FIXME 0474). The leak is pre-existing (inherited from `Par`; `Select`
+inherited the same shape in S96 Chunk C) and observable only for a select/par **constructed
+inside** a continuation.
+
+**Ruling — option (a), applied to BOTH tags together (shared model).** The **fresh-node release
+path becomes shape-aware** for the two multi-child tags: on a last-ref release of a fresh
+`IO_TAG_PAR` **or** `IO_TAG_SELECT` node it **deep-frees the branch container** (the field-0
+`List`/`Vec` and, transitively, every branch sub-tree) **before** deallocating the node header;
+all other tags stay **shallow exactly as today**. Concretely, `dec_shallow_io` (or a dedicated
+`dec_fresh_io` release entry) grows a tag check: for PAR/SELECT it runs the **same branch-
+container walk `consume_io_tree`'s PAR/SELECT arms already use** (Principle 7 — single source,
+not a second free path), then deallocs the header; for every other tag it is byte-identical to
+the current shallow behaviour.
+
+**Why (a) over (b) (route fresh PAR/SELECT through `consume_io_tree`).** Both options are
+**functionally equivalent and both safe** — fresh nodes are disjoint from caller-tree nodes
+(§3.5.4: the two sets never overlap), and freshness is **viral within a subtree** (§3.5.4 /
+§3.5.6: a fresh par/select node's branches are themselves fresh), so a transitive deep-free of
+a fresh node frees exactly the fresh branches, each once, with **no double-free** (the post-
+return `consume_io_tree(io_ptr)` never reaches them). Option (b) is rejected on **placement**,
+not correctness: routing fresh par/select through `consume_io_tree` requires a "if tag ∈
+{PAR, SELECT} call `consume_io_tree` else `dec_shallow_io`" branch at **every** fresh replace
+site (Bind→inner, Pure/Effect/Par/Select pop → cont result, the no-cont return path), and
+crucially it must **NOT** be generalized to all fresh nodes — routing a fresh `Bind`/`Pure`/
+`Effect` through `consume_io_tree` would **double-free** the children the spine walk already
+handled (the §3.5.4 "unconditional shallow-dec / transitive" hazard, restated). Option (a)
+centralizes the node-shape knowledge in the **one** release primitive — the same place
+`dec_shallow_io` already encodes "safe on bare nullary tags" — so the trampoline's replace
+sites stay uniform (always call the one release fn; the fn knows node shapes). This is the
+single-source choice (Principle 7) and the smaller blast radius (Principle 6).
+
+**Safety condition (why the deep-free is timely).** A fresh par/select node is replaced as
+`current` only **after** the trampoline has finished interpreting it — for `Select`, the losers'
+futures are dropped (cancellation = drop, releasing permits + deregistering interest,
+`io-trampoline.md` §16.5) when the winner is found; for `Par`, all branches **join** (structured
+fork-join) — both **before** the node is shallow-dec'd. So at the deep-free point **no in-flight
+future references the branch heap sub-trees**, and the deep-free reclaims exactly the rc=1
+branch roots the recursive branch trampolines / reactor left behind (the recursive trampolines
+RC-balance their *own* intermediates, §3.5.6, but never consume the branch **root** node — that
+root is what leaked).
+
+**Test obligation (per the cross-skill defect protocol).** `/qa` owns a narrow **heap-balance**
+repro — a `(bind X (fn [_] (select […])))` and a `par` analogue asserting `alloc == dealloc`
+under `CRANELISP_RC_TRACE` / sustained repetition (failing-not-ignored, co-landing with the
+`/dev` fix). The backend/runtime-side unit guard mirrors §3.5.7: build a tree whose continuation
+returns a fresh select (then par) node with N branches; after `cranelisp_run_io`,
+`(alloc_count − baseline) == (dealloc_count − baseline)` — today it leaks the branch container +
+N branch roots, post-fix zero. FIXME 0474 stays open until `/qa`'s guard + the `/dev` fix land
+(Phase 5); the cross-ref is `io-trampoline.md` §16.12.
+
+**Code-location note.** §3.5's paths cite `crates/cranelisp-runtime/src/{io,drop}.rs`; post the
+D43 split the IO trampoline + `dec_shallow_io`/`consume_io_tree` live in
+`crates/cranelisp-intrinsics/src/io.rs` (+ `drop.rs`) — the FIXME's `refers_to`. The **model**
+above is unchanged by the relocation; the fix edits the intrinsics-crate release path.
 - `sprints/SPRINT.md` §"Architecture Review" condition 6 — the `/qa` RC-balance integration test (Wave 3 acceptance criterion).
 - `repl/demos/…` — platform demos that exercise the trampoline (behaviour-preserving; memory behaviour fixed).
 

@@ -1867,6 +1867,29 @@ impl HeapHeader {
 }
 ```
 
+### Resource descriptor (ABI v9 — representation overhead, S97 FIXME 0482)
+
+A **resource-handle** ADT (one the manifest marks `Produce`/`Consume`, e.g. `web/Connection`) carries its dynamic scheduling descriptor `(token, capacity)` in a **fixed-offset header slot** — uniform across all resource-handle types, like the RC/heap header, so the trampoline reads it with **no per-ADT "token is field N" knowledge** (`platform-interface.md` §6.8.0b; `effect-concurrency.md` §4.1.1). The slot is **type-invisible** — never a logical ADT field, never a leaf argument — and is reserved by the backend (§"Heap Object Layouts" backend layouts) only on resource-handle ADTs (a few bytes on those only, not on every heap object). The trampoline **stamps** it at production (from a produce leaf's `desc_out`) and **reads** it before a consume leaf polls. The slotted payload is `ResourceDesc`:
+
+```rust
+/// Dynamic per-resource scheduling descriptor, stored in a resource-handle's
+/// header slot and written by a produce leaf through `PollFn::desc_out`.
+/// `#[repr(C)]` layout contract governed by `cranelisp_platform::ABI_VERSION`.
+#[repr(C)]
+pub struct ResourceDesc {        // in cranelisp-types
+    pub token: u64,              // dynamic, platform-minted (web: == fd)
+    pub capacity: u32,           // the resource's safe-concurrency ceiling
+    pub _pad: [u8; 4],           // MUST be zero
+}
+
+/// Per-EFFECT static role — carried on the manifest descriptor, NOT on the
+/// per-value `ResourceDesc`. The trampoline reads it to decide stamp/read/nothing.
+#[repr(u8)]
+pub enum ResourceRole { None = 0, Produce = 1, Consume = 2 }   // in cranelisp-types
+```
+
+The v9 cut also adds `role: ResourceRole` to `ConcurrencyDescriptor` (consuming one byte of its `_reserved: [u8; 3]` tail — existing field offsets unchanged) and a `desc_out: *mut ResourceDesc` parameter to `PollFn` (`poll(state, *HostCtx, *Waker, desc_out) -> Poll`; the type crate names `desc_out` as `*mut c_void` per the Principle-3 opaque-pointer pattern, re-projected as `*mut ResourceDesc` in `cranelisp-platform`). **`Poll` stays a single-register `#[repr(i32)]` enum and the result value still flows through `set_result`** — the descriptor is the only new return-side channel (the /arch adjustment to 0482's "widen the return"). These land in the v9 cutover change-set (atomic `ABI_VERSION` 8 → 9; `cranelisp-types` + `cranelisp-platform` `public-api.txt` regen). Canonical: `platform-interface.md` §6.8.0b.
+
 ### HeapString (in `cranelisp-intrinsics`)
 
 ```rust

@@ -334,6 +334,46 @@ which classifies `Sequential` (its head is `bind`, not a platform effect), so it
 enters Par competition and is decided entirely in the `Sequential` arm's extended
 launch-eligibility check.
 
+### 4.1.1 The resource descriptor is representation overhead, not value data (ABI v9, S97, FIXME 0482)
+
+**The descriptor `(token, capacity)` is type-invisible runtime representation
+overhead — like the RC/heap header — never user source and never part of an ADT's
+logical shape.** At v8 the per-connection `(token, capacity)` leaked into source
+(`web/Connection` was `[token capacity fd]`; the user wrote `(read-conn fd 1 fd)`).
+The v9 cut (`platform-interface.md` §6.8.0b) makes the descriptor trampoline-owned and
+carries it as representation overhead, completing the "concurrency written by nobody"
+promise at the **value** level, not just the source level. The model, with the
+producing/consuming asymmetry that is the load-bearing subtlety:
+
+- A resource-**producing** leaf (`accept`) writes `{token, capacity}` through a
+  `desc_out` out-param (NOT a leading positional arg); the trampoline **stamps** it
+  into the produced value's fixed-offset **header slot** and hands the bare value
+  onward. The token *value* is the platform's internal choice (web: `token == fd`) —
+  invisible to user and backend.
+- A resource-**consuming** leaf (`read`/`send`) carries no descriptor; **before** it
+  polls, the trampoline **reads** `(token, capacity)` off the consumed handle's header
+  and acquires the token (acquire-around-poll). Its result carries no descriptor.
+- The leaf's **role** (`Produce`/`Consume`/`None`) is a static, per-effect manifest
+  fact (`ConcurrencyDescriptor.role`), not a per-value fact; the value header carries
+  only the dynamic `(token, capacity)`.
+
+**This strengthens E2 (§4.1), it does not change it.** E2's value-locality witness —
+"a resource reachable only from a freshly-bound, non-shared value yields a fresh,
+disjoint token by construction" — becomes a **representational** fact under v9: the
+disjoint token literally rides inside the freshly-bound `conn`'s header. The
+disjointness proof is unchanged; its grounding is firmer. **FIXME 0478** (the
+single-step launch arm admits a discarded `ResourceSerial` step without the E2 check
+the sub-tree arm runs) is the §4.1 hardening that co-lands with the v9 /int work — but
+it is a **compile-time inference soundness** fix, decoupled from the descriptor
+representation (it must be sound under both v8 and v9), and should not be gated on the
+representation cut.
+
+**Singleton resources carry a manifest-static token.** A resource not minted per value
+(stdin) has no produced handle to stamp; it declares a manifest-static descriptor
+(`read-line`: `{token: STDIN_TOKEN != 0, capacity: 1, role: Consume}`) and the
+trampoline acquires that token before polling — structurally enforcing single-in-flight
+(resolves FIXME 0471 structurally, not by prose correction).
+
 ## 5. The concurrency descriptor
 
 The platform declares, per effect, a **concurrency descriptor** — a finite, declarative

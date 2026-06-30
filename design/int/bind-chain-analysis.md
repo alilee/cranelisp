@@ -150,22 +150,56 @@ segments (`Segment::Parallel` → `ParBind`) are never relowered as launch: a la
 is a **single launched arm** (the §10.12.7 discriminator), while `ParBind` is the
 structured-join of ≥2 arms.
 
-**Eligibility predicate.** A `Segment::Sequential(name, io_expr, …)` with
+**Eligibility predicate (E1–E3 — the single-step arm runs the SAME check as the
+sub-tree arm; FIXME 0478).** A `Segment::Sequential(name, io_expr, …)` with
 continuation `result` lowers to `Expr::LaunchContinue { launched: io_expr,
-continuation: result }` iff BOTH:
+continuation: result }` iff ALL of (the local, sound, conservative predicate
+`effect-concurrency.md §4.1` pins for **both** the single-step and the discarded-
+sub-tree arms):
 
-1. **Result discarded** — `name` does not appear free in the continuation
+1. **(E1) Result discarded** — `name` does not appear free in the continuation
    (`!free_vars_expr(&result).contains(&name)`). This reuses the `free_vars_expr`
    independence core (§3.4), applied to the CONTINUATION (the §10.12.7 "result is
    discarded" criterion). The launched effect's result is unused downstream.
-2. **Resource tokens disjoint from the continuation** — `classify_expr(io_expr) !=
-   Sequential`. This reuses the `classify_expr` scheduling-class core (§3.3): a
-   non-`Sequential` class (`Commutative` / `ResourceSerial`) is a real schedulable
-   effect carrying a resource token, so detaching it cannot violate ordering on a
-   shared sequential resource. Per **Gap G2** the analysis approximates "tokens
-   disjoint" by scheduling class + data-shape (it does NOT statically resolve
-   concrete tokens — the trampoline owns the live token decision); a `Sequential`
-   effect has no disjoint token and is therefore never launched.
+2. **(E2) Value-locality — the launched step shares no free variable with the
+   continuation** (`free_vars_expr(&io_expr).is_disjoint_from(free_vars_expr(&result))`,
+   modulo globals). **This is the check the single-step arm was MISSING (FIXME 0478)** —
+   the sub-tree arm runs it (over the sub-tree's combined free vars); the single-step
+   arm did not, so a **discarded `ResourceSerial` middle step whose continuation
+   performs a same-token effect on the same handle** could be detached, reordering two
+   same-token effects across the detach boundary. Concretely: a step
+   `(_ (send-conn conn r1))` whose continuation does `(send-conn conn r2)` shares the
+   free var `conn` — same per-value handle ⇒ same dynamic token ⇒ detaching reorders.
+   E2 refuses it (shared `conn`). The disjointness *witnesses* token-locality without
+   resolving concrete tokens (runtime/dynamic, §5/§8.1): a launched effect whose
+   resource value does **not** also flow into the continuation cannot ride the same
+   per-value token as a continuation effect. (For the legitimate accept-loop launch the
+   handler's `conn` is bound *inside* the launched sub-tree and is absent from the
+   continuation — E2 passes; that path is unchanged.)
+3. **(E3) No shared-singleton-token effect — `ResourceSerial` only, refuse
+   `Commutative` (token-0) and `Sequential` (token-1).** Tightens the prior
+   `classify_expr(io_expr) != Sequential` test (which admitted **both** `Commutative`
+   and `ResourceSerial`): a `Commutative` (token-0) or `Sequential` (token-1) effect
+   rides a **shared singleton** token whose disjointness E2's value-provenance argument
+   cannot witness — two strands on token-0 (a shared-`stdout` `print`) interleave
+   observably, and the per-token semaphore gives exclusion but not source-order across
+   the detach boundary, so a wrongly-detached shared-token step *reorders*. For an
+   **inferred** (un-annotated) detachment the disposition is **REFUSE**. The one
+   permitted non-`ResourceSerial` member is a resource-free `sleep` timer — but **only
+   as a sub-tree member, never as the single-step root** (`is_sleep_timer_leaf`,
+   `effect-concurrency.md §4.1` timer refinement); the single-step arm keeps refusing a
+   lone `sleep`. Per **Gap G2** the analysis approximates "tokens disjoint" by
+   scheduling class + value-shape (it does NOT statically resolve concrete tokens — the
+   trampoline owns the live token decision).
+
+> **DECOUPLED from the ABI v9 descriptor cut (S97).** This hardening is a **compile-time
+> inference-soundness** fix over AST free-variable provenance + scheduling class — it
+> touches **no** runtime descriptor representation and is **sound under both v8 and v9**.
+> v9 (`effect-concurrency.md §4.1.1`) *strengthens E2's grounding* (the disjoint token
+> literally rides inside the freshly-bound handle's header) but **does not change the
+> check**. So 0478 **must NOT be gated on the v9 reshape's schedule** — it can land in any
+> change-set, before or after v9. (`/arch` re-classed it from a §B v9 fold to "co-located
+> but decoupled," SPRINT.md §"Architecture review (Phase 2)" Fold verdict.)
 
 **Conservative-`Bind` fallthrough (the sound default).** When NOT provably
 eligible — the result is **used** downstream, OR the effect is `Sequential`-class —
@@ -709,6 +743,22 @@ in `src/bind_chain_analysis.rs`:
 - **ADD** `test_mixed_chain_segments` — a `[independent, independent, dependent, independent]`
   chain produces `ParBind(2) → Sequential → Sequential` (the dependent step flushes the
   group, then stands alone). Pins `flush_par_group` boundary behaviour at the seam.
+
+**Single-step launch E2 hardening (FIXME 0478 — the §3.7 fix; the shape the FIXME names):**
+- **ADD** `test_launch_arm_refuses_same_token_continuation` — a chain whose discarded
+  `ResourceSerial` middle step `(_ (send-conn conn r1))` is followed by a continuation that
+  performs a **same-handle** effect `(send-conn conn r2)` MUST **NOT** lower to
+  `Expr::LaunchContinue` (E2 fails — `io_expr` and `continuation` share the free var `conn`);
+  it stays an ordinary `Bind`. This pins the 0478 hardening: without E2 the single-step arm
+  wrongly detaches it, reordering two same-token effects. `// spec: 10-io.md §10.12.7 (E2
+  value-locality)`.
+- **ADD** `test_launch_arm_refuses_commutative_single_step` — a discarded `Commutative`
+  (token-0) single step (e.g. a shared-`stdout` `print` with its result unused) MUST NOT
+  launch (E3 — refuse shared-singleton token-0); only `ResourceSerial` single steps are
+  launch-eligible. (The legitimate accept-loop launch — `conn` bound inside the launched
+  sub-tree, absent from the continuation — stays GREEN: `test`-guard that the existing
+  `concurrency_fanout` / accept-loop launch shape still emits `LaunchContinue`, so the
+  hardening does **not** weaken the §B4 single-step launch the synthetic test guards.)
 
 All §8.1 tests carry `// spec: 10-io.md §10.12.1` annotations. They are the Wave-0
 failing-first guards the /arch refinement calls for ("the negatives are the cheapest

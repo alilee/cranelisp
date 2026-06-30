@@ -1,5 +1,22 @@
 # The slice-2 effect reactor — interior design (int / intrinsics-hosted)
 
+> **S97 v9 LAYER (FIXME 0482) — descriptor as trampoline-owned representation overhead.**
+> The S96 design below carried the per-resource `(token, capacity)` **on the poll node**
+> (token @ node+32, capacity @ node+40 — §2.9 "Offsets read"). ABI v9 (`ABI_VERSION` 8 → 9)
+> makes the descriptor type-invisible representation overhead — like the RC/heap header —
+> carried across the leaf boundary as a return-side side-band, **not** value data. The
+> trampoline's runtime half — **split** on the per-effect `role` (node+32), **stamp** a
+> produced handle's header from the leaf's `desc_out`, **read** a consumed handle's header
+> before polling — is designed in the new **§7** (the authoritative v9 statement); §8 makes
+> the 0479 idle-server-watchdog call; §9 confirms the 0475 empty-`select` approach. §7
+> **supersedes** the §2.9 "Offsets read" poll-node `(token, capacity)` rows (the lifecycle
+> shape — `EffectPoll` owns the `Permit`, release on `Ready`/drop — is **unchanged**; only
+> *where the `(token, capacity)` comes from* changes). The 0478 single-step launch-arm E2
+> hardening (co-located, **decoupled** from the v9 representation cut) is `bind-chain-analysis.md`
+> §3.7. The cut lands as ONE atomic cross-surface change-set; this doc is the **int/trampoline**
+> half (backend half: `design/backend/io-trampoline.md §17`; platform half:
+> `design/platform/poll-support.md §3.1/§3.5/§3.6`).
+
 **Owner**: `/design` (int). **Status**: S96 DESIGN REFRESH (Chunk C — slice 7) —
 *the explicit control surface + the cancellation=drop completion of the A→C contract*:
 the **combinator runtime** (`race`/`select` over the branch futures on the one reactor
@@ -146,6 +163,13 @@ only). Liveness guards: `MAX_TURN_BLOCK = 5s` per mio block, `MAX_TOTAL_BLOCK = 
 total. **`MAX_TOTAL_BLOCK` is a poll-leaf-hang backstop, NOT a blocking-I/O ceiling** —
 it does not fire while a rayon→reactor bridge is outstanding (`pending_bridges > 0`); see
 §2.6 "Blocking-I/O ceiling" for the ruling and rationale.
+
+> **S97 (FIXME 0479) — the wall-clock `MAX_TOTAL_BLOCK` total cap is RETIRED for the
+> long-running server drive; see §8.** A wall-clock total cap kills a legitimately-idle
+> server `accept` loop (no traffic for 30s ⇒ abort). §8 replaces it with a **structural
+> armed-ness deadlock detector** (trip only when the top future is `Pending` AND *nothing*
+> in the reactor could ever wake it) plus a mode knob that keeps a wall-clock backstop
+> **only** for one-shot `--run`/REPL-eval. An idle-but-armed `accept` stays up indefinitely.
 
 ### 2.5 The one await boundary — `EffectPoll` (S94: generic over the node seam)
 
@@ -592,6 +616,16 @@ stays the later-slice question of §2.6; out of scope here.
 
 #### Offsets read (the cross-crate agreement — designed-in)
 
+> **SUPERSEDED for the poll-node `(token, capacity)` rows by ABI v9 — see §7.** Under v9 the
+> poll node no longer carries `(token, capacity)`: node+32 becomes the per-effect `role`,
+> node+40 becomes the `desc_out` `ResourceDesc` region, and a Consume leaf's live
+> `(token, capacity)` is read off the **consumed handle's header** (handle+24), not the node.
+> The §7 v9 offset table is authoritative. The **state-closure ptr @ node+24** row is
+> unchanged (it stays field 0). The acquire-around-poll **lifecycle** below (the `EffectPoll`
+> owns the `Permit`; eager release on `Ready`, drop-glue release on cancellation) is unchanged
+> — only the *source* of `(token, capacity)` moves from the node to the handle header / a
+> manifest-static singleton.
+
 The poll-node layout is baked by the backend's poll-construction arm (`/design backend` owns
 `design/backend/io-trampoline.md §12/§13`) and READ by this trampoline. The agreement is
 stated on both sides so the write/read offsets cannot silently drift:
@@ -599,12 +633,12 @@ stated on both sides so the write/read offsets cannot silently drift:
 | Field | Abs offset | int read site | Backend write site (sibling /design) |
 |---|---|---|---|
 | state-closure ptr | **24** (`FIELD_0_OFFSET`) | `await_poll_node` (`read_node_field`) | poll node field 0 |
-| `token` (u64) | **32** (`FIELD_1_OFFSET`) | `read_resource_token` (IO_TAG_EFFECT_POLL arm) | poll node `field_offset(1)` |
-| `capacity` (i64) | **40** (`FIELD_1_OFFSET + 8` = `field_offset(2)`) | `read_capacity` (`POLL_CAPACITY_ABS_OFFSET`) | poll node `field_offset(2)` |
+| `token` (u64) — **v8; v9 → §7** | **32** (`FIELD_1_OFFSET`) | `read_resource_token` (IO_TAG_EFFECT_POLL arm) | poll node `field_offset(1)` |
+| `capacity` (i64) — **v8; v9 → §7** | **40** (`FIELD_1_OFFSET + 8` = `field_offset(2)`) | `read_capacity` (`POLL_CAPACITY_ABS_OFFSET`) | poll node `field_offset(2)` |
 
 S95 already reserved offsets 32/40 at sentinel; S96 only changes the baked **values** from
 sentinel to live `(token, capacity)` — **no offset moves**, append-only. A change to any of
-these offsets is an `ABI_VERSION` bump (§2.5 note).
+these offsets is an `ABI_VERSION` bump (§2.5 note) — **v9 is exactly such a bump** (8 → 9, §7).
 
 #### Byte-identical-when-feature-off
 
@@ -1762,7 +1796,323 @@ builder's home is the lowest crate that can name the pointers, never an upward
 dependency; **Principle 8 (no mode divergence)** — `--run`/REPL and `--link` build the
 same host values by calling the same code, not by hand-mirroring.
 
-## 7. Cross-references
+## 7. ABI v9 — descriptor side-band: the trampoline split / stamp / read (S97, FIXME 0482)
+
+> **Status: `/design` (int) Phase-3 intent, RATIFIED arch shape.** Conforms to
+> `platform-interface.md` §6.8.0b, `effect-concurrency.md` §4.1.1, `interfaces.md`
+> §"Resource descriptor", the backend codegen half `design/backend/io-trampoline.md §17`
+> (esp. the §17.5 boundary contract), and the platform leaf-authoring half
+> `design/platform/poll-support.md §3.1/§3.5/§3.6`. This is the **runtime** half: the
+> trampoline reads the per-effect `role`, and — without any per-ADT or manifest lookup at
+> poll time — **stamps** a produced handle's header, **reads** a consumed handle's header,
+> or does neither. Lands in the ONE atomic v9 change-set (`ABI_VERSION` 8 → 9).
+
+### 7.1 What the trampoline does, in one paragraph
+
+The backend reserves the storage and bakes the static facts (the §17.5 division of labour);
+the trampoline does every **runtime** descriptor action. At a poll node the trampoline reads
+the baked `role` (`ResourceRole {None=0, Produce=1, Consume=2}` @ `node + 32`) and acts:
+**Produce** — pass the node's `desc_out` region (`node + 40`) to the poll-fn, which writes
+`{token, capacity}` there before `Ready`; on `Ready` the trampoline reads `node + 40` and
+**stamps** it into the produced value's header slot (`value + 24`). **Consume** — derive
+`(token, capacity)` (from the node's baked manifest-static descriptor for a singleton, or by
+**reading** the consumed handle's header for a per-value resource), **acquire that token
+before the first poll**, release on `Ready`/drop (the unchanged §2.9 RAII `Permit`). **None**
+— poll with a `desc_out` the leaf ignores; no acquire, no stamp. The descriptor never
+reaches user source and is never a cranelisp value — it is representation overhead the
+trampoline owns end-to-end.
+
+### 7.2 The frozen offsets (the cross-crate seam — `/design backend` §17.5)
+
+These are the offsets the backend writes and the trampoline reads; a silent drift here is the
+heap-offset class of bug `CRANELISP_CODEGEN_TRACE=1` exposes at the CLIF seam. They are pinned
+identically in `io-trampoline.md §17.5`:
+
+| Constant | Abs offset | Trampoline read/write site |
+|---|---|---|
+| `RESOURCE_DESC_OFFSET` (handle header slot — `{token:u64@+0, capacity:u32@+8, _pad:[u8;4]@+12}`) | **24** | `handle + 24` **read** (Consume, off the consumed handle); `produced + 24` **write** (Produce stamp) |
+| poll-node state-closure ptr (field 0) | **24** | `await_poll_node` — unchanged from v8 |
+| poll-node `role` (field 1) | **32** | `read role` once at `await_poll_node` — the split discriminator |
+| `POLL_DESC_OUT_OFFSET` = `desc_out` `ResourceDesc` region (fields 2–3) | **40** | `node + 40` passed as `desc_out: *mut ResourceDesc` to every poll call; **read back** on a Produce `Ready` |
+| consumed handle = leaf `arg(0)` = state-closure `capture(1)` | `state + 8` | `PollEnv::arg(0)` env offset — the trampoline reads the handle pointer here to find its header |
+
+The v8 `read_resource_token`/`read_capacity` off the node (token@32, capacity@40) are
+**deleted** — node+32 is now `role`, node+40 is the `desc_out` region. The live
+`(token, capacity)` a Consume leaf admits on comes from the **handle header** (token@24 of the
+handle), never the node.
+
+### 7.3 `await_poll_node` becomes the single role-dispatch site
+
+`await_poll_node` (io.rs) is the one place the trampoline establishes a poll leaf; v9 makes it
+the role-dispatch site. It is the v9 replacement for §2.9 step 1 ("Read `(token, capacity)`
+off the poll node"):
+
+1. **Read `role` @ `node + 32`** (one `iconst`-baked byte; no manifest lookup).
+2. **Derive the permit per role** (the only change from §2.9; the lifecycle that follows is
+   identical):
+   - **`Produce`** ⇒ `permit = None`. **No pre-poll acquire** — `accept` is structurally
+     serial in the serve loop (`poll-support.md §3.5.2`); it mints a resource, it does not
+     ride one. (`token == 0` for the produced descriptor at construction; the leaf fills it.)
+   - **`Consume`** ⇒ read the node's baked `ResourceDesc` (`node + 40`). If **`token != 0`**
+     (a **singleton** — `read-line`'s manifest-static `{STDIN_TOKEN, 1}`, §7.5) acquire that
+     **manifest-static** token directly — there is no handle to read. If **`token == 0`** (a
+     per-value resource — `read-conn`/`send-conn`) **read the consumed handle's header**: the
+     handle is `arg(0)`, marshaled at env offset `state + 8` (`PollEnv::arg(0)`); read that
+     pointer `h`, then `h + 24` → `(token, capacity)`; acquire **that** token. Acquire
+     **before** the first poll (acquire-around-poll, §2.9 ordering unchanged) → `permit =
+     Some(Permit)`.
+
+     > **Contract (frozen with backend §17.5): the consumed handle is `arg(0)`.** A Consume
+     > leaf's resource handle is its **first** leaf arg — `read-conn : (Fn [Connection] …)` and
+     > `send-conn : (Fn [Connection Response] …)` both put `Connection` at `arg(0)`. The
+     > trampoline reads `state + 8` unconditionally for a `token == 0` Consume; a future Consume
+     > leaf that placed its handle elsewhere would break this. This matches the platform side
+     > (`poll-support.md §3.6.1`: the leaf calls `desc_of(arg(0))`) — so the read offset is the
+     > same on both sides. A born-unstamped handle reads `{0, 0}` → token 0 → no acquire
+     > (benign; in practice a `Connection` only exists via `accept` (Produce), so it is always
+     > stamped before any Consume, §17.2). Phase-5 watch item: pin the arg(0)-is-handle contract
+     > with a unit so a sig reshape that moves the handle is caught.
+   - **`None`** ⇒ `permit = None`. No acquire.
+3. **Construct `EffectPoll`** with the permit (§2.9 step 3, unchanged) **plus** a new
+   `desc_out: *mut ResourceDesc` field = `node + 40`. The poll-fn signature is v9
+   `poll(state, host, waker, desc_out)`, so `EffectPoll::poll` passes `desc_out` on **every**
+   poll call regardless of role (Produce writes it; Consume/None ignore it). This keeps
+   `EffectPoll` role-agnostic — it owns the `Permit` and forwards `desc_out`; the role logic
+   lives entirely in `await_poll_node`'s pre/post steps.
+4. **`.await` the `EffectPoll`** across establish→`Pending`→…→`Ready` → the leaf's i64 result
+   (read generically off the env result slot, §2.5 step 4 — unchanged; for Produce this i64
+   **is** the produced `Connection` pointer).
+5. **Produce post-step — the stamp.** If `role == Produce`, after the `await` yields the
+   produced value `v`, read `*(node + 40)` → `ResourceDesc {token, capacity}` and **write it
+   into `v + 24`** (the handle's header descriptor slot, born zero-inited by the backend's
+   constructor, §17.2). Then hand the bare `v` to the continuation. The stamp is a plain
+   16-byte header write — **no RC** (both fields are `NeverHeap` scalars), no drop-glue change.
+   `set_result` (the value) and the stamp (the descriptor) are **two independent writes**; the
+   stamp neither widens `Poll` (still single-register `#[repr(i32)]`) nor touches the value
+   path.
+
+The §2.9 acquire-around-poll **lifecycle is otherwise byte-for-byte unchanged**: the `Permit`
+is owned by `EffectPoll` as `Option<Permit>`, released eagerly on `Ready` (`take()`+drop
+before `TaskPoll::Ready`) and on cancellation via the field's drop glue — the A→C contract
+(§2.9 "The RAII drop-guard") is exactly as designed. v9 changes **only** where the
+`(token, capacity)` the acquire uses comes from (handle header / manifest-static, not the
+node). The lock-free single-reactor-thread permit-map invariant (§2.8/§2.9) holds verbatim:
+the handle read, the acquire, the poll, the stamp, and the release are all reactor-thread
+events.
+
+### 7.4 The producing / consuming asymmetry (the load-bearing subtlety)
+
+A leaf is the **sole writer** of a descriptor (Produce, through `desc_out`) **or** a pure
+**reader** (Consume, off the consumed handle's header) **or** neither (None) — never both
+(`poll-support.md §3.6.1`). The asymmetry is why the trampoline can split on a single baked
+`role` byte with no per-poll manifest lookup:
+
+- The **producer** mints the token (web: the new connection fd) and the trampoline imprints it
+  on the value at the moment of production, so the value carries its own admission identity
+  forever after.
+- Every later **consumer** of that value recovers `(token, capacity)` straight from the header
+  it rides — no symbol back-reference, no second handle, no platform call. `read-conn` over a
+  `Connection` reads `Connection + 24` → the same token `accept` stamped → admission serializes
+  per-connection by construction.
+
+This is what completes "concurrency written by nobody" at the **value** level: the descriptor
+is neither in the user's source nor in the value's logical shape — `web/Connection` is
+`(deftype Connection [])`, fully opaque, a 40-byte object whose only in-object storage is the
+header descriptor slot (`poll-support.md §3.5.1`).
+
+### 7.5 The singleton `read-line` path (resolves FIXME 0471 structurally)
+
+`read-line : (Fn [] (IO String))` produces no handle and consumes no per-value handle — stdin
+is a process singleton. v9 gives it a **Consume** role with a **manifest-static** descriptor
+`{token: STDIN_TOKEN != 0, capacity: 1}` baked into the node (`poll-support.md §3.1`,
+`io-trampoline.md §17.4`). The trampoline's Consume arm (§7.3 step 2) reads the node's baked
+descriptor, sees **`token != 0`**, and acquires the **manifest-static** `STDIN_TOKEN`
+directly — **no handle header read** (there is no handle). Because the token is a fixed
+non-zero singleton at capacity 1, the §2.8 permit map admits **at most one in-flight
+`read_line`** — single-in-flight stdin is enforced **by construction**, not by the host
+`STDIN_BUF` `Mutex` + serial-use convention v8 leaned on (the 0471 latent gap: a token-0
+`Commutative` descriptor acquired no permit, so nothing structurally barred two concurrent
+reads). The trampoline does nothing special for the singleton — it is the ordinary Consume
+acquire path with the `token != 0` branch; the only difference from a per-value Consume is
+*where the descriptor came from* (the node's baked static vs the handle's header), which is
+exactly the `token`-zeroness test §7.3 already makes.
+
+### 7.6 Quality attributes touched
+
+- **Simplicity / complexity budget (Principle 6).** The trampoline's v9 delta is a **net
+  wash, trending subtraction**: `await_poll_node` gains a 3-way `role` split and a one-line
+  Produce post-stamp, and **loses** the v8 `read_resource_token`/`read_capacity` node reads.
+  No new future, no new permit machinery, no new pool — `EffectPoll` gains one `desc_out`
+  pointer field. The descriptor's whole runtime existence collapses into "read a header / write
+  a header," the cheapest possible carrier.
+- **Maintainability / single source of truth (Principle 7).** Each offset has **one**
+  trampoline site: `RESOURCE_DESC_OFFSET = 24` read in the Consume arm and written in the
+  Produce post-step; `role` read once at `await_poll_node`; `desc_out = node + 40` forwarded
+  once. The seam is co-stated with the backend (§7.2 ≡ §17.5) so write-side and read-side
+  cannot drift silently — the §2.5 `ABI_VERSION`-bump discipline already governs it.
+- **Concurrency-safety (Principle 1).** No new shared state. The stamp is a reactor-thread
+  write to a freshly-produced value not yet handed onward (no aliasing); the header read is a
+  reactor-thread read of a value the leaf already owns. The permit map stays the lock-free
+  single-reactor-thread `RefCell<HashMap>` (§2.8) — v9 moves the descriptor *source*, never the
+  *thread* on which acquire/release run.
+- **Observability.** The role-keyed split is a natural strand-event seam: a Produce stamp and a
+  Consume acquire are already the points the §3 sink emits `Token*`/`Effect*` events; v9 adds
+  no new event, it only makes "which token" a header fact instead of a node fact. Noted as
+  non-impact on the sink shape.
+- **Testability (Principle 5).** Each arm is unit-isolable in intrinsics over a fixture node +
+  a stub leaf: a Produce leaf that writes a known `{T, N}` to `desc_out` ⇒ assert the produced
+  value's header carries `{T, N}` at +24 on `Ready`; a Consume leaf over a handle pre-stamped
+  `{T, N}` ⇒ assert the permit acquired is on token `T`; the `read-line` singleton ⇒ assert the
+  acquire is on `STDIN_TOKEN` with **no** handle read; a `None` leaf ⇒ no acquire, no stamp.
+  The negative guard is the absence of any v8 node `(token, capacity)` read.
+
+## 8. The idle-server watchdog — no-progress, not wall-clock (S97, FIXME 0479)
+
+> **Status: `/design` (int) Phase-3 — the design CALL is made here for Phase-5 /dev + /qa.**
+> The driving FIXME: `block_on_reactor`'s 30s `MAX_TOTAL_BLOCK` wall-clock cap (§2.4) aborts a
+> **legitimately-idle** server `accept` loop — a server with no traffic for 30s dies, which
+> directly contradicts the marquee's stated production-shape goal (`effect-concurrency.md §3`:
+> the web server is the reference workload, "what makes a server survive the open internet").
+
+### 8.1 The problem the watchdog must actually solve
+
+The watchdog exists to catch a **genuinely-stuck reactor** — a poll leaf suspended on a
+readiness that will *never* arrive (a logic bug; a deadlock). It must NOT catch a **healthy
+idle server**: an `accept` loop parked on the listener fd, waiting (correctly, indefinitely)
+for the next connection. The two are wall-clock-indistinguishable — both make no progress for
+arbitrarily long — so a **wall-clock total cap cannot separate them**. It must be separated
+**structurally**.
+
+The separating fact is **armed-ness**. In this single-reactor-thread model (§2.1) a future
+that returns `Pending` has either:
+- **armed an external readiness source** — registered an fd in `fd_waiters` or a timer in
+  `timer_heap`, or has a rayon→reactor bridge outstanding (`pending_bridges > 0`), or has a
+  live supervised strand (§2.12), or has a parked permit waiter whose holder is in-flight
+  (§2.8). The system **can** be woken; it is legitimately waiting. An idle `accept` is exactly
+  this case — its listener fd sits in `fd_waiters`; mio will wake it on the next connection.
+- **armed nothing** — `Pending` with `fd_waiters` empty ∧ `timer_heap` empty ∧
+  `pending_bridges == 0` ∧ the supervisor empty ∧ no parked permit waiter. Now `turn()` would
+  block on an **empty interest set** forever: nothing can ever wake the suspended future. This
+  is the **true deadlock signature**, and it is detectable the instant it occurs — no 30s wait.
+
+### 8.2 The design call — Option (a) (structural no-progress detector) + Option (b) mode knob; reject (c)
+
+**The call: replace the wall-clock `MAX_TOTAL_BLOCK` total cap with a structural armed-ness
+deadlock detector (Option a), and keep a wall-clock backstop ONLY for one-shot `--run`/REPL
+via a `block_on_reactor` construction knob (Option b). Reject the per-leaf descriptor flag
+(Option c).**
+
+**Mechanism (Option a — the primary).** After a top-future `Pending` poll, before `turn()`,
+evaluate `reactor_is_armed()`:
+
+```
+armed  ⇔  !fd_waiters.is_empty()
+        ∨ !timer_heap.is_empty()
+        ∨ pending_bridges > 0
+        ∨ !supervisor.is_empty()
+        ∨ pool.any_waiter_parked()      // a permit-park; the holder is in-flight (§2.9 non-re-entry ⇒ no permit cycle)
+```
+
+- **`armed` ⇒ never trip.** `turn(MAX_TURN_BLOCK)` blocks up to the per-turn ceiling (a
+  re-check cadence, **not** an abort), then the loop re-polls and re-evaluates. A healthy idle
+  server (armed on its listener fd) waits **indefinitely** — exactly the production shape.
+  `MAX_TURN_BLOCK = 5s` stays only as the periodic wake-to-re-check/drain-supervisor interval.
+- **`!armed` ⇒ trip immediately** with the deadlock diagnostic ("reactor suspended with no
+  armed interest — a poll leaf is stuck / a deadlock"). This is strictly better than the 30s
+  wall-clock cap: it fires the moment the stuck state is structurally present, not 30s later,
+  and it never fires for a leaf that is merely slow-but-armed.
+
+This **generalizes the exemptions the design already grew piecemeal** (§2.6 `pending_bridges
+> 0`; §2.12/§5.2 "a non-empty supervisor is also progress") into the single armed-ness
+predicate they were converging toward — Principle 7 (one liveness rule, not three ad-hoc
+exemptions).
+
+**Mode knob (Option b — the one-shot backstop).** Option (a) deliberately **cannot** catch an
+"armed-but-never-readies" hang — a leaf armed on an fd that genuinely never becomes readable
+(a hung peer; a wrong fd). For a **server** this is correct and intended: "armed on an fd that
+hasn't readied yet" is indistinguishable from "idle waiting for traffic," and the application's
+own deadline tools (`timeout`, cancel-on-disconnect — §2.18/§2.19) are the right instrument,
+not a host wall-clock guillotine. For a **one-shot `--run`/REPL-eval**, though, a batch program
+that arms an fd and hangs is a real hang worth a backstop. So `block_on_reactor` takes a
+**`drive_mode` knob** (set by int `src/` at construction — the same host-side policy channel as
+the §2.19 shutdown `Cell<bool>`, **no ABI/`cranelisp-types` touch**):
+- **`OneShot`** (default — `--run`, `--link` exe entry, REPL per-form eval): the armed-ness
+  detector **plus** a wall-clock backstop (the old `MAX_TOTAL_BLOCK`, retained as a hang guard;
+  value configurable, 30s default).
+- **`Server`** (a long-running accept-loop drive): the armed-ness detector **only**; **no
+  wall-clock cap**. An idle-but-armed server runs forever.
+
+How `src/` picks the mode is a small int policy decision deferred to Phase-5 /dev: the minimal
+form is a CLI/run-context signal (a server entry sets `Server`); a later refinement could
+infer it from the program's top-future shape (an accept loop / a launch-and-continue root). The
+design point of record is the **knob exists and defaults to `OneShot`** so no batch program
+loses its hang guard while a server gains indefinite idle.
+
+**Why reject Option (c) — the per-leaf "may-block-indefinitely" descriptor flag.** It would
+mark `accept` as legitimately-indefinite and apply the wall-clock cap to all other leaves. It
+is rejected because: (1) it needs a **new `ConcurrencyDescriptor` field** — a `cranelisp-types`
+edge change outside the frozen v9 descriptor shape (`role` replacing one `_reserved` byte,
+offsets unchanged; arch ruling, SPRINT.md §"Architecture review (Phase 2)"); int cannot make
+it, and bolting it onto the atomic v9 cut expands a frozen ABI surface; (2) the **armed-ness
+signal already captures the same fact structurally** — an `accept` parked on its listener fd
+**is** armed — with zero ABI surface, so the flag is redundant with reactor-internal state the
+trampoline already owns; (3) it is more fragile: every new poll leaf would have to remember to
+declare the flag correctly, whereas armed-ness is automatic. If a future case genuinely needs
+to distinguish "armed-but-never-readies application hang" *per leaf* (Option a cannot), the
+descriptor flag is the documented escalation — a FIXME `target: /arch` to add it to
+`ConcurrencyDescriptor` — but it is **not needed now** and must not ride the v9 cut.
+
+### 8.3 What Phase-5 /dev + /qa build against
+
+- **/dev (intrinsics):** add `reactor_is_armed()` (reading the five reactor-internal sources
+  above), the `drive_mode` knob on `block_on_reactor` (default `OneShot`), and the
+  `!armed ⇒ abort` / `Server ⇒ no wall-clock cap` drive-loop logic; retire the unconditional
+  `MAX_TOTAL_BLOCK`. The §2.6 `pending_bridges`-exemption and the §2.12/§5.2 supervisor-exempt
+  fold into `reactor_is_armed()` (one predicate). Unit: a fixture future that returns `Pending`
+  with no armed interest trips the detector immediately; one that armed an fd does not.
+- **/dev (src/):** plumb `drive_mode` from the run context (server entry ⇒ `Server`).
+- **/qa (e2e — once it is no longer self-defeating):** a server that idles **past** the old
+  30s cap and is **then** served — must succeed (today this e2e cannot exist because the cap
+  aborts at 30s, the exact gap 0479 records). Plus a negative: a genuinely-stuck one-shot
+  (armed nothing) still aborts promptly; a one-shot armed-but-hung still hits the `OneShot`
+  wall-clock backstop.
+
+## 9. Empty `(select [])` — recoverable runtime error (S97, FIXME 0475; confirm approach)
+
+> **Status: `/design` (int) Phase-3 — short approach confirmation. Mostly a /dev fix.**
+> `/spec` ruled (`spec/10-io.md §10.12.8`, `spec/12-runtime.md §12.4.4`): `(select [])` over
+> an empty branch vector MUST **raise a recoverable runtime error** (§12.7.2) — the same class
+> as match non-exhaustion or division by zero — not return a synthesised value (the as-built
+> returns Unit `0`, an unsound null at a heap-typed `a`) and not hang.
+
+**Approach (confirmed).** The empty-branch case is detected in the `select` combinator runtime
+where the branch `Vec` is read (the §2.15 `IO_TAG_SELECT` arm; impl site `io.rs:496-500`,
+`run_select_node`). When the branch count is **0**, instead of returning Unit `0`, raise
+through the **standard runtime-error slot** the same way every other recoverable runtime fault
+does — `runtime/panic` (the `set_runtime_error`/`take_runtime_error` mechanism, `panic.rs`,
+the path match-non-exhaustion and div-by-zero already use, and the §2.12 supervisor/§"discover-
+tests" `catch-runtime-error` combinator already drains). Message: **"select over empty
+collection"**. Because it goes through the runtime-error slot (not a Rust `panic!`/abort), it
+is:
+- **recoverable** at a `catch-runtime-error` boundary (returns `Err("select over empty
+  collection")`), exactly like the other §12.7.2 faults; and
+- **fatal-to-the-evaluation** otherwise (under `--run`/`--link` with no catch, the slot is read
+  at the trampoline boundary and the program exits non-zero with the message).
+
+**Why this is the right slot, not a special case.** `select` already runs on the reactor
+thread and already has a runtime-error path (a losing/failing branch ferries through the slot,
+§2.15). The empty case is just the **degenerate branch count** — it raises through the **same**
+mechanism, so there is no new error channel, no combinator-specific plumbing, and the
+recoverability falls out of the existing `catch-runtime-error` drain. This is a guard at the
+top of `run_select_node` (count `== 0` ⇒ raise) ahead of the race construction, which is the
+smallest possible change.
+
+**Phase-5:** /dev adds the count-zero guard in `run_select_node`; /qa owns the failing-not-
+ignored e2e — an empty `select` instantiated at a **heap-typed** `a` (a `String`/ADT result)
+MUST surface the runtime error (catchable, or fatal under `--run`/`--link`), NOT a `0`/garbage
+value or a hang — with `// spec: spec/10-io.md §10.12.8 (Empty select)`.
+
+## 10. Cross-references
 
 - `sprints/SPRINT.md` — S95 scope (slices 3 + 6) + S96 Chunk A item 3 (poll-shape live
   capacity + acquire-around-poll) + S96 **Chunk B** (slice 5 + slice 4) + the Phase-2
@@ -1790,7 +2140,21 @@ same host values by calling the same code, not by hand-mirroring.
 - `design/arch/bounded-contexts.md` §6 (int reactor policy + impl-location), §4b
   (intrinsics hosting), §5 (platform C-ABI async leaf).
 - `design/arch/platform-interface.md` §6.8 — ABI-v7 layout contracts (`ConcurrencyDescriptor`,
-  `Poll`, `PollFn`, `HostCtx`, `Waker`, `WakerVTable`, `ConcurrentPlatformFn`).
+  `Poll`, `PollFn`, `HostCtx`, `Waker`, `WakerVTable`, `ConcurrentPlatformFn`); **§6.8.0b — ABI
+  v9** (the descriptor as representation overhead; header slot / `desc_out` / role-on-manifest;
+  AUTHORITY for §7).
+- **ABI v9 (S97, FIXME 0482) — the cross-surface cut this doc's §7/§8/§9 are the int half of:**
+  `design/arch/effect-concurrency.md §4.1.1` (descriptor as representation overhead; the
+  produce/consume asymmetry; the singleton manifest-static token; E2 strengthened-not-changed),
+  `design/arch/interfaces.md §"Resource descriptor"` (`ResourceDesc`/`ResourceRole` shapes +
+  header-slot layout), `design/backend/io-trampoline.md §17` (the backend codegen half — esp.
+  **§17.5 the boundary contract**, the offset table §7.2 mirrors), `design/platform/poll-support.md`
+  §3.1 (singleton stdin token) / §3.5 (opaque `Connection`) / §3.6 (the `desc_out` leaf-authoring
+  contract). FIXME **0479** (idle-server watchdog — §8) + **0475** (empty-`select` — §9) are the
+  /int §C drains; **0478** (single-step launch-arm E2 hardening, co-located but **decoupled** from
+  v9) is `design/int/bind-chain-analysis.md §3.7`.
+- `design/int/io-integration.md §I3` — platform DLL load + `ABI_VERSION = 9` refusal of v8
+  manifests (the loader's v9 cutover note; /dev executes).
 - `design/arch/sequences/concurrency-scheduler.mmd` — reactor participant (intrinsics-hosted).
 - `crates/cranelisp-intrinsics/src/{reactor.rs,strand.rs,io.rs}` — the implementation;
   `crates/cranelisp-intrinsics/Cargo.toml` — the feature gates.
