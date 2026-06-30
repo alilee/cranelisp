@@ -2224,7 +2224,18 @@ impl CompilerSession {
                 // `format_scheme_type` renderer (`format_scheme_display` is the
                 // thin `:type module/name` wrapper around it).
                 let base = format_scheme_display(name, scheme, module);
-                let is_primitive = matches!(kind.as_ref(), DefKind::Primitive { .. });
+                // Both got-slotted primitives (`DefKind::Primitive`, e.g.
+                // `add-i64`) and slot-less host-promised externs
+                // (`DefKind::PrimitiveExtern`, e.g. the S96 `race`/`select`/
+                // `sleep` builtins + `bind`/`discover-tests`/`catch-runtime-error`)
+                // are `primitives`-module builtins and MUST classify as
+                // `; primitive` per `repl/spec.md §1.1` — a `PrimitiveExtern`
+                // dispatches by-name via `Linkage::Import` but is no less a
+                // primitive to the user (FIXME 0481).
+                let is_primitive = matches!(
+                    kind.as_ref(),
+                    DefKind::Primitive { .. } | DefKind::PrimitiveExtern
+                );
                 let classification = if is_primitive { "primitive" } else { "defn" };
                 let base = format!("{base} ; {classification}");
                 // FIXME 0308: primitive entries now carry their Appendix A.5

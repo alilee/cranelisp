@@ -123,6 +123,8 @@ The compiler MUST perform independence analysis on `bind!` chains and insert par
 
 **Design constraint for architecture**: The IO trampoline MUST support concurrent execution of independent effect branches. The resource serialization model (token-based) MUST ensure that effects sharing a resource are sequenced while independent effects may run concurrently.
 
+**Explicit-control half**: alongside this *inferred* scheduling, the IO model also provides an *explicit-control* layer — the `race`/`select`/`timeout` combinators and the structured cancellation underneath them, normatively specified in [§10.12.8–§10.12.10](10-io.md#10128-structured-control-combinators--race--select--timeout) and [§12.4.4](12-runtime.md#1244-structured-control-combinators-and-cancellation). The IO trampoline MUST support **cancellation**: dropping an in-flight effect (a race loser, a timed-out effect) such that its resource permits are released and its reactor interest deregistered. This is the architectural requirement underneath the per-request-timeout / cancel-on-disconnect / graceful-shutdown patterns; the resource-pool model (§C.4) MUST NOT be exhaustible by cancelled work.
+
 **Activation**: Ring 4 (IO and platform infrastructure).
 
 ### C.3.3 Tail Call Optimization [Tested+Neg tests/spec_12_runtime::tco_deep_countdown]

@@ -3,28 +3,13 @@ name = "cranelisp-intrinsics"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-# Exposes the strand-identity + trampoline observability event-stream plumbing
-# (`StrandId`, `StrandEvent`) for the slice-2 async substrate. Off by default
-# (byte-identical-when-off — observability costs nothing in `--link`/`--release`)
-# and out of the `public-api.txt` baseline until the reactor wires the emit
-# hooks. See `design/arch/effect-concurrency.md` §11.
-concurrency = ["cranelisp-types/concurrency", "cranelisp-platform/concurrency"]
-
-# The slice-2 reactor IMPLEMENTATION (effect-concurrency track — the async
-# substrate). Builds on the `concurrency` layout contracts and adds the two
-# single-purpose runtime deps the host reactor needs:
-#   - `mio`     — the cross-platform epoll/kqueue/IOCP abstraction the host
-#                 reactor drives (the `HostCtx` C-ABI is mio-shaped: register a
-#                 raw fd + a waker — `design/arch/effect-concurrency.md` App. B).
-#   - `futures` — `join_all` for the `Par`-async overlap path + task/waker glue.
-# Both are `dep:`-gated optional dependencies, so with the feature OFF cargo
-# never compiles or links them. NOT in default features; the exe-bundle/`--link`
-# build path never enables it ⇒ a linked binary is byte-identical and
-# executor-free (the "platforms carry no runtime" thesis, preserved
-# structurally). The strand observability sink + the async trampoline emit
-# hooks are also gated here.
-concurrency-runtime = ["concurrency", "dep:mio", "dep:futures"]
+# Single-ABI + single-trampoline cutover (S96, `design/arch/platform-interface.md`
+# §6.8.0a): BOTH the `concurrency` (layout) and `concurrency-runtime` (reactor)
+# features are RETIRED. The reactor IS the runtime — `reactor`/`strand`, mio, and
+# futures are now UNCONDITIONAL. A pure-blocking program drains synchronously
+# through the one (async) trampoline and constructs no mio `Poll` (lazy reactor
+# init — `design/int/reactor.md`); lean-default is a RUNTIME property, not a
+# `#[cfg]` split.
 
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }
@@ -32,6 +17,8 @@ cranelisp-platform = { path = "../cranelisp-platform" }
 rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 libc = "0.2"
-# Reactor runtime deps — optional, `dep:`-gated by `concurrency-runtime` (above).
-mio = { version = "1", features = ["os-poll", "os-ext"], optional = true }
-futures = { version = "0.3", optional = true }
+# Host-reactor runtime deps — now UNCONDITIONAL (the reactor is always linked;
+# §6.8.0a). `mio` = the epoll/kqueue/IOCP abstraction the `HostCtx` reactor drives;
+# `futures` = `join_all` for the `Par`-async overlap + task/waker glue.
+mio = { version = "1", features = ["os-poll", "os-ext"] }
+futures = { version = "0.3" }

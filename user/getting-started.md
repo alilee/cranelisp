@@ -115,8 +115,14 @@ the source. It applies in two places:
 
 - **Independent IO actions run concurrently.** When the compiler can see that two
   effects do not depend on one another, it schedules them at the same time. You write
-  straight-line effectful code and the parallelism comes for free. See
-  [`examples/28-parallel.cl`](../examples/28-parallel.cl).
+  straight-line effectful code and the parallelism comes for free — even a server's
+  per-connection handlers fan out with **no `spawn` in the source**. See
+  [`examples/28-parallel.cl`](../examples/28-parallel.cl) and the
+  [concurrency guide](guide/concurrency.md). The one honest scope: effects that share
+  one resource are bounded by that resource's **capacity** — a ceiling the platform
+  declares, not the program — so a connection pool of *N* admits up to *N*
+  concurrently and the (N+1)th waits. Distinct resources overlap freely. The normative
+  rule is [`spec/10-io.md §10.12.4.1`](../spec/10-io.md).
 - **Independent pure computations run in parallel too.** The arguments of a call that
   do not depend on each other can be evaluated at the same time. So the two recursive
   branches of a divide-and-conquer function run at once. The standard library packages
@@ -168,9 +174,11 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
 - **Guide** — feature-by-feature pages: [`guide/bitwise.md`](guide/bitwise.md)
   (bit-level arithmetic and the `num.bits` module),
   [`guide/field-accessors.md`](guide/field-accessors.md) (`Type.field` accessors and
-  the bare-name alias), and
+  the bare-name alias),
   [`guide/parallel-collections.md`](guide/parallel-collections.md) (`par-map`,
-  `par-reduce`, `par-map-reduce`).
+  `par-reduce`, `par-map-reduce`), and
+  [`guide/concurrency.md`](guide/concurrency.md) (the two-halves concurrency model:
+  inferred fan-out + the `sleep`/`race`/`select`/`timeout` control combinators).
 - [`repl/spec.md`](../repl/spec.md) — the normative REPL experience: display
   formats, slash commands, errors, caching.
 - [`spec/`](../spec/) — the language specification.

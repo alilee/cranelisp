@@ -2743,3 +2743,57 @@
             "using a ParBind-bound name as `IO Int` (not unwrapped `Int`) must be a type error"
         );
     }
+
+    // --- LaunchContinue tests (S96 Chunk B, spec/10-io.md §10.12.7) -----------
+
+    /// Build a `LaunchContinue` node by hand (no surface syntax — synthesised by
+    /// the bind-chain independence analysis at the §10.12.7 launch shape).
+    fn launch_continue(launched: Expr, continuation: Expr) -> Expr {
+        Expr::LaunchContinue {
+            launched: Box::new(launched),
+            continuation: Box::new(continuation),
+            span: span(0, 80),
+            inferred_type: None,
+        }
+    }
+
+    // spec: 10-io.md §10.12.7 — a `LaunchContinue` types as its CONTINUATION; the
+    // launched effect's result is discarded. The launched arm still typechecks
+    // (it's a real `IO a` effect run as a detached strand).
+    #[test]
+    fn launch_continue_types_as_its_continuation() {
+        let mut tc = tc();
+        // launched effect typed `IO Int` (its result discarded); continuation an
+        // `IO Bool` action (its type IS this node's type).
+        tc.bind_local_self(Symbol::from("eff"), mono(io_type(Type::Int)));
+        tc.bind_local_self(Symbol::from("cont"), mono(io_type(Type::Bool)));
+        let mut expr = launch_continue(
+            Expr::var(Symbol::from("eff"), span(10, 14)),
+            Expr::var(Symbol::from("cont"), span(15, 19)),
+        );
+        let ty = tc.infer_expr_for_test(&mut expr).unwrap();
+        assert_eq!(
+            ty,
+            io_type(Type::Bool),
+            "LaunchContinue types as its continuation (IO Bool); the launched \
+             effect's result (IO Int) is discarded"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — the launched arm MUST typecheck as a real `IO a`
+    // effect: a non-IO launched value is a type error (it is unified against
+    // `IO ?a`, exactly as the sequential `bind` would).
+    #[test]
+    fn launch_continue_non_io_launched_is_type_error() {
+        let mut tc = tc();
+        tc.bind_local_self(Symbol::from("plain"), mono(Type::Int)); // NOT an IO action
+        tc.bind_local_self(Symbol::from("cont"), mono(io_type(Type::Bool)));
+        let mut expr = launch_continue(
+            Expr::var(Symbol::from("plain"), span(10, 15)),
+            Expr::var(Symbol::from("cont"), span(16, 20)),
+        );
+        assert!(
+            tc.infer_expr_for_test(&mut expr).is_err(),
+            "a launched arm that is not an `IO a` effect must be a type error"
+        );
+    }

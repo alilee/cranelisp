@@ -55,7 +55,6 @@
 //! clean runtime-RED; a non-compiling fixture crate would break the workspace
 //! build. The fixture lands in Wave 2.
 
-#![cfg(feature = "concurrency-runtime")]
 
 #[path = "helpers/mod.rs"]
 mod helpers;

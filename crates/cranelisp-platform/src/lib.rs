@@ -134,6 +134,7 @@
 //! - Principles 6, 8, 14, 15, 18 — design budget, no-interim, FFI
 //!   layout, facade-types-live-with-behaviour, structural invariants.
 
+use core::ffi::c_void;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -143,19 +144,24 @@ pub use schema::{Ctor, Field, FieldType, ParseLoc, Schema, SchemaParseError, Typ
 mod adt;
 pub use adt::{set_global_schema, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldType};
 
-// ABI-v7 host-reactor C-ABI (effect-concurrency track, slice 2). Gated behind
-// the off-by-default `concurrency` feature — landed as the layout contract
-// `/dev` implements next sprint/stretch, out of the default build and the
-// `public-api.txt` frozen edge until then. See
-// `design/arch/effect-concurrency.md` §12 + `design/arch/platform-interface.md`
-// §6.8 (the ABI 6→7 cascade).
-#[cfg(feature = "concurrency")]
+// Host-reactor C-ABI (effect-concurrency track) — the host-owned reactor vtable
+// (`HostCtx`), the C-ABI `Waker`/`WakerVTable`, and the poll-shape `PollFn`. Under
+// the single-ABI cutover (`design/arch/platform-interface.md` §6.8.0) these are
+// CORE (ungated): the `ConcurrencyDescriptor` is part of every manifest entry and
+// any platform may declare a poll-shape leaf, so the formerly-dormant
+// `concurrency` feature is RETIRED. The host *reactor implementation* (mio/futures)
+// lives in `cranelisp-intrinsics` and is always linked post-streamline.
 mod concurrency;
-#[cfg(feature = "concurrency")]
-pub use concurrency::{
-    ConcurrencyDescriptor, ConcurrentPlatformFn, ConcurrentPlatformManifest, HostCtx, Poll, PollFn,
-    Waker, WakerVTable,
-};
+pub use concurrency::{ConcurrencyDescriptor, HostCtx, Poll, PollFn, Waker, WakerVTable};
+
+// The `poll_support` ergonomics suite (S96 Chunk A item 2) — the typed
+// state-closure env accessor (`PollEnv`), the fd/timer readiness scaffold over the
+// host/waker vtable (`Reactor`), and the first-poll/re-poll phase scaffold
+// (`PollState`/`PollStep`). Extracted evidence-first from the in-tree poll leaves
+// (`async-demo`, `poll-pool`) that hand-rolled the same env offset math + vtable
+// indirection + result-slot-as-phase-sentinel idiom. CORE (ungated) under the
+// single-ABI cutover.
+pub mod poll_support;
 
 // The `declare_platform!` three-exports emitter + its compile-time
 // `extract_layout_hash` helper. The macros are `#[macro_export]` (crate-root
@@ -245,8 +251,9 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// §12 + `design/arch/platform-interface.md` §6.8) — the **ABI-v4 cascade**, recorded
 /// numerically as 6→7 (the "v4" is the doc-label for the async-leaf model, NOT the
 /// numeric version). v7 reserves the poll-shape async-leaf boundary: blocking
-/// `extern "C"` effect fns become poll-shape ([`PollFn`] / [`ConcurrentPlatformFn`],
-/// dispatched GOT-indirect exactly as before — only the *signature shape* changes);
+/// `extern "C"` effect fns become poll-shape ([`PollFn`] / the since-deleted
+/// `ConcurrentPlatformFn`, dispatched GOT-indirect exactly as before — only the
+/// *signature shape* changes);
 /// `scheduling_class: u32` is subsumed by [`ConcurrencyDescriptor`] (token +
 /// cardinality + global_budget + blocking, §5); and the new host-reactor C-ABI
 /// ([`HostCtx`] vtable + C-ABI [`Waker`]) is the one genuinely new designed artifact.
@@ -256,7 +263,20 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// read the v6 `PlatformFn` shape until the slice-2 reactor wires the migration
 /// (`/dev`). Bumping the stamp now keeps in-workspace host + DLLs (which rebuild
 /// together) consistent and signals the cascade target.
-pub const ABI_VERSION: u32 = 7;
+/// v8 (Sprint 96, the SINGLE-ABI CUTOVER — `design/arch/platform-interface.md`
+/// §6.8.0/§6.8.0a) — the v6/v7 split is collapsed into ONE ABI. [`PlatformFn`]
+/// absorbs the former `ConcurrentPlatformFn`: `scheduling_class: u32` is replaced
+/// by `concurrency: ConcurrencyDescriptor` (each effect is independently blocking
+/// or poll-shape via `concurrency.blocking`), and a `drop_state` poll-leaf
+/// teardown hook is added. `ConcurrentPlatformFn` / `ConcurrentPlatformManifest`
+/// / `concurrent_manifest_to_descriptors` / `declare_concurrent_platform!` are
+/// **deleted**; there is ONE manifest type, ONE macro, ONE GOT export, ONE loader
+/// path. The host-reactor ABI types (`HostCtx`/`Waker`/`PollFn`/`Poll`/
+/// `ConcurrencyDescriptor`) graduate to the default (ungated) edge — the
+/// `concurrency`/`concurrency-runtime` features are RETIRED. Layout-affecting
+/// (Principle 14): the `PlatformFn` field set changed. With no out-of-tree DLLs
+/// every in-tree platform rebuilds against v8 in the cutover change-set.
+pub const ABI_VERSION: u32 = 8;
 
 /// The exported-symbol name of a platform's manifest entry point, namespaced by
 /// the platform's raw `name:` literal (`cranelisp_platform_manifest_<name>`).
@@ -285,19 +305,48 @@ pub const IO_TAG_BIND: i64 = 2;
 /// See spec §10.12 (Automatic IO Scheduling).
 pub const IO_TAG_PAR: i64 = 3;
 
-/// Poll-shape effect node (ABI-v7 effect-concurrency seam, S94 R1). Field-0 is a
+/// Poll-shape effect node (the effect-concurrency seam, S94 R1). Field-0 is a
 /// host-built **state-closure** (`code_ptr` = the GOT-loaded poll-fn,
 /// `drop_glue_ptr` = state teardown, env = result-slot + marshaled i64 args +
 /// scratch); the trampoline's async Effect arm `.await`s an `EffectPoll` over it.
-/// Distinct from [`IO_TAG_EFFECT`] (= 1, the v6 blocking-thunk node, untouched):
-/// the poll node is constructed ONLY for poll-shape (`blocking == 0`) effects,
-/// which exist only in a `concurrency`-built toolchain — so the feature-off
-/// trampoline never sees this tag (byte-identical-when-off, sprint S94 R3).
-/// Gated behind `concurrency` (off the default `public-api.txt` edge) alongside
-/// the other v7 layout contracts. See `design/arch/effect-concurrency.md`
-/// Appendix B §"ratified backend↔intrinsics seam" + `platform-interface.md` §6.8.
-#[cfg(feature = "concurrency")]
+/// Distinct from [`IO_TAG_EFFECT`] (= 1, the blocking-thunk node): the poll node
+/// is constructed for poll-shape (`concurrency.blocking == 0`) effects, the
+/// blocking node for `blocking == 1` effects — a single manifest may mix both.
+/// CORE (ungated) under the single-ABI cutover (`platform-interface.md`
+/// §6.8.0/§6.8.0a) — poll-shape effects exist in every build and the reactor that
+/// drives them is always linked; lean-default is a runtime property (a
+/// pure-blocking program builds no `EffectPoll`), not a `#[cfg]` split. See
+/// `design/arch/effect-concurrency.md` Appendix B §"ratified backend↔intrinsics
+/// seam" + `platform-interface.md` §6.8.
 pub const IO_TAG_EFFECT_POLL: i64 = 4;
+
+/// Launch-and-continue node (the effect-concurrency launch slice, S96 Chunk B).
+/// A thin single-field IO node: field-0 is the **detached IO sub-tree** (the
+/// launched effect). The trampoline's `IO_TAG_LAUNCH` arm moves the sub-tree into
+/// a supervised strand and yields `Pure Unit`, so the continuation runs without
+/// awaiting it (fire-and-forget, spec §10.12.7). Constructed by the backend's
+/// `compile_launch` (the literal `5`), consumed by the reactor trampoline +
+/// `consume_io_tree`. An in-process backend↔intrinsics convention — the node is
+/// host-built and host-interpreted, never crossing the platform DLL ABI (no
+/// `ABI_VERSION` bump), mirroring [`IO_TAG_EFFECT_POLL`]. See
+/// `design/backend/io-trampoline.md §15` + `design/int/reactor.md §2.11`.
+pub const IO_TAG_LAUNCH: i64 = 5;
+
+/// Race/select combinator node (the control-layer slice, S96 Chunk C, slice 7).
+/// A thin single-field IO node: field-0 is the **branch carrier** — a `Vec (IO a)`
+/// of the N candidate sub-trees (`race a b` builds a 2-element Vec; `select [..]`
+/// passes its Vec literal through). The trampoline's `IO_TAG_SELECT` arm runs all
+/// branches concurrently on the reactor, yields the **first-ready** winner's value,
+/// and **drops the losers** (cancellation = future-drop, releasing their permits +
+/// reactor interest). The node owns the Vec for the whole tree lifetime — there is
+/// **no move-out and no null-guard** (select never detaches), so its drop glue is a
+/// plain `consume_vec_with(field0, consume_io_tree)`. Constructed by the backend's
+/// `compile_select`/`compile_race` (the literal `6`), consumed by the reactor
+/// trampoline + `consume_io_tree`. An in-process backend↔intrinsics convention —
+/// host-built and host-interpreted, never crossing the platform DLL ABI (no
+/// `ABI_VERSION` bump), mirroring [`IO_TAG_LAUNCH`]. See
+/// `design/backend/io-trampoline.md §16` + `design/int/reactor.md §2.15`.
+pub const IO_TAG_SELECT: i64 = 6;
 
 /// Byte offset of the resource token within an Effect node payload.
 /// Effect layout (slice-3 / S95, ABI v4 node):
@@ -335,8 +384,8 @@ pub const IO_EFFECT_FN_NAME_OFFSET: i64 = 24;
 ///
 /// The node layout is an **in-process** backend↔intrinsics convention; the append
 /// is **not** an [`ABI_VERSION`] bump (the in-workspace host + DLLs rebuild
-/// together, and the feature-off trampoline never reads this field —
-/// byte-identical-when-off). See `io-trampoline.md` §13.9.
+/// together, and a node built by `effect_on_resource` — capacity 1 — and one
+/// built by `…_with_capacity` agree by construction). See `io-trampoline.md` §13.9.
 pub const IO_EFFECT_CAPACITY_OFFSET: i64 = 32;
 
 /// Scheduling class for a platform function, declared in the platform manifest.
@@ -416,14 +465,18 @@ pub const STRING_HEADER_BYTES: usize = 8;
 /// arm of [`declare_platform!`]; the macro emits the parallel arrays
 /// alongside the function pointer.
 ///
-/// # Scheduling class
+/// # Concurrency descriptor
 ///
-/// `scheduling_class` is a `u32` discriminant — **not** a Rust-typed
-/// [`SchedulingClass`] field. The host re-interprets the `u32` via
-/// `SchedulingClass::from(u32)`. Keeping the `#[repr(C)]` struct free of
-/// Rust-typed fields lets the DLL author's `cbindgen`-generated header
-/// match the layout exactly. Discriminants: 0 = Sequential, 1 =
-/// Commutative, 2 = ResourceSerial (per Decision 0026; spec §10.10.1).
+/// The per-effect concurrency contract rides as a [`ConcurrencyDescriptor`]
+/// (`concurrency`), a `#[repr(C)]` POD of `i64`/`u8` fields (token +
+/// cardinality + global_budget + blocking). Under the single-ABI cutover
+/// (§6.8.0) this REPLACES the former v6 `scheduling_class: u32` discriminant:
+/// the host derives both `scheduling_class =
+/// concurrency.nearest_scheduling_class()` and the dispatch shape
+/// (`poll_shape = concurrency.blocking == 0`) from it. Keeping the descriptor a
+/// flat POD lets the DLL author's `cbindgen`-generated header match the layout
+/// exactly. (Scheduling-class semantics: 0 = Sequential, 1 = Commutative, 2 =
+/// ResourceSerial — per Decision 0026; spec §10.10.1.)
 ///
 /// # ABI versioning
 ///
@@ -449,13 +502,20 @@ pub struct PlatformFn {
     /// Name as seen by cranelisp code (e.g. "print").
     pub name: *const u8,
     pub name_len: usize,
-    /// Function pointer (extern "C", all i64 params/returns). The manifest's
-    /// fn-pointer order IS the GOT slot order (platform-interface.md §5.1); the
-    /// host adopts `got_slot = manifest index` and dispatches GOT-indirect
-    /// against `__cranelisp_got_platform_<name>`. Platform fns need no exported
-    /// linker name (the former `jit_name` mangled-name dispatch retired, FIXME
-    /// 0288).
+    /// Type-erased effect fn pointer. A blocking `extern "C"` `CLIO`-returning
+    /// effect fn when `concurrency.blocking == 1`, or a [`PollFn`] poll-shape
+    /// async leaf when `concurrency.blocking == 0` — GOT-indirect dispatch is
+    /// shape-agnostic (the backend reads `DefKind::PlatformEffect.poll_shape` to
+    /// decide which node to build). The manifest's fn-pointer order IS the GOT
+    /// slot order (platform-interface.md §5.1); the host adopts `got_slot =
+    /// manifest index` and dispatches GOT-indirect against
+    /// `__cranelisp_got_platform_<name>`.
     pub ptr: *const u8,
+    /// Poll-shape leaf state-teardown hook (the former
+    /// `ConcurrentPlatformFn.drop_state`); `None` for blocking effects and for
+    /// poll leaves whose state is entirely host-known. Baked into the host-built
+    /// state-closure's `drop_glue_ptr`. Single-ABI cutover (§6.8.0).
+    pub drop_state: Option<unsafe extern "C" fn(state: *mut c_void)>,
     /// Number of i64 parameters.
     pub param_count: u32,
     /// Type signature as S-expression string (e.g. "(Fn [String] (IO Int))").
@@ -470,8 +530,11 @@ pub struct PlatformFn {
     pub param_name_lens: *const usize,
     /// Number of parameter names.
     pub param_name_count: usize,
-    /// SchedulingClass discriminant: 0=Sequential, 1=Commutative, 2=ResourceSerial.
-    pub scheduling_class: u32,
+    /// The per-effect concurrency contract (token + cardinality + global_budget +
+    /// blocking). REPLACES the v6 `scheduling_class: u32` (§6.8.0): the host
+    /// derives both `scheduling_class = concurrency.nearest_scheduling_class()`
+    /// and `poll_shape = concurrency.blocking == 0` from it.
+    pub concurrency: ConcurrencyDescriptor,
 }
 
 // Safety: PlatformFn is a C-ABI struct with raw pointers; it is only
@@ -1428,16 +1491,15 @@ pub struct OwnedPlatformFnDescriptor {
     pub type_sig: String,
     pub docstring: String,
     pub param_names: Vec<String>,
+    /// The conflict-domain axis the host keeps on `DefKind::PlatformEffect`,
+    /// derived from [`concurrency`](Self::concurrency) via
+    /// [`ConcurrencyDescriptor::nearest_scheduling_class`].
     pub scheduling_class: SchedulingClass,
-    /// The v7 per-effect concurrency contract, lifted from a
-    /// [`ConcurrentPlatformFn`] by [`concurrent_manifest_to_descriptors`].
-    /// `Some` for a v7-loaded poll-shape effect; `None` for a v6
-    /// (`manifest_to_descriptors`) blocking effect. Gated `concurrency` so the
-    /// default edge is unchanged (the struct is `#[non_exhaustive]`). The loader
-    /// reads `concurrency.blocking == 0` to set `DefKind::PlatformEffect.poll_shape`
-    /// (FIXME 0457; `platform-interface.md` §6.8).
-    #[cfg(feature = "concurrency")]
-    pub concurrency: Option<ConcurrencyDescriptor>,
+    /// The per-effect concurrency contract lifted verbatim from the unified
+    /// [`PlatformFn::concurrency`] by [`manifest_to_descriptors`]. Always
+    /// populated under the single-ABI cutover (§6.8.0); the loader reads
+    /// `concurrency.blocking == 0` to set `DefKind::PlatformEffect.poll_shape`.
+    pub concurrency: ConcurrencyDescriptor,
 }
 
 /// Convert a C-ABI manifest into safe Rust descriptors.
@@ -1548,111 +1610,10 @@ pub unsafe fn manifest_to_descriptors(
             type_sig: func_type_sig,
             docstring: func_docstring,
             param_names,
-            scheduling_class: SchedulingClass::from_u32(func.scheduling_class),
-            // v6 blocking effects carry no concurrency descriptor.
-            #[cfg(feature = "concurrency")]
-            concurrency: None,
-        });
-    }
-
-    Ok((name, version, descriptors))
-}
-
-/// Convert a C-ABI **concurrent** manifest (ABI v7) into safe Rust descriptors —
-/// the gated sibling of [`manifest_to_descriptors`] (FIXME 0457,
-/// `platform-interface.md` §6.8).
-///
-/// Lifts each [`ConcurrentPlatformFn`] into an [`OwnedPlatformFnDescriptor`],
-/// carrying its [`ConcurrencyDescriptor`] on the `concurrency` field (`Some`).
-/// The still-required `scheduling_class` (the conflict-domain axis the host keeps
-/// on `DefKind::PlatformEffect`) is derived from the descriptor via
-/// [`ConcurrencyDescriptor::nearest_scheduling_class`]. The `poll`-fn pointer is
-/// stored in `ptr` exactly as the v6 path stores the blocking fn pointer — both
-/// are the GOT-indirect dispatch address; what differs is the *shape* the slot
-/// holds, decided downstream by `poll_shape` on the symbol-table entry.
-///
-/// # Safety
-/// All pointers in the manifest must be valid and point to UTF-8 data.
-///
-/// # Errors
-/// UTF-8 validation failures construct [`PlatformError::LoadFailed`] with
-/// `ErrorLocation::unknown()`; the caller rewrites `dll`/`location` at the call
-/// site (same convention as [`manifest_to_descriptors`]).
-#[cfg(feature = "concurrency")]
-pub unsafe fn concurrent_manifest_to_descriptors(
-    manifest: &ConcurrentPlatformManifest,
-) -> Result<(String, String, Vec<OwnedPlatformFnDescriptor>), PlatformError> {
-    let utf8_err = |what: &str, e: std::str::Utf8Error| PlatformError::LoadFailed {
-        dll: std::path::PathBuf::new(),
-        cause: format!("invalid UTF-8 in {what}: {e}"),
-        location: ErrorLocation::unknown(),
-    };
-
-    let name = unsafe {
-        let bytes = std::slice::from_raw_parts(manifest.name, manifest.name_len);
-        std::str::from_utf8(bytes)
-            .map_err(|e| utf8_err("platform name", e))?
-            .to_string()
-    };
-    let version = unsafe {
-        let bytes = std::slice::from_raw_parts(manifest.version, manifest.version_len);
-        std::str::from_utf8(bytes)
-            .map_err(|e| utf8_err("platform version", e))?
-            .to_string()
-    };
-
-    let functions =
-        unsafe { std::slice::from_raw_parts(manifest.functions, manifest.function_count) };
-
-    let mut descriptors = Vec::with_capacity(manifest.function_count);
-    for func in functions {
-        let func_name = unsafe {
-            let bytes = std::slice::from_raw_parts(func.name, func.name_len);
-            std::str::from_utf8(bytes)
-                .map_err(|e| utf8_err("function name", e))?
-                .to_string()
-        };
-        let func_type_sig = unsafe {
-            let bytes = std::slice::from_raw_parts(func.type_sig, func.type_sig_len);
-            std::str::from_utf8(bytes)
-                .map_err(|e| utf8_err("function type_sig", e))?
-                .to_string()
-        };
-        let func_docstring = unsafe {
-            let bytes = std::slice::from_raw_parts(func.docstring, func.docstring_len);
-            std::str::from_utf8(bytes)
-                .map_err(|e| utf8_err("function docstring", e))?
-                .to_string()
-        };
-
-        let mut param_names = Vec::with_capacity(func.param_name_count);
-        if func.param_name_count > 0 {
-            let name_ptrs =
-                unsafe { std::slice::from_raw_parts(func.param_names, func.param_name_count) };
-            let name_lens =
-                unsafe { std::slice::from_raw_parts(func.param_name_lens, func.param_name_count) };
-            for i in 0..func.param_name_count {
-                let pname = unsafe {
-                    let bytes = std::slice::from_raw_parts(name_ptrs[i], name_lens[i]);
-                    std::str::from_utf8(bytes)
-                        .map_err(|e| utf8_err(&format!("param name {i}"), e))?
-                        .to_string()
-                };
-                param_names.push(pname);
-            }
-        }
-
-        descriptors.push(OwnedPlatformFnDescriptor {
-            name: func_name,
-            // The poll-fn pointer is the GOT-indirect dispatch address (the
-            // backend bakes it as the state-closure `code_ptr`).
-            ptr: func.poll as *const u8,
-            param_count: func.param_count as usize,
-            type_sig: func_type_sig,
-            docstring: func_docstring,
-            param_names,
+            // Single-ABI cutover (§6.8.0): derive the conflict-domain class from
+            // the unified descriptor; carry the descriptor verbatim.
             scheduling_class: func.concurrency.nearest_scheduling_class(),
-            concurrency: Some(func.concurrency),
+            concurrency: func.concurrency,
         });
     }
 

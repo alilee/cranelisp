@@ -1,8 +1,59 @@
 pub mod cranelisp_platform
+pub use cranelisp_platform::ConcurrencyDescriptor
 pub use cranelisp_platform::GOT_TABLE_SIZE
 pub use cranelisp_platform::PlatformError
+pub use cranelisp_platform::Poll
 pub use cranelisp_platform::SchedulingClass
-pub macro cranelisp_platform::declare_concurrent_platform!
+pub mod cranelisp_platform::poll_support
+pub enum cranelisp_platform::poll_support::PollStep
+pub cranelisp_platform::poll_support::PollStep::Park
+pub cranelisp_platform::poll_support::PollStep::Ready(i64)
+impl core::marker::Freeze for cranelisp_platform::poll_support::PollStep
+impl core::marker::Send for cranelisp_platform::poll_support::PollStep
+impl core::marker::Sync for cranelisp_platform::poll_support::PollStep
+impl core::marker::Unpin for cranelisp_platform::poll_support::PollStep
+impl core::marker::UnsafeUnpin for cranelisp_platform::poll_support::PollStep
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::poll_support::PollStep
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::poll_support::PollStep
+pub struct cranelisp_platform::poll_support::PollEnv
+impl cranelisp_platform::poll_support::PollEnv
+pub unsafe fn cranelisp_platform::poll_support::PollEnv::arg(&self, usize) -> i64
+pub unsafe fn cranelisp_platform::poll_support::PollEnv::arg_str(&self, usize) -> core::option::Option<&str>
+pub unsafe fn cranelisp_platform::poll_support::PollEnv::new(*mut core::ffi::c_void) -> Self
+pub fn cranelisp_platform::poll_support::PollEnv::result(&self) -> i64
+pub fn cranelisp_platform::poll_support::PollEnv::set_result(&self, i64)
+impl core::marker::Freeze for cranelisp_platform::poll_support::PollEnv
+impl !core::marker::Send for cranelisp_platform::poll_support::PollEnv
+impl !core::marker::Sync for cranelisp_platform::poll_support::PollEnv
+impl core::marker::Unpin for cranelisp_platform::poll_support::PollEnv
+impl core::marker::UnsafeUnpin for cranelisp_platform::poll_support::PollEnv
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::poll_support::PollEnv
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::poll_support::PollEnv
+pub struct cranelisp_platform::poll_support::PollState<'e>
+impl<'e> cranelisp_platform::poll_support::PollState<'e>
+pub fn cranelisp_platform::poll_support::PollState<'e>::drive(&self, i64, impl core::ops::function::FnOnce() -> cranelisp_platform::poll_support::PollStep, impl core::ops::function::FnOnce() -> cranelisp_platform::poll_support::PollStep) -> cranelisp_types::scheduling::Poll
+pub fn cranelisp_platform::poll_support::PollState<'e>::is_first_poll(&self) -> bool
+pub fn cranelisp_platform::poll_support::PollState<'e>::new(&'e cranelisp_platform::poll_support::PollEnv) -> Self
+impl<'e> core::marker::Freeze for cranelisp_platform::poll_support::PollState<'e>
+impl<'e> !core::marker::Send for cranelisp_platform::poll_support::PollState<'e>
+impl<'e> !core::marker::Sync for cranelisp_platform::poll_support::PollState<'e>
+impl<'e> core::marker::Unpin for cranelisp_platform::poll_support::PollState<'e>
+impl<'e> core::marker::UnsafeUnpin for cranelisp_platform::poll_support::PollState<'e>
+impl<'e> core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::poll_support::PollState<'e>
+impl<'e> core::panic::unwind_safe::UnwindSafe for cranelisp_platform::poll_support::PollState<'e>
+pub struct cranelisp_platform::poll_support::Reactor
+impl cranelisp_platform::poll_support::Reactor
+pub unsafe fn cranelisp_platform::poll_support::Reactor::new(*const cranelisp_platform::HostCtx, *const cranelisp_platform::Waker) -> Self
+pub fn cranelisp_platform::poll_support::Reactor::wake_on_readable(&self, i32)
+pub fn cranelisp_platform::poll_support::Reactor::wake_on_timer(&self, u64)
+pub fn cranelisp_platform::poll_support::Reactor::wake_on_writable(&self, i32)
+impl core::marker::Freeze for cranelisp_platform::poll_support::Reactor
+impl !core::marker::Send for cranelisp_platform::poll_support::Reactor
+impl !core::marker::Sync for cranelisp_platform::poll_support::Reactor
+impl core::marker::Unpin for cranelisp_platform::poll_support::Reactor
+impl core::marker::UnsafeUnpin for cranelisp_platform::poll_support::Reactor
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::poll_support::Reactor
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::poll_support::Reactor
 pub macro cranelisp_platform::declare_platform!
 pub enum cranelisp_platform::ExpectedFieldType
 pub cranelisp_platform::ExpectedFieldType::Adt(&'static str)
@@ -283,7 +334,20 @@ impl core::marker::Unpin for cranelisp_platform::HostContext
 impl core::marker::UnsafeUnpin for cranelisp_platform::HostContext
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::HostContext
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::HostContext
+#[repr(C)] pub struct cranelisp_platform::HostCtx
+pub cranelisp_platform::HostCtx::host: *const core::ffi::c_void
+pub cranelisp_platform::HostCtx::register_readable: fn(*const core::ffi::c_void, i32, *const cranelisp_platform::Waker)
+pub cranelisp_platform::HostCtx::register_timer: fn(*const core::ffi::c_void, u64, *const cranelisp_platform::Waker)
+pub cranelisp_platform::HostCtx::register_writable: fn(*const core::ffi::c_void, i32, *const cranelisp_platform::Waker)
+impl core::marker::Freeze for cranelisp_platform::HostCtx
+impl !core::marker::Send for cranelisp_platform::HostCtx
+impl !core::marker::Sync for cranelisp_platform::HostCtx
+impl core::marker::Unpin for cranelisp_platform::HostCtx
+impl core::marker::UnsafeUnpin for cranelisp_platform::HostCtx
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::HostCtx
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::HostCtx
 #[non_exhaustive] pub struct cranelisp_platform::OwnedPlatformFnDescriptor
+pub cranelisp_platform::OwnedPlatformFnDescriptor::concurrency: cranelisp_types::scheduling::ConcurrencyDescriptor
 pub cranelisp_platform::OwnedPlatformFnDescriptor::docstring: alloc::string::String
 pub cranelisp_platform::OwnedPlatformFnDescriptor::name: alloc::string::String
 pub cranelisp_platform::OwnedPlatformFnDescriptor::param_count: usize
@@ -310,8 +374,10 @@ impl core::marker::UnsafeUnpin for cranelisp_platform::ParseLoc
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::ParseLoc
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::ParseLoc
 #[repr(C)] pub struct cranelisp_platform::PlatformFn
+pub cranelisp_platform::PlatformFn::concurrency: cranelisp_types::scheduling::ConcurrencyDescriptor
 pub cranelisp_platform::PlatformFn::docstring: *const u8
 pub cranelisp_platform::PlatformFn::docstring_len: usize
+pub cranelisp_platform::PlatformFn::drop_state: core::option::Option<fn(*mut core::ffi::c_void)>
 pub cranelisp_platform::PlatformFn::name: *const u8
 pub cranelisp_platform::PlatformFn::name_len: usize
 pub cranelisp_platform::PlatformFn::param_count: u32
@@ -319,7 +385,6 @@ pub cranelisp_platform::PlatformFn::param_name_count: usize
 pub cranelisp_platform::PlatformFn::param_name_lens: *const usize
 pub cranelisp_platform::PlatformFn::param_names: *const *const u8
 pub cranelisp_platform::PlatformFn::ptr: *const u8
-pub cranelisp_platform::PlatformFn::scheduling_class: u32
 pub cranelisp_platform::PlatformFn::type_sig: *const u8
 pub cranelisp_platform::PlatformFn::type_sig_len: usize
 impl core::marker::Send for cranelisp_platform::PlatformFn
@@ -369,6 +434,28 @@ impl core::marker::Unpin for cranelisp_platform::TypeShape
 impl core::marker::UnsafeUnpin for cranelisp_platform::TypeShape
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::TypeShape
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::TypeShape
+#[repr(C)] pub struct cranelisp_platform::Waker
+pub cranelisp_platform::Waker::data: *const core::ffi::c_void
+pub cranelisp_platform::Waker::vtable: *const cranelisp_platform::WakerVTable
+impl core::marker::Freeze for cranelisp_platform::Waker
+impl !core::marker::Send for cranelisp_platform::Waker
+impl !core::marker::Sync for cranelisp_platform::Waker
+impl core::marker::Unpin for cranelisp_platform::Waker
+impl core::marker::UnsafeUnpin for cranelisp_platform::Waker
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::Waker
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::Waker
+#[repr(C)] pub struct cranelisp_platform::WakerVTable
+pub cranelisp_platform::WakerVTable::clone: fn(*const core::ffi::c_void) -> cranelisp_platform::Waker
+pub cranelisp_platform::WakerVTable::drop: fn(*const core::ffi::c_void)
+pub cranelisp_platform::WakerVTable::wake: fn(*const core::ffi::c_void)
+pub cranelisp_platform::WakerVTable::wake_by_ref: fn(*const core::ffi::c_void)
+impl core::marker::Freeze for cranelisp_platform::WakerVTable
+impl core::marker::Send for cranelisp_platform::WakerVTable
+impl core::marker::Sync for cranelisp_platform::WakerVTable
+impl core::marker::Unpin for cranelisp_platform::WakerVTable
+impl core::marker::UnsafeUnpin for cranelisp_platform::WakerVTable
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::WakerVTable
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::WakerVTable
 pub const cranelisp_platform::ABI_VERSION: u32
 pub const cranelisp_platform::HEAP_HEADER_SIZE: i64
 pub const cranelisp_platform::IO_EFFECT_CAPACITY_OFFSET: i64
@@ -376,8 +463,11 @@ pub const cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET: i64
 pub const cranelisp_platform::IO_EFFECT_RESOURCE_OFFSET: i64
 pub const cranelisp_platform::IO_TAG_BIND: i64
 pub const cranelisp_platform::IO_TAG_EFFECT: i64
+pub const cranelisp_platform::IO_TAG_EFFECT_POLL: i64
+pub const cranelisp_platform::IO_TAG_LAUNCH: i64
 pub const cranelisp_platform::IO_TAG_PAR: i64
 pub const cranelisp_platform::IO_TAG_PURE: i64
+pub const cranelisp_platform::IO_TAG_SELECT: i64
 pub const cranelisp_platform::STRING_HEADER_BYTES: usize
 pub trait cranelisp_platform::CLAdtType: 'static
 pub const cranelisp_platform::CLAdtType::TYPE_NAME: &'static str
@@ -441,3 +531,4 @@ pub unsafe fn cranelisp_platform::manifest_to_descriptors(&cranelisp_platform::P
 pub c fn cranelisp_platform::null_alloc_with_tag(u32, u32, *const i64) -> i64
 pub fn cranelisp_platform::platform_manifest_symbol(&str) -> alloc::string::String
 pub fn cranelisp_platform::set_global_schema(cranelisp_platform::Schema)
+pub type cranelisp_platform::PollFn = fn(*mut core::ffi::c_void, *const cranelisp_platform::HostCtx, *const cranelisp_platform::Waker) -> cranelisp_types::scheduling::Poll

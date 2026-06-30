@@ -17,8 +17,11 @@ Per `design/arch/bounded-contexts.md` §5 — platform is the *shared interface 
 - C-ABI manifest types — `PlatformManifest`, `PlatformFn`, `HostCallbacks` (all `#[repr(C)]`)
 - Manifest parsing — `manifest_to_descriptors()` → `OwnedPlatformFnDescriptor`
 - Effect-thunk consumption primitive — `call_effect_thunk` (single-shot, called from runtime)
-- Constants — `ABI_VERSION`, `IO_TAG_PURE`/`IO_TAG_EFFECT`/`IO_TAG_BIND`/`IO_TAG_PAR`, `HEAP_HEADER_SIZE`, `IO_EFFECT_RESOURCE_OFFSET`, `STRING_HEADER_BYTES`
-- DLL author macro — `declare_platform!`
+- Constants — `ABI_VERSION` (= **7**), `IO_TAG_PURE`/`IO_TAG_EFFECT`/`IO_TAG_BIND`/`IO_TAG_PAR`, `HEAP_HEADER_SIZE`, `IO_EFFECT_RESOURCE_OFFSET` (16), `IO_EFFECT_FN_NAME_OFFSET` (24, ABI v4), `IO_EFFECT_CAPACITY_OFFSET` (32, S95 slice-3 carrier), `STRING_HEADER_BYTES`
+- Resource/capacity effect constructors — `CLIO::effect_on_resource(token, f)` and the additive sibling `CLIO::effect_on_resource_with_capacity(token, capacity, f)` (S95 slice-3 carrier; `effect_on_resource(token, f) = …_with_capacity(token, 1, f)`)
+- DLL author macros — `declare_platform!` (v6 blocking) + the `concurrency`-gated `declare_concurrent_platform!` (v7 poll-shape), both in `declare.rs`
+- v7 host-reactor C-ABI contract types (`concurrency.rs`, `#[cfg(feature = "concurrency")]`, off the default edge) — `HostCtx`, `Waker`, `WakerVTable`, `PollFn`, `ConcurrentPlatformFn`, `ConcurrentPlatformManifest` (+ `cranelisp_types::{ConcurrencyDescriptor, Poll}` re-exports)
+- `concurrency`-gated `poll_support` ergonomics module (S96) — typed env accessor + fd/timer reactor scaffold + `PollState` phase scaffold (`design/platform/poll-support.md`)
 - Per-DLL write-once globals — `HostContext`, the two allocator slots (`GLOBAL_ALLOC`, `GLOBAL_ALLOC_WITH_TAG`), and the schema `OnceLock` (`GLOBAL_SCHEMA` in `adt.rs`)
 - ADT marshaling — `CLAdt<T>` heap-ADT wrapper, `CLAdtType` marker trait, `EffectOutcome` `#[repr(C)]` fault-outcome carrier
 - Schema parser — `Schema`/`TypeShape`/`Ctor`/`Field` + the tiny S-expr lexer/parser (`schema.rs`), reading the backend-generated `/platform-schema` artifact for name→offset field lookup
@@ -48,7 +51,7 @@ Per `design/arch/bounded-contexts.md` §5 — platform is the *shared interface 
 - **Safe descriptor**: `OwnedPlatformFnDescriptor` — UTF-8-validated Rust mirror of `PlatformFn`, returned by `manifest_to_descriptors()`.
 - **DLL author macro**: `declare_platform!` (+ the internal `__declare_platform_body!`) — the **three-exports** emitter: the GOT (`__cranelisp_got_platform_<name>`), the `cranelisp_platform_manifest` extern, and (with the `schema:` arm) the `__cranelisp_layout_hash_<name>` data symbol. `extract_layout_hash()` is the const-fn it uses to pull the hash from the embedded artifact.
 - **Schema parser** (`schema.rs`): `Schema`/`TypeShape`/`Ctor`/`Field`/`FieldType` + a tiny S-expr lexer/parser, total and frontend-independent (Principle 3), reading the backend-generated `/platform-schema` artifact for `read_field` name→index resolution.
-- **Constants**: `ABI_VERSION = 5`, `IO_TAG_*`, `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, `IO_EFFECT_RESOURCE_OFFSET`.
+- **Constants**: `ABI_VERSION = 7`, `IO_TAG_*` (incl. the reserved `IO_TAG_EFFECT_POLL`, gated), `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, `IO_EFFECT_RESOURCE_OFFSET = 16`, `IO_EFFECT_FN_NAME_OFFSET = 24`, `IO_EFFECT_CAPACITY_OFFSET = 32`.
 - **Re-exports** (per Principle 15 external-audience exception): `pub use cranelisp_types::SchedulingClass`; `pub use cranelisp_types::PlatformError` (per Decision 42, when adopted — see §3 divergence list).
 
 Per Principle 15 the exception is justified inline in the facade: out-of-tree DLL author crates depend ONLY on `cranelisp-platform` and have no reason to depend on `cranelisp-types`. This is the only crate in the workspace that exercises the external-audience exception.
@@ -57,9 +60,24 @@ Drift detection between facade and implementation is the job of `cargo-public-ap
 
 ---
 
-## 3. Current state (as-built — audit 2026-06-14)
+## 3. Current state (as-built — audit 2026-06-14; ABI/file refresh S96 FIXME 0461)
 
-The crate is **three files, 3,816 source lines, ABI v5**, dispatching **GOT-indirect** with **ADT marshaling**. It has cleanly absorbed three major reworks since the S71-era reading this section used to describe: S71 ADT marshaling, S76 three-exports, S81 fault-guarded dispatch funnel. The audit's verdict: it **conforms to all nine BC §5 invariants and the three-exports model**, with **no HIGH findings**.
+> **S96 refresh (FIXME 0461 drain).** The audit headline below was written at
+> ABI v5 / three files. As-built today the stamp is **ABI v7** and the crate is
+> **five files** — the macro pair split out to `declare.rs` (S84 MED-4 extract),
+> and the v7 host-reactor C-ABI contract types landed in `concurrency.rs`
+> (`#[cfg(feature = "concurrency")]`, off the default edge). Two bumps since the
+> audit: **v6** (S86 — namespaced manifest export `cranelisp_platform_manifest_<name>`,
+> DEF-5) and **v7** (S93 — the effect-concurrency ABI-v4 cascade, `concurrency`-gated
+> contracts). The S95 slice-3 **capacity carrier** also landed: the
+> `CLIO::effect_on_resource_with_capacity(token, capacity, f)` constructor + the
+> `IO_EFFECT_CAPACITY_OFFSET = 32` const (the `IO_TAG_EFFECT` payload widens
+> 32 → 40, **append-only**). See the refreshed "ABI version history" + "Capacity
+> carrier" below; the canonical surfaces remain the source rustdoc +
+> `io-trampoline.md` §13 / `effect-concurrency.md` §8.1 / `platform-interface.md`
+> §6.8.
+
+The crate is **five files, ABI v7**, dispatching **GOT-indirect** with **ADT marshaling**. It has cleanly absorbed five major reworks since the S71-era reading this section used to describe: S71 ADT marshaling, S76 three-exports, S81 fault-guarded dispatch funnel, S86 manifest-export namespacing (v6), S93 effect-concurrency ABI-v7 cascade (gated). The audit's verdict (at v5): it **conforms to all nine BC §5 invariants and the three-exports model**, with **no HIGH findings**.
 
 ### File metrics (from `audits/platform-2026-06-14.md`)
 
@@ -89,7 +107,26 @@ The DLL-local fault catch (FIXME 0327 Option A, S81) is monomorphised into the D
 
 ### ABI version history
 
-`ABI_VERSION = 5` (was `1` in the S71-era reading this section replaced). The bump trail: **v1** primitive marshaling → **v2** S71 ADT marshaling (`alloc_with_tag`, schema DSL) → **v3** S76 three-exports (`validate_schema` removed, layout-hash gate) → **v4** EffectOutcome / dispatch funnel scaffolding → **v5** the 32-byte Effect node + fault-guarded dispatch (S81). The bump-rule enumeration is canonical in the `ABI_VERSION` rustdoc; `int`'s `load_platform_dll` refuses any DLL whose `manifest.abi_version != ABI_VERSION` (Principle 14; on mismatch → `PlatformError::AbiVersionMismatch`).
+`ABI_VERSION = 7` (was `1` in the S71-era reading this section replaced). The bump trail (canonical in the `ABI_VERSION` rustdoc): **v1** primitive marshaling → **v2** S71 ADT marshaling (`alloc_with_tag`, schema DSL) → **v3** S76 three-exports (`validate_schema` removed, layout-hash gate) → **v4** S81 fn-name node widen (`IO_EFFECT_FN_NAME_OFFSET = 24`; the `IO_TAG_EFFECT` node 24 → 32) → **v5** S81 EffectOutcome / DLL-local fault-catch (`call_effect_thunk` returns `EffectOutcome`) → **v6** S86 namespaced manifest export (`cranelisp_platform_manifest_<name>`, DEF-5; resolves the two-platforms-one-binary symbol collision) → **v7** S93 effect-concurrency ABI-v4 cascade (the poll-shape async-leaf boundary: `ConcurrentPlatformFn`/`PollFn` + `HostCtx`/`Waker` host-reactor C-ABI + `ConcurrencyDescriptor` subsuming `scheduling_class`; **landed-and-dormant behind the off-by-default `concurrency` feature**, so the default `public-api.txt` edge stays byte-identical-when-off — the `_neg` frozen-edge guard enforces this). `int`'s `load_platform_dll` refuses any DLL whose `manifest.abi_version != ABI_VERSION` (Principle 14; on mismatch → `PlatformError::AbiVersionMismatch`). The v7 stamp is bumped now (in-workspace host + DLLs rebuild together) even though the macro still emits the v6 `PlatformFn` shape until a platform opts into `declare_concurrent_platform!` — v7 is **not frozen** (no out-of-tree cdylib has shipped against it), which is why the S94 R1 `drop_state` reserve + the S95 capacity slots could be appended in place with no further bump.
+
+### Capacity carrier (S95 slice 3 — `effect_on_resource_with_capacity`)
+
+The `IO_TAG_EFFECT` node carries a fourth concurrency coordinate beyond the
+`resource_token` (offset 16) and the fn-name handle (offset 24): a **capacity**
+at `IO_EFFECT_CAPACITY_OFFSET = 32`. The additive sibling constructor
+`CLIO::effect_on_resource_with_capacity(token, capacity, f)` appends it (the node
+widens 32 → 40 bytes, **append-only — no existing offset moves**), and
+`effect_on_resource(token, f)` lowers to `…_with_capacity(token, 1, f)` (today's
+serial-within-token). This is the platform-supplied `(token, capacity)` carrier
+the trampoline reads to run a `Semaphore(capacity)` per token (arch §8.1; reactor.md
+§2.8 owns the pool). Capacity is per-**resource** (per-token), platform-supplied
+**dynamically at the effect site** — NOT a static `DefKind` field. S95 proved it
+on the **blocking carrier** (the synthetic `platforms/pool-demo` test leaf —
+`pool-read`/`pool-write`/`pool-log`, all declaring `(token, capacity)` via the new
+constructor — a blocking sibling of the `test-capture` test platform); the
+**poll-shape** carrier (`IO_TAG_EFFECT_POLL` reserving the same `(token, capacity)`
+slots) + live capacity-N supply + acquire-around-poll is **S96 Chunk A** (the web
+reactor connection pool — `poll-support.md`).
 
 ### As-built vs as-designed — BC §5 conformance (audit)
 
@@ -141,7 +178,7 @@ There is no internal cadence: no threads spawned, no state machines, no schedule
 
 The platform calling convention is the contract that compiled cranelisp code, the IO trampoline (in runtime), and platform DLLs all agree on. Per spec §10.10.1 (current state — pre-callback): every value crosses as a single `i64`.
 
-**Type → i64 mapping** (current ABI, version 5):
+**Type → i64 mapping** (current ABI, version 7):
 
 | Cranelisp type | i64 interpretation | Wrapper |
 |---|---|---|
@@ -157,9 +194,10 @@ The platform calling convention is the contract that compiled cranelisp code, th
 | Tag | Constant | Size (after header) | Fields |
 |---|---|---|---|
 | 0 | `IO_TAG_PURE` | 16 | `[tag, value]` |
-| 1 | `IO_TAG_EFFECT` | **32** (ABI v5) | `[tag, thunk_ptr, resource_token, fn_name]` — `thunk_ptr` is a `Box<Box<dyn FnOnce() -> i64>>` ptr; the 4th field is the reserved fn-name coordinate the dispatch funnel stamps (§9a) |
+| 1 | `IO_TAG_EFFECT` | **40** (ABI v7; S95 capacity widen) | `[tag, thunk_ptr, resource_token, fn_name, capacity]` — `thunk_ptr` is a `Box<Box<dyn FnOnce() -> i64>>` ptr; `resource_token` @16, `fn_name` @24 (the dispatch funnel coordinate, §9a), `capacity` @32 (`IO_EFFECT_CAPACITY_OFFSET`, the S95 slice-3 carrier — `effect_on_resource(token, f)` writes capacity 1). Append-only — no existing offset moved. |
 | 2 | `IO_TAG_BIND` | (set by runtime) | Internal — reserved tag, not constructed by platform DLLs |
-| 3 | `IO_TAG_PAR` | (set by runtime) | Reserved for spec §10.12 automatic IO scheduling |
+| 3 | `IO_TAG_PAR` | (set by runtime) | spec §10.12 automatic IO scheduling |
+| 4 | `IO_TAG_EFFECT_POLL` | 16 payload (`concurrency`-gated) | `[tag, state_closure]` — the poll-shape async-leaf node; field-0 is a host-built state-closure (`[header | code_ptr=poll-fn | drop_glue | env]`); the `(token, capacity)` reserve the same slots. Built by the **backend** (io-trampoline §12), not the DLL. |
 
 The double-boxed thunk on Effect nodes is a thin pointer (one `i64`) over a trait object (two `i64`s). `call_effect_thunk` reclaims via `Box::from_raw`, invokes once **under the DLL-local `catch_unwind`**, and returns a `#[repr(C)] EffectOutcome` (ABI v4→v5 — the fault-outcome carrier; §9a). The trampoline (in intrinsics) MUST not call `call_effect_thunk` on the same node twice — single-shot, by contract.
 
@@ -493,13 +531,74 @@ The other `design/platform/` documents:
 | `CLAUDE.md` | Current | **Keep**. Local conventions for `/platform` design work — read first when designing. |
 | `sprint71-redesign.md` | Current | **Keep**. The S71 platform-boundary redesign (schema parser, `CLAdt<T>`, marker-type pattern, `HostCallbacks` growth, `ABI_VERSION = 2`, R1 wired-or-panic gate). The boundary the S76 host-wiring (`host-wiring-s76.md`) wires up. |
 | `host-wiring-s76.md` | Current (Phase 3) | **Keep**. The S76 W-Integrate host-wiring plan: platform-side completeness audit (round-trip path), the cross-crate seam map (FIXMEs 0229–0235 → owning crate + data/ABI contract), round-trip completion sequence, and the one /arch seam (S-PLAT-1 schema-literal exposure, FIXME 0250). Platform's own delta is near-zero — the wiring is overwhelmingly consumer-side. |
-| `platform-dlls.md` | Pre-Decision-42 references stringly-typed errors; pre-Decision-40 doesn't mention the platform-runtime pairing; pre-Principle-14 doesn't cite the layout-discipline rule. The mechanics it documents (search path, manifest format, capture-RC protocol, `cranelisp-stdio` reference platform, `cranelisp-test-capture` test platform) are all current and load-bearing. **Keep — minor refresh needed.** Refresh deferred to the same sprint that lands FIXME 0104 (PlatformError adoption) so the error-surface narrative can be updated in one pass. |
+| `poll-support.md` | Current (S96 Chunk A, pre-implementation) | **Keep**. The `concurrency`-gated `poll_support` ergonomics-suite design (typed env accessor `PollEnv`, fd/timer `Reactor` scaffold, `PollState` phase scaffold) + the web/stdio v7 poll-shape adoption + the converged `declare_platform!`/`declare_concurrent_platform!` macro skeleton honouring gate (c). Evidence-first: the extraction target the Chunk-A `/dev` hand-rewrite converges to. Cites reactor.md §2.8 (acquire-around-poll / RAII Permit) + io-trampoline §12 (poll-node bake) as referenced seams. |
+| `platform-dlls.md` | **Refreshed S96 (FIXME 0461 drain).** The capacity carrier (`effect_on_resource_with_capacity` + `IO_EFFECT_CAPACITY_OFFSET`), the ABI-v7 stamp, the namespaced manifest export, the `PlatformError` error surface (Decision 42), and the `pool-demo` blocking test leaf are now reconciled. The mechanics it documents (search path, manifest format, capture-RC protocol, `cranelisp-stdio` reference platform, `cranelisp-test-capture` test platform) remain current and load-bearing. **Keep.** Canonical constructor/constant surface is still the source rustdoc + `io-trampoline.md` §13 — this doc carries the loading mechanics narrative. |
 | `archive/platform-registry-removal.md` | Work has landed (Decision 27 deletion + cache-restore addendum). Lessons folded into Decisions 26, 27, 38 and into this master + `platform-dlls.md`. **Archived** to `design/platform/archive/` (FIXME 0106 resolved). |
 | `runtime.md` | **Mis-located.** This file is the runtime crate's design doc, not platform's. It collides namewise with `design/runtime/runtime.md` (the canonical home post-S64) and predates the per-crate-master-design baseline. **Delete.** The canonical runtime master is `design/runtime/runtime.md`; nothing in `design/platform/runtime.md` is uniquely load-bearing for the platform crate (the platform-side view of the IO trampoline contract is captured in §5 of this doc; the `call_effect_thunk` semantics in §5; the allocator wiring in §4; the platform-runtime pairing in the §10 Decision register row for Decision 40). Deletion executed this pass — git history preserves content per S64 methodology rule. |
 
 ---
 
 ## 13. Open questions / FIXMEs filed this pass
+
+### S96 Chunk-B pass (2026-06-29, `/design` platform + /port perspective) — FIXME 0465 (web connection-handle interface)
+
+Resolved **FIXME 0465** (the Chunk-B keystone — the web capacity-on-poll connection
+model needed a concrete cranelisp connection-handle interface that did not exist). The
+resolution is **`poll-support.md` §3.5** (new): the `web/Listener` + `web/Connection`
+handle ADTs (ordinary `.cl` types, /port-owned), the four v8 poll-leaf signatures
+(`bind-listener` blocking + `accept-conn`/`read-conn`/`send-conn` poll `ResourceSerial`,
+each riding the leading-pair `(token, capacity)` convention), the `.cl` destructuring
+wrappers (the cranelisp value SOURCE — `accept`/`read`/`send` destructure the handle and
+supply the leading pair so `main.cl` reads in handle terms), and the serial serve-loop
+reshape with the Chunk-B launch-and-continue fan-out drop-in seam. The `(token, capacity)`
+reach the poll node via the wrapper-placed leading operands → backend bake (offsets 32/40)
+→ `await_poll_node` → the A3 acquire-around-poll permit (lit up on every web leaf). §3.5
+also **refined §3.2/§3.4.5's loose "capacity N per connection" wording** to the arch §16
+faithful model: fresh per-connection token at capacity **1** (serial within the
+connection), with the in-flight-**connection-COUNT** ceiling `N` enforced by the **Chunk-B
+slice-4 global admission budget** (sibling `/design` intrinsics), NOT a per-connection
+capacity-N. **FIXME 0465 deleted this pass.**
+
+**No new FIXME filed; no `/arch` escalation.** The interface uses only the ratified §8.1
+leading-pair carrier + ordinary `.cl` ADTs — **no `cranelisp-types` change, no new
+cross-crate convention.** One **coordination note for `/sprint`** (recorded in §3.5.6, not
+a blocker, no contradiction with the sibling seam): the server demo's "N concurrent
+connections; (N+1)th parks" acceptance is a **Chunk-B** property (the global admission
+budget the sibling owns), not a Chunk-A per-token-permit property — Chunk A lights the
+permit up on every leaf; Chunk B supplies the count ceiling. The rejected shared-pool-token
+alternative (which would make the per-token permit bound the count in Chunk A) is recorded
+in §3.5.6 with its arch-§16 divergence rationale.
+
+> **Doc-staleness residual (not 0465, flagged for a future `/design` platform pass):**
+> `poll-support.md` §2/§4 + `platform-dlls.md` still describe the v6/v7 *coexistence*
+> envelope (`#[cfg(feature = "concurrency")]`, ABI-v7, the two-macro split). The S96
+> **single-ABI v8 cutover** (A4c — landed) superseded that. A top banner + a §4 banner were
+> added to `poll-support.md` to redirect readers; a full v8 sweep of §2/§4 + `platform-dlls.md`
+> (ABI 7→8, one `declare_platform!`, ungated ABI types, always-present reactor) is owed but
+> out of 0465's narrow scope.
+
+### S96 Chunk-A pass (2026-06-28, `/design` platform) — poll_support + web/stdio v7 + FIXME 0461 drain
+
+This pass authored the new subordinate doc **`design/platform/poll-support.md`**
+(the `concurrency`-gated `poll_support` ergonomics suite + the web/stdio v7
+poll-shape adoption + the converged macro skeleton honouring Phase-2 gate (c)) and
+**drained FIXME 0461** by reconciling §1/§2/§3/§5/§12 of this master + the
+mechanics in `platform-dlls.md` to the live ABI-v7 + capacity-carrier state:
+`ABI_VERSION` 5 → 7 (the v6/v7 bumps named), `IO_EFFECT_FN_NAME_OFFSET = 24` +
+`IO_EFFECT_CAPACITY_OFFSET = 32` added, `effect_on_resource_with_capacity` added to
+the constructor inventory, the 40-byte `IO_TAG_EFFECT` payload noted (append-only),
+the `IO_TAG_EFFECT_POLL` reserve recorded, the five-file crate shape + the
+`concurrency.rs`/`declare.rs` modules named, and the `platforms/pool-demo` blocking
+test leaf mentioned alongside `test-capture`. **FIXME 0461 is deleted this pass.**
+
+**No new FIXME filed.** No cross-crate contradiction found against the sibling
+Chunk-A design seams (`reactor.md` §2.8 acquire-around-poll / RAII Permit;
+`io-trampoline.md` §12 poll-node bake): the platform side is permit-agnostic and the
+`PollEnv` accessor adopts io-trampoline §12.2's result-slot-first offset verbatim.
+The one coordination point (result-slot placement) is flagged in `poll-support.md`
+§2.1/§3.3 as single-sited, not a contradiction. The v7 contract types + the
+capacity carrier are `/arch`-owned at `effect-concurrency.md`/`platform-interface.md`
+and were read-only here.
 
 ### S84 pass (2026-06-16, `/design` platform) — §3 doc-truth refresh (FIXME 0372 / audit MED-1)
 

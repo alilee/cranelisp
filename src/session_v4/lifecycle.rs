@@ -106,6 +106,12 @@ impl CompilerSession {
             &entry_module,
         );
 
+        // Arm the SIGUSR1 scheduler-state dump if CRANELISP_SCHED_DUMP_ON_SIGUSR1
+        // is set (permanent in-tree lost-wakeup diagnostic; no-op otherwise).
+        // Registers this session's scheduler so `kill -USR1 <pid>` on a hung
+        // child prints which module is stranded + on what — see src/sched_dump.rs.
+        crate::sched_dump::arm_if_enabled(&shared);
+
         let (priority_worker_handles, nice_worker_handles) =
             Self::spawn_worker_threads(&shared, priority_workers, nice_workers);
 

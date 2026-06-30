@@ -380,7 +380,7 @@ fn resolve_poll_effect_target_keys_on_poll_shape() {
     // poll-shape resolves to (defining module, slot, param types) — the keying.
     let got = resolve_poll_effect_target(&tables, &aliases, &plat, &Symbol::from("async-read"));
     assert!(
-        matches!(&got, Some((m, 3, params)) if m == &plat && params.len() == 1),
+        matches!(&got, Some((m, 3, params, _class)) if m == &plat && params.len() == 1),
         "poll-shape effect must key the poll arm with its param types, got {got:?}",
     );
     // blocking effect → None (unchanged call path; byte-identical-off).

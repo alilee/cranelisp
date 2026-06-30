@@ -78,6 +78,7 @@ is the **capability taught**. Exit code is the documented `main` return
 | 29 | `29-annotations.cl` | The `:Type` annotation model (capstone): constraining function typing + disambiguating expressions | 119 |
 | 30 | `30-parallel-map-reduce.cl` | A general parallel `par-map` over a Functor: apply-argument sparking makes recursive divide-and-conquer and `fmap` of an expensive function parallelise automatically | 56 |
 | 31 | `31-bitwise.cl` | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) as bitmask set operations; inline single-bit helpers (`bit-test`/`bit-set`/`bit-clear`/`bit-flip`) and a permission bitmask | 19 |
+| 32 | `32-concurrency-combinators.cl` | Explicit-control concurrency (the CONTROL peer to 28/30's inferred half): `sleep` timer leaf, `race` (first-to-complete wins, loser cancelled), `select` (n-ary race over a Vec), and the `timeout` pattern expressed inline as `race`-against-a-deadline (stdlib `timeout` is off-limits to free-standing examples) | 6 |
 
 ### Notes on specific entries
 
@@ -127,6 +128,31 @@ is the **capability taught**. Exit code is the documented `main` return
   reference `CRANELISP_NO_LENIENT=1` (codegen escape hatch) and
   `CRANELISP_SPARK_BUDGET` (runtime in-flight cap). Exit 56 unchanged
   (`main` returns 312 = 8 × 39, cross-checked between the two stages).
+
+- **32-concurrency-combinators** (S96 Phase 6) — the **control** peer to 28/30's
+  inferred half. Teaches the S96 explicit-control combinators: `sleep` (the timer
+  leaf, parks d ms then resumes with 0), `race` (first-to-complete wins, loser
+  CANCELLED so the race completes in ≈ the winner's wall-clock), `select` (n-ary
+  race over a **Vec** `[...]`, never a List — FIXME 0480), and the `timeout`
+  PATTERN. All three are `primitives` builtins (no platform DLL, no env var).
+  Free-standing: stdlib `timeout` is off-limits, so the timeout pattern is
+  expressed INLINE as `(race work deadline)` where the deadline branch is built
+  from `sleep` and yields a sentinel (99) on firing — exactly the stdlib
+  derivation `timeout d io ≡ race io (sleep d)`, written out. Six sub-tests, each
+  contributing 1 to a pass count → exit 6. Determinism: a Pure / a 50 ms branch
+  always beats a 300 ms branch (6× gap; the loser is cancelled so wall-clock is
+  ≈ the winner), verified exit-6-stable over 5 runs (~0.32 s each).
+  - **Defect dodged by idiom (handed to /qa):** under lenient eval (default),
+    `race` with an **inline `bind`-lambda argument** miscompiles —
+    `(race (bind (Pure 0) (fn [_] (Pure 111))) (Pure 222))` errors with
+    `failed to declare lambda function: … signature … incompatible with previous
+    declaration` (a 2-param vs 1-param lambda-name collision from apply-argument
+    sparking). `CRANELISP_NO_LENIENT=1` compiles it cleanly; `select` with the
+    same inline shape is unaffected; lifting each `race` branch into a named
+    helper avoids it. The example factors every `race`/`select` branch into a
+    named helper — which is the clearer pedagogy anyway AND sidesteps the bug.
+    Handoff repro in the S96 Phase-6 /examples report (for the consolidated /qa
+    narrow-test pass).
 
 ## 3. Platform / IO examples (21–24) — running without an env var
 
@@ -200,6 +226,7 @@ the spec when annotating coverage.)
 | Lazy sequences | 27 |
 | IO model (`Pure`, `bind`, platform IO, `read-line`) | 21, 22, 23, 24 |
 | Parallel evaluation (lenient eval: independent `let` bindings + apply-arguments) | 28, 30 |
+| Explicit-control concurrency combinators (`sleep`/`race`/`select` + inline `timeout` pattern) | 32 |
 | `:Type` annotation model | 29 |
 | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) | 31 |
 
@@ -223,9 +250,16 @@ to reconcile that table.
 
 ## Next skills
 
-- `/qa` — reconcile the `tests/examples.rs` expected-exit table: ADD
-  `31-bitwise.cl => 19` (S91 bitwise primitives example). Also (pre-existing)
-  the S86 changes (08-floats 9→10, 22-io-hello 11→99); replay
-  `tests/examples.rs`.
+- `/qa` — (1) The S96 `32-concurrency-combinators.cl => 6` row is already in the
+  `tests/examples.rs` table (added with the example so the umbrella stays green —
+  the test's own assertion instructs the file-adder to update `expected_exits()`);
+  no reconciliation owed, just awareness. (2) Author the narrow failing repro for
+  the **race-inline-bind-lambda lenient-eval codegen defect** surfaced by this
+  example — minimal: `(import [primitives [Pure bind race]]) (defn main [] (race
+  (bind (Pure 0) (fn [_] (Pure 111))) (Pure 222)))` errors under default lenient
+  eval with `failed to declare lambda function … incompatible with previous
+  declaration`, compiles+runs (exit 111) under `CRANELISP_NO_LENIENT=1`; `select`
+  with the same shape is unaffected. Resolver: `/backend` (apply-argument
+  sparking vs combinator-argument lambda naming).
 - `/docs` — getting-started can lead with `01-integers` and reference the
   platform-symlink note here for the IO examples.

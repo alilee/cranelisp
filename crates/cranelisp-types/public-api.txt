@@ -142,6 +142,11 @@ pub cranelisp_types::Expr::Lambda::body: alloc::boxed::Box<cranelisp_types::Expr
 pub cranelisp_types::Expr::Lambda::inferred_type: core::option::Option<alloc::boxed::Box<cranelisp_types::Type>>
 pub cranelisp_types::Expr::Lambda::params: alloc::vec::Vec<(cranelisp_types::Symbol, core::option::Option<cranelisp_types::TypeExpr>)>
 pub cranelisp_types::Expr::Lambda::span: cranelisp_types::Span
+pub cranelisp_types::Expr::LaunchContinue
+pub cranelisp_types::Expr::LaunchContinue::continuation: alloc::boxed::Box<cranelisp_types::Expr>
+pub cranelisp_types::Expr::LaunchContinue::inferred_type: core::option::Option<alloc::boxed::Box<cranelisp_types::Type>>
+pub cranelisp_types::Expr::LaunchContinue::launched: alloc::boxed::Box<cranelisp_types::Expr>
+pub cranelisp_types::Expr::LaunchContinue::span: cranelisp_types::Span
 pub cranelisp_types::Expr::Let
 pub cranelisp_types::Expr::Let::bindings: alloc::vec::Vec<(cranelisp_types::Symbol, cranelisp_types::Expr)>
 pub cranelisp_types::Expr::Let::body: alloc::boxed::Box<cranelisp_types::Expr>
@@ -336,6 +341,11 @@ pub cranelisp_types::MonoExpr::Lambda::body: alloc::boxed::Box<cranelisp_types::
 pub cranelisp_types::MonoExpr::Lambda::params: alloc::vec::Vec<cranelisp_types::Symbol>
 pub cranelisp_types::MonoExpr::Lambda::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::Lambda::ty: cranelisp_types::ConcreteType
+pub cranelisp_types::MonoExpr::LaunchContinue
+pub cranelisp_types::MonoExpr::LaunchContinue::continuation: alloc::boxed::Box<cranelisp_types::MonoExpr>
+pub cranelisp_types::MonoExpr::LaunchContinue::launched: alloc::boxed::Box<cranelisp_types::MonoExpr>
+pub cranelisp_types::MonoExpr::LaunchContinue::span: cranelisp_types::Span
+pub cranelisp_types::MonoExpr::LaunchContinue::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::Let
 pub cranelisp_types::MonoExpr::Let::bindings: alloc::vec::Vec<(cranelisp_types::Symbol, cranelisp_types::MonoExpr)>
 pub cranelisp_types::MonoExpr::Let::body: alloc::boxed::Box<cranelisp_types::MonoExpr>
@@ -477,6 +487,16 @@ impl core::marker::Unpin for cranelisp_types::PlatformError
 impl core::marker::UnsafeUnpin for cranelisp_types::PlatformError
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::PlatformError
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::PlatformError
+#[repr(i32)] pub enum cranelisp_types::Poll
+pub cranelisp_types::Poll::Pending = 1
+pub cranelisp_types::Poll::Ready = 0
+impl core::marker::Freeze for cranelisp_types::Poll
+impl core::marker::Send for cranelisp_types::Poll
+impl core::marker::Sync for cranelisp_types::Poll
+impl core::marker::Unpin for cranelisp_types::Poll
+impl core::marker::UnsafeUnpin for cranelisp_types::Poll
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::Poll
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::Poll
 #[non_exhaustive] pub enum cranelisp_types::PrimitiveNaming
 pub cranelisp_types::PrimitiveNaming::Bare
 pub cranelisp_types::PrimitiveNaming::Qualified
@@ -750,6 +770,22 @@ impl core::marker::Unpin for cranelisp_types::CompileResult
 impl core::marker::UnsafeUnpin for cranelisp_types::CompileResult
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::CompileResult
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::CompileResult
+#[repr(C)] pub struct cranelisp_types::ConcurrencyDescriptor
+pub cranelisp_types::ConcurrencyDescriptor::_reserved: [u8; 3]
+pub cranelisp_types::ConcurrencyDescriptor::blocking: u8
+pub cranelisp_types::ConcurrencyDescriptor::cardinality: u32
+pub cranelisp_types::ConcurrencyDescriptor::global_budget: u32
+pub cranelisp_types::ConcurrencyDescriptor::token: u64
+impl cranelisp_types::ConcurrencyDescriptor
+pub const fn cranelisp_types::ConcurrencyDescriptor::from_scheduling_class(cranelisp_types::SchedulingClass) -> Self
+pub const fn cranelisp_types::ConcurrencyDescriptor::nearest_scheduling_class(&self) -> cranelisp_types::SchedulingClass
+impl core::marker::Freeze for cranelisp_types::ConcurrencyDescriptor
+impl core::marker::Send for cranelisp_types::ConcurrencyDescriptor
+impl core::marker::Sync for cranelisp_types::ConcurrencyDescriptor
+impl core::marker::Unpin for cranelisp_types::ConcurrencyDescriptor
+impl core::marker::UnsafeUnpin for cranelisp_types::ConcurrencyDescriptor
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ConcurrencyDescriptor
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ConcurrencyDescriptor
 pub struct cranelisp_types::ConstrainedFn
 pub cranelisp_types::ConstrainedFn::scheme: cranelisp_types::Scheme
 pub cranelisp_types::ConstrainedFn::variant: cranelisp_types::DefnVariant
@@ -1565,6 +1601,7 @@ pub fn cranelisp_types::substitute_module_alias(&cranelisp_types::ModuleAliases,
 pub fn cranelisp_types::type_var_names(&cranelisp_types::Type) -> std::collections::hash::map::HashMap<cranelisp_types::TypeId, alloc::string::String>
 pub type cranelisp_types::CallGraph = std::collections::hash::map::HashMap<cranelisp_types::Symbol, cranelisp_types::CallInfo>
 pub type cranelisp_types::ModuleAliases = dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::ModuleAliasEntry>
+pub type cranelisp_types::PollFn = fn(*mut core::ffi::c_void, *const core::ffi::c_void, *const core::ffi::c_void) -> cranelisp_types::Poll
 pub type cranelisp_types::Program = alloc::vec::Vec<cranelisp_types::TopLevel>
 pub type cranelisp_types::Subst = std::collections::hash::map::HashMap<cranelisp_types::TypeId, cranelisp_types::Type>
 pub type cranelisp_types::SymbolTables<C, L> = dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>

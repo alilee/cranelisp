@@ -318,6 +318,36 @@ pub fn consume_io_tree(ptr: i64) {
         4 => {
             consume_closure(field0);
         }
+        // IO_TAG_LAUNCH (= 5, the S96 launch-and-continue node). field0 is the
+        // detached IO sub-tree — OR the `0` sentinel if the trampoline already
+        // moved it into a supervised strand (the move-out, `io-trampoline.md
+        // §15.5`). This is the **null-guarded field-0 drop glue**: an
+        // un-interpreted Launch (an unchosen `if`/`match` arm dropped without the
+        // trampoline reaching it) still holds the live sub-tree → recurse + free
+        // it (no leak); a detached one (field0 == 0) is a no-op (the strand owns
+        // it and `consume_io_tree`s it on completion). The `0`-sentinel write is
+        // the backend↔intrinsics contract (§15.5) — without it node-drop would
+        // double-free the now-strand-owned sub-tree. (Literal `5` to match the
+        // `4` poll arm's style; `cranelisp_platform::IO_TAG_LAUNCH` is the home.)
+        // The `field0 != 0` guard IS the null-guard (§15.5); a detached node
+        // (field-0 == 0) falls through to the `_` no-op and just deallocs.
+        5 if field0 != 0 => {
+            consume_io_tree(field0);
+        }
+        // IO_TAG_SELECT (= 6, the S96 Chunk-C race/select node). field0 is the
+        // branch carrier — a `Vec (IO a)` of the N candidate sub-trees. Unlike
+        // launch there is **no move-out and no null-guard** (select never
+        // detaches, `io-trampoline.md §16.5`): the node owns the Vec for the whole
+        // tree lifetime, and `consume_vec_with(field0, consume_io_tree)` dec's the
+        // Vec, consuming each branch IO sub-tree (winner AND losers, exactly once)
+        // and freeing the data buffer. Cancellation dropped only the loser
+        // *futures* (releasing their permits/interest); the loser *heap* sub-trees
+        // are reclaimed uniformly here with the rest of the list. (Literal `6` to
+        // match the `4`/`5` arms' style; `cranelisp_platform::IO_TAG_SELECT` is the
+        // home.)
+        6 => {
+            consume_vec_with(field0, consume_io_tree);
+        }
         _ => {
             // Unknown IO tag — treat conservatively as scalar fields.
         }

@@ -1229,7 +1229,265 @@ to be sourced from the declaration, not the manifest. The GOT + layout-hash dlsy
 the dual gate, the `--link` startup-stub hash bake — all unaffected. The hash symbol was
 already namespaced; the schema model does not change. Only the manifest fn's name moves.
 
-### 6.8 The ABI-v4 cascade — numeric `ABI_VERSION` 6→7 (S93, effect-concurrency slice 2)
+### 6.8.0 SINGLE-ABI CUTOVER — `ABI_VERSION` 7→8 (S96, user-directed; supersedes the dual-channel design below)
+
+> **Status: RATIFIED target (S96 /arch), pre-`/dev`-migration.** User direction
+> 2026-06-29: *"Jump to the latest ABI and ditch backward compatibility — there are
+> no users."* This **retires the v6/v7 coexistence envelope** that the rest of §6.8
+> (below) and the FIXME-0464 dual-manifest-merge ruling were built to preserve.
+> Everything below from "§6.8 The ABI-v4 cascade" onward is **HISTORICAL** — it
+> records how the additive, byte-identical-off, dormant-`concurrency`-feature
+> coexistence worked. The target is now a single ABI; read §6.8.0 as authoritative
+> and the rest as the path that led here.
+
+**The target: ONE platform ABI (v8).** One manifest type, one macro, one GOT
+export, one loader path. Each effect is **independently blocking or poll-shape via
+its `ConcurrencyDescriptor`** — `blocking == 1` ⇒ a blocking `CLIO`-returning effect
+fn; `blocking == 0` ⇒ a poll-shape async leaf (`PollFn`). There is no separate v7
+channel, no either/or probe, no within-DLL-mixing problem (FIXME 0464 **dissolves** —
+a single manifest naturally carries both shapes).
+
+**1. The unified manifest entry — `PlatformFn` absorbs `ConcurrentPlatformFn`.** The
+v6 `PlatformFn` and the v7 `ConcurrentPlatformFn` merge into ONE `#[repr(C)]`
+manifest entry. Because GOT-indirect dispatch is **shape-agnostic** (the slot holds
+a type-erased `*const u8`; the backend reads `poll_shape` off `DefKind` to decide
+what *node* to build), the entry needs only one fn-pointer field plus the descriptor:
+
+```rust
+#[repr(C)]
+pub struct PlatformFn {
+    pub name: *const u8, pub name_len: usize,
+    /// Blocking `extern "C"` effect fn (CLIO-returning) when `concurrency.blocking == 1`,
+    /// or a `PollFn` when `concurrency.blocking == 0`. Type-erased; GOT-indirect
+    /// dispatch is shape-agnostic — `DefKind::PlatformEffect.poll_shape` selects the node.
+    pub ptr: *const u8,
+    /// Poll-shape leaf state-teardown hook (the former ConcurrentPlatformFn.drop_state);
+    /// `None` for blocking effects.
+    pub drop_state: Option<unsafe extern "C" fn(state: *mut core::ffi::c_void)>,
+    pub param_count: u32,
+    pub type_sig: *const u8, pub type_sig_len: usize,
+    pub docstring: *const u8, pub docstring_len: usize,
+    pub param_names: *const *const u8, pub param_name_lens: *const usize, pub param_name_count: usize,
+    /// REPLACES `scheduling_class: u32`. Carries token + cardinality + global_budget + blocking.
+    pub concurrency: ConcurrencyDescriptor,
+}
+```
+
+`PlatformManifest` is unchanged in shape (it already points at a `*const PlatformFn`
+array) — only the element type's fields change. `ConcurrentPlatformManifest` is
+**deleted** (merged into `PlatformManifest`).
+
+**2. The ABI types become CORE (ungated).** `ConcurrencyDescriptor`, `Poll`,
+`PollFn` (`cranelisp-types`) and `HostCtx`, `Waker`, `WakerVTable`, `PollFn`
+(`cranelisp-platform`) graduate from the dormant `#[cfg(feature = "concurrency")]`
+edge to the default public surface — the descriptor is part of every manifest entry
+and any platform may declare a poll leaf. **The `concurrency` feature (layout-only)
+is RETIRED**; the host **reactor** stays optional behind `concurrency-runtime`
+(mio/futures, in `cranelisp-intrinsics`). **`/arch` has landed the `cranelisp-types`
+half** (ungated `ConcurrencyDescriptor`/`Poll`/`PollFn`; `from_scheduling_class`
+re-documented as the blocking-effect descriptor sugar, not a compat shim).
+
+**3. ONE macro — `declare_platform!`; `declare_concurrent_platform!` is DELETED.**
+The single macro emits one GOT (`__cranelisp_got_platform_<name>`), one namespaced
+manifest fn (`cranelisp_platform_manifest_<name>`), the unified `PlatformFn` array,
+and the optional `schema:`/layout-hash exports. Per-effect, the author writes EITHER
+`scheduling: SchedulingClass` (blocking sugar → `ConcurrencyDescriptor::from_scheduling_class`,
+`blocking = 1` — minimal churn for the 7 blocking platforms) OR `descriptor:
+ConcurrencyDescriptor { … }` (full, for poll-shape, `blocking = 0`) + optional
+`drop_state:`. This is a per-fn key choice inside one macro, **not** the rejected
+two-top-level-macro convergence — strictly simpler.
+
+**4. The loader is a SINGLE path.** `src/platform.rs::load_platform_dll` deletes the
+`#[cfg(feature = "concurrency")]` either/or probe + the `cranelisp_concurrent_manifest`
+symbol: it dlsyms `cranelisp_platform_manifest_<name>`, reads the unified manifest,
+and `manifest_to_descriptors` (the lone lifter; `concurrent_manifest_to_descriptors`
+is deleted) populates `OwnedPlatformFnDescriptor.concurrency` for every entry.
+`register_platform_in_tc` computes — with NO cfg — `poll_shape = desc.concurrency.blocking == 0`
+and `scheduling_class = desc.concurrency.nearest_scheduling_class()`, and builds
+`DefKind::PlatformEffect { scheduling_class, poll_shape, got_slot }`. The exe-bundle
+`--link` startup stub (`cranelisp_init_platform`) is unaffected in shape — it calls
+the same namespaced manifest fn for its init side-effect; only the `PlatformManifest`
+element type it transmutes against recompiles.
+
+**5. The DEFAULT (non-reactor) host + poll effects — the key question, answered.**
+The default build (no `concurrency-runtime`) fully understands the unified manifest:
+it reads `blocking`, registers blocking effects for synchronous dispatch, and
+registers poll-shape effects in the symbol table **but has no reactor to drive
+them**. The resolution is **call-time, not load-time** (load-time whole-platform
+refusal is wrong — it would break a mixed platform like stdio's `print` just because
+the same DLL also carries a poll `read_line`):
+
+- The platform **loads fully** in the default host; blocking effects work; a program
+  that never invokes a poll effect runs unchanged. This is what makes mixed platforms
+  (stdio = `print` blocking + `read_line` poll in ONE manifest) work in the default
+  host — the exact wall FIXME 0464 hit, now structurally gone.
+- The **backend is build-invariant** (no cargo feature): it always emits the
+  `IO_TAG_EFFECT_POLL` node for a `poll_shape` effect — the same backend compiles for
+  both the reactor and non-reactor binary, so it cannot know which it is in.
+- The **earliest build-aware point is the trampoline** (`cranelisp-intrinsics`,
+  `concurrency-runtime`-gated). The reactor build drives the poll node; the
+  **non-reactor build gains a new `#[cfg(not(feature = "concurrency-runtime"))]`
+  `IO_TAG_EFFECT_POLL` arm that returns a clean runtime error** — *"poll-shape effect
+  invoked without a concurrency runtime; rebuild with `--features
+  concurrency-runtime`"* — never a SIGSEGV, never a missing-arm panic. This is the one
+  load-bearing `/dev` addition for the default-host story.
+- Int MAY *additionally* surface a friendlier load-/codegen-time diagnostic when it
+  can detect (poll effect reachable) ∧ (no reactor), but the **structural guarantee
+  is the trampoline arm**.
+
+**6. `concurrency-runtime` stays OPTIONAL.** The default build is lean (no
+mio/futures, no reactor, blocking-only + the loud poll-error arm). This is
+recommended-kept: the production default never pays for the reactor, and `--link`
+output without `concurrency-runtime` links no executor (structural).
+
+**7. The "byte-identical-off" invariant CHANGES MEANING → "reactor-free-off".** The
+prior invariant (default build byte-identical because all v7 machinery is `#[cfg]`'d
+out) no longer holds — the ABI types are core, so the manifest, loader, and descriptor
+are present in every build. The NEW, narrower invariant: **the `concurrency-runtime`-off
+build carries NO reactor (no mio/futures), drives only blocking effects, and produces a
+clean error on poll-effect invocation.** This is a feature-presence guarantee, not a
+byte-identity one. The `_neg`/frozen-edge guards that asserted "v7 types ABSENT from
+the default `public-api.txt` edge" are **inverted** — those types are now present by
+design — and are REPLACED by positive layout guards on the unified `PlatformFn` field
+order + `ConcurrencyDescriptor` presence (a `/qa` rewrite; see SPRINT.md).
+
+**8. ABI bump: 7 → 8.** The unified `PlatformFn` (drops `scheduling_class: u32`; adds
+`drop_state` + `concurrency`) is a layout-affecting change (Principle 14). Stamp
+`ABI_VERSION = 8`. With no out-of-tree DLLs, every in-tree platform rebuilds against
+v8 in the cutover change-set. The `shapes-badabi` negative fixture's hard-coded wrong
+version is re-pinned wrong-relative-to-8 (`/qa`).
+
+---
+
+### 6.8.0a FULL STREAMLINE — single trampoline + lazy reactor (S96 SCOPE PIVOT EXTENDED, user-directed)
+
+> **Status: RATIFIED target (S96 /arch), pre-`/dev`-migration. Extends §6.8.0
+> in the SAME A4c jump.** User direction 2026-06-29: *"are we still carrying two
+> tramps or variations? would it make sense to cutover to the streamlined state
+> in one jump? simple platform, simplest tramp?"* §6.8.0 above kept the host
+> **reactor optional** behind `concurrency-runtime` — i.e. TWO `#[cfg]`-selected
+> trampolines (a synchronous off-build stepper + the async on-build executor),
+> and §6.8.0 point 5 even ADDED a poll-error arm to the off-build. Landing A4c on
+> that dual-trampoline state would be a **Principle-8 interim** (migrate the
+> platforms now, re-collapse the trampoline later). So A4c targets the genuine
+> end-state in one jump: **ONE ABI + ONE (async) trampoline + NO
+> `concurrency`/`concurrency-runtime` feature.** The reactor IS the runtime.
+
+**The defuser is LAZY reactor init.** The async executor already drives the top
+future on the **calling thread** (there is no dedicated reactor thread — `turn()`
+blocks `mio::poll` on the same thread; only `rayon::spawn` uses other threads, via
+rayon's own lazily-spun global pool). The only eager cost today is `Reactor::new()`
+= `mio::Poll::new()` (epoll_create) + `mio::Waker::new()` (an eventfd). We **defer
+those two syscalls** to the first time the program actually needs them — the first
+poll-leaf that registers fd/timer interest, or the first `Par` blocking-bridge
+spawn. A pure-blocking program (`(print "hello")`) then drains synchronously
+through the one trampoline and constructs no mio Poll at all. **Lean-default
+becomes a RUNTIME property, not a `#[cfg]` split.**
+
+**Feasibility verdict: YES, with caveats** (verified against
+`cranelisp-intrinsics/src/{io.rs,reactor.rs}` as-built):
+
+1. **`block_on` drives pure-blocking to completion with no reactor activity.** The
+   async stepper (`run_io_trampoline_inner_async`) forces `IO_TAG_EFFECT` thunks
+   **synchronously** (`force_effect_node`, identical to the sync stepper) and
+   walks `Pure`/`Bind` purely; only an `IO_TAG_EFFECT_POLL` that would-blocks, or a
+   `Par` rayon-bridge, ever returns `Pending`. So for a Pure/Bind/blocking-Effect
+   tree the FIRST `future.poll()` returns `Ready` — the executor loop returns
+   before `turn()` is ever reached. **If a future never returns `Pending`, the mio
+   `Poll` is never needed.** Confirmed.
+2. **Lazy mio `Poll` is sound.** Make the `Poll` + bridge `Waker` a reactor-thread-
+   local lazy singleton inside `Reactor` (a `OnceCell`/`RefCell<Option<…>>` field,
+   NOT a process-global `LazyLock` — one reactor per `block_on` drive). Force it at
+   the two register-callback bodies (`register_fd`/`register_timer`) and **before**
+   the `rayon::spawn` in `run_blocking_branch`. The soundness obligation the prompt
+   names — *the eventfd must exist before the first `Pending` parks* — holds **by
+   single-thread happens-before**: a poll-fn can only register interest by calling
+   `HostCtx::register_*` (forcing the `Poll` first, on the calling thread, before
+   that call returns `Pending`); and the cross-thread `Par` wake races only after
+   `rayon::spawn`, which we force the `Poll`+bridge-`Waker` ahead of. There is no
+   window in which a wake targets a not-yet-built eventfd. The `HostCtx` *struct*
+   (the register-callback vtable over `*mut Reactor`) is still built eagerly and
+   cheaply — only the `Poll` it lazily touches is deferred — so a trivially-ready
+   poll leaf (web `listen`/`send` returning `Poll::Ready` without registering)
+   pays nothing.
+3. **The blocking/rayon path works without the Poll for the sequential case.** A
+   blocking effect runs inline via `force_effect_node` — no rayon, no reactor. Only
+   a `Par` with a blocking branch spawns rayon, and that branch forces the lazy
+   `Poll`+bridge before spawning (it needs the bridge to be woken back). The
+   sync per-branch driver `run_io_trampoline` (sync) is **RETAINED** — it is the
+   rayon-worker run-to-completion body; what is deleted is the `drive_io` `#[cfg]`
+   split, not `run_io_trampoline` itself.
+4. **`--link`/exe-bundle works with an always-linked-but-lazy reactor.** The
+   startup stub calls `cranelisp_run_io` → `drive_io` → `block_on_reactor`
+   unconditionally (today the `--link` build took the sync arm; post-cutover there
+   is only the async arm). mio+futures+rayon are **always linked** into the binary
+   (accepted per "no users" — rayon is already an unconditional intrinsics dep; mio
+   +futures graduate from `dep:`-gated to plain deps). A `(print "hello")` linked
+   binary still constructs no `Poll` at runtime (lazy). **No `HostCallbacks`/exe-
+   bundle host-construction change** — the reactor `HostCtx` is built single-sited
+   inside `block_on_reactor` (intrinsics), separate from the exe-bundle's
+   `HostCallbacks{alloc, alloc_with_tag}`; **FIXME 0419 stays parked** (one reactor-
+   construction site, divergence-proof, unchanged).
+
+**Caveat / closest-feasible fallback.** The truly-lazy `Poll` is a bounded refactor
+of `Reactor` (the `Poll`/`bridge_waker` fields, `register_fd`/`register_timer`,
+`turn`, `ExecutorWaker`, `block_on_reactor_capped`). If it threatens A4c's already-
+large blast radius, the **closest feasible alternative is "always-construct-but-
+cheap"**: keep `Reactor::new()` eager (the two syscalls per top-level drive) but
+never spawn a thread and never `turn()` for a pure-blocking program (already true).
+That still delivers the one-trampoline collapse and the feature deletion; it merely
+pays ~2 syscalls per `cranelisp_run_io`. This is a perf refinement, **not a
+correctness interim** — eager-cheap is a permanently-valid behaviour. Recommended
+sequencing: land the collapse green FIRST, then the lazy-`Poll` as the LAST step of
+A4c (both in A4c, so the end-state is not split across sprints — Principle 8).
+
+**What changes relative to §6.8.0 (the deltas of the extension):**
+
+- **DELETE the `drive_io` `#[cfg]` split.** `drive_io` becomes the single async
+  body unconditionally; the `#[cfg(not(feature = "concurrency-runtime"))] fn
+  drive_io = run_io_trampoline` arm is removed.
+- **DELETE the §6.8.0-point-5 trampoline poll-error arm before it is ever built.**
+  There is no non-reactor build, so a poll-shape effect **always works** — no
+  `IO_TAG_EFFECT_POLL` "rebuild with `--features concurrency-runtime`" error arm.
+  (§6.8.0 point 5's call-time-error answer is mooted; the mixed-platform load story
+  it protected still holds, but the resolution is "the reactor is always present,"
+  not "error cleanly without it.")
+- **RETIRE the `concurrency` AND `concurrency-runtime` features entirely** (§6.8.0
+  retired only `concurrency`; this retires both). `reactor`/`strand` (in
+  `cranelisp-intrinsics`) and the gated platform/types ABI items become
+  unconditional. mio/futures move from `dep:`-gated to plain deps.
+- **The regression guard changes again: "reactor-free-off" → a RUNTIME assertion.**
+  With no off-state, there is no `#[cfg]` lane to police. The replacement invariant
+  is a **runtime property**: *a pure-blocking program constructs no mio `Poll`
+  (no epoll_create / eventfd) and drains synchronously through the one trampoline.*
+  Guarded by (i) a lazy-init unit/e2e — drive a `(print …)`-shaped tree and assert
+  the reactor's `Poll` was never built (a test-visible construction counter on
+  `Reactor`); and (ii) the existing reactor/`Par`-overlap e2e rows, which now
+  exercise the lazy construction path on first `Pending` (proving no lost-wake).
+  The whole feature-off test lane (`#[cfg(not(feature = "concurrency-runtime"))]`
+  rows, the `nt-concurrency`/`nt-concurrency-runtime`/`nt-reactor-e2e` aliases, the
+  default-`nt` vs gated-lane split) **collapses into one lane** — the default `nt`
+  now drives the lazy reactor.
+
+**Added public-API consequence (beyond §6.8.0).** Retiring `concurrency-runtime`
+ungates `cranelisp-intrinsics`'s `reactor` (+ `strand`) module ⇒ its `pub` items
+(`Reactor`, `make_cabi_waker`, `monotonic_nanos`, `join_io_leaves`, the fixture
+`AsyncReadState`/`async_read_pollfn`/`TimerWriteState`/`timer_write_pollfn`) now hit
+the **default** `crates/cranelisp-intrinsics/public-api.txt` baseline (they were
+off the default edge while feature-gated). `/dev` regenerates that baseline in the
+cutover change-set; `/review` confirms each newly-default-public item is intended
+(several fixtures may warrant `pub(crate)` downgrade during the ungate — a facade
+cleanup, flagged not blocking). §6.8.0's `cranelisp-types`/`cranelisp-platform`
+public-api deltas are unchanged.
+
+**Knock-on to Chunks B/C: still NONE semantically.** The reactor + poll-leaf
+substrate is identical; lazy init only defers WHEN the `Poll` is built. Launch-and-
+continue/supervisor/backpressure (B) and cancellation/combinators (C) build on the
+single async trampoline unchanged.
+
+---
+
+### 6.8 The ABI-v4 cascade — numeric `ABI_VERSION` 6→7 (S93, effect-concurrency slice 2) — HISTORICAL (superseded by §6.8.0)
 
 **Framing — "v4" is a doc-label, the version is numeric.** The
 `design/arch/effect-concurrency.md` §12 / §13 cascade is named the **A2
@@ -1364,6 +1622,40 @@ seam is ratified (S94 R1), and this §6.8 is the cascade record. The remaining w
 is tracked by the slice-2 work in `sprints/ROADMAP.md`, not a separate FIXME (the
 manifestation-site discipline: the cascade lives here at its natural home, actioned by
 the open track).
+
+**Within-DLL v6+v7 mixing — the boundary, and the deferred merge mechanism (S96 /arch
+ruling, FIXME 0464). — SUPERSEDED by §6.8.0 (single-ABI cutover, 2026-06-29).** The
+whole within-DLL-mixing *problem* dissolves under the single ABI: one manifest carries
+both blocking and poll-shape entries natively, so the dual-manifest-merge mechanism
+below is never built and FIXME 0464 is resolved-by-superseding-pivot (deleted). The
+paragraph is retained as the record of the coexistence-era reasoning.
+
+**The §6.8 byte-identical-off design supports **system-level
+coexistence** — some platforms v6, some v7, the host loading each by the either/or probe
+(`cranelisp_concurrent_manifest` first, else `cranelisp_platform_manifest_<name>`). It does
+NOT, as built, support **within-DLL mixing** — a SINGLE DLL carrying both a v6 blocking
+effect AND a v7 poll effect. Two structural walls: (1) both `declare_platform!` and
+`declare_concurrent_platform!` export the same `__cranelisp_got_platform_<name>` GOT static
+⇒ a crate invoking both fails to link; (2) the loader is strictly either/or per handle — a
+v7 hit uses the v7 manifest *exclusively*, never also reading the v6 manifest from the same
+handle. **This is a deliberate boundary, not a defect to fix on sight.** The S96 server demo
+sidesteps it entirely: the exemplar **`web`** platform is **pure-v7 + concurrency-host-only**
+(all leaves poll-shape — sync leaves via a trivially-ready `Poll::Ready` poll per point 1
+above; `declare_concurrent_platform!` only ⇒ one GOT export, either/or loader suffices), and
+**`stdio` stays fully v6** (`print` must stay default-host-loadable; its `read_line`-poll
+ergonomics rewrite is descoped). **The merge mechanism, when a genuine within-DLL mixed
+platform is needed (unmet trigger as of S96):** the ruled path is **dual-manifest merge** —
+one DLL exports BOTH manifests over ONE shared GOT (disjoint slot ranges; GOT static emitted
+once via the `declare_platform!`/`declare_concurrent_platform!` shared `@spine` macro
+convergence), the `concurrency` host reading + merging both (blocking → v6 descriptors, poll
+→ v7), the default host reading only the v6 subset (poll effects simply absent). It stays in
+the §6.8 envelope: **no `cranelisp-types` touch, no `ABI_VERSION` bump, no `public-api.txt`
+touch** — both manifest exports already exist; the change is macro-internal (GOT de-dup) +
+int-internal (`src/platform.rs` loader merge), and the v7 manifest read is already
+`#[cfg(feature="concurrency")]` so default-host byte-identical-off is preserved. The
+rejected alternative (a unified v7 manifest carrying a blocking effect + a v6 *view*/shim for
+the default host) couples the default load path to v7 types and re-opens the v7-unfrozen
+posture — denied. Build the merge WITH the macro convergence when the trigger fires.
 
 ---
 

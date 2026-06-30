@@ -312,6 +312,7 @@ pub(crate) fn mount_synthetic_modules(
     register_result_type(symbol_tables, next_id); // step 4c (test-discovery.md ruling 1)
     register_io_type(symbol_tables, next_id); // step 5
     register_bind_primitive(symbol_tables, next_id); // step 6
+    register_combinators(symbol_tables, next_id); // step 6b (S96 Chunk C, slice 7)
     register_trace_type(symbol_tables); // step 7
     register_test_infrastructure(symbol_tables, next_id); // step 8
 }
@@ -898,6 +899,107 @@ fn register_bind_primitive(
     );
 }
 
+// --- Step 6b: race/select combinators (primitives) ---
+//
+// The user-facing control combinators (S96 Chunk C, slice 7; spec §10.12.8,
+// design `io-trampoline.md §16` / `reactor.md §2.15`). Like `bind`, both are
+// slot-less `DefKind::PrimitiveExtern` entries: typecheck's classifier
+// (`resolve_primitive_jit_name`) accepts `PrimitiveExtern` as
+// `ResolvedCall::BuiltinFn { name }`, and the backend name-matches `race`/`select`
+// at its `BuiltinFn` apply-dispatch arm (`apply.rs`, the `bind` precedent) — NO
+// inferred AST marker (`io-trampoline.md §16.2`). They never touch the GOT, so
+// they need no slot.
+//
+// `timeout` is deliberately NOT seeded here — it is a derived `.cl` stdlib
+// composition (`timeout d io = race io (sleep d)`, §2.18) owned by the C4 wave;
+// seeding it as a builtin would duplicate that derivation.
+fn register_combinators(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
+    next_id: &AtomicU32,
+) {
+    let primitives_path = ModuleFullPath::from("primitives");
+    let io_fqtn = primitives_fqtn("IO");
+    let vec_fqtn = primitives_fqtn("Vec");
+
+    // race : forall a. IO a -> IO a -> IO a — the binary first-to-complete race.
+    let ra = fresh_type_id(next_id);
+    let io_ra = Type::ADT(io_fqtn.clone(), vec![Type::Var(ra)]);
+    let race_ty = Type::Fn(
+        vec![io_ra.clone(), io_ra.clone()],
+        Box::new(io_ra.clone()),
+    );
+    let race_scheme = Scheme {
+        type_vars: vec![ra],
+        constraints: HashMap::new(),
+        ty: race_ty,
+    };
+
+    // select : forall a. Vec (IO a) -> IO a — the n-ary generalisation over a
+    // branch list (the `[..]` literal is a `Vec`); returns the winner's value.
+    let sa = fresh_type_id(next_id);
+    let io_sa = Type::ADT(io_fqtn, vec![Type::Var(sa)]);
+    let vec_io_sa = Type::ADT(vec_fqtn, vec![io_sa.clone()]);
+    let select_ty = Type::Fn(vec![vec_io_sa], Box::new(io_sa));
+    let select_scheme = Scheme {
+        type_vars: vec![sa],
+        constraints: HashMap::new(),
+        ty: select_ty,
+    };
+
+    let mut primitives = symbol_tables
+        .get_mut(&primitives_path)
+        .unwrap_or_else(|| unreachable!("invariant: primitives module should exist"));
+    primitives.insert(
+        Symbol::from("race"),
+        ModuleEntry::def(race_scheme, DefKind::PrimitiveExtern)
+            .visibility(Visibility::Public)
+            .docstring(
+                "Race two IO actions: the first to complete wins; the loser is cancelled",
+            )
+            .param_names(vec![Symbol::from("a"), Symbol::from("b")])
+            .build(),
+    );
+    primitives.insert(
+        Symbol::from("select"),
+        ModuleEntry::def(select_scheme, DefKind::PrimitiveExtern)
+            .visibility(Visibility::Public)
+            .docstring(
+                "Race a list of IO actions: the first to complete wins; the losers are cancelled",
+            )
+            .param_names(vec![Symbol::from("branches")])
+            .build(),
+    );
+
+    // sleep : Int -> IO Int — the runtime timer poll leaf (S96 Chunk C4, slice 7;
+    // spec §10.12.8, `reactor.md §2.18`). `(sleep d)` arms the reactor's timer and
+    // resumes (with `0`) after `d` MILLISECONDS. Like `race`/`select`/`bind` it is a
+    // slot-less `DefKind::PrimitiveExtern` name-matched at the backend's `BuiltinFn`
+    // apply arm (`compile_sleep`, the non-GOT runtime-symbol `code_ptr` path) — it
+    // never touches the GOT. Monomorphic (no type vars): the result inner type is
+    // `Int` (the language has no `Unit` type; `0` is the discarded result). It is the
+    // one leaf the derived `timeout = race (map-io Some io) (map-io (fn [_] None)
+    // (sleep d))` stdlib composition builds on.
+    let sleep_ty = Type::Fn(
+        vec![Type::Int],
+        Box::new(Type::ADT(primitives_fqtn("IO"), vec![Type::Int])),
+    );
+    let sleep_scheme = Scheme {
+        type_vars: vec![],
+        constraints: HashMap::new(),
+        ty: sleep_ty,
+    };
+    primitives.insert(
+        Symbol::from("sleep"),
+        ModuleEntry::def(sleep_scheme, DefKind::PrimitiveExtern)
+            .visibility(Visibility::Public)
+            .docstring(
+                "Sleep for d milliseconds (a timer IO leaf): arms the reactor timer and resumes after the delay",
+            )
+            .param_names(vec![Symbol::from("d")])
+            .build(),
+    );
+}
+
 // --- Step 7: Trace ADT + field accessors + `trace` form (primitives) ---
 
 fn register_trace_type(
@@ -1166,6 +1268,48 @@ mod tests {
         }
     }
 
+    // S96 Chunk C, slice 7 — `race`/`select` are seeded as slot-less
+    // `DefKind::PrimitiveExtern` entries in `primitives` (so typecheck resolves
+    // them to `BuiltinFn` and the backend name-matches them, the `bind` precedent),
+    // public, with their §10.12.8 schemes. `timeout` is deliberately NOT seeded (a
+    // C4 stdlib derivation). RED on revert: without `register_combinators` the
+    // entries are absent.
+    #[test]
+    fn mounts_race_select_combinators() {
+        let (tables, next_id) = fresh_tables();
+        mount_synthetic_modules(&tables, &next_id);
+        let prims = tables.get(&ModuleFullPath::from("primitives")).unwrap();
+
+        // race : IO a -> IO a -> IO a — slot-less PrimitiveExtern, public, binary.
+        match prims.get("race") {
+            Some(ModuleEntry::Def { kind, scheme, visibility, .. }) => {
+                assert!(matches!(kind.as_ref(), DefKind::PrimitiveExtern));
+                assert_eq!(*visibility, Visibility::Public);
+                match &scheme.ty {
+                    Type::Fn(params, _) => assert_eq!(params.len(), 2, "race is binary"),
+                    other => panic!("race must be a Fn type, got {other:?}"),
+                }
+            }
+            other => panic!("race must be a PrimitiveExtern Def, got {other:?}"),
+        }
+
+        // select : Vec (IO a) -> IO a — slot-less PrimitiveExtern, public, unary.
+        match prims.get("select") {
+            Some(ModuleEntry::Def { kind, scheme, visibility, .. }) => {
+                assert!(matches!(kind.as_ref(), DefKind::PrimitiveExtern));
+                assert_eq!(*visibility, Visibility::Public);
+                match &scheme.ty {
+                    Type::Fn(params, _) => assert_eq!(params.len(), 1, "select takes one branch list"),
+                    other => panic!("select must be a Fn type, got {other:?}"),
+                }
+            }
+            other => panic!("select must be a PrimitiveExtern Def, got {other:?}"),
+        }
+
+        // `timeout` is a C4 stdlib derivation, NOT a seeded builtin.
+        assert!(prims.get("timeout").is_none(), "timeout must NOT be a seeded builtin (C4 stdlib)");
+    }
+
     #[test]
     fn mounts_trace_and_test_infrastructure() {
         let (tables, next_id) = fresh_tables();
@@ -1296,7 +1440,8 @@ mod tests {
         let (tables, next_id) = fresh_tables();
         mount_synthetic_modules(&tables, &next_id);
         // SList(1) + Option(1) + Pair(2) + Result(2) + IO(1) + Bind(2)
-        // + bind(2) + catch-runtime-error(1) = 12 fresh vars.
-        assert_eq!(next_id.load(Ordering::SeqCst), 12);
+        // + bind(2) + race(1) + select(1) + catch-runtime-error(1) = 14 fresh vars.
+        // (S96 Chunk C: `register_combinators` mints one var each for race + select.)
+        assert_eq!(next_id.load(Ordering::SeqCst), 14);
     }
 }

@@ -68,6 +68,73 @@
         assert!(ms.object_done);
     }
 
+    // S95 window-#2 (nice-worker object-codegen lost wakeup) deterministic
+    // guard. Models the EXACT stranding ordering the SIGUSR1 dump pinned: a
+    // module reaches `TypecheckDone` with `object_done == false` AND its
+    // `notify_typecheck_done` `object_work_available.notify_all()` already fired
+    // (the nice worker was mid check-then-park gap, not yet parked, so the notify
+    // was lost). A nice worker then calls `park_nice_worker`. With the fix it
+    // re-checks pending object work UNDER THE LOCK and returns `true` (do not
+    // park — re-loop and claim). On revert (no re-check) it parks forever on a
+    // notify that will never fire again — the module strands and
+    // `wait_object_complete` hangs. The spawned-thread + `recv_timeout` shape
+    // makes the revert a clean RED (assertion failure after the timeout), not a
+    // suite hang; `shutdown()` releases the parked thread either way.
+    #[test]
+    fn park_nice_worker_does_not_strand_pending_object_codegen() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let sched = std::sync::Arc::new(CompileScheduler::new());
+        let m = mod_path("user");
+
+        // Drive `m` to TypecheckDone with object_done == false. The
+        // `notify_typecheck_done` call ALSO fires the `object_work_available`
+        // notify here — modelling the notify that landed in the nice worker's
+        // check-then-park gap and was lost (no waiter parked yet).
+        sched.register_module(m.clone(), no_sexps(), false);
+        let _ = sched.take_priority_work(); // pop -> TypecheckWorking
+        sched.notify_typecheck_done(&m); // -> TypecheckDone, object_done=false
+
+        // Sanity: object work IS pending (this is the work the nice worker must
+        // not strand).
+        {
+            let state = sched.lock();
+            let ms = state.modules.get(&m).unwrap();
+            assert_eq!(ms.pool, ModulePool::TypecheckDone);
+            assert!(!ms.object_done && !ms.object_working);
+        }
+
+        // A nice worker now parks — AFTER the (lost) notify. With the fix this
+        // returns `true` promptly (pending work seen under the lock). Without it,
+        // it blocks forever.
+        let (tx, rx) = mpsc::channel();
+        let sched_clone = std::sync::Arc::clone(&sched);
+        let handle = std::thread::spawn(move || {
+            let r = sched_clone.park_nice_worker();
+            let _ = tx.send(r);
+        });
+
+        let outcome = rx.recv_timeout(Duration::from_secs(2));
+
+        // Release the parked thread on the revert path (and join cleanly on the
+        // fix path) so no thread leaks regardless of branch.
+        sched.shutdown();
+        let _ = handle.join();
+
+        match outcome {
+            Ok(returned) => assert!(
+                returned,
+                "park_nice_worker must report work-available (true), not shutdown",
+            ),
+            Err(_) => panic!(
+                "park_nice_worker STRANDED pending object codegen — lost wakeup \
+                 (window #2): it parked on an already-fired notify instead of \
+                 re-checking pending object work under the lock",
+            ),
+        }
+    }
+
     #[test]
     fn wait_object_complete_returns_when_all_done() {
         let sched = CompileScheduler::new();
@@ -530,6 +597,80 @@
                 assert_eq!(module, a, "a unblocks after b's whole-module typecheck")
             }
             other => panic!("expected Typecheck(mod_a) after unblock, got {other:?}"),
+        }
+    }
+
+    // spec: design/int/signature-body-prepass.md §7 step 4 — S93 Invariant PP
+    // lost-wakeup guard for the per-import FQ-dependency discovery path.
+    //
+    // Drive `dep` to TypecheckDone (terminal) FIRST, THEN call
+    // `block_for_typecheck(module, dep, "*")`. This reproduces the two-lock
+    // window in `dependency.rs` (`register_module(dep)` enqueues + notifies; a
+    // priority worker pops `dep`, typechecks it, runs `notify_typecheck_done(dep)`
+    // — whose waiter-sweep finds no waiter for `module` yet — all BEFORE
+    // `block_for_typecheck` runs). The pre-fix code unconditionally registered
+    // `module` as a waiter on the now-terminal `dep`; since no future
+    // `notify_typecheck_done(dep)` would ever fire, `module` was stranded in
+    // `TypecheckBlocked` forever (the intermittent 30 s hang). The fix's atomic
+    // check-and-act requeues `module` instead. Assert `module` is NOT left in
+    // `TypecheckBlocked` — it is requeued (TypecheckFirst/Next), ready to be
+    // re-driven. RED on the pre-fix code (module stranded `TypecheckBlocked`),
+    // GREEN with the fix.
+    #[test]
+    fn block_for_typecheck_on_already_terminal_dep_requeues_not_strands() {
+        let sched = CompileScheduler::new();
+        let module = mod_path("importer");
+        let dep = mod_path("dependency");
+        sched.register_module(module.clone(), no_sexps(), false);
+        sched.register_module(dep.clone(), no_sexps(), false);
+
+        // Model the worker flow: both modules are claimed off the queue
+        // (TypecheckWorking), so neither is a stale deque entry. `module` is the
+        // one a worker is mid-pass on when it discovers + drives `dep`.
+        let _ = sched.take_priority_work();
+        let _ = sched.take_priority_work();
+
+        // Drive `dep` to TypecheckDone FIRST — its waiter-sweep runs now, before
+        // `module` ever registers as a waiter. This is the two-lock window in
+        // `dependency.rs`: between `register_module(dep)` (which enqueues + wakes a
+        // priority worker that can pop, typecheck, and `notify_typecheck_done`
+        // `dep`) and `block_for_typecheck`, `dep` has already gone terminal.
+        sched.notify_typecheck_done(&dep);
+
+        // Now the discovery path records the edge — on an already-terminal dep.
+        sched
+            .block_for_typecheck(&module, &dep, &Symbol::from("*"))
+            .unwrap();
+
+        // `module` MUST NOT be stranded in TypecheckBlocked: with `dep` already
+        // terminal, no future `notify_typecheck_done(dep)` will ever fire to
+        // release it, so the only correct outcome is an immediate requeue.
+        // (Pre-fix: `block_for_typecheck` unconditionally registered the dead
+        // waiter and left `module` in TypecheckBlocked → permanent hang → RED.)
+        {
+            let state = sched.lock();
+            let pool = state.modules.get(&module).unwrap().pool;
+            assert_ne!(
+                pool,
+                ModulePool::TypecheckBlocked,
+                "module stranded in TypecheckBlocked on an already-terminal dep \
+                 (lost-wakeup regression — S93 Invariant PP)"
+            );
+            assert!(
+                matches!(
+                    pool,
+                    ModulePool::TypecheckFirst | ModulePool::TypecheckNext
+                ),
+                "module must be requeued for typecheck, got {pool:?}"
+            );
+        }
+
+        // And it is re-drivable: the requeued module surfaces as priority work.
+        match sched.take_priority_work() {
+            Some(PriorityWork::Typecheck { module: m, .. }) => {
+                assert_eq!(m, module, "requeued module is available as typecheck work")
+            }
+            other => panic!("expected requeued Typecheck(importer), got {other:?}"),
         }
     }
 

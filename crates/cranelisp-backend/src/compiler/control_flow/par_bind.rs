@@ -316,7 +316,11 @@ where
     /// Allocate the par-bind continuation closure at the call site, storing the
     /// code pointer, drop glue, and the captured values (inc'ing heap-typed
     /// captures). Returns the closure base pointer (rc=1).
-    fn alloc_par_cont_closure(
+    ///
+    /// `pub(crate)` so the sibling `launch.rs` continuation builder reuses the
+    /// identical closure-site emission (Principle 7) — the launch continuation is
+    /// a standard bind continuation closure differing only in its body.
+    pub(crate) fn alloc_par_cont_closure(
         &mut self,
         cont_func_id: cranelift_module::FuncId,
         captures: &[Symbol],

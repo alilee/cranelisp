@@ -66,6 +66,7 @@ unsafe fn read_leaf<'h>(
             async_read_pollfn,
             host,
             strand,
+            None, // substrate-regression leaf: no pool admission
         )
     }
 }
@@ -82,6 +83,7 @@ unsafe fn feeder_leaf<'h>(
             timer_write_pollfn,
             host,
             strand,
+            None, // substrate-regression leaf: no pool admission
         )
     }
 }
@@ -249,16 +251,16 @@ fn two_async_reads_overlap_max_not_sum_one_thread() {
         // Reads use the thread-recording wrappers so the test can prove no
         // read ran on a thread other than the reactor's.
         let read1 = unsafe {
-            EffectPoll::new(&mut r1 as *mut _ as *mut c_void, rec_read_pollfn, host, s_read1)
+            EffectPoll::new(&mut r1 as *mut _ as *mut c_void, rec_read_pollfn, host, s_read1, None)
         };
         let read2 = unsafe {
-            EffectPoll::new(&mut r2 as *mut _ as *mut c_void, rec_read_pollfn, host, s_read2)
+            EffectPoll::new(&mut r2 as *mut _ as *mut c_void, rec_read_pollfn, host, s_read2, None)
         };
         let feed1 = unsafe {
-            EffectPoll::new(&mut f1 as *mut _ as *mut c_void, rec_timer_pollfn, host, s_feed1)
+            EffectPoll::new(&mut f1 as *mut _ as *mut c_void, rec_timer_pollfn, host, s_feed1, None)
         };
         let feed2 = unsafe {
-            EffectPoll::new(&mut f2 as *mut _ as *mut c_void, rec_timer_pollfn, host, s_feed2)
+            EffectPoll::new(&mut f2 as *mut _ as *mut c_void, rec_timer_pollfn, host, s_feed2, None)
         };
         join_io_leaves(vec![read1, read2, feed1, feed2]).await
     })
@@ -407,6 +409,7 @@ fn leaf_pending_twice_re_registers_and_completes_no_lost_wakeup() {
                 two_fire_read_pollfn,
                 host,
                 strand,
+                None,
             )
         };
         leaf.await
@@ -593,6 +596,107 @@ fn same_token_conflicting_capacity_first_writer_wins_and_records_event() {
     let _ = poll_once(&mut a2); // drain (now Ready) — no assertion needed.
 }
 
+// spec: design/int/reactor.md §2.17 + S96 Chunk-C C2-review forward item #1 — a
+// parked `AcquirePermit` that was WOKEN (its FIFO entry popped by a `Drop for
+// Permit`, which incremented `permits`) but then CANCELLED before re-polling must
+// FORWARD the freed permit: pop+wake the NEXT front waiter. Without it the freed
+// permit is claimable but the next parked sibling is never pinged → stranded under
+// a `FuturesUnordered`-style "only-woken-re-poll" executor (the supervisor, §2.12).
+// RED on revert: the pre-fix `Drop` only `retain`-removed its own entry; with the
+// entry already popped that is a no-op and B is never woken.
+#[test]
+fn woken_then_cancelled_acquire_forwards_permit_to_next_waiter() {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering as O};
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct CountWaker(AtomicUsize);
+    impl Wake for CountWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, O::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, O::SeqCst);
+        }
+    }
+    fn poll_with<F: Future + Unpin>(f: &mut F, w: &Waker) -> Poll<F::Output> {
+        let mut cx = Context::from_waker(w);
+        Pin::new(f).poll(&mut cx)
+    }
+
+    let pool = TokenPool::new();
+    // Capacity 1 on token 5: the holder takes the only permit.
+    let mut holder = pool.acquire(5, 1, StrandId(1));
+    let permit = match poll_once(&mut holder) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("the first acquire on a capacity-1 token must be Ready"),
+    };
+
+    // Park A (front) then B (behind), each with its OWN counting waker.
+    let a_w = Arc::new(CountWaker(AtomicUsize::new(0)));
+    let b_w = Arc::new(CountWaker(AtomicUsize::new(0)));
+    let a_waker = Waker::from(a_w.clone());
+    let b_waker = Waker::from(b_w.clone());
+    let mut a = pool.acquire(5, 1, StrandId(2));
+    let mut b = pool.acquire(5, 1, StrandId(3));
+    assert!(
+        matches!(poll_with(&mut a, &a_waker), Poll::Pending),
+        "A parks on the full token"
+    );
+    assert!(
+        matches!(poll_with(&mut b, &b_waker), Poll::Pending),
+        "B parks behind A"
+    );
+
+    // Release the holder ⇒ pop+wake the FRONT waiter A (permits → 1). A is woken
+    // but NOT re-polled.
+    drop(permit);
+    assert_eq!(
+        a_w.0.load(O::SeqCst),
+        1,
+        "the release wakes the front waiter A"
+    );
+    assert_eq!(b_w.0.load(O::SeqCst), 0, "B is not yet woken");
+
+    // A is CANCELLED (dropped) before claiming the freed permit ⇒ the forwarding
+    // fix pops+wakes B.
+    drop(a);
+    assert_eq!(
+        b_w.0.load(O::SeqCst),
+        1,
+        "a woken-then-cancelled acquire must FORWARD the freed permit to the next \
+         waiter B (lost-wakeup otherwise)"
+    );
+
+    // B can now acquire the forwarded (freed) permit.
+    assert!(
+        matches!(poll_with(&mut b, &b_waker), Poll::Ready(_)),
+        "B acquires the forwarded permit"
+    );
+}
+
+// spec: design/int/reactor.md §2.16 + S96 Chunk-C C2-review forward item #2 — the
+// `RegistrantGuard` clears `Reactor::current_registrant` on drop, so a poll-fn
+// panic mid-`EffectPoll::poll` cannot leak a stale registrant tag onto the next
+// leaf's fd/timer registrations. A null guard is a no-op (no deref).
+#[test]
+fn registrant_guard_clears_current_registrant_on_drop() {
+    let mut reactor = Reactor::new().expect("reactor construction");
+    let r_ptr: *mut Reactor = &mut reactor;
+    // SAFETY: `r_ptr` is the live local reactor; single-threaded test.
+    unsafe { (*r_ptr).current_registrant = Some(7) };
+    drop(RegistrantGuard(r_ptr));
+    assert_eq!(
+        unsafe { (*r_ptr).current_registrant },
+        None,
+        "the guard's Drop must clear current_registrant (the panic-safe bracket)"
+    );
+    // A null guard must be an inert no-op (it must not dereference null).
+    drop(RegistrantGuard(std::ptr::null_mut()));
+}
+
 // ===========================================================================
 // I1 — the no-progress cap is held off while a blocking branch is in flight.
 //
@@ -689,10 +793,696 @@ fn cap_still_trips_for_stuck_poll_leaf_no_bridge() {
                     never_ready_short_timer_pollfn,
                     host,
                     strand,
+                    None,
                 )
             };
             leaf.await
         },
         cap,
+    );
+}
+
+// ===========================================================================
+// S96 §2.9 — acquire-around-poll lifecycle + the RAII `Permit` drop-guard
+// (the A→C contract). These drive an `EffectPoll` that OWNS a `Some(Permit)`
+// directly (with a no-op fixture `HostCtx`, so a leaf can return `Pending`
+// without a live reactor) + a competing `AcquirePermit` on the same token, and
+// observe the permit lifecycle by the competing waiter's Pending→Ready edge.
+// design: design/int/reactor.md §2.9
+// ===========================================================================
+
+/// A no-op `HostCtx` for unit-driving an `EffectPoll` WITHOUT a live reactor: its
+/// `register_*` callbacks do nothing and `host` is null. Sound because the fixture
+/// poll-fns below never call back through it (they return `Pending`/`Ready`
+/// without arming interest) — these tests exercise the PERMIT lifecycle, not the
+/// fd/timer reactor path (that is covered by the spine/overlap tests above).
+unsafe extern "C" fn noop_register_readable(_h: *const c_void, _fd: i32, _w: *const CWaker) {}
+unsafe extern "C" fn noop_register_writable(_h: *const c_void, _fd: i32, _w: *const CWaker) {}
+unsafe extern "C" fn noop_register_timer(_h: *const c_void, _d: u64, _w: *const CWaker) {}
+
+fn noop_host_ctx() -> HostCtx {
+    HostCtx {
+        register_readable: noop_register_readable,
+        register_writable: noop_register_writable,
+        register_timer: noop_register_timer,
+        host: std::ptr::null(),
+    }
+}
+
+/// A poll-fn that writes `7` into the result slot and returns `Ready` on the
+/// first poll (no suspension). Models a leaf whose work completes immediately.
+unsafe extern "C" fn always_ready_pollfn(
+    state: *mut c_void,
+    _host: *const HostCtx,
+    _waker: *const CWaker,
+) -> CPoll {
+    unsafe { *(state as *mut i64) = 7 };
+    CPoll::Ready
+}
+
+/// A poll-fn that ALWAYS returns `Pending` and never arms interest — models a
+/// leaf parked-on-readiness that never completes (the drop-mid-flight subject).
+unsafe extern "C" fn always_pending_pollfn(
+    _state: *mut c_void,
+    _host: *const HostCtx,
+    _waker: *const CWaker,
+) -> CPoll {
+    CPoll::Pending
+}
+
+/// Env for a phased poll-fn: `result@0`, `polls_left@8`. Returns `Pending` for
+/// `polls_left` polls (the establish + resume steps of a real arc), then writes
+/// `99` and returns `Ready` — exercising "the permit is held across the WHOLE
+/// establish→Pending→…→Ready arc", not just a one-shot dispatch.
+#[repr(C)]
+struct PhasedState {
+    result: i64,
+    polls_left: i64,
+}
+
+unsafe extern "C" fn phased_pollfn(
+    state: *mut c_void,
+    _host: *const HostCtx,
+    _waker: *const CWaker,
+) -> CPoll {
+    let st = unsafe { &mut *(state as *mut PhasedState) };
+    if st.polls_left > 0 {
+        st.polls_left -= 1;
+        CPoll::Pending
+    } else {
+        st.result = 99;
+        CPoll::Ready
+    }
+}
+
+/// Acquire a permit from `pool` synchronously (poll once with a noop waker — the
+/// first acquire on a free slot resolves `Ready` immediately).
+fn acquire_now(pool: &std::rc::Rc<TokenPool>, token: u64, capacity: u32, strand: StrandId) -> Permit {
+    let mut a = pool.acquire(token, capacity, strand);
+    match poll_once(&mut a) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("acquire on a free slot must be Ready"),
+    }
+}
+
+// spec: design/int/reactor.md §2.9 §1A — the acquire-around-poll permit spans the
+// WHOLE establish→Pending→…→Ready arc of an `EffectPoll`, NOT a one-shot
+// acquire/release around a single dispatch. With a capacity-1 token held by the
+// leaf, a competing waiter stays parked across every poll (establish + resume)
+// and proceeds ONLY after the leaf reaches `Ready` (the eager release).
+// design: design/int/reactor.md §2.9
+#[test]
+fn acquire_around_poll_permit_spans_establish_to_ready() {
+    let pool = TokenPool::new();
+    let host = noop_host_ctx();
+
+    // Token 7, capacity 1: the leaf takes the only permit.
+    let permit = acquire_now(&pool, 7, 1, StrandId(1));
+
+    // A competing acquire on the same token parks (slot full).
+    let mut waiter = pool.acquire(7, 1, StrandId(2));
+    assert!(matches!(poll_once(&mut waiter), _Poll::Pending), "competing waiter parks while the leaf holds the permit");
+
+    // The leaf: Pending twice (establish + one resume), then Ready.
+    let mut st = PhasedState { result: 0, polls_left: 2 };
+    let mut leaf = unsafe {
+        EffectPoll::new(&mut st as *mut _ as *mut c_void, phased_pollfn, &host, StrandId(1), Some(permit))
+    };
+
+    // Establish (poll #1) → Pending: the permit (slot) is STILL held.
+    assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "leaf establishes (Pending)");
+    assert!(matches!(poll_once(&mut waiter), _Poll::Pending), "permit held across establish — waiter still parked");
+
+    // Resume (poll #2) → Pending: the permit is STILL held across the arc.
+    assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "leaf resumes (still Pending)");
+    assert!(matches!(poll_once(&mut waiter), _Poll::Pending), "permit held across resume — waiter STILL parked");
+
+    // Ready (poll #3): the permit releases EAGERLY (Option::take), freeing the slot.
+    assert!(matches!(poll_once(&mut leaf), _Poll::Ready(99)), "leaf reaches Ready");
+    assert!(matches!(poll_once(&mut waiter), _Poll::Ready(_)), "permit freed only at Ready — the waiter now acquires");
+}
+
+// spec: design/int/reactor.md §2.9 §1A — two distinct poll-shape effect "kinds"
+// on the SAME token of capacity N draw from ONE `Semaphore(N)` (capacity attaches
+// to the token, not the effect kind): N acquire, the (N+1)th parks. `token == 0`
+// ⇒ no acquire (the inert permit, no map entry).
+// design: design/int/reactor.md §2.9
+#[test]
+fn poll_effects_sharing_one_token_draw_from_one_pool() {
+    let pool = TokenPool::new();
+
+    // Two distinct poll effect kinds (modelled as two acquires) on token 4,
+    // capacity 2: both succeed from the ONE shared slot.
+    let _k1 = acquire_now(&pool, 4, 2, StrandId(1));
+    let _k2 = acquire_now(&pool, 4, 2, StrandId(2));
+
+    // A third on the same token — regardless of "kind" — parks (sum-in-flight ≤ N
+    // across both kinds; a per-kind pool would wrongly admit it).
+    let mut k3 = pool.acquire(4, 2, StrandId(3));
+    assert!(matches!(poll_once(&mut k3), _Poll::Pending), "the 3rd on a shared capacity-2 token parks (one shared pool, not per-kind)");
+
+    // token 0 ⇒ unrestricted: no acquire, always Ready, independent of any slot.
+    let mut z = pool.acquire(0, 2, StrandId(4));
+    assert!(matches!(poll_once(&mut z), _Poll::Ready(_)), "token 0 is unrestricted on the poll carrier — no acquire");
+}
+
+// spec: design/int/reactor.md §2.9 §1E / arch §8.1 — first-writer-wins on the
+// POLL carrier: two poll effects on one token declaring different capacities ⇒
+// the slot is sized by the FIRST writer (never resized, never silent-max), and a
+// `TokenCapacityMismatch` strand event records the disagreement. The shared pool
+// is carrier-agnostic — same reconciliation code as the blocking carrier.
+// design: design/int/reactor.md §2.9
+#[test]
+fn poll_same_token_conflicting_capacity_first_writer_wins_and_records_event() {
+    start_strand_recording();
+    let pool = TokenPool::new();
+
+    // First poll effect sizes token 6 to capacity 2.
+    let _p1 = acquire_now(&pool, 6, 2, StrandId(1));
+    let _p2 = acquire_now(&pool, 6, 2, StrandId(2)); // 2nd permit of the 2 — slot now full
+
+    // A second poll effect declares a DISAGREEING capacity (5). First-writer-wins:
+    // the slot stays capacity 2 (full), so this acquire PARKS (it would be Ready if
+    // the pool had been resized to 5).
+    let mut p3 = pool.acquire(6, 5, StrandId(3));
+    assert!(matches!(poll_once(&mut p3), _Poll::Pending), "first-writer-wins: capacity stays 2 (not resized to 5), so the 3rd parks");
+
+    let events = drain_strand_events();
+    assert!(
+        events.contains(&StrandEvent::TokenCapacityMismatch {
+            strand: StrandId(3),
+            token: 6,
+            first_capacity: 2,
+            requested_capacity: 5,
+        }),
+        "a same-token capacity disagreement on the poll carrier must record TokenCapacityMismatch (first=2, requested=5): {events:?}"
+    );
+}
+
+// spec: design/int/reactor.md §2.9 §2A — the permit is released on `Poll::Ready`
+// (the eager success path). An `EffectPoll` carrying `Some(Permit)` on a full
+// capacity-1 token: when its poll-fn returns `Ready`, the permit drops BEFORE
+// `TaskPoll::Ready`, freeing the slot + waking the front waiter, so the parked
+// `AcquirePermit` on that token proceeds.
+// design: design/int/reactor.md §2.9
+#[test]
+fn poll_ready_releases_permit_next_waiter_proceeds() {
+    let pool = TokenPool::new();
+    let host = noop_host_ctx();
+
+    let permit = acquire_now(&pool, 8, 1, StrandId(1));
+    let mut waiter = pool.acquire(8, 1, StrandId(2));
+    assert!(matches!(poll_once(&mut waiter), _Poll::Pending), "waiter parks behind the held permit");
+
+    // The leaf completes on its first poll → eager release.
+    let mut slot: i64 = 0;
+    let mut leaf = unsafe {
+        EffectPoll::new(&mut slot as *mut _ as *mut c_void, always_ready_pollfn, &host, StrandId(1), Some(permit))
+    };
+    assert!(matches!(poll_once(&mut leaf), _Poll::Ready(7)), "leaf returns its result on Ready");
+
+    // The Ready release freed the slot — the parked waiter now acquires.
+    assert!(matches!(poll_once(&mut waiter), _Poll::Ready(_)), "permit released on Ready ⇒ the next waiter proceeds");
+}
+
+// spec: design/int/reactor.md §2.9 §2B — THE A→C CONTRACT (load-bearing). A
+// still-`Pending` `EffectPoll` that holds a permit and is DROPPED mid-flight
+// (cancelled / timed-out / race-lost — before reaching `Ready`) releases its
+// permit via the `Option<Permit>` field's drop glue, so the next waiter on that
+// token proceeds. A leaked permit would leave the waiter parked forever — the
+// deadlock this guards. Chunk C's cancellation combinators lean on exactly this.
+// design: design/int/reactor.md §2.9
+#[test]
+fn dropping_inflight_poll_releases_permit_next_waiter_proceeds() {
+    let pool = TokenPool::new();
+    let host = noop_host_ctx();
+
+    let permit = acquire_now(&pool, 11, 1, StrandId(1));
+    let mut waiter = pool.acquire(11, 1, StrandId(2));
+    assert!(matches!(poll_once(&mut waiter), _Poll::Pending), "waiter parks behind the held permit");
+
+    {
+        // A leaf parked-on-readiness that NEVER completes; it holds the permit.
+        let mut slot: i64 = 0;
+        let mut leaf = unsafe {
+            EffectPoll::new(&mut slot as *mut _ as *mut c_void, always_pending_pollfn, &host, StrandId(1), Some(permit))
+        };
+        assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "leaf is parked (Pending), holding the permit");
+        // While parked, the slot is still held — the waiter cannot proceed.
+        assert!(matches!(poll_once(&mut waiter), _Poll::Pending), "permit held while the leaf is parked");
+        // DROP the future mid-flight (no `Ready`) — the RAII drop-guard fires.
+    }
+
+    // The dropped future released its permit via field drop glue (NOT a leak) —
+    // the next waiter on the same token now acquires.
+    assert!(matches!(poll_once(&mut waiter), _Poll::Ready(_)), "dropping the in-flight poll released the permit ⇒ next waiter proceeds (no leak, no deadlock)");
+}
+
+// spec: design/int/reactor.md §2.9 §2B (the `_neg` face) — dropping a parked
+// `EffectPoll` mid-flight cleans up its permit EXACTLY ONCE: the slot returns to
+// its pre-acquire free count (not leaked, not double-freed). A double-release
+// would over-credit the slot and let TWO waiters acquire a capacity-1 token; a
+// leak would let NONE. We assert exactly one waiter proceeds.
+//
+// Note: this test runs with a NO-REACTOR fixture `HostCtx` (null host), so the
+// `EffectPoll`'s finding-#3 `ReactorInterest` is inert here (reg 0 ⇒ drop no-op) —
+// it isolates the PERMIT half of the drop (released exactly once, never twice). The
+// active fd/timer deregistration that finding #3 (§2.16) now adds is exercised
+// against a REAL reactor by `dropping_inflight_poll_deregisters_reactor_interest`
+// below.
+// design: design/int/reactor.md §2.9
+#[test]
+fn dropping_inflight_poll_deregisters_reactor_interest_neg() {
+    let pool = TokenPool::new();
+    let host = noop_host_ctx();
+
+    // Capacity 1 so the free-count is unambiguous: 0 held, 1 after a single release.
+    let permit = acquire_now(&pool, 13, 1, StrandId(1));
+
+    // Two waiters queue behind the single held permit.
+    let mut w1 = pool.acquire(13, 1, StrandId(2));
+    let mut w2 = pool.acquire(13, 1, StrandId(3));
+    assert!(matches!(poll_once(&mut w1), _Poll::Pending), "w1 parks");
+    assert!(matches!(poll_once(&mut w2), _Poll::Pending), "w2 parks");
+
+    {
+        let mut slot: i64 = 0;
+        let mut leaf = unsafe {
+            EffectPoll::new(&mut slot as *mut _ as *mut c_void, always_pending_pollfn, &host, StrandId(1), Some(permit))
+        };
+        assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "leaf parked, holding the permit");
+    } // drop → exactly one permit returns.
+
+    // EXACTLY ONE waiter proceeds (a single release). If the drop had
+    // double-released, BOTH would acquire on a capacity-1 token. Bind w1's permit
+    // so it is HELD (an unbound `Ready(_)` would drop it immediately and re-credit
+    // the slot, masking a real double-release).
+    let _w1_permit = match poll_once(&mut w1) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("the first parked waiter must acquire the single freed permit"),
+    };
+    assert!(matches!(poll_once(&mut w2), _Poll::Pending), "no double-release: the capacity-1 token admits exactly ONE — w2 stays parked");
+}
+
+// spec: design/int/reactor.md §2.9 §2C — admission is non-re-entrant on its own
+// token. The acquire is taken ONCE, before the poll-fn is ever called; the
+// platform poll-fn receives only `(state, host, waker)` (no `TokenPool` handle —
+// a compile-time structural fact), so it cannot re-enter admission per poll. We
+// prove the runtime consequence: across MANY poll-fn invocations (establish +
+// several resumes) the token's single permit is acquired exactly once — a
+// competing waiter stays parked the whole arc and proceeds only at `Ready`.
+// design: design/int/reactor.md §2.9
+#[test]
+fn poll_fn_cannot_re_enter_admission_on_own_token_neg() {
+    let pool = TokenPool::new();
+    let host = noop_host_ctx();
+
+    let permit = acquire_now(&pool, 15, 1, StrandId(1));
+    let mut waiter = pool.acquire(15, 1, StrandId(2));
+    assert!(matches!(poll_once(&mut waiter), _Poll::Pending), "waiter parks behind the single permit");
+
+    // Many Pending polls (the poll-fn runs once per poll) then Ready — if the
+    // poll-fn could re-enter admission it would have to grab/release a permit per
+    // poll, perturbing the waiter; it cannot (no pool handle in its ABI).
+    let mut st = PhasedState { result: 0, polls_left: 4 };
+    let mut leaf = unsafe {
+        EffectPoll::new(&mut st as *mut _ as *mut c_void, phased_pollfn, &host, StrandId(1), Some(permit))
+    };
+    for _ in 0..4 {
+        assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "leaf re-polls (poll-fn invoked) — still Pending");
+        assert!(matches!(poll_once(&mut waiter), _Poll::Pending), "the SINGLE permit acquired once at establish is held across every re-poll — no per-poll re-acquire");
+    }
+    assert!(matches!(poll_once(&mut leaf), _Poll::Ready(99)), "leaf reaches Ready");
+    assert!(matches!(poll_once(&mut waiter), _Poll::Ready(_)), "the one permit releases at Ready ⇒ the waiter finally acquires");
+}
+
+// spec: design/int/reactor.md §2.9 — NO DOUBLE-RELEASE. After a `Ready` release
+// (`Option::take`) the field is `None`, so dropping the `EffectPoll` is a no-op:
+// the slot is credited exactly ONCE across the Ready-then-drop sequence. (The
+// `Option` makes "released exactly once" representable — Principle 20.)
+// design: design/int/reactor.md §2.9
+#[test]
+fn poll_ready_then_drop_no_double_release() {
+    let pool = TokenPool::new();
+    let host = noop_host_ctx();
+
+    let permit = acquire_now(&pool, 17, 1, StrandId(1));
+
+    {
+        let mut slot: i64 = 0;
+        let mut leaf = unsafe {
+            EffectPoll::new(&mut slot as *mut _ as *mut c_void, always_ready_pollfn, &host, StrandId(1), Some(permit))
+        };
+        // Ready releases the permit (take ⇒ field becomes None).
+        assert!(matches!(poll_once(&mut leaf), _Poll::Ready(7)), "leaf Ready releases the permit");
+        // Drop the (now permit-less) future — the field-drop must be a NO-OP.
+    }
+
+    // Exactly ONE credit reached the slot. A capacity-1 token therefore admits
+    // exactly one acquirer; a second parks. (A double-release would admit two.)
+    let _again = acquire_now(&pool, 17, 1, StrandId(2)); // consumes the single credit
+    let mut extra = pool.acquire(17, 1, StrandId(3));
+    assert!(matches!(poll_once(&mut extra), _Poll::Pending), "no double-release: the slot was credited exactly once (Ready-take then drop is a no-op)");
+}
+
+// ===========================================================================
+// S96 Chunk B §2.13 — backpressure: degree throttle + global admission budget.
+// design: design/int/reactor.md §2.13
+// ===========================================================================
+
+// spec: design/int/reactor.md §2.13 part 1 / spec/10-io.md §10.12.4.2 item 1 — the
+// program `degree` throttles a token's effective in-flight limit to
+// `min(node_capacity, degree)`: under degree d < N a capacity-N token admits only
+// d (the (d+1)th parks). It can only TIGHTEN.
+// design: design/int/reactor.md §2.13
+#[test]
+fn degree_throttles_token_slot_to_min_capacity_degree() {
+    // degree 2 < node capacity 5 ⇒ effective 2: two acquire, the 3rd parks.
+    let pool = TokenPool::with_degree(2);
+    let mut a1 = pool.acquire(5, 5, StrandId(1));
+    let mut a2 = pool.acquire(5, 5, StrandId(2));
+    let mut a3 = pool.acquire(5, 5, StrandId(3));
+    let _p1 = match poll_once(&mut a1) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("1st acquire under degree 2 must be Ready"),
+    };
+    let _p2 = match poll_once(&mut a2) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("2nd acquire under degree 2 must be Ready"),
+    };
+    assert!(
+        matches!(poll_once(&mut a3), _Poll::Pending),
+        "degree 2 throttles a capacity-5 token to 2 in flight — the 3rd parks (min(5,2)=2)"
+    );
+}
+
+// spec: design/int/reactor.md §2.13 part 1 / spec/10-io.md §10.12.4.2 item 2 — a
+// degree ABOVE a token's capacity has no extra effect: capacity still binds
+// (`min(N, D) = N`). Degree never loosens past the platform ceiling.
+// design: design/int/reactor.md §2.13
+#[test]
+fn degree_above_capacity_capacity_still_binds() {
+    // degree 5 > node capacity 2 ⇒ effective 2: capacity binds, the 3rd parks.
+    let pool = TokenPool::with_degree(5);
+    let mut a1 = pool.acquire(9, 2, StrandId(1));
+    let mut a2 = pool.acquire(9, 2, StrandId(2));
+    let mut a3 = pool.acquire(9, 2, StrandId(3));
+    let _p1 = match poll_once(&mut a1) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("1st on capacity-2 token must be Ready"),
+    };
+    let _p2 = match poll_once(&mut a2) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("2nd on capacity-2 token must be Ready"),
+    };
+    assert!(
+        matches!(poll_once(&mut a3), _Poll::Pending),
+        "degree 5 above capacity 2 ⇒ capacity binds (min(2,5)=2): the 3rd parks"
+    );
+}
+
+// spec: design/int/reactor.md §2.13 part 2 / spec/10-io.md §10.12.4.2 item 3 — the
+// global admission budget bounds total in-flight detached strands to the global
+// degree D: D global acquires succeed, the (D+1)th PARKS until one frees
+// (saturate-not-oversaturate). Emits the `GlobalBudget*` events (not `Token*`).
+// design: design/int/reactor.md §2.13
+#[test]
+fn global_budget_bounds_inflight_to_degree_nplus1_parks() {
+    start_strand_recording();
+    let pool = TokenPool::with_degree(2); // global degree D = 2
+
+    let mut g1 = pool.acquire_global(StrandId(1));
+    let mut g2 = pool.acquire_global(StrandId(2));
+    let mut g3 = pool.acquire_global(StrandId(3));
+    let p1 = match poll_once(&mut g1) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("1st global acquire under degree 2 must be Ready"),
+    };
+    let _p2 = match poll_once(&mut g2) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("2nd global acquire under degree 2 must be Ready"),
+    };
+    assert!(
+        matches!(poll_once(&mut g3), _Poll::Pending),
+        "the (D+1)th detached strand parks on the full global budget (saturate-not-oversaturate)"
+    );
+
+    // Release one → the parked (D+1)th launch proceeds.
+    drop(p1);
+    assert!(
+        matches!(poll_once(&mut g3), _Poll::Ready(_)),
+        "a completing strand frees a global slot ⇒ the parked launch proceeds"
+    );
+
+    // The global gate emits the distinct GlobalBudget* events (not Token*).
+    let events = drain_strand_events();
+    assert!(
+        events.contains(&StrandEvent::GlobalBudgetParked { strand: StrandId(3) }),
+        "the over-budget launch records GlobalBudgetParked: {events:?}"
+    );
+    assert!(
+        events.contains(&StrandEvent::GlobalBudgetAcquired { strand: StrandId(3) }),
+        "the resumed launch records GlobalBudgetAcquired: {events:?}"
+    );
+    assert!(
+        events.contains(&StrandEvent::GlobalBudgetReleased { strand: StrandId(1) }),
+        "the releaser records GlobalBudgetReleased: {events:?}"
+    );
+    // Negative: the global gate must NOT masquerade as a resource-token event.
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StrandEvent::TokenParked { .. } | StrandEvent::TokenAcquired { .. })),
+        "the global budget must emit GlobalBudget* events, NOT Token*: {events:?}"
+    );
+}
+
+// spec: design/int/reactor.md §2.14 (the A→C volume consumer) — a supervised
+// strand OWNS its global-budget `Permit`; dropping the strand (completion /
+// shutdown) drops the `Permit`, freeing a global slot so a parked launch proceeds.
+// This is the global half of the A→C contract (the per-token half is covered by
+// the §2.9 EffectPoll-drop tests above). RAII, no leak.
+// design: design/int/reactor.md §2.14
+#[test]
+fn dropping_global_permit_frees_budget_parked_launch_proceeds() {
+    let pool = TokenPool::with_degree(1); // global budget = 1
+    let g1 = match poll_once(&mut pool.acquire_global(StrandId(1))) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("the only global permit must be acquirable"),
+    };
+    let mut g2 = pool.acquire_global(StrandId(2));
+    assert!(matches!(poll_once(&mut g2), _Poll::Pending), "the 2nd launch parks behind the held global permit");
+    // Drop the permit as a completing/dropped supervised strand would (RAII).
+    drop(g1);
+    assert!(
+        matches!(poll_once(&mut g2), _Poll::Ready(_)),
+        "dropping the strand's global permit frees the budget ⇒ the parked launch proceeds (no leak)"
+    );
+}
+
+// ===========================================================================
+// S96 Chunk C C2 — the A3-review cancellation foundations.
+//   finding #4 (§2.17): `Drop for AcquirePermit` — stale-waker removal.
+//   finding #3 (§2.16): `ReactorInterest` — active fd/timer deregistration.
+//   `sleep` (§2.18): the tokenless timer leaf.
+// design: design/int/reactor.md §2.16 / §2.17 / §2.18
+// ===========================================================================
+
+use std::sync::atomic::{AtomicBool, Ordering as _Ordering};
+
+/// A `Wake` impl that flips a flag — lets a test observe WHICH parked waiter the
+/// releaser woke (the finding-#4 lost-wakeup witness).
+struct FlagWaker(std::sync::Arc<AtomicBool>);
+impl std::task::Wake for FlagWaker {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.store(true, _Ordering::SeqCst);
+    }
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.0.store(true, _Ordering::SeqCst);
+    }
+}
+
+/// Poll an `Unpin` future once with a specific waker (so the parked entry carries
+/// THAT waker), returning the outcome.
+fn poll_with<F: _Future + Unpin>(f: &mut F, w: &std::task::Waker) -> _Poll<F::Output> {
+    let mut cx = _Context::from_waker(w);
+    _Pin::new(f).poll(&mut cx)
+}
+
+// spec: design/int/reactor.md §2.17 — finding #4: an `AcquirePermit` dropped WHILE
+// PARKED removes its OWN stale waker from the slot's FIFO, so a later `Drop for
+// Permit`'s front-`pop` wakes the next LIVE waiter — not the stranded one. Without
+// `Drop for AcquirePermit` the release pops+wakes the dead waker (a no-op) while the
+// live waiter behind it is NEVER woken and the freed permit goes unclaimed
+// (lost-wakeup / a free permit nobody can take). We observe the wake directly via
+// flag wakers: the LIVE waiter's flag must fire, the stale one's must not.
+// design: design/int/reactor.md §2.17
+#[test]
+fn dropping_parked_acquire_removes_stale_waker_next_live_waiter_woken() {
+    let pool = TokenPool::new();
+
+    // Capacity-1 token 7: a1 takes the only permit.
+    let p1 = acquire_now(&pool, 7, 1, StrandId(1));
+
+    // The STALE waiter parks FRONT (it will be cancelled); the LIVE waiter parks
+    // behind it. Each carries a distinct flag waker.
+    let stale_flag = std::sync::Arc::new(AtomicBool::new(false));
+    let live_flag = std::sync::Arc::new(AtomicBool::new(false));
+    let stale_waker: std::task::Waker = std::sync::Arc::new(FlagWaker(stale_flag.clone())).into();
+    let live_waker: std::task::Waker = std::sync::Arc::new(FlagWaker(live_flag.clone())).into();
+
+    let mut stale = pool.acquire(7, 1, StrandId(2));
+    let mut live = pool.acquire(7, 1, StrandId(3));
+    assert!(matches!(poll_with(&mut stale, &stale_waker), _Poll::Pending), "stale parks front");
+    assert!(matches!(poll_with(&mut live, &live_waker), _Poll::Pending), "live parks behind");
+
+    // Cancel the FRONT waiter while parked (drop it). Finding #4: its Drop
+    // `retain`-removes its own entry, so the FIFO front becomes the live waiter.
+    drop(stale);
+
+    // Release the permit ⇒ the releaser pops+wakes the FRONT. With finding #4 that
+    // is the LIVE waiter; without it, the stranded stale waker.
+    drop(p1);
+
+    assert!(
+        live_flag.load(_Ordering::SeqCst),
+        "finding #4: the release must wake the next LIVE waiter (its waker did NOT fire ⇒ lost wakeup)"
+    );
+    assert!(
+        !stale_flag.load(_Ordering::SeqCst),
+        "the cancelled waiter's stale waker must NOT be the one woken"
+    );
+    // And the live waiter actually acquires on re-poll (the permit is claimable).
+    assert!(
+        matches!(poll_with(&mut live, &live_waker), _Poll::Ready(_)),
+        "the woken live waiter acquires the freed permit"
+    );
+}
+
+// spec: design/int/reactor.md §2.17 — finding #4 on the GLOBAL-budget acquire (the
+// shutdown-cancelled accept-loop launch the A3 review asked to co-cover): a parked
+// `acquire_global` cancelled while queued behind a full budget removes its own stale
+// waker, so the release wakes the next live launch — same machinery, global token.
+// design: design/int/reactor.md §2.17
+#[test]
+fn dropping_parked_global_acquire_removes_stale_waker_co_covers_shutdown() {
+    let pool = TokenPool::with_degree(1); // global budget = 1
+    let p1 = match poll_once(&mut pool.acquire_global(StrandId(1))) {
+        _Poll::Ready(p) => p,
+        _Poll::Pending => panic!("the only global permit must be acquirable"),
+    };
+
+    let stale_flag = std::sync::Arc::new(AtomicBool::new(false));
+    let live_flag = std::sync::Arc::new(AtomicBool::new(false));
+    let stale_waker: std::task::Waker = std::sync::Arc::new(FlagWaker(stale_flag.clone())).into();
+    let live_waker: std::task::Waker = std::sync::Arc::new(FlagWaker(live_flag.clone())).into();
+
+    let mut stale = pool.acquire_global(StrandId(2));
+    let mut live = pool.acquire_global(StrandId(3));
+    assert!(matches!(poll_with(&mut stale, &stale_waker), _Poll::Pending), "stale launch parks front");
+    assert!(matches!(poll_with(&mut live, &live_waker), _Poll::Pending), "live launch parks behind");
+
+    drop(stale); // shutdown cancels the front parked launch
+    drop(p1); // an in-flight strand completes, freeing the global slot
+
+    assert!(
+        live_flag.load(_Ordering::SeqCst),
+        "the freed global slot must wake the next LIVE launch (no lost wakeup on the global token)"
+    );
+    assert!(!stale_flag.load(_Ordering::SeqCst), "the cancelled launch's stale waker must not be woken");
+}
+
+// spec: design/int/reactor.md §2.16 — finding #3: an in-flight `EffectPoll` that
+// armed reactor interest (an fd/timer waiter) and is DROPPED mid-flight (cancelled
+// before `Ready`) ACTIVELY deregisters that interest via its `ReactorInterest` field
+// drop. Without it the `fd_waiters`/`timer_waiters` entry + mio registration leak
+// until the fd next readies (unbounded growth under volume cancellation). We drive a
+// REAL reactor (so the interest is live), arm a far-future timer leaf, drop it, and
+// assert the reactor's waiter count returns to 0.
+// design: design/int/reactor.md §2.16
+#[test]
+fn dropping_inflight_poll_deregisters_reactor_interest() {
+    let strand = next_strand();
+    block_on_reactor(async |env| {
+        // Raw read handle on the reactor (B1 provenance — read-only here, between
+        // operations, no concurrent turn).
+        let reactor = env.host.host as *const Reactor;
+        let before = unsafe { (*reactor).waiter_count() };
+
+        // A `sleep` leaf with a far-future deadline: first poll arms a timer and
+        // parks (never readies during this test).
+        let mut st = SleepState {
+            result: 0,
+            duration_nanos: 60 * 1_000_000_000, // 60s — never fires here
+            deadline_nanos: 0,
+        };
+        {
+            let mut leaf = unsafe {
+                EffectPoll::new(
+                    &mut st as *mut _ as *mut c_void,
+                    sleep_pollfn,
+                    env.host,
+                    strand,
+                    None,
+                )
+            };
+            assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "sleep leaf arms a timer and parks");
+            let armed = unsafe { (*reactor).waiter_count() };
+            assert_eq!(armed, before + 1, "the parked leaf armed exactly one reactor (timer) interest");
+            // Drop the in-flight leaf (cancellation) → ReactorInterest::drop runs.
+        }
+        let after = unsafe { (*reactor).waiter_count() };
+        assert_eq!(
+            after, before,
+            "finding #3: dropping the in-flight EffectPoll deregistered its reactor interest \
+             (waiter map back to {before}; a leak would leave it at {})",
+            before + 1
+        );
+        0
+    })
+    .expect("reactor");
+}
+
+// spec: design/int/reactor.md §2.18 — the `sleep` tokenless timer leaf: arms the
+// reactor timer on first poll (Pending → parks), resumes to `Unit` (0) when the
+// timer fires. Proves it genuinely PARKS for ≈the duration (not a busy spin) and
+// emits the Dispatched→Suspended→Resumed strand trace, reusing the whole EffectPoll
+// / timer-turn machinery. This is the leaf `timeout = race io (sleep d)` builds on.
+// design: design/int/reactor.md §2.18
+#[test]
+fn sleep_leaf_parks_for_duration_then_resumes_unit() {
+    start_strand_recording();
+    let strand = next_strand();
+    let delay_ms = 40u64;
+
+    let start = Instant::now();
+    let result = block_on_reactor(async |env| {
+        let mut st = SleepState {
+            result: 0,
+            duration_nanos: (delay_ms * 1_000_000) as i64,
+            deadline_nanos: 0,
+        };
+        let leaf = unsafe {
+            EffectPoll::new(&mut st as *mut _ as *mut c_void, sleep_pollfn, env.host, strand, None)
+        };
+        leaf.await
+    })
+    .expect("reactor");
+    let elapsed = start.elapsed();
+
+    assert_eq!(result, 0, "sleep resolves to Unit (0)");
+    assert!(
+        elapsed.as_millis() as u64 >= delay_ms - 10,
+        "sleep must genuinely PARK until ≈the deadline (no busy spin), got {elapsed:?}"
+    );
+    let events = drain_strand_events();
+    assert_eq!(
+        events,
+        vec![
+            StrandEvent::EffectDispatched { strand },
+            StrandEvent::EffectSuspended { strand },
+            StrandEvent::EffectResumed { strand },
+        ],
+        "the sleep leaf suspends on the reactor timer and resumes"
     );
 }

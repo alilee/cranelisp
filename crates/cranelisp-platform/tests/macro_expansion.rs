@@ -87,14 +87,11 @@ fn invoke_manifest() -> cranelisp_platform::PlatformManifest {
 fn macro_exports_got_in_manifest_order() {
     let manifest = invoke_manifest();
     assert_eq!(
-        manifest.abi_version, 7,
-        "ABI v7 (Sprint 93 — the ABI-v4 cascade recorded numerically 6→7: \
-         poll-shape async-leaf effect fns + ConcurrencyDescriptor in the \
-         manifest + the host-reactor C-ABI; v7 layout types landed-and-dormant \
-         behind the `concurrency` feature, the macro still emits the v6 \
-         PlatformFn shape until the reactor wires them. Was v6 at DEF-5 — the \
-         manifest export is namespaced per platform name; v5 at FIXME 0327 \
-         Option A; v4 at the step-1 node-widen; v3 at FIXME 0286)"
+        manifest.abi_version, 8,
+        "ABI v8 (Sprint 96 — the single-ABI cutover, §6.8.0: the unified \
+         `PlatformFn` absorbs `ConcurrentPlatformFn`, the host-reactor ABI types \
+         graduate to the default edge, the `concurrency` feature is retired). \
+         Was v7 (Sprint 93 ABI-v4 cascade), v6 at DEF-5)"
     );
     assert_eq!(manifest.function_count, 2);
 

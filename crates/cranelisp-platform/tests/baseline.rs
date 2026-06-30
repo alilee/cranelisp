@@ -58,20 +58,18 @@ fn read_source(rel: &str) -> String {
 // T23 per tests/plan/sprint71-platform.md row T23.
 #[test]
 fn sprint71_abi_version_baseline_co_regen() {
-    // (1) Source-side: ABI_VERSION must read `= 7;` after the Sprint 93 ABI-v4
-    //     cascade (recorded numerically 6→7: poll-shape async-leaf effect fns +
-    //     ConcurrencyDescriptor in the manifest + the host-reactor C-ABI; the v7
-    //     layout types are landed-and-dormant behind the `concurrency` feature,
-    //     §6.8). Was `= 6;` at DEF-5 (the manifest export namespaced per platform
-    //     name, §5.5.5 / §6.7), `= 5;` at FIXME 0327 Option-A (the DLL-local
-    //     dispatch-funnel fault-catch), `= 4;` at the step-1 node-widen, `= 3;`
-    //     at FIXME 0286 (the three-exports macro rework).
+    // (1) Source-side: ABI_VERSION must read `= 8;` after the Sprint 96 SINGLE-ABI
+    //     CUTOVER (§6.8.0 — the unified `PlatformFn` absorbs `ConcurrentPlatformFn`:
+    //     `scheduling_class: u32` → `concurrency: ConcurrencyDescriptor` + a
+    //     `drop_state` hook; the host-reactor ABI types graduate to the default
+    //     edge; the `concurrency` feature is retired). Was `= 7;` (Sprint 93 ABI-v4
+    //     cascade), `= 6;` at DEF-5, `= 5;`/`= 4;`/`= 3;` earlier.
     let lib_rs = read_source("src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 7;"),
-        "expected `pub const ABI_VERSION: u32 = 7;` in \
-         crates/cranelisp-platform/src/lib.rs (Sprint 93: the ABI-v4 cascade \
-         bumps the ABI from 6 to 7). If you see this failure the source change \
+        lib_rs.contains("pub const ABI_VERSION: u32 = 8;"),
+        "expected `pub const ABI_VERSION: u32 = 8;` in \
+         crates/cranelisp-platform/src/lib.rs (Sprint 96: the single-ABI cutover \
+         bumps the ABI from 7 to 8). If you see this failure the source change \
          was skipped or reverted."
     );
 

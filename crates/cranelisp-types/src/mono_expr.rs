@@ -149,6 +149,17 @@ pub enum MonoExpr {
         span: Span,
         ty: ConcreteType,
     },
+    /// Launch-and-continue — the post-mono twin of [`Expr::LaunchContinue`]
+    /// (see its rustdoc). Codegen lowers `launched` to a detached supervised
+    /// strand (the `IO_TAG_LAUNCH` runtime node, `design/backend/io-trampoline.md §15`)
+    /// and proceeds with `continuation` without awaiting it. `ty` is the
+    /// continuation's concrete type (the launched effect's result is discarded).
+    LaunchContinue {
+        launched: Box<MonoExpr>,
+        continuation: Box<MonoExpr>,
+        span: Span,
+        ty: ConcreteType,
+    },
     ConstrADT {
         type_name: FQTypeName,
         tag: usize,
@@ -175,6 +186,7 @@ impl MonoExpr {
             | MonoExpr::VecLit { span, .. }
             | MonoExpr::Trace { span, .. }
             | MonoExpr::ParBind { span, .. }
+            | MonoExpr::LaunchContinue { span, .. }
             | MonoExpr::ConstrADT { span, .. } => *span,
         }
     }
@@ -195,6 +207,7 @@ impl MonoExpr {
             | MonoExpr::VecLit { ty, .. }
             | MonoExpr::Trace { ty, .. }
             | MonoExpr::ParBind { ty, .. }
+            | MonoExpr::LaunchContinue { ty, .. }
             | MonoExpr::ConstrADT { ty, .. } => ty,
         }
     }
@@ -322,6 +335,14 @@ impl MonoExpr {
                 span: *span,
                 ty: node_ty(expr)?,
             }),
+            Expr::LaunchContinue { launched, continuation, span, .. } => {
+                Ok(MonoExpr::LaunchContinue {
+                    launched: Box::new(MonoExpr::from_expr(launched)?),
+                    continuation: Box::new(MonoExpr::from_expr(continuation)?),
+                    span: *span,
+                    ty: node_ty(expr)?,
+                })
+            }
             Expr::ConstrADT { type_name, tag, fields, span, .. } => Ok(MonoExpr::ConstrADT {
                 type_name: type_name.clone(),
                 tag: *tag,

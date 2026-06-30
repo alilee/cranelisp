@@ -82,6 +82,10 @@ pub(crate) fn for_each_child_expr(expr: &Expr, mut f: impl FnMut(&Expr)) {
             }
         }
         Expr::Trace { body, .. } => f(body),
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            f(launched);
+            f(continuation);
+        }
         Expr::ConstrADT { fields, .. } => {
             for field in fields {
                 f(field);
@@ -131,6 +135,10 @@ pub(crate) fn for_each_child_expr_mut(expr: &mut Expr, mut f: impl FnMut(&mut Ex
             }
         }
         Expr::Trace { body, .. } => f(body),
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            f(launched);
+            f(continuation);
+        }
         Expr::ConstrADT { fields, .. } => {
             for field in fields {
                 f(field);

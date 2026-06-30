@@ -272,6 +272,36 @@ where
                     return self.compile_bind_inline(&arg_vals, span);
                 }
 
+                // Race/select combinators (S96 Chunk C, slice 7): name-matched
+                // here exactly like `bind` (the inline-primitive precedent — NOT
+                // an inferred AST marker; `io-trampoline.md §16.2`). `select`
+                // takes one branch `Vec (IO a)` (consuming convention, so a
+                // temporary `[..]` literal transfers its rc and a `Var` is inc'd
+                // once); `race a b` builds the same node over a 2-element branch
+                // Vec from its two IO args (`compile_race` compiles the args
+                // itself via `compile_vec_lit`). Both produce the one
+                // `IO_TAG_SELECT` node (`io-trampoline.md §16.3/§16.4`).
+                if op_name.as_ref() == "select" {
+                    let arg_vals = self.compile_consuming_arg_list(args)?;
+                    self.in_tail_position = saved_tail;
+                    return self.compile_select(&arg_vals, span);
+                }
+                if op_name.as_ref() == "race" {
+                    self.in_tail_position = saved_tail;
+                    return self.compile_race(args, span);
+                }
+
+                // `sleep` — the runtime timer poll leaf (S96 Chunk C4, slice 7;
+                // `reactor.md §2.18`). Name-matched here like `race`/`select`/`bind`
+                // (the inline-primitive precedent). `compile_sleep` builds an
+                // `IO_TAG_EFFECT_POLL` node whose `code_ptr` is the RUNTIME symbol
+                // `runtime/sleep_pollfn` (the new non-GOT runtime-symbol path —
+                // distinct from `compile_poll_effect`'s GOT-slot load).
+                if op_name.as_ref() == "sleep" {
+                    self.in_tail_position = saved_tail;
+                    return self.compile_sleep(args, span);
+                }
+
                 // Vec operations: intercept and compile inline.
                 // Vec ops handle their own temporary cleanup internally
                 // via emit_vec_drop_if_temporary (COW-specific, not post-call
@@ -688,12 +718,17 @@ where
         // on the data field, no cargo feature; a blocking effect (every v6
         // platform) returns `None` here and takes the unchanged call path below,
         // so the default build constructs no poll node and is byte-identical.
-        if let Some((module_path, slot, param_types)) = crate::compiler::resolve_poll_effect_target(
-            self.ctx.symbol_tables,
-            self.ctx.module_aliases,
-            &self.ctx.current_module,
-            name,
-        ) {
+        // `scheduling_class` is surfaced here (S96 A4 step 0) but the bake/peel is
+        // keyed ONLY on `poll_shape` (the one uniform peel) — the class gates the
+        // producer-side injection, not this consumer. Bound `_` here.
+        if let Some((module_path, slot, param_types, _scheduling_class)) =
+            crate::compiler::resolve_poll_effect_target(
+                self.ctx.symbol_tables,
+                self.ctx.module_aliases,
+                &self.ctx.current_module,
+                name,
+            )
+        {
             return self.compile_poll_effect(&module_path, slot, &param_types, arg_vals, span);
         }
 
@@ -910,19 +945,28 @@ where
     /// trampoline supplies `HostCtx`/`Waker` and calls the poll-fn later
     /// (`design/backend/io-trampoline.md §12`, `design/int/reactor.md §2.5`).
     ///
+    /// Operand convention (`io-trampoline.md §14.2` / SPRINT.md S96 Phase-3):
+    ///   `arg_vals = [ token, capacity, resource_handle(=leaf_0), leaf_1, ... ]`.
+    /// The backend peels the leading `(token, capacity)` pair and bakes the live
+    /// values into the node carrier (fields 1/2); the leaf args (`arg_vals[2..]`)
+    /// marshal into the state-closure env.
+    ///
     /// State-closure (standard `HeapClosure`) env layout:
     ///   `capture(0)` = result slot (sentinel `0`, the poll-fn writes its result),
-    ///   `capture(1+i)` = effect arg `i`. The trampoline passes the env base
-    ///   (`closure + 32`) as `state`, so the poll-fn sees result at `state+0`,
-    ///   arg0 at `state+8`. The node holds tag + the state-closure pointer
-    ///   (field 0) + the reserved `(token, capacity)` carrier (fields 1 and 2,
-    ///   sentinel-initialised `0`/`1` — S95 slice 3, `io-trampoline.md §13.3`).
+    ///   `capture(1+i)` = leaf arg `i` (`arg_vals[2+i]`). The trampoline passes the
+    ///   env base (`closure + 32`) as `state`, so the poll-fn sees result at
+    ///   `state+0`, the re-passed resource handle (`leaf_0`) at `state+8`. The node
+    ///   holds tag + the state-closure pointer (field 0) + the LIVE `(token,
+    ///   capacity)` carrier (fields 1 and 2 — S96 item 3, `io-trampoline.md §14`;
+    ///   replaces the S95 `0`/`1` sentinels at the same abs 32 / 40 offsets).
     ///
-    /// RC: args reach here via the consuming convention (`compile_consuming_arg_list`
-    /// in the platform-effect dispatch arm), so storing them into the env is an
-    /// ownership transfer (no inc — like `ParBind`/`Bind` constructor convention);
-    /// the state-closure drop glue (`build_poll_state_drop_glue`) dec's the
-    /// heap-typed arg slots when the node is consumed (`consume_io_tree`).
+    /// RC: leaf args reach here via the consuming convention
+    /// (`compile_consuming_arg_list` in the platform-effect dispatch arm), so storing
+    /// them into the env is an ownership transfer (no inc — like `ParBind`/`Bind`
+    /// constructor convention); the state-closure drop glue
+    /// (`build_poll_state_drop_glue`) dec's the heap-typed arg slots when the node is
+    /// consumed (`consume_io_tree`). The baked `(token, capacity)` are `NeverHeap`
+    /// scalars (no inc, no dec — §14.6).
     fn compile_poll_effect(
         &mut self,
         module_path: &cranelisp_types::ModuleFullPath,
@@ -936,6 +980,34 @@ where
             location: ErrorLocation::from_span(span),
         })?;
 
+        // 0. Peel the leading `(token, capacity)` operand pair (the poll-shape
+        //    operand convention — `io-trampoline.md §14.2` / SPRINT.md S96 Phase-3
+        //    ruling):
+        //      arg_vals = [ token, capacity, resource_handle(=leaf_0), leaf_1, ... ]
+        //    `token` (arg_vals[0]) → node field 1 (abs 32); `capacity` (arg_vals[1])
+        //    → node field 2 (abs 40, node-only — the poll-fn never sees it); the
+        //    leaf args (arg_vals[2..]) marshal into the state-closure env, with the
+        //    resource handle re-passed as `leaf_0` (arg_vals[2] → capture(1)) so the
+        //    poll-fn still finds its fd at `state+8`. A tokenless leaf supplies the
+        //    leading pair as the explicit constants `(0, 1)` through this SAME path,
+        //    so `token = 0` (no-acquire) / `capacity = 1` (serial) — the S95 sentinel
+        //    behaviour preserved by value, not by a special-case branch. The backend
+        //    always peels the pair: there is no "tokened vs tokenless" branch and no
+        //    new `cranelisp-types` field (`poll_shape: bool` stays the sole
+        //    discriminator). Both baked fields are `NeverHeap` scalars (an opaque
+        //    fd/handle identity and a count), so the bake takes no `rc_inc` (§14.6).
+        let (token_val, cap_val, leaf_args) = match arg_vals {
+            [token, cap, rest @ ..] => (*token, *cap, rest),
+            _ => {
+                return Err(CranelispError::CodegenError {
+                    message: "poll-shape effect must carry the leading (token, \
+                              capacity) operand pair (io-trampoline.md §14.2)"
+                        .into(),
+                    location: ErrorLocation::from_span(span),
+                });
+            }
+        };
+
         // 1. GOT-load the poll-fn (the shared load prefix — NO call at the site).
         let got_sym = crate::compiler::got_data_symbol_name(module_path);
         let data_id = self
@@ -947,9 +1019,12 @@ where
             })?;
         let poll_fn = self.emit_got_slot_load(data_id, slot);
 
-        // 2. Build the state-closure: env = result-slot + k arg captures.
-        let k = arg_vals.len();
-        let env_slots = 1 + k;
+        // 2. Build the state-closure: env = result-slot + leaf arg captures (the
+        //    leading `(token, capacity)` pair is NOT marshaled into the env — capacity
+        //    is node-only; the resource handle reaches the env as the re-passed
+        //    `leaf_0`).
+        let leaf_count = leaf_args.len();
+        let env_slots = 1 + leaf_count;
         let closure_size = HeapClosure::payload_size(env_slots) as i64;
         let clo = heap::emit_alloc(&mut self.builder, self.module, alloc_id, closure_size);
 
@@ -957,7 +1032,22 @@ where
         heap::heap_store(&mut self.builder, poll_fn, clo, HeapClosure::CODE_PTR_OFFSET);
 
         // drop_glue_ptr = capture-dec glue (null when no arg is heap-typed).
-        let drop_glue = self.build_poll_state_drop_glue(param_types, span)?;
+        //
+        // The glue is keyed on the **leaf** param types — those aligned with the
+        // env captures (`leaf_args` = `arg_vals[2..]`), NOT the full effect scheme.
+        // A `ResourceSerial` leaf's scheme carries `(token, capacity)` as its first
+        // two params (the S95 `pool-demo` convention, e.g. `poll-log : (Fn [Int Int
+        // Int String] …)`), but those two operands are PEELED to the node fields
+        // and are NOT marshaled into the env — so keying the glue on the full scheme
+        // would mis-offset the dec walk (dec'ing a heap field at a capture slot that
+        // does not exist → corruption). The leaf params are the TRAILING
+        // `leaf_args.len()` entries of the scheme: for a `Commutative` leaf the
+        // `(0,1)` pair is SYNTHESIZED by the producer injection (absent from the
+        // scheme), so the trailing slice is the whole scheme; for a `ResourceSerial`
+        // leaf it drops the two leading `(token, capacity)` params. One uniform
+        // alignment rule, no `scheduling_class` branch here.
+        let leaf_param_types = &param_types[param_types.len().saturating_sub(leaf_count)..];
+        let drop_glue = self.build_poll_state_drop_glue(leaf_param_types, span)?;
         let drop_glue_val = if let Some(glue_id) = drop_glue {
             let glue_ref = self.module.declare_func_in_func(glue_id, self.builder.func);
             self.builder.ins().func_addr(types::I64, glue_ref)
@@ -971,25 +1061,36 @@ where
         let sentinel = self.builder.ins().iconst(types::I64, 0);
         heap::heap_store(&mut self.builder, sentinel, clo, HeapClosure::capture_offset(0));
 
-        // env(1+i) = effect arg i (ownership transfer, no inc — consuming conv).
-        for (i, &arg) in arg_vals.iter().enumerate() {
+        // env(1+i) = leaf arg i (ownership transfer, no inc — consuming conv).
+        // leaf_args = arg_vals[2..]; leaf_0 (the re-passed resource handle) lands at
+        // capture(1) = state+8 (the poll-fn's fd). The leading-pair peel does not
+        // shift any arg the poll-fn relies on — env layout is unchanged from S94/S95.
+        for (i, &arg) in leaf_args.iter().enumerate() {
             heap::heap_store(&mut self.builder, arg, clo, HeapClosure::capture_offset(1 + i));
         }
 
         // 3. Build the IO_TAG_EFFECT_POLL node:
         //    [header | tag=4 | state_closure | token | capacity].
         //
-        // S95 slice 3 (`io-trampoline.md §13.3`): reserve the symmetric
-        // `(token, capacity)` carrier on the poll node so the Wave-4 trampoline
-        // reads `(token, capacity)` uniformly off ANY IO node — a poll branch
-        // reads `token == 0` ⇒ no acquire. The node fields keep `token` at
-        // `field_offset(1)` — symmetric with the blocking node's token (also
-        // field 1) — so `read_resource_token` stays one tag-agnostic field-1 read.
-        // S95 only RESERVES the slots with safe sentinels (`token = 0` ⇒
-        // unrestricted; `capacity = 1` ⇒ serial); the live poll-shape value
-        // supply + acquire-around-poll wiring is a deferred Phase-3 refinement.
+        // S95 slice 3 (`io-trampoline.md §13.3`) reserved the symmetric
+        // `(token, capacity)` carrier on the poll node so the trampoline reads
+        // `(token, capacity)` uniformly off ANY IO node. The node fields keep
+        // `token` at `field_offset(1)` — symmetric with the blocking node's token
+        // (also field 1) — so `read_resource_token` stays one tag-agnostic field-1
+        // read; `capacity` follows at `field_offset(2)`.
+        //
+        // S96 Chunk A item 3 (`io-trampoline.md §14`) LIGHTS UP the live carrier:
+        // the two S95 sentinel `iconst 0`/`iconst 1` stores are replaced by stores
+        // of the live `(token, capacity)` operand Values peeled above, so the
+        // reactor's acquire-around-poll admission gate reads a real `(token,
+        // capacity)` off the node BEFORE the first poll (the establish step). No
+        // alloc change (already `payload_size(3)`), no new node field, no new arm —
+        // only the *value stored* changes; the read sites + offsets are unchanged
+        // (abs 32 / 40), so the cross-crate contract cannot drift (§14.4).
+        //
         // The widened node is still a one-heap-field ADT (only field 0, the
-        // state-closure, is heap-typed), so drop glue is unchanged in shape.
+        // state-closure, is heap-typed); both baked fields are `NeverHeap` scalars,
+        // so the bake takes no `rc_inc` and drop glue is unchanged in shape (§14.6).
         let node_size = HeapAdt::payload_size(3) as i64;
         let node = heap::emit_alloc(&mut self.builder, self.module, alloc_id, node_size);
         // IO_TAG_EFFECT_POLL = 4 (the `cranelisp-platform` gated constant; a
@@ -999,12 +1100,104 @@ where
         heap::heap_store(&mut self.builder, tag, node, HeapAdt::TAG_OFFSET);
         // field 0: ownership transfer of the state-closure (rc=1) into the node, no inc.
         heap::heap_store(&mut self.builder, clo, node, HeapAdt::field_offset(0));
-        // field 1: token sentinel `0` (⇒ unrestricted / no-acquire).
-        let token_sentinel = self.builder.ins().iconst(types::I64, 0);
-        heap::heap_store(&mut self.builder, token_sentinel, node, HeapAdt::field_offset(1));
-        // field 2: capacity sentinel `1` (⇒ serial-within-token).
-        let capacity_sentinel = self.builder.ins().iconst(types::I64, 1);
-        heap::heap_store(&mut self.builder, capacity_sentinel, node, HeapAdt::field_offset(2));
+        // field 1: live token (arg_vals[0]) — abs 32, NeverHeap scalar, no inc.
+        heap::heap_store(&mut self.builder, token_val, node, HeapAdt::field_offset(1));
+        // field 2: live capacity (arg_vals[1]) — abs 40, NeverHeap scalar, no inc.
+        heap::heap_store(&mut self.builder, cap_val, node, HeapAdt::field_offset(2));
+
+        Ok(node)
+    }
+
+    /// Compile a `(sleep d)` call — the runtime timer poll leaf (S96 Chunk C4,
+    /// slice 7; `design/int/reactor.md §2.18`). `sleep : Int -> IO Int` arms the
+    /// reactor's timer and resumes (with `0`) after `d` MILLISECONDS, reusing the
+    /// **entire** `IO_TAG_EFFECT_POLL` / `EffectPoll` / acquire-around-poll /
+    /// timer-`turn()` machinery — it is just another poll node.
+    ///
+    /// **The genuinely-new machinery vs `compile_poll_effect`: the `code_ptr` is a
+    /// RUNTIME SYMBOL, not a GOT platform slot.** A `declare_platform!` poll effect
+    /// loads its poll-fn from `__cranelisp_got_platform_<name>` (`emit_got_slot_load`);
+    /// `sleep`'s poll-fn is the intrinsics `runtime/sleep_pollfn` (the control
+    /// vocabulary is runtime-hosted, §9 — platforms never see it), so it is resolved
+    /// as a `Linkage::Import` and `func_addr`-baked here (the non-GOT path). Both
+    /// paths converge on the SAME state-closure shape; the trampoline reads the
+    /// baked `code_ptr` uniformly (`io.rs::await_poll_node`) and does not care where
+    /// it came from.
+    ///
+    /// `sleep` is **tokenless** — `(token = 0, capacity = 1)` ⇒ unrestricted overlap
+    /// (many `sleep`s race concurrently; `token == 0` ⇒ the trampoline's no-acquire
+    /// path). State-closure env (overlaid by the intrinsics `SleepState`): `env(0)` =
+    /// result slot (`0`, the Unit the leaf writes on `Ready`), `env(1)` =
+    /// `duration_nanos` (the `d`-ms arg × 1_000_000), `env(2)` = `deadline_nanos`
+    /// (`0` — the first-poll "not yet armed" sentinel). All scalars ⇒ null drop glue.
+    fn compile_sleep(
+        &mut self,
+        args: &[MonoExpr],
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let arg_vals = self.compile_arg_list(args)?;
+        let [d_ms] = arg_vals[..] else {
+            return Err(CranelispError::CodegenError {
+                message: "sleep takes exactly one (Int milliseconds) argument".into(),
+                location: ErrorLocation::from_span(span),
+            });
+        };
+        let alloc_id = self.ctx.alloc_func_id.ok_or_else(|| CranelispError::CodegenError {
+            message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+            location: ErrorLocation::from_span(span),
+        })?;
+
+        // duration_nanos = d (milliseconds) × 1_000_000 (the leaf works in nanos —
+        // `reactor.rs::sleep_pollfn` does `monotonic_nanos() + duration_nanos`).
+        let duration_nanos = self.builder.ins().imul_imm(d_ms, 1_000_000);
+
+        // code_ptr = the RUNTIME symbol `runtime/sleep_pollfn`, resolved as a
+        // `Linkage::Import` and `func_addr`-baked (the non-GOT path — Principle 7
+        // keeps the runtime-symbol bake distinct from `emit_got_slot_load`). The
+        // signature MUST match the catalog arity (3 i64 params + i64 return) so the
+        // JIT/`--link` symbol resolution agrees (`catalog.rs` `runtime/sleep_pollfn`).
+        let mut sig = self.module.make_signature();
+        for _ in 0..3 {
+            sig.params.push(AbiParam::new(types::I64)); // state, host, waker
+        }
+        sig.returns.push(AbiParam::new(types::I64)); // Poll
+        let poll_fn_id = self
+            .module
+            .declare_function("runtime/sleep_pollfn", cranelift_module::Linkage::Import, &sig)
+            .map_err(|e| CranelispError::CodegenError {
+                message: format!("failed to declare runtime symbol 'runtime/sleep_pollfn': {e}"),
+                location: ErrorLocation::from_span(span),
+            })?;
+        let poll_fn_ref = self.module.declare_func_in_func(poll_fn_id, self.builder.func);
+        let poll_fn = self.builder.ins().func_addr(types::I64, poll_fn_ref);
+
+        // State-closure: [header | code_ptr | drop_glue=0 | env(0)=result(0) |
+        // env(1)=duration_nanos | env(2)=deadline(0)] — 3 env slots (SleepState).
+        let closure_size = HeapClosure::payload_size(3) as i64;
+        let clo = heap::emit_alloc(&mut self.builder, self.module, alloc_id, closure_size);
+        heap::heap_store(&mut self.builder, poll_fn, clo, HeapClosure::CODE_PTR_OFFSET);
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        // drop_glue = null (SleepState is all scalars — nothing to dec).
+        heap::heap_store(&mut self.builder, zero, clo, HeapClosure::DROP_GLUE_PTR_OFFSET);
+        // env(0) = result slot (Unit `0`; the poll-fn / EffectPoll read it on Ready).
+        heap::heap_store(&mut self.builder, zero, clo, HeapClosure::capture_offset(0));
+        // env(1) = duration_nanos (the baked d-ms × 1e6).
+        heap::heap_store(&mut self.builder, duration_nanos, clo, HeapClosure::capture_offset(1));
+        // env(2) = deadline_nanos = 0 (first-poll "not yet armed" sentinel).
+        heap::heap_store(&mut self.builder, zero, clo, HeapClosure::capture_offset(2));
+
+        // IO_TAG_EFFECT_POLL = 4 node: [header | tag=4 | state_closure | token=0 |
+        // capacity=1]. Tokenless ⇒ token 0 (no-acquire), capacity 1 (the §2.18
+        // "tokenless leaf passes (0,1) constants" convention). payload_size(3).
+        let node_size = HeapAdt::payload_size(3) as i64;
+        let node = heap::emit_alloc(&mut self.builder, self.module, alloc_id, node_size);
+        let tag = self.builder.ins().iconst(types::I64, 4);
+        heap::heap_store(&mut self.builder, tag, node, HeapAdt::TAG_OFFSET);
+        heap::heap_store(&mut self.builder, clo, node, HeapAdt::field_offset(0));
+        let token = self.builder.ins().iconst(types::I64, 0);
+        heap::heap_store(&mut self.builder, token, node, HeapAdt::field_offset(1));
+        let cap = self.builder.ins().iconst(types::I64, 1);
+        heap::heap_store(&mut self.builder, cap, node, HeapAdt::field_offset(2));
 
         Ok(node)
     }

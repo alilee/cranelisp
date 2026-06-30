@@ -176,6 +176,50 @@ fn decision24_consume_io_pure_frees_node() {
     assert_eq!(dealloc_count() - deallocs, 1);
 }
 
+// spec: io-trampoline.md §16.5/§16.7 — consume_io_tree on an IO_TAG_SELECT (= 6)
+// node dec's the field-0 branch Vec, consuming EVERY branch IO sub-tree (winner +
+// losers, exactly once) and freeing the Vec struct + the node. No move-out, no
+// null-guard (the contrast with launch). RED on revert: without the `6 =>` arm the
+// node falls through to the `_` no-op and only the node is freed → the Vec + both
+// branches leak.
+#[test]
+fn consume_io_select_frees_branch_vec_and_all_branches() {
+    let allocs = alloc_count();
+    let deallocs = dealloc_count();
+
+    // Two Pure branches (each an IO_TAG_PURE leaf node).
+    let b0 = alloc_slot(16);
+    write_field(b0, TAG_OFFSET, IO_TAG_PURE);
+    write_field(b0, FIELD0_OFFSET, 42);
+    let b1 = alloc_slot(16);
+    write_field(b1, TAG_OFFSET, IO_TAG_PURE);
+    write_field(b1, FIELD0_OFFSET, 7);
+
+    // The branch carrier Vec [b0, b1].
+    let (vec, data) = make_vec_struct(2);
+    unsafe {
+        *data.add(0) = b0;
+        *data.add(1) = b1;
+    }
+    write_field(vec, VEC_LEN_OFFSET, 2);
+
+    // The IO_TAG_SELECT (= 6) node: tag + field-0 = the Vec.
+    let node = alloc_slot(16); // tag + 1 field
+    write_field(node, TAG_OFFSET, 6); // IO_TAG_SELECT
+    write_field(node, FIELD0_OFFSET, vec);
+
+    consume_io_tree(node);
+
+    // alloc_with_rc-tracked allocations: node + vec struct + b0 + b1 = 4. (The Vec
+    // data buffer is a plain allocation, freed by consume_vec_with but not counted.)
+    assert_eq!(alloc_count() - allocs, 4);
+    assert_eq!(
+        dealloc_count() - deallocs,
+        4,
+        "the select node, its branch Vec, and BOTH branches must be freed exactly once"
+    );
+}
+
 // spec: design/arch/CLAUDE.md Decision 24 — consume_io_tree Bind recurses
 #[test]
 fn decision24_consume_io_bind_recurses_into_inner() {
@@ -339,4 +383,49 @@ fn decision24_consume_slist_skips_nullary() {
     consume_closure(0);
     assert_eq!(alloc_count() - allocs, 0);
     assert_eq!(dealloc_count() - deallocs, 0);
+}
+
+// design: design/backend/io-trampoline.md §15.5/§15.6 — the null-guarded
+// IO_TAG_LAUNCH (=5) field-0 drop. An un-interpreted Launch node (field-0 holds a
+// live sub-tree, e.g. an unchosen `if`/`match` arm) frees the sub-tree via the
+// guarded recursive consume; a detached one (field-0 == 0 after the trampoline's
+// move-out, §15.5) is a no-op on field-0 (the supervised strand owns the sub-tree
+// and consumes it — no double-free).
+#[test]
+fn consume_launch_node_frees_live_subtree() {
+    let allocs = alloc_count();
+    let deallocs = dealloc_count();
+
+    // Pure 42 sub-tree (the launched effect, simplest IO leaf): tag + value = 16.
+    let sub = alloc_slot(16);
+    write_field(sub, TAG_OFFSET, IO_TAG_PURE);
+    write_field(sub, FIELD0_OFFSET, 42);
+
+    // IO_TAG_LAUNCH node holding the LIVE sub-tree at field 0: tag + field0 = 16.
+    let launch = alloc_slot(16);
+    write_field(launch, TAG_OFFSET, cranelisp_platform::IO_TAG_LAUNCH);
+    write_field(launch, FIELD0_OFFSET, sub);
+
+    consume_io_tree(launch);
+    // Null-guard sees a non-zero field-0 → recurse: BOTH the Launch node and the
+    // live sub-tree are freed (no leak).
+    assert_eq!(alloc_count() - allocs, 2);
+    assert_eq!(dealloc_count() - deallocs, 2);
+}
+
+#[test]
+fn consume_launch_node_detached_field0_sentinel_is_noop() {
+    let allocs = alloc_count();
+    let deallocs = dealloc_count();
+
+    // IO_TAG_LAUNCH node whose field-0 is the `0` sentinel (the trampoline moved
+    // the sub-tree into a supervised strand). The null-guard skips field-0; only
+    // the node itself is freed — no double-free of the strand-owned sub-tree.
+    let launch = alloc_slot(16);
+    write_field(launch, TAG_OFFSET, cranelisp_platform::IO_TAG_LAUNCH);
+    write_field(launch, FIELD0_OFFSET, 0);
+
+    consume_io_tree(launch);
+    assert_eq!(alloc_count() - allocs, 1);
+    assert_eq!(dealloc_count() - deallocs, 1);
 }

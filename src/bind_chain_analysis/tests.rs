@@ -242,14 +242,17 @@
     #[test]
     fn test_single_element_demoted() {
         let (tables, m) = commutative_tables();
-        // Single bind step — should not produce ParBind.
+        // Single bind step whose result is USED (`t1` in the continuation) — not
+        // launch-eligible, so it demotes to a sequential bind, never a ParBind.
         let expr = make_bind_expr(
             make_apply("get-time", vec![]),
             "t1",
-            make_int(0),
+            make_var("t1"),
         );
         let result = transform_expr(expr, &tables, &m);
         assert!(!matches!(result, Expr::ParBind { .. }));
+        // A used result is the conservative-Bind path, not a detached launch.
+        assert!(!matches!(result, Expr::LaunchContinue { .. }));
     }
 
     // spec: 10-io.md §10.12.1 — qualified `bind` callee is preserved through
@@ -267,13 +270,17 @@
     #[test]
     fn test_qualified_bind_callee_preserved_through_sequential() {
         let (tables, m) = commutative_tables();
-        // (primitives/bind (get-time) (fn [t1] 0)) — single step, demoted to
-        // Sequential during rebuild.
+        // (primitives/bind (get-time) (fn [t1] t1)) — single step, demoted to
+        // Sequential during rebuild. The continuation USES `t1` (the result is NOT
+        // discarded), so this is NOT launch-eligible (§10.12.7) and round-trips as
+        // an ordinary `bind` Apply — exactly the sequential-reconstruction path
+        // this test pins. (A discarded result would instead lower to
+        // `LaunchContinue`; see `test_launch_*` below.)
         let expr = make_bind_expr_with_callee(
             "primitives/bind",
             make_apply("get-time", vec![]),
             "t1",
-            make_int(0),
+            make_var("t1"),
         );
         let result = transform_expr(expr, &tables, &m);
         // A single step never becomes a ParBind — it round-trips as a Sequential
@@ -375,8 +382,15 @@
         // (bind (get-time)           (fn [a]
         //   (bind (http-get "u")     (fn [b]
         //     (bind (http-get b)     (fn [c]      ; depends on b → flush
-        //       (bind (get-time)     (fn [d] 0))))))))
-        let l4 = make_bind_expr(make_apply("get-time", vec![]), "d", make_int(0));
+        //       (bind (get-time)     (fn [d] (add c d)))))))))
+        // The final body USES `c` and `d`, so neither step is launch-eligible
+        // (results not discarded) — they take the sequential / demoted-sequential
+        // paths this test pins (a discarded result would lower to LaunchContinue).
+        let l4 = make_bind_expr(
+            make_apply("get-time", vec![]),
+            "d",
+            make_apply("add", vec![make_var("c"), make_var("d")]),
+        );
         let l3 = make_bind_expr(make_apply("http-get", vec![make_var("b")]), "c", l4);
         let l2 = make_bind_expr(make_apply("http-get", vec![make_var("u")]), "b", l3);
         let l1 = make_bind_expr(make_apply("get-time", vec![]), "a", l2);
@@ -467,5 +481,455 @@
             SchedulingClass::Commutative,
             "classify_expr should read SchedulingClass::Commutative through the Import chain \
              to the PlatformEffect entry"
+        );
+    }
+
+    // === Launch-and-continue emission (S96 Chunk B, spec §10.12.7) =============
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE (E3 token-0 refusal): a discarded
+    // `Commutative` (token-0, shared-singleton) effect is NOT launch-eligible.
+    // design: effect-concurrency.md §4.1 — E3 refuses `Commutative` (the
+    // value-provenance witness cannot prove a shared singleton disjoint; detaching
+    // it would REORDER same-token effects across the detach boundary). This
+    // TIGHTENS the pre-S96 single-step arm (whose `class != Sequential &&
+    // result-discarded` test wrongly detached a discarded `Commutative`).
+    #[test]
+    fn test_no_launch_for_commutative_class_even_if_discarded() {
+        let (tables, m) = commutative_tables();
+        // (bind (get-time) (fn [_ignored] 0)) — get-time is Commutative (token-0);
+        // result discarded, BUT token-0 ⇒ E3 REFUSAL ⇒ ordinary Bind, no launch.
+        let expr = make_bind_expr(make_apply("get-time", vec![]), "t1", make_int(0));
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a discarded Commutative (token-0) effect must NOT launch (E3 refusal), got {result:?}"
+        );
+        assert!(matches!(result, Expr::Apply { .. }), "must be an ordinary bind Apply");
+    }
+
+    // spec: 10-io.md §10.12.7 — a ResourceSerial (poll-pool-style) effect with a
+    // discarded result also launches (a non-Sequential class carries a resource
+    // token; the analysis approximates token-disjointness by class per Gap G2, the
+    // trampoline owns the live token decision). This is the §B4 accept-loop shape.
+    #[test]
+    fn test_launch_emitted_for_discarded_resource_serial_result() {
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let m = ModuleFullPath::from("user");
+        let plat = ModuleFullPath::from("platform.test");
+        let mut pst = SymbolTable::new(plat.clone());
+        pst.insert(Symbol::from("rd"), platform_effect_entry(SchedulingClass::ResourceSerial));
+        tables.insert(plat.clone(), pst);
+        let mut cst = SymbolTable::new(m.clone());
+        cst.insert(
+            Symbol::from("rd"),
+            ModuleEntry::Import {
+                source: FQSymbol { module: plat.clone(), symbol: Symbol::from("rd") },
+                visibility: Visibility::Private,
+            },
+        );
+        tables.insert(m.clone(), cst);
+
+        // (bind (rd) (fn [r] 7)) — r discarded; rd is ResourceSerial.
+        let expr = make_bind_expr(make_apply("rd", vec![]), "r", make_int(7));
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            matches!(result, Expr::LaunchContinue { .. }),
+            "a discarded-result ResourceSerial step must launch, got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE: result USED ⇒ NOT launch (conservative
+    // Bind). The continuation references the binder, so the effect's result is not
+    // discarded — declining to detach is always sound.
+    #[test]
+    fn test_no_launch_when_result_used() {
+        let (tables, m) = commutative_tables();
+        // (bind (get-time) (fn [t1] t1)) — t1 USED → ordinary bind, no launch.
+        let expr = make_bind_expr(make_apply("get-time", vec![]), "t1", make_var("t1"));
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a USED result must NOT launch (conservative Bind), got {result:?}"
+        );
+        assert!(matches!(result, Expr::Apply { .. }), "must be an ordinary bind Apply");
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE: a `Sequential`-class effect (no disjoint
+    // resource token) NEVER launches, even with a discarded result. Sequencing of
+    // Sequential effects must be preserved (§10.12.2).
+    #[test]
+    fn test_no_launch_for_sequential_class_even_if_discarded() {
+        let (tables, m) = commutative_tables();
+        // (bind (print) (fn [_p] 0)) — print is Sequential; discarded result, but
+        // Sequential class ⇒ NOT launch-eligible (tokens not disjoint).
+        let expr = make_bind_expr(make_apply("print", vec![]), "p", make_int(0));
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a Sequential-class effect must NOT launch, got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — idempotency: re-running the pass on an
+    // already-`LaunchContinue`-transformed tree is a no-op (recurse_children's
+    // LaunchContinue arm recurses children without re-grouping), mirroring the
+    // ParBind idempotency requirement (§5.2).
+    #[test]
+    fn test_launch_transform_idempotent() {
+        // A ResourceSerial (per-token) discarded step IS launch-eligible (E3
+        // permits ResourceSerial; Commutative/token-0 is refused — see
+        // `test_no_launch_for_commutative_class_even_if_discarded`).
+        let (tables, m) = resource_serial_tables();
+        let expr = make_bind_expr(make_apply("rd", vec![]), "t1", make_int(0));
+        let once = transform_expr(expr, &tables, &m);
+        assert!(matches!(once, Expr::LaunchContinue { .. }), "first pass should launch");
+        let twice = transform_expr(once.clone(), &tables, &m);
+        assert_eq!(
+            format!("{once:?}"),
+            format!("{twice:?}"),
+            "launch transform must be idempotent: apply-twice == apply-once"
+        );
+    }
+
+    // === The C-fanout E1/E2/E3 launch-eligibility matrix ======================
+    // design: effect-concurrency.md §4.1 — the inferred-launch eligibility
+    // predicate over a discarded bind SUB-TREE (the inlined connection handler).
+    // FIXME 0470 (/arch lighter-path ruling, option 2). spec: §10.12.7.
+
+    /// A poll-shape platform-effect entry (`poll_shape == true`) — the leading
+    /// operand is the DYNAMIC token (the `(token, capacity, …)` convention), so
+    /// these exercise the E3 token-0 refusal.
+    fn poll_effect_entry(sc: SchedulingClass) -> ModuleEntry {
+        ModuleEntry::def(
+            Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: Type::Int,
+            },
+            DefKind::PlatformEffect { scheduling_class: sc, poll_shape: true, got_slot: 0 },
+        )
+        .visibility(Visibility::Public)
+        .build()
+    }
+
+    /// Tables for the C-fanout matrix: a `platform.web`-shaped module exporting
+    /// poll-shape leaves `rd`/`wr` (the read-conn/send-conn analogues,
+    /// `ResourceSerial`), a `cm` (`Commutative` = token-0) and a `seq`
+    /// (`Sequential` = token-1), imported bare into `user`.
+    fn fanout_tables() -> (SymbolTables, ModuleFullPath) {
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let user_mod = ModuleFullPath::from("user");
+        let plat = ModuleFullPath::from("platform.web");
+        let mut p = SymbolTable::new(plat.clone());
+        p.insert(Symbol::from("rd"), poll_effect_entry(SchedulingClass::ResourceSerial));
+        p.insert(Symbol::from("wr"), poll_effect_entry(SchedulingClass::ResourceSerial));
+        p.insert(Symbol::from("cm"), poll_effect_entry(SchedulingClass::Commutative));
+        p.insert(Symbol::from("seq"), poll_effect_entry(SchedulingClass::Sequential));
+        tables.insert(plat.clone(), p);
+        let mut u = SymbolTable::new(user_mod.clone());
+        for n in &["rd", "wr", "cm", "seq"] {
+            u.insert(
+                Symbol::from(*n),
+                ModuleEntry::Import {
+                    source: FQSymbol { module: plat.clone(), symbol: Symbol::from(*n) },
+                    visibility: Visibility::Private,
+                },
+            );
+        }
+        // The `sleep` timer leaf — a `DefKind::PrimitiveExtern` (mirrors
+        // `bootstrap.rs`'s `sleep`). A resource-free timer: launch-eligible only as
+        // a sub-tree MEMBER (the §4.1 timer refinement), never the single-step root.
+        u.insert(
+            Symbol::from("sleep"),
+            ModuleEntry::def(
+                Scheme {
+                    type_vars: vec![],
+                    constraints: std::collections::HashMap::new(),
+                    ty: Type::Int,
+                },
+                DefKind::PrimitiveExtern,
+            )
+            .visibility(Visibility::Public)
+            .build(),
+        );
+        tables.insert(user_mod.clone(), u);
+        (tables, user_mod)
+    }
+
+    /// Single-platform-leaf ResourceSerial tables (poll_shape=false `rd`) — the
+    /// `test_launch_transform_idempotent` single-step shape.
+    fn resource_serial_tables() -> (SymbolTables, ModuleFullPath) {
+        fanout_tables()
+    }
+
+    /// Build the inlined connection-handler sub-tree
+    /// `(bind (<read> <token> c f) (fn [req] (<write> <token> c f req)))` — the
+    /// shape `/port` inlines into the serve loop down to platform leaves.
+    fn handler_subtree(read: &str, token: Expr, write: &str) -> Expr {
+        make_bind_expr(
+            make_apply(read, vec![token.clone(), make_var("c"), make_var("f")]),
+            "req",
+            make_apply(write, vec![token, make_var("c"), make_var("f"), make_var("req")]),
+        )
+    }
+
+    /// `(bind <subtree> (fn [binder] <continuation>))` — the discarded-launch
+    /// outer step the serve loop's accept continuation desugars to.
+    fn launch_outer(subtree: Expr, binder: &str, continuation: Expr) -> Expr {
+        make_bind_expr(subtree, binder, continuation)
+    }
+
+    // spec: 10-io.md §10.12.7 — POSITIVE: a discarded, value-local, ResourceSerial
+    // bind SUB-TREE (the inlined `read→handle→send` handler over a fresh `conn`
+    // token) lowers to `LaunchContinue`. design: effect-concurrency.md §4.1
+    // (E1 discarded + E2 value-local + E3 ResourceSerial-only).
+    #[test]
+    fn test_launch_subtree_discarded_value_local_resource_serial() {
+        let (tables, m) = fanout_tables();
+        // outer: (bind (bind (rd t c f) (fn [req] (wr t c f req))) (fn [_] (recur listener)))
+        let subtree = handler_subtree("rd", make_var("t"), "wr");
+        let cont = make_apply("recur", vec![make_var("listener")]);
+        let expr = launch_outer(subtree, "_", cont);
+        let result = transform_expr(expr, &tables, &m);
+        let Expr::LaunchContinue { launched, continuation, .. } = &result else {
+            panic!("a discarded value-local ResourceSerial sub-tree must LAUNCH, got {result:?}");
+        };
+        // The launched arm is the (transformed) handler sub-tree; the continuation
+        // is the accept-loop recursion.
+        assert!(is_bind_chain_start(launched), "launched arm must be the handler sub-tree");
+        assert!(
+            matches!(continuation.as_ref(), Expr::Apply { .. }),
+            "continuation must be the accept-loop recursion"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE (E1): the launched binder is USED in the
+    // continuation ⇒ the result is awaited ⇒ NOT launch (ordinary Bind).
+    #[test]
+    fn test_no_launch_subtree_when_result_used() {
+        let (tables, m) = fanout_tables();
+        let subtree = handler_subtree("rd", make_var("t"), "wr");
+        // continuation references the binder `h` → E1 fails.
+        let expr = launch_outer(subtree, "h", make_var("h"));
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a USED sub-tree result must NOT launch (E1), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE (E2 value-shared-with-continuation): the
+    // sub-tree shares a free variable (`t`, the resource token) with the
+    // continuation ⇒ the value-provenance disjointness witness FAILS ⇒ NOT launch.
+    // design: effect-concurrency.md §4.1 — a module-global pool handle (shared
+    // across siblings) appears exactly as this shared free var.
+    #[test]
+    fn test_no_launch_subtree_when_value_shared_with_continuation() {
+        let (tables, m) = fanout_tables();
+        let subtree = handler_subtree("rd", make_var("t"), "wr");
+        // continuation ALSO touches `t` (the shared token / pool handle).
+        let cont = make_apply("recur", vec![make_var("t")]);
+        let expr = launch_outer(subtree, "_", cont);
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a sub-tree sharing a free var (token) with the continuation must NOT \
+             launch (E2), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE (E3 token-0 / Commutative): the sub-tree
+    // touches a `Commutative` (token-0, shared singleton) effect ⇒ REFUSED.
+    #[test]
+    fn test_no_launch_subtree_with_commutative_token0_effect() {
+        let (tables, m) = fanout_tables();
+        // The handler's tail is `cm` (Commutative / token-0) instead of `wr`.
+        let subtree = handler_subtree("rd", make_var("t"), "cm");
+        let cont = make_apply("recur", vec![make_var("listener")]);
+        let expr = launch_outer(subtree, "_", cont);
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a sub-tree touching a Commutative (token-0) effect must NOT launch (E3), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE (E3 literal token-0 on a poll-shape leaf):
+    // a poll-shape ResourceSerial leaf whose DYNAMIC leading token operand is the
+    // literal `0` is the shared-singleton token-0 ⇒ REFUSED (the unit analogue of
+    // the `e3_token0_…` e2e). design: effect-concurrency.md §4.1.
+    #[test]
+    fn test_no_launch_subtree_with_literal_token0_leading_operand() {
+        let (tables, m) = fanout_tables();
+        // rd's leading token operand is the literal 0 (shared singleton).
+        let subtree = handler_subtree("rd", make_int(0), "wr");
+        let cont = make_apply("recur", vec![make_var("listener")]);
+        let expr = launch_outer(subtree, "_", cont);
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a poll-shape leaf with a literal-0 leading token must NOT launch (E3 token-0), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE (E3 token-1 / Sequential): the sub-tree
+    // touches a `Sequential` (global token-1) effect ⇒ REFUSED.
+    #[test]
+    fn test_no_launch_subtree_with_sequential_token1_effect() {
+        let (tables, m) = fanout_tables();
+        let subtree = handler_subtree("rd", make_var("t"), "seq");
+        let cont = make_apply("recur", vec![make_var("listener")]);
+        let expr = launch_outer(subtree, "_", cont);
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a sub-tree touching a Sequential (token-1) effect must NOT launch (E3), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE (E3 opaque user fn in effect position):
+    // an unknown footprint (a non-platform-effect call in the sub-tree's effect
+    // position) is REFUSED — exactly the 0470 wall that forces the handler to be
+    // inlined down to platform leaves. design: effect-concurrency.md §4.1.
+    #[test]
+    fn test_no_launch_subtree_with_opaque_user_fn_effect() {
+        let (tables, m) = fanout_tables();
+        // The read step is an opaque user fn `(handle-conn conn)` (not a platform
+        // effect) — the un-inlined 0470 shape.
+        let subtree = make_bind_expr(
+            make_apply("handle-conn", vec![make_var("conn")]),
+            "req",
+            make_apply("wr", vec![make_var("t"), make_var("c"), make_var("f"), make_var("req")]),
+        );
+        let cont = make_apply("recur", vec![make_var("listener")]);
+        let expr = launch_outer(subtree, "_", cont);
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a sub-tree with an opaque user-fn effect position must NOT launch (E3 \
+             unknown footprint — the 0470 wall), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — SINGLE-STEP token-0 refusal: a discarded poll-shape
+    // ResourceSerial leaf with a literal-0 leading token must NOT launch (the
+    // tightened single-step arm; the unit analogue of the e3_token0 e2e ordering
+    // pin). design: effect-concurrency.md §4.1.
+    #[test]
+    fn test_no_launch_single_step_literal_token0() {
+        let (tables, m) = fanout_tables();
+        // (bind (rd 0 c f) (fn [_] (recur))) — token 0 ⇒ E3 refusal.
+        let expr = make_bind_expr(
+            make_apply("rd", vec![make_int(0), make_var("c"), make_var("f")]),
+            "_",
+            make_apply("recur", vec![]),
+        );
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a single discarded poll-shape leaf on token 0 must NOT launch (E3), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — SINGLE-STEP nonzero-token launch: the §B4
+    // accept-loop shape `(bind (rd n c f) (fn [_] (recur (sub n))))` launches even
+    // though the token var `n` is shared with the continuation (a value read, not a
+    // conflicting effect — the single-step arm relies on the per-call dynamic token
+    // + E3, not the sub-tree's E2 shared-free-var witness).
+    #[test]
+    fn test_launch_single_step_nonzero_token_shares_counter_var() {
+        let (tables, m) = fanout_tables();
+        let expr = make_bind_expr(
+            make_apply("rd", vec![make_var("n"), make_var("c"), make_var("f")]),
+            "_",
+            make_apply("recur", vec![make_apply("sub", vec![make_var("n")])]),
+        );
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            matches!(result, Expr::LaunchContinue { .. }),
+            "the §B4 single-step launch loop (token var shared as a value) must \
+             LAUNCH, got {result:?}"
+        );
+    }
+
+    /// The exact serve-loop handler shape (S96 C4 / FIXME 0470): an inlined
+    /// `read → (sleep (slow-ms req)) → send` sub-tree over the fresh connection
+    /// token, with a `sleep` TIMER step in the middle (the C4 deterministic delay).
+    /// `read`/`send` are `ResourceSerial` poll leaves; the middle step is a direct
+    /// `(sleep <arg>)` call (the arg `(slow-ms req)` is a pure user fn — an
+    /// ARGUMENT, not an effect position).
+    fn handler_subtree_with_sleep() -> Expr {
+        make_bind_expr(
+            make_apply("rd", vec![make_var("t"), make_var("c"), make_var("f")]),
+            "req",
+            make_bind_expr(
+                make_apply("sleep", vec![make_apply("slow-ms", vec![make_var("req")])]),
+                "_",
+                make_apply("wr", vec![make_var("t"), make_var("c"), make_var("f"), make_var("req")]),
+            ),
+        )
+    }
+
+    // spec: 10-io.md §10.12.7 — POSITIVE (the C4 / 0470 fix): a discarded handler
+    // sub-tree containing an inlined `(sleep …)` TIMER step launches as ONE strand.
+    // The C4 regression was that `(slow-delay req)` was a USER FN returning IO in
+    // an effect position (opaque footprint ⇒ E3 refusal). Reshaped to a direct
+    // `(sleep (slow-ms req))`, the timer is the §4.1 resource-free timer leaf and
+    // the whole handler launches. design: effect-concurrency.md §4.1 (timer refinement).
+    // RED-on-revert: reverting `is_sleep_timer_leaf` makes the sub-tree refuse (the
+    // sleep effect position is neither ResourceSerial nor a recognised leaf).
+    #[test]
+    fn test_launch_subtree_with_inlined_sleep_timer_step() {
+        let (tables, m) = fanout_tables();
+        let subtree = handler_subtree_with_sleep();
+        let cont = make_apply("serve-loop", vec![make_var("listener")]);
+        let expr = launch_outer(subtree, "_", cont);
+        let result = transform_expr(expr, &tables, &m);
+        let Expr::LaunchContinue { launched, .. } = &result else {
+            panic!(
+                "a discarded handler sub-tree with an inlined sleep timer step must \
+                 LAUNCH (§4.1 timer refinement, 0470 fix), got {result:?}"
+            );
+        };
+        // The launched handler runs as ONE strand: read→sleep→send are SEQUENTIAL
+        // binds inside it — the inner sleep step must NOT be a nested LaunchContinue
+        // (that would let `send` run before the delay, defeating it).
+        assert!(
+            is_bind_chain_start(launched),
+            "the launched handler must be the read→sleep→send bind sub-tree, got {launched:?}"
+        );
+        let Expr::Apply { args, .. } = launched.as_ref() else {
+            panic!("launched handler is not an Apply: {launched:?}");
+        };
+        let Expr::Lambda { body: read_body, .. } = &args[1] else {
+            panic!("read step has no lambda body");
+        };
+        assert!(
+            !matches!(read_body.as_ref(), Expr::LaunchContinue { .. }),
+            "the inner sleep step must NOT independently launch (it must stay a \
+             sequential bind inside the handler strand), got {read_body:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — NEGATIVE: a LONE discarded `sleep` step does NOT
+    // single-step launch. The timer is launch-eligible only as a sub-tree MEMBER,
+    // never as the launched root (a detached lone sleep is pointless, and detaching
+    // a sleep the continuation relies on would run the continuation before the
+    // delay). design: effect-concurrency.md §4.1 (timer refinement — single-step arm
+    // keeps refusing sleep).
+    #[test]
+    fn test_no_single_step_launch_for_lone_sleep_step() {
+        let (tables, m) = fanout_tables();
+        // (bind (sleep 100) (fn [_] (recur))) — discarded, but a LONE sleep.
+        let expr = make_bind_expr(
+            make_apply("sleep", vec![make_int(100)]),
+            "_",
+            make_apply("recur", vec![]),
+        );
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a lone discarded sleep step must NOT single-step launch (timer is a \
+             sub-tree member only), got {result:?}"
         );
     }

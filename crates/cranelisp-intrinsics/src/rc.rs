@@ -40,7 +40,8 @@ pub fn rc_trace(op: &str, ptr: i64, rc: i64) {
     #[cfg(debug_assertions)]
     {
         if RC_TRACE_ENABLED.load(Ordering::Relaxed) {
-            eprintln!("[RC] {op:>5} {ptr:#x} rc={rc}");
+            let tag = if ptr > 0x1000 { unsafe { *((ptr as isize + 16) as *const i64) } } else { -1 };
+            eprintln!("[RC] {op:>5} {ptr:#x} rc={rc} tag@16={tag}");
         }
     }
     #[cfg(not(debug_assertions))]

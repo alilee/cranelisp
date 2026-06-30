@@ -8,3 +8,4 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cranelisp-platform = { path = "../../../crates/cranelisp-platform" }
+libc = "0.2"

@@ -293,19 +293,17 @@
     // `tests/plan/sprint71-platform.md`.
     // ---------------------------------------------------------------------
 
-    // ABI_VERSION is 7 (Sprint 93, effect-concurrency slice 2 — the ABI-v4
-    // cascade recorded numerically 6→7: poll-shape async-leaf effect fns +
-    // ConcurrencyDescriptor in the manifest + the host-reactor C-ABI; the v7
-    // layout types are landed-and-dormant behind the `concurrency` feature, the
-    // emitter/loader still use the v6 PlatformFn shape until the reactor wires
-    // them). Was 6 (Sprint 86, DEF-5 — manifest export namespacing), 5 at FIXME
-    // 0327 Option A (DLL-local dispatch-funnel fault-catch), 4 at the FIXME 0327
-    // step-1 node-widen, 3 at FIXME 0286 (three-exports macro rework).
+    // ABI_VERSION is 8 (Sprint 96, the SINGLE-ABI CUTOVER — the unified
+    // `PlatformFn` absorbs `ConcurrentPlatformFn`: `scheduling_class: u32` →
+    // `concurrency: ConcurrencyDescriptor` + a `drop_state` poll-leaf teardown
+    // hook; `declare_concurrent_platform!`/`ConcurrentPlatform*` deleted; the
+    // host-reactor ABI types graduate to the default edge; the `concurrency`
+    // feature is retired). Was 7 (Sprint 93, ABI-v4 cascade), 6 (Sprint 86, DEF-5).
     // spec: design/arch/bounded-contexts.md §5 invariant 9;
-    //       design/arch/platform-interface.md §6.8
+    //       design/arch/platform-interface.md §6.8.0
     #[test]
-    fn abi_version_is_7() {
-        assert_eq!(ABI_VERSION, 7);
+    fn abi_version_is_8() {
+        assert_eq!(ABI_VERSION, 8);
     }
 
     // The macro's `concat!("cranelisp_platform_manifest_", name)` export-name
@@ -1019,10 +1017,14 @@
         let type_sig: &[u8] = b"(Fn [] (IO primitives/Int))";
         let docstring: &[u8] = b"";
 
+        // Single-ABI cutover (§6.8.0): a blocking effect carries a
+        // `ConcurrencyDescriptor` synthesized from its scheduling class; the
+        // loader derives `scheduling_class` back via `nearest_scheduling_class`.
         let func = PlatformFn {
             name: fn_name.as_ptr(),
             name_len: fn_name.len(),
             ptr: std::ptr::null(),
+            drop_state: None,
             param_count: 0,
             type_sig: type_sig.as_ptr(),
             type_sig_len: type_sig.len(),
@@ -1031,7 +1033,9 @@
             param_names: std::ptr::null(),
             param_name_lens: std::ptr::null(),
             param_name_count: 0,
-            scheduling_class: class_discriminant,
+            concurrency: ConcurrencyDescriptor::from_scheduling_class(
+                SchedulingClass::from_u32(class_discriminant),
+            ),
         };
         let funcs = [func];
         let manifest = PlatformManifest {
@@ -1151,72 +1155,64 @@
         );
     }
 
+
     // ======================================================================
-    // S93 §2B — ABI-v7 dormant-contract guard (/qa, Phase-5 Stage-1).
-    // Gated `#[cfg(feature = "concurrency")]`; runs only under
-    // `cargo nt-concurrency` (the FIXME-0449 lane). Verifies the LANDED v7
-    // contract — the poll-shape successor to v6 `PlatformFn`.
+    // S96 single-ABI cutover (§6.8.0) — unified `PlatformFn` structural guards.
+    // These REPLACE the deleted gated `ConcurrentPlatformFn` field-order guard:
+    // there is now ONE manifest entry type carrying both blocking and poll-shape
+    // effects (via `concurrency.blocking`). Ungated — they run in the default
+    // (only) lane.
     // ======================================================================
 
-    // spec: design/arch/platform-interface.md §6.8 + effect-concurrency.md §12 —
-    // `ConcurrentPlatformFn` is the ABI-v7 manifest entry that crosses the
-    // platform-DLL C-ABI as raw bytes. Its `#[repr(C)]` field order is the
-    // FROZEN v7 byte layout (governed by ABI_VERSION = 7). This pins the
-    // declaration order via monotonic field offsets — the poll fn replaces v6's
-    // blocking `ptr`, and `concurrency: ConcurrencyDescriptor` subsumes v6's
-    // `scheduling_class: u32`. A reorder breaks the GOT-indirect manifest read.
-    #[cfg(feature = "concurrency")]
+    // design: platform-interface.md §6.8.0 — the unified `PlatformFn` is the sole
+    // C-ABI manifest entry. Its `#[repr(C)]` field order is the FROZEN v8 byte
+    // layout (governed by ABI_VERSION = 8): `ptr` is the type-erased effect fn
+    // (blocking CLIO fn or PollFn), `drop_state` is the poll-leaf teardown hook
+    // (sits between `ptr` and `param_count`), and `concurrency:
+    // ConcurrencyDescriptor` (the trailing field) REPLACES v6's `scheduling_class:
+    // u32`. A reorder breaks the GOT-indirect manifest read.
     #[test]
-    fn concurrent_platform_fn_repr_c_field_order_v7() {
+    fn platform_fn_repr_c_field_order_v8() {
         use core::mem::offset_of;
-        // Field declaration order, pinned by strictly-increasing offsets.
         let offs = [
-            offset_of!(ConcurrentPlatformFn, name),
-            offset_of!(ConcurrentPlatformFn, name_len),
-            offset_of!(ConcurrentPlatformFn, poll),
-            // S94 R1 — the reserved-but-inert `drop_state` hook is appended in
-            // place between `poll` and `param_count` (no `ABI_VERSION` bump; the
-            // v7 contract is not yet frozen). Pin it so a future reorder/removal
-            // is caught (QA Wave-1 carry (e), `tests/plan/sprint-94.md` §1E).
-            offset_of!(ConcurrentPlatformFn, drop_state),
-            offset_of!(ConcurrentPlatformFn, param_count),
-            offset_of!(ConcurrentPlatformFn, type_sig),
-            offset_of!(ConcurrentPlatformFn, type_sig_len),
-            offset_of!(ConcurrentPlatformFn, docstring),
-            offset_of!(ConcurrentPlatformFn, docstring_len),
-            offset_of!(ConcurrentPlatformFn, param_names),
-            offset_of!(ConcurrentPlatformFn, param_name_lens),
-            offset_of!(ConcurrentPlatformFn, param_name_count),
-            offset_of!(ConcurrentPlatformFn, concurrency),
+            offset_of!(PlatformFn, name),
+            offset_of!(PlatformFn, name_len),
+            offset_of!(PlatformFn, ptr),
+            offset_of!(PlatformFn, drop_state),
+            offset_of!(PlatformFn, param_count),
+            offset_of!(PlatformFn, type_sig),
+            offset_of!(PlatformFn, type_sig_len),
+            offset_of!(PlatformFn, docstring),
+            offset_of!(PlatformFn, docstring_len),
+            offset_of!(PlatformFn, param_names),
+            offset_of!(PlatformFn, param_name_lens),
+            offset_of!(PlatformFn, param_name_count),
+            offset_of!(PlatformFn, concurrency),
         ];
-        assert_eq!(offset_of!(ConcurrentPlatformFn, name), 0, "name leads the v7 layout");
+        assert_eq!(offset_of!(PlatformFn, name), 0, "name leads the v8 layout");
         for w in offs.windows(2) {
             assert!(
                 w[0] < w[1],
-                "v7 ConcurrentPlatformFn field order frozen: offsets must be \
-                 strictly increasing in declaration order, got {offs:?}"
+                "v8 PlatformFn field order frozen: offsets must be strictly \
+                 increasing in declaration order, got {offs:?}"
             );
         }
-        // S94 R1 — `drop_state` is positioned strictly between `poll` and
-        // `param_count` (the landed layout, `concurrency.rs:148`).
+        // `drop_state` sits strictly between `ptr` and `param_count`.
         assert!(
-            offset_of!(ConcurrentPlatformFn, poll)
-                < offset_of!(ConcurrentPlatformFn, drop_state)
-                && offset_of!(ConcurrentPlatformFn, drop_state)
-                    < offset_of!(ConcurrentPlatformFn, param_count),
-            "drop_state must sit between poll and param_count"
+            offset_of!(PlatformFn, ptr) < offset_of!(PlatformFn, drop_state)
+                && offset_of!(PlatformFn, drop_state) < offset_of!(PlatformFn, param_count),
+            "drop_state must sit between ptr and param_count"
         );
         // The concurrency descriptor is the trailing field (subsumes v6
-        // scheduling_class) and is the embedded v7 descriptor type.
+        // scheduling_class).
         assert_eq!(
-            offset_of!(ConcurrentPlatformFn, concurrency),
+            offset_of!(PlatformFn, concurrency),
             *offs.iter().max().unwrap(),
             "concurrency descriptor is the last field"
         );
     }
 
     // A no-op poll-fn for the manifest-lift test (never called).
-    #[cfg(feature = "concurrency")]
     unsafe extern "C" fn dummy_poll(
         _state: *mut core::ffi::c_void,
         _host: *const crate::HostCtx,
@@ -1225,33 +1221,30 @@
         crate::Poll::Ready
     }
 
-    // spec: design/arch/platform-interface.md §6.8 (FIXME 0457) —
-    // `concurrent_manifest_to_descriptors` lifts a v7 `ConcurrentPlatformManifest`
-    // into `OwnedPlatformFnDescriptor`s, carrying each effect's
-    // `ConcurrencyDescriptor` on `concurrency` (`Some`) and deriving the
-    // still-required `scheduling_class` via `nearest_scheduling_class`. The
-    // poll-fn pointer lands in `ptr` (the GOT-indirect dispatch address). This is
-    // the platform-side half of the manifest→loader→backend poll channel.
-    #[cfg(feature = "concurrency")]
+    // design: platform-interface.md §6.8.0 — `manifest_to_descriptors` is the SOLE
+    // lifter; it carries the per-effect `ConcurrencyDescriptor` verbatim and
+    // derives `scheduling_class` via `nearest_scheduling_class`. This pins the
+    // poll-shape (`blocking == 0`) path: the descriptor is present (not Option) and
+    // the loader can read `concurrency.blocking == 0` to set `poll_shape`.
     #[test]
-    fn concurrent_manifest_to_descriptors_lifts_concurrency_and_derives_class() {
+    fn manifest_to_descriptors_lifts_poll_shape_descriptor() {
         let name = b"async-read";
         let sig = b"(Fn [primitives/Int] (primitives/IO primitives/Int))";
         let doc = b"demo";
         let pname = b"n";
         let pname_ptr: [*const u8; 1] = [pname.as_ptr()];
         let pname_len: [usize; 1] = [pname.len()];
-        let desc = crate::ConcurrencyDescriptor {
+        let desc = ConcurrencyDescriptor {
             token: 0,
             cardinality: 0,
             global_budget: 0,
             blocking: 0, // poll-shape
             _reserved: [0; 3],
         };
-        let funcs = [crate::ConcurrentPlatformFn {
+        let funcs = [PlatformFn {
             name: name.as_ptr(),
             name_len: name.len(),
-            poll: dummy_poll,
+            ptr: dummy_poll as *const u8,
             drop_state: None,
             param_count: 1,
             type_sig: sig.as_ptr(),
@@ -1265,8 +1258,8 @@
         }];
         let plat = b"async-demo";
         let ver = b"0.1.0";
-        let manifest = crate::ConcurrentPlatformManifest {
-            abi_version: crate::ABI_VERSION,
+        let manifest = PlatformManifest {
+            abi_version: ABI_VERSION,
             name: plat.as_ptr(),
             name_len: plat.len(),
             version: ver.as_ptr(),
@@ -1276,7 +1269,7 @@
         };
 
         let (pname_s, pver_s, descs) =
-            unsafe { crate::concurrent_manifest_to_descriptors(&manifest) }.expect("lift");
+            unsafe { manifest_to_descriptors(&manifest) }.expect("lift");
         assert_eq!(pname_s, "async-demo");
         assert_eq!(pver_s, "0.1.0");
         assert_eq!(descs.len(), 1);
@@ -1284,11 +1277,10 @@
         assert_eq!(d.name, "async-read");
         assert_eq!(d.param_count, 1);
         assert_eq!(d.param_names, vec!["n".to_string()]);
-        // The poll-fn pointer is carried in `ptr` (GOT-indirect dispatch address).
         assert_eq!(d.ptr, dummy_poll as *const u8);
-        // The descriptor is carried (Some) and is poll-shape.
-        assert_eq!(d.concurrency, Some(desc));
-        assert_eq!(d.concurrency.unwrap().blocking, 0);
+        // The descriptor is carried verbatim and is poll-shape.
+        assert_eq!(d.concurrency, desc);
+        assert_eq!(d.concurrency.blocking, 0);
         // scheduling_class derived from token:0,cardinality:0 → Commutative.
-        assert_eq!(d.scheduling_class, crate::SchedulingClass::Commutative);
+        assert_eq!(d.scheduling_class, SchedulingClass::Commutative);
     }

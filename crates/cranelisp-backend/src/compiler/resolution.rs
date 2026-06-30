@@ -271,12 +271,22 @@ where
 /// unchanged GOT-indirect blocking-call path — the default build constructs no
 /// `IO_TAG_EFFECT_POLL` node and stays byte-identical. No cargo feature: the arm
 /// is selected on the data field (Principle 11).
+///
+/// S96 Wave A4 (step 0): the result additionally surfaces the already-destructured
+/// `scheduling_class` (a long-standing `DefKind::PlatformEffect` field — **no new
+/// `cranelisp-types` edge, no ABI bump**). The producer pass
+/// [`crate::inject_poll_leading_pair`] keys the inject-vs-leave-alone decision on
+/// it: `Commutative` ⇒ inject the tokenless `(0, 1)` sentinel; `ResourceSerial` /
+/// `Sequential` ⇒ leave the source-supplied live `(token, capacity)` leading pair
+/// intact (`poll-support.md §3.4.2`). The bake/peel itself stays keyed ONLY on
+/// `poll_shape: bool` (the one uniform path) — `scheduling_class` gates only the
+/// producer, never a second node discriminator.
 pub(crate) fn resolve_poll_effect_target<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
     current_module: &ModuleFullPath,
     name: &Symbol,
-) -> Option<(ModuleFullPath, usize, Vec<Type>)>
+) -> Option<(ModuleFullPath, usize, Vec<Type>, cranelisp_types::SchedulingClass)>
 where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
@@ -287,6 +297,7 @@ where
                 DefKind::PlatformEffect {
                     poll_shape: true,
                     got_slot,
+                    scheduling_class,
                     ..
                 } => {
                     // The effect's param types (for the state-closure capture-dec
@@ -295,7 +306,7 @@ where
                         Type::Fn(ps, _ret) => ps.clone(),
                         _ => Vec::new(),
                     };
-                    Some((module.clone(), *got_slot, params))
+                    Some((module.clone(), *got_slot, params, *scheduling_class))
                 }
                 _ => None,
             },

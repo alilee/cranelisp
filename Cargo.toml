@@ -16,6 +16,7 @@ members = [
     "platforms/boom",
     "platforms/async-demo",
     "platforms/pool-demo",
+    "platforms/poll-pool",
     "exemplar/platforms/web",
 ]
 resolver = "2"
@@ -87,27 +88,12 @@ features = ["derive"]
 # the accessor is purely additive (Principle 8 — no interim scaffolding).
 [features]
 bench = []
-# Sprint 94 Phase 5 (effect-concurrency / reactor-e2e track): passthrough that
-# turns on the slice-2 host reactor IMPLEMENTATION via the intrinsics crate, so
-# `cargo ... -p cranelisp --features concurrency-runtime` builds the binary with
-# the runtime linked (the `nt-reactor-e2e` lane in `.cargo/config.toml` uses
-# exactly this). `cranelisp-intrinsics/concurrency-runtime` is a strict superset
-# of `concurrency` (pulls the optional `mio`/`futures` deps and transitively
-# enables `cranelisp-platform/concurrency` + `cranelisp-types/concurrency`), so a
-# single passthrough covers the whole chain. OFF by default — in NO default
-# feature set, so `cargo build` / `cargo nextest run` (the `nt` lane) and the
-# `--link` exe-bundle path never compile or link the runtime; a default/linked
-# binary stays byte-identical and executor-free ("platforms carry no runtime").
-# See design/arch/effect-concurrency.md §11 + sprints/SPRINT.md Wave 0.
-# Sprint 94 (FIXME 0457): the binary-side `concurrency` cfg — enables the v7
-# layout-contract types in the loader (`src/platform.rs` probes
-# `cranelisp_concurrent_manifest` + lifts `ConcurrencyDescriptor` to set
-# `DefKind::PlatformEffect.poll_shape`). Additive, OFF by default (no default
-# feature set), so the default `nt` build never compiles the v7 probe and stays
-# byte-identical. Implied by `concurrency-runtime` (the reactor needs the v7
-# channel to feed it real poll nodes).
-concurrency = ["cranelisp-platform/concurrency", "cranelisp-types/concurrency"]
-concurrency-runtime = ["concurrency", "cranelisp-intrinsics/concurrency-runtime"]
+# Single-ABI + single-trampoline cutover (S96, `design/arch/platform-interface.md`
+# §6.8.0a): the `concurrency` / `concurrency-runtime` passthroughs are RETIRED —
+# the host reactor + the unified-ABI loader path are now UNCONDITIONAL in every
+# build (incl. `--link` exe-bundle output). A pure-blocking program constructs no
+# mio `Poll` at runtime (lazy reactor init — `design/int/reactor.md`), so
+# lean-default is preserved as a RUNTIME property, not a `#[cfg]` split.
 # Sprint 88 Phase 5 (agentic-REPL track, Wave 3 — Advisor MVP core): the
 # embedded agent. OFF by default — in NO default feature set, enabled by no
 # dev-dependency, so `cargo build` / `cargo nextest run` never compile it and

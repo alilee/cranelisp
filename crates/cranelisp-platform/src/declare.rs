@@ -116,34 +116,32 @@ pub const fn extract_layout_hash(artifact: &str) -> &str {
 /// | `schema:` | optional | `&'static str` (the embedded `/platform-schema` artifact, typically `include_str!(...)`) | Embedded generated schema; absent ⇒ no ADT marshaling |
 /// | `functions:` | yes | `[ fn { ... }, ... ]` array | Per-fn descriptors |
 ///
-/// Each per-fn block has five required fields — `cl_name:` (kebab-case
+/// Each per-fn block has four required fields — `cl_name:` (kebab-case
 /// user-visible name), `sig:` (FQ type-signature S-expression), `doc:`
-/// (docstring), `params:` (named-parameter ident list), `scheduling:`
-/// ([`SchedulingClass`] expression).
+/// (docstring), `params:` (named-parameter ident list) — plus a **concurrency
+/// key** that is EITHER `scheduling:` ([`SchedulingClass`] expression — the
+/// blocking-effect sugar, lowered via
+/// [`ConcurrencyDescriptor::from_scheduling_class`]) OR `descriptor:`
+/// ([`crate::ConcurrencyDescriptor`] expression — a poll-shape leaf, `blocking =
+/// 0`), and an OPTIONAL `drop_state:` (an
+/// `unsafe extern "C" fn(*mut c_void)` poll-leaf teardown hook).
 ///
-/// # ABI v7 — authoring is unchanged (Sprint 93)
+/// # ABI v8 — the single-ABI cutover (Sprint 96)
 ///
-/// [`crate::ABI_VERSION`] is now **7**: the effect-concurrency track landed the
-/// v7 host-reactor C-ABI layout contracts (`ConcurrentPlatformFn`,
-/// `HostCtx` / `Waker` / `WakerVTable`, the poll-shape `PollFn`). **Those
-/// contracts are landed-but-dormant behind the off-by-default `concurrency`
-/// feature** — they are out of the default build and the `public-api.txt`
-/// frozen edge. For a platform author, **nothing about `declare_platform!`
-/// changed**: this macro still emits the v6 [`crate::PlatformFn`] shape, effect
-/// fns are still **blocking** `extern "C"` functions returning [`crate::CLIO`],
-/// and each fn still declares a `scheduling:` [`crate::SchedulingClass`]. The
-/// poll-shape async-leaf
-/// model — where blocking effect fns become `PollFn`s the host reactor drives,
-/// and `scheduling:` is subsumed by `ConcurrencyDescriptor` — wires in a later
-/// slice; until then write platforms exactly as the examples below.
+/// [`crate::ABI_VERSION`] is now **8**: the v6/v7 dual-channel split is collapsed
+/// into ONE ABI (`design/arch/platform-interface.md` §6.8.0). There is ONE macro
+/// (`declare_concurrent_platform!` is **deleted**), ONE manifest type, ONE GOT
+/// export, ONE loader path. A platform may freely mix blocking effects
+/// (`scheduling:` / `descriptor` with `blocking = 1`) and poll-shape leaves
+/// (`descriptor` with `blocking = 0`) in ONE manifest; the host reads
+/// `concurrency.blocking` per effect to pick the dispatch node. A blocking effect
+/// is an `extern "C"` fn returning [`crate::CLIO`]; a poll-shape leaf is a
+/// [`crate::PollFn`] (`unsafe extern "C" fn(state, *HostCtx, *Waker) -> Poll`).
 ///
-/// The 6→7 bump matters only for the load-time ABI gate: a DLL built from this
-/// crate now stamps `abi_version: 7` in its manifest, and the host rejects a
-/// mismatched stamp with [`crate::PlatformError`]`::AbiVersionMismatch`. In-workspace
-/// host + platform DLLs rebuild together, so the stamp stays consistent; an
-/// externally pre-built v6 DLL would need a rebuild against this crate to load
-/// against a v7 host (there are no such external DLLs today — every platform is
-/// a workspace member).
+/// The 7→8 bump matters only for the load-time ABI gate: a DLL built from this
+/// crate stamps `abi_version: 8`, and the host rejects a mismatched stamp with
+/// [`crate::PlatformError`]`::AbiVersionMismatch`. In-workspace host + platform
+/// DLLs rebuild together, so the stamp stays consistent.
 ///
 /// # Example — no schema (scalar-only platform)
 ///
@@ -209,7 +207,8 @@ macro_rules! declare_platform {
                     sig: $sig:literal,
                     doc: $doc:literal,
                     params: [$($param:ident),* $(,)?],
-                    scheduling: $scheduling:expr,
+                    $conc_key:ident: $conc_val:expr,
+                    $(drop_state: $drop_state:expr,)?
                 }
             ),* $(,)?
         ]
@@ -220,16 +219,7 @@ macro_rules! declare_platform {
 
         // Export the layout hash (extracted from the artifact's
         // `;; layout-hash:` header at compile time) as a data symbol the host
-        // compares against its live-tables regeneration (§5.5.4). Carried as a
-        // `&'static str` — a `(ptr, len)` fat reference into the schema rodata.
-        // BOTH run-mode readers dereference this fat reference and use its `len`,
-        // so neither depends on a NUL terminator (the D2 fix lives in the reader,
-        // `cranelisp-intrinsics::layout` — see its doc):
-        //   - `--run` reads `library.get::<*const &str>` → `**sym` (`src/platform.rs`).
-        //   - `--link`'s startup stub passes THIS symbol's address to
-        //     `cranelisp_check_layout_hash`, which reads it as `*const &str` —
-        //     the same (ptr, len) view, so the two modes read identically.
-        // Platform-agnostic: an ordinary Rust static, correct on Mach-O / ELF / PE.
+        // compares against its live-tables regeneration (§5.5.4).
         #[unsafe(export_name = concat!("__cranelisp_layout_hash_", $platform_name))]
         pub static __CRANELISP_LAYOUT_HASH: &str =
             $crate::extract_layout_hash(__CRANELISP_PLATFORM_SCHEMA_TEXT);
@@ -246,7 +236,8 @@ macro_rules! declare_platform {
                         sig: $sig,
                         doc: $doc,
                         params: [$($param),*],
-                        scheduling: $scheduling,
+                        $conc_key: $conc_val,
+                        $(drop_state: $drop_state,)?
                     }
                 ),*
             ]
@@ -265,7 +256,8 @@ macro_rules! declare_platform {
                     sig: $sig:literal,
                     doc: $doc:literal,
                     params: [$($param:ident),* $(,)?],
-                    scheduling: $scheduling:expr,
+                    $conc_key:ident: $conc_val:expr,
+                    $(drop_state: $drop_state:expr,)?
                 }
             ),* $(,)?
         ]
@@ -282,11 +274,42 @@ macro_rules! declare_platform {
                         sig: $sig,
                         doc: $doc,
                         params: [$($param),*],
-                        scheduling: $scheduling,
+                        $conc_key: $conc_val,
+                        $(drop_state: $drop_state,)?
                     }
                 ),*
             ]
         );
+    };
+}
+
+/// Lower a per-fn concurrency key to a [`crate::ConcurrencyDescriptor`].
+///
+/// `scheduling: <SchedulingClass>` is the blocking-effect sugar (→
+/// [`crate::ConcurrencyDescriptor::from_scheduling_class`], `blocking = 1`);
+/// `descriptor: <ConcurrencyDescriptor>` is the full form (poll-shape leaves set
+/// `blocking = 0`). Internal to [`declare_platform!`]; do not invoke directly.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __platform_concurrency {
+    (scheduling $e:expr) => {
+        $crate::ConcurrencyDescriptor::from_scheduling_class($e)
+    };
+    (descriptor $e:expr) => {
+        $e
+    };
+}
+
+/// Lower the OPTIONAL per-fn `drop_state:` key to an `Option<fn>`. Absent ⇒
+/// `None`. Internal to [`declare_platform!`]; do not invoke directly.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __platform_drop_state {
+    () => {
+        ::core::option::Option::None
+    };
+    ($e:expr) => {
+        ::core::option::Option::Some($e)
     };
 }
 
@@ -307,32 +330,25 @@ macro_rules! __declare_platform_body {
                     sig: $sig:literal,
                     doc: $doc:literal,
                     params: [$($param:ident),* $(,)?],
-                    scheduling: $scheduling:expr,
+                    $conc_key:ident: $conc_val:expr,
+                    $(drop_state: $drop_state:expr,)?
                 }
             ),* $(,)?
         ]
     ) => {
-        // The exported platform GOT (§5.1) — modelled on
-        // `cranelisp-primitives::PRIMITIVES_GOT_SLAB` (FIXME 0280). Slot i holds
-        // the fn pointer of the i-th declared function (manifest order IS GOT
-        // slot order); the rest stay null. Lives in writable `__DATA` so the
-        // `(trace …)` GOT copy-swap can reach platform slots. The host wraps
-        // this in place via `GotTable::with_static_backing` — no copy.
+        // The exported platform GOT (§5.1). Slot i holds the fn pointer of the
+        // i-th declared function (manifest order IS GOT slot order); the rest stay
+        // null. Lives in writable `__DATA`. The host wraps this in place via
+        // `GotTable::with_static_backing` — no copy.
         #[unsafe(export_name = concat!("__cranelisp_got_platform_", $platform_name))]
         pub static __CRANELISP_PLATFORM_GOT:
             [$crate::MacroAtomicPtr<u8>; $crate::GOT_TABLE_SIZE] =
             [const { $crate::MacroAtomicPtr::new(::std::ptr::null_mut()) };
                 $crate::GOT_TABLE_SIZE];
 
-        // NAMESPACED per platform-interface.md §5.5.5 (DEF-5, ABI v4 step) —
-        // the manifest export carries a `_<name>` suffix like the GOT and
-        // layout-hash exports, so two force-loaded platform rlibs no longer
-        // collide on a bare `cranelisp_platform_manifest`. The pattern string
-        // here MUST match `$crate::platform_manifest_symbol` exactly (the host
-        // consume side calls that helper); a unit test pins the two together.
-        // The macro cannot call a runtime fn in `export_name`, so it emits the
-        // suffix with the same `concat!(…, $platform_name)` form the GOT and
-        // layout-hash exports already use.
+        // NAMESPACED per platform-interface.md §5.5.5 — the manifest export
+        // carries a `_<name>` suffix like the GOT and layout-hash exports. The
+        // pattern string MUST match `$crate::platform_manifest_symbol` exactly.
         #[unsafe(export_name = concat!("cranelisp_platform_manifest_", $platform_name))]
         pub unsafe extern "C" fn cranelisp_platform_manifest(
             callbacks: *const $crate::HostCallbacks,
@@ -341,9 +357,7 @@ macro_rules! __declare_platform_body {
             unsafe { $host.init(callbacks); }
 
             // Install the embedded generated schema (if this platform marshals
-            // ADTs) so `CLAdt::read_field` resolves field offsets by name
-            // (§5.5). A parse failure is a generator/parser grammar drift — a
-            // `/dev` bug — and aborts loudly.
+            // ADTs) so `CLAdt::read_field` resolves field offsets by name (§5.5).
             if let ::core::option::Option::Some(schema_text) = $schema_text {
                 let schema = $crate::Schema::parse(schema_text).expect(
                     "embedded platform schema artifact failed to parse — \
@@ -353,9 +367,6 @@ macro_rules! __declare_platform_body {
             }
 
             // Populate the exported GOT: slot i ← fn pointer of functions[i].
-            // Manifest order IS GOT slot order (§5.1, answer 1). Done here at
-            // DLL load so a session/`--link` finds the slots resolved; the host
-            // never populates the platform GOT.
             {
                 let mut __got_slot: usize = 0;
                 $(
@@ -368,9 +379,9 @@ macro_rules! __declare_platform_body {
                 let _ = __got_slot;
             }
 
-            // Build function descriptors.
-            // Phase 1: Capture each function pointer, param info, and scheduling class
-            // before shadowing the identifier.
+            // Phase 1: capture each fn pointer, param info, the unified
+            // concurrency descriptor, and the optional drop_state hook before
+            // shadowing the identifier.
             $(
                 #[allow(unused)]
                 let $fn_ident = {
@@ -390,157 +401,23 @@ macro_rules! __declare_platform_body {
                     } else {
                         (std::ptr::null::<*const u8>(), std::ptr::null::<usize>())
                     };
-                    let scheduling_class = ($scheduling) as u32;
-                    (fn_ptr, name_ptrs_ptr, name_lens_ptr, param_count, scheduling_class)
+                    let concurrency: $crate::ConcurrencyDescriptor =
+                        $crate::__platform_concurrency!($conc_key $conc_val);
+                    let drop_state: ::core::option::Option<
+                        unsafe extern "C" fn(state: *mut ::core::ffi::c_void),
+                    > = $crate::__platform_drop_state!($($drop_state)?);
+                    (fn_ptr, name_ptrs_ptr, name_lens_ptr, param_count, concurrency, drop_state)
                 };
             )*
 
-            // Phase 2: Build PlatformFn descriptors array. Platform fns carry no
-            // exported linker name (the former jit_name mangled-name dispatch
-            // retired, FIXME 0288) — dispatch is GOT-indirect at the manifest
-            // index. The fn pointer in `ptr` is the only address coordinate; the
-            // exported GOT (populated above) carries it for code dispatch.
+            // Phase 2: Build the unified PlatformFn descriptor array.
             let functions: &'static [$crate::PlatformFn] = Box::leak(vec![
                 $(
                     $crate::PlatformFn {
                         name: $cl_name.as_ptr(),
                         name_len: $cl_name.len(),
                         ptr: ($fn_ident).0,
-                        param_count: ($fn_ident).3 as u32,
-                        type_sig: $sig.as_ptr(),
-                        type_sig_len: $sig.len(),
-                        docstring: $doc.as_ptr(),
-                        docstring_len: $doc.len(),
-                        param_names: ($fn_ident).1,
-                        param_name_lens: ($fn_ident).2,
-                        param_name_count: ($fn_ident).3,
-                        scheduling_class: ($fn_ident).4,
-                    },
-                )*
-            ].into_boxed_slice());
-
-            $crate::PlatformManifest {
-                abi_version: $crate::ABI_VERSION,
-                name: $platform_name.as_ptr(),
-                name_len: $platform_name.len(),
-                version: $platform_version.as_ptr(),
-                version_len: $platform_version.len(),
-                functions: functions.as_ptr(),
-                function_count: functions.len(),
-            }
-        }
-    };
-}
-
-/// Declare a **poll-shape (concurrent) platform** — the ABI-v7 sibling of
-/// [`declare_platform!`] for platforms whose effects are host-reactor poll
-/// leaves (`blocking == 0`), not v6 blocking `CLIO` thunks (FIXME 0457,
-/// `platform-interface.md` §6.8).
-///
-/// Each function is a [`crate::PollFn`] (`unsafe extern "C" fn(state, *HostCtx,
-/// *Waker) -> Poll`) — NOT a `CLIO`-returning blocking fn — and carries a
-/// [`crate::ConcurrencyDescriptor`] (the `descriptor:` key) instead of a
-/// `SchedulingClass`. The macro emits TWO exports, deliberately on the **v7
-/// channel only** (it does NOT emit the v6 `cranelisp_platform_manifest_<name>`
-/// — these functions are not blocking effects, so they have no v6 shape):
-///
-/// 1. `__cranelisp_got_platform_<name>` — the exported GOT (poll-fn pointers,
-///    manifest order = slot order), identical in shape + symbol to the v6 GOT so
-///    the host's existing dlsym + `GotTable::with_static_backing` wiring works
-///    unchanged.
-/// 2. `cranelisp_concurrent_manifest` — a fn taking `HostCallbacks`, returning a
-///    [`crate::ConcurrentPlatformManifest`]; it inits the host context, populates
-///    the GOT, and builds the [`crate::ConcurrentPlatformFn`] array. The
-///    concurrency-built host dlsym-probes this symbol FIRST (`src/platform.rs`).
-///
-/// Gated usage: the platform crate must enable `cranelisp-platform/concurrency`
-/// (so the v7 types resolve). `drop_state` is `None` for S94 (the reserved-inert
-/// hook; the in-tree demo's state is host-known — `effect-concurrency.md` §13
-/// decision 4).
-#[macro_export]
-macro_rules! declare_concurrent_platform {
-    (
-        name: $platform_name:literal,
-        version: $platform_version:literal,
-        host: $host:ident,
-        functions: [
-            $(
-                $fn_ident:ident {
-                    cl_name: $cl_name:literal,
-                    sig: $sig:literal,
-                    doc: $doc:literal,
-                    params: [$($param:ident),* $(,)?],
-                    descriptor: $descriptor:expr,
-                }
-            ),* $(,)?
-        ]
-    ) => {
-        // The exported platform GOT (§5.1) — slot i holds poll-fn i's pointer.
-        // Same symbol + shape as the v6 GOT (the host dlsyms it by name).
-        #[unsafe(export_name = concat!("__cranelisp_got_platform_", $platform_name))]
-        pub static __CRANELISP_PLATFORM_GOT:
-            [$crate::MacroAtomicPtr<u8>; $crate::GOT_TABLE_SIZE] =
-            [const { $crate::MacroAtomicPtr::new(::std::ptr::null_mut()) };
-                $crate::GOT_TABLE_SIZE];
-
-        // The v7 concurrent manifest export. NOT namespaced by platform name: a
-        // concurrent platform is dlopened as its own library and the host
-        // dlsyms this symbol in that specific handle (FIXME 0457).
-        #[unsafe(export_name = "cranelisp_concurrent_manifest")]
-        pub unsafe extern "C" fn cranelisp_concurrent_manifest(
-            callbacks: *const $crate::HostCallbacks,
-        ) -> $crate::ConcurrentPlatformManifest {
-            // Initialize the host context (stores callbacks, sets global alloc).
-            unsafe { $host.init(callbacks); }
-
-            // Populate the exported GOT: slot i ← poll-fn i (manifest order IS
-            // GOT slot order, §5.1).
-            {
-                let mut __got_slot: usize = 0;
-                $(
-                    __CRANELISP_PLATFORM_GOT[__got_slot].store(
-                        $fn_ident as *const u8 as *mut u8,
-                        ::std::sync::atomic::Ordering::Release,
-                    );
-                    __got_slot += 1;
-                )*
-                let _ = __got_slot;
-            }
-
-            // Phase 1: capture each poll-fn pointer + param info before shadowing.
-            $(
-                #[allow(unused)]
-                let $fn_ident = {
-                    let poll: $crate::PollFn = $fn_ident;
-                    let param_names_vec: Vec<&'static [u8]> = vec![
-                        $( stringify!($param).as_bytes(), )*
-                    ];
-                    let param_count = param_names_vec.len();
-                    let (name_ptrs_ptr, name_lens_ptr) = if param_count > 0 {
-                        let name_ptrs: Vec<*const u8> =
-                            param_names_vec.iter().map(|b| b.as_ptr()).collect();
-                        let name_lens: Vec<usize> =
-                            param_names_vec.iter().map(|b| b.len()).collect();
-                        let ptrs = Box::leak(name_ptrs.into_boxed_slice());
-                        let lens = Box::leak(name_lens.into_boxed_slice());
-                        (ptrs.as_ptr(), lens.as_ptr())
-                    } else {
-                        (std::ptr::null::<*const u8>(), std::ptr::null::<usize>())
-                    };
-                    let descriptor: $crate::ConcurrencyDescriptor = $descriptor;
-                    (poll, name_ptrs_ptr, name_lens_ptr, param_count, descriptor)
-                };
-            )*
-
-            // Phase 2: build the ConcurrentPlatformFn array.
-            let functions: &'static [$crate::ConcurrentPlatformFn] = Box::leak(vec![
-                $(
-                    $crate::ConcurrentPlatformFn {
-                        name: $cl_name.as_ptr(),
-                        name_len: $cl_name.len(),
-                        poll: ($fn_ident).0,
-                        // RESERVED-but-inert (S94): host-known state, no leaf hook.
-                        drop_state: ::core::option::Option::None,
+                        drop_state: ($fn_ident).5,
                         param_count: ($fn_ident).3 as u32,
                         type_sig: $sig.as_ptr(),
                         type_sig_len: $sig.len(),
@@ -554,7 +431,7 @@ macro_rules! declare_concurrent_platform {
                 )*
             ].into_boxed_slice());
 
-            $crate::ConcurrentPlatformManifest {
+            $crate::PlatformManifest {
                 abi_version: $crate::ABI_VERSION,
                 name: $platform_name.as_ptr(),
                 name_len: $platform_name.len(),

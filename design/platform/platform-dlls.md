@@ -2,6 +2,22 @@
 
 Sprint 16 I4. This document defines the platform DLL system: the C-ABI contract between Cranelisp and platform shared libraries, the `cranelisp-stdio` reference platform, and the optional `cranelisp-test-capture` testing platform.
 
+> **S96 refresh (FIXME 0461 drain).** The mechanics below (search path, manifest
+> format, capture-RC protocol, the reference + test platforms) are current and
+> load-bearing. Three things are kept reconciled here: (1) **ABI is at version 7**,
+> not 1 — see the version trail in `platform.md` §3 "ABI version history"; the
+> single-i64 calling convention + manifest shape this doc describes are unchanged
+> across the bumps. (2) The **capacity carrier** — the additive
+> `CLIO::effect_on_resource_with_capacity(token, capacity, f)` constructor +
+> `IO_EFFECT_CAPACITY_OFFSET = 32` (the `IO_TAG_EFFECT` payload widened 32 → 40,
+> append-only) + the `IO_EFFECT_FN_NAME_OFFSET = 24` (ABI v4) — is documented in the
+> `CLIO<CL>` + node-layout sections below. (3) Load-path errors are structured
+> `PlatformError` values (`cranelisp-types`, Decision 42), not bare `String` — the
+> "Error Conditions" tables list the user-facing messages those variants carry. The
+> canonical constructor/constant surface is the source rustdoc + `io-trampoline.md`
+> §13 + `effect-concurrency.md` §8.1; this doc carries the loading-mechanics
+> narrative.
+
 ## Architectural Context
 
 Platform DLLs are the mechanism by which Cranelisp programs perform side effects. The language's IO model (spec 10-io.md) defines IO as a deferred task tree; platform DLLs provide the leaf `Effect` nodes that actually do work when the trampoline forces them.
@@ -27,9 +43,9 @@ platforms/test-capture/ ──> cranelisp-platform
 
 ### ABI Version
 
-The reimplementation starts at **ABI version 1**. The sketch iterated to version 3 through its own development; the reimplementation's ABI is a fresh contract. The runtime checks `manifest.abi_version == ABI_VERSION` at load time and rejects mismatches.
+The reimplementation started at **ABI version 1**; it is now at **ABI version 7** (the bump trail is canonical in `platform.md` §3 "ABI version history" + the `ABI_VERSION` rustdoc: v2 ADT marshaling, v3 three-exports, v4 fn-name node widen, v5 EffectOutcome/fault-catch, v6 namespaced manifest export, v7 effect-concurrency cascade). The host (`int::load_platform_dll`) checks `manifest.abi_version == ABI_VERSION` at load time and rejects mismatches with `PlatformError::AbiVersionMismatch` (Decision 42).
 
-Future breaking changes (struct layout changes, new required fields) bump the version. Additive changes (new optional fields at the end of structs) may be handled without a version bump if backward compatibility is maintained, but a bump is preferred for clarity.
+Future breaking changes (struct layout changes, new required fields) bump the version. Additive changes (new optional fields at the end of structs) may be handled without a version bump if backward compatibility is maintained, but a bump is preferred for clarity. The S95 capacity carrier (`IO_EFFECT_CAPACITY_OFFSET = 32`) and the S94 R1 poll-shape `drop_state` reserve were appended in place **without** a bump only because the v7 layout is not yet frozen (no out-of-tree cdylib has shipped against it) — once a v7 platform ships externally, the append-in-place latitude ends.
 
 ### IO Tag Constants
 
@@ -40,8 +56,10 @@ Shared between platform DLLs and the host trampoline:
 | `IO_TAG_PURE` | 0 | Completed value |
 | `IO_TAG_EFFECT` | 1 | Deferred effect (opaque closure) |
 | `IO_TAG_BIND` | 2 | Chain (internal) |
+| `IO_TAG_PAR` | 3 | Automatic IO scheduling (spec §10.12) |
+| `IO_TAG_EFFECT_POLL` | 4 | Poll-shape async leaf (`concurrency`-gated; backend-built state-closure node, io-trampoline §12) |
 
-`IO_TAG_PAR` (tag 3) is NOT included in ABI version 1. It will be added when automatic IO scheduling lands (Ring 4 later sprint), per /arch's Principle 8 guidance.
+`IO_TAG_PAR` (tag 3) is now present (automatic IO scheduling landed). `IO_TAG_EFFECT_POLL` (tag 4) is the poll-shape async-leaf node, reserved with the v7 `concurrency` layout contracts; it is built by the **backend** (a host-built state-closure), not the DLL — see `design/backend/io-trampoline.md` §12 and `design/platform/poll-support.md`.
 
 ### `PlatformManifest`
 
@@ -160,13 +178,22 @@ impl<CL: CLType> CLIO<CL> {
     pub fn effect(f: impl FnOnce() -> CL + 'static) -> Self;
 
     /// Effect with a resource token (for ResourceSerial scheduling).
+    /// Lowers to `effect_on_resource_with_capacity(token, 1, f)`.
     pub fn effect_on_resource(token: i64, f: impl FnOnce() -> CL + 'static) -> Self;
+
+    /// Effect with a resource token AND a capacity (S95 slice-3 carrier).
+    /// The trampoline runs a `Semaphore(capacity)` per token: `token` effects
+    /// overlap up to `capacity`, the (capacity+1)th parks (arch §8.1; the pool
+    /// lives intrinsics-side, reactor.md §2.8). `capacity` rides the node at
+    /// `IO_EFFECT_CAPACITY_OFFSET` (32). Capacity is per-RESOURCE (per-token),
+    /// platform-supplied dynamically at the effect site — not a static field.
+    pub fn effect_on_resource_with_capacity(token: i64, capacity: i64, f: impl FnOnce() -> CL + 'static) -> Self;
 }
 ```
 
 `CLIO::pure(val)` allocates a 2-field node `[tag=0, value]` (16 bytes) on the host heap.
 
-`CLIO::effect(f)` double-boxes the closure (`Box<Box<dyn FnOnce() -> i64>>`), allocates a 3-field node `[tag=1, thunk_ptr, resource_token=0]` (24 bytes). The double-boxing produces a thin pointer (one `i64`) from a trait object (two `i64`s). The trampoline calls `call_effect_thunk` to reclaim ownership and invoke the closure exactly once.
+`CLIO::effect(f)` double-boxes the closure (`Box<Box<dyn FnOnce() -> i64>>`) and allocates an `IO_TAG_EFFECT` node. As of ABI v7 the node payload is **40 bytes** (was 24 at ABI v1): `[tag=1, thunk_ptr, resource_token, fn_name, capacity]` — `resource_token` @16, `fn_name` @24 (`IO_EFFECT_FN_NAME_OFFSET`, the ABI-v4 dispatch-funnel coordinate, reserved null by the constructor and stamped by the backend, §9a of `platform.md`), `capacity` @32 (`IO_EFFECT_CAPACITY_OFFSET`, the S95 slice-3 carrier; `effect`/`effect_on_resource` write capacity 1). Every widen was **append-only** — no existing offset moved. The double-boxing produces a thin pointer (one `i64`) from a trait object (two `i64`s). The trampoline calls `call_effect_thunk` to reclaim ownership and invoke the closure exactly once (returning an `EffectOutcome` under the DLL-local fault catch, ABI v5).
 
 ### `call_effect_thunk`
 
@@ -347,6 +374,10 @@ Key details:
 - `CLString::from(String)` allocates via the host allocator inside the closure (host context is already initialized)
 - Scheduling class: `Sequential` -- reads must occur in order (stdin is a serial resource)
 - On read failure, `unwrap_or(0)` produces an empty string
+
+## Test-leaf platforms (`test-capture`, `pool-demo`)
+
+Two in-tree test platforms exercise the ABI without touching real IO. **`cranelisp-test-capture`** (below) substitutes in-memory buffers for stdio. **`platforms/pool-demo`** (S95) is the capacity-carrier test leaf: `pool-read`/`pool-write`/`pool-log`, all declaring `(token, capacity)` via `CLIO::effect_on_resource_with_capacity` on **blocking** effects — the fixture that proved capacity-N pool sizing, first-writer-wins reconciliation, and parking on the blocking carrier (the poll-shape carrier is S96, `poll-support.md`). Both are workspace members rebuilt with the compiler.
 
 ## `cranelisp-test-capture` Design (Optional)
 

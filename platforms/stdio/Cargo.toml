@@ -8,3 +8,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 cranelisp-platform = { path = "../../crates/cranelisp-platform" }
+# `read-line` is a poll-shape leaf: it does a non-blocking `libc::read` on stdin
+# (fd 0) and registers fd-readiness with the host reactor on EWOULDBLOCK.
+libc = "0.2"

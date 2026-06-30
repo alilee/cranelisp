@@ -581,6 +581,10 @@ fn body_references_dev_session_extern(
         Expr::VecLit { elements, .. } => elements
             .iter()
             .find_map(|e| body_references_dev_session_extern(e, is_dev_session_extern)),
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            body_references_dev_session_extern(launched, is_dev_session_extern)
+                .or_else(|| body_references_dev_session_extern(continuation, is_dev_session_extern))
+        }
         Expr::ConstrADT { fields, .. } => fields
             .iter()
             .find_map(|e| body_references_dev_session_extern(e, is_dev_session_extern)),

@@ -518,6 +518,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cranelisp-poll-pool"
+version = "0.1.0"
+dependencies = [
+ "cranelisp-platform",
+ "libc",
+]
+
+[[package]]
 name = "cranelisp-pool-demo"
 version = "0.1.0"
 dependencies = [
@@ -552,6 +560,7 @@ name = "cranelisp-stdio"
 version = "0.1.0"
 dependencies = [
  "cranelisp-platform",
+ "libc",
 ]
 
 [[package]]
@@ -584,6 +593,7 @@ name = "cranelisp-web"
 version = "0.1.0"
 dependencies = [
  "cranelisp-platform",
+ "libc",
 ]
 
 [[package]]

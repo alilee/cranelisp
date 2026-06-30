@@ -737,7 +737,6 @@ fn trampoline_clean_effect_leaves_no_fault() {
 /// field (payload tag+thunk+token+fn_name+capacity = 40 bytes), instant thunk.
 /// Used by the feature-off negative guard to prove the default build's sync path
 /// is unchanged by the capacity append (it ignores capacity — no pool exists).
-#[cfg(not(feature = "concurrency-runtime"))]
 fn make_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
     let thunk_ptr = clean_effect_thunk(value);
     let base = alloc_with_rc(40) as i64;
@@ -751,25 +750,23 @@ fn make_capacity_effect_node(token: i64, capacity: i64, value: i64) -> i64 {
     base
 }
 
-// spec: design/int/reactor.md §2.9 / §13.8 (byte-identical-off negative guard) —
-// the DEFAULT build (`concurrency-runtime` OFF) constructs NO semaphore/pool
-// path: a blocking `Par` runs through the unchanged sync rayon dispatcher
-// (`dispatch_par_branches_with_trace`), and the appended `capacity` field is
-// simply ignored (same-token branches serialise via `SerialGroup`, capacity-1 —
-// no `Semaphore`, no parking). This is the negative face of the feature gate: the
-// pool types are `cfg`'d out entirely, so this path CANNOT touch them.
-#[cfg(not(feature = "concurrency-runtime"))]
+// spec: design/int/reactor.md §2.9 — the RETAINED synchronous rayon dispatcher
+// (the rayon-worker per-branch driver under the single-trampoline cutover,
+// §6.8.0a) token-groups same-token blocking branches via `SerialGroup` and runs
+// them WITHOUT any token-capacity `Semaphore` (the appended `capacity` field is
+// inert on the sync path — the pool lives only on the async carrier). Negative
+// face: the sync `run_par_node` path constructs no pool/parking machinery.
 #[test]
-fn blocking_par_default_build_constructs_no_semaphore_path_neg() {
-    // Two same-token (token 5) capacity-2 blocking effects in a Par. Feature-off,
-    // capacity is inert — the sync dispatcher token-groups them (SerialGroup) and
+fn blocking_par_sync_dispatcher_runs_without_semaphore_neg() {
+    // Two same-token (token 5) capacity-2 blocking effects in a Par. On the sync
+    // path capacity is inert — the dispatcher token-groups them (SerialGroup) and
     // runs them; the results are marshaled into the Par buffer in binding order.
     let a = make_capacity_effect_node(5, 2, 10);
     let b = make_capacity_effect_node(5, 2, 20);
     let par = make_par_node(&[a, b]);
 
-    // The SYNC trampoline — the only path that exists feature-off. No reactor, no
-    // pool, no `block_on_reactor`; `drive_io` resolves to `run_io_trampoline`.
+    // The SYNC dispatcher (`run_par_node`) — the retained rayon-worker driver. No
+    // reactor, no pool: `dispatch_par_branches_with_trace` runs the branches.
     let results_buf = run_par_node(par);
     let r0 = unsafe { crate::heap_access::read_i64(results_buf, FIELD_0_OFFSET) };
     let r1 = unsafe { crate::heap_access::read_i64(results_buf, FIELD_0_OFFSET + 8) };
@@ -785,7 +782,6 @@ fn blocking_par_default_build_constructs_no_semaphore_path_neg() {
 // Gated `concurrency-runtime` (runs under `cargo nt-concurrency-runtime`).
 // ===========================================================================
 
-#[cfg(feature = "concurrency-runtime")]
 mod poll_arm {
     use super::*;
     use crate::strand::{drain_strand_events, start_strand_recording, StrandEvent, StrandId};
@@ -876,6 +872,52 @@ mod poll_arm {
         crate::drop::consume_io_tree(node); // tag-4 consume path frees node + closure
     }
 
+    /// Build an `IO_TAG_EFFECT_POLL` node carrying a LIVE `(token, capacity)` at
+    /// the S95-reserved slots (token @ abs 32, capacity @ abs 40) — what the S96
+    /// backend poll-construction arm bakes (no longer the sentinel `(0, 1)`).
+    fn build_poll_node_tc(n: i64, token: i64, capacity: i64) -> i64 {
+        let clo = alloc_with_rc(32) as i64;
+        unsafe {
+            crate::heap_access::write_i64(clo, 16, test_timer_poll as *const () as i64);
+            crate::heap_access::write_i64(clo, 24, 0); // drop_glue null
+            crate::heap_access::write_i64(clo, 32, 0); // env: result slot sentinel
+            crate::heap_access::write_i64(clo, 40, n); // env: arg 0 = N
+        }
+        let node = alloc_with_rc(32) as i64;
+        unsafe {
+            crate::heap_access::write_i64(node, TAG_OFFSET, IO_TAG_EFFECT_POLL); // abs 16
+            crate::heap_access::write_i64(node, FIELD_0_OFFSET, clo); // abs 24 — state closure
+            crate::heap_access::write_i64(node, FIELD_1_OFFSET, token); // abs 32 — LIVE token
+            crate::heap_access::write_i64(node, FIELD_1_OFFSET + 8, capacity); // abs 40 — LIVE capacity
+        }
+        node
+    }
+
+    // spec: design/int/reactor.md §2.9 §1A — the trampoline reads the LIVE
+    // `(token, capacity)` off the `IO_TAG_EFFECT_POLL` node (the S95-reserved
+    // slots, now carrying real values), using the SAME offsets the blocking
+    // carrier and the backend agree on: token @ abs 32 (`read_resource_token` via
+    // FIELD_1_OFFSET), capacity @ abs 40 (`read_capacity` via
+    // POLL_CAPACITY_ABS_OFFSET). NOT the sentinel `(0, 1)`. Offset-agreement guard
+    // with `io-trampoline.md §13`.
+    // design: design/int/reactor.md §2.9
+    #[test]
+    fn poll_node_token_capacity_read_live_not_sentinel() {
+        // A poll node declaring token 42, capacity 3 reads back the LIVE values.
+        let live = build_poll_node_tc(0, 42, 3);
+        assert_eq!(read_resource_token(live), 42, "poll node token read live off abs offset 32");
+        assert_eq!(read_capacity(live), 3, "poll node capacity read live off abs offset 40");
+
+        // A sentinel-shaped poll node (token 0, capacity 1) reads back 0/1 — the
+        // read distinguishes live from sentinel; it is the SAME read path.
+        let sentinel = build_poll_node(7);
+        assert_eq!(read_resource_token(sentinel), 0, "sentinel poll node token reads 0 (unrestricted)");
+        assert_eq!(read_capacity(sentinel), 1, "sentinel poll node capacity reads 1");
+
+        crate::drop::consume_io_tree(live);
+        crate::drop::consume_io_tree(sentinel);
+    }
+
     // spec: design/arch/effect-concurrency.md §"The ratified backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)" (b)
     // — the public cfg-on driver `drive_io` (the entry `cranelisp_run_program` /
     // `cranelisp_run_io` route through) forces a poll node through the reactor.
@@ -884,6 +926,27 @@ mod poll_arm {
         let node = build_poll_node(42);
         let result = drive_io(node);
         assert_eq!(result, 42, "drive_io routes a poll node through the reactor");
+        crate::drop::consume_io_tree(node);
+    }
+
+    // spec: design/int/reactor.md §2.9 §1A — the LIVE poll-carrier acquire wiring:
+    // a poll node declaring a non-zero `(token, capacity)` drives through
+    // `await_poll_node`, which now READS the live `(token, capacity)`, ACQUIRES the
+    // token's permit from `env.pool` before establish, OWNS it on the `EffectPoll`
+    // across the suspend/resume arc, and RELEASES it on `Ready` — completing with
+    // the generic env-slot result. Proves the acquire-around-poll path is wired on
+    // the poll carrier (not just readable), end-to-end through the trampoline.
+    // design: design/int/reactor.md §2.9
+    #[test]
+    fn live_capacity_poll_node_acquires_owns_releases_through_trampoline() {
+        let node = build_poll_node_tc(63, 21, 1); // token 21, capacity 1, result 63
+        let result = crate::reactor::block_on_reactor(async |env| {
+            // The pool starts empty; the poll path creates + acquires token 21's
+            // slot, holds it across the arc, and releases on Ready.
+            run_io_trampoline_inner_async(node, env, StrandId::ROOT).await
+        })
+        .expect("reactor");
+        assert_eq!(result, 63, "live-capacity poll node completes (acquire→own→release) via the generic env slot");
         crate::drop::consume_io_tree(node);
     }
 
@@ -1006,4 +1069,329 @@ mod poll_arm {
         crate::drop::dec_shallow_io(results_buf);
         crate::drop::consume_io_tree(par);
     }
+
+    /// A continuation closure `(fn [_] <captured-node>)` — ignores its argument
+    /// and returns a pre-built IO node pointer (captured at env+32). Models the
+    /// launch loop's `(fn [_r] (recur …))` tail, where the continuation produces
+    /// the next IO tree rather than a `Pure`. `drop_glue` null (the captured node
+    /// is owned by the trampoline that consumes it, not the closure).
+    fn make_return_node_closure(node: i64) -> i64 {
+        extern "C" fn ret_node(env_ptr: i64, _val: i64) -> i64 {
+            unsafe { *((env_ptr as isize + 32) as *const i64) }
+        }
+        let base = alloc_with_rc(24); // code_ptr + drop_glue + 1 capture
+        unsafe {
+            *((base as isize + 16) as *mut i64) = ret_node as *const () as i64;
+            *((base as isize + 24) as *mut i64) = 0; // drop_glue null
+            *((base as isize + 32) as *mut i64) = node; // captured next-node
+        }
+        base as i64
+    }
+
+    // spec: spec/10-io.md §10.12.4.2 item 3 / design/int/reactor.md §2.13 — a launch
+    // LOOP under a global degree D bounds in-flight DETACHED strands to D: the
+    // (D+1)th launch PARKS on `acquire_global`, then RESUMES when an in-flight
+    // strand completes and frees a global slot. The regression this guards: when
+    // the launcher parks on `acquire_global` and the last in-flight strand
+    // completes DURING `supervisor.drive()` (freeing the budget + waking the parked
+    // launch), the executor loop reached the `would hang` panic guard — no fd/timer
+    // waiter, supervisor empty, top not done — and FALSELY aborted, even though the
+    // launcher was just woken and only needed a re-poll. The `woken` pending-wake
+    // flag suppresses that false hang. Without the fix this `block_on_reactor`
+    // drive panics; with it the launch loop drains cleanly and the launcher reaches
+    // its `(Pure 42)`.
+    // design: design/int/reactor.md §2.13
+    #[test]
+    fn degree_parked_launcher_resumes_when_strand_frees_budget_no_false_hang() {
+        // SAFETY: nextest runs each test in its own process, so this env mutation
+        // is isolated (no other test observes it). degree 1 ⇒ global budget 1.
+        unsafe { std::env::set_var("CRANELISP_DEGREE", "1") };
+        start_strand_recording();
+
+        // Bind(Launch(poll1), (fn [_] Bind(Launch(poll2), (fn [_] Pure 42)))):
+        // a 2-iteration launch loop. Under degree 1 the launch of poll2 PARKS on
+        // the global budget held by poll1; poll1's reactor timer fires, the strand
+        // completes + frees the budget, and the parked launch resumes.
+        let pure42 = make_pure_node(42);
+        let launch2 = make_launch_node(build_poll_node(2));
+        let bind_inner = make_bind_node(launch2, make_return_node_closure(pure42));
+        let launch1 = make_launch_node(build_poll_node(1));
+        let bind_outer = make_bind_node(launch1, make_return_node_closure(bind_inner));
+
+        let result = cranelisp_run_io(bind_outer);
+        unsafe { std::env::remove_var("CRANELISP_DEGREE") };
+
+        assert_eq!(
+            result, 42,
+            "the degree-parked launcher must RESUME when an in-flight strand frees \
+             the global budget — the loop drains to (Pure 42), NOT a false `would \
+             hang` abort"
+        );
+        let events = drain_strand_events();
+        // Both detached strands ran to completion (drained before exit, §2.12).
+        let completed = events
+            .iter()
+            .filter(|e| matches!(e, StrandEvent::StrandCompleted { .. }))
+            .count();
+        assert_eq!(
+            completed, 2,
+            "both launched strands drained before exit: {events:?}"
+        );
+        // The (D+1)th launch PARKED on the global budget, then resumed (the
+        // backpressure witness at the unit tier).
+        assert!(
+            events.contains(&StrandEvent::GlobalBudgetParked { strand: StrandId(2) })
+                || events.iter().any(|e| matches!(e, StrandEvent::GlobalBudgetParked { .. })),
+            "the over-budget launch parked on the global budget: {events:?}"
+        );
+    }
+
+    /// An always-`Pending` poll-fn that arms NO reactor interest — models a leaf
+    /// parked-on-readiness that never completes (the cancelled-branch subject). Used
+    /// to suspend a branch future mid-flight so the §2.15.1 drop-guard can be
+    /// observed.
+    unsafe extern "C" fn never_ready_pollfn(
+        _state: *mut core::ffi::c_void,
+        _host: *const HostCtx,
+        _waker: *const CWaker,
+    ) -> CPoll {
+        CPoll::Pending
+    }
+
+    /// Build an `IO_TAG_EFFECT_POLL` node over `never_ready_pollfn`, token 0 (no
+    /// admission). Two `alloc_with_rc` chunks: the state closure + the node.
+    fn build_never_ready_poll_node() -> i64 {
+        let clo = alloc_with_rc(32) as i64;
+        unsafe {
+            crate::heap_access::write_i64(clo, 16, never_ready_pollfn as *const () as i64);
+            crate::heap_access::write_i64(clo, 24, 0); // drop_glue null
+            crate::heap_access::write_i64(clo, 32, 0); // env: result slot
+            crate::heap_access::write_i64(clo, 40, 0); // env: pad/arg
+        }
+        let node = alloc_with_rc(32) as i64;
+        unsafe {
+            crate::heap_access::write_i64(node, TAG_OFFSET, IO_TAG_EFFECT_POLL);
+            crate::heap_access::write_i64(node, FIELD_0_OFFSET, clo);
+            crate::heap_access::write_i64(node, FIELD_1_OFFSET, 0); // token 0 (no acquire)
+            crate::heap_access::write_i64(node, FIELD_1_OFFSET + 8, 1); // capacity 1
+        }
+        node
+    }
+
+    /// Poll a boxed trampoline future once with a noop waker.
+    fn poll_boxed(
+        f: &mut std::pin::Pin<Box<dyn std::future::Future<Output = i64> + '_>>,
+    ) -> std::task::Poll<i64> {
+        let w = futures::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&w);
+        f.as_mut().poll(&mut cx)
+    }
+
+    // spec: design/int/reactor.md §2.15.1 — the trampoline-frame cancellation
+    // drop-guard. A branch future suspended on a FRESH (continuation-produced)
+    // in-flight poll node, then DROPPED mid-flight (a cancelled race/select loser),
+    // must FREE that fresh subtree (node + state closure) via the `TrampolineFrame`
+    // drop-guard. Without the guard the fresh in-flight node leaks (it has no other
+    // owner — its producing Bind was already dec'd). `Bind(Pure 0, (fn [_] <fresh
+    // poll node>))` steps Pure→continuation→the poll node (now fresh) → suspends;
+    // dropping the future there frees the fresh node.
+    // design: design/int/reactor.md §2.15.1
+    #[test]
+    fn cancelled_branch_future_frees_fresh_inflight_subtree() {
+        // The poll node becomes a FRESH in-flight node when the continuation returns
+        // it (Step::Advance ⇒ current_is_fresh = true).
+        let poll = build_never_ready_poll_node(); // 2 allocs: node + closure
+        let cont = make_return_node_closure(poll); // (fn [_] <captured poll node>)
+        let inner = make_pure_node(0);
+        let bind = make_bind_node(inner, cont);
+
+        let d_before = crate::alloc::dealloc_count();
+        crate::reactor::block_on_reactor(async |env| {
+            let mut fut = run_io_trampoline_inner_async(bind, env, StrandId::ROOT);
+            // One poll drives Pure → continuation → the fresh poll node → Pending.
+            assert!(matches!(poll_boxed(&mut fut), std::task::Poll::Pending),
+                "the branch suspends on the fresh in-flight poll node");
+            drop(fut); // CANCEL mid-flight → the frame guard frees the fresh subtree.
+            0
+        })
+        .expect("reactor");
+        let freed = crate::alloc::dealloc_count() - d_before;
+        assert!(
+            freed >= 2,
+            "the cancelled branch must free its FRESH in-flight poll node + state closure \
+             via the §2.15.1 drop-guard (freed {freed}; a leak frees 0)"
+        );
+
+        // The caller's tree (Bind + Pure + cont closure) is non-fresh — the guard
+        // leaves it to its owner; release it so the test is leak-clean. (The fresh
+        // poll node was already consumed by the guard, so it is NOT in this walk.)
+        crate::drop::consume_io_tree(bind);
+    }
+}
+
+// ===========================================================================
+// S96 Chunk B §2.11/§2.12 — the `IO_TAG_LAUNCH` launch-and-continue arm +
+// the supervisor (catch + StrandFailed + drive survives). These drive a real
+// `Bind(Launch(sub), cont)` tree through `cranelisp_run_io` (the ASYNC
+// trampoline — the launch arm exists only there; the sync stepper never sees an
+// `IO_TAG_LAUNCH` node), so the launch detaches the sub-tree into the supervisor
+// and the continuation proceeds without awaiting it.
+// design: design/int/reactor.md §2.11 / §2.12
+// ===========================================================================
+
+use crate::strand::{drain_strand_events, start_strand_recording, StrandEvent, StrandId};
+
+/// Build a thin `IO_TAG_LAUNCH` node wrapping `sub_tree` at field 0 (the backend's
+/// `compile_launch` shape, `io-trampoline.md §15.4`).
+fn make_launch_node(sub_tree: i64) -> i64 {
+    let base = alloc_with_rc(16); // tag + 1 field = 16 bytes payload
+    unsafe {
+        *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_LAUNCH;
+        *((base as isize + FIELD_0_OFFSET) as *mut i64) = sub_tree;
+    }
+    base as i64
+}
+
+/// Build an IO node with an arbitrary (here: bogus) tag — the async trampoline
+/// `panic!`s on an unknown tag, modelling a strand that faults mid-flight.
+fn make_bogus_tag_node(tag: i64) -> i64 {
+    let base = alloc_with_rc(16); // tag + field0 (consume_io_tree snapshots field0)
+    unsafe {
+        *((base as isize + TAG_OFFSET) as *mut i64) = tag;
+        *((base as isize + FIELD_0_OFFSET) as *mut i64) = 0;
+    }
+    base as i64
+}
+
+/// Build an `IO_TAG_EFFECT` node whose thunk raises a RUNTIME ERROR (sets the
+/// thread-local error slot, as `runtime_panic` does) then returns `0` — so the
+/// strand's completion-boundary `take_runtime_error` capture (§2.12) sees it.
+fn make_runtime_error_effect(msg: &'static str) -> i64 {
+    let thunk: Box<Box<dyn FnOnce() -> cranelisp_platform::EffectOutcome>> =
+        Box::new(Box::new(move || {
+            crate::panic::set_runtime_error(msg.to_string());
+            cranelisp_platform::EffectOutcome {
+                value: 0,
+                fault_cause: std::ptr::null(),
+                fault_len: 0,
+            }
+        }));
+    let thunk_ptr = Box::into_raw(thunk) as i64;
+    let base = alloc_with_rc(32); // tag + thunk + token + fn_name (ABI v4)
+    unsafe {
+        *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_EFFECT;
+        *((base as isize + FIELD_0_OFFSET) as *mut i64) = thunk_ptr;
+        *((base as isize + FIELD_1_OFFSET) as *mut i64) = 0; // resource_token
+        *((base as isize + FIELD_2_OFFSET) as *mut i64) = 0; // fn_name handle
+    }
+    base as i64
+}
+
+// spec: spec/10-io.md §10.12.7 — launch-and-continue: a launched effect runs
+// DETACHED while the launcher continues WITHOUT awaiting it. `Bind(Launch(Pure
+// 999), (fn [x] (Pure (+ x 77))))`: the launch yields `Pure Unit` (0), so the
+// continuation runs with 0 ⇒ 77 — NOT the launched 999 (the launcher did not
+// await). The detached strand still RAN (drained before exit: StrandLaunched +
+// StrandCompleted), under the root strand.
+// design: design/int/reactor.md §2.11
+#[test]
+fn launch_arm_detaches_subtree_continuation_proceeds_without_awaiting() {
+    start_strand_recording();
+    let sub = make_pure_node(999); // the launched (discarded-result) sub-tree
+    let launch = make_launch_node(sub);
+    let cont = make_add_and_pure_closure(77); // (fn [x] (Pure (+ x 77)))
+    let bind = make_bind_node(launch, cont);
+
+    let result = cranelisp_run_io(bind);
+    assert_eq!(
+        result, 77,
+        "the continuation proceeds on the launch's Pure Unit (0+77), NOT the \
+         launched 999 — the launcher did not await the detached effect"
+    );
+
+    let events = drain_strand_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StrandEvent::StrandLaunched { parent, .. } if *parent == StrandId::ROOT)),
+        "the launch records StrandLaunched under the root strand: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| matches!(e, StrandEvent::StrandCompleted { .. })),
+        "the detached strand RAN to completion (drained before exit): {events:?}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.9 — a launched (detached) strand that PANICS is
+// contained by the supervisor: caught (`catch_unwind`), recorded (`StrandFailed`,
+// not silently dropped), the drive SURVIVES (the launcher's continuation still
+// completes), and the panic is NEVER re-raised (the runtime-error slot stays
+// clear). A non-supervised detached panic would abort the whole drive.
+// design: design/int/reactor.md §2.12
+#[test]
+fn supervisor_catches_panicking_strand_records_failed_drive_survives() {
+    // Silence the EXPECTED panic's default hook output (nextest isolates this
+    // process, so the global hook swap is safe).
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    start_strand_recording();
+
+    let bogus = make_bogus_tag_node(999); // the async trampoline panics on it
+    let launch = make_launch_node(bogus);
+    let cont = make_add_and_pure_closure(5); // (fn [x] (Pure (+ x 5)))
+    let bind = make_bind_node(launch, cont);
+
+    let result = cranelisp_run_io(bind);
+    std::panic::set_hook(prev);
+
+    assert_eq!(
+        result, 5,
+        "the drive SURVIVED the strand panic — the launcher's continuation \
+         completed (0+5), the server lives"
+    );
+    // Never re-raised: a caught panic is NOT ferried into the runtime-error slot.
+    assert!(
+        crate::panic::take_runtime_error().is_none(),
+        "the supervisor must catch + drop, never re-raise the panic into the slot"
+    );
+
+    let events = drain_strand_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StrandEvent::StrandFailed { message, .. } if message == "<panicked>")),
+        "a panicking strand must record StrandFailed (NOT a silent drop): {events:?}"
+    );
+}
+
+// spec: spec/12-runtime.md §12.7.9 — the supervisor catches the OTHER failure
+// kind too: a strand whose effect raises a RUNTIME ERROR is captured at the
+// completion boundary (`take_runtime_error`, reused from the S95 ferry) →
+// StrandFailed{message} with the ferried message, the drive survives, and the
+// error is captured (taken), not re-raised into the host slot.
+// design: design/int/reactor.md §2.12
+#[test]
+fn supervisor_catches_runtime_error_strand_records_failed_with_message() {
+    start_strand_recording();
+    let sub = make_runtime_error_effect("eff-boom"); // raises a runtime error mid-strand
+    let launch = make_launch_node(sub);
+    let cont = make_add_and_pure_closure(3);
+    let bind = make_bind_node(launch, cont);
+
+    let result = cranelisp_run_io(bind);
+    assert_eq!(result, 3, "the launcher's continuation completed (0+3); the drive survived");
+
+    let events = drain_strand_events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StrandEvent::StrandFailed { message, .. } if message == "eff-boom")),
+        "a runtime-error strand records StrandFailed with the ferried message: {events:?}"
+    );
+    // The supervisor TOOK the error at the strand's completion boundary (captured,
+    // not left in the slot to re-raise into the host).
+    assert!(
+        crate::panic::take_runtime_error().is_none(),
+        "the runtime error was captured by the strand, not re-raised"
+    );
 }

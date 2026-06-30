@@ -10,8 +10,10 @@
 //! so that it can appear both on `DefKind::PlatformEffect` (a sibling
 //! variant on `ModuleEntry::Def.kind` — promoted from the retired
 //! `PrimitiveKind::PlatformEffect` sub-discriminator per S69 Submission 36)
-//! and in the platform-ABI surface
-//! (`cranelisp-platform::PlatformFn::scheduling_class`) without forcing a
+//! and in the platform-ABI surface (derived onto the host-side
+//! `cranelisp-platform::OwnedPlatformFnDescriptor::scheduling_class` from the
+//! unified `PlatformFn::concurrency` — the single-ABI cutover removed the former
+//! standalone `PlatformFn::scheduling_class` field) without forcing a
 //! `cranelisp-types -> cranelisp-platform` dependency edge (which would
 //! violate Principle 3 — `cranelisp-types` depends on nothing).
 //!
@@ -75,27 +77,34 @@ impl SchedulingClass {
 }
 
 // ===========================================================================
-// ABI-v7 concurrency contracts (effect-concurrency track, slice 2)
+// Unified-ABI concurrency contracts (effect-concurrency track) — ABI v8
 //
-// These are the cross-crate *layout contracts* the slice-2 async substrate is
-// built against. They are landed as code (the contract `/dev` implements next
-// sprint/stretch) but gated behind the off-by-default `concurrency` feature so
-// they enter neither the default build nor the `public-api.txt` frozen edge
-// until the reactor implementation wires them (mirroring the `test-support`
-// feature's out-of-baseline discipline). The default suite stays byte-identical.
+// These are the cross-crate *layout contracts* of the single platform ABI. As of
+// the S96 single-ABI cutover (`design/arch/platform-interface.md` §6.8) they are
+// **core, ungated** surface: there is ONE platform ABI in which each effect is
+// independently blocking or poll-shape via its `ConcurrencyDescriptor`. The former
+// off-by-default `concurrency` feature (which kept these dormant + off the frozen
+// `public-api.txt` edge while v6 coexistence was preserved) is RETIRED — there are
+// no out-of-tree v6 DLLs to preserve compatibility with, so the descriptor is part
+// of every platform manifest entry. The host *reactor* that drives poll-shape
+// leaves stays optional behind `cranelisp-intrinsics`'s `concurrency-runtime`
+// feature (mio/futures); these ABI *types* do not.
 //
-// Manifestation: `design/arch/effect-concurrency.md` §5 (descriptor), §6
-// (substrate), §12 (the A2 C-ABI-async leaf model); `design/arch/CLAUDE.md`
-// notes the cascade. The descriptor generalizes `SchedulingClass` (above).
+// Manifestation: `design/arch/platform-interface.md` §6.8 (the single-ABI
+// cutover) + `design/arch/effect-concurrency.md` §5 (descriptor), §12 (the A2
+// C-ABI-async leaf model). The descriptor generalizes `SchedulingClass` (above):
+// a blocking effect's descriptor is synthesized from its `SchedulingClass` via
+// `from_scheduling_class`; a poll-shape effect declares its descriptor natively.
 // ===========================================================================
 
 /// The per-effect concurrency contract a platform declares in its manifest
-/// (ABI v7) — a finite, declarative **generalization of [`SchedulingClass`]**
+/// (the unified single-ABI platform contract, `platform-interface.md` §6.8.0) —
+/// a finite, declarative **generalization of [`SchedulingClass`]**
 /// (`design/arch/effect-concurrency.md` §5).
 ///
 /// `#[repr(C)]` layout contract: it crosses the platform-DLL C-ABI as raw bytes
-/// in the v7 manifest entry (`cranelisp_platform::ConcurrentPlatformFn`), so its
-/// layout is governed by `cranelisp_platform::ABI_VERSION` (Principle 14), **not**
+/// in the unified manifest entry (`cranelisp_platform::PlatformFn::concurrency`),
+/// so its layout is governed by `cranelisp_platform::ABI_VERSION` (Principle 14), **not**
 /// by `#[non_exhaustive]` source-evolution guards. Deliberately **not**
 /// `#[non_exhaustive]` — a layout contract evolves by an explicit ABI bump.
 ///
@@ -121,7 +130,6 @@ impl SchedulingClass {
 /// - `_reserved` — explicit tail padding to keep the `#[repr(C)]` size 8-byte
 ///   aligned and leave a named, zero-initialised slot for a future inert field
 ///   without a layout-disturbing insert. MUST be zero.
-#[cfg(feature = "concurrency")]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConcurrencyDescriptor {
@@ -137,14 +145,16 @@ pub struct ConcurrencyDescriptor {
     pub _reserved: [u8; 3],
 }
 
-#[cfg(feature = "concurrency")]
 impl ConcurrencyDescriptor {
-    /// The conservative migration bridge from a v6 [`SchedulingClass`] to a v7
-    /// descriptor. Maps the three classes onto token/cardinality; `blocking` is
-    /// **orthogonal** to scheduling class (a class says nothing about whether an
-    /// effect blocks), so the bridge picks the conservative `blocking = 1`. A
-    /// native v7 manifest declares `blocking` explicitly rather than relying on
-    /// this default.
+    /// Synthesize a **blocking** effect's descriptor from its [`SchedulingClass`]
+    /// — the canonical sugar the unified `declare_platform!` macro uses to lower a
+    /// blocking effect declared with `scheduling:` rather than a full `descriptor:`.
+    /// Maps the three classes onto token/cardinality; `blocking` is **orthogonal**
+    /// to scheduling class (a class says nothing about whether an effect blocks),
+    /// so a blocking effect's synthesized descriptor sets `blocking = 1`. A
+    /// poll-shape effect declares its descriptor natively (`blocking = 0`) and does
+    /// not use this. (Formerly the v6→v7 compat bridge; under the single ABI it is
+    /// the blocking-effect descriptor sugar — `platform-interface.md` §6.8.)
     pub const fn from_scheduling_class(c: SchedulingClass) -> Self {
         match c {
             // Globally ordered: one shared token, cardinality 1.
@@ -204,7 +214,7 @@ impl ConcurrencyDescriptor {
     }
 }
 
-/// C-ABI poll result (ABI v7) — the return of a poll-shape effect fn.
+/// C-ABI poll result (the unified platform ABI) — the return of a poll-shape effect fn.
 ///
 /// `#[repr(i32)]` so it crosses the C-ABI as a plain int (no niche assumptions).
 /// It is the FFI collapse of `std::task::Poll`: `Ready` means the effect produced
@@ -212,7 +222,6 @@ impl ConcurrencyDescriptor {
 /// the effect registered interest via the [`PollFn`]'s `HostCtx` waker and must be
 /// re-polled when woken. Sync / non-blocking effects simply return `Ready`
 /// immediately (§12 — blocking-style and poll-style coexist).
-#[cfg(feature = "concurrency")]
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Poll {
@@ -222,7 +231,7 @@ pub enum Poll {
     Pending = 1,
 }
 
-/// The ABI-v7 poll-fn signature shape — `poll(state, *HostCtx, *Waker) -> Poll`
+/// The poll-fn signature shape — `poll(state, *HostCtx, *Waker) -> Poll`
 /// (`design/arch/effect-concurrency.md` §12).
 ///
 /// At the bottom of the dependency DAG `cranelisp-types` cannot name the host
@@ -231,7 +240,6 @@ pub enum Poll {
 /// type-crate shape uses opaque `*const c_void` for the two host pointers; the
 /// platform crate re-projects this as a strongly-typed `cranelisp_platform::PollFn`
 /// over its own `HostCtx` / `Waker`. Both describe the **same C-ABI**.
-#[cfg(feature = "concurrency")]
 pub type PollFn = unsafe extern "C" fn(
     state: *mut core::ffi::c_void,
     host_ctx: *const core::ffi::c_void,
@@ -276,7 +284,6 @@ mod tests {
     // substantive layout/bridge guards are the S93 §2B tests (/qa + /dev); this
     // only asserts the lane reaches a gated body and the gated `src` types
     // compile + construct.
-    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrency_lane_executes_gated_tests_smoke() {
         let d = ConcurrencyDescriptor::from_scheduling_class(SchedulingClass::Sequential);
@@ -289,7 +296,6 @@ mod tests {
     // loader's derivation of the still-required `scheduling_class`. Round-trips
     // the three canonical images; ignores `blocking` (the orthogonal axis); maps
     // a cardinality-N pool to the nearest unbounded-parallel class.
-    #[cfg(feature = "concurrency")]
     #[test]
     fn nearest_scheduling_class_inverts_from_scheduling_class() {
         for cls in [
@@ -340,7 +346,6 @@ mod tests {
     // bridge. `from_scheduling_class` maps the three scheduling classes onto the
     // descriptor's {token, cardinality, global_budget, blocking}; `_reserved`
     // MUST stay all-zero for every class (the inert tail).
-    #[cfg(feature = "concurrency")]
     #[test]
     fn concurrency_descriptor_from_scheduling_class_bridges_three_classes() {
         let seq = ConcurrencyDescriptor::from_scheduling_class(SchedulingClass::Sequential);
@@ -366,12 +371,10 @@ mod tests {
     }
 
     // spec: design/arch/effect-concurrency.md §5 — the descriptor crosses the
-    // platform-DLL C-ABI as raw bytes (`ConcurrentPlatformFn.concurrency`), so
-    // its `#[repr(C)]` field offsets + size are a FROZEN v7 layout contract
-    // (governed by ABI_VERSION, not source-evolution guards). The inert
-    // `global_budget` slot MUST be present now (reserved to avoid a 7→8 bump
-    // when slice 4 lands — SPRINT.md arch R5 / FIXME 0442).
-    #[cfg(feature = "concurrency")]
+    // platform-DLL C-ABI as raw bytes (`PlatformFn.concurrency`), so its
+    // `#[repr(C)]` field offsets + size are a FROZEN layout contract (governed by
+    // ABI_VERSION, not source-evolution guards). The `global_budget` slot is the
+    // slice-4 degree carrier (SPRINT.md arch R5 / FIXME 0442).
     #[test]
     fn concurrency_descriptor_repr_c_layout_and_inert_budget_present() {
         use core::mem::{align_of, offset_of, size_of};
@@ -390,7 +393,6 @@ mod tests {
     // spec: design/arch/effect-concurrency.md §12 — `Poll` is the FFI collapse of
     // `std::task::Poll`, `#[repr(i32)]` so it crosses the C-ABI as a plain int.
     // The discriminants are byte-stable: Ready = 0, Pending = 1.
-    #[cfg(feature = "concurrency")]
     #[test]
     fn poll_repr_i32_ready_zero_pending_one() {
         assert_eq!(Poll::Ready as i32, 0);

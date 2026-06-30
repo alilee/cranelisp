@@ -380,3 +380,84 @@ fn create_gate_not_emitted_for_single_sparkable_binding() {
         "< 2 sparkable bindings must NOT emit a create-gate runtime branch; CLIF:\n{clif}"
     );
 }
+
+// =============================================================================
+// Launch-and-continue node emission (S96 Chunk B, slice 5).
+// design: design/backend/io-trampoline.md §15 — a `MonoExpr::LaunchContinue`
+// lowers to a thin `IO_TAG_LAUNCH=5` node (the launched sub-tree at field 0),
+// wrapped by an `IO_TAG_BIND=2` node linking it to a continuation closure that
+// discards the (Pure Unit) launch result. The structural twin of `Par` in
+// `Bind(Par(..), cont)`. Branches are int-literal stand-ins for IO-tree pointers
+// (the guard is the emitted node SHAPE, not its runtime IO semantics).
+// =============================================================================
+
+/// Build a `LaunchContinue` node by hand (no surface syntax — synthesised by
+/// `/int`'s bind-chain analysis at the §10.12.7 launch shape).
+fn launch_continue(launched: Expr, continuation: Expr) -> Expr {
+    Expr::LaunchContinue {
+        launched: Box::new(launched),
+        continuation: Box::new(continuation),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+// spec: spec/10-io.md §10.12.7 + design/backend/io-trampoline.md §15.4/§15.9 —
+//       a launch-marked site constructs an `IO_TAG_LAUNCH=5` node storing the
+//       launched sub-tree pointer at field 0, wrapped by an `IO_TAG_BIND=2`
+//       node. Both tag constants must appear in the emitted CLIF.
+#[test]
+fn launch_continue_emits_launch_node_wrapped_by_bind() {
+    // (launch (effect-subtree) ; continue with 0)
+    let body = launch_continue(int_lit(10), int_lit(0));
+    let clif = clif_of_body(body);
+
+    // The Launch node stores tag=5 (IO_TAG_LAUNCH) at TAG_OFFSET.
+    assert!(
+        clif.contains("iconst.i64 5"),
+        "LaunchContinue codegen must emit the IO_TAG_LAUNCH=5 marker; CLIF:\n{clif}"
+    );
+    // The wrapping Bind node stores tag=2 (IO_TAG_BIND).
+    assert!(
+        clif.contains("iconst.i64 2"),
+        "LaunchContinue codegen must wrap the Launch node in an IO_TAG_BIND=2 \
+         node; CLIF:\n{clif}"
+    );
+    // The launched sub-tree pointer (stand-in int 10) is stored into the node.
+    assert!(
+        clif.contains("iconst.i64 10"),
+        "the launched sub-tree value must be compiled + stored at field 0; CLIF:\n{clif}"
+    );
+    // At least three heap allocations: the Launch node, the continuation closure,
+    // and the wrapping Bind node.
+    let alloc_calls = clif.matches("call ").count();
+    assert!(
+        alloc_calls >= 3,
+        "LaunchContinue codegen must emit Launch-node + continuation-closure + \
+         Bind-node allocations (>=3 calls); found {alloc_calls}. CLIF:\n{clif}"
+    );
+}
+
+// spec: design/backend/io-trampoline.md §15.7/§15.9 — NEGATIVE / no-regression:
+//       an ordinary `Bind`-shaped program (a plain `let`, NOT a LaunchContinue)
+//       emits NO IO_TAG_LAUNCH=5 node. The launch node is constructed ONLY at a
+//       launch-marked site (structural no-regression: non-launch programs are
+//       byte-identical to before this slice).
+#[test]
+fn non_launch_program_emits_no_launch_node() {
+    // A plain sequential let with int-literal bindings (never launch-marked).
+    let body = Expr::Let {
+        bindings: vec![
+            (Symbol::from("a"), int_lit(1)),
+            (Symbol::from("b"), int_lit(2)),
+        ],
+        body: Box::new(int_lit(0)),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let clif = clif_of_body(body);
+    assert!(
+        !clif.contains("iconst.i64 5"),
+        "a non-launch program must NOT emit an IO_TAG_LAUNCH=5 node; CLIF:\n{clif}"
+    );
+}

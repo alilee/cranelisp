@@ -23,8 +23,10 @@ mod dependent_spark;
 mod fn_as_value;
 mod free_vars;
 mod lambda;
+mod launch;
 mod let_if;
 mod par_bind;
+mod select;
 mod sparkability;
 
 // Cross-submodule bridges: these names are referenced by the sub-modules via
@@ -50,3 +52,6 @@ mod par_codegen_tests;
 
 #[cfg(test)]
 mod poll_codegen_tests;
+
+#[cfg(test)]
+mod select_codegen_tests;

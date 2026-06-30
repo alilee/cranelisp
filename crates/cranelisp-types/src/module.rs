@@ -1537,12 +1537,12 @@ pub enum DefKind {
     PlatformEffect {
         scheduling_class: SchedulingClass,
         /// `true` ⇒ a poll-shape async leaf (the loader lifted
-        /// `ConcurrencyDescriptor.blocking == 0` from a v7
-        /// `ConcurrentPlatformFn`); backend emits the poll-construction arm
-        /// (`IO_TAG_EFFECT_POLL` + host-built state-closure). `false` ⇒ a v6
+        /// `ConcurrencyDescriptor.blocking == 0` from the unified
+        /// `PlatformFn::concurrency`); backend emits the poll-construction arm
+        /// (`IO_TAG_EFFECT_POLL` + host-built state-closure). `false` ⇒ a
         /// blocking effect; backend emits the unchanged blocking call. Polarity
         /// is inverted from the C-ABI `blocking` field so that the serde default
-        /// (`false`) is the byte-identical v6 world — a cached pre-S94
+        /// (`false`) is the byte-identical blocking world — a cached pre-S94
         /// `PlatformEffect` (no field in its JSON) deserializes as a blocking
         /// effect, exactly as before. (FIXME 0457; `effect-concurrency.md`
         /// §13 "S94 R1" + Appendix B "ratified backend↔intrinsics seam".)

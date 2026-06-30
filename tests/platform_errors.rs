@@ -34,32 +34,29 @@ mod helpers;
 use helpers::e2e::{Cranelisp, PreludeVariant};
 use std::sync::Once;
 
-/// Build the platform cdylibs (`stdio`, `test-capture`) into `target/debug`
-/// once per test-binary process. These crates are workspace members that
-/// nothing links, so a plain `cargo nextest run` does NOT build them — a
-/// `(platform stdio)` program would otherwise fail `platform 'stdio' not
-/// found` on the search path. Mirrors `tests/examples.rs` + the root
-/// `justfile run-example` recipe; idempotent and cheap when already built.
+/// No-op: the platform cdylibs/rlibs are built suite-wide by the nextest setup
+/// script (`tests/scripts/build-link-prereqs.sh`), the single owner of that
+/// artifact-set invariant (`tests/CLAUDE.md` §"`--link` prerequisites" — "A test
+/// MUST NOT shell out to `cargo build`").
+///
+/// The former per-test `cargo build -p cranelisp-stdio -p cranelisp-test-capture`
+/// band-aid is RETIRED: under the single-ABI cutover it rebuilt
+/// `target/debug/libcranelisp_stdio.rlib` against a `cranelisp-platform` variant
+/// resolved over a DIFFERENT dep-subgraph than the setup script's
+/// (`{stdio,test-capture}` vs `{stdio,…,exe-bundle}`), yielding a mismatched crate
+/// disambiguator. A concurrent `--link` test then saw stdio.rlib and
+/// `libcranelisp_exe_bundle.a` reference different `cranelisp_platform::*` symbol
+/// manglings → `undefined reference` link failures under parallel load.
 fn ensure_platform_cdylibs_built() {
+    // qa-ratified S96 B1: the A4c neutralization is sound — no coverage hole. The
+    // setup script (`tests/scripts/build-link-prereqs.sh`) builds the full platform
+    // set (stdio + test-capture included) once, profile-consistent, before any
+    // test; this helper's former per-test `cargo build` is the forbidden band-aid
+    // that broke parallel `--link` with mismatched crate disambiguators. Inert by
+    // design; call sites preserved.
+    // Intentionally empty — see the doc comment above. The setup script owns it.
     static BUILT: Once = Once::new();
-    BUILT.call_once(|| {
-        let status = std::process::Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "cranelisp-stdio",
-                "-p",
-                "cranelisp-test-capture",
-            ])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .expect("failed to spawn `cargo build` for platform cdylibs");
-        assert!(
-            status.success(),
-            "`cargo build -p cranelisp-stdio -p cranelisp-test-capture` failed; \
-             a `(platform stdio)` program cannot resolve its DLL without these cdylibs"
-        );
-    });
+    BUILT.call_once(|| {});
 }
 
 // =============================================================================
@@ -282,9 +279,9 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     // BOTH versions MUST surface so the user sees what they have (the DLL's
-    // stale `found` = 2) vs. what the runtime requires (`expected` = 7 as of
-    // Sprint 93 — the ABI-v4 cascade took host ABI 6 → 7, recorded in
-    // design/arch/platform-interface.md §6.8; was 6 at S86/DEF-5 §5.5.5). The
+    // stale `found` = 2) vs. what the runtime requires (`expected` = 8 as of
+    // Sprint 96 — the single-ABI cutover took host ABI 7 → 8, recorded in
+    // design/arch/platform-interface.md §6.8.0; was 7 at S93). The
     // `PlatformError::AbiVersionMismatch` Display
     // (`crates/cranelisp-types/src/error.rs:327`) renders
     // `DLL <path> ABI version <found> does not match expected <expected>` — it
@@ -299,9 +296,9 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     assert!(
-        out.stderr.contains("2") && out.stderr.contains("7"),
+        out.stderr.contains("2") && out.stderr.contains("8"),
         "ABI-version-mismatch error MUST report BOTH the DLL's stale version (2) \
-         and the runtime's required version (7) so the user sees what they have \
+         and the runtime's required version (8) so the user sees what they have \
          vs. what is required; got stderr:\n{}",
         out.stderr
     );

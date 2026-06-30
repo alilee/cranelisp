@@ -135,6 +135,49 @@ The segments are folded right-to-left (innermost first) to rebuild the nested ex
 
 Sub-expressions within each binding's `io_expr` and the final body are recursively transformed by the same pass (to handle nested bind chains inside lambdas, match arms, etc.).
 
+### 3.7 Launch-and-continue emission (S96 Chunk B, spec §10.12.7)
+
+The SAME pass also emits `Expr::LaunchContinue` — the marker for a **detached**
+effect (a fire-and-forget strand with no join point), the backend counterpart of
+which is the `IO_TAG_LAUNCH` node (`design/backend/io-trampoline.md §15`). This is
+a small discriminator layered on top of the existing grouping cores (Principle 7 —
+the token-disjointness core is NOT forked).
+
+**Where it fires.** In `rebuild_chain`'s right-to-left reconstruction, at the
+`Segment::Sequential` arm — i.e. a bind step that did **not** join a parallel group
+(a lone schedulable step, or one demoted from a 1-element group). Par-grouped
+segments (`Segment::Parallel` → `ParBind`) are never relowered as launch: a launch
+is a **single launched arm** (the §10.12.7 discriminator), while `ParBind` is the
+structured-join of ≥2 arms.
+
+**Eligibility predicate.** A `Segment::Sequential(name, io_expr, …)` with
+continuation `result` lowers to `Expr::LaunchContinue { launched: io_expr,
+continuation: result }` iff BOTH:
+
+1. **Result discarded** — `name` does not appear free in the continuation
+   (`!free_vars_expr(&result).contains(&name)`). This reuses the `free_vars_expr`
+   independence core (§3.4), applied to the CONTINUATION (the §10.12.7 "result is
+   discarded" criterion). The launched effect's result is unused downstream.
+2. **Resource tokens disjoint from the continuation** — `classify_expr(io_expr) !=
+   Sequential`. This reuses the `classify_expr` scheduling-class core (§3.3): a
+   non-`Sequential` class (`Commutative` / `ResourceSerial`) is a real schedulable
+   effect carrying a resource token, so detaching it cannot violate ordering on a
+   shared sequential resource. Per **Gap G2** the analysis approximates "tokens
+   disjoint" by scheduling class + data-shape (it does NOT statically resolve
+   concrete tokens — the trampoline owns the live token decision); a `Sequential`
+   effect has no disjoint token and is therefore never launched.
+
+**Conservative-`Bind` fallthrough (the sound default).** When NOT provably
+eligible — the result is **used** downstream, OR the effect is `Sequential`-class —
+the step lowers as an ordinary sequential `Bind` (`make_bind`), exactly as before.
+Declining to detach is always sound (§10.12.7: "whether a given eligible effect is
+run detached … is implementation-determined"), so the non-launch path is the safe
+default and the launch path is opt-in by eligibility, never the fallback.
+
+**Idempotency.** `recurse_children` handles a pre-existing `Expr::LaunchContinue`
+by recursing both sub-trees without re-grouping (the `ParBind` precedent, §5.2), so
+the retry-from-top property is preserved.
+
 ---
 
 ## 4. Platform Scheduling Data Access

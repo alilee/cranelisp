@@ -3,15 +3,10 @@ name = "cranelisp-platform"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-# Exposes the ABI-v7 host-reactor C-ABI layout contracts (`HostCtx`, `Waker`,
-# `WakerVTable`, `PollFn`, `ConcurrentPlatformFn`) + the re-exported
-# `ConcurrencyDescriptor` / `Poll`. Off by default and generated WITHOUT this
-# feature in the `public-api.txt` baseline, so the v7 contracts stay out of the
-# frozen edge (and the v6 field-order tables in `tests/facade_pif_rows.rs` stay
-# green) until the slice-2 reactor wires them. See
-# `design/arch/effect-concurrency.md` §12.
-concurrency = ["cranelisp-types/concurrency"]
+# Single-ABI cutover (S96, `design/arch/platform-interface.md` §6.8.0): the
+# former off-by-default `concurrency` feature is RETIRED — the host-reactor ABI
+# contracts (`HostCtx`/`Waker`/`PollFn`/`ConcurrencyDescriptor`) + `poll_support`
+# are now CORE (always compiled, on the default `public-api.txt` edge).
 
 [dependencies]
 cranelisp-types = { path = "../cranelisp-types" }

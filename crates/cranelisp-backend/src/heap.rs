@@ -699,6 +699,12 @@ uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
             }
             collect_var_uses(body, uses);
         }
+        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            // Union over both sub-trees — the launched effect binds no name (its
+            // result is discarded), so var uses come from both arms.
+            collect_var_uses(launched, uses);
+            collect_var_uses(continuation, uses);
+        }
         MonoExpr::ConstrADT { fields, .. } => {
             for f in fields {
                 collect_var_uses(f, uses);

@@ -41,16 +41,16 @@
 //! present only to make the manifest a faithful mirror; it is dead at runtime.
 
 use cranelisp_platform::{
-    CLAdt, CLAdtType, CLHeap, CLInt, CLIO, HostCallbacks, HostContext, PlatformFn,
-    PlatformManifest, SchedulingClass,
+    CLAdt, CLAdtType, CLHeap, CLInt, CLIO, ConcurrencyDescriptor, HostCallbacks, HostContext,
+    PlatformFn, PlatformManifest, SchedulingClass,
 };
 
 /// The deliberately-stale ABI version baked into this DLL's manifest.
 ///
-/// The host's `ABI_VERSION` is currently `6` (DEF-5 bump, §5.5.5); baking `2`
-/// here (a prior ABI) guarantees `found (2) != expected (6)` at the
+/// The host's `ABI_VERSION` is currently `8` (the single-ABI cutover, §6.8.0);
+/// baking `2` here (a prior ABI) guarantees `found (2) != expected (8)` at the
 /// `check_abi_version` gate, triggering
-/// `PlatformError::AbiVersionMismatch { expected: 6, found: 2 }`. This literal
+/// `PlatformError::AbiVersionMismatch { expected: 8, found: 2 }`. This literal
 /// is intentionally NOT derived from `cranelisp_platform::ABI_VERSION` — it
 /// stays stale across every host ABI bump, so the mismatch holds regardless of
 /// the current real ABI.
@@ -129,6 +129,7 @@ pub unsafe extern "C" fn cranelisp_platform_manifest(
             name: AREA_CL_NAME.as_ptr(),
             name_len: AREA_CL_NAME.len(),
             ptr: rectangle_area as *const u8,
+            drop_state: None,
             param_count: 1,
             type_sig: AREA_SIG.as_ptr(),
             type_sig_len: AREA_SIG.len(),
@@ -137,7 +138,11 @@ pub unsafe extern "C" fn cranelisp_platform_manifest(
             param_names: name_ptrs_ptr,
             param_name_lens: name_lens_ptr,
             param_name_count: 1,
-            scheduling_class: SchedulingClass::Commutative as u32,
+            // Single-ABI cutover (§6.8.0): `scheduling_class: u32` is replaced by
+            // the unified `concurrency` descriptor (blocking, Commutative shape).
+            concurrency: ConcurrencyDescriptor::from_scheduling_class(
+                SchedulingClass::Commutative,
+            ),
         }]
         .into_boxed_slice(),
     );

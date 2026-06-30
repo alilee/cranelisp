@@ -212,6 +212,26 @@ fn classify_expr<C: CodeStore, L: LinkerStore>(
     symbol_tables: &SymbolTables<C, L>,
     current_module: &ModuleFullPath,
 ) -> SchedulingClass {
+    effect_descriptor(expr, symbol_tables, current_module)
+        .map(|(sc, _poll_shape)| sc)
+        .unwrap_or(SchedulingClass::Sequential)
+}
+
+/// The launch-relevant slice of a direct platform-effect call's descriptor:
+/// `(scheduling_class, poll_shape)`. `None` for anything that is NOT a direct
+/// call to a `DefKind::PlatformEffect` primitive (a user-fn wrapper, a pure
+/// expression, a literal — all conservatively NON-launchable, §4.1 E3).
+///
+/// `poll_shape` is needed by the §4.1 E3 token-0 refusal: a poll-shape
+/// `ResourceSerial` leaf carries its DYNAMIC resource token as the leading
+/// operand (the `(token, capacity)` pair convention, `poll-support.md §3.4`), so
+/// a literal-`0` leading operand is the shared-singleton token-0 the launch must
+/// refuse. A blocking effect has no such leading-pair convention.
+fn effect_descriptor<C: CodeStore, L: LinkerStore>(
+    expr: &Expr,
+    symbol_tables: &SymbolTables<C, L>,
+    current_module: &ModuleFullPath,
+) -> Option<(SchedulingClass, bool)> {
     if let Expr::Apply { callee, .. } = expr
         && let Expr::Var { name, .. } = callee.as_ref()
     {
@@ -220,35 +240,34 @@ fn classify_expr<C: CodeStore, L: LinkerStore>(
         if let Some(pos) = name.rfind('/') {
             let mod_part = ModuleFullPath::from(&name[..pos]);
             let sym_part = &name[pos + 1..];
-            if let Some(sc) = scheduling_class_from_table(symbol_tables, &mod_part, sym_part) {
-                return sc;
+            if let Some(d) = effect_descriptor_from_table(symbol_tables, &mod_part, sym_part) {
+                return Some(d);
             }
         }
         // Bare name: resolve via the current module (follows Import chains).
-        if let Some(sc) = scheduling_class_from_table(symbol_tables, current_module, name.as_ref())
-        {
-            return sc;
+        if let Some(d) = effect_descriptor_from_table(symbol_tables, current_module, name.as_ref()) {
+            return Some(d);
         }
     }
-    SchedulingClass::Sequential
+    None
 }
 
-/// Resolve `name` in `module` (following Import/Reexport chains) and return
-/// its scheduling class if the entry is a `PlatformEffect` primitive.
+/// Resolve `name` in `module` (following Import/Reexport chains) and return its
+/// `(scheduling_class, poll_shape)` if the entry is a `PlatformEffect` primitive.
 ///
 /// Returns `None` if the name is absent, resolves to a non-`PlatformEffect`
 /// entry, or the Import chain does not terminate in a `Def`.
-fn scheduling_class_from_table<C: CodeStore, L: LinkerStore>(
+fn effect_descriptor_from_table<C: CodeStore, L: LinkerStore>(
     symbol_tables: &SymbolTables<C, L>,
     module: &ModuleFullPath,
     name: &str,
-) -> Option<SchedulingClass> {
+) -> Option<(SchedulingClass, bool)> {
     fn walk<C: CodeStore, L: LinkerStore>(
         tables: &SymbolTables<C, L>,
         module: &ModuleFullPath,
         name: &str,
         depth: usize,
-    ) -> Option<SchedulingClass> {
+    ) -> Option<(SchedulingClass, bool)> {
         if depth > 16 {
             return None;
         }
@@ -256,8 +275,8 @@ fn scheduling_class_from_table<C: CodeStore, L: LinkerStore>(
         let entry = table.get(name)?;
         match entry {
             ModuleEntry::Def { kind, .. } => {
-                if let DefKind::PlatformEffect { scheduling_class, .. } = kind.as_ref() {
-                    Some(*scheduling_class)
+                if let DefKind::PlatformEffect { scheduling_class, poll_shape, .. } = kind.as_ref() {
+                    Some((*scheduling_class, *poll_shape))
                 } else {
                     None
                 }
@@ -281,6 +300,215 @@ fn is_independent(expr: &Expr, bound_names: &HashSet<Symbol>) -> bool {
     }
     let globals = HashSet::new();
     free_vars_expr(expr, &globals).is_disjoint(bound_names)
+}
+
+// ---------------------------------------------------------------------------
+// Launch-and-continue eligibility — the E1/E2/E3 predicate
+// (design/arch/effect-concurrency.md §4.1; spec/10-io.md §10.12.7)
+// ---------------------------------------------------------------------------
+
+/// The launch-eligibility predicate (§4.1). A bind step `(bind io_expr (fn [name]
+/// continuation))` whose `io_expr` is either a single platform effect OR a whole
+/// discarded **bind sub-tree** may be lowered as a detached supervised strand
+/// (`Expr::LaunchContinue`) instead of an ordinary `Bind` iff ALL of:
+///
+/// - **(E1) Result-discarded** — `name` is unused in `continuation`
+///   (`!free_vars(continuation).contains(name)`): no one awaits the launched
+///   value, so detaching does not change the program's value (§10.12.7 step 1).
+/// - **(E2) Value-locality** (sub-tree only) — the launched sub-tree shares **no
+///   free variable** with the continuation. A fresh, non-shared value (the
+///   `accept`-minted `conn`) yields a fresh, disjoint token by construction (§4
+///   fact 2). This is the load-bearing disjointness *witness*: token VALUES are
+///   dynamic/runtime (§5/§8.1), so disjointness is derived from value provenance,
+///   not token comparison. A module-global pool handle would appear as a shared
+///   free var ⇒ refused, exactly as §4.1 requires. (The single-step arm relies on
+///   the per-call dynamic token + E3 instead — the §B4 launch-loop legitimately
+///   shares its loop-counter/token var with the continuation, which is a *value*
+///   read, not a conflicting effect.)
+/// - **(E3) No shared-singleton-token effect** — every effect position in the
+///   launched expression must be a `ResourceSerial` per-value-minted-token leaf,
+///   never `Commutative` (token-0, unrestricted) nor `Sequential` (the global
+///   token-1), and (for poll-shape leaves) never a literal-`0` leading token
+///   operand (the dynamic shared singleton). An **opaque user-fn** in an effect
+///   position is an unknown footprint and is likewise refused — which is why the
+///   handler must be inlined to platform leaves for the launch to fire. **Timer
+///   refinement:** a resource-free `sleep` timer leaf (`is_sleep_timer_leaf`) is
+///   ALSO permitted as a sub-tree effect position — it carries no shared token and
+///   no observable side-effect stream, so it reorders nothing observable when
+///   detached as a sub-tree member (it is NOT independently launch-shaped; the
+///   single-step arm below still refuses it).
+///
+/// Declining to detach is ALWAYS sound (§10.12.7), so every failure path lowers
+/// as an ordinary `Bind`.
+fn launch_eligible<C: CodeStore, L: LinkerStore>(
+    name: &Symbol,
+    io_expr: &Expr,
+    continuation: &Expr,
+    symbol_tables: &SymbolTables<C, L>,
+    current_module: &ModuleFullPath,
+) -> bool {
+    let globals: HashSet<Symbol> = HashSet::new();
+
+    // (E1) Result-discarded — the launched binder is unused in the continuation.
+    if free_vars_expr(continuation, &globals).contains(name) {
+        return false;
+    }
+
+    if is_bind_chain_start(io_expr) {
+        // SUB-TREE case (the S96 C-fanout extension): walk every effect position
+        // of the already-collected local bind sub-tree (Principle 7 — no
+        // interprocedural analysis; the handler is inlined down to platform
+        // leaves so the footprint is purely local).
+        for effect in subtree_effect_positions(io_expr) {
+            // A `ResourceSerial` per-value-minted-token leaf (E3) OR the
+            // resource-free `sleep` timer leaf (the §4.1 timer-leaf refinement —
+            // see `is_sleep_timer_leaf`). A timer touches no shared resource and
+            // produces no observable side-effect stream, so it is sound to carry
+            // INSIDE a launched sub-tree (it is NOT independently launch-shaped —
+            // the single-step arm below still refuses it).
+            if !is_launchable_leaf(effect, symbol_tables, current_module)
+                && !is_sleep_timer_leaf(effect, symbol_tables, current_module)
+            {
+                return false; // (E3) — non-ResourceSerial / token-0 / opaque.
+            }
+        }
+        // (E2) Value-locality witness: no free variable shared with the
+        // continuation (a fresh, non-shared value ⇒ a disjoint token).
+        let s_free = free_vars_expr(io_expr, &globals);
+        let c_free = free_vars_expr(continuation, &globals);
+        s_free.is_disjoint(&c_free)
+    } else {
+        // SINGLE-STEP case (the tightened pre-S96 arm): E1 (above) + E3. No
+        // shared-free-var E2 — the per-call dynamic token is the disjointness
+        // unit and the launch-loop counter legitimately rides the same var.
+        is_launchable_leaf(io_expr, symbol_tables, current_module)
+    }
+}
+
+/// (E3) for a single effect position: a `ResourceSerial` per-value-minted-token
+/// leaf, refusing `Commutative` (token-0) / `Sequential` (token-1) / opaque
+/// user-fn / a literal-`0` dynamic token on a poll-shape leaf.
+fn is_launchable_leaf<C: CodeStore, L: LinkerStore>(
+    effect: &Expr,
+    symbol_tables: &SymbolTables<C, L>,
+    current_module: &ModuleFullPath,
+) -> bool {
+    match effect_descriptor(effect, symbol_tables, current_module) {
+        Some((SchedulingClass::ResourceSerial, poll_shape)) => {
+            // The token-0 refusal: a poll-shape leaf's DYNAMIC token is the
+            // leading operand; a literal `0` is the shared singleton (token-0).
+            !(poll_shape && leading_token_is_zero(effect))
+        }
+        // Commutative (token-0), Sequential (token-1), or not a direct platform
+        // effect (opaque user fn / pure expression) → refuse.
+        _ => false,
+    }
+}
+
+/// True if `effect` is a direct call to the `sleep` timer primitive (a
+/// `DefKind::PrimitiveExtern` whose terminal symbol is `sleep`), resolved through
+/// the import chain.
+///
+/// The timer is a per-call, **resource-free** delay leaf (`bootstrap.rs` —
+/// `(Fn [Int] (IO Int))`, the reactor armed-timer `runtime/sleep_pollfn`): it
+/// carries **no resource token** and produces **no observable side-effect stream**
+/// (unlike a token-0 shared-`stdout` `print`). So, unlike the §4.1 E3 refusal of
+/// `Commutative`/`Sequential` shared-singleton-token effects (whose detachment
+/// REORDERS an observable same-token stream), detaching a timer **as a member of a
+/// larger launched sub-tree** reorders nothing observable — it is sound. This is
+/// the §4.1 *timer-leaf refinement* of E3: the inlined connection handler legally
+/// contains a `(sleep d)` delay step and the whole handler still launches.
+///
+/// It is deliberately **NOT** accepted by the single-step launch arm
+/// (`launch_eligible`'s `else` branch keeps using `is_launchable_leaf`): a *lone*
+/// detached `sleep` is pointless, and detaching a `sleep` that the continuation's
+/// effect relies on (e.g. `(bind (sleep d) (fn [_] (send …)))`) would let the
+/// continuation run BEFORE the delay — defeating a delay the program wrote on
+/// purpose. So the timer is launch-eligible only as a sub-tree *member*, never as
+/// the launched root.
+fn is_sleep_timer_leaf<C: CodeStore, L: LinkerStore>(
+    effect: &Expr,
+    symbol_tables: &SymbolTables<C, L>,
+    current_module: &ModuleFullPath,
+) -> bool {
+    let Expr::Apply { callee, .. } = effect else {
+        return false;
+    };
+    let Expr::Var { name, .. } = callee.as_ref() else {
+        return false;
+    };
+    // Qualified form: resolve in the named module directly.
+    if let Some(pos) = name.rfind('/') {
+        let mod_part = ModuleFullPath::from(&name[..pos]);
+        if resolves_to_sleep_extern(symbol_tables, &mod_part, &name[pos + 1..], 0) {
+            return true;
+        }
+    }
+    // Bare form: resolve via the current module (follows Import chains).
+    resolves_to_sleep_extern(symbol_tables, current_module, name.as_ref(), 0)
+}
+
+/// Resolve `name` in `module` (following Import chains) and return `true` iff it
+/// terminates in a `DefKind::PrimitiveExtern` whose terminal symbol is `sleep`.
+fn resolves_to_sleep_extern<C: CodeStore, L: LinkerStore>(
+    symbol_tables: &SymbolTables<C, L>,
+    module: &ModuleFullPath,
+    name: &str,
+    depth: usize,
+) -> bool {
+    if depth > 16 {
+        return false;
+    }
+    let Some(table) = symbol_tables.get(module) else {
+        return false;
+    };
+    let Some(entry) = table.get(name) else {
+        return false;
+    };
+    match entry {
+        ModuleEntry::Def { kind, .. } => {
+            matches!(kind.as_ref(), DefKind::PrimitiveExtern) && name == "sleep"
+        }
+        ModuleEntry::Import { source, .. } => {
+            let next_mod = source.module.clone();
+            let next_sym: String = source.symbol.as_ref().to_string();
+            drop(table);
+            resolves_to_sleep_extern(symbol_tables, &next_mod, &next_sym, depth + 1)
+        }
+        _ => false,
+    }
+}
+
+/// True if `effect` is an `Apply` whose first argument is a literal `0` — the
+/// token-0 shared-singleton dynamic token of a poll-shape `(token, capacity, …)`
+/// leaf (§4.1 E3 / `poll-support.md §3.4`).
+fn leading_token_is_zero(effect: &Expr) -> bool {
+    matches!(effect, Expr::Apply { args, .. }
+        if matches!(args.first(), Some(Expr::IntLit { value: 0, .. })))
+}
+
+/// Collect the effect positions of a launched bind sub-tree: each `bind` step's
+/// `io_expr` plus the tail expression. A non-`bind` tail (a `Pure`, a literal, a
+/// user-fn call) is included so `is_launchable_leaf` refuses any non-leaf tail.
+/// Reference-only walk (does not consume) — `collect_bind_chain`'s consuming twin
+/// is reused everywhere else; here the sub-tree must stay borrowed.
+fn subtree_effect_positions(subtree: &Expr) -> Vec<&Expr> {
+    let mut effects: Vec<&Expr> = Vec::new();
+    let mut cursor = subtree;
+    loop {
+        if is_bind_chain_start(cursor)
+            && let Expr::Apply { args, .. } = cursor
+        {
+            effects.push(&args[0]); // the step's io_expr (an effect position)
+            if let Expr::Lambda { body, .. } = &args[1] {
+                cursor = body;
+                continue;
+            }
+        }
+        effects.push(cursor); // the tail expression (also an effect position)
+        break;
+    }
+    effects
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +598,28 @@ fn rebuild_chain<C: CodeStore, L: LinkerStore>(
         result = match segment {
             Segment::Sequential(name, io_expr, annotation, span, bind_callee) => {
                 let io_expr = transform_expr(*io_expr, symbol_tables, current_module);
-                make_bind(bind_callee, name, io_expr, annotation, result, span)
+                // Launch-and-continue eligibility (design/arch/effect-concurrency.md
+                // §4.1 / spec/10-io.md §10.12.7): a bind step whose RESULT IS
+                // DISCARDED and whose effects act only on per-value-minted
+                // ResourceSerial tokens disjoint from the continuation may be lowered
+                // as a detached supervised strand (`Expr::LaunchContinue`) rather than
+                // an ordinary `Bind`. The `io_expr` is either a single platform-effect
+                // step OR a whole discarded bind SUB-TREE (the inlined connection
+                // handler — the C-fanout extension). `launch_eligible` applies the
+                // exact E1/E2/E3 predicate; reuses the existing cores
+                // (`collect`/`classify`/`free_vars`, Principle 7). CONSERVATIVE
+                // DEFAULT: any step that fails E1-E3 lowers as an ordinary `Bind`
+                // (declining to detach is always sound, §10.12.7).
+                if launch_eligible(&name, &io_expr, &result, symbol_tables, current_module) {
+                    Expr::LaunchContinue {
+                        launched: Box::new(io_expr),
+                        continuation: Box::new(result),
+                        span,
+                        inferred_type: None,
+                    }
+                } else {
+                    make_bind(bind_callee, name, io_expr, annotation, result, span)
+                }
             }
             Segment::Parallel(bindings_with_span) => {
                 let span = bindings_with_span[0].2;
@@ -517,6 +766,15 @@ fn recurse_children<C: CodeStore, L: LinkerStore>(
             span,
             inferred_type,
         },
+        // Idempotency (§5.2): a pre-existing `LaunchContinue` (from a prior pass, or
+        // built by a future caller) recurses its children without re-grouping —
+        // exactly like the `ParBind` arm above.
+        Expr::LaunchContinue { launched, continuation, span, inferred_type } => Expr::LaunchContinue {
+            launched: Box::new(transform_expr(*launched, symbol_tables, current_module)),
+            continuation: Box::new(transform_expr(*continuation, symbol_tables, current_module)),
+            span,
+            inferred_type,
+        },
         Expr::ConstrADT { type_name, tag, fields, span, inferred_type } => Expr::ConstrADT {
             type_name,
             tag,
@@ -557,11 +815,12 @@ pub(crate) fn scheduling_of<C: CodeStore, L: LinkerStore>(
     if let Some(pos) = name.rfind('/') {
         let mod_part = ModuleFullPath::from(&name[..pos]);
         let sym_part = &name[pos + 1..];
-        if let Some(sc) = scheduling_class_from_table(symbol_tables, &mod_part, sym_part) {
+        if let Some((sc, _)) = effect_descriptor_from_table(symbol_tables, &mod_part, sym_part) {
             return sc;
         }
     }
-    scheduling_class_from_table(symbol_tables, current_module, name)
+    effect_descriptor_from_table(symbol_tables, current_module, name)
+        .map(|(sc, _)| sc)
         .unwrap_or(SchedulingClass::Sequential)
 }
 

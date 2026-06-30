@@ -68,6 +68,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 span,
                 ..
             } => self.infer_par_bind(state, bindings, body, *span),
+            Expr::LaunchContinue {
+                launched,
+                continuation,
+                span,
+                ..
+            } => self.infer_launch_continue(state, launched, continuation, *span),
             // Trigger 2 (S70 shared `instantiate_ctor` helper): the typing rule
             // for synthesised `Expr::ConstrADT` nodes inside constructor Def
             // bodies. Resolves the (type_name, tag) identity to the ctor's
@@ -375,6 +381,44 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let io_result = Self::io_type(result_inner);
         self.unify(state, &body_ty, &io_result, body.span())?;
         self.pop_scope(state);
+
+        let resolved = self.apply_subst(state, &io_result);
+        self.record_expr_type(state, span, resolved.clone());
+        Ok(resolved)
+    }
+
+    /// Typing rule for `Expr::LaunchContinue` (spec §10.12.7 — launch-and-continue).
+    ///
+    /// Semantically a sequential `Bind(launched, λ_. continuation)` for type
+    /// purposes (`ast.rs` rustdoc): `launched` is an effect whose result is
+    /// **discarded**, and `continuation` produces this node's value. So this
+    /// types EXACTLY like a sequential bind step whose binder is unused —
+    /// preserving the §10.12 transparency invariant (a chain types identically
+    /// whether or not the analysis marked the step launch-eligible).
+    ///
+    /// - `launched` must be a real effect `IO a` (it still typechecks — it runs
+    ///   as a detached strand). Its inner type `a` is discarded (no name binds
+    ///   it; the continuation cannot reference it).
+    /// - `continuation` is itself an `IO U` action; its type IS this node's type.
+    fn infer_launch_continue(
+        &self, state: &mut CheckState,
+        launched: &Expr,
+        continuation: &Expr,
+        span: Span,
+    ) -> Result<Type, CranelispError> {
+        // The launched effect must be an `IO a` action; unify against `IO ?a` to
+        // assert it (the same unwrap the sequential `bind` performs), then DISCARD
+        // the inner type — no name binds it, the continuation cannot await it.
+        let launched_ty = self.infer_expr(state, launched)?;
+        let launched_inner = self.fresh_var();
+        let io_launched = Self::io_type(launched_inner);
+        self.unify(state, &launched_ty, &io_launched, launched.span())?;
+
+        // The continuation is itself an `IO U` action; its type is this node's type.
+        let cont_ty = self.infer_expr(state, continuation)?;
+        let result_inner = self.fresh_var();
+        let io_result = Self::io_type(result_inner);
+        self.unify(state, &cont_ty, &io_result, continuation.span())?;
 
         let resolved = self.apply_subst(state, &io_result);
         self.record_expr_type(state, span, resolved.clone());

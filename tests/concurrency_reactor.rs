@@ -92,9 +92,7 @@ fn link_io_program_runs_without_executor() {
 // programs reference a platform that does not exist, so the binary errors at
 // load — a meaningful runtime-RED against the intended shape (failing-not-ignored;
 // preferred over a compile-fail per the task's QA-first guidance).
-#[cfg(feature = "concurrency-runtime")]
 const ASYNC_LEAF_PLATFORM: &str = "async-demo";
-#[cfg(feature = "concurrency-runtime")]
 const ASYNC_LEAF_EFFECT: &str = "async-read";
 
 // spec: design/arch/effect-concurrency.md §"The ratified backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)" (b) single-leaf
@@ -104,7 +102,6 @@ const ASYNC_LEAF_EFFECT: &str = "async-read";
 // strand stream (`Dispatched → Suspended → Resumed`) is the intrinsics-unit guard;
 // here the observable proxy is that the program completes with the leaf's result.
 // RED-first: the in-tree leaf does not exist on HEAD (Wave 2).
-#[cfg(feature = "concurrency-runtime")]
 #[test]
 fn real_leaf_suspends_and_resumes_through_run_io() {
     // The leaf reads after a 50ms-armed timer; its i64 result is the value we
@@ -132,7 +129,6 @@ fn real_leaf_suspends_and_resumes_through_run_io() {
 // thread (`join_io_leaves` / auto-IO-parallel): wall-clock ≈ MAX(delay) not SUM,
 // no thread-per-read. Observable proxy for the interleaved two-strand stream.
 // RED-first: the in-tree leaf does not exist on HEAD (Wave 2).
-#[cfg(feature = "concurrency-runtime")]
 #[test]
 fn two_real_leaves_in_par_overlap_max_not_sum_one_thread() {
     // Two data-independent 60ms async reads (`a` not free in the second, `b` not
@@ -176,7 +172,6 @@ fn two_real_leaves_in_par_overlap_max_not_sum_one_thread() {
 // returns. The S93 per-effect `ResultReader` fn-pointer collapses to a host-known
 // offset read (seam decision 3). RED-first: the in-tree leaf does not exist on
 // HEAD (Wave 2).
-#[cfg(feature = "concurrency-runtime")]
 #[test]
 fn real_leaf_i64_result_reads_back_correctly() {
     let prog = format!(

@@ -478,6 +478,12 @@ where
                 span,
                 ..
             } => self.compile_par_bind(bindings, body, *span),
+            MonoExpr::LaunchContinue {
+                launched,
+                continuation,
+                span,
+                ..
+            } => self.compile_launch_continue(launched, continuation, *span),
             MonoExpr::ConstrADT {
                 tag,
                 fields,

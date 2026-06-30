@@ -1,0 +1,20 @@
+[package]
+name = "cranelisp-poll-pool"
+version = "0.1.0"
+edition = "2024"
+
+# In-tree poll-shape CAPACITY test leaf (S96 Chunk A, Gap G1 — the poll-carrier
+# analogue of the S95 BLOCKING `pool-demo`). Three `declare_platform!` poll-shape
+# effects (`poll-read`/`poll-write`/`poll-log`), each `ResourceSerial`, each
+# carrying its `(token, capacity)` as the two leading cranelisp args (the S95
+# `pool-demo` convention on the poll carrier), routing to the host reactor via an
+# armed timer so capacity-N parking is wall-clock observable. Flips the 4 RED
+# `tests/concurrency_poll_capacity.rs` rows green. Single-ABI cutover (§6.8.0):
+# poll-shape is a per-effect descriptor on the unified manifest — no `concurrency`
+# feature.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cranelisp-platform = { path = "../../crates/cranelisp-platform" }
+libc = "0.2"

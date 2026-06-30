@@ -140,6 +140,19 @@ fn defn_display_polymorphic_id() {
         .assert_stdout_does_not_contain("t1");
 }
 
+// spec: repl/spec.md §1.1 — a host-promised extern builtin (`DefKind::PrimitiveExtern`)
+// in the `primitives` module classifies as `; primitive`, NOT `; defn`. The S96
+// concurrency builtins `race`/`select`/`sleep` are `PrimitiveExtern`s; before the
+// FIXME-0481 fix the classifier matched only `DefKind::Primitive`, so they (and
+// `bind`) mis-rendered as `; defn`. A got-slotted `Primitive` (`add-i64`) was
+// always correct; this pins the extern arm.
+#[test]
+fn extern_primitive_classifies_as_primitive_not_defn() {
+    let out = repl_prims("(import [primitives [race]])\nrace\n");
+    out.assert_stdout_contains("primitives/race ; primitive")
+        .assert_stdout_does_not_contain("primitives/race ; defn");
+}
+
 // spec: repl/spec.md §1.3 — defn classification is `; defn`, not `closure`
 #[test]
 fn defn_display_neg_not_closure() {

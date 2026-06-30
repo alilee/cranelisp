@@ -280,6 +280,40 @@ pub enum Expr {
         #[serde(default)]
         inferred_type: Option<Box<Type>>,
     },
+    /// Launch-and-continue: produced by the same bind! independence analysis
+    /// pass that emits [`Expr::ParBind`]. Marks an eligible *detached* effect —
+    /// one whose result is discarded AND whose resource tokens are disjoint from
+    /// the continuation's effects (spec §10.12.7) — so the backend lowers the
+    /// `launched` sub-tree to a detached supervised strand (the `IO_TAG_LAUNCH`
+    /// runtime node) and proceeds with the `continuation` without awaiting it.
+    ///
+    /// Semantically this is a sequential `Bind(launched, λ_. continuation)` for
+    /// type-checking purposes: `launched` is an effect whose value is discarded
+    /// and `continuation` produces this node's result (the node's
+    /// `inferred_type` is the continuation's type). Codegen, however, emits the
+    /// detached-strand dispatch rather than an ordinary `Bind` — exactly the
+    /// `ParBind`→`IO_TAG_PAR` precedent.
+    ///
+    /// A **dedicated variant** (over extending `ParBind` with a `detached`
+    /// discriminator) keeps structured-join (`ParBind`) and detached
+    /// (`LaunchContinue`) representationally distinct per Principle 20: the
+    /// backend's marker match selects the runtime node by the variant itself,
+    /// not by reading a flag, so a structured-join site can never be
+    /// mis-lowered as detached (or vice versa) by construction.
+    ///
+    /// spec: §10.12.7 (Launch-and-continue) — design: `design/backend/io-trampoline.md §15`,
+    /// `design/int/bind-chain-analysis.md`.
+    LaunchContinue {
+        /// The detached effect sub-tree — lowered to a supervised strand and
+        /// not awaited by the continuation. Its result is discarded.
+        launched: Box<Expr>,
+        /// The continuation that runs without awaiting `launched`. Produces this
+        /// node's value.
+        continuation: Box<Expr>,
+        span: Span,
+        #[serde(default)]
+        inferred_type: Option<Box<Type>>,
+    },
     /// ADT construction — a language-level operation. Synthesised by the
     /// deftype expander as the body of every constructor's Defn (see
     /// `Expr` rustdoc in `ast.rs` and `bounded-contexts.md` §7
@@ -332,6 +366,7 @@ impl Expr {
             | Expr::Annotate { span, .. }
             | Expr::Trace { span, .. }
             | Expr::ParBind { span, .. }
+            | Expr::LaunchContinue { span, .. }
             | Expr::ConstrADT { span, .. } => *span,
         }
     }
@@ -353,6 +388,7 @@ impl Expr {
             | Expr::Annotate { inferred_type, .. }
             | Expr::Trace { inferred_type, .. }
             | Expr::ParBind { inferred_type, .. }
+            | Expr::LaunchContinue { inferred_type, .. }
             | Expr::ConstrADT { inferred_type, .. } => inferred_type.as_deref(),
         }
     }
@@ -374,6 +410,7 @@ impl Expr {
             | Expr::Annotate { inferred_type, .. }
             | Expr::Trace { inferred_type, .. }
             | Expr::ParBind { inferred_type, .. }
+            | Expr::LaunchContinue { inferred_type, .. }
             | Expr::ConstrADT { inferred_type, .. } => *inferred_type = ty,
         }
     }
@@ -767,6 +804,16 @@ pub fn free_vars_expr(expr: &Expr, globals: &HashSet<Symbol>) -> HashSet<Symbol>
         }
 
         Expr::Trace { body, .. } => free_vars_expr(body, globals),
+
+        // `LaunchContinue { launched, continuation, .. }` — sequential
+        // `Bind(launched, λ_. continuation)` for free-variable purposes: the
+        // launched effect discards its result (it binds no name visible to the
+        // continuation), so the free-var set is the union over both sub-trees.
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            let mut fv = free_vars_expr(launched, globals);
+            fv.extend(free_vars_expr(continuation, globals));
+            fv
+        }
 
         // `ConstrADT { type_name, tag, fields, span, inferred_type }` — see
         // `ast.rs` rustdoc. Free vars are the union over the field

@@ -3,20 +3,16 @@ name = "cranelisp-async-demo"
 version = "0.1.0"
 edition = "2024"
 
-# In-tree async-capable demo platform (S94 R2/R6, FIXME 0457): a real
-# `declare_concurrent_platform!`-emitted poll-shape leaf driven through the full
+# In-tree async-capable demo platform (S94 R2/R6): a real `declare_platform!`-
+# emitted poll-shape leaf (`descriptor: blocking = 0`) driven through the full
 # macro -> backend -> loader -> `cranelisp_run_io` path. NO separate cdylib
 # fixture is needed beyond this workspace member; the host dlopens the built
-# `libcranelisp_async_demo.{so,dylib}` from `target/debug/`.
+# `libcranelisp_async_demo.{so,dylib}` from `target/debug/`. Single-ABI cutover
+# (§6.8.0): poll-shape is a per-effect descriptor on the unified manifest — no
+# `concurrency` feature.
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# `concurrency` is ON for this crate unconditionally — the async leaf is a
-# poll-shape effect, so it always exports the v7 `cranelisp_concurrent_manifest`
-# (the `concurrency` feature pulls in ZERO runtime deps; only the host's
-# `concurrency-runtime` pulls mio/futures). The build-link-prereqs setup script
-# builds this crate with default features, so the feature must be a dep default
-# here rather than a build-time flag.
-cranelisp-platform = { path = "../../crates/cranelisp-platform", features = ["concurrency"] }
+cranelisp-platform = { path = "../../crates/cranelisp-platform" }
 libc = "0.2"

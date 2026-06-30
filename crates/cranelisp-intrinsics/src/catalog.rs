@@ -130,6 +130,15 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
         IntrinsicEntry { name: "runtime/vec_new", ptr: crate::vec_runtime::vec_new as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/vec_drop", ptr: crate::vec_runtime::vec_drop as *const u8, param_count: 2, has_return: false, is_runtime: true },
         IntrinsicEntry { name: "runtime/run_io", ptr: crate::io::cranelisp_run_io as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        // `sleep` — the runtime-provided timer poll leaf (S96 Chunk C4, slice 7;
+        // `design/int/reactor.md §2.18`). UNLIKE a `declare_platform!` poll effect
+        // (whose poll-fn is loaded from `__cranelisp_got_platform_<name>`), `sleep`
+        // is a RUNTIME symbol: the backend's `compile_sleep` resolves it as a
+        // `Linkage::Import` and `func_addr`-bakes it as the `IO_TAG_EFFECT_POLL`
+        // state-closure `code_ptr` (the new non-GOT runtime-symbol path, C4). The
+        // arity is the C-ABI poll-fn shape `(state, host, waker) -> Poll` — 3 i64
+        // params + an i64 return (the backend declares the matching signature).
+        IntrinsicEntry { name: "runtime/sleep_pollfn", ptr: crate::reactor::sleep_pollfn as *const u8, param_count: 3, has_return: true, is_runtime: true },
         // IVar intrinsics for lenient evaluation (spec §12.4.3).
         IntrinsicEntry { name: "cranelisp_ivar_create", ptr: crate::ivar::ivar_create as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "cranelisp_ivar_spark", ptr: crate::ivar::ivar_spark as *const u8, param_count: 1, has_return: true, is_runtime: true },

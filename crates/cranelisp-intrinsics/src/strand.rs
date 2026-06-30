@@ -12,14 +12,15 @@
 //! every path — so the newtype + the event-hook surface land **with** the async
 //! substrate, not after (§11, §14 "observability is groundwork").
 //!
-//! This module lands the **plumbing types only**, gated behind the off-by-default
-//! `concurrency` feature: byte-identical-when-off (§11 scope guard — reuse the
-//! agentic-repl feature-gated discipline so observability costs nothing in
-//! `--link` / `--release`). The sink (a dev-facing, REPL-visible stream, sibling
-//! to `trace` / `io_observer`) and the trampoline hooks that emit these events
-//! are the slice-2 reactor implementation (`/dev`). It extends — does not replace
-//! — the existing observability machinery (`trace`, `io_observer` / `IoObserver`,
-//! the S90 `turn` correlation).
+//! This module lands the **plumbing types + the recording sink**. The
+//! single-ABI / single-trampoline cutover (`platform-interface.md` §6.8.0a)
+//! retired the former `concurrency` / `concurrency-runtime` feature gates — the
+//! strand machinery is now **unconditional**, costing nothing at steady state
+//! (emit is a cheap lock + `is_none` check when not recording). The dev-facing,
+//! REPL-visible dump (a `/strand` surface, sibling to `trace` / `io_observer`)
+//! is the deferred `src/` (int) consumer; the buffer + emit hooks land here. It
+//! extends — does not replace — the existing observability machinery (`trace`,
+//! `io_observer` / `IoObserver`, the S90 `turn` correlation).
 
 /// A strand correlation id — the unit of observable concurrency identity.
 ///
@@ -42,6 +43,10 @@ impl StrandId {
     pub const ROOT: StrandId = StrandId(0);
 
     /// The raw correlation value (for joining with the `turn` log↔trace stream).
+    ///
+    /// `#[allow(dead_code)]`: part of the strand vocabulary for the deferred `src/`
+    /// `/strand` dev surface + the turn-log join; no in-crate non-test caller yet.
+    #[allow(dead_code)]
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -73,12 +78,16 @@ pub enum StrandEvent {
         /// The strand that resumed.
         strand: StrandId,
     },
-    /// A lenient/CPU spark was created (forked onto rayon).
+    /// A lenient/CPU spark was created (forked onto rayon). Present in the enum;
+    /// emit is deferred to the CPU-spark slice (§11), so it is not yet constructed.
+    #[allow(dead_code)]
     SparkCreated {
         /// The strand the spark belongs to.
         strand: StrandId,
     },
-    /// A spark was forced (its value demanded / joined).
+    /// A spark was forced (its value demanded / joined). Present in the enum; emit
+    /// is deferred to the CPU-spark slice (§11), so it is not yet constructed.
+    #[allow(dead_code)]
     SparkForced {
         /// The strand whose spark was forced.
         strand: StrandId,
@@ -125,10 +134,100 @@ pub enum StrandEvent {
         /// The disagreeing capacity this effect declared (ignored, recorded).
         requested_capacity: u32,
     },
+    /// A detached strand was spawned into the supervisor by the
+    /// `IO_TAG_LAUNCH` launch-and-continue arm (slice 5, §2.11). The `parent`
+    /// ties the handler strand to the accept-loop root strand so the `/strand`
+    /// dump reconstructs *"this request fanned out into this handler."*
+    StrandLaunched {
+        /// The freshly-minted detached strand.
+        strand: StrandId,
+        /// The strand that launched it (the accept-loop / launching context).
+        parent: StrandId,
+    },
+    /// A supervised detached strand finished cleanly (§2.12).
+    StrandCompleted {
+        /// The strand that completed.
+        strand: StrandId,
+    },
+    /// A supervised detached strand panicked or produced a runtime error; the
+    /// supervisor caught it (`catch_unwind` + the `take_runtime_error` capture)
+    /// and applied the §10 log/drop policy. **The load-bearing event of §11
+    /// point 2: supervisor drops vanish without it** — the only trace a dropped
+    /// (500'd) request leaves. Never re-raised, never aborts the drive (§2.12).
+    StrandFailed {
+        /// The strand that failed.
+        strand: StrandId,
+        /// The caught failure message (`"<panicked>"` for a Rust panic, or the
+        /// ferried runtime-error message).
+        message: String,
+    },
+    /// The accept-loop launch parked on a full global admission budget — the
+    /// (D+1)th detached strand under global degree D blocked until an in-flight
+    /// strand completes (backpressure on accept, §2.13). Followed by a
+    /// [`StrandEvent::GlobalBudgetAcquired`] when a slot frees.
+    GlobalBudgetParked {
+        /// The strand whose launch parked on the full global budget.
+        strand: StrandId,
+    },
+    /// A global admission permit was granted — the launch proceeded (§2.13).
+    GlobalBudgetAcquired {
+        /// The strand whose launch was admitted.
+        strand: StrandId,
+    },
+    /// A completing detached strand freed its global admission permit, possibly
+    /// waking a parked launch (§2.13).
+    GlobalBudgetReleased {
+        /// The strand whose global permit was released.
+        strand: StrandId,
+    },
+    /// A strand was **cancelled** — the cancellation counterpart to
+    /// [`StrandEvent::StrandFailed`] (slice 7, §2.15 step 5 / §2.18 / §2.19). A
+    /// branch future was dropped because it **lost a race**, **timed out**, or was
+    /// **cleared by graceful shutdown**. Cancellation is the *consequence* of
+    /// losing a race or exiting a scope (§9 — there is no `cancel` primitive), so
+    /// this event is the only trace a dropped (cancelled) strand leaves in the
+    /// `/strand` dump (the cancellation half of §11 point 2). The drop itself runs
+    /// the four §2.15 release paths (permit, fd/timer interest, FIFO waker,
+    /// unconsumed sub-tree); this event records *that* it happened and *why*.
+    ///
+    /// `#[allow(dead_code)]`: the production constructor is the C3 combinator
+    /// runtime (`run_io_trampoline`'s race/select loser-drop) + the C4 shutdown
+    /// hook; until those land its only constructor is the in-crate tests (the
+    /// event plumbing lands with the C2 foundations, ahead of its emitters).
+    #[allow(dead_code)]
+    StrandCancelled {
+        /// The strand that was cancelled.
+        strand: StrandId,
+        /// Why it was cancelled.
+        reason: CancelReason,
+    },
+}
+
+/// Why a [`StrandEvent::StrandCancelled`] fired (slice 7, §2.15 / §2.19).
+///
+/// `#[non_exhaustive]` so the later kinds (`Timeout`, `Disconnect` — both reduce to
+/// a race-loser drop, §2.18/§2.19) join without breaking consumers.
+/// `#[allow(dead_code)]`: see [`StrandEvent::StrandCancelled`] — no production
+/// constructor until the C3/C4 combinator + shutdown emitters land.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum CancelReason {
+    /// The strand lost a `race` / `select` (or a derived `timeout`) — the §2.15
+    /// loser-drop. Also covers cancel-on-disconnect (the handler loses the race to
+    /// the disconnect-watch leaf, §2.19).
+    RaceLost,
+    /// The strand was cleared by graceful/hard shutdown (`Supervisor::clear`,
+    /// §2.19).
+    Shutdown,
 }
 
 impl StrandEvent {
     /// The strand this event is correlated to.
+    ///
+    /// `#[allow(dead_code)]`: a strand-vocabulary accessor for the deferred `src/`
+    /// `/strand` dev surface; only the in-crate tests call it today.
+    #[allow(dead_code)]
     pub fn strand(&self) -> StrandId {
         match self {
             StrandEvent::EffectDispatched { strand }
@@ -139,31 +238,37 @@ impl StrandEvent {
             | StrandEvent::TokenAcquired { strand, .. }
             | StrandEvent::TokenParked { strand, .. }
             | StrandEvent::TokenReleased { strand, .. }
-            | StrandEvent::TokenCapacityMismatch { strand, .. } => *strand,
+            | StrandEvent::TokenCapacityMismatch { strand, .. }
+            | StrandEvent::StrandLaunched { strand, .. }
+            | StrandEvent::StrandCompleted { strand }
+            | StrandEvent::StrandFailed { strand, .. }
+            | StrandEvent::GlobalBudgetParked { strand }
+            | StrandEvent::GlobalBudgetAcquired { strand }
+            | StrandEvent::GlobalBudgetReleased { strand }
+            | StrandEvent::StrandCancelled { strand, .. } => *strand,
         }
     }
 }
 
 // ===========================================================================
-// The strand-event SINK — slice-2 reactor implementation (gated
-// `concurrency-runtime`; sibling to `io_observer`).
+// The strand-event SINK — the reactor observability sink (sibling to
+// `io_observer`).
 //
 // `design/arch/effect-concurrency.md` App. B "Strand observability hook":
 // "A thread-safe `StrandEvent` sink … The trampoline emits via
-// `emit_strand_event(ev)` that compiles to a no-op when off." Per the spill
-// marker the minimal sink is "a registration-API + in-memory buffer with a
+// `emit_strand_event(ev)` that compiles to a no-op when not recording." Per the
+// spill marker the minimal sink is "a registration-API + in-memory buffer with a
 // test-only reader, no REPL command" — that is exactly this: a process-global
 // recording buffer the async trampoline / reactor push into, drained by the
-// gated tests. The dev-facing `/strand` REPL dump is the deferred (`src/`) sink
-// surface, out of scope for this crate.
+// in-crate tests. The dev-facing `/strand` REPL dump is the deferred (`src/`)
+// sink surface, out of scope for this crate.
 //
-// It is gated `concurrency-runtime` (a strict superset of `concurrency`, so the
-// module — `#[cfg(feature = "concurrency")]` in lib.rs — is present), keeping it
-// byte-identical-when-off: with `concurrency-runtime` off there is no buffer, no
-// emit, no cost (§11 scope guard).
+// Unconditional under the single-trampoline cutover (`platform-interface.md`
+// §6.8.0a — the former `concurrency` / `concurrency-runtime` gates are retired):
+// at steady state `emit` is a cheap lock + `is_none` check, so it costs nothing
+// until a consumer starts recording (§11 scope guard).
 // ===========================================================================
 
-#[cfg(feature = "concurrency-runtime")]
 mod sink {
     use super::StrandEvent;
     use std::sync::Mutex;
@@ -182,17 +287,22 @@ mod sink {
     static BUFFER: Mutex<Option<Vec<StrandEvent>>> = Mutex::new(None);
 
     /// Begin recording strand events into the global buffer (clearing any prior
-    /// recording). The minimal dev-facing sink: a test (or a future `/strand`
-    /// REPL surface) starts recording, drives the reactor, then drains.
+    /// recording). The minimal dev-facing sink: a test (or the deferred `src/`
+    /// `/strand` REPL surface) starts recording, drives the reactor, then drains.
+    ///
+    /// `#[allow(dead_code)]`: a `pub(crate)` recording-control entry awaiting the
+    /// deferred `src/` `/strand` dev surface; until that lands its only callers
+    /// are the in-crate reactor/io tests.
+    #[allow(dead_code)]
     pub fn start_strand_recording() {
         *BUFFER.lock().expect("strand buffer poisoned") = Some(Vec::new());
     }
 
-    /// Emit a strand event. A no-op (one lock + `is_none`) when not recording —
-    /// and compiled out entirely when `concurrency-runtime` is off (the call
-    /// sites are themselves gated). Thread-safe: the reactor executor is
-    /// single-threaded today, but `Par`-async branches and the rayon spark path
-    /// may emit from worker threads, so the buffer is a `Mutex`.
+    /// Emit a strand event. A no-op (one lock + `is_none`) when not recording, so
+    /// it costs nothing until a consumer calls [`start_strand_recording`].
+    /// Thread-safe: the reactor executor is single-threaded today, but
+    /// `Par`-async branches and the rayon spark path may emit from worker
+    /// threads, so the buffer is a `Mutex`.
     pub fn emit_strand_event(ev: StrandEvent) {
         if let Some(buf) = BUFFER.lock().expect("strand buffer poisoned").as_mut() {
             buf.push(ev);
@@ -201,6 +311,10 @@ mod sink {
 
     /// Stop recording and return the captured events in emission order. Returns
     /// an empty vec if recording was never started.
+    ///
+    /// `#[allow(dead_code)]`: see [`start_strand_recording`] — the deferred
+    /// `src/` consumer is its production caller; tests are the current ones.
+    #[allow(dead_code)]
     pub fn drain_strand_events() -> Vec<StrandEvent> {
         BUFFER
             .lock()
@@ -210,22 +324,26 @@ mod sink {
     }
 }
 
-#[cfg(feature = "concurrency-runtime")]
-pub use sink::{drain_strand_events, emit_strand_event, start_strand_recording};
+pub use sink::emit_strand_event;
+// The recording-control surface for the deferred `src/` `/strand` dev dump (§3).
+// No non-test consumer yet (A4c #2 — downgraded to `pub(crate)` via the module),
+// so the re-export is unused outside the in-crate tests.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use sink::{drain_strand_events, start_strand_recording};
 
 /// Mint a fresh non-root [`StrandId`], monotonic across the process. The async
 /// `Par` fork mints one per branch so the demo's two reads are distinguishable
 /// (App. B "Strand identity"); [`StrandId::ROOT`] (0) is the top-level program,
 /// so minted ids start at 1.
-#[cfg(feature = "concurrency-runtime")]
 pub fn next_strand() -> StrandId {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(1);
     StrandId(NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
-// This module is itself `#[cfg(feature = "concurrency")]` (see lib.rs), so the
-// whole test mod runs only under `cargo nt-concurrency` (the FIXME-0449 lane).
+// The strand machinery is unconditional under the single-trampoline cutover
+// (`platform-interface.md` §6.8.0a), so this test mod runs in the default
+// `cargo nextest run` lane.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +371,30 @@ mod tests {
         ] {
             assert_eq!(ev.strand(), s);
         }
+    }
+
+    // spec: design/int/reactor.md §2.15 / §2.18 / §2.19 — `StrandCancelled` is the
+    // cancellation counterpart to `StrandFailed`: a strand dropped because it lost a
+    // race / timed out / was cleared by shutdown. It constructs with a
+    // `CancelReason`, correlates back to its strand (so the `/strand` dump shows the
+    // cancellation), and records through the recording sink like every other kind.
+    #[test]
+    fn strand_cancelled_constructs_carries_reason_and_correlates() {
+        let s = StrandId(11);
+        let lost = StrandEvent::StrandCancelled { strand: s, reason: CancelReason::RaceLost };
+        let shut = StrandEvent::StrandCancelled { strand: s, reason: CancelReason::Shutdown };
+        assert_eq!(lost.strand(), s);
+        assert_eq!(shut.strand(), s);
+        assert_ne!(lost, shut, "the reason distinguishes a race-loss from a shutdown cancel");
+
+        // It flows through the recording sink like the other kinds.
+        start_strand_recording();
+        emit_strand_event(StrandEvent::StrandCancelled { strand: s, reason: CancelReason::RaceLost });
+        let events = drain_strand_events();
+        assert_eq!(
+            events,
+            vec![StrandEvent::StrandCancelled { strand: s, reason: CancelReason::RaceLost }],
+            "StrandCancelled records through the strand sink"
+        );
     }
 }

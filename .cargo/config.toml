@@ -1,56 +1,9 @@
 [alias]
 nt = "nextest run"
 
-# Concurrency-contract test lane (FIXME 0449, /arch S93).
-#
-# The S93 ABI-v7 effect-concurrency layout contracts
-# (`cranelisp_types::{ConcurrencyDescriptor, Poll, PollFn}`,
-# `cranelisp_platform::{HostCtx, Waker, ConcurrentPlatformFn}`,
-# `cranelisp_intrinsics::{StrandId, StrandEvent}`) are landed DORMANT behind the
-# off-by-default `concurrency` feature, so they stay out of the default/production
-# build and out of the frozen `public-api.txt` edge. Their `#[cfg(feature =
-# "concurrency")]` unit guards (/qa + /dev, S93 Phase-5) therefore NEVER run under
-# the canonical `cargo nt` (feature off) — invisible coverage.
-#
-# This additive lane turns the feature ON for exactly the three contract crates
-# and runs their gated guards. `cranelisp-intrinsics/concurrency` transitively
-# enables `cranelisp-platform/concurrency` and `cranelisp-types/concurrency`, so
-# one feature flag covers all three. It is ADDITIVE — a companion to `cargo nt`,
-# NOT a replacement: the default run + `cargo public-api` api-check both stay
-# feature-OFF so the dormant-contract absence guard (`tests/facade_pif_rows.rs`)
-# and the frozen edge remain asserted without the v7 types.
-#
-#   cargo nt-concurrency     # run the gated ABI-v7 contract guards
-nt-concurrency = "nextest run -p cranelisp-types -p cranelisp-platform -p cranelisp-intrinsics --features cranelisp-intrinsics/concurrency"
-
-# Reactor-runtime test lane (slice-2 reactor implementation, `/dev` S93).
-#
-# The slice-2 host reactor (the mio `HostCtx` reactor + the C-ABI waker + the
-# `block_on` executor + the `EffectPoll` await boundary + the strand sink + the
-# hand-written demo leaves) is gated behind the off-by-default
-# `concurrency-runtime` feature (a strict superset of `concurrency`, pulling the
-# optional `mio`/`futures` deps). Its tests therefore run under NEITHER `cargo nt`
-# (feature off) NOR `cargo nt-concurrency` (only the layout-contract `concurrency`
-# feature). This lane turns `concurrency-runtime` ON for `cranelisp-intrinsics`
-# and runs the reactor spine + Par-async overlap tests. ADDITIVE — the default
-# run + the api-check stay feature-off so the frozen `public-api.txt` edge and the
-# dormant-contract absence guards remain asserted without mio/futures.
-#
-#   cargo nt-concurrency-runtime   # run the slice-2 reactor tests
-nt-concurrency-runtime = "nextest run -p cranelisp-intrinsics --features cranelisp-intrinsics/concurrency-runtime"
-
-# Reactor end-to-end test lane (Sprint 94 Phase 5, reactor-e2e track, `/dev` S94).
-#
-# The slice-2 reactor's END-TO-END path runs through the `cranelisp` binary
-# crate: the int loader reads the `ConcurrentPlatformFn` manifest, constructs the
-# host reactor, and drives a real in-tree async leaf through `cranelisp_run_io`.
-# Those e2e tests need the runtime linked into the binary, which the root
-# crate's `concurrency-runtime` passthrough feature (root `Cargo.toml`) provides
-# by forwarding to `cranelisp-intrinsics/concurrency-runtime`. This lane turns it
-# ON for the `cranelisp` package and runs the reactor e2e tests. ADDITIVE — a
-# companion to `cargo nt`, NOT a replacement: the default run + the api-check
-# stay feature-OFF so the frozen `public-api.txt` edge and the dormant-contract
-# absence guards remain asserted without mio/futures and with no runtime linked.
-#
-#   cargo nt-reactor-e2e   # run the reactor end-to-end tests
-nt-reactor-e2e = "nextest run -p cranelisp --features concurrency-runtime"
+# Single-ABI + single-trampoline cutover (S96, `design/arch/platform-interface.md`
+# §6.8.0a): the three gated lanes — `nt-concurrency`, `nt-concurrency-runtime`,
+# `nt-reactor-e2e` — are RETIRED. The `concurrency` / `concurrency-runtime`
+# features no longer exist; the reactor is always linked and the formerly-gated
+# layout-contract + reactor + reactor-e2e guards all run in the single default
+# `cargo nt` lane.

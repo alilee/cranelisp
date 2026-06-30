@@ -1,9 +1,10 @@
 //! `async-demo` — an in-tree async-capable (poll-shape) platform (S94 R2/R6,
 //! FIXME 0457).
 //!
-//! The single effect `async-read` is the load-bearing real leaf the
-//! `nt-reactor-e2e` rows drive end-to-end: a `declare_concurrent_platform!`-emitted
-//! [`cranelisp_platform::PollFn`] (NOT a v6 blocking `CLIO` thunk) that suspends on
+//! The single effect `async-read` is the load-bearing real leaf the reactor e2e
+//! rows drive end-to-end: a `declare_platform!`-emitted poll-shape
+//! [`cranelisp_platform::PollFn`] (`descriptor: blocking = 0`, NOT a blocking
+//! `CLIO` thunk) that suspends on
 //! the host reactor's timer and resumes to `Ready`. It exists to exercise the
 //! whole real-node-await chain (macro -> backend poll-construction arm -> loader
 //! -> `cranelisp_run_io` reactor), in-tree, with no separate cdylib fixture.
@@ -101,7 +102,7 @@ pub unsafe extern "C" fn async_read_pollfn(
     }
 }
 
-cranelisp_platform::declare_concurrent_platform! {
+cranelisp_platform::declare_platform! {
     name: "async-demo",
     version: "0.1.0",
     host: HOST,

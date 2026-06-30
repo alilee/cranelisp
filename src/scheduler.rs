@@ -774,6 +774,57 @@ impl CompileScheduler {
             module.as_ref(),
         );
         let mut state = self.lock();
+
+        // S93 Invariant PP — lost-wakeup Blocker fix (mirror
+        // `block_on_first_unready_closure_member`'s atomic check-and-act). The
+        // per-import FQ-dependency discovery path (`dependency.rs` —
+        // `handle_import` / `handle_export` / `drive_module_dep` /
+        // `drive_submodule`) calls `register_module(dep, …, true)` (which enqueues
+        // `dep` and fires `priority_work_available`) and THEN `block_dep` → here.
+        // BETWEEN those two calls a priority worker can pop `dep`, typecheck it to
+        // terminal, and run `notify_typecheck_done(dep)` — whose waiter-sweep finds
+        // NO waiter for `module` yet. If we then UNCONDITIONALLY register `module`
+        // as a waiter on the now-terminal `dep`, no future
+        // `notify_typecheck_done(dep)` will ever fire again → `module` is stranded
+        // in `TypecheckBlocked` forever (the intermittent 30 s hang). This is the
+        // SAME class S93 closed for the body-boundary barrier; the discovery path
+        // was never converted — closing it here.
+        //
+        // The cure: BEFORE registering the waiter, re-check (under THIS single
+        // lock — no release between the check and the act) whether `needed_module`
+        // has already published its signatures (gone terminal, per
+        // `signatures_ready_locked` — the same predicate the body-boundary gate
+        // uses). If so, do NOT register a dead waiter; instead requeue `module`
+        // immediately via the existing `try_unblock_locked` path (exactly what the
+        // already-loaded / cache-hit arms of `drive_module_dep` do with
+        // `unblock_module`), so a worker re-drives `module` against the now-larger
+        // live state and proceeds. With the scan and the act under one lock,
+        // `notify_typecheck_done(needed_module)` either ran entirely before this
+        // call (the check sees it terminal and requeues) or runs entirely after
+        // (it sweeps the waiter this call registers below) — there is no gap.
+        //
+        // Only the whole-module (`"*"`) waiter — the sole production form (every
+        // `dependency.rs` caller passes `"*"`) — gets the terminal-requeue: a
+        // terminal `needed_module` has published ALL its symbols, so a `"*"`
+        // waiter is definitively satisfiable. The specific-symbol form is
+        // test-only and keeps the register-a-waiter behaviour.
+        if needed_symbol.as_ref() == "*"
+            && Self::signatures_ready_locked(&state, needed_module)
+        {
+            // Clear any stale edge, move to TypecheckBlocked so
+            // `try_unblock_locked`'s `pool == TypecheckBlocked` precondition holds,
+            // then immediately requeue (→ TypecheckFirst/Next). Mirrors
+            // `unblock_module`, inlined under this lock.
+            if let Some(ms) = state.modules.get_mut(module) {
+                ms.blocked_on = None;
+            }
+            Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
+            Self::try_unblock_locked(&mut state, module);
+            drop(state);
+            self.priority_work_available.notify_all();
+            return Ok(());
+        }
+
         Self::set_pool_locked(&mut state, module, ModulePool::TypecheckBlocked);
 
         // Record the forward edge for cycle detection.
@@ -1060,11 +1111,49 @@ impl CompileScheduler {
         if state.shutdown {
             return false;
         }
+        // S95 window-#2 lost-wakeup fix (mirror the S93/Invariant-PP window-#1
+        // discipline — re-check the predicate UNDER THIS LOCK before parking, no
+        // lost signal). The nice-worker loop's non-blocking `try_take_object_codegen`
+        // and this park are TWO separate lock acquisitions (the S91 index
+        // interleave). A `notify_typecheck_done` that, under the state lock, pushed
+        // a module to `typecheck_done` (object_done == false) AND fired
+        // `object_work_available.notify_all()` in the GAP between those two
+        // acquisitions delivers its notify to an empty waiter set — it is LOST,
+        // and the about-to-park nice worker then `wait`s forever. The module
+        // strands in `TypecheckDone` with `object_done == false`, and the eval
+        // thread's `wait_object_complete` (REPL `.o` cache-persist / `--link`
+        // hot flush) hangs on it (the intermittent oversubscription hang, pinned
+        // via the SIGUSR1 dump: `[TypecheckDone] user object_done=false` with the
+        // nice worker parked). Re-scanning here closes the window: the push+notify
+        // in `notify_typecheck_done` and this scan are serialized on the state
+        // lock, so EITHER this scan observes the pending work (return `true`, the
+        // loop re-iterates and `try_take_object_codegen` claims it) OR the notify
+        // arrives after we begin `wait` below and wakes us. There is no gap.
+        if Self::has_pending_object_work_locked(&state) {
+            return true;
+        }
         let state = self
             .object_work_available
             .wait(state)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         !state.shutdown
+    }
+
+    /// Whether any `TypecheckDone` module still needs object codegen — not yet
+    /// done and not currently claimed by a nice worker. This is the EXACT
+    /// predicate `take_object_codegen` / `try_take_object_codegen` scan for,
+    /// extracted so [`Self::park_nice_worker`] can re-check it under the lock
+    /// before parking (the S95 window-#2 lost-wakeup fix). Keeping it a single
+    /// shared predicate prevents the park-time check from drifting from the
+    /// claim-time scan (Principle 7 single-source-of-truth).
+    fn has_pending_object_work_locked(state: &SchedulerState) -> bool {
+        state.typecheck_done.iter().any(|module| {
+            state
+                .modules
+                .get(module)
+                .map(|ms| !ms.object_done && !ms.object_working)
+                .unwrap_or(false)
+        })
     }
 
     /// Object codegen for a module is complete (.o written).
@@ -1747,6 +1836,104 @@ impl CompileScheduler {
     pub fn module_count(&self) -> usize {
         let state = self.lock();
         state.modules.len()
+    }
+
+    /// Render a full snapshot of scheduler coordination state for diagnostics
+    /// (the SIGUSR1 lost-wakeup dump — `src/sched_dump.rs`). For every module:
+    /// its pool, the `blocked_on` forward edge, the inmem/object flags, and the
+    /// waiter list it holds (who is waiting on which of ITS symbols, and for
+    /// what). Plus the three priority/done queue contents and the shutdown flag.
+    ///
+    /// This is the asset that pins a lost wakeup: a module stranded in
+    /// `TypecheckBlocked` with a `blocked_on` edge to a module that is already
+    /// terminal (`TypecheckDone`/`Complete`) — yet NOT present in that module's
+    /// waiter list (the sweep already ran) and NOT in any queue — is a lost
+    /// wakeup. The dump makes that triangle directly visible.
+    ///
+    /// Acquires the state lock — MUST be called from a normal thread (the
+    /// watchdog), NEVER from inside a signal handler (the handler only flips an
+    /// atomic flag; `src/sched_dump.rs §safety`).
+    pub fn dump_state_to_string(&self) -> String {
+        use std::fmt::Write as _;
+        let state = self.lock();
+        let mut s = String::with_capacity(2048);
+        let _ = writeln!(
+            s,
+            "=== CompileScheduler state dump (shutdown={}, modules={}) ===",
+            state.shutdown,
+            state.modules.len(),
+        );
+        let _ = writeln!(
+            s,
+            "  queues: typecheck_first={:?} typecheck_next={:?} typecheck_done={:?}",
+            state.typecheck_first.iter().map(|m| m.as_ref()).collect::<Vec<_>>(),
+            state.typecheck_next.iter().map(|m| m.as_ref()).collect::<Vec<_>>(),
+            state.typecheck_done.iter().map(|m| m.as_ref()).collect::<Vec<_>>(),
+        );
+        // Stable iteration order for deterministic dumps across runs.
+        let mut paths: Vec<&ModuleFullPath> = state.modules.keys().collect();
+        paths.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        for path in paths {
+            let ms = &state.modules[path];
+            let cached = state.cached_modules.contains(path);
+            let _ = writeln!(
+                s,
+                "  [{:?}] {} blocked_on={:?} inmem_done={} inmem_claimed={} \
+                 object_done={} object_working={} cached={} sexps={} error={}",
+                ms.pool,
+                path.as_ref(),
+                ms.blocked_on.as_ref().map(|m| m.as_ref()),
+                ms.inmem_done,
+                ms.inmem_claimed,
+                ms.object_done,
+                ms.object_working,
+                cached,
+                ms.sexps.is_some(),
+                ms.error.is_some(),
+            );
+            for (sym, waiters) in &ms.waiters {
+                for w in waiters {
+                    let _ = writeln!(
+                        s,
+                        "        waiter-on-symbol {:?}: {} needs {:?}",
+                        sym.as_ref(),
+                        w.module.as_ref(),
+                        w.need,
+                    );
+                }
+            }
+        }
+        // Lost-wakeup heuristic: flag any TypecheckBlocked module whose
+        // blocked_on target is already terminal AND does not list it as a
+        // waiter. That triangle is the lost-wakeup signature.
+        for path in state.modules.keys() {
+            let ms = &state.modules[path];
+            if ms.pool != ModulePool::TypecheckBlocked {
+                continue;
+            }
+            let Some(dep) = &ms.blocked_on else { continue };
+            let dep_terminal = Self::signatures_ready_locked(&state, dep);
+            let listed_as_waiter = state
+                .modules
+                .get(dep)
+                .map(|d| {
+                    d.waiters
+                        .values()
+                        .flatten()
+                        .any(|w| &w.module == path)
+                })
+                .unwrap_or(false);
+            if dep_terminal && !listed_as_waiter {
+                let _ = writeln!(
+                    s,
+                    "  !! LOST-WAKEUP SUSPECT: {} is TypecheckBlocked on {} which is \
+                     terminal but does NOT list it as a waiter (sweep already ran)",
+                    path.as_ref(),
+                    dep.as_ref(),
+                );
+            }
+        }
+        s
     }
 
     // -----------------------------------------------------------------------

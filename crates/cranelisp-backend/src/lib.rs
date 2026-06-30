@@ -665,6 +665,135 @@ pub(crate) fn requires_codegen_view(kind: &cranelisp_types::DefKind) -> bool {
 /// panic — so this builder fills any non-concrete/absent node type with a
 /// placeholder (`ConcreteType::Int`, never read) so the walk has a total
 /// `MonoExpr`. The live `codegen_view` body-AST path stays 100% `Var`-free.
+/// S96 Chunk A (Wave A2b) — **poll-shape operand injection** (the producer side of
+/// the leading-pair convention; `design/backend/io-trampoline.md §14.2` +
+/// `sprints/SPRINT.md` §"Phase-3 exit-gate seam RESOLVED").
+///
+/// Wave A2 made [`FnCompiler::compile_poll_effect`] STRICTLY peel a leading
+/// `(token, capacity)` operand pair off a poll-shape effect call
+/// (`arg_vals = [token, capacity, leaf_0, …]`). This pass is the matching
+/// **producer**: it walks the production codegen `MonoExpr` body and, for every
+/// `Apply` whose callee resolves to a poll-shape
+/// `DefKind::PlatformEffect { poll_shape: true, .. }` (via
+/// [`crate::compiler::resolve_poll_effect_target`] — the SAME `poll_shape: bool`
+/// discriminator the peel keys on, no new `cranelisp-types` field), injects the two
+/// leading operands ahead of the natural leaf args.
+///
+/// EXISTING poll leaves are **tokenless** (a bare timer / no resource — the S94
+/// `async-demo` `async-read`), so the pair is the explicit sentinel constants
+/// `(token = 0, capacity = 1)`: `token = 0` ⇒ no-acquire / unrestricted,
+/// `capacity = 1` ⇒ serial — the S95 sentinel behaviour preserved **by value**
+/// through the one uniform peel (no tokened/tokenless branch, §14.2). The natural
+/// args become the leaf args unchanged (`arg_vals[2..]`), so the state-closure env
+/// layout the poll-fn reads is undisturbed (result slot at `state+0`, leaf_0 at
+/// `state+8`).
+///
+/// **Production-only.** This runs in [`compile_to_module_impl`] over the
+/// typecheck-populated `codegen_view` bodies (the `--run` / `--link` path). The
+/// backend-unit poll-codegen guards (`control_flow/poll_codegen_tests.rs`) drive
+/// `compile_defn` → [`lenient_mono_from_expr`] (NO `codegen_view`), so they bypass
+/// this pass and feed the post-injection `[token, capacity, leaf…]` form directly —
+/// which is required: a live-`777` token bake cannot be exercised through an
+/// always-`(0,1)` injector, so the producer MUST sit upstream of the unit-test
+/// compile path (Principle 5 — the bake and the injection are pinned at distinct
+/// seams).
+///
+/// **Forward-compatibility (A4 / `poll_support`).** This is the minimal injection
+/// Wave A2b authorises ahead of A4. When A4 lands real resource leaves (web
+/// `accept`/`read`), the value SOURCE generalises — `token` = the resource-handle
+/// operand, `capacity` = the pool ceiling — but the injection POINT and the
+/// leading-pair convention are unchanged; A4's `poll_support` lowering SUBSUMES the
+/// `(0, 1)` constants here with the live derivation. Filed for `/design` to
+/// reconcile `poll-support.md`'s "platform owns the injection" wording with the
+/// codegen reality that a platform Rust crate cannot place codegen operands.
+fn inject_poll_leading_pair<C, L>(
+    expr: &mut cranelisp_types::MonoExpr,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    current_module: &ModuleFullPath,
+) where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    use cranelisp_types::{ConcreteType, MonoExpr};
+
+    match expr {
+        MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::StringLit { .. }
+        | MonoExpr::Var { .. } => {}
+        MonoExpr::Let { bindings, body, .. } | MonoExpr::ParBind { bindings, body, .. } => {
+            for (_, e) in bindings.iter_mut() {
+                inject_poll_leading_pair(e, symbol_tables, module_aliases, current_module);
+            }
+            inject_poll_leading_pair(body, symbol_tables, module_aliases, current_module);
+        }
+        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            inject_poll_leading_pair(cond, symbol_tables, module_aliases, current_module);
+            inject_poll_leading_pair(then_branch, symbol_tables, module_aliases, current_module);
+            inject_poll_leading_pair(else_branch, symbol_tables, module_aliases, current_module);
+        }
+        MonoExpr::Lambda { body, .. } | MonoExpr::Trace { body, .. } => {
+            inject_poll_leading_pair(body, symbol_tables, module_aliases, current_module);
+        }
+        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            inject_poll_leading_pair(launched, symbol_tables, module_aliases, current_module);
+            inject_poll_leading_pair(continuation, symbol_tables, module_aliases, current_module);
+        }
+        MonoExpr::Match { scrutinee, arms, .. } => {
+            inject_poll_leading_pair(scrutinee, symbol_tables, module_aliases, current_module);
+            for arm in arms.iter_mut() {
+                inject_poll_leading_pair(&mut arm.body, symbol_tables, module_aliases, current_module);
+            }
+        }
+        MonoExpr::VecLit { elements, .. } | MonoExpr::ConstrADT { fields: elements, .. } => {
+            for e in elements.iter_mut() {
+                inject_poll_leading_pair(e, symbol_tables, module_aliases, current_module);
+            }
+        }
+        MonoExpr::Apply { callee, args, span, .. } => {
+            // Recurse first — handles a poll effect nested in the callee position or
+            // in the (still natural) leaf args — THEN inject this call's leading
+            // pair iff it is itself a poll-shape effect.
+            inject_poll_leading_pair(callee, symbol_tables, module_aliases, current_module);
+            for a in args.iter_mut() {
+                inject_poll_leading_pair(a, symbol_tables, module_aliases, current_module);
+            }
+            if let MonoExpr::Var { name, .. } = callee.as_ref()
+                && let Some((_module, _slot, _params, scheduling_class)) =
+                    crate::compiler::resolve_poll_effect_target(
+                        symbol_tables,
+                        module_aliases,
+                        current_module,
+                        name,
+                    )
+                && matches!(scheduling_class, cranelisp_types::SchedulingClass::Commutative)
+            {
+                // S96 A4 step 0 — `scheduling_class`-keyed injection (SUBSUMES A2b).
+                // Only a **tokenless** (`Commutative`) poll leaf (a bare timer /
+                // `stdio read_line` / `async-demo async-read` — no pooled resource)
+                // gets the sentinel pair synthesised here: token = 0 (no-acquire /
+                // unrestricted), capacity = 1 (serial). A `ResourceSerial` /
+                // `Sequential` poll leaf is LEFT UNTOUCHED — the source/wrapper
+                // already supplies the live `[token, capacity, leaf_0, …]` leading
+                // pair (the S95 `pool-demo` convention, now on the poll carrier;
+                // `poll-support.md §3.4.2`), and the A2 strict peel bakes it. Were
+                // we to blindly prepend `(0, 1)` here it would clobber the real
+                // `(token, capacity)` — hence the per-leaf gate.
+                //
+                // Both injected operands are `ConcreteType::Int` i64 scalars
+                // (NeverHeap — the peel bakes them with no RC, §14.6); they are NOT
+                // in the effect's leaf scheme, so the state-closure capture-dec glue
+                // (keyed on the leaf `param_types`) is unaffected.
+                let span = *span;
+                let lead = |value| MonoExpr::IntLit { value, span, ty: ConcreteType::Int };
+                args.splice(0..0, [lead(0), lead(1)]);
+            }
+        }
+    }
+}
+
 pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_types::MonoExpr {
     use cranelisp_types::{ConcreteType, Expr, MonoExpr, MonoMatchArm};
 
@@ -739,6 +868,12 @@ pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_
         Expr::ParBind { bindings, body, span, .. } => MonoExpr::ParBind {
             bindings: bindings.iter().map(|(n, e)| (n.clone(), lenient_mono_from_expr(e))).collect(),
             body: Box::new(lenient_mono_from_expr(body)),
+            span: *span,
+            ty: node_ty(expr),
+        },
+        Expr::LaunchContinue { launched, continuation, span, .. } => MonoExpr::LaunchContinue {
+            launched: Box::new(lenient_mono_from_expr(launched)),
+            continuation: Box::new(lenient_mono_from_expr(continuation)),
             span: *span,
             ty: node_ty(expr),
         },
@@ -869,6 +1004,18 @@ where
             defns.push(defn);
             bodies.push(body);
         }
+    }
+
+    // S96 Wave A2b — poll-shape operand injection (the producer side of the
+    // leading-pair convention; see `inject_poll_leading_pair`). Runs here, on the
+    // production codegen bodies, AFTER the `table` Ref above is dropped (so the
+    // per-call `resolve_poll_effect_target` re-reads `symbol_tables` without a
+    // self-shard borrow). The backend-unit poll-codegen guards take the
+    // `compile_defn` path and never reach here, so they continue to feed
+    // `compile_poll_effect` the post-injection `[token, capacity, leaf…]` form
+    // directly (the bake pinned independently of the injection).
+    for body in &mut bodies {
+        inject_poll_leading_pair(body, symbol_tables, module_aliases, &module_path);
     }
 
     if defns.is_empty() {

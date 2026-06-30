@@ -290,6 +290,7 @@ pub struct MatchArm {
 ///   Trace — §12
 ///   RunTests — REPL-only special form
 ///   ParBind — §10.12
+///   LaunchContinue — §10.12.7
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     IntLit { value: i64, span: Span },
@@ -346,6 +347,22 @@ pub enum Expr {
     ParBind {
         bindings: Vec<(Symbol, Expr)>,
         body: Box<Expr>,
+        span: Span,
+    },
+    // Launch-and-continue (spec §10.12.7) — the *detached* peer of `ParBind`.
+    // Produced by the SAME `/int` bind-chain independence analysis (the shared
+    // token-disjointness core, Principle 7), consumed by the SAME backend
+    // IO-node-construction family (lowers to the `IO_TAG_LAUNCH` runtime node,
+    // `design/backend/io-trampoline.md §15`). `launched` is the detached effect
+    // sub-tree (result discarded, supervised strand); `continuation` runs
+    // without awaiting it and produces the node's value. A dedicated variant
+    // (not a `detached` flag on `ParBind`) keeps structured-join vs detached
+    // representationally distinct per Principle 20 — the marker match selects
+    // the runtime node by the variant, so a join site cannot be mis-lowered as
+    // detached. Mirrored on `MonoExpr::LaunchContinue` (the codegen twin).
+    LaunchContinue {
+        launched: Box<Expr>,
+        continuation: Box<Expr>,
         span: Span,
     },
 }

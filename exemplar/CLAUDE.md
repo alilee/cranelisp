@@ -3,8 +3,51 @@
 Exemplar project for Cranelisp: a Sudoku Solver. Owned by `/port` skill.
 
 The **committed showcase target is the stdio CLI** — `user.cl` tells the full
-story end-to-end. The web platform is a designed-but-unbuilt future stretch
-(FIXME 0405, `/platform`); see `plan-exemplar.md`.
+story end-to-end. The web platform is now built (S96) and is the marquee for
+**inferred concurrency**; see the S96 Phase 6 note below and `plan-exemplar.md`.
+
+## Current State (Sprint 96 Phase 6 — web server adopts the inferred concurrent fan-out)
+
+The exemplar **`web` server (`main.cl`) now genuinely fans out** — a "server
+with no `spawn`". The serve loop INFERS launch-and-continue concurrency: the
+per-connection handler is inlined as a sub-tree of DIRECT poll/timer leaves
+(`read-conn` → `(sleep (slow-ms req))` → `send-conn`), its result DISCARDED (the
+`do`) and its footprint disjoint from the continuation's `listener`, so /int's
+bind-chain analysis (`effect-concurrency.md §4.1` E1/E2/E3) infers a detached
+launch — one supervised strand per connection. There is **NO `spawn`/`go`/`async`
+in the source**. This mirrors the reference fixture
+`tests/fixtures/web_fanout/main.cl` (byte-identical `web.cl`/`serve.cl`).
+
+**The direct-leaf discipline (why the launch fires):** every EFFECT POSITION in
+the handler sub-tree is a direct launchable leaf — `read-conn`/`send-conn`
+(ResourceSerial poll over the fresh connection token) or `sleep` (the
+resource-free timer leaf, §4.1 timer refinement). The pure helpers `slow-ms`
+(`Request -> Int`, the per-request delay) and `safe-handle` (`Request ->
+Response`, the 500-safe router) only compute leaf ARGUMENTS — they are never
+themselves placed in an effect position. A user function returning IO in an
+effect position (the retired `handle-conn` wrapper, or a `(slow-delay req)`
+returning `(IO _)`) is an opaque footprint the eligibility analysis REFUSES (E3),
+silently serialising the server — that was the S96 0470 wall, now avoided here.
+
+**500-on-fault preserved:** `safe-handle` runs the pure router under
+`catch-runtime-error` → a faulting request yields a 500 page for THAT request,
+the serve loop keeps living (reactor.md §2.12, the application-layer 500).
+
+**Proof:** `tests/exemplar_web.rs` — two green e2e:
+`exemplar_web_server_serves_form_solution_and_not_found_over_http` (serves the
+form / a valid solved grid / 404, all through the launched handler) and
+`exemplar_web_server_fans_out_concurrent_requests_overlap` (K=4 concurrent
+`/slow` requests OVERLAP ≈1·D ≈110ms, NOT serialise ≈K·D ≈440ms — the ratio
+assertion; deterministic, 5/5 green). The harness is now port-parametrized
+(ephemeral port via `CRANELISP_PORT`), retiring the fixed-8080 collision. The
+exemplar-scale counterpart of `tests/concurrency_fanout_web.rs`.
+
+Demonstration endpoint: `GET /slow` returns a plain 200 after a deterministic
+100 ms `(sleep …)` — the concurrency witness. All real routes (`/`, `/solve`,
+404) stay instantaneous (`slow-ms` returns 0). The Sudoku core
+(`handle`/`solve-route`/`solution-page`/`parse-form-body`) is unchanged and
+pure. The non-web Sudoku showcase (`user.cl`/`solver.cl`/`tests.cl`) is
+untouched by this sprint.
 
 ## Current State (Sprint 95 Phase 6a — assessment: exemplar untouched, web rewrite is S96)
 

@@ -14,6 +14,7 @@
 #   * `cranelisp-shapes-badabi`-> target/debug/libcranelisp_shapes_badabi.{rlib,so}
 #   * `cranelisp-pool-demo`   -> target/debug/libcranelisp_pool_demo.{rlib,so}  (blocking capacity leaf; S95 slice-3 nt-reactor-e2e)
 #   * `cranelisp-async-demo`  -> target/debug/libcranelisp_async_demo.{rlib,so}  (poll-shape reactor leaf; nt-reactor-e2e)
+#   * `cranelisp-poll-pool`   -> target/debug/libcranelisp_poll_pool.{rlib,so}  (poll-shape CAPACITY leaf; S96 nt-reactor-e2e)
 #   * `cranelisp-web`          -> target/debug/libcranelisp_web.{rlib,so}  (HTTP platform; exemplar/platforms/web)
 #
 # It resolves them AT RUNTIME by scanning `target/debug/` (see
@@ -35,6 +36,10 @@
 # Cheap when already built: cargo no-ops in ~0.02s.
 set -euo pipefail
 
+# Single-ABI cutover (S96, §6.8.0): the `concurrency` feature is RETIRED, so
+# `async-demo` and `poll-pool` (poll-shape leaves) no longer feature-unify a
+# distinct `cranelisp-platform` variant — they build in the SAME invocation as the
+# blocking platforms (one ABI, one platform build graph). No separate invocation.
 cargo build \
   -p cranelisp-exe-bundle \
   -p cranelisp-stdio \
@@ -43,15 +48,6 @@ cargo build \
   -p cranelisp-shapes-badabi \
   -p cranelisp-boom \
   -p cranelisp-pool-demo \
-  -p cranelisp-web
-
-# `cranelisp-async-demo` (the S94 poll-shape reactor leaf) is built in a SEPARATE
-# invocation: it depends on `cranelisp-platform` with `features = ["concurrency"]`,
-# and including it above would feature-unify `cranelisp-platform/concurrency` onto
-# the v6 platforms (stdio/shapes/…) in the same build graph. Those rlibs would then
-# differ from the default (`concurrency`-off) `cargo nextest` build, thrashing
-# `target/debug` artifacts and breaking `--link`'s `.rcgu.o` references under
-# parallel test load (FIXME 0457). A separate invocation keeps the v6 platforms
-# `concurrency`-off (consistent with the default build) and caches the
-# concurrency-on `cranelisp-platform` separately.
-cargo build -p cranelisp-async-demo
+  -p cranelisp-web \
+  -p cranelisp-async-demo \
+  -p cranelisp-poll-pool

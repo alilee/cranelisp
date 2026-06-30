@@ -249,6 +249,91 @@ fills the CPU cores via rayon sparks. The blocking-vs-CPU split is itself infera
 fill the cores is the scheduler's job (§7), given the metadata — and none of it touches
 the pure source.
 
+### 4.1 The inferred-launch eligibility predicate (the sound local check)
+
+Launch-and-continue is **inferred** (§10.12.7 step 2 requires the tokens be disjoint
+from the continuation; no annotation appears in source), so the eligibility test must
+be **sound, conservative, and computable without following into a user fn**. This
+subsection pins the exact predicate the local bind-chain analysis applies
+(`src/bind_chain_analysis.rs`, the `LaunchContinue` arm). A step OR a discarded
+**bind sub-tree** ahead of a continuation is launch-eligible iff ALL of:
+
+- **(E1) Result-discarded.** The launched binder's name is unused in the continuation
+  (`!free_vars(continuation).contains(binder)`). Sufficient on its own for the
+  "no one awaits the result" half (§10.12.7 step 1): if the value is never referenced,
+  the value the program computes is unchanged whether the effect runs detached or
+  inline. **Local; sufficient.**
+
+- **(E2) Value-locality (the disjointness *witness*).** Every effect in the launched
+  sub-tree acts on a resource token carried by a value bound **within** the sub-tree —
+  transitively from the launched step's own binder (the fresh `conn` produced by
+  `accept`) — and the sub-tree shares **no free variable** with the continuation. This
+  is the load-bearing move: token disjointness is a **runtime** fact (runtime tokens
+  are dynamic, platform-supplied at the effect site, §5/§8.1 — the compile-time
+  analysis sees only scheduling *classes*, never token *values*), so it cannot be
+  proven by comparing token values. It is instead **derived from value provenance**: a
+  resource reachable only from a freshly-bound, non-shared value yields a fresh,
+  disjoint token by construction (the accept loop's "stream of distinct connection
+  tokens", §4 fact 2 — a platform trust-boundary assertion, §5). This also discharges
+  the **cross-iteration / sibling** hazard: each loop iteration binds a fresh `conn`, so
+  two in-flight detached handlers ride distinct tokens and cannot alias. A
+  module-global resource handle (a shared DB pool) is **not** locally-bound-per-launch
+  and so fails (E2) — correctly, because successive detached handlers would share its
+  token; the pool's legitimate concurrency comes from the capacity-N **inferred** pool
+  (§8.1) inside a joined structure, never from detachment.
+
+- **(E3) No shared-singleton-token effect — the token-0 *refusal*.** The sub-tree must
+  touch **no `Commutative` (token-0, unrestricted) effect and no `Sequential` (the
+  global token-1) effect** — only `ResourceSerial`/capacity-N effects on per-value-minted
+  tokens. token-0 and token-1 are **shared singletons**, not per-value-minted, so (E2)'s
+  value-provenance argument cannot witness their disjointness: two strands on token 0
+  (e.g. a shared-`stdout` `print`) interleave **observably**, and the trampoline's
+  per-token semaphore gives **exclusion but not source-order across the detach boundary**
+  (§8.2) — so a wrongly-detached shared-token sub-tree *reorders* same-token effects
+  relative to sequential. A `Commutative` tag asserts order-independence of the computed
+  **value**, not of the observable **side-effect stream**; for an *inferred* (un-annotated)
+  detachment we take no such latitude. **The disposition is REFUSE** (decline to detach
+  is always sound, §10.12.7). An **opaque user-fn call** anywhere in the sub-tree's effect
+  positions is an unknown footprint and is likewise refused — which is exactly why the
+  sub-tree must be **inlined down to platform leaves** for the launch to fire, and exactly
+  why the check stays **local** (no interprocedural token-provenance walk).
+
+  **Timer-leaf refinement (S96 C-fanout, FIXME 0470).** A **resource-free `sleep`
+  timer** is the one non-`ResourceSerial` leaf permitted as a sub-tree effect
+  *member*. A timer carries **no resource token** and produces **no observable
+  side-effect stream** (unlike a token-0 shared-`stdout` `print`), so detaching it
+  *as a member of a larger launched sub-tree* reorders nothing observable — the E3
+  hazard (reordering a shared-token stream across the detach boundary) does not
+  apply. This is what lets the inlined connection handler legally carry a `(sleep d)`
+  delay step (`read → sleep → send`) and still launch as one strand. The timer is
+  admitted **only as a sub-tree member, never as the single-step launch root**: a
+  lone detached `sleep` is pointless, and detaching a `sleep` the continuation's
+  effect depends on would run the continuation *before* the delay — so the
+  single-step arm keeps refusing it (`src/bind_chain_analysis.rs::is_sleep_timer_leaf`).
+  This refines E3 without widening it to opaque user fns: `sleep` is a known,
+  resource-free primitive leaf, resolved through the import chain — not an
+  interprocedural footprint walk.
+
+**Conservative default.** Any step that fails E1–E3 lowers as an ordinary `Bind`
+(serial) — never wrongly detached. (E1–E3 *tighten* the pre-S96 single-step arm, whose
+`class != Sequential && result-discarded` test is necessary but **not** sufficient: it
+omits E2/E3 and so could wrongly detach a discarded `Commutative` effect. Folding E2/E3
+into the arm is a co-landing correctness improvement.)
+
+**Par vs launch vs Bind — the three-way disposition.** result-discarded is the **first**
+discriminator. A discarded + disjoint step/sub-tree (E1–E3) is a **detached launch** and
+MUST be excluded from `Par` grouping: `Par` *joins* (the continuation awaits every
+branch), so folding a discarded effect into a `Par` would needlessly serialize the
+continuation behind work no one awaits — defeating the fan-out. A step whose result **is**
+used downstream can never launch (you must await a value you use) and is a `Par` candidate
+(≥2 independent non-`Sequential` steps that join) or a `Bind`. So the grouping decision is:
+(1) discarded + disjoint ⇒ `LaunchContinue` (detached, never grouped); (2) result-used +
+independent + non-`Sequential` ⇒ `Par` (joined); (3) else ⇒ `Bind`. For the inlined
+server sub-tree this falls out trivially: the outer step's `io_expr` is a bind *sub-tree*,
+which classifies `Sequential` (its head is `bind`, not a platform effect), so it never
+enters Par competition and is decided entirely in the `Sequential` arm's extended
+launch-eligibility check.
+
 ## 5. The concurrency descriptor
 
 The platform declares, per effect, a **concurrency descriptor** — a finite, declarative
@@ -259,7 +344,7 @@ generalization of today's scheduling classes (`Sequential` / `Commutative` /
 |---|---|---|---|---|
 | **token** | what the effect conflicts on = the resource identity (0 = unrestricted) | platform (dynamic) | which `Semaphore` | 3 |
 | **capacity** | the resource's safe-concurrency *ceiling* — "this token correctly sustains ≤ N concurrent ops"; exceeding it is a correctness violation | platform (trust) | number of permits on the token's `Semaphore` | 3 |
-| **degree** | the *program's* chosen in-flight throttle (memory / fairness / politeness), always ≤ capacity = the backpressure threshold | program (policy) | bounded channel / `Semaphore` | **4 — reserve only** |
+| **degree** | the *program's* chosen in-flight throttle (memory / fairness / politeness), always ≤ capacity = the backpressure threshold | program (policy) | the **existing §8.1 token-permit map**, effective permits `= min(capacity, degree)` + one **global** admission `Semaphore` (reactor-thread) | **4 (S96)** |
 | **blocking?** | does it block, or yield on `WouldBlock`? — selects the worker pool (inferable) | platform | CPU pool (rayon) vs reactor routing | 6 |
 
 **capacity vs degree — two concepts the prior `cardinality`/`global-budget` framing
@@ -268,8 +353,38 @@ of the **resource**: the ceiling the resource correctly sustains; the platform a
 it (the trust boundary). *degree* is a **program** attribute: the application's chosen
 throttle, for policy reasons, always ≤ capacity. **Effective limit = `min(capacity,
 degree)`.** S95 slice 3 handles **capacity only**; *degree* is slice 4 (backpressure /
-the former "global budget", FIXME 0442) — the name is reserved now, the mechanism
-deferred.
+the former "global budget").
+
+**FIXME 0442 resolution — TWO substrate-bound mechanisms, ONE shared *concept*, NOT one
+unified abstraction (/arch, S96 Phase 2; the FIXME's trigger — slice-4 design — is now
+MET).** The CPU spark budget and the I/O backpressure budget bound "in-flight work of a
+kind," but they share **no runtime code path** and must not be fused:
+
+- **Over-budget action diverges irreducibly.** A CPU spark over budget **folds inline**
+  on the caller (a synchronous run-to-completion fallback the backend create-gate emits);
+  an I/O effect over budget **admission-parks** (an async suspension until a permit
+  frees). There is no common body — a "polymorphic over-budget strategy" would be a name
+  over two disjoint operations (Principle 6).
+- **The two substrates forbid a shared data structure.** The CPU counter lives on the
+  **multi-threaded rayon** side, so it is *necessarily* a cross-thread `AtomicIsize`
+  (slice-1 `ivar_spark`); the I/O admission lives on the **single reactor thread**, so it
+  is *deliberately lock-free* (the `reactor.md` §2.8 `RefCell<HashMap<token, TokenSlot>>`
+  reactor-thread permit map — a ruling that exists precisely to avoid atomics). Unifying them would regress one
+  substrate: atomics forced onto the lock-free reactor pool, or unsoundness on rayon.
+- **Neither is orphaned (Principle 8 honoured).** The slice-1 CPU counter stays exactly
+  as built — a plain counter + cap + single decision site — and its *signal* (not its
+  shape) is refined later by the contention-aware gate (FIXME 0459, S97 / Phase H), which
+  is a **Parallelism-axis** owner, not slice 4's. The slice-4 I/O *degree* is **not new
+  admission machinery**: it is a parameter on the **existing §8.1 token-permit map**
+  (effective permits `= min(capacity, degree)`), plus one **global** reactor-thread
+  admission `Semaphore` that bounds total in-flight detached strands (the
+  launch-and-continue fan-out memory bound, §4/§10) — and that global gate reuses the same
+  `AcquirePermit`/`TokenSlot` permit-counter the per-token pool already runs. What the two
+  sides genuinely share is the **permit-counter shape**, realized once per substrate, not
+  a forced common type. Slice-4 /design elaborates the `min`-threading + the global gate
+  against this ruling; no `cranelisp-types` edge touch (degree/budget ride the already-
+  reserved, `concurrency`-gated `ConcurrencyDescriptor.global_budget` + a reactor-
+  construction knob — both off the frozen public-api edge).
 
 **Capacity is per-RESOURCE (per-token), not per-effect — sharing is the central case,
 not an edge.** The DB connection pool is canonical: `query`/`execute`/`begin` are
@@ -328,11 +443,27 @@ The combinators and the inferred dispatch map directly onto host-runtime primiti
 So the work is not "build a fiber runtime"; it is **use the async runtime, provide the
 inference (§4), and map the descriptors (§5) onto runtime primitives.**
 
-**Runtime naming and feature-gating.** The host runtime is tokio-or-equivalent, and it
-is **feature-gated**: pure / non-concurrent `--link` binaries must not pull in the
-reactor. This respects the "empty prelude works" principle (nothing in the runtime is
-required for the language to work) and Phase-H binary size — a program that performs no
-concurrent effects links no executor.
+**Runtime naming and gating — UPDATED (S96 SCOPE PIVOT EXTENDED, user-directed).**
+The host runtime is a hand-written single-threaded executor over a `mio` reactor
+(NOT tokio in the as-built; the App. B substrate). It is **NO LONGER feature-gated**:
+the S96 full-streamline cutover (`platform-interface.md` §6.8.0 + §6.8.0a) retires
+both the `concurrency` and `concurrency-runtime` features and collapses the former
+two `#[cfg]`-selected trampolines (sync off-build + async on-build) into ONE async
+trampoline — **the reactor IS the runtime.** The "pure / non-concurrent binaries
+must not pay for the reactor" goal is preserved, but as a **RUNTIME property via lazy
+reactor init**, not a `#[cfg]` split: the executor drives the top future on the
+calling thread, and the mio `Poll` (epoll_create) + bridge waker (eventfd) are
+constructed only on the first `Pending` (first poll-leaf fd/timer registration or
+first `Par` blocking-bridge spawn). A program that performs no concurrent effects
+(`(print "hello")`) drains synchronously through the one trampoline and constructs no
+`Poll` — honouring the "empty prelude works" principle as a behaviour rather than a
+build mode. `mio`/`futures`/`rayon` are unconditionally linked (accepted: no users,
+no out-of-tree DLLs); Phase-H binary size is addressed by the lazy construction, not
+by a link-time gate. The feature-off "byte-identical"/"reactor-free" invariant is
+retired and replaced by the runtime assertion *"a pure-blocking program builds no
+mio `Poll`."* See `platform-interface.md` §6.8.0a for the feasibility verdict +
+sequencing; the `Reactor` lazy-singleton implementation detail is `/design` int's
+(`design/int/reactor.md` — change specified there, not authored here).
 
 ## 7. The two-pool model — rayon for CPU, async runtime for I/O
 
@@ -690,7 +821,20 @@ is filed: per the project's manifestation-site discipline, the cascade is record
 at its natural home and actioned when the track opens (the trigger — implementation — is
 unmet, so an open FIXME would merely idle across sprints).
 
-**STATUS — ACTIONING (S93, effect-concurrency slice 2).** The track has opened; the
+**STATUS — SINGLE-ABI CUTOVER (S96, supersedes the v6/v7 coexistence below).**
+User-directed 2026-06-29: there is now ONE platform ABI (v8). The dual-channel
+"v7 reserved behind an off-by-default `concurrency` feature, byte-identical-off"
+disposition described in this section is **HISTORICAL** — the ABI types
+(`ConcurrencyDescriptor`/`Poll`/`PollFn`/`HostCtx`/`Waker`/`WakerVTable`) are now
+**core/ungated**, `ConcurrentPlatformFn`/`ConcurrentPlatformManifest` merge into the
+unified `PlatformFn`/`PlatformManifest`, the `concurrency` (layout-only) feature is
+retired (the host **reactor** stays optional behind `concurrency-runtime`), and the
+descriptor's `blocking` flag is the per-effect blocking-vs-poll discriminator in one
+manifest. "byte-identical-off" becomes "**reactor-free-off**". Authoritative home:
+`platform-interface.md` **§6.8.0**. The descriptor model (§5) and the A2 leaf model
+(§12) below are unchanged — only the gating/coexistence packaging is superseded.
+
+**PRIOR STATUS — ACTIONING (S93, effect-concurrency slice 2).** The track has opened; the
 cascade is **being executed**, recorded at its natural home in
 `platform-interface.md` **§6.8**. Two corrections to the pre-implementation text
 above: (1) the numeric stamp steps **`ABI_VERSION` 6 → 7**, NOT "3 → 4" — the "3→4"

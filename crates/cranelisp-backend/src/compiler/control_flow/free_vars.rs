@@ -92,6 +92,13 @@ fn collect_free_vars(
             }
             collect_free_vars(body, &extended, free, seen);
         }
+        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            // The launched effect binds no name (its result is discarded), so the
+            // free-var set is simply the union over both sub-trees — like a
+            // sequential `Bind(launched, λ_. continuation)`.
+            collect_free_vars(launched, bound, free, seen);
+            collect_free_vars(continuation, bound, free, seen);
+        }
         MonoExpr::ConstrADT { fields, .. } => {
             for f in fields {
                 collect_free_vars(f, bound, free, seen);

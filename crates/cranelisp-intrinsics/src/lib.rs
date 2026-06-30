@@ -199,21 +199,26 @@ pub mod trace_format;
 pub mod vec_runtime;
 
 // Strand identity + the trampoline observability event stream
-// (effect-concurrency track, slice 2 — observability §11). Gated behind the
-// off-by-default `concurrency` feature: byte-identical-when-off; the strand-id
-// plumbing is expensive-to-retrofit groundwork that lands WITH the async
-// substrate. The sink + trampoline emit-hooks are the slice-2 reactor work.
-#[cfg(feature = "concurrency")]
-pub mod strand;
+// (effect-concurrency track — observability §11). UNCONDITIONAL under the
+// single-trampoline cutover (`design/arch/platform-interface.md` §6.8.0a) — the
+// feature gate is retired. **`pub(crate)`** (A4c #2): the whole strand surface
+// (the `StrandId`/`StrandEvent` types + the recording sink) has **no cross-crate
+// consumer** today — the dev-facing `/strand` dump (int `src/`) that will re-`pub`
+// it is deferred (§3). Reached in-crate by `io`/`reactor`; downgrade until a
+// consumer lands.
+pub(crate) mod strand;
 
-// The slice-2 host reactor IMPLEMENTATION — the mio `HostCtx` reactor + the
-// C-ABI waker + the `block_on` executor + the `EffectPoll` await boundary + the
-// hand-written demo leaves (`design/arch/effect-concurrency.md` App. B). Gated
-// behind `concurrency-runtime` (which pulls the `mio`/`futures` deps); with the
-// feature off cargo links neither — byte-identical, executor-free. NOT in
-// default features; the exe-bundle/`--link` path never enables it.
-#[cfg(feature = "concurrency-runtime")]
-pub mod reactor;
+// The host reactor IMPLEMENTATION — the mio `HostCtx` reactor + the C-ABI waker +
+// the `block_on` executor + the `EffectPoll` await boundary + the supervisor +
+// the token/global admission pools + the hand-written demo leaves
+// (`design/arch/effect-concurrency.md` App. B). UNCONDITIONAL under the
+// single-trampoline cutover (§6.8.0a): the reactor IS the runtime, always linked.
+// A pure-blocking program constructs no mio `Poll` at runtime (lazy init).
+// **`pub(crate)`** (A4c #2): the entire reactor surface is host-internal — reached
+// only through `io::cranelisp_run_io` / the trampoline, with no cross-crate Rust
+// consumer (verified: zero `reactor::`/`EffectPoll`/`Reactor`/`join_io_leaves`
+// path uses outside this crate).
+pub(crate) mod reactor;
 
 // Root re-exports — only the names with a verified root-form Rust consumer.
 //

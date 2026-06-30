@@ -764,21 +764,22 @@ fn platform_repr_c_field_order_frozen() {
     // Frozen field-order tables (source-declaration order). A reshuffle that
     // changes byte offsets reorders these lines in the baseline → mismatch.
     let platform_fn_fields = fields_in_order(&api, "cranelisp_platform::PlatformFn");
-    // Frozen field-order table for ABI_VERSION = 3 (Sprint 76, FIXME 0288):
-    // `jit_name` / `jit_name_len` were removed — the former jit_name
-    // mangled-name dispatch retired in favour of the exported linker name
-    // (see crates/cranelisp-platform/src/lib.rs:186-191, 320, 359). The
-    // ABI_VERSION bump (1→3) is the recorded layout-discipline gate for the
-    // removal; this frozen table is updated to match.
+    // Frozen field-set for ABI_VERSION = 8 (Sprint 96, the SINGLE-ABI CUTOVER,
+    // platform-interface.md §6.8.0): the unified `PlatformFn` absorbs the former
+    // `ConcurrentPlatformFn` — `scheduling_class: u32` is REPLACED by
+    // `concurrency: ConcurrencyDescriptor`, and a `drop_state` poll-leaf teardown
+    // hook is added. cargo-public-api emits field lines alphabetically, so this
+    // set is the alphabetical projection (the byte-offset order is pinned
+    // separately by the platform unit test `platform_fn_repr_c_field_order_v8`).
     assert_eq!(
         platform_fn_fields,
         vec![
-            "docstring", "docstring_len", "name",
+            "concurrency", "docstring", "docstring_len", "drop_state", "name",
             "name_len", "param_count", "param_name_count", "param_name_lens",
-            "param_names", "ptr", "scheduling_class", "type_sig", "type_sig_len",
+            "param_names", "ptr", "type_sig", "type_sig_len",
         ],
-        "FIXME 0227 (audit C4): PlatformFn field ORDER drifted — a #[repr(C)] \
-         byte-offset change. ABI_VERSION bump + frozen-table update required."
+        "PlatformFn field SET drifted — a #[repr(C)] byte-offset change. \
+         ABI_VERSION bump + frozen-table update required (§6.8.0)."
     );
     let manifest_fields = fields_in_order(&api, "cranelisp_platform::PlatformManifest");
     assert_eq!(
@@ -847,73 +848,71 @@ fn platform_send_sync_claims_match_invariants() {
 }
 
 // =============================================================================
-// S93 §2B `_neg` — ABI-v7 dormant types ABSENT from the default (feature-off)
-// public-api edge.
+// S96 SINGLE-ABI CUTOVER — the host-reactor ABI types are CORE (on the default
+// public-api edge); the deleted dual-channel types are ABSENT.
 //
-// The `concurrency` feature is off-by-default; the `public-api.txt` baselines
-// are generated WITHOUT it (root CLAUDE.md / arch baseline-diff discipline). So
-// the v7 layout contracts (`ConcurrencyDescriptor`, `ConcurrentPlatformFn`,
-// `Poll`, `Waker*`, `HostCtx`, `StrandId`/`StrandEvent`) MUST NOT appear on the
-// frozen default edge — they enter only under `cargo nt-concurrency`. This is
-// the negative half of the §2B coverage (its positive half is the gated unit
-// guards): the lane never pulls the dormant types into the default/production
-// build, so the frozen edge stays byte-identical-when-off.
-//
-// Posture: PASS-on-HEAD (verify-the-frozen-edge). It flips RED only if a future
-// change leaks a gated type into the default baseline — the regression this
-// guards against.
+// This INVERTS the former `_neg` frozen-edge guard (which asserted the v7 types
+// were ABSENT behind the off-by-default `concurrency` feature). Under the cutover
+// (platform-interface.md §6.8.0) the `concurrency` feature is RETIRED — the ABI
+// contracts (`ConcurrencyDescriptor`/`Poll`/`PollFn`/`HostCtx`/`Waker*`) are now
+// always-compiled, on the default edge. The deleted dual-channel types
+// (`ConcurrentPlatformFn`/`ConcurrentPlatformManifest`) MUST be GONE. This is the
+// positive descriptor-presence guard (the field-order guard is
+// `platform_repr_c_field_order_frozen` + the platform unit
+// `platform_fn_repr_c_field_order_v8`).
 // =============================================================================
 
-// spec: design/arch/effect-concurrency.md §11/§12 + design/arch/CLAUDE.md
-// (the `concurrency`-feature out-of-baseline discipline) — the ABI-v7 dormant
-// layout contracts are ABSENT from every default-build `public-api.txt`.
+// spec: design/arch/platform-interface.md §6.8.0 — the unified-ABI contracts are
+// CORE; the dual-channel `ConcurrentPlatform*` types are deleted.
 #[test]
-fn concurrency_descriptor_absent_from_default_public_api_neg() {
+fn unified_abi_contracts_present_dual_channel_deleted() {
     let types_api = read_pub_api("cranelisp-types");
     let platform_api = read_pub_api("cranelisp-platform");
-    let intrinsics_api = read_pub_api("cranelisp-intrinsics");
 
-    for (crate_name, api, names) in [
-        (
-            "cranelisp-types",
-            &types_api,
-            &["ConcurrencyDescriptor", "PollFn"][..],
-        ),
-        (
-            "cranelisp-platform",
-            &platform_api,
-            &[
-                "ConcurrencyDescriptor",
-                "ConcurrentPlatformFn",
-                "HostCtx",
-                "WakerVTable",
-            ][..],
-        ),
-        (
-            "cranelisp-intrinsics",
-            &intrinsics_api,
-            &["StrandId", "StrandEvent"][..],
-        ),
-    ] {
-        for n in names {
-            assert!(
-                !api.contains(n),
-                "ABI-v7 dormant type `{n}` leaked into the default (feature-off) \
-                 {crate_name}/public-api.txt — it MUST stay behind the off-by-default \
-                 `concurrency` feature (the frozen edge is byte-identical-when-off)."
-            );
-        }
-    }
-    // `Poll` is a short token — assert its FULLY-QUALIFIED forms are absent so an
-    // unrelated identifier substring cannot mask a real leak.
+    // PRESENT (core edge): the unified ABI contracts.
     for fq in [
+        "cranelisp_types::ConcurrencyDescriptor",
         "cranelisp_types::Poll",
-        "cranelisp_platform::Poll",
+        "cranelisp_types::PollFn",
     ] {
-        let combined = format!("{types_api}{platform_api}");
         assert!(
-            !combined.contains(fq),
-            "ABI-v7 `{fq}` leaked into a default public-api.txt edge."
+            types_api.contains(fq),
+            "single-ABI cutover (§6.8.0): `{fq}` MUST be on the default \
+             cranelisp-types edge (the `concurrency` feature is retired)."
         );
     }
+    for fq in [
+        "cranelisp_platform::ConcurrencyDescriptor",
+        "cranelisp_platform::Poll",
+        "cranelisp_platform::PollFn",
+        "cranelisp_platform::HostCtx",
+        "cranelisp_platform::Waker",
+        "cranelisp_platform::WakerVTable",
+    ] {
+        assert!(
+            platform_api.contains(fq),
+            "single-ABI cutover (§6.8.0): `{fq}` MUST be on the default \
+             cranelisp-platform edge."
+        );
+    }
+
+    // ABSENT (deleted): the dual-channel types and the deleted macro/lifter.
+    for gone in [
+        "ConcurrentPlatformFn",
+        "ConcurrentPlatformManifest",
+        "concurrent_manifest_to_descriptors",
+        "declare_concurrent_platform",
+    ] {
+        assert!(
+            !platform_api.contains(gone),
+            "single-ABI cutover (§6.8.0): the deleted dual-channel item `{gone}` \
+             still appears in cranelisp-platform/public-api.txt."
+        );
+    }
+    // The unified PlatformFn no longer carries the v6 `scheduling_class` field.
+    assert!(
+        !platform_api.contains("cranelisp_platform::PlatformFn::scheduling_class"),
+        "single-ABI cutover (§6.8.0): PlatformFn::scheduling_class was replaced by \
+         `concurrency: ConcurrencyDescriptor` — it must be gone from the edge."
+    );
 }

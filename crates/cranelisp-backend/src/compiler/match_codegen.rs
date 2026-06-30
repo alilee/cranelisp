@@ -99,7 +99,7 @@ where
         // Panic block: non-exhaustive match.
         self.builder.switch_to_block(panic_block);
         self.builder.seal_block(panic_block);
-        self.emit_match_panic(scrut_val)?;
+        self.emit_match_panic()?;
 
         // Merge block.
         self.builder.switch_to_block(merge_block);
@@ -546,7 +546,7 @@ where
     /// Calls `runtime_panic("match failed")` so that `catch_unwind` at the
     /// REPL eval boundary can recover, then emits a trailing trap as an
     /// unreachable terminator (Cranelift requires one).
-    fn emit_match_panic(&mut self, _scrut_val: Value) -> Result<(), CranelispError> {
+    fn emit_match_panic(&mut self) -> Result<(), CranelispError> {
         let panic_id = self.ctx.panic_func_id.ok_or_else(|| {
             CranelispError::CodegenError {
                 message: "runtime/panic not declared".into(),

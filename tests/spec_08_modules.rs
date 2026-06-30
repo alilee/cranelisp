@@ -2115,3 +2115,75 @@ fn import_mod_target_qualified_and_bare_equiv() {
         .output()
         .assert_exit(14);
 }
+
+// =============================================================================
+// §8.11.2 — bare (current-module-relative) submodule re-export resolution
+// (S96 Phase 6 user-proxy validation; PRE-EXISTING, unrelated to S96).
+// =============================================================================
+//
+// FAILING-NOT-IGNORED defect repro. §8.11.2 step 1 mandates that when resolving
+// a module name inside a module, the FIRST search step is "Submodule of current
+// module -- already registered via (mod name) in the current module" (no file
+// search required). A shell module that declares `(mod child)` and then
+// re-exports a name from it by the BARE relative name —
+//
+//   (mod child)
+//   (export [child [foo]])
+//
+// — therefore MUST resolve `child` to the current module's submodule. Today it
+// fails:
+//   module 'child' not found (re-exported by 'shell')
+// because the export-resolution path (src/process_form/dependency.rs
+// `handle_export` → `pipeline::resolve_module_file`) skips §8.11.2 step 1 and
+// resolves `child` only as a project-root / lib-dir ROOT module — which does not
+// exist (the file is `shell/child.cl`, i.e. module `shell.child`).
+//
+// Isolation (`tests/CLAUDE.md §"Isolating Cross-Crate Failures"`):
+//   - SELF-CONTAINED fixture reproduces (this test — no stdlib dependency).
+//     The defect is NOT stdlib-specific; the real `stdlib/core.cl`
+//     `(export [syntax …])` / `(export [io …])` bare re-exports are merely the
+//     surfacing instance (failing under `CRANELISP_LIB=stdlib`).
+//   - The FULLY-QUALIFIED form `(export [shell.child [foo]])` WORKS (exit 42) —
+//     see `export_specific_reexport` above — pinning the axis to bare-relative
+//     name resolution, NOT re-export semantics in general.
+//   - The same skip affects bare-relative IMPORT
+//     (`(import [child …])` ⇒ "module 'child' not found (imported by 'shell')").
+//   - The bug reproduces in-project AND via a lib path; not lib-path-specific.
+//
+// Resolver = /int (module resolution in the binary crate). The error originates
+// in `src/process_form/dependency.rs`, which is /int-owned; the fix is to honour
+// §8.11.2 step 1 (submodule-of-current-module) before falling through to
+// project-root / lib-dir file resolution in BOTH the export and import paths.
+//
+// spec: spec/08-modules.md §8.11.2 — Module Resolution Search Order (step 1,
+//   submodule of current module).
+// FIXME(/int): honour §8.11.2 step 1 in `handle_export`/`handle_import` so a
+//   bare name matching a `(mod name)`-declared submodule of the current module
+//   resolves to that submodule instead of erroring "module 'name' not found".
+#[test]
+fn bare_relative_submodule_reexport_resolves() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [Pure]])\n\
+             (import [shell [foo]])\n\
+             (defn main [] (Pure (foo 41)))",
+        )
+        .file(
+            "shell.cl",
+            "(mod child)\n\
+             (export [child [foo]])",
+        )
+        .file(
+            "shell/child.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn foo [x] (add-i64 x 1))",
+        )
+        .run("main.cl")
+        .output()
+        // CORRECT: the bare `child` in `(export [child [foo]])` resolves to the
+        // current module's `(mod child)` submodule (§8.11.2 step 1); `foo` is
+        // re-exported through `shell`; main exits 42. Today this FAILS with
+        // "module 'child' not found (re-exported by 'shell')".
+        .assert_exit(42);
+}

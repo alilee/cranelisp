@@ -233,89 +233,41 @@ pub fn load_platform_dll(
         alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
     };
 
-    // v7 channel (FIXME 0457, `platform-interface.md` §6.8): a concurrency-built
-    // host probes the v7 `cranelisp_concurrent_manifest` export FIRST. A
-    // poll-shape platform (e.g. `async-demo`) exposes its effects ONLY through
-    // this separate manifest type + symbol; on a hit we lift them via
-    // `concurrent_manifest_to_descriptors` (which carries each effect's
-    // `ConcurrencyDescriptor`). The default (non-concurrency) host compiles this
-    // probe out entirely, so v6 platforms + the default host stay byte-identical.
-    #[cfg(feature = "concurrency")]
-    let concurrent: Option<(String, String, Vec<OwnedPlatformFnDescriptor>)> = {
-        let probe: Result<
-            libloading::Symbol<
-                unsafe extern "C" fn(
-                    *const HostCallbacks,
-                )
-                    -> cranelisp_platform::ConcurrentPlatformManifest,
-            >,
-            _,
-        > = unsafe { library.get(b"cranelisp_concurrent_manifest") };
-        match probe {
-            Ok(cm_fn) => {
-                let manifest = unsafe { cm_fn(&callbacks) };
-                check_abi_version(manifest.abi_version, dll_path, location())?;
-                let triple = unsafe {
-                    cranelisp_platform::concurrent_manifest_to_descriptors(&manifest).map_err(
-                        |e| match e {
-                            cranelisp_types::PlatformError::LoadFailed { cause, .. } => {
-                                CranelispError::Platform(
-                                    cranelisp_types::PlatformError::LoadFailed {
-                                        dll: dll_path.to_path_buf(),
-                                        cause,
-                                        location: location(),
-                                    },
-                                )
-                            }
-                            other => CranelispError::Platform(other),
-                        },
-                    )?
-                };
-                Some(triple)
-            }
-            // No v7 export ⇒ a v6 blocking platform; fall through.
-            Err(_) => None,
-        }
-    };
-    #[cfg(not(feature = "concurrency"))]
-    let concurrent: Option<(String, String, Vec<OwnedPlatformFnDescriptor>)> = None;
-
-    let (name, version, descriptors) = match concurrent {
-        Some(triple) => triple,
-        None => {
-            // v6 path: the per-platform-namespaced manifest fn
-            // (`cranelisp_platform_manifest_<name>`, §5.5.5 / §6.7 / DEF-5). The
-            // name is known here from the declaration, computed via the shared
-            // helper (never an inline `format!`).
-            let manifest_sym_name =
-                cranelisp_platform::platform_manifest_symbol(platform_name);
-            type ManifestFn = unsafe extern "C" fn(*const HostCallbacks) -> PlatformManifest;
-            let manifest_fn: libloading::Symbol<ManifestFn> = unsafe {
-                library.get(manifest_sym_name.as_bytes()).map_err(|_e| {
-                    CranelispError::Platform(cranelisp_types::PlatformError::ManifestNotFound {
+    // Single-ABI cutover (`design/arch/platform-interface.md` §6.8.0): ONE loader
+    // path. The v6/v7 either/or probe (`cranelisp_concurrent_manifest`) is gone —
+    // dlsym the per-platform-namespaced `cranelisp_platform_manifest_<name>`
+    // (§5.5.5 / §6.7), read the unified manifest, validate the ABI, and lift via
+    // the lone `manifest_to_descriptors` (which carries each effect's
+    // `ConcurrencyDescriptor` and derives its `scheduling_class`). A platform may
+    // mix blocking and poll-shape effects in this one manifest.
+    let (name, version, descriptors) = {
+        let manifest_sym_name = cranelisp_platform::platform_manifest_symbol(platform_name);
+        type ManifestFn = unsafe extern "C" fn(*const HostCallbacks) -> PlatformManifest;
+        let manifest_fn: libloading::Symbol<ManifestFn> = unsafe {
+            library.get(manifest_sym_name.as_bytes()).map_err(|_e| {
+                CranelispError::Platform(cranelisp_types::PlatformError::ManifestNotFound {
+                    dll: dll_path.to_path_buf(),
+                    location: location(),
+                })
+            })?
+        };
+        let manifest = unsafe { manifest_fn(&callbacks) };
+        check_abi_version(manifest.abi_version, dll_path, location())?;
+        // `manifest_to_descriptors` constructs `PlatformError::LoadFailed` with
+        // `ErrorLocation::unknown()`; rewrite both at this call site so the user
+        // sees the `(platform "name")` form span.
+        unsafe {
+            cranelisp_platform::manifest_to_descriptors(&manifest).map_err(|e| match e {
+                cranelisp_types::PlatformError::LoadFailed { cause, .. } => {
+                    CranelispError::Platform(cranelisp_types::PlatformError::LoadFailed {
                         dll: dll_path.to_path_buf(),
+                        cause,
                         location: location(),
                     })
-                })?
-            };
-            let manifest = unsafe { manifest_fn(&callbacks) };
-            check_abi_version(manifest.abi_version, dll_path, location())?;
-            // `manifest_to_descriptors` constructs `PlatformError::LoadFailed`
-            // with `ErrorLocation::unknown()`; rewrite both at this call site so
-            // the user sees the `(platform "name")` form span.
-            unsafe {
-                cranelisp_platform::manifest_to_descriptors(&manifest).map_err(|e| match e {
-                    cranelisp_types::PlatformError::LoadFailed { cause, .. } => {
-                        CranelispError::Platform(cranelisp_types::PlatformError::LoadFailed {
-                            dll: dll_path.to_path_buf(),
-                            cause,
-                            location: location(),
-                        })
-                    }
-                    // Defensive: forward any non-LoadFailed variant.
-                    other => CranelispError::Platform(other),
-                })?
-            }
+                }
+                // Defensive: forward any non-LoadFailed variant.
+                other => CranelispError::Platform(other),
+            })?
         }
     };
 
@@ -443,15 +395,11 @@ pub fn register_platform_in_tc(
         // the GOT-indirect dispatch arm in backend (`apply.rs`) activates on
         // the variant's `got_slot`.
         if let Some(mut table) = symbol_tables.get_mut(&module_path) {
-            // FIXME 0457 (S94): the poll-shape dispatch axis. Ungated (v6 /
-            // default host) ⇒ always `false` (byte-identical blocking). The
-            // concurrency host lifts it from the v7 descriptor:
+            // Single-ABI cutover (§6.8.0): the poll-shape dispatch axis is read
+            // unconditionally off the unified per-effect descriptor —
             // `concurrency.blocking == 0` ⇒ a poll-shape async leaf ⇒ the
-            // backend's poll-construction arm.
-            #[cfg(feature = "concurrency")]
-            let poll_shape = desc.concurrency.map_or(false, |c| c.blocking == 0);
-            #[cfg(not(feature = "concurrency"))]
-            let poll_shape = false;
+            // backend's poll-construction arm; `== 1` ⇒ a blocking effect.
+            let poll_shape = desc.concurrency.blocking == 0;
 
             let mut builder = ModuleEntry::def(
                 scheme,

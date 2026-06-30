@@ -41,16 +41,24 @@
 //! effects).
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// The fixed port `exemplar/main.cl` listens on (`(defn port [] 8080)`).
-const PORT: u16 = 8080;
-
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// Reserve an ephemeral free TCP port (bind :0, read it, drop the listener), so
+/// the two server tests in this file never collide with each other nor with
+/// `tests/concurrency_fanout_web.rs` under parallel nextest. `exemplar/main.cl`
+/// honours `CRANELISP_PORT` (read platform-side by `bind-listener`), overriding
+/// its source `(defn port [] 8080)`. Small TOCTOU window before the server
+/// re-binds; acceptable for a per-test port.
+fn free_port() -> u16 {
+    let l = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    l.local_addr().expect("local_addr").port()
 }
 
 /// RAII guard that kills + reaps the server child on drop, so a panicking
@@ -67,9 +75,11 @@ impl Drop for ServerGuard {
     }
 }
 
-/// Spawn `--run exemplar/main.cl` with the workspace platform + stdlib env, then
-/// poll the listening port until it accepts a connection (server is ready).
-fn spawn_server() -> ServerGuard {
+/// Spawn `--run exemplar/main.cl` with the given ephemeral port + the workspace
+/// platform + stdlib env, then poll the listening port until it accepts a
+/// connection (server is ready). `CRANELISP_PORT` overrides the exemplar's
+/// source `(defn port [] 8080)`.
+fn spawn_server(port: u16) -> ServerGuard {
     let root = workspace_root();
     let binary = root.join("target").join("debug").join("cranelisp");
     assert!(
@@ -88,6 +98,7 @@ fn spawn_server() -> ServerGuard {
         .current_dir(&root)
         .arg("--run")
         .arg("exemplar/main.cl")
+        .env("CRANELISP_PORT", port.to_string())
         .env("CRANELISP_PLATFORM_PATH", root.join("target").join("debug"))
         .env("CRANELISP_LIB", root.join("stdlib"))
         .stdin(Stdio::null())
@@ -107,12 +118,12 @@ fn spawn_server() -> ServerGuard {
         if let Ok(Some(status)) = guard.child.try_wait() {
             panic!(
                 "exemplar web server exited before listening (status {:?}). \
-                 Is port {PORT} already in use? Check CRANELISP_PLATFORM_PATH/CRANELISP_LIB.",
+                 Is port {port} already in use? Check CRANELISP_PLATFORM_PATH/CRANELISP_LIB.",
                 status
             );
         }
         if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{PORT}").parse().unwrap(),
+            &format!("127.0.0.1:{port}").parse().unwrap(),
             Duration::from_millis(200),
         )
         .is_ok()
@@ -121,7 +132,7 @@ fn spawn_server() -> ServerGuard {
         }
         assert!(
             Instant::now() < deadline,
-            "exemplar web server did not start listening on 127.0.0.1:{PORT} within 20s"
+            "exemplar web server did not start listening on 127.0.0.1:{port} within 20s"
         );
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -133,8 +144,8 @@ fn spawn_server() -> ServerGuard {
 /// (status line + headers + body). The exemplar `web` DLL is a single-threaded
 /// accept loop that reads one request per connection and honours Content-Length
 /// for POST bodies (exemplar/platforms/web/src/lib.rs).
-fn http_request(method: &str, path: &str, body: Option<&str>) -> String {
-    let mut stream = TcpStream::connect(format!("127.0.0.1:{PORT}"))
+fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> String {
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}"))
         .expect("connect to exemplar web server");
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
@@ -196,10 +207,11 @@ fn encode_puzzle_form(puzzle: &str) -> String {
 //   GET  /missing -> 404 page     (<title>Not Found</title>)
 #[test]
 fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
-    let _server = spawn_server();
+    let port = free_port();
+    let _server = spawn_server(port);
 
     // --- GET / -> the puzzle-entry form page ---
-    let form_resp = http_request("GET", "/", None);
+    let form_resp = http_request(port, "GET", "/", None);
     assert!(
         form_resp.contains("<form") && form_resp.contains("action=\"/solve\""),
         "GET / must serve the puzzle-entry form (a <form action=\"/solve\">); got:\n{}",
@@ -217,7 +229,7 @@ fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
     let puzzle =
         "53..7....6..195....98....6.8...6...34..8.3..17...2...6.6....28....419..5....8..79";
     let body = encode_puzzle_form(puzzle);
-    let solve_resp = http_request("POST", "/solve", Some(&body));
+    let solve_resp = http_request(port, "POST", "/solve", Some(&body));
 
     assert!(
         solve_resp.contains("<title>Solution</title>"),
@@ -256,11 +268,75 @@ fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
     );
 
     // --- GET /missing -> the 404 not-found page ---
-    let nf_resp = http_request("GET", "/no-such-path", None);
+    let nf_resp = http_request(port, "GET", "/no-such-path", None);
     assert!(
         nf_resp.contains("<title>Not Found</title>"),
         "GET on an unknown path must serve the Not Found page; got:\n{}",
         truncate(&nf_resp, 600)
+    );
+
+    // _server's Drop kills + reaps the child here.
+}
+
+// =============================================================================
+// The fan-out marquee — the EXEMPLAR server fans out with NO `spawn` in source.
+// =============================================================================
+
+// spec: spec/10-io.md §10.12.7 — Launch-and-Continue (the inferred fan-out,
+// E1/E2/E3). The exemplar's serve loop (`exemplar/main.cl`) inlines the
+// per-connection handler down to direct poll/timer leaves (`read-conn` → `sleep`
+// → `send-conn`) and DISCARDS the result, so /int's bind-chain analysis infers a
+// detached launch-and-continue — one supervised strand per connection — with NO
+// `spawn`/`go`/`async` anywhere in the source. This is the exemplar-scale
+// counterpart of `tests/concurrency_fanout_web.rs::
+// web_server_fans_out_concurrent_requests_overlap` (which proves it on the test
+// fixture): here the SHOWCASE server is the subject.
+//
+// The witness is the per-connection `(sleep (slow-ms req))` direct timer leaf:
+// `/slow` parks ≈100 ms (`slow-ms` is a PURE `Request -> Int`, NOT an IO-returning
+// helper in an effect position — the trap that would suppress the launch, §4.1
+// E3). So K=4 concurrent `/slow` requests OVERLAP on the one reactor (≈1·D ≈ 110ms)
+// instead of serialising (≈K·D ≈ 440ms). The discriminating assertion is the RATIO
+// (D is fixture-defined): K overlapping requests must take far less than K times a
+// single request.
+#[test]
+fn exemplar_web_server_fans_out_concurrent_requests_overlap() {
+    let port = free_port();
+    let _server = spawn_server(port);
+
+    // Fire K concurrent slow requests and measure the wall-clock of the slowest.
+    const K: usize = 4;
+    let start = Instant::now();
+    let handles: Vec<_> = (0..K)
+        .map(|_| std::thread::spawn(move || http_request(port, "GET", "/slow", None)))
+        .collect();
+    let mut bodies = Vec::new();
+    for h in handles {
+        bodies.push(h.join().expect("client thread"));
+    }
+    let elapsed = start.elapsed();
+
+    // All K requests got a (200 OK) response — the server served every one.
+    for (i, b) in bodies.iter().enumerate() {
+        assert!(
+            b.contains("200") || b.to_lowercase().contains("ok"),
+            "concurrent request {i} got no 200/OK response:\n{b}"
+        );
+    }
+
+    // Measure a single /slow request as the baseline D.
+    let one = {
+        let s = Instant::now();
+        let _ = http_request(port, "GET", "/slow", None);
+        s.elapsed()
+    };
+    assert!(
+        elapsed < one * (K as u32) - one / 2,
+        "K={K} concurrent slow requests must OVERLAP (≈1·D, wall-clock {elapsed:?}) \
+         not serialise (≈K·D ≈ {:?}); the exemplar serve loop did not fan out \
+         (launch-and-continue not firing — §10.12.7 / effect-concurrency.md §4.1 \
+         E1/E2/E3 sub-tree launch over the inlined handler)",
+        one * (K as u32),
     );
 
     // _server's Drop kills + reaps the child here.

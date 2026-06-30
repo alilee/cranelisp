@@ -571,10 +571,17 @@ fn link_after_run_reuses_cache_and_resolves_cross_module_got() {
 // spec: design/arch/platform-interface.md §7.3 — `--link` sequence (no live load step)
 #[test]
 fn link_multi_module_platform_emits_single_layout_hash_gate_symbol() {
-    // The `web` platform's Request/Response ADTs as an ordinary `.cl` module
-    // (platforms do not declare ADTs — platform-interface.md §3a). The DLL
-    // references these by FQ identity `web/Request` / `web/Response`.
-    let web_module = "(deftype Request \
+    // The `web` platform's connection-handle ADTs as an ordinary `.cl` module
+    // (platforms do not declare ADTs — platform-interface.md §3a). The v8
+    // poll-shape DLL references these by FQ identity `web/Listener` /
+    // `web/Connection` / `web/Request` / `web/Response` (S96 Chunk B, FIXME 0465 —
+    // mirrors exemplar/web.cl's deftypes, ADTs-only so it resolves during the
+    // platform-load sig pre-resolve).
+    let web_module = "(deftype Listener \
+         [:primitives/Int fd :primitives/Int pool])\n\
+         (deftype Connection \
+         [:primitives/Int token :primitives/Int capacity :primitives/Int fd])\n\
+         (deftype Request \
          [:primitives/String method :primitives/String path :primitives/String body])\n\
          (deftype Response \
          [:primitives/Int status :primitives/String content-type :primitives/String body])\n";
@@ -584,15 +591,16 @@ fn link_multi_module_platform_emits_single_layout_hash_gate_symbol() {
     let helper_module = "(import [primitives [Int add-i64]])\n\
          (defn add-one [:Int x] :Int (add-i64 x 1))\n";
 
-    // The entry: `(platform web)` + import the second module. `listen` is a web
-    // platform effect; `(add-one 8079)` forces a real cross-module call so the
-    // helper module is genuinely part of the link set.
+    // The entry: `(platform web)` + import the second module. `bind-listener` is a
+    // web platform effect (v8: `(Fn [Int Int] (IO web/Listener))`); `(add-one
+    // 8079)` forces a real cross-module call so the helper module is genuinely
+    // part of the link set.
     let entry = "(platform web)\n\
          (import [primitives [bind Pure]])\n\
-         (import [platform.web [listen]])\n\
-         (import [web [Request Response]])\n\
+         (import [platform.web [bind-listener]])\n\
+         (import [web [Listener Request Response]])\n\
          (import [helper [add-one]])\n\
-         (defn main [] (bind (listen (add-one 8079)) (fn [_] (Pure 0))))\n";
+         (defn main [] (bind (bind-listener (add-one 8079) 64) (fn [_] (Pure 0))))\n";
 
     let out = Cranelisp::new()
         .use_workspace_platforms()

@@ -57,34 +57,28 @@ fn platform_search_path() -> PathBuf {
     project_root().join("target").join("debug")
 }
 
-/// Build the platform cdylibs (`stdio`, `test-capture`) into `target/debug`
-/// exactly once per test-binary process. These crates are workspace members
-/// that nothing links, so a plain `cargo nextest run` does NOT build them —
-/// `every_example_runs_with_documented_exit` would otherwise fail the 4 IO
-/// examples with `platform 'stdio'/'test-capture' not found`. Mirrors the
-/// root `justfile run-example` recipe and the cargo-subprocess precedent in
-/// `tests/public_api_relocations.rs`. Idempotent and cheap when already built
-/// (cargo no-ops in ~0.02s).
+/// No-op: the platform cdylibs/rlibs are built suite-wide by the nextest setup
+/// script (`tests/scripts/build-link-prereqs.sh`), the single owner of that
+/// artifact-set invariant (`tests/CLAUDE.md` §"`--link` prerequisites" — "A test
+/// MUST NOT shell out to `cargo build`").
+///
+/// The former per-test `cargo build -p cranelisp-stdio -p cranelisp-test-capture`
+/// band-aid is RETIRED: under the single-ABI cutover it rebuilt the platform
+/// rlib against a `cranelisp-platform` variant resolved over a different
+/// dep-subgraph than the setup script's, yielding a mismatched crate
+/// disambiguator that broke concurrent `--link` tests with `undefined reference`
+/// errors. The setup script builds a profile-consistent artifact set once.
 fn ensure_platform_cdylibs_built() {
+    // qa-ratified S96 B1: the A4c neutralization is sound — no coverage hole. The
+    // platforms this helper formerly built (stdio, test-capture) are both in
+    // `tests/scripts/build-link-prereqs.sh`'s single `cargo build -p …` (9
+    // platforms incl. them), so the IO examples (21-24) still resolve their DLLs;
+    // the call sites are preserved (inert) so the structure reads unchanged. The
+    // forbidden per-test `cargo build` band-aid (which broke parallel `--link`
+    // with mismatched crate disambiguators under the single-ABI cutover) is gone.
+    // Intentionally empty — see the doc comment above. The setup script owns it.
     static BUILT: Once = Once::new();
-    BUILT.call_once(|| {
-        let status = Command::new("cargo")
-            .args([
-                "build",
-                "-p",
-                "cranelisp-stdio",
-                "-p",
-                "cranelisp-test-capture",
-            ])
-            .current_dir(project_root())
-            .status()
-            .expect("failed to spawn `cargo build` for platform cdylibs");
-        assert!(
-            status.success(),
-            "`cargo build -p cranelisp-stdio -p cranelisp-test-capture` failed; \
-             the IO examples cannot resolve their platforms without these cdylibs"
-        );
-    });
+    BUILT.call_once(|| {});
 }
 
 fn run_example(path: &Path) -> Output {
@@ -158,6 +152,10 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // 31: bitwise integer operations. main returns the sum of sub-test
         // pass counts = 19 → exit 19.
         ("31-bitwise.cl", &[19]),
+        // 32: explicit-control concurrency combinators (race / select / sleep +
+        // the inline timeout pattern). main returns the sum of 6 sub-test pass
+        // counts = 6 → exit 6.
+        ("32-concurrency-combinators.cl", &[6]),
     ]
 }
 

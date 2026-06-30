@@ -13,14 +13,10 @@ edition = "2024"
 # the test-only delineation enforceable. See `bounded-contexts.md` §7.
 test-support = []
 
-# Exposes the ABI-v7 effect-concurrency layout contracts
-# (`ConcurrencyDescriptor`, `Poll`, `PollFn`) to the slice-2 async substrate.
-# Off by default and generated WITHOUT this feature in the `public-api.txt`
-# baseline, so the v7 contracts stay out of the frozen edge until the reactor
-# implementation (`/dev`, next sprint/stretch) wires them. Mirrors the
-# `test-support` out-of-baseline discipline. See
-# `design/arch/effect-concurrency.md` §5/§6/§12.
-concurrency = []
+# Single-ABI cutover (S96, `design/arch/platform-interface.md` §6.8.0): the
+# former off-by-default `concurrency` feature is RETIRED — the effect-concurrency
+# ABI contracts (`ConcurrencyDescriptor`, `Poll`, `PollFn`) are now CORE (always
+# compiled, on the default `public-api.txt` edge).
 
 [dependencies]
 dashmap = "6"

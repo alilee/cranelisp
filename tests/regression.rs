@@ -4422,3 +4422,108 @@ fn mono_is_some_unannotated_none_rejected_neg() {
         out.stdout, out.stderr
     );
 }
+
+// =============================================================================
+// An ADT constructor passed as a first-class fn-VALUE and applied indirectly
+// SIGSEGVs (was FIXME 0476; surfaced — not caused — by S96 C4's `timeout`
+// stdlib derivation, which worked around it with an explicit lambda wrapper).
+// =============================================================================
+//
+// `Some` (a `DefKind::Constructor`) used directly (`(Some 7)`) and wrapped in a
+// lambda (`(fn [y] (Some y))`) both work; only the BARE constructor ESCAPING as a
+// value and then being CALLED indirectly through a fn parameter crashes — the
+// `fn_as_value` auto-curry / constructor-wrapper codegen path for a
+// `DefKind::Constructor` reaching codegen as a value (likely an RC/arity mismatch
+// in the wrapper arm). `--run` ⇒ SIGSEGV (exit 139); expected exit 7.
+//
+// Failing-not-ignored defect guard (`memory/feedback_failing_not_ignored.md`):
+// it asserts the CORRECT behaviour (exit 7) and so flips green when /backend fixes
+// the wrapper codegen. The lambda-wrapped control below is a positive companion
+// pinning that the defect is specifically the bare-constructor-as-value path.
+//
+// spec: spec/05-definitions.md §5.2.7 — Constructor Semantics ("Data constructors
+// are functions. They participate in auto-currying: `(let [f Some] (f 42))`
+// works.") — exactly the contract this defect violates.
+// FIXME(/backend): fix the constructor fn-as-value wrapper codegen
+// (control_flow/fn_as_value.rs constructor-wrapper / auto-curry arm for a
+// DefKind::Constructor reaching codegen as a value).
+#[test]
+fn constructor_as_fn_value_applied_indirectly_does_not_segfault() {
+    let source = r#"(import [primitives [Pure Some None]])
+(defn apply-it [f x] (f x))
+(defn main []
+  (match (apply-it Some 7) [(Some v) (Pure v) None (Pure 2)]))
+"#;
+    Cranelisp::new()
+        .run("main.cl")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("main.cl", source)
+        .output()
+        .assert_exit(7);
+}
+
+// spec: spec/05-definitions.md §5.2.7 — Constructor Semantics (positive
+// companion to the defect guard above). Wrapping the constructor in an explicit
+// lambda is the SUPPORTED shape and must work — this pins that the crash is
+// specific to the bare-constructor-as-value path, not the closure-call path.
+#[test]
+fn constructor_wrapped_in_lambda_applied_indirectly_works() {
+    let source = r#"(import [primitives [Pure Some None]])
+(defn apply-it [f x] (f x))
+(defn main []
+  (match (apply-it (fn [y] (Some y)) 7) [(Some v) (Pure v) None (Pure 2)]))
+"#;
+    Cranelisp::new()
+        .run("main.cl")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("main.cl", source)
+        .output()
+        .assert_exit(7);
+}
+
+// =============================================================================
+// `race` with an inline `bind`-lambda branch miscompiles under default lenient
+// eval (S96 Phase 6 user-proxy validation).
+// =============================================================================
+//
+// `(race (bind (Pure 0) (fn [_] (Pure 111))) (Pure 222))` under DEFAULT lenient
+// eval fails in codegen with:
+//   failed to declare lambda function: Function __lambda_main__…__ signature
+//   {2 params} is incompatible with previous declaration {1 param}
+// — the apply-argument-sparking lambda-name allocator collides with the
+// combinator-argument lambda for the SAME inline `(fn …)` inside a `race`
+// branch: the lambda is declared once with the sparking signature (2 params)
+// and once with the combinator signature (1 param) under one name.
+//
+// Established by isolation (`tests/CLAUDE.md §"Isolating Cross-Crate Failures"`):
+//   - `CRANELISP_NO_LENIENT=1` ⇒ compiles + runs clean, exit 111 (the bound
+//     branch wins; both branches are immediate `Pure`s, `race` returns the
+//     first). So the codegen path is correct; only the lenient-sparking
+//     lambda-naming collides.
+//   - `select` with the identical inline `(bind … (fn …))` branch is
+//     UNAFFECTED — the collision is `race`-specific.
+//   - Lifting each branch to a named top-level helper avoids it.
+//
+// Failing-not-ignored defect guard (`memory/feedback_failing_not_ignored.md`):
+// asserts the CORRECT result (exit 111, DEFAULT lenient eval ON) so it FAILS
+// now (codegen error, exit 1) and flips green when /backend fixes the
+// lambda-name collision between the apply-arg-sparking and combinator-arg
+// lambda allocators for an inline `(fn …)` in a `race` branch.
+//
+// spec: spec/10-io.md §10.12.8 — race
+// FIXME(/backend): de-collide the lambda-function name allocated for an
+// inline `(fn …)` that is BOTH an apply-argument-spark candidate AND a
+// `race` combinator argument under default lenient eval (the two emission
+// paths declare the same `__lambda_…__` name with incompatible signatures).
+#[test]
+fn race_with_inline_bind_lambda_branch_compiles_under_lenient() {
+    let source = r#"(import [primitives [Pure bind race]])
+(defn main [] (race (bind (Pure 0) (fn [_] (Pure 111))) (Pure 222)))
+"#;
+    Cranelisp::new()
+        .run("main.cl")
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("main.cl", source)
+        .output()
+        .assert_exit(111);
+}

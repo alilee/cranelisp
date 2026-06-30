@@ -36,13 +36,16 @@
 //!   "hand-written executor loop that calls `Future::poll`" — NOT a fiber (the
 //!   suspension is a real compiler-generated `async` state machine; App. B
 //!   substrate rationale, Principle 8).
-//! - the fixture **`async-read`** poll-fn ([`async_read_pollfn`]) + a timer-driven
-//!   feeder ([`timer_write_pollfn`]) — the hand-written demo leaves (App. B "Demo
-//!   leaf"). No `declare_platform!` / backend change is needed to demo the
-//!   mechanism; the macro poll-emission is a later slice.
+//! - the fixture **`async-read`** poll-fn (`async_read_pollfn`) + a timer-driven
+//!   feeder (`timer_write_pollfn`) — the hand-written demo leaves (App. B "Demo
+//!   leaf"), now `#[cfg(test)]` test-only fixtures. No `declare_platform!` /
+//!   backend change is needed to demo the mechanism.
 //!
-//! Gated `concurrency-runtime`: byte-identical-when-off (the deps `mio`/`futures`
-//! are `dep:`-gated, so with the feature off cargo links neither).
+//! Single-ABI cutover (S96, `platform-interface.md` §6.8.0a): the reactor + its
+//! `mio`/`futures` deps are **unconditional** in every build (the former
+//! `concurrency-runtime` feature is retired). Lean-default is preserved as a
+//! RUNTIME property — a pure-blocking program constructs no mio `Poll` (the
+//! reactor is lazily initialised per drive), not via a `#[cfg]` split.
 
 use core::ffi::c_void;
 use std::cell::{Cell, RefCell};
@@ -57,6 +60,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll as TaskPoll, Wake, Waker};
 use std::time::Duration;
+
+use futures::future::FutureExt; // catch_unwind on the supervised strand body
+use futures::stream::{FuturesUnordered, StreamExt}; // the supervisor JoinSet-equivalent
 
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Token};
@@ -196,6 +202,12 @@ impl Drop for OwnedCWaker {
 // The reactor — one mio::Poll loop + a timer min-heap.
 // ===========================================================================
 
+/// A registrant tag (finding #3, §2.16): identifies the [`EffectPoll`] that armed a
+/// given fd/timer interest, so the leaf's `ReactorInterest::drop` can actively
+/// deregister exactly its own entries on cancel. `0` is the reserved "untagged"
+/// sentinel (see [`Reactor::next_reg`]).
+type RegId = u64;
+
 /// A registered timer waiter.
 struct TimerEntry {
     deadline_nanos: u64,
@@ -234,13 +246,28 @@ pub struct Reactor {
     events: Events,
     /// Next mio `Token` value to hand out for an fd registration.
     next_fd_token: usize,
-    /// Live fd registrations: `token → (fd, waker-to-fire-on-ready)`.
-    fd_waiters: HashMap<usize, (RawFd, OwnedCWaker)>,
+    /// Live fd registrations: `token → (fd, waker-to-fire-on-ready, registrant)`.
+    /// The `RegId` tag (finding #3, §2.16) records which [`EffectPoll`] armed the
+    /// entry, so its `ReactorInterest::drop` can actively deregister it on cancel.
+    fd_waiters: HashMap<usize, (RawFd, OwnedCWaker, RegId)>,
     /// Pending timers, soonest-deadline first.
     timer_heap: BinaryHeap<Reverse<TimerEntry>>,
-    /// Live timer waiters: `id → waker-to-fire-on-expiry`.
-    timer_waiters: HashMap<u64, OwnedCWaker>,
+    /// Live timer waiters: `id → (waker-to-fire-on-expiry, registrant)` (finding
+    /// #3 tag — see [`Reactor::fd_waiters`]).
+    timer_waiters: HashMap<u64, (OwnedCWaker, RegId)>,
     next_timer_id: u64,
+    /// Monotonic source of [`RegId`] registrant tags (finding #3, §2.16). Allocated
+    /// per [`EffectPoll`] in `EffectPoll::new`; `0` is the reserved "untagged"
+    /// sentinel (an entry armed with no current registrant — e.g. a fixture leaf
+    /// built with a null host — which `deregister` never targets). Starts at 1.
+    next_reg: RegId,
+    /// The leaf currently being polled (finding #3, §2.16): set by
+    /// `EffectPoll::poll`'s bracket around the poll-fn call, so every fd/timer the
+    /// poll-fn arms during THIS poll is stamped with that leaf's `RegId`. `None`
+    /// between polls (and during `turn()`), so a registration that somehow reached
+    /// the reactor outside a bracket is stamped `0` (untagged) rather than
+    /// mis-attributed.
+    current_registrant: Option<RegId>,
     /// The cross-thread wakeup (slice 6): a `mio::Waker` on the reserved
     /// [`BRIDGE_WAKE_TOKEN`] that unblocks a `mio::poll` in [`Reactor::turn`]
     /// from another thread. This is what lets the **wakeable rayon→reactor
@@ -255,6 +282,16 @@ pub struct Reactor {
 
 impl Reactor {
     /// Build a fresh reactor (one `mio::Poll`).
+    ///
+    /// Single-trampoline cutover, Stage-2 (`design/arch/platform-interface.md`
+    /// §6.8.0a): this is the **eager-cheap** reactor — `epoll_create` + one eventfd
+    /// per top-level drive (~2 syscalls), constructed unconditionally. It is the
+    /// blessed fallback (a permanently-valid behaviour, NOT an interim). A
+    /// pure-blocking program drives to `Ready` on the first poll and never calls
+    /// `turn()`, so it pays only these two syscalls and never blocks the `Poll`.
+    /// The truly-lazy `Poll` (construct nothing for a pure-blocking program) is the
+    /// follow-up refinement deferred here for its capacity-park-release lost-wake
+    /// soundness obligation.
     pub fn new() -> std::io::Result<Self> {
         let poll = mio::Poll::new()?;
         // The cross-thread wakeup on the reserved token (slice 6 — the wakeable
@@ -268,6 +305,8 @@ impl Reactor {
             timer_heap: BinaryHeap::new(),
             timer_waiters: HashMap::new(),
             next_timer_id: 1,
+            next_reg: 1,
+            current_registrant: None,
             bridge_waker,
         })
     }
@@ -312,7 +351,10 @@ impl Reactor {
         match self.poll.registry().register(&mut src, Token(token), interest) {
             Ok(()) => {
                 let owned = unsafe { OwnedCWaker::clone_from_ref(waker) };
-                self.fd_waiters.insert(token, (fd, owned));
+                // Stamp the entry with the leaf currently being polled (finding #3,
+                // §2.16) — `0` (untagged) if armed outside a poll bracket.
+                let reg = self.current_registrant.unwrap_or(0);
+                self.fd_waiters.insert(token, (fd, owned, reg));
             }
             Err(e) if e.raw_os_error() == Some(libc::EEXIST) => {
                 // Already registered (sibling re-poll while still parked): keep
@@ -331,8 +373,63 @@ impl Reactor {
         let id = self.next_timer_id;
         self.next_timer_id += 1;
         let owned = unsafe { OwnedCWaker::clone_from_ref(waker) };
+        // Stamp with the current registrant (finding #3, §2.16).
+        let reg = self.current_registrant.unwrap_or(0);
         self.timer_heap.push(Reverse(TimerEntry { deadline_nanos, id }));
-        self.timer_waiters.insert(id, owned);
+        self.timer_waiters.insert(id, (owned, reg));
+    }
+
+    /// Allocate a fresh [`RegId`] for an [`EffectPoll`] (finding #3, §2.16). Called
+    /// once per leaf in `EffectPoll::new` (through the `host.host` raw-`*mut Reactor`
+    /// reborrow, the B1 provenance invariant). Monotonic; never returns `0`.
+    fn alloc_reg(&mut self) -> RegId {
+        let reg = self.next_reg;
+        self.next_reg += 1;
+        reg
+    }
+
+    /// Actively tear down every fd/timer interest tagged `reg` (finding #3, §2.16) —
+    /// the body of [`ReactorInterest::drop`]. A cancelled in-flight [`EffectPoll`]
+    /// (race loser, timed-out / disconnected / shutdown-cleared strand) calls this
+    /// so its armed `fd_waiters` / `timer_waiters` entries + `mio` registrations do
+    /// not leak until the fd next readies (or for the whole drive). Without it the
+    /// maps + mio registrations accumulate unboundedly under volume cancellation in
+    /// a long-running reactor (the §2.16 leak this fixes).
+    ///
+    /// fd entries are `mio`-deregistered; timer entries are dropped from the map
+    /// (their `timer_heap` slot becomes a tombstone `turn()` already tolerates — the
+    /// `remove` guard finds nothing and skips). Scanning by tag is O(live waiters);
+    /// cancellation is rarer than steady-state and the maps are bounded by in-flight
+    /// leaves — acceptable (Principle 6). `reg == 0` (untagged) is a no-op.
+    ///
+    /// Runs on the reactor thread between polls/turns (never concurrently with a
+    /// poll-fn or `turn()`), so the `&mut self` reborrow is sound (B1).
+    fn deregister(&mut self, reg: RegId) {
+        if reg == 0 {
+            return;
+        }
+        // fd waiters tagged `reg`: mio-deregister + drop from the map.
+        let fd_tokens: Vec<usize> = self
+            .fd_waiters
+            .iter()
+            .filter(|(_, (_, _, r))| *r == reg)
+            .map(|(t, _)| *t)
+            .collect();
+        for token in fd_tokens {
+            if let Some((fd, _waker, _reg)) = self.fd_waiters.remove(&token) {
+                let mut src = SourceFd(&fd);
+                let _ = self.poll.registry().deregister(&mut src);
+            }
+        }
+        // timer waiters tagged `reg`: drop from the map (heap entries tombstone).
+        self.timer_waiters.retain(|_, (_, r)| *r != reg);
+    }
+
+    /// Total live fd + timer waiters — the finding-#3 leak witness for the unit
+    /// tests (a dropped in-flight leaf must bring this back to its pre-arm value).
+    #[cfg(test)]
+    pub(crate) fn waiter_count(&self) -> usize {
+        self.fd_waiters.len() + self.timer_waiters.len()
     }
 
     /// Drive one reactor turn: block in `mio::poll` until the soonest timer
@@ -357,7 +454,7 @@ impl Reactor {
         // 1. Fire ready fd waiters (and tear down their registration — one-shot).
         let ready_tokens: Vec<usize> = self.events.iter().map(|e| e.token().0).collect();
         for token in ready_tokens {
-            if let Some((fd, waker)) = self.fd_waiters.remove(&token) {
+            if let Some((fd, waker, _reg)) = self.fd_waiters.remove(&token) {
                 let mut src = SourceFd(&fd);
                 let _ = self.poll.registry().deregister(&mut src);
                 waker.wake();
@@ -371,7 +468,7 @@ impl Reactor {
                 break;
             }
             let Reverse(t) = self.timer_heap.pop().unwrap();
-            if let Some(waker) = self.timer_waiters.remove(&t.id) {
+            if let Some((waker, _reg)) = self.timer_waiters.remove(&t.id) {
                 waker.wake();
             }
         }
@@ -442,6 +539,68 @@ fn make_host_ctx(reactor_ptr: *mut Reactor) -> HostCtx {
 // EffectPoll — the one await boundary (App. B).
 // ===========================================================================
 
+/// The reactor-registration handle an [`EffectPoll`] OWNS (finding #3, §2.16): a
+/// RAII binding of the *reactor interest's* lifetime to the future, exactly as
+/// `Option<Permit>` binds the *permit's* (§2.9). Its `Drop` actively deregisters
+/// every fd/timer interest this leaf armed — the active-deregistration that the
+/// §2.9 Chunk-A permit-only path deferred to Chunk C. **No hand-written
+/// `Drop for EffectPoll`**: this field's own drop glue IS the deregistration path
+/// (the structural minimum — Principle 18).
+///
+/// Lifecycle parity with the permit:
+/// - **drop-while-`Pending`** (cancellation) → `Drop` deregisters the live fd/timer
+///   interest. This is the leak fix.
+/// - **`Ready`** → the fd entry was already removed by `turn()`'s one-shot
+///   deregister and a timer self-clears at its deadline, so the eventual
+///   future-drop `deregister` is a safe no-op (no eager dereg is added — unlike the
+///   permit, reactor interest has no `join_all`-style hold that would starve a
+///   sibling; §2.16 documents this deliberate asymmetry).
+struct ReactorInterest {
+    /// The raw `*mut Reactor` (the B1 provenance pointer — the `host.host` handle).
+    /// May be **null** for a leaf built with a no-reactor fixture `HostCtx` (the
+    /// permit-lifecycle unit tests), in which case there is nothing to deregister.
+    reactor: *mut Reactor,
+    /// This leaf's registrant tag (finding #3). `0` ⇒ no interest to tear down.
+    reg: RegId,
+}
+
+/// Scope-guard that clears [`Reactor::current_registrant`] when dropped — the
+/// panic-safe bracket for the finding-#3 poll-fn tagging (S96 Chunk C, C2-review
+/// forward item #2, §2.16). A poll-fn that panics mid-[`EffectPoll::poll`] would
+/// otherwise skip the explicit `current_registrant = None` clear, leaving a stale
+/// `Some(reg)` that mis-tags the NEXT leaf's fd/timer registrations. Binding the
+/// clear to this guard's `Drop` runs it on BOTH a normal return and an unwind.
+/// Cheap: one nullable pointer + a single field write on drop.
+struct RegistrantGuard(*mut Reactor);
+
+impl Drop for RegistrantGuard {
+    fn drop(&mut self) {
+        if self.0.is_null() {
+            return;
+        }
+        // SAFETY: B1 provenance — `self.0` is the raw `*mut Reactor` (`host.host`).
+        // The guard drops inside `EffectPoll::poll` (normal return) or during its
+        // unwind, on the reactor thread between polls/turns — no overlap with a
+        // concurrent `turn()` or poll-fn reborrow.
+        unsafe { (*self.0).current_registrant = None };
+    }
+}
+
+impl Drop for ReactorInterest {
+    fn drop(&mut self) {
+        if self.reactor.is_null() || self.reg == 0 {
+            return; // no live reactor / never armed under a tag — nothing to do.
+        }
+        // SAFETY: B1 provenance invariant — `reactor` is the raw `*mut Reactor`
+        // (the `host.host` handle), NOT derived from a `&Reactor`. This `Drop` runs
+        // on the reactor thread when the future is dropped — between polls/turns,
+        // never concurrently with a poll-fn's reborrow or `turn()`'s reborrow — so
+        // this transient `&mut` does not alias any other `&mut Reactor`.
+        let r = unsafe { &mut *self.reactor };
+        r.deregister(self.reg);
+    }
+}
+
 /// Byte offset of the reserved **result slot** within a poll-fn `state` — the
 /// generic env-offset result read (S94 R1 seam decision 3, FIXME 0457). `state`
 /// is the env base of the host-built state-closure (`closure + 32`), and the
@@ -455,8 +614,33 @@ const RESULT_SLOT_OFFSET: isize = 0;
 /// and `Pending` → a park on the reactor, and emits the strand observability
 /// events.
 ///
-/// All fields are `Copy`/pointer ⇒ `EffectPoll: Unpin`, so it polls through a
-/// plain `&mut`. The lifetime ties the borrowed `HostCtx` to the future.
+/// `EffectPoll: Unpin` — every field is a pointer / `Copy` scalar, or the
+/// movable `Option<Permit>` (`Permit` is `Rc` + scalars, itself `Unpin`) — so it
+/// polls through a plain `&mut`. The lifetime ties the borrowed `HostCtx` to the
+/// future.
+///
+/// **The capacity permit (§2.9 — acquire-around-poll + the RAII drop-guard).**
+/// `permit: Option<Permit>` is the token-capacity permit this future OWNS across
+/// its whole establish→`Pending`→…→`Ready` arc. It is `Some` from construction
+/// (acquired BEFORE the first poll-fn call, in `io::await_poll_node`) and is
+/// released by exactly one of two mutually-exclusive paths:
+///
+/// - **eagerly on `Poll::Ready`** — `Option::take()` + drop in [`EffectPoll::poll`],
+///   freeing the slot the instant the result is available. NOT deferred to
+///   future-drop: in a `join_all` an individual leaf is not dropped until the
+///   whole join completes, so deferring would hold the slot past this leaf's own
+///   completion and starve same-token waiters until the slowest sibling finishes.
+/// - **on future-drop** — the `Option<Permit>` field's own drop glue releases it
+///   if still `Some`, i.e. the future was dropped before reaching `Ready`
+///   (cancelled / timed-out / race-lost / disconnected — the A→C contract Chunk C
+///   exercises). **No `Drop for EffectPoll` is hand-written**; the field's drop
+///   glue IS the cancellation release path.
+///
+/// The `Option` makes "released exactly once" *representable* (Principle 20 — no
+/// boolean `released` flag to keep in sync): `take()` on `Ready` leaves `None`, so
+/// the subsequent field-drop is a no-op; a dropped-before-`Ready` future never ran
+/// `take()`, so the field is `Some` and drops exactly once. (`token == 0` ⇒ an
+/// inert permit whose drop is itself a no-op.)
 pub struct EffectPoll<'h> {
     state: *mut c_void,
     poll_fn: PollFn,
@@ -465,28 +649,72 @@ pub struct EffectPoll<'h> {
     /// Number of times `poll` has run — distinguishes dispatch (0) from a resume
     /// (>0) for the strand events.
     polls: u32,
+    /// The token-capacity permit owned across the establish→ready arc (§2.9). See
+    /// the type doc above for the two-path, released-exactly-once lifecycle.
+    permit: Option<Permit>,
+    /// This leaf's registrant tag (finding #3, §2.16) — allocated in
+    /// [`EffectPoll::new`], stamped onto every fd/timer this leaf arms (via the
+    /// poll-bracket below), and used by `_interest`'s drop to deregister them.
+    /// `0` for a no-reactor fixture leaf.
+    reg: RegId,
+    /// The RAII reactor-registration handle (finding #3, §2.16). Underscore-prefixed
+    /// because it is **drop-only** — the future never reads it; its `Drop` actively
+    /// deregisters this leaf's reactor interest when the future drops (the
+    /// cancellation leak fix), paralleling the `Option<Permit>` drop-release.
+    _interest: ReactorInterest,
 }
 
 impl<'h> EffectPoll<'h> {
-    /// Build an effect leaf over a poll-fn + its state, charged to `strand`.
+    /// Build an effect leaf over a poll-fn + its state, charged to `strand`, that
+    /// OWNS `permit` across its establish→ready arc (§2.9). The caller acquires
+    /// the live `(token, capacity)` permit (in `io::await_poll_node`) BEFORE the
+    /// first poll and moves it in here as `Some(permit)`; the future releases it
+    /// on `Ready` (eager `Option::take`) or on drop (the cancellation path). Pass
+    /// an inert `token == 0` permit for the unrestricted case (its drop is a
+    /// no-op); pass `None` only for a leaf that takes no admission (the fixture
+    /// substrate-regression leaves driven without a pool).
+    ///
+    /// `pub(crate)`, not `pub`: the only construction sites are this crate's
+    /// trampoline (`io::await_poll_node`) and unit tests — no external crate
+    /// builds an `EffectPoll`. Keeping it crate-local also keeps the `pub(crate)`
+    /// [`Permit`] out of a `pub` signature (no private-in-public lint).
     ///
     /// # Safety
     /// `state` must be valid for the poll-fn for the future's lifetime, and must
     /// point at an env whose first `i64` slot ([`RESULT_SLOT_OFFSET`]) is the
     /// reserved result slot the poll-fn writes before returning `Ready`;
     /// `poll_fn` must obey the v7 poll-fn contract.
-    pub unsafe fn new(
+    pub(crate) unsafe fn new(
         state: *mut c_void,
         poll_fn: PollFn,
         host: &'h HostCtx,
         strand: StrandId,
+        permit: Option<Permit>,
     ) -> Self {
+        // Mint this leaf's registrant tag from the reactor (finding #3, §2.16),
+        // alongside the §2.9 permit acquire. The reactor is the `host.host` raw
+        // `*mut Reactor` handle (B1). A no-reactor fixture `HostCtx` (the
+        // permit-lifecycle unit tests) carries a NULL `host`, so there is no reactor
+        // to tag against — `reg = 0`, an inert interest whose drop is a no-op.
+        let reactor = host.host as *mut Reactor;
+        let reg = if reactor.is_null() {
+            0
+        } else {
+            // SAFETY: B1 — `host.host` is the raw `*mut Reactor`; `new` runs once,
+            // inside a `Future::poll` on the reactor thread (the same window a
+            // poll-fn reborrows in), so this transient `&mut` does not overlap
+            // `turn()`'s reborrow.
+            unsafe { (*reactor).alloc_reg() }
+        };
         EffectPoll {
             state,
             poll_fn,
             host,
             strand,
             polls: 0,
+            permit,
+            reg,
+            _interest: ReactorInterest { reactor, reg },
         }
     }
 }
@@ -511,9 +739,32 @@ impl Future for EffectPoll<'_> {
         // Project the executor's waker across the C-ABI; the poll-fn clones it if
         // it registers interest. Freed unconditionally after the call.
         let cwaker = make_cabi_waker(cx.waker().clone());
+        // Bracket the poll-fn call (finding #3, §2.16): set `current_registrant` to
+        // this leaf's tag so every fd/timer it arms during THIS poll is stamped with
+        // `this.reg`, then clear it. A no-reactor fixture leaf (`reg == 0` / null
+        // host) is not bracketed. The reborrow is the B1 pattern — transient, on the
+        // reactor thread, non-overlapping with `turn()` and with the poll-fn's own
+        // `register_*` reborrows (which run sequentially after this set).
+        let reactor = this.host.host as *mut Reactor;
+        let bracketed = !reactor.is_null() && this.reg != 0;
+        // Panic-safe bracket (forward item #2, §2.16): the guard clears
+        // `current_registrant` on the way out — normal return AND poll-fn panic
+        // unwind — so a panicking poll-fn cannot leak a stale tag onto the next
+        // leaf's registrations.
+        let _reg_guard = if bracketed {
+            // SAFETY: B1 — `host.host` is the raw `*mut Reactor`; transient `&mut`,
+            // no overlap with `turn()` (we are inside `Future::poll`).
+            unsafe { (*reactor).current_registrant = Some(this.reg) };
+            Some(RegistrantGuard(reactor))
+        } else {
+            None
+        };
         // SAFETY: `state`/`host`/`poll_fn` honour the v7 contract (constructor
         // safety obligation); `&cwaker` is a live C-ABI waker.
         let result = unsafe { (this.poll_fn)(this.state, this.host as *const HostCtx, &cwaker as *const CWaker) };
+        // Clear the registrant bracket now (the guard's drop is the panic-path
+        // backstop; this explicit drop keeps the common-path timing unchanged).
+        drop(_reg_guard);
         drop_cabi_waker(cwaker);
 
         match result {
@@ -526,6 +777,15 @@ impl Future for EffectPoll<'_> {
                 let value = unsafe {
                     *((this.state as *const i64).byte_offset(RESULT_SLOT_OFFSET))
                 };
+                // Eager release (§2.9 step 5): take + drop the permit BEFORE
+                // returning `Ready`. In a `join_all` an individual leaf is not
+                // dropped until the whole join completes, so deferring release to
+                // future-drop would hold the slot past this leaf's own completion
+                // and starve same-token waiters. `Option::take()` moves the
+                // `Permit` out (leaving `None`, so the field's drop glue is a
+                // no-op — no double-release) and dropping it increments the slot +
+                // FIFO-wakes the front parked waiter (`Drop for Permit`).
+                drop(this.permit.take());
                 TaskPoll::Ready(value)
             }
             CPoll::Pending => {
@@ -563,32 +823,73 @@ struct TokenSlot {
     /// stands under first-writer-wins reconciliation).
     capacity: u32,
     /// Parked waiters in FIFO order — the (capacity+1)th and beyond. A permit
-    /// release wakes the FRONT (source order for capacity 1, §8.2).
-    waiters: VecDeque<Waker>,
+    /// release wakes the FRONT (source order for capacity 1, §8.2). Each waiter
+    /// carries a monotonic `WaiterId` (finding #4, §2.17) so a cancelled
+    /// `AcquirePermit` can `retain`-remove its OWN stale waker by identity on drop —
+    /// keeping the single-front-`pop` FIFO (and its source-order guarantee) intact
+    /// while never waking a stranded waker.
+    waiters: VecDeque<(u64, Waker)>,
 }
+
+/// The reserved well-known token for the **global admission budget** (§2.13) —
+/// the single program-wide `Semaphore` bounding total in-flight detached strands
+/// (the launch-and-continue memory bound). `u64::MAX` is a sentinel that is never
+/// a real resource token, so its slot in the shared pool never collides with a
+/// resource token's. Pre-sized (via the pool's `degree`) at construction.
+pub(crate) const GLOBAL_BUDGET_TOKEN: u64 = u64::MAX;
 
 /// The host-owned token-capacity pool: `token → TokenSlot`. Keyed on the
 /// **node-read** `(token, capacity)` (`io::read_resource_token` / `read_capacity`).
 /// Constructed single-sited in [`block_on_reactor`] alongside the [`Reactor`]
 /// (§6.2 — divergence-proof by the intrinsics-hosting argument; int grows no
 /// parallel pool builder).
+///
+/// **`degree` (slice 4, §2.13).** A program-chosen in-flight throttle that
+/// composes with each token's platform-asserted capacity: a token's slot is sized
+/// `min(node_capacity, degree)` (degree can only *tighten*, never loosen past the
+/// capacity ceiling — spec §10.12.4.2). `degree == u32::MAX` (the default) is "no
+/// throttle" — every slot is sized to its node capacity, preserving the
+/// pre-slice-4 behaviour. The same `degree` pre-sizes the global-budget slot
+/// ([`GLOBAL_BUDGET_TOKEN`]).
 pub(crate) struct TokenPool {
     slots: RefCell<HashMap<u64, TokenSlot>>,
+    /// The program degree throttle (§2.13). `u32::MAX` ⇒ no throttle.
+    degree: u32,
+    /// Monotonic source of parked-waiter identities (finding #4, §2.17). A `Cell`
+    /// (not an atomic) — every acquire/park/drop runs on the ONE reactor thread
+    /// (§2.8 single-thread invariant), so no synchronisation is needed. Starts at 1
+    /// so `0` is never a live waiter id (a free `parked_id` sentinel is `None`, not
+    /// `Some(0)`, but keeping `0` reserved is defensive).
+    next_waiter: Cell<u64>,
 }
 
 impl TokenPool {
-    /// A fresh empty pool (no tokens yet — slots are created lazily on first
-    /// acquire).
+    /// A fresh empty pool with **no degree throttle** (`degree = u32::MAX`) — the
+    /// pre-slice-4 behaviour, where each token slot is sized to its full node
+    /// capacity. Slots are created lazily on first acquire.
+    ///
+    /// `#[cfg(test)]`: a test convenience for the pool/permit unit tests.
+    /// Production drives construct the pool via [`with_degree`] (the degree knob).
+    #[cfg(test)]
     pub(crate) fn new() -> Rc<Self> {
+        Self::with_degree(u32::MAX)
+    }
+
+    /// A fresh empty pool with a program `degree` throttle (§2.13): every token
+    /// slot is sized `min(node_capacity, degree)`, and the global-budget slot is
+    /// pre-sized to `degree`. `degree == u32::MAX` ⇒ no throttle (see [`new`]).
+    pub(crate) fn with_degree(degree: u32) -> Rc<Self> {
         Rc::new(TokenPool {
             slots: RefCell::new(HashMap::new()),
+            degree: degree.max(1),
+            next_waiter: Cell::new(1),
         })
     }
 
-    /// Acquire a permit on `token` (sized `capacity` on first sight), charged to
-    /// `strand`. `token == 0` ⇒ no acquire (unrestricted — full overlap). The
-    /// returned [`AcquirePermit`] future resolves to a [`Permit`] whose drop
-    /// releases the permit and wakes the front waiter.
+    /// Acquire a permit on `token` (sized `min(capacity, degree)` on first sight),
+    /// charged to `strand`. `token == 0` ⇒ no acquire (unrestricted — full
+    /// overlap). The returned [`AcquirePermit`] future resolves to a [`Permit`]
+    /// whose drop releases the permit and wakes the front waiter.
     fn acquire(self: &Rc<Self>, token: u64, capacity: u32, strand: StrandId) -> AcquirePermit {
         AcquirePermit {
             pool: Rc::clone(self),
@@ -596,6 +897,25 @@ impl TokenPool {
             capacity,
             strand,
             parked: false,
+            is_global: false,
+            parked_id: None,
+        }
+    }
+
+    /// Acquire a permit on the reserved [`GLOBAL_BUDGET_TOKEN`] — the global
+    /// admission gate the `IO_TAG_LAUNCH` arm takes before spawning a detached
+    /// strand (§2.13). Sized to the pool's `degree` (the global bound); exhaustion
+    /// parks the launch (the accept loop) until an in-flight strand completes and
+    /// frees a permit. Emits the `GlobalBudget*` strand events (not `Token*`).
+    fn acquire_global(self: &Rc<Self>, strand: StrandId) -> AcquirePermit {
+        AcquirePermit {
+            pool: Rc::clone(self),
+            token: GLOBAL_BUDGET_TOKEN,
+            capacity: self.degree,
+            strand,
+            parked: false,
+            is_global: true,
+            parked_id: None,
         }
     }
 }
@@ -609,9 +929,19 @@ pub(crate) struct AcquirePermit {
     token: u64,
     capacity: u32,
     strand: StrandId,
-    /// `true` once this future has emitted `TokenParked` — so a re-poll that is
-    /// still blocked does not re-emit the park event.
+    /// `true` once this future has emitted `TokenParked` / `GlobalBudgetParked` —
+    /// so a re-poll that is still blocked does not re-emit the park event.
     parked: bool,
+    /// `true` for an acquire on the reserved [`GLOBAL_BUDGET_TOKEN`] — emits the
+    /// `GlobalBudget*` strand events instead of `Token*` (§2.13 / §3).
+    is_global: bool,
+    /// This future's own parked-waiter identity in the slot's FIFO (finding #4,
+    /// §2.17). `None` until it parks; `Some(id)` while its waker sits in
+    /// `slot.waiters`; cleared back to `None` on acquire (the releaser already
+    /// popped it). [`Drop for AcquirePermit`] uses it to `retain`-remove ONLY this
+    /// future's stale waker if it is cancelled while parked — no lost-wakeup, FIFO
+    /// order preserved. `token == 0` never parks ⇒ stays `None` ⇒ drop is a no-op.
+    parked_id: Option<u64>,
 }
 
 impl Future for AcquirePermit {
@@ -626,50 +956,88 @@ impl Future for AcquirePermit {
                 pool: Rc::clone(&this.pool),
                 token: 0,
                 strand: this.strand,
+                is_global: false,
             });
         }
 
+        // Slot sizing = min(node_capacity, degree) (§2.13 part 1). For the global
+        // token, `capacity` is already the degree, so min is idempotent.
+        let degree = this.pool.degree;
+        let sized = this.capacity.max(1).min(degree).max(1);
         let mut slots = this.pool.slots.borrow_mut();
         let slot = slots.entry(this.token).or_insert_with(|| TokenSlot {
-            // First-writer-wins: this acquirer sizes the slot.
-            permits: this.capacity.max(1),
-            capacity: this.capacity.max(1),
+            // First-writer-wins: this acquirer sizes the slot (degree-throttled).
+            permits: sized,
+            capacity: sized,
             waiters: VecDeque::new(),
         });
 
         // First-writer-wins reconciliation: a later, disagreeing capacity is
         // recorded (dev-facing) but does NOT resize the pool (§2.8 / arch §8.1).
-        let declared = this.capacity.max(1);
-        if declared != slot.capacity {
+        // (Compared against the degree-throttled effective capacity, since that is
+        // what the slot is sized to.) The global token never disagrees with
+        // itself, so this only fires for resource tokens.
+        if !this.is_global && sized != slot.capacity {
             emit_strand_event(StrandEvent::TokenCapacityMismatch {
                 strand: this.strand,
                 token: this.token,
                 first_capacity: slot.capacity,
-                requested_capacity: declared,
+                requested_capacity: sized,
             });
         }
 
         if slot.permits > 0 {
             slot.permits -= 1;
-            emit_strand_event(StrandEvent::TokenAcquired {
-                strand: this.strand,
-                token: this.token,
+            // Acquired: the releaser already popped our waker (or we never parked),
+            // so clear our parked identity (finding #4 — so the eventual drop is a
+            // no-op, not a spurious `retain`).
+            this.parked_id = None;
+            emit_strand_event(if this.is_global {
+                StrandEvent::GlobalBudgetAcquired { strand: this.strand }
+            } else {
+                StrandEvent::TokenAcquired { strand: this.strand, token: this.token }
             });
             TaskPoll::Ready(Permit {
                 pool: Rc::clone(&this.pool),
                 token: this.token,
                 strand: this.strand,
+                is_global: this.is_global,
             })
         } else {
-            // Park: enqueue our waker in FIFO order. A permit release wakes the
-            // front (capacity-1 ⇒ source order, since first-poll enqueue order =
-            // source order, §8.2).
-            slot.waiters.push_back(cx.waker().clone());
+            // Park: enqueue our waker in FIFO order, tagged with our own identity
+            // (finding #4, §2.17). A permit release wakes the front (capacity-1 ⇒
+            // source order, since first-poll enqueue order = source order, §8.2).
+            let waker = cx.waker().clone();
+            match this.parked_id {
+                // Still parked from an earlier poll AND our entry is still queued
+                // (rare under the single executor — the releaser normally pops+wakes
+                // us before any re-poll): REPLACE our waker in place rather than
+                // pushing a duplicate. This also closes the latent
+                // push-on-every-`Pending` duplication the pre-finding-#4 code had.
+                Some(id) if slot.waiters.iter().any(|(wid, _)| *wid == id) => {
+                    for entry in slot.waiters.iter_mut() {
+                        if entry.0 == id {
+                            entry.1 = waker;
+                            break;
+                        }
+                    }
+                }
+                // First park, or a re-park after our prior entry was popped (a
+                // release woke us but a competitor re-took the permit): allocate a
+                // fresh identity and enqueue at the back (FIFO).
+                _ => {
+                    let id = this.pool.next_waiter.get();
+                    this.pool.next_waiter.set(id + 1);
+                    slot.waiters.push_back((id, waker));
+                    this.parked_id = Some(id);
+                }
+            }
             if !this.parked {
                 this.parked = true;
-                emit_strand_event(StrandEvent::TokenParked {
-                    strand: this.strand,
-                    token: this.token,
+                emit_strand_event(if this.is_global {
+                    StrandEvent::GlobalBudgetParked { strand: this.strand }
+                } else {
+                    StrandEvent::TokenParked { strand: this.strand, token: this.token }
                 });
             }
             TaskPoll::Pending
@@ -679,11 +1047,14 @@ impl Future for AcquirePermit {
 
 /// An acquired permit. Dropping it returns the permit to the token's pool and
 /// wakes the front (FIFO) parked waiter. An inert permit (`token == 0`) is a
-/// no-op on drop.
+/// no-op on drop. A global-budget permit (`is_global`) emits `GlobalBudgetReleased`.
 pub(crate) struct Permit {
     pool: Rc<TokenPool>,
     token: u64,
     strand: StrandId,
+    /// `true` for a [`GLOBAL_BUDGET_TOKEN`] permit — emits `GlobalBudgetReleased`
+    /// on drop instead of `TokenReleased` (§2.13).
+    is_global: bool,
 }
 
 impl Drop for Permit {
@@ -701,18 +1072,229 @@ impl Drop for Permit {
                 return;
             };
             slot.permits += 1;
-            emit_strand_event(StrandEvent::TokenReleased {
-                strand: self.strand,
-                token: self.token,
+            emit_strand_event(if self.is_global {
+                StrandEvent::GlobalBudgetReleased { strand: self.strand }
+            } else {
+                StrandEvent::TokenReleased { strand: self.strand, token: self.token }
             });
             // Detach the front waiter (FIFO). It will re-poll, find a free permit,
-            // and acquire (re-establishing exclusion).
-            slot.waiters.pop_front()
+            // and acquire (re-establishing exclusion). Finding #4 (§2.17): the
+            // front is now guaranteed LIVE — a cancelled-while-parked waiter
+            // `retain`-removed its own entry on drop, so we never pop+wake a stale
+            // waker (which would strand the freed permit + the next live waiter).
+            slot.waiters.pop_front().map(|(_, w)| w)
         }; // `slots` borrow dropped here.
         if let Some(waker) = waker {
             waker.wake();
         }
     }
+}
+
+/// Finding #4 (§2.17) — an `AcquirePermit` dropped **while parked** (a future
+/// cancelled before it acquired its permit: a race loser, a timed-out / shutdown-
+/// cleared branch queued behind a full token or a full global budget) removes its
+/// OWN stale waker from the slot's FIFO by identity. Without this, a later
+/// [`Drop for Permit`] would `pop_front()` that stale waker and wake it (a no-op —
+/// the future is gone) while the freed permit goes unclaimed and the next LIVE
+/// waiter behind it is never woken ⇒ lost-wakeup / a free permit nobody can take.
+///
+/// `retain`-by-identity keeps the rest of the FIFO (and its source-order guarantee,
+/// §8.2) intact — the rejected "pop-until-live" / "wake-all" alternatives cannot
+/// (a `Waker` carries no liveness/identity signal; wake-all is a thundering herd
+/// that destroys capacity-1 source order). `token == 0` never parks (`parked_id`
+/// stays `None`) ⇒ this is a no-op. The global-budget acquire shares this machinery,
+/// so a shutdown-cancelled accept-loop launch parked on a full global budget is
+/// co-covered. Runs on the ONE reactor thread (§2.8), so the plain `RefCell`
+/// borrow needs no synchronisation; `retain` is O(slot waiters) per cancel —
+/// acceptable (cancellation is rarer than steady-state; Principle 6).
+impl Drop for AcquirePermit {
+    fn drop(&mut self) {
+        let Some(id) = self.parked_id else {
+            return; // never parked (acquired, or token 0) — nothing to remove.
+        };
+        // Detach the forward-target waker UNDER the borrow, drop the borrow, THEN
+        // wake (the S2 hardening `Drop for Permit` uses — keep `wake()` outside the
+        // `slots` borrow against a re-entrant waker).
+        let forward = {
+            let mut slots = self.pool.slots.borrow_mut();
+            let Some(slot) = slots.get_mut(&self.token) else {
+                return;
+            };
+            let before = slot.waiters.len();
+            slot.waiters.retain(|(wid, _)| *wid != id);
+            if slot.waiters.len() < before {
+                // Our entry was still queued — we were parked, not yet woken.
+                // Removing it is the whole of finding #4; no permit was freed for
+                // us, so there is nothing to forward.
+                None
+            } else {
+                // **Woken-then-cancelled permit-forwarding (S96 Chunk C, C2-review
+                // forward item #1).** Our FIFO entry was already popped — a
+                // `Drop for Permit` woke us (incrementing `permits`) but we are
+                // dropped (cancelled: a race loser, a timed-out / shutdown-cleared
+                // branch) BEFORE re-polling to claim that freed permit. The permit
+                // is now claimable but the NEXT parked sibling behind us was never
+                // pinged: under a `FuturesUnordered`-style "only-woken-re-poll"
+                // executor (the supervisor, §2.12) that sibling is STRANDED
+                // (lost-wakeup). Forward the permit by popping + waking the next
+                // front waiter — the FIFO/source-order guarantee is preserved (we
+                // wake the front, the same waiter a `Drop for Permit` would).
+                // `select_all`-driven combinators re-poll all branches each turn so
+                // they are unaffected, but this makes the fix substrate-wide
+                // (supervisor + any future only-woken consumer).
+                slot.waiters.pop_front().map(|(_, w)| w)
+            }
+        }; // `slots` borrow dropped here.
+        if let Some(waker) = forward {
+            waker.wake();
+        }
+    }
+}
+
+// ===========================================================================
+// The supervisor — a single-threaded `JoinSet`-equivalent (§2.12).
+//
+// A `FuturesUnordered` of supervised detached-strand futures, owned by the
+// reactor. The `IO_TAG_LAUNCH` arm (`io::launch_continue`) `spawn`s into it; the
+// executor `drive`s it each loop iteration. Every member future is wrapped so
+// EVERY termination is caught (`catch_unwind` + the reused `take_runtime_error`
+// capture) and the §10 policy applied INSIDE the future — so a panic never
+// unwinds into the executor and aborts the drive (§2.12). The set's item type is
+// `()`: the executor only has to drain it.
+// ===========================================================================
+
+/// The per-effect-kind failure policy for a supervised detached strand (§2.12).
+/// A reactor-construction config (gate (b): a scheduler-declared default, so it
+/// stays out of the pure language). The minimal default is [`SupervisorPolicy::LogAndDrop`];
+/// the web "500-on-dropped-connection" mapping is the serve-loop's job, layered
+/// on top of the `StrandFailed` event this policy emits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum SupervisorPolicy {
+    /// Catch + record (`StrandFailed`) + drop the strand. Never re-raises (no
+    /// parent), never aborts the drive. The minimal default.
+    #[default]
+    LogAndDrop,
+}
+
+/// Apply the §10 supervisor policy at the intrinsics layer: **catch + record +
+/// drop**. Emits `StrandFailed` to the strand sink (the `/strand` dev surface +
+/// `/qa`'s panic-survival assertion read it). It NEVER re-raises and NEVER aborts
+/// the drive — the "500 to the client" is the application/platform mapping
+/// layered on top (§2.12).
+fn apply_policy(policy: SupervisorPolicy, strand: StrandId, message: String) {
+    match policy {
+        SupervisorPolicy::LogAndDrop => {
+            emit_strand_event(StrandEvent::StrandFailed { strand, message });
+        }
+    }
+}
+
+/// The supervisor: a single-threaded set of supervised detached-strand futures.
+/// `push` is `&self` (interior mutability via `RefCell`) so the `IO_TAG_LAUNCH`
+/// arm can add a strand while the set is being driven; draining removes each
+/// member as it completes. Constructed single-sited in [`block_on_reactor`]
+/// alongside the [`Reactor`]/[`TokenPool`] and reached through [`ReactorEnv`].
+pub(crate) struct Supervisor<'h> {
+    strands: RefCell<FuturesUnordered<Pin<Box<dyn Future<Output = ()> + 'h>>>>,
+    policy: SupervisorPolicy,
+}
+
+impl<'h> Supervisor<'h> {
+    /// A fresh empty supervisor with the given failure policy.
+    pub(crate) fn new(policy: SupervisorPolicy) -> Rc<Self> {
+        Rc::new(Supervisor {
+            strands: RefCell::new(FuturesUnordered::new()),
+            policy,
+        })
+    }
+
+    /// `true` while no detached strand is in flight (the executor's "supervisor is
+    /// progress / a non-empty supervisor is busy" predicate — §2.12).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.strands.borrow().is_empty()
+    }
+
+    /// Spawn a detached strand: wrap `sub_tree` in the [`supervised`] catch+policy
+    /// wrapper (owning the launched sub-tree, the cloned [`ReactorEnv`], and the
+    /// global-budget `permit` for its whole lifetime — RAII release on
+    /// completion/drop), and push it into the set (§2.11 step 3 / §2.12).
+    pub(crate) fn spawn(
+        &self,
+        sub_tree: i64,
+        env: ReactorEnv<'h>,
+        strand: StrandId,
+        permit: Permit,
+    ) {
+        let policy = self.policy;
+        let fut = supervised(sub_tree, env, strand, permit, policy);
+        self.strands.borrow_mut().push(Box::pin(fut));
+    }
+
+    /// Drive every member strand once, removing each as it completes (a completed
+    /// strand has already run its policy + released its permit + freed its sub-tree
+    /// inside its own body). Called by the executor each loop iteration (§2.12).
+    ///
+    /// The `RefCell` borrow is held only for the synchronous `poll_next` calls.
+    /// (A *nested* launch — a launched strand that itself launches — would re-enter
+    /// `spawn`'s `borrow_mut` here and panic; not reachable by the Chunk-B
+    /// acceptance shapes, which launch only from the top accept loop. Active
+    /// support for nested launch is a Chunk-C concern.)
+    pub(crate) fn drive(&self, cx: &mut Context<'_>) {
+        loop {
+            let mut strands = self.strands.borrow_mut();
+            match strands.poll_next_unpin(cx) {
+                TaskPoll::Ready(Some(())) => {
+                    drop(strands); // release before the next iteration
+                }
+                TaskPoll::Ready(None) | TaskPoll::Pending => return,
+            }
+        }
+    }
+
+    /// Drop all in-flight strands (drive-end / shutdown). Each dropped strand's
+    /// owned `EffectPoll`(s) release their per-token permits (§2.9) and its global
+    /// `Permit` releases — RAII, no leak. Breaks the `Rc` cycle the supervised
+    /// futures form (they own a cloned `ReactorEnv` holding an `Rc<Supervisor>`).
+    pub(crate) fn clear(&self) {
+        self.strands.borrow_mut().clear();
+    }
+}
+
+/// The supervised-strand wrapper (§2.12): run the launched sub-tree, catching
+/// EVERY termination — `catch_unwind` (a Rust panic → the server lives) + the
+/// reused S95 `take_runtime_error` capture at the completion boundary — then apply
+/// the §10 policy, free the detached sub-tree (`consume_io_tree` — the strand owns
+/// it, §2.11), and release the global-budget `permit` (RAII drop at scope end →
+/// frees a global slot → wakes a parked launch, §2.13).
+async fn supervised(
+    sub_tree: i64,
+    env: ReactorEnv<'_>,
+    strand: StrandId,
+    global_permit: Permit,
+    policy: SupervisorPolicy,
+) {
+    // catch_unwind around the strand body so a Rust-level panic (bad tag, RC
+    // mid-panic, a handler `(panic …)`) is caught, NOT propagated into the
+    // executor. The `take_runtime_error` capture is SYNCHRONOUS with the resolve
+    // (no `.await` between), so no other strand interposes on the shared slot.
+    let body = std::panic::AssertUnwindSafe(async {
+        let r = crate::io::run_io_trampoline_inner_async(sub_tree, &env, strand).await;
+        let err = crate::panic::take_runtime_error();
+        (r, err)
+    });
+    let outcome = body.catch_unwind().await;
+
+    match outcome {
+        Ok((_r, None)) => emit_strand_event(StrandEvent::StrandCompleted { strand }),
+        Ok((_r, Some(msg))) => apply_policy(policy, strand, msg), // runtime error
+        Err(_panic) => apply_policy(policy, strand, "<panicked>".to_string()),
+    }
+
+    // The strand owns its detached sub-tree (§2.11) — free it exactly once.
+    crate::drop::consume_io_tree(sub_tree);
+    // `global_permit` drops HERE (scope end) → frees a global-budget slot →
+    // FIFO-wakes a parked launch (§2.13). Explicit to document the release point.
+    drop(global_permit);
 }
 
 // ===========================================================================
@@ -745,13 +1327,29 @@ impl Drop for Permit {
 /// not introduce either.
 struct ExecutorWaker {
     mio: Arc<mio::Waker>,
+    /// A pending-wake flag the executor loop reads to distinguish a *genuinely
+    /// stuck* top future (Pending with nothing that could ever wake it — the
+    /// `would hang` panic guard) from one that was **just woken but not yet
+    /// re-polled** (§2.13). The decisive case: the launcher parks on
+    /// `acquire_global` (degree exhausted); the in-flight detached strands then
+    /// complete during `supervisor.drive()`, each dropping its global-budget
+    /// `Permit` and waking the parked acquire — but that wake fires AFTER this
+    /// iteration's top-future poll, so at the guard the supervisor is empty and no
+    /// fd/timer waiter remains. Without this flag the guard would misfire as a
+    /// hang; with it the guard sees the pending wake and re-polls (the `mio::wake`
+    /// already made the next `turn()` non-blocking, so the launcher resumes at
+    /// once). Set on every wake; cleared by the loop right before each top poll
+    /// (the poll services the wake).
+    woken: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Wake for ExecutorWaker {
     fn wake(self: Arc<Self>) {
+        self.woken.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.mio.wake();
     }
     fn wake_by_ref(self: &Arc<Self>) {
+        self.woken.store(true, std::sync::atomic::Ordering::SeqCst);
         let _ = self.mio.wake();
     }
 }
@@ -761,6 +1359,15 @@ impl Wake for ExecutorWaker {
 /// per-branch permit acquire), and the in-flight blocking-bridge counter (so the
 /// executor knows a `rayon`-offloaded branch is outstanding even when no fd/timer
 /// waiter is registered). Constructed single-sited in [`block_on_reactor`].
+///
+/// **Clone (§2.11/§2.12).** A supervised detached strand OWNS its own
+/// `ReactorEnv` clone (rather than borrowing the launching frame's), so the
+/// supervisor's futures do not self-borrow the env that reaches the supervisor.
+/// The clone is cheap — the `host`/`pool`/`pending_bridges` fields are copied
+/// borrows and `supervisor` is one `Rc` clone. (The `Rc<Supervisor>` makes the
+/// supervised future + supervisor an `Rc` cycle while a strand is in flight;
+/// completed strands self-remove and drive-end [`Supervisor::clear`] breaks it.)
+#[derive(Clone)]
 pub(crate) struct ReactorEnv<'h> {
     /// The reactor host vtable the platform poll-fns register against.
     pub host: &'h HostCtx,
@@ -772,6 +1379,10 @@ pub(crate) struct ReactorEnv<'h> {
     /// count as "keep turning" so a blocking-only `Par` is not mistaken for a
     /// hung future with no waiters.
     pub pending_bridges: &'h Rc<Cell<usize>>,
+    /// The supervisor that owns each detached strand (§2.12). An `Rc` (not a
+    /// borrow) so a supervised future can own a cloned `ReactorEnv` to reach it
+    /// for a nested launch without the env self-borrowing the supervisor.
+    pub supervisor: Rc<Supervisor<'h>>,
 }
 
 impl ReactorEnv<'_> {
@@ -779,6 +1390,14 @@ impl ReactorEnv<'_> {
     /// gate). `token == 0` ⇒ no acquire.
     pub(crate) fn acquire(&self, token: u64, capacity: u32, strand: StrandId) -> AcquirePermit {
         self.pool.acquire(token, capacity, strand)
+    }
+
+    /// Acquire the global admission budget (the `IO_TAG_LAUNCH` arm's gate, §2.13)
+    /// charged to `strand`. Resolves once a global slot is free; parks (the accept
+    /// loop) on a full budget. The resulting `Permit` is moved into the supervised
+    /// strand (owned for its lifetime, RAII-released on completion/drop).
+    pub(crate) fn acquire_global(&self, strand: StrandId) -> AcquirePermit {
+        self.pool.acquire_global(strand)
     }
 }
 
@@ -832,15 +1451,30 @@ where
     // turn-loop still re-polls after every turn, so the fd/timer path is
     // unchanged — this only ADDS the ability for cross-thread/park wakeups to
     // shorten a blocking `mio::poll`.)
+    // The pending-wake flag the executor loop reads to suppress the false-hang
+    // panic when a parked top future (e.g. the launcher on `acquire_global`) was
+    // just woken by a Permit release but not yet re-polled (§2.13). Shared between
+    // the waker (sets it) and the loop (clears it before each top poll).
+    let woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let task_waker: Waker = Arc::new(ExecutorWaker {
         mio: reactor.bridge_waker(),
+        woken: Arc::clone(&woken),
     })
     .into();
 
-    // The token-capacity pool + the in-flight blocking-bridge counter, both
-    // single-sited here alongside the reactor (§2.8 / §6.2). Single-threaded:
-    // every mutation runs on THIS reactor thread.
-    let pool = TokenPool::new();
+    // The program degree throttle (§2.13). Provisional reactor-construction
+    // surface: the `CRANELISP_DEGREE` env var (the carrier the Chunk-B acceptance
+    // rows read; `design/int/reactor.md §2.13` — int `src/` supplies it as a
+    // reactor-construction config when the policy surface lands). Unset / invalid
+    // / zero ⇒ `u32::MAX` (no throttle), preserving the pre-slice-4 behaviour.
+    let degree = read_degree_env();
+
+    // The token-capacity pool + the in-flight blocking-bridge counter, single-
+    // sited here alongside the reactor (§2.8 / §6.2). Single-threaded: every
+    // mutation runs on THIS reactor thread. (The supervisor is declared AFTER
+    // `host_ctx` below so it — and the detached strands it owns, which borrow
+    // `host_ctx` through their cloned `ReactorEnv` — drops BEFORE `host_ctx`.)
+    let pool = TokenPool::with_degree(degree);
     let pending_bridges: Rc<Cell<usize>> = Rc::new(Cell::new(0));
 
     // Raw self pointer for the poll-fns. Discipline: after this we touch the
@@ -854,10 +1488,16 @@ where
     // non-overlapping lifetimes (see `make_host_ctx`).
     let host_ctx = make_host_ctx(reactor_ptr);
 
+    // The supervisor (§2.12) — declared AFTER `host_ctx` so it (and the detached
+    // strands it owns, which borrow `host_ctx`/`pool`/`pending_bridges` through
+    // their cloned `ReactorEnv`) drops before those borrowed locals.
+    let supervisor = Supervisor::new(SupervisorPolicy::default());
+
     let env = ReactorEnv {
         host: &host_ctx,
         pool: &pool,
         pending_bridges: &pending_bridges,
+        supervisor: Rc::clone(&supervisor),
     };
     let mut future = Box::pin(make_future(&env));
     let mut cx = Context::from_waker(&task_waker);
@@ -869,20 +1509,49 @@ where
     // therefore measures only contiguous no-bridge time and fires solely for a
     // genuinely-stuck poll leaf (I1; `reactor.md` §2.6).
     let mut no_progress_since = std::time::Instant::now();
+    // The top future's value once it completes. Once `Some`, we STOP polling the
+    // top future (polling a completed future panics) but keep DRAINING the
+    // supervisor — a finite program's detached strands must run to completion
+    // (drained before exit, §2.12; the §B4 launch-and-continue acceptance), not be
+    // discarded the instant `main` returns.
+    let mut top_result: Option<T> = None;
     loop {
-        // Poll the future. The leaf poll-fns mutate the reactor through the
-        // `HostCtx` host handle during this call; no `&mut reactor` is held here.
-        match future.as_mut().poll(&mut cx) {
-            TaskPoll::Ready(v) => return Ok(v),
-            TaskPoll::Pending => {}
+        // Clear the pending-wake flag right before polling: the poll SERVICES any
+        // wake delivered up to this point, so a wake that arrives during this poll
+        // or the supervisor drive below re-sets it and the guard re-polls (§2.13).
+        woken.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // Poll the top future (until it completes). The leaf poll-fns mutate the
+        // reactor through the `HostCtx` host handle during this call; no
+        // `&mut reactor` is held here.
+        if top_result.is_none()
+            && let TaskPoll::Ready(v) = future.as_mut().poll(&mut cx)
+        {
+            top_result = Some(v);
         }
 
-        if pending_bridges.get() > 0 {
-            // A blocking branch is legitimately in flight — hold the no-progress
-            // deadline off (blocking I/O is uncapped). The backstop resumes
-            // measuring once the last bridge completes.
+        // Drain the supervisor (§2.12): drive every detached strand concurrently
+        // with the top future, removing each as it completes (a completed strand
+        // has already run its policy + released its permit + freed its sub-tree).
+        supervisor.drive(&mut cx);
+
+        // Return only when the top future is done AND every detached strand has
+        // drained — so launched effects genuinely run before exit (§2.12 / §B4).
+        if supervisor.is_empty()
+            && let Some(v) = top_result
+        {
+            return Ok(v);
+        }
+
+        // A blocking branch in flight OR a non-empty supervisor is legitimate
+        // progress — hold the no-progress deadline off (a server with live
+        // handlers is busy, not stuck; §2.12). The backstop resumes measuring once
+        // both are quiescent.
+        if pending_bridges.get() > 0 || !supervisor.is_empty() {
             no_progress_since = std::time::Instant::now();
         } else if no_progress_since.elapsed() > max_total_block {
+            // Drop in-flight strands (none — supervisor is empty here) and bail.
+            supervisor.clear();
             panic!("block_on_reactor: exceeded {max_total_block:?} — leaf never completed");
         }
 
@@ -890,15 +1559,35 @@ where
         // live). SAFETY: the future is not being polled here, so the host-handle
         // raw alias is dormant; no two `&mut` coexist.
         let r = unsafe { &mut *reactor_ptr };
-        if !r.has_waiters() && pending_bridges.get() == 0 {
-            // Pending with nothing registered (no fd/timer waiter AND no rayon
-            // bridge outstanding) would spin forever. With our re-poll-every-turn
-            // model this should not happen for a well-formed future; treat it as
-            // a bug rather than a silent hang.
+        if !r.has_waiters()
+            && pending_bridges.get() == 0
+            && supervisor.is_empty()
+            && top_result.is_none()
+            && !woken.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            // Pending with nothing registered (no fd/timer waiter, no rayon bridge,
+            // no detached strand) AND no pending wake (the launcher was NOT just
+            // woken by a Permit release — §2.13: a parked `acquire_global` that a
+            // completing strand just satisfied sets `woken`, and must re-poll, not
+            // panic) AND the top future not yet done would spin forever. With our
+            // re-poll-every-turn model this should not happen for a well-formed
+            // future; treat it as a bug rather than a silent hang.
+            supervisor.clear();
             panic!("block_on_reactor: future Pending with no reactor waiters (would hang)");
         }
         r.turn(MAX_TURN_BLOCK);
     }
+}
+
+/// Read the program degree throttle (§2.13) from the provisional `CRANELISP_DEGREE`
+/// reactor-construction surface. Unset / unparsable / zero ⇒ `u32::MAX` (no
+/// throttle). See [`block_on_reactor_capped`] for why this lives here for now.
+fn read_degree_env() -> u32 {
+    std::env::var("CRANELISP_DEGREE")
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .filter(|&d| d > 0)
+        .unwrap_or(u32::MAX)
 }
 
 // ===========================================================================
@@ -915,13 +1604,18 @@ where
 /// FIXME 0457) — the same env-result-slot convention the real backend-built
 /// state-closure obeys. The S93 per-effect `ResultReader` is gone; this fixture
 /// proves the reactor + `EffectPoll` substrate against the generic offset read.
+///
+/// Test-only fixture (`#[cfg(test)]`) — exercised solely by the in-crate reactor
+/// unit tests; it is not part of the crate's public surface (the real poll-shape
+/// leaves live in the `platforms/` DLLs, not here).
+#[cfg(test)]
 #[repr(C)]
-pub struct AsyncReadState {
+pub(crate) struct AsyncReadState {
     /// Bytes received (the leaf's `i64` result), or `-1` on a hard error. FIRST
     /// field ⇒ at the generic result-slot offset `EffectPoll` reads.
-    pub result: i64,
+    pub(crate) result: i64,
     /// The non-blocking fd to read from.
-    pub fd: i32,
+    pub(crate) fd: i32,
     /// Observability flag: `true` once interest has been registered at least
     /// once. **Not** a re-registration gate — the poll-fn re-registers on EVERY
     /// `Pending` (the v7 poll-fn contract); the reactor's one-shot deregister
@@ -929,7 +1623,7 @@ pub struct AsyncReadState {
     /// readiness), and the next `Pending` MUST re-arm interest or the wakeup is
     /// lost (I2). `register_fd` is idempotent (EEXIST), so re-registering while
     /// still parked is a safe no-op.
-    pub registered: bool,
+    pub(crate) registered: bool,
 }
 
 /// The `async-read` poll-fn (hand-written fixture). `recv` the fd non-blocking;
@@ -947,7 +1641,8 @@ pub struct AsyncReadState {
 ///
 /// # Safety
 /// C-ABI poll-fn: `state` is a live `AsyncReadState`; `host` / `waker` are live.
-pub unsafe extern "C" fn async_read_pollfn(
+#[cfg(test)]
+pub(crate) unsafe extern "C" fn async_read_pollfn(
     state: *mut c_void,
     host: *const HostCtx,
     waker: *const CWaker,
@@ -988,16 +1683,20 @@ pub unsafe extern "C" fn async_read_pollfn(
 /// `peer_fd` (waking the corresponding `async-read`). Drives the feed off the
 /// host reactor's timer wheel, so the whole demo stays single-reactor with NO
 /// per-read OS thread.
+///
+/// Test-only fixture (`#[cfg(test)]`) — see [`AsyncReadState`]; exercised solely
+/// by the in-crate reactor unit tests, not part of the public surface.
+#[cfg(test)]
 #[repr(C)]
-pub struct TimerWriteState {
+pub(crate) struct TimerWriteState {
     /// Unit result (`0`) at the generic [`RESULT_SLOT_OFFSET`] — the feeder
     /// produces no meaningful value, but `EffectPoll` reads `state + 0` on `Ready`
     /// (the generic env-offset read), so the slot is reserved first and left `0`.
-    pub result: i64,
+    pub(crate) result: i64,
     /// The fd to send a wake-byte to once the timer fires.
-    pub peer_fd: i32,
+    pub(crate) peer_fd: i32,
     /// Monotonic-nanos deadline at which to perform the write.
-    pub deadline_nanos: u64,
+    pub(crate) deadline_nanos: u64,
     /// Re-registration gate. Unlike the fd path (I2), this latch is SOUND for the
     /// timer leaf and is deliberately kept: a timer leaf transitions to `Ready`
     /// the moment `now >= deadline` (its fire), so it NEVER returns `Pending`
@@ -1007,7 +1706,7 @@ pub struct TimerWriteState {
     /// another leaf woke) from pushing a DUPLICATE timer-heap entry on every such
     /// poll. `register_timer` has no natural dedup key, so the per-leaf latch is
     /// the idempotency guard here.
-    pub registered: bool,
+    pub(crate) registered: bool,
 }
 
 /// The timer-feeder poll-fn. Before the deadline → `register_timer` + `Pending`;
@@ -1020,7 +1719,8 @@ pub struct TimerWriteState {
 ///
 /// # Safety
 /// C-ABI poll-fn: `state` is a live `TimerWriteState`; `host` / `waker` are live.
-pub unsafe extern "C" fn timer_write_pollfn(
+#[cfg(test)]
+pub(crate) unsafe extern "C" fn timer_write_pollfn(
     state: *mut c_void,
     host: *const HostCtx,
     waker: *const CWaker,
@@ -1042,6 +1742,83 @@ pub unsafe extern "C" fn timer_write_pollfn(
 }
 
 // ===========================================================================
+// `sleep` — the runtime-provided timer poll leaf (slice 7, §2.18).
+//
+// `sleep : Duration -> IO Unit` arms the reactor timer and resumes when it fires.
+// It is a **tokenless** poll leaf (`token = 0, capacity = 1` ⇒ unrestricted overlap
+// — many `sleep`s race concurrently) reusing the ENTIRE `EffectPoll` / acquire-
+// around-poll / timer-`turn()` machinery. Unlike the platform poll-shape effects it
+// is an **intrinsics** poll-fn, NOT a `declare_platform!` DLL export — the control
+// vocabulary is runtime-hosted, platforms never see it (§9). It is the one new leaf
+// `timeout = race (map Some io) (map (const None) (sleep d))` needs (§2.18); the
+// race-loser drop (C3) cancels whichever arm loses.
+//
+// This also gives the marquee overlap wall-clock witness a real parking delay (the
+// flaky sub-ms timing ratio in `web_server_fans_out_concurrent_requests_overlap`).
+// ===========================================================================
+
+/// State for the `sleep` timer leaf (§2.18). `result` is the FIRST field (the
+/// generic [`RESULT_SLOT_OFFSET`] `EffectPoll` reads on `Ready`) and holds `Unit`
+/// (`0`) once the timer fires. `deadline_nanos == 0` is the "not yet armed"
+/// sentinel; the first poll computes + stores the absolute deadline.
+#[repr(C)]
+pub(crate) struct SleepState {
+    /// Unit result (`0`) at the generic result-slot offset.
+    pub(crate) result: i64,
+    /// The sleep duration in nanoseconds (the env-baked argument).
+    pub(crate) duration_nanos: i64,
+    /// Absolute monotonic deadline, `0` until armed (the first-poll sentinel).
+    pub(crate) deadline_nanos: u64,
+}
+
+/// The `sleep` poll-fn (§2.18). First poll → compute `deadline = now + duration`,
+/// `register_timer`, return `Pending`. Re-poll → `now >= deadline` ⇒ write `Unit`
+/// and `Ready`, else `Pending`. The `deadline_nanos != 0` latch means it never
+/// re-arms a duplicate timer on a sibling-driven re-poll before its deadline (the
+/// same idempotency the `timer_write_pollfn` fixture's `registered` latch provides —
+/// a timer leaf goes `Ready` on its fire and never re-`Pending`s after, so there is
+/// no lost-wakeup to re-arm against, §2.7).
+///
+/// Published as the runtime symbol `runtime/sleep_pollfn` ([`crate::catalog`]):
+/// the backend's C4 `sleep` lowering (`compile_sleep`) resolves it as a
+/// `Linkage::Import` and `func_addr`-bakes it as the `IO_TAG_EFFECT_POLL`
+/// state-closure `code_ptr` — the non-GOT runtime-symbol path (a well-known
+/// runtime symbol the node's `code_ptr` resolves to, §2.18; distinct from a
+/// `declare_platform!` effect's GOT slot). The leaf + its reactor timer
+/// registration landed in C2 (with the unit test); the backend lowering is C4.
+///
+/// # Safety
+/// C-ABI poll-fn: `state` is a live [`SleepState`]; `host` / `waker` are live.
+///
+/// JIT name: "runtime/sleep_pollfn" — exported via `export_name` so `--link`
+/// mode resolves it (the system linker needs a real symbol of this exact
+/// slash-name, not just the catalog pointer the JIT in-memory linker uses).
+/// Mirrors `runtime/vec_new` / `runtime/alloc`.
+#[unsafe(export_name = "runtime/sleep_pollfn")]
+pub(crate) unsafe extern "C" fn sleep_pollfn(
+    state: *mut c_void,
+    host: *const HostCtx,
+    waker: *const CWaker,
+) -> CPoll {
+    let st = unsafe { &mut *(state as *mut SleepState) };
+    if st.deadline_nanos == 0 {
+        // First poll: arm the reactor timer at now + duration.
+        st.deadline_nanos = monotonic_nanos() + st.duration_nanos.max(0) as u64;
+        let hc = unsafe { &*host };
+        unsafe { (hc.register_timer)(hc.host, st.deadline_nanos, waker) };
+        return CPoll::Pending;
+    }
+    if monotonic_nanos() >= st.deadline_nanos {
+        st.result = 0; // Unit
+        CPoll::Ready
+    } else {
+        // A sibling-driven re-poll before our deadline: keep waiting WITHOUT
+        // re-arming (the timer is already in the heap — no duplicate entry).
+        CPoll::Pending
+    }
+}
+
+// ===========================================================================
 // Par-async overlap (App. B step 2d) — concurrent I/O leaves on the ONE reactor.
 // ===========================================================================
 
@@ -1053,7 +1830,12 @@ pub unsafe extern "C" fn timer_write_pollfn(
 /// trampoline's `Par` arm lowering to `futures::future::join_all` (vs. the rayon
 /// dispatcher, which stays the CPU-spark / feature-off path). Results are
 /// returned in branch order.
-pub async fn join_io_leaves(leaves: Vec<EffectPoll<'_>>) -> Vec<i64> {
+///
+/// `#[cfg(test)]`: a substrate-regression test helper. Production `Par` overlap
+/// runs through `io::run_par_node_async` → `run_poll_partition` (which calls
+/// `join_all` directly); this convenience wrapper has no non-test consumer.
+#[cfg(test)]
+pub(crate) async fn join_io_leaves(leaves: Vec<EffectPoll<'_>>) -> Vec<i64> {
     futures::future::join_all(leaves).await
 }
 

@@ -82,6 +82,7 @@ pub(crate) mod repl;
 // repl/ module deleted — v4 REPL is driven by CompilerSession in main.rs + session_v4.rs.
 // FileWatcher extracted to watch.rs; remaining features (save, trace, run-tests) are future work.
 pub(crate) mod save;
+pub(crate) mod sched_dump;
 pub(crate) mod scheduler;
 // syntax — the `/syntax` topic-indexed core-language cheat-sheet (design/int/
 // agent.md §22, repl/spec.md §17.17). UNCONDITIONAL (default build) — the
