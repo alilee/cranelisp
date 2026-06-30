@@ -49,7 +49,52 @@ here:
 > serve-loop reshape — resolving FIXME 0465** (the Chunk-B keystone; co-designed with
 > the slice-5 server demo).
 
-> **S97 ABI v8→v9 update (FIXME 0482; /arch Phase-2 RATIFIED, `platform-interface.md`
+> **S97 MODEL PIVOT — the callback-`ctx`-vtable handle model SUPERSEDES the v9
+> descriptor cut (user-ratified + `/arch`-ratified 2026-06-30; `effect-concurrency.md`
+> §4.1.1, `platform-interface.md` §6.8.0b, `bounded-contexts.md` §5, `interfaces.md`
+> §"Resource scheduling").** The descriptor-as-representation-overhead model in the
+> banner immediately below (a fixed-offset `ResourceDesc {token, capacity}` **header
+> slot** on resource-handle ADTs, a `desc_out` out-param on `PollFn`, the trampoline
+> stamp/read) is **RETIRED**. It hit a structural blocker at Wave-2 implementation: an
+> opaque zero-field `Connection []` minted *inside the DLL* (`CLAdt::construct` → a
+> 24-byte object) had no room for a 16-byte header slot stamped at `value+24` (heap
+> overrun), and reserving that slot at the DLL-mint→host-alloc boundary was an
+> undesigned cross-crate interface. The ratified replacement is **simpler and dissolves
+> the blocker** — scheduling state never touches the value at all:
+> - **NO header slot, NO `desc_out`, NO `ResourceDesc` type, NO `AsRawFd`-style trait.**
+>   `PollFn` / `Poll` are **UNCHANGED** (`poll(state, *HostCtx, *Waker) -> Poll`).
+> - **Handles are opaque ADTs carrying the platform's `r`/`fd` in a GENUINE field** —
+>   `(deftype Connection [...])` with a real opaque field (web: `r == fd`); the platform
+>   built the handle and reads `r` back out of its own field; the trampoline never
+>   introspects it. Because the field is real, `CLAdt::construct` mints a normal
+>   N-field object — the Wave-2 24-vs-40-byte overrun cannot arise.
+> - **All runtime scheduling flows through a trampoline-owned `ctx` vtable** (the
+>   generalized `HostCtx`) the poll-fn calls: `acquire(token, cap, waker) → Acquired |
+>   Parked`, `register_{readable,writable,timer}(source, waker)`, `retire(token)`.
+>   **Release is trampoline-owned** (fired on `Ready`/cancel, keyed by effect identity;
+>   cancel never re-enters the poll-fn) — NOT a vtable call.
+> - **The leaf's `role`** (`None`/`Produce`/`Consume`/`Retire`, on
+>   `ConcurrencyDescriptor.role`) is a **compile-time-only manifest fact** grounding
+>   inference E2 + codegen; the trampoline does NOT branch on it at runtime.
+>
+> **What this re-cascades in THIS doc** (Wave 0, S97; `platform-interface.md` §6.8.0b
+> cascade list): **§3.5** (web) is rewritten — `Connection` is an opaque ADT with a
+> genuine `fd` field (not the dead `[]` + header slot); the leaf sigs lose every
+> `desc_out`/header carrier. **§3.6** is rewritten — the leaf-authoring contract is the
+> **ctx-vtable poll-fn skeleton** (acquire/register/retire + tramp-owned release), NOT
+> the `desc_out` env contract; the four leaf roles incl. **Retire** are documented.
+> **§3.1** (stdio) re-expresses the singleton stdin token (0471, carried) as the poll-fn
+> calling `acquire(STDIN_TOKEN, 1, waker)`. The §2 scaffolds stand, with two pivots: the
+> `desc_of`/`set_desc` `PollEnv` helpers the descriptor cut added are **deleted**, and
+> the `Reactor` scaffold (§2.2) grows `acquire`/`retire` wrappers over the new vtable
+> entries. The two-module `web.cl`/`serve.cl` split (FIXME 0469) + the load-order rule
+> (§3.6.3) + the singleton stdin token (FIXME 0471) **carry forward UNCHANGED**.
+> **Everything below the "S97 ABI v8→v9 update" banner that describes a header slot,
+> `desc_out`, `ResourceDesc`, or `Connection []` is SUPERSEDED** — read it for
+> provenance only.
+
+> **[SUPERSEDED by the MODEL PIVOT banner above.] S97 ABI v8→v9 update (FIXME 0482;
+> /arch Phase-2 RATIFIED, `platform-interface.md`
 > §6.8.0b + `effect-concurrency.md` §4.1.1 + BC §3/§5/§6 + `interfaces.md`
 > §"Resource descriptor").** This doc was authored against the **v8 leading-pair**
 > convention — the per-connection `(token, capacity)` rode into user source as the two
@@ -200,16 +245,32 @@ impl<'h> Reactor<'h> {
     pub fn wake_on_readable(&self, fd: RawFd) { /* (*host).register_readable(host_data, fd, waker) */ }
     pub fn wake_on_writable(&self, fd: RawFd) { … }
     pub fn wake_on_timer(&self, deadline_nanos: u64) { … }
+
+    // --- v9 ctx-vtable: the token-permit half (the leaf calls these itself) ---
+
+    /// Acquire a permit on `token`'s capacity-`N` pool. `Acquired` ⇒ hold a permit and
+    /// proceed; `Parked` ⇒ no permit free — the host enqueued `waker` on the token's
+    /// permit-wait queue, so the leaf returns `Pending` (backpressure, §3.6.1).
+    /// Idempotent per in-flight effect (the host keys held permits by the waker's data
+    /// identity), so a re-poll re-calls it without double-counting — no "already
+    /// acquired?" flag on the leaf. Release is **trampoline-owned** (on `Ready`/cancel);
+    /// `Reactor` has no `release`.
+    pub fn acquire(&self, token: u64, capacity: u32) -> Acquire { /* (*host).acquire(host_data, token, capacity, waker) */ }
+
+    /// A Retire/`close` leaf ends the resource's scheduling identity after `close(r)`.
+    /// Idempotent; wakes any token-parked waiters to observe the gone resource.
+    pub fn retire(&self, token: u64) { /* (*host).retire(host_data, token) */ }
 }
 ```
 
 It exists to (a) hide the `(*host).vtable_fn(host_data, …)` indirection and the
-`host`-handle threading, and (b) give the leaf a single, named verb per readiness
-kind. It owns **no reactor state** — the host owns the *when* (§12 A2 model);
-this is purely the platform-side projection of "register interest." Cancellation
-needs no leaf cooperation here: the host simply ceases to poll and drops the node
-(the RAII `Permit` releases — reactor.md §2.8); `Reactor` registers, it never
-blocks.
+`host`/`waker`-handle threading, and (b) give the leaf a single, named verb per
+readiness kind **and per token-permit op**. It owns **no reactor state** — the host
+owns the *when* and the permit pool (§12 A2 model + §4.1.1 ctx-vtable); this is purely
+the platform-side projection of "register interest" / "ask for a permit." Cancellation
+needs no leaf cooperation: the host ceases to poll, drops the node, and **releases the
+permit it holds** (trampoline-owned, keyed by effect identity, never re-entering the
+poll-fn); `Reactor` registers and acquires, it never blocks and never releases.
 
 ### 2.3 first-poll / re-poll phase scaffold — `PollState`
 
@@ -259,16 +320,21 @@ the scratch slot, it never dispatches another effect.
 - **The syscall + result meaning.** `TcpListener::accept`, `read`, the i64 the
   result slot carries — all hand-written. The scaffold locates and registers; it
   does not interpret.
-- **The reactor / the pool / the Permit.** All intrinsics-side (reactor.md). The
-  platform never sees a `Semaphore`, a permit, or the acquire-around-poll arc — it
-  only `register_*`s and returns `Poll`. This is the thin-platform thesis (§12):
-  platforms own the *what*, the host owns the *when*.
-- **The codegen operand injection.** Placing the live `(token, capacity)` as the
-  two leading operands of a poll-shape call is a compile-time `MonoExpr` concern,
-  owned by the **backend** pass `inject_poll_leading_pair` (§3.4.1). `poll_support`
-  (a runtime-Rust helper inside the poll-fn) cannot place codegen operands; its
-  role is the *value SOURCE* — deriving token/capacity and shaping the source-level
-  call so the backend peel finds them (FIXME 0463 reconciliation, §3.4).
+- **The reactor / the permit pool / release.** All host-side (reactor.md). The platform
+  *expresses intent* via the `ctx` vtable (`acquire`/`register_*`/`retire`) but **never
+  sees a `Semaphore`, never holds a permit object, and never releases** — it calls
+  `acquire`, returns `Poll`, and the host owns the permit pool + the tramp-owned release
+  (on `Ready`/cancel). This is the thin-platform thesis (§12 / §4.1.1): platforms own the
+  *what* + *which token*, the host owns the *when* + the permit *lifecycle*.
+- **The token derivation, but NOT a codegen operand.** Under v9 (ctx-vtable model)
+  there is **no codegen operand injection at all** — the `inject_poll_leading_pair`
+  pass and the positional leading-pair are **deleted** (the §3.4 banner; backend's only
+  v9 delta is the deletion). The leaf **computes the token from the handle it holds**
+  (web: `token == fd`, read from `Connection`'s genuine `fd` field) and calls
+  `ctx.acquire(token, capacity, waker)` *itself* in the poll-fn — `poll_support` exposes
+  the `Reactor::acquire` wrapper (§2.2), but the *value* (which token, what capacity) is
+  the platform's trust assertion, hand-written. `poll_support` never derives the token
+  and never places an operand; it only wraps the vtable call.
 
 ---
 
@@ -289,30 +355,31 @@ the scratch slot, it never dispatches another effect.
   `wake_on_readable(STDIN_FILENO)` and parks; on wake, a non-blocking read either
   completes (write the `CLString` result via `PollEnv::set_result_cl`) or re-parks.
 
-  **v9 — the manifest-static serial token (resolves FIXME 0471 STRUCTURALLY).**
-  `read_line : (Fn [] (IO String))` takes **no operands** and produces **no
-  per-value handle**: stdin is a *process singleton*, not a resource minted per
-  value. So it carries neither a leading-pair token (deleted at v9) nor a header
-  descriptor (no handle to stamp). v9 gives the singleton a clean home: a
-  **manifest-static descriptor** declared on the effect —
-  `read-line : { token: STDIN_TOKEN != 0, capacity: 1, role: Consume }`. The
-  trampoline acquires the **manifest-static** `STDIN_TOKEN` (a process constant,
-  not read off any value) *before* polling and releases on `Ready`/drop, exactly
-  as it acquires a per-value token for a minted resource. Because the token is a
-  fixed non-zero singleton at **capacity 1**, admission permits **at most one
-  in-flight `read_line`** — single-in-flight stdin is enforced **by
-  construction**, not by the host `STDIN_BUF` `Mutex` + serial-use convention the
-  v8 framing leaned on (FIXME 0471's latent gap: a `Commutative`, `token == 0`
-  descriptor acquires no permit, so nothing structurally barred two concurrent
-  in-flight reads racing `STDIN_BUF`). This is the **structural upgrade** over
-  0471's recommended doc-only "correct the over-claim": the v8 obstacle (a
-  tokenless leaf cannot carry a *positional* token) **dissolves** under v9 —
-  nothing is injected positionally; the token is a *manifest fact* the trampoline
-  reads from the effect's `ConcurrencyDescriptor`, never from an operand or a
-  value header. It is a `/platform`-owned descriptor edit (the `read-line`
-  manifest entry in `platforms/stdio`); no backend injection convention is needed
-  (the v8 "fixed-token injection for a tokenless leaf" 0471 contemplated is moot —
-  there is no positional injection at all under v9).
+  **v9 (ctx-vtable) — the manifest-static serial token (resolves FIXME 0471
+  STRUCTURALLY; CARRIES from the descriptor cut, re-expressed in ctx-vtable terms).**
+  `read-line : (Fn [] (IO String))` takes **no operands** and produces **no per-value
+  handle**: stdin is a *process singleton*, not a resource minted per value. So there
+  is **no handle to project a token from** — and (under the ctx-vtable model) no header
+  slot and no `desc_out` either. v9 gives the singleton a clean home: a **manifest-static
+  serial token** declared on the effect —
+  `read-line : { token: STDIN_TOKEN != 0, capacity: 1, role: Consume }`. **The poll-fn
+  itself** calls `acquire(STDIN_TOKEN, 1, waker)` on that **constant** at the start of
+  each poll — the token is read from the effect's `ConcurrencyDescriptor` (a process
+  constant baked into the leaf), **not off any value** and **not from an operand**. On
+  `Acquired` it does the non-blocking read: completes ⇒ `PollEnv::set_result_cl` the
+  `CLString` + `Ready`; would-block ⇒ `register_readable(STDIN_FILENO, waker)` + `Pending`.
+  On `Parked` (the only way to hit it is a *second* concurrent `read-line`) it returns
+  `Pending` *before* the read; the host re-polls it when the first releases. The host
+  **releases** the STDIN permit on `Ready`/cancel (trampoline-owned). Because the token
+  is a fixed non-zero singleton at **capacity 1**, admission permits **at most one
+  in-flight `read-line`** — single-in-flight stdin is enforced **by construction**, not
+  by the v6 host `STDIN_BUF` `Mutex` + serial-use convention (FIXME 0471's latent gap: a
+  `Commutative`, `token == 0` leaf acquires no permit, so nothing structurally barred
+  two concurrent reads racing `STDIN_BUF`). It is a `/platform`-owned descriptor edit (the
+  `read-line` manifest entry in `platforms/stdio`); **no backend/trampoline change** —
+  there is no positional injection (deleted at v9) and no header to stamp, the leaf calls
+  `acquire` itself. This is the canonical "serial resource with no handle object" case of
+  the uniform poll-fn skeleton (§3.6.1).
 
 `stdio` is the ergonomics check: if porting *one trivial blocking read* to a poll
 leaf is more than "register readiness; resume on wake; set result," `poll_support`
@@ -365,15 +432,18 @@ capacity (this corrects the loose "capacity N per connection" wording here and i
 capacity-**N** *per-token pool* mechanism is the DB-pool / `poll-pool`-test-leaf
 case (§3.4.6), **not** web connections.
 
-> **SUPERSEDED by v9 (top banner).** The remainder of this paragraph describes the v8
-> leading-pair carrier (the `.cl` wrapper places `(token, capacity)` as two leading
-> operands; the backend `inject_poll_leading_pair` pass bakes them to node offsets
-> 32/40). Under v9 the descriptor is **not a cranelisp operand** — it rides the
-> resource-handle's header slot (produce leaf writes `desc_out` → trampoline stamps;
-> consume leaf → trampoline reads the header). The **fresh-per-connection-token model +
-> the gate-(a) non-re-entry property above STAND** (they are about the *model*, not the
-> carrier); only the carrier mechanism below is retired. See §3.5 (web concrete) + §3.6
-> (the `desc_out` contract).
+> **SUPERSEDED (top banner — ctx-vtable model).** The remainder of this paragraph
+> describes the v8 leading-pair carrier (the `.cl` wrapper places `(token, capacity)` as
+> two leading operands; the backend `inject_poll_leading_pair` pass bakes them to node
+> offsets 32/40). Under the ratified v9 **ctx-vtable** model the `(token, capacity)` is
+> **neither a cranelisp operand nor a value-header slot** — the **leaf computes the token
+> from its handle** (web: `token == fd`, off `Connection`'s genuine `fd` field) and calls
+> `ctx.acquire(token, capacity, waker)` itself; nothing is baked onto the node and the
+> backend's only v9 delta is **deleting** the bake. The **fresh-per-connection-token
+> model + the gate-(a) non-re-entry property above STAND** (they are about the *model*,
+> not the carrier); both the leading-pair carrier below AND the intermediate
+> header-slot/`desc_out` carrier are retired. See §3.5 (web concrete) + §3.6 (the
+> ctx-vtable leaf-authoring contract).
 
 On the v8 poll carrier the `(token, capacity)`
 are **runtime operands** the `.cl` wrapper (§3.5.3) places as the two leading args of
@@ -438,17 +508,19 @@ token ⇒ shared pool").
 > operands and the backend `inject_poll_leading_pair` pass bakes them from those
 > positional args into the poll node's offset-32/40 slots. **v9 deletes this entire
 > mechanism for resource leaves** — `(token, capacity)` is no longer a cranelisp value,
-> no longer a leaf argument, and the backend stops baking from positional args. The
-> descriptor now lives in the resource-handle's **header slot** (stamped by the
-> trampoline from a produce leaf's `desc_out`, read by the trampoline before a consume
-> leaf polls). The §3.4.2 `scheduling_class`-keyed inject-vs-leave-alone branch, the
-> §3.4.3 token-as-positional-arg derivation, the §3.4.4 capacity-as-operand choice, and
-> the §3.4.5 web leading-pair lifecycle are all **retired**; their v9 replacements are
-> §3.5 (web concrete) + §3.6 (the `desc_out` leaf-authoring contract). §3.4 is retained
-> as the historical v8 design record (the model the v8 server shipped on); read it for
-> provenance, not as the live contract. **The §3.4.6 `poll-pool` G1 test leaf survives
-> as a v9 consume/produce leaf** — its `(token, capacity)` likewise move off explicit
-> args onto the descriptor channel; `/qa` re-pins the rows against the v9 carrier.
+> no longer a leaf argument, and the backend stops baking from positional args. Under the
+> ratified v9 **ctx-vtable** model the `(token, capacity)` is **not stored anywhere on a
+> value** (neither operand nor header slot) — **the leaf computes the token from the
+> handle it holds and calls `ctx.acquire(token, capacity, waker)` itself** in the poll-fn.
+> The §3.4.2 `scheduling_class`-keyed inject-vs-leave-alone branch, the §3.4.3
+> token-as-positional-arg derivation, the §3.4.4 capacity-as-operand choice, and the
+> §3.4.5 web leading-pair lifecycle are all **retired**; their v9 replacements are §3.5
+> (web concrete) + §3.6 (the ctx-vtable leaf-authoring contract). §3.4 is retained as the
+> historical v8 design record (the model the v8 server shipped on); read it for
+> provenance, not as the live contract. **The §3.4.6 `poll-pool` G1 test leaf survives as
+> a v9 leaf** — its poll-fn `acquire`s the `(token, capacity)` from its own explicit args
+> via the ctx vtable instead of carrying them as a baked leading pair; `/qa` re-pins the
+> rows against the ctx-vtable carrier.
 
 This is the load-bearing A4 refinement: how the S95 `(0, 1)` sentinel pass
 (`cranelisp_backend::inject_poll_leading_pair`, landed A2b) GENERALIZES to LIVE
@@ -631,20 +703,24 @@ v8 this is one unified `declare_platform!` with each effect's `descriptor:` poll
 
 ---
 
-### 3.5 The web connection-handle cranelisp interface (v9 — opaque Connection; resolves FIXME 0465 + 0469)
+### 3.5 The web connection-handle cranelisp interface (v9 ctx-vtable — opaque Connection with a genuine `fd` field; resolves FIXME 0465 + 0469)
 
-> **Rewritten for ABI v9 (top banner; `platform-interface.md` §6.8.0b).** The v8
-> version of this section pinned a `web/Connection` of `[token capacity fd]` whose
-> leading pair the wrappers destructured into every leaf call. Under v9 the descriptor
-> is representation overhead, so `Connection` slims to **fully opaque** and the leaf
-> sigs lose the leading pair. The §3.6 `desc_out` contract is the general leaf-authoring
-> rule this section instantiates for web.
+> **Rewritten for the ctx-vtable model (top banner; `platform-interface.md` §6.8.0b,
+> `effect-concurrency.md` §4.1.1).** Two prior shapes are superseded: the v8
+> `web/Connection [token capacity fd]` (leading pair destructured into every leaf call)
+> AND the intermediate v9-descriptor `Connection []` (fully empty, scheduling in a hidden
+> header slot stamped via `desc_out`). The ratified model is between them: `Connection`
+> is **opaque but carries a GENUINE `fd` field** holding the platform's `r` (`r == fd`)
+> — a real ADT field the platform reads back, NOT a hidden header slot. The leaf computes
+> the token from that field and calls the `ctx` vtable itself. §3.6 is the general
+> ctx-vtable leaf-authoring rule this section instantiates for web.
 
 §3.2 / §3.4.5 describe the web connection-token *model*; this section pins the
-**concrete v9 cranelisp surface** — the connection-handle ADTs (now opaque), the
-platform poll-leaf signatures (descriptor off the handle / `desc_out`, no leading
-pair), the **two-module** wrapper placement (FIXME 0469), and the serial serve-loop
-reshape. `/port` owns the `.cl` files (`exemplar/web.cl`, `exemplar/serve.cl`,
+**concrete v9 cranelisp surface** — the connection-handle ADTs (opaque, with a genuine
+`fd` field), the platform poll-leaf signatures (the leaf projects the token from the
+handle's `fd` field + calls `ctx.acquire`/`register_*`; no leading pair, no `desc_out`),
+the **two-module** wrapper placement (FIXME 0469), and the serial serve-loop reshape.
+`/port` owns the `.cl` files (`exemplar/web.cl`, `exemplar/serve.cl`,
 `exemplar/main.cl`); `/platform` owns the poll-fns
 (`exemplar/platforms/web/src/lib.rs`); this section is the **interface both implement
 against** (Phase-5 D/D/R). It is the **SERIAL** serve loop (the permanent baseline).
@@ -653,93 +729,107 @@ The launch-and-continue fan-out (sibling `/design` intrinsics — `effect-concur
 threading below is shaped so the fan-out drops in without touching the leaves or
 wrappers.
 
-#### 3.5.1 The handle ADTs (`exemplar/web.cl`, /port-owned) — Connection is fully opaque
+#### 3.5.1 The handle ADTs (`exemplar/web.cl`, /port-owned) — Connection is opaque with a genuine `fd` field
 
 `web/Request` / `web/Response` are unchanged (§3.2 — platforms still do not declare
 ADTs; the backend regenerates `web.platform-schema`). The two handle ADTs:
 
 ```clojure
-;; web/Listener — the bound TCP listener. ORDINARY ADT, not a resource handle:
-;; nothing acquires a "listener token" around a poll (accept is structurally serial
-;; in the serve loop, §3.5.5), so the listener carries NO descriptor header slot.
-;;   fd   : listener socket fd — a GENUINE logical field; accept reads it to poll on
+;; web/Listener — the bound TCP listener. ORDINARY ADT, not a per-poll resource handle:
+;; nothing acquires a "listener token" around a poll (accept is structurally serial in
+;; the serve loop, §3.5.5).
+;;   fd   : listener socket fd — a GENUINE field; accept reads it to poll on
 ;;          listener-readable and to accept() the next connection.
 ;;   pool : N, the in-flight-CONNECTION-COUNT ceiling — consumed by the
 ;;          launch-and-continue fan-out (slice-4 global admission budget, arch §16),
-;;          NOT a per-connection capacity. A genuine logical field.
+;;          NOT a per-connection capacity. A genuine field.
 (deftype Listener [:primitives/Int fd :primitives/Int pool])
 
-;; web/Connection — one accepted HTTP connection. FULLY OPAQUE — ZERO logical fields.
-;; Its sole datum is the connection fd, and for web `token == fd`, so the fd lives in
-;; the trampoline-owned (token, capacity) DESCRIPTOR HEADER SLOT (representation
-;; overhead, §6.8.0b), never a logical field. The body is empty; the value is a bare
-;; resource handle = HeapHeader(16) + ResourceDesc slot(16).
-(deftype Connection [])
+;; web/Connection — one accepted HTTP connection. OPAQUE handle carrying a GENUINE `fd`
+;; field. For web `r == fd`, so the connection fd lives in an ordinary opaque ADT field
+;; the PLATFORM reads back (it built the handle); the trampoline never introspects it.
+;; The token is PROJECTED from this fd by the poll-fn (token == fd) — it is NOT stored
+;; (no header slot, no desc_out, no ResourceDesc). The value is a normal 1-field object
+;; = HeapHeader(16) + tag(8) + fd(8); `CLAdt::construct` mints it directly.
+(deftype Connection [:primitives/Int fd])
 ```
 
-**Why `Connection` is empty, not `[fd]`.** For web the connection's only datum is its
-fd, and the platform's internal choice is `token == fd` (§6.8.0b). So the fd is
-**already carried** in the descriptor's `token` field (header slot) — duplicating it as
-a logical ADT field would re-expose the very scheduling metadata v9 hides. A consume
-leaf (`read`/`send`) recovers `fd = token` from the header (§3.5.4); it needs no
-logical field. The live OS resources (`TcpListener`, accepted `TcpStream`) stay in
-platform-internal maps keyed by fd — only the i64 fd/token cross the boundary (the
-standard fd-as-handle pattern), and the i64 now rides the header, not a leaf arg. This
-retires the process-global `Mutex<ServerState>` of the v6 platform.
+**Opacity (per `/arch`'s ruling — BC §5 / `interfaces.md` §"Resource scheduling" /
+`effect-concurrency.md` §4.1.1).** `Connection` is an **opaque ADT**: the `fd` field is
+**present but not user-destructurable** — user code threads the handle from `accept` to
+`read`/`send`/`close` but cannot pattern-match it open to read or forge the fd. Opacity
+is expressed per `/arch`'s ruling on opaque ADTs (the field is genuine program/platform
+data; the type does not export a user destructuring path). The *platform* — which built
+the handle via `CLAdt::construct` — reads `r`/`fd` back out of the field (`CLAdt`/schema,
+§3.5.4), exactly as `std`'s `TcpStream` holds a private `RawFd` no user reads directly.
 
-> **The escape hatch — genuine platform data stays a distinct opaque ADT field.** If a
-> future platform needs a handle datum that is **not** the scheduling token — e.g.
-> `token != fd` (a virtual / NAT'd / multiplexed fd, where the admission token is a
-> pool id distinct from the syscall fd) — that datum becomes an **ordinary opaque ADT
-> logical field** (`(deftype Connection [:primitives/Int fd])`), kept **separate from
-> the descriptor header slot**. The descriptor (token, capacity) is *always* header
-> overhead; genuine per-handle data is *always* a logical field. The two never share a
-> slot. Web simply has zero genuine data beyond `fd == token`, so its Connection is
-> empty.
+**Why `Connection` carries a genuine `fd` field, not the dead `[]`+header-slot shape.**
+For web the connection's only datum is its fd, and the platform's internal choice is
+`token == fd`. The fd is a **real opaque ADT field the platform reads back**, NOT a
+type-invisible header slot the trampoline stamps — so `CLAdt::construct` mints a normal
+1-field object and the Wave-2 24-vs-40-byte overrun (the descriptor cut's blocker) never
+arises. The live OS resources (`TcpListener`, accepted `TcpStream`) stay in
+platform-internal maps keyed by fd — only the i64 fd crosses the boundary (the standard
+fd-as-handle pattern), now in a genuine field. This retires the process-global
+`Mutex<ServerState>` of the v6 platform.
+
+> **The escape hatch — multiple genuine fields compose normally.** If a future platform
+> needs more handle data than the syscall fd — e.g. `token != fd` (a virtual / NAT'd /
+> multiplexed fd, where the admission token is a pool id distinct from the syscall fd) —
+> it simply adds more opaque fields (`(deftype Connection [:primitives/Int fd
+> :primitives/Int pool-id])`) and projects the token from whichever field(s) it chooses
+> in its poll-fn. There is no header slot to coordinate with — the handle is an ordinary
+> opaque ADT, and the token is always a *projection the platform computes*, never a
+> stored datum. Web simply has one genuine field (`fd`) and projects `token == fd`.
 
 #### 3.5.2 The platform poll-leaf signatures (`exemplar/platforms/web`, /platform-owned)
 
 Four effects in ONE `declare_platform!` manifest (mixed blocking + poll). The sigs
 **slim** — no leading `(token, capacity)` pair; the handle IS the leaf argument:
 
-| effect | role (`ConcurrencyDescriptor.role`) | FQ signature | descriptor carrier |
+| effect | role (`ConcurrencyDescriptor.role`) | FQ signature | how scheduling is driven |
 |---|---|---|---|
-| `bind-listener` | blocking (`scheduling: Sequential`; role `None`) | `(Fn [Int Int] (IO web/Listener))` | none — `Listener` is not a resource handle |
-| `accept-conn` | poll, **Produce** | `(Fn [web/Listener] (IO web/Connection))` | writes `desc_out = {token: new_fd, capacity: 1}`; trampoline stamps the produced `Connection`'s header |
-| `read-conn` | poll, **Consume** | `(Fn [web/Connection] (IO web/Request))` | trampoline READS `(token, capacity)` off the `Connection` header before polling (acquire-around-poll); leaf recovers `fd = token` |
-| `send-conn` | poll, **Consume** | `(Fn [web/Connection web/Response] (IO Int))` | as `read-conn`; `Response` is an ordinary second arg |
+| `bind-listener` | blocking (`scheduling: Sequential`; role `None`) | `(Fn [Int Int] (IO web/Listener))` | none — `Listener` is not a per-poll resource handle |
+| `accept-conn` | poll, **Produce** | `(Fn [web/Listener] (IO web/Connection))` | drives acquire/register on the listener fd; at `Ready` mints `Connection{fd: new_fd}` carrying the fresh `r` |
+| `read-conn` | poll, **Consume** | `(Fn [web/Connection] (IO web/Request))` | reads `fd` off the `Connection` field; `acquire(read_tok(fd), 1, waker)` itself; parks on readable |
+| `send-conn` | poll, **Consume** | `(Fn [web/Connection web/Response] (IO Int))` | reads `fd` off arg 0; `acquire(write_tok(fd), 1, waker)`; parks on writable; `Response` is arg 1 |
 
 - **`bind-listener`** is a plain blocking `CLIO::effect` (a bind is fast; no poll-fn).
   It binds the listener, chooses `N`, and `CLAdt::<Listener>::construct`s
-  `(listener_fd, N)` — both **genuine logical fields**. Role `None`: nothing acquires a
-  listener token. Blocking + poll effects coexist in one manifest exactly as stdio's
-  mixed manifest does.
+  `(listener_fd, N)` — both **genuine fields**. Role `None`: nothing acquires a listener
+  token. Blocking + poll effects coexist in one manifest exactly as stdio's mixed
+  manifest does.
 - **`accept-conn`** is `role: Produce`. Its `Listener` arg arrives in the env at
-  `PollEnv::arg(0)` (the ADT base ptr); the poll-fn reads `Listener.fd` (a logical
-  field, via `CLAdt`/schema), parks on listener-readable, and on wake `accept()`s a new
-  fd. It then **writes `*desc_out = {token: new_fd, capacity: 1}`** and `Ready`s the
-  opaque `Connection` value through `set_result`. The trampoline stamps the descriptor
-  into the `Connection`'s header. `accept` is **structurally serial** in the serve loop
-  (§3.5.5), so it takes no acquire — role `Produce` (not `Consume`) is correct: it
-  produces, it does not consume a prior handle's admission.
+  `PollEnv::arg(0)` (the ADT base ptr); the poll-fn reads `Listener.fd` (a genuine field,
+  via `CLAdt`/schema). During establishment there is **no program handle yet**, so the
+  Produce leaf drives acquire/register on the **listener fd** it is establishing on:
+  `register_readable(listener_fd, waker)` + `Pending` until readable, then on wake
+  `accept()`s a new fd. It then `CLAdt::<Connection>::construct`s `Connection{fd: new_fd}`
+  carrying the fresh `r` and `Ready`s it through `set_result`. The handle **materializes
+  only at the `Ready` edge** — no header stamp, no `desc_out` (both deleted). `accept` is
+  **structurally serial** in the serve loop (§3.5.5), so role `Produce` (not `Consume`)
+  is correct: it produces a handle, it does not consume a prior handle's admission.
 - **`read-conn` / `send-conn`** are `role: Consume`. Their `Connection` arg arrives at
-  `PollEnv::arg(0)`; **before** the first poll the trampoline reads `(token, capacity)`
-  off that handle's header and acquires the token (per-connection serial, capacity 1).
-  The poll-fn recovers `fd = token` from the header (§3.5.4), parks on the connection
-  fd's readable/writable readiness, and on wake reads/writes. `send-conn`'s `Response`
-  is `PollEnv::arg(1)`.
+  `PollEnv::arg(0)`; the poll-fn reads `fd` off the `Connection`'s genuine field
+  (§3.5.4), **projects the per-direction token** (`read` ⇒ `read_tok(fd)`, `send` ⇒
+  `write_tok(fd)` — distinct, so read/write on one connection do not serialize against
+  each other, §3.6.1 full-duplex), and **calls `acquire(token, 1, waker)` itself** at the
+  start of each poll. On `Acquired` it parks on the connection fd's readable/writable
+  readiness; on wake it reads/writes. The host **releases** the permit on `Ready`/cancel.
+  `send-conn`'s `Response` is `PollEnv::arg(1)`.
 
-**Env layout under v9** (no leading-pair peel — the descriptor is NOT an operand): the
-result slot @ `state+0`; the **handle** (`Listener` for accept, `Connection` for
-read/send) @ `state+8` = `PollEnv::arg(0)`; `Response` ADT base ptr (`send-conn` only)
-@ `state+16` = `PollEnv::arg(1)`. The poll-fn **never sees `capacity`** (admission-only,
-read by the trampoline off the header / `desc_out`); it sees `token` only by reading
-the handle's header itself when it needs `fd` (§3.5.4).
+**Env layout under v9** (no leading-pair peel, no `desc_out` slot — `PollFn` is
+unchanged): the result slot @ `state+0`; the **handle** (`Listener` for accept,
+`Connection` for read/send) @ `state+8` = `PollEnv::arg(0)`; `Response` ADT base ptr
+(`send-conn` only) @ `state+16` = `PollEnv::arg(1)`. The poll-fn computes the token from
+the handle's `fd` field and supplies `capacity` (the platform's trust assertion: `1` per
+connection) directly to `acquire` — both are the *platform's* values, never baked onto a
+value or read off a header.
 
 #### 3.5.3 Wrapper placement — the TWO-MODULE split (resolves FIXME 0469)
 
-Under v9 the friendly verbs are near-trivial pass-throughs — the destructuring is
-**gone** (no leading pair to thread):
+Under v9 (ctx-vtable) the friendly verbs are near-trivial pass-throughs — the
+destructuring is **gone** (no leading pair to thread; no descriptor to read or write):
 
 ```clojure
 ;; exemplar/serve.cl  (NOT web.cl — see the load-order constraint below)
@@ -748,7 +838,7 @@ Under v9 the friendly verbs are near-trivial pass-throughs — the destructuring
 
 (defn listen [port n] (bind-listener port n))     ; blocking; returns Listener
 (defn accept [listener] (accept-conn listener))   ; Produce; mints opaque Connection
-(defn read   [conn]     (read-conn conn))         ; Consume; descriptor off the header
+(defn read   [conn]     (read-conn conn))         ; Consume; token projected from conn.fd
 (defn send   [conn resp] (send-conn conn resp))   ; Consume
 ```
 
@@ -766,7 +856,7 @@ registered** → a hard `ModuleError` (`module 'platform.web' not found (importe
 load `platform.web` as a `.cl` module mid-platform-load — the same cycle).
 
 So the resolution splits the placement across **two `/port`-owned modules** (the
-interface — ADTs, sigs, leading-descriptor model — is unchanged; only *where the
+interface — ADTs, sigs, ctx-vtable scheduling model — is unchanged; only *where the
 wrappers live* moves):
 
 | module | contents | imports | loaded |
@@ -777,45 +867,49 @@ wrappers live* moves):
 
 The "plumbing out of `main.cl`" intent (the v8 §3.5.3 goal) is preserved — the
 plumbing lives in `serve.cl`, just not in `web.cl`. **The general platform-authoring
-rule this constraint generalizes to is §3.6.3** (`/arch` flagged it as v9-independent
+rule this constraint generalizes to is §3.6.3** (`/arch` flagged it as model-independent
 and worth stating regardless — it governs *any* platform whose sigs reference `.cl`
-ADTs, not just web). `accept-conn`'s poll-fn mints the fresh `Connection` (the empty
-opaque value) and writes its `desc_out`; the trampoline stamps the header.
+ADTs, not just web). `accept-conn`'s poll-fn mints the fresh `Connection{fd: new_fd}`
+(an opaque value carrying the new `r` in its genuine field) and `set_result`s it — no
+header stamp, no `desc_out`.
 
-#### 3.5.4 poll_support consumption — web is the 3rd consumer; ONE new descriptor-reader helper
+#### 3.5.4 poll_support consumption — web is the 3rd consumer; NO new env helper, `Reactor` grows acquire/retire
 
-The three §2 scaffolds serve the web leaves; v9 adds **one** small reader to `PollEnv`
-(the §3.6.2 helper) so the descriptor-slot offset lives in one place, consistent with
-§2.1's offset-discipline thesis:
+The three §2 scaffolds serve the web leaves with **no new `PollEnv` helper** — the
+ctx-vtable model adds nothing to the env layout (no header slot, no `desc_out`). The
+*only* §2 change is on the `Reactor` scaffold (§2.2), which grows the `acquire`/`retire`
+wrappers over the new vtable entries. The descriptor cut's `desc_of`/`set_desc` PollEnv
+helpers are **deleted** (there is no descriptor slot to read or write):
 
 - **`PollEnv`** (§2.1) — reads `arg(0)` = the handle ADT base ptr (`Listener` /
   `Connection`), `arg(1)` = `Response` ptr; writes the result via `set_result` /
-  `set_result_cl`. **New v9 reader:** `PollEnv::desc_of(handle: i64) -> ResourceDesc`
-  reads the fixed-offset descriptor header slot off a resource-handle arg — a
-  consume leaf calls `self.env.desc_of(self.env.arg(0)).token as RawFd` to recover its
-  `fd` (web's `token == fd`). For a produce leaf, `PollEnv` exposes the `desc_out`
-  out-param as `set_desc(ResourceDesc { token, capacity })` (§3.6.1).
-- **`Reactor`** (§2.2) — `wake_on_readable(listener_fd)` (accept, fd from `Listener.fd`
-  logical field), `wake_on_readable(conn_fd)` (read, fd from `desc.token`),
-  `wake_on_writable(conn_fd)` (send).
-- **`PollState::drive`** (§2.3) — first poll registers readiness + parks; resume
-  re-attempts the syscall; `Ready(result)` on completion.
+  `set_result_cl`. The leaf reads the connection `fd` as an **ordinary opaque ADT field**
+  off `arg(0)` via the existing `CLAdt` / `web.platform-schema` path (`Connection.fd`) —
+  the same accessor it uses for `Listener.fd`; **no descriptor-offset helper.**
+- **`Reactor`** (§2.2) — `wake_on_readable(listener_fd)` (accept, fd from `Listener.fd`),
+  `acquire(read_tok(conn_fd), 1)` + `wake_on_readable(conn_fd)` (read, fd from
+  `Connection.fd`), `acquire(write_tok(conn_fd), 1)` + `wake_on_writable(conn_fd)` (send).
+  The leaf computes the token from the fd field and calls `acquire`/`register_*` itself.
+- **`PollState::drive`** (§2.3) — first poll `acquire`s + registers readiness + parks;
+  resume re-`acquire`s (idempotent) + re-attempts the syscall; `Ready(result)` on
+  completion (the host releases the permit).
 
 Two web-specific parts stay **hand-written** (§2.4 "what `poll_support` does NOT own"):
-(a) the **ADT construct/read on the ready phase** — `accept-conn` constructs the opaque
-`Connection` (an empty body; the descriptor is stamped by the trampoline, not the
-construct call) + reads `Listener.fd`; `read-conn` constructs a `Request`; `send-conn`
-reads a `Response` — via the existing `CLAdt` / `web.platform-schema` path; (b) the
-**capture-RC** of the `Response` retained across `send-conn`'s park→write boundary
-(`CLOwned` it). The descriptor read/write is the *only* new idiom, and it is codified
-once in `PollEnv` (§3.6.2) — no other scaffold change.
+(a) the **ADT construct/read on the ready phase** — `accept-conn` constructs
+`Connection{fd: new_fd}` (a normal 1-field object via `CLAdt::construct`) + reads
+`Listener.fd`; `read-conn` constructs a `Request`; `send-conn` reads a `Response` — via
+the existing `CLAdt` / `web.platform-schema` path; (b) the **capture-RC** of the
+`Response` retained across `send-conn`'s park→write boundary (`CLOwned` it). The token
+projection (`fd` → `read_tok`/`write_tok`) is the platform's trust assertion (§3.6.1),
+hand-written; `poll_support` only wraps the `acquire`/`register_*` calls — no scaffold
+beyond `Reactor::acquire`/`retire`.
 
 #### 3.5.5 The serial serve loop + the fan-out seam (`exemplar/main.cl`)
 
 Structurally **unchanged from the v8 §3.5.5** — the connection still threads
 accept→read→send via ordinary binding, and `Connection` is still a self-contained
-handle (now self-contained *because* it carries its descriptor in its header, rather
-than as logical fields). The serial loop:
+handle (self-contained *because* it carries its `fd` in its own genuine opaque field,
+from which the platform projects the token). The serial loop:
 
 ```clojure
 (import [serve [listen accept read send]])
@@ -840,40 +934,48 @@ than as logical fields). The serial loop:
 
 `handle` (the pure router) is **unchanged**. The fan-out factors `handle-conn` and
 detaches it (`(do (handle-conn conn) (serve-loop listener))`) — and because the
-`Connection` is a self-contained handle (its descriptor rides its header), `handle-conn`
-is a pure function of `conn`; the fan-out wraps it without re-plumbing. The v9 cut
-**strengthens** this property: at v8 the self-containment depended on the wrapper having
-threaded the `(token, capacity, fd)` triple correctly; at v9 it is a *representational*
-fact (the descriptor is part of the value), so a mis-threaded leading pair is no longer
-even expressible.
+`Connection` is a self-contained handle (it carries its `fd`, from which the platform
+projects the token), `handle-conn` is a pure function of `conn`; the fan-out wraps it
+without re-plumbing. The ctx-vtable cut **strengthens** this property: at v8 the
+self-containment depended on the wrapper having threaded the `(token, capacity, fd)`
+triple correctly; now the connection carries only its genuine `fd`, and the token is a
+projection the poll-fn recomputes each poll (never threaded, never stored), so a
+mis-threaded leading pair is no longer even expressible.
 
-#### 3.5.6 How the descriptor reaches the poll node — the acquire-around-poll permit lights up
+#### 3.5.6 How scheduling reaches the trampoline — the leaf-driven acquire/register lights up
 
-Under v9 the descriptor reaches the trampoline **without any cranelisp operand**:
+Under the ctx-vtable model **the leaf drives scheduling itself** (no cranelisp operand,
+no header slot, no `desc_out`); the trampoline only supplies the `*HostCtx` + `*Waker`
+and owns *release*:
 
-- **Produce (`accept-conn`):** the poll-fn writes `*desc_out = {token: new_fd, capacity:
-  1}`; on `Ready` the trampoline **stamps** that into the produced `Connection`'s header
-  slot (reactor.md §2.9 — the v9 stamp step) and hands the bare value onward.
-- **Consume (`read-conn` / `send-conn`):** **before** the first poll the trampoline
-  **reads** `(token, capacity)` off the `Connection` arg's header and calls
-  `env.acquire(token, capacity, strand)` — taking the per-token permit, holding it
-  across the establish→park→ready arc, releasing on `Ready`/drop (the RAII `Permit`). So
-  every consume leaf is admission-wrapped — **the acquire-around-poll permit is lit up by
-  the web consume leaves**.
+- **Produce (`accept-conn`):** there is **no program handle during establishment**, so
+  the poll-fn drives `register_readable(listener_fd, waker)` on the *listener* fd it is
+  establishing on (an `accept` does not contend on a connection token — it is structurally
+  serial in the serve loop). At `Ready` it mints `Connection{fd: new_fd}` carrying the
+  fresh `r` and `set_result`s it — no stamp, no `desc_out`.
+- **Consume (`read-conn` / `send-conn`):** the poll-fn **reads `fd` off the `Connection`
+  arg's genuine field**, projects the per-direction token (`read_tok`/`write_tok`), and
+  calls `acquire(token, 1, waker)` **itself** at the start of each poll — taking the
+  per-token permit. The host **holds** that permit across the establish→park→ready arc
+  and **releases** it on `Ready`/cancel (trampoline-owned, keyed by the effect's identity;
+  cancel never re-enters the poll-fn). So every consume leaf is admission-wrapped — **the
+  leaf-driven acquire is lit up by the web consume leaves**.
 
-What the permit gates, per granularity (honest, arch §16-faithful) — unchanged from v8:
+What the permit gates, per granularity (honest, arch §16-faithful):
 
-- **Per connection (capacity 1):** read→send on one connection serialize + order (§8.2
-  capacity-1 group) — dataflow already orders them, so the permit is
+- **Per connection (capacity 1, per direction):** `read`/`send` on one connection draw
+  **distinct per-direction tokens** (`read_tok(fd)` ≠ `write_tok(fd)`), so they do NOT
+  serialize against each other (full-duplex, §3.6.1); within a direction, capacity 1
+  serializes — dataflow already orders read→send, so the permit is
   correct-but-uncontended.
-- **Across connections (distinct tokens):** independent — different connections carry
-  **distinct header tokens** (= distinct fds), so the per-token permit does not serialize
-  them (arch §8.2). Under v9 this is a representational fact: each produced `Connection`
-  has its own stamped token.
+- **Across connections (distinct fds):** independent — different connections carry
+  **distinct `fd`s**, so the projected tokens are distinct and the per-token permit does
+  not serialize them (arch §8.2). Each connection's token is recomputed from its own `fd`
+  each poll.
 - **The in-flight-CONNECTION-COUNT ceiling N:** enforced under the fan-out by the
-  **slice-4 global admission budget** (reading `N` off the `Listener`'s `pool` logical
-  field), composing `min(capacity, degree)` over the same permit machinery (arch §8.1 /
-  §16). **Not** a per-connection capacity-N.
+  **slice-4 global admission budget** (reading `N` off the `Listener`'s `pool` field),
+  composing `min(capacity, degree)` over the same permit machinery (arch §8.1 / §16).
+  **Not** a per-connection capacity-N.
 
 **Rejected alternative — a SHARED connection-pool token of capacity N** (so the per-token
 permit alone bounds the count, without the slice-4 global budget): **rejected** for the
@@ -885,27 +987,30 @@ need not re-prove it.
 
 > **Coordination note for `/sprint`.** The "N concurrent connections; the (N+1)th parks"
 > server-demo witness is a fan-out property (the slice-4 global admission budget the
-> sibling `/design` intrinsics agent owns), NOT a per-token-permit property. The v9
-> descriptor cut does not change this split: the interface uses only the ratified header
-> descriptor + ordinary `.cl` ADTs — and the `cranelisp-types` ABI changes (`ResourceDesc`,
-> `ResourceRole`, `ConcurrencyDescriptor.role`, `PollFn::desc_out`) are the /arch-ruled
-> v9 cutover surface (§6.8.0b), already manifested — no NEW cross-crate convention is
-> introduced by this design pass.
+> sibling `/design` intrinsics agent owns), NOT a per-token-permit property. The
+> ctx-vtable cut does not change this split: the interface uses only the ratified `ctx`
+> vtable (`acquire`/`register_*`/`retire`) + ordinary opaque `.cl` ADTs — and the
+> `cranelisp-types`/`cranelisp-platform` ABI changes (`ResourceRole`,
+> `ConcurrencyDescriptor.role`, `Acquire`, `HostCtx.{acquire,retire}`; `PollFn` UNCHANGED)
+> are the /arch-ruled v9 cutover surface (§6.8.0b), already manifested — no NEW cross-crate
+> convention is introduced by this design pass.
 
-#### 3.5.7 /dev + /port web implements, in this order (v9)
+#### 3.5.7 /dev + /port web implements, in this order (v9 ctx-vtable)
 
 1. **`/port` — the handle ADTs** (`exemplar/web.cl`, §3.5.1): `web/Listener [fd pool]`
-   (ordinary) + `web/Connection []` (fully opaque). **No platform import in `web.cl`**
-   (§3.5.3 / §3.6.3). Keep `Request`/`Response`.
+   (ordinary) + `web/Connection [fd]` (opaque, genuine `fd` field — NOT `[]`). **No
+   platform import in `web.cl`** (§3.5.3 / §3.6.3). Keep `Request`/`Response`.
 2. **`/port` — the wrapper module** (`exemplar/serve.cl`, §3.5.3): the trivial
    `listen`/`accept`/`read`/`send` pass-throughs; imports `[web [Listener Connection]]`
    + `[platform.web […]]`. Export them.
 3. **`/platform` — the v9 platform poll leaves** (`exemplar/platforms/web/src/lib.rs`,
    §3.5.2): one `declare_platform!` with `bind-listener` (blocking, role `None`),
-   `accept-conn` (poll, **Produce** — writes `desc_out`), `read-conn` / `send-conn`
-   (poll, **Consume** — recover `fd` from the header). Keep the pure `parse_http_request`
-   / `format_http_response` halves; fd-keyed internal maps replace `Mutex<ServerState>`.
-   Each rides `poll_support` (§3.5.4) + the §3.6 `desc_out`/`desc_of` helpers.
+   `accept-conn` (poll, **Produce** — drives acquire/register on the listener fd, mints
+   `Connection{fd}` at `Ready`), `read-conn` / `send-conn` (poll, **Consume** — read `fd`
+   off the `Connection` field, `acquire(read_tok/write_tok, 1, waker)` themselves). Keep
+   the pure `parse_http_request` / `format_http_response` halves; fd-keyed internal maps
+   replace `Mutex<ServerState>`. Each rides `poll_support` (§3.5.4) — `PollEnv` +
+   `Reactor::{wake_on_*,acquire,retire}` + `PollState::drive`. No `desc_out`/`desc_of`.
 4. **`/platform` (or `/int`) — regenerate `web.platform-schema`** for the new ADT shapes
    (opaque `Connection`) + slimmed signatures (`/platform-schema web`).
 5. **`/port` — reshape the serve loop** (`exemplar/main.cl`, §3.5.5): import `serve`;
@@ -921,71 +1026,110 @@ need not re-prove it.
 
 ---
 
-### 3.6 The `desc_out` leaf-authoring contract — Produce vs Consume (the general v9 rule)
+### 3.6 The ctx-vtable leaf-authoring contract — the uniform poll-fn skeleton + the four roles (the general v9 rule)
 
 §3.5 instantiates v9 for web; this section is the **platform-agnostic leaf-authoring
-contract** every poll leaf follows under v9. It is the §2.4 "what `poll_support` does
-NOT own" boundary, restated for the descriptor: `poll_support` codifies the *offset
-discipline* of reading/writing the descriptor (one place, §3.6.2); the leaf author
-declares the **role** and decides the **token/capacity values** (the trust assertion).
+contract** every poll leaf follows under the ctx-vtable model. It is the §2.4 "what
+`poll_support` does NOT own" boundary: `poll_support` wraps the `ctx` vtable calls
+(`Reactor::{wake_on_*,acquire,retire}`, §2.2) and the env/phase scaffolds; the leaf
+author declares the **role** (a manifest fact) and decides the **token/capacity values**
++ **token projection** from the handle (the trust assertion).
 
-#### 3.6.1 The three roles and what each leaf author writes
+**The uniform poll-fn skeleton** (`effect-concurrency.md` §4.1.1; every poll-shape leaf
+has this shape):
+
+```
+poll(state, ctx, waker):
+    token = project_token(state.handle)            # platform computes from its handle
+    if token != 0:
+        if ctx.acquire(token, capacity, waker) == Parked:
+            return Pending                          # backpressure: no op without a permit
+    r = state.syscall(NONBLOCK)                      # the platform's `what`
+    if would_block(r):
+        ctx.register_<interest>(state.fd, waker)     # the host's `when`
+        return Pending
+    set_result(state, value_from(r))
+    return Ready                                      # host releases the permit
+```
+
+- `acquire` returning **`Parked`** returns `Pending` **before** the syscall — an op is
+  never started without a permit (backpressure / pool bound, arch §8).
+- `acquire` is **idempotent per in-flight effect** (the host keys held permits by the
+  waker's data identity), so a re-poll re-`acquire`s without consuming a second permit —
+  the skeleton needs **no "have I already acquired?" flag** on `state`.
+- A **commutative** leaf (`token == 0`) omits `acquire` entirely — the token never
+  appears, no permit is taken.
+- A **one-shot** leaf (`sleep`) is the degenerate case: no handle, no token, no acquire —
+  just `register_timer(deadline, waker) → Pending → Ready`.
+- **Release is trampoline-owned** — the host releases the held permit on the effect's
+  `Ready` **or** cancel; cancel never re-enters the poll-fn (so a leaf never frees a
+  permit it cannot soundly free on a cancel it never sees).
+
+#### 3.6.1 The four roles and what each leaf author writes
 
 The leaf's **role** is a **per-effect static fact** declared on the manifest
-`ConcurrencyDescriptor.role` (`ResourceRole { None, Produce, Consume }`) — NOT a
+`ConcurrencyDescriptor.role` (`ResourceRole { None, Produce, Consume, Retire }`) — NOT a
 per-value field (`platform-interface.md` §6.8.0b; "Produce" is a fact about the *leaf*,
-not the connection). The poll-fn signature gains `desc_out: *mut ResourceDesc`
-(`poll(state, host, waker, desc_out) -> Poll`); `Poll` stays single-register
-`#[repr(i32)]` and the value still flows through `set_result`.
+not the connection). The trampoline **does NOT branch on role at runtime** — role grounds
+inference E2 + documents the leaf; the poll-fn does *all* scheduling via the `ctx` vtable.
+`PollFn` is **UNCHANGED** (`poll(state, *HostCtx, *Waker) -> Poll`) — no `desc_out`; the
+value flows through `set_result` as today.
 
-| role | when to declare it | what the poll-fn does with `desc_out` | what the trampoline does |
+| role | when to declare it | what the poll-fn does (via `ctx`) | what the trampoline does |
 |---|---|---|---|
-| **`None`** | the effect neither produces nor consumes a scheduling resource (a tokenless/`Commutative` leaf — a bare timer; a fire-and-forget log; `bind-listener`) | **ignores `desc_out`** (host zero-inits the slot; never read) | no acquire, no stamp |
-| **`Produce`** | the effect **mints** a resource handle whose later use must be admission-controlled (`accept-conn`; `connect-pool`) | **writes `*desc_out = ResourceDesc { token, capacity }`** before returning `Ready` (via `PollEnv::set_desc`) — `token` is the platform's internal identity choice (web: the new fd), `capacity` the resource's safe-concurrency ceiling | reads `*desc_out` on `Ready`; **stamps** it into the produced value's header slot; hands the bare value onward |
-| **`Consume`** | the effect **operates on** a previously-produced handle and must serialize within that resource (`read-conn`/`send-conn`; a DB `query` over a pooled connection) | **ignores `desc_out`**; recovers any per-resource identity it needs (web: `fd = token`) by **reading the handle's header** via `PollEnv::desc_of(arg)` | **reads** `(token, capacity)` off the consumed handle's header **before** the first poll; acquire-around-poll on that token; releases on `Ready`/drop |
+| **`None`** | the effect neither produces nor consumes a scheduling resource (a tokenless/`Commutative` leaf — a bare timer; a fire-and-forget log; `bind-listener`; `sleep` one-shot) | **no `acquire`** (token 0 / no token); `register_timer` only if it waits | nothing scheduling-specific |
+| **`Produce`** | the effect **mints** a resource handle whose later use must be admission-controlled (`accept`/`connect`/`open`) | drives `acquire`/`register_*` on the **establishment** resource (the listener fd / a fresh socket fd it minted — there is no program handle yet); at `Ready` **mints the handle ADT carrying the new `r`** in a genuine field and `set_result`s it | releases the establishment permit on `Ready`/cancel; hands the minted value onward (no stamp) |
+| **`Consume`** | the effect **operates on** a previously-produced handle and must serialize within that resource (`read`/`write`/`send`; a DB `query` over a pooled connection) | reads `r` off the handle arg's **genuine field**, projects the (per-direction) token, calls `acquire(token, capacity, waker)` itself, then the I/O syscall + `register_*` on `WouldBlock` | releases the permit on `Ready`/cancel (keyed by effect identity) |
+| **`Retire`** | the effect **ends** a resource's scheduling identity (`close`) | `acquire(token, …)` (idempotent), `close(r)` syscall, then `ctx.retire(token)` for **each** of the resource's tokens (full-duplex: `retire(read_tok)` + `retire(write_tok)`) | releases the permit on `Ready`; the `retire` drops the token's pool + wakes any token-parked waiters |
 
-**The asymmetry is the load-bearing subtlety.** A Produce leaf is the *only* writer of a
-descriptor (through `desc_out`); a Consume leaf is a pure reader (off the header); a
-`None` leaf touches neither. A leaf is never both Produce and Consume — if an effect
-both mints a new handle and rides a prior one (rare), it declares `Produce` and the
-prior handle's admission is the *caller's* concern (for web, `accept` is structurally
-serial in the serve loop, so it needs no listener-side acquire — §3.5.2).
+**The asymmetry is the load-bearing subtlety.** Every leaf does its *own* scheduling
+through the vtable — there is no writer/reader split over a shared descriptor (that was
+the dead model). A `Produce` leaf drives admission on the resource it is *establishing*
+and mints the handle at `Ready`; a `Consume` leaf projects the token from the handle it
+*holds*; a `Retire` leaf ends the identity; a `None` leaf touches neither. A leaf is
+never both Produce and Consume — if an effect both mints a new handle and rides a prior
+one (rare), it declares `Produce` and the prior handle's admission is the *caller's*
+concern (for web, `accept` is structurally serial in the serve loop, so it needs no
+listener-side contention — §3.5.2).
 
 **Singleton resources (no produced handle) — the manifest-static token.** A resource
-that is **not minted per value** (stdin, a global rate-limiter) has no handle to stamp
-or read. It declares a **manifest-static** descriptor on the effect — a fixed non-zero
-`token` + `capacity` + `role: Consume` — and the trampoline acquires the *manifest-static*
-token before polling (no value header involved). `read-line`'s `{token: STDIN_TOKEN != 0,
+that is **not minted per value** (stdin, a global rate-limiter) has no handle to project
+a token from. It declares a **manifest-static** serial token on the effect — a fixed
+non-zero `token` + `capacity` + `role: Consume` — and the poll-fn calls
+`acquire(STATIC_TOKEN, capacity, waker)` on that **constant** (read from the effect's
+`ConcurrencyDescriptor`, not off any value). `read-line`'s `{token: STDIN_TOKEN != 0,
 capacity: 1, role: Consume}` (§3.1) is the canonical case; it structurally enforces
-single-in-flight without any per-value descriptor. This is the v9 home for "a serial
-resource with no handle object."
+single-in-flight with no value, no header, no special case. This is the v9 home for "a
+serial resource with no handle object."
 
-#### 3.6.2 The `poll_support` descriptor helpers (the offset lives in ONE place)
+#### 3.6.2 The `poll_support` scaffold (no descriptor helper — the vtable is the only new idiom)
 
-Consistent with §2.1 (the R1 env-layout convention lives in `PollEnv`, not replicated
-offset math per leaf), the v9 descriptor read/write is codified once:
+The ctx-vtable model adds **nothing to the env layout** (no header slot, no `desc_out`),
+so there is **no `PollEnv` descriptor helper** — the descriptor cut's `desc_of`/`set_desc`
+are **deleted**. The new idiom is purely the *vtable call*, codified once on the
+`Reactor` scaffold (§2.2):
 
 ```rust
 #[cfg(feature = "concurrency")]
-impl PollEnv {
-    /// PRODUCE leaf: write the descriptor the trampoline will stamp into the
-    /// produced value's header. Writes through the `desc_out` out-param the host
-    /// passed to the poll-fn. Call once, before returning `PollStep::Ready`.
-    pub fn set_desc(&self, d: ResourceDesc) { /* *self.desc_out = d */ }
-
-    /// CONSUME leaf: read the descriptor off a resource-handle arg's header slot
-    /// (the fixed offset — the ONE place that encodes it). Web: `desc_of(arg(0)).token
-    /// as RawFd` recovers the connection fd.
-    pub fn desc_of(&self, handle: i64) -> ResourceDesc { /* read fixed header slot */ }
+impl Reactor<'_> {
+    /// Token-permit acquire (the leaf computes `token` + `capacity` itself). Idempotent
+    /// per in-flight effect; `Parked` ⇒ the leaf returns `Pending`. Release is
+    /// trampoline-owned — there is NO `release` here.
+    pub fn acquire(&self, token: u64, capacity: u32) -> Acquire { /* (*host).acquire(...) */ }
+    /// End a token's scheduling identity (a Retire/`close` leaf), after `close(r)`.
+    pub fn retire(&self, token: u64) { /* (*host).retire(...) */ }
+    // wake_on_readable / wake_on_writable / wake_on_timer — §2.2, unchanged.
 }
 ```
 
-The fixed header-slot offset (`interfaces.md` §"Resource descriptor") is encoded
-**once** in `desc_of`/`set_desc` — if the backend's resource-handle layout ever moves
-the slot, this is the single platform-side edit (the same single-sited discipline
-`PollEnv::result()` already has for the env result slot, §2.1). A leaf author never does
-raw descriptor pointer arithmetic. `set_desc` is the *only* place a leaf touches
-`desc_out`; `desc_of` the *only* place it reads a handle's descriptor.
+A leaf reads its handle's `r`/`fd` as an **ordinary opaque ADT field** off `PollEnv::arg(0)`
+via the existing `CLAdt` / platform-schema path (the same accessor it uses for any ADT
+field) — **not** through a descriptor-offset helper. It then projects the token
+(`token == fd` for web; per-direction for full-duplex) and calls `Reactor::acquire`. The
+**only** new offset-discipline question the descriptor cut raised (where does the
+descriptor slot live?) **disappears** — there is no slot. The env-layout single-siting of
+§2.1 (`PollEnv`) and the vtable single-siting of §2.2 (`Reactor`) are the two homes; no
+third helper is added.
 
 #### 3.6.3 General platform-authoring rule — a sig-referenced type-module cannot import its own platform
 
@@ -1013,10 +1157,10 @@ platform's sigs reference. The pattern is the §3.5.3 two-module split:
    registered.
 
 This is a structural constraint, not a web quirk — the next platform that wants
-destructuring/convenience wrappers over its own ADTs follows the same two-module
-pattern. (The descriptor cut *reduces* the wrappers to near-trivial pass-throughs under
-v9 — there is no leading pair to destructure — but the placement rule is unchanged: the
-wrapper still imports the platform, so it still cannot be `M`.)
+convenience wrappers over its own ADTs follows the same two-module pattern. (The
+ctx-vtable cut *reduces* the wrappers to near-trivial pass-throughs — there is no leading
+pair and no descriptor to thread — but the placement rule is unchanged: the wrapper still
+imports the platform, so it still cannot be `M`.)
 
 ---
 
@@ -1144,23 +1288,25 @@ already-gated types, and the macro spine names none.
 |---|---|
 | **Simplicity** | Net subtraction (Principle 6): retires the ~105-line `declare_concurrent_platform!` mirror; `poll_support` is extracted from real evidence, not speculated. The three scaffolds each codify one repeated idiom (env offsets, vtable calls, phase sentinel) — no scaffold without a witnessed pain point. |
 | **Maintainability** | The R1 env-layout convention lives in **one place** (`PollEnv`, §2.1) instead of replicated offset math per leaf — bounded blast radius if the backend bake moves a slot (one edit). The macro spine is single-sited (Principle 7) — a GOT/manifest mechanism change touches the shared helper, not two mirrors. |
-| **Observability** | Out-of-pass for the platform crate (the strand event stream is intrinsics/reactor-side, reactor.md §3). `poll_support` emits nothing — park/acquire/release events are stamped by the reactor when it drives the `EffectPoll`, not by the leaf. Noted as non-impact. |
-| **Concurrency-safety** | The platform side stays single-threaded-per-leaf and permit-agnostic: a poll-fn registers readiness and returns `Poll`, never blocks, never re-enters admission (gate (a) req. 2, §3.2). The lock-free reactor-thread admission invariant (reactor.md §2.8) holds verbatim because the platform never touches the permit map. `PollState` lives in env scratch torn down by the host-built `drop_glue_ptr` (RC + drop for free, io-trampoline §12.2). |
-| **Testability** | `PollEnv`/`Reactor`/`PollState` are unit-testable in-crate over a fixture env + a stub `HostCtx`/`Waker` (the `async_read_pollfn`/`timer_write_pollfn` precedent, reactor.md §2.7 — `concurrency`-gated unit tests). The macro convergence is pinned by `tests/macro_expansion.rs` (v7 GOT/manifest shape) + the `_neg` frozen-edge guard. e2e (distinct-token overlap, capacity-N poll parking) is `/qa`'s Chunk-A plan over the rewritten web/stdio. |
+| **Observability** | Out-of-pass for the platform crate (the strand event stream is intrinsics/reactor-side, reactor.md §3). `poll_support` emits nothing — the acquire/park/release events are emitted by the host when it services the vtable calls + releases the permit on `Ready`/cancel, not by the leaf. Noted as non-impact. |
+| **Concurrency-safety** | The platform side stays single-threaded-per-leaf and **release-agnostic**: a poll-fn calls `acquire`/`register_*`/`retire` through the `ctx` vtable and returns `Poll`, but never blocks (`acquire` returns `Parked` immediately) and never dispatches another effect (gate (a) req. 2, §3.2). **Release is trampoline-owned** — the platform never releases a permit (so it cannot mis-release on a cancel it never sees). The lock-free reactor-thread permit map (reactor.md §2.8) is the host's; the platform only *calls into* it via the vtable. `PollState` lives in env scratch torn down by the host-built `drop_glue_ptr` (RC + drop for free, io-trampoline §12.2). |
+| **Testability** | `PollEnv`/`Reactor`/`PollState` are unit-testable in-crate over a fixture env + a stub `HostCtx`/`Waker` (the `async_read_pollfn`/`timer_write_pollfn` precedent, reactor.md §2.7 — `concurrency`-gated unit tests); the stub `HostCtx` now also records `acquire`/`retire` calls. The macro skeleton is pinned by `tests/macro_expansion.rs` (GOT/manifest shape) + the `_neg` frozen-edge guard. e2e (distinct-token overlap, capacity-N poll parking, full-duplex non-serialization) is `/qa`'s plan over the rewritten web/stdio. |
 
 ---
 
 ## 6. Cross-references
 
-- **ABI v9 (the authoritative /arch rulings this doc conforms to — read-only):**
-  `design/arch/platform-interface.md` §6.8.0b (the three carriers — header slot,
-  `desc_out`, header-read; role on the manifest); `design/arch/effect-concurrency.md`
-  §4.1.1 (descriptor as representation overhead; the produce/consume asymmetry; the
-  singleton manifest-static token); `design/arch/interfaces.md` §"Resource descriptor"
-  (the `ResourceDesc`/`ResourceRole` shapes + the header-slot layout); `design/arch/
-  bounded-contexts.md` §5 (platform ABI v9 surface) / §3 (backend poll-node emit) / §6
-  (int trampoline stamp/read). The v9 sections here (§3.5 / §3.6 / §3.1) are the
-  platform/leaf-authoring half of the cascade these rulings own.
+- **ABI v9 ctx-vtable (the authoritative /arch rulings this doc conforms to — read-only):**
+  `design/arch/platform-interface.md` §6.8.0b (the `ctx` vtable ABI — `HostCtx.{acquire,
+  retire}` + the `Acquire` enum + `ConcurrencyDescriptor.role`; `PollFn` UNCHANGED, no
+  `desc_out`); `design/arch/effect-concurrency.md` §4.1.1 (the canonical model — the
+  uniform poll-fn skeleton, the four leaf roles, the full open/read/write/close trace,
+  the singleton manifest-static token; §8.1/§8.2 permit + ordering); `design/arch/
+  interfaces.md` §"Resource scheduling" (the `ResourceRole`/`Acquire`/`HostCtx` shapes —
+  NO `ResourceDesc`, NO header slot); `design/arch/bounded-contexts.md` §5 (platform ABI
+  v9 surface) / §3 (backend: delete the bake) / §6 (int: ctx-vtable host impl + tramp-owned
+  release). The v9 sections here (§3.5 / §3.6 / §3.1) are the platform/leaf-authoring half
+  of the cascade these rulings own.
 - `design/platform/platform.md` — master (this is subordinate; cited from §"Subordinate docs")
 - `design/int/reactor.md` §2.6/§2.8/§2.9 — acquire-around-poll, the token-capacity pool, RAII `Permit`, the testability seams (sibling `/design` int)
 - `design/backend/io-trampoline.md` §12 — `IO_TAG_EFFECT_POLL` node + state-closure env layout (the `PollEnv` consumer's contract; sibling `/design` backend)
@@ -1179,6 +1325,15 @@ already-gated types, and the macro spine names none.
 ---
 
 ## /dev A4 implements, in this order:
+
+> **SUPERSEDED by the ctx-vtable cutover (top banner; SPRINT.md Wave 2).** Steps 0/3
+> below are the v8 `inject_poll_leading_pair` work; under the ctx-vtable model the backend's
+> only delta is **DELETING** `inject_poll_leading_pair` + the positional peel (no
+> `scheduling_class`-keyed branch, no leading pair to bake), and the platform leaves move to
+> the uniform poll-fn skeleton (§3.6) — the live web impl order is **§3.5.7**. This list is
+> retained for the evidence-first / extract-after sequencing rationale (Principle 8), which
+> still governs how `poll_support` is extracted; read steps 0/3's carrier mechanics for
+> provenance only.
 
 Hand-rewrite first, extract after (Principle 8 — the suite is the target the
 rewrite converges to, not a speculated pre-abstraction). The backend

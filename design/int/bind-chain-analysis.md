@@ -192,14 +192,17 @@ sub-tree arms):
    scheduling class + value-shape (it does NOT statically resolve concrete tokens — the
    trampoline owns the live token decision).
 
-> **DECOUPLED from the ABI v9 descriptor cut (S97).** This hardening is a **compile-time
+> **DECOUPLED from the ABI v9 model cut (S97).** This hardening is a **compile-time
 > inference-soundness** fix over AST free-variable provenance + scheduling class — it
-> touches **no** runtime descriptor representation and is **sound under both v8 and v9**.
-> v9 (`effect-concurrency.md §4.1.1`) *strengthens E2's grounding* (the disjoint token
-> literally rides inside the freshly-bound handle's header) but **does not change the
-> check**. So 0478 **must NOT be gated on the v9 reshape's schedule** — it can land in any
-> change-set, before or after v9. (`/arch` re-classed it from a §B v9 fold to "co-located
-> but decoupled," SPRINT.md §"Architecture review (Phase 2)" Fold verdict.)
+> touches **no** runtime scheduling representation and is **sound under both v8 and the v9
+> ctx-vtable handle model**. v9 (`effect-concurrency.md §4.1.1`) *strengthens E2's grounding*
+> (the platform mints the connection's opaque `r` fresh at the `accept` (Produce) leaf's
+> `Ready` edge and projects the per-value token from the handle's own field, so a launched
+> step whose handle does not also flow into the continuation cannot ride a continuation
+> effect's token) but **does not change the check**. So 0478 **must NOT be gated on the v9
+> reshape's schedule** — it can land in any change-set, before or after v9. (`/arch`
+> re-classed it from a §B v9 fold to "co-located but decoupled," SPRINT.md §"Architecture
+> review (Phase 2)" Fold verdict.)
 
 **Conservative-`Bind` fallthrough (the sound default).** When NOT provably
 eligible — the result is **used** downstream, OR the effect is `Sequential`-class —
@@ -544,6 +547,30 @@ tests cover only the `Apply`-arg case (`test_dependent_expression` `:696`); the 
 remaining variants.
 
 ### Gap G2 — same-non-zero-token serial grouping is NOT enforced at the int seam (it is the trampoline's job)
+
+> **SUPERSEDED by the ABI v9 ctx-vtable handle model (S97) — the trampoline's token-grouping
+> dissolves; same-token ordering's home moves to THIS pass (E2).** The body below describes the
+> v8 model, where `dispatch_par_branches` re-grouped a `ParBind`'s same-token branches into a
+> runtime `WorkItem::SerialGroup` and serialised them. Under the ctx-vtable model
+> (`effect-concurrency.md §4.1.1`/§8.2; `design/int/reactor.md §7.7`) **the trampoline no longer
+> sees tokens** (the platform projects them in its poll-fn; the host never introspects the
+> handle), so it **cannot** re-serialise same-token branches at runtime — the order-restoring net
+> is gone. The guarantee is sound because it was always the inference's: **two effects on the
+> same explicit handle share that handle as a free variable, so the §3.4 data-independence check
+> (E2, §3.7) refuses to make them disjoint → they lower to a serial `Bind` in source order, NOT a
+> `ParBind`.** The permit (a capacity-1 same-token `acquire`) then provides *exclusion*; *order*
+> comes from the bind chain. So the same-handle ordering G2 deferred to the trampoline is now
+> carried HERE by E2 declining to parallelise same-handle effects. **The one residual case the
+> trampoline used to catch and now does not** — two *different-provenance* effects the platform
+> deliberately projects onto **one shared token** (no shared free var, so E2 sees them as
+> independent and DOES emit a `ParBind`) — is the *ordered* cross-resource co-serialization that
+> `/arch` has **deferred** to a future advanced API (`effect-concurrency.md §4.1.1` point e / §8.2):
+> the permit still gives exclusion, but source-order across two distinct handles is no longer
+> promised. **Phase-5 watch item (/qa):** the PO-0367.3 `resource_serial_same_token_serializes`
+> timing pair must use the **same explicit handle** so E2 sequences it into a serial `Bind`; a
+> distinct-handle-shared-token variant would be the deferred case, not a runtime guarantee. Do
+> NOT re-derive the inference here — `/arch §8.2` is authoritative; §3.7 is the int home of the
+> E1/E2/E3 predicate.
 
 This is the most important gap to record correctly, because it determines what the int-seam
 unit tests can and cannot prove. **The bind-chain analysis pass does NOT distinguish "same

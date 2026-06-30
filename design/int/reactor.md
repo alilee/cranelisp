@@ -1,21 +1,31 @@
 # The slice-2 effect reactor — interior design (int / intrinsics-hosted)
 
-> **S97 v9 LAYER (FIXME 0482) — descriptor as trampoline-owned representation overhead.**
-> The S96 design below carried the per-resource `(token, capacity)` **on the poll node**
-> (token @ node+32, capacity @ node+40 — §2.9 "Offsets read"). ABI v9 (`ABI_VERSION` 8 → 9)
-> makes the descriptor type-invisible representation overhead — like the RC/heap header —
-> carried across the leaf boundary as a return-side side-band, **not** value data. The
-> trampoline's runtime half — **split** on the per-effect `role` (node+32), **stamp** a
-> produced handle's header from the leaf's `desc_out`, **read** a consumed handle's header
-> before polling — is designed in the new **§7** (the authoritative v9 statement); §8 makes
-> the 0479 idle-server-watchdog call; §9 confirms the 0475 empty-`select` approach. §7
-> **supersedes** the §2.9 "Offsets read" poll-node `(token, capacity)` rows (the lifecycle
-> shape — `EffectPoll` owns the `Permit`, release on `Ready`/drop — is **unchanged**; only
-> *where the `(token, capacity)` comes from* changes). The 0478 single-step launch-arm E2
-> hardening (co-located, **decoupled** from the v9 representation cut) is `bind-chain-analysis.md`
-> §3.7. The cut lands as ONE atomic cross-surface change-set; this doc is the **int/trampoline**
-> half (backend half: `design/backend/io-trampoline.md §17`; platform half:
-> `design/platform/poll-support.md §3.1/§3.5/§3.6`).
+> **S97 v9 LAYER — the host `ctx`-vtable handle model (RATIFIED 2026-06-30; supersedes
+> FIXME 0482's descriptor cut).** Scheduling state — `(token, capacity)` — **never rides on
+> a value**. It flows through a **trampoline-owned `ctx` vtable** the platform's poll-fns call
+> (the host-owned-reactor `HostCtx`, §2.3, *generalized* from "register interest" to
+> "register interest + acquire/release a token permit + retire a token"). The host owns the
+> §8.1 permit map + a per-effect held-permit ledger keyed by the in-flight effect's identity,
+> and owns **release** (fired on `Ready`/cancel, never re-entering the poll-fn). This is the
+> authoritative int statement: the new **§7** (rewritten to the ctx-vtable model). **The prior
+> §7 — the descriptor cut (split on a baked `role @ node+32`, stamp a produced handle's header
+> at `value+24` from a `desc_out @ node+40`, read a consumed handle's header before polling) —
+> is RETIRED in full** (it hit the Wave-2 DLL-mint blocker: an opaque zero-field `Connection`
+> minted in the DLL as a 24-byte object had no room for a 16-byte header slot at `value+24`).
+> Under the new model there is **NO** trampoline stamp/read, **NO** runtime `role` branch,
+> **NO** `desc_out`, **NO** baked node scheduling offsets, **NO** `ResourceDesc`. §7 also
+> **supersedes** §2.9's "Offsets read" rows AND §2.9's *trampoline-side pre-poll acquire* — the
+> acquire moves into the platform poll-fn (`ctx.acquire`); the `EffectPoll`'s `Option<Permit>`
+> becomes the host's identity-keyed ledger + a release-guard (the §8.1 permit-map mechanism +
+> the §2.9/§2.16/§2.17 RAII lifecycle are otherwise unchanged). §8 makes the 0479
+> idle-server-watchdog call; §9 confirms the 0475 empty-`select` approach. §8.2 (within-token
+> source ordering) **dissolves with the trampoline's order-restoring net** — its home moves to
+> the **inference** (E2/E3), `effect-concurrency.md §8.2`; see §7.7. The 0478 single-step
+> launch-arm E2 hardening (co-located, **decoupled** — sound under v8+v9) is
+> `bind-chain-analysis.md §3.7`. The cut lands as ONE atomic cross-surface change-set; this doc
+> is the **int/host** half (backend half: `design/backend/io-trampoline.md §17`, pure
+> subtraction; platform half: `design/platform/poll-support.md §3.1/§3.5/§3.6`). Canonical
+> model: `effect-concurrency.md §4.1.1`; ABI cascade: `platform-interface.md §6.8.0b`.
 
 **Owner**: `/design` (int). **Status**: S96 DESIGN REFRESH (Chunk C — slice 7) —
 *the explicit control surface + the cancellation=drop completion of the A→C contract*:
@@ -480,6 +490,19 @@ for same-resource effects (log appends to one file must land in source order):
 
 ### 2.9 Acquire-around-poll lifecycle + RAII `Permit` drop-guard (slice 3, S96)
 
+> **SUPERSEDED for the *acquire call-site* by the ABI v9 ctx-vtable model — see §7.** Under v9
+> the **platform poll-fn** calls `ctx.acquire(token, capacity, waker)` itself (the host
+> *implements* the vtable); the trampoline no longer reads `(token, capacity)` off the node and
+> no longer takes a pre-poll acquire in `await_poll_node`. The `EffectPoll`'s `Option<Permit>`
+> field is replaced by the host's per-effect held-permit ledger (keyed by effect identity) +
+> an `EffectPoll`-owned **release-guard** (§7.3). **What is UNCHANGED and STANDS:** the §8.1
+> permit-map mechanism (semaphore-per-token, first-writer-wins, FIFO), the **eager-release-on-
+> `Ready`** rationale (join_all starvation), and the **release-on-drop = cancellation** RAII
+> discipline (the A→C contract) — only relocated from "the `EffectPoll` owns the `Permit` it
+> acquired up-front" to "the `EffectPoll` owns a guard that releases whatever the platform
+> acquired, by identity." Read the lifecycle below for the release/drop discipline; read §7.3
+> for who-acquires + the identity keying.
+
 **Authority: `sprints/SPRINT.md` Phase-2 architecture review gate (a) + `effect-concurrency.md`
 §8.1 (the pool carrier) / §7 (the wakeable bridge).** S95 proved the §2.8 pool on the
 **blocking** carrier (admit → `rayon::spawn` → release on completion — a one-shot dispatch).
@@ -616,15 +639,19 @@ stays the later-slice question of §2.6; out of scope here.
 
 #### Offsets read (the cross-crate agreement — designed-in)
 
-> **SUPERSEDED for the poll-node `(token, capacity)` rows by ABI v9 — see §7.** Under v9 the
-> poll node no longer carries `(token, capacity)`: node+32 becomes the per-effect `role`,
-> node+40 becomes the `desc_out` `ResourceDesc` region, and a Consume leaf's live
-> `(token, capacity)` is read off the **consumed handle's header** (handle+24), not the node.
-> The §7 v9 offset table is authoritative. The **state-closure ptr @ node+24** row is
-> unchanged (it stays field 0). The acquire-around-poll **lifecycle** below (the `EffectPoll`
-> owns the `Permit`; eager release on `Ready`, drop-glue release on cancellation) is unchanged
-> — only the *source* of `(token, capacity)` moves from the node to the handle header / a
-> manifest-static singleton.
+> **SUPERSEDED for the poll-node `(token, capacity)` rows by the ABI v9 ctx-vtable model —
+> see §7.** Under v9 the poll node carries **no scheduling fields at all**: node+32 and node+40
+> are gone (`io-trampoline.md §17` is pure subtraction — `inject_poll_leading_pair` deleted, no
+> header slot, no `role`/`desc_out` node fields). The trampoline **reads nothing** off the node
+> or any value header for scheduling; the **platform poll-fn** computes `(token, capacity)` from
+> its handle and calls `ctx.acquire` itself (§7.1/§7.2). The **state-closure ptr @ node+24** row
+> is unchanged (field 0), and the **leaf args still marshal into the state-closure env at
+> `state + 8` onward** (`arg(0)` = the consumed handle) — but the *reader of the handle is the
+> platform*, not the trampoline (§7.5). The acquire-around-poll **release/drop lifecycle** below
+> (eager release on `Ready`, drop-glue release on cancellation) is unchanged — **relocated** so
+> the `EffectPoll` owns a host-identity-keyed release-guard rather than an `Option<Permit>` it
+> acquired up-front (§7.3). The v8 `token`/`capacity` node rows in the table below are
+> **historical** — `read_resource_token`/`read_capacity` off the node are deleted in v9.
 
 The poll-node layout is baked by the backend's poll-construction arm (`/design backend` owns
 `design/backend/io-trampoline.md §12/§13`) and READ by this trampoline. The agreement is
@@ -1796,175 +1823,275 @@ builder's home is the lowest crate that can name the pointers, never an upward
 dependency; **Principle 8 (no mode divergence)** — `--run`/REPL and `--link` build the
 same host values by calling the same code, not by hand-mirroring.
 
-## 7. ABI v9 — descriptor side-band: the trampoline split / stamp / read (S97, FIXME 0482)
+## 7. ABI v9 — the host `ctx`-vtable handle model: acquire / retire + trampoline-owned release (S97)
 
-> **Status: `/design` (int) Phase-3 intent, RATIFIED arch shape.** Conforms to
-> `platform-interface.md` §6.8.0b, `effect-concurrency.md` §4.1.1, `interfaces.md`
-> §"Resource descriptor", the backend codegen half `design/backend/io-trampoline.md §17`
-> (esp. the §17.5 boundary contract), and the platform leaf-authoring half
-> `design/platform/poll-support.md §3.1/§3.5/§3.6`. This is the **runtime** half: the
-> trampoline reads the per-effect `role`, and — without any per-ADT or manifest lookup at
-> poll time — **stamps** a produced handle's header, **reads** a consumed handle's header,
-> or does neither. Lands in the ONE atomic v9 change-set (`ABI_VERSION` 8 → 9).
+> **Status: `/design` (int) Phase-5 Wave-0 re-cascade — RATIFIED arch model. REWRITTEN; the
+> prior descriptor §7 is RETIRED in full (banner-superseded above + here).** Conforms to the
+> canonical model `effect-concurrency.md §4.1.1`, the ABI cascade `platform-interface.md
+> §6.8.0b`, `bounded-contexts.md §6`, the backend half `design/backend/io-trampoline.md §17`
+> (pure subtraction — delete `inject_poll_leading_pair`, no header slot, no `role`/`desc_out`
+> node fields), and the platform leaf-authoring half `design/platform/poll-support.md
+> §3.1/§3.5/§3.6`. **What the old §7 said and is now GONE:** the trampoline split on a baked
+> `role @ node+32`, forwarded a `desc_out @ node+40`, **stamped** a produced handle's header at
+> `value+24`, and **read** a consumed handle's header before polling. **None of that exists.**
+> There is **NO** trampoline stamp, **NO** value-header read, **NO** runtime `role` branch,
+> **NO** `desc_out` poll argument, **NO** baked node scheduling offsets, **NO** `ResourceDesc`
+> type. Lands in the ONE atomic v9 change-set (`ABI_VERSION` 8 → 9).
 
-### 7.1 What the trampoline does, in one paragraph
+### 7.1 The model in one paragraph
 
-The backend reserves the storage and bakes the static facts (the §17.5 division of labour);
-the trampoline does every **runtime** descriptor action. At a poll node the trampoline reads
-the baked `role` (`ResourceRole {None=0, Produce=1, Consume=2}` @ `node + 32`) and acts:
-**Produce** — pass the node's `desc_out` region (`node + 40`) to the poll-fn, which writes
-`{token, capacity}` there before `Ready`; on `Ready` the trampoline reads `node + 40` and
-**stamps** it into the produced value's header slot (`value + 24`). **Consume** — derive
-`(token, capacity)` (from the node's baked manifest-static descriptor for a singleton, or by
-**reading** the consumed handle's header for a per-value resource), **acquire that token
-before the first poll**, release on `Ready`/drop (the unchanged §2.9 RAII `Permit`). **None**
-— poll with a `desc_out` the leaf ignores; no acquire, no stamp. The descriptor never
-reaches user source and is never a cranelisp value — it is representation overhead the
-trampoline owns end-to-end.
+The host (the reactor/trampoline in `cranelisp-intrinsics`) **implements the `ctx` vtable** the
+platform's poll-fns call back through — the existing host-owned-reactor `HostCtx` (§2.3)
+**generalized** from "register interest" to "register interest **+ acquire/release a token
+permit + retire a token**." A **resource handle is an opaque ADT** carrying the platform's own
+opaque id `r` (web: `r == fd`) in an ordinary field; **the trampoline never introspects it.**
+The platform's poll-fn projects a scheduling **token** from the handle it holds, calls
+`ctx.acquire(token, cap, waker)` **itself**, does its non-blocking syscall, and on `WouldBlock`
+calls `ctx.register_{readable,writable,timer}(…, waker)` — the uniform skeleton
+`acquire? → syscall → (would-block? register + Pending : Ready)`. The host owns the
+**`(token, capacity)` semaphore-per-token permit map** (§8.1, unchanged) **plus a per-effect
+held-permit ledger keyed by the in-flight effect's identity**, and owns **release**: when an
+effect reaches `Ready` or is **cancelled** (its future drops), the host releases every permit
+that effect holds and deregisters its reactor interest — **without ever re-entering the
+poll-fn**. The trampoline is **role-blind at runtime**: Produce / Consume / Retire / None are
+compile-time *manifest* facts (for inference E1–E3 + the platform-writer's guide), not a runtime
+branch; the host does no stamp, no header read, no per-role dispatch.
 
-### 7.2 The frozen offsets (the cross-crate seam — `/design backend` §17.5)
+### 7.2 The `ctx` vtable the host implements
 
-These are the offsets the backend writes and the trampoline reads; a silent drift here is the
-heap-offset class of bug `CRANELISP_CODEGEN_TRACE=1` exposes at the CLIF seam. They are pinned
-identically in `io-trampoline.md §17.5`:
+`make_host_ctx` (§2.3) gains two fn-pointer entries beside the existing
+`register_readable`/`_writable`/`_timer` + the C-ABI waker. The ABI surface (the `#[repr(C)]`
+`HostCtx` layout + the `Acquire` result enum) is `platform-interface.md §6.8.0b`; the **host-side
+bodies are int-owned policy** in intrinsics (the same int-owns-policy / intrinsics-hosts-mechanism
+split as the rest of the reactor, BC §6):
 
-| Constant | Abs offset | Trampoline read/write site |
+```
+acquire(host, token: u64, capacity: u32, waker: *const Waker) -> Acquire   // Acquired | Parked
+retire (host, token: u64)
+register_readable/writable/timer(host, fd_or_ns, waker)                     // unchanged, §2.2/§2.3
+```
+
+- **There is NO `release` vtable entry** — release is host-owned (§7.3/§7.4). The platform
+  expresses *intent* (`acquire`); the host owns *lifecycle* (release).
+- **`PollFn` is UNCHANGED** — `poll(state, *HostCtx, *Waker) -> Poll`. No `desc_out` parameter.
+  The poll-fn does all scheduling through the `*HostCtx` it already receives. This is the chief
+  simplification over the retired descriptor cut (which added a `desc_out` out-param).
+
+#### `acquire` — over the §8.1 permit map + a per-effect held ledger
+
+The host adds, beside the §8.1 `RefCell<HashMap<token, TokenSlot>>` permit map, a **per-effect
+held-permit ledger** — `held: HashMap<EffectId, SmallVec<token>>` — recording which tokens each
+in-flight effect currently holds a permit on. **`EffectId` is the in-flight effect's identity**:
+the `RegId`/registrant the §2.16 poll-fn bracket already stamps (equivalently the waker's data
+pointer, which `/arch` names as the identity). `acquire(token, capacity, waker)` runs on the one
+reactor thread (§2.8 single-thread invariant holds verbatim — no atomics, no `Mutex`):
+
+1. **`token == 0`** ⇒ return `Acquired` immediately (commutative; never touches the map or the
+   ledger).
+2. **Idempotent per in-flight effect** ⇒ if `held[effect].contains(token)`, return `Acquired`
+   **without** consuming a second permit. A re-poll (woken because the fd readied, or a permit
+   freed) re-calls `acquire` on its own token and must not double-count — this is why the skeleton
+   needs no "already acquired?" flag on `state`; the ledger makes re-acquire safe.
+3. **Slot has a free permit** (`slot.permits > 0`, the slot sized first-writer-wins by `capacity`,
+   §8.1) ⇒ decrement, record `token` in `held[effect]`, return `Acquired`.
+4. **Slot full** ⇒ enqueue `waker` on `slot.waiters` (identity-tagged per §2.17 so a cancel can
+   remove a stale waiter), return **`Parked`**. The reactor thread **never blocks in `acquire`** —
+   it returns `Parked` immediately and the strand suspends `Pending`; a later `release` (§7.3)
+   pops the front waiter and re-polls it. The permit-is-a-counter / no-deadlock reasoning of §8.1
+   holds (pressure-test (f) PASS).
+
+#### `retire` — end a token's scheduling identity
+
+`retire(token)` (called by a Retire/`close` leaf's poll-fn after `close(r)`): drop the token's
+`TokenSlot` if present, and **wake any parked waiters** on it so they re-poll and observe the
+gone resource through their own (now-`EBADF`) syscall. **Idempotent** — a double-`close` or a
+`close`-while-parked retires once; no drain barrier (Unix-aligned, pressure-test (c) PASS). A
+full-duplex handle's `close` retires **both** per-direction tokens the platform projected
+(`retire(read_tok); retire(write_tok)`), because the platform — not the host — knows they are
+the same resource.
+
+### 7.3 Trampoline-owned release keyed by effect identity (the A→C contract, relocated)
+
+Release is the **`EffectPoll`-owned RAII discipline** §2.9 + §2.16 + §2.17 designed — *relocated*
+from "the `EffectPoll` owns a `Permit` it acquired up-front" to "the `EffectPoll` owns a
+**release-guard** that releases whatever the **platform** acquired on this effect's behalf, by
+identity." The two former RAII fields (`permit: Option<Permit>` for the permit, `_interest:
+ReactorInterest` for the reactor registrations, §2.16) **unify under one identity key** — both
+were already keyed by the in-flight leaf:
+
+- **On `Ready` (eager).** When the poll-fn returns `Poll::Ready`, `EffectPoll::poll` calls
+  `host.release_all(effect)` **before** returning `TaskPoll::Ready(value)` — releasing every
+  permit in `held[effect]` (each: increment the slot + FIFO-wake the front parked waiter, the
+  existing `Drop for Permit` body, §2.8) and clearing the ledger entry. **Eager release is
+  deliberate** (the §2.9 rationale is unchanged): in a `join_all` a completed leaf future is not
+  dropped until the whole join finishes, so deferring release to drop would starve same-token
+  waiters until the slowest sibling completes. The fired fd-waiter was already removed by `turn()`
+  (one-shot deregister, §2.16); a still-live timer self-clears.
+- **On drop = cancellation** (a race loser / timed-out / disconnected / shutdown-cleared strand —
+  Chunk C, §2.15/§2.18/§2.19). The `EffectPoll`'s **auto-generated drop glue** runs the
+  release-guard's `Drop`, which calls `host.release_all(effect)` **and** `host.deregister(effect)`
+  (active fd/timer dereg, §2.16). **Cancel never re-enters the poll-fn** — the host releases
+  purely from its own identity-keyed ledger + interest table; cancel cleanup needs **nothing**
+  from the handle and nothing from the leaf. **No hand-written `Drop for EffectPoll`** — the
+  guard field's own drop glue is the release/dereg path (Principle 18 — enforce invariants
+  structurally).
+- **No double-release.** `release_all` removes the ledger entry on first call, so the `Ready`
+  path's eager release leaves nothing for the subsequent field-drop to release (a no-op) — exactly
+  the `Option::take()`-then-`None` guarantee §2.9 gave, now expressed by the ledger entry's
+  presence/absence (Principle 20 — model invariants by representation).
+
+A parked `AcquirePermit`-style waiter dropped while still parked (a cancelled strand queued behind
+a full token) removes its own identity-tagged waker on drop (§2.17, **unchanged** — load-bearing
+for capacity-1 FIFO source order). The §2.17 machinery is now reached through the same effect
+identity, so it co-covers a strand cancelled while parked on `acquire`.
+
+> **Relationship to §2.9 (relocated, not contradicted).** §2.9 had the *trampoline* take a
+> pre-poll acquire in `await_poll_node` and store the resulting `Permit` on the `EffectPoll`.
+> Under v9 the *platform poll-fn* acquires via `ctx.acquire`, so `await_poll_node` does **no**
+> pre-poll acquire and reads **nothing** off the node for scheduling (§7.5). The release/drop
+> discipline, the eager-on-`Ready` rule, and the §8.1 permit-map are all preserved — only the
+> *acquirer* and the *ownership shape* (a per-effect ledger, not an `Option<Permit>` field) move.
+
+### 7.4 Why release is host-owned, not a vtable callback
+
+The platform never releases. Two reasons the callback model is **wrong** here and the host-owned
+model is right:
+
+1. **Cancel never re-enters the poll-fn.** A cancelled effect is a *dropped parked future* — the
+   poll-fn is never called again. A platform `release` callback could therefore never fire on the
+   cancel path, so the platform could not soundly release a cancel it never sees. The host, which
+   owns the drop, is the only party that can.
+2. **The host already tracks what to release.** Because the host keys held permits **and** fd/timer
+   registrations by effect identity (§7.3), it has everything cancel cleanup needs with no
+   per-leaf, per-handle, or per-value bookkeeping. Adding a `release` vtable entry would duplicate
+   state the host already owns and re-introduce the leaf-coupling the model eliminates.
+
+### 7.5 `await_poll_node` is now scheduling-blind; the four roles are manifest-only
+
+`await_poll_node` (io.rs) — the one place the trampoline establishes a poll leaf — **stops being
+the role-dispatch / token-read site** it was under both v8 and the dead descriptor §7. It now:
+
+1. Reads the state-closure pointer (field 0, **unchanged**) and constructs the `EffectPoll` with
+   its identity-keyed release-guard (§7.3) — **no** `role` read, **no** `(token, capacity)` read,
+   **no** `desc_out`, **no** pre-poll acquire.
+2. `.await`s the `EffectPoll` across establish → `Pending` → … → `Ready` → the leaf's i64 result
+   (read generically off the env result slot, §2.5 step 4 — unchanged).
+
+The **four leaf roles are compile-time manifest facts the host does NOT branch on at runtime**
+(the runtime scheduling is entirely the platform poll-fn's vtable calls):
+
+| Role | Examples | What the platform poll-fn does (host is blind) |
 |---|---|---|
-| `RESOURCE_DESC_OFFSET` (handle header slot — `{token:u64@+0, capacity:u32@+8, _pad:[u8;4]@+12}`) | **24** | `handle + 24` **read** (Consume, off the consumed handle); `produced + 24` **write** (Produce stamp) |
-| poll-node state-closure ptr (field 0) | **24** | `await_poll_node` — unchanged from v8 |
-| poll-node `role` (field 1) | **32** | `read role` once at `await_poll_node` — the split discriminator |
-| `POLL_DESC_OUT_OFFSET` = `desc_out` `ResourceDesc` region (fields 2–3) | **40** | `node + 40` passed as `desc_out: *mut ResourceDesc` to every poll call; **read back** on a Produce `Ready` |
-| consumed handle = leaf `arg(0)` = state-closure `capture(1)` | `state + 8` | `PollEnv::arg(0)` env offset — the trampoline reads the handle pointer here to find its header |
+| **Produce** | `accept` / `open` / `connect` | During establishment there is no program handle yet, so the platform drives `acquire`/`register` on the **fresh `r`** it minted; at `Ready` it mints the handle ADT carrying `r` and returns it. |
+| **Consume** | `read` / `write` | `state.handle` **is** the platform's handle; the platform reads `r` from it, projects the (per-direction) token, `ctx.acquire`s, does the I/O. |
+| **Retire** | `close` | `close(r)` + `ctx.retire(token(s))`. |
+| **None** | a commutative GET / `sleep` | no token (or token 0); no acquire. `sleep` is the degenerate one-shot — no handle, just `register_timer`. |
 
-The v8 `read_resource_token`/`read_capacity` off the node (token@32, capacity@40) are
-**deleted** — node+32 is now `role`, node+40 is the `desc_out` region. The live
-`(token, capacity)` a Consume leaf admits on comes from the **handle header** (token@24 of the
-handle), never the node.
+The full open / read / write / close trace (program ↔ host-trampoline ↔ platform poll-fn) is
+`effect-concurrency.md §4.1.1`. The host's column in that trace is exactly §7.2 (implement
+acquire/retire) + §7.3 (own release).
 
-### 7.3 `await_poll_node` becomes the single role-dispatch site
+> **Surviving int/backend/platform env-layout invariant (the §7.3-style load-bearing contract).**
+> The trampoline no longer reads the handle — but the **handle still reaches the platform poll-fn
+> as the leaf's `arg(0)`, marshaled at env offset `state + 8`** (`PollEnv::arg(0)`), per the
+> backend's state-closure layout (result-slot first, then args in declaration order, §2.5). A
+> Consume leaf (`read-conn : (Fn [Connection] …)`, `send-conn : (Fn [Connection Response] …)`)
+> puts `Connection` at `arg(0)`; the **platform** reads `r` out of that handle's own field. This
+> is the env-layout half of the v9 ABI (governed by `ABI_VERSION`); a future Consume sig that
+> moved the handle off `arg(0)` would break the platform's read. **Phase-5 watch item:** pin the
+> `arg(0) = state + 8` marshaling contract with a unit so a sig reshape is caught — but note the
+> *reader is now the platform*, not the trampoline (the trampoline introspects nothing).
 
-`await_poll_node` (io.rs) is the one place the trampoline establishes a poll leaf; v9 makes it
-the role-dispatch site. It is the v9 replacement for §2.9 step 1 ("Read `(token, capacity)`
-off the poll node"):
+### 7.6 Singleton `read-line` (resolves FIXME 0471 structurally)
 
-1. **Read `role` @ `node + 32`** (one `iconst`-baked byte; no manifest lookup).
-2. **Derive the permit per role** (the only change from §2.9; the lifecycle that follows is
-   identical):
-   - **`Produce`** ⇒ `permit = None`. **No pre-poll acquire** — `accept` is structurally
-     serial in the serve loop (`poll-support.md §3.5.2`); it mints a resource, it does not
-     ride one. (`token == 0` for the produced descriptor at construction; the leaf fills it.)
-   - **`Consume`** ⇒ read the node's baked `ResourceDesc` (`node + 40`). If **`token != 0`**
-     (a **singleton** — `read-line`'s manifest-static `{STDIN_TOKEN, 1}`, §7.5) acquire that
-     **manifest-static** token directly — there is no handle to read. If **`token == 0`** (a
-     per-value resource — `read-conn`/`send-conn`) **read the consumed handle's header**: the
-     handle is `arg(0)`, marshaled at env offset `state + 8` (`PollEnv::arg(0)`); read that
-     pointer `h`, then `h + 24` → `(token, capacity)`; acquire **that** token. Acquire
-     **before** the first poll (acquire-around-poll, §2.9 ordering unchanged) → `permit =
-     Some(Permit)`.
+`read-line : (Fn [] (IO String))` produces no handle and consumes no per-value handle — stdin is a
+process singleton. v9 gives it a manifest-static serial token `{token: STDIN_TOKEN != 0, capacity
+1, role Consume}` (`poll-support.md §3.1`); its poll-fn calls `ctx.acquire(STDIN_TOKEN, 1, waker)`
+on that constant. The §8.1 permit map then admits **at most one in-flight `read_line`** — single-
+in-flight stdin is enforced **by construction**, replacing the v8 host `STDIN_BUF` `Mutex` +
+serial-use convention (the 0471 latent gap: a token-0 `Commutative` descriptor acquired no permit,
+so nothing structurally barred two concurrent reads). **The host does nothing special** — it is an
+ordinary `acquire` on a fixed non-zero token; the singleton-ness lives entirely in the platform
+manifest + poll-fn, not in any host branch.
 
-     > **Contract (frozen with backend §17.5): the consumed handle is `arg(0)`.** A Consume
-     > leaf's resource handle is its **first** leaf arg — `read-conn : (Fn [Connection] …)` and
-     > `send-conn : (Fn [Connection Response] …)` both put `Connection` at `arg(0)`. The
-     > trampoline reads `state + 8` unconditionally for a `token == 0` Consume; a future Consume
-     > leaf that placed its handle elsewhere would break this. This matches the platform side
-     > (`poll-support.md §3.6.1`: the leaf calls `desc_of(arg(0))`) — so the read offset is the
-     > same on both sides. A born-unstamped handle reads `{0, 0}` → token 0 → no acquire
-     > (benign; in practice a `Connection` only exists via `accept` (Produce), so it is always
-     > stamped before any Consume, §17.2). Phase-5 watch item: pin the arg(0)-is-handle contract
-     > with a unit so a sig reshape that moves the handle is caught.
-   - **`None`** ⇒ `permit = None`. No acquire.
-3. **Construct `EffectPoll`** with the permit (§2.9 step 3, unchanged) **plus** a new
-   `desc_out: *mut ResourceDesc` field = `node + 40`. The poll-fn signature is v9
-   `poll(state, host, waker, desc_out)`, so `EffectPoll::poll` passes `desc_out` on **every**
-   poll call regardless of role (Produce writes it; Consume/None ignore it). This keeps
-   `EffectPoll` role-agnostic — it owns the `Permit` and forwards `desc_out`; the role logic
-   lives entirely in `await_poll_node`'s pre/post steps.
-4. **`.await` the `EffectPoll`** across establish→`Pending`→…→`Ready` → the leaf's i64 result
-   (read generically off the env result slot, §2.5 step 4 — unchanged; for Produce this i64
-   **is** the produced `Connection` pointer).
-5. **Produce post-step — the stamp.** If `role == Produce`, after the `await` yields the
-   produced value `v`, read `*(node + 40)` → `ResourceDesc {token, capacity}` and **write it
-   into `v + 24`** (the handle's header descriptor slot, born zero-inited by the backend's
-   constructor, §17.2). Then hand the bare `v` to the continuation. The stamp is a plain
-   16-byte header write — **no RC** (both fields are `NeverHeap` scalars), no drop-glue change.
-   `set_result` (the value) and the stamp (the descriptor) are **two independent writes**; the
-   stamp neither widens `Poll` (still single-register `#[repr(i32)]`) nor touches the value
-   path.
+### 7.7 Within-token source ordering — its home moves to the inference (`effect-concurrency.md §8.2`)
 
-The §2.9 acquire-around-poll **lifecycle is otherwise byte-for-byte unchanged**: the `Permit`
-is owned by `EffectPoll` as `Option<Permit>`, released eagerly on `Ready` (`take()`+drop
-before `TaskPoll::Ready`) and on cancellation via the field's drop glue — the A→C contract
-(§2.9 "The RAII drop-guard") is exactly as designed. v9 changes **only** where the
-`(token, capacity)` the acquire uses comes from (handle header / manifest-static, not the
-node). The lock-free single-reactor-thread permit-map invariant (§2.8/§2.9) holds verbatim:
-the handle read, the acquire, the poll, the stamp, and the release are all reactor-thread
-events.
+Because the trampoline no longer sees tokens (the platform computes them; the host never
+introspects the handle), the **v8 `SerialGroup` order-restoring net dissolves with the rest of
+the group-by-token dispatcher** — the trampoline cannot group same-token effects to restore
+their source order. This is **sound**, because the ordering guarantee was already the
+**inference's**, and that is now its sole home:
 
-### 7.4 The producing / consuming asymmetry (the load-bearing subtlety)
+- **Capacity-1 same-resource order is guaranteed by E2 value-locality, not the trampoline.** Two
+  effects on the **same explicit handle** share that handle as a free variable, so E2 refuses to
+  disjoin them (`bind-chain-analysis.md §3.7` / `effect-concurrency.md §4.1`) — they lower to a
+  serial `Bind` in source order. The permit gives **exclusion** (a same-token `acquire` parks
+  until release); **order** comes from the bind chain.
+- **Shared singletons (Sequential token-1 — `stdout`) are sequenced by E3** (never Par'd; E3
+  refuses detaching them). Their `acquire(token-1, 1)` never contends and is a harmless redundant
+  safety net.
+- **Capacity-N pools are an unordered bag of N slots** — the inference parallelizes
+  data-independent effects, the permit bounds them at N, order is **not** promised past exclusion
+  (unchanged).
 
-A leaf is the **sole writer** of a descriptor (Produce, through `desc_out`) **or** a pure
-**reader** (Consume, off the consumed handle's header) **or** neither (None) — never both
-(`poll-support.md §3.6.1`). The asymmetry is why the trampoline can split on a single baked
-`role` byte with no per-poll manifest lookup:
+**The one thing genuinely lost** is the trampoline's order-restoring net for *different-provenance*
+effects deliberately aliased onto one shared token (the *ordered* form of cross-resource
+co-serialization) — already deferred (`effect-concurrency.md §4.1.1` point e / §8.2): the
+*exclusion* form survives via shared-token projection; the *ordered* form, if ever wanted, is a
+separate advanced API (an explicit ordering combinator / a threaded handle that makes a real data
+dependency the inference respects). **The E1/E2/E3 predicate's int home is `bind-chain-analysis.md
+§3.7`** (the 0478 hardening makes the single-step launch arm run E2); **do NOT re-derive the
+inference here — `effect-concurrency.md §8.2` is authoritative.** The trampoline relies on the
+inference having already sequenced whatever must be ordered.
 
-- The **producer** mints the token (web: the new connection fd) and the trampoline imprints it
-  on the value at the moment of production, so the value carries its own admission identity
-  forever after.
-- Every later **consumer** of that value recovers `(token, capacity)` straight from the header
-  it rides — no symbol back-reference, no second handle, no platform call. `read-conn` over a
-  `Connection` reads `Connection + 24` → the same token `accept` stamped → admission serializes
-  per-connection by construction.
+### 7.8 What Phase-5 /dev + /qa build against (the int-layer implementables)
 
-This is what completes "concurrency written by nobody" at the **value** level: the descriptor
-is neither in the user's source nor in the value's logical shape — `web/Connection` is
-`(deftype Connection [])`, fully opaque, a 40-byte object whose only in-object storage is the
-header descriptor slot (`poll-support.md §3.5.1`).
+- **/dev (intrinsics — the host ctx-vtable impl).** Extend `make_host_ctx`/`HostCtx` with the
+  `acquire` + `retire` fn-pointers (§7.2); implement `acquire` over the §8.1 permit map + the new
+  per-effect held-permit ledger (idempotent-by-identity, `token==0` fast path, `Parked` enqueues
+  the identity-tagged waker); implement `retire` (drop pool + wake waiters, idempotent). The
+  bodies reborrow `&mut Reactor` via the B1 raw-pointer provenance invariant (§2.3), running only
+  inside the poll-fn call on the reactor thread.
+- **/dev (intrinsics — release accounting).** Replace the `EffectPoll`'s `Option<Permit>` field
+  with the host's identity-keyed ledger + an `EffectPoll`-owned **release-guard** whose `Drop`
+  calls `release_all(effect)` + `deregister(effect)` (§7.3); eager `release_all(effect)` on
+  `Ready` before `TaskPoll::Ready`. Keep §2.17's identity-tagged waiter removal for a cancel
+  parked on `acquire`.
+- **/dev (intrinsics — `await_poll_node`).** Delete the v8/descriptor node reads (no `role`, no
+  `(token, capacity)`, no `desc_out`); construct the `EffectPoll` scheduling-blind (§7.5). The
+  poll-fn signature is the unchanged `poll(state, host, waker)`.
+- **/dev (src/ — loader).** `ABI_VERSION = 9`, refuse v8 manifests (`io-integration.md §I3`).
+- **/qa (unit + e2e).** A stub Produce leaf that mints a handle and drives `ctx.acquire`/`register`
+  on the fresh `r` ⇒ assert acquire/release balance; a Consume leaf over a pre-built handle ⇒
+  assert it acquires on the platform-projected token; the `read-line` singleton ⇒ assert
+  single-in-flight (the second `read-line` parks); a Retire leaf ⇒ `retire` drops the pool (a
+  later acquire on that token re-creates a fresh slot); a **cancelled** parked Consume ⇒ the host
+  releases its permit + deregisters its fd (no leak, no lost-wakeup, no poll-fn re-entry). The
+  **negative guard** is the absence of any trampoline value-header stamp/read and any node
+  `(token, capacity)`/`role`/`desc_out` read. The §7.5 `arg(0) = state + 8` marshaling pin guards
+  the platform's handle read.
 
-### 7.5 The singleton `read-line` path (resolves FIXME 0471 structurally)
+### 7.9 Quality attributes touched
 
-`read-line : (Fn [] (IO String))` produces no handle and consumes no per-value handle — stdin
-is a process singleton. v9 gives it a **Consume** role with a **manifest-static** descriptor
-`{token: STDIN_TOKEN != 0, capacity: 1}` baked into the node (`poll-support.md §3.1`,
-`io-trampoline.md §17.4`). The trampoline's Consume arm (§7.3 step 2) reads the node's baked
-descriptor, sees **`token != 0`**, and acquires the **manifest-static** `STDIN_TOKEN`
-directly — **no handle header read** (there is no handle). Because the token is a fixed
-non-zero singleton at capacity 1, the §2.8 permit map admits **at most one in-flight
-`read_line`** — single-in-flight stdin is enforced **by construction**, not by the host
-`STDIN_BUF` `Mutex` + serial-use convention v8 leaned on (the 0471 latent gap: a token-0
-`Commutative` descriptor acquired no permit, so nothing structurally barred two concurrent
-reads). The trampoline does nothing special for the singleton — it is the ordinary Consume
-acquire path with the `token != 0` branch; the only difference from a per-value Consume is
-*where the descriptor came from* (the node's baked static vs the handle's header), which is
-exactly the `token`-zeroness test §7.3 already makes.
-
-### 7.6 Quality attributes touched
-
-- **Simplicity / complexity budget (Principle 6).** The trampoline's v9 delta is a **net
-  wash, trending subtraction**: `await_poll_node` gains a 3-way `role` split and a one-line
-  Produce post-stamp, and **loses** the v8 `read_resource_token`/`read_capacity` node reads.
-  No new future, no new permit machinery, no new pool — `EffectPoll` gains one `desc_out`
-  pointer field. The descriptor's whole runtime existence collapses into "read a header / write
-  a header," the cheapest possible carrier.
-- **Maintainability / single source of truth (Principle 7).** Each offset has **one**
-  trampoline site: `RESOURCE_DESC_OFFSET = 24` read in the Consume arm and written in the
-  Produce post-step; `role` read once at `await_poll_node`; `desc_out = node + 40` forwarded
-  once. The seam is co-stated with the backend (§7.2 ≡ §17.5) so write-side and read-side
-  cannot drift silently — the §2.5 `ABI_VERSION`-bump discipline already governs it.
-- **Concurrency-safety (Principle 1).** No new shared state. The stamp is a reactor-thread
-  write to a freshly-produced value not yet handed onward (no aliasing); the header read is a
-  reactor-thread read of a value the leaf already owns. The permit map stays the lock-free
-  single-reactor-thread `RefCell<HashMap>` (§2.8) — v9 moves the descriptor *source*, never the
-  *thread* on which acquire/release run.
-- **Observability.** The role-keyed split is a natural strand-event seam: a Produce stamp and a
-  Consume acquire are already the points the §3 sink emits `Token*`/`Effect*` events; v9 adds
-  no new event, it only makes "which token" a header fact instead of a node fact. Noted as
-  non-impact on the sink shape.
-- **Testability (Principle 5).** Each arm is unit-isolable in intrinsics over a fixture node +
-  a stub leaf: a Produce leaf that writes a known `{T, N}` to `desc_out` ⇒ assert the produced
-  value's header carries `{T, N}` at +24 on `Ready`; a Consume leaf over a handle pre-stamped
-  `{T, N}` ⇒ assert the permit acquired is on token `T`; the `read-line` singleton ⇒ assert the
-  acquire is on `STDIN_TOKEN` with **no** handle read; a `None` leaf ⇒ no acquire, no stamp.
-  The negative guard is the absence of any v8 node `(token, capacity)` read.
+- **Simplicity / complexity budget (Principle 6).** A **net subtraction** vs both v8 and the
+  descriptor cut: the trampoline loses the node `(token, capacity)` reads, the role split, the
+  stamp, the value-header read, and the `desc_out` plumbing; it gains two vtable bodies (`acquire`/
+  `retire`) that are thin wrappers over the §8.1 permit map it already owns, plus one identity
+  ledger. `PollFn`/`Poll` unchanged; `EffectPoll` gains a release-guard, loses an `Option<Permit>`.
+- **Maintainability / single source of truth (Principle 7).** All runtime scheduling lives in
+  **one** place — the host's `ctx` impl — keyed by **one** identity. The order-restoring logic that
+  was split between the trampoline (the dissolved `SerialGroup`) and the inference now lives wholly
+  in the inference (§7.7). No write/read offset seam to drift (there are no scheduling offsets).
+- **Concurrency-safety (Principle 1).** No new shared state crosses threads: `acquire`/`retire`/
+  `release_all`/`deregister` and the ledger are all reactor-thread events (§2.8), so the permit map
+  + ledger stay a lock-free `RefCell<HashMap>`. The host never introspects a value, so there is no
+  aliasing question on the handle.
+- **Observability.** `acquire`/`Parked`/release/`retire` are the natural strand-event seam (the §3
+  sink's `Token*`/`Effect*` events) — "which token" is now a platform-projected fact surfaced
+  through the vtable call, not a node or header fact. No new event shape; noted as sink non-impact.
+- **Testability (Principle 5).** Each vtable body is unit-isolable in intrinsics over a fixture
+  reactor + a stub poll-fn that drives the vtable, with no codegen path needed (the host impl is
+  pure Rust); the cancel path is exercised by dropping a parked `EffectPoll` (§7.8).
 
 ## 8. The idle-server watchdog — no-progress, not wall-clock (S97, FIXME 0479)
 
@@ -2051,9 +2178,10 @@ loses its hang guard while a server gains indefinite idle.
 **Why reject Option (c) — the per-leaf "may-block-indefinitely" descriptor flag.** It would
 mark `accept` as legitimately-indefinite and apply the wall-clock cap to all other leaves. It
 is rejected because: (1) it needs a **new `ConcurrencyDescriptor` field** — a `cranelisp-types`
-edge change outside the frozen v9 descriptor shape (`role` replacing one `_reserved` byte,
-offsets unchanged; arch ruling, SPRINT.md §"Architecture review (Phase 2)"); int cannot make
-it, and bolting it onto the atomic v9 cut expands a frozen ABI surface; (2) the **armed-ness
+edge change outside the frozen v9 manifest shape (under the ctx-vtable model `ConcurrencyDescriptor`
+gains exactly `role`, consuming one `_reserved` byte, offsets unchanged; `platform-interface.md
+§6.8.0b`); int cannot make it, and bolting it onto the atomic v9 cut expands a frozen ABI surface;
+(2) the **armed-ness
 signal already captures the same fact structurally** — an `accept` parked on its listener fd
 **is** armed — with zero ABI surface, so the flag is redundant with reactor-internal state the
 trampoline already owns; (3) it is more fragile: every new poll leaf would have to remember to
@@ -2139,20 +2267,24 @@ value or a hang — with `// spec: spec/10-io.md §10.12.8 (Empty select)`.
   Appendix B — the implementable plan (canonical).
 - `design/arch/bounded-contexts.md` §6 (int reactor policy + impl-location), §4b
   (intrinsics hosting), §5 (platform C-ABI async leaf).
-- `design/arch/platform-interface.md` §6.8 — ABI-v7 layout contracts (`ConcurrencyDescriptor`,
+- `design/arch/platform-interface.md` §6.8 — ABI layout contracts (`ConcurrencyDescriptor`,
   `Poll`, `PollFn`, `HostCtx`, `Waker`, `WakerVTable`, `ConcurrentPlatformFn`); **§6.8.0b — ABI
-  v9** (the descriptor as representation overhead; header slot / `desc_out` / role-on-manifest;
-  AUTHORITY for §7).
-- **ABI v9 (S97, FIXME 0482) — the cross-surface cut this doc's §7/§8/§9 are the int half of:**
-  `design/arch/effect-concurrency.md §4.1.1` (descriptor as representation overhead; the
-  produce/consume asymmetry; the singleton manifest-static token; E2 strengthened-not-changed),
-  `design/arch/interfaces.md §"Resource descriptor"` (`ResourceDesc`/`ResourceRole` shapes +
-  header-slot layout), `design/backend/io-trampoline.md §17` (the backend codegen half — esp.
-  **§17.5 the boundary contract**, the offset table §7.2 mirrors), `design/platform/poll-support.md`
-  §3.1 (singleton stdin token) / §3.5 (opaque `Connection`) / §3.6 (the `desc_out` leaf-authoring
-  contract). FIXME **0479** (idle-server watchdog — §8) + **0475** (empty-`select` — §9) are the
+  v9** (the `ctx`-vtable handle model: `HostCtx.{acquire,retire}` + the `Acquire` enum +
+  `ConcurrencyDescriptor.role`; `PollFn`/`Poll` UNCHANGED; no `ResourceDesc`/`desc_out`/header
+  slot; AUTHORITY for §7).
+- **ABI v9 ctx-vtable handle model (S97; supersedes FIXME 0482) — the cross-surface cut this
+  doc's §7/§8/§9 are the int half of:** `design/arch/effect-concurrency.md §4.1.1` (the canonical
+  model: scheduling state never rides on values; the `ctx` vtable; the produce/consume/retire
+  roles + the full open/read/write/close trace; the singleton manifest-static token; E2
+  strengthened-not-changed) + **§8.1** (the permit-is-a-counter map — unchanged mechanism) +
+  **§8.2** (within-token ordering's home moves to the inference; the dissolved `SerialGroup` —
+  AUTHORITY for §7.7), `design/backend/io-trampoline.md §17` (the backend half — pure subtraction:
+  delete `inject_poll_leading_pair`; no header slot, no role/desc_out node fields; the §17.5
+  baked-offset contract RETIRED), `design/platform/poll-support.md` §3.1 (singleton stdin token) /
+  §3.5 (opaque `Connection` carrying `fd` in an ordinary field) / §3.6 (the ctx-vtable poll-fn
+  skeleton). FIXME **0479** (idle-server watchdog — §8) + **0475** (empty-`select` — §9) are the
   /int §C drains; **0478** (single-step launch-arm E2 hardening, co-located but **decoupled** from
-  v9) is `design/int/bind-chain-analysis.md §3.7`.
+  the model cut — sound under v8+v9) is `design/int/bind-chain-analysis.md §3.7`.
 - `design/int/io-integration.md §I3` — platform DLL load + `ABI_VERSION = 9` refusal of v8
   manifests (the loader's v9 cutover note; /dev executes).
 - `design/arch/sequences/concurrency-scheduler.mmd` — reactor participant (intrinsics-hosted).

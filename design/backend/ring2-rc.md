@@ -432,6 +432,12 @@ Rationale for divergence: Decision 24's uniform consuming convention makes every
 
 #### 3.5.10 Fresh-continuation-produced `SELECT`/`PAR` node release — the deep-free ruling (S97, FIXME 0474)
 
+> **Model-independent — STANDS through the S97 ctx-vtable pivot.** This ruling is about freeing
+> a fresh `IO_TAG_PAR`/`IO_TAG_SELECT` node's branch container (field-0 `List`/`Vec` + sub-trees)
+> in the trampoline's fresh-node release path. It has nothing to do with resource descriptors,
+> the retired header-slot model, or the ctx-vtable scheduling model (`io-trampoline.md` §17) —
+> it is unaffected by the Wave-0 re-cascade and is implemented unchanged.
+
 **The defect.** The Wave-3 fresh-node release path (`current_is_fresh` + `dec_shallow_io`,
 §3.5.4) is **shallow** by design: it frees a fresh node's *own* allocation and relies on the
 trampoline's spine walk to reach the node's children (a fresh `Bind`'s `inner` is descended

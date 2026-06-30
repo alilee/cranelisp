@@ -525,12 +525,15 @@ build flag).
 
 ### 12.2 `IO_TAG_EFFECT_POLL` node layout
 
-> **v9 note (S97, FIXME 0482; §17).** The node's two admission slots (field 1 = token @
-> abs 32, field 2 = capacity @ abs 40 in v8) are **repurposed under v9**: field 1 holds the
-> baked manifest `role`, fields 2–3 hold a 16-byte `ResourceDesc` region (the `desc_out`
-> slot). The v8 `(token, capacity)`-from-positional-args bake is **deleted** (§14 superseded).
-> The env layout below is **unchanged in shape** (result @ env+0, args follow) but the args
-> are now `arg_vals[0..]` directly — no leading-pair peel. See §17 for the v9 node shape.
+> **v9 note (S97, ctx-vtable handle model; §17).** The node keeps the v8 shape **unchanged** —
+> no growth, no `role` field, no descriptor region (the intermediate descriptor-cut design that
+> would have repurposed the two admission slots into `role`@32 + a `desc_out` `ResourceDesc`
+> region @40 is **RETIRED** — §17.7). Under the ctx-vtable model the platform poll-fn computes
+> the token from its handle and calls the trampoline-owned `ctx` vtable itself, so **nothing
+> scheduling-related is baked on the node**; the two admission slots are inert. The v8
+> `(token, capacity)`-from-positional-args bake is **deleted** (§14 superseded). The env layout
+> below is **unchanged in shape** (result @ env+0, args follow) but the args are now
+> `arg_vals[0..]` directly — no leading-pair peel. See §17 for the (deletion-only) v9 delta.
 
 A new IO tag, `IO_TAG_EFFECT_POLL` (next free tag — `IO_TAG_PAR` is 3, so this is **4**;
 the constant joins the others in `cranelisp-platform` / `cranelisp-types` per §1.4,
@@ -1106,19 +1109,21 @@ node-layout convention, not a struct ABI freeze). The `_neg` gated-edge guard st
 
 ## 14. Poll-node LIVE `(token, capacity)` bake (S96 Chunk A, item 3)
 
-> **SUPERSEDED by ABI v9 (S97, FIXME 0482) — see §17.** This entire section designs the
-> **v8 leading-pair bake**: the poll-shape lowering supplies `(token, capacity)` as the two
-> leading operands of every poll effect (`arg_vals = [token, capacity, leaf_0, …]`) and the
-> backend bakes them from those positional args into the poll node's offset-32/40 slots
-> (§14.2–§14.4). **v9 deletes this mechanism.** The resource descriptor `(token, capacity)`
-> is no longer a cranelisp operand, no longer a leaf argument, and the backend **stops baking
-> from positional args** — `compile_poll_effect`'s leaf-arg list is `arg_vals[0..]` directly
-> (no leading-pair peel). The descriptor now lives in the **resource-handle ADT's header
-> slot** (stamped by the trampoline from a produce leaf's `desc_out`, read by the trampoline
-> before a consume leaf polls). §14 is retained as the historical v8 design record (the model
-> the v8 server shipped on); read it for provenance, not as the live contract. The v9 emit
-> reshape — the deleted positional bake, the reserved header slot, the `desc_out` slot, and
-> the per-role stamp/read hooks — is **§17**.
+> **SUPERSEDED by ABI v9 (S97, ctx-vtable handle model) — see §17.** This entire section
+> designs the **v8 leading-pair bake**: the poll-shape lowering supplies `(token, capacity)` as
+> the two leading operands of every poll effect (`arg_vals = [token, capacity, leaf_0, …]`) and
+> the backend bakes them from those positional args into the poll node's offset-32/40 slots
+> (§14.2–§14.4). **v9 deletes this mechanism.** Under the ratified ctx-vtable model the resource
+> descriptor `(token, capacity)` is no longer a cranelisp operand, no longer a leaf argument,
+> and is not stored anywhere (no node slot, no value-header slot) — the **platform poll-fn
+> computes the token from the handle it holds and calls the trampoline-owned `ctx` vtable
+> (`acquire`/`register_*`/`retire`) itself** (`effect-concurrency.md` §4.1.1). The backend
+> **stops baking from positional args** — `compile_poll_effect`'s leaf-arg list is
+> `arg_vals[0..]` directly (no leading-pair peel) — and bakes nothing in its place. §14 is
+> retained as the historical v8 design record (the model the v8 server shipped on); read it for
+> provenance, not as the live contract. The v9 backend delta is the deletion-only reshape in
+> **§17** (the intermediate descriptor-cut header-slot/`desc_out` design is itself retired —
+> §17.7).
 
 Sprint 96 Chunk A lights up the **live** poll-shape `(token, capacity)` carrier — the
 deferred half of §13.3. S95 reserved the poll node's `(token, capacity)` slots at
@@ -2069,31 +2074,191 @@ and are **not** backend-unit-tier.
 
 ---
 
-## 17. ABI v9 — resource-descriptor side-band: poll-node emit reshape (S97, FIXME 0482)
+## 17. ABI v9 — the ctx-vtable handle model: poll-node emit is a DELETION pass (S97, Wave 0 re-cascade)
 
-> **Status: `/design` (backend) Phase-3 intent, RATIFIED arch shape.** Conforms to
-> `platform-interface.md` §6.8.0b, `effect-concurrency.md` §4.1.1, `interfaces.md`
-> §"Resource descriptor", and the platform-side leaf-authoring contract
-> `design/platform/poll-support.md` §3.5/§3.6. The v9 cut lands as **ONE atomic cross-surface
-> change-set** (`ABI_VERSION` 8 → 9); this section is the **backend codegen** half:
-> reserve-slots + bake-role + emit-the-poll-node. The runtime stamp/read is the trampoline's
-> (`/design int`); §17.5 pins the boundary.
+> **REWRITTEN for the `/arch`-ratified ctx-vtable handle model (2026-06-30; supersedes the
+> descriptor cut).** §17.1–§17.6 below are the **live** backend delta. Conforms to
+> `design/arch/effect-concurrency.md` §4.1.1 (the ctx-vtable model), `platform-interface.md`
+> §6.8.0b, `bounded-contexts.md` §3, and the platform-side leaf-authoring contract
+> `design/platform/poll-support.md` §3.1/§3.5/§3.6 (the uniform poll-fn skeleton). The earlier
+> §17 descriptor-cut design — a fixed-offset `ResourceDesc` **header slot @24** on
+> resource-handle ADTs, a baked poll-node **`role`@32** + **`desc_out` `ResourceDesc` region
+> @40**, the **§17.5 offset contract**, and the **§17.7/§17.8** wiring/QA notes written to it —
+> is **RETIRED**; it is preserved under the **[SUPERSEDED]** banner at §17.7 (provenance only,
+> read for the rejected shape + why). FIXME 0482 is **deleted** (resolved-by-supersession).
+>
+> **The whole backend delta under the new model is a *subtraction*.** Scheduling state
+> (`token`/`capacity`) never rides on a value and never rides on the poll node — it flows
+> entirely through a trampoline-owned `ctx` vtable the **platform poll-fn** calls
+> (`acquire`/`register_*`/`retire`), with **trampoline-owned release** on `Ready`/cancel
+> (`effect-concurrency.md` §4.1.1). So there is **no header slot to reserve, no `role` to bake,
+> no `desc_out` slot to allocate, no per-role stamp/read hook to emit**. `PollFn`/`Poll` are
+> **unchanged**. The hard parts of the dead design (the resource-handle ADT slot reservation +
+> the undesigned DLL-mint→host-alloc seam that STOPPED Wave 2) are **gone**. The v9 cut still
+> lands as ONE atomic change-set (the `cranelisp-types` ABI bump reds the tree until consumers
+> catch up; `ABI_VERSION` 8 → 9), but the backend's contribution to it is the two deletions in
+> §17.3 + a `CACHE_SCHEMA_VERSION` bump.
 
 ### 17.1 What changes, in one paragraph
 
-The per-connection scheduling descriptor `(token, capacity)` stops being a cranelisp value.
-v8 baked it into the poll node from the **two leading positional leaf args** (§14, the
-`inject_poll_leading_pair` convention); **v9 deletes that bake entirely** — the backend no
-longer reads the leading two operands. The descriptor becomes **trampoline-owned
-representation overhead, like the RC/heap header**: it rides a **fixed-offset header slot on
-resource-handle ADTs** (§17.2), is written by a *produce* leaf through a new `desc_out`
-out-param slot the backend allocates on the poll node (§17.3), and is read by the trampoline
-off the consumed handle's header before a *consume* leaf polls (§17.5). The backend's four
-jobs: **(a)** reserve the header slot on resource-handle ADTs; **(b)** allocate the `desc_out`
-slot + bake the per-effect `role` on the poll node; **(c)** delete the positional bake; **(d)**
-emit the node shape so the trampoline can run the per-role stamp/read hooks.
+**The poll node stays the v8 uniform shape; the only backend change is deletion.** Under the
+ctx-vtable model the descriptor `(token, capacity)` is neither a cranelisp value, nor a leaf
+argument, nor anything stored on the node or on a handle: the platform's poll-fn **computes the
+token from the handle it holds** (web: `token == fd`, off `Connection`'s genuine `fd` field —
+`poll-support.md` §3.5.1) and **calls `ctx.acquire(token, capacity, waker)` itself**
+(`effect-concurrency.md` §4.1.1 skeleton). The v8 backend baked `(token, capacity)` into the
+poll node from the **two leading positional leaf args** (§14, the `inject_poll_leading_pair`
+convention). **v9 deletes that pass and its positional peel** — there is nothing to bake in its
+place. The poll node retains its v8/§13/§14 layout (`state_closure` heap field + the two
+admission slots, now simply **unused / zero**), and `compile_poll_effect` treats the leaf args
+as `arg_vals[0..]` directly. That single deletion is the backend's entire v9 reshape (§17.3).
+`ring2-rc.md §3.5.10` (the 0474 fresh-select/par deep-free ruling) is **model-independent and
+unaffected** (§17.4 cross-ref).
 
-### 17.2 Job (a) — reserve the `ResourceDesc` header slot on resource-handle ADTs
+### 17.2 The poll node is UNIFORM — no header slot, no role, no desc_out
+
+There is **no resource-handle ADT layout change**. The opaque handle `web/Connection` is an
+**ordinary 1-field ADT** — `(deftype Connection [:primitives/Int fd])` — laid out as the
+standard `HeapAdt` (`header(16)` + ctor-`tag @ 16` + `fd @ FIELDS_START = 24`). It is minted by
+the normal `CLAdt::construct` path (the platform built the handle; `r == fd` lives in its
+genuine field). **No reserved descriptor region, no `RESOURCE_DESC_OFFSET`, no `FIELDS_START`
+shift, no zero-init of any slot, no "resource-handle type set" the backend must derive from
+manifests at layout time.** Every ADT — resource handle or not — keeps `FIELDS_START = 24`.
+This is the dissolution of the Wave-2 blocker: a 1-field `Connection` is a normal N-field
+object, so the 24-vs-40-byte DLL-mint overrun **cannot arise** (`effect-concurrency.md` §4.1.1;
+`poll-support.md` MODEL-PIVOT banner).
+
+The poll node (`IO_TAG_EFFECT_POLL = 4`) keeps the v8 shape exactly (§12.2 / §13.3 / §14):
+`state_closure` heap field (RC'd, drop-glue'd) + the two admission slots that v8 baked
+`(token, capacity)` into. **Under v9 those two slots carry nothing the trampoline reads** — the
+backend bakes neither the v8 positional `(token, capacity)` nor any v9 `role`/descriptor; they
+are inert (left at the §13.3 zero/sentinel `iconst`s, or elided — `/dev`'s call, no semantic
+content either way). **No node growth** (it does NOT grow 48→56), **no `role` field at +32**,
+**no `desc_out` region at +40**. The node remains a one-heap-field ADT, so §13.6/§14.6 drop
+glue is untouched.
+
+Because `PollFn`/`Poll` are unchanged (`poll(state, *HostCtx, *Waker) -> Poll`, single-register
+`#[repr(i32)]`), **`cranelisp-types` poll-node codegen is untouched** — the host-built
+state-closure env layout (§12.2: result @ `state+0`, args @ `state + 8 + 8·i`, scratch after)
+is byte-for-byte the same. The only consequence of v9 for that codegen is the bake-deletion in
+§17.3 (the env now packs `arg_vals[0..]` with no leading-pair peel).
+
+### 17.3 The delete — `inject_poll_leading_pair` + the positional peel
+
+Two deletions, both in `cranelisp-backend`:
+
+1. **Delete `inject_poll_leading_pair`** (`lib.rs`, the `MonoExpr` pass — its ~14 call sites
+   and the `compile_to_module_impl` invocation) entirely: the pass, its `scheduling_class`
+   keying, and its `(0,1)`-sentinel synthesis all go away. There is no surviving caller — under
+   the ctx-vtable model nothing prepends a leading pair, because the platform leaf acquires the
+   token itself (§17.1).
+2. **Delete the `arg_vals[0..1]` positional peel in `compile_poll_effect`** (§12.3 / `apply.rs`):
+   the leaf-arg list is `arg_vals[0..]` directly, marshaled into the state-closure env at
+   `capture(1+i)` (result @ `capture(0)`). The §14.2/§14.3 leading-pair peel is removed — a poll
+   leaf's natural args are its only args.
+
+Everything else in `compile_poll_effect` (the node alloc, the state-closure build, the
+`code_ptr`/`drop_glue_ptr` wiring, the RC) is unchanged. There is **no per-role branch, no node
+shape branch, no manifest read at layout time** — the construction site is the uniform v8 path
+minus the peel.
+
+### 17.4 Cache invalidation, public-api, and the 0474 cross-ref
+
+- **`CACHE_SCHEMA_VERSION` bump (required).** The emitted poll-node arg handling changes (the
+  env now packs the natural leaf args at `capture(1..)` with no leading-pair displacement), so a
+  stale `.o` cached under the v8 leading-pair convention would marshal args at the wrong
+  capture slots. The cutover change-set bumps `CACHE_SCHEMA_VERSION` so every cached artifact
+  re-derives (`module-caching.md` — the schema-version gate). This is the v8→v9 marker on the
+  backend side.
+- **`public-api.txt` — almost certainly UNCHANGED for `cranelisp-backend`.** v9 is a pure
+  *deletion* of an internal pass (`inject_poll_leading_pair` is not a public export) plus an
+  internal peel removal — neither moves the backend's public surface. **Flag:** regenerate it
+  in the cutover change-set regardless (baseline-diff discipline, `design/arch/CLAUDE.md`) and
+  include the diff; the expectation is an **empty backend diff**. If `/dev` finds the pass *was*
+  re-exported (it should not be), that removal is the only line and `/review` confirms it.
+  (The ABI-surface regen the arch ruling names — `cranelisp-types` + `cranelisp-platform` for
+  the `ResourceDesc`-delete / `ConcurrencyDescriptor.role` / `HostCtx` ctx-vtable additions —
+  rides the same change-set but is `/dev`-on-those-crates, not backend.)
+- **0474 stands, model-independent (§17.5 cross-ref → `ring2-rc.md §3.5.10`).** The fresh
+  `IO_TAG_SELECT`/`IO_TAG_PAR` deep-free ruling is about IO-node branch-`Vec` freeing in the
+  trampoline's fresh-node release path; it has nothing to do with descriptors or scheduling
+  state. It is **unaffected by the S97 model pivot** and STANDS as written. FIXME 0474 stays
+  **open** (Phase-5 /qa heap-balance guard + /dev fix; do not delete the FIXME).
+
+### 17.5 The codegen↔trampoline boundary under the ctx-vtable model
+
+This is the boundary statement the `/design` (int) pass implements against. **There is no
+shared offset contract anymore** — the §17.5 frozen offset table of the dead descriptor design
+(`RESOURCE_DESC_OFFSET = 24` / poll-node `role @ 32` / `POLL_DESC_OUT_OFFSET = 40`) is
+**RETIRED**, because nothing crosses the codegen↔trampoline seam by baked offset under the new
+model. Crisply:
+
+**Codegen (backend) owns** — only the uniform poll node + the leaf args:
+- emit the v8-shape `IO_TAG_EFFECT_POLL` node with its `state_closure` (unchanged);
+- pack the leaf's natural args `arg_vals[0..]` into the state-closure env (no leading-pair
+  peel); the env convention (§12.2) is unchanged, so the platform poll-fn reads its handle at
+  `PollEnv::arg(0)` = `state + 8` exactly as before;
+- bake **nothing** scheduling-related onto the node (no `role`, no `(token, capacity)`, no
+  `desc_out`). The backend emits **no acquire, no register, no retire, no stamp, no read, no
+  header write** — it never names a scheduling primitive.
+
+**Trampoline (int, runtime) owns the entire ctx vtable** (`effect-concurrency.md` §4.1.1;
+`reactor.md` §7, /design int Wave-0 re-cascade):
+- it implements the `ctx`/`HostCtx` the platform poll-fn calls — `acquire(token, capacity,
+  waker) -> Acquired | Parked`, `register_{readable,writable,timer}(source, waker)`,
+  `retire(token)` — backed by the §8.1 per-token permit map (semaphore-per-token, keyed by the
+  waker's effect identity) + the reactor interest table;
+- it owns **release** (tramp-owned, on poll `Ready` or cancel, keyed by effect identity; cancel
+  never re-enters the poll-fn) — release is **not** a vtable call;
+- it never introspects the handle and holds no handle→token scoreboard — the platform poll-fn
+  computes the token from its own handle each poll and the host recomputes nothing.
+
+So the seam is: **backend hands the trampoline a uniform poll node + the leaf's natural args;
+the platform poll-fn drives all scheduling through the trampoline-owned ctx vtable.** The
+backend↔trampoline interface for poll effects is exactly its v8 shape *minus* the leading-pair
+convention — there is no v9-specific offset either side must agree on.
+
+### 17.6 Quality attributes touched
+
+- **Simplicity / complexity budget (Principle 6).** v9 is a **net subtraction at the backend
+  layer** — it deletes a whole codegen pass (`inject_poll_leading_pair` + its `scheduling_class`
+  keying + its `(0,1)` synthesis) and the positional peel, and adds **nothing** (no header slot,
+  no role bake, no desc_out — all of which the dead descriptor design would have added). This is
+  strictly less machinery than even the v8 baseline.
+- **No-interim-implementations (Principle 8).** v9 *removes* the v8 leading-pair interim; the
+  uniform poll node + platform-driven ctx vtable is the end-state. The backend builds nothing to
+  be discarded.
+- **Maintainability / single source of truth (Principle 7).** All scheduling lives in **one
+  place** — the trampoline's ctx vtable + permit map (int). The backend no longer holds any
+  scheduling knowledge (no offset constant, no manifest-derived resource-handle type set, no
+  role), so the cross-crate offset-drift class the dead §17.5 table guarded against **cannot
+  exist** — there is no shared baked offset to drift.
+- **Concurrency-safety (Principle 1).** Unchanged: the backend emits no concurrency primitive;
+  it lays out a uniform node and passes leaf args. All acquire/register/retire/park/release lives
+  in the trampoline.
+- **Testability (Principle 5).** The deletion is inspectable at the CLIF seam on a shrunk repro
+  (`CRANELISP_CODEGEN_TRACE=1`): a poll effect's construct has **no `arg_vals[0]/[1]` positional
+  store displaced ahead of the natural args** (the deleted bake is the negative guard) and the
+  node is the v8 shape (no growth, no `role` at +32). A resource-handle ADT (`Connection [fd]`)
+  is a plain 1-field ADT at `FIELDS_START = 24` (the byte-identical-to-ordinary-ADT witness).
+  The runtime ctx-vtable behaviour is the trampoline's, tested separately by `/qa` + /design int.
+
+### 17.7 [SUPERSEDED — provenance only] the descriptor-cut emit design (RETIRED by the ctx-vtable pivot)
+
+> **RETIRED (2026-06-30) — do not implement.** Everything in §17.7.x below is the dead
+> descriptor-cut design (`ResourceDesc` header slot @24, poll-node `role`@32 + `desc_out`
+> region @40, the per-role stamp/read hooks, the frozen offset contract, the resource-handle
+> type-set wiring). It is kept for provenance — the rejected shape + the Wave-2 blocker that
+> killed it — and is **superseded in full** by §17.1–§17.6 above and `effect-concurrency.md`
+> §4.1.1. The descriptor never rides a value (no header slot), `PollFn`/`Poll` are unchanged
+> (no `desc_out`), and the trampoline owns the ctx vtable (no baked `role`, no offset contract).
+> The blocker that retired it: an opaque zero-field `Connection []` minted inside the DLL via
+> `CLAdt::construct` was a 24-byte object with no room for a 16-byte header slot stamped at
+> `value+24`, and reserving that slot at the DLL-mint→host-alloc boundary was an undesigned
+> cross-crate interface (SPRINT.md "Wave 2 STOP" note). The ctx-vtable model dissolves it by
+> giving `Connection` a genuine `fd` field and never touching the value with scheduling state.
+
+#### 17.7.1 [retired] Job (a) — reserve the `ResourceDesc` header slot on resource-handle ADTs
 
 **Which ADTs.** A type `T` is a **resource handle** iff a loaded platform manifest marks some
 effect `Produce`/`Consume` (`ConcurrencyDescriptor.role`) with `T` as the produced/consumed
@@ -2142,7 +2307,7 @@ would make the slot a per-type offset the trampoline must compute from field cou
 "uniform, no per-ADT knowledge." Offset 24 (between tag and logical fields) is the only fixed
 uniform choice that leaves the header + ctor-tag undisturbed.
 
-### 17.3 Job (b) — the v9 poll-node shape: `role` + the `desc_out` `ResourceDesc` slot
+#### 17.7.2 [retired] Job (b) — the poll-node shape: `role` + the `desc_out` `ResourceDesc` slot
 
 The poll node grows from the v8 3-field (48-byte) shape to a 4-field (56-byte) shape; the
 v8 `(token, capacity)` slots are repurposed. **The poll node is an in-process backend↔
@@ -2171,7 +2336,7 @@ v9 IO_TAG_EFFECT_POLL node — payload_size(4) = 56 bytes:
   — the node remains a one-heap-field ADT (only field 0, the state-closure, is heap-typed), so
   §13.6/§14.6's drop glue is untouched.
 
-### 17.4 Job (c) — delete the positional bake; what the backend stores per role
+#### 17.7.3 [retired] Job (c) — delete the positional bake; what the backend stores per role
 
 `compile_poll_effect` (§12.3 / `apply.rs`) **stops** peeling `arg_vals[0]`/`arg_vals[1]` as
 `(token, capacity)`. Leaf args are `arg_vals[0..]` directly, marshaled into the state-closure
@@ -2194,7 +2359,7 @@ node-shape branch**. The two Consume cases are the **same** bake — the manifes
 descriptor — distinguished only by the baked `token`'s zero-ness (effect-concurrency §5:
 "token 0 = unrestricted/dynamic"), not by a second node field or a codegen branch.
 
-### 17.5 Job (d) — the per-role hooks: who does the stamp, who does the read (the codegen↔trampoline boundary)
+#### 17.7.4 [retired] Job (d) — the per-role hooks: who does the stamp, who does the read
 
 **The backend reserves slots and emits the node; the trampoline does the runtime stamp/read.**
 This is the load-bearing boundary `/design int` and Phase-5 `/dev` implement against. Crisply:
@@ -2235,7 +2400,7 @@ breaks if the two sides disagree):
 | poll-node `role` | `field_offset(1)` = **32** | `role` bake | `node + 32` read |
 | `POLL_DESC_OUT_OFFSET` (= `desc_out`) | `field_offset(2)` = **40** | `desc_out` region bake/zero | `node + 40` passed as `desc_out`; read-back on Produce `Ready` |
 
-### 17.6 Job (e) — cache invalidation + baseline regen (design-level note; `/dev` executes)
+#### 17.7.5 [retired] Job (e) — cache invalidation + baseline regen
 
 - **`CACHE_SCHEMA_VERSION` bump (required).** Both baked shapes change vs v8: the poll node
   grows `48 → 56` bytes with a new field meaning (`role` + `desc_out` region, no positional
@@ -2252,7 +2417,7 @@ breaks if the two sides disagree):
   `cranelisp-types`/`cranelisp-platform` regen the arch ruling already names (`ABI_VERSION`
   8 → 9 surface). `/review` (backend) confirms the regen is present in the diff.
 
-### 17.7 Phase-5 watch items + the resource-handle type-set wiring
+#### 17.7.6 [retired] Phase-5 watch items + the resource-handle type-set wiring
 
 - **Resource-handle type set.** The backend must know, at ADT layout + field-access codegen,
   which ADTs are resource handles. Derive it once per session from the loaded manifests where
@@ -2274,7 +2439,7 @@ breaks if the two sides disagree):
   header after reading it — `set_result` and the stamp are two independent writes (the result
   slot vs the value header), neither widening `Poll` (still single-register `#[repr(i32)]`).
 
-### 17.8 Quality attributes touched
+#### 17.7.7 [retired] Quality attributes touched (descriptor-cut)
 
 - **Simplicity / complexity budget (Principle 6).** v9 is a **net subtraction**: it deletes
   `inject_poll_leading_pair` (a whole codegen pass + its `scheduling_class` keying + its
