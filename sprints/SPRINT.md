@@ -1,6 +1,6 @@
 # Sprint 97: Concurrency-track consolidation — ABI v9 (descriptor as representation overhead) + drain the S96 carry
 
-**Status**: PHASE 4 WAVE ORG COMPLETE — awaiting user go for PHASE 5 (the v9 atomic cutover). Phases 2–3 done (arch SIGN-OFF; platform/backend/int design + /qa plan all complete; 0469/0471 resolved+deleted).
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 1 (QA-first) in progress. Design checkpoint committed `60bf564`. Phases 2–4 done (arch SIGN-OFF; platform/backend/int design + /qa plan + waves complete; 0469/0471 resolved+deleted).
 
 **Goal**: Clear the concurrency track before the parallelism axis (S98) — land the ABI v8→v9 cut that makes the resource `(token, capacity)` descriptor trampoline-owned representation overhead (invisible to user source AND value shape), drain the seven open concurrency-track FIXMEs + three standing known-defect REDs, and split the user-facing concurrency documentation from a new platform-writer's guide along the same seam.
 
@@ -123,7 +123,7 @@ Seams handed downstream: /design (backend) — poll-node emit reserves the fixed
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /qa | tests/ | Write the 15 failing-not-ignored e2e per `tests/plan/sprint-97.md` (`concurrency_v9_abi.rs` / `concurrency_v9_select.rs` + `concurrency_fanout{,_web}.rs` additions). RED by compile/run failure. Confirm the 2 green regression guards + 3 standing REDs baseline. | pending |
+| /qa | tests/ | Write the 15 failing-not-ignored e2e per `tests/plan/sprint-97.md`. **DONE** — `concurrency_v9_abi.rs` (7) + `concurrency_v9_select.rs` (5) + `concurrency_fanout.rs` (+2, 0474) + `concurrency_fanout_web.rs` (+1, 0479 idle-server). **1781 tests / 18 RED = 15 new + 3 standing; 2 guards GREEN; no regression.** 4 `FIXME(/sprint S97 W3)` for /dev-owed interfaces: `CRANELISP_DRIVE_MODE`+`CRANELISP_REACTOR_BACKSTOP_MS` (0479 5.1), `poll-no-interest` fixture leaf (0479 5.2 unarmed), `poll-produce`/`poll-consume` bounded leaves (2.4 RC-leak, G-C), and the 0475 catch-boundary question (§9 raises at trampoline-run — is it inside `catch-runtime-error`'s bracket?). Process: suite ~47s in RED state (idle witness ~8.6s + empty-select SIGSEGV dumps; collapses when 0475/0479 land). | DONE |
 
 ### Wave 2 — the v9 atomic cutover (critical path; lands first)
 

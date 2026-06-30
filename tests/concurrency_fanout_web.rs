@@ -426,3 +426,134 @@ fn e3_token0_discarded_subtree_not_launched_stays_source_ordered() {
          spec/10-io.md §10.12.7 / effect-concurrency.md §4.1); got stdout={stdout:?}",
     );
 }
+
+// =============================================================================
+// Sprint 97 — 0479: idle-but-armed server `accept` survives (no wall-clock 30s cap).
+//
+// The wall-clock `MAX_TOTAL_BLOCK` 30s cap is replaced by a structural armed-ness
+// deadlock detector (`design/int/reactor.md §8`): an idle-but-armed `accept` (listener
+// fd in `fd_waiters`) waits FOREVER (production-shaped); a genuinely-unarmed suspend
+// trips immediately. A host-side `drive_mode` knob keeps a `OneShot` (`--run`/REPL)
+// wall-clock backstop, DISABLED in `Server` mode.
+//
+// ## Gap G-D (the knob is /dev-owed)
+//
+// `reactor.md §8.2`: "How `src/` picks the mode is a small int policy decision deferred
+// to Phase-5 /dev"; the backstop value is "configurable, 30s default" with no named
+// env/CLI knob yet. This row is written against the INTENDED knobs `CRANELISP_DRIVE_MODE`
+// (`server` disables the wall-clock backstop; `oneshot` keeps it) + a scaled
+// `CRANELISP_REACTOR_BACKSTOP_MS` — so the witness fits the suite budget (NO real 30s
+// wait). FIXME(/sprint S97 W3): /dev (int) Wave 3 must NAME + wire these knobs (the
+// §8.3 `drive_mode` on `block_on_reactor` + a scaled `OneShot` backstop); reconcile the
+// two consts below when that wave lands. On HEAD the knobs are ignored (the 30s cap is
+// always on) ⇒ the OneShot-backstop discriminator (case B) is RED.
+// =============================================================================
+
+/// The intended `drive_mode` selector knob (G-D, /dev-owed). `server` ⇒ no wall-clock
+/// backstop (idle-armed `accept` survives); `oneshot` ⇒ the scaled backstop is kept.
+const DRIVE_MODE_ENV: &str = "CRANELISP_DRIVE_MODE";
+/// The intended scaled-`OneShot`-backstop knob (G-D, /dev-owed) — set low so the
+/// witness fits the suite budget instead of waiting the real 30s default.
+const BACKSTOP_ENV: &str = "CRANELISP_REACTOR_BACKSTOP_MS";
+
+/// Like `spawn_server`, but with an extra env overlay (the G-D drive-mode / backstop
+/// knobs). Polls until the child is listening; panics (loudly, fast) on early exit.
+fn spawn_server_env(fixture_rel: &str, port: u16, env: &[(&str, &str)]) -> ServerGuard {
+    let root = workspace_root();
+    let binary = root.join("target").join("debug").join("cranelisp");
+    assert!(binary.exists(), "cranelisp binary not found at {} — run `cargo build` first", binary.display());
+
+    let mut cmd = Command::new(&binary);
+    cmd.current_dir(&root)
+        .arg("--run")
+        .arg(fixture_rel)
+        .env("CRANELISP_PORT", port.to_string())
+        .env("CRANELISP_PLATFORM_PATH", root.join("target").join("debug"))
+        .env("CRANELISP_LIB", root.join("stdlib"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let child = cmd.spawn().expect("spawn idle-armed web server");
+    let mut guard = ServerGuard { child };
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Ok(Some(status)) = guard.child.try_wait() {
+            panic!(
+                "idle-armed web server exited before listening (status {status:?}). The \
+                 fan-out fixture `{fixture_rel}` is a co-landing v9 deliverable (/port); \
+                 it is RED-first until that wave lands."
+            );
+        }
+        if TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(200),
+        )
+        .is_ok()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "idle-armed web server did not start listening on 127.0.0.1:{port} within 20s"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    guard
+}
+
+// spec: design/int/reactor.md §8 — a `Server`-mode fan-out server idles with NO traffic
+// for T > the scaled `OneShot` backstop, is THEN served one request → MUST succeed (the
+// armed `accept` was NOT killed; production-shaped). The RED-now discriminator is the
+// CONTRAST (case B): the SAME idle under `OneShot` + the scaled backstop MUST abort the
+// server at ≈backstop — proving the knob actually controls drive. On HEAD both knobs are
+// ignored (the 30s cap is always on), so case B's "the OneShot backstop killed the idle
+// server" assertion fails (the server is still alive at 3s ≪ 30s) ⇒ RED. Flips GREEN when
+// 0479 + the `drive_mode`/backstop knob land (Wave 3). Time-boxed (G-D): backstop ≈2s,
+// idle ≈3s — NO real 30s wait.
+#[test]
+fn idle_armed_server_survives_then_serves() {
+    const BACKSTOP_MS: &str = "2000";
+    let idle = Duration::from_millis(3000); // > backstop, ≪ the old 30s cap.
+
+    // Case A — Server mode: the idle-armed accept survives the idle, then serves.
+    let port_a = free_port();
+    let server_a = spawn_server_env(
+        FANOUT_FIXTURE,
+        port_a,
+        &[(DRIVE_MODE_ENV, "server"), (BACKSTOP_ENV, BACKSTOP_MS)],
+    );
+    std::thread::sleep(idle);
+    let resp = http_request(port_a, "GET", OK_ROUTE);
+    assert!(
+        !resp.is_empty() && !resp.contains("500"),
+        "a Server-mode idle-armed accept must SURVIVE a {idle:?} idle (> the {BACKSTOP_MS}ms \
+         backstop) and then serve — the armed accept must NOT be killed (reactor.md §8); the \
+         subsequent GET got:\n{resp}"
+    );
+    drop(server_a);
+
+    // Case B — RED-now discriminator: OneShot mode + the scaled backstop MUST abort the
+    // idle server at ≈backstop. On HEAD the knob is ignored (30s cap) ⇒ still alive ⇒ RED.
+    let port_b = free_port();
+    let mut server_b = spawn_server_env(
+        FANOUT_FIXTURE,
+        port_b,
+        &[(DRIVE_MODE_ENV, "oneshot"), (BACKSTOP_ENV, BACKSTOP_MS)],
+    );
+    std::thread::sleep(idle);
+    let exited = matches!(server_b.child.try_wait(), Ok(Some(_)));
+    // ServerGuard::drop reaps it regardless.
+    assert!(
+        exited,
+        "RED-until-0479+knob (G-D): a OneShot-mode server with a {BACKSTOP_MS}ms backstop \
+         MUST abort the idle drive by ≈{BACKSTOP_MS}ms — but it is still running after \
+         {idle:?}. On HEAD the `{DRIVE_MODE_ENV}`/`{BACKSTOP_ENV}` knobs are ignored (the \
+         30s `MAX_TOTAL_BLOCK` cap is always on, 3s ≪ 30s). This is the contrast that proves \
+         the backstop knob controls drive; it flips GREEN with the §8.2 knob + §8 detector \
+         (Wave 3)."
+    );
+}

@@ -284,3 +284,53 @@ Protocol": a row that now passes on HEAD is **Resolved** (note the flip); a stil
 forward with its owner + signature; the two GREEN regression guards (2.3, 6.3) must remain GREEN
 (a RED there is a v9-reshape regression, not a known guard). The standing REDs (item 7) flip or
 carry per their resolver's wave.
+
+## Phase-5 Stage-1 realization (what /qa actually authored — 2026-06-30)
+
+**15 failing-not-ignored e2e written, all RED on HEAD** (full suite: 1781 tests, 18 failed = these
+15 + the 3 standing REDs; 2 GREEN regression guards stay green; no other regression). File
+placement (matches the plan): `concurrency_v9_abi.rs` = 1.1–1.4 + 2.1, 2.2, 2.4 (7);
+`concurrency_v9_select.rs` = 4.1–4.4 + 5.2 (5); `concurrency_fanout.rs` += 3.1, 3.2 (2);
+`concurrency_fanout_web.rs` += 5.1 (1).
+
+**Construction realities Wave-2/3 /dev must know (the RED→GREEN contract each row pins):**
+
+- **Items 1/2 (v9 sig/layout).** Each row drops an inline v9-shaped opaque `web.cl`
+  (`Connection []`) + loads the workspace `web` DLL. On HEAD the opaque module mismatches the v8
+  DLL's **embedded schema** → the run dies at the schema gate (`embedded schema is out of date`).
+  Positive rows assert `exit 0`; reject rows assert *non-zero AND output does NOT contain
+  `"schema"`* — the `!contains("schema")` clause is the load-bearing RED-until discriminator (it
+  fails on the HEAD schema-gate error, flips green when the v9 DLL rebuild makes the rejection a
+  clean leaf-arity / field-count type error). So **the v9 e2e flip needs the platform DLL rebuilt
+  opaque (Wave 2) AND nothing else** — they do not depend on the /port fixture rewrite.
+- **G-B RESOLVED (3.2).** There is **no surface `par`** (`spec/10-io.md §10.12.5`: auto-inserted).
+  A fresh `IO_TAG_PAR` in a continuation is built deterministically by **auto-IO-Par over two
+  INDEPENDENT poll effects** `(bind (Pure 0) (fn [_] (bind (poll-read 1 1 30) (fn [a] (bind
+  (poll-read 2 1 30) (fn [b] (Pure (add-i64 a b))))))))`. Verified the DEPENDENT control (b uses a
+  ⇒ no Par) balances 12/12 while the independent shape leaks 12/8 — isolating the imbalance to the
+  par branch-Vec. 3.2 is now a **firm** row (not gap-contingent).
+- **G-C (2.4) — /dev owes a bounded poll fixture.** 2.4 references absent `poll-pool` leaves
+  **`poll-produce` / `poll-consume`** (a bounded produce(stamp)→consume(read) cycle that exits) —
+  the S96 Gap-G1 poll-pool analogue. /dev (Wave 3) must ADD them to `platforms/poll-pool/` +
+  `tests/scripts/build-link-prereqs.sh`, else 2.4 reduces to the /dev intrinsics RC unit. RED on
+  HEAD = absent leaves.
+- **G-D (5.1, 5.2) — /dev (int) owes the named knobs/leaf.** 5.1 is written against
+  **`CRANELISP_DRIVE_MODE`** (`server`|`oneshot`) + **`CRANELISP_REACTOR_BACKSTOP_MS`** (scaled
+  backstop), RED-now via a CONTRAST: a `oneshot`+2s-backstop idle server MUST die at ≈2s (on HEAD
+  the knob is ignored ⇒ 30s cap ⇒ still alive at 3s ⇒ RED). 5.2 references an absent §8.3 fixture
+  leaf **`poll-no-interest`** (returns `Pending` unarmed). /dev (int) Wave 3 must NAME+wire the
+  knobs + provide the fixture leaf; reconcile these names when that wave lands. If unarmed-Pending
+  is not surfaced, 5.2 reduces to the §8.3 /dev intrinsics immediate-trip unit (5.1 stays).
+- **4.2 catch-boundary FIXME (open question for /dev int).** `catch-runtime-error` brackets only
+  the PURE construction of an `IO` value (spec §A.3), but design §9 raises the empty-select error
+  in `run_select_node` at TRAMPOLINE-RUN time. On HEAD the empty select under a catch is Ok-at-
+  construction (exit 0, select never run). /dev (int) Wave 3 must confirm/wire how the run-time
+  empty-select error reaches `catch-runtime-error` — or /dev(int)+/qa re-point 4.2. Marked
+  `// FIXME(/sprint S97 W3)` in the test.
+
+**Runtime note (suite stewardship):** the full suite is ~47s on HEAD (up from the ~9s baseline),
+dominated by **(a)** 5.1's inherent idle-server witness (≈8.6s — two ~3s idles past the backstop)
+and **(b)** the three empty-select SIGSEGV rows' core-dump cost (~1–3s each, RED-STATE ONLY — they
+vanish the instant 0475 routes the empty select through the recoverable slot instead of the
+unsound-null deref). The blow-up is temporary RED-state cost + the one production-shape server
+witness; it is not a hang. Flag for /sprint awareness; revisit at close once 0475/0479 land.

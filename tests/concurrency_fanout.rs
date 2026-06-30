@@ -335,3 +335,117 @@ fn launch_and_continue_runs_concurrently_launcher_does_not_await() {
         D_MS * 3,
     );
 }
+
+// =============================================================================
+// Sprint 97 — 0474: fresh continuation-produced SELECT / PAR node branch-Vec leak.
+//
+// A fresh `IO_TAG_SELECT` / `IO_TAG_PAR` node built INSIDE a bind continuation is
+// released by the shallow `dec_shallow_io` path, which never walks field 0 → the
+// branch container Vec + the branch sub-trees LEAK (`design/backend/ring2-rc.md
+// §3.5.10`). The fix (option (a), shared across both tags) makes `dec_shallow_io`
+// shape-aware for `IO_TAG_PAR` / `IO_TAG_SELECT` and deep-frees the branch container.
+// `/qa` owns the heap-balance e2e guard; `/dev` (intrinsics) owns the unit mirror.
+//
+// Both rows are **failing-not-ignored** RC-balance guards: under `CRANELISP_RC_TRACE=1`
+// a leaked branch Vec shows `alloc > free`. They are RED on HEAD (the leak) and flip
+// GREEN when the 0474 deep-free lands. Process-isolated (each `--run` is its own
+// subprocess; the RC counter reads only that child's stderr), so no `serial`
+// coordination is needed.
+// =============================================================================
+
+/// Count `[RC] alloc` / `[RC]  free` events in a `CRANELISP_RC_TRACE=1` stderr.
+/// Mirrors `concurrency_spark.rs::rc_alloc_free_counts` / `spec_12_runtime.rs`.
+fn rc_alloc_free_counts(stderr: &str) -> (usize, usize) {
+    let allocs = stderr
+        .lines()
+        .filter(|l| l.contains("[RC]") && l.contains(" alloc "))
+        .count();
+    let frees = stderr
+        .lines()
+        .filter(|l| l.contains("[RC]") && l.contains(" free "))
+        .count();
+    (allocs, frees)
+}
+
+// spec: spec/10-io.md §10.12.8 — a continuation-produced FRESH `select` with N≥2 heap
+// branches: `(bind (Pure 0) (fn [_] (select [(Pure 7) (Pure 8)])))`. The first branch
+// wins ⇒ exit 7 (a clean run), but the freshly-built `IO_TAG_SELECT` node is released
+// shallow, leaking the branch container + the N branch roots. `[RC] alloc` MUST equal
+// `[RC] free`. RED on HEAD (leaks); GREEN post-0474 deep-free.
+#[test]
+fn fresh_select_in_continuation_rc_balanced() {
+    let src = "(import [primitives [bind select Pure]])\n\
+               (defn main [] (bind (Pure 0) (fn [_] (select [(Pure 7) (Pure 8)]))))\n";
+    let out = Cranelisp::new()
+        .env("CRANELISP_RC_TRACE", "1")
+        .file("user.cl", src)
+        .run("user.cl")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "the continuation-produced select must run cleanly (first branch wins ⇒ exit 7)\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
+    assert!(allocs > 0, "expected the RC trace to record allocations; got 0");
+    assert_eq!(
+        allocs, frees,
+        "a FRESH continuation-produced select node must be alloc/free balanced — the \
+         branch container Vec + N branch roots must deep-free (0474, ring2-rc.md §3.5.10); \
+         got {allocs} allocs / {frees} frees (alloc > free ⇒ the shallow-dec leaked the \
+         branch Vec).\nstderr:\n{}",
+        out.stderr
+    );
+}
+
+// spec: spec/10-io.md §10.12.7 — the `par` analogue. There is NO surface `par` form
+// (`spec/10-io.md §10.12.5`: concurrent IO is AUTOMATIC — the compiler inserts a `Par`
+// node for data-independent effect pairs in a bind chain). A continuation whose body
+// is TWO INDEPENDENT poll effects (`b` does not reference `a`) builds a fresh
+// `IO_TAG_PAR` node INSIDE the continuation (gap G-B resolved: auto-IO-Par over the
+// independent pair, no surface combinator needed). The fresh par node leaks its branch
+// container exactly as the select node does. CONTROL: the DEPENDENT variant (b uses a ⇒
+// NO Par node) is alloc/free BALANCED on HEAD (verified: 12/12 vs the independent
+// 12/8), isolating this imbalance to the par branch-Vec leak (not poll-machinery
+// noise). RED on HEAD (leaks); GREEN post-0474.
+#[test]
+fn fresh_par_in_continuation_rc_balanced() {
+    // Two 30 ms `poll-read`s on DISTINCT tokens, results combined; the second does NOT
+    // depend on the first ⇒ the independence analysis inserts a fresh `IO_TAG_PAR` node
+    // in the continuation. 30 + 30 ⇒ exit 60 (a clean run).
+    let src = "(platform poll-pool)\n\
+               (import [platform.poll-pool [poll-read]])\n\
+               (import [primitives [bind Pure add-i64]])\n\
+               (defn main []\n\
+                 (bind (Pure 0) (fn [_]\n\
+                   (bind (poll-read 1 1 30) (fn [a]\n\
+                     (bind (poll-read 2 1 30) (fn [b]\n\
+                       (Pure (add-i64 a b)))))))))\n";
+    let out = Cranelisp::new()
+        .use_workspace_platforms()
+        .env("CRANELISP_RC_TRACE", "1")
+        .file("user.cl", src)
+        .run("user.cl")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(60),
+        "the continuation-produced par (two independent poll-reads) must run cleanly \
+         (30+30 ⇒ exit 60)\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    let (allocs, frees) = rc_alloc_free_counts(&out.stderr);
+    assert!(allocs > 0, "expected the RC trace to record allocations; got 0");
+    assert_eq!(
+        allocs, frees,
+        "a FRESH continuation-produced par node must be alloc/free balanced — the branch \
+         container Vec must deep-free (0474, shared with the select tag; ring2-rc.md \
+         §3.5.10); got {allocs} allocs / {frees} frees. (The DEPENDENT control — b uses a, \
+         no Par — balances on HEAD, isolating this to the par branch-Vec leak.)\nstderr:\n{}",
+        out.stderr
+    );
+}
