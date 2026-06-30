@@ -95,23 +95,35 @@ the v8 3-arg sig typechecks; the v9 sig does not).
 > /platform deliverable (`poll-support.md §3.5.3`); rows 1.1–1.4 are RED-by-compile-failure
 > until those modules exist, which is a valid loud signal.
 
-## Item 2 — v9 layout / representation guards (descriptor is type-invisible)
+## Item 2 — v9 layout / representation guards (scheduling state never rides on the value)
 
-The descriptor rides a fixed header slot (`RESOURCE_DESC_OFFSET = 24`), NOT a logical field — it
-must not appear in the value's logical shape / field count / display, and must not leak RC.
+**ADJUSTED for the ctx-vtable model (S97 Wave-1 layout rework, 2026-06-30 — the dead
+header-slot/`desc_out` model is gone).** Under the callback-vtable handle model
+(`effect-concurrency.md §4.1.1`, `poll-support.md §3.5`) `Connection` is `(deftype Connection
+[:primitives/Int fd])` — an **opaque ADT carrying a GENUINE `fd` field** (the platform's `r`,
+read back by the platform; `r == fd`). It is **present-but-not-user-destructurable**. There is
+**NO descriptor, no `RESOURCE_DESC_OFFSET` header slot, no `desc_out`, no node `(token,capacity)`/
+`role`** — all scheduling state lives in the trampoline-owned `ctx` vtable, never on the value.
+So the guards become: (2.1) opacity rejects a destructure even though a field exists; (2.2/2.5)
+no scheduling artifact surfaces at the value/type level; (2.4) the opaque handle RC-balances like
+any ordinary 1-field ADT.
 
 | # | Test (file::fn) | Tier | spec anchor | Assertion | RED-until / state |
 |---|---|---|---|---|---|
-| 2.1 | `concurrency_v9_abi::connection_is_opaque_zero_fields_destructure_rejected_neg` | e2e | (gap G-A) `poll-support.md §3.5.1` | `(deftype Connection [])` has ZERO logical fields → a destructure/match `[(Connection a b c)]` MUST be a wrong-field-count error (the descriptor is invisible to the pattern); the v8 `(Connection token capacity fd)` 3-field destructure no longer typechecks | NEW, RED-until v9 |
-| 2.2 | `concurrency_v9_abi::connection_display_shows_no_descriptor_neg` | e2e | (gap G-A) `poll-support.md §3.5.1` | a produced `Connection`'s display/value-shape MUST NOT surface `token`/`capacity`/a descriptor field (negative-coverage: descriptor invisible at the value level) | NEW, RED-until v9 |
-| 2.3 | `concurrency_fanout_web::web_server_fans_out_concurrent_requests_overlap` | e2e | `spec/10-io.md §10.12.7` | **EXISTING, currently GREEN** — the marquee overlap regression guard. MUST STAY GREEN through the v9 fixture reshape (opaque `Connection` + slim sigs in `tests/fixtures/web_fanout/main.cl`, rewritten by /port). Cross-ref, no new test. | existing GREEN — regression guard |
-| 2.4 | `concurrency_v9_abi::produce_consume_descriptor_no_rc_leak` | e2e (RC-balance) | (gap G-A) `io-trampoline.md §17.2` / `reactor.md §7.6` | over a bounded produce(stamp)→consume(read) cycle, `[RC] alloc == [RC] free` under `CRANELISP_RC_TRACE=1` — the 16-byte descriptor region is `NeverHeap` scalars (no RC, no drop glue), so no descriptor-region leak. Uses the `rc_alloc_free_counts` precedent. | NEW, RED-until v9 — **Phase-3 gap G-C (deterministic bounded produce/consume fixture)** |
+| 2.1 | `concurrency_v9_abi::connection_opaque_field_present_but_not_user_destructurable_neg` | e2e | (gap G-A) `poll-support.md §3.5.1` / `effect-concurrency.md §4.1.1` | `(deftype Connection [:primitives/Int fd])` is OPAQUE: the `fd` field is genuine (platform reads `r` back) but **not user-destructurable** → a user `(match c [(Connection f) f])` opening it MUST be a clean **opacity** type error (NOT the dead "wrong field count"; the field exists, opacity rejects). `// FIXME(/sprint S97 W2)` — the opacity MECHANISM is not yet pinned; written against intended behavior, flips green when the cutover lands the opaque-handle rule. | ADJUSTED, RED-until v9 |
+| 2.2 | `concurrency_v9_abi::connection_display_shows_no_descriptor_neg` | e2e | (gap G-A) `poll-support.md §3.5.1` / `effect-concurrency.md §4.1.1` | a probe of `Connection` MUST NOT surface `token`/`capacity` at the value level — cleaner under ctx-vtable (nothing scheduling-related on the value at all). KEPT; assertion now anchored to the fd-field reality. | KEPT (adjusted), RED-until v9 |
+| 2.3 | `concurrency_fanout_web::web_server_fans_out_concurrent_requests_overlap` | e2e | `spec/10-io.md §10.12.7` | **EXISTING, currently GREEN** — the marquee overlap regression guard. MUST STAY GREEN through the v9 fixture reshape (opaque `Connection [fd]` + slim sigs in `tests/fixtures/web_fanout/main.cl`, rewritten by /port). Cross-ref, no new test. | existing GREEN — regression guard |
+| 2.4 | `concurrency_v9_abi::produce_consume_descriptor_no_rc_leak` | e2e (RC-balance) | (gap G-A) `effect-concurrency.md §4.1.1` | RE-EXPRESSED: there is no descriptor region — over a bounded produce→consume→retire cycle, `[RC] alloc == [RC] free` under `CRANELISP_RC_TRACE=1` because the opaque handle is a normal 1-field ADT (scalar `fd`, no RC) and scheduling is ctx-owned (no value-carried region to leak). Uses the `rc_alloc_free_counts` precedent. `// FIXME(/sprint S97 W3)` G-C bounded `poll-produce`/`poll-consume` fixture (else reduces to the /dev intrinsics RC unit). | RE-EXPRESSED, RED-until v9 — **gap G-C** |
+| 2.5 | `concurrency_v9_abi::connection_carries_no_scheduling_state_normal_adt_neg` | e2e | `effect-concurrency.md §4.1.1` | **NEW** (/design(int)-requested absence guard): `Connection` is a normal 1-field opaque ADT — a type probe MUST NOT surface `descriptor`/`desc_out`/`role`/`token`/`capacity` (broadened forbidden set). The value carries no scheduling state of any kind. The CLIF-internal absence (no header slot/role/desc_out/positional bake) is the `/dev`-owed backend unit below, NOT this e2e. | NEW, RED-until v9 |
 
-> Mirror unit (`/dev`-owed, backend, `io-trampoline.md §17.8`): a resource-handle ADT construct
-> stores zero into `+24/+32` and (for `Connection []`) no logical fields; a poll effect bakes
-> `role` @ `+32` and zero/static into the `+40` region with **no `arg_vals[0]/[1]` positional
-> store** (the deleted-bake negative guard); a non-resource ADT keeps `FIELDS_START = 24`. CLIF-
-> inspectable on a shrunk repro.
+> Mirror unit (`/dev`-owed, backend, `io-trampoline.md §17` / `platform-interface.md §6.8.0b` —
+> ctx-vtable model): the v9 cutover is **pure subtraction** — DELETE `inject_poll_leading_pair`
+> (+the `arg_vals[0..1]` peel); the poll node stays v8-uniform (NO header slot @ +24, NO `role` @
+> +32, NO `desc_out` @ +40, no growth); `Connection [fd]` is an ordinary 1-field ADT
+> (`FIELDS_START = 24`, normal `CLAdt::construct`); `PollFn`/`Poll`/`cranelisp-types`-codegen
+> untouched; backend `public-api.txt` UNCHANGED. The **deleted-bake negative** (no positional
+> `(token,capacity)` store on the node) + the **no-header-slot** assertion are CLIF-inspectable on
+> a shrunk repro — this is the unit complement of e2e row 2.5's value-level face.
 
 ## Item 3 — 0474: fresh `select`/`par` continuation-node branch-Vec leak
 
@@ -190,21 +202,50 @@ they flip GREEN when the Phase-5 fix lands. Recorded here for the close-time fli
 | `regression::constructor_as_fn_value_applied_indirectly_does_not_segfault` (0476) | `spec/05-definitions.md §5.2.7` | `/backend` (constructor fn-as-value wrapper codegen, `control_flow/fn_as_value.rs`) | SIGSEGV (exit 139) → exit 7 |
 | `spec_08_modules::bare_relative_submodule_reexport_resolves` | `spec/08-modules.md §8.11.2` | `/int` (`handle_export`/`handle_import` honour §8.11.2 step 1 before file fallthrough, `src/process_form/dependency.rs`) | "module 'child' not found" → exit 42 |
 
-## Item 8 — the §7.3 watch-item (consumed handle = `arg(0)` / `state+8`)
+## Item 8 — the §7.5 watch-item (consumed handle = `arg(0)` / `state+8`)
 
-The load-bearing v9 contract: a Consume leaf's resource handle is its FIRST arg, marshaled at env
-offset `state + 8` = `PollEnv::arg(0)` (`reactor.md §7.2/§7.3`, `io-trampoline.md §17.5`). A
-future Consume sig that moved the handle off `arg(0)` would silently break the header read.
+**ADJUSTED to the ctx-vtable model.** The arg(0)-marshaling contract SURVIVES (`reactor.md §7.5`
+"survivor invariant"): a Consume leaf's resource handle is its FIRST arg, marshaled at env offset
+`state + 8` = `PollEnv::arg(0)`. What CHANGES: the trampoline no longer reads a descriptor off
+`handle + 24` — the **platform** reads `r`/`fd` back out of the handle's own genuine field
+(`CLAdt`/schema) and projects the token itself; the trampoline introspects nothing. A future
+Consume sig that moved the handle off `arg(0)` would still silently break the platform's field read.
 
 | # | Test | Tier | spec anchor | Assertion | Owner / state |
 |---|---|---|---|---|---|
-| 8.1 | intrinsics: `consumed_handle_is_arg0_at_state_plus_8` | unit (intrinsics) | `reactor.md §7.3` / `io-trampoline.md §17.5` | a `token == 0` Consume reads the consumed handle pointer at `state + 8` and the descriptor at `handle + 24`; pins the arg(0)-is-handle contract so a handle-position reshape is caught | `/dev` (intrinsics) — RECORDED, not /qa-authored |
+| 8.1 | intrinsics/platform: `consumed_handle_is_arg0_at_state_plus_8` | unit | `reactor.md §7.5` / `effect-concurrency.md §4.1.1` | a Consume leaf reads the consumed handle pointer at `state + 8` = `arg(0)`, and the **platform** reads `fd`/`r` off the handle's own field (NOT a descriptor at `handle + 24`); pins the arg(0)-is-handle contract so a handle-position reshape is caught | `/dev` — RECORDED, not /qa-authored |
 
-> Companion `/dev`-owed trampoline stamp/read isolations (`reactor.md §7.6`): Produce leaf writes
-> `{T,N}` to `desc_out` ⇒ produced value header carries `{T,N}` at `+24` on `Ready`; Consume over
-> a pre-stamped `{T,N}` handle ⇒ permit acquired on token `T`; `read-line` singleton ⇒ acquire on
-> `STDIN_TOKEN` with NO handle read; `None` leaf ⇒ no acquire, no stamp; negative: absence of any
-> v8 node `(token, capacity)` read.
+> Companion `/dev`-owed trampoline/platform isolations (`reactor.md §7` ctx-vtable): Produce leaf
+> at `Ready` mints the handle carrying the fresh `r` in its field (NO header stamp, NO `desc_out`);
+> Consume poll-fn projects the token from the handle's `fd` field + calls `ctx.acquire(token, cap,
+> waker)` itself ⇒ permit acquired on the projected token; `read-line` singleton ⇒ acquire on the
+> manifest-static stdin token with NO handle read; `None`/commutative leaf ⇒ no acquire; negative:
+> absence of any `inject_poll_leading_pair` positional `(token, capacity)` bake on the node.
+
+## §8.2 same-handle ordering watch-item (`/design`(int)-flagged; Phase-5/dev-owed reshape)
+
+`/design`(int) flagged (SPRINT.md Wave-0 /design-DONE, `reactor.md §7.7`): under the ctx-vtable
+model the v8 trampoline `SerialGroup` order-restoring net **dissolves** (the trampoline no longer
+sees tokens — `effect-concurrency.md §8.2`). **Within-token SOURCE ORDER now lives in the
+inference** (E2 value-locality) — but only when same-token effects share the **SAME EXPLICIT
+HANDLE** (a shared free var). A same-token *timing/order* pair that threads the token as a literal
+arg across data-independent effects is no longer guaranteed ordered post-cutover (the permit gives
+exclusion, not order).
+
+**Disposition — one such test EXISTS in the suite, currently GREEN, must be reshaped (NOT a /qa
+e2e flip; Phase-5/dev-owed):**
+
+| Test (file::fn) | Current | §8.2 risk | Owed action |
+|---|---|---|---|
+| `concurrency_poll_capacity::same_token_capacity_1_poll_serial_and_source_ordered` | GREEN (v8 SerialGroup gives a<b<c) | asserts SOURCE ORDER (a<b<c) over three DATA-INDEPENDENT `log` calls sharing only a token LITERAL (`9`) — post-cutover the inference may parallelise them (exclusion via the capacity-1 permit, but NOT order) ⇒ a<b<c could break | Phase-5/dev: reshape to thread the SAME EXPLICIT HANDLE so E2 serialises them in source order (or split the exclusion assertion from the order assertion). A `WATCH(/qa S97 §8.2)` note is in-place at the test. |
+
+> This is a GREEN guard the v9 cutover must **keep green by reshaping**, not a RED that flips. The
+> exclusion half (capacity-1 serialisation, wall-clock ≈ 3·D) survives unchanged; only the *order*
+> half depends on the handle-threading. /dev owns the reshape (it needs a handle-threaded poll-pool
+> fixture leaf, the same G-C-class fixture dependency as 2.4). Other same-token poll-capacity rows
+> (`same_token_capacity_n_poll_admits_n…`, `distinct_poll_effects_sharing_one_token…`,
+> `n_distinct_token_poll…`) assert only EXCLUSION/overlap (capacity/permit semantics), NOT source
+> order, so they are model-independent and carry unchanged.
 
 ---
 
@@ -247,11 +288,11 @@ future Consume sig that moved the handle off `arg(0)` would silently break the h
 | Count | Rows | RED-until |
 |---|---|---|
 | 4 | 1.1–1.4 (v9 signature change) | v9 cutover |
-| 3 | 2.1, 2.2, 2.4 (v9 layout/representation; 2.3 is existing-GREEN regression) | v9 cutover |
+| 4 | 2.1, 2.2, 2.4, 2.5 (v9 layout/representation — ADJUSTED to ctx-vtable; 2.3 is existing-GREEN regression) | v9 cutover |
 | 2 | 3.1, 3.2 (0474 RC-balance) | 0474 deep-free |
 | 4 | 4.1–4.4 (0475 empty-select; 4.4 may fold into 4.1) | 0475 guard |
 | 2 | 5.1, 5.2 (0479; subject to gap G-D) | 0479 + knob |
-| **15** | **(13 firm + 2 gap-contingent)** NEW e2e | — |
+| **16** | **(14 firm + 2 gap-contingent)** NEW e2e — +1 (the 2.5 absence guard added in the Wave-1 layout rework) | — |
 
 **Existing tests cross-referenced (no new code):**
 - 2 regression GREEN-guards that must STAY green through v9: `concurrency_fanout_web::
@@ -293,16 +334,46 @@ placement (matches the plan): `concurrency_v9_abi.rs` = 1.1–1.4 + 2.1, 2.2, 2.
 `concurrency_v9_select.rs` = 4.1–4.4 + 5.2 (5); `concurrency_fanout.rs` += 3.1, 3.2 (2);
 `concurrency_fanout_web.rs` += 5.1 (1).
 
+### Wave-1 layout rework (post model-pivot — ctx-vtable, 2026-06-30)
+
+The S97 model pivoted from the descriptor cut to the **callback-vtable handle model** (FIXME 0482
+DELETED; `effect-concurrency.md §4.1.1`). The 4 **signature** e2e (1.1–1.4) carry unchanged (both
+models slim the sigs identically). The **3 layout** e2e in `concurrency_v9_abi.rs` were reworked to
+the new reality (`Connection` is now an opaque ADT with a GENUINE `fd` field, not a zero-field
+header-slot carrier), and **a 4th layout guard (2.5) was added**:
+
+- **2.1 RENAMED** `connection_is_opaque_zero_fields_destructure_rejected_neg` →
+  `connection_opaque_field_present_but_not_user_destructurable_neg`. Assertion: a user destructure
+  of the opaque handle is rejected by **opacity** (the `fd` field exists but is not
+  user-destructurable), NOT by "zero/wrong field count". Carries `// FIXME(/sprint S97 W2)` — the
+  opacity mechanism is not yet pinned; written against intended behavior.
+- **2.2 KEPT** `connection_display_shows_no_descriptor_neg` — still holds, cleaner; assertion
+  anchored to the fd-field reality (no `token`/`capacity` on the value).
+- **2.4 RE-EXPRESSED** `produce_consume_descriptor_no_rc_leak` — no descriptor region exists; now an
+  ordinary 1-field-ADT RC-balance over produce→consume→retire. Keeps `// FIXME(/sprint S97 W3)` for
+  the G-C bounded `poll-produce`/`poll-consume` fixture.
+- **2.5 NEW** `connection_carries_no_scheduling_state_normal_adt_neg` — the /design(int)-requested
+  absence guard, e2e value/type-level face (no `descriptor`/`desc_out`/`role`/`token`/`capacity`).
+  The CLIF-internal absence (no header slot/role/desc_out/positional bake) is RECORDED as the
+  `/dev`-owed backend unit (Item 2 mirror), NOT forced into a weak e2e.
+
+The shared inline `V9_WEB_CL` constant changed `(deftype Connection [])` →
+`(deftype Connection [:primitives/Int fd])` — required so the signature rows also flip green
+post-cutover (the rebuilt DLL's `Connection` is `[fd]`, so the module must match `[fd]`, not `[]`).
+The `!contains("schema")` RED-until discriminator is unchanged (HEAD's v8 3-field DLL still
+mismatches the inline 1-field module → schema gate → RED). **NEW e2e total: 16** (was 15).
+
 **Construction realities Wave-2/3 /dev must know (the RED→GREEN contract each row pins):**
 
 - **Items 1/2 (v9 sig/layout).** Each row drops an inline v9-shaped opaque `web.cl`
-  (`Connection []`) + loads the workspace `web` DLL. On HEAD the opaque module mismatches the v8
-  DLL's **embedded schema** → the run dies at the schema gate (`embedded schema is out of date`).
-  Positive rows assert `exit 0`; reject rows assert *non-zero AND output does NOT contain
-  `"schema"`* — the `!contains("schema")` clause is the load-bearing RED-until discriminator (it
-  fails on the HEAD schema-gate error, flips green when the v9 DLL rebuild makes the rejection a
-  clean leaf-arity / field-count type error). So **the v9 e2e flip needs the platform DLL rebuilt
-  opaque (Wave 2) AND nothing else** — they do not depend on the /port fixture rewrite.
+  (`Connection [fd]`) + loads the workspace `web` DLL. On HEAD the opaque 1-field module mismatches
+  the v8 DLL's **3-field embedded schema** → the run dies at the schema gate (`embedded schema is
+  out of date`). Positive rows assert `exit 0`; reject rows assert *non-zero AND output does NOT
+  contain `"schema"`* — the `!contains("schema")` clause is the load-bearing RED-until discriminator
+  (it fails on the HEAD schema-gate error, flips green when the v9 DLL rebuild makes the rejection a
+  clean leaf-arity / opacity type error). So **the v9 e2e flip needs the platform DLL rebuilt opaque
+  (Wave 2) AND nothing else** — they do not depend on the /port fixture rewrite. The Wave-2 DLL-mint
+  blocker is **GONE** under the pivot (opaque `Connection [fd]` is a normal `CLAdt::construct`).
 - **G-B RESOLVED (3.2).** There is **no surface `par`** (`spec/10-io.md §10.12.5`: auto-inserted).
   A fresh `IO_TAG_PAR` in a continuation is built deterministically by **auto-IO-Par over two
   INDEPENDENT poll effects** `(bind (Pure 0) (fn [_] (bind (poll-read 1 1 30) (fn [a] (bind

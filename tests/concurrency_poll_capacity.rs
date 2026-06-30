@@ -206,6 +206,17 @@ fn same_token_capacity_n_poll_admits_n_concurrent_nplus1_parks() {
 // capacity 1 serialise (wall-clock ≈ 3·D, not overlapped) AND complete in SOURCE
 // ORDER (item 3 — exclusion and order). Order observed via the leaf's stdout tags
 // ("a","b","c"); the wall-clock witnesses serialisation on the poll arc.
+//
+// WATCH(/qa S97 §8.2 — same-token ordering home moves to the inference): under the
+// v9 ctx-vtable model the trampoline no longer sees tokens, so the v8 SerialGroup
+// order-restoring safety net DISSOLVES (`effect-concurrency.md §8.2`). Within-token
+// SOURCE ORDER is now carried by the inference's E2 value-locality — but ONLY when
+// the effects share the SAME EXPLICIT HANDLE (a shared free var). This test threads
+// the token as a literal arg (`9`) across three DATA-INDEPENDENT `log` calls, so
+// post-cutover the inference may parallelise them (exclusion via the permit, but NOT
+// order) and the a<b<c assertion could break. Phase-5/dev-OWED reshape: thread the
+// same explicit handle so E2 serialises them (or split exclusion vs order). Recorded
+// in `tests/plan/sprint-97.md` §"§8.2 same-handle ordering watch-item".
 #[test]
 fn same_token_capacity_1_poll_serial_and_source_ordered() {
     // token 9, capacity 1, tags a/b/c in source order, each suspending D ms.

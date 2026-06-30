@@ -1,20 +1,28 @@
-//! Sprint 97 — ABI v8→v9: the resource descriptor becomes trampoline-owned
-//! representation overhead (FIXME 0482). QA-first (Phase 5 Wave 1) failing-not-
-//! ignored e2e acceptance rows for the user-visible v9 signature change (item 1)
-//! and the v9 layout / representation guards (item 2).
+//! Sprint 97 — ABI v8→v9: the **callback-vtable handle model** (model pivot,
+//! 2026-06-30; supersedes the descriptor cut + FIXME 0482, both DELETED). QA-first
+//! (Phase 5 Wave 1) failing-not-ignored e2e acceptance rows for the user-visible v9
+//! signature change (item 1) and the v9 layout / representation guards (item 2 —
+//! *adjusted* to the ctx-vtable reality, S97 Wave-1 layout rework).
 //!
 //! Plan: `tests/plan/sprint-97.md` §"Item 1" + §"Item 2". Contracts of record:
-//!   - `design/platform/poll-support.md §3.5` — opaque `Connection []` + slim leaf
-//!     sigs (`accept-conn:(Fn [Listener] (IO Connection))` Produce /
+//!   - `design/platform/poll-support.md §3.5` — **opaque `Connection` with a GENUINE
+//!     `fd` field** (`(deftype Connection [:primitives/Int fd])`; `r == fd`, the
+//!     platform reads it back, user code threads but cannot destructure it open) +
+//!     slim leaf sigs (`accept-conn:(Fn [Listener] (IO Connection))` Produce /
 //!     `read-conn:(Fn [Connection] (IO Request))` + `send-conn:(Fn [Connection
 //!     Response] (IO Int))` Consume).
-//!   - `design/arch/platform-interface.md §6.8.0b` — the v9 ABI ruling (descriptor
-//!     as representation overhead; backend stops baking from positional args).
+//!   - `design/arch/effect-concurrency.md §4.1.1` — the model: scheduling state
+//!     (`token`/`capacity`/`role`) NEVER rides on a value; it flows through a
+//!     trampoline-owned `ctx` vtable (`acquire`/`register_*`/`retire`; release is
+//!     tramp-owned) the platform's poll-fn calls. **NO `ResourceDesc`, no header
+//!     slot, no `desc_out`, no `PollFn` change, no positional-pair bake.**
+//!   - `design/arch/platform-interface.md §6.8.0b` — the ctx-vtable ABI (backend
+//!     just DELETES `inject_poll_leading_pair`; `PollFn`/`Poll` unchanged).
 //!
 //! ## Spec anchor (gap G-A, /sprint-resolved)
 //!
-//! v9 is **representation/ABI, not language semantics** (arch Phase-2 ruling) — NO
-//! new `/spec` section for the leaf-signature reshape. These rows therefore anchor
+//! v9 is **representation/ABI, not language semantics** (arch ruling) — NO new
+//! `/spec` section for the leaf-signature reshape. These rows therefore anchor
 //! their `// spec:` to the design citations above (consistent with existing
 //! concurrency tests citing `effect-concurrency.md`), not a `spec/` section.
 //!
@@ -22,14 +30,15 @@
 //!
 //! All rows are **failing-not-ignored** (`memory/feedback_failing_not_ignored.md`).
 //! They are written against the **intended v9 world**: each test drops a v9-shaped
-//! opaque `web.cl` (`Connection []`) into its tmpdir and loads the workspace `web`
-//! platform DLL. On HEAD the DLL is still v8 (3-field `Connection`), so the platform
-//! load fails the **embedded-schema gate** — a clean, loud RED for every row. The
-//! v9 cutover (`cranelisp-types` + platform DLL reshape, SPRINT.md Wave 2) rebuilds
-//! the DLL against the opaque `Connection`; the schema gate then passes and:
+//! opaque `web.cl` (`Connection [fd]`) into its tmpdir and loads the workspace `web`
+//! platform DLL. On HEAD the DLL is still v8 (3-field `Connection [token capacity
+//! fd]`), so the platform load fails the **embedded-schema gate** — a clean, loud
+//! RED for every row. The v9 cutover (`cranelisp-types` ABI bump + platform DLL
+//! reshape to the opaque `Connection [fd]`, SPRINT.md Wave 2) rebuilds the DLL; the
+//! schema gate then passes and:
 //!   - the POSITIVE rows (1.2/1.3-pos/1.4/handle-only) compile + exit 0;
-//!   - the REJECT rows (1.1/1.3-neg/2.1) surface a clean leaf-arity / field-count
-//!     type error (NOT the schema-gate error) — the `!contains("schema")`
+//!   - the REJECT rows (1.1/1.3-neg/2.1-opacity) surface a clean leaf-arity /
+//!     opacity type error (NOT the schema-gate error) — the `!contains("schema")`
 //!     discriminator is exactly what keeps them RED on HEAD and flips them GREEN
 //!     post-cutover.
 //!
@@ -46,10 +55,14 @@ use helpers::e2e::{Cranelisp, CrOutput};
 const POLL_PLATFORM: &str = "poll-pool";
 /// `poll-produce` / `poll-consume` — the Gap-G-C bounded resource-handle fixture
 /// leaves (a co-landing `/platform` + `/dev` deliverable, the S96 Gap-G1 poll-pool
-/// analogue): `poll-produce` mints a resource handle (the trampoline STAMPS the
-/// `{token,capacity}` descriptor into its header side-band), `poll-consume` consumes
-/// it (the trampoline READS the descriptor off the handle pre-poll), then both exit.
-/// Absent on HEAD ⇒ a clean runtime-RED (the leaf does not resolve). See the 2.4 FIXME.
+/// analogue): `poll-produce` mints an **opaque resource handle** (an ordinary ADT
+/// carrying a genuine `fd`-style field — Produce role; the poll-fn drives `acquire`/
+/// `register` via the `ctx` vtable, no header stamp), `poll-consume` threads it
+/// (Consume role; the poll-fn projects the token from the handle's own field), then
+/// both exit. Under the ctx-vtable model NOTHING is stamped onto the value — the
+/// handle is a normal ADT, so a produce→consume→retire cycle RC-balances like any
+/// ADT-field cycle. Absent on HEAD ⇒ a clean runtime-RED (the leaf does not resolve).
+/// See the 2.4 FIXME.
 const POLL_PRODUCE: &str = "poll-produce";
 const POLL_CONSUME: &str = "poll-consume";
 
@@ -61,15 +74,19 @@ fn rc_alloc_free_counts(stderr: &str) -> (usize, usize) {
     (allocs, frees)
 }
 
-/// The v9-shaped web connection-handle ADT module — `Connection` is **fully
-/// opaque** (`poll-support.md §3.5.1`: zero logical fields; the `{token,capacity}`
-/// descriptor rides the value header side-band, invisible to user source). The
-/// other three ADTs mirror `exemplar/web.cl` unchanged. The /port-owned v9 `web.cl`
-/// is the production form of this; inlined here so each row is self-contained.
-/// On HEAD this opaque shape mismatches the v8 DLL's embedded schema (the RED).
+/// The v9-shaped web connection-handle ADT module — `Connection` is **opaque but
+/// carries a GENUINE `fd` field** (`poll-support.md §3.5.1`: a normal 1-field ADT
+/// = HeapHeader(16) + tag(8) + fd(8); the platform reads `r == fd` back out of the
+/// field, the trampoline never introspects it; user code threads the handle but the
+/// field is **not user-destructurable**). Scheduling state (`token`/`capacity`)
+/// never touches the value — it flows through the `ctx` vtable (`effect-concurrency.md
+/// §4.1.1`). NO header slot, NO `desc_out`, NO `ResourceDesc`. The other three ADTs
+/// mirror `exemplar/web.cl` unchanged. The /port-owned v9 `web.cl` is the production
+/// form of this; inlined here so each row is self-contained. On HEAD this opaque
+/// 1-field shape mismatches the v8 DLL's 3-field embedded schema (the RED).
 const V9_WEB_CL: &str = "\
 (deftype Listener [:primitives/Int fd :primitives/Int pool])\n\
-(deftype Connection [])\n\
+(deftype Connection [:primitives/Int fd])\n\
 (deftype Request [:primitives/String method :primitives/String path :primitives/String body])\n\
 (deftype Response [:primitives/Int status :primitives/String content-type :primitives/String body])\n";
 
@@ -89,12 +106,12 @@ fn run_v9(imports: &str, defns: &str) -> CrOutput {
         .output()
 }
 
-/// Assert a v9 program is REJECTED by a clean leaf-arity / field-count type error,
+/// Assert a v9 program is REJECTED by a clean leaf-arity / opacity type error,
 /// NOT by the HEAD schema gate. The `!contains("schema")` clause is the load-bearing
 /// RED-until-v9 discriminator: on HEAD the program dies at the platform schema gate
 /// ("embedded schema is out of date"), so this fails (RED); post-cutover the opaque
-/// DLL passes the gate and the leaf-arity/field-count error (no "schema") flips it
-/// GREEN.
+/// `Connection [fd]` DLL passes the gate and the leaf-arity / opacity error (no
+/// "schema") flips it GREEN.
 fn assert_v9_rejected(out: CrOutput, ctx: &str) {
     let combined = format!("{}{}", out.stdout, out.stderr);
     assert_ne!(
@@ -105,7 +122,7 @@ fn assert_v9_rejected(out: CrOutput, ctx: &str) {
     assert!(
         !combined.contains("schema"),
         "{ctx}: RED-until-v9 — on HEAD this fails at the platform SCHEMA GATE (v8 DLL's \
-         3-field Connection vs the opaque v9 Connection), not the leaf-arity / field-count \
+         3-field Connection vs the opaque v9 Connection [fd]), not the leaf-arity / opacity \
          rejection it must become. Flips GREEN when the v9 cutover (Wave 2) rebuilds the web \
          DLL opaque so the rejection is a clean type error.\ncombined:\n{combined}"
     );
@@ -196,30 +213,49 @@ fn accept_conn_listener_only_typechecks() {
 }
 
 // =============================================================================
-// Item 2 — v9 layout / representation guards (descriptor is type-invisible).
+// Item 2 — v9 layout / representation guards (scheduling state never rides on the
+// value; the handle is an opaque ADT). ADJUSTED to the ctx-vtable model (S97 Wave-1
+// layout rework — the dead header-slot/`desc_out` model is gone).
 // =============================================================================
 
-// spec: design/platform/poll-support.md §3.5.1 — `(deftype Connection [])` has ZERO
-// logical fields: the `{token,capacity}` descriptor rides the value-header side-band
-// (`RESOURCE_DESC_OFFSET = 24`), invisible to the pattern. So a v8-style 3-field
-// destructure `[(Connection a b c)]` MUST be a wrong-field-count type error (expected
-// 0, got 3) — the descriptor is NOT a destructurable field. RED-until v9 cutover.
+// spec: design/platform/poll-support.md §3.5.1 — `(deftype Connection
+// [:primitives/Int fd])` is an OPAQUE handle: it carries a GENUINE `fd` field (the
+// platform's `r`, read back by the platform), but the field is **present-but-not-
+// user-destructurable** (`effect-concurrency.md §4.1.1`: user code threads the handle
+// from accept→read/send/close but cannot pattern-match it open to read or forge the
+// fd). So a user attempt to destructure/match it open `[(Connection f) …]` MUST be a
+// clean opacity type error — NOT the dead "zero-field, wrong field count" rejection
+// (the field exists; opacity, not arity, is what rejects). RED-until v9 cutover.
+//
+// FIXME(/sprint S97 W2): the exact opacity MECHANISM — how a platform/handle ADT is
+// marked non-user-destructurable while keeping a genuine field the platform reads back
+// (`CLAdt`/schema) — is not yet pinned in a way `/qa` can assert deterministically
+// against a specific error string. This row is written against the INTENDED behavior
+// (an opaque-handle destructure is rejected, no "schema"/"internal") so it stays RED
+// now and flips GREEN when the Wave-2 cutover lands the opacity rule. The cutover MUST
+// establish: (a) `web/Connection` is opaque (no exported user destructuring path) yet
+// (b) the `fd` field is genuine ADT data the platform reads. If the cutover instead
+// makes the field freely destructurable, this row stays RED and the opacity ruling is
+// re-opened with `/arch`.
 #[test]
-fn connection_is_opaque_zero_fields_destructure_rejected_neg() {
+fn connection_opaque_field_present_but_not_user_destructurable_neg() {
     let out = run_v9(
         "(import [web [Connection]])",
-        "(defn d [:web/Connection c] (match c [(Connection a b c2) a]))",
+        "(defn d [:web/Connection c] (match c [(Connection f) f]))",
     );
-    assert_v9_rejected(out, "connection_is_opaque_zero_fields_destructure_rejected_neg");
+    assert_v9_rejected(out, "connection_opaque_field_present_but_not_user_destructurable_neg");
 }
 
-// spec: design/platform/poll-support.md §3.5.1 — negative-coverage: the descriptor
-// is invisible at the VALUE level. A clean load + probe of the opaque `Connection`
-// MUST NOT surface `token` / `capacity` / a descriptor field anywhere in its display
-// or value-shape. RED-until v9: on HEAD the v8 DLL's embedded schema (a 3-field
-// Connection carrying `token`/`capacity`) mismatches the opaque module ⇒ the probe
-// dies at the schema gate (the `!contains("schema")` clause is RED); post-cutover the
-// opaque Connection probes cleanly with NO descriptor field.
+// spec: design/platform/poll-support.md §3.5.1 — negative-coverage: NO scheduling
+// state rides on the value. A clean load + probe of the opaque `Connection` MUST NOT
+// surface `token` / `capacity` (nor any descriptor/role) anywhere in its display or
+// value-shape — under the ctx-vtable model those live entirely in the trampoline's
+// `ctx`, never on the handle (`effect-concurrency.md §4.1.1`). Cleaner than the dead
+// header-slot model: there is literally nothing scheduling-related on the value.
+// RED-until v9: on HEAD the v8 DLL's 3-field embedded schema (a Connection carrying
+// `token`/`capacity`) mismatches the opaque 1-field module ⇒ the probe dies at the
+// schema gate (the `!contains("schema")` clause is RED); post-cutover the opaque
+// `Connection [fd]` probes cleanly with no scheduling field.
 //
 // NOTE: this probes the TYPE-level invisibility (no socket needed). The value-level
 // produced-`Connection` display is exercised by the /port web fan-out fixture.
@@ -239,36 +275,83 @@ fn connection_display_shows_no_descriptor_neg() {
          Connection mismatches the v8 DLL's embedded schema, so the probe fails at the \
          schema gate. Flips GREEN when the v9 cutover rebuilds the DLL opaque.\n{combined}"
     );
-    // The descriptor MUST be invisible at the value level (the negative assertion).
+    // No scheduling state at the value level (the negative assertion).
     assert!(
         !combined.contains("token") && !combined.contains("capacity"),
         "connection_display_shows_no_descriptor_neg: the opaque v9 Connection MUST NOT \
-         surface `token` / `capacity` (the descriptor is trampoline-owned header overhead, \
-         not a logical field — poll-support.md §3.5.1); got:\n{combined}"
+         surface `token` / `capacity` (scheduling state is trampoline-`ctx`-owned, never a \
+         field on the handle — effect-concurrency.md §4.1.1 / poll-support.md §3.5.1); \
+         got:\n{combined}"
     );
 }
 
-// spec: design/backend/io-trampoline.md §17.2 — the 16-byte descriptor region
-// (`RESOURCE_DESC_OFFSET = 24`) is `NeverHeap` scalars (`{token,capacity}` — no RC, no
-// drop glue). Over a bounded produce(stamp)→consume(read) cycle, `[RC] alloc` MUST
-// equal `[RC] free`: the descriptor-region carries NO heap reference, so it cannot
-// leak. RED on HEAD; GREEN when the v9 stamp/read trampoline (Wave 2) + the bounded
-// fixture (G-C) land.
+// spec: design/arch/effect-concurrency.md §4.1.1 — NEW absence guard (/design(int)
+// asked for it): the value carries NO scheduling state of any kind. Under the
+// ctx-vtable model there is no value-header stamp/read, no node `(token,capacity)`,
+// no `role`, no `desc_out` — `Connection` is just a normal 1-field opaque ADT. The
+// e2e-observable face is the TYPE introspection: a probe of `Connection` MUST NOT
+// surface `descriptor` / `desc` / `role` / `desc_out` / `token` / `capacity`
+// anywhere (the broadened forbidden set vs 2.2's display-of-`token`/`capacity`).
+// RED-until v9 via the same schema-gate discriminator.
+//
+// The DEEPER, CLIF-internal absence — no header slot @ +24, no poll-node `role` @
+// +32, no `desc_out` @ +40, no `inject_poll_leading_pair` positional bake — is NOT
+// e2e-observable; it is a `/dev`-owed backend codegen unit (`io-trampoline.md §17`,
+// recorded in `tests/plan/sprint-97.md` §"Item 2" mirror). This e2e covers only the
+// value-/type-level "no scheduling state" face.
+#[test]
+fn connection_carries_no_scheduling_state_normal_adt_neg() {
+    let cap = Cranelisp::new()
+        .use_workspace_platforms()
+        .file("web.cl", V9_WEB_CL)
+        .repl()
+        .stdin("(platform web)\n(import [web [Connection]])\n/info web/Connection\n")
+        .output();
+    let combined = format!("{}{}", cap.stdout, cap.stderr).to_lowercase();
+    // RED-until-v9 signal: a clean opaque load (no schema-gate failure on HEAD).
+    assert!(
+        !combined.contains("schema"),
+        "connection_carries_no_scheduling_state_normal_adt_neg: RED-until-v9 — on HEAD the \
+         opaque 1-field Connection mismatches the v8 DLL's 3-field embedded schema, so the \
+         probe dies at the schema gate. Flips GREEN when the v9 cutover rebuilds the DLL \
+         opaque.\n{combined}"
+    );
+    // No scheduling artifact of any kind on the handle/type (the broadened negative).
+    for forbidden in ["descriptor", "desc_out", "role", "token", "capacity"] {
+        assert!(
+            !combined.contains(forbidden),
+            "connection_carries_no_scheduling_state_normal_adt_neg: the opaque v9 Connection \
+             is a normal 1-field ADT — its introspection MUST NOT surface `{forbidden}` \
+             (all scheduling state lives in the trampoline `ctx`, never on the value — \
+             effect-concurrency.md §4.1.1); got:\n{combined}"
+        );
+    }
+}
+
+// spec: design/arch/effect-concurrency.md §4.1.1 — under the ctx-vtable model there
+// is NO descriptor region on the value: a resource handle is an ordinary opaque ADT
+// (`Connection [fd]`) carrying a genuine scalar field. Over a bounded produce→consume
+// →retire cycle, `[RC] alloc` MUST equal `[RC] free`: the handle RC-balances like any
+// 1-field ADT (the `fd` Int is a scalar — no RC, no drop glue), and scheduling lives
+// in the trampoline `ctx`, not on the value, so there is no value-carried region to
+// leak. RED on HEAD; GREEN when the bounded fixture (G-C) lands. (Re-expressed from the
+// dead "16-byte descriptor region @ +24" model — there is no such region under v9.)
 //
 // FIXME(/sprint S97 W3) — gap G-C: an RC-balance assertion over a REAL network server
 // is non-deterministic (the server runs indefinitely; trace volume is unbounded). A
-// clean descriptor-no-leak witness needs a BOUNDED poll fixture that produces then
-// consumes a handful of resource handles and EXITS — the co-landing `/platform` +
-// `/dev` `poll-produce` / `poll-consume` leaves (the S96 Gap-G1 poll-pool analogue).
-// /dev (Wave 3) must ADD them to `platforms/poll-pool/` + `tests/scripts/
+// clean no-leak witness needs a BOUNDED poll fixture that produces then consumes a
+// handful of resource handles and EXITS — the co-landing `/platform` + `/dev`
+// `poll-produce` / `poll-consume` leaves (the S96 Gap-G1 poll-pool analogue). /dev
+// (Wave 3) must ADD them to `platforms/poll-pool/` + `tests/scripts/
 // build-link-prereqs.sh`. If that fixture does not land, 2.4 REDUCES to the `/dev`
 // intrinsics RC-balance UNIT (plan §"Item 2" mirror, /dev-owed). On HEAD the leaves are
 // absent ⇒ RED (the run errors; no balanced trace).
 #[test]
 fn produce_consume_descriptor_no_rc_leak() {
-    // A bounded produce→consume loop over N resource handles, then exit. Each
-    // `poll-produce` stamps a descriptor into the produced handle's header; each
-    // `poll-consume` reads it. The descriptor region is NeverHeap scalars ⇒ no RC.
+    // A bounded produce→consume loop over N opaque handles, then exit. `poll-produce`
+    // mints an opaque handle (Produce role; ctx-vtable acquire/register, no stamp);
+    // `poll-consume` threads it (Consume role; the poll-fn projects the token from the
+    // handle's own field). The handle is a normal ADT ⇒ ordinary alloc/free balance.
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{produce} {consume}]])\n\
@@ -303,9 +386,9 @@ fn produce_consume_descriptor_no_rc_leak() {
     assert!(allocs > 0, "expected the RC trace to record allocations; got 0");
     assert_eq!(
         allocs, frees,
-        "the descriptor region (NeverHeap scalars @ +24) must add NO RC — a bounded \
-         produce/consume cycle must be alloc/free balanced; got {allocs} allocs / {frees} \
-         frees.\nstderr:\n{}",
+        "the opaque handle carries NO value-side scheduling region (scheduling is \
+         ctx-vtable-owned — effect-concurrency.md §4.1.1), so a bounded produce/consume \
+         cycle must be alloc/free balanced; got {allocs} allocs / {frees} frees.\nstderr:\n{}",
         out.stderr
     );
 }

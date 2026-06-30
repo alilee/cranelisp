@@ -133,7 +133,7 @@ The three /design DONE entries were written to the dead descriptor model. Re-cas
 
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /qa | tests/ | **Carries:** the user-facing **signature** e2e (opaque `Connection`, `(read-conn conn)` 1-arg typechecks, old 3-arg rejected) — both models slim the sigs identically. **Needs rework:** the 3 **layout** e2e written to the header-slot model — `Connection` now has a *real* opaque `fd` field, so "zero-field destructure rejected" → "opaque field present but not user-destructurable"; "descriptor invisible in display" still holds (cleaner — nothing on the value); "descriptor-region RC no-leak" → ordinary ADT-field RC. | DONE → adjust |
+| /qa | tests/ | **DONE (adjusted).** Carries: the 4 signature e2e + select/fanout defect e2e. Layout rework in `concurrency_v9_abi.rs`: 2.1→`connection_opaque_field_present_but_not_user_destructurable_neg` (reject by opacity, not field-count); 2.2 kept (display shows no scheduling state); 2.4→ordinary 1-field-ADT RC-balance (+`FIXME(/sprint W3)` G-C fixture); **2.5 NEW `connection_carries_no_scheduling_state_normal_adt_neg`** (`/info` surfaces no descriptor/role/token; deeper CLIF-absence recorded as /dev-owed backend unit). Fixture `Connection []`→`[:primitives/Int fd]`. Suite **1782 / 19 RED** (8 v9_abi + 3 standing + 0474/0475/0479) / 2 guards GREEN / no regression. **`FIXME(/sprint W2)`** in 2.1: opacity-marking mechanism for a handle ADT with a genuine field. | DONE |
 
 ### Wave 2 — the atomic cutover (re-scoped; critical path)
 
