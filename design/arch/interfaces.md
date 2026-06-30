@@ -1873,10 +1873,14 @@ impl HeapHeader {
 `effect-concurrency.md` §4.1.1 — superseding the descriptor cut, which proposed a
 value-header `ResourceDesc` slot and was retired at the Wave-2 DLL-mint blocker). There
 is **no resource-descriptor heap-header slot, no `ResourceDesc` type, no resource-handle
-layout marking, no `PollFn.desc_out`**. A resource handle is an ordinary opaque ADT
-(`web/Connection`) carrying the platform's own `r`/`fd` in a genuine field; the trampoline
-never introspects it. All runtime scheduling flows through a trampoline-owned **`ctx`
-vtable** (the generalized `HostCtx`) the platform's poll-fns call.
+layout marking, no `PollFn.desc_out`**. A resource handle (`web/Connection`) is an ordinary
+ADT carrying the platform's own `r`/`fd` in a genuine field. It is **tramp-opaque, not
+user-opaque**: the trampoline never introspects it (only the platform reads `r` back out),
+but the **user program may read its fields by ordinary destructuring** — it is their
+connection's genuine data, not a sealed value (`(match c [(Connection fd) fd])` typechecks
+and yields the real fd; there is no "no user destructuring path" mechanism). All runtime
+scheduling flows through a trampoline-owned **`ctx` vtable** (the generalized `HostCtx`) the
+platform's poll-fns call — none of it on the value.
 
 The v9 ABI surface is two additions — no value-side types:
 

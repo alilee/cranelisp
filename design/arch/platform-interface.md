@@ -1516,8 +1516,11 @@ single async trampoline unchanged.
 
 **The model (canonical: `effect-concurrency.md` §4.1.1).** Scheduling state never rides
 on user values; it flows through a trampoline-owned `ctx` vtable the platform's poll-fns
-call. Handles are opaque ADTs carrying the platform's `r` in their own field (the
-trampoline never introspects them). The poll-fn skeleton is uniform:
+call. Handles are **tramp-opaque, user-readable** ADTs carrying the platform's `r` in their
+own field: the trampoline never introspects them (only the platform reads `r` back), but
+the user program may read the handle's genuine fields by ordinary destructuring — "opaque"
+is to the runtime, not the user (`effect-concurrency.md` §4.1.1). The poll-fn skeleton is
+uniform:
 `acquire(token,cap,waker)? → syscall → (would-block? register(waker)+Pending : Ready)`;
 a commutative leaf omits `acquire`; `sleep` is the degenerate one-shot. Release is
 trampoline-owned (fired on `Ready`/cancel; cancel never re-enters the poll-fn). The
@@ -1581,8 +1584,9 @@ unchanged. `Acquire` is the new result enum (above). **No `ResourceDesc` type ex
 constant — single-in-flight by construction (resolves FIXME 0471).
 
 **Leaf signatures slim identically to the descriptor cut.** `accept-conn : (Fn [Listener]
-(IO Connection))` with `Connection` fully opaque (`(deftype Connection [...])`, carrying
-the platform's `fd`/`r` in an ordinary field — *not* a hidden slot); `read-conn :
+(IO Connection))` with `Connection` an ordinary user-readable ADT, tramp-opaque only
+(`(deftype Connection [...])`, carrying the platform's `fd`/`r` in an ordinary field —
+*not* a hidden slot, and *not* a sealed value); `read-conn :
 (Fn [Connection] (IO Request))`; `send-conn : (Fn [Connection Response] (IO Int))`. The
 user never writes `(read-conn fd 1 fd)`. The difference from the descriptor cut: the
 `fd`/`r` is a **genuine opaque ADT field the platform reads back**, not a type-invisible

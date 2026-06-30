@@ -103,6 +103,95 @@ fn t_s2_2_inline_adt_arg_wrapping_vec_preserves_len() {
 }
 
 // =============================================================================
+// S97 — ADT-wrapping-Vec RC heap corruption under LOOPED DOUBLE-USE (the
+//       t_s2_2 family, escalated to the recursive/threaded case).
+// =============================================================================
+//
+// `t_s2_2` above guards the SINGLE-SHOT inline-ADT-wrapping-Vec case (length
+// preservation). This guards the LOOPED case the single shot does not catch: a
+// recursive `(let [g2 (set-cell g 0 i)] ...)` that uses the freshly-rebuilt
+// ADT-wrapped Vec `g2` in TWO positions in the SAME step — threaded forward as
+// the next `g` AND read via `(vec-get (gcells g2) 0)`. Under that double-use the
+// inner Vec's RC is mismanaged (the `borrowed_vars` / `emit_capture_return_inc`
+// class, design/backend/ring2-rc.md §5.5/§5.6): the inner Vec is freed while
+// still reachable, so the next iteration's `vec-set` writes through a dangling
+// pointer and the host heap corrupts → a deterministic SIGSEGV/SIGBUS.
+//
+// MINIMALITY (the reduction that localises the fault):
+//   - 8/8 deterministic crash at iters=50 (crashes from iters ≈ 5).
+//   - Removing the ADT wrapper — a bare `(Vec Cell)` + `vec-set`, SAME loop —
+//     runs clean and returns 251, proving the ADT-wrapping-Vec is load-bearing,
+//     NOT the Vec churn itself.
+//   - Collapsing the per-step double-use to a SINGLE use of `g2` also runs clean,
+//     proving the simultaneous thread-forward + inner-Vec-read is the trigger.
+//   - Needs NEITHER web NOR concurrency NOR lenient sparks — purely codegen.
+//
+// PROVENANCE — this is the deterministic reduction of the S97 ctx-vtable
+// cutover's intermittent `exemplar_web` heap corruption
+// (`free(): chunks in smallbin corrupted`, ~20-30% under concurrent load,
+// tests/exemplar_web.rs, now quarantined). That corruption is the SAME
+// nested-ADT-Vec RC class via the Sudoku `Grid` (= an ADT wrapping a `(Vec Cell)`)
+// `set-cell` churn — there through the stdlib `assoc` copy under CONCURRENT
+// launched strands (intermittent), here through `vec-set` single-threaded
+// (deterministic). The diagnostics that localised ownership to the RC codegen and
+// NOT the launch/spark layer:
+//   - the exemplar corruption PERSISTS under CRANELISP_NO_LENIENT=1 (4/4) —
+//     rules OUT the lenient-eval / rayon-spark path (the 0408/0459 contention
+//     class); and
+//   - a web-stripped heavy concurrent rayon spark-fan of bare-Vec churn does NOT
+//     corrupt (0/40), while THIS bare single-threaded ADT-wrapping-Vec repro does.
+// /backend should confirm whether the `assoc` path shares the `vec-set` fix (the
+// likely common borrowed_vars root) or needs a sibling fix, and whether
+// concurrency is load-bearing for the `assoc` manifestation. See
+// tests/plan/ledger.md (S97 entry).
+//
+// spec: design/backend/ring2-rc.md §5.5 — Captured and Borrowed Variables and
+//       Last-Use (the borrowed_vars inner-Vec RC invariant). Same anchor as
+//       t_s2_2 above; this is the looped escalation.
+// FIXME(/backend): looped double-use of an ADT-wrapping-Vec frees the inner Vec
+//       while still reachable → heap corruption. Resolve in the ring2-rc
+//       borrowed_vars / emit_capture_return_inc RC codegen; flip this AND the
+//       quarantined tests/exemplar_web.rs guard green.
+#[test]
+fn nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg() {
+    // Grid is an ADT wrapping a (Vec Cell). `set-cell` destructures, vec-sets the
+    // inner Vec, and rewraps — identical in shape to t_s2_2's `box-set`. The loop
+    // binds g2 then uses it TWICE per step (threaded forward + inner-Vec read).
+    // Primitives + special forms only — free-standing, ZERO stdlib.
+    let source = r#"(import [primitives [Int add-i64 sub-i64 le-i64 vec-get vec-set Pure]])
+(deftype Cell [:Int v])
+(deftype Grid [cells])
+(defn unc [c] (match c [(Cell x) x]))
+(defn gcells [g] (match g [(Grid c) c]))
+(defn set-cell [g idx d] (Grid (vec-set (gcells g) idx (Cell d))))
+(defn loop [g i acc]
+  (if (le-i64 i 0)
+    acc
+    (let [g2 (set-cell g 0 i)]
+      (loop g2 (sub-i64 i 1) (add-i64 acc (unc (vec-get (gcells g2) 0)))))))
+(defn main [] (Pure (loop (Grid [(Cell 0) (Cell 1) (Cell 2)]) 50 0)))
+"#;
+    let out = Cranelisp::new()
+        .run("user.cl")
+        .file("user.cl", source)
+        .output();
+    // GREEN contract: the looped set-cell churn computes 50*51/2 = 1275; 1275 mod
+    // 256 = 251 (the Unix exit byte) — the value the unwrapped (no-ADT) control
+    // returns. RED today: the inner-Vec RC bug frees-while-reachable → SIGSEGV /
+    // SIGBUS (status.code() == None or 139/135) instead of a clean exit 251.
+    let exit = out.status.code();
+    assert_eq!(
+        exit,
+        Some(251),
+        "looped double-use of an ADT-wrapping-Vec must NOT corrupt the heap \
+         (expected clean exit 251 = 1275 mod 256); got exit={exit:?} \
+         (None/139 = SIGSEGV, 135 = SIGBUS ⇒ heap corruption — the ring2-rc §5.5 \
+         borrowed_vars inner-Vec RC defect reproduces).\n--- stderr ---\n{}",
+        out.stderr
+    );
+}
+
+// =============================================================================
 // Sprint 59 Defects 4+5 reductions — `/run-tests` batched-dispatch crashes
 // =============================================================================
 //

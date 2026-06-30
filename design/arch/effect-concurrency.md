@@ -353,12 +353,25 @@ launch-eligibility check.
 (§12, the A2 model) **generalized** from "register interest" to "register interest +
 acquire/release a token permit + retire a token." The model:
 
-- **Handles are opaque ADTs.** A resource handle (`Connection`, …) is an ordinary ADT
-  carrying only genuine program data (a peer address, say — or nothing). The platform's
-  opaque resource id `r` (web: `r == fd`) lives in **the handle's own field** — the
-  platform built the handle and reads `r` back out of it. **The trampoline never
-  introspects the handle.** There is no per-ADT "token is field N" knowledge anywhere
-  in the host, no resource-handle layout marking, no reserved slot.
+- **Handles are tramp-opaque, NOT user-opaque.** A resource handle (`Connection`, …) is
+  an **ordinary ADT** carrying genuine program data (the fd, a peer address, say). "Opaque"
+  here means **opaque to the trampoline / runtime** — *not* opaque to the user program.
+  The two readers are distinct:
+  - **The trampoline never introspects the handle.** This is the architectural invariant
+    that lets all scheduling live in the `ctx` vtable: there is no per-ADT "token is
+    field N" knowledge anywhere in the host, no resource-handle layout marking, no
+    reserved slot. The trampoline passes the handle straight back to the platform's
+    poll-fn; only the **platform** reads `r` out of it (the platform built the handle, so
+    it knows which field is `r`).
+  - **The user CAN read the handle.** It is *their* connection — its fd and peer address
+    are genuine program data, and the user reads them by ordinary destructuring /
+    `match` exactly as for any ADT (`(match c [(Connection fd) fd])` typechecks and yields
+    the real fd). There is **no special "no user destructuring path" mechanism**, and the
+    field is **not** hidden behind opacity-marking. A resource handle is `std::net::TcpStream`
+    with `as_raw_fd()` *available*, not a sealed newtype — the program owns its own resource
+    and may inspect it. (The earlier "opaque ADT — the type does not export a user
+    destructuring path" framing conflated the two readers and is wrong; the handle is
+    tramp-opaque and user-readable.)
 - **The `ctx` vtable** (the generalized `HostCtx`, §12) carries, alongside the existing
   `register_readable`/`register_writable`/`register_timer` + the C-ABI waker:
   - `acquire(token, capacity, waker) -> Acquired | Parked` — ask for a permit on
@@ -383,6 +396,44 @@ acquire/release a token permit + retire a token." The model:
   token each poll, **there is no separate scoreboard** mapping handle→token: the host's
   only scheduling state is the semaphore-per-token permit map (§8.1) and the reactor's
   interest table — both inherent, neither a value-side or handle-side store.
+
+**Handle fabrication is a platform-IO concern, never a host-soundness one (ruling).**
+Because the handle is user-readable (above), the obvious next question is whether the user
+may *construct* one — `(Connection 999)` with an arbitrary or unowned fd — and hand it to
+`read-conn`. **Ruling: this is out of scope as a language/host soundness or capability
+concern; the trust boundary is the platform's syscall (the OS), and a bad/unowned fd
+errors safely.** Rationale:
+
+- **No host UB is reachable.** The trampoline never introspects the handle, so a
+  fabricated handle cannot corrupt any host scheduling state by being *read* — the host
+  touches no field of it. The only host scheduling state is the permit map + reactor
+  interest table, and both are populated solely as a *consequence* of an `acquire` /
+  `register_*` call the **platform's** poll-fn makes after projecting a token. A
+  fabricated handle therefore reaches the host only through a normal `acquire(token, …)` /
+  syscall path — the same path a genuine handle takes.
+- **The OS is the capability checkpoint.** fds are OS capabilities; a fabricated fd is
+  just an integer. The platform's `syscall(fd, NONBLOCK)` on a bad/unowned fd returns
+  `EBADF` (or operates on whatever fd is actually open at that number) — the platform
+  surfaces that as an ordinary `IO` error, recoverable at `catch-runtime-error`. There is
+  no UB, no crash, no hang.
+- **There is no intra-program privilege boundary to violate.** A single Cranelisp program
+  is not a sandbox; code that already holds the program's fds (and could call a raw-fd
+  leaf or FFI directly) gains *nothing* from fabricating a handle that it could not
+  already do. Restricting the **constructor** would be security theatre — and would
+  directly contradict the just-established user-readability of the handle. So the answer
+  is **not** "restrict the constructor" (option b); it is "the syscall is the check"
+  (option c), backed by "a bad fd errors safely" (option a).
+- **Worst case is a scheduling nuisance, never memory unsafety.** If a fabricated token
+  collides with a live resource's token, the two merely share that token's permit pool
+  (exactly as full-duplex per-direction tokens and the singleton stdin token already share
+  pools by design) — at most spurious backpressure or over-admission on that one pool, a
+  liveness/throughput annoyance, never corruption.
+
+**Surviving invariant (pinned):** *the handle carries no scheduling state and the host
+never introspects it; all safety of fd use is enforced at the platform↔OS syscall boundary,
+not by restricting handle construction or reading.* Consequently a fabricated handle can
+produce a recoverable platform IO error but never host-level UB or scheduling-state
+corruption.
 
 **Uniform poll-fn skeleton.** Every poll-shape leaf has the same shape:
 

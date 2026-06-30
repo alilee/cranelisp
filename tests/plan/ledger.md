@@ -36,6 +36,46 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 97 — ADT-wrapping-Vec RC heap corruption (the cutover-surfaced exemplar_web smallbin abort, reduced) (/qa, 2026-06-30)
+
+- **Test (deterministic repro, un-ignored RED):**
+  `regression::nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg`
+- **Test (quarantined flaky e2e, `#[ignore]`):**
+  `exemplar_web::exemplar_web_server_serves_form_solution_and_not_found_over_http`
+- **Current commit SHA:** `1846f13` (the S97 ctx-vtable / ABI-v9 cutover)
+- **Exact signature:** deterministic repro — `Segmentation fault (core dumped)` /
+  `Bus error (core dumped)` (exit None/139/135), empty stderr (raw heap corruption
+  in JIT code), 8/8 at iters=50, crashes from iters≈5. Exemplar e2e —
+  `free(): chunks in smallbin corrupted` glibc abort / SIGSEGV, ~20-30% under
+  K≥8 concurrent POST /solve.
+- **Owning skill:** `/backend` (RC codegen; ring2-rc.md §5.5/§5.6 `borrowed_vars` /
+  `emit_capture_return_inc`).
+- **Target sprint:** S97 Wave 3 (independent /backend defect drain) or carry.
+- **Disposition:** `under-investigation (owner=/backend)`. The looped DOUBLE-USE of
+  an ADT-wrapping-Vec — `(let [g2 (set-cell g 0 i)] (loop g2 … (vec-get (gcells g2) 0)))`,
+  `g2` simultaneously threaded-forward AND inner-Vec-read — frees the inner Vec while
+  still reachable → next-iteration `vec-set` writes through a dangling pointer →
+  host-heap corruption. The escalated/looped case of the already-guarded single-shot
+  `regression::t_s2_2_inline_adt_arg_wrapping_vec_preserves_len`.
+- **Reduction narrowing (committed in the repro comment):** removing the ADT wrapper
+  (bare `(Vec Cell)` + vec-set, same loop) runs clean → the ADT-wrapping-Vec is
+  load-bearing; collapsing the per-step double-use to a single use runs clean → the
+  simultaneous thread+read is the trigger; needs NEITHER web NOR concurrency NOR
+  lenient sparks. The exemplar e2e is the SAME class via the Sudoku `Grid`=ADT-wrapping-
+  `(Vec Cell)` `set-cell` churn through stdlib `assoc` under concurrent launched strands.
+- **Ownership evidence (rules out spark/launch layer):** the exemplar corruption
+  PERSISTS under `CRANELISP_NO_LENIENT=1` (4/4 — not the lenient-eval/rayon-spark /
+  0408-0459 contention class); a web-stripped heavy concurrent rayon spark-fan of
+  bare-Vec churn does NOT corrupt (0/40) while the bare single-threaded
+  ADT-wrapping-Vec repro does (8/8); the exemplar's single non-concurrent solve never
+  corrupts (0/8) — concurrency only widens the window on the same RC defect. Open for
+  /backend at unit-isolation: whether the `assoc` manifestation shares the `vec-set`
+  fix (likely common borrowed_vars root) or needs a sibling fix.
+- **Regression-vs-latent:** cutover-SURFACED (exemplar_web was GREEN pre-cutover per
+  the S97 record). The reshape increased the concurrency that triggers the latent
+  borrowed_vars RC defect; whether the deterministic vec-set form specifically
+  regressed at the cutover was not bisected (would need a pre-cutover rebuild).
+
 ### Sprint 94 Phase 6 — /port floor-violation: alloc/RC-heavy parallel workload runs slower than serial (DEMOTED to ignored benchmark — durable record here) (/qa, 2026-06-28)
 
 `/port` (Phase 6) found the effect-concurrency thesis floor — "never slower than
