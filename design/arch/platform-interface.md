@@ -1487,127 +1487,153 @@ single async trampoline unchanged.
 
 ---
 
-### 6.8.0b ABI v8→v9 — the resource descriptor becomes trampoline-owned representation overhead (S97, FIXME 0482; /arch-ruled)
+### 6.8.0b ABI v8→v9 — scheduling state moves off values into the `ctx` vtable handle model (S97, supersedes FIXME 0482; /arch-ruled)
 
-> **Status: RATIFIED target (S97 /arch Phase 2, 2026-06-30; FIXME 0482).** Arbitrates
-> the 0482 proposal — the carrier shape adjusted from the literal "tuple on the
-> `Poll::Ready` return" to an **out-param** (rationale below). Cascade: /arch (this
-> section + `effect-concurrency.md` §4.1/§5 + BC §3/§5/§6 + `interfaces.md`) →
-> /design (`poll-support.md` §3.1/§3.5) → /platform (web + stdio leaves) → /backend
-> (poll-node emit + resource-handle header slot) → /int (trampoline split/stamp/read
-> + the §4.1 single-step E2 hardening, FIXME 0478). The v9 cutover lands as **ONE
-> change-set** (the ABI bump is atomic across `cranelisp-types`, `cranelisp-platform`,
-> backend, int, and every in-tree platform DLL — "no users," so the bump is free).
+> **Status: RATIFIED target (S97 /arch, 2026-06-30; supersedes FIXME 0482 + the
+> Phase-2 value-header descriptor ruling).** The earlier S97 cut (the
+> descriptor-as-representation-overhead model: a `ResourceDesc` value-header slot, a
+> `desc_out` out-param on `PollFn`, a per-value `(token, capacity)`) is **RETIRED**.
+> During Wave-2 implementation it hit a structural blocker — an opaque zero-field
+> `Connection` minted *inside the DLL* (`CLAdt::construct` → 24-byte object) had no room
+> for a 16-byte descriptor slot stamped at `value+24` (heap overrun), and reserving the
+> slot at the DLL-mint→host-alloc boundary was an undesigned cross-crate interface. The
+> ratified replacement **dissolves that blocker**: scheduling state never touches the
+> value, so there is no slot to reserve. The canonical model statement is
+> `effect-concurrency.md` §4.1.1; this section is its ABI cascade. **Deleted relative to
+> the descriptor cut:** `ResourceDesc`, the value-header slot, `PollFn.desc_out`, the
+> `AsRawFd`-style trait, and the backend's resource-handle layout marking. **Added:**
+> `acquire` + `retire` fn-pointer entries on the `ctx` vtable (`HostCtx`) + an `Acquire`
+> result enum. Cascade: /arch (this section + `effect-concurrency.md` §4.1.1/§8.1/§8.2 +
+> BC §3/§5/§6 + `interfaces.md`) → /design re-cascade of `poll-support.md` /
+> `io-trampoline.md` / `reactor.md` (they were written to the dead descriptor model;
+> §6.8.0b cascade list below) → /platform (web + stdio leaves to the poll-fn skeleton) →
+> /backend (uniform poll node, delete the positional bake) → /int (the ctx-vtable host
+> impl: acquire/retire + tramp-owned release + the §4.1 single-step E2 hardening, FIXME
+> 0478). The v9 cutover lands as **ONE change-set** (the `HostCtx` + `ConcurrencyDescriptor`
+> layout change is atomic across `cranelisp-types`, `cranelisp-platform`, backend, int,
+> and every in-tree platform DLL — "no users," so the bump is free). **It is a *simpler*
+> bump than the descriptor cut.**
 
-**The defect v9 removes.** As shipped at v8 (FIXME 0465), the per-connection
-scheduling metadata `(token, capacity)` **leaks into user source**: `web/Connection`
-is `[token capacity fd]`, and the backend bakes the poll node's `(token@32,
-capacity@40)` slots from the **first two positional leaf args** (the leading-pair
-convention, §3.4). The user hand-writes `(read-conn fd 1 fd)` — one piece of real
-data plus two pieces of bookkeeping they neither choose nor should see. The
-leading-pair-from-positional-args wiring was the v8 path of least resistance, **not a
-necessity** — it is exactly the kind of interim convenience Principle 8 targets.
+**The model (canonical: `effect-concurrency.md` §4.1.1).** Scheduling state never rides
+on user values; it flows through a trampoline-owned `ctx` vtable the platform's poll-fns
+call. Handles are opaque ADTs carrying the platform's `r` in their own field (the
+trampoline never introspects them). The poll-fn skeleton is uniform:
+`acquire(token,cap,waker)? → syscall → (would-block? register(waker)+Pending : Ready)`;
+a commutative leaf omits `acquire`; `sleep` is the degenerate one-shot. Release is
+trampoline-owned (fired on `Ready`/cancel; cancel never re-enters the poll-fn). The
+token is a platform-computed projection of the handle (default `r`; split per-direction
+for full-duplex; `0` ⇒ commutative). The **manifest** carries compile-time facts
+(poll-shape, role, capacity default, serialization class) for inference + codegen; the
+**`ctx` vtable** carries ALL runtime scheduling.
 
-**The v9 model: the resource descriptor is representation overhead, like the RC/heap
-header.** `(token, capacity)` is **type-invisible** — not part of any ADT's logical
-shape, not a leaf argument — carried as runtime representation overhead and stamped
-into a value's heap header by the trampoline at production. Three carriers, ruled
-distinctly:
+**The `cranelisp-platform` ABI surface (the `ctx` vtable = `HostCtx` generalized).**
+`HostCtx` gains two fn-pointer entries beside the existing
+`register_readable`/`register_writable`/`register_timer` + opaque `host`:
 
-1. **Storage — the value-header descriptor slot (CONFIRMED).** A resource-handle
-   object carries its dynamic `(token, capacity)` in a **fixed-offset header slot**
-   (uniform across all resource-handle types, read by the trampoline with no per-ADT
-   "token is field N" knowledge — the property the 0482 "opaque field" alternative
-   could not give). This is the heap-header-overhead model: a few bytes on resource
-   handles only (not on every heap object). `interfaces.md` §"Heap Object Layouts"
-   carries the layout; the backend reserves the slot only on ADTs the manifest marks
-   as resource handles (§BC 3). **Rejected (CONFIRMED):** a pointer-keyed side table
-   — fragile under copy / move / RC; a header slot rides the value itself.
+```rust
+// in cranelisp-platform::concurrency (re-projected from cranelisp-types opaque c_void)
+pub register_readable: unsafe extern "C" fn(host: *const c_void, fd: i32,  waker: *const Waker),
+pub register_writable: unsafe extern "C" fn(host: *const c_void, fd: i32,  waker: *const Waker),
+pub register_timer:    unsafe extern "C" fn(host: *const c_void, ns: u64,  waker: *const Waker),
+// NEW v9 — the token-permit half of the ctx vtable:
+pub acquire: unsafe extern "C" fn(host: *const c_void, token: u64, capacity: u32, waker: *const Waker) -> Acquire,
+pub retire:  unsafe extern "C" fn(host: *const c_void, token: u64),
+pub host: *const c_void,
+```
 
-2. **Produce carry, leaf → trampoline — an out-param on `PollFn`, NOT a widened
-   return struct (ADJUSTED from 0482).** 0482 proposed widening `Poll::Ready` from
-   `value:i64` to `(value:i64, desc)`. **Ruling: keep `Poll` a single-register
-   `#[repr(i32)]` enum and keep the value flowing through the existing `set_result`
-   state-out-param; add a dedicated `desc_out: *mut ResourceDesc` parameter to
-   `PollFn`** — `poll(state, host, waker, desc_out) -> Poll`. A **produce-role** leaf
-   writes `*desc_out = {token, capacity}` before returning `Ready`; **consume/none**
-   leaves never touch it (the host zero-inits the slot). Rationale for the
-   adjustment: (a) the v9 cut is about the **descriptor**, not the value — moving the
-   value off the working `set_result` path onto an sret return struct is gratuitous
-   churn the cut does not need; (b) a `>16-byte` return struct crosses the C-ABI via a
-   hidden `sret` pointer, re-introducing exactly the kind of return-shape subtlety
-   that bites at FFI boundaries — an out-param keeps the return single-register and is
-   **symmetric with `set_result`** (the leaf already hands its product back through an
-   out-param-shaped write). In spirit this is still "a side-band on the poll-fn return
-   ABI"; the out-param is its sounder realization.
+```rust
+/// C-ABI result of a permit acquisition. `#[repr(i32)]`.
+#[repr(i32)]
+pub enum Acquire { Acquired = 0, Parked = 1 }   // in cranelisp-types, re-exported here
+```
 
-3. **Consume read, trampoline → leaf — read the header off the consumed handle
-   (CONFIRMED).** Before polling a **consume-role** leaf, the trampoline reads
-   `(token, capacity)` from the **consumed handle's header slot** and does
-   acquire-around-poll. The consume leaf needs no `desc_out` and no leading-pair args;
-   it recovers any per-resource identity it needs (for web, `token == fd`, the
-   platform's internal choice) from the header. This is what lets the backend **stop
-   baking `(token, capacity)` from positional args entirely** (§3.4's leading-pair
-   bake is deleted for resource leaves) and lets **`Connection` slim to fully opaque**:
-   `read-conn : (Fn [Connection] (IO Request))`, `send-conn : (Fn [Connection
-   Response] (IO Int))`.
+- `acquire` takes the **waker** (refining the user-sketched `acquire(token,cap)`): on
+  `Parked` the host enqueues that waker on the token's permit-wait queue so the strand is
+  re-polled when a permit frees. The single reactor thread never blocks in `acquire` — it
+  returns `Parked` immediately and the strand suspends `Pending` (cooperative); the
+  permit-is-a-counter reasoning of §8.1 holds, **no deadlock** (pressure-test (f) PASS).
+- `acquire` is **idempotent per in-flight effect** (host keys held permits by the waker's
+  data identity), so a re-poll does not double-count a permit.
+- There is **no `release` vtable entry** — release is trampoline-owned (on `Ready`/cancel).
+- **`PollFn` is UNCHANGED** — `poll(state, *HostCtx, *Waker) -> Poll`. No `desc_out`. The
+  poll-fn calls `acquire`/`register_*`/`retire` through the `*HostCtx` it already
+  receives. (This is the chief simplification over the descriptor cut, which added a
+  `desc_out` parameter.)
 
-**Role lives on the manifest, NOT on the per-value descriptor (ADJUSTED from 0482).**
-0482 put `role` inside the value descriptor (`{token, capacity, role}`). **Ruling:
-`role: ResourceRole {None, Produce, Consume}` is a per-**effect**, static property —
-it belongs on the manifest `ConcurrencyDescriptor`, read by the trampoline to decide
-stamp-vs-read-vs-nothing.** A value's header carries only the dynamic `(token,
-capacity)` any consume leaf needs; "Produce" is a fact about the *leaf*, not the
-*connection*. This removes a redundant per-value byte and keeps the role decision
-where its determinant (the leaf identity) lives.
+**The `cranelisp-types` ABI surface.** `ConcurrencyDescriptor` gains
+`role: ResourceRole` (consuming one byte of the existing `_reserved: [u8; 3]` tail —
+existing field offsets + size unchanged), a **compile-time-only** fact:
 
-**Singleton resources — the stdin serial case (resolves FIXME 0471 structurally,
-upgrading its doc-only fix).** A resource that is **not minted per value** (stdin) has
-no produced handle to stamp. v9 gives it a clean home: a **manifest-static**
-descriptor — `read-line` declares `{token: STDIN_TOKEN != 0, capacity: 1, role:
-Consume}` and the trampoline acquires the manifest-static token before polling (no
-value header needed; the token is a process singleton). This **structurally enforces
-single-in-flight stdin** — strictly better than 0471's recommended "correct the
-over-claim in prose." The v8 obstacle (a tokenless leaf cannot carry a leading-pair
-token) **dissolves**: under v9 nothing is injected positionally; the token is a
-manifest fact.
+```rust
+/// Per-EFFECT static leaf role — a compile-time manifest fact grounding inference E2
+/// and documenting the leaf for the platform-writer's guide. The trampoline does NOT
+/// branch on it at runtime (there is no stamp/read — the leaf does all scheduling via
+/// the ctx vtable). `#[repr(u8)]`, governed by ABI_VERSION.
+#[repr(u8)]
+pub enum ResourceRole { None = 0, Produce = 1, Consume = 2, Retire = 3 }
+```
 
-**The new / changed `cranelisp-types` ABI surface (authored in the cutover
-change-set; `interfaces.md` carries the shapes):**
+`PollFn` (the `cranelisp-types` opaque-pointer projection) is **unchanged**. `Poll` is
+unchanged. `Acquire` is the new result enum (above). **No `ResourceDesc` type exists.**
 
-- **`ResourceDesc`** — new `#[repr(C)]` layout contract: `{ token: u64, capacity:
-  u32, _pad: [u8; 4] }`. Written by a produce leaf through `desc_out`; stored in the
-  resource-handle header slot. Layout governed by `ABI_VERSION`.
-- **`ResourceRole`** — new `#[repr(u8)]`: `None = 0, Produce = 1, Consume = 2`.
-- **`ConcurrencyDescriptor`** — gains `role: ResourceRole`, consuming one byte of the
-  existing `_reserved: [u8; 3]` tail (size/offsets of existing fields unchanged; the
-  byte's *meaning* changes from must-be-zero to the role discriminant — a layout-
-  contract semantic change, hence the bump).
-- **`PollFn`** — gains `desc_out: *mut ResourceDesc` (the type crate names it as
-  `*mut core::ffi::c_void` per the Principle-3 opaque-pointer pattern, re-projected as
-  `*mut ResourceDesc` in `cranelisp-platform`).
-- **`PlatformFn`** — unchanged in field shape (its `concurrency: ConcurrencyDescriptor`
-  carries the new `role` internally).
+**Singleton resources** (stdin) declare a manifest-static serial token
+(`read-line`: `{token != 0, cardinality 1, role Consume}`); the poll-fn acquires that
+constant — single-in-flight by construction (resolves FIXME 0471).
 
-**No v10 looming (Principle 8 — interim risk verdict: PASS).** v9 is not an interim;
-it **removes** one (the v8 positional-bake convenience). It is the descriptor model's
-end-state. The one known forward axis — slice-4 **degree** / backpressure — is already
-carried by `ConcurrencyDescriptor.global_budget` (reserved, inert) and needs no v9
-shape change and no v10 bump. The role byte consumes reserved tail; `ResourceDesc`
-reserves its own `_pad`. Nothing in v9 is built to be discarded.
+**Leaf signatures slim identically to the descriptor cut.** `accept-conn : (Fn [Listener]
+(IO Connection))` with `Connection` fully opaque (`(deftype Connection [...])`, carrying
+the platform's `fd`/`r` in an ordinary field — *not* a hidden slot); `read-conn :
+(Fn [Connection] (IO Request))`; `send-conn : (Fn [Connection Response] (IO Int))`. The
+user never writes `(read-conn fd 1 fd)`. The difference from the descriptor cut: the
+`fd`/`r` is a **genuine opaque ADT field the platform reads back**, not a type-invisible
+header slot the trampoline stamps — so `CLAdt::construct` mints a normal N-field object
+and the Wave-2 24-vs-40-byte overrun never arises.
 
-**Inference (E1–E3) is unaffected and cleaner.** Value-locality (§4.1 E2) reasons
-about the `conn` handle being born fresh at `accept`; under v9 the disjoint token
-literally **rides inside that value's header**, so E2's value-provenance witness
-becomes a *representational* fact (a freshly-bound, non-shared resource value carries
-a fresh, disjoint token by construction) rather than only a provenance argument. The
-disjointness proof is unchanged; its grounding is firmer.
+**Lifecycle: who calls what.**
 
-**ABI bump: 8 → 9.** Stamp `ABI_VERSION = 9`. The `ResourceDesc`/`ResourceRole`
-additions, the `ConcurrencyDescriptor.role` field, and the `PollFn` `desc_out`
-parameter are layout-affecting (Principle 14). Every in-tree platform rebuilds against
-v9 in the cutover change-set; the `shapes-badabi` negative fixture re-pins wrong-
-relative-to-9 (`/qa`).
+| Operation | Caller | When |
+|---|---|---|
+| `acquire(token, cap, waker)` | platform poll-fn | start of each poll (token ≠ 0) |
+| `register_readable/writable/timer` | platform poll-fn | on `WouldBlock` |
+| `retire(token)` | platform poll-fn (a Retire/`close` leaf) | after `close(r)` |
+| **release** (permit) | **host trampoline** | on the effect's `Ready` **or** cancel/drop |
+
+`retire` is **idempotent** (remove-the-token's-pool-if-present); a double-`close` or a
+`close`-while-parked retires once and wakes any token-parked waiters to observe the gone
+resource via their own (now-`EBADF`) syscall — Unix-aligned, no drain barrier
+(pressure-test (c)). Full-duplex is expressible because the platform projects **distinct
+per-direction tokens** off one handle in its read vs write poll-fns; the manifest imposes
+no shared-token constraint between distinct effects (pressure-test (d)).
+
+**No v10 looming (Principle 8 — interim-risk PASS).** v9 *removes* the v8 positional-bake
+convenience and is the model's end-state. The forward axis (slice-4 degree/backpressure)
+rides the already-reserved `ConcurrencyDescriptor.global_budget` — no v9 reshape, no v10
+bump. Nothing in v9 is built to be discarded.
+
+**ABI bump: 8 → 9.** Stamp `ABI_VERSION = 9`. The `HostCtx` layout change (the two new
+fn-pointers), the `ConcurrencyDescriptor.role` byte, and the new `Acquire` enum are
+layout-affecting (Principle 14). Every in-tree platform rebuilds against v9 in the
+cutover change-set; the `shapes-badabi` negative fixture re-pins wrong-relative-to-9
+(`/qa`). The `cranelisp-types` + `cranelisp-platform` `public-api.txt` regen rides the
+same change-set.
+
+**/design re-cascade (the design docs written to the dead descriptor model — flag for
+/design, do NOT edit from /arch):**
+- `design/platform/poll-support.md` §3.1/§3.5/§3.6 — rewrite the leaf-authoring contract
+  to the poll-fn skeleton (acquire/register/retire via `ctx`); delete the `desc_out`
+  env contract and the resource-handle-header depiction; `Connection` opaque field holds
+  `r` (not a slot); the two-module `web.cl`/`serve.cl` split + the load-order rule
+  (§3.6.3) carry forward unchanged.
+- `design/backend/io-trampoline.md` §17 — the poll node is **uniform** (no role bake, no
+  `ResourceDesc` header slot, no `desc_out` slot, no resource-handle type set); the
+  backend's only v9 delta is **deleting** `inject_poll_leading_pair` + the positional
+  peel. Net *less* backend work than the descriptor cut. `ring2-rc.md` §3.5.10 (0474) is
+  model-independent and stands.
+- `design/int/reactor.md` §7 — the trampoline does **not** split by role / stamp / read;
+  it drives the uniform poll node, and the host implements the `ctx` vtable's
+  `acquire`/`retire` (the §8.1 permit map) + **tramp-owned release** on `Ready`/cancel,
+  keyed by effect identity. §8 (0479 watchdog) + §9 (0475) are model-independent and
+  stand. §7.5 singleton `read-line` acquires the manifest-static token (carries forward).
 
 ---
 

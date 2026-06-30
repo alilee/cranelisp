@@ -1867,28 +1867,59 @@ impl HeapHeader {
 }
 ```
 
-### Resource descriptor (ABI v9 — representation overhead, S97 FIXME 0482)
+### Resource scheduling — the `ctx` vtable handle model (ABI v9, S97, supersedes FIXME 0482)
 
-A **resource-handle** ADT (one the manifest marks `Produce`/`Consume`, e.g. `web/Connection`) carries its dynamic scheduling descriptor `(token, capacity)` in a **fixed-offset header slot** — uniform across all resource-handle types, like the RC/heap header, so the trampoline reads it with **no per-ADT "token is field N" knowledge** (`platform-interface.md` §6.8.0b; `effect-concurrency.md` §4.1.1). The slot is **type-invisible** — never a logical ADT field, never a leaf argument — and is reserved by the backend (§"Heap Object Layouts" backend layouts) only on resource-handle ADTs (a few bytes on those only, not on every heap object). The trampoline **stamps** it at production (from a produce leaf's `desc_out`) and **reads** it before a consume leaf polls. The slotted payload is `ResourceDesc`:
+**Scheduling state never rides on a value** (`platform-interface.md` §6.8.0b;
+`effect-concurrency.md` §4.1.1 — superseding the descriptor cut, which proposed a
+value-header `ResourceDesc` slot and was retired at the Wave-2 DLL-mint blocker). There
+is **no resource-descriptor heap-header slot, no `ResourceDesc` type, no resource-handle
+layout marking, no `PollFn.desc_out`**. A resource handle is an ordinary opaque ADT
+(`web/Connection`) carrying the platform's own `r`/`fd` in a genuine field; the trampoline
+never introspects it. All runtime scheduling flows through a trampoline-owned **`ctx`
+vtable** (the generalized `HostCtx`) the platform's poll-fns call.
+
+The v9 ABI surface is two additions — no value-side types:
 
 ```rust
-/// Dynamic per-resource scheduling descriptor, stored in a resource-handle's
-/// header slot and written by a produce leaf through `PollFn::desc_out`.
-/// `#[repr(C)]` layout contract governed by `cranelisp_platform::ABI_VERSION`.
-#[repr(C)]
-pub struct ResourceDesc {        // in cranelisp-types
-    pub token: u64,              // dynamic, platform-minted (web: == fd)
-    pub capacity: u32,           // the resource's safe-concurrency ceiling
-    pub _pad: [u8; 4],           // MUST be zero
-}
-
-/// Per-EFFECT static role — carried on the manifest descriptor, NOT on the
-/// per-value `ResourceDesc`. The trampoline reads it to decide stamp/read/nothing.
+// cranelisp-types — the new compile-time fact + acquire result.
+//
+/// Per-EFFECT static leaf role — a manifest compile-time fact (grounds inference E2,
+/// documents the leaf). The trampoline does NOT branch on it at runtime. `#[repr(u8)]`,
+/// governed by cranelisp_platform::ABI_VERSION.
 #[repr(u8)]
-pub enum ResourceRole { None = 0, Produce = 1, Consume = 2 }   // in cranelisp-types
+pub enum ResourceRole { None = 0, Produce = 1, Consume = 2, Retire = 3 }
+
+/// C-ABI result of a token-permit acquisition. `#[repr(i32)]`.
+#[repr(i32)]
+pub enum Acquire { Acquired = 0, Parked = 1 }
+
+// `ConcurrencyDescriptor` gains `role: ResourceRole` (consuming one byte of its
+// `_reserved: [u8; 3]` tail — existing field offsets + size unchanged).
+// `PollFn` is UNCHANGED: poll(state, *HostCtx, *Waker) -> Poll  (no desc_out).
 ```
 
-The v9 cut also adds `role: ResourceRole` to `ConcurrencyDescriptor` (consuming one byte of its `_reserved: [u8; 3]` tail — existing field offsets unchanged) and a `desc_out: *mut ResourceDesc` parameter to `PollFn` (`poll(state, *HostCtx, *Waker, desc_out) -> Poll`; the type crate names `desc_out` as `*mut c_void` per the Principle-3 opaque-pointer pattern, re-projected as `*mut ResourceDesc` in `cranelisp-platform`). **`Poll` stays a single-register `#[repr(i32)]` enum and the result value still flows through `set_result`** — the descriptor is the only new return-side channel (the /arch adjustment to 0482's "widen the return"). These land in the v9 cutover change-set (atomic `ABI_VERSION` 8 → 9; `cranelisp-types` + `cranelisp-platform` `public-api.txt` regen). Canonical: `platform-interface.md` §6.8.0b.
+```rust
+// cranelisp-platform — HostCtx (the `ctx` vtable) gains the token-permit half.
+#[repr(C)]
+pub struct HostCtx {
+    pub register_readable: unsafe extern "C" fn(host: *const c_void, fd: i32, waker: *const Waker),
+    pub register_writable: unsafe extern "C" fn(host: *const c_void, fd: i32, waker: *const Waker),
+    pub register_timer:    unsafe extern "C" fn(host: *const c_void, deadline_nanos: u64, waker: *const Waker),
+    // NEW v9 — token-permit pool ops the platform poll-fn calls:
+    pub acquire: unsafe extern "C" fn(host: *const c_void, token: u64, capacity: u32, waker: *const Waker) -> Acquire,
+    pub retire:  unsafe extern "C" fn(host: *const c_void, token: u64),
+    pub host: *const c_void,
+    // NO `release` — release is trampoline-owned (on Ready/cancel).
+}
+```
+
+The poll-fn calls `acquire`/`register_*`/`retire` through the `*HostCtx` it already
+receives; the host releases permits automatically on the effect's `Ready` or cancel (keyed
+by effect identity). `acquire` takes the **waker** so a `Parked` return can enqueue the
+strand for re-poll, and is idempotent per in-flight effect. These land in the v9 cutover
+change-set (atomic `ABI_VERSION` 8 → 9; `cranelisp-types` + `cranelisp-platform`
+`public-api.txt` regen) — a **simpler** bump than the descriptor cut. Canonical:
+`platform-interface.md` §6.8.0b.
 
 ### HeapString (in `cranelisp-intrinsics`)
 

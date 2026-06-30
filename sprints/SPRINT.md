@@ -1,6 +1,6 @@
-# Sprint 97: Concurrency-track consolidation — ABI v9 (descriptor as representation overhead) + drain the S96 carry
+# Sprint 97: Concurrency-track consolidation — the callback-vtable handle model + drain the S96 carry
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 1 (QA-first) in progress. Design checkpoint committed `60bf564`. Phases 2–4 done (arch SIGN-OFF; platform/backend/int design + /qa plan + waves complete; 0469/0471 resolved+deleted).
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — **/arch RATIFIED the callback-vtable handle model (2026-06-30, no flaw); rescope = still S97, SMALLER spine.** Resuming with a /design re-cascade wave → /qa layout-row adjust → re-scoped Wave-2 cutover (DLL-mint blocker gone) → Wave-3 drains → Wave-4 docs/port. Scheduling state lives entirely in a tramp-owned `ctx` vtable (`acquire(token,cap,waker)`/`register_{readable,writable,timer}`/`retire`; release is tramp-owned); handles are opaque ADTs carrying a real opaque `fd` field; **no `ResourceDesc`, no header slot, no `desc_out`, no trait — `PollFn`/`Poll` unchanged**; ABI 8→9 (simpler). FIXME 0482 deleted (resolved-by-supersession). Wave-1 RED baseline `5124e1a` stands (the user-facing sig e2e carry; the layout e2e need /qa rework). Design checkpoint `60bf564`. **NOTE the title/goal below still read "descriptor cut" — superseded; the model is the §"MODEL PIVOT" Notes entry + `effect-concurrency.md §4.1.1`.**
 
 **Goal**: Clear the concurrency track before the parallelism axis (S98) — land the ABI v8→v9 cut that makes the resource `(token, capacity)` descriptor trampoline-owned representation overhead (invisible to user source AND value shape), drain the seven open concurrency-track FIXMEs + three standing known-defect REDs, and split the user-facing concurrency documentation from a new platform-writer's guide along the same seam.
 
@@ -56,7 +56,8 @@ This is a serial cross-surface cascade: **/arch (rules the shape; manifests `pla
 
 | FIXME | Target skill | Status | Notes |
 |---|---|---|---|
-| 0482 | /arch | **spine** | ABI v8→v9 — descriptor as representation overhead. /arch rules the shape → cascade B/§A. |
+| 0482 | /arch | **DELETED** (superseded) | descriptor cut → superseded by the callback-vtable handle model; substance migrated `effect-concurrency.md §4.1.1` + `platform-interface.md §6.8.0b` |
+| 0483 | /arch | open (Phase-7 / when invoked) | NEW — "actors+functions explicit before synthesising" principle (user-directed; filed once redesign settled). /arch authors the principle + deletes. |
 | 0469 | /design | **RESOLVED + deleted** (Phase 3) | web wrappers / platform-load cycle → two-module split `web.cl`+`serve.cl`; general load-order rule recorded `poll-support.md §3.6.3` |
 | 0471 | /design | **RESOLVED + deleted** (Phase 3) | serial-stdin → manifest-static singleton token `poll-support.md §3.1` (structural, strengthened over doc-only) |
 | 0478 | /int | co-located, decoupled | single-step launch arm skips E2 value-locality — /int §4.1 hardening, sound under v8+v9, not gated on the descriptor cut |
@@ -115,9 +116,51 @@ Seams handed downstream: /design (backend) — poll-node emit reserves the fixed
 
 **Phase 3 exit gate MET:** /arch public-API + interface set complete (Phase 2); /qa has enough to draft failing tests (this plan; gaps dispositioned); touched design docs current (platform/backend/int all DONE).
 
-## Waves (Phase 4)
+## Waves (Phase 4 — RESCOPED 2026-06-30 after the model pivot)
 
-**Organizing constraint:** the v9 cut is **ONE atomic change-set** spanning `cranelisp-types` + platform + backend + int (the `ResourceDesc`/`PollFn`/`role` layout reds the tree until all consumers catch up) — it is a single cross-crate `/dev` task, NOT a per-crate D/D/R fan-out (design is already done across all three surfaces). The independent defect drains are separate change-sets. Worktree isolation is broken → all source-touching waves run **serially**, one `/dev` agent at a time.
+**The pivot makes the spine SMALLER.** The cutover is still ONE atomic change-set (the `cranelisp-types` ABI bump reds the tree until consumers catch up), but it's now mostly *deletion*: backend just removes `inject_poll_leading_pair`; `PollFn`/`Poll` unchanged; int trades the descriptor stamp/read for a permit-map it largely has via §8.1. The Wave-2 DLL-mint blocker is **gone** (opaque `Connection` now carries a real `fd` field → normal `CLAdt::construct`). Independent defect drains are unchanged. Worktree isolation broken → source-touching waves run **serially**.
+
+### Wave 0 — /design re-cascade (NEW; text-only, may fan out read-style)
+
+The three /design DONE entries were written to the dead descriptor model. Re-cascade to the ctx-vtable model per `/arch`'s map:
+| Skill | Doc | Task | Status |
+|---|---|---|---|
+| /design (platform) | `poll-support.md §3.1/3.5/3.6` | poll-fn skeleton (`acquire→syscall→register?`/Ready) via ctx; DELETE the `desc_out` env contract + header-slot depiction; `Connection` opaque **`fd` field** holds `r`. CARRY: web.cl/serve.cl split (0469), load-order rule §3.6.3, singleton stdin token (0471). | pending |
+| /design (backend) | `io-trampoline.md §17` | **uniform** poll node; the ONLY delta is DELETING `inject_poll_leading_pair` + the positional peel (no header slot, no role bake, no desc_out). `ring2-rc.md §3.5.10` (0474) stands. | pending |
+| /design (int) | `reactor.md §7` | host implements ctx `acquire`/`retire` (the §8.1 permit map) + **tramp-owned release** on Ready/cancel keyed by effect identity; no role-split/stamp/read. §8 (0479) + §9 (0475) stand. Also §8.2: within-token ordering home moves to inference (E2/E3) — the dissolved `SerialGroup`. | pending |
+
+### Wave 1 — QA-first — DONE + needs a layout-row adjust
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /qa | tests/ | **Carries:** the user-facing **signature** e2e (opaque `Connection`, `(read-conn conn)` 1-arg typechecks, old 3-arg rejected) — both models slim the sigs identically. **Needs rework:** the 3 **layout** e2e written to the header-slot model — `Connection` now has a *real* opaque `fd` field, so "zero-field destructure rejected" → "opaque field present but not user-destructurable"; "descriptor invisible in display" still holds (cleaner — nothing on the value); "descriptor-region RC no-leak" → ordinary ADT-field RC. | DONE → adjust |
+
+### Wave 2 — the atomic cutover (re-scoped; critical path)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | types+platform+backend+int | `cranelisp-types`: DELETE `ResourceDesc`/`PollFn.desc_out`/the trait; ADD `ResourceRole{None,Produce,Consume,Retire}`, `Acquire{Acquired,Parked}`, `ConcurrencyDescriptor.role` (one reserved byte, offsets unchanged), `HostCtx.{acquire,retire}` fn-ptrs; regen `public-api.txt` ×2. platform: ctx-vtable poll-fn skeleton + opaque-`fd`-field `Connection` + web.cl/serve.cl split + singleton stdin token. backend: **DELETE `inject_poll_leading_pair`** + positional peel; `CACHE_SCHEMA_VERSION` bump. int: host impl of ctx `acquire`/`retire` + tramp-owned release (effect-identity keyed) + `ABI_VERSION=9` loader. Flips the sig+(adjusted)layout e2e GREEN; keeps the 2 regression guards GREEN. + 0478 (decoupled, lands here or W3). | pending |
+| /review | (cross-crate) | review vs the ctx-vtable contract + `/arch` rulings; baseline diffs present. | pending |
+
+### Wave 3 — independent defect drains (serial; model-independent — unchanged)
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | cranelisp-backend | 0474 deep-free (a) both tags; race+inline-bind; 0476 ctor-as-value. + unit mirrors. /review. | pending |
+| /dev | src/ (int) | 0475 empty-`select` runtime-error; 0479 armed-ness detector + `drive_mode` knob (G-D Server-mode selector + scaled backstop); 0478 E1/E2/E3 (if not in W2); bare-submodule-reexport §8.11.2 step-1. /review. | pending |
+
+### Wave 4 — Phase 6 (user-facing; unchanged, docs now CLEANER)
+
+| Skill | Surface | Task | Status |
+|---|---|---|---|
+| /docs | user/ | Split `concurrency.md` → user concurrency guide (NO scheduling internals) + NEW platform-writer's guide (the ctx-vtable poll-fn skeleton — `acquire`/`register`/`retire`, the four leaf roles — *not* a descriptor ABI). | pending |
+| /port | exemplar/ | Adopt the handle model: opaque `Connection`, slim leaf calls, web.cl/serve.cl. Replay marquee fan-out green. | pending |
+| /repl·/stdlib·/examples | — | 6a assessment + replay prior demos green. | pending |
+
+---
+**Superseded (kept for record):** the original single-wave "v9 atomic cutover" plan below + the three /design-DONE entries' descriptor specifics. The model is `effect-concurrency.md §4.1.1`; the re-cascade is Wave 0 above.
+
+### [SUPERSEDED] Original Phase-4 waves (descriptor cut)
 
 ### Wave 1 — QA-first (Phase 5 Stage 1)
 
@@ -149,6 +192,10 @@ Seams handed downstream: /design (backend) — poll-node emit reserves the fixed
 
 ## Notes
 
+- 2026-06-30 — **/arch RATIFIED the callback-vtable model (no flaw found) + manifested + rescoped.** Refinements: `acquire(token,cap,waker)` (waker added so `Parked`→re-enqueue), discrete `register_{readable,writable,timer}`, `role` compile-time-only, discrete fns affirmed over a bundled `schedule(intent)`. **Load-bearing consequence ruled:** the v8 `SerialGroup` order-restoring safety net **dissolves** (tramp no longer sees tokens) → within-token source ordering's home **moves to the inference** (E2 value-provenance + E3 cover the promised-order cases); `effect-concurrency.md §8.2`. Rulings (a)–(f) all PASS: establishment-phase token clean (Produce drives acquire/register on the fresh `r`, handle materializes at Ready); release tramp-owned on Ready/cancel keyed by effect identity; retire idempotent; full-duplex = distinct per-direction tokens (no manifest field); cross-resource co-serialization exclusion-form still expressible (ordered-form deferred per 0482, an advanced API); no acquire/reactor-thread deadlock (Parked returns immediately, §8.1 counter). **0482 DELETED** (substance → `effect-concurrency.md §4.1.1` + `platform-interface.md §6.8.0b`). Arch docs changed: `effect-concurrency.md` (§4.1.1 rewrite, §8.1 banner, §8.2 rewrite), `platform-interface.md §6.8.0b` (ctx-vtable ABI), `bounded-contexts.md §3/§5/§6`, `interfaces.md`. **No /spec FIXME** (representation/ABI; concurrency-semantics cascade remains 0447). **Pending /arch principle filing NOW DONE → FIXME 0483 filed** (redesign settled).
+- 2026-06-30 — **PENDING /arch principle filing (user-directed, file once the redesign settles).** → **ACTIONED: FIXME 0483 filed** (`design/arch/fixmes/0483-arch-actors-functions-explicit-before-synthesis.md`). Add an `/arch` principle: **make the actors + the functions/contracts between them explicit BEFORE synthesising a mechanism** — the precondition for a solution that is faithful (maps the real interaction structure), simple (minimal mechanism becomes visible), and innovative (better/general designs only become *seeable* once actors+calls are laid bare). Trigger smell: a design arriving **pre-framed across multiple incremental FIXMEs** (0465→0482) — challenge the *premise*, not just the shape; run a first-principles / actor-model / "what would unix do" pass before ratifying. Origin: the S97 descriptor cut was a mechanism synthesised from an inherited frame with no actor model; the 3-column program/tramp/platform table + the calls/returns/callbacks is what surfaced the simple model. Captured in `memory/feedback_actors_functions_before_synthesis.md`. **Do NOT file the FIXME yet — wait for the /arch redesign to land (avoid churn on docs in flight).**
+- 2026-06-30 — **MODEL PIVOT (user-ratified) — callback-vtable handle model supersedes the descriptor cut.** Worked through with the user from the Wave-2 STOP. Core: scheduling state (`token`/`capacity`) NEVER rides on user values — it flows through a tramp-owned `ctx` vtable the platform calls. **Vtable:** `acquire(token, cap)→Acquired|Parked`, `register(source, interest, waker)`, `retire(token)`, + the existing `waker` (the model is the waker *generalized*). **Release is tramp-owned** (on poll `Ready` or cancel — cancel never re-enters the poll fn), not a callback. **Handles are opaque ADTs** carrying only genuine data (the platform's `r` lives in the handle's own field + the platform's hands; tramp never introspects). **Poll-fn skeleton (uniform):** `acquire → syscall → (would-block? register + Pending : Ready)`; commutative leaf omits acquire; one-shot `sleep` = degenerate (no handle, just `register(timer)`). **Token = derived scheduling projection of the handle** (default per-resource = `r`; split per-direction for full-duplex; `0` commutative), recomputed not remembered → no separate scoreboard (the reactor interest table IS it). **Layering split:** manifest = compile-time facts (poll-shape? role? capacity? — for inference E1–E3 + codegen); `ctx` = ALL runtime scheduling. **Deletes** `ResourceDesc`/header-slot/`desc_out`/the `AsRawFd`-style trait entirely + dissolves the Wave-2 DLL-mint blocker (no slot to reserve). Unix/rust-stdlib aligned (fd + `accept→(stream,addr)` + Drop/`close`-retires). **User prefers DISCRETE vtable fns over a bundled `schedule(intent)` data object (open to persuasion).** Supersedes FIXME 0482 + the Phase-2 value-header ruling + the §17/§7/§3.5-3.6 descriptor cascade. → /arch to ratify, pressure-test, re-cascade, and rescope S97.
+- 2026-06-30 — **Wave 2 STOP (design gap, no edits — tree clean/green).** The v9 produce-stamp needs a produced opaque `Connection []` to be a 40-byte object (header 16 + tag 8 + 16-byte desc slot@24), but `accept-conn` mints it inside the DLL via `CLAdt::construct`→`alloc_with_tag(tag, field_count=0)` → a **24-byte** object; stamping at `value+24` overruns by 16 (DEF-6/Risk-11 heap corruption). The `alloc_with_tag` ABI + platform schema carry **no resource-handle identity** — slot reservation for a zero-logical-field handle at the DLL-mint→host-alloc boundary is **undesigned** (v9 designed the descriptor *shapes*, not this allocation seam; §17.7/§3.5.7's "confirm `CLAdt::construct` emits 40 bytes" is a new interface, not a confirmation). Compile-only v9 tests would pass but the `web_server…overlap` guard runs a real `accept→read→send` and would corrupt → no clean partial for an atomic change-set. **Routed to /arch** to rule the slot-reservation seam (candidates: schema resource-handle bit consulted by `CLAdt::construct` / resource-handle-aware host alloc callback / `accept-conn` mints via backend-emitted constructor). Rest of cutover traced + ready; resumes once /arch rules. Also noted: `_reserved`@17 unit test `scheduling.rs:386` must update; `tests/fixtures/web_fanout/*` still v8-shaped, must move to v9 with the guard.
 - 2026-06-30 — S97 opened. S96 SPRINT.md archived to `sprints/archive/sprint-96.md` (was committed/closed at `e981ead` but never moved). Scope = full concurrency-track drain (user-approved appetite) + the /docs user/platform-writer split (user direction). Parallelism axis (0459/0408) deferred to S98.
 
 ## Outcome (Phase 7)

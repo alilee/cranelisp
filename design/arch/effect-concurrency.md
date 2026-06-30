@@ -334,45 +334,178 @@ which classifies `Sequential` (its head is `bind`, not a platform effect), so it
 enters Par competition and is decided entirely in the `Sequential` arm's extended
 launch-eligibility check.
 
-### 4.1.1 The resource descriptor is representation overhead, not value data (ABI v9, S97, FIXME 0482)
+### 4.1.1 Scheduling state never rides on values — the `ctx` vtable handle model (ABI v9, S97, supersedes FIXME 0482)
 
-**The descriptor `(token, capacity)` is type-invisible runtime representation
-overhead — like the RC/heap header — never user source and never part of an ADT's
-logical shape.** At v8 the per-connection `(token, capacity)` leaked into source
-(`web/Connection` was `[token capacity fd]`; the user wrote `(read-conn fd 1 fd)`).
-The v9 cut (`platform-interface.md` §6.8.0b) makes the descriptor trampoline-owned and
-carries it as representation overhead, completing the "concurrency written by nobody"
-promise at the **value** level, not just the source level. The model, with the
-producing/consuming asymmetry that is the load-bearing subtlety:
+> **Supersedes the descriptor-representation-overhead cut.** A prior S97 ruling
+> (FIXME 0482 + the Phase-2 value-header descriptor model) treated `(token, capacity)`
+> as trampoline-owned representation overhead carried on the *value* (a fixed-offset
+> heap-header slot, a `desc_out` out-param on `PollFn`, a `ResourceDesc` type, a
+> `ResourceRole`-on-the-value notion). **That model is RETIRED** (user-ratified
+> 2026-06-30, after the Wave-2 DLL-mint blocker: an opaque zero-field `Connection`
+> minted in the DLL as a 24-byte object had no room for a 16-byte header slot stamped
+> at `value+24`, and reserving that slot at the DLL-mint→host-alloc boundary was an
+> undesigned cross-crate interface). The replacement is **simpler and dissolves the
+> blocker**: scheduling state never touches the value at all — there is **no header
+> slot, no `desc_out`, no `ResourceDesc`, no `AsRawFd`-style trait**.
 
-- A resource-**producing** leaf (`accept`) writes `{token, capacity}` through a
-  `desc_out` out-param (NOT a leading positional arg); the trampoline **stamps** it
-  into the produced value's fixed-offset **header slot** and hands the bare value
-  onward. The token *value* is the platform's internal choice (web: `token == fd`) —
-  invisible to user and backend.
-- A resource-**consuming** leaf (`read`/`send`) carries no descriptor; **before** it
-  polls, the trampoline **reads** `(token, capacity)` off the consumed handle's header
-  and acquires the token (acquire-around-poll). Its result carries no descriptor.
-- The leaf's **role** (`Produce`/`Consume`/`None`) is a static, per-effect manifest
-  fact (`ConcurrencyDescriptor.role`), not a per-value fact; the value header carries
-  only the dynamic `(token, capacity)`.
+**Scheduling state never rides on user values. It flows through a trampoline-owned
+`ctx` vtable that the platform's poll-fns call** — the existing host-owned-reactor waker
+(§12, the A2 model) **generalized** from "register interest" to "register interest +
+acquire/release a token permit + retire a token." The model:
 
-**This strengthens E2 (§4.1), it does not change it.** E2's value-locality witness —
-"a resource reachable only from a freshly-bound, non-shared value yields a fresh,
-disjoint token by construction" — becomes a **representational** fact under v9: the
-disjoint token literally rides inside the freshly-bound `conn`'s header. The
-disjointness proof is unchanged; its grounding is firmer. **FIXME 0478** (the
-single-step launch arm admits a discarded `ResourceSerial` step without the E2 check
-the sub-tree arm runs) is the §4.1 hardening that co-lands with the v9 /int work — but
-it is a **compile-time inference soundness** fix, decoupled from the descriptor
-representation (it must be sound under both v8 and v9), and should not be gated on the
-representation cut.
+- **Handles are opaque ADTs.** A resource handle (`Connection`, …) is an ordinary ADT
+  carrying only genuine program data (a peer address, say — or nothing). The platform's
+  opaque resource id `r` (web: `r == fd`) lives in **the handle's own field** — the
+  platform built the handle and reads `r` back out of it. **The trampoline never
+  introspects the handle.** There is no per-ADT "token is field N" knowledge anywhere
+  in the host, no resource-handle layout marking, no reserved slot.
+- **The `ctx` vtable** (the generalized `HostCtx`, §12) carries, alongside the existing
+  `register_readable`/`register_writable`/`register_timer` + the C-ABI waker:
+  - `acquire(token, capacity, waker) -> Acquired | Parked` — ask for a permit on
+    `token`'s capacity-`N` pool. `Acquired` ⇒ a permit is held; `Parked` ⇒ no permit
+    free, the `waker` has been enqueued on the token's permit-wait queue and will fire
+    when one releases.
+  - `retire(token)` — the resource's scheduling identity is gone (its `close` ran);
+    drop the token's permit pool and wake any permit-waiters to observe the gone
+    resource.
+  - (the three `register_*` + waker — unchanged, the A2 reactor primitives.)
+- **Release is trampoline-owned, NOT a vtable call.** The platform never releases. The
+  host releases a held permit automatically when the poll completes (`Ready`) **or** is
+  cancelled (the future drops) — and **cancel never re-enters the poll-fn**. The
+  platform expresses *intent* (`acquire`); the host owns *lifecycle* (release). This is
+  why `release` is absent from the vtable: the platform could not soundly release on a
+  cancel it never sees.
+- **The token is a derived scheduling projection of the handle, recomputed not
+  remembered.** The platform computes it in the poll-fn from the handle it holds
+  (default per-resource: `token == r`; **split per-direction** — `read`/`write` project
+  distinct tokens off one full-duplex handle so they do not serialize against each
+  other; `token == 0` ⇒ commutative / no acquire). Because the platform recomputes the
+  token each poll, **there is no separate scoreboard** mapping handle→token: the host's
+  only scheduling state is the semaphore-per-token permit map (§8.1) and the reactor's
+  interest table — both inherent, neither a value-side or handle-side store.
 
-**Singleton resources carry a manifest-static token.** A resource not minted per value
-(stdin) has no produced handle to stamp; it declares a manifest-static descriptor
-(`read-line`: `{token: STDIN_TOKEN != 0, capacity: 1, role: Consume}`) and the
-trampoline acquires that token before polling — structurally enforcing single-in-flight
-(resolves FIXME 0471 structurally, not by prose correction).
+**Uniform poll-fn skeleton.** Every poll-shape leaf has the same shape:
+
+```
+poll(state, ctx, waker):
+    token = project_token(state.handle)          # platform computes from its handle
+    if token != 0:
+        if ctx.acquire(token, capacity, waker) == Parked:
+            return Pending                        # backpressure: never start an op without a permit
+    r = state.syscall(NONBLOCK)                   # the platform's `what`
+    if would_block(r):
+        ctx.register_<interest>(state.fd, waker)  # the host's `when`
+        return Pending
+    set_result(state, value_from(r))
+    return Ready
+```
+
+- A **commutative** leaf (token 0) omits `acquire` entirely (no permit; the token
+  never appears).
+- A **one-shot** leaf (`sleep`) is the degenerate case: no handle, no token, no
+  acquire — just `register_timer(deadline, waker) → Pending → Ready`.
+- `acquire` returning **`Parked`** returns `Pending` **before** the syscall — an op is
+  never started without a permit (this is the backpressure / pool-bound, §8). `acquire`
+  is **idempotent per in-flight effect**: a re-poll (woken because the fd became ready,
+  or a permit freed) calls `acquire` again, and the host — keying held permits by the
+  effect's identity (the waker's data pointer) — returns `Acquired` without consuming a
+  second permit. So the skeleton needs no "have I already acquired?" flag on `state`;
+  the host's per-effect permit accounting makes acquire safe to re-call.
+
+**The four leaf roles** (a static, per-effect *manifest* fact — see the layering split
+below; the trampoline does **not** branch on role at runtime):
+
+| Role | Examples | Shape |
+|---|---|---|
+| **Produce** | `open` / `accept` / `connect` | Acquires/registers on the **establishment** resource (the listener fd for `accept`, a fresh socket fd for `connect`); at `Ready` mints the handle ADT carrying the new `r` and returns it. During establishment there is no program handle yet, so the platform drives `acquire`/`register` on the fresh `r` it minted — the handle materializes only at `Ready`. |
+| **Consume** | `read` / `write` | `state.handle` **is** the platform's own handle (it reads `r` from it); projects the (per-direction) token, acquires, does the I/O syscall. |
+| **Retire** | `close` | `close(r)` syscall + `ctx.retire(r)`. Ends the resource's scheduling identity. |
+| **None** | a commutative GET, `sleep` | No token (or token 0); no acquire. |
+
+**A full open / read / write / close trace** (generic; web is the worked instance,
+`r == fd`):
+
+```
+program                 trampoline (host)                 platform poll-fn
+───────                 ─────────────────                 ────────────────
+(open …)        ──►  drive Produce leaf  ──►  acquire(establish_tok, waker)? Acquired
+                                              connect(NONBLOCK) → WouldBlock
+                ◄──  Pending                ◄  register_writable(fd, waker); Pending
+   … reactor wakes on writable …
+                ──►  re-poll Produce      ──►  acquire(…)=Acquired (idempotent); connect done
+                ◄──  Ready(Conn{r=fd})     ◄  mint Conn carrying r=fd; set_result; Ready
+                     RELEASE establish permit (tramp-owned, on Ready)
+(read conn)     ──►  drive Consume leaf   ──►  tok=read_tok(r);  acquire(tok,1,waker)=Acquired
+                                              recv(fd,NONBLOCK) → WouldBlock
+                ◄──  Pending                ◄  register_readable(fd, waker); Pending
+   … reactor wakes on readable …
+                ──►  re-poll Consume      ──►  acquire(tok,…)=Acquired (idempotent); recv ok
+                ◄──  Ready(Request)        ◄  set_result; Ready
+                     RELEASE read permit (on Ready)
+(write conn r)  ──►  drive Consume leaf   ──►  tok=write_tok(r); acquire(tok,1,waker)=Acquired
+                                              send(fd,NONBLOCK) ok
+                ◄──  Ready(Int)            ◄  set_result; Ready
+                     RELEASE write permit (on Ready)
+(close conn)    ──►  drive Retire leaf    ──►  tok=read_tok(r); acquire(tok,1,waker)=Acquired
+                                              close(fd); ctx.retire(read_tok); ctx.retire(write_tok)
+                ◄──  Ready(Unit)           ◄  set_result; Ready
+                     RELEASE close permit (on Ready)
+```
+
+If the `(read conn)` future is **cancelled** while Pending (race loser / timeout /
+scope exit), the host drops it: it deregisters the fd-waiter from the interest table
+and releases the read permit it holds — **without ever re-entering the poll-fn**.
+Because the held permit and the registration are both host-tracked (keyed by the
+effect's identity), cancel cleanup needs nothing from the handle and nothing from the
+leaf.
+
+**The layering split — manifest vs `ctx`.** The **manifest** carries *compile-time
+facts*: is-poll-shape? (the `blocking` flag), the leaf's **role** (Produce/Consume/
+Retire/None), its **capacity default**, its **serialization class** (Sequential/
+Commutative/ResourceSerial) — exactly what inference E1–E3 and codegen need. The **`ctx`
+vtable** carries **ALL runtime scheduling** — acquire/register/retire + waker. This is
+unix/rust-stdlib-aligned: a handle is an fd; `accept` returns `(stream, addr)`; `Drop`/
+`close` retires. The split is clean because no runtime scheduling datum ever needs to
+live on a value: the platform recomputes it from the handle, and the host tracks permits
+and registrations by effect identity.
+
+**This strengthens E2 (§4.1) without changing it.** E2's value-locality witness — "a
+resource reachable only from a freshly-bound, non-shared value yields a fresh, disjoint
+token by construction" — holds because the **platform** mints `r` fresh at the Produce
+leaf's `Ready` edge and projects the token from it. The disjointness proof is unchanged;
+its grounding is that the conn's `r` is born fresh at `accept`. **FIXME 0478** (the
+single-step launch arm admits a discarded `ResourceSerial` step without the E2
+value-locality check the sub-tree arm runs) is a **compile-time inference soundness**
+fix that is sound under **any** representation — it co-lands with the /int work but is
+**not gated** on this model.
+
+**Singleton resources carry a manifest-static token** (resolves FIXME 0471
+structurally). A resource not minted per value (stdin) has no handle to project from; it
+declares a **manifest-static** serial token — `read-line`: `{token != 0, capacity 1,
+role Consume}` — and its poll-fn calls `acquire(STDIN_TOKEN, 1, waker)` on that constant.
+Single-in-flight stdin is then enforced by construction (the second concurrent
+`read-line` parks), with no value, no header, no special case.
+
+**Cross-resource co-serialization is still expressible (point e — confirmed).** Two
+*different* resources can be deliberately co-serialized by having both leaves' poll-fns
+project the **same** token — the permit then serializes access across them. This is the
+*exclusion* form of the 0482-deferred "explicit token" knob, and it remains expressible
+with no ABI change (the platform controls the projection). Its *ordered* form
+(source-order across two different-provenance resources) is **not** expressible via a
+shared token alone — see §8.2 — and, consistent with 0482's deferral, belongs to a
+separate advanced API (an explicit ordering combinator, or a threaded handle that
+creates a real data dependency the inference respects) if ever wanted.
+
+**Discrete vtable functions, not a bundled `schedule(intent)` (confirmed).** `acquire` /
+`register_*` / `retire` stay **discrete** fn-pointer entries rather than one
+`schedule(intent: Intent)` data object. The operations have genuinely different return
+types (`acquire` → `Acquired | Parked`; the rest → unit) and different argument shapes
+(fd vs deadline vs token+capacity); bundling them behind one struct-carrying call buys
+nothing and adds a struct ABI (Principle 2 narrow interfaces, Principle 6 budget). The
+three `register_*` are themselves the generalized `register(source, interest, waker)`
+specialized by source-kind (readable-fd / writable-fd / timer) — kept discrete for the
+same reason (a unified `register` would need a tagged source union for one i32-vs-u64
+argument difference).
 
 ## 5. The concurrency descriptor
 
@@ -593,6 +726,18 @@ token's permit." That is a net mechanism simplification.
 
 ### 8.1 The slice-3 carrier — `(token, capacity)` dynamic on the node (the ratified seam)
 
+> **v9 relocation (§4.1.1).** The carrier described below — `(token, capacity)` baked
+> onto the IO node and read by the trampoline, which acquires the token's permit
+> *around* the poll — is the v8 shape. Under the v9 ctx-vtable model the **leaf**
+> computes the token (from its handle) and calls `ctx.acquire(token, capacity, waker)`
+> itself; nothing is baked onto the node, and the trampoline does not acquire-around-poll
+> or read any token off the node. The **permit mechanism below is unchanged** — a host
+> `Semaphore(capacity)` keyed by token, `token == 0` ⇒ no acquire, the (capacity+1)th
+> parks — only *who calls acquire* (the leaf, not the trampoline) and *where the token
+> comes from* (the platform's projection, not a node field) move. Release stays
+> trampoline-owned (on `Ready`/cancel). Read this section for the permit semantics; read
+> §4.1.1 for the call-site relocation.
+
 Capacity reaches the runtime the *same way the token already does* — **dynamically, on
 the IO node, platform-supplied at the effect site** — not via a static `DefKind` field
 or a synthesized per-symbol token. The mechanism is a one-field generalization of the
@@ -636,16 +781,44 @@ declared ceiling), and the recorded event surfaces the bug to the observability 
 (§11) rather than hiding it. (Later, the slice-4 *degree* throttle composes by
 `min(capacity, degree)` regardless.)
 
-### 8.2 Within-token source ordering — carried deliberately
+### 8.2 Within-token source ordering — its home moves to the inference (v9 ctx-vtable consequence)
 
 **One invariant to carry deliberately: within-token source ordering.** A bare semaphore
 gives *exclusion* but not *order*, and order is observable for same-resource effects
-(e.g. log appends to one file must land in source order). So a **capacity-1** same-token
-group is modelled as a **sequential async block**, mirroring today's `SerialGroup` —
-exclusion *and* order. This must be carried into the async lowering on purpose; it does
-not fall out of permits alone. (For capacity ≥ 2 the pool is explicitly concurrent within
-the token, so ordering is not promised beyond the permit discipline — a capacity-N pool
-is by definition an unordered bag of N slots.)
+(e.g. log appends to one file must land in source order).
+
+**Under the v9 ctx-vtable model the trampoline no longer sees tokens** — the platform
+computes the token in its poll-fn and the host never introspects the handle (§4.1.1). So
+the v8 mechanism (trampoline reads the token off the node and groups same-token effects
+into an ordered `SerialGroup` sequential async block) **dissolves with the rest of the
+group-by-token dispatcher** (§8): the trampoline cannot group by a token it cannot see.
+This relocates where the ordering guarantee lives — and it is sound, because the
+guarantee was already the inference's:
+
+- **Capacity-1 same-resource ordering is guaranteed by the inference, not the
+  trampoline.** Two effects on the **same explicit handle** share that handle as a free
+  variable, so E2 value-locality refuses to make them disjoint (§4.1) — they lower to a
+  serial `Bind` in source order. The permit then provides *exclusion* (a same-token
+  re-entrant `acquire` parks until release); *order* comes from the bind chain. So
+  capacity-1 within-token source order holds **by the inference sequencing same-handle
+  effects**, exactly the cases where order is promised.
+- **Capacity-N pools are an unordered bag of N slots** — the inference parallelizes
+  data-independent effects (Par), the permit bounds them at N, order is **not** promised
+  (unchanged from §8.2's v8 statement; the DB pool case).
+- **Shared singletons (Sequential token-1, stdout) are sequenced by the inference**
+  (Sequential is never Par'd; E3 refuses detaching them), so their order holds without
+  trampoline grouping. Their `acquire(token-1, 1)` never contends (only one in flight)
+  and is a harmless redundant safety net.
+
+**The one thing genuinely lost is the trampoline's order-restoring safety net for
+*different-provenance* effects that alias to the same token** (two handles the platform
+deliberately projects onto one shared token for *ordered* co-serialization). The permit
+gives them exclusion but not source-order (the inference parallelizes them — distinct
+handles — and the trampoline can no longer re-sequence them). This is the *ordered* half
+of the cross-resource co-serialization knob, which 0482 already deferred (§4.1.1, point
+e): the *exclusion* form survives via shared-token projection; the *ordered* form, if
+ever wanted, is a separate advanced API — and arguably belongs there, since an ordering
+constraint is more honestly expressed as a data dependency than a hidden shared token.
 
 The worked example: concurrent HTTP GETs draw **distinct** connection tokens → run
 concurrently; serial file block reads share **one** file token of capacity 1 → serialize
