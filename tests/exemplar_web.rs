@@ -206,28 +206,31 @@ fn encode_puzzle_form(puzzle: &str) -> String {
 //                                   30 given + 51 solved <td> cells, a valid sudoku)
 //   GET  /missing -> 404 page     (<title>Not Found</title>)
 //
-// QUARANTINED (S97, /qa) — flaky heap corruption since the ctx-vtable cutover.
-// Under the concurrent launched-strand fan-out the heavy POST /solve handler
-// corrupts the host heap ~20-30% of the time (`free(): chunks in smallbin
-// corrupted` glibc abort, or SIGSEGV). A flaky soundness RED in the canonical
-// suite is worse than a clean deterministic guard, so this is `#[ignore]`'d
-// behind the DETERMINISTIC free-standing repro it reduces to:
-//   tests/regression.rs::nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg
-// That repro isolates the root cause to the nested-ADT-Vec RC codegen class
-// (design/backend/ring2-rc.md §5.5/§5.6 borrowed_vars) — the Sudoku `Grid`
-// (= an ADT wrapping a `(Vec Cell)`) `set-cell` churn. Diagnostics ruling out the
-// launch/spark layer: the corruption PERSISTS under CRANELISP_NO_LENIENT=1 (not
-// lenient/rayon sparks), and a single non-concurrent solve never corrupts (the
-// concurrency only widens the window on the same RC defect). Un-ignore when
-// /backend fixes the borrowed_vars inner-Vec RC defect (both this and the
-// deterministic repro flip green together).
-// FIXME(/backend): ring2-rc §5.5/§5.6 borrowed_vars inner-Vec RC — frees the
-//       ADT-wrapped inner Vec while still reachable under looped/concurrent churn.
+// STILL QUARANTINED (S97, /backend) — the single-threaded nested-ADT-wrapping-Vec
+// double-use defect that the deterministic repro reduces is FIXED (the inline
+// `vec-get` temporary release `emit_vec_drop_if_temporary` now routes through the
+// rc-checked `emit_vec_rc_dec_with_drop` — free only on the last reference;
+// ring2-rc.md §5.5 — closing
+//   tests/regression.rs::nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg).
+// But this e2e remains ~1/6 flaky: the exemplar's grid mutation goes through the
+// stdlib USER functions `get`/`assoc` (`(vec-get v i)` / `(vec-set v i x)` on a
+// Var PARAMETER), NOT the inline-temporary path the deterministic repro (and this
+// fix) exercise. That path does not crash single-threaded (a free-standing
+// user-fn-wrapped reduction returns the correct value; it leaks but never
+// corrupts); the corruption appears ONLY under the concurrent launched-strand
+// serve loop and persists under CRANELISP_NO_LENIENT=1 — a SEPARATE,
+// concurrency-specific RC manifestation on a different code path. A flaky
+// soundness RED in the canonical suite is worse than a clean deterministic guard,
+// so this stays `#[ignore]`'d behind the deterministic repro until the
+// concurrency manifestation is isolated and fixed.
+// FIXME(/backend): isolate the concurrent get/assoc-path (user-fn borrowed-Var
+//       vec-set under launched strands) heap corruption — distinct from the
+//       now-fixed inline-temporary `emit_vec_drop_if_temporary` defect.
 #[test]
-#[ignore = "S97 flaky heap corruption (smallbin/SIGSEGV) under concurrent launched \
-            strands — deterministic repro: \
-            regression::nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg; \
-            FIXME(/backend) ring2-rc §5.5/§5.6 borrowed_vars"]
+#[ignore = "S97 residual: concurrency-specific heap corruption on the user-fn \
+            get/assoc grid path (distinct from the now-fixed inline-temporary \
+            vec-drop defect); deterministic single-thread repro is green: \
+            regression::nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg"]
 fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
     let port = free_port();
     let _server = spawn_server(port);

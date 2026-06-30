@@ -220,6 +220,82 @@ fn consume_io_select_frees_branch_vec_and_all_branches() {
     );
 }
 
+// spec: design/backend/ring2-rc.md §3.5.10 — FIXME 0474: the FRESH-node release
+// path `dec_shallow_io` on a last-ref IO_TAG_SELECT (= 6) node must DEEP-free the
+// field-0 branch carrier Vec + every branch IO sub-tree (a fresh select node — one
+// a bind continuation built — is released here, NOT via consume_io_tree). RED on
+// revert: a bare shallow dec frees only the node header → the Vec + both branches
+// leak (the 0474 fresh-continuation-produced branch-Vec leak).
+#[test]
+fn dec_shallow_io_select_deep_frees_branch_vec_and_all_branches() {
+    let allocs = alloc_count();
+    let deallocs = dealloc_count();
+
+    // Two Pure branches.
+    let b0 = alloc_slot(16);
+    write_field(b0, TAG_OFFSET, IO_TAG_PURE);
+    write_field(b0, FIELD0_OFFSET, 42);
+    let b1 = alloc_slot(16);
+    write_field(b1, TAG_OFFSET, IO_TAG_PURE);
+    write_field(b1, FIELD0_OFFSET, 7);
+
+    // Branch carrier Vec [b0, b1].
+    let (vec, data) = make_vec_struct(2);
+    unsafe {
+        *data.add(0) = b0;
+        *data.add(1) = b1;
+    }
+    write_field(vec, VEC_LEN_OFFSET, 2);
+
+    // Fresh IO_TAG_SELECT (= 6) node: tag + field-0 = the Vec.
+    let node = alloc_slot(16);
+    write_field(node, TAG_OFFSET, 6); // IO_TAG_SELECT
+    write_field(node, FIELD0_OFFSET, vec);
+
+    dec_shallow_io(node);
+
+    // node + vec struct + b0 + b1 = 4 alloc_with_rc-tracked allocations, all freed.
+    assert_eq!(alloc_count() - allocs, 4);
+    assert_eq!(
+        dealloc_count() - deallocs,
+        4,
+        "dec_shallow_io on a fresh SELECT node must deep-free the branch Vec and \
+         BOTH branches (FIXME 0474) — a shallow dec would leak the Vec + branches"
+    );
+}
+
+// spec: design/backend/ring2-rc.md §3.5.10 — FIXME 0474: the same deep-free for a
+// fresh IO_TAG_PAR (= 3) node. `dec_shallow_io` must walk the field0=count /
+// FIELD1+i*8 branches and free each. RED on revert: shallow dec leaks both branches.
+#[test]
+fn dec_shallow_io_par_deep_frees_branches() {
+    let allocs = alloc_count();
+    let deallocs = dealloc_count();
+
+    let b0 = alloc_slot(16);
+    write_field(b0, TAG_OFFSET, IO_TAG_PURE);
+    write_field(b0, FIELD0_OFFSET, 1);
+    let b1 = alloc_slot(16);
+    write_field(b1, TAG_OFFSET, IO_TAG_PURE);
+    write_field(b1, FIELD0_OFFSET, 2);
+
+    // Fresh IO_TAG_PAR node: tag + count + 2 branch pointers.
+    let par = alloc_slot(32);
+    write_field(par, TAG_OFFSET, IO_TAG_PAR);
+    write_field(par, FIELD0_OFFSET, 2); // count
+    write_field(par, FIELD1_OFFSET, b0);
+    write_field(par, FIELD1_OFFSET + 8, b1);
+
+    dec_shallow_io(par);
+
+    assert_eq!(alloc_count() - allocs, 3);
+    assert_eq!(
+        dealloc_count() - deallocs,
+        3,
+        "dec_shallow_io on a fresh PAR node must deep-free both branches (FIXME 0474)"
+    );
+}
+
 // spec: design/arch/CLAUDE.md Decision 24 — consume_io_tree Bind recurses
 #[test]
 fn decision24_consume_io_bind_recurses_into_inner() {

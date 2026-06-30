@@ -16,6 +16,43 @@ use crate::primitives_inline;
 
 use super::{emit_capture_inc_into, FnCompiler};
 
+#[cfg(test)]
+mod ctor_value_tests;
+
+/// Borrowed-builder form of `FnCompiler::emit_adt_construct` (apply.rs): emit an
+/// ADT construction (`alloc` + tag + field stores) onto an arbitrary `builder`,
+/// used to inline-construct a data constructor inside a generated wrapper body
+/// (which builds in a separate Cranelift context, not `self.builder`). Single
+/// source of the construction shape — RC-identical: fields arrive owned and are
+/// stored with no inc, exactly as `emit_adt_construct`.
+fn emit_adt_construct_into<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    alloc_id: cranelift_module::FuncId,
+    tag: usize,
+    field_vals: &[Value],
+    _span: Span,
+) -> Result<Value, CranelispError> {
+    use crate::heap::HeapAdt;
+
+    if field_vals.is_empty() {
+        // Nullary constructor: bare tag, no heap allocation.
+        return Ok(builder.ins().iconst(types::I64, tag as i64));
+    }
+
+    let payload_size = HeapAdt::payload_size(field_vals.len()) as i64;
+    let base_ptr = heap::emit_alloc(builder, module, alloc_id, payload_size);
+
+    let tag_val = builder.ins().iconst(types::I64, tag as i64);
+    heap::heap_store(builder, tag_val, base_ptr, HeapAdt::TAG_OFFSET);
+
+    for (i, &field_val) in field_vals.iter().enumerate() {
+        heap::heap_store(builder, field_val, base_ptr, HeapAdt::field_offset(i));
+    }
+
+    Ok(base_ptr)
+}
+
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -329,12 +366,41 @@ where
         span: Span,
     ) -> Result<Value, CranelispError> {
         // If the function is declared in the current compilation unit, emit a
-        // direct call — cheaper and avoids an unnecessary GOT dereference.
+        // direct call — cheaper and avoids an unnecessary GOT dereference. User
+        // ADT constructors have a compiled constructor function here, so this
+        // arm covers `(let [f Box] (f 7))` for user types.
         if let Some(target_id) = self.ctx.func_ids.get(target_name) {
             let target_ref =
                 self.module.declare_func_in_func(*target_id, builder.func);
             let call = builder.ins().call(target_ref, user_params);
             return Ok(builder.inst_results(call)[0]);
+        }
+
+        // Data constructor as a first-class value with NO callable function in
+        // this unit — e.g. a PRIMITIVE constructor (`Some` / `None` from the
+        // primitives bootstrap), whose GOT slot is NOT a callable constructor
+        // body. Calling through it (the GOT-indirect path below) jumps to a
+        // non-function and SIGSEGVs. Instead, inline-construct the ADT directly
+        // in the wrapper body — `(let [f Some] (f 42))` (spec §5.2.7 "data
+        // constructors are functions"). This is RC-identical to direct
+        // construction (`emit_adt_construct`): the wrapper's params arrive owned
+        // (consuming convention) and are stored into the new ADT with no inc.
+        if let Some((_fqtn, ctor_info)) = self.ctx.lookup_constructor(target_name.as_ref()) {
+            let alloc_id =
+                self.ctx
+                    .alloc_func_id
+                    .ok_or_else(|| CranelispError::CodegenError {
+                        message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                        location: ErrorLocation::from_span(span),
+                    })?;
+            return emit_adt_construct_into(
+                builder,
+                self.module,
+                alloc_id,
+                ctor_info.tag,
+                user_params,
+                span,
+            );
         }
 
         // Otherwise: GOT-indirect call via __cranelisp_got_{module} data sym.

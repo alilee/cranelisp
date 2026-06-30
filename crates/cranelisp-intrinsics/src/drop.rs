@@ -263,20 +263,6 @@ pub fn consume_io_tree(ptr: i64) {
         0
     };
 
-    // Par branches snapshot (count + pointers).
-    let par_branches: Vec<i64> = if tag == IO_TAG_PAR {
-        let count = field0 as usize;
-        let mut v = Vec::with_capacity(count);
-        for i in 0..count {
-            // Branches live at FIELD1_OFFSET + i*8.
-            let p = unsafe { read_i64(ptr, FIELD1_OFFSET + i * 8) };
-            v.push(p);
-        }
-        v
-    } else {
-        Vec::new()
-    };
-
     let old_rc = unsafe { atomic_dec_rc(ptr) };
     if old_rc != 1 {
         return;
@@ -306,9 +292,9 @@ pub fn consume_io_tree(ptr: i64) {
             consume_closure(field1);
         }
         t if t == IO_TAG_PAR => {
-            for branch in par_branches {
-                consume_io_tree(branch);
-            }
+            // Walk + free the N branch sub-trees (single source — same helper
+            // the fresh-node release path `dec_shallow_io` uses; FIXME 0474).
+            free_io_branches(ptr, tag);
         }
         // IO_TAG_EFFECT_POLL (= 4, the S94 poll-shape node; literal here because
         // the constant is `concurrency`-gated in cranelisp-platform and this file
@@ -346,13 +332,55 @@ pub fn consume_io_tree(ptr: i64) {
         // match the `4`/`5` arms' style; `cranelisp_platform::IO_TAG_SELECT` is the
         // home.)
         6 => {
-            consume_vec_with(field0, consume_io_tree);
+            // Walk + free the branch carrier Vec + each branch IO sub-tree
+            // (single source — same helper `dec_shallow_io` uses; FIXME 0474).
+            free_io_branches(ptr, tag);
         }
         _ => {
             // Unknown IO tag — treat conservatively as scalar fields.
         }
     }
     unsafe { alloc::dealloc(ptr as *mut u8) };
+}
+
+/// Deep-free the branch container of a last-ref multi-child IO node
+/// (`IO_TAG_PAR` / `IO_TAG_SELECT`). The **single source** of the branch walk
+/// shared by `consume_io_tree`'s PAR/SELECT arms and the fresh-node release
+/// path `dec_shallow_io` (FIXME 0474, `design/backend/ring2-rc.md §3.5.10`,
+/// Principle 7 — not a second free path).
+///
+/// - `IO_TAG_PAR` (3): field0 is the branch count; the N branch IO pointers
+///   live at `FIELD1_OFFSET + i*8`. Each is `consume_io_tree`'d.
+/// - `IO_TAG_SELECT` (6): field0 is the branch carrier `Vec (IO a)`;
+///   `consume_vec_with(field0, consume_io_tree)` dec's the Vec, consuming each
+///   branch IO sub-tree (winner AND losers, exactly once) and freeing the data
+///   buffer.
+///
+/// Caller contract: the node is at its LAST reference (rc just reached 0) and
+/// not yet deallocated — so fields are readable and, per §3.5.10's safety
+/// condition, no in-flight future references the branch sub-trees (Select's
+/// losers were cancellation-dropped when the winner was found; Par's branches
+/// all joined). The branch roots are the rc=1 sub-trees the recursive branch
+/// trampolines / reactor left behind.
+///
+/// # Safety
+/// `ptr` must be a still-allocated IO node base pointer whose `tag` is
+/// `IO_TAG_PAR` or `IO_TAG_SELECT`.
+fn free_io_branches(ptr: i64, tag: i64) {
+    if tag == IO_TAG_PAR {
+        let count = unsafe { read_i64(ptr, FIELD0_OFFSET) } as usize;
+        for i in 0..count {
+            // Branches live at FIELD1_OFFSET + i*8.
+            let branch = unsafe { read_i64(ptr, FIELD1_OFFSET + i * 8) };
+            consume_io_tree(branch);
+        }
+    } else if tag == 6 {
+        // IO_TAG_SELECT (literal 6 — the constant is `concurrency`-gated in
+        // cranelisp-platform and this file is ungated; same style as the
+        // `consume_io_tree` SELECT arm).
+        let field0 = unsafe { read_i64(ptr, FIELD0_OFFSET) };
+        consume_vec_with(field0, consume_io_tree);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -410,9 +438,21 @@ pub fn dec_shallow_io(ptr: i64) {
     if poll_closure != 0 {
         consume_closure(poll_closure);
     }
-    // Last ref — free the outer allocation only. Fields are intentionally
-    // NOT walked; the caller has transferred ownership of every heap-typed
-    // field to another holder (see §3.5.4).
+    // The multi-child tags `IO_TAG_PAR` (3) / `IO_TAG_SELECT` (6) are the other
+    // exception to "shallow" (FIXME 0474, ring2-rc.md §3.5.10): their branches
+    // live in a branch container at field 0 that is NOT on the `current` spine
+    // (the trampoline leaves them for the node's drop glue). A fresh par/select
+    // node — one a bind continuation built, e.g. `(bind X (fn [_] (select […])))`
+    // — is released here, so a bare shallow dec would leak the branch container
+    // Vec + every branch sub-tree. Deep-free them via the SINGLE branch-walk
+    // `consume_io_tree`'s PAR/SELECT arms also use (Principle 7), then dealloc the
+    // header. All other tags stay byte-identically shallow.
+    if tag == IO_TAG_PAR || tag == 6 {
+        free_io_branches(ptr, tag);
+    }
+    // Last ref — free the outer allocation. For non-PAR/SELECT tags the fields
+    // are intentionally NOT walked; the caller has transferred ownership of
+    // every heap-typed field to another holder (see §3.5.4).
     unsafe { alloc::dealloc(ptr as *mut u8) };
 }
 

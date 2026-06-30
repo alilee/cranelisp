@@ -570,9 +570,21 @@ where
         }
     }
 
-    /// Emit `vec_drop(vec_val, elem_dec_fn_ptr)` if the Vec expression is a
-    /// temporary (not a named variable). Named variables are cleaned up at
-    /// scope exit; temporaries have no scope entry and would leak.
+    /// Release a temporary Vec expression's reference after an inline Vec op
+    /// (vec-get / vec-len) consumed it. Named variables are cleaned up at scope
+    /// exit; temporaries have no scope entry and would leak.
+    ///
+    /// The release is **rc-checked** (`emit_vec_rc_dec_with_drop`), NOT an
+    /// unconditional `vec_drop`. A temporary Vec expression is not always the
+    /// sole owner: when it is a borrowed ADT field — e.g. `(vec-get (gcells g) 0)`
+    /// where `gcells` returns the inner Vec still owned by the live Grid `g` —
+    /// the Vec's rc is > 1, and an unconditional `vec_drop` would free the data
+    /// buffer + struct out from under the still-reachable Grid, corrupting the
+    /// heap on the next write through the now-dangling pointer (the S97
+    /// nested-ADT-wrapping-Vec double-use soundness defect; ring2-rc.md §5.5).
+    /// The rc-checked dec frees only when this was the last reference (rc==1) —
+    /// byte-identical to the old behaviour for a genuinely fresh rc==1 temporary,
+    /// and correct (no free) for a shared borrowed-field temporary.
     fn emit_vec_drop_if_temporary(
         &mut self,
         vec_expr: &MonoExpr,
@@ -594,10 +606,13 @@ where
         let elem_type = self.vec_elem_type(vec_expr);
         let dec_fn_ptr = self.resolve_elem_dec_fn_ptr(&elem_type, span)?;
 
-        let vec_drop_ref = self
-            .module
-            .declare_func_in_func(vec_drop_id, self.builder.func);
-        self.builder.ins().call(vec_drop_ref, &[vec_val, dec_fn_ptr]);
+        emit_vec_rc_dec_with_drop(
+            &mut self.builder,
+            self.module,
+            vec_val,
+            vec_drop_id,
+            dec_fn_ptr,
+        );
 
         Ok(())
     }
@@ -1353,3 +1368,6 @@ mod vec_push_rc_tests;
 
 #[cfg(test)]
 mod vec_set_rc_tests;
+
+#[cfg(test)]
+mod temp_drop_rc_tests;

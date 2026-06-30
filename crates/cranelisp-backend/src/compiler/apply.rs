@@ -94,7 +94,11 @@ where
         // left-to-right position (Phase 2, the barrier) before any call code is
         // emitted, and feeds the forced values through the unchanged apply
         // lowering (Phase 3). See `maybe_force_sparked_arg`.
-        if !*LENIENT_DISABLED && !self.in_trace_body && !self.suppress_spark_gate {
+        if !*LENIENT_DISABLED
+            && !self.in_trace_body
+            && !self.suppress_spark_gate
+            && !is_io_combinator_call(resolved_call)
+        {
             let constructors = self.collect_module_constructors();
             let sparkable = find_sparkable_args(args, &constructors);
             if sparkable.len() >= 2 {
@@ -1632,6 +1636,29 @@ fn is_vec_primitive(name: &str) -> bool {
     matches!(name, "vec-get" | "vec-set" | "vec-push" | "vec-len")
 }
 
+/// Check if a resolved call is one of the inline IO combinators that compile
+/// their OWN arguments as IO sub-trees (`bind` / `select` / `race` / `sleep`),
+/// rather than as ordinary values dispatched through the generic apply lowering.
+///
+/// These must be EXCLUDED from the lenient apply-argument spark pre-pass
+/// (`compile_apply`, lenient-eval.md §2.5). Their arguments are IO computations
+/// the trampoline runs (via the reactor / recursive trampolines), NOT values to
+/// force on the rayon spark pool — sparking them is semantically wrong. It is
+/// also a codegen-collision hazard: `compile_race` recompiles its arg IO sub-trees
+/// via `compile_vec_lit` WITHOUT consulting `sparked_args`, so a Phase-1 spark
+/// thunk and the recompiled inner lambda are emitted for the same source span,
+/// declaring the same `__lambda_<span>__` symbol with incompatible signatures
+/// (`{1 param}` thunk vs `{2 param}` closure). `select` shares the arm but takes a
+/// single `[..]` VecLit carrier (not a sparkable Apply), so it never tripped this —
+/// the guard makes the exclusion uniform across all four combinators.
+fn is_io_combinator_call(resolved_call: Option<&ResolvedCall>) -> bool {
+    matches!(
+        resolved_call,
+        Some(ResolvedCall::BuiltinFn { name })
+            if matches!(name.as_ref(), "bind" | "select" | "race" | "sleep")
+    )
+}
+
 /// The byte payload baked for a platform fn-name handle (S81 / FIXME 0327, the
 /// dispatch funnel step 2/4): the FQ name as UTF-8 with a trailing NUL — the
 /// self-describing C-string convention the trampoline fault guard reads (step 3)
@@ -1682,3 +1709,6 @@ mod trace_accessor_tests;
 
 #[cfg(test)]
 mod platform_fn_name_stamp_tests;
+
+#[cfg(test)]
+mod io_combinator_spark_tests;
