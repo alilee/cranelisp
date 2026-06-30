@@ -293,17 +293,14 @@
     // `tests/plan/sprint71-platform.md`.
     // ---------------------------------------------------------------------
 
-    // ABI_VERSION is 8 (Sprint 96, the SINGLE-ABI CUTOVER — the unified
-    // `PlatformFn` absorbs `ConcurrentPlatformFn`: `scheduling_class: u32` →
-    // `concurrency: ConcurrencyDescriptor` + a `drop_state` poll-leaf teardown
-    // hook; `declare_concurrent_platform!`/`ConcurrentPlatform*` deleted; the
-    // host-reactor ABI types graduate to the default edge; the `concurrency`
-    // feature is retired). Was 7 (Sprint 93, ABI-v4 cascade), 6 (Sprint 86, DEF-5).
-    // spec: design/arch/bounded-contexts.md §5 invariant 9;
-    //       design/arch/platform-interface.md §6.8.0
+    // ABI_VERSION is 9 (Sprint 97, the ctx-vtable handle-model cutover — `HostCtx`
+    // gains `acquire`/`retire` fn-ptrs, `ConcurrencyDescriptor` gains a `role` byte,
+    // and the new `Acquire` result enum; `PollFn`/`Poll` unchanged). Was 8 (Sprint 96,
+    // SINGLE-ABI CUTOVER), 7 (Sprint 93, ABI-v4 cascade), 6 (Sprint 86, DEF-5).
+    // spec: design/arch/platform-interface.md §6.8.0b; effect-concurrency.md §4.1.1
     #[test]
-    fn abi_version_is_8() {
-        assert_eq!(ABI_VERSION, 8);
+    fn abi_version_is_9() {
+        assert_eq!(ABI_VERSION, 9);
     }
 
     // The macro's `concat!("cranelisp_platform_manifest_", name)` export-name
@@ -1239,7 +1236,8 @@
             cardinality: 0,
             global_budget: 0,
             blocking: 0, // poll-shape
-            _reserved: [0; 3],
+            role: crate::ResourceRole::None,
+            _reserved: [0; 2],
         };
         let funcs = [PlatformFn {
             name: name.as_ptr(),

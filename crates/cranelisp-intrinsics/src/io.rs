@@ -340,16 +340,14 @@ async fn await_poll_node(
     env: &crate::reactor::ReactorEnv<'_>,
     strand: crate::strand::StrandId,
 ) -> i64 {
-    // 1. Read the LIVE (token, capacity) off the IO_TAG_EFFECT_POLL node (§2.9
-    //    step 1 — offsets the backend's poll-construction arm bakes and this
-    //    trampoline reads; `io-trampoline.md §13` is the cross-crate agreement).
-    let token = read_resource_token(node) as u64;
-    let capacity = read_capacity(node).max(1) as u32;
-    // 2. Acquire the permit BEFORE establish (§2.9 step 2). `token == 0` ⇒ the
-    //    AcquirePermit resolves immediately to an inert permit (no map entry).
-    let permit = env.acquire(token, capacity, strand).await;
-
-    // The state-closure pointer (the node's only payload field).
+    // v9 ctx-vtable (`reactor.md §7.5`): `await_poll_node` is **scheduling-blind**.
+    // It reads NO `(token, capacity)`/`role` off the node and takes NO pre-poll
+    // acquire — the *platform poll-fn* projects its token from the handle it holds and
+    // calls `ctx.acquire` itself; the host keys held permits by this leaf's identity
+    // and releases them on `Ready`/cancel (the `EffectPoll`'s release-guard). The node
+    // is the v8-uniform shape; the v8 token/capacity admission slots are inert.
+    //
+    // The state-closure pointer (the node's only payload field this trampoline reads).
     let clo = unsafe { read_node_field(node, FIELD_0_OFFSET) };
     // code_ptr = the GOT-loaded poll-fn (closure offset 16).
     let poll_fn_ptr = unsafe { crate::heap_access::read_i64(clo, CLOSURE_CODE_PTR_OFFSET) };
@@ -371,12 +369,12 @@ async fn await_poll_node(
     // the reserved result slot is its first i64 (env offset 0). (Named
     // `state_env` to not shadow the `env: &ReactorEnv` admission handle above.)
     let state_env = (clo + CLOSURE_ENV_OFFSET) as *mut core::ffi::c_void;
-    // 3. Move the Permit into the EffectPoll (§2.9 step 3) — the future now OWNS
-    //    it across the establish→ready arc and releases it on Ready/drop.
+    // Construct the EffectPoll scheduling-blind (no permit) — the platform poll-fn
+    // acquires via `ctx.acquire`; the host releases by identity on `Ready`/drop.
     // SAFETY: `state_env` points at the backend-built env (result slot + i64
-    // args); `poll_fn` obeys the v7 poll-fn contract.
+    // args); `poll_fn` obeys the v9 poll-fn contract.
     let leaf = unsafe {
-        crate::reactor::EffectPoll::new(state_env, poll_fn, env.host, strand, Some(permit))
+        crate::reactor::EffectPoll::new(state_env, poll_fn, env.host, strand)
     };
     leaf.await
 }

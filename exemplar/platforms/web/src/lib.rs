@@ -64,6 +64,18 @@ use std::sync::{LazyLock, Mutex};
 use cranelisp_platform::poll_support::{PollEnv, PollState, PollStep, Reactor};
 use cranelisp_platform::*;
 
+/// v9 token projection (`poll-support.md §3.6.1`): the platform computes a scheduling
+/// token from the connection fd it holds. Read and write project **distinct**
+/// per-direction tokens off one full-duplex handle, so `read`/`send` on a connection
+/// do not serialize against each other; across connections the fds differ ⇒ the tokens
+/// differ ⇒ connections are concurrent by construction.
+fn read_tok(fd: i32) -> u64 {
+    fd as u64
+}
+fn write_tok(fd: i32) -> u64 {
+    (fd as u64) | (1u64 << 48)
+}
+
 static HOST: HostContext = HostContext::new();
 
 // ---------------------------------------------------------------------
@@ -78,10 +90,12 @@ impl CLAdtType for Listener {
     const TYPE_NAME: &'static str = "web/Listener";
 }
 
-/// Marker for the `web/Connection` ADT (the value `accept-conn` mints):
-/// `[token, capacity, fd]` (`web.cl`). `token == fd` (fresh per accept ⇒ distinct
-/// connections concurrent), `capacity == 1` (serial within the connection), `fd`
-/// is the accepted socket fd (the syscall handle, re-passed as `leaf_0`).
+/// Marker for the `web/Connection` ADT (the value `accept-conn` mints). **v9
+/// ctx-vtable:** an OPAQUE handle carrying the platform's `r` in a GENUINE `fd` field
+/// (`(deftype Connection [:primitives/Int fd])`, `web.cl`). `r == fd`; the platform
+/// reads `fd` back out of the handle and PROJECTS the per-direction token from it
+/// (`read_tok`/`write_tok`) — the token is never stored on the value. No header slot,
+/// no `(token, capacity)` fields (the dead v8 leading-pair shape).
 pub struct Connection;
 impl CLAdtType for Connection {
     const TYPE_NAME: &'static str = "web/Connection";
@@ -339,10 +353,12 @@ fn adt_into_raw<T: CLAdtType>(owned: CLOwned<CLAdt<T>>) -> CLAdt<T> {
 // accept-conn -- poll-shape: park on listener-readable, mint a fresh Connection
 // ---------------------------------------------------------------------
 
-/// `accept-conn` poll-fn (`(Fn [Int Int Int] (IO web/Connection))`). leaf arg 0
-/// (`state+8`, `PollEnv::arg(0)`) is the re-passed listener fd. First poll tries
-/// `accept`; on `EWOULDBLOCK` it registers listener-readable and parks; on a
-/// connection it mints a FRESH `Connection [conn_fd, 1, conn_fd]` (token == fd).
+/// `accept-conn` poll-fn — **v9 Produce** (`(Fn [web/Listener] (IO web/Connection))`).
+/// Leaf arg 0 (`state+8`) is the `web/Listener` ADT base ptr; the poll-fn reads its
+/// genuine `fd` field. `accept` is structurally serial in the serve loop, so role
+/// Produce takes NO listener-token acquire (`poll-support.md §3.5.2`) — it only
+/// registers listener-readable and accepts. On a connection it mints a FRESH opaque
+/// `Connection [conn_fd]` carrying the new `r` (`r == fd`), materialized at `Ready`.
 ///
 /// # Safety
 /// C-ABI poll-fn ([`PollFn`]): `state` is the host-built state-closure env base;
@@ -355,8 +371,11 @@ pub unsafe extern "C" fn accept_conn_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
-    // SAFETY: leaf arg 0 (the re-passed listener fd) is in the env.
-    let listener_fd = unsafe { env.arg(0) } as i32;
+    // v9: leaf arg 0 is the `web/Listener` ADT base ptr; read its genuine `fd` field.
+    // SAFETY: leaf arg 0 is a live `web/Listener` base pointer (the effect declares it).
+    let listener = CLAdt::<Listener>::from_raw(unsafe { env.arg(0) });
+    let listener_fd: CLInt = listener.read_field("fd");
+    let listener_fd = i64::from(listener_fd) as i32;
     PollState::new(&env).drive(
         WEB_ARMED,
         || accept_step(listener_fd, &reactor),
@@ -373,8 +392,8 @@ fn accept_step(listener_fd: i32, reactor: &Reactor) -> PollStep {
     }
     if cfd >= 0 {
         set_nonblocking(cfd);
-        // Fresh per-connection token == the accepted fd; capacity 1.
-        let fields = [cfd as i64, 1i64, cfd as i64];
+        // v9: opaque 1-field Connection carrying the fresh `r` (`r == fd`).
+        let fields = [cfd as i64];
         let adt = adt_into_raw(CLAdt::<Connection>::construct(0, &fields));
         if std::env::var("WEBDBG").is_ok() {
             eprintln!("[WEB] accept built Connection ptr={:#x}", adt.to_raw());
@@ -387,7 +406,7 @@ fn accept_step(listener_fd: i32, reactor: &Reactor) -> PollStep {
         // Hard accept error (e.g. listener fd == -1): yield a sentinel
         // connection so the cranelisp side stays total rather than the DLL
         // wedging the strand.
-        let fields = [-1i64, 1i64, -1i64];
+        let fields = [-1i64];
         let adt = adt_into_raw(CLAdt::<Connection>::construct(0, &fields));
         PollStep::Ready(adt.to_raw())
     }
@@ -397,10 +416,13 @@ fn accept_step(listener_fd: i32, reactor: &Reactor) -> PollStep {
 // read-conn -- poll-shape: park on connection-readable, parse one Request
 // ---------------------------------------------------------------------
 
-/// `read-conn` poll-fn (`(Fn [Int Int Int] (IO web/Request))`). leaf arg 0
-/// (`state+8`) is the re-passed connection fd. Reads (nonblocking) into the
-/// per-fd accumulation buffer until the header terminator + declared body are
-/// present, then parses and constructs a `web/Request`; parks on `EWOULDBLOCK`.
+/// `read-conn` poll-fn — **v9 Consume** (`(Fn [web/Connection] (IO web/Request))`).
+/// Leaf arg 0 (`state+8`) is the `web/Connection` ADT base ptr; the poll-fn reads its
+/// genuine `fd` field, projects `read_tok(fd)`, and calls `ctx.acquire` ITSELF
+/// (`poll-support.md §3.6.1`). On `Parked` ⇒ `Pending` (backpressure). Then reads
+/// (nonblocking) into the per-fd accumulation buffer until a complete request, parses
+/// it, and constructs a `web/Request`; parks on `EWOULDBLOCK`. The host releases the
+/// permit on `Ready`/cancel.
 ///
 /// # Safety
 /// C-ABI poll-fn ([`PollFn`]); see [`accept_conn_pollfn`].
@@ -412,8 +434,15 @@ pub unsafe extern "C" fn read_conn_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
-    // SAFETY: leaf arg 0 (the re-passed connection fd) is in the env.
-    let conn_fd = unsafe { env.arg(0) } as i32;
+    // v9: leaf arg 0 is the `web/Connection` ADT base ptr; read its genuine `fd` field.
+    // SAFETY: leaf arg 0 is a live `web/Connection` base pointer.
+    let conn = CLAdt::<Connection>::from_raw(unsafe { env.arg(0) });
+    let conn_fd: CLInt = conn.read_field("fd");
+    let conn_fd = i64::from(conn_fd) as i32;
+    // Skeleton step 1: the Consume leaf acquires its own (read-direction) token permit.
+    if matches!(reactor.acquire(read_tok(conn_fd), 1), Acquire::Parked) {
+        return Poll::Pending;
+    }
     PollState::new(&env).drive(
         WEB_ARMED,
         || read_step(conn_fd, &reactor),
@@ -516,12 +545,13 @@ fn build_request(raw: &str) -> i64 {
 // send-conn -- poll-shape: park on connection-writable, write + close
 // ---------------------------------------------------------------------
 
-/// `send-conn` poll-fn (`(Fn [Int Int Int web/Response] (IO Int))`). leaf arg 0
-/// (`state+8`) is the re-passed connection fd; leaf arg 1 (`state+16`) is the
-/// `web/Response` base pointer (read-only — RC owned by the env's drop glue, so
-/// no capture-RC dance needed: re-read from the env each poll). Formats the wire
-/// once into the per-fd write buffer, writes (nonblocking, resumable across a
-/// park on `EWOULDBLOCK`), then closes the connection and returns `0`.
+/// `send-conn` poll-fn — **v9 Consume** (`(Fn [web/Connection web/Response] (IO Int))`).
+/// Leaf arg 0 (`state+8`) is the `web/Connection` ADT base ptr (read its genuine `fd`
+/// field); leaf arg 1 (`state+16`) is the `web/Response` base pointer (read-only — RC
+/// owned by the env's drop glue). Projects `write_tok(fd)` and calls `ctx.acquire`
+/// ITSELF; `Parked` ⇒ `Pending`. Formats the wire once into the per-fd write buffer,
+/// writes (nonblocking, resumable across a park on `EWOULDBLOCK`), then closes the
+/// connection and returns `0`. The host releases the permit on `Ready`/cancel.
 ///
 /// # Safety
 /// C-ABI poll-fn ([`PollFn`]); see [`accept_conn_pollfn`]. `state+16` is a live
@@ -534,8 +564,15 @@ pub unsafe extern "C" fn send_conn_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
-    // SAFETY: leaf arg 0 (the re-passed connection fd) is in the env.
-    let conn_fd = unsafe { env.arg(0) } as i32;
+    // v9: leaf arg 0 is the `web/Connection` ADT base ptr; read its genuine `fd` field.
+    // SAFETY: leaf arg 0 is a live `web/Connection` base pointer.
+    let conn = CLAdt::<Connection>::from_raw(unsafe { env.arg(0) });
+    let conn_fd: CLInt = conn.read_field("fd");
+    let conn_fd = i64::from(conn_fd) as i32;
+    // Skeleton step 1: the Consume leaf acquires its own (write-direction) token permit.
+    if matches!(reactor.acquire(write_tok(conn_fd), 1), Acquire::Parked) {
+        return Poll::Pending;
+    }
     PollState::new(&env).drive(
         WEB_ARMED,
         || send_step(conn_fd, &env, &reactor),
@@ -638,19 +675,28 @@ fn finish_connection(conn_fd: i32) {
     }
 }
 
-/// The `ResourceSerial` descriptor every web poll leaf carries: `token 0` (the
-/// static conflict identity — the DYNAMIC per-resource token rides the leading
-/// `token` operand the `.cl` wrapper supplies), `cardinality 1`, `blocking 0`
-/// (poll-shape ⇒ the reactor carrier). `nearest_scheduling_class` maps
-/// `token 0, cardinality 1` ⇒ `ResourceSerial`, so the backend leaves the
-/// source-supplied `(token, capacity)` leading pair intact (no `(0,1)` inject —
-/// `poll-support.md §3.4.2`).
-const RESOURCE_SERIAL: ConcurrencyDescriptor = ConcurrencyDescriptor {
+/// v9 **Produce** descriptor for `accept-conn`: poll-shape (`blocking 0`), role
+/// `Produce` (it mints a fresh resource handle). `token`/`cardinality` are the static
+/// defaults; the live scheduling is the platform poll-fn's `ctx` calls.
+const ACCEPT_DESC: ConcurrencyDescriptor = ConcurrencyDescriptor {
     token: 0,
     cardinality: 1,
     global_budget: 0,
     blocking: 0,
-    _reserved: [0; 3],
+    role: ResourceRole::Produce,
+    _reserved: [0; 2],
+};
+
+/// v9 **Consume** descriptor for `read-conn` / `send-conn`: poll-shape, role
+/// `Consume` (each operates on a previously-produced `Connection`, projecting its
+/// per-direction token from the handle's `fd` field and acquiring it via `ctx`).
+const CONSUME_DESC: ConcurrencyDescriptor = ConcurrencyDescriptor {
+    token: 0,
+    cardinality: 1,
+    global_budget: 0,
+    blocking: 0,
+    role: ResourceRole::Consume,
+    _reserved: [0; 2],
 };
 
 declare_platform! {
@@ -668,24 +714,24 @@ declare_platform! {
         },
         accept_conn_pollfn {
             cl_name: "accept-conn",
-            sig: "(Fn [primitives/Int primitives/Int primitives/Int] (primitives/IO web/Connection))",
-            doc: "Poll-shape: park on the listener fd readable, accept a connection, mint a fresh Connection",
-            params: [token, capacity, fd],
-            descriptor: RESOURCE_SERIAL,
+            sig: "(Fn [web/Listener] (primitives/IO web/Connection))",
+            doc: "Poll-shape Produce: park on the listener fd readable, accept a connection, mint a fresh opaque Connection",
+            params: [listener],
+            descriptor: ACCEPT_DESC,
         },
         read_conn_pollfn {
             cl_name: "read-conn",
-            sig: "(Fn [primitives/Int primitives/Int primitives/Int] (primitives/IO web/Request))",
-            doc: "Poll-shape: park on the connection fd readable, read+parse one HTTP request into a Request",
-            params: [token, capacity, fd],
-            descriptor: RESOURCE_SERIAL,
+            sig: "(Fn [web/Connection] (primitives/IO web/Request))",
+            doc: "Poll-shape Consume: read fd off the Connection, acquire the read token, park on readable, read+parse one HTTP request",
+            params: [conn],
+            descriptor: CONSUME_DESC,
         },
         send_conn_pollfn {
             cl_name: "send-conn",
-            sig: "(Fn [primitives/Int primitives/Int primitives/Int web/Response] (primitives/IO primitives/Int))",
-            doc: "Poll-shape: park on the connection fd writable, write the Response as HTTP/1.0, and close",
-            params: [token, capacity, fd, resp],
-            descriptor: RESOURCE_SERIAL,
+            sig: "(Fn [web/Connection web/Response] (primitives/IO primitives/Int))",
+            doc: "Poll-shape Consume: read fd off the Connection, acquire the write token, park on writable, write the Response as HTTP/1.0, and close",
+            params: [conn, resp],
+            descriptor: CONSUME_DESC,
         },
     ]
 }

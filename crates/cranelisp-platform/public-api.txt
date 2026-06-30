@@ -1,8 +1,10 @@
 pub mod cranelisp_platform
+pub use cranelisp_platform::Acquire
 pub use cranelisp_platform::ConcurrencyDescriptor
 pub use cranelisp_platform::GOT_TABLE_SIZE
 pub use cranelisp_platform::PlatformError
 pub use cranelisp_platform::Poll
+pub use cranelisp_platform::ResourceRole
 pub use cranelisp_platform::SchedulingClass
 pub mod cranelisp_platform::poll_support
 pub enum cranelisp_platform::poll_support::PollStep
@@ -43,7 +45,9 @@ impl<'e> core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::poll_su
 impl<'e> core::panic::unwind_safe::UnwindSafe for cranelisp_platform::poll_support::PollState<'e>
 pub struct cranelisp_platform::poll_support::Reactor
 impl cranelisp_platform::poll_support::Reactor
+pub fn cranelisp_platform::poll_support::Reactor::acquire(&self, u64, u32) -> cranelisp_types::scheduling::Acquire
 pub unsafe fn cranelisp_platform::poll_support::Reactor::new(*const cranelisp_platform::HostCtx, *const cranelisp_platform::Waker) -> Self
+pub fn cranelisp_platform::poll_support::Reactor::retire(&self, u64)
 pub fn cranelisp_platform::poll_support::Reactor::wake_on_readable(&self, i32)
 pub fn cranelisp_platform::poll_support::Reactor::wake_on_timer(&self, u64)
 pub fn cranelisp_platform::poll_support::Reactor::wake_on_writable(&self, i32)
@@ -335,10 +339,12 @@ impl core::marker::UnsafeUnpin for cranelisp_platform::HostContext
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_platform::HostContext
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_platform::HostContext
 #[repr(C)] pub struct cranelisp_platform::HostCtx
+pub cranelisp_platform::HostCtx::acquire: fn(*const core::ffi::c_void, u64, u32, *const cranelisp_platform::Waker) -> cranelisp_types::scheduling::Acquire
 pub cranelisp_platform::HostCtx::host: *const core::ffi::c_void
 pub cranelisp_platform::HostCtx::register_readable: fn(*const core::ffi::c_void, i32, *const cranelisp_platform::Waker)
 pub cranelisp_platform::HostCtx::register_timer: fn(*const core::ffi::c_void, u64, *const cranelisp_platform::Waker)
 pub cranelisp_platform::HostCtx::register_writable: fn(*const core::ffi::c_void, i32, *const cranelisp_platform::Waker)
+pub cranelisp_platform::HostCtx::retire: fn(*const core::ffi::c_void, u64)
 impl core::marker::Freeze for cranelisp_platform::HostCtx
 impl !core::marker::Send for cranelisp_platform::HostCtx
 impl !core::marker::Sync for cranelisp_platform::HostCtx

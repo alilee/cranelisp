@@ -296,10 +296,10 @@ fn platform_abi_version_mismatch_e2e() {
         out.stderr
     );
     assert!(
-        out.stderr.contains("2") && out.stderr.contains("8"),
+        out.stderr.contains("2") && out.stderr.contains("9"),
         "ABI-version-mismatch error MUST report BOTH the DLL's stale version (2) \
-         and the runtime's required version (8) so the user sees what they have \
-         vs. what is required; got stderr:\n{}",
+         and the runtime's required version (9, the S97 ctx-vtable cutover) so the \
+         user sees what they have vs. what is required; got stderr:\n{}",
         out.stderr
     );
 }

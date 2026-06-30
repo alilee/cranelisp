@@ -51,8 +51,9 @@ fn poll_capacity_rides_node_convention_and_abi_is_v8() {
         );
     }
 
-    // (2) The single-ABI cutover stamps `ABI_VERSION = 8` (the unified PlatformFn
-    // replaced `scheduling_class` with `concurrency` + added `drop_state`).
+    // (2) The S97 ctx-vtable handle-model cutover stamps `ABI_VERSION = 9`
+    // (`HostCtx` gains `acquire`/`retire`, `ConcurrencyDescriptor` gains `role`,
+    // the `Acquire` enum is added; `platform-interface.md §6.8.0b`). Was 8 (S96).
     let lib_rs = std::fs::read_to_string(
         workspace_root()
             .join("crates")
@@ -62,9 +63,9 @@ fn poll_capacity_rides_node_convention_and_abi_is_v8() {
     )
     .expect("read cranelisp-platform/src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 8;"),
-        "the single-ABI cutover (§6.8.0) stamps `ABI_VERSION = 8`. The \
-         `pub const ABI_VERSION: u32 = 8;` line was not found in \
+        lib_rs.contains("pub const ABI_VERSION: u32 = 9;"),
+        "the S97 ctx-vtable cutover (§6.8.0b) stamps `ABI_VERSION = 9`. The \
+         `pub const ABI_VERSION: u32 = 9;` line was not found in \
          cranelisp-platform/src/lib.rs."
     );
 
@@ -116,8 +117,11 @@ fn chunk_c_no_new_public_api_edge_or_abi_bump_neg() {
         );
     }
 
-    // (2) The single-ABI cutover ABI stamp stays `ABI_VERSION = 8` — Chunk C bumps
-    // nothing (it lights up the already-reserved gated `drop_state`).
+    // (2) The combinator/cancellation work (Chunk C) added no public-api edge
+    // (asserted above). The ABI stamp itself is now `9` after the S97 ctx-vtable
+    // cutover (`platform-interface.md §6.8.0b`) — the combinators remain in-process
+    // node tags + derived `.cl` (they contributed no ABI change; the bump is the
+    // `HostCtx`/`ConcurrencyDescriptor` ctx-vtable change, not Chunk C).
     let lib_rs = std::fs::read_to_string(
         workspace_root()
             .join("crates")
@@ -127,8 +131,8 @@ fn chunk_c_no_new_public_api_edge_or_abi_bump_neg() {
     )
     .expect("read cranelisp-platform/src/lib.rs");
     assert!(
-        lib_rs.contains("pub const ABI_VERSION: u32 = 8;"),
-        "Chunk C must NOT bump the ABI — `ABI_VERSION` must stay 8 (combinators are \
-         in-process node tags + derived `.cl`; cancellation reuses `drop_state`)."
+        lib_rs.contains("pub const ABI_VERSION: u32 = 9;"),
+        "post-S97 the ABI stamp is `9` (the ctx-vtable cutover); the combinators \
+         themselves are in-process node tags + derived `.cl` (no Chunk-C edge)."
     );
 }

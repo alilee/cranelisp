@@ -97,6 +97,56 @@ impl SchedulingClass {
 // `from_scheduling_class`; a poll-shape effect declares its descriptor natively.
 // ===========================================================================
 
+/// Per-EFFECT static leaf **role** — a compile-time manifest fact (ABI v9,
+/// `effect-concurrency.md` §4.1.1 / `platform-interface.md` §6.8.0b). It grounds
+/// inference E2 (a Produce leaf mints a fresh resource ⇒ a fresh disjoint token) and
+/// documents the leaf for the platform-writer's guide. **The trampoline does NOT branch
+/// on `role` at runtime** — there is no stamp/read; the platform poll-fn does ALL
+/// runtime scheduling via the `ctx` vtable (`acquire`/`register_*`/`retire`).
+///
+/// `#[repr(u8)]`: it rides one byte of `ConcurrencyDescriptor` (the former `_reserved`
+/// tail), so its layout is governed by `cranelisp_platform::ABI_VERSION` (Principle 14),
+/// not source-evolution guards. `Default` is `None` (the zero discriminant), so a
+/// zero-initialised descriptor reads `role: None`.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResourceRole {
+    /// The effect neither produces nor consumes a scheduling resource (a tokenless /
+    /// `Commutative` leaf — a bare timer, a fire-and-forget log, `bind-listener`, `sleep`).
+    #[default]
+    None = 0,
+    /// The effect **mints** a resource handle whose later use is admission-controlled
+    /// (`open` / `accept` / `connect`): it drives `acquire`/`register` on the
+    /// establishment resource and, at `Ready`, mints the handle ADT carrying the new `r`.
+    Produce = 1,
+    /// The effect **operates on** a previously-produced handle and serializes within that
+    /// resource (`read` / `write` / `send`): it reads `r` off the handle's genuine field,
+    /// projects the token, and `ctx.acquire`s it.
+    Consume = 2,
+    /// The effect **ends** a resource's scheduling identity (`close`): `close(r)` +
+    /// `ctx.retire(token)` for each of the resource's tokens.
+    Retire = 3,
+}
+
+/// C-ABI result of a token-permit acquisition the platform poll-fn requests via the
+/// `ctx` vtable's `acquire` (ABI v9, `effect-concurrency.md` §4.1.1). `Acquired` ⇒ a
+/// permit is held (proceed); `Parked` ⇒ no permit free — the host enqueued the waker on
+/// the token's permit-wait queue and the leaf returns `Pending` (backpressure). The host
+/// keys held permits by the in-flight effect's identity, so `acquire` is idempotent per
+/// effect (a re-poll re-`acquire`s without double-counting). Release is trampoline-owned
+/// (on `Ready`/cancel) — there is no `release` vtable entry.
+///
+/// `#[repr(i32)]` so it crosses the C-ABI as a plain int. Re-exported by
+/// `cranelisp_platform`; the `HostCtx::acquire` fn-pointer returns it.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Acquire {
+    /// A permit on the token is held; the leaf proceeds with its syscall.
+    Acquired = 0,
+    /// No permit free; the waker is enqueued — the leaf returns `Pending`.
+    Parked = 1,
+}
+
 /// The per-effect concurrency contract a platform declares in its manifest
 /// (the unified single-ABI platform contract, `platform-interface.md` §6.8.0) —
 /// a finite, declarative **generalization of [`SchedulingClass`]**
@@ -141,8 +191,15 @@ pub struct ConcurrencyDescriptor {
     pub global_budget: u32,
     /// `0` = non-blocking poll leaf (reactor); `1` = blocking (rayon / spawn_blocking).
     pub blocking: u8,
+    /// The per-effect static leaf **role** (`None`/`Produce`/`Consume`/`Retire`) — a
+    /// compile-time manifest fact grounding inference E2 + documenting the leaf for the
+    /// platform-writer's guide (ABI v9, `effect-concurrency.md` §4.1.1). The trampoline
+    /// does NOT branch on it at runtime — the poll-fn does all scheduling via the `ctx`
+    /// vtable (`acquire`/`register_*`/`retire`). Consumes one byte of the former
+    /// `_reserved: [u8; 3]` tail; existing field offsets + the struct size are unchanged.
+    pub role: ResourceRole,
     /// Reserved tail padding; MUST be zero. Keeps the layout stable for future inert fields.
-    pub _reserved: [u8; 3],
+    pub _reserved: [u8; 2],
 }
 
 impl ConcurrencyDescriptor {
@@ -163,7 +220,8 @@ impl ConcurrencyDescriptor {
                 cardinality: 1,
                 global_budget: 0,
                 blocking: 1,
-                _reserved: [0; 3],
+                role: ResourceRole::None,
+                _reserved: [0; 2],
             },
             // No shared state: unrestricted, unbounded parallelism.
             SchedulingClass::Commutative => Self {
@@ -171,7 +229,8 @@ impl ConcurrencyDescriptor {
                 cardinality: 0,
                 global_budget: 0,
                 blocking: 1,
-                _reserved: [0; 3],
+                role: ResourceRole::None,
+                _reserved: [0; 2],
             },
             // Per-resource token (narrowed dynamically); serial within a token.
             SchedulingClass::ResourceSerial => Self {
@@ -179,7 +238,8 @@ impl ConcurrencyDescriptor {
                 cardinality: 1,
                 global_budget: 0,
                 blocking: 1,
-                _reserved: [0; 3],
+                role: ResourceRole::None,
+                _reserved: [0; 2],
             },
         }
     }
@@ -287,7 +347,8 @@ mod tests {
     #[test]
     fn concurrency_lane_executes_gated_tests_smoke() {
         let d = ConcurrencyDescriptor::from_scheduling_class(SchedulingClass::Sequential);
-        assert_eq!(d._reserved, [0u8; 3]);
+        assert_eq!(d.role, ResourceRole::None);
+        assert_eq!(d._reserved, [0u8; 2]);
     }
 
     // spec: design/arch/platform-interface.md §6.8 (FIXME 0457) —
@@ -317,7 +378,8 @@ mod tests {
             cardinality: 0,
             global_budget: 0,
             blocking: 0,
-            _reserved: [0; 3],
+            role: ResourceRole::None,
+            _reserved: [0; 2],
         };
         assert_eq!(poll.nearest_scheduling_class(), SchedulingClass::Commutative);
         // A native cardinality-N pool maps to the nearest unbounded class.
@@ -326,7 +388,8 @@ mod tests {
             cardinality: 4,
             global_budget: 0,
             blocking: 0,
-            _reserved: [0; 3],
+            role: ResourceRole::None,
+            _reserved: [0; 2],
         };
         assert_eq!(pool.nearest_scheduling_class(), SchedulingClass::Commutative);
     }
@@ -353,21 +416,24 @@ mod tests {
         assert_eq!(seq.cardinality, 1, "Sequential = serial");
         assert_eq!(seq.global_budget, 0, "budget inert until slice 4");
         assert_eq!(seq.blocking, 1, "bridge is conservative: blocking");
-        assert_eq!(seq._reserved, [0u8; 3]);
+        assert_eq!(seq.role, ResourceRole::None);
+        assert_eq!(seq._reserved, [0u8; 2]);
 
         let com = ConcurrencyDescriptor::from_scheduling_class(SchedulingClass::Commutative);
         assert_eq!(com.token, 0, "Commutative = unrestricted (no conflict)");
         assert_eq!(com.cardinality, 0, "Commutative = unbounded");
         assert_eq!(com.global_budget, 0);
         assert_eq!(com.blocking, 1);
-        assert_eq!(com._reserved, [0u8; 3]);
+        assert_eq!(com.role, ResourceRole::None);
+        assert_eq!(com._reserved, [0u8; 2]);
 
         let rs = ConcurrencyDescriptor::from_scheduling_class(SchedulingClass::ResourceSerial);
         assert_eq!(rs.token, 0, "ResourceSerial token narrowed dynamically");
         assert_eq!(rs.cardinality, 1, "ResourceSerial = serial within a token");
         assert_eq!(rs.global_budget, 0);
         assert_eq!(rs.blocking, 1);
-        assert_eq!(rs._reserved, [0u8; 3]);
+        assert_eq!(rs.role, ResourceRole::None);
+        assert_eq!(rs._reserved, [0u8; 2]);
     }
 
     // spec: design/arch/effect-concurrency.md §5 — the descriptor crosses the
@@ -383,10 +449,13 @@ mod tests {
         // The inert backpressure slot is present and at the frozen offset.
         assert_eq!(offset_of!(ConcurrencyDescriptor, global_budget), 12);
         assert_eq!(offset_of!(ConcurrencyDescriptor, blocking), 16);
-        assert_eq!(offset_of!(ConcurrencyDescriptor, _reserved), 17);
+        // v9: `role` consumes the byte the former `_reserved[0]` held (offset 17);
+        // `_reserved` shrinks to `[u8; 2]` at offset 18. Offsets + size are unchanged.
+        assert_eq!(offset_of!(ConcurrencyDescriptor, role), 17);
+        assert_eq!(offset_of!(ConcurrencyDescriptor, _reserved), 18);
         assert_eq!(align_of::<ConcurrencyDescriptor>(), 8);
-        // 8 (token) + 4 (cardinality) + 4 (budget) + 1 (blocking) + 3 (_reserved)
-        // = 20, rounded up to the 8-byte alignment = 24. The frozen v7 size.
+        // 8 (token) + 4 (cardinality) + 4 (budget) + 1 (blocking) + 1 (role) +
+        // 2 (_reserved) = 20, rounded up to the 8-byte alignment = 24. Unchanged from v8.
         assert_eq!(size_of::<ConcurrencyDescriptor>(), 24);
     }
 

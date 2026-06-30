@@ -117,7 +117,8 @@ cranelisp_platform::declare_platform! {
                 cardinality: 0,
                 global_budget: 0,
                 blocking: 0, // poll-shape -> the backend's poll-construction arm
-                _reserved: [0; 3],
+                role: cranelisp_platform::ResourceRole::None, // tokenless commutative demo leaf
+                _reserved: [0; 2],
             },
         },
     ]

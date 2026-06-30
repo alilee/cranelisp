@@ -58,7 +58,7 @@
 ;; cycle (see web.cl/serve.cl).
 (import [serve [listen accept]])
 (import [platform.web [read-conn send-conn]])
-(import [web [Connection Request Response]])
+(import [web [Request Response]])
 
 ;; The pure Sudoku core (shared verbatim with the stdio showcase).
 (import [form   [parse-form-body]])
@@ -145,21 +145,19 @@
   :(primitives/IO primitives/Int)
   (bind (accept listener)
     (fn [conn]
-      (match conn
-        [(Connection token capacity fd)
-           (do
-             ;; the discarded, launch-eligible per-connection handler sub-tree.
-             ;; Every effect position is a DIRECT leaf: read-conn/send-conn
-             ;; (ResourceSerial poll over the fresh connection token) + `sleep`
-             ;; (the resource-free timer leaf). The pure `slow-ms`/`safe-handle`
-             ;; only compute leaf arguments. So the whole read→sleep→send handler
-             ;; launches as ONE supervised strand per connection.
-             (bind (read-conn token capacity fd)
-               (fn [req]
-                 (bind (sleep (slow-ms req))
-                   (fn [_] (send-conn token capacity fd (safe-handle req))))))
-             ;; the continuation: accept the next connection (a fresh token)
-             (serve-loop listener))]))))
+      (do
+        ;; the discarded, launch-eligible per-connection handler sub-tree. v9: the
+        ;; opaque `conn` handle is threaded directly into the DIRECT leaves
+        ;; read-conn/send-conn (Consume polls — the platform projects the token from
+        ;; the handle's fd + acquires via the ctx vtable) + `sleep` (the resource-free
+        ;; timer leaf). The pure `slow-ms`/`safe-handle` only compute leaf arguments.
+        ;; So the whole read→sleep→send handler launches as ONE supervised strand.
+        (bind (read-conn conn)
+          (fn [req]
+            (bind (sleep (slow-ms req))
+              (fn [_] (send-conn conn (safe-handle req))))))
+        ;; the continuation: accept the next connection (a fresh opaque handle)
+        (serve-loop listener)))))
 
 ;; ── Headline web entry ────────────────────────────────────────────────────
 ;;

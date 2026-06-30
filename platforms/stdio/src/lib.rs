@@ -173,6 +173,15 @@ pub unsafe extern "C" fn read_line_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
+    // v9 ctx-vtable (`poll-support.md §3.1`, resolves FIXME 0471 STRUCTURALLY):
+    // stdin is a process SINGLETON with no handle to project a token from, so it
+    // declares a MANIFEST-STATIC serial token. The poll-fn acquires that CONSTANT
+    // (capacity 1) — admission then permits at most ONE in-flight `read-line` by
+    // construction. `Parked` (a second concurrent `read-line`) ⇒ Pending before the
+    // read; the host releases the STDIN permit on Ready/cancel.
+    if matches!(reactor.acquire(STDIN_TOKEN, 1), Acquire::Parked) {
+        return Poll::Pending;
+    }
     let phase = PollState::new(&env);
     phase.drive(
         READ_LINE_ARMED,
@@ -181,18 +190,22 @@ pub unsafe extern "C" fn read_line_pollfn(
     )
 }
 
-/// The `Commutative` (tokenless) descriptor `read-line` carries: `token 0`
-/// (no admission token — stdin's serial discipline is a host concern, not a
-/// pooled resource), `cardinality 0`, `blocking 0` (poll-shape ⇒ the reactor
-/// carrier). `nearest_scheduling_class` maps `token 0, cardinality 0` ⇒
-/// `Commutative`, so the backend INJECTS the `(0, 1)` leading pair (no
-/// token/capacity cranelisp args — `poll-support.md §3.4.2`).
-const COMMUTATIVE: ConcurrencyDescriptor = ConcurrencyDescriptor {
-    token: 0,
-    cardinality: 0,
+/// v9: the manifest-static SINGLETON serial token for stdin (`poll-support.md §3.1`).
+/// A fixed non-zero token; the `read-line` poll-fn acquires it at capacity 1, so
+/// admission enforces single-in-flight stdin by construction (resolves FIXME 0471).
+const STDIN_TOKEN: u64 = 0x5354_4449_4E5F_544B; // "STDIN_TK" — any fixed non-zero value
+
+/// The v9 SINGLETON-`Consume` descriptor `read-line` carries: role `Consume`,
+/// a manifest-static serial `token` ([`STDIN_TOKEN`]) at `cardinality 1`, `blocking 0`
+/// (poll-shape ⇒ the reactor carrier). The poll-fn acquires [`STDIN_TOKEN`] itself
+/// via the `ctx` vtable — single-in-flight by construction, not a host special case.
+const READ_LINE_DESC: ConcurrencyDescriptor = ConcurrencyDescriptor {
+    token: STDIN_TOKEN,
+    cardinality: 1,
     global_budget: 0,
     blocking: 0,
-    _reserved: [0; 3],
+    role: ResourceRole::Consume,
+    _reserved: [0; 2],
 };
 
 declare_platform! {
@@ -212,7 +225,7 @@ declare_platform! {
             sig: "(Fn [] (primitives/IO primitives/String))",
             doc: "Read a line from stdin (poll-shape: suspends on stdin readiness)",
             params: [],
-            descriptor: COMMUTATIVE,
+            descriptor: READ_LINE_DESC,
         },
     ]
 }

@@ -152,7 +152,9 @@ pub use adt::{set_global_schema, CLAdt, CLAdtType, CLTypeWitness, ExpectedFieldT
 // `concurrency` feature is RETIRED. The host *reactor implementation* (mio/futures)
 // lives in `cranelisp-intrinsics` and is always linked post-streamline.
 mod concurrency;
-pub use concurrency::{ConcurrencyDescriptor, HostCtx, Poll, PollFn, Waker, WakerVTable};
+pub use concurrency::{
+    Acquire, ConcurrencyDescriptor, HostCtx, Poll, PollFn, ResourceRole, Waker, WakerVTable,
+};
 
 // The `poll_support` ergonomics suite (S96 Chunk A item 2) — the typed
 // state-closure env accessor (`PollEnv`), the fd/timer readiness scaffold over the
@@ -276,7 +278,7 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// `concurrency`/`concurrency-runtime` features are RETIRED. Layout-affecting
 /// (Principle 14): the `PlatformFn` field set changed. With no out-of-tree DLLs
 /// every in-tree platform rebuilds against v8 in the cutover change-set.
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 9;
 
 /// The exported-symbol name of a platform's manifest entry point, namespaced by
 /// the platform's raw `name:` literal (`cranelisp_platform_manifest_<name>`).

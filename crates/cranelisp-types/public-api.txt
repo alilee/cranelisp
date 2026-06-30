@@ -1,5 +1,15 @@
 pub mod cranelisp_types
 pub macro cranelisp_types::string_newtype!
+#[repr(i32)] pub enum cranelisp_types::Acquire
+pub cranelisp_types::Acquire::Acquired = 0
+pub cranelisp_types::Acquire::Parked = 1
+impl core::marker::Freeze for cranelisp_types::Acquire
+impl core::marker::Send for cranelisp_types::Acquire
+impl core::marker::Sync for cranelisp_types::Acquire
+impl core::marker::Unpin for cranelisp_types::Acquire
+impl core::marker::UnsafeUnpin for cranelisp_types::Acquire
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::Acquire
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::Acquire
 pub enum cranelisp_types::CodegenBehaviour
 pub cranelisp_types::CodegenBehaviour::InMemoryAndObject
 pub cranelisp_types::CodegenBehaviour::ObjectOnly
@@ -578,6 +588,18 @@ impl core::marker::Unpin for cranelisp_types::ResolvedCall
 impl core::marker::UnsafeUnpin for cranelisp_types::ResolvedCall
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ResolvedCall
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ResolvedCall
+#[repr(u8)] pub enum cranelisp_types::ResourceRole
+pub cranelisp_types::ResourceRole::Consume = 2
+pub cranelisp_types::ResourceRole::None = 0
+pub cranelisp_types::ResourceRole::Produce = 1
+pub cranelisp_types::ResourceRole::Retire = 3
+impl core::marker::Freeze for cranelisp_types::ResourceRole
+impl core::marker::Send for cranelisp_types::ResourceRole
+impl core::marker::Sync for cranelisp_types::ResourceRole
+impl core::marker::Unpin for cranelisp_types::ResourceRole
+impl core::marker::UnsafeUnpin for cranelisp_types::ResourceRole
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ResourceRole
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ResourceRole
 #[repr(u32)] pub enum cranelisp_types::SchedulingClass
 pub cranelisp_types::SchedulingClass::Commutative = 1
 pub cranelisp_types::SchedulingClass::ResourceSerial = 2
@@ -771,10 +793,11 @@ impl core::marker::UnsafeUnpin for cranelisp_types::CompileResult
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::CompileResult
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::CompileResult
 #[repr(C)] pub struct cranelisp_types::ConcurrencyDescriptor
-pub cranelisp_types::ConcurrencyDescriptor::_reserved: [u8; 3]
+pub cranelisp_types::ConcurrencyDescriptor::_reserved: [u8; 2]
 pub cranelisp_types::ConcurrencyDescriptor::blocking: u8
 pub cranelisp_types::ConcurrencyDescriptor::cardinality: u32
 pub cranelisp_types::ConcurrencyDescriptor::global_budget: u32
+pub cranelisp_types::ConcurrencyDescriptor::role: cranelisp_types::ResourceRole
 pub cranelisp_types::ConcurrencyDescriptor::token: u64
 impl cranelisp_types::ConcurrencyDescriptor
 pub const fn cranelisp_types::ConcurrencyDescriptor::from_scheduling_class(cranelisp_types::SchedulingClass) -> Self

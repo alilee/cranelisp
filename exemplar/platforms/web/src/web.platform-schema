@@ -4,16 +4,17 @@
 ;; `web.cl` module graph after any layout change, then rebuild the dylib
 ;; (`cargo build -p cranelisp-web`).
 ;;
-;; S96 Chunk B (Wave B4, FIXME 0465): the v8 poll-shape connection lifecycle.
-;; Closure: the generator walks the bind-listener/accept-conn/read-conn/send-conn
-;; sigs. The roots `web/Listener` (bind-listener return), `web/Connection`
-;; (accept-conn return), `web/Request` (read-conn return), `web/Response`
-;; (send-conn parameter) -- all single-ctor products, tag 0 -- PLUS the
-;; `(primitives/IO _)` instantiations reached through the IO-returning sigs are
-;; all in the closed-over set. The header below is the FNV-1a digest of the
-;; canonical body -- the `extract_layout_hash` const fn exports it as
-;; `__cranelisp_layout_hash_web` for the host's load/`--link` hash gate.
-;; layout-hash: cdbd8fc0c1932a71
+;; S97 ABI v9 (ctx-vtable handle model): the opaque-`Connection` poll-shape
+;; connection lifecycle. `web/Connection` is now a single opaque `fd` field (the
+;; v8 `[token capacity fd]` shape is retired — scheduling state never rides on the
+;; value). Closure: the generator walks the bind-listener/accept-conn/read-conn/
+;; send-conn sigs. The roots `web/Listener`/`web/Connection`/`web/Request`/
+;; `web/Response` (all single-ctor products, tag 0) PLUS the `(primitives/IO _)`
+;; instantiations reached through the IO-returning sigs are all in the closed-over
+;; set. The header below is the FNV-1a digest of the canonical body -- the
+;; `extract_layout_hash` const fn exports it as `__cranelisp_layout_hash_web` for
+;; the host's load/`--link` hash gate.
+;; layout-hash: 3582bc7f3ed7f6f4
 (schema
   ((primitives/IO _)
     (Pure 0 ((ioval _)))
@@ -36,7 +37,7 @@
     (Effect 1 ((thunk web/Request)))
     (Bind 2 ((inner (primitives/IO _)) (cont _))))
   (web/Connection
-    (Connection 0 ((token primitives/Int) (capacity primitives/Int) (fd primitives/Int))))
+    (Connection 0 ((fd primitives/Int))))
   (web/Listener
     (Listener 0 ((fd primitives/Int) (pool primitives/Int))))
   (web/Request

@@ -191,7 +191,14 @@ pub mod linker;
 /// extended serde surface. The field defaults `None` on a v9 cold-load; the
 /// frontend reader (a future `/dev` change) populates it from the leading
 /// comment block (§8.16.2).
-pub const CACHE_SCHEMA_VERSION: u32 = 9;
+/// **S97 v9 (ABI v8→v9 ctx-vtable cutover, `io-trampoline.md §17.4`).** The poll-node
+/// arg handling changed: `compile_poll_effect` no longer peels a leading `(token,
+/// capacity)` pair, so the state-closure env now packs a poll leaf's natural args at
+/// `capture(1..)` with no leading-pair displacement, AND `ConcurrencyDescriptor` gained
+/// a `role` byte. A stale `.o`/`.meta.json` cached under the v8 convention would marshal
+/// args at the wrong capture slots, so the bump rejects every pre-v9 cache as
+/// `CacheStale::SchemaMismatch` (cache-miss → recompile). This is the v8→v9 marker.
+pub const CACHE_SCHEMA_VERSION: u32 = 10;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

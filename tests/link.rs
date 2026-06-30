@@ -572,15 +572,16 @@ fn link_after_run_reuses_cache_and_resolves_cross_module_got() {
 #[test]
 fn link_multi_module_platform_emits_single_layout_hash_gate_symbol() {
     // The `web` platform's connection-handle ADTs as an ordinary `.cl` module
-    // (platforms do not declare ADTs — platform-interface.md §3a). The v8
-    // poll-shape DLL references these by FQ identity `web/Listener` /
-    // `web/Connection` / `web/Request` / `web/Response` (S96 Chunk B, FIXME 0465 —
-    // mirrors exemplar/web.cl's deftypes, ADTs-only so it resolves during the
-    // platform-load sig pre-resolve).
+    // (platforms do not declare ADTs — platform-interface.md §3a). The v9
+    // ctx-vtable DLL references these by FQ identity `web/Listener` /
+    // `web/Connection` / `web/Request` / `web/Response` (mirrors exemplar/web.cl's
+    // deftypes, ADTs-only so it resolves during the platform-load sig pre-resolve).
+    // `web/Connection` is the v9 OPAQUE 1-field handle (scheduling state lives in
+    // the trampoline ctx vtable, never on the value).
     let web_module = "(deftype Listener \
          [:primitives/Int fd :primitives/Int pool])\n\
          (deftype Connection \
-         [:primitives/Int token :primitives/Int capacity :primitives/Int fd])\n\
+         [:primitives/Int fd])\n\
          (deftype Request \
          [:primitives/String method :primitives/String path :primitives/String body])\n\
          (deftype Response \

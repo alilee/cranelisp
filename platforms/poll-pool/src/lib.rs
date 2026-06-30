@@ -40,7 +40,7 @@
 use core::ffi::c_void;
 
 use cranelisp_platform::poll_support::{PollEnv, Reactor};
-use cranelisp_platform::{ConcurrencyDescriptor, HostCtx, Poll, Waker};
+use cranelisp_platform::{Acquire, ConcurrencyDescriptor, HostCtx, Poll, ResourceRole, Waker};
 
 static HOST: cranelisp_platform::HostContext = cranelisp_platform::HostContext::new();
 
@@ -73,8 +73,18 @@ unsafe fn arm_timer_poll(state: *mut c_void, host: *const HostCtx, waker: *const
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
-    // SAFETY: leaf arg 0 (`ms`) is in the env (the effect declares it).
-    let ms = unsafe { env.arg(0) };
+    // v9 ctx-vtable: the leaf reads its OWN (token, capacity) as plain leaf args
+    // (the v8 leading-pair peel is deleted — `poll-support.md §3.6`) and acquires the
+    // token permit ITSELF. arg(0) = token, arg(1) = capacity, arg(2) = ms.
+    // SAFETY: leaf args 0/1/2 are in the env (the effect declares them).
+    let token = unsafe { env.arg(0) } as u64;
+    let capacity = unsafe { env.arg(1) } as u32;
+    let ms = unsafe { env.arg(2) };
+    // Skeleton step 1: acquire BEFORE the syscall; `Parked` ⇒ Pending (backpressure).
+    // `token == 0` omits acquire. Idempotent per in-flight effect (host-keyed).
+    if token != 0 && matches!(reactor.acquire(token, capacity), Acquire::Parked) {
+        return Poll::Pending;
+    }
     let slot = env.result();
 
     if slot == 0 {
@@ -160,7 +170,9 @@ pub unsafe extern "C" fn poll_log_pollfn(
         // SAFETY: leaf arg 1 (`tag`) is a live CLString base pointer (the effect
         // declares it as a String param).
         let env = unsafe { PollEnv::new(state) };
-        if let Some(s) = unsafe { env.arg_str(1) } {
+        // v9: tag is leaf arg 3 (token, capacity, ms, tag) — was arg(1) under the
+        // v8 leading-pair peel.
+        if let Some(s) = unsafe { env.arg_str(3) } {
             use std::io::Write;
             let mut out = std::io::stdout();
             let _ = out.write_all(s.as_bytes());
@@ -282,6 +294,13 @@ pub unsafe extern "C" fn poll_block_pollfn(
     // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
     let env = unsafe { PollEnv::new(state) };
     let reactor = unsafe { Reactor::new(host, waker) };
+    // v9: token = arg(0), capacity = arg(1); acquire the token permit (idempotent).
+    // SAFETY: leaf args 0/1 are in the env (the effect declares them).
+    let token = unsafe { env.arg(0) } as u64;
+    let capacity = unsafe { env.arg(1) } as u32;
+    if token != 0 && matches!(reactor.acquire(token, capacity), Acquire::Parked) {
+        return Poll::Pending;
+    }
     if env.result() == 0 {
         // First poll: arm READABLE interest on the never-readable fd, mark armed.
         env.set_result(1);
@@ -302,7 +321,9 @@ const RESOURCE_SERIAL: ConcurrencyDescriptor = ConcurrencyDescriptor {
     cardinality: 1,
     global_budget: 0,
     blocking: 0,
-    _reserved: [0; 3],
+    // v9: these test leaves operate on an explicit per-call token ⇒ role Consume.
+    role: ResourceRole::Consume,
+    _reserved: [0; 2],
 };
 
 cranelisp_platform::declare_platform! {
@@ -360,6 +381,15 @@ mod tests {
     unsafe extern "C" fn noop_readable(_h: *const c_void, _fd: i32, _w: *const Waker) {}
     unsafe extern "C" fn noop_writable(_h: *const c_void, _fd: i32, _w: *const Waker) {}
     unsafe extern "C" fn noop_timer(_h: *const c_void, _deadline: u64, _w: *const Waker) {}
+    unsafe extern "C" fn noop_acquire(
+        _h: *const c_void,
+        _t: u64,
+        _c: u32,
+        _w: *const Waker,
+    ) -> cranelisp_platform::Acquire {
+        cranelisp_platform::Acquire::Acquired
+    }
+    unsafe extern "C" fn noop_retire(_h: *const c_void, _t: u64) {}
     unsafe extern "C" fn noop_wake(_d: *const c_void) {}
     unsafe extern "C" fn noop_wake_by_ref(_d: *const c_void) {}
     unsafe extern "C" fn noop_clone(_d: *const c_void) -> Waker {
@@ -399,6 +429,8 @@ mod tests {
             register_readable: noop_readable,
             register_writable: noop_writable,
             register_timer: noop_timer,
+            acquire: noop_acquire,
+            retire: noop_retire,
             host: core::ptr::null(),
         };
         let waker = Waker { data: core::ptr::null(), vtable: &WAKER_VTABLE };

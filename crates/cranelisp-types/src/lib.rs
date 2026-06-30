@@ -266,7 +266,7 @@ pub use scheduling::SchedulingClass;
 // optional (`cranelisp-intrinsics`'s `concurrency-runtime` feature); these ABI
 // *types* are part of every build. See `crates/cranelisp-types/src/scheduling.rs`
 // and `design/arch/effect-concurrency.md` §5/§6/§12.
-pub use scheduling::{ConcurrencyDescriptor, Poll, PollFn};
+pub use scheduling::{Acquire, ConcurrencyDescriptor, Poll, PollFn, ResourceRole};
 pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,

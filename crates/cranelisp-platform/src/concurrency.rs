@@ -24,7 +24,7 @@
 
 use core::ffi::c_void;
 
-pub use cranelisp_types::{ConcurrencyDescriptor, Poll};
+pub use cranelisp_types::{Acquire, ConcurrencyDescriptor, Poll, ResourceRole};
 
 /// The C-ABI projection of `std::task::RawWakerVTable` — four `extern "C"`
 /// function pointers over the waker's opaque `data`.
@@ -71,7 +71,27 @@ pub struct HostCtx {
     /// Register a timer; the reactor wakes `waker` at `deadline_nanos` (monotonic).
     pub register_timer:
         unsafe extern "C" fn(host: *const c_void, deadline_nanos: u64, waker: *const Waker),
-    /// Opaque host reactor handle, passed back as `host` to each `register_*`.
+    /// **v9 ctx-vtable — acquire a token permit** (`effect-concurrency.md` §4.1.1).
+    /// A poll-fn projects a scheduling `token` from the handle it holds and calls
+    /// this at the start of each poll (a `token == 0` commutative leaf omits it).
+    /// `Acquire::Acquired` ⇒ a permit is held, proceed; `Acquire::Parked` ⇒ no permit
+    /// free — the host enqueued `waker` on the token's permit-wait queue and the leaf
+    /// returns `Poll::Pending` (backpressure). Idempotent per in-flight effect (the
+    /// host keys held permits by the waker's identity), so a re-poll re-`acquire`s
+    /// without double-counting. Release is **trampoline-owned** (on `Ready`/cancel) —
+    /// there is deliberately NO `release` entry (cancel never re-enters the poll-fn).
+    pub acquire: unsafe extern "C" fn(
+        host: *const c_void,
+        token: u64,
+        capacity: u32,
+        waker: *const Waker,
+    ) -> Acquire,
+    /// **v9 ctx-vtable — retire a token's scheduling identity** (a Retire/`close`
+    /// leaf calls this after `close(r)`). Drops the token's permit pool and wakes any
+    /// permit-waiters to observe the gone resource. Idempotent (`effect-concurrency.md`
+    /// §4.1.1); a full-duplex handle's `close` retires both per-direction tokens.
+    pub retire: unsafe extern "C" fn(host: *const c_void, token: u64),
+    /// Opaque host reactor handle, passed back as `host` to each callback.
     pub host: *const c_void,
 }
 

@@ -67,7 +67,9 @@ use futures::stream::{FuturesUnordered, StreamExt}; // the supervisor JoinSet-eq
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Token};
 
-use cranelisp_platform::{HostCtx, Poll as CPoll, PollFn, Waker as CWaker, WakerVTable};
+use cranelisp_platform::{
+    Acquire as CAcquire, HostCtx, Poll as CPoll, PollFn, Waker as CWaker, WakerVTable,
+};
 
 use crate::strand::{emit_strand_event, StrandEvent, StrandId};
 
@@ -278,6 +280,19 @@ pub struct Reactor {
     /// executor's task `Waker` ([`ExecutorWaker`]) so a `futures` `oneshot` send
     /// from a `rayon` worker wakes the reactor through the normal waker path.
     bridge_waker: Arc<mio::Waker>,
+    /// **v9 ctx-vtable (§7.2).** The host-owned token-capacity permit map the
+    /// platform poll-fns acquire against via [`host_acquire`]. Wired by
+    /// [`block_on_reactor`] after the [`TokenPool`] is constructed (`None` for a
+    /// fixture reactor with no pool — `acquire` then resolves unrestricted). Shared
+    /// (`Rc`) with [`ReactorEnv`], whose blocking-branch / global-budget acquires use
+    /// the SAME pool.
+    pool: Option<Rc<TokenPool>>,
+    /// **v9 ctx-vtable (§7.2).** The per-effect **held-permit ledger** keyed by the
+    /// in-flight effect's identity (its [`RegId`], the registrant the poll-fn bracket
+    /// stamps): which tokens each effect currently holds a permit on. Makes `acquire`
+    /// idempotent per effect (a re-poll re-`acquire`s without double-counting) and is
+    /// what `release_all` consults on `Ready`/cancel. Reactor-thread only (§2.8).
+    held: HashMap<RegId, Vec<u64>>,
 }
 
 impl Reactor {
@@ -308,7 +323,126 @@ impl Reactor {
             next_reg: 1,
             current_registrant: None,
             bridge_waker,
+            pool: None,
+            held: HashMap::new(),
         })
+    }
+
+    /// Wire the host-owned [`TokenPool`] into the reactor so the v9 `ctx` vtable's
+    /// [`host_acquire`] can take/return token permits (§7.2). Called once by
+    /// [`block_on_reactor`] after the pool is constructed, before any poll-fn runs.
+    fn set_pool(&mut self, pool: Rc<TokenPool>) {
+        self.pool = Some(pool);
+    }
+
+    /// **v9 ctx-vtable `acquire`** (`reactor.md §7.2`): take a permit on `token`'s
+    /// capacity-`N` pool for the currently-polling effect (its [`RegId`] =
+    /// [`Reactor::current_registrant`]). Returns [`CAcquire::Acquired`] if a permit is
+    /// held (idempotent per effect — a re-acquire on a token already held does NOT
+    /// consume a second permit) or [`CAcquire::Parked`] if the slot is full (the
+    /// `waker` is enqueued identity-tagged so a cancel can remove it). `token == 0`
+    /// and a fixture reactor with no pool both resolve `Acquired` (unrestricted).
+    ///
+    /// Runs on the reactor thread inside the poll-fn call (the B1 reborrow window), so
+    /// the `RefCell` permit map + the `held` ledger stay lock-free (§2.8).
+    ///
+    /// # Safety
+    /// `waker` is the live C-ABI waker the platform passed; its `data` is the boxed
+    /// `std::task::Waker` [`make_cabi_waker`] produced.
+    unsafe fn acquire_permit(&mut self, token: u64, capacity: u32, waker: *const CWaker) -> CAcquire {
+        if token == 0 {
+            return CAcquire::Acquired; // commutative — never touches map/ledger.
+        }
+        let effect = self.current_registrant.unwrap_or(0);
+        // Idempotent per in-flight effect: a token already held ⇒ Acquired, no 2nd permit.
+        if let Some(tokens) = self.held.get(&effect)
+            && tokens.contains(&token)
+        {
+            return CAcquire::Acquired;
+        }
+        let Some(pool) = self.pool.clone() else {
+            return CAcquire::Acquired; // no pool wired (fixture reactor) ⇒ unrestricted.
+        };
+        let degree = pool.degree;
+        let sized = capacity.max(1).min(degree).max(1);
+        let mut slots = pool.slots.borrow_mut();
+        let slot = slots.entry(token).or_insert_with(|| TokenSlot {
+            permits: sized,
+            capacity: sized,
+            waiters: VecDeque::new(),
+        });
+        if slot.permits > 0 {
+            slot.permits -= 1;
+            drop(slots);
+            self.held.entry(effect).or_default().push(token);
+            CAcquire::Acquired
+        } else {
+            // Park: enqueue an identity-tagged std `Waker` recovered from the C-ABI
+            // waker (its `data` is a boxed `std::task::Waker`). A later `release_all`
+            // pops the front (FIFO ⇒ capacity-1 source order, §8.2).
+            let id = pool.next_waiter.get();
+            pool.next_waiter.set(id + 1);
+            // SAFETY: caller obligation — `waker` is a live C-ABI waker whose `data`
+            // is the boxed `std::task::Waker` (make_cabi_waker).
+            let std_waker = unsafe { (*((*waker).data as *const Waker)).clone() };
+            slot.waiters.push_back((id, std_waker));
+            CAcquire::Parked
+        }
+    }
+
+    /// **v9 ctx-vtable `retire`** (`reactor.md §7.2`): drop `token`'s permit pool and
+    /// wake any parked waiters so they re-poll and observe the gone resource. Called
+    /// by a Retire/`close` leaf after `close(r)`. Idempotent (remove-if-present);
+    /// `token == 0` / no pool ⇒ no-op.
+    fn retire_token(&mut self, token: u64) {
+        if token == 0 {
+            return;
+        }
+        let Some(pool) = self.pool.clone() else {
+            return;
+        };
+        let wakers: Vec<Waker> = {
+            let mut slots = pool.slots.borrow_mut();
+            match slots.remove(&token) {
+                Some(slot) => slot.waiters.into_iter().map(|(_, w)| w).collect(),
+                None => Vec::new(),
+            }
+        };
+        for w in wakers {
+            w.wake();
+        }
+    }
+
+    /// **v9 trampoline-owned release** (`reactor.md §7.3`): release every permit the
+    /// effect `reg` holds — incrementing each token's slot + FIFO-waking its front
+    /// parked waiter — and clear the ledger entry. Called eagerly on the effect's
+    /// `Ready` (before `TaskPoll::Ready`) AND on its drop = cancellation (via
+    /// [`ReactorInterest::drop`]); the first call removes the ledger entry, so the
+    /// second is a no-op (no double-release — Principle 20). Reactor-thread only.
+    fn release_all(&mut self, reg: RegId) {
+        let Some(tokens) = self.held.remove(&reg) else {
+            return;
+        };
+        let Some(pool) = self.pool.clone() else {
+            return;
+        };
+        for token in tokens {
+            // Detach the front waiter UNDER the borrow, drop the borrow, THEN wake
+            // (the `Drop for Permit` S2 hardening — wake outside the `slots` borrow).
+            let waker = {
+                let mut slots = pool.slots.borrow_mut();
+                match slots.get_mut(&token) {
+                    Some(slot) => {
+                        slot.permits += 1;
+                        slot.waiters.pop_front().map(|(_, w)| w)
+                    }
+                    None => None,
+                }
+            };
+            if let Some(w) = waker {
+                w.wake();
+            }
+        }
     }
 
     /// A clone of the cross-thread wakeup handle ([`Reactor::bridge_waker`]) for
@@ -508,6 +642,32 @@ unsafe extern "C" fn host_register_timer(host: *const c_void, deadline_nanos: u6
     unsafe { r.register_timer(deadline_nanos, waker) };
 }
 
+/// The v9 `ctx` vtable `acquire` callback (`reactor.md §7.2`): the platform poll-fn
+/// asks for a permit on its projected `(token, capacity)`. Reborrows the reactor
+/// (B1 provenance — transient, inside the poll-fn call) and delegates to
+/// [`Reactor::acquire_permit`], which keys held permits by the currently-polling
+/// effect's identity (idempotent per effect).
+unsafe extern "C" fn host_acquire(
+    host: *const c_void,
+    token: u64,
+    capacity: u32,
+    waker: *const CWaker,
+) -> CAcquire {
+    // SAFETY: B1 provenance invariant — `host` is the raw `*mut Reactor`; transient
+    // `&mut`, no overlap with `turn()` (we are inside a poll-fn call).
+    let r = unsafe { &mut *(host as *mut Reactor) };
+    // SAFETY: `waker` is the live C-ABI waker the host projected for this poll.
+    unsafe { r.acquire_permit(token, capacity, waker) }
+}
+
+/// The v9 `ctx` vtable `retire` callback (`reactor.md §7.2`): a Retire/`close` leaf
+/// ends a token's scheduling identity. B1 reborrow; idempotent.
+unsafe extern "C" fn host_retire(host: *const c_void, token: u64) {
+    // SAFETY: B1 provenance invariant — see [`host_acquire`].
+    let r = unsafe { &mut *(host as *mut Reactor) };
+    r.retire_token(token);
+}
+
 /// Build the `HostCtx` vtable over a reactor, given its raw `*mut Reactor`.
 ///
 /// **B1 provenance invariant.** `host` is set to `reactor_ptr` directly — the
@@ -531,6 +691,8 @@ fn make_host_ctx(reactor_ptr: *mut Reactor) -> HostCtx {
         register_readable: host_register_readable,
         register_writable: host_register_writable,
         register_timer: host_register_timer,
+        acquire: host_acquire,
+        retire: host_retire,
         host: reactor_ptr as *const c_void,
     }
 }
@@ -597,6 +759,12 @@ impl Drop for ReactorInterest {
         // never concurrently with a poll-fn's reborrow or `turn()`'s reborrow — so
         // this transient `&mut` does not alias any other `&mut Reactor`.
         let r = unsafe { &mut *self.reactor };
+        // v9 ctx-vtable (`reactor.md §7.3`): on a cancellation drop (the future never
+        // reached `Ready`), release every permit this effect holds AND deregister its
+        // reactor interest — keyed by the same identity, both from the host's ledger,
+        // without ever re-entering the poll-fn. On the `Ready` path `release_all` was
+        // already called (ledger entry gone) so this release is a no-op (Principle 20).
+        r.release_all(self.reg);
         r.deregister(self.reg);
     }
 }
@@ -614,33 +782,32 @@ const RESULT_SLOT_OFFSET: isize = 0;
 /// and `Pending` → a park on the reactor, and emits the strand observability
 /// events.
 ///
-/// `EffectPoll: Unpin` — every field is a pointer / `Copy` scalar, or the
-/// movable `Option<Permit>` (`Permit` is `Rc` + scalars, itself `Unpin`) — so it
-/// polls through a plain `&mut`. The lifetime ties the borrowed `HostCtx` to the
-/// future.
+/// `EffectPoll: Unpin` — every field is a pointer / `Copy` scalar or the RAII
+/// `ReactorInterest` (pointer + scalar) — so it polls through a plain `&mut`. The
+/// lifetime ties the borrowed `HostCtx` to the future.
 ///
-/// **The capacity permit (§2.9 — acquire-around-poll + the RAII drop-guard).**
-/// `permit: Option<Permit>` is the token-capacity permit this future OWNS across
-/// its whole establish→`Pending`→…→`Ready` arc. It is `Some` from construction
-/// (acquired BEFORE the first poll-fn call, in `io::await_poll_node`) and is
-/// released by exactly one of two mutually-exclusive paths:
+/// **v9 ctx-vtable release (`reactor.md §7.3`).** The future no longer OWNS an
+/// `Option<Permit>` it acquired up-front — under the ctx-vtable model the *platform
+/// poll-fn* acquires its token permit itself via `ctx.acquire`, and the host tracks
+/// every held permit by this effect's identity (`reg`) in its per-effect ledger
+/// ([`Reactor::held`]). Release is **trampoline-owned**, keyed by `reg`, fired on
+/// exactly one of two mutually-exclusive paths:
 ///
-/// - **eagerly on `Poll::Ready`** — `Option::take()` + drop in [`EffectPoll::poll`],
-///   freeing the slot the instant the result is available. NOT deferred to
-///   future-drop: in a `join_all` an individual leaf is not dropped until the
-///   whole join completes, so deferring would hold the slot past this leaf's own
-///   completion and starve same-token waiters until the slowest sibling finishes.
-/// - **on future-drop** — the `Option<Permit>` field's own drop glue releases it
-///   if still `Some`, i.e. the future was dropped before reaching `Ready`
-///   (cancelled / timed-out / race-lost / disconnected — the A→C contract Chunk C
-///   exercises). **No `Drop for EffectPoll` is hand-written**; the field's drop
-///   glue IS the cancellation release path.
+/// - **eagerly on `Poll::Ready`** — [`EffectPoll::poll`] calls
+///   [`Reactor::release_all`]`(reg)` BEFORE returning `TaskPoll::Ready`, freeing every
+///   permit this effect holds the instant its result is available. NOT deferred to
+///   future-drop: in a `join_all` an individual leaf is not dropped until the whole
+///   join completes, so deferring would starve same-token waiters until the slowest
+///   sibling finishes (§2.9 rationale, unchanged).
+/// - **on future-drop = cancellation** — [`ReactorInterest::drop`] calls
+///   `release_all(reg)` (and `deregister(reg)`) if the future was dropped before
+///   `Ready` (cancelled / timed-out / race-lost / disconnected — the A→C contract).
+///   **No `Drop for EffectPoll` is hand-written**; the `_interest` field's drop glue
+///   IS the cancellation release/dereg path (Principle 18).
 ///
-/// The `Option` makes "released exactly once" *representable* (Principle 20 — no
-/// boolean `released` flag to keep in sync): `take()` on `Ready` leaves `None`, so
-/// the subsequent field-drop is a no-op; a dropped-before-`Ready` future never ran
-/// `take()`, so the field is `Some` and drops exactly once. (`token == 0` ⇒ an
-/// inert permit whose drop is itself a no-op.)
+/// "released exactly once" is *representable* (Principle 20): `release_all` removes
+/// the ledger entry on its first call, so the eager-on-`Ready` release leaves nothing
+/// for the subsequent field-drop to release (a no-op).
 pub struct EffectPoll<'h> {
     state: *mut c_void,
     poll_fn: PollFn,
@@ -649,9 +816,6 @@ pub struct EffectPoll<'h> {
     /// Number of times `poll` has run — distinguishes dispatch (0) from a resume
     /// (>0) for the strand events.
     polls: u32,
-    /// The token-capacity permit owned across the establish→ready arc (§2.9). See
-    /// the type doc above for the two-path, released-exactly-once lifecycle.
-    permit: Option<Permit>,
     /// This leaf's registrant tag (finding #3, §2.16) — allocated in
     /// [`EffectPoll::new`], stamped onto every fd/timer this leaf arms (via the
     /// poll-bracket below), and used by `_interest`'s drop to deregister them.
@@ -665,31 +829,27 @@ pub struct EffectPoll<'h> {
 }
 
 impl<'h> EffectPoll<'h> {
-    /// Build an effect leaf over a poll-fn + its state, charged to `strand`, that
-    /// OWNS `permit` across its establish→ready arc (§2.9). The caller acquires
-    /// the live `(token, capacity)` permit (in `io::await_poll_node`) BEFORE the
-    /// first poll and moves it in here as `Some(permit)`; the future releases it
-    /// on `Ready` (eager `Option::take`) or on drop (the cancellation path). Pass
-    /// an inert `token == 0` permit for the unrestricted case (its drop is a
-    /// no-op); pass `None` only for a leaf that takes no admission (the fixture
-    /// substrate-regression leaves driven without a pool).
+    /// Build an effect leaf over a poll-fn + its state, charged to `strand`. **v9
+    /// ctx-vtable (`reactor.md §7.5`):** the future is **scheduling-blind** — it does
+    /// NO pre-poll acquire and reads NO `(token, capacity)`/`role` off the node. The
+    /// *platform poll-fn* acquires its own token permit via `ctx.acquire`; the host
+    /// tracks held permits by this leaf's identity (`reg`) and releases them on
+    /// `Ready` (eager, [`EffectPoll::poll`]) or on drop ([`ReactorInterest::drop`]).
     ///
     /// `pub(crate)`, not `pub`: the only construction sites are this crate's
-    /// trampoline (`io::await_poll_node`) and unit tests — no external crate
-    /// builds an `EffectPoll`. Keeping it crate-local also keeps the `pub(crate)`
-    /// [`Permit`] out of a `pub` signature (no private-in-public lint).
+    /// trampoline (`io::await_poll_node`) and unit tests — no external crate builds an
+    /// `EffectPoll`.
     ///
     /// # Safety
     /// `state` must be valid for the poll-fn for the future's lifetime, and must
     /// point at an env whose first `i64` slot ([`RESULT_SLOT_OFFSET`]) is the
     /// reserved result slot the poll-fn writes before returning `Ready`;
-    /// `poll_fn` must obey the v7 poll-fn contract.
+    /// `poll_fn` must obey the v9 poll-fn contract.
     pub(crate) unsafe fn new(
         state: *mut c_void,
         poll_fn: PollFn,
         host: &'h HostCtx,
         strand: StrandId,
-        permit: Option<Permit>,
     ) -> Self {
         // Mint this leaf's registrant tag from the reactor (finding #3, §2.16),
         // alongside the §2.9 permit acquire. The reactor is the `host.host` raw
@@ -712,7 +872,6 @@ impl<'h> EffectPoll<'h> {
             host,
             strand,
             polls: 0,
-            permit,
             reg,
             _interest: ReactorInterest { reactor, reg },
         }
@@ -777,15 +936,19 @@ impl Future for EffectPoll<'_> {
                 let value = unsafe {
                     *((this.state as *const i64).byte_offset(RESULT_SLOT_OFFSET))
                 };
-                // Eager release (§2.9 step 5): take + drop the permit BEFORE
-                // returning `Ready`. In a `join_all` an individual leaf is not
-                // dropped until the whole join completes, so deferring release to
-                // future-drop would hold the slot past this leaf's own completion
-                // and starve same-token waiters. `Option::take()` moves the
-                // `Permit` out (leaving `None`, so the field's drop glue is a
-                // no-op — no double-release) and dropping it increments the slot +
-                // FIFO-wakes the front parked waiter (`Drop for Permit`).
-                drop(this.permit.take());
+                // v9 eager release (`reactor.md §7.3`): release every permit this
+                // effect (identity `reg`) holds BEFORE returning `Ready`. In a
+                // `join_all` an individual leaf is not dropped until the whole join
+                // completes, so deferring release to future-drop would starve
+                // same-token waiters. `release_all` removes the ledger entry, so the
+                // subsequent `_interest` drop's `release_all` is a no-op (no
+                // double-release). A null-host fixture leaf (`reg == 0`) holds nothing.
+                if !reactor.is_null() && this.reg != 0 {
+                    // SAFETY: B1 — `host.host` is the raw `*mut Reactor`; transient
+                    // `&mut`, inside `Future::poll` on the reactor thread, no overlap
+                    // with `turn()` or the (already-returned) poll-fn reborrow.
+                    unsafe { (*reactor).release_all(this.reg) };
+                }
                 TaskPoll::Ready(value)
             }
             CPoll::Pending => {
@@ -1475,6 +1638,12 @@ where
     // `host_ctx` below so it — and the detached strands it owns, which borrow
     // `host_ctx` through their cloned `ReactorEnv` — drops BEFORE `host_ctx`.)
     let pool = TokenPool::with_degree(degree);
+    // v9 ctx-vtable (§7.2): wire the pool into the reactor so the `host_acquire`/
+    // `host_retire` callbacks take/return token permits against it. The poll-leaf
+    // path acquires through the reactor's `ctx` vtable (the platform poll-fn calls
+    // `ctx.acquire`); the blocking-branch / global-budget paths acquire the SAME
+    // pool directly through `ReactorEnv` (the `Future`-based `AcquirePermit`).
+    reactor.set_pool(Rc::clone(&pool));
     let pending_bridges: Rc<Cell<usize>> = Rc::new(Cell::new(0));
 
     // Raw self pointer for the poll-fns. Discipline: after this we touch the

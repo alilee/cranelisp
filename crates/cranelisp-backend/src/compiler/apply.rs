@@ -980,33 +980,14 @@ where
             location: ErrorLocation::from_span(span),
         })?;
 
-        // 0. Peel the leading `(token, capacity)` operand pair (the poll-shape
-        //    operand convention — `io-trampoline.md §14.2` / SPRINT.md S96 Phase-3
-        //    ruling):
-        //      arg_vals = [ token, capacity, resource_handle(=leaf_0), leaf_1, ... ]
-        //    `token` (arg_vals[0]) → node field 1 (abs 32); `capacity` (arg_vals[1])
-        //    → node field 2 (abs 40, node-only — the poll-fn never sees it); the
-        //    leaf args (arg_vals[2..]) marshal into the state-closure env, with the
-        //    resource handle re-passed as `leaf_0` (arg_vals[2] → capture(1)) so the
-        //    poll-fn still finds its fd at `state+8`. A tokenless leaf supplies the
-        //    leading pair as the explicit constants `(0, 1)` through this SAME path,
-        //    so `token = 0` (no-acquire) / `capacity = 1` (serial) — the S95 sentinel
-        //    behaviour preserved by value, not by a special-case branch. The backend
-        //    always peels the pair: there is no "tokened vs tokenless" branch and no
-        //    new `cranelisp-types` field (`poll_shape: bool` stays the sole
-        //    discriminator). Both baked fields are `NeverHeap` scalars (an opaque
-        //    fd/handle identity and a count), so the bake takes no `rc_inc` (§14.6).
-        let (token_val, cap_val, leaf_args) = match arg_vals {
-            [token, cap, rest @ ..] => (*token, *cap, rest),
-            _ => {
-                return Err(CranelispError::CodegenError {
-                    message: "poll-shape effect must carry the leading (token, \
-                              capacity) operand pair (io-trampoline.md §14.2)"
-                        .into(),
-                    location: ErrorLocation::from_span(span),
-                });
-            }
-        };
+        // 0. v9 ctx-vtable (`io-trampoline.md §17.3`): the v8 leading-pair peel is
+        //    DELETED. Under the ctx-vtable handle model the descriptor `(token,
+        //    capacity)` is neither a cranelisp value nor a leaf arg nor anything stored
+        //    on the node — the platform poll-fn computes its token from the handle it
+        //    holds and calls `ctx.acquire` itself. So a poll leaf's natural args are
+        //    its ONLY args: `leaf_args = arg_vals[0..]` directly, marshaled into the
+        //    state-closure env at `capture(1+i)` (result @ `capture(0)`).
+        let leaf_args = arg_vals;
 
         // 1. GOT-load the poll-fn (the shared load prefix — NO call at the site).
         let got_sym = crate::compiler::got_data_symbol_name(module_path);
@@ -1069,28 +1050,18 @@ where
             heap::heap_store(&mut self.builder, arg, clo, HeapClosure::capture_offset(1 + i));
         }
 
-        // 3. Build the IO_TAG_EFFECT_POLL node:
-        //    [header | tag=4 | state_closure | token | capacity].
+        // 3. Build the IO_TAG_EFFECT_POLL node — the v8-UNIFORM shape
+        //    (`io-trampoline.md §17.2`): `[header | tag=4 | state_closure | _ | _]`.
         //
-        // S95 slice 3 (`io-trampoline.md §13.3`) reserved the symmetric
-        // `(token, capacity)` carrier on the poll node so the trampoline reads
-        // `(token, capacity)` uniformly off ANY IO node. The node fields keep
-        // `token` at `field_offset(1)` — symmetric with the blocking node's token
-        // (also field 1) — so `read_resource_token` stays one tag-agnostic field-1
-        // read; `capacity` follows at `field_offset(2)`.
-        //
-        // S96 Chunk A item 3 (`io-trampoline.md §14`) LIGHTS UP the live carrier:
-        // the two S95 sentinel `iconst 0`/`iconst 1` stores are replaced by stores
-        // of the live `(token, capacity)` operand Values peeled above, so the
-        // reactor's acquire-around-poll admission gate reads a real `(token,
-        // capacity)` off the node BEFORE the first poll (the establish step). No
-        // alloc change (already `payload_size(3)`), no new node field, no new arm —
-        // only the *value stored* changes; the read sites + offsets are unchanged
-        // (abs 32 / 40), so the cross-crate contract cannot drift (§14.4).
-        //
-        // The widened node is still a one-heap-field ADT (only field 0, the
-        // state-closure, is heap-typed); both baked fields are `NeverHeap` scalars,
-        // so the bake takes no `rc_inc` and drop glue is unchanged in shape (§14.6).
+        // v9 ctx-vtable: the two former `(token, capacity)` admission slots carry
+        // NOTHING the trampoline reads (`await_poll_node` is scheduling-blind — the
+        // platform poll-fn does all scheduling via `ctx.acquire`). The node keeps the
+        // `payload_size(3)` layout (so the read helpers + drop glue are byte-stable),
+        // and the two slots are baked with INERT zero/sentinel `iconst`s. The node is
+        // still a one-heap-field ADT (only field 0, the state-closure, is heap-typed);
+        // the two inert fields are `NeverHeap` scalars (no `rc_inc`, drop glue
+        // unchanged in shape, §14.6). No node growth (it does NOT grow 48→56), no
+        // `role` field, no `desc_out` region (`io-trampoline.md §17.2`).
         let node_size = HeapAdt::payload_size(3) as i64;
         let node = heap::emit_alloc(&mut self.builder, self.module, alloc_id, node_size);
         // IO_TAG_EFFECT_POLL = 4 (the `cranelisp-platform` gated constant; a
@@ -1100,10 +1071,11 @@ where
         heap::heap_store(&mut self.builder, tag, node, HeapAdt::TAG_OFFSET);
         // field 0: ownership transfer of the state-closure (rc=1) into the node, no inc.
         heap::heap_store(&mut self.builder, clo, node, HeapAdt::field_offset(0));
-        // field 1: live token (arg_vals[0]) — abs 32, NeverHeap scalar, no inc.
-        heap::heap_store(&mut self.builder, token_val, node, HeapAdt::field_offset(1));
-        // field 2: live capacity (arg_vals[1]) — abs 40, NeverHeap scalar, no inc.
-        heap::heap_store(&mut self.builder, cap_val, node, HeapAdt::field_offset(2));
+        // fields 1/2: INERT under v9 (no scheduling state on the node) — zero/sentinel.
+        let inert_token = self.builder.ins().iconst(types::I64, 0);
+        heap::heap_store(&mut self.builder, inert_token, node, HeapAdt::field_offset(1));
+        let inert_capacity = self.builder.ins().iconst(types::I64, 1);
+        heap::heap_store(&mut self.builder, inert_capacity, node, HeapAdt::field_offset(2));
 
         Ok(node)
     }

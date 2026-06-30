@@ -29,7 +29,7 @@
 
 use core::ffi::c_void;
 
-use crate::{HostCtx, Poll, Waker, HEAP_HEADER_SIZE, STRING_HEADER_BYTES};
+use crate::{Acquire, HostCtx, Poll, Waker, HEAP_HEADER_SIZE, STRING_HEADER_BYTES};
 
 /// Typed accessor over the host-built **state-closure env** — the single home for
 /// the R1 env-layout convention (`io-trampoline.md §12.2`):
@@ -155,6 +155,33 @@ impl Reactor {
             (hc.register_timer)(hc.host, deadline_nanos, self.waker);
         }
     }
+
+    /// **v9 ctx-vtable — acquire a token permit** (`effect-concurrency.md` §4.1.1).
+    /// The leaf computes `token` + `capacity` itself (the platform's trust assertion —
+    /// web: `token == fd`, capacity 1 per connection; a singleton resource: a
+    /// manifest-static token). `Acquire::Acquired` ⇒ hold a permit and proceed;
+    /// `Acquire::Parked` ⇒ no permit free — the host enqueued `waker`, so the leaf
+    /// returns `Poll::Pending` (backpressure). **Idempotent per in-flight effect** (the
+    /// host keys held permits by the waker's identity), so a re-poll re-`acquire`s
+    /// without double-counting — no "already acquired?" flag on the leaf. Release is
+    /// **trampoline-owned** (on `Ready`/cancel); `Reactor` has no `release`.
+    pub fn acquire(&self, token: u64, capacity: u32) -> Acquire {
+        // SAFETY: `host`/`waker` are the live pointers from `new`.
+        unsafe {
+            let hc = &*self.host;
+            (hc.acquire)(hc.host, token, capacity, self.waker)
+        }
+    }
+
+    /// **v9 ctx-vtable — retire a token's scheduling identity** (a Retire/`close`
+    /// leaf calls this after `close(r)`). Idempotent; wakes any token-parked waiters.
+    pub fn retire(&self, token: u64) {
+        // SAFETY: `host`/`waker` are the live pointers from `new`.
+        unsafe {
+            let hc = &*self.host;
+            (hc.retire)(hc.host, token);
+        }
+    }
 }
 
 /// What a phase step decided: done with an i64 result, or parked on a readiness
@@ -273,6 +300,15 @@ mod tests {
     unsafe extern "C" fn rec_timer(_h: *const c_void, deadline: u64, _w: *const Waker) {
         TIMER_DEADLINE.store(deadline, Ordering::SeqCst);
     }
+    unsafe extern "C" fn noop_acquire(
+        _h: *const c_void,
+        _t: u64,
+        _c: u32,
+        _w: *const Waker,
+    ) -> crate::Acquire {
+        crate::Acquire::Acquired
+    }
+    unsafe extern "C" fn noop_retire(_h: *const c_void, _t: u64) {}
     unsafe extern "C" fn noop_wake(_d: *const c_void) {}
     unsafe extern "C" fn noop_wake_by_ref(_d: *const c_void) {}
     unsafe extern "C" fn noop_clone(_d: *const c_void) -> Waker {
@@ -303,6 +339,8 @@ mod tests {
             register_readable: rec_readable,
             register_writable: rec_writable,
             register_timer: rec_timer,
+            acquire: noop_acquire,
+            retire: noop_retire,
             host: std::ptr::null(),
         };
         let waker = Waker { data: std::ptr::null(), vtable: &WAKER_VTABLE };

@@ -31,7 +31,7 @@
 (import [primitives [bind sleep catch-runtime-error Result Ok Err div-i64 int-to-string]])
 (import [serve [listen accept]])
 (import [platform.web [read-conn send-conn]])
-(import [web [Connection Request Response]])
+(import [web [Request Response]])
 
 ;; ── The pure router ───────────────────────────────────────────────────────
 ;; /fault deliberately faults (div-by-zero) — a catchable runtime error that
@@ -78,23 +78,21 @@
   :(primitives/IO primitives/Int)
   (bind (accept listener)
     (fn [conn]
-      (match conn
-        [(Connection token capacity fd)
-           (do
-             ;; the discarded, launch-eligible per-connection handler sub-tree:
-             ;; read → (sleep (slow-ms req)) → send. Every effect position is a
-             ;; direct platform/timer leaf (read-conn/send-conn = ResourceSerial
-             ;; poll over the fresh connection token; `sleep` = the resource-free
-             ;; timer, §4.1 timer refinement), so /int infers the detached launch
-             ;; and the `(sleep 100)` for /slow makes the overlap witness
-             ;; deterministic. The handler launches as ONE strand (read→sleep→send
-             ;; sequential inside); the `sleep` step is NOT independently detached.
-             (bind (read-conn token capacity fd)
-               (fn [req]
-                 (bind (sleep (slow-ms req))
-                   (fn [_] (send-conn token capacity fd (safe-handle req))))))
-             ;; the continuation: accept the next connection (a fresh token)
-             (serve-loop listener))]))))
+      (do
+        ;; the discarded, launch-eligible per-connection handler sub-tree:
+        ;; read → (sleep (slow-ms req)) → send. v9: the opaque `conn` handle threads
+        ;; directly into the DIRECT leaves read-conn/send-conn (Consume polls — the
+        ;; platform projects the token from the handle's fd + acquires via ctx) +
+        ;; `sleep` (the resource-free timer leaf, §4.1), so /int infers the detached
+        ;; launch and the `(sleep 100)` for /slow makes the overlap witness
+        ;; deterministic. The handler launches as ONE strand (read→sleep→send
+        ;; sequential inside); the `sleep` step is NOT independently detached.
+        (bind (read-conn conn)
+          (fn [req]
+            (bind (sleep (slow-ms req))
+              (fn [_] (send-conn conn (safe-handle req))))))
+        ;; the continuation: accept the next connection (a fresh opaque handle)
+        (serve-loop listener)))))
 
 ;; ── Entry ──────────────────────────────────────────────────────────────────
 ;; The port arg is a fallback; `bind-listener` prefers `CRANELISP_PORT` when set.

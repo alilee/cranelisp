@@ -87,11 +87,11 @@ fn invoke_manifest() -> cranelisp_platform::PlatformManifest {
 fn macro_exports_got_in_manifest_order() {
     let manifest = invoke_manifest();
     assert_eq!(
-        manifest.abi_version, 8,
-        "ABI v8 (Sprint 96 — the single-ABI cutover, §6.8.0: the unified \
-         `PlatformFn` absorbs `ConcurrentPlatformFn`, the host-reactor ABI types \
-         graduate to the default edge, the `concurrency` feature is retired). \
-         Was v7 (Sprint 93 ABI-v4 cascade), v6 at DEF-5)"
+        manifest.abi_version, 9,
+        "ABI v9 (Sprint 97 — the ctx-vtable handle-model cutover, §6.8.0b: `HostCtx` \
+         gains `acquire`/`retire`, `ConcurrencyDescriptor` gains `role`, the `Acquire` \
+         enum is added; `PollFn`/`Poll` unchanged). Was v8 (Sprint 96 single-ABI \
+         cutover), v7 (Sprint 93 ABI-v4 cascade), v6 at DEF-5)"
     );
     assert_eq!(manifest.function_count, 2);
 
