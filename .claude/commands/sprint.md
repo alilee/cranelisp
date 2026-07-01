@@ -45,7 +45,7 @@ Specifically MUST NOT edit:
 12 skills. Three categories matter to `/sprint`:
 
 - **Authority**: `/spec`, `/arch`, `/qa`. Arbitrate correctness; route technical questions here.
-- **Per-crate triad**: `/design`, `/dev`, `/review` — generic skills, narrow-deployed one crate per invocation. The 6 crate-shaped surfaces are `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-runtime`, `cranelisp-platform`, and `src/` (binary). Always name the crate when invoking.
+- **Per-crate triad**: `/design`, `/dev`, `/review` — generic skills, narrow-deployed one crate per invocation. The crate-shaped surfaces are `cranelisp-frontend`, `cranelisp-typecheck`, `cranelisp-backend`, `cranelisp-primitives` + `cranelisp-intrinsics` (the **backend-emitted runtime library** — S73 D43 split of the former `cranelisp-runtime`; paired with backend, NOT `/int`; `/int` is only a host-client — see BC §4b/§6 + FIXME 0486), `cranelisp-platform`, and `src/` (binary). Always name the crate when invoking.
 - **User-proxy**: `/stdlib`, `/examples`, `/docs`, `/repl`, `/port`. Operate in Phase 6 — exercise the language outside-in.
 
 `/frontend`, `/typecheck`, `/backend`, `/int`, `/platform` are RETIRED (collapsed into `/dev` narrow-deployment). Do not invoke. The integration-bottleneck rule (sprint sized to one skill's capacity) is also retired — it was a holdover from the per-skill-per-crate model.
