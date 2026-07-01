@@ -50,12 +50,14 @@
 (import [primitives [bind sleep catch-runtime-error Result Ok Err]])
 
 ;; The web platform connection lifecycle. `listen`/`accept` stay behind the
-;; serve.cl destructuring wrappers (they supply the poll leading (token,
-;; capacity) pair); the per-connection `read-conn`/`send-conn` poll leaves are
-;; imported RAW from `platform.web` so the serve loop can inline them down to
-;; direct leaves — the discipline the inferred launch requires (see header).
-;; The wrappers live in `serve` not `web` to avoid the platform-load pre-resolve
-;; cycle (see web.cl/serve.cl).
+;; serve.cl convenience wrappers; under v9 (ctx-vtable handle model) those
+;; wrappers are near-trivial pass-throughs — there is NO leading (token,
+;; capacity) pair to thread and NO descriptor to read/write. The
+;; per-connection `read-conn`/`send-conn` poll leaves are imported RAW from
+;; `platform.web` so the serve loop can inline them down to direct leaves — the
+;; discipline the inferred launch requires (see header). The wrappers live in
+;; `serve` not `web` to avoid the platform-load pre-resolve cycle (see
+;; web.cl/serve.cl).
 (import [serve [listen accept]])
 (import [platform.web [read-conn send-conn]])
 (import [web [Request Response]])

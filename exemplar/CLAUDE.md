@@ -6,6 +6,54 @@ The **committed showcase target is the stdio CLI** — `user.cl` tells the full
 story end-to-end. The web platform is now built (S96) and is the marquee for
 **inferred concurrency**; see the S96 Phase 6 note below and `plan-exemplar.md`.
 
+## Current State (Sprint 98 Phase 6 — exemplar adopts the v9 ctx-vtable handle model + marquee replays GREEN)
+
+The web exemplar is now on the **v9 ctx-vtable handle model** (S97 model pivot;
+`design/platform/poll-support.md` §3.5, `design/arch/effect-concurrency.md`
+§4.1.1). Scheduling state (token/capacity) **never rides on a value** — it flows
+through a trampoline-owned `ctx` vtable the platform's poll-fns call. Concretely:
+
+- **`web/Connection` is a slim OPAQUE handle** carrying only the platform's `r`
+  in a GENUINE `fd` field (`(deftype Connection [:primitives/Int fd])`); the
+  platform reads `fd` back and PROJECTS the per-direction token from it. No
+  `token`/`capacity` fields (the dead v8 leading-pair shape), no header slot, no
+  user-visible descriptor.
+- **`serve.cl` wrappers are near-trivial pass-throughs** — no leading
+  `(token, capacity)` pair to thread, no descriptor to read/write. `read`/`send`
+  take the opaque handle directly; `accept` takes the `Listener` directly.
+- **`web.cl` / `serve.cl` are byte-identical to the v9 reference fixture**
+  `tests/fixtures/web_fanout/` (the S97-cutover reference). `main.cl` is the full
+  Sudoku-over-HTTP showcase (differs from the reduced fixture `main.cl` only in
+  routes: `/solve` parse→solve→render vs the fixture's `/fault` witness) and uses
+  the v9 imports (`[serve [listen accept]]` + raw `[platform.web [read-conn
+  send-conn]]`) and the v9 serve-loop (opaque `conn` threaded directly into the
+  Consume poll leaves). The one stale v8 comment in `main.cl` (wrappers "supply
+  the poll leading (token, capacity) pair") was reconciled to v9.
+
+**Marquee replays GREEN — and this is the real-showcase validation that bug #2
+(0494) holds.** `tests/exemplar_web.rs` (both tests un-ignored after 0494,
+`5ca6ef2`):
+
+- `exemplar_web_server_serves_form_solution_and_not_found_over_http` — spawns the
+  live `--run exemplar/main.cl` server, POSTs a puzzle, and asserts the rendered
+  solution page is a COMPLETE VALID sudoku (30 given + 51 solved cells) across the
+  host↔DLL boundary. This is the end-to-end proof the 0494 launched-strand
+  borrowed-`conn` double-free fix holds in the full showcase (not just the reduced
+  `launch_grid_corrupt` guard).
+- `exemplar_web_server_fans_out_concurrent_requests_overlap` — the no-`spawn`
+  marquee: K=4 concurrent `/slow` requests OVERLAP (≈1·D) instead of serialising
+  (≈K·D).
+
+Both are process-managed + killed on drop, bounded by a 20 s readiness deadline —
+safe under nextest (the idle-armed-server S98 `0479` survive-forever caveat is why
+a bare foreground `--run` on a server hangs; these tests never wait on exit).
+Full `cargo nextest run`: **1795 passed, 1 skipped, 0 failed** (the skip is the
+`concurrency_spark` perf benchmark, `#[ignore]`'d). The non-web Sudoku showcase
+(`user.cl`/`solver.cl`/`tests.cl`) is untouched by this sprint.
+
+Doc-only residue filed to `/qa` (FIXME 0498): `tests/exemplar_web.rs`'s header
+still reads "STILL IGNORED/QUARANTINED" though the tests are un-ignored + green.
+
 ## Current State (Sprint 96 Phase 6 — web server adopts the inferred concurrent fan-out)
 
 The exemplar **`web` server (`main.cl`) now genuinely fans out** — a "server
