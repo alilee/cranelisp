@@ -36,6 +36,47 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 97 Wave-3 — exemplar_web bug #2: launched-strand `get`/`assoc` grid Vec double-free (deterministic repro) (/qa, 2026-07-01)
+
+- **Test (deterministic repro, un-ignored RED):**
+  `launch_grid_corrupt::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg`
+- **Fixture:** `tests/fixtures/web_grid_corrupt/` (free-standing "server with no
+  spawn"; `web` platform DLL + primitives only, ZERO stdlib).
+- **Still-quarantined flaky witness (`#[ignore]`, unchanged):**
+  `exemplar_web::exemplar_web_server_serves_form_solution_and_not_found_over_http`
+- **Current commit SHA:** `cc0d613` (binary `target/debug/cranelisp` @ 2026-07-01 01:52).
+- **Exact signature:** `free(): chunks in smallbin corrupted` glibc abort → SIGABRT,
+  `ExitStatus(unix_wait_status(134))` (signal 6) after ONE read-to-EOF request.
+  RC_TRACE (stderr→file): `2082 alloc / 1478 free`, **205 distinct pointers freed
+  2+ times** (double-free of grid Vec pointers).
+- **Sampling:** default lenient **8/8** SIGABRT; `CRANELISP_NO_LENIENT=1` **3/3**
+  (⇒ reactor/launch-and-continue path, NOT rayon-spark); `CRANELISP_RC_TRACE=1`
+  (stderr→file) **4/4**; `Stdio::null` (the test's condition) **8/8**. The lone
+  non-crash was `PIPE`+`RC_TRACE` together (trace volume blocks the child on a full
+  stderr pipe — an I/O artifact, not a real clean run). Deterministic, not flaky.
+- **Owning skill:** `/backend` (RC codegen of the borrowed-Var `vec-get`/`vec-set`
+  path; `ring2-rc.md §5.5` `borrowed_vars` / `emit_capture_return_inc`) — TENTATIVE.
+  `/int` trampoline launch-capture / Consume-release NOT excluded (see narrowing).
+- **Target sprint:** S97 Wave-3 /backend drain (RESIDUAL row) or carry.
+- **Disposition:** `under-investigation (owner=/backend)`. The launched
+  per-connection handler builds an ADT-wrapping-`(Vec Cell)` grid `g`, churns a
+  second grid `s` via user-fn `assoc` (`vec-set` on a Var param), and renders BOTH
+  via user-fn `get` (`vec-get` on a Var param) — an RC undercount frees a grid Vec
+  while still reachable → second free → smallbin corruption. Distinct from the
+  now-fixed single-threaded inline-temporary `emit_vec_drop_if_temporary` defect
+  (`regression::nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg`, GREEN).
+- **Reduction narrowing (committed in the repro header):** the WEB layer is
+  load-bearing — a bare-launch **poll-pool** strip (`accept`/`read-conn`/`send-conn`
+  → `poll-read`/`poll-log`) doing the IDENTICAL grid build/churn/render inside the
+  launched strand is **CLEAN 8/8** (launch confirmed firing: 8 strands × 60 ms →
+  314 ms, timers overlap). So a generic launched strand over the borrowed-Var vec
+  RC path is NOT sufficient; the manifestation needs the web-reactor terminal
+  (`send-conn` — a Consume poll leaf that marshals a `Response` ADT to the DLL over
+  a per-`accept` fresh opaque `Connection` handle). Reduction floors at the `web`
+  fixture. Regression class: **LATENT, cutover-surfaced** (the borrowed-Var
+  undercount pre-existed; the S97 v9 serve-loop reshape actually LAUNCHES the
+  handler — previously serial — exposing it).
+
 ### Sprint 97 — ADT-wrapping-Vec RC heap corruption (the cutover-surfaced exemplar_web smallbin abort, reduced) (/qa, 2026-06-30)
 
 - **Test (deterministic repro, un-ignored RED):**

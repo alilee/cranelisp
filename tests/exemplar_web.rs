@@ -223,14 +223,28 @@ fn encode_puzzle_form(puzzle: &str) -> String {
 // soundness RED in the canonical suite is worse than a clean deterministic guard,
 // so this stays `#[ignore]`'d behind the deterministic repro until the
 // concurrency manifestation is isolated and fixed.
-// FIXME(/backend): isolate the concurrent get/assoc-path (user-fn borrowed-Var
-//       vec-set under launched strands) heap corruption — distinct from the
-//       now-fixed inline-temporary `emit_vec_drop_if_temporary` defect.
+// FIXME(/backend): the concurrent get/assoc-path (user-fn borrowed-Var vec-set
+//       under launched strands) heap corruption is now ISOLATED to a
+//       DETERMINISTIC (8/8) minimal repro:
+//         tests/launch_grid_corrupt.rs::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg
+//       (a free-standing "server with no spawn" whose launched per-connection
+//       handler builds an ADT-wrapping-(Vec Cell) grid, churns a second grid, and
+//       renders BOTH via user-fn `get`/`assoc` over vec-get/vec-set on a Var
+//       param — `ring2-rc.md §5.5` borrowed_vars). Persists under
+//       CRANELISP_NO_LENIENT=1 (reactor/launch-and-continue path, NOT rayon-spark);
+//       RC_TRACE shows a DOUBLE-FREE (205 distinct ptrs freed 2+×). Distinct from
+//       the now-fixed inline-temporary `emit_vec_drop_if_temporary` defect. The
+//       web-reactor terminal (`send-conn`, a DLL-ADT-marshaling Consume leaf) is
+//       load-bearing: a bare-launch poll-pool strip doing the identical grid work
+//       is CLEAN (8/8), so `/int` trampoline launch-capture cannot be excluded.
+//       This over-HTTP test stays #[ignore]'d as the ~1/6-flaky witness; the
+//       deterministic guard above is the un-ignored failing-not-ignored repro.
 #[test]
 #[ignore = "S97 residual: concurrency-specific heap corruption on the user-fn \
             get/assoc grid path (distinct from the now-fixed inline-temporary \
-            vec-drop defect); deterministic single-thread repro is green: \
-            regression::nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg"]
+            vec-drop defect); this over-HTTP test is the ~1/6 flaky witness — the \
+            DETERMINISTIC un-ignored repro is \
+            launch_grid_corrupt::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg"]
 fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
     let port = free_port();
     let _server = spawn_server(port);
