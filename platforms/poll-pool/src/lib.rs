@@ -310,6 +310,34 @@ pub unsafe extern "C" fn poll_block_pollfn(
     Poll::Pending
 }
 
+/// `poll-no-interest` — the §8.3 unarmed-suspend fixture leaf (FIXME 0479). A
+/// poll-shape effect that returns `Poll::Pending` while arming **NOTHING**: no fd
+/// in the reactor's `fd_waiters`, no timer in `timer_heap`, no rayon bridge, no
+/// permit acquire (it is called at token 0 ⇒ no acquire), no supervised strand.
+/// Nothing can ever wake it, so the reactor's structural armed-ness deadlock
+/// detector (`reactor.rs` FIXME 0479 / `reactor.md §8`) MUST trip on it PROMPTLY —
+/// the negative face of the idle-armed-server-survives row (an idle `accept` is
+/// *armed* on its listener fd; this leaf is *unarmed*). Named WITHOUT an
+/// "armed"/"deadlock" substring so the absent-leaf load error on an old binary
+/// cannot false-match the deadlock diagnostic the e2e asserts.
+///
+/// It takes `(token, capacity, ms)` (leaf args 0/1/2) for call-shape symmetry with
+/// the other poll-pool leaves, but READS none of them and arms nothing.
+///
+/// # Safety
+/// C-ABI poll-fn (`PollFn`); args are ignored — it never touches `state`, `host`,
+/// or `waker`.
+pub unsafe extern "C" fn poll_no_interest_pollfn(
+    _state: *mut c_void,
+    _host: *const HostCtx,
+    _waker: *const Waker,
+) -> Poll {
+    // Suspend with NOTHING armed — the true-deadlock signature the §8 detector
+    // catches. No timer, no fd, no acquire: `Pending` forever with an empty reactor
+    // interest set.
+    Poll::Pending
+}
+
 /// The `ResourceSerial` descriptor every poll-pool effect carries: `token 0`
 /// (the static conflict identity — the DYNAMIC per-resource token rides the
 /// leading `token` operand at the call site), `cardinality 1`, `blocking 0`
@@ -364,6 +392,13 @@ cranelisp_platform::declare_platform! {
             sig: "(Fn [primitives/Int primitives/Int] (primitives/IO primitives/Int))",
             doc: "Arm READABLE interest on a never-readable fd and park forever -- a guaranteed race loser whose fd interest must be deregistered on cancel (finding #3 witness)",
             params: [token, capacity],
+            descriptor: RESOURCE_SERIAL,
+        },
+        poll_no_interest_pollfn {
+            cl_name: "poll-no-interest",
+            sig: "(Fn [primitives/Int primitives/Int primitives/Int] (primitives/IO primitives/Int))",
+            doc: "Return Pending while arming NOTHING (no fd, no timer, no acquire) -- the unarmed-suspend witness the armed-ness deadlock detector must trip on promptly (FIXME 0479)",
+            params: [token, capacity, ms],
             descriptor: RESOURCE_SERIAL,
         },
     ]

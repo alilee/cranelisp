@@ -315,16 +315,23 @@ fn is_independent(expr: &Expr, bound_names: &HashSet<Symbol>) -> bool {
 /// - **(E1) Result-discarded** — `name` is unused in `continuation`
 ///   (`!free_vars(continuation).contains(name)`): no one awaits the launched
 ///   value, so detaching does not change the program's value (§10.12.7 step 1).
-/// - **(E2) Value-locality** (sub-tree only) — the launched sub-tree shares **no
-///   free variable** with the continuation. A fresh, non-shared value (the
+/// - **(E2) Value-locality** — the launched effect's resource value must not flow
+///   into a same-token continuation effect. A fresh, non-shared value (the
 ///   `accept`-minted `conn`) yields a fresh, disjoint token by construction (§4
 ///   fact 2). This is the load-bearing disjointness *witness*: token VALUES are
 ///   dynamic/runtime (§5/§8.1), so disjointness is derived from value provenance,
-///   not token comparison. A module-global pool handle would appear as a shared
-///   free var ⇒ refused, exactly as §4.1 requires. (The single-step arm relies on
-///   the per-call dynamic token + E3 instead — the §B4 launch-loop legitimately
-///   shares its loop-counter/token var with the continuation, which is a *value*
-///   read, not a conflicting effect.)
+///   not token comparison. **Sub-tree arm:** plain free-var disjointness
+///   (`free_vars(sub-tree) ∩ free_vars(cont) == ∅`) — sound because the sub-tree
+///   binds its resource internally, so a shared free var IS an external handle. A
+///   module-global pool handle appears as a shared free var ⇒ refused.
+///   **Single-step arm (FIXME 0478):** a NARROWER handle-locality check
+///   (`continuation_shares_resource_handle`) — refuse iff the launched leaf's
+///   resource HANDLE (its leading token operand) flows into a `ResourceSerial`
+///   effect in the continuation. Plain disjointness would over-refuse the §B4
+///   launch LOOP, whose counter var is shared with the continuation as a pure
+///   *value* (a loop index passed to `recur`), not a same-token continuation
+///   effect; the handle-locality check permits that while still refusing the
+///   reorder-unsound `(send-conn conn r1)`→`(send-conn conn r2)` shape.
 /// - **(E3) No shared-singleton-token effect** — every effect position in the
 ///   launched expression must be a `ResourceSerial` per-value-minted-token leaf,
 ///   never `Commutative` (token-0, unrestricted) nor `Sequential` (the global
@@ -378,10 +385,134 @@ fn launch_eligible<C: CodeStore, L: LinkerStore>(
         let c_free = free_vars_expr(continuation, &globals);
         s_free.is_disjoint(&c_free)
     } else {
-        // SINGLE-STEP case (the tightened pre-S96 arm): E1 (above) + E3. No
-        // shared-free-var E2 — the per-call dynamic token is the disjointness
-        // unit and the launch-loop counter legitimately rides the same var.
+        // SINGLE-STEP case: E3 (`is_launchable_leaf` — ResourceSerial only, refuse
+        // Commutative/Sequential/token-0/opaque) + E2 (value-locality, FIXME 0478).
+        //
+        // E2 for a single leaf is NARROWER than the sub-tree arm's plain free-var
+        // disjointness (`s_free.is_disjoint(&c_free)` above). Plain disjointness is
+        // sound for a sub-tree because the sub-tree binds its resource internally,
+        // so its residual free vars ARE external handles. A bare leaf's free vars
+        // include its per-call dynamic-token operand, which the legitimate §B4
+        // launch LOOP legitimately shares with the continuation as a pure VALUE (a
+        // loop index passed to `recur`, NOT a same-token continuation effect) — so
+        // plain disjointness would wrongly refuse it. E2 here refuses ONLY the
+        // reorder-unsound shape §3.7 names: the launched leaf's resource HANDLE (its
+        // leading token operand, when a `Var`) flowing into a same-token
+        // `ResourceSerial` effect in the continuation (e.g. a discarded
+        // `(send-conn conn r1)` whose continuation does `(send-conn conn r2)` —
+        // same handle ⇒ same dynamic token ⇒ detaching reorders). The counter loop
+        // `(rd n c f)` → `(recur (sub n))` shares `n` as a value only (no cont
+        // `ResourceSerial` effect uses `n` as its handle) ⇒ E2 passes, unchanged.
         is_launchable_leaf(io_expr, symbol_tables, current_module)
+            && !continuation_shares_resource_handle(
+                io_expr,
+                continuation,
+                symbol_tables,
+                current_module,
+            )
+    }
+}
+
+/// (E2 single-step, FIXME 0478 / §3.7) True iff the launched leaf's resource HANDLE
+/// — its leading token operand, when a `Var` — flows into a `ResourceSerial` effect
+/// position in `continuation` as THAT effect's leading operand. Such a shared handle
+/// is the same per-value dynamic token, so detaching the launched step would reorder
+/// two same-token effects across the launch boundary — the E2 value-locality refusal.
+///
+/// This witnesses token-locality WITHOUT resolving concrete tokens (they are
+/// runtime/dynamic, §5/§8.1): the refusal keys on the handle *var*, not a token
+/// comparison. A leaf with a non-`Var` leading operand (a literal token) shares no
+/// handle to reorder ⇒ vacuously value-local (`false`).
+fn continuation_shares_resource_handle<C: CodeStore, L: LinkerStore>(
+    io_expr: &Expr,
+    continuation: &Expr,
+    symbol_tables: &SymbolTables<C, L>,
+    current_module: &ModuleFullPath,
+) -> bool {
+    let Some(handle) = leading_operand_var(io_expr) else {
+        return false; // no `Var` handle ⇒ nothing to reorder.
+    };
+    let mut shared = false;
+    visit_exprs(continuation, &mut |e| {
+        if shared {
+            return;
+        }
+        // A direct `ResourceSerial` platform effect in the continuation whose OWN
+        // leading operand is the same handle ⇒ same dynamic token ⇒ reorder.
+        if let Some((SchedulingClass::ResourceSerial, _)) =
+            effect_descriptor(e, symbol_tables, current_module)
+            && leading_operand_var(e).as_ref() == Some(&handle)
+        {
+            shared = true;
+        }
+    });
+    shared
+}
+
+/// The leading operand of an `Apply`, when it is a `Var` — the resource handle /
+/// dynamic-token operand of a poll-shape `(token, capacity, …)` leaf.
+fn leading_operand_var(effect: &Expr) -> Option<Symbol> {
+    match effect {
+        Expr::Apply { args, .. } => match args.first() {
+            Some(Expr::Var { name, .. }) => Some(name.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Visit `expr` and every sub-expression (pre-order), invoking `f` on each. A
+/// complete structural walk over the `Expr` variants that can carry a nested effect
+/// position — used by the single-step E2 continuation scan (FIXME 0478). Conservative
+/// by construction: every child that can hold an `Apply` is descended.
+fn visit_exprs(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+    f(expr);
+    match expr {
+        Expr::Apply { callee, args, .. } => {
+            visit_exprs(callee, f);
+            for a in args {
+                visit_exprs(a, f);
+            }
+        }
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+            for (_, rhs) in bindings {
+                visit_exprs(rhs, f);
+            }
+            visit_exprs(body, f);
+        }
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            visit_exprs(cond, f);
+            visit_exprs(then_branch, f);
+            visit_exprs(else_branch, f);
+        }
+        Expr::Lambda { body, .. } | Expr::Trace { body, .. } => visit_exprs(body, f),
+        Expr::Match { scrutinee, arms, .. } => {
+            visit_exprs(scrutinee, f);
+            for arm in arms {
+                visit_exprs(&arm.body, f);
+            }
+        }
+        Expr::Annotate { expr, .. } => visit_exprs(expr, f),
+        Expr::VecLit { elements, .. } => {
+            for e in elements {
+                visit_exprs(e, f);
+            }
+        }
+        Expr::ConstrADT { fields, .. } => {
+            for e in fields {
+                visit_exprs(e, f);
+            }
+        }
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            visit_exprs(launched, f);
+            visit_exprs(continuation, f);
+        }
+        // Leaves with no nested `Expr`.
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. } => {}
     }
 }
 

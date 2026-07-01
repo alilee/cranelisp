@@ -756,6 +756,7 @@ fn cap_held_off_while_blocking_bridge_in_flight() {
             env.pending_bridges.set(env.pending_bridges.get() - 1);
             v
         },
+        crate::reactor::DriveMode::OneShot,
         cap,
     )
     .expect("reactor");
@@ -794,6 +795,7 @@ fn cap_still_trips_for_stuck_poll_leaf_no_bridge() {
             };
             leaf.await
         },
+        crate::reactor::DriveMode::OneShot,
         cap,
     );
 }

@@ -852,6 +852,71 @@
         );
     }
 
+    // spec: 10-io.md §10.12.7 / design/int/bind-chain-analysis.md §3.7 (FIXME 0478)
+    // — SINGLE-STEP E2 value-locality REFUSAL: a discarded `ResourceSerial` step
+    // `(wr conn r1)` whose continuation performs a same-token effect `(wr conn r2)`
+    // on the SAME handle `conn` must NOT single-step launch — the shared handle is
+    // the same per-value dynamic token, so detaching reorders two same-token
+    // effects across the launch boundary. This is the check the single-step arm was
+    // MISSING before 0478 (E2). RED-on-revert: dropping the E2
+    // `continuation_shares_resource_handle` guard makes this wrongly launch.
+    #[test]
+    fn test_no_single_step_launch_when_handle_flows_into_same_token_continuation() {
+        let (tables, m) = fanout_tables();
+        // (bind (wr conn r1) (fn [_] (wr conn r2))) — conn is the shared handle;
+        // both wr are ResourceSerial on token `conn`. E1 passes (result discarded);
+        // E3 passes (ResourceSerial); E2 REFUSES (handle flows into a same-token
+        // continuation effect).
+        let expr = make_bind_expr(
+            make_apply("wr", vec![make_var("conn"), make_var("r1")]),
+            "_",
+            make_apply("wr", vec![make_var("conn"), make_var("r2")]),
+        );
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a discarded ResourceSerial step whose continuation performs a same-token \
+             effect on the same handle must NOT launch (E2, FIXME 0478), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 / design/int/bind-chain-analysis.md §3.7 (FIXME 0478)
+    // — SINGLE-STEP E3 Commutative REFUSAL + the accept-loop-still-launches green
+    // guard (the two together confirm the tightened single-step predicate). Part A:
+    // a discarded `Commutative` (token-0-class) single step is refused (E3 —
+    // ResourceSerial only). Part B: the §B4 counter-loop `(rd n c f)`→`(recur (sub
+    // n))` STILL launches under the new E2 — `n` is shared as a VALUE (a loop index),
+    // not as a same-token continuation effect handle, so E2 permits it. Adding E2
+    // must NOT weaken this launch (the synthetic concurrency_fanout guard).
+    #[test]
+    fn test_single_step_commutative_refused_but_counter_loop_still_launches() {
+        let (tables, m) = fanout_tables();
+
+        // Part A — Commutative single step refused (E3).
+        let commutative = make_bind_expr(
+            make_apply("cm", vec![make_var("n"), make_var("c"), make_var("f")]),
+            "_",
+            make_apply("recur", vec![]),
+        );
+        assert!(
+            !matches!(transform_expr(commutative, &tables, &m), Expr::LaunchContinue { .. }),
+            "a discarded Commutative (token-0-class) single step must NOT launch (E3)"
+        );
+
+        // Part B — the accept-loop counter loop STILL launches (E2 permits a shared
+        // VALUE that is not a same-token continuation effect handle).
+        let loop_step = make_bind_expr(
+            make_apply("rd", vec![make_var("n"), make_var("c"), make_var("f")]),
+            "_",
+            make_apply("recur", vec![make_apply("sub", vec![make_var("n")])]),
+        );
+        assert!(
+            matches!(transform_expr(loop_step, &tables, &m), Expr::LaunchContinue { .. }),
+            "the §B4 counter loop must STILL launch under E2 (shared `n` is a value, \
+             not a same-token continuation effect handle) — E2 must not weaken it"
+        );
+    }
+
     /// The exact serve-loop handler shape (S96 C4 / FIXME 0470): an inlined
     /// `read → (sleep (slow-ms req)) → send` sub-tree over the fresh connection
     /// token, with a `sleep` TIMER step in the middle (the C4 deterministic delay).

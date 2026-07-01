@@ -713,13 +713,62 @@ pub(super) fn gate_body_on_signature_barrier(
 /// `register_exports` can read its symbol table. If the source module isn't
 /// loaded, we trigger dependency loading via the same path as `handle_import`
 /// and return `BlockAction::Block`.
+/// §8.11.2 step 1 — current-module-relative module resolution. A **bare**
+/// (single-component) module reference inside `module` first resolves as a
+/// submodule of `module` (`<module>.<dep>`, declared via `(mod dep)`) BEFORE the
+/// project-root / lib-dir search-order fallthrough. Returns the effective module
+/// path: the `<module>.<dep>` submodule when it is already registered OR has a
+/// backing file (`<module-dir>/<dep>.cl`); the original `dep` otherwise (a genuine
+/// root/lib module, or a name with no current-module-relative candidate).
+///
+/// This mirrors the current-module-relative resolution `imports::install_exports`
+/// already applies at the LATE (re-export-registration) stage — without it the
+/// EARLY (dep-load) stage in `handle_export`/`handle_import` resolves a bare
+/// submodule name only as a ROOT module and errors "module 'name' not found"
+/// (bare-submodule-reexport defect). Dotted `dep`s (FQ / ancestor-qualified) and a
+/// root-level `module` (empty path) have no current-module-relative candidate and
+/// pass through unchanged.
+fn resolve_current_module_relative<V>(
+    symbol_tables: &dashmap::DashMap<ModuleFullPath, V>,
+    project_root: &Path,
+    lib_dirs: &[PathBuf],
+    module: &ModuleFullPath,
+    dep: &ModuleFullPath,
+) -> ModuleFullPath {
+    // Only a bare name inside a non-root module is a current-module-relative
+    // candidate; a dotted `dep` is already an explicit path.
+    if dep.as_ref().contains('.') || module.as_ref().is_empty() {
+        return dep.clone();
+    }
+    let candidate = ModuleFullPath::from(format!("{}.{}", module.as_ref(), dep.as_ref()));
+    if symbol_tables.contains_key(&candidate)
+        || crate::pipeline::resolve_module_file(&candidate, project_root, lib_dirs).is_some()
+    {
+        candidate
+    } else {
+        dep.clone()
+    }
+}
+
 pub(super) fn handle_export(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     specs: &[ExportSpec],
 ) -> Result<BlockAction, CranelispError> {
     for spec in specs {
-        let dep = &spec.module_path;
+        // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
+        // (`<module>.<name>`) BEFORE the root/lib file search, symmetric with the
+        // FQ path and with `install_exports`'s late-stage resolution. Without this
+        // a bare `(export [child …])` in a `(mod child)`-declaring shell resolves
+        // `child` only as a ROOT module and errors "module 'child' not found".
+        let dep_owned = resolve_current_module_relative(
+            ctx.symbol_tables,
+            ctx.project_root,
+            ctx.lib_dirs,
+            module,
+            &spec.module_path,
+        );
+        let dep = &dep_owned;
 
         // Already loaded — register the re-export and continue.
         if ctx.symbol_tables.contains_key(dep) {
@@ -1344,6 +1393,94 @@ pub(super) fn sexps_reference_prelude(sexps: &[Sexp]) -> bool {
 // acceptance unit test (design/int/session-persistence.md §10.3).
 // spec: 08-modules.md §8.2.2
 // ---------------------------------------------------------------------------
+#[cfg(test)]
+mod current_module_relative_tests {
+    use super::*;
+
+    // spec: spec/08-modules.md §8.11.2 (step 1 — submodule of current module) —
+    // a bare name matching a REGISTERED `<module>.<name>` submodule resolves
+    // current-module-relative (the `(mod child)` load ran before the export/import).
+    #[test]
+    fn bare_name_resolves_to_registered_submodule() {
+        let tables: dashmap::DashMap<ModuleFullPath, ()> = dashmap::DashMap::new();
+        tables.insert(ModuleFullPath::from("shell.child"), ());
+        let td = tempfile::tempdir().unwrap();
+        let got = resolve_current_module_relative(
+            &tables,
+            td.path(),
+            &[],
+            &ModuleFullPath::from("shell"),
+            &ModuleFullPath::from("child"),
+        );
+        assert_eq!(
+            got,
+            ModuleFullPath::from("shell.child"),
+            "a bare `child` inside `shell` with a registered `shell.child` submodule \
+             must resolve current-module-relative (§8.11.2 step 1)"
+        );
+    }
+
+    // spec: spec/08-modules.md §8.11.2 (step 1) — a bare name with a backing file
+    // `<module-dir>/<name>.cl` resolves current-module-relative even before the
+    // submodule is registered (the `(mod child)` load has not run yet).
+    #[test]
+    fn bare_name_resolves_to_file_backed_submodule() {
+        let tables: dashmap::DashMap<ModuleFullPath, ()> = dashmap::DashMap::new();
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join("shell")).unwrap();
+        std::fs::write(td.path().join("shell/child.cl"), "(defn foo [x] x)\n").unwrap();
+        let got = resolve_current_module_relative(
+            &tables,
+            td.path(),
+            &[],
+            &ModuleFullPath::from("shell"),
+            &ModuleFullPath::from("child"),
+        );
+        assert_eq!(got, ModuleFullPath::from("shell.child"));
+    }
+
+    // spec: spec/08-modules.md §8.11.2 — NEGATIVE: a bare name with NO
+    // current-module-relative candidate (neither registered nor file-backed) passes
+    // through unchanged, so the root/lib search-order fallthrough still resolves a
+    // genuine root module.
+    #[test]
+    fn bare_name_without_candidate_passes_through() {
+        let tables: dashmap::DashMap<ModuleFullPath, ()> = dashmap::DashMap::new();
+        let td = tempfile::tempdir().unwrap();
+        let got = resolve_current_module_relative(
+            &tables,
+            td.path(),
+            &[],
+            &ModuleFullPath::from("shell"),
+            &ModuleFullPath::from("other"),
+        );
+        assert_eq!(
+            got,
+            ModuleFullPath::from("other"),
+            "a bare name with no submodule candidate must pass through to the \
+             root/lib search-order fallthrough"
+        );
+    }
+
+    // spec: spec/08-modules.md §8.11.2 — NEGATIVE: a DOTTED (FQ / ancestor-qualified)
+    // dep is already an explicit path and is never re-rooted current-module-relative
+    // (no double-prefixing `shell.a.b`).
+    #[test]
+    fn dotted_dep_passes_through_unchanged() {
+        let tables: dashmap::DashMap<ModuleFullPath, ()> = dashmap::DashMap::new();
+        tables.insert(ModuleFullPath::from("shell.a.b"), ());
+        let td = tempfile::tempdir().unwrap();
+        let got = resolve_current_module_relative(
+            &tables,
+            td.path(),
+            &[],
+            &ModuleFullPath::from("shell"),
+            &ModuleFullPath::from("a.b"),
+        );
+        assert_eq!(got, ModuleFullPath::from("a.b"), "a dotted dep is explicit — unchanged");
+    }
+}
+
 #[cfg(test)]
 mod inline_mod_write_tests {
     use super::*;

@@ -1395,3 +1395,76 @@ fn supervisor_catches_runtime_error_strand_records_failed_with_message() {
         "the runtime error was captured by the strand, not re-raised"
     );
 }
+
+/// Build a degenerate empty `IO_TAG_SELECT` node — `[header | tag=6 | branch_vec]`
+/// with a NULL branch-vec pointer (field 0 = 0), which `read_select_branches`
+/// reads back as zero branches (the `(select [])` shape).
+fn make_empty_select_node() -> i64 {
+    let base = alloc_with_rc(16); // tag + 1 field (branch vec) = 16 bytes payload
+    unsafe {
+        *((base as isize + TAG_OFFSET) as *mut i64) = IO_TAG_SELECT;
+        *((base as isize + FIELD_0_OFFSET) as *mut i64) = 0; // null vec ⇒ empty
+    }
+    base as i64
+}
+
+// A witness the empty-select continuation was invoked (it MUST NOT be — the
+// sentinel `0` an empty select produces is never applied to the continuation).
+static EMPTY_SELECT_CONT_RAN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// A continuation `(fn [_] (Pure 99))` that RECORDS it was invoked. Used to prove
+/// the empty-select abort fires BEFORE the continuation runs (FIXME 0475).
+fn make_flag_setting_cont() -> i64 {
+    extern "C" fn flag_cont(_env_ptr: i64, _val: i64) -> i64 {
+        EMPTY_SELECT_CONT_RAN.store(true, std::sync::atomic::Ordering::SeqCst);
+        make_pure_node_inline(99)
+    }
+    let base = alloc_with_rc(16); // code_ptr + drop_glue_ptr = 16
+    unsafe {
+        *((base as isize + 16) as *mut i64) = flag_cont as *const () as i64;
+        *((base as isize + 24) as *mut i64) = 0;
+    }
+    base as i64
+}
+
+// spec: design/int/reactor.md §9 / spec/10-io.md §10.12.8 — a degenerate empty
+// `(select [])` MUST raise a recoverable runtime error ("select over empty
+// collection") through the standard runtime-error slot, NOT return a synthesised
+// Unit `0` and NOT hang. The trampoline aborts BEFORE feeding the sentinel to the
+// bind continuation (at a heap-typed `a` the `0` is an unsound null the
+// continuation would dereference), so the continuation MUST NOT run. FIXME 0475.
+#[test]
+fn empty_select_raises_runtime_error_and_does_not_feed_continuation() {
+    // Clear any stale slot + flag so we observe only this run.
+    let _ = crate::panic::take_runtime_error();
+    EMPTY_SELECT_CONT_RAN.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    let select = make_empty_select_node();
+    let cont = make_flag_setting_cont();
+    let bind = make_bind_node(select, cont);
+
+    let result = crate::reactor::block_on_reactor(async |env| {
+        run_io_trampoline_inner_async(bind, env, StrandId::ROOT).await
+    })
+    .expect("reactor");
+
+    // The sentinel is returned (the trampoline aborts to `0`; int reads the slot,
+    // not the return value).
+    assert_eq!(result, 0, "an aborted empty-select drive returns the sentinel 0");
+    // The runtime-error slot carries the message of record.
+    assert_eq!(
+        crate::panic::take_runtime_error().as_deref(),
+        Some("select over empty collection"),
+        "empty (select []) must raise the runtime error 'select over empty collection' \
+         via the standard slot (reactor.md §9 / spec/10-io.md §10.12.8)"
+    );
+    // The bind continuation MUST NOT have run — the sentinel `0` was never applied.
+    assert!(
+        !EMPTY_SELECT_CONT_RAN.load(std::sync::atomic::Ordering::SeqCst),
+        "the empty-select sentinel 0 MUST NOT be fed to the continuation (it is an \
+         unsound null at a heap-typed `a`); the trampoline must abort first"
+    );
+
+    crate::drop::consume_io_tree(bind);
+}

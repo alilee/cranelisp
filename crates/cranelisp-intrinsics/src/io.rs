@@ -299,6 +299,19 @@ pub(crate) fn run_io_trampoline_inner_async<'a, 'h: 'a>(
                 _ => panic!("cranelisp_run_io: unknown IO tag {tag}"),
             };
 
+            // A combinator arm may have raised a runtime error while producing a
+            // sentinel (e.g. an empty `(select [])` → "select over empty
+            // collection", FIXME 0475). Abort BEFORE feeding the continuation so the
+            // sentinel `0` is never applied — at a heap-typed `a` the `0` is an
+            // unsound null the continuation would dereference. Mirrors the
+            // `IO_TAG_EFFECT` `EffectStep::Aborted` early-return; int reads the slot
+            // at the trampoline boundary (or a `catch-runtime-error` bracket drains
+            // it) — not the return value.
+            if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
+                frame.armed = false;
+                return 0;
+            }
+
             match feed_continuation(&mut frame.cont_stack, current, current_is_fresh, produced) {
                 Step::Advance(new_io) => {
                     if crate::panic::has_runtime_error() || crate::panic::has_dispatch_fault() {
@@ -492,8 +505,16 @@ async fn run_select_node(
     // SAFETY: `node` is the live `current` IO_TAG_SELECT node base pointer.
     let branches = unsafe { read_select_branches(node) };
     if branches.is_empty() {
-        // Degenerate `(select [])` — no branch can win. Yield Unit (`0`); there is
-        // nothing to race or cancel.
+        // Degenerate `(select [])` — no branch can win and there is no value to
+        // return (FIXME 0475 / `reactor.md §9`; `spec/10-io.md §10.12.8`). Raise a
+        // recoverable runtime error through the standard runtime-error slot — the
+        // same §12.7.2 class as match-non-exhaustion / div-by-zero — instead of
+        // returning a synthesised Unit `0` (an unsound null at a heap-typed `a`
+        // that the continuation would dereference) and instead of hanging. Returning
+        // the sentinel `0` here is safe: the trampoline's post-arm error-slot check
+        // (`run_io_trampoline_inner_async`) aborts BEFORE feeding the continuation,
+        // so the `0` is never applied.
+        crate::panic::set_runtime_error("select over empty collection".to_string());
         return 0;
     }
 

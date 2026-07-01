@@ -1065,6 +1065,17 @@ impl TokenPool {
         }
     }
 
+    /// `true` if ANY token slot has a parked waiter (finding for the §8 armed-ness
+    /// deadlock detector). A parked permit-waiter means the reactor is legitimately
+    /// waiting (its holder is in-flight — §2.9 non-re-entry guarantees no permit
+    /// cycle), so it counts as "armed" and must NOT trip the deadlock detector.
+    /// Redundant-but-faithful: a permit holder is itself armed (fd/timer), so a
+    /// parked waiter implies `has_waiters()` too — but the design lists this source
+    /// explicitly (`reactor.md §8.2`), so it is checked directly.
+    pub(crate) fn any_waiter_parked(&self) -> bool {
+        self.slots.borrow().values().any(|s| !s.waiters.is_empty())
+    }
+
     /// Acquire a permit on the reserved [`GLOBAL_BUDGET_TOKEN`] — the global
     /// admission gate the `IO_TAG_LAUNCH` arm takes before spawning a detached
     /// strand (§2.13). Sized to the pool's `degree` (the global bound); exhaustion
@@ -1568,18 +1579,80 @@ impl ReactorEnv<'_> {
 /// misbehaving leaf can never wedge the reactor (acceptance: no deadlock/hang).
 const MAX_TURN_BLOCK: Duration = Duration::from_secs(5);
 
-/// Default upper bound on **no-progress** wall-clock for one `block_on_reactor` —
-/// a liveness backstop catching a poll leaf that never completes (acceptance #5:
-/// bounded test timeouts; a genuinely-stuck leaf surfaces as a panic, not a hang).
+/// Default `OneShot` wall-clock **backstop** for one `block_on_reactor` — a
+/// liveness guard catching an **armed-but-never-readies** poll leaf (a leaf armed
+/// on an fd/timer that never fires — a hung peer, a wrong fd) under a one-shot
+/// `--run`/REPL drive. FIXME 0479 (`reactor.md §8`): the primary liveness rule is
+/// now the **structural armed-ness deadlock detector** ([`reactor_is_armed`]) which
+/// trips the instant a `Pending` top future has NOTHING armed — it fires
+/// immediately, not after this wall-clock delay. This backstop is the SECONDARY
+/// guard the detector cannot cover (an armed leaf that never readies), retained
+/// only in [`DriveMode::OneShot`]; a [`DriveMode::Server`] drive disables it so a
+/// legitimately-idle armed `accept` loop runs indefinitely.
 ///
 /// **This is NOT a cap on total drive time.** It measures only time during which
-/// NO blocking branch is in flight (`pending_bridges == 0`). A legitimately slow
-/// blocking I/O branch on rayon (the wakeable bridge) holds the no-progress
-/// deadline off for as long as the branch runs, so blocking I/O is **uncapped by
-/// design** — matching the feature-off sync stepper, which runs such a branch
-/// uncapped. The backstop fires only for the genuinely-stuck case: no bridge
-/// pending AND no poll progress for `MAX_TOTAL_BLOCK`. (`reactor.md` §2.6.)
+/// NO blocking branch is in flight (`pending_bridges == 0`) and the supervisor is
+/// empty. A legitimately slow blocking I/O branch on rayon (the wakeable bridge)
+/// holds the no-progress deadline off for as long as the branch runs, so blocking
+/// I/O is **uncapped by design** — matching the feature-off sync stepper.
 const MAX_TOTAL_BLOCK: Duration = Duration::from_secs(30);
+
+/// How `block_on_reactor` treats the wall-clock backstop (FIXME 0479 / `reactor.md
+/// §8.2` mode knob). The structural armed-ness deadlock detector
+/// ([`reactor_is_armed`]) is ALWAYS active in both modes; the mode governs ONLY the
+/// secondary wall-clock backstop for an armed-but-never-readies hang.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DriveMode {
+    /// `--run` / `--link` exe entry / REPL per-form eval: the armed-ness detector
+    /// PLUS the wall-clock backstop (a batch program that arms an fd and hangs is a
+    /// real hang worth a guard).
+    OneShot,
+    /// A long-running accept-loop drive: the armed-ness detector ONLY, no wall-clock
+    /// cap — an idle-but-armed server runs forever (production-shaped).
+    Server,
+}
+
+/// The structural armed-ness predicate (`reactor.md §8.2`): the reactor is *armed*
+/// (legitimately waiting, can be woken) when any of the five readiness sources is
+/// live. A `Pending` top future with NONE of these armed is a true deadlock — no
+/// event can ever wake it — and trips the detector immediately (no wall-clock wait).
+/// This generalizes the piecemeal `pending_bridges`/supervisor exemptions into one
+/// predicate (Principle 7 — one liveness rule).
+fn reactor_is_armed(
+    reactor: &Reactor,
+    pending_bridges: &Rc<Cell<usize>>,
+    supervisor: &Supervisor<'_>,
+    pool: &TokenPool,
+) -> bool {
+    reactor.has_waiters()
+        || pending_bridges.get() > 0
+        || !supervisor.is_empty()
+        || pool.any_waiter_parked()
+}
+
+/// Read the `OneShot`/`Server` drive-mode knob from the `CRANELISP_DRIVE_MODE`
+/// reactor-construction surface (FIXME 0479 / `reactor.md §8.3`). `server` ⇒
+/// [`DriveMode::Server`]; anything else (incl. unset / `oneshot`) ⇒
+/// [`DriveMode::OneShot`] (the default — no batch program loses its hang guard).
+fn read_drive_mode_env() -> DriveMode {
+    match std::env::var("CRANELISP_DRIVE_MODE").ok().as_deref() {
+        Some(s) if s.trim().eq_ignore_ascii_case("server") => DriveMode::Server,
+        _ => DriveMode::OneShot,
+    }
+}
+
+/// Read the scaled `OneShot` wall-clock backstop from `CRANELISP_REACTOR_BACKSTOP_MS`
+/// (FIXME 0479 / `reactor.md §8.3`). Unset / unparsable / zero ⇒ [`MAX_TOTAL_BLOCK`]
+/// (30s default). The /qa suite sets a low value so the OneShot-backstop witness
+/// fits the suite-time budget instead of waiting the real 30s.
+fn read_backstop_env() -> Duration {
+    std::env::var("CRANELISP_REACTOR_BACKSTOP_MS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(MAX_TOTAL_BLOCK)
+}
 
 /// Drive `make_future` to completion on a fresh reactor, turning the mio loop
 /// between polls. Single-threaded: the future (and every leaf poll-fn it awaits)
@@ -1594,16 +1667,26 @@ pub(crate) fn block_on_reactor<F, T>(make_future: F) -> std::io::Result<T>
 where
     F: AsyncFnOnce(&ReactorEnv<'_>) -> T,
 {
-    block_on_reactor_capped(make_future, MAX_TOTAL_BLOCK)
+    // FIXME 0479 (`reactor.md §8.3`): the drive mode + the scaled backstop are read
+    // from the reactor-construction env surface (the same channel as
+    // `CRANELISP_DEGREE`). `Server` disables the wall-clock backstop so an idle-but-
+    // armed `accept` loop runs indefinitely; `OneShot` (default) keeps it as a hang
+    // guard for `--run`/REPL.
+    block_on_reactor_capped(make_future, read_drive_mode_env(), read_backstop_env())
 }
 
-/// [`block_on_reactor`] with an injectable no-progress cap — the seam the I1 unit
-/// tests drive with a lowered cap (the production entry point passes
-/// [`MAX_TOTAL_BLOCK`]). The cap is a **no-progress** backstop: it is held off
-/// while any blocking branch is in flight (`pending_bridges > 0`), so a slow
-/// blocking I/O branch is uncapped (matching feature-off), and it fires only for a
-/// genuinely-stuck poll leaf with no bridge pending.
-fn block_on_reactor_capped<F, T>(make_future: F, max_total_block: Duration) -> std::io::Result<T>
+/// [`block_on_reactor`] with an injectable drive-mode + wall-clock backstop — the
+/// seam the liveness unit tests drive with a lowered cap. The structural armed-ness
+/// deadlock detector ([`reactor_is_armed`]) is ALWAYS active; `drive_mode` governs
+/// only the secondary wall-clock backstop (a **no-progress** guard held off while a
+/// blocking branch is in flight, so a slow blocking I/O branch is uncapped —
+/// matching feature-off — and firing only for an armed-but-never-readies leaf under
+/// [`DriveMode::OneShot`]).
+fn block_on_reactor_capped<F, T>(
+    make_future: F,
+    drive_mode: DriveMode,
+    max_total_block: Duration,
+) -> std::io::Result<T>
 where
     F: AsyncFnOnce(&ReactorEnv<'_>) -> T,
 {
@@ -1713,38 +1796,65 @@ where
         }
 
         // A blocking branch in flight OR a non-empty supervisor is legitimate
-        // progress — hold the no-progress deadline off (a server with live
-        // handlers is busy, not stuck; §2.12). The backstop resumes measuring once
-        // both are quiescent.
+        // progress — hold the no-progress deadline off (a slow blocking I/O branch on
+        // rayon is uncapped, matching feature-off, §2.6; a server with live handler
+        // strands is busy, not stuck, §2.12). The backstop resumes measuring once both
+        // are quiescent.
+        //
+        // FIXME 0479 (`reactor.md §8.2`): the wall-clock cap is the SECONDARY guard
+        // (an armed-but-never-readies leaf), retained ONLY in `OneShot` mode. A
+        // `Server`-mode drive disables it, so a legitimately-idle armed `accept` loop
+        // (listener fd in `fd_waiters`) runs indefinitely — the production shape. The
+        // PRIMARY liveness rule is the armed-ness detector below.
         if pending_bridges.get() > 0 || !supervisor.is_empty() {
             no_progress_since = std::time::Instant::now();
-        } else if no_progress_since.elapsed() > max_total_block {
-            // Drop in-flight strands (none — supervisor is empty here) and bail.
+        } else if drive_mode == DriveMode::OneShot
+            && no_progress_since.elapsed() > max_total_block
+        {
+            // OneShot backstop: no bridge, empty supervisor, no progress for the
+            // backstop window — an armed-but-never-readies (or genuinely-stuck) leaf
+            // under a one-shot drive. Drop in-flight strands (none here) and bail.
             supervisor.clear();
-            panic!("block_on_reactor: exceeded {max_total_block:?} — leaf never completed");
+            panic!("block_on_reactor: OneShot backstop exceeded {max_total_block:?} — leaf never completed");
         }
 
         // Turn the reactor BETWEEN polls (the only place a `&mut reactor` is
         // live). SAFETY: the future is not being polled here, so the host-handle
         // raw alias is dormant; no two `&mut` coexist.
         let r = unsafe { &mut *reactor_ptr };
-        if !r.has_waiters()
-            && pending_bridges.get() == 0
-            && supervisor.is_empty()
-            && top_result.is_none()
+        // The PRIMARY liveness rule (FIXME 0479 / `reactor.md §8.2`): the structural
+        // armed-ness deadlock detector. A `Pending` top future with NOTHING armed
+        // (no fd/timer waiter, no rayon bridge, no detached strand, no parked permit
+        // waiter) can NEVER be woken — a true deadlock, detectable the instant it
+        // occurs (no wall-clock wait). This fires in BOTH modes (it is not a
+        // wall-clock cap): an idle server is *armed* (its listener fd is a waiter),
+        // so it never trips here; only a genuinely-stuck reactor does. The `!woken`
+        // guard excludes a parked launcher just satisfied by a Permit release (§2.13
+        // — it must re-poll, not panic).
+        if top_result.is_none()
             && !woken.load(std::sync::atomic::Ordering::SeqCst)
+            && !reactor_is_armed(r, &pending_bridges, &supervisor, &pool)
         {
-            // Pending with nothing registered (no fd/timer waiter, no rayon bridge,
-            // no detached strand) AND no pending wake (the launcher was NOT just
-            // woken by a Permit release — §2.13: a parked `acquire_global` that a
-            // completing strand just satisfied sets `woken`, and must re-poll, not
-            // panic) AND the top future not yet done would spin forever. With our
-            // re-poll-every-turn model this should not happen for a well-formed
-            // future; treat it as a bug rather than a silent hang.
             supervisor.clear();
-            panic!("block_on_reactor: future Pending with no reactor waiters (would hang)");
+            panic!(
+                "reactor suspended with no armed interest — a poll leaf is stuck / a deadlock \
+                 (block_on_reactor: future Pending with nothing registered to wake it)"
+            );
         }
-        r.turn(MAX_TURN_BLOCK);
+        // Cap the per-turn mio block so the OneShot backstop check can fire at its
+        // deadline, not `MAX_TURN_BLOCK` later (FIXME 0479): without this a 2s
+        // backstop with a 5s turn block would only be checked every 5s. In `Server`
+        // mode there is no wall-clock backstop, so the full `MAX_TURN_BLOCK` re-check
+        // cadence applies. The reactor's own timer wheel further clamps this to the
+        // soonest armed timer, so a poll leaf's deadline is never overshot.
+        let turn_block = if drive_mode == DriveMode::OneShot {
+            max_total_block
+                .saturating_sub(no_progress_since.elapsed())
+                .min(MAX_TURN_BLOCK)
+        } else {
+            MAX_TURN_BLOCK
+        };
+        r.turn(turn_block);
     }
 }
 
