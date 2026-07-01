@@ -119,7 +119,8 @@ Principles evolve through sprint close review (§Sprint participation, Phase 7) 
 | Frontend | `crates/cranelisp-frontend/` | Source text → S-expressions → AST. Owns reading, parsing, and macro expansion as a frontend step. Does not type-check or codegen. | `crates/cranelisp-frontend/src/lib.rs` |
 | Typecheck | `crates/cranelisp-typecheck/` | AST → typed AST + symbol tables. Owns Hindley-Milner inference, trait resolution, and monomorphisation analysis. Does not produce code. | `crates/cranelisp-typecheck/src/lib.rs` |
 | Backend | `crates/cranelisp-backend/` | Typed AST → Cranelift IR → executable. Owns codegen, RC, JIT lifecycle, caching, and linking. Paired with runtime. | `crates/cranelisp-backend/src/lib.rs` |
-| Runtime | `crates/cranelisp-runtime/` | Drop glue, intrinsic helpers, and RC primitives consumed by backend-emitted code. Implementation-paired with backend. | `crates/cranelisp-runtime/src/lib.rs` |
+| Primitives | `crates/cranelisp-primitives/` | Statically-constructed primitive `SymbolTable` + GOT — the primitive values/operators the compiled program dispatches. Backend-emitted runtime library (D43 split of the former `cranelisp-runtime`); dep-severed from backend (Decision 0048). Canonical: `bounded-contexts.md` §4a. | `crates/cranelisp-primitives/src/lib.rs` |
+| Intrinsics | `crates/cranelisp-intrinsics/` | Drop glue, RC/alloc primitives, the IO reactor + async trampoline, and intrinsic helpers backend-emitted code calls by named extern. Backend-emitted runtime library (D43 split of the former `cranelisp-runtime`); implementation-paired with backend. Canonical: `bounded-contexts.md` §4b. | `crates/cranelisp-intrinsics/src/lib.rs` |
 | Platform | `crates/cranelisp-platform/` | Platform DLL loading, IO trampoline, and scheduling-class registry. Consumes runtime; exposes platform-fn registry to backend. | `crates/cranelisp-platform/src/lib.rs` |
 | Binary (int) | `src/` + `crates/cranelisp-exe-bundle/` | Pipeline orchestration, REPL session, CLI, slash-command dispatch, prelude loading, file watcher, and `--link` standalone executable generation (exe-bundle). The application layer that wires the other surfaces together and produces the deployable artefact. | `src/lib.rs` + `src/main.rs`; `crates/cranelisp-exe-bundle/src/lib.rs` |
 
@@ -129,7 +130,7 @@ Plus the non-triad surface:
 
 **Binary-surface composition rationale.** `cranelisp-exe-bundle` exists to enable the binary's `--link` capability, not as an independent concern. The two crate paths are one surface for triad purposes: a change touching both is one D/D/R cycle, not two.
 
-**Runtime ownership note (resolves M13 per METHOD_PROPOSED §15).** `cranelisp-runtime` is owned by `/dev` narrow-deployed in **backend** mode (paired with `cranelisp-backend`), not by a separate `/platform` deployment. Historical references in older `CLAUDE.md` / design / sprint docs that assigned runtime to `/platform` are obsolete; `/sprint` sweeps them as M13 lands.
+**Runtime ownership note (resolves M13 per METHOD_PROPOSED §15).** The backend-emitted runtime library — `cranelisp-primitives` + `cranelisp-intrinsics` (the D43 split of the former `cranelisp-runtime`; Decision 0043) — is owned by `/dev` narrow-deployed in **backend** mode (paired with `cranelisp-backend`), not by a separate `/platform` deployment. Historical references in older `CLAUDE.md` / design / sprint docs that assigned runtime to `/platform`, or that name the pre-split `cranelisp-runtime` crate as a live surface, are obsolete; `/sprint` sweeps them as M13 lands.
 
 ## Public-API discipline
 

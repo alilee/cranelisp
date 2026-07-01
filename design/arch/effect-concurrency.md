@@ -689,6 +689,24 @@ mio `Poll`."* See `platform-interface.md` §6.8.0a for the feasibility verdict +
 sequencing; the `Reactor` lazy-singleton implementation detail is `/design` int's
 (`design/intrinsics/reactor.md` — change specified there, not authored here).
 
+**Level-2 (the state-machine transform) is DEFERRED — trigger named, not defaulted (S98,
+FIXME 0486 closed).** The reified-IO-as-data choice above makes lifetime-across-suspension a
+*runtime* discipline rather than a compile-time guarantee (a deferred effect's baked args are
+held alive by the runtime `EffectPoll`, BC §4b invariant 15 — not by a backend-generated frame).
+The alternative — have `/backend` co-generate a per-program Rust-async-style **state machine** that
+holds each suspended effect's args across its suspend points by construction, moving the
+lifetime half of the trampoline into codegen — was weighed and **deferred**. Its recurrence
+trigger: *a second deferred-effect lifetime bug that the reified-data model cannot localize to
+the runtime.* The S98 bug #2 (the launched-`send-conn` heap corruption) was **NOT** such a
+recurrence: its actual cause was a plain `/backend` codegen traversal gap
+(`find_var_type_in_expr` failing to reach the `conn` argument, starving the existing
+consuming-inc — FIXME 0494, fixed `5ca6ef2`, hardened `0497`), fixed within the current model by
+the runtime keep-alive (`75f286d`, net-zero-inc `StateClosure` at the `EffectPoll`/`reg` seam) +
+the traversal repair — **not** a failure of the reified-data lifetime model. So the evidence
+*reinforces* keeping reified-IO-as-data; Level-2 is not indicated. The executor half (the reactor
+owning OS handles + DLL calls) is a runtime library under **any** split, so even if Level-2 were
+taken, only the interpreter/lifetime half would move — not the whole trampoline.
+
 ## 7. The two-pool model — rayon for CPU, async runtime for I/O
 
 The two pools are the correct realization of §5's blocking/CPU split, **not accidental
