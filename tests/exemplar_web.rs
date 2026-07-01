@@ -206,52 +206,27 @@ fn encode_puzzle_form(puzzle: &str) -> String {
 //                                   30 given + 51 solved <td> cells, a valid sudoku)
 //   GET  /missing -> 404 page     (<title>Not Found</title>)
 //
-// STILL QUARANTINED (S97, /backend) — the single-threaded nested-ADT-wrapping-Vec
-// double-use defect that the deterministic repro reduces is FIXED (the inline
-// `vec-get` temporary release `emit_vec_drop_if_temporary` now routes through the
-// rc-checked `emit_vec_rc_dec_with_drop` — free only on the last reference;
-// ring2-rc.md §5.5 — closing
-//   tests/regression.rs::nested_adt_wrapping_vec_looped_double_use_corrupts_heap_neg).
-// But this e2e remains ~1/6 flaky: the exemplar's grid mutation goes through the
-// stdlib USER functions `get`/`assoc` (`(vec-get v i)` / `(vec-set v i x)` on a
-// Var PARAMETER), NOT the inline-temporary path the deterministic repro (and this
-// fix) exercise. That path does not crash single-threaded (a free-standing
-// user-fn-wrapped reduction returns the correct value; it leaks but never
-// corrupts); the corruption appears ONLY under the concurrent launched-strand
-// serve loop and persists under CRANELISP_NO_LENIENT=1 — a SEPARATE,
-// concurrency-specific RC manifestation on a different code path. A flaky
-// soundness RED in the canonical suite is worse than a clean deterministic guard,
-// so this stays `#[ignore]`'d behind the deterministic repro until the
-// concurrency manifestation is isolated and fixed.
-// FIXME(/backend): the concurrent get/assoc-path (user-fn borrowed-Var vec-set
-//       under launched strands) heap corruption is now ISOLATED to a
-//       DETERMINISTIC (8/8) minimal repro:
-//         tests/launch_grid_corrupt.rs::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg
-//       (a free-standing "server with no spawn" whose launched per-connection
-//       handler builds an ADT-wrapping-(Vec Cell) grid, churns a second grid, and
-//       renders BOTH via user-fn `get`/`assoc` over vec-get/vec-set on a Var
-//       param — `ring2-rc.md §5.5` borrowed_vars). Persists under
-//       CRANELISP_NO_LENIENT=1 (reactor/launch-and-continue path, NOT rayon-spark);
-//       RC_TRACE shows a DOUBLE-FREE (205 distinct ptrs freed 2+×). Distinct from
-//       the now-fixed inline-temporary `emit_vec_drop_if_temporary` defect. The
-//       web-reactor terminal (`send-conn`, a DLL-ADT-marshaling Consume leaf) is
-//       load-bearing: a bare-launch poll-pool strip doing the identical grid work
-//       is CLEAN (8/8), so `/int` trampoline launch-capture cannot be excluded.
-//       This over-HTTP test stays #[ignore]'d as the ~1/6-flaky witness; the
-//       deterministic guard above is the un-ignored failing-not-ignored repro.
-// STILL IGNORED (S98 finding, FIXME 0486): the S98 runtime keep-alive (net-zero-inc
-// at the `EffectPoll`/`reg` seam; `bounded-contexts.md §4b` invariant 15) LANDED and
-// is correct — the send-conn state-closure is now held live across the deferred
-// send. But it does NOT fix this defect: the S98 /qa Stage-1 reduction + a /dev A/B
-// of both invariant-15 variants proved the residual UAF is NOT the state-closure —
-// it is the borrowed-Var TWO-live-vec RC path on the launched strand (String body
-// alone: 0/8; single vec: 0/8; two live vecs: 8/8 SIGABRT). Runtime keep-alive
-// cannot fix a backend codegen RC miscount. (The move-out-with-sentinel variant
-// appeared to flip the guards green but was a FALSE-GREEN: it eager-frees the accept
-// effect's LISTENER-capturing closure, wedging the server so it hangs instead of
-// crashing.) The fix is now a /backend borrowed-Var vec RC task — see FIXME 0486's
-// S98 finding. This over-HTTP test stays `#[ignore]`'d; the deterministic guards
-// `launch_grid_corrupt` + `launch_vec_send_corrupt` remain the un-ignored RED repros.
+// RESOLVED (S98) — un-ignored and GREEN. This test was quarantined across S97-S98
+// while the launched-strand grid-corruption defect ("bug #2") was chased through
+// six investigation passes; the durable trail lives at the deterministic guards
+// `tests/launch_grid_corrupt.rs::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg`
+// and `tests/launch_vec_send_corrupt.rs::launched_strand_two_live_vecs_send_does_not_corrupt_heap_neg`
+// (both now GREEN). Root cause (FIXME 0494, `5ca6ef2`): `find_var_type_in_expr`
+// (`crates/cranelisp-backend/src/compiler/rc_emission.rs`) had no traversal arm for
+// `MonoExpr::LaunchContinue`/`ConstrADT`, so a borrowed heap Var used only inside a
+// launched sub-tree (`conn`, the Connection ADT) had no recorded type — the
+// existing consuming-inc discipline silently skipped it while the poll-effect
+// drop-glue decremented it unconditionally, a double-free on launched-strand
+// teardown. Fixed by making that traversal exhaustive (hardened further by FIXME
+// 0497 — no wildcard arm remains, so the next `MonoExpr` variant is a compile
+// error here, not a silent UAF). The separate S98 runtime keep-alive (net-zero-inc
+// at the `EffectPoll`/`reg` seam; `bounded-contexts.md §4b` invariant 15, FIXME
+// 0486) is ALSO landed and correct — it holds the send-conn state-closure live
+// across the deferred send — but was necessary, not sufficient, for this defect;
+// the fix above is the one that closes it. This over-HTTP test is the real-showcase
+// end-to-end proof that both fixes hold together: the full Sudoku-over-HTTP
+// round-trip (concurrent launched handlers, borrowed-Var grid mutation, DLL
+// marshaling) now serves correctly with no heap corruption.
 #[test]
 fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
     let port = free_port();
