@@ -1,6 +1,6 @@
 # Sprint 98: Concurrency-track drain + the trampoline boundary defect — clear the slate before the parallelism axis
 
-**Status**: PHASE 5 COMPLETE — **bands A–E all landed; BUG #2 CLOSED** (`0494` fix `5ca6ef2`); suite **1795 pass / 1 skip / 0 fail**, zero known-defect REDs, `exemplar_web` un-ignored+green. 14 FIXMEs resolved this sprint (`0407 0419 0475 0479 0483 0484 0485 0487 0488 0489 0490 0493 0494` + `0483`). Now entering **PHASE 6** (`0491` docs split, `0492` exemplar v9 adoption — unblocked — + repl/stdlib/examples assessment). Pre-close remaining: consolidated `/review` of code changes; doc-tidy `0495`/`0496` (/design); `0486` close (/arch — band A fully delivered). New FIXMEs filed en route: `0495`+`0496` (/design doc reconciliation).
+**Status**: PHASE 7 CLOSE — **PROPOSED CLOSE, awaiting user approval to archive.** All phases complete: bands A–E landed, bug #2 closed, `/review` clean bill + hardening, Phase 6 delivered (exemplar v9 replay + docs split + repl assessment + the user-directed 0499 root-cause fix), all 22 FIXMEs filed/carried this sprint resolved. Suite **1798 pass / 1 skip / 0 fail**. See Outcome below.
 
 **Goal**: Drain the entire S97-carried defect/FIXME backlog — headlined by the `/int↔/backend` trampoline arg-lifetime boundary (`0486`) and the bug-#2 launched-effect UAF it names — so the parallelism/memory-contention axis (S99) tunes the spark gate against a fully-settled substrate, with zero known-defect REDs and zero open concurrency-track FIXMEs behind it.
 
@@ -144,8 +144,52 @@ _Note: worktree isolation is broken here — only one agent edits source at a ti
 
 ## Skill plans (Phase 3)
 
-_Pending Phase 2._
+_Superseded by execution — this was a drain sprint; per-band skill plans lived directly in the FIXMEs + the Phase-2 `0486` ruling, not a separate Phase-3 pass. See Outcome for what each skill actually delivered._
 
 ## Waves (Phase 4)
 
-_Pending Phase 3. Provisional shape: `0486` /arch ruling gates band A's fix + `0492`; bands B/C are largely independent doc/spec/test drains that parallelize (serial only where they touch shared source); band D Phase-6 sequences last._
+_As executed (serial — worktree isolation broken, one source-touching agent at a time): Wave 1 band A (`/backend` intrinsics keep-alive) parallel-in-principle with bands B/C/E (`/spec`, `/design`, `/qa`, `/platform`, `/dev`, `/arch`) — all landed serially in practice. Band A's `0494` codegen investigation ran after B/C/E per user direction (de-risk the sure wins first), through 6 passes to a confirmed fix. Phase 6 (`/port`, `/docs`, `/repl`) sequenced after band A closed. See Outcome._
+
+## Outcome (Phase 7) — PROPOSED CLOSE (awaiting user approval to archive)
+
+**Headline:** S98 delivered the full concurrency-track + host-callback drain scoped at Phase 1, closed the sprint's namesake defect (bug #2 — a 6-pass, cross-model investigation), and completed a user-directed root-cause fix for a REPL/`--run` divergence surfaced in Phase 6. Every FIXME filed or carried into this sprint is resolved. Zero known-defect REDs remain.
+
+### Delivered (committed + clean tree)
+
+- **Band A — the `0486` boundary + bug #2 (the sprint's spine).** `/arch` ruled the arg-lifetime-across-suspension contract (`bounded-contexts.md §4b` invariant 15: keep-alive is runtime-owned at the `EffectPoll`/`reg` seam). `/dev`(intrinsics) landed the keep-alive (`75f286d`, net-zero-inc `StateClosure` RAII) — correct and `/review`-confirmed exactly-once, but proven (via disciplined A/B) necessary-not-sufficient. **Bug #2's actual cause**, found after 6 investigation passes each blocked by a refuted hypothesis (RC double-dec → refuted; ASAN-clean vec-COW-JIT-store → refuted by CLIF; CLIF-confirmed-correct vec codegen → led to the real site): a `/backend` AST-traversal gap (`find_var_type_in_expr`, no `LaunchContinue`/`ConstrADT` arm) starved the *existing* consuming-inc discipline of a borrowed Var's (`conn`) type, so the poll-effect drop-glue decremented it once too often — a double-free on launched-strand teardown. Fixed at the root (`5ca6ef2`); hardened by `/review`'s P8 mirror-hunt finding (`0497`: the traversal's wildcard arm converted to exhaustive, so the next `MonoExpr` variant is a compile error, not a silent UAF). `0486` closed with the Level-2 deferral (state-machine transform) recorded permanently at `effect-concurrency.md §6`, reinforced rather than triggered by this sprint's finding.
+- **Band B — spec/design rulings.** `/spec`: submodule bare-name precedence (submodule-first, `0485`); empty-`select` catchability (fatal/non-catchable, generalizing to all run-time effect errors, `0487`). `/design`: `Connection` opacity re-worded (tramp-opaque, user-readable, `0484`); doc staleness fixed (`0488`); the `0486` keep-alive cite-back; later doc-tidy `0495`/`0496`.
+- **Band C — RED-clearing drains.** `/dev`(intrinsics): idle-server watchdog knob (flips `5.1B`, root-caused a supervisor-exemption bug + a SIGABRT-vs-clean-exit(70) timing issue, `0479`); empty-select mechanism confirmed (`0475`). `/qa`: inverted `2.1` (Connection is user-readable), retired `4.2` (wrong premise under the `0487` ruling), confirmed `5.1B`. `/platform`: bounded `poll-produce`/`poll-consume` fixture flips `2.4` (`0490`). `/dev`: repo-wide stale-`cranelisp-runtime`-reference sweep (`0493`).
+- **Band E — platform-boundary consolidation (user-directed).** `/arch` ruled poll-in/wake-out is the *complete* platform-effect boundary — no closure-callback-into-cranelisp capability, by design (manifested `effect-concurrency.md §12.1` + `platform-interface.md §3a`; deleted `0407`; caught and reconciled a stale Decision-0031 contradiction en route). `/dev` drained the resulting standalone dedup: one shared `host_callbacks()` builder in `cranelisp-intrinsics` replacing 3 hand-mirrored `HostCallbacks` construction sites (`0419`).
+- **Quality gate.** Consolidated `/review` of every RC/lifetime-critical change: clean bill (no Blocker/Important), both crux items (the `0494` traversal fix, the `0486` keep-alive) confirmed sound; one P8 hardening finding actioned (`0497`).
+- **Phase 6 — user-facing.** `/port`: exemplar already on v9 (from the S97 cutover); reconciled one stale comment, replayed the marquee green — the real-showcase end-to-end proof the bug-#2 fix holds (`0492`). `/docs`: split concurrency docs into a user guide (combinators only, zero descriptors/tokens) + a new platform-writer's guide (poll-in/wake-out, roles, manifest) (`0491`). `/repl`: confirmed the settled concurrency surface behaves per spec — **and surfaced a genuine defect**, `0499`: `(select [])` was fatal under `--run` but returned an unsound-null `Int 0` in the REPL (§10.12.8 violation).
+- **`0499` — user-directed root-cause investigation + fix (not deferred).** User asked whether this indicated a regrown dual pipeline (the sketch's original sin). Investigated and confirmed: **no** — REPL and `--run`/`--link` share one IO driver (`cranelisp_run_io`); the bug was a narrower dual host *wrapper* — the REPL hand-rolled a partial mirror of the shared C-ABI driver (`cranelisp_run_program`) that only checked the runtime-error slot before the IO drive, never after. Fixed by deleting the hand-rolled mirror and routing the REPL through the same shared driver (`e77b71b`) — structurally unifies error observation for *all* fatal IO errors, not just this symptom. New parity e2e + 5 unit tests.
+- **Doc hygiene closed out**: `0495` (reactor backstop/supervisor prose), `0496` (stale `cranelisp-runtime` refs in `/design`-owned docs), `0498` (stale exemplar_web quarantine header).
+
+### FIXMEs resolved this sprint (19)
+
+`0407 0419 0475 0479 0483 0484 0485 0486 0487 0488 0489 0490 0493 0494 0495 0496 0497 0498 0499` — 6 carried from S97 close (`0407 0419 0475 0479 0489 0490`; `0483 0484 0485 0487 0488` were also S97-close carries) plus `0486` (S97 carry, closed via the band-A investigation) and 6 filed + resolved within S98 itself (`0494 0495 0496 0497 0498 0499`). Net: **zero FIXMEs remain that were opened or carried by this sprint.**
+
+### Deferred (with rationale — unchanged from Phase-1 scope)
+
+- **Parallelism/memory-contention axis → S99**: `0459` (contention-aware spark gate) + `0408` (Sudoku perf half). Deliberately out of scope — this sprint's entire point was producing the settled substrate S99 tunes against.
+- **`0486` Level-2** (interpreter-vs-state-machine split of `effect-concurrency.md §6`) — deferred to its recurrence trigger, **reinforced not triggered**: bug #2 turned out to be a plain codegen traversal gap, not a lifetime-model failure, so the reified-IO-as-data model stands.
+- **Parked (Phase H / off-track, unchanged):** `0050`/`0052`/`0365`, `0416`, `0430`.
+- **Opportunistic, undrawn:** `0460`.
+
+### Known state at close
+
+**Suite: 1798 passed, 1 skipped (`concurrency_spark` perf benchmark, feature-gated), 0 failed.** Zero known-defect REDs. `exemplar_web` un-ignored and green (both tests). Working tree clean (only pre-existing unrelated untracked cruft: `scratch_other.diff`, `test1/` — not part of this sprint).
+
+### Findings (durable lessons)
+
+- **The reduce-first/confirm-first gate paid for itself many times over.** Bug #2 took 6 investigation passes; the gate prevented at least 3 wasted fixes (vec-RC hypothesis, ASAN-implied vec-COW-JIT-store hypothesis, and would have prevented shipping the false-green move-out-sentinel variant that hangs the server instead of crashing it). The final fix was a genuine root cause, not a symptom patch.
+- **Cross-model divergence is informative even when one line is wrong.** The analytical (read-only) cross-check on bug #2 diverged from the empirical instrumentation pass — it wrongly named the untracked vec buffer instead of the tracked `conn` ADT — but it correctly identified the mechanism CLASS (a stray write/dec into freed memory) and its "why 5 passes failed" reasoning (heavyweight sanitizers perturb layout-sensitive bugs away) was exactly right and reusable.
+- **P8 mirror-hunting on a fix, not just the diff, catches the root enabler.** `/review`'s finding on `0494` (`0497`) wasn't a new bug — it was noticing the wildcard-match pattern that let the ORIGINAL bug ship silently, and closing that structurally (compile error, not runtime UAF) for the next variant.
+- **User-directed root-cause investigation over methodology-default deferral.** `0499` would have defaulted to an S99 carry per Phase-6 convention; the user's insistence on understanding "is this a regrown dual pipeline" before accepting any fix path caught the correct, narrower framing (dual wrapper, not dual driver) and produced a structural fix in the same sprint rather than a symptom patch scheduled for later.
+- **Agent-liveness judgment from transcript files is unreliable.** Twice this sprint a transcript's byte-count/idle-time was read as a stall signal; the first time genuinely working. The transcript file appears to buffer until completion. Live-process activity (build/test processes, listening sockets) and the completion notification are the trustworthy signals — this is a durable operational lesson for future sprints. [See memory candidate below.]
+
+### Close plan
+
+1. ✅ All FIXMEs resolved; suite green; tree clean.
+2. **On user approval:** `git mv sprints/SPRINT.md sprints/archive/sprint-98.md`; update `sprints/ROADMAP.md` (S98 closed → **S99 = parallelism/memory-contention axis** next); commit.
+3. **Arch-principles check (Phase 7 prompt):** Principle 21 (actors-first, authored this sprint) served the band-E closure-boundary ruling well. No new principle proposed from this sprint's findings — the reduce-first-gate discipline and the transcript-liveness lesson are operational/memory items, not architectural principles.
