@@ -869,6 +869,26 @@ When resolving a module name to a file, the implementation MUST search in this o
 
 A module in the project root shadows a module with the same name in a lib directory. This is intentional -- it allows projects to override library modules.
 
+#### 8.11.2.1 Bare-Name Precedence: Current-Module-Relative Submodule Wins [Tested tests/spec_08_modules::project_root_shadows_stdlib]
+
+The search order above is **first-match**: the first tier that yields a file resolves the name, and later tiers are not consulted. This is normative in the one shape where two tiers can both match a bare name — the **dual-name shape**:
+
+> When a bare module name `name` is resolved from **inside** module `M`, and **both** a current-module-relative submodule `M.name` (tier 1, registered via `(mod name)` in `M`) **and** a root module `name` (tier 2, `{project_root}/name.cl`) exist, the resolution MUST bind the **submodule** `M.name`. The current-module-relative submodule wins; the root module is not consulted for that bare reference.
+
+This is the nearest-scope reading: a bare name inside a module first means "the submodule I declared," and only falls through to the project root and lib directories when no such submodule exists. It holds uniformly for every position that resolves a bare module name — `(import [name …])`, `(export [name …])`, and the `(mod name)`-registered reference itself — so a bare name never resolves to the submodule in one position and the root module in another within the same module `M`. To refer to the root module `name` from inside `M` when a submodule `M.name` also exists, name it by its own path (the root module `name` is reachable as the peer it is), not as a bare reference that tier 1 would capture first.
+
+**Example.** Given a project with a root module `child.cl` **and** a submodule `parent.child` (declared by `(mod child)` inside `parent.cl`):
+
+```
+project/
+  parent.cl           ; contains (mod child)  → loads parent/child.cl as parent.child
+  parent/
+    child.cl          ; module "parent.child"
+  child.cl            ; root module "child" (a peer)
+```
+
+Inside `parent`, `(import [child [f]])` resolves `child` to the submodule `parent.child` (tier 1), **not** the root module `child` (tier 2). Both resolution stages of a conforming implementation MUST agree on this: whichever code path binds the name early and whichever collects it late resolve the same bare `child` to `parent.child`. (Implementation follow-up, if the two stages disagree, is `/int`-internal — the semantics pinned here is the contract they must both meet.)
+
 The standard library is not a special language feature beyond this search mechanism. Modules named `core`, `prelude`, `std`, or anything else are ordinary Cranelisp source files found through the module search order — there is no distinction at the language level between "standard library" modules and user modules.
 
 ### 8.11.3 Platform DLL Resolution Search Order [Tested tests/wave3_g8.rs]
