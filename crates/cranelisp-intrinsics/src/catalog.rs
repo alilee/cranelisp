@@ -125,6 +125,11 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
         // incl. `--link`. User-visible name, so `is_runtime: false`.
         IntrinsicEntry { name: "catch-runtime-error", ptr: crate::panic::catch_runtime_error as *const u8, param_count: 1, has_return: true, is_runtime: false },
         IntrinsicEntry { name: "runtime/rc_underflow_check", ptr: crate::rc::rc_underflow_check as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        // FIXME 0494 localization: stale-dec liveness check, emitted before each
+        // inline dec ONLY under the codegen-time `CRANELISP_RC_DEC_CHECK` gate
+        // (off by default ⇒ never emitted ⇒ this entry is inert). Registered
+        // unconditionally so JIT can resolve the symbol when the gate is on.
+        IntrinsicEntry { name: "runtime/rc_dec_check", ptr: crate::rc::rc_dec_check as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/alloc_string", ptr: crate::heap_string::heap_alloc_string as *const u8, param_count: 2, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/string_read", ptr: crate::heap_string::string_read as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/vec_new", ptr: crate::vec_runtime::vec_new as *const u8, param_count: 1, has_return: true, is_runtime: true },

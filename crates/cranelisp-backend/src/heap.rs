@@ -233,6 +233,14 @@ pub(crate) fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
 /// The `dealloc_func_id` is the FuncId for `runtime/dealloc`.
 /// The `drop_glue_id` is Some(FuncId) if the type has heap-typed fields.
 /// If `guard_nullary` is true, emit a check that skips dec for bare tags.
+/// FIXME 0494 localization gate (codegen-time, read once). When
+/// `CRANELISP_RC_DEC_CHECK` is set, [`emit_rc_dec_guarded`] emits a
+/// `runtime/rc_dec_check(ptr)` call before each inline dec. Off by default.
+fn rc_dec_check_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var_os("CRANELISP_RC_DEC_CHECK").is_some())
+}
+
 pub(crate) fn emit_rc_dec<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -268,6 +276,23 @@ pub(crate) fn emit_rc_dec_guarded<M: Module>(
             .brif(is_tag, cont_block, &[], dec_block, &[]);
         builder.switch_to_block(dec_block);
         builder.seal_block(dec_block);
+    }
+
+    // FIXME 0494 localization: when the codegen-time gate is on, emit a call to
+    // `runtime/rc_dec_check(ptr)` immediately before the inline atomic sub, so a dec
+    // of an already-freed heap pointer aborts AT the stale dec (with the pointer +
+    // JIT stack) instead of silently corrupting a reused chunk. Off by default ⇒ no
+    // emitted call ⇒ byte-identical codegen.
+    if rc_dec_check_enabled() {
+        let mut sig = module.make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        if let Ok(check_id) =
+            module.declare_function("runtime/rc_dec_check", cranelift_module::Linkage::Import, &sig)
+        {
+            let check_ref = module.declare_func_in_func(check_id, builder.func);
+            builder.ins().call(check_ref, &[ptr]);
+        }
     }
 
     let rc_addr = builder

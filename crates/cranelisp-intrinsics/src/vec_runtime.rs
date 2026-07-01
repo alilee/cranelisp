@@ -114,21 +114,144 @@ fn alloc_data_buffer(cap: i64) -> *mut i64 {
     if ptr.is_null() {
         alloc::handle_alloc_error(layout);
     }
+    #[cfg(debug_assertions)]
+    databuf_guard::on_alloc(ptr as usize, cap);
     ptr as *mut i64
+}
+
+/// Debug-only: validate that a vec's `data_ptr`/`cap` names a currently-live data
+/// buffer (see [`databuf_guard::assert_live`]). No-op in release. Exposed so
+/// `drop.rs`'s `consume_vec_with` can check a Vec before walking + freeing it.
+#[inline]
+pub(crate) fn debug_assert_live_buffer(data_ptr: *const i64, cap: i64, site: &'static str) {
+    #[cfg(debug_assertions)]
+    databuf_guard::assert_live(data_ptr as usize, cap, site);
+    #[cfg(not(debug_assertions))]
+    let _ = (data_ptr, cap, site);
 }
 
 /// Free a data buffer of `cap` elements.
 ///
+/// `site` names the calling free path — used ONLY by the debug data-buffer guard
+/// ([`databuf_guard`]) to report both sites on a double-free; it is a no-op string
+/// in release (the guard is `#[cfg(debug_assertions)]`, so it does not affect the
+/// release code path or heap layout — Principle 14 / `tests/CLAUDE.md`
+/// §"Heap-header integrity…").
+///
+/// This is the **single** vec-data-buffer free path (Principle 7). `drop.rs`'s
+/// `consume_vec_with` routes here rather than inlining its own `dealloc`, so every
+/// untracked-buffer free crosses the guard.
+///
 /// # Safety
 /// `data_ptr` must have been allocated by `alloc_data_buffer` with the given `cap`.
-unsafe fn free_data_buffer(data_ptr: *mut i64, cap: i64) {
+pub(crate) unsafe fn free_data_buffer(data_ptr: *mut i64, cap: i64, site: &'static str) {
     if data_ptr.is_null() || cap <= 0 {
         return;
     }
+    #[cfg(debug_assertions)]
+    databuf_guard::on_free(data_ptr as usize, cap, site);
+    #[cfg(not(debug_assertions))]
+    let _ = site;
     let byte_size = cap as usize * 8;
     let layout = Layout::from_size_align(byte_size, 8)
         .unwrap_or_else(|_| unreachable!("invariant: valid layout for size {byte_size}"));
     unsafe { alloc::dealloc(data_ptr as *mut u8, layout) };
+}
+
+// ---------------------------------------------------------------------------
+// Debug-only untracked-buffer double-free guard (layout-NEUTRAL)
+// ---------------------------------------------------------------------------
+//
+// Vec **data buffers** are plain `alloc`/`dealloc` allocations with NO RC header,
+// so `crate::alloc`'s `LIVE_ALLOCS` double-free debug-assert (which keys on the
+// `alloc_with_rc` base) never sees them. This side table extends the same
+// double-free / free-of-non-live detection to the untracked data buffers, WITHOUT
+// perturbing the allocation itself (no redzone, no padding, no size change) — the
+// one class of instrumentation that does not close the layout/timing race window
+// that hides bug #2 (FIXME 0494: ASAN + `MALLOC_CHECK_` both HID it by perturbing
+// allocator layout). Debug-only; compiled out entirely in release.
+#[cfg(debug_assertions)]
+mod databuf_guard {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+
+    /// Live data-buffer pointers → their allocated `cap`.
+    static LIVE: LazyLock<Mutex<HashMap<usize, i64>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    /// Recently-freed data-buffer pointers → the site that freed them. Cleared on
+    /// re-alloc at the same address (so alloc→free→alloc→free reuse is NOT flagged;
+    /// only a genuine second free of a still-freed pointer fires — this is why the
+    /// side table is immune to the address-reuse false positives that confused the
+    /// whole-trace analysis in FIXME 0494).
+    static FREED: LazyLock<Mutex<HashMap<usize, &'static str>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    pub(super) fn on_alloc(ptr: usize, cap: i64) {
+        LIVE.lock().unwrap_or_else(|e| e.into_inner()).insert(ptr, cap);
+        FREED.lock().unwrap_or_else(|e| e.into_inner()).remove(&ptr);
+    }
+
+    /// Validate that `ptr` (a vec's `data_ptr`) is a currently-live data buffer of
+    /// the given `cap`. Fires if the buffer was already freed (a use-after-free of a
+    /// stale vec whose buffer was reclaimed) or if the recorded cap disagrees (a
+    /// corrupted `cap` field). `null`/`cap<=0` (the empty-vec sentinel) is skipped.
+    pub(super) fn assert_live(ptr: usize, cap: i64, site: &'static str) {
+        if ptr == 0 || cap <= 0 {
+            return;
+        }
+        let live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        match live.get(&ptr) {
+            Some(&live_cap) => {
+                debug_assert!(
+                    live_cap == cap,
+                    "vec op {site} touched data buffer {ptr:#x} with cap {cap} but the \
+                     live buffer there has cap {live_cap} — a corrupted cap field or a \
+                     stale (reused-address) buffer. (FIXME 0494 bug #2.)"
+                );
+            }
+            None => {
+                let prev = FREED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&ptr)
+                    .copied();
+                panic!(
+                    "USE-AFTER-FREE: vec op {site} touched data buffer {ptr:#x} (cap {cap}) \
+                     that is NOT live — it was freed (previous free site = {prev:?}) and not \
+                     re-allocated. A stale vec is being operated on after its buffer was \
+                     reclaimed. (FIXME 0494 bug #2 — free-ownership defect on the \
+                     launched-strand teardown.)"
+                );
+            }
+        }
+    }
+
+    pub(super) fn on_free(ptr: usize, cap: i64, site: &'static str) {
+        let removed = LIVE.lock().unwrap_or_else(|e| e.into_inner()).remove(&ptr);
+        match removed {
+            Some(live_cap) => {
+                debug_assert!(
+                    live_cap == cap,
+                    "vec data buffer {ptr:#x} freed with cap {cap} but was allocated \
+                     with cap {live_cap} (free site: {site})"
+                );
+                FREED.lock().unwrap_or_else(|e| e.into_inner()).insert(ptr, site);
+            }
+            None => {
+                let prev = FREED
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&ptr)
+                    .copied();
+                panic!(
+                    "DOUBLE/INVALID FREE of untracked vec data buffer at {ptr:#x}: \
+                     this free site = {site}; previous free site = {prev:?}. \
+                     (FIXME 0494 bug #2 — free-ownership defect on the launched-strand \
+                     teardown.)"
+                );
+            }
+        }
+    }
 }
 
 /// Type alias for element inc/dec callback function pointer.
@@ -201,6 +324,8 @@ pub extern "C" fn vec_set_copy(vec: i64, idx: i64, val: i64, elem_inc_fn: i64) -
         let len = read_len(src);
         let cap = read_cap(src);
         let src_data = read_data_ptr(src);
+        #[cfg(debug_assertions)]
+        databuf_guard::assert_live(src_data as usize, cap, "vec_set_copy(src)");
 
         // Allocate new Vec struct + data buffer.
         let new_base = heap_alloc_mod::alloc_with_rc(VEC_PAYLOAD_SIZE);
@@ -241,7 +366,10 @@ pub extern "C" fn vec_push_copy(vec: i64, val: i64, elem_inc_fn: i64) -> i64 {
     let src = vec as *const u8;
     unsafe {
         let len = read_len(src);
+        let cap = read_cap(src);
         let src_data = read_data_ptr(src);
+        #[cfg(debug_assertions)]
+        databuf_guard::assert_live(src_data as usize, cap, "vec_push_copy(src)");
 
         let new_cap = len + 1;
 
@@ -281,6 +409,8 @@ pub extern "C" fn vec_push_grow(vec: i64, val: i64) -> i64 {
         let len = read_len(base);
         let old_cap = read_cap(base);
         let old_data = read_data_ptr(base);
+        #[cfg(debug_assertions)]
+        databuf_guard::assert_live(old_data as usize, old_cap, "vec_push_grow(in)");
 
         // Double capacity (minimum 4).
         let new_cap = if old_cap == 0 { 4 } else { old_cap * 2 };
@@ -292,7 +422,7 @@ pub extern "C" fn vec_push_grow(vec: i64, val: i64) -> i64 {
         }
 
         // Free old data buffer.
-        free_data_buffer(old_data, old_cap);
+        free_data_buffer(old_data, old_cap, "vec_push_grow(old)");
 
         // Store new value at data[len].
         *new_data.add(len as usize) = val;
@@ -322,6 +452,8 @@ pub extern "C" fn vec_drop(vec: i64, elem_dec_fn: i64) {
         let len = read_len(base);
         let cap = read_cap(base);
         let data = read_data_ptr(base);
+        #[cfg(debug_assertions)]
+        databuf_guard::assert_live(data as usize, cap, "vec_drop(in)");
 
         // Dec each live element.
         if elem_dec_fn != 0 {
@@ -332,7 +464,7 @@ pub extern "C" fn vec_drop(vec: i64, elem_dec_fn: i64) {
         }
 
         // Free data buffer.
-        free_data_buffer(data, cap);
+        free_data_buffer(data, cap, "vec_drop");
 
         // Free Vec struct.
         heap_alloc_mod::dealloc(base);

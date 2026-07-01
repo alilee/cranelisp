@@ -75,6 +75,18 @@ unsafe fn read_i64(base: i64, offset: usize) -> i64 {
 /// `ptr` must be a valid heap pointer with `rc > 0`.
 #[inline]
 unsafe fn atomic_dec_rc(ptr: i64) -> i64 {
+    // FIXME 0494 localization: a dec of an already-freed (stale) heap pointer writes
+    // into reclaimed/reused memory (the atomic fetch_sub clobbers a smallbin chunk's
+    // freelist pointer) — the UAF-write that surfaces later as `free(): chunks in
+    // smallbin corrupted`. Validate liveness at the dec point so we abort AT the
+    // stale dec, not tens of allocations later. Layout-neutral (side-table read).
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        alloc::is_live(ptr as usize),
+        "STALE RC DEC (drop glue): dec of non-live heap pointer {ptr:#x} — this heap \
+         value was already freed and its memory reclaimed; the dec corrupts the \
+         reused chunk. (FIXME 0494 bug #2 — free-ownership defect on launched teardown.)"
+    );
     let rc_ptr = unsafe {
         &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
     };
@@ -204,19 +216,17 @@ pub fn consume_vec_with(ptr: i64, elem_consume: ElemConsumeFn) {
         let len = *(base.add(VEC_LEN_OFFSET) as *const i64);
         let cap = *(base.add(VEC_CAP_OFFSET) as *const i64);
         let data = *(base.add(VEC_DATA_PTR_OFFSET) as *const *mut i64);
+        crate::vec_runtime::debug_assert_live_buffer(data as *const i64, cap, "consume_vec_with");
 
         for i in 0..len as usize {
             let elem = *data.add(i);
             elem_consume(elem);
         }
 
-        // Free the data buffer (plain allocation, not tracked by alloc_with_rc).
-        if !data.is_null() && cap > 0 {
-            let byte_size = cap as usize * 8;
-            let layout = std::alloc::Layout::from_size_align(byte_size, 8)
-                .unwrap_or_else(|_| unreachable!("invariant: valid layout for size {byte_size}"));
-            std::alloc::dealloc(data as *mut u8, layout);
-        }
+        // Free the data buffer (plain allocation, not tracked by alloc_with_rc)
+        // through the SINGLE vec-data-buffer free path (Principle 7), so the debug
+        // untracked-buffer double-free guard sees this crossing too (FIXME 0494).
+        crate::vec_runtime::free_data_buffer(data, cap, "consume_vec_with");
 
         alloc::dealloc(base);
     }

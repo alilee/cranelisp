@@ -80,6 +80,13 @@ pub fn consume_shallow(ptr: i64) {
     if ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
         return; // bare tag — no heap alloc to dec
     }
+    // FIXME 0494 localization: catch a dec of an already-freed pointer AT the dec.
+    #[cfg(debug_assertions)]
+    debug_assert!(
+        alloc::is_live(ptr as usize),
+        "STALE RC DEC (consume_shallow): dec of non-live heap pointer {ptr:#x} — \
+         already freed + reclaimed; the dec corrupts the reused chunk. (FIXME 0494.)"
+    );
     // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
     let rc_ptr = unsafe {
         &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
@@ -135,6 +142,41 @@ pub fn rc_inc(ptr: i64) {
     };
     let old_rc = rc_ptr.fetch_add(1, Ordering::Release);
     rc_trace("inc", ptr, old_rc + 1);
+}
+
+/// FIXME 0494 localization — stale-dec liveness check, called from JIT-generated
+/// inline dec code ONLY when the backend was invoked with `CRANELISP_RC_DEC_CHECK`
+/// set (a codegen-time gate — off by default ⇒ zero emitted call ⇒ byte-identical).
+///
+/// The backend emits inline RC dec as `atomic_rmw Sub`, so a dec of an
+/// already-freed heap value (e.g. a closure drop-glue dec'ing a stale capture on
+/// the launched-strand teardown, FIXME 0494 bug #2) silently corrupts the reused
+/// chunk — invisible to every Rust-side guard because the write is JIT. This hook,
+/// emitted just before the atomic sub, validates the pointer is a currently-live
+/// tracked allocation and fires AT the stale dec with the exact pointer + JIT stack.
+///
+/// Linker symbol: `runtime/rc_dec_check`. `pub(crate)` (catalog references it by fn
+/// pointer) — not part of the crate's public surface.
+#[unsafe(export_name = "runtime/rc_dec_check")]
+pub(crate) extern "C" fn rc_dec_check(ptr: i64) -> i64 {
+    #[cfg(debug_assertions)]
+    {
+        if ptr >= cranelisp_types::NULLARY_TAG_THRESHOLD as i64
+            && !alloc::is_live(ptr as usize)
+        {
+            let info = alloc::freed_info(ptr as usize);
+            panic!(
+                "STALE RC DEC (JIT inline): about to dec non-live heap pointer {ptr:#x} \
+                 — already freed and reclaimed; this dec corrupts the reused chunk. \
+                 Freed-value (size, payload@16) = {info:?}. (FIXME 0494 bug #2 — \
+                 double-free on launched-strand teardown; a poll-effect state-closure \
+                 leaf arg baked without an inc while still owned by an enclosing \
+                 continuation.)"
+            );
+        }
+    }
+    let _ = ptr;
+    0
 }
 
 /// RC underflow check — called from JIT-generated inline dec code.

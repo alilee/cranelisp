@@ -5,7 +5,6 @@
 //! This departs from the sketch's interior-pointer convention.
 
 use std::alloc::{self, Layout};
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
@@ -23,10 +22,30 @@ static BYTES_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 static BYTES_CURRENT: AtomicUsize = AtomicUsize::new(0);
 static BYTES_PEAK: AtomicUsize = AtomicUsize::new(0);
 
-/// Live allocation set for double-free detection. Debug builds only.
+/// Live allocation map for double-free + header-integrity detection. Debug builds
+/// only. Maps base pointer → the `total_size` written into its header at alloc, so
+/// `dealloc` can verify the header was not clobbered by an adjacent overrun (a
+/// wrong-size free is what glibc reports as `chunks in smallbin corrupted`).
 #[cfg(debug_assertions)]
-static LIVE_ALLOCS: LazyLock<Mutex<HashSet<usize>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+static LIVE_ALLOCS: LazyLock<Mutex<std::collections::HashMap<usize, usize>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// FIXME 0494: freed tracked allocations → (total_size, payload word @+16) captured
+/// at free. Lets `rc::rc_dec_check` report the TYPE/identity of a stale-dec'd value
+/// (size discriminates closure / String / ADT / Vec-struct; the payload word is the
+/// tag / len / code-ptr). Cleared on re-alloc at the same address.
+#[cfg(debug_assertions)]
+static FREED_TRACKED: LazyLock<Mutex<std::collections::HashMap<usize, (usize, i64)>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Report `(total_size, payload_word@16)` recorded at the last free of `ptr`, if it
+/// is a freed-and-not-reallocated tracked allocation. The payload word (the ADT
+/// tag / String len / closure code-ptr) helps identify the TYPE of a stale-dec'd
+/// value. Debug-only diagnostic used by [`crate::rc::rc_dec_check`].
+#[cfg(debug_assertions)]
+pub(crate) fn freed_info(ptr: usize) -> Option<(usize, i64)> {
+    FREED_TRACKED.lock().unwrap_or_else(|e| e.into_inner()).get(&ptr).copied()
+}
 
 // ---------------------------------------------------------------------------
 // Public Rust API for tracking (used by /qa integration tests)
@@ -62,7 +81,7 @@ pub fn bytes_peak() -> usize {
 /// Check if a pointer is currently live (debug builds only).
 #[cfg(debug_assertions)]
 pub fn is_live(ptr: usize) -> bool {
-    LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).contains(&ptr)
+    LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&ptr)
 }
 
 /// Reset all counters. Called between tests for isolation.
@@ -78,6 +97,41 @@ pub fn reset_counts() {
     }
 }
 
+/// Debug + env-gated full-heap header scan (FIXME 0494 localization). When
+/// `CRANELISP_HEAP_SCAN` is set, validates that EVERY currently-live tracked
+/// allocation's header `alloc_size` still equals what was recorded at alloc. Fires
+/// at the first corrupted chunk — catching an overrun into a live chunk's header at
+/// the earliest subsequent alloc/free, together with the `site` label of where in
+/// the lifecycle it was noticed. Layout-neutral (reads a side table + existing
+/// headers; allocates nothing new in the heap). O(live) per call — acceptable for a
+/// repro, off by default.
+#[cfg(debug_assertions)]
+fn scan_live_headers(site: &'static str) {
+    use std::sync::atomic::AtomicBool;
+    static ENABLED: LazyLock<bool> =
+        LazyLock::new(|| std::env::var_os("CRANELISP_HEAP_SCAN").is_some());
+    if !*ENABLED {
+        return;
+    }
+    static TRIPPED: AtomicBool = AtomicBool::new(false);
+    if TRIPPED.load(Ordering::Relaxed) {
+        return;
+    }
+    let live = LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner());
+    for (&addr, &recorded) in live.iter() {
+        // SAFETY: `addr` is a currently-live tracked allocation base.
+        let header = unsafe { *(addr as *const i64) } as usize;
+        if header != recorded {
+            TRIPPED.store(true, Ordering::Relaxed);
+            panic!(
+                "HEAP HEADER CORRUPTED (scan @ {site}) at {addr:#x}: header alloc_size \
+                 reads {header} but chunk was allocated with {recorded}. An overrun \
+                 clobbered a LIVE chunk's header. (FIXME 0494 bug #2.)"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core allocator
 // ---------------------------------------------------------------------------
@@ -89,6 +143,8 @@ pub fn reset_counts() {
 /// The returned pointer points to offset 0 (alloc_size field).
 /// RC is initialised to 1.
 pub fn alloc_with_rc(payload_size: usize) -> *mut u8 {
+    #[cfg(debug_assertions)]
+    scan_live_headers("alloc-entry");
     let total_size = HeapHeader::SIZE + payload_size;
     let layout = Layout::from_size_align(total_size, 8)
         .unwrap_or_else(|_| unreachable!("invariant: valid layout for size {total_size}"));
@@ -124,7 +180,14 @@ pub fn alloc_with_rc(payload_size: usize) -> *mut u8 {
 
     #[cfg(debug_assertions)]
     {
-        LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner()).insert(base as usize);
+        LIVE_ALLOCS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(base as usize, total_size);
+        FREED_TRACKED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(base as usize));
     }
 
     rc::rc_trace("alloc", base as i64, 1);
@@ -140,18 +203,37 @@ pub fn alloc_with_rc(payload_size: usize) -> *mut u8 {
 pub unsafe fn dealloc(base: *mut u8) {
     debug_assert!(!base.is_null(), "dealloc called with null pointer");
 
+    // SAFETY: caller guarantees base is valid and was returned by alloc_with_rc.
+    let total_size = unsafe { *(base as *const i64) } as usize;
+
+    #[cfg(debug_assertions)]
+    scan_live_headers("dealloc-entry");
+
     #[cfg(debug_assertions)]
     {
         let addr = base as usize;
         let mut live = LIVE_ALLOCS.lock().unwrap_or_else(|e| e.into_inner());
+        let recorded = live.remove(&addr);
         debug_assert!(
-            live.remove(&addr),
+            recorded.is_some(),
             "double free or invalid free at {addr:#x}"
         );
+        // Header-integrity check (FIXME 0494): the `total_size` we read from the
+        // header MUST equal what we wrote at alloc. A mismatch means an adjacent
+        // overrun clobbered this chunk's header — freeing with the wrong Layout is
+        // exactly the `free(): chunks in smallbin corrupted` glibc reports. This
+        // is layout-neutral (a side table), so it does not close the timing window
+        // ASAN / MALLOC_CHECK_ close.
+        if let Some(expected) = recorded {
+            debug_assert!(
+                expected == total_size,
+                "HEAP HEADER CORRUPTED at {addr:#x}: header alloc_size reads \
+                 {total_size} but this chunk was allocated with {expected} — an \
+                 adjacent-chunk overrun clobbered the header. (FIXME 0494 bug #2.)"
+            );
+        }
     }
 
-    // SAFETY: caller guarantees base is valid and was returned by alloc_with_rc.
-    let total_size = unsafe { *(base as *const i64) } as usize;
     debug_assert!(
         total_size >= HeapHeader::SIZE,
         "invalid alloc_size {total_size} at {:#x}",
@@ -162,6 +244,16 @@ pub unsafe fn dealloc(base: *mut u8) {
         .unwrap_or_else(|_| unreachable!("invariant: valid layout for size {total_size}"));
 
     rc::rc_trace("free", base as i64, 0);
+
+    #[cfg(debug_assertions)]
+    {
+        // Capture size + payload word @+16 before releasing, for stale-dec reports.
+        let payload_word = unsafe { *((base as *const u8).add(16) as *const i64) };
+        FREED_TRACKED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(base as usize, (total_size, payload_word));
+    }
 
     // SAFETY: base was allocated with this layout by alloc_with_rc.
     unsafe { alloc::dealloc(base, layout) };

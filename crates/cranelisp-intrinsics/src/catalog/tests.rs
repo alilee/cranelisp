@@ -9,6 +9,7 @@ const EXPECTED_NAMES: &[&str] = &[
     "runtime/panic",
     "catch-runtime-error",
     "runtime/rc_underflow_check",
+    "runtime/rc_dec_check",
     "runtime/alloc_string",
     "runtime/string_read",
     "runtime/vec_new",
@@ -38,13 +39,13 @@ const EXPECTED_NAMES: &[&str] = &[
     "cranelisp_trace_format",
 ];
 
-/// Name-set completeness + uniqueness: the table contains exactly the 31
+/// Name-set completeness + uniqueness: the table contains exactly the 32
 /// expected names — no more, no fewer — and no name repeats (BC §6
 /// guardrail; positive + negative coverage).
 #[test]
-fn name_set_is_exactly_the_expected_31() {
+fn name_set_is_exactly_the_expected_32() {
     let names: Vec<&str> = intrinsics_table().iter().map(|e| e.name).collect();
-    assert_eq!(names.len(), 31, "table must hold exactly 31 entries");
+    assert_eq!(names.len(), 32, "table must hold exactly 32 entries");
     assert_eq!(names.len(), EXPECTED_NAMES.len());
 
     // Every expected name present (no drop).
@@ -86,6 +87,7 @@ fn arity_matches_historical_signature() {
         ("runtime/panic", 2, true),
         ("catch-runtime-error", 1, true),
         ("runtime/rc_underflow_check", 1, true),
+        ("runtime/rc_dec_check", 1, true),
         ("runtime/alloc_string", 2, true),
         ("runtime/string_read", 1, true),
         ("runtime/vec_new", 1, true),
