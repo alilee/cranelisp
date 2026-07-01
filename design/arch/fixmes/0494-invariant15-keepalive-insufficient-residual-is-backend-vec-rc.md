@@ -40,6 +40,36 @@ status: open
 > `exemplar_web` stays `#[ignore]`'d; `0492` stays blocked; `0494` stays OPEN.** Full evidence:
 > §"/dev band-A ASAN localization" at the bottom.
 
+> ## ⚠️ CLIF GATE-STOP (2026-07-01, /dev on `cranelisp-backend`, THIRD gate — the vec-COW stale-pointer PRIME HYPOTHESIS is REFUTED by the emitted IR)
+> Inspected the emitted CLIF for the two-live-vec render path (`/clif` on
+> `make-resp`/`churn`/`render`/`assoc`/`conj`/`get` over a pure, no-platform reduction
+> `pure.cl` that exercises the **identical** vec codegen). **The prime hypothesis — "a vec
+> data-pointer loaded ONCE and reused for a later element store across a `vec-push`/`assoc`
+> that can COW-REALLOC, without reloading after the realloc" — does NOT hold.** In EVERY inline
+> vec op the data-pointer is loaded **fresh** (`load v+32`) immediately before the element
+> load/store, inside the same basic block, and is **never** held in an SSA value across any call
+> that could reallocate:
+> - `vec-set` mutate path (`assoc` block2): `v11 = load v3+32` → `store v5, (v11 + idx*8)` — fresh, same block.
+> - `vec-get` (`get` block2): `v13 = load v2+32` → `load (v13 + idx*8)` — fresh, same block.
+> - `vec-push` fast path (`conj` block5): `v12 = load v2+32` → `store v3, (v12 + len*8)` — fresh; grow (block6) calls the extern which returns the same struct with a **reloaded** data_ptr; copy (block3) returns a new struct. No cached pointer survives a grow.
+>
+> `vec_push_grow` (`crates/cranelisp-intrinsics/src/vec_runtime.rs:278`) mutates the struct **in
+> place** (frees old buffer, installs new, updates `data_ptr` at `+32`, returns the SAME struct)
+> — and the CLIF proves the JIT reloads `data_ptr` after it, so the in-place grow is codegen-safe.
+> **There is no stale-pointer store and no OOB element store in the vec-op codegen.** GATE
+> triggered: no concrete defect confirmed in the IR → **no speculative fix spent** (per the
+> reduce-first gate). Two further findings that RE-OPEN the localization (below): (a) the ASAN
+> pass's "the only uninstrumented JIT writer on the render path is vec-COW" premise is now
+> **falsified** — the vec ops are provably correct, so that elimination-to-vec-codegen collapses;
+> (b) **ASAN-clean is NOT proof of a JIT write.** The bug is layout/timing-sensitive (the FIXME's
+> own `MALLOC_CHECK_=3` evidence changed the failure to a reactor stall — an allocator-padding
+> perturbation that closed the window); ASAN's redzones + quarantine are the SAME class of
+> layout/timing perturbation and most plausibly **closed the race window**, not "couldn't see a
+> JIT store." That re-opens candidates (1) Response-body/String free-timing and (2) `CLString`
+> marshaling that ASAN "ruled out." **No source changed (gate-stop); guards stay RED;
+> `exemplar_web` stays `#[ignore]`'d; `0492` stays blocked; `0494` stays OPEN, owner re-point
+> below.** Full evidence: §"/dev band-A CLIF refutation" at the bottom.
+
 > ## ⚠️ GATE-STOP UPDATE (2026-07-01, /dev on `cranelisp-backend`, reduce-first timebox) — the /backend-vec-RC hypothesis is REFUTED
 > A disciplined reduce-first investigation (per root CLAUDE.md §cross-skill handoff + the S97
 > wasted-fix warning) **confirms a NEGATIVE**: bug #2 is **NOT** a `/backend` borrowed-Var
@@ -308,3 +338,84 @@ bug (candidates 1 & 2 ruled out) and NOT the separately-refuted RC double-dec.
   that permits it. The small `web_launch_vec_send_corrupt` fixture yields small CLIF.
 - **Guards + `exemplar_web` + `0492` unchanged** (RED / `#[ignore]` / blocked). `0494` OPEN.
   No source changed; no `cranelisp-backend`/intrinsics/platform edit. `cargo check` clean.
+
+## /dev band-A CLIF refutation (2026-07-01, `cranelisp-backend`, THIRD gate — vec-COW stale-pointer REFUTED in the IR)
+
+Deployed to **confirm the vec-COW stale-pointer in the emitted CLIF, then fix** (per the reduce-
+first gate). The CLIF **refutes** the prime hypothesis; no fix spent. This box supersedes the ASAN
+box's "residual = a backend JIT-codegen store on the vec-COW path" conclusion on its central claim.
+
+### Method
+
+Built a pure, no-platform reduction that exercises the **identical** vec codegen as the fixture —
+`get`/`assoc`/`conj` borrowed-Var wrappers over `vec-get`/`vec-set`/`vec-push`, `build`
+(vec-push loop) + `churn` (vec-set on a shared Var → copy then mutate) + `render`
+(two-live-vec → String), and `make-resp` binding `g`+`s` both live. Read the emitted CLIF via
+`/clif` on each. (The pure synchronous form is CLEAN per the FIXME's own 100× run — this is the
+same compiled code the server runs; the platform/reactor changes only free-timing, not codegen.)
+
+### The emitted IR — every vec op reloads `data_ptr` fresh (the refutation)
+
+| Op (fn) | CLIF (mutate/fast path) | Cached across a realloc? |
+|---|---|---|
+| `vec-set` mutate (`assoc` block2, rc==1) | `v11 = load v3+32` → `v14 = v11 + idx*8` → `store v5, v14` | **No** — `data_ptr` (v11) loaded fresh, used same block; no call between. Copy path (block3) = `vec-set-copy` → new struct. |
+| `vec-get` (`get` block2) | `v13 = load v2+32` → `v17 = load (v13 + idx*8)` | **No** — fresh, same block. |
+| `vec-push` fast (`conj` block5, rc==1, len<cap) | `v12 = load v2+32` → `store v3, (v12 + len*8)` → `len++` | **No** — fresh, same block. Grow (block6) = `vec-push-grow` extern → returns same struct with a **reloaded** data_ptr. Copy (block3) = `vec-push-copy` → new struct. |
+
+`vec_push_grow` (`vec_runtime.rs:278`) mutates the struct **in place**: frees the old data buffer,
+allocs a new one, writes the new `data_ptr` at `+32`, returns the SAME struct pointer. This is
+exactly the operation the prime hypothesis feared — but the CLIF shows **the JIT reloads `data_ptr`
+from `+32` after every op**, so a caller holding the struct sees the fresh buffer. There is **no
+SSA value that caches a base/data pointer across a reallocating call**, hence **no stale-pointer
+store and no OOB element store** in the vec-op codegen. (The `vec-set` mutate path carries no bounds
+check, but `churn`'s indices `i-1 ∈ [0, len)` are all in-bounds; `vec-set` never grows.)
+
+`make-resp` CLIF additionally shows its `let [g … s …]` compiles to **lenient-sparked IVars** (two
+thunk closures forced via ivar helpers) — context, but NOT the trigger: the FIXME already recorded
+`CRANELISP_NO_LENIENT=1` still SIGABRTs, so it is the sequential `make-resp` path (block3: `build`→
+`churn`→`render`, with `g`/`s` dropped via `vec_drop` at make-resp return **before** `send-conn`),
+not a rayon spark race.
+
+### Two findings that RE-OPEN the localization (the elimination-to-vec-codegen collapses)
+
+1. **The "only uninstrumented JIT writer on the render path = vec-COW" premise is falsified.** The
+   ASAN box reached `/backend vec_codegen.rs` by eliminating the Rust writers and asserting vec-COW
+   was the sole remaining (JIT-invisible) writer. The vec ops are now **proven correct** in the IR,
+   so that elimination no longer lands on vec codegen. Other JIT writers on the path remain
+   un-eliminated (scope-cleanup `vec_drop` of `g`/`s` — which frees **untracked** data buffers —
+   closure-capture stores, IVar force/store), but none is a stale/OOB element store.
+2. **ASAN-clean is NOT evidence of a JIT write.** The bug is **layout/timing-sensitive**: the
+   FIXME's own `MALLOC_CHECK_=3` run *changed the failure* (smallbin-corruption → reactor stall) —
+   an allocator-padding perturbation that closed the corruption window. ASAN's redzones +
+   quarantine are the **same class** of layout/timing perturbation; the most parsimonious reading of
+   "ASAN ran clean" is that ASAN **closed the same race window**, not that the faulting store is
+   JIT-emitted and shadow-invisible. This directly **re-opens** the two candidates the ASAN box
+   marked "ruled out": (1) Response-body/String free-timing across the launched-strand teardown,
+   and (2) `CLString` marshaling base-pointer at `send_conn_pollfn`.
+
+### What the evidence now points at (refined hypothesis)
+
+A **free-timing use-after-free / double-free of UNTRACKED memory** (a Vec data buffer or a String
+byte buffer — neither is RC-tracked, so "RC balanced" and "invariant-8 LIVE_ALLOCS silent" are both
+consistent) on the **reactor launched-strand teardown**, AFTER `send-conn` completes (the DLL reads
+`body_len=2184` correctly first). This is a **boundary free-ownership** defect at
+`{launched strand} × {sleep suspend/resume} × {send-conn crossing}`, NOT a defect in the vec
+element-store codegen. It surfaces only when the launch changes *when* an untracked buffer is freed
+relative to a later write/free through a surviving reference.
+
+### Recommendation to `/sprint` + `/arch` (owner re-point — AWAY from vec_codegen)
+
+- **`cranelisp-backend/src/compiler/vec_codegen.rs` is cleared** as the faulting site by direct CLIF
+  inspection. Re-point the guard-flip owner to the **launched-strand teardown free-ownership seam**:
+  first suspect the reactor/`consume_io_tree` deep-free vs. JIT scope-cleanup double-ownership of an
+  untracked buffer (`cranelisp-intrinsics` reactor/drop + the send-conn Response marshaling), with
+  candidates (1)+(2) re-opened.
+- **Localization that does NOT perturb heap layout** (the key lesson — ASAN/MALLOC_CHECK both hide
+  it): add a **DEF-6-class heap-header-integrity `debug_assert!`** (per `tests/CLAUDE.md`
+  §"Heap-header integrity…") at `free_data_buffer`/`vec_drop`/`dealloc` that validates the chunk's
+  header (and a freed-sentinel to catch the second free) **before** releasing — this converts the
+  threshold-delayed glibc abort into a first-crossing failure at the exact seam, **without** adding
+  redzones/quarantine/padding that close the window. `rr`/`valgrind` remain unavailable here.
+- **Guards + `exemplar_web` + `0492` unchanged** (RED / `#[ignore]` / blocked). `0494` OPEN, owner
+  re-pointed off `cranelisp-backend`. No source changed (gate-stop); `cargo check -p
+  cranelisp-backend` clean.
