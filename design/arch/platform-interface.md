@@ -1633,7 +1633,7 @@ same change-set.
   backend's only v9 delta is **deleting** `inject_poll_leading_pair` + the positional
   peel. Net *less* backend work than the descriptor cut. `ring2-rc.md` §3.5.10 (0474) is
   model-independent and stands.
-- `design/int/reactor.md` §7 — the trampoline does **not** split by role / stamp / read;
+- `design/intrinsics/reactor.md` §7 — the trampoline does **not** split by role / stamp / read;
   it drives the uniform poll node, and the host implements the `ctx` vtable's
   `acquire`/`retire` (the §8.1 permit map) + **tramp-owned release** on `Ready`/cancel,
   keyed by effect identity. §8 (0479 watchdog) + §9 (0475) are model-independent and

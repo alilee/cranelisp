@@ -8,7 +8,7 @@ model. The cross-crate seams it rides on are owned elsewhere and only *reference
 here:
 
 - the **acquire-around-poll lifecycle** + the RAII `Permit` drop-guard + the
-  token-capacity `Semaphore` pool — `design/int/reactor.md` §2.6 / §2.8 (sibling
+  token-capacity `Semaphore` pool — `design/intrinsics/reactor.md` §2.6 / §2.8 (sibling
   `/design` int);
 - the **poll-node bake** (`IO_TAG_EFFECT_POLL` + the host-built state-closure env
   layout) — `design/backend/io-trampoline.md` §12 (sibling `/design` backend);
@@ -486,7 +486,7 @@ token ⇒ shared pool").
 
 ### 3.3 Consistency with the sibling seams (referenced, not duplicated)
 
-- **acquire-around-poll + RAII `Permit`** — `design/int/reactor.md` §2.6/§2.8.
+- **acquire-around-poll + RAII `Permit`** — `design/intrinsics/reactor.md` §2.6/§2.8.
   This doc requires only that web/stdio leaves return `Poll::Pending` on park and
   never block; the permit lifecycle, the pool, and the A→C cancellation-releases-
   permit contract are int's. **No contradiction found** — the platform side is
@@ -1308,7 +1308,7 @@ already-gated types, and the macro spine names none.
   release). The v9 sections here (§3.5 / §3.6 / §3.1) are the platform/leaf-authoring half
   of the cascade these rulings own.
 - `design/platform/platform.md` — master (this is subordinate; cited from §"Subordinate docs")
-- `design/int/reactor.md` §2.6/§2.8/§2.9 — acquire-around-poll, the token-capacity pool, RAII `Permit`, the testability seams (sibling `/design` int)
+- `design/intrinsics/reactor.md` §2.6/§2.8/§2.9 — acquire-around-poll, the token-capacity pool, RAII `Permit`, the testability seams (sibling `/design` int)
 - `design/backend/io-trampoline.md` §12 — `IO_TAG_EFFECT_POLL` node + state-closure env layout (the `PollEnv` consumer's contract; sibling `/design` backend)
 - `design/backend/io-trampoline.md` §14 — the poll-node live `(token, capacity)` bake + the leading-pair operand convention the `inject_poll_leading_pair` pass produces (sibling `/design` backend; §3.4 here is the platform-side value-source half)
 - `crates/cranelisp-backend/src/lib.rs::inject_poll_leading_pair` — the backend `MonoExpr` injection POINT A4 generalizes (§3.4.1); `crates/cranelisp-backend/src/compiler/resolution.rs::resolve_poll_effect_target` — extended to surface `scheduling_class` (the no-types-touch discriminator, §3.4.2)

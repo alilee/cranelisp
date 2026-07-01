@@ -4,7 +4,7 @@ target: /int
 filed_by: /port
 filed_at: 2026-06-30
 sprint_filed: 96
-refers_to: crates/cranelisp-intrinsics/src/reactor.rs (block_on_reactor MAX_TOTAL_BLOCK watchdog, ~:1555), design/int/reactor.md, design/arch/effect-concurrency.md §3 (server = reference workload)
+refers_to: crates/cranelisp-intrinsics/src/reactor.rs (block_on_reactor MAX_TOTAL_BLOCK watchdog, ~:1555), design/intrinsics/reactor.md, design/arch/effect-concurrency.md §3 (server = reference workload)
 ---
 
 # Title — the reactor watchdog aborts a legitimately-idle server accept loop after 30s
@@ -40,7 +40,7 @@ deadlock" from "stuck / no-progress." Options for /int to weigh:
 - A server-mode signal (the program never terminates by design) that opts out of
   the one-shot cap.
 Whichever: a healthy idle server must stay up indefinitely; a real deadlock must
-still be caught. Pin the chosen behaviour in `design/int/reactor.md` and add an
+still be caught. Pin the chosen behaviour in `design/intrinsics/reactor.md` and add an
 e2e (a server idle > the old cap then served) once it's no longer self-defeating.
 
 ## Operational implication / Context

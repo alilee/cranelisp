@@ -665,7 +665,7 @@ state-closure env as another reserved slot — not in scope for S94.)
 
 The node construction is the backend's whole job; the **call** is the trampoline's
 (`run_io_trampoline_inner_async`, `cranelisp-intrinsics`, intrinsics-owned — see
-`design/int/reactor.md`). Stated here only so the seam is unambiguous: the async
+`design/intrinsics/reactor.md`). Stated here only so the seam is unambiguous: the async
 Effect arm `.await`s an `EffectPoll` future whose `Future::poll(cx)` builds a C-ABI
 `Waker` over `cx.waker()` and calls `poll(state = clo, host, waker) -> Poll`. On
 `Poll::Ready` it reads the i64 result generically from `state + 32` (the reserved
@@ -1132,7 +1132,7 @@ sentinel `iconst` stores with stores of the live runtime values**, so the reacto
 acquire-around-poll admission gate reads a real `(token, capacity)` off the poll node — the
 poll analogue of the S95 blocking-carrier capacity-N proof. This is the **whole backend
 job** for item 3; the permit (RAII acquire-around-poll lifecycle) is intrinsics-side
-(`design/int/reactor.md`, `/design int`).
+(`design/intrinsics/reactor.md`, `/design int`).
 
 This section is the `/design` intent for the bake. It builds against `effect-concurrency.md`
 §8.1 (capacity rides WITH the token, **platform-supplied dynamically at the effect site** —
@@ -1360,7 +1360,7 @@ Sprint 96 Chunk B lands the first user-facing control capability — **launch-an
 point**) that lets a server fan out request handlers with **no `spawn`** in the source. The
 runtime side (acquire-a-global-permit → mint a child strand → transfer the sub-tree into a
 supervised strand → yield `Pure Unit`) is the intrinsics agent's design
-(`design/int/reactor.md §2.11`–§2.13); this section is the **backend counterpart**: the new IO
+(`design/intrinsics/reactor.md §2.11`–§2.13); this section is the **backend counterpart**: the new IO
 node tag, its construction bake (modeled on the §14 poll node), how the launchable site is
 recognized (reusing — not forking — the existing `Par` independence analysis), and the one new
 RC subtlety the detach introduces (sub-tree ownership transfer into the strand).
@@ -1406,7 +1406,7 @@ The trampoline walks this exactly as today until the inner node: `IO_TAG_BIND` p
 continuation and descends to the `Launch` node; the `IO_TAG_LAUNCH` arm detaches the sub-tree
 into the supervisor and **yields `Pure Unit`** as the inner result, so the popped continuation
 `(fn [_] (serve listener))` runs **immediately** — the accept loop tail-recurses to the next
-`accept` without awaiting the handler (`design/int/reactor.md §2.11` steps 1–4). The `Launch`
+`accept` without awaiting the handler (`design/intrinsics/reactor.md §2.11` steps 1–4). The `Launch`
 node is therefore the `inner_io` of a `Bind`, the **same structural slot** a `Par` node occupies
 in `Bind(Par(…), cont)` (§13.5 / `io-scheduling.md §4`) — the trampoline's "inner yields a value,
 pop the continuation" contract is reused verbatim; `Launch`'s value is always `Unit`.
@@ -1503,7 +1503,7 @@ marker match (Principle 7 — same construction machinery, no parallel mechanism
 The detached sub-tree **outlives** the `IO_TAG_LAUNCH` node's interpretation: the main trampoline
 walks the launching tree to completion and returns on the **top** future, while the launched
 sub-tree runs concurrently on the reactor as a supervised strand and is `consume_io_tree`'d by
-**that strand** on completion (`design/int/reactor.md §2.11`–§2.12). So the sub-tree's single
+**that strand** on completion (`design/intrinsics/reactor.md §2.11`–§2.12). So the sub-tree's single
 reference must travel cleanly from the `Launch` node to the strand — an **owned-field move**, not a
 copy and not a second owner. The discipline (consistent with the §2.9 RAII model and the
 Decision-24 single-consuming convention):
@@ -1511,7 +1511,7 @@ Decision-24 single-consuming convention):
 **Construction (backend):** the sub-tree's one reference is transferred into `field_offset(0)` (no
 inc, §15.4). At this point the `Launch` node is the sole owner of that reference.
 
-**Detach (intrinsics, `design/int/reactor.md §2.11` — referenced, not authored here):** the
+**Detach (intrinsics, `design/intrinsics/reactor.md §2.11` — referenced, not authored here):** the
 `IO_TAG_LAUNCH` trampoline arm **moves** the reference out of the node into the supervised strand —
 it reads `field_offset(0)`, hands the sub-tree to `supervisor.spawn(sub_tree, …)`, and **writes the
 `0` sentinel back into `field_offset(0)`** so the reference now lives only in the strand. This is
@@ -1591,7 +1591,7 @@ shape of §10.12.7. So:
 **Task 2 verdict: DO NOT pull forward into Chunk B — bounded-acceptable for Chunk B; defer the
 active reactor-interest deregistration to Chunk C. Codegen implication: NONE.**
 
-Finding #3 (`design/int/reactor.md §2.9` scope note + §2.14 finding #1): a dropped in-flight
+Finding #3 (`design/intrinsics/reactor.md §2.9` scope note + §2.14 finding #1): a dropped in-flight
 `EffectPoll` that had armed real fd/timer interest releases its *permit* (the §2.9 `Option<Permit>`
 drop-glue) but does **not** actively *deregister* its `fd_waiters`/`timer_waiters` entry + `mio`
 registration — the entry leaks until that fd next readies. The supervisor (Chunk B) is the first
@@ -1667,7 +1667,7 @@ single-launch site (small repro → small CLIF readable by eye):
 End-to-end seams (launch-and-continue returns immediately; the accept loop keeps accepting; a
 panicking handler → server lives; global-budget bounds in-flight strands; strand-drop releases its
 permits + sub-tree) are `/qa` integration seams driven through `cranelisp_run_io` + the reactor —
-they are listed in `design/int/reactor.md §2.10` and are not backend-unit-tier.
+they are listed in `design/intrinsics/reactor.md §2.10` and are not backend-unit-tier.
 
 ### 15.10 Implementation steps for `/dev` (backend half)
 
@@ -1697,7 +1697,7 @@ they are listed in `design/int/reactor.md §2.10` and are not backend-unit-tier.
   reuses the constructor-convention store shared by `par_bind`/`compile_poll_effect`.
 - **Concurrency-safety (Principle 1).** The backend emits **no concurrency primitive** — it
   constructs a value (the `Launch` node) and a null-guarded drop path. All spawn/supervise/global-
-  budget/strand-consume lives in the reactor (`design/int/reactor.md`). The one new RC subtlety
+  budget/strand-consume lives in the reactor (`design/intrinsics/reactor.md`). The one new RC subtlety
   (sub-tree move-out) is modeled by representation (the `0` sentinel = "moved", §15.5) so "consumed
   exactly once" is structural, not a flag to keep in sync.
 - **Testability (Principle 5).** The arm emits an inspectable node shape (tag + one field + a
@@ -1711,7 +1711,7 @@ Sprint 96 Chunk C lands the **explicit control surface** — the user-facing com
 the §12 typing FIXME 0447's second half). These are the "vocabulary for an uncooperative
 environment at the I/O boundary": per-request timeout, cancel-on-disconnect, graceful
 shutdown. The runtime side — poll all branches, first-ready wins, **cancel (drop) the
-losers** — is the intrinsics agent's design (`design/int/reactor.md`, the combinator
+losers** — is the intrinsics agent's design (`design/intrinsics/reactor.md`, the combinator
 trampoline arm + the A→C RAII-`Permit` drop-guard it exercises); this section is the
 **backend counterpart**: the new IO node tag, its construction bake (modeled on the §15
 launch node), how race/select are recognized and lowered (the `bind` inline-primitive

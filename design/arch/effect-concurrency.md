@@ -687,7 +687,7 @@ by a link-time gate. The feature-off "byte-identical"/"reactor-free" invariant i
 retired and replaced by the runtime assertion *"a pure-blocking program builds no
 mio `Poll`."* See `platform-interface.md` §6.8.0a for the feasibility verdict +
 sequencing; the `Reactor` lazy-singleton implementation detail is `/design` int's
-(`design/int/reactor.md` — change specified there, not authored here).
+(`design/intrinsics/reactor.md` — change specified there, not authored here).
 
 ## 7. The two-pool model — rayon for CPU, async runtime for I/O
 
@@ -1461,7 +1461,7 @@ reified as data), so the restructure is narrow:
 > (`resource_serial_diff_token_parallelizes`,
 > `auto_io_independent_diff_token_parallelizes_e2e`,
 > `auto_io_par_grouping_uniform_across_modes`) — a known slice-3 gap (§7 / §14 item 5),
-> not a 0457 regression. See `design/int/reactor.md` §4 for the as-built reactor
+> not a 0457 regression. See `design/intrinsics/reactor.md` §4 for the as-built reactor
 > interior.
 
 ### The ratified backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)
@@ -1511,7 +1511,7 @@ platforms (no v7 export) ⇒ `poll_shape = false`, byte-identical. The full desc
 `poll_shape` is the orthogonal dispatch axis beside the existing `scheduling_class`
 conflict-domain axis. Full per-crate channel spec + sequencing:
 `platform-interface.md` §6.8 "S94 R1 (FIXME 0457)" (0457 resolved + deleted S94 — the
-channel is as-built; see `design/int/reactor.md` for the as-built reactor interior).
+channel is as-built; see `design/intrinsics/reactor.md` for the as-built reactor interior).
 
 **Trampoline.** Both node kinds flow through `run_io_trampoline_inner_async`; the
 Effect arm `.await`s an `EffectPoll` for `IO_TAG_EFFECT_POLL` and forces synchronously

@@ -4,9 +4,26 @@ target: /arch
 filed_by: /sprint
 filed_at: 2026-07-01
 sprint_filed: 97
-refers_to: design/arch/effect-concurrency.md §6 (async substrate / reified-IO-as-data), design/arch/bounded-contexts.md §3 (backend) + §4b (intrinsics) + §6 (int), design/backend/io-trampoline.md, design/int/reactor.md §7, crates/cranelisp-intrinsics/src/{io.rs (consume_io_tree/feed_continuation), reactor.rs}, tests/launch_grid_corrupt.rs
+refers_to: design/arch/effect-concurrency.md §6 (async substrate / reified-IO-as-data), design/arch/bounded-contexts.md §3 (backend) + §4b (intrinsics) + §6 (int), design/backend/io-trampoline.md, design/intrinsics/reactor.md §7, crates/cranelisp-intrinsics/src/{io.rs (consume_io_tree/feed_continuation), reactor.rs}, tests/launch_grid_corrupt.rs
 status: open
 ---
+
+> **Partial action landed (S97 doc-tidy, /arch).** The low-risk half of the candidate
+> resolution below is executed: `reactor.md` (the intrinsics-hosted IO-runtime-library
+> design) **relocated `design/int/` → `design/intrinsics/reactor.md`** (`git mv`, history
+> preserved); the host-client seam within it is demarcated (§0, the `/int` client role)
+> and pointed to from `design/int/CLAUDE.md`; BC §4a/§4b affirm `cranelisp-primitives` +
+> `cranelisp-intrinsics` as the **backend-emitted runtime library** and BC §6 affirms
+> `/int` as a **host-client** (constructs `HostCtx`, drives `block_on_reactor`), not the
+> runtime's owner; new `design/{int,intrinsics}/CLAUDE.md` fix ownership. `io-integration.md`
+> stayed in `design/int/` (it is int-host-wiring — platform-DLL load + batch/REPL IO
+> forcing, all in `src/`); `bind-chain-analysis.md` stayed pending this FIXME's finer
+> ruling (a one-line note added there). **The diagnostic prose below is preserved as the
+> pre-action record** — where it says "the docs live under `design/int/`" read it as the
+> state that motivated this FIXME. **STILL OPEN + deferred (the bigger questions this
+> tidy did NOT touch):** the interpreter-vs-state-machine split (§"The architectural
+> fork"), the arg-lifetime-across-suspension contract (§"Proposed resolution" level 1),
+> and the bug-#2 fix + `tests/launch_grid_corrupt.rs` guard flip.
 
 # Is "runtime" underspecified? — the /int ↔ intrinsics ↔ /backend boundary for the trampoline (and does intrinsics belong to /int at all?)
 

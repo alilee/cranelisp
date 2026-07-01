@@ -2,6 +2,13 @@
 
 Post-expansion, pre-typecheck pass that transforms `bind!`-expanded AST trees into `Expr::ParBind` nodes for automatic IO scheduling.
 
+> **Ownership note (S97 doc-tidy).** This doc stays in `design/int/` for now: it is the
+> **compile-time** IO-scheduling pass (a pipeline transform), not the runtime reactor
+> (which relocated to `design/intrinsics/reactor.md`). Whether this compile-time
+> scheduling analysis is finally an `/int` concern or belongs with the backend-emitted
+> runtime is an explicit **open question of FIXME 0486** (`design/arch/fixmes/0486-*`);
+> 0486 will rule it. Left here pending that ruling.
+
 ## References
 
 - `spec/10-io.md` §10.12 — Automatic IO Scheduling
@@ -552,7 +559,7 @@ remaining variants.
 > dissolves; same-token ordering's home moves to THIS pass (E2).** The body below describes the
 > v8 model, where `dispatch_par_branches` re-grouped a `ParBind`'s same-token branches into a
 > runtime `WorkItem::SerialGroup` and serialised them. Under the ctx-vtable model
-> (`effect-concurrency.md §4.1.1`/§8.2; `design/int/reactor.md §7.7`) **the trampoline no longer
+> (`effect-concurrency.md §4.1.1`/§8.2; `design/intrinsics/reactor.md §7.7`) **the trampoline no longer
 > sees tokens** (the platform projects them in its poll-fn; the host never introspects the
 > handle), so it **cannot** re-serialise same-token branches at runtime — the order-restoring net
 > is gone. The guarantee is sound because it was always the inference's: **two effects on the

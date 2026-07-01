@@ -166,7 +166,7 @@ Steps:
    > `cranelisp-platform`/`-backend` (arch/platform-owned); int's loader merely propagates the
    > refusal. **Design-level note; `/dev` executes** the bump + the refusal-error wiring in the v9
    > change-set. The trampoline runtime half (the host ctx-vtable impl + tramp-owned release this
-   > version gates) is `design/int/reactor.md §7`.
+   > version gates) is `design/intrinsics/reactor.md §7`.
 3. **Validate manifest name**: Check that the DLL's self-reported name matches `platform_name`.
 4. **Register with typechecker**: Call `tc.register_platform(platform_name, &descriptors)` — creates a `platform.{name}` module with `Def` entries for each function, typed as `PrimitiveKind::PlatformEffect`.
 5. **Insert `PlatformDecl` entry**: In the declaring module's symbol table, insert a `ModuleEntry::PlatformDecl` so `/list` and `/exports` can show it.

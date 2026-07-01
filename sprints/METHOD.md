@@ -46,14 +46,14 @@
 
 Three skills (`/design`, `/dev`, `/review`), one definition each, each invocation focused on exactly one crate. Per-crate specialization lives in `design/{crate}/{crate}.md` (the design doc) and `crates/{crate}/CLAUDE.md` (or `src/CLAUDE.md`), not in the skill definitions.
 
-The 6 crate-shaped surfaces:
+The crate-shaped surfaces (7 crates; the two runtime crates form one backend-paired runtime surface):
 
 - `cranelisp-frontend`
 - `cranelisp-typecheck`
 - `cranelisp-backend`
-- `cranelisp-runtime` (paired with backend)
+- `cranelisp-primitives` + `cranelisp-intrinsics` — the **backend-emitted runtime library** (S73 Decision-43 split of the former `cranelisp-runtime`). **Paired with backend, NOT `/int`**: `cranelisp-backend` depends on these crates and emits calls into them (BC §4a/§4b — "backend declares them as imports"; the dep graph confirms it). `/int` is only a *host-client* of the runtime (constructs `HostCtx`, drives `block_on_reactor`) — it does not own the runtime library, and the IO-runtime internals (reactor, `consume_io_tree`, RC) are not an `/int` concern. See FIXME 0486 for the boundary review + the design-doc relocation.
 - `cranelisp-platform` (consumer of runtime, not owner)
-- `src/` (binary crate — pipeline, REPL, CLI)
+- `src/` (binary crate — pipeline, REPL, CLI, session; **host-client** to the runtime, not its owner)
 
 Cross-crate work splits into sequential per-crate triad invocations, coordinated by `/sprint`. Any required interface change goes through `/arch` (in the types crate) before per-crate work proceeds.
 

@@ -332,7 +332,7 @@ The resource tokens, however, are a runtime concern: they are embedded in Effect
 > backend reserves the symmetric `(token, capacity)` slots on the poll node it builds.
 > The backend half and the precise backend↔intrinsics boundary are in `io-trampoline.md`
 > §13; the partition + join + pool sizing are intrinsics/int-owned
-> (`design/int/reactor.md`).
+> (`design/intrinsics/reactor.md`).
 
 **Scheduling class in trampoline trace events (resolution of FIXME 0011).** The `PlatformEffect` trace event emitted at the trampoline site (`cranelisp-intrinsics/src/io.rs`) carries `scheduling_class: 0` — a placeholder rather than the effect's real `PlatformFn.scheduling_class`. FIXME 0011 asked whether the Effect node payload should be extended with an extra field so trampoline events carry the real class inline. The disposition, confirmed against Slice-4 evidence, is **resolution (b): no IR-payload extension**. No Slice-4 consumer requires the class to be present on the trampoline event itself; where the scheduling class is needed for trace interpretation it is recovered by **cross-trace correlation** — joining the trampoline event to the originating `ParBind` classification trace by event ordering — rather than by threading the class through the Effect node. The live site therefore keeps `scheduling_class: 0` deliberately.
 

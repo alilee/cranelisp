@@ -1,4 +1,17 @@
-# The slice-2 effect reactor — interior design (int / intrinsics-hosted)
+# The slice-2 effect reactor — interior design (`cranelisp-intrinsics`-hosted runtime library)
+
+> **Location + ownership (S97 doc-tidy; FIXME 0486 partial action).** This is the interior
+> design of the **backend-emitted IO/RC runtime library** — the reactor, async trampoline,
+> `consume_io_tree`, the token-capacity pool, and the `HostCtx`/waker C-ABI. It lives in the
+> `cranelisp-intrinsics` crate (BC §4b) and is *emitted into* by `cranelisp-backend`; it is
+> **NOT** an `/int` orchestration concern. The doc was relocated from `design/int/` to
+> `design/intrinsics/` because its old placement mis-signalled `/int` ownership of the
+> runtime internals. **`/int`'s only contact is the thin host-client seam** — it constructs
+> the reactor once via the single C-ABI entry `cranelisp_run_io` and drives `block_on_reactor`
+> for `--run`/REPL; it never reaches into `consume_io_tree`, the permit map, or reactor
+> lifetime discipline. That seam is demarcated in §0 below and pointed to from
+> `design/int/CLAUDE.md`. Canonical ownership: `design/arch/bounded-contexts.md` §4b
+> (intrinsics = backend-emitted runtime) + §6 (int = host-client).
 
 > **S97 v9 LAYER — the host `ctx`-vtable handle model (RATIFIED 2026-06-30; supersedes
 > FIXME 0482's descriptor cut).** Scheduling state — `(token, capacity)` — **never rides on
@@ -102,6 +115,44 @@ over-assume.
 > **and** `--link` concurrency later. int owns only **construction-for-REPL/--run,
 > policy, and feature-gating** — the same split as `io_observer` (int registers the
 > sink + drives the dev surface; the runtime mechanism is intrinsics-owned). See BC §6.
+
+---
+
+## 0. The `/int` host-client seam (what int owns; everything else here is runtime-library interior)
+
+Almost all of this document is `cranelisp-intrinsics` runtime-library **interior** — reactor
+loop, poll futures, permit pool, error-ferry, `consume_io_tree`, drop/RC discipline — that
+`/int` neither owns nor needs to understand. `/int` is a **host-client** of this runtime, and
+its entire contact surface is small and enumerated here so it stays findable after the
+relocation. Everything NOT in this list is intrinsics interior (backend-emitted, per BC §4b).
+
+**The `/int` host-client seam is exactly:**
+
+1. **Drive the runtime through the single C-ABI entry.** `/int`'s `--run` and REPL-eval paths
+   force an IO tree by calling into `cranelisp_run_io` → `block_on_reactor` (§2.4). int passes
+   a `make_future` and (post-S97) a `SupervisorPolicy` config value + the one-shot-vs-server
+   mode knob (§8.2); it receives the inner i64 result. **int constructs no `Reactor`, no
+   `HostCtx`, no waker, no permit pool** — those are built single-sited inside
+   `block_on_reactor` (§6.2). This is the `io-integration.md` I6/I7 forcing seam (the batch
+   `main` exit-code path + the REPL IO display path), which stays in `design/int/`.
+2. **The `ABI_VERSION` loader gate lives in `src/`.** int's platform loader refuses a stale
+   manifest ABI (`ABI_VERSION = 9`, `io-integration.md §I3`; §7.8 "src/ loader"). The constant
+   itself is `cranelisp-platform`/`-backend`-owned; int's loader merely propagates the refusal.
+3. **The OPTIONAL dev-facing `/strand` sink** (§3) — int surfaces the strand-event dump as a
+   REPL diagnostic. This is a *reader* of an intrinsics-emitted event stream, not runtime
+   participation; it constructs no host-callback values.
+
+**Not the seam (intrinsics interior — `/int` must NOT reach in):** the reactor loop (§2.1),
+the C-ABI waker projection (§2.2), the `HostCtx` vtable + its `acquire`/`retire`/`register_*`
+bodies (§2.3, §7), `EffectPoll` + the one await boundary (§2.5), the two-pool `Par` join
+(§2.6), the token-capacity permit pool + RAII `Permit` (§2.8, §2.9), launch/supervisor/
+admission (§2.11–§2.13), the combinator runtime + cancellation drop-paths (§2.15–§2.19),
+`consume_io_tree`/`feed_continuation`, and the arg-lifetime-across-suspension discipline. These
+are the runtime-library guts that `/backend` emits calls into; a bug in any of them is an
+intrinsics/backend concern, not an `/int` orchestration concern (the mis-attribution FIXME
+0486 records). §6 (host-construction sharability) is the design commitment that *keeps* this
+seam thin — the reactor host-construction stays single-sited in intrinsics so int never grows
+a parallel builder.
 
 ---
 
