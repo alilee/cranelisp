@@ -119,6 +119,8 @@ Suite: **1795 run, 1789 passed, 6 failed, 2 skipped** (~53s, stable ×2). The 6 
 
 **✅ ALL RESOLVED (S98 close-of-drain).** Full suite: **1795 passed, 1 skipped (`concurrency_spark` perf bench), 0 failed.** `2.1` inverted-green, `2.4` fixture-green, `4.2` retired, `5.1B` knob-green, both bug-#2 guards (`launch_grid_corrupt` + `launch_vec_send_corrupt`) GREEN, **`exemplar_web` un-ignored + GREEN.** Zero known-defect REDs remain. Bug #2 (the 6-pass headline) closed via `0486` keep-alive + `0494` traversal fix together.
 
+**Phase-6 finding + fix (`0499`, user-directed root-cause investigation, 2026-07-01): REPL/`--run` empty-`select` divergence — RESOLVED, `e77b71b`.** `/repl`'s assessment found `(select [])` correctly fatal under `--run` but returning unsound-null `Int 0` in the REPL (§10.12.8 violation). User asked whether this meant a regrown dual pipeline (the sketch's original sin). **Investigated + confirmed: NO — single IO driver** (`cranelisp_run_io`) **shared by both modes; the actual bug was a dual host WRAPPER** — `src/pipeline.rs::execute_compiled_expr` (REPL) hand-rolled a partial mirror of the shared C-ABI driver (`cranelisp_run_program`, FIXME 0366) that only checked the runtime-error slot BEFORE the IO drive, never after. **Fix: deleted the hand-rolled mirror; REPL now calls `cranelisp_run_program` directly** — structurally unifies error observation for ALL fatal IO errors (not just empty-select), not just this one symptom. New parity e2e (`concurrency_v9_select::empty_select_repl_run_parity_no_unsound_null`) + 5 unit tests. **Suite now 1798 pass / 1 skip / 0 fail.**
+
 ## Phase-1 decisions (resolved, user 2026-07-01)
 
 1. **Appetite** — ✅ **full A–D drain** (everything but the parallelism axis + Phase-H/off-track parked).
