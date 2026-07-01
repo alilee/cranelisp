@@ -634,6 +634,22 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
             }
             find_var_type_in_expr(body, name)
         }
+        // A `LaunchContinue` node's `launched` sub-tree (the detached
+        // per-connection handler) is where a continuation parameter is often
+        // used EXCLUSIVELY — e.g. `conn` in `(bind (read-conn conn) (fn [req]
+        // … (send-conn conn …)))`. Omitting this arm left such a param
+        // un-typed in `variable_types`, so `compile_consuming_arg_list` skipped
+        // its consuming inc while the poll state-closure drop glue still dec'd
+        // it → double-free of a borrowed heap value owned by an enclosing scope
+        // (FIXME 0494 bug #2, the size-32 `Connection` stale RC-dec). Descending
+        // both branches restores the inc that balances the drop-glue dec.
+        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            find_var_type_in_expr(launched, name)
+                .or_else(|| find_var_type_in_expr(continuation, name))
+        }
+        MonoExpr::ConstrADT { fields, .. } => {
+            fields.iter().find_map(|f| find_var_type_in_expr(f, name))
+        }
         _ => None,
     }
 }
@@ -670,5 +686,84 @@ where
         // A generic-ctor-template field param (`Type::Var`) / unresolved HKT head:
         // uniform i64 representation → `Mixed` (the guarded RC path). FIXME 0394.
         Err(_) => HeapCategory::Mixed,
+    }
+}
+
+#[cfg(test)]
+mod find_var_type_tests {
+    use super::find_var_type_in_expr;
+    use cranelisp_types::{
+        ConcreteType, FQTypeName, ModuleFullPath, MonoExpr, Span, Symbol, TypeName,
+    };
+
+    fn conn_ty() -> ConcreteType {
+        // A 1-field heap ADT, mirroring `web/Connection` (FIXME 0494 bug #2).
+        ConcreteType::ADT(
+            FQTypeName::new(ModuleFullPath::from("web"), TypeName::from("Connection")),
+            vec![],
+        )
+    }
+
+    fn var(name: &str, ty: ConcreteType) -> MonoExpr {
+        MonoExpr::Var {
+            name: Symbol::from(name),
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            ty,
+        }
+    }
+
+    fn apply(callee: MonoExpr, args: Vec<MonoExpr>) -> MonoExpr {
+        MonoExpr::Apply {
+            callee: Box::new(callee),
+            args,
+            span: Span::SYNTHETIC,
+            resolved_call: None,
+            ty: ConcreteType::Int,
+        }
+    }
+
+    // spec: bounded-contexts.md §4b invariant 15 / ring2-rc.md §5.5 — a continuation
+    // parameter used ONLY inside a launched (detached) sub-tree must still be
+    // heap-typed so its consuming inc balances the poll state-closure drop-glue dec.
+    // RED before the FIXME-0494 fix: `find_var_type_in_expr` had no `LaunchContinue`
+    // arm, so it returned `None` for `conn` here and the consuming inc was skipped →
+    // double-free of the borrowed `Connection`.
+    #[test]
+    fn find_var_type_descends_into_launchcontinue_launched_subtree() {
+        // `(launch (read-conn conn) <continuation>)` — `conn` (a heap ADT) is used
+        // ONLY inside the launched (detached) branch, never in the continuation.
+        let launched = apply(var("read-conn", ConcreteType::Int), vec![var("conn", conn_ty())]);
+        let continuation = var("_", ConcreteType::Int);
+        let node = MonoExpr::LaunchContinue {
+            launched: Box::new(launched),
+            continuation: Box::new(continuation),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+
+        let found = find_var_type_in_expr(&node, &Symbol::from("conn"));
+        assert_eq!(
+            found,
+            Some(conn_ty().to_type()),
+            "conn used only in a LaunchContinue.launched sub-tree must still be \
+             heap-typed (else its consuming inc is skipped → poll drop-glue double-free)"
+        );
+    }
+
+    // A temporary (a non-`Var` sub-expression) inside the launched sub-tree is NOT a
+    // named variable, so it is (correctly) not discovered as a param type — the
+    // owned-temporary side of the borrowed-vs-owned discipline (no inc owed).
+    #[test]
+    fn find_var_type_absent_for_unnamed_var() {
+        let launched = apply(var("read-conn", ConcreteType::Int), vec![var("conn", conn_ty())]);
+        let node = MonoExpr::LaunchContinue {
+            launched: Box::new(launched),
+            continuation: Box::new(var("_", ConcreteType::Int)),
+            span: Span::SYNTHETIC,
+            ty: ConcreteType::Int,
+        };
+        // A name not present anywhere resolves to None (no spurious type).
+        assert_eq!(find_var_type_in_expr(&node, &Symbol::from("nope")), None);
     }
 }

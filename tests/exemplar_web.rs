@@ -253,10 +253,6 @@ fn encode_puzzle_form(puzzle: &str) -> String {
 // S98 finding. This over-HTTP test stays `#[ignore]`'d; the deterministic guards
 // `launch_grid_corrupt` + `launch_vec_send_corrupt` remain the un-ignored RED repros.
 #[test]
-#[ignore = "S98: invariant-15 runtime keep-alive landed but bug #2's residual UAF is \
-            a /backend borrowed-Var two-live-vec RC miscount on the launched strand \
-            (QA Stage-1 + /dev A/B); not fixable at the intrinsics seam. FIXME 0486. \
-            Deterministic un-ignored repros: launch_grid_corrupt + launch_vec_send_corrupt"]
 fn exemplar_web_server_serves_form_solution_and_not_found_over_http() {
     let port = free_port();
     let _server = spawn_server(port);
