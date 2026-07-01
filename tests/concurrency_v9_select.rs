@@ -84,14 +84,21 @@ fn empty_select_heap_typed_fatal_runtime_error() {
 // recovered branch). Ok ⇒ exit 0; Err ⇒ exit 42 (the discriminator). RED on HEAD:
 // today the empty select is never raised through the recoverable slot.
 //
-// FIXME(/sprint S97 W3): the catchable BOUNDARY is unresolved. `catch-runtime-error`
-// brackets only the PURE construction of an `IO` value (spec/appendix-a §A.3 — "if `a`
-// instantiates to `(IO x)` the bracket covers only the pure construction; effects run
-// later, outside the bracket"), whereas design §9 raises the empty-select error in
-// `run_select_node` at TRAMPOLINE-RUN time. /dev (int) Wave 3 must confirm/wire how
-// the run-time empty-select error reaches `catch-runtime-error` (spec §A.3 says it is
-// catchable) — or, if it is only catchable at a different boundary, /dev(int) + /qa
-// re-point this row. Until then it is RED-first against the spec's "recoverable" promise.
+// FIXME(/spec 0487) — GATED, catchability RULING PENDING (S98 band B). The exit-42
+// assertion below PRESUMES resolution (b) "construction-time-catchable". This is
+// NOT yet decided: FIXME 0487 (`design/arch/fixmes/0487-spec-empty-select-catchability
+// -semantics.md`) is the /spec ruling that finalizes the shape, and /arch's S98 Phase-2
+// steer is toward resolution **(a) honest fatal-runtime-error** — under which this row
+// is UNACHIEVABLE (the empty select raises at effect-RUN time, outside `catch-runtime-
+// error`'s pure-construction bracket, spec/appendix-a §A.3) and MUST be RETIRED, not
+// green-flipped. So this row is HELD RED pending 0487:
+//   - if /spec rules (b) construction-time-catchable → /backend `compile_select` raise
+//     makes exit 42 GREEN (this row is the acceptance);
+//   - if /spec rules (a) fatal-runtime-error → RETIRE this row; the "does raise, not
+//     unsound-null" invariant is already covered GREEN by the three sibling rows
+//     (`empty_select_heap_typed_fatal_runtime_error`, `_not_unit_zero_neg`,
+//     `_does_not_hang`). /qa re-points after the ruling. Do NOT green-flip by
+//     presuming either shape before 0487 resolves.
 #[test]
 fn empty_select_caught_by_catch_runtime_error() {
     let src = "\

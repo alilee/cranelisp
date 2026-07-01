@@ -36,6 +36,42 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 98 Stage-1 — exemplar_web bug #2: SMALLER two-live-vec launched-send reduction + reduction findings (/qa, 2026-07-01)
+
+- **Test (smaller deterministic repro, un-ignored RED):**
+  `launch_vec_send_corrupt::launched_strand_two_live_vecs_send_does_not_corrupt_heap_neg`
+- **Fixture:** `tests/fixtures/web_launch_vec_send_corrupt/` (free-standing "server
+  with no spawn"; `web` platform DLL + primitives only, ZERO stdlib; ZERO ADT wrapper).
+- **Current commit SHA:** `666b019` (binary `target/debug/cranelisp` @ 2026-07-01).
+- **Exact signature:** `free(): chunks in smallbin corrupted` glibc abort → SIGABRT,
+  `ExitStatus(unix_wait_status(134))` (signal 6) after ONE read-to-EOF request.
+- **Sampling:** one request in ISOLATION **8/8** SIGABRT under `Stdio::null`; one
+  request UNDER PARALLEL SUITE LOAD can survive (this smaller shape churns less than
+  the grid sibling, so the deferred-send window narrows under contention); a bounded
+  BURST of up to 8 sequential requests (the test's condition) reliably SIGABRTs under
+  full parallel load (3/3 full-load runs). Deterministic under the canonical parallel
+  `cargo nextest run`, NOT flaky — the burst is what makes it robust.
+- **Owning skill:** `/backend` (on `cranelisp-intrinsics` — the FIXME-0486 Level-1
+  keep-alive fix at the `EffectPoll`/`reg` seam, BC §4b invariant 15; the launched
+  borrowed-Var vec RC path, `ring2-rc.md §5.5`).
+- **Target sprint:** S98 Wave-1 band A (`0486` /backend fix — flips this + the grid
+  sibling + un-quarantines `exemplar_web`).
+- **Disposition:** `under-investigation (owner=/backend)`. Smaller sibling of
+  `launch_grid_corrupt::launched_strand_grid_get_assoc_does_not_corrupt_heap_neg` —
+  same launched-send-terminal UAF, one reduction step down (drops the `Cell`/`Grid`
+  ADT wrappers; renders two live `(Vec Int)`s directly via the borrowed-Var `get`/
+  `assoc` wrappers). Small repro → small CLIF for the fix (CLAUDE.md §Testing).
+- **Reduction findings (measured, 8 trials each, committed in the fixture header):**
+  the FIXME-0486 `redA` hypothesis ("launch + send-conn + churned STRING body, no
+  grids/vec" — the pure `Response.body` heap-String being the freed-early buffer) is
+  **REFUTED**: churned-String-body (0/8), two-heavy-live-Strings interleaved (0/8),
+  and SINGLE live `(Vec Int)` (0/8) all run CLEAN; TWO live `(Vec Int)` via the
+  borrowed-Var wrappers reproduces (8/8), as does the full grid (8/8). **Load-bearing
+  floor:** (1) a `(Vec …)` through the borrowed-Var-param wrappers, AND (2) TWO vecs
+  BOTH live simultaneously — NOT the ADT wrapper, NOT the pure String body. This
+  refines the `0486` fix target toward the borrowed-Var vec RC path on the launched
+  strand and is fed back to /arch + /backend on FIXME 0486.
+
 ### Sprint 97 Wave-3 — exemplar_web bug #2: launched-strand `get`/`assoc` grid Vec double-free (deterministic repro) (/qa, 2026-07-01)
 
 - **Test (deterministic repro, un-ignored RED):**
