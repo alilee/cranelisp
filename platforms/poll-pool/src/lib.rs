@@ -338,6 +338,101 @@ pub unsafe extern "C" fn poll_no_interest_pollfn(
     Poll::Pending
 }
 
+/// The capacity ceiling the bounded produce/consume fixture leaves acquire on.
+/// A modest constant (the fixture drives one produce→consume cycle at a time, so
+/// no contention arises); it exists only to give the ctx-vtable `acquire` a
+/// non-degenerate capacity.
+const POLL_POOL_CAPACITY: u32 = 4;
+
+/// `poll-produce` — a bounded **Produce**-role poll leaf (Gap G-C, FIXME 0490).
+///
+/// Mints an opaque resource HANDLE from its single seed arg and readies with it on
+/// the first poll — bounded and deterministic (no timer, no unbounded loop), so a
+/// produce→consume cycle terminates for CI. Under the v9 ctx-vtable handle model
+/// the handle is an ORDINARY value (here the seed itself, standing in for a genuine
+/// `fd`/token field): NOTHING is stamped onto it — no header slot, no `desc_out`, no
+/// descriptor region. Scheduling flows through the `ctx` vtable: the poll-fn derives
+/// a fresh disjoint token from the minted handle (Produce ⇒ fresh token,
+/// `cranelisp-types::scheduling` E2) and `acquire`s a permit; the trampoline owns the
+/// release (on `Ready`). Because the handle is a plain value, the produce→consume
+/// round-trip is RC-neutral (the 2.4 no-leak witness — nothing value-side to leak).
+///
+/// # Safety
+/// C-ABI poll-fn (`PollFn`); `state` is the host-built env (`result` at +0, the seed
+/// at +8); `host`/`waker` are live for the call.
+pub unsafe extern "C" fn poll_produce_pollfn(
+    state: *mut c_void,
+    host: *const HostCtx,
+    waker: *const Waker,
+) -> Poll {
+    // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
+    let env = unsafe { PollEnv::new(state) };
+    let reactor = unsafe { Reactor::new(host, waker) };
+    // The seed (leaf arg 0) both derives the fresh token AND is the minted handle
+    // (a stand-in for a genuine `fd`/token field the consuming leaf reads back —
+    // v9: token == fd, projected off the handle, never off a header slot).
+    // SAFETY: leaf arg 0 is declared (a single Int).
+    let handle = unsafe { env.arg(0) };
+    let token = handle as u64;
+    // Acquire the fresh token's permit before minting (skeleton step 1). `Parked` ⇒
+    // Pending (backpressure); the sequential fixture never contends, but honour the
+    // uniform poll-fn skeleton. Idempotent per in-flight effect; release is
+    // trampoline-owned (on `Ready`).
+    if token != 0 && matches!(reactor.acquire(token, POLL_POOL_CAPACITY), Acquire::Parked) {
+        return Poll::Pending;
+    }
+    // Ready on the first poll: hand back the minted handle. Bounded + deterministic.
+    env.set_result(handle);
+    Poll::Ready
+}
+
+/// `poll-consume` — a bounded **Consume**-role poll leaf (Gap G-C, FIXME 0490).
+///
+/// Threads the handle minted by [`poll_produce_pollfn`], projecting the token from
+/// the handle's OWN value (v9 ctx-vtable: `token == fd`, read back off the handle —
+/// the platform built it; the trampoline never introspects it; there is no header
+/// read and no `desc_out`), `acquire`s the permit, then readies with `0` on the
+/// first poll. Bounded and deterministic. The handle is an ordinary value, so a
+/// produce→consume cycle RC-balances like any value round-trip (no value-side
+/// scheduling region exists to leak — `effect-concurrency.md §4.1.1`).
+///
+/// # Safety
+/// C-ABI poll-fn (`PollFn`); `state` is the host-built env (`result` at +0, the
+/// handle at +8); `host`/`waker` are live for the call.
+pub unsafe extern "C" fn poll_consume_pollfn(
+    state: *mut c_void,
+    host: *const HostCtx,
+    waker: *const Waker,
+) -> Poll {
+    // SAFETY: `state` is the host-built env base; `host`/`waker` are live.
+    let env = unsafe { PollEnv::new(state) };
+    let reactor = unsafe { Reactor::new(host, waker) };
+    // Project the token from the handle's own value (no header read, no `desc_out`).
+    // SAFETY: leaf arg 0 is the handle (a single Int).
+    let handle = unsafe { env.arg(0) };
+    let token = handle as u64;
+    if token != 0 && matches!(reactor.acquire(token, POLL_POOL_CAPACITY), Acquire::Parked) {
+        return Poll::Pending;
+    }
+    // Consume: nothing to do beyond the acquire (the fixture only needs the handle
+    // to round-trip). Ready with 0. The trampoline releases on `Ready`.
+    env.set_result(0);
+    Poll::Ready
+}
+
+/// The **Produce**-role descriptor for `poll-produce`. Identical to
+/// [`RESOURCE_SERIAL`] except `role: Produce` — the compile-time-only manifest fact
+/// grounding inference E2 (a Produce leaf mints a fresh disjoint token). The
+/// trampoline does NOT branch on it at runtime (`effect-concurrency.md §4.1.1`).
+const PRODUCE_DESC: ConcurrencyDescriptor = ConcurrencyDescriptor {
+    token: 0,
+    cardinality: 1,
+    global_budget: 0,
+    blocking: 0,
+    role: ResourceRole::Produce,
+    _reserved: [0; 2],
+};
+
 /// The `ResourceSerial` descriptor every poll-pool effect carries: `token 0`
 /// (the static conflict identity — the DYNAMIC per-resource token rides the
 /// leading `token` operand at the call site), `cardinality 1`, `blocking 0`
@@ -399,6 +494,20 @@ cranelisp_platform::declare_platform! {
             sig: "(Fn [primitives/Int primitives/Int primitives/Int] (primitives/IO primitives/Int))",
             doc: "Return Pending while arming NOTHING (no fd, no timer, no acquire) -- the unarmed-suspend witness the armed-ness deadlock detector must trip on promptly (FIXME 0479)",
             params: [token, capacity, ms],
+            descriptor: RESOURCE_SERIAL,
+        },
+        poll_produce_pollfn {
+            cl_name: "poll-produce",
+            sig: "(Fn [primitives/Int] (primitives/IO primitives/Int))",
+            doc: "Mint an opaque resource handle from a seed and ready immediately (Produce role) -- the bounded no-RC-leak produce/consume fixture (FIXME 0490)",
+            params: [seed],
+            descriptor: PRODUCE_DESC,
+        },
+        poll_consume_pollfn {
+            cl_name: "poll-consume",
+            sig: "(Fn [primitives/Int] (primitives/IO primitives/Int))",
+            doc: "Thread a handle from poll-produce, project its token, acquire, and ready (Consume role) -- the bounded no-RC-leak produce/consume fixture (FIXME 0490)",
+            params: [handle],
             descriptor: RESOURCE_SERIAL,
         },
     ]
@@ -482,5 +591,51 @@ mod tests {
             "poll-fault must SET the runtime-error slot on the Ready phase \
              (the supervisor-catchable fault path), not abort via panic"
         );
+    }
+
+    fn fixture_host() -> HostCtx {
+        HostCtx {
+            register_readable: noop_readable,
+            register_writable: noop_writable,
+            register_timer: noop_timer,
+            acquire: noop_acquire,
+            retire: noop_retire,
+            host: core::ptr::null(),
+        }
+    }
+
+    // design: design/arch/fixmes/0490-platform-poll-produce-consume-bounded-fixture.md
+    // -- poll-produce mints its handle from the seed (leaf arg 0) and readies on the
+    // FIRST poll (bounded/deterministic). The minted handle IS the seed (a stand-in
+    // for a genuine fd/token field); nothing is stamped onto a header slot.
+    #[test]
+    fn poll_produce_mints_handle_and_readies() {
+        let host = fixture_host();
+        let waker = Waker { data: core::ptr::null(), vtable: &WAKER_VTABLE };
+        // env: [result_slot = 0, seed = 7].
+        let mut env_slots: [i64; 2] = [0, 7];
+        // SAFETY: env_slots is a valid [result | seed] env; host/waker are live.
+        let poll = unsafe {
+            poll_produce_pollfn(env_slots.as_mut_ptr() as *mut c_void, &host, &waker)
+        };
+        assert!(matches!(poll, Poll::Ready), "produce readies on the first poll");
+        assert_eq!(env_slots[0], 7, "the result slot carries the minted handle (== seed)");
+    }
+
+    // design: design/arch/fixmes/0490-platform-poll-produce-consume-bounded-fixture.md
+    // -- poll-consume projects the token from the handle's own value (v9 ctx-vtable,
+    // no header read), acquires, and readies with 0 on the FIRST poll.
+    #[test]
+    fn poll_consume_threads_handle_and_readies() {
+        let host = fixture_host();
+        let waker = Waker { data: core::ptr::null(), vtable: &WAKER_VTABLE };
+        // env: [result_slot = 0, handle = 7 (as minted by produce)].
+        let mut env_slots: [i64; 2] = [0, 7];
+        // SAFETY: env_slots is a valid [result | handle] env; host/waker are live.
+        let poll = unsafe {
+            poll_consume_pollfn(env_slots.as_mut_ptr() as *mut c_void, &host, &waker)
+        };
+        assert!(matches!(poll, Poll::Ready), "consume readies on the first poll");
+        assert_eq!(env_slots[0], 0, "consume readies with 0");
     }
 }
