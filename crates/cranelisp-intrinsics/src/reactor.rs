@@ -1748,6 +1748,51 @@ fn reactor_is_armed(
         || pool.any_waiter_parked()
 }
 
+/// One drive-iteration decision for the `OneShot` no-progress wall-clock backstop
+/// (FIXME 0479 / `reactor.md §8.3`).
+///
+/// **Deliberately does NOT take the supervisor.** A merely non-empty supervisor
+/// (parked/armed handler strands) must NOT hold the backstop off: a one-shot
+/// *armed-but-hung* strand — e.g. a handler parked reading a peer that never sends
+/// — is exactly the hang the `OneShot` backstop exists to catch (§8.3). The
+/// armed-ness DEADLOCK detector ([`reactor_is_armed`]) separately keeps such a
+/// strand from being mis-read as a deadlock (a non-empty supervisor is `armed`, so
+/// the drive keeps turning); this predicate is the orthogonal wall-clock hang
+/// guard, and it is held off ONLY by genuine off-thread blocking work
+/// (`pending_bridges > 0`) — a rayon bridge, uncapped to match feature-off (§2.6).
+/// A finite program whose supervised strands genuinely PROGRESS drains and returns
+/// before the window elapses; only an armed-but-hung strand reaches [`Fire`].
+///
+/// (Supersedes the earlier `!supervisor.is_empty()` hold-off, which contradicted
+/// §8.3 by suppressing the backstop for any lingering strand — filed to /design as
+/// the §2.12/§2.4-comment reconciliation.)
+///
+/// [`Fire`]: BackstopAction::Fire
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackstopAction {
+    /// Genuine off-thread blocking work in flight — reset the no-progress anchor.
+    HoldOff,
+    /// `OneShot`, no bridge, no progress past the window — abort the drive.
+    Fire,
+    /// No bridge but within the window, or `Server` mode (no wall-clock cap).
+    Wait,
+}
+
+fn oneshot_backstop_action(
+    drive_mode: DriveMode,
+    pending_bridges: usize,
+    elapsed: Duration,
+    backstop: Duration,
+) -> BackstopAction {
+    if pending_bridges > 0 {
+        BackstopAction::HoldOff
+    } else if drive_mode == DriveMode::OneShot && elapsed > backstop {
+        BackstopAction::Fire
+    } else {
+        BackstopAction::Wait
+    }
+}
+
 /// Read the `OneShot`/`Server` drive-mode knob from the `CRANELISP_DRIVE_MODE`
 /// reactor-construction surface (FIXME 0479 / `reactor.md §8.3`). `server` ⇒
 /// [`DriveMode::Server`]; anything else (incl. unset / `oneshot`) ⇒
@@ -1789,8 +1834,38 @@ where
     // from the reactor-construction env surface (the same channel as
     // `CRANELISP_DEGREE`). `Server` disables the wall-clock backstop so an idle-but-
     // armed `accept` loop runs indefinitely; `OneShot` (default) keeps it as a hang
-    // guard for `--run`/REPL.
-    block_on_reactor_capped(make_future, read_drive_mode_env(), read_backstop_env())
+    // guard for `--run`/REPL. Production drive ⇒ a fired backstop exits the process
+    // cleanly (`OnBackstop::ExitProcess`) — no `SIGABRT`/core-dump latency.
+    block_on_reactor_capped(
+        make_future,
+        read_drive_mode_env(),
+        read_backstop_env(),
+        OnBackstop::ExitProcess,
+    )
+}
+
+/// Process exit code when the `OneShot` wall-clock backstop terminates a hung
+/// batch drive (FIXME 0479 / `reactor.md §8.3`). Distinct non-zero value so a
+/// hang-timeout is distinguishable from an ordinary program error at the shell.
+const BACKSTOP_EXIT_CODE: i32 = 70;
+
+/// How a fired `OneShot` backstop TERMINATES the drive ([`block_on_reactor_capped`]
+/// `Fire` arm). The production entry [`block_on_reactor`] uses [`ExitProcess`] (a
+/// clean, fast, non-core-dumping process exit — the backstop is a deliberate
+/// host-policy termination of a hung batch program, not a crash); the liveness unit
+/// tests drive `block_on_reactor_capped` directly with [`Panic`] so `#[should_panic]`
+/// can observe the trip inside the test process without killing the runner.
+///
+/// [`ExitProcess`]: OnBackstop::ExitProcess
+/// [`Panic`]: OnBackstop::Panic
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnBackstop {
+    /// Clean `std::process::exit(BACKSTOP_EXIT_CODE)` — production drive.
+    ExitProcess,
+    /// `panic!` — the unit-test seam (catchable via `#[should_panic]`).
+    /// Constructed only by the `#[cfg(test)]` liveness units.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Panic,
 }
 
 /// [`block_on_reactor`] with an injectable drive-mode + wall-clock backstop — the
@@ -1804,6 +1879,7 @@ fn block_on_reactor_capped<F, T>(
     make_future: F,
     drive_mode: DriveMode,
     max_total_block: Duration,
+    on_backstop: OnBackstop,
 ) -> std::io::Result<T>
 where
     F: AsyncFnOnce(&ReactorEnv<'_>) -> T,
@@ -1913,27 +1989,58 @@ where
             return Ok(v);
         }
 
-        // A blocking branch in flight OR a non-empty supervisor is legitimate
-        // progress — hold the no-progress deadline off (a slow blocking I/O branch on
-        // rayon is uncapped, matching feature-off, §2.6; a server with live handler
-        // strands is busy, not stuck, §2.12). The backstop resumes measuring once both
-        // are quiescent.
+        // Only genuine off-thread blocking work (a rayon bridge) holds the
+        // no-progress deadline off (a slow blocking I/O branch is uncapped, matching
+        // feature-off, §2.6). A merely non-empty supervisor does NOT hold it off: a
+        // parked/hung handler strand (armed on an fd/timer that never readies) is
+        // exactly the `OneShot` armed-but-hung case the backstop must catch (§8.3).
+        // Such a strand is kept from being mis-read as a *deadlock* by the armed-ness
+        // detector below (a non-empty supervisor is `armed`), but the wall-clock hang
+        // guard still applies under a one-shot drive. A finite program whose
+        // supervised strands genuinely progress drains and returns (above) well
+        // before the window; only an armed-but-hung strand reaches the Fire arm.
         //
-        // FIXME 0479 (`reactor.md §8.2`): the wall-clock cap is the SECONDARY guard
-        // (an armed-but-never-readies leaf), retained ONLY in `OneShot` mode. A
+        // FIXME 0479 (`reactor.md §8.3`): the wall-clock cap is the SECONDARY guard
+        // (an armed-but-never-readies leaf/strand), retained ONLY in `OneShot` mode. A
         // `Server`-mode drive disables it, so a legitimately-idle armed `accept` loop
         // (listener fd in `fd_waiters`) runs indefinitely — the production shape. The
         // PRIMARY liveness rule is the armed-ness detector below.
-        if pending_bridges.get() > 0 || !supervisor.is_empty() {
-            no_progress_since = std::time::Instant::now();
-        } else if drive_mode == DriveMode::OneShot
-            && no_progress_since.elapsed() > max_total_block
-        {
-            // OneShot backstop: no bridge, empty supervisor, no progress for the
-            // backstop window — an armed-but-never-readies (or genuinely-stuck) leaf
-            // under a one-shot drive. Drop in-flight strands (none here) and bail.
-            supervisor.clear();
-            panic!("block_on_reactor: OneShot backstop exceeded {max_total_block:?} — leaf never completed");
+        match oneshot_backstop_action(
+            drive_mode,
+            pending_bridges.get(),
+            no_progress_since.elapsed(),
+            max_total_block,
+        ) {
+            BackstopAction::HoldOff => no_progress_since = std::time::Instant::now(),
+            BackstopAction::Fire => {
+                // No bridge, no progress for the backstop window — an
+                // armed-but-never-readies (or genuinely-stuck) leaf/strand under a
+                // one-shot drive. Drop any in-flight strands and terminate.
+                supervisor.clear();
+                let msg = format!(
+                    "block_on_reactor: OneShot backstop exceeded {max_total_block:?} — leaf never completed"
+                );
+                match on_backstop {
+                    // Production drive (`--run`/`--link`/REPL eval, via
+                    // `block_on_reactor`): the backstop firing is a deliberate
+                    // host-policy termination of a hung batch program — NOT a
+                    // bug/crash. Exit CLEANLY (non-zero, diagnostic to stderr)
+                    // rather than `panic!` into the `cannot_unwind`
+                    // `cranelisp_run_program` boundary, which raises `SIGABRT` and
+                    // core-dumps the (large) process — ~1s of latency that made a
+                    // hung program appear to linger past its own deadline (FIXME
+                    // 0479 / `reactor.md §8.3`: "aborts the drive by ≈backstop").
+                    OnBackstop::ExitProcess => {
+                        eprintln!("{msg}");
+                        std::process::exit(BACKSTOP_EXIT_CODE);
+                    }
+                    // Unit-test seam (`block_on_reactor_capped` called directly):
+                    // panic so `#[should_panic]` can observe the trip within the
+                    // test process without killing the runner.
+                    OnBackstop::Panic => panic!("{msg}"),
+                }
+            }
+            BackstopAction::Wait => {}
         }
 
         // Turn the reactor BETWEEN polls (the only place a `&mut reactor` is

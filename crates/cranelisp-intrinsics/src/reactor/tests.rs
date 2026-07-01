@@ -758,6 +758,7 @@ fn cap_held_off_while_blocking_bridge_in_flight() {
         },
         crate::reactor::DriveMode::OneShot,
         cap,
+        crate::reactor::OnBackstop::Panic,
     )
     .expect("reactor");
 
@@ -797,6 +798,55 @@ fn cap_still_trips_for_stuck_poll_leaf_no_bridge() {
         },
         crate::reactor::DriveMode::OneShot,
         cap,
+        crate::reactor::OnBackstop::Panic,
+    );
+}
+
+// spec: design/int/reactor.md §8.3 — the `OneShot` no-progress backstop decision.
+// The regression this pins (FIXME 0479 / 5.1B): a merely non-empty supervisor must
+// NOT hold the backstop off — a one-shot armed-but-hung strand (a handler parked
+// reading a peer that never sends) must still hit the wall-clock guard. The rule is
+// modelled by `oneshot_backstop_action`, which by construction does NOT take the
+// supervisor as an input: ONLY a rayon bridge (`pending_bridges > 0`) holds it off
+// (uncapped blocking I/O, §2.6); `Server` mode has no cap. Contrast the pre-fix
+// `!supervisor.is_empty()` hold-off that suppressed the backstop for any lingering
+// strand (server wrongly still-alive at 3s ≪ backstop).
+#[test]
+fn oneshot_backstop_action_ignores_supervisor_holds_off_only_on_bridge() {
+    use crate::reactor::{oneshot_backstop_action, BackstopAction, DriveMode};
+    let backstop = Duration::from_millis(2000);
+    let over = Duration::from_millis(2500); // past the window
+    let under = Duration::from_millis(500); // within the window
+
+    // OneShot, NO bridge, window exceeded ⇒ FIRE — regardless of any supervised
+    // strand (the predicate does not consider the supervisor; the caller's real
+    // drive has a non-empty supervisor here and MUST still fire, §8.3).
+    assert_eq!(
+        oneshot_backstop_action(DriveMode::OneShot, 0, over, backstop),
+        BackstopAction::Fire,
+        "OneShot + no bridge + past the window must FIRE (a parked/hung supervised \
+         strand does not exempt it — §8.3)"
+    );
+    // A rayon bridge in flight holds it off even past the window (blocking I/O is
+    // uncapped, matching feature-off, §2.6).
+    assert_eq!(
+        oneshot_backstop_action(DriveMode::OneShot, 1, over, backstop),
+        BackstopAction::HoldOff,
+        "a pending rayon bridge holds the backstop off (uncapped blocking I/O)"
+    );
+    // Within the window ⇒ keep waiting.
+    assert_eq!(
+        oneshot_backstop_action(DriveMode::OneShot, 0, under, backstop),
+        BackstopAction::Wait,
+        "within the no-progress window the drive keeps waiting"
+    );
+    // Server mode ⇒ no wall-clock cap ever, even past the window with no bridge
+    // (an idle-but-armed server runs forever; the armed-ness detector is its only
+    // liveness rule).
+    assert_eq!(
+        oneshot_backstop_action(DriveMode::Server, 0, over, backstop),
+        BackstopAction::Wait,
+        "Server mode disables the wall-clock backstop entirely"
     );
 }
 
@@ -847,6 +897,7 @@ fn armed_ness_detector_trips_immediately_on_unarmed_pending() {
         },
         crate::reactor::DriveMode::OneShot,
         Duration::from_secs(30),
+        crate::reactor::OnBackstop::Panic,
     );
 }
 
@@ -883,6 +934,7 @@ fn armed_fd_leaf_does_not_trip_detector_reaches_backstop() {
         },
         crate::reactor::DriveMode::OneShot,
         Duration::from_millis(60),
+        crate::reactor::OnBackstop::Panic,
     );
 }
 
