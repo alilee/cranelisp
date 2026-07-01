@@ -10,6 +10,36 @@ status: open
 
 # Invariant-15 runtime keep-alive LANDED but does NOT fix bug #2 — the residual UAF is a /backend borrowed-Var two-live-vec RC miscount, not the poll state-closure
 
+> ## ⚠️ ASAN GATE-STOP (2026-07-01, /dev, `cranelisp-intrinsics` deploy) — ASAN CANNOT localize: the faulting store is JIT-emitted; BOTH named Rust candidates RULED OUT
+> Built BOTH the host `cranelisp` binary **and** the dlopen'd web cdylib with
+> `-Zsanitizer=address` (dlopen instrumentation SUCCEEDED — 217 asan syms in the exe, 35 in
+> the DLL) and ran the exact deterministic crashing fixture (8–16 request burst) — **ASAN
+> stays completely clean: zero reports, no crash, server survives, all responses correct
+> (`body_len=2184` each).** Reason: `vec-get`/`vec-set`/`vec-push` are **inlined as Cranelift
+> IR (JIT machine code)** in the common COW path (`cranelisp-backend/src/compiler/vec_codegen.rs`,
+> "COW inline + extern fallback"), and **ASAN cannot instrument JIT code** — its allocator's
+> redzone+quarantine simply absorbs the overrun the glibc allocator reports as
+> `free(): chunks in smallbin corrupted`. This ASAN run is a **localized confirmed-negative**:
+> it RULES OUT **both** FIXME-0494 candidates as the faulting site — (1) reactor state-closure /
+> **Response-body String lifetime across suspension** (intrinsics `reactor.rs`/`io.rs` — fully
+> instrumented; the DLL read the body correctly AFTER the sleep-suspension + launched teardown,
+> no UAF, no OOB read → the body String is NOT freed early), and (2) **DEF-6 `CLString`
+> marshaling base-pointer** at `send_conn_pollfn` (web DLL + platform marshaling — fully
+> instrumented; field reads returned correct `status`/`content-type`/`body`, ASAN saw no
+> out-of-bounds read → the base-vs-payload pointer is correct). **Every Rust writer in the
+> render is instrumented and clean** (`str-concat`, `int-to-string` are Rust primitives; the
+> DLL `format_http_response`/`wire.into_bytes()` is Rust). **The ONLY uninstrumented writer on
+> the render path is the inline JIT vec-COW/element codegen** → the residual is a **backend
+> JIT-codegen store** (an out-of-bounds / stale-pointer write on the borrowed-Var two-live-vec
+> COW path), surfacing ONLY under the {launched strand}×{`sleep` suspend/resume}×{`send-conn`
+> DLL crossing} free-timing — NOT a Rust-layer marshaling/lifetime bug, NOT the (separately
+> refuted) RC double-dec. **Owner: `/backend` (`vec_codegen.rs`), NOT intrinsics/platform.**
+> Right tool for a JIT-emitted write is **valgrind** (a DBT that instruments JIT) or CLIF
+> inspection (`CRANELISP_CODEGEN_TRACE=1` / `/clif` on `make-resp`/`churn`) — valgrind/gdb/rr
+> are unavailable in this env (no sudo/apt). **No source changed (gate-stop); guards stay RED;
+> `exemplar_web` stays `#[ignore]`'d; `0492` stays blocked; `0494` stays OPEN.** Full evidence:
+> §"/dev band-A ASAN localization" at the bottom.
+
 > ## ⚠️ GATE-STOP UPDATE (2026-07-01, /dev on `cranelisp-backend`, reduce-first timebox) — the /backend-vec-RC hypothesis is REFUTED
 > A disciplined reduce-first investigation (per root CLAUDE.md §cross-skill handoff + the S97
 > wasted-fix warning) **confirms a NEGATIVE**: bug #2 is **NOT** a `/backend` borrowed-Var
@@ -189,3 +219,92 @@ the reactor/marshaling arg-lifetime boundary:
 No source was changed (gate-stop). Guards `launch_grid_corrupt` + `launch_vec_send_corrupt`
 stay RED; `exemplar_web` stays `#[ignore]`'d; `0492` stays blocked. `cargo check -p
 cranelisp-backend` clean (no edits). `0494` stays OPEN, retargeted per the recommendation above.
+
+## /dev band-A ASAN localization (2026-07-01, `cranelisp-intrinsics` deploy — GATE-STOP, ASAN blind to the JIT write site)
+
+Deployed to **pin bug #2's overrun write site with ASAN** and fix the confirmed cause. ASAN
+across the dlopen boundary WORKED (both artefacts instrumented) but **cannot localize this
+particular overrun because the faulting store is Cranelift-JIT machine code**, not Rust. This
+is a localized confirmed-negative, not a fix.
+
+### Exact commands
+
+```bash
+# 1. Baseline (glibc) — confirm the deterministic SIGABRT + ordering
+cargo build -p cranelisp -p cranelisp-web -p cranelisp-stdio
+# spawn: CRANELISP_PORT=P CRANELISP_PLATFORM_PATH=target/debug CRANELISP_LIB=stdlib \
+#          target/debug/cranelisp --run tests/fixtures/web_launch_vec_send_corrupt/main.cl
+#   → WEBDBG=1 shows:  [WEB] send ... body_len=2184  →  [WEB] finish/close  →
+#     free(): chunks in smallbin corrupted  (SIGABRT, exit 134) on the FIRST request.
+#   The render + send read the Response CORRECTLY (body_len=2184); the corruption trips at a
+#   free() during the launched-strand TEARDOWN, after the send completes.
+
+# 2. ASAN build — instrument BOTH the host exe AND the dlopen'd web cdylib.
+#    NB: RUSTFLAGS env REPLACES ~/.cargo/config.toml's [target.*].rustflags, so the machine-
+#    local -rdynamic + mold MUST be re-added or dlsym of the statically-linked primitives
+#    (e.g. `neq-string`) fails at JIT link with "can't resolve symbol".
+RUSTFLAGS="-Zsanitizer=address -C link-arg=-fuse-ld=mold -C link-arg=-rdynamic" \
+  cargo build --target aarch64-unknown-linux-gnu -p cranelisp -p cranelisp-web
+
+# 3. Run the SAME fixture under ASAN (platform path → the ASAN target dir so the instrumented
+#    DLL is the one dlopen'd).
+export ASAN_OPTIONS="detect_leaks=0:abort_on_error=1:symbolize=1:halt_on_error=1"
+ADIR=target/aarch64-unknown-linux-gnu/debug
+#  spawn $ADIR/cranelisp --run main.cl with CRANELISP_PLATFORM_PATH=$ADIR, drive 8–16 GETs.
+#  Also tried: quarantine_size_mb=0:redzone=16:max_redzone=16:poison_heap=1, 16 requests.
+```
+
+### What ASAN showed
+
+- **Instrumentation confirmed real:** `nm -D $ADIR/cranelisp | grep -c asan` → **217**;
+  `…/libcranelisp_web.so` → **35**. dlopen of the instrumented DLL into the instrumented exe
+  loaded + ran fine (the `-rdynamic` fix cleared the `neq-string` JIT-link failure).
+- **The exact deterministic crashing workload runs CLEAN under ASAN:** 9–17 requests, **zero
+  ASAN reports, no crash, server survives**, every response correct (`WEBDBG`: `body_len=2184`
+  per send). Same under quarantine-off + minimal-redzone + heavier load.
+- **No `heap-buffer-overflow`, no `heap-use-after-free`, no bad-free** was ever emitted.
+
+### Why ASAN is blind here (the gate-stop root cause)
+
+`vec-get`/`vec-set`/`vec-push` compile to **inline Cranelift IR** in the common COW path
+(`cranelisp-backend/src/compiler/vec_codegen.rs` — "COW inline + extern fallback"; the
+`vec-set-copy`/`vec-push-copy` Rust externs in `cranelisp-intrinsics/src/vec_runtime.rs` are a
+*fallback*, not the hot path). The corrupting store therefore executes as **JIT-emitted machine
+code**, which ASAN's compile-time shadow instrumentation fundamentally does not cover. ASAN's
+allocator (redzones + quarantine, its OWN metadata — never glibc smallbins) simply **absorbs**
+the overrun that glibc reports as `free(): chunks in smallbin corrupted`, and the uninstrumented
+JIT store is never shadow-checked → silence. valgrind (a dynamic binary translator that DOES
+instrument JIT) is the tool that would pin it, but valgrind/gdb/rr are unavailable here (no
+sudo; `apt-get` needs interactive auth).
+
+### What this confirmed-negative BUYS (the decision ASAN was asked to make)
+
+ASAN was to decide between candidate (1) reactor/Response-body lifetime and candidate (2) DEF-6
+`CLString` marshaling base-pointer. **Both are RULED OUT as the faulting site**, because both
+are fully-instrumented Rust and ASAN saw no violation in either across the crashing workload:
+
+| Candidate | Instrumented? | ASAN verdict | Why ruled out |
+|---|---|---|---|
+| (1) Response-body String lifetime across suspension (`reactor.rs`/`io.rs`) | YES | no UAF, no OOB read | the DLL read `body` **correctly** (`body_len=2184`) AFTER the `sleep`-suspend + launched teardown → the body String is **not** freed early |
+| (2) DEF-6 `CLString` base-vs-payload at `send_conn_pollfn` (web DLL + platform marshal) | YES | no OOB read | field reads returned correct `status`/`content-type`/`body` → the base pointer is **correct** |
+| **(3) inline JIT vec-COW/element write on the borrowed-Var two-live-vec render** | **NO (JIT)** | **invisible to ASAN** | the ONLY uninstrumented writer on the render path; `str-concat`/`int-to-string`/DLL wire-format are all instrumented Rust and clean |
+
+So the residual bug #2 is a **backend JIT-codegen store** — an out-of-bounds or stale-pointer
+write on the inline borrowed-Var two-live-vec COW path (`vec_codegen.rs`) — that manifests ONLY
+under the {launched strand} × {`sleep` suspend/resume} × {`send-conn` DLL crossing} free-timing
+(consistent with the FIXME's "non-server render is clean; the crossing is load-bearing" and
+"corrupted memory is untracked Vec data buffers"). It is NOT a Rust-layer marshaling/lifetime
+bug (candidates 1 & 2 ruled out) and NOT the separately-refuted RC double-dec.
+
+### Recommendation to `/sprint` + `/arch` (owner re-point, UNCHANGED direction but sharper)
+
+- **Owner = `/backend`, `cranelisp-backend/src/compiler/vec_codegen.rs`** (the inline vec-COW /
+  element-store codegen), NOT `cranelisp-intrinsics` (reactor) and NOT `cranelisp-platform` /
+  web DLL (marshaling) — the two Rust candidates ASAN eliminated.
+- **Localization tool for `/backend`:** since ASAN can't see JIT stores, use **CLIF inspection**
+  — `CRANELISP_CODEGEN_TRACE=1` on the fixture (or `/clif make-resp` / `/clif churn` /
+  `/clif build` in the REPL) — to read the emitted COW copy-loop bounds + the element store
+  offsets against the two-live-vec borrowed-Var path, and/or provision **valgrind** in a env
+  that permits it. The small `web_launch_vec_send_corrupt` fixture yields small CLIF.
+- **Guards + `exemplar_web` + `0492` unchanged** (RED / `#[ignore]` / blocked). `0494` OPEN.
+  No source changed; no `cranelisp-backend`/intrinsics/platform edit. `cargo check` clean.
