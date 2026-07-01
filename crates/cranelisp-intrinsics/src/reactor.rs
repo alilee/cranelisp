@@ -769,6 +769,62 @@ impl Drop for ReactorInterest {
     }
 }
 
+/// RAII holder of a reactor-deferred poll effect's **state-closure keep-alive ref**
+/// — the runtime-owned keep-alive mandated by `bounded-contexts.md §4b`
+/// **invariant 15** (FIXME 0486 bug #2). A poll-shape effect's baked heap arguments
+/// live in the host-built state-closure at the `IO_TAG_EFFECT_POLL` node's field-0;
+/// those args must stay live from establish (`io::await_poll_node` →
+/// [`EffectPoll::new_owning`]) until the reactor resolves the effect. Under the
+/// **net-zero-inc** variant, `await_poll_node` takes ONE extra RC ref on the
+/// state-closure (`rc_inc`) and hands it here — the node's field-0 is left UNTOUCHED
+/// (no sentinel), so the sub-tree's own `consume_io_tree` / `dec_shallow_io` tag-4
+/// arm still dec's the node's ref exactly as before. This guard releases the
+/// keep-alive ref **exactly once** at resolve:
+///
+/// - on `Poll::Ready` — [`EffectPoll::poll`] calls [`StateClosure::consume`] AFTER
+///   reading the result slot;
+/// - on cancel (the future drops while `Pending`) — this guard's `Drop` runs
+///   `consume` on the still-held ref.
+///
+/// Each `consume` is one `consume_closure` (an RC dec that runs the backend drop
+/// glue + deallocs ONLY on the closure's true last ref). So the closure is freed at
+/// the LATER of {node-release, effect-resolve}: on the normal path resolve precedes
+/// node-release (node-release frees — byte-identical timing to pre-fix); on the
+/// launched path the early node-release only dec's (this keep-alive ref survives the
+/// teardown so the deferred send reads live args), and resolve frees. The
+/// zero-after-consume makes "this ref released exactly once" *representable*
+/// (Principle 20): once `consume` has run on either path the handle is `0` and the
+/// other path is a no-op. `0` is also the constructor default (fixture/test leaves
+/// that hold no keep-alive ref), so the guard is inert there; `consume_closure`
+/// itself no-ops on the `0`/sub-`NULLARY_THRESHOLD` handle, double-safe.
+struct StateClosure(i64);
+
+impl StateClosure {
+    /// Release the keep-alive ref NOW (one `consume_closure` — an RC dec, running
+    /// drop glue + dealloc only on the closure's true last ref), if still held.
+    /// Idempotent — zeroes the handle so a later `consume`/`Drop` is a no-op. The
+    /// exactly-once release keyed to whichever resolve path fires first (invariant 15).
+    fn consume(&mut self) {
+        let clo = self.0;
+        if clo != 0 {
+            // Zero FIRST so a re-entrant / subsequent path cannot double-release.
+            self.0 = 0;
+            // `consume_closure` atomically dec's the closure RC and, on last ref,
+            // invokes the embedded drop glue (dec'ing the baked args) + deallocs.
+            crate::drop::consume_closure(clo);
+        }
+    }
+}
+
+impl Drop for StateClosure {
+    fn drop(&mut self) {
+        // Cancellation path (future dropped while Pending): release the still-held
+        // keep-alive ref. On the `Ready` path `consume` already ran (handle == 0) so
+        // this is a no-op — the exactly-once guarantee (invariant 15, Principle 20).
+        self.consume();
+    }
+}
+
 /// Byte offset of the reserved **result slot** within a poll-fn `state` — the
 /// generic env-offset result read (S94 R1 seam decision 3, FIXME 0457). `state`
 /// is the env base of the host-built state-closure (`closure + 32`), and the
@@ -826,6 +882,15 @@ pub struct EffectPoll<'h> {
     /// deregisters this leaf's reactor interest when the future drops (the
     /// cancellation leak fix), paralleling the `Option<Permit>` drop-release.
     _interest: ReactorInterest,
+    /// The runtime-owned keep-alive ref on this reactor-deferred effect's
+    /// state-closure (`bounded-contexts.md §4b` invariant 15; FIXME 0486). Holds an
+    /// extra net-zero-inc RC ref on the state-closure (baked heap args) across the
+    /// effect's suspend arc and releases it **exactly once** at resolve — on
+    /// `Poll::Ready` (via [`StateClosure::consume`] after the result read) or on
+    /// cancel-drop (this field's own `Drop`). `0` for a fixture/test leaf that holds
+    /// no keep-alive ref (constructed via the [`EffectPoll::new`] convenience
+    /// wrapper). See [`StateClosure`] for the exactly-once discipline.
+    _state_closure: StateClosure,
 }
 
 impl<'h> EffectPoll<'h> {
@@ -840,16 +905,55 @@ impl<'h> EffectPoll<'h> {
     /// trampoline (`io::await_poll_node`) and unit tests — no external crate builds an
     /// `EffectPoll`.
     ///
+    /// This convenience wrapper owns **no** state-closure keep-alive (invariant 15) —
+    /// it delegates to [`EffectPoll::new_owning`] with a `0` closure handle. It is the
+    /// constructor for fixture/test leaves whose `state` is a stack/heap fixture the
+    /// caller owns, NOT a moved-out backend state-closure the runtime must consume.
+    /// The real trampoline path (`io::await_poll_node`) uses [`EffectPoll::new_owning`].
+    ///
     /// # Safety
     /// `state` must be valid for the poll-fn for the future's lifetime, and must
     /// point at an env whose first `i64` slot ([`RESULT_SLOT_OFFSET`]) is the
     /// reserved result slot the poll-fn writes before returning `Ready`;
     /// `poll_fn` must obey the v9 poll-fn contract.
+    ///
+    /// `#[cfg(test)]`: the production trampoline always owns a state-closure and so
+    /// calls [`EffectPoll::new_owning`] directly; this zero-keep-alive wrapper has
+    /// only unit-test callers (fixture leaves).
+    #[cfg(test)]
     pub(crate) unsafe fn new(
         state: *mut c_void,
         poll_fn: PollFn,
         host: &'h HostCtx,
         strand: StrandId,
+    ) -> Self {
+        // No runtime-owned state-closure (fixture/test leaf): `state_closure = 0`.
+        unsafe { Self::new_owning(state, poll_fn, host, strand, 0) }
+    }
+
+    /// Build an effect leaf that holds a **keep-alive ref** on the state-closure —
+    /// the runtime-owned keep-alive of `bounded-contexts.md §4b` **invariant 15**
+    /// (FIXME 0486 bug #2). `state_closure` is the backend-built state-closure base
+    /// pointer (the `IO_TAG_EFFECT_POLL` node's field-0) on which `io::await_poll_node`
+    /// has just taken ONE extra net-zero-inc RC ref (`rc_inc`); the node's field-0 is
+    /// left untouched. The returned [`EffectPoll`] holds that ref across the effect's
+    /// suspend arc and releases it exactly once at resolve (see [`StateClosure`]).
+    /// `state` is the poll-fn env base (`state_closure + 32`), the same pointer
+    /// [`EffectPoll::new`] takes; passing `state_closure == 0` gives the
+    /// no-keep-alive fixture behaviour.
+    ///
+    /// # Safety
+    /// Same obligations as [`EffectPoll::new`] on `state`/`poll_fn`, plus: if
+    /// `state_closure != 0` it must be a valid closure heap pointer carrying the
+    /// caller's `rc_inc` keep-alive ref, which the runtime releases via
+    /// `crate::drop::consume_closure` at resolve, and `state` must remain valid until
+    /// that release (it points INTO `state_closure`, kept live by the ref).
+    pub(crate) unsafe fn new_owning(
+        state: *mut c_void,
+        poll_fn: PollFn,
+        host: &'h HostCtx,
+        strand: StrandId,
+        state_closure: i64,
     ) -> Self {
         // Mint this leaf's registrant tag from the reactor (finding #3, §2.16),
         // alongside the §2.9 permit acquire. The reactor is the `host.host` raw
@@ -874,6 +978,7 @@ impl<'h> EffectPoll<'h> {
             polls: 0,
             reg,
             _interest: ReactorInterest { reactor, reg },
+            _state_closure: StateClosure(state_closure),
         }
     }
 }
@@ -936,6 +1041,19 @@ impl Future for EffectPoll<'_> {
                 let value = unsafe {
                     *((this.state as *const i64).byte_offset(RESULT_SLOT_OFFSET))
                 };
+                // Keep-alive release (`bounded-contexts.md §4b` invariant 15; FIXME
+                // 0486): the effect has resolved, so the runtime releases its
+                // net-zero-inc keep-alive ref on the state-closure NOW — after the
+                // result read above (which reads INTO `this.state`, a pointer inside
+                // the closure, so the read must precede any last-ref free). This is
+                // one `consume_closure` dec; it frees + runs the backend drop glue
+                // only if this was the closure's true last ref (on the normal path
+                // the node still holds its ref, so this dec does not free). `consume`
+                // zeroes the handle so the subsequent field-drop is a no-op —
+                // released exactly once (Principle 20). A fixture leaf holds no ref
+                // (handle == 0) so this is inert. Ordering vs. the permit release
+                // below is independent (closure heap vs. reactor ledger).
+                this._state_closure.consume();
                 // v9 eager release (`reactor.md §7.3`): release every permit this
                 // effect (identity `reg`) holds BEFORE returning `Ready`. In a
                 // `join_all` an individual leaf is not dropped until the whole join

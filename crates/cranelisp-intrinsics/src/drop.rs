@@ -300,7 +300,15 @@ pub fn consume_io_tree(ptr: i64) {
         // the constant is `concurrency`-gated in cranelisp-platform and this file
         // is ungated). field0 is the host-built state-closure — its embedded
         // drop glue dec's the captured i64 args; `consume_closure` runs it +
-        // deallocs the closure. The result slot is a plain i64 (no dec).
+        // deallocs the closure. The result slot is a plain i64 (no dec). This dec
+        // is the node's HALF of the arg-lifetime keep-alive (`bounded-contexts.md
+        // §4b` invariant 15; FIXME 0486 bug #2): `await_poll_node` takes ONE extra
+        // RC ref on the state-closure (net-zero-inc) that the `EffectPoll` releases
+        // at resolve, so this node-release dec no longer necessarily frees the
+        // closure — the closure is freed only when this ref AND the EffectPoll's
+        // keep-alive ref have both dropped (true rc→0). field-0 is NOT
+        // sentinel-moved (net-zero-inc leaves the node untouched), so this arm
+        // stays unconditional.
         4 => {
             consume_closure(field0);
         }
@@ -421,7 +429,12 @@ pub fn dec_shallow_io(ptr: i64) {
     // field0 state-closure is NOT re-owned elsewhere (unlike a Bind's inner /
     // cont, which transfer to `current` / `cont_stack`), so a last-ref shallow
     // dec MUST also release the closure or it leaks. (Literal 4 — the constant is
-    // `concurrency`-gated; this file is ungated.)
+    // `concurrency`-gated; this file is ungated.) This dec is the node's HALF of
+    // the arg-lifetime keep-alive (`bounded-contexts.md §4b` invariant 15; FIXME
+    // 0486): `await_poll_node` takes ONE extra net-zero-inc RC ref on the
+    // state-closure that the `EffectPoll` releases at resolve, so this shallow dec
+    // frees the closure only at true rc→0 (when both refs have dropped) — field-0 is
+    // untouched (no sentinel), so this stays a plain unconditional dec.
     let tag = unsafe { read_i64(ptr, TAG_OFFSET) };
     let poll_closure = if tag == 4 {
         unsafe { read_i64(ptr, FIELD0_OFFSET) }

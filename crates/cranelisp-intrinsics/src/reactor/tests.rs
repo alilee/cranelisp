@@ -1018,6 +1018,141 @@ fn v9_dropping_inflight_consume_releases_permit() {
     );
 }
 
+// ===========================================================================
+// Arg-lifetime-across-suspension keep-alive (invariant 15; FIXME 0486 bug #2).
+//
+// These pin the runtime-owned state-closure keep-alive at the `EffectPoll` seam:
+// a reactor-deferred poll effect holds its moved-out state-closure ALIVE across
+// the suspend arc and consumes it EXACTLY ONCE at resolve — eagerly on
+// `Poll::Ready`, or on cancel-drop — never both. The "consume" is observed by a
+// backend-drop-glue stand-in that bumps a counter (the real drop glue dec's the
+// baked heap args; here we count invocations to prove exactly-once).
+// ===========================================================================
+
+/// A test state-closure `[header(16) | code_ptr(16) | drop_glue(24) | env(32..)]`
+/// whose env holds: result@32, `polls_left`@40, and a `*const AtomicUsize`
+/// counter@48 that the drop glue bumps. Returns the closure base (rc == 1) — the
+/// same shape `io::await_poll_node` moves out of an `IO_TAG_EFFECT_POLL` node and
+/// hands to `EffectPoll::new_owning`.
+fn make_keepalive_test_closure(polls_left: i64, counter: *const std::sync::atomic::AtomicUsize) -> i64 {
+    // payload = code_ptr(8) + drop_glue(8) + [result(8) + polls_left(8) + counter(8)]
+    let clo = crate::alloc::alloc_with_rc(40) as i64;
+    unsafe {
+        // code_ptr@16 is unused here (new_owning takes the poll-fn directly).
+        *((clo + 16) as *mut i64) = 0;
+        // drop_glue@24 — the backend-drop-glue stand-in.
+        *((clo + 24) as *mut i64) = keepalive_test_dropglue as *const () as usize as i64;
+        // env@32: result slot (poll-fn writes it), polls_left, counter ptr.
+        *((clo + 32) as *mut i64) = 0; // result slot
+        *((clo + 40) as *mut i64) = polls_left;
+        *((clo + 48) as *mut i64) = counter as i64;
+    }
+    clo
+}
+
+/// The backend-drop-glue stand-in: bump the closure's captured counter. `consume_closure`
+/// invokes this exactly once on the closure's last-ref dec (rc 1→0), so the counter
+/// reads how many times the runtime consumed the state-closure.
+extern "C" fn keepalive_test_dropglue(clo: i64) {
+    // counter ptr baked at clo+48 (env offset 16).
+    let counter = unsafe { *((clo + 48) as *const i64) } as *const std::sync::atomic::AtomicUsize;
+    unsafe { (*counter).fetch_add(1, std::sync::atomic::Ordering::SeqCst) };
+}
+
+/// Poll-fn over the test closure's env (state = clo+32): park `polls_left` times,
+/// then write a result and return `Ready`. Never touches `host` (null-host leaf).
+unsafe extern "C" fn keepalive_test_pollfn(
+    state: *mut c_void,
+    _host: *const HostCtx,
+    _waker: *const CWaker,
+) -> CPoll {
+    let result_slot = state as *mut i64;
+    let polls_left = unsafe { (state as *mut i64).byte_offset(8) };
+    if unsafe { *polls_left } > 0 {
+        unsafe { *polls_left -= 1 };
+        return CPoll::Pending;
+    }
+    unsafe { *result_slot = 77 };
+    CPoll::Ready
+}
+
+// spec: bounded-contexts.md §4b invariant 15 (arg-lifetime-across-suspension; FIXME
+// 0486 bug #2). The runtime OWNS the state-closure keep-alive at the `EffectPoll`
+// seam: a reactor-deferred effect's baked args stay live across the suspend arc
+// (NOT freed at establish/suspend by the sub-tree's own reclamation), and are
+// consumed EXACTLY ONCE on the eager `Poll::Ready` resolve — a subsequent
+// future-drop is a no-op (no double-free — the bug-#2 UAF class).
+#[test]
+fn keepalive_state_closure_consumed_exactly_once_on_ready() {
+    let counter = std::sync::atomic::AtomicUsize::new(0);
+    let host = make_host_ctx(std::ptr::null_mut()); // null-host leaf: reg 0, no reactor.
+
+    // Establish the leaf OWNING the moved-out state-closure; parks ONCE before Ready.
+    let clo = make_keepalive_test_closure(1, &counter as *const _);
+    let state_env = (clo + 32) as *mut c_void /* closure env base = clo + header(16) + code_ptr(8) + drop_glue(8) */;
+    let mut leaf =
+        unsafe { EffectPoll::new_owning(state_env, keepalive_test_pollfn, &host, StrandId(1), clo) };
+
+    // Poll #1 → Pending: the effect suspends. The state-closure MUST stay live
+    // (keep-alive) — NOT consumed at establish/suspend.
+    assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "establish → Pending (suspended)");
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "state-closure held alive across suspension (invariant 15) — not consumed at suspend"
+    );
+
+    // Poll #2 → Ready: the runtime consumes the state-closure EXACTLY ONCE, eagerly.
+    assert!(matches!(poll_once(&mut leaf), _Poll::Ready(77)), "resolve → Ready(77)");
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "state-closure consumed exactly once on Ready (eager keep-alive release)"
+    );
+
+    // Dropping the resolved future is a NO-OP — the closure was already consumed
+    // (handle zeroed), so no double-free (the bug-#2 UAF guard, Principle 20).
+    drop(leaf);
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "future-drop after Ready does NOT re-consume the state-closure (exactly once)"
+    );
+}
+
+// spec: bounded-contexts.md §4b invariant 15 (arg-lifetime-across-suspension; FIXME
+// 0486 bug #2). The SECOND resolve path: a still-`Pending` leaf that is DROPPED
+// (cancelled / race-lost / disconnected) consumes its owned state-closure EXACTLY
+// ONCE on the cancel-drop — the same exactly-once contract as the `Ready` path, on
+// the other branch. No leak (the closure is freed) and no double-free.
+#[test]
+fn keepalive_state_closure_consumed_exactly_once_on_cancel_drop() {
+    let counter = std::sync::atomic::AtomicUsize::new(0);
+    let host = make_host_ctx(std::ptr::null_mut());
+
+    {
+        // Never-Ready leaf owning the state-closure.
+        let clo = make_keepalive_test_closure(i64::MAX, &counter as *const _);
+        let state_env = (clo + 32) as *mut c_void /* closure env base = clo + header(16) + code_ptr(8) + drop_glue(8) */;
+        let mut leaf =
+            unsafe { EffectPoll::new_owning(state_env, keepalive_test_pollfn, &host, StrandId(1), clo) };
+
+        assert!(matches!(poll_once(&mut leaf), _Poll::Pending), "parked (never Ready)");
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "state-closure held alive while parked — not consumed at suspend"
+        );
+        // DROP the in-flight leaf (cancellation) — the `_state_closure` guard consumes.
+    }
+
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "cancel-drop consumes the owned state-closure exactly once (no leak, no double-free)"
+    );
+}
+
 // spec: design/int/reactor.md §7.2 — `acquire` is idempotent per in-flight effect
 // (a re-acquire on a token the effect already holds does NOT consume a 2nd permit),
 // and a DIFFERENT effect on a full capacity-1 token PARKS. A later `release_all`

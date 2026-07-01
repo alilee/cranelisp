@@ -382,12 +382,50 @@ async fn await_poll_node(
     // the reserved result slot is its first i64 (env offset 0). (Named
     // `state_env` to not shadow the `env: &ReactorEnv` admission handle above.)
     let state_env = (clo + CLOSURE_ENV_OFFSET) as *mut core::ffi::c_void;
+    // Keep-alive across suspension (`bounded-contexts.md §4b` invariant 15; FIXME
+    // 0486 bug #2). A reactor-deferred poll effect's baked heap args (captured in
+    // the state-closure) must stay LIVE from establish until the reactor resolves
+    // the effect — but the enclosing IO sub-tree can be torn down first (a launched
+    // strand's `consume_io_tree` runs to completion while the terminal `send-conn`
+    // is still reactor-deferred). That teardown's tag-4 arm (`drop.rs`) would run
+    // the state-closure's drop glue and free the baked args out from under the
+    // pending poll-fn → use-after-free (RC-balanced; a UAF, not a miscount →
+    // SIGABRT).
+    //
+    // Fix = **net-zero-inc** (the RC-trace-decided variant, FIXME 0486): take ONE
+    // extra RC ref on the state-closure at establish and hand it to the
+    // `EffectPoll`, which releases it (via `consume_closure`) exactly once at
+    // resolve — on `Poll::Ready` OR on cancel-drop, keyed to the SAME two-path the
+    // permit release already rides. The node's field-0 is left UNTOUCHED (no
+    // sentinel), so the sub-tree's own tag-4 reclamation still dec's its ref
+    // exactly as before; the closure is now freed at the LATER of {node-release,
+    // effect-resolve} — i.e. at true rc→0. On the normal path resolve precedes
+    // node-release, so free-timing/ownership is byte-identical to pre-fix; on the
+    // launched path the extra ref survives the early teardown and the deferred send
+    // reads the live args, resolve then frees. This is runtime-owned keep-alive;
+    // the backend's state-closure + drop-glue obligation is unchanged (invariant
+    // 15). (The move-out-with-sentinel alternative was rejected on measurement: it
+    // eager-frees EVERY poll effect's closure on `Ready`, including the `accept`
+    // effect's closure that captures the LISTENER — freeing it early wedges the
+    // accept loop, so the server hangs and the launched vec-render never runs enough
+    // to trip the bug. That is a false-green — the SIGABRT guard sees "no signal" but
+    // the server is dead — and it reliably breaks the real serve path. Net-zero-inc
+    // preserves the pre-fix closure free-timing, so listener/conn lifetime is
+    // correct and the server keeps serving. See FIXME 0486.)
+    // SAFETY: `clo` is the live state-closure base (rc > 0) — `rc_inc` takes the
+    // keep-alive ref the `EffectPoll` owns.
+    crate::rc::rc_inc(clo);
     // Construct the EffectPoll scheduling-blind (no permit) — the platform poll-fn
     // acquires via `ctx.acquire`; the host releases by identity on `Ready`/drop.
-    // SAFETY: `state_env` points at the backend-built env (result slot + i64
-    // args); `poll_fn` obeys the v9 poll-fn contract.
+    // The `EffectPoll` now owns the keep-alive ref on `clo` and releases it exactly
+    // once at resolve (invariant 15).
+    // SAFETY: `state_env` points at the backend-built env (result slot + i64 args)
+    // INSIDE `clo` (valid for the future's whole lifetime — the keep-alive ref keeps
+    // `clo` alive at least until the EffectPoll releases it at resolve, after
+    // reading the result slot); `poll_fn` obeys the v9 poll-fn contract; `clo` is
+    // the live state-closure base carrying the keep-alive ref.
     let leaf = unsafe {
-        crate::reactor::EffectPoll::new(state_env, poll_fn, env.host, strand)
+        crate::reactor::EffectPoll::new_owning(state_env, poll_fn, env.host, strand, clo)
     };
     leaf.await
 }
