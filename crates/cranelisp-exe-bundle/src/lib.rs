@@ -121,26 +121,12 @@ pub extern "C" fn cranelisp_init_platform(manifest_fn_ptr: i64) {
         *const cranelisp_platform::HostCallbacks,
     ) -> cranelisp_platform::PlatformManifest;
     let manifest_fn: ManifestFn = unsafe { std::mem::transmute(manifest_fn_ptr) };
-    // `alloc_with_tag` is wired to the real intrinsic (S76 W3, FIXME 0229
-    // step 1): `cranelisp_alloc_with_tag` allocates a tagged heap ADT and
-    // returns the alloc base, removing the R1 gate in `--link` mode too. The
-    // `validate_schema` callback channel is gone (FIXME 0288): schema validation
-    // is superseded by the `--link` layout-hash gate (platform-interface.md
-    // §5.5.4), baked into the startup object as a `cranelisp_check_layout_hash`
-    // compare-and-abort.
-    let callbacks = cranelisp_platform::HostCallbacks {
-        // DEF-6 (Sprint 86): `HostCallbacks::alloc` MUST return a PAYLOAD pointer
-        // (alloc base + HEAP_HEADER_SIZE) — the platform's heap-node constructors
-        // (`CLIO::pure`/`effect`, `CLString::from`) subtract HEAP_HEADER_SIZE to
-        // recover the base. `heap_alloc` returns the BASE, so wiring it here drove
-        // every platform-built node's stored base 16 bytes too low, clobbering the
-        // RC header and overrunning adjacent heap metadata one node per host↔DLL
-        // crossing (glibc "double free or corruption" after ~40 crossings). The
-        // JIT path (`src/platform.rs`) already wires `heap_alloc_payload`; this
-        // makes the `--link` path match. See the platform-side layout-invariant
-        // guards `def6_*` in cranelisp-platform/src/lib.rs.
-        alloc: cranelisp_intrinsics::alloc::heap_alloc_payload,
-        alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
-    };
+    // The single divergence-proof `HostCallbacks` builder (FIXME 0419). Both the
+    // JIT path (`src/platform.rs`) and this `--link` startup stub call the ONE
+    // construction site in `cranelisp-intrinsics`, so the DEF-6 payload-vs-base
+    // `alloc` mismatch cannot recur by hand-mirror. (The former 10-line
+    // cross-file "this makes the --link path match" comment dissolved: there is
+    // no sibling literal to match — there is one literal.)
+    let callbacks = cranelisp_intrinsics::host_callbacks();
     manifest_fn(&callbacks);
 }

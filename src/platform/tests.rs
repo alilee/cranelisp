@@ -154,11 +154,10 @@
 
     /// Build the `HostCallbacks` exactly as `load_platform_dll` does, so the
     /// test exercises the wiring under test rather than a hand-built struct.
+    /// Delegates to the ONE divergence-proof builder (FIXME 0419) that every
+    /// production site now calls.
     fn wired_host_callbacks() -> HostCallbacks {
-        HostCallbacks {
-            alloc: cranelisp_intrinsics::heap_alloc_payload,
-            alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
-        }
+        cranelisp_intrinsics::host_callbacks()
     }
 
     // spec: design/platform/host-wiring-s76.md §2 — the host wires the real

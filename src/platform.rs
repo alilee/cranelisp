@@ -224,14 +224,11 @@ pub fn load_platform_dll(
     // and populates the DLL's exported GOT slab (manifest order IS GOT slot
     // order, §5.1), which we dlsym in step 6.
     //
-    // `alloc_with_tag` is wired to the real intrinsic (S76 W3, FIXME 0229):
-    // `cranelisp_alloc_with_tag` allocates a tagged heap ADT over
-    // `alloc::alloc_with_rc`. The `validate_schema` callback is gone (FIXME
-    // 0288): schema validation is superseded by the layout-hash gate (§5.5.4).
-    let callbacks = HostCallbacks {
-        alloc: cranelisp_intrinsics::heap_alloc_payload,
-        alloc_with_tag: cranelisp_intrinsics::alloc::cranelisp_alloc_with_tag,
-    };
+    // The single divergence-proof `HostCallbacks` builder (FIXME 0419): one
+    // construction site wires the DEF-6-correct payload-returning `alloc` +
+    // the real `cranelisp_alloc_with_tag`. Every mode (this JIT/REPL path, the
+    // `--link` startup stub in `cranelisp-exe-bundle`, the test mirror) calls it.
+    let callbacks = cranelisp_intrinsics::host_callbacks();
 
     // Single-ABI cutover (`design/arch/platform-interface.md` §6.8.0): ONE loader
     // path. The v6/v7 either/or probe (`cranelisp_concurrent_manifest`) is gone —

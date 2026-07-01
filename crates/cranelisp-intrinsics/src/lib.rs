@@ -233,3 +233,56 @@ pub use catalog::{intrinsics_table, IntrinsicEntry}; // backend Jit::new + int w
 pub use io_observer::{register_io_observer, trace_anchor}; // src/io_trace.rs, src/got_trace.rs
 pub use alloc::{alloc_count, alloc_with_rc, bytes_current, dealloc_count, heap_alloc_payload}; // src/{session_v4,pipeline,platform}.rs
 pub use io::run_io_trampoline; // src/{session_v4,pipeline}.rs
+
+/// The canonical host-callbacks table handed to every platform manifest call.
+///
+/// This is the **single, divergence-proof construction site** for the
+/// `HostCallbacks` a platform DLL receives — DEF-6 divergence-proofing. Every
+/// mode (`--run`/REPL JIT via `src/platform.rs`, the `--link` startup stub in
+/// `cranelisp-exe-bundle`, and the test mirror) calls this one builder, so the
+/// `alloc` = payload-returning (`heap_alloc_payload`) vs base-returning
+/// (`heap_alloc`) mismatch that corrupted the heap in DEF-6 cannot recur by
+/// hand-mirroring three separate literals.
+///
+/// This is the lowest crate that can name both `cranelisp_platform::HostCallbacks`
+/// (its dependency) and both intrinsic function pointers it owns
+/// (`heap_alloc_payload`, `cranelisp_alloc_with_tag`) without inverting the crate
+/// DAG (Principle 3) — see FIXME 0419 for the home ruling.
+pub fn host_callbacks() -> cranelisp_platform::HostCallbacks {
+    cranelisp_platform::HostCallbacks {
+        // DEF-6 (Sprint 86): `HostCallbacks::alloc` MUST return a PAYLOAD pointer
+        // (alloc base + HEAP_HEADER_SIZE). `heap_alloc` returns the BASE and wiring
+        // it here clobbers the RC header one node per host↔DLL crossing.
+        alloc: alloc::heap_alloc_payload,
+        alloc_with_tag: alloc::cranelisp_alloc_with_tag,
+    }
+}
+
+#[cfg(test)]
+mod host_callbacks_tests {
+    // spec: design/arch/fixmes/0419 — DEF-6 divergence-proofing. The one shared
+    // builder MUST wire `alloc` to the PAYLOAD-returning `heap_alloc_payload`,
+    // never the base-returning `heap_alloc`. Pinning the function-pointer identity
+    // makes the builder divergence-proof by construction.
+    #[test]
+    fn host_callbacks_alloc_is_payload_returning() {
+        let cb = super::host_callbacks();
+        // Function-pointer identity: `alloc` is exactly `heap_alloc_payload`.
+        assert_eq!(
+            cb.alloc as *const () as usize,
+            super::alloc::heap_alloc_payload as *const () as usize,
+            "DEF-6: host_callbacks().alloc must be the payload-returning heap_alloc_payload"
+        );
+        // And it must NOT be the base-returning `heap_alloc` (the DEF-6 defect).
+        assert_ne!(
+            cb.alloc as *const () as usize,
+            super::alloc::heap_alloc as *const () as usize,
+            "DEF-6: host_callbacks().alloc must NOT be the base-returning heap_alloc"
+        );
+        assert_eq!(
+            cb.alloc_with_tag as *const () as usize,
+            super::alloc::cranelisp_alloc_with_tag as *const () as usize,
+            "host_callbacks().alloc_with_tag must be the tagged-ADT intrinsic"
+        );
+    }
+}

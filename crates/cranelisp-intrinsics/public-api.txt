@@ -270,6 +270,7 @@ pub fn cranelisp_intrinsics::alloc_with_rc(usize) -> *mut u8
 pub fn cranelisp_intrinsics::bytes_current() -> usize
 pub fn cranelisp_intrinsics::dealloc_count() -> usize
 #[no_mangle] pub c fn cranelisp_intrinsics::heap_alloc_payload(i64) -> i64
+pub fn cranelisp_intrinsics::host_callbacks() -> cranelisp_platform::HostCallbacks
 pub fn cranelisp_intrinsics::intrinsics_table() -> &'static [cranelisp_intrinsics::catalog::IntrinsicEntry]
 pub fn cranelisp_intrinsics::register_io_observer(core::option::Option<cranelisp_intrinsics::io_observer::IoObserver>)
 pub fn cranelisp_intrinsics::run_io_trampoline(i64) -> i64
