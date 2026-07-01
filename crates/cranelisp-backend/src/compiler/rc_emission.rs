@@ -650,7 +650,26 @@ pub(crate) fn find_var_type_in_expr(expr: &MonoExpr, name: &Symbol) -> Option<Ty
         MonoExpr::ConstrADT { fields, .. } => {
             fields.iter().find_map(|f| find_var_type_in_expr(f, name))
         }
-        _ => None,
+        // Literals carry no sub-expression and no variable reference — no type
+        // to find. This arm is deliberately EXHAUSTIVE (not `_ => None`) so that
+        // adding a new `MonoExpr` variant carrying a sub-expression is a compile
+        // error at this seam, forcing a conscious traversal decision. A silent
+        // `_ => None` here is exactly how FIXME 0494's double-free shipped
+        // (a `conn`-typed param used only inside a then-missing `LaunchContinue`
+        // sub-tree fell through to `None` → skipped consuming inc → UAF). Kept
+        // in lock-step with its two exhaustive sibling MonoExpr RC/lifetime
+        // traversals (`heap.rs::collect_var_uses`,
+        // `control_flow/free_vars.rs::collect_free_vars`); all three must stay
+        // exhaustive.
+        //
+        // `Var { .. }` also lands here: the guarded `Var` arm above returns the
+        // type only when the name matches (a guarded arm does not count toward
+        // exhaustivity), so a non-matching `Var` yields no type.
+        MonoExpr::Var { .. }
+        | MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::StringLit { .. } => None,
     }
 }
 
