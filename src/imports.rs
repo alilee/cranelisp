@@ -53,8 +53,28 @@ pub(crate) fn install_imports(
             );
         }
 
+        // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
+        // (try as-is, then `<current>.<name>`), SYMMETRIC with `install_exports`
+        // (which already does this). Without it a bare `(import [child …])` in a
+        // `(mod child)`-declaring shell fails "unknown module 'child'": the source
+        // table is registered as `<current>.child`, not root `child`. Bare names
+        // with no child candidate + dotted paths fall through to `spec.module_path`
+        // unchanged (the `.get(&resolved_path).ok_or_else(…)` below still errors for
+        // a genuinely-missing module).
+        let resolved_path = if symbol_tables.contains_key(&spec.module_path) {
+            spec.module_path.clone()
+        } else {
+            let child =
+                ModuleFullPath::from(format!("{current_module}.{}", spec.module_path));
+            if symbol_tables.contains_key(&child) {
+                child
+            } else {
+                spec.module_path.clone()
+            }
+        };
+
         let to_add = {
-            let source_guard = symbol_tables.get(&spec.module_path).ok_or_else(|| {
+            let source_guard = symbol_tables.get(&resolved_path).ok_or_else(|| {
                 CranelispError::TypeError {
                     message: format!("unknown module '{}' in import", spec.module_path),
                     location: ErrorLocation::from_span(spec.span),
@@ -63,7 +83,7 @@ pub(crate) fn install_imports(
             collect_bindings(
                 &source_guard,
                 current_module,
-                &spec.module_path,
+                &resolved_path,
                 &spec.names,
                 spec.span,
                 Visibility::Private,

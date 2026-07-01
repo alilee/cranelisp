@@ -138,7 +138,25 @@ pub(super) fn handle_import(
     specs: Vec<ImportSpec>,
 ) -> Result<BlockAction, CranelispError> {
     for spec in &specs {
-        let dep = &spec.module_path;
+        // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
+        // (`<module>.<name>`) BEFORE the root/lib file search, SYMMETRIC with
+        // `handle_export` (the shared helper's own doc names BOTH `handle_export`
+        // and `handle_import` as afflicted; only the export side was wired). Without
+        // it a bare `(import [child …])` in a `(mod child)`-declaring shell resolves
+        // `child` only as a ROOT module and errors "module 'child' not found". Bare
+        // non-submodule names and dotted deps pass through unchanged, so no genuine
+        // root/lib import regresses. NOTE: the late (registration) stage
+        // `install_imports` applies the SAME relative resolution (it is called with
+        // the raw spec here), mirroring `install_exports` — the two together close
+        // the bare-submodule-import mirror.
+        let dep_owned = resolve_current_module_relative(
+            ctx.symbol_tables,
+            ctx.project_root,
+            ctx.lib_dirs,
+            module,
+            &spec.module_path,
+        );
+        let dep = &dep_owned;
 
         // §8.3.6 Null import: empty names means suppress loading entirely.
         if matches!(&spec.names, ImportNames::None) {

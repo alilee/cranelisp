@@ -172,7 +172,11 @@ fn detached_faulting_effect_does_not_abort_the_launch_loop() {
     // A tail-recursive launch LOOP (the §B4 model): each iteration LAUNCHES one
     // `poll-fault` on a DISTINCT token `n` (its result discarded — the unused bind
     // binder, exactly what the `do` sequencing macro desugars to; tests are
-    // free-standing so we cannot use the prelude `do` macro) and recurses. A single
+    // free-standing so we cannot use the prelude `do` macro) and recurses. The
+    // `(let [m (sub-i64 n 1)] …)` decouple hoists the loop control value OUT of the
+    // token operand so io free {n} and cont free {m} are disjoint — the unified
+    // single-step launch-arm E2 (FIXME 0478: same literal free-var disjointness the
+    // sub-tree arm uses) then permits the launch. A single
     // result-discarded, token-disjoint bind step per dynamic frame lowers to
     // `IO_TAG_LAUNCH` (the launch shape `/int`'s independence analysis recognises —
     // a flat sibling chain would instead group into a joined `Par`, bypassing the
@@ -186,8 +190,9 @@ fn detached_faulting_effect_does_not_abort_the_launch_loop() {
          (defn fault-loop [n]\n\
            (if (eq-i64 n 0)\n\
                (Pure 42)\n\
-               (bind ({fault} n 1 {d}) (fn [r]\n\
-                 (fault-loop (sub-i64 n 1))))))\n\
+               (let [m (sub-i64 n 1)]\n\
+                 (bind ({fault} n 1 {d}) (fn [r]\n\
+                   (fault-loop m))))))\n\
          (defn main [] (fault-loop 3))\n",
         plat = POLL_PLATFORM,
         fault = POLL_FAULT,
@@ -226,7 +231,10 @@ fn degree_n_bounds_inflight_launched_effects_nplus1_parks() {
     // A tail-recursive launch LOOP (the §B4 model): each iteration LAUNCHES one
     // D-ms `poll-read` on a DISTINCT token `n` (capacity 1 each, so the per-resource
     // pool never bounds them — only the global degree does) with its result
-    // DISCARDED (the unused bind binder), then recurses. The discarded, token-
+    // DISCARDED (the unused bind binder), then recurses. The `(let [m (sub-i64 n 1)]
+    // …)` decouple keeps the token operand `n` disjoint from the continuation (io
+    // free {n}, cont free {m}) so the unified single-step launch-arm E2 (FIXME 0478)
+    // permits the launch. The discarded, token-
     // disjoint single bind step lowers to `IO_TAG_LAUNCH`, whose `launch_continue`
     // arm acquires the GLOBAL-budget permit (sized to the degree) — so degree=2
     // admits 2 strands and PARKS the 3rd/4th launch. Returns `(Pure 0)` ⇒ exit 0
@@ -239,8 +247,9 @@ fn degree_n_bounds_inflight_launched_effects_nplus1_parks() {
          (defn launch-loop [n]\n\
            (if (eq-i64 n 0)\n\
                (Pure 0)\n\
-               (bind ({read} n 1 {d}) (fn [r]\n\
-                 (launch-loop (sub-i64 n 1))))))\n\
+               (let [m (sub-i64 n 1)]\n\
+                 (bind ({read} n 1 {d}) (fn [r]\n\
+                   (launch-loop m))))))\n\
          (defn main [] (launch-loop 4))\n",
         plat = POLL_PLATFORM,
         read = POLL_READ,
@@ -297,8 +306,10 @@ fn degree_n_bounds_inflight_launched_effects_nplus1_parks() {
 fn launch_and_continue_runs_concurrently_launcher_does_not_await() {
     // A tail-recursive accept-loop: launch a slow D-ms poll-read on token `n`
     // (result discarded — unused bind binder), then recurse. Distinct tokens per
-    // iteration, so
-    // capacity never bounds them. Returns `(Pure 0)` at n=0 ⇒ exit 0.
+    // iteration, so capacity never bounds them. The `(let [m (sub-i64 n 1)] …)`
+    // decouple hoists the loop control value out of the token operand (io free {n},
+    // cont free {m} ⇒ disjoint), which the unified single-step launch-arm E2 (FIXME
+    // 0478) requires to permit the launch. Returns `(Pure 0)` at n=0 ⇒ exit 0.
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{read}]])\n\
@@ -306,8 +317,9 @@ fn launch_and_continue_runs_concurrently_launcher_does_not_await() {
          (defn fanout-loop [n]\n\
            (if (eq-i64 n 0)\n\
                (Pure 0)\n\
-               (bind ({read} n 1 {d}) (fn [r]\n\
-                 (fanout-loop (sub-i64 n 1))))))\n\
+               (let [m (sub-i64 n 1)]\n\
+                 (bind ({read} n 1 {d}) (fn [r]\n\
+                   (fanout-loop m))))))\n\
          (defn main [] (fanout-loop 5))\n",
         plat = POLL_PLATFORM,
         read = POLL_READ,

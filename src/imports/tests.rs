@@ -407,3 +407,74 @@
             "the colliding name MUST be poisoned with the Ambiguous sentinel",
         );
     }
+
+    // spec: 08-modules.md §8.11.2 (step 1) — install_imports resolves a BARE submodule
+    // name current-module-relative (try as-is, then `<current>.<name>`), SYMMETRIC with
+    // install_exports. A bare `(import [child [foo]])` inside a `(mod child)`-declaring
+    // `shell` registers `foo` sourced from `shell.child`, not a root `child` (which
+    // errored "unknown module 'child'"). This closes the import half of the mirror the
+    // dependency.rs current-module-relative helper's own doc names (only the export
+    // side was wired before). RED-on-revert: dropping the relative resolution in
+    // install_imports makes this error.
+    #[test]
+    fn install_imports_resolves_bare_submodule_current_module_relative() {
+        let tables = tables();
+        ensure(&tables, "shell");
+        ensure(&tables, "shell.child");
+        let aliases = ModuleAliases::default();
+
+        // The child submodule defines a public `foo`.
+        tables
+            .get_mut(&ModuleFullPath::from("shell.child"))
+            .unwrap()
+            .insert(Symbol::from("foo"), primitive_def());
+
+        // shell does `(import [child [foo]])` — module_path is the BARE `child`.
+        install_imports(
+            &tables,
+            &ModuleFullPath::from("shell"),
+            &aliases,
+            &[specific_spec("child", "foo")],
+        )
+        .expect(
+            "a bare submodule import must resolve current-module-relative to \
+             shell.child (§8.11.2 step 1) — not error 'unknown module child'",
+        );
+
+        let shell = tables.get(&ModuleFullPath::from("shell")).unwrap();
+        match shell.get("foo").expect("foo installed in shell") {
+            ModuleEntry::Import { source, .. } => {
+                assert_eq!(
+                    source.module,
+                    ModuleFullPath::from("shell.child"),
+                    "foo must be sourced from the shell.child submodule, not root child",
+                );
+            }
+            other => panic!("expected an Import binding for foo, got {other:?}"),
+        }
+    }
+
+    // spec: 08-modules.md §8.11.2 — NEGATIVE: a bare import name with NO
+    // current-module-relative candidate (no `<current>.<name>` table) still errors
+    // "unknown module" — the relative resolution is a fallback that never masks a
+    // genuinely-missing module.
+    #[test]
+    fn install_imports_bare_name_without_submodule_errors() {
+        let tables = tables();
+        ensure(&tables, "shell");
+        let aliases = ModuleAliases::default();
+        let err = install_imports(
+            &tables,
+            &ModuleFullPath::from("shell"),
+            &aliases,
+            &[specific_spec("nope", "foo")],
+        )
+        .expect_err("a bare name with no submodule candidate must still error");
+        match err {
+            CranelispError::TypeError { message, .. } => assert!(
+                message.contains("unknown module 'nope'"),
+                "the error must name the genuinely-missing module; got: {message}",
+            ),
+            other => panic!("expected a TypeError, got {other:?}"),
+        }
+    }

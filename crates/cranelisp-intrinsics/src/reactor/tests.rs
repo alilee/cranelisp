@@ -801,6 +801,92 @@ fn cap_still_trips_for_stuck_poll_leaf_no_bridge() {
 }
 
 // ===========================================================================
+// FIXME 0479 (§8.3) — the structural armed-ness deadlock detector vs the backstop.
+//
+// The pre-existing liveness units above cover only the SECONDARY wall-clock backstop
+// (an armed-but-never-readies leaf). These two cover the PRIMARY structural predicate
+// (`reactor_is_armed`, §8.2): the §8.3-mandated pair — an unarmed `Pending` trips it
+// immediately; an armed fd does NOT (it falls through to the backstop instead).
+// ===========================================================================
+
+/// A poll-fn that returns `Pending` and arms NOTHING (no fd, no timer) — the
+/// structural-deadlock shape the §8.2 armed-ness detector must catch immediately.
+unsafe extern "C" fn unarmed_pending_pollfn(
+    _state: *mut c_void,
+    _host: *const HostCtx,
+    _waker: *const CWaker,
+) -> CPoll {
+    CPoll::Pending
+}
+
+// spec: design/int/reactor.md §8.3 — the structural armed-ness deadlock detector
+// (`reactor_is_armed`, §8.2) trips IMMEDIATELY on a `Pending` top future that armed
+// NOTHING (no fd/timer waiter, no bridge, no supervised strand, no parked permit) — a
+// true deadlock nothing can ever wake. It fires WITHOUT waiting the wall-clock
+// backstop: the 30s backstop below would hang the test if the detector did not fire
+// first, so a fast panic proves the immediate structural trip. This is the PRIMARY
+// liveness rule, distinct from the secondary armed-but-never-readies backstop the
+// units above cover.
+#[test]
+#[should_panic(expected = "no armed interest")]
+fn armed_ness_detector_trips_immediately_on_unarmed_pending() {
+    let strand = next_strand();
+    let _ = block_on_reactor_capped(
+        async |env| {
+            let host = env.host;
+            let mut st = NeverReadyState { result: 0 };
+            let leaf = unsafe {
+                EffectPoll::new(
+                    &mut st as *mut _ as *mut c_void,
+                    unarmed_pending_pollfn,
+                    host,
+                    strand,
+                )
+            };
+            leaf.await
+        },
+        crate::reactor::DriveMode::OneShot,
+        Duration::from_secs(30),
+    );
+}
+
+// spec: design/int/reactor.md §8.3 — an ARMED leaf (an fd waiter) must NOT trip the
+// structural armed-ness detector: `reactor_is_armed` is true (`has_waiters`), so the
+// drive keeps turning and the leaf falls through to the SECONDARY wall-clock backstop
+// (a short one here) instead. This proves the detector distinguishes "armed but not
+// ready" (a legitimate park) from "armed nothing" (immediate deadlock) — the pairing
+// §8.3 mandates. Contrast the unarmed leaf above (panics `no armed interest`); this
+// armed one reaches the `OneShot backstop`. RED contrast: were the armed-ness
+// predicate wrong (always-false), this would flip to the `no armed interest` panic.
+#[test]
+#[should_panic(expected = "OneShot backstop exceeded")]
+fn armed_fd_leaf_does_not_trip_detector_reaches_backstop() {
+    let strand = next_strand();
+    // A non-blocking read end that is never fed: the leaf arms `register_readable`
+    // and parks (armed, but never readies). `pair` (has a `Drop`) stays alive to the
+    // end of scope, so the fd is valid across the whole drive.
+    let pair = SockPair::new();
+    let read_fd = pair.read_end;
+    let _ = block_on_reactor_capped(
+        async |env| {
+            let host = env.host;
+            let mut st = AsyncReadState { result: 0, fd: read_fd, registered: false };
+            let leaf = unsafe {
+                EffectPoll::new(
+                    &mut st as *mut _ as *mut c_void,
+                    async_read_pollfn,
+                    host,
+                    strand,
+                )
+            };
+            leaf.await
+        },
+        crate::reactor::DriveMode::OneShot,
+        Duration::from_millis(60),
+    );
+}
+
+// ===========================================================================
 // S97 ABI v9 — the ctx-vtable handle model: the platform poll-fn acquires its own
 // token permit via `ctx.acquire`; the host keys held permits by the effect's
 // identity (its RegId) and OWNS release (eager on `Ready`, on drop = cancel). These

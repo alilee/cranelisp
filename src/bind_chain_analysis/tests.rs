@@ -679,6 +679,38 @@
         make_bind_expr(subtree, binder, continuation)
     }
 
+    /// The DECOUPLED §B4 single-step launch shape (FIXME 0478):
+    /// `(let [m (sub-i64 n 1)] (bind (<read> n c f) (fn [_] (recur m))))` — hoists
+    /// the loop control value `m` OUT of the token operand `n`, so io free {n} and
+    /// cont free {m} are DISJOINT and the unified E2 (same literal free-var
+    /// disjointness as the sub-tree arm) permits the launch. This is the accept-loop
+    /// desugaring the compiler front-half supplies.
+    fn decoupled_counter_loop(read: &str) -> Expr {
+        Expr::Let {
+            bindings: vec![(Symbol::from("m"), make_apply("sub-i64", vec![make_var("n")]))],
+            body: Box::new(make_bind_expr(
+                make_apply(read, vec![make_var("n"), make_var("c"), make_var("f")]),
+                "_",
+                make_apply("recur", vec![make_var("m")]),
+            )),
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        }
+    }
+
+    /// Assert `result` is a `Let` whose body is a `LaunchContinue` — the shape the
+    /// decoupled single-step launch produces (the outer `(let [m …] …)` hoist wraps
+    /// the launched bind step).
+    fn assert_let_wraps_launch(result: &Expr) {
+        let Expr::Let { body, .. } = result else {
+            panic!("expected a Let wrapping the launch, got {result:?}");
+        };
+        assert!(
+            matches!(body.as_ref(), Expr::LaunchContinue { .. }),
+            "the decoupled single-step loop must LAUNCH inside the Let body, got {body:?}"
+        );
+    }
+
     // spec: 10-io.md §10.12.7 — POSITIVE: a discarded, value-local, ResourceSerial
     // bind SUB-TREE (the inlined `read→handle→send` handler over a fresh `conn`
     // token) lowers to `LaunchContinue`. design: effect-concurrency.md §4.1
@@ -831,35 +863,29 @@
         );
     }
 
-    // spec: 10-io.md §10.12.7 — SINGLE-STEP nonzero-token launch: the §B4
-    // accept-loop shape `(bind (rd n c f) (fn [_] (recur (sub n))))` launches even
-    // though the token var `n` is shared with the continuation (a value read, not a
-    // conflicting effect — the single-step arm relies on the per-call dynamic token
-    // + E3, not the sub-tree's E2 shared-free-var witness).
+    // spec: 10-io.md §10.12.7 / design/int/bind-chain-analysis.md §3.7 (FIXME 0478)
+    // — SINGLE-STEP nonzero-token launch, DECOUPLED shape: the §B4 accept loop hoists
+    // its control value out of the token operand — `(let [m (sub-i64 n 1)] (bind (rd
+    // n c f) (fn [_] (recur m))))` — so io free {n} and cont free {m} are DISJOINT and
+    // the unified E2 (same literal free-var disjointness as the sub-tree arm) permits
+    // the launch. Under the retired narrow check the token var could be shared; the
+    // unified check requires the decouple, which the accept-loop desugaring supplies.
     #[test]
     fn test_launch_single_step_nonzero_token_shares_counter_var() {
         let (tables, m) = fanout_tables();
-        let expr = make_bind_expr(
-            make_apply("rd", vec![make_var("n"), make_var("c"), make_var("f")]),
-            "_",
-            make_apply("recur", vec![make_apply("sub", vec![make_var("n")])]),
-        );
-        let result = transform_expr(expr, &tables, &m);
-        assert!(
-            matches!(result, Expr::LaunchContinue { .. }),
-            "the §B4 single-step launch loop (token var shared as a value) must \
-             LAUNCH, got {result:?}"
-        );
+        let result = transform_expr(decoupled_counter_loop("rd"), &tables, &m);
+        assert_let_wraps_launch(&result);
     }
 
     // spec: 10-io.md §10.12.7 / design/int/bind-chain-analysis.md §3.7 (FIXME 0478)
-    // — SINGLE-STEP E2 value-locality REFUSAL: a discarded `ResourceSerial` step
-    // `(wr conn r1)` whose continuation performs a same-token effect `(wr conn r2)`
-    // on the SAME handle `conn` must NOT single-step launch — the shared handle is
-    // the same per-value dynamic token, so detaching reorders two same-token
-    // effects across the launch boundary. This is the check the single-step arm was
-    // MISSING before 0478 (E2). RED-on-revert: dropping the E2
-    // `continuation_shares_resource_handle` guard makes this wrongly launch.
+    // — SINGLE-STEP E2 literal-disjointness REFUSAL: a discarded `ResourceSerial`
+    // step `(wr conn r1)` whose continuation performs a same-token effect `(wr conn
+    // r2)` on the SAME handle `conn` must NOT single-step launch — io free {conn,r1}
+    // and cont free {conn,r2} SHARE `conn`, so the unified E2 (same literal free-var
+    // disjointness as the sub-tree arm) refuses it: the shared value cannot be proven
+    // token-disjoint, so detaching would reorder two same-token effects across the
+    // launch boundary. This is the check the single-step arm was MISSING before 0478.
+    // RED-on-revert: dropping the E2 disjointness guard makes this wrongly launch.
     #[test]
     fn test_no_single_step_launch_when_handle_flows_into_same_token_continuation() {
         let (tables, m) = fanout_tables();
@@ -882,12 +908,12 @@
 
     // spec: 10-io.md §10.12.7 / design/int/bind-chain-analysis.md §3.7 (FIXME 0478)
     // — SINGLE-STEP E3 Commutative REFUSAL + the accept-loop-still-launches green
-    // guard (the two together confirm the tightened single-step predicate). Part A:
-    // a discarded `Commutative` (token-0-class) single step is refused (E3 —
-    // ResourceSerial only). Part B: the §B4 counter-loop `(rd n c f)`→`(recur (sub
-    // n))` STILL launches under the new E2 — `n` is shared as a VALUE (a loop index),
-    // not as a same-token continuation effect handle, so E2 permits it. Adding E2
-    // must NOT weaken this launch (the synthetic concurrency_fanout guard).
+    // guard (the two together confirm the single-step predicate). Part A: a discarded
+    // `Commutative` (token-0-class) single step is refused (E3 — ResourceSerial only).
+    // Part B: the §B4 counter loop STILL launches under the UNIFIED E2 (same literal
+    // free-var disjointness as the sub-tree arm), using the DECOUPLED shape that hoists
+    // the control value out of the token operand. Adding the literal-disjointness E2
+    // must NOT weaken this §B4 launch (the synthetic concurrency_fanout guard).
     #[test]
     fn test_single_step_commutative_refused_but_counter_loop_still_launches() {
         let (tables, m) = fanout_tables();
@@ -903,18 +929,80 @@
             "a discarded Commutative (token-0-class) single step must NOT launch (E3)"
         );
 
-        // Part B — the accept-loop counter loop STILL launches (E2 permits a shared
-        // VALUE that is not a same-token continuation effect handle).
-        let loop_step = make_bind_expr(
-            make_apply("rd", vec![make_var("n"), make_var("c"), make_var("f")]),
+        // Part B — the §B4 counter loop STILL launches under the unified E2, via the
+        // DECOUPLED shape (io free {n}, cont free {m} ⇒ disjoint ⇒ launches).
+        let loop_result = transform_expr(decoupled_counter_loop("rd"), &tables, &m);
+        assert_let_wraps_launch(&loop_result);
+    }
+
+    // spec: 10-io.md §10.12.7 / design/int/bind-chain-analysis.md §3.7 (FIXME 0478)
+    // — SINGLE-STEP E2 REFUSAL, ALIASED HANDLE (closes hole 1): a discarded
+    // `ResourceSerial` step `(wr conn r1)` whose continuation ALIASES the handle
+    // through a Let — `(let [c conn] (wr c r2))` — must NOT launch. The unified E2
+    // (literal free-var disjointness) sees `conn` free in BOTH io and continuation
+    // (the Let RHS) ⇒ refused. The retired narrow `continuation_shares_resource_handle`
+    // compared the launched leaf's leading operand against a continuation effect's
+    // LEADING operand only — `(wr c r2)`'s leading operand is `c`, not `conn` — so it
+    // MISSED the alias and wrongly launched (the soundness hole). RED-on-revert.
+    #[test]
+    fn test_no_single_step_launch_when_handle_aliased_in_continuation() {
+        let (tables, m) = fanout_tables();
+        // (bind (wr conn r1) (fn [_] (let [c conn] (wr c r2)))) — conn aliased to c.
+        let cont = Expr::Let {
+            bindings: vec![(Symbol::from("c"), make_var("conn"))],
+            body: Box::new(make_apply("wr", vec![make_var("c"), make_var("r2")])),
+            span: Span::SYNTHETIC,
+            inferred_type: None,
+        };
+        let expr = make_bind_expr(
+            make_apply("wr", vec![make_var("conn"), make_var("r1")]),
             "_",
-            make_apply("recur", vec![make_apply("sub", vec![make_var("n")])]),
+            cont,
         );
+        let result = transform_expr(expr, &tables, &m);
         assert!(
-            matches!(transform_expr(loop_step, &tables, &m), Expr::LaunchContinue { .. }),
-            "the §B4 counter loop must STILL launch under E2 (shared `n` is a value, \
-             not a same-token continuation effect handle) — E2 must not weaken it"
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "an aliased handle flowing into a same-token continuation effect must NOT \
+             launch (E2 literal disjointness — hole 1 closed), got {result:?}"
         );
+    }
+
+    // spec: 10-io.md §10.12.7 / design/int/bind-chain-analysis.md §3.7 (FIXME 0478)
+    // — SINGLE-STEP E2 REFUSAL, USER-FN-WRAPPED HANDLE (closes hole 2): a discarded
+    // `(wr conn r1)` whose continuation passes the handle to a USER fn `(my-send conn
+    // r2)` (which does a same-token send internally) must NOT launch. The unified E2
+    // sees `conn` free in BOTH ⇒ refused. The retired narrow check scanned the
+    // continuation ONLY for direct `ResourceSerial` platform effects; a user-fn
+    // wrapper is opaque to it, so it MISSED the same-token flow and wrongly launched
+    // (the soundness hole). RED-on-revert.
+    #[test]
+    fn test_no_single_step_launch_when_handle_wrapped_in_user_fn() {
+        let (tables, m) = fanout_tables();
+        // (bind (wr conn r1) (fn [_] (my-send conn r2))) — my-send is a user defn that
+        // performs a same-token send on `conn` (opaque to a leading-operand scan).
+        let expr = make_bind_expr(
+            make_apply("wr", vec![make_var("conn"), make_var("r1")]),
+            "_",
+            make_apply("my-send", vec![make_var("conn"), make_var("r2")]),
+        );
+        let result = transform_expr(expr, &tables, &m);
+        assert!(
+            !matches!(result, Expr::LaunchContinue { .. }),
+            "a handle passed to a user-fn wrapper in the continuation must NOT launch \
+             (E2 literal disjointness — hole 2 closed), got {result:?}"
+        );
+    }
+
+    // spec: 10-io.md §10.12.7 — SINGLE-STEP launch PERMITTED when the token operand is
+    // disjoint from the continuation (pins that the unified E2 does NOT over-refuse the
+    // legitimate §B4 accept-loop launch). The DECOUPLED shape `(let [m (sub-i64 n 1)]
+    // (bind (rd n c f) (fn [_] (recur m))))` keeps the loop control value `m` out of
+    // the token operand `n`: io free {n}, cont free {m} ⇒ disjoint ⇒ launches.
+    #[test]
+    fn test_launch_single_step_permitted_when_token_disjoint_from_continuation() {
+        let (tables, m) = fanout_tables();
+        let result = transform_expr(decoupled_counter_loop("rd"), &tables, &m);
+        assert_let_wraps_launch(&result);
     }
 
     /// The exact serve-loop handler shape (S96 C4 / FIXME 0470): an inlined
