@@ -176,9 +176,12 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
   [`guide/field-accessors.md`](guide/field-accessors.md) (`Type.field` accessors and
   the bare-name alias),
   [`guide/parallel-collections.md`](guide/parallel-collections.md) (`par-map`,
-  `par-reduce`, `par-map-reduce`), and
+  `par-reduce`, `par-map-reduce`),
   [`guide/concurrency.md`](guide/concurrency.md) (the two-halves concurrency model:
-  inferred fan-out + the `sleep`/`race`/`select`/`timeout` control combinators).
+  inferred fan-out + the `sleep`/`race`/`select`/`timeout` control combinators), and
+  [`guide/writing-platforms.md`](guide/writing-platforms.md) (authoring a platform
+  DLL: poll-shape effect leaves, the poll-in / wake-out reactor boundary, the
+  handle model).
 - [`repl/spec.md`](../repl/spec.md) — the normative REPL experience: display
   formats, slash commands, errors, caching.
 - [`spec/`](../spec/) — the language specification.

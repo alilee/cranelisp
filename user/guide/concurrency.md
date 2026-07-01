@@ -25,6 +25,13 @@ promise hold. The full architecture is specified in
 [`design/arch/effect-concurrency.md`](../../design/arch/effect-concurrency.md) and
 the normative rules live in [`spec/10-io.md`](../../spec/10-io.md) §10.12.
 
+> **Writing your own platform?** This page is about *using* concurrency from
+> cranelisp. If you are authoring a platform DLL — poll-shape effect leaves, the
+> reactor boundary, the connection/handle model — see the companion
+> [**writing-platforms.md**](writing-platforms.md). Everything on *this* page is
+> what a program author sees; none of the platform-side scheduling machinery
+> (tokens, pools, poll functions) is visible here, by design.
+
 ---
 
 ## The inferred half — concurrency written by nobody
@@ -44,19 +51,17 @@ This is the shape the showcase web server uses (from
 (defn serve-loop [listener]
   (bind (accept listener)
     (fn [conn]
-      (match conn
-        [(Connection token capacity fd)
-           (do
-             ;; the per-connection handler: read → (optional delay) → send.
-             ;; Its result is DISCARDED (the `do`), and its work touches only
-             ;; this fresh connection — so the runtime LAUNCHES it and does not
-             ;; wait for it to finish.
-             (bind (read-conn token capacity fd)
-               (fn [req]
-                 (bind (sleep (slow-ms req))
-                   (fn [_] (send-conn token capacity fd (safe-handle req))))))
-             ;; the continuation: accept the next connection right away
-             (serve-loop listener))]))))
+      (do
+        ;; the per-connection handler: read → (optional delay) → send.
+        ;; Its result is DISCARDED (the `do`), and its work touches only
+        ;; this freshly-accepted `conn` — so the runtime LAUNCHES it and does
+        ;; not wait for it to finish.
+        (bind (read-conn conn)
+          (fn [req]
+            (bind (sleep (slow-ms req))
+              (fn [_] (send-conn conn (safe-handle req))))))
+        ;; the continuation: accept the next connection right away
+        (serve-loop listener)))))
 ```
 
 There is no `spawn`, `go`, or `async` anywhere. The compiler infers the fan-out
@@ -90,19 +95,38 @@ This is the IO-effect sibling of the **pure-compute** parallelism documented in
 [parallel collections](parallel-collections.md). Both extract concurrency from
 independence; they run on different substrates (the reactor for I/O, rayon for CPU).
 
-### Honest scope: per-resource capacity
+### Connections are ordinary values you can read
+
+`accept` hands your program a **connection handle** — an ordinary value. It is
+*your* connection: you can `match` it open to read its fields exactly like any
+other data type. A minimal web `Connection` carries the socket descriptor:
+
+```clojure
+(deftype Connection [:primitives/Int fd])
+
+(defn conn-fd [c]
+  (match c [(Connection fd) fd]))     ;; reads the real fd — typechecks and works
+```
+
+There is **no hidden scheduling state** on the value — no tokens, no pool
+bookkeeping, nothing the runtime stamps in. A handle is just data your program
+owns; how many connections may run at once is the platform's concern, decided
+platform-side, and never something you thread through your code. (How the platform
+does that is the subject of [writing-platforms.md](writing-platforms.md).)
+
+### Honest scope: shared resources are bounded
 
 Independent IO effects overlap — **but effects that share one resource are bounded
-by that resource's capacity, a ceiling the platform declares, not the program.** The
-canonical case is a database connection pool of *N* connections: many `query`
-effects can be in flight, but the sum in flight is capped at *N*, and the (N+1)th
-**parks** until one frees (observable as wall-clock latency). Distinct resources
-(distinct connection tokens) are independent and overlap freely; capacity-1 resources
-serialize in source order.
+by that resource.** The canonical case is a database connection pool: many `query`
+effects can be in flight at once, but the number in flight is capped by the pool,
+and one more **parks** (waits) until a slot frees, which you observe as latency.
+Effects on *distinct* resources are independent and overlap freely; effects on a
+strictly-serial resource run one at a time in source order.
 
-You never choose *N* and never write pool code — the platform author declares the
-capacity, and the runtime enforces it. The normative rule is
-[`spec/10-io.md §10.12.4.1`](../../spec/10-io.md) (Resource Capacity — Token Pools).
+You never choose the limit and never write pool code — the platform decides it and
+the runtime enforces it. From your side this is invisible except as
+throughput/latency. The observable contract is
+[`spec/10-io.md §10.12`](../../spec/10-io.md).
 
 ---
 
@@ -118,7 +142,7 @@ the composed effect runs only when it is sequenced into the program.
 |---|---|---|
 | `sleep` | `(Fn [Int] (IO Int))` | Park for *d* milliseconds, then resume with `0`. |
 | `race` | `(Fn [(IO a) (IO a)] (IO a))` | Run both; the first to complete wins, the **loser is cancelled**. |
-| `select` | `(Fn [(Vec (IO a))] (IO a))` | N-ary race over a `Vec`; first to finish wins, all losers cancelled. |
+| `select` | `(Fn [(Vec (IO a))] (IO a))` | N-ary race over a non-empty `Vec`; first to finish wins, all losers cancelled. An **empty** `Vec` raises a fatal error (see below). |
 | `timeout` | `(Fn [Int (IO a)] (IO (Option a)))` | Stdlib: `(Some v)` if the work wins, `None` if the *d*-ms timer fires first (cancelling the work). |
 
 `sleep`, `race`, and `select` are `primitives` builtins — no platform DLL, no
@@ -171,6 +195,16 @@ never a List:
 ```
 cranelisp --run select.cl   # exit code 7
 ```
+
+**Empty `select` is a fatal error.** `(select [])` over an empty `Vec` has no branch
+that can win and no value to return, so it **raises a runtime error** rather than
+returning a value or hanging. This raise happens when the effect *runs*, which is
+outside any `catch-runtime-error` bracket — so it is **fatal and NOT catchable**:
+it terminates the process in batch mode and aborts the expression in the REPL.
+Wrapping the `select` in a thunk does not help; it only defers the raise. Always
+give `select` a **non-empty** Vec. This is the honest general rule for *every*
+run-time effect error, not a `select` special case (spec
+[§10.12.8](../../spec/10-io.md) — the empty-`select` ruling).
 
 ### `timeout` — bound work by a deadline
 
@@ -237,10 +271,10 @@ consequence of three situations:
   ends.
 
 A cancelled computation's effects **do not complete**: its future is dropped, its
-remaining side effects never run, and its resources (permits, reactor interest) are
-released. This is observable. The following stdio program races a slow `print "LATE"`
-against a 10ms deadline; only `EARLY` is printed — `LATE` never happens because the
-slow branch is cancelled:
+remaining side effects never run, and its resources are released. This is
+observable. The following stdio program races a slow `print "LATE"` against a 10ms
+deadline; only `EARLY` is printed — `LATE` never happens because the slow branch is
+cancelled:
 
 ```clojure
 (platform stdio)
@@ -291,11 +325,12 @@ state them plainly rather than imply production-unattended readiness.
 - **`timeout` is stdlib, not a primitive.** It is available to programs run with
   `CRANELISP_LIB=stdlib` (the exemplar and production binaries). Free-standing code
   writes the `race`/`sleep` pattern inline (above).
-- **A long-running server cannot yet idle unattended past ~30s with no traffic.** The
-  reactor watchdog currently aborts a parked `accept` loop after about 30 seconds of
-  no progress. A server under continuous traffic is fine; an idle server waiting for
-  its first connection for more than 30s is not yet supported. (Tracked as a known
-  limitation; a no-progress watchdog / server-mode opt-out is the fix.)
+- **An idle server stays up but does not self-exit.** A long-running `accept` loop
+  with no traffic now stays alive indefinitely (the earlier ~30-second no-progress
+  watchdog was retired). The flip side: a foreground `cranelisp --run` of a server
+  will **not exit on its own** — it is waiting for the next connection. Run it under
+  a process manager, or drive it from a test harness that kills it on completion (as
+  `tests/exemplar_web.rs` does), rather than expecting it to return.
 
 ### Known rough edges
 
@@ -305,9 +340,6 @@ shape instead. The snippets above all sidestep these on purpose:
 - **A bare ADT constructor used as a first-class function value crashes.** Wrap it in
   a lambda: write `(fn [x] (Some x))`, not a bare `Some`, when passing a constructor
   to a higher-order function. (This is why `timeout`'s definition wraps `Some`.)
-- **`(select [])` over an empty Vec is unsound** — `select` is documented to never
-  complete on an empty Vec; a program must not rely on it. Always give `select` a
-  non-empty Vec.
 - **`race` with an *inline* `bind`-lambda argument miscompiles** under the default
   lenient evaluation. Use **named-helper branches** (as every snippet above does)
   rather than passing an inline `(bind …)` expression directly to `race`. `select` is
@@ -317,6 +349,9 @@ shape instead. The snippets above all sidestep these on purpose:
 
 ## See also
 
+- [`writing-platforms.md`](writing-platforms.md) — the companion guide for authoring
+  a platform DLL: poll-shape leaves, the poll-in / wake-out reactor boundary, the
+  connection/handle model. Everything the runtime does *behind* this page.
 - [`examples/32-concurrency-combinators.cl`](../../examples/32-concurrency-combinators.cl)
   — the free-standing teaching example for `sleep` / `race` / `select` + the inline
   timeout pattern.
@@ -327,7 +362,7 @@ shape instead. The snippets above all sidestep these on purpose:
   inferred half.
 - [`spec/10-io.md §10.12`](../../spec/10-io.md) — the normative IO concurrency model:
   combinators (§10.12.8), structured cancellation (§10.12.9), reference patterns
-  (§10.12.10), resource capacity (§10.12.4.1).
+  (§10.12.10).
 - [`design/arch/effect-concurrency.md`](../../design/arch/effect-concurrency.md) — the
   ratified architecture: the two-peers thesis, the inferred-launch eligibility
   predicate (§4.1), the trampoline.
