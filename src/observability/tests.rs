@@ -511,8 +511,8 @@
     //   * A panic inside catch_unwind after install_panic_hook still
     //     delegates to the prior hook.
     //
-    // Mirrors the /backend-side tests in
-    // `crates/cranelisp-runtime/src/io_trace.rs`.
+    // Mirrors the io-trace-side tests in
+    // `src/io_trace.rs`.
 
     #[test]
     fn flush_guard_drops_without_panic() {

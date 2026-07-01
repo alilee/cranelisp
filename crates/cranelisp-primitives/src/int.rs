@@ -4,14 +4,14 @@
 //! kebab-case JIT names (`int-to-string`, `parse-int`), registered in the
 //! synthetic `primitives` module's symbol table; user-addressable.
 //!
-//! Wave 3b-2d.2b lifted the bodies from
-//! `cranelisp-runtime/src/primitives/int.rs` into this crate. The
+//! Wave 3b-2d.2b lifted the bodies from the pre-D43 runtime crate
+//! (`primitives/int.rs`) into this crate. The
 //! `cranelisp_op_*` operator-as-value wrappers that previously cohabited
 //! that file are backend-emitted-call targets (not user-callable; backend
 //! emits direct calls when an operator is referenced as a first-class
 //! value) and migrated to `cranelisp-intrinsics::ops` instead.
-//! `cranelisp-runtime` keeps thin re-export shims for both halves until
-//! that crate retires per FIXME 0150 Phase 5.
+//! (The pre-D43 runtime crate has since retired per FIXME 0150 Phase 5 —
+//! its D43 split produced `cranelisp-primitives` + `cranelisp-intrinsics`.)
 
 use cranelisp_intrinsics::alloc;
 use cranelisp_intrinsics::rc;

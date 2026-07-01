@@ -3,7 +3,7 @@
 //! Per Decision 43 (see the crate-root `//!` and `bounded-contexts.md` §4a):
 //! kebab-case JIT name `bool-to-string`; registered in the synthetic
 //! `primitives` module's symbol table. Wave 3b-2d.2b lifted the body from
-//! `cranelisp-runtime/src/primitives/bool.rs`.
+//! the pre-D43 runtime crate (`primitives/bool.rs`).
 
 use cranelisp_intrinsics::heap_string;
 

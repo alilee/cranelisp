@@ -15,7 +15,7 @@ The triad narrow-deploys to exactly one of:
 | Frontend | `crates/cranelisp-frontend/` | `lib.rs` |
 | Typecheck | `crates/cranelisp-typecheck/` | `lib.rs` |
 | Backend | `crates/cranelisp-backend/` | `lib.rs` |
-| Runtime | `crates/cranelisp-runtime/` | `lib.rs` |
+| Runtime | `crates/cranelisp-primitives/` + `crates/cranelisp-intrinsics/` (D43 split of the former `cranelisp-runtime`) | `lib.rs` |
 | Platform | `crates/cranelisp-platform/` | `lib.rs` |
 | Binary (int) | `src/` + `crates/cranelisp-exe-bundle/` | `src/lib.rs` + `src/main.rs`; `crates/cranelisp-exe-bundle/src/lib.rs` |
 

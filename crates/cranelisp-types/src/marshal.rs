@@ -3,7 +3,7 @@
 //! These constants define the runtime tag layout for the `Sexp` and `SList`
 //! algebraic data types used by the macro system. Both the compiler-side
 //! marshal (`src/marshal.rs`) and the runtime-side marshal
-//! (`cranelisp-runtime/src/marshal.rs`) import these to stay in sync.
+//! (`crates/cranelisp-primitives/src/marshal.rs`) import these to stay in sync.
 //!
 //! **Authoritative source of constructor order**:
 //! `register_macros_module()` in `crates/cranelisp-typecheck/src/builtins.rs`.

@@ -22,7 +22,7 @@ model) + App-B (as-built ↔ target). **Spec of record:** `spec/10-io.md` **§10
 (Resource Cardinality — Token Pools; being renamed cardinality→capacity in parallel —
 anchor unchanged; `/spec` actioned FIXME 0447 — the capacity-N pool / (N+1)th-parks
 observable is now normative) + §10.12.4 / §10.12.5 / §10.12.6. **Design of record
-(interior):** `design/int/reactor.md` §2.6 (Par-overlap) / §5 (token-capacity `Semaphore`
+(interior):** `design/intrinsics/reactor.md` §2.6 (Par-overlap) / §5 (token-capacity `Semaphore`
 — the slice-3 item) + the as-built reactor boundary. **Public-api edge target:**
 `cranelisp-platform` — the additive ungated `CLIO::effect_on_resource_with_capacity`
 constructor + the 32→40 node-widen (baseline-diff in Phase 5; **NO `cranelisp-types`

@@ -336,7 +336,7 @@ Refresh the audit when any of these happen:
 Suggested mechanical checks:
 
 ```bash
-rg -n '\b(Arc|Mutex|RwLock|DashMap|OnceLock|Atomic[A-Za-z0-9]+)\s*<' src crates/cranelisp-typecheck crates/cranelisp-runtime
+rg -n '\b(Arc|Mutex|RwLock|DashMap|OnceLock|Atomic[A-Za-z0-9]+)\s*<' src crates/cranelisp-typecheck crates/cranelisp-primitives crates/cranelisp-intrinsics
 rg -n 'unsafe impl\s+(Send|Sync)\b' src crates
 rg -n 'thread_local!' src crates
 ```

@@ -3,7 +3,7 @@
 // Migrated from cranelisp-backend in Sprint 66 Wave 3b-2a. Owned by the int
 // crate as a REPL/trace concern (presentation, not codegen). Imports the heap
 // layout constants from cranelisp-backend::heap; depends on cranelisp-types
-// for type definitions and cranelisp-runtime for string access.
+// for type definitions and cranelisp-intrinsics for string access.
 
 use std::collections::HashMap;
 

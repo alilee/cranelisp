@@ -1,6 +1,7 @@
 // HeapCategory + classifier relocated to cranelisp-backend per S69 Sub 38
 // (bounded-context: backend-internal codegen classification). HeapHeader
-// retains as the cross-crate layout contract shared with cranelisp-runtime.
+// retains as the cross-crate layout contract shared with the backend-emitted
+// runtime library (cranelisp-primitives / cranelisp-intrinsics).
 
 use std::mem::{self, offset_of};
 

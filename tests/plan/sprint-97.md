@@ -28,7 +28,7 @@ rulings each row pins.
   (CLIF-seam testability witnesses).
 - `design/backend/ring2-rc.md §3.5.10` (0474 — option (a) deep-free; the `/qa` RC-balance
   obligation + the `/dev` intrinsics-unit mirror).
-- `design/int/reactor.md §7` (v9 trampoline split/stamp/read — authoritative int statement),
+- `design/intrinsics/reactor.md §7` (v9 trampoline split/stamp/read — authoritative int statement),
   **§8** (0479 armed-ness watchdog + `drive_mode` knob), **§9** (0475 empty-`select`).
 - `design/int/bind-chain-analysis.md §3.7` (0478 E1/E2/E3) + **§8.1** (the two int-seam unit
   notes).

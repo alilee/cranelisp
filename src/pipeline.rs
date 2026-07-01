@@ -183,7 +183,7 @@ fn compose_dispatch_error(
 /// continuation closures) leak — the O(N) Wave-1-review Condition-6
 /// regression. This pairing mirrors the internal structure of the extern
 /// `cranelisp_run_io` entry point (see
-/// `crates/cranelisp-runtime/src/io.rs::cranelisp_run_io`).
+/// `crates/cranelisp-intrinsics/src/io.rs::cranelisp_run_io`).
 fn unwrap_io_inline(raw_value: i64, ty: Type) -> (i64, Type) {
     if ty.is_io() {
         // SAFETY: `raw_value` is either a heap pointer to an IO node (when

@@ -146,9 +146,9 @@ This is not a Blocker — the `// SAFETY:` discipline is present and the unsafe 
 
 **Proposed remediation**: subsumed by HIGH-1 (single-source the offsets) + MED-1 (route RC through intrinsics). No separate FIXME needed beyond cross-referencing this in the HIGH-1 brief.
 
-### LOW-1: Stale cross-references to retired crates/docs in module rustdoc
+### LOW-1: Stale cross-references to retired crates/docs in module rustdoc — RESOLVED S98 (FIXME 0493)
 **Files**: `crates/cranelisp-primitives/src/ring0.rs:4-5` (`design/arch/facades/backend.md` — retired S75 W5b), `crates/cranelisp-primitives/src/marshal.rs:14-16`, `crates/cranelisp-primitives/src/int.rs:7-14`, `crates/cranelisp-primitives/src/float.rs:5-6`, `crates/cranelisp-primitives/src/bool.rs:5-6` (all cite `cranelisp-runtime` "keeps a thin re-export shim until that crate retires per FIXME 0150 Phase 5" — `cranelisp-runtime` no longer exists post-D43)
-**Severity**: Low (doc staleness)
+**Severity**: Low (doc staleness) · **RESOLVED S98 (FIXME 0493)** — swept per the remediation below.
 
 Several module rustdocs reference artefacts that have since retired:
 - `ring0.rs` cites `design/arch/facades/backend.md` §"Non-goals" — that facade retired S75 W5b (→ BC §3 + backend source rustdoc).

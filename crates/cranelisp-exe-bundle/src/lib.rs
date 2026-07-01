@@ -18,7 +18,7 @@
 //! `cranelisp-intrinsics` as unreferenced.
 //!
 //! Wave 4a.pre.exe-bundle (Sprint 66) migrated these re-exports from the
-//! soon-to-be-retired `cranelisp-runtime` shim crate to the terminal
+//! since-retired `cranelisp-runtime` shim crate to the terminal
 //! `cranelisp-intrinsics` crate directly — backend-emitted-call targets
 //! (alloc, drop, io, ivar, panic, rc, trace, string-internal, vec-internal).
 //!

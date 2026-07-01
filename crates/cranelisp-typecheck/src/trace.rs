@@ -1,7 +1,8 @@
 //! Observability hook for typecheck-crate-internal events.
 //!
 //! The `cranelisp-typecheck` crate does not depend on the `cranelisp`
-//! binary crate (nor on `cranelisp-runtime`), so it cannot call the
+//! binary crate (nor on the backend-emitted runtime crates
+//! `cranelisp-primitives`/`cranelisp-intrinsics`), so it cannot call the
 //! integration-layer observability sink in `src/observability.rs`
 //! directly. Instead, the binary crate installs a function pointer at
 //! startup; typecheck-crate call sites invoke it via the inline

@@ -230,7 +230,9 @@ pub(crate) fn ring0_primitives() -> Vec<PrimitiveDef> {
 /// Ring 1 extern primitive definitions.
 ///
 /// These are string and type conversion functions implemented as extern "C"
-/// functions in `cranelisp-runtime`. They are NOT inlined as Cranelift IR
+/// functions in the backend-emitted runtime library (`cranelisp-primitives` /
+/// `cranelisp-intrinsics`, the D43 split of the former `cranelisp-runtime`).
+/// They are NOT inlined as Cranelift IR
 /// at call sites -- the backend emits `call` instructions to the JIT-registered
 /// function pointers, keyed by the primitive name (same as the spec name).
 pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {

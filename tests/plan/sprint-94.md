@@ -10,7 +10,7 @@ FIXME drain 0424 + 0430; the Phase-2 R1–R6 revisions). **Contract of record:**
 `design/arch/effect-concurrency.md` §13 "S94 R1" + Appendix B §"the ratified
 backend↔intrinsics poll-shape Effect-node seam (S94, R1 — the /dev contract)" — the
 "What /qa can assert" list (a)–(d) is the Phase-5 Stage-1 acceptance contract.
-**Design of record (interior):** `design/int/reactor.md` §2/§3/§4 (reactor, strand sink,
+**Design of record (interior):** `design/intrinsics/reactor.md` §2/§3/§4 (reactor, strand sink,
 the S93 as-built boundary /design int refreshes this sprint). **ABI guard target:**
 `crates/cranelisp-platform/src/concurrency.rs` (`ConcurrentPlatformFn.drop_state`,
 landed S94 R1, no `ABI_VERSION` bump) + `crates/cranelisp-platform/src/tests.rs:1033`

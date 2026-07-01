@@ -280,7 +280,7 @@ const _: fn() = || {
 // ---------------------------------------------------------------------------
 
 /// Per-thread ring buffer capacity. Matches `IO_TRACE_BUFFER_CAPACITY`
-/// in `cranelisp-runtime::io_trace` so the two traces are sized
+/// in `src/io_trace.rs` so the two traces are sized
 /// consistently (per /arch Phase 3a cross-doc consistency note).
 pub const SCHEDULER_TRACE_BUFFER_CAPACITY: usize = 65_536;
 
@@ -591,8 +591,8 @@ pub fn flush_to_stderr() {
 //     so a panic still prints the trace before the stack unwinds and
 //     the thread-local ring buffers are dropped.
 //
-// Mirror of the /backend-side pattern in
-// `crates/cranelisp-runtime/src/io_trace.rs` — see
+// Mirror of the io-trace-side pattern in
+// `src/io_trace.rs` — see
 // `design/backend/io-trampoline-trace.md §6.1` for the rationale.
 //
 // Scenarios covered:
@@ -691,7 +691,7 @@ pub fn install_panic_hook() {
 /// interleave under `cargo test` (shared process). `cargo nextest run`
 /// (subprocess-per-test) does not interleave them, but the lock makes the
 /// invariant explicit + robust under either runner. Sister convention to
-/// FIXME 0012 in `crates/cranelisp-runtime/src/io_trace.rs`.
+/// FIXME 0012 in `src/io_trace.rs`.
 #[cfg(test)]
 static TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

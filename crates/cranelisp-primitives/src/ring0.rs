@@ -1,7 +1,7 @@
 //! Ring 0 monomorphic primitive Rust shim fns — user-callable.
 //!
 //! Per Decision 43 + FIXME 0174 (`design/arch/fixmes/0174-...uniform-primitive-dispatch.md`) +
-//! `design/arch/facades/backend.md` §"Non-goals / forbidden patterns": every
+//! `bounded-contexts.md` §3 (Backend) §"Non-goals / forbidden patterns": every
 //! Ring 0 primitive (`add-i64` … `not`) MUST be addressable as an ordinary
 //! `ModuleEntry::Def` in the synthetic `primitives` symbol table — with a
 //! `got_slot: Some(_)` and a code pointer registered in that slot. The standard

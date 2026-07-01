@@ -29,7 +29,7 @@ poll_support macro convergence (the `_neg` frozen-edge guard is the enforcement)
   (the `(token, capacity)`-dynamic-on-the-node carrier + first-writer-wins reconciliation) /
   **§8.2** (within-token source ordering) / **§7** (two-pool model + the permanent wakeable
   bridge) / §5 (FIXME-0442 ruling — `min(capacity, degree)`, Chunk B).
-- `design/int/reactor.md` **§2.8** (the token-capacity `Semaphore` pool — carrier-agnostic;
+- `design/intrinsics/reactor.md` **§2.8** (the token-capacity `Semaphore` pool — carrier-agnostic;
   S95 proved it on the BLOCKING carrier, **Chunk A lights up the POLL carrier**) / **§2.9**
   (testability seams — the AcquirePermit / Permit-on-drop / parking seams) / **§5** (the S96
   acquire-around-poll lifecycle: the permit wraps the `EffectPoll` establish→ready arc).
@@ -629,7 +629,7 @@ rewrite + FIXME 0465 carried from Chunk A close.
   caveat) / **§11** (observability: supervisor drops vanish without a sink — the strand event
   is the trace) / **§16** (the worked pure-side server sketch — the `serve`/`handle-conn`
   shape the demo realizes).
-- `design/int/reactor.md` **§5** (forward-looking: backpressure / *degree* generalizes the
+- `design/intrinsics/reactor.md` **§5** (forward-looking: backpressure / *degree* generalizes the
   S92 CPU spark-budget counter into the reactor's I/O dimension via the inert `global_budget`
   field; supervisor = launch-and-continue + 500/log/drop for detached strands) / **§2.8** (the
   lock-free single-reactor-thread permit map the *degree* throttle parameterizes + the global
@@ -1157,7 +1157,7 @@ RAII-Permit-release-on-drop contract is **verified here**) + the A3-review findi
   graceful shutdown are what let a server survive an uncooperative open-internet boundary) /
   **§10** (supervisor — the §C5 reference patterns) / **§11** (observability — the **cancellation**
   event: "race loser / timeout fired → what was cancelled" — the strand-sink trace).
-- `design/int/reactor.md` — the Chunk-C cancellation interior, **being authored by the sibling
+- `design/intrinsics/reactor.md` — the Chunk-C cancellation interior, **being authored by the sibling
   `/design` int agent THIS Phase** (Gap G9): **finding #3** (the `EffectPoll`-owned reactor-
   registration handle whose `Drop` deregisters `fd_waiters`/`timer_waiters` + mio) + **finding #4**
   (`Drop for AcquirePermit` / pop-until-live release) folded into the Chunk-C design pass, plus

@@ -227,7 +227,7 @@ pub(crate) fn run_shell_command(cmd: &str, stdout: &mut impl Write) {
 
 /// Format the `/mem` snapshot (no-expression form).
 ///
-/// Reads the current allocation counters from `cranelisp-runtime` and
+/// Reads the current allocation counters from `cranelisp-intrinsics` and
 /// returns a two-line report: one data line with current live bytes, and
 /// a comment line with total alloc / dealloc counts and the currently-live
 /// allocation count (`allocs - deallocs`).
