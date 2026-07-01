@@ -29,8 +29,8 @@ Per `design/arch/bounded-contexts.md` §5 — platform is the *shared interface 
 
 **Does not own**:
 - DLL lifecycle storage — `SharedState.kept_dlls: DashMap<PathBuf, Arc<DllHandle>>` lives in `int`. Path search, `dlopen`, ABI version validation, and lifecycle orchestration also live in `int` (`src/platform.rs::load_platform_dll`, `resolve_platform_path`).
-- IO trampoline — owned by `cranelisp-runtime`. Platform exposes `call_effect_thunk` and the IO node tag layout; runtime reduces the tree.
-- `IoObserver` callback contract — owned by `cranelisp-runtime` per Decision 40. Platform DLLs do not register observers; runtime does.
+- IO trampoline — owned by `cranelisp-intrinsics` (the backend-emitted runtime library; the former `cranelisp-runtime` was split at D43). Platform exposes `call_effect_thunk` and the IO node tag layout; the runtime library reduces the tree.
+- `IoObserver` callback contract — owned by `cranelisp-intrinsics` per Decision 40 (the registration host moved with the D43 split). Platform DLLs do not register observers; the runtime library does.
 - Scheduling decisions — `int`'s scheduler reads `scheduling_class` off `PrimitiveKind::PlatformEffect` to choose threadpool/serialisation.
 - Platform fn dispatch at runtime — **GOT-indirect** (`got_slot = manifest index`; the host's `GotTable` wraps the dlsym'd DLL GOT in place — BC §5 invariant 1). The S71-era `platform_fn_ptr`-on-`ModuleEntry::Def` field and `JITBuilder::symbol`/`derive_jit_name` name-dispatch are **retired** (S76–S80 three-exports landing).
 - Type signature parsing — `parse_type_sig` lives in `int` (`src/platform.rs`), invoked at platform-load time after `manifest_to_descriptors` returns the raw string.

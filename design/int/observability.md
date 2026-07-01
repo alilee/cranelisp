@@ -25,7 +25,7 @@ in `tests/CLAUDE.md §"Diagnostic Logging"`. One line each:
 
 | Variable | Observes | Code site |
 |---|---|---|
-| `CRANELISP_RC_TRACE=1` | Every alloc, inc, dec, free with pointer + type | `crates/cranelisp-runtime/src/rc.rs` |
+| `CRANELISP_RC_TRACE=1` | Every alloc, inc, dec, free with pointer + type | `crates/cranelisp-intrinsics/src/rc.rs` |
 | `CRANELISP_INFER_TRACE=1` | Unification steps, constraint generation | `crates/cranelisp-typecheck/` |
 | `CRANELISP_CODEGEN_TRACE=1` | CLIF IR before/after optimisation (per-fn) | `crates/cranelisp-backend/src/` |
 | `CRANELISP_CODEGEN_DUMP=1` | Full CLIF dump to file | `crates/cranelisp-backend/src/` |
@@ -83,12 +83,16 @@ process exit code. Refer to that doc for the full event struct.
 This doc owns the **env-var name** and **the crate-placement decision**;
 the full event taxonomy is in the runtime-side design.
 
-**Code site**: `cranelisp-runtime`. Thread-local ring buffer. New module
-`crates/cranelisp-runtime/src/io_trace.rs` — not `trace.rs`, which is
-already occupied by the `(trace ...)` special form runtime. The IO
-trampoline is runtime-owned; its event taxonomy matches the runtime's
-state machine. See `design/backend/io-trampoline-trace.md` §Crate
-Placement for the /backend-side decision record.
+**Code site**: the io_trace thread-local ring buffer lives in `src/io_trace/`
+(int-owned, relocated per Decision 40 / FIXME 0103 from the former
+`cranelisp-runtime/src/io_trace.rs`) — named `io_trace`, not `trace.rs`,
+which is already occupied by the `(trace ...)` special form runtime. The IO
+trampoline it observes is owned by `cranelisp-intrinsics` (the backend-emitted
+runtime library, split from the former `cranelisp-runtime` at D43); its event
+taxonomy matches the trampoline state machine, fed across the `IoObserver`
+registration contract (the ~50-line API that stayed in intrinsics). See
+`design/backend/io-trampoline-trace.md` §Crate Placement for the /backend-side
+decision record.
 
 ## 4. Crate placement — architectural decision (MANDATORY)
 
@@ -98,7 +102,7 @@ cannot drift.
 | Log | Crate | Rationale |
 |---|---|---|
 | Scheduler/worker events | `src/` | Scheduler is `src/`-owned (`src/scheduler.rs`, `src/worker.rs`). Event taxonomy follows scheduler state machine. |
-| IO trampoline events | `cranelisp-runtime` | Trampoline is runtime-owned (`crates/cranelisp-runtime/src/io.rs`). Event taxonomy follows runtime state machine. |
+| IO trampoline events | `cranelisp-intrinsics` (emit) → `src/io_trace/` (int, ring buffer) | Trampoline is runtime-library-owned (`crates/cranelisp-intrinsics/src/io.rs`, the D43 successor of the former `cranelisp-runtime`). Event taxonomy follows the trampoline state machine; the ring buffer that consumes events relocated to int per Decision 40 / FIXME 0103. |
 
 **Hard constraints (enforced by `/arch` review):**
 
@@ -229,8 +233,9 @@ Three primitives land in `src/observability.rs` and are consumed by
    `ModuleStateTypechecking` etc. would be dropped when those threads
    terminate).
 
-This mirrors the `/backend`-side pattern in
-`crates/cranelisp-runtime/src/io_trace.rs` (see
+This mirrors the io_trace guard pattern in `src/io_trace/` (int-owned,
+relocated per Decision 40 / FIXME 0103 from the former
+`cranelisp-runtime/src/io_trace.rs`; see
 `design/backend/io-trampoline-trace.md §6.1`) — one RAII guard, one
 idempotent panic hook, documented at the same shape so a consumer sees
 a uniform API across both traces.
@@ -240,9 +245,9 @@ a uniform API across both traces.
 ```rust
 fn main() {
     // Observability — flush scheduler + IO traces on normal exit AND panic.
-    cranelisp_runtime::io_trace_install_panic_hook();
+    io_trace::install_panic_hook();
     observability::install_panic_hook();
-    let _io_flush = cranelisp_runtime::IoTraceFlushGuard::new();
+    let _io_flush = io_trace::IoTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
     // ... existing main body ...
 }
@@ -327,7 +332,7 @@ CRANELISP_IO_TRACE=1 cargo run -- --run examples/21-hello-io.cl
 Produces a full trampoline event sequence ending at process exit. Events
 include `Pure` / `Bind` transitions and `exit` with an exit code.
 
-Unit tests inside `src/` and `cranelisp-runtime`: each crate owns tests
+Unit tests inside `src/` and `cranelisp-intrinsics`: each crate owns tests
 for its own ring buffer — enable/disable via env-var, bounded-capacity
 drop counter, `Send + Sync` compile-time check, parse-once assertion
 (the second call to `filter()` must not re-read the env).
@@ -339,8 +344,8 @@ drop counter, `Send + Sync` compile-time check, parse-once assertion
   scheduler/worker topology whose transitions are being observed.
 - `design/backend/io-trampoline-trace.md` (parallel authorship,
   `/backend`-owned) — IO trampoline event taxonomy.
-- `crates/cranelisp-runtime/src/io.rs` + `spec/10-effects.md §10.12` —
-  IO trampoline state machine.
+- `crates/cranelisp-intrinsics/src/io.rs` + `spec/10-effects.md §10.12` —
+  IO trampoline state machine (the D43 successor of the former `cranelisp-runtime`).
 - `design/arch/concurrent-pipeline.md §7` — form-by-form scheduler's
   pool-state-transition protocol (what Slice 3 observes via this log).
 - Sprint 60 Wave 2 Round 4 — publish-vs-flag race precedent that

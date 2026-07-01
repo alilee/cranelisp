@@ -275,7 +275,7 @@ This sprint did not touch backend performance. No subordinate performance doc ex
 
 - **MED-2** (test mis-location). `lib.rs` is 4655 lines, of which **3932 are tests** (test block starts at line 724, 64 tests). Meanwhile the seven compiler files in `compiler/` total 7008 lines with **zero local tests**. The structural foundation for narrow testing (`FnCompiler<M>` generic over `Module`) already exists. The blocker is just nobody has done the moves. Resolution: audit Phase 4.
 
-The structural-testability claim is principled: backend's runtime imports are by symbol name (per facade §"Consumed surface" — `cranelisp_runtime::heap_alloc` etc. are referenced as strings during codegen), so a test-only `Module` can register stubs for those names. Backend can be unit-tested without a real `cranelisp-runtime` linkage. The audit does not flag this as a gap.
+The structural-testability claim is principled: backend's runtime imports are by symbol name (`cranelisp_intrinsics::heap_alloc` etc. — the runtime-library internals the former `cranelisp-runtime` split into at D43 — are referenced as strings during codegen), so a test-only `Module` can register stubs for those names. Backend can be unit-tested without a real `cranelisp-intrinsics`/`cranelisp-primitives` linkage. The audit does not flag this as a gap.
 
 **Feasibility check**: test relocation is mechanical refactor. No contract problem.
 

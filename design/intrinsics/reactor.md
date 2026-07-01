@@ -921,13 +921,18 @@ detached strands make progress concurrently with the accept loop:
 
 The borrow of the `RefCell<FuturesUnordered>` is taken **only** for the synchronous
 `poll_next` call and dropped before any `.await` (single-thread invariant — no borrow held
-across a suspension; the `IO_TAG_LAUNCH` arm's `push` is `&self` and momentary). **Liveness:**
-the existing `pending_bridges`/`has_waiters` no-progress logic (§2.4) extends to "**a non-empty
-supervisor is also progress**" — `block_on_reactor` returns on the **top** future's completion
-(the server's `main`/accept loop), and outstanding supervised strands are then dropped at drive
-end (their permits + interest release on drop — §2.14); the `MAX_TOTAL_BLOCK` no-progress cap
-must NOT fire while the supervisor is non-empty (the same exemption `pending_bridges > 0`
-already gets — a server with live handlers is legitimately busy, not stuck).
+across a suspension; the `IO_TAG_LAUNCH` arm's `push` is `&self` and momentary). **Liveness
+(reconciled with §8 as shipped, S98):** a non-empty supervisor counts as **armed** in the
+`reactor_is_armed()` deadlock detector (§8.2) — a server with live handlers is wakeable, not a
+deadlock, so the structural detector never mis-reads it as stuck. `block_on_reactor` returns on
+the **top** future's completion (the server's `main`/accept loop), and outstanding supervised
+strands are then dropped at drive end (their permits + interest release on drop — §2.14). A
+long-running server runs under the `Server` drive mode (§8.2), which carries **no wall-clock cap
+at all**. Critically, **a non-empty supervisor does NOT hold off the `OneShot` wall-clock
+backstop** — that backstop holds off ONLY on `pending_bridges > 0` (genuine off-thread work,
+§2.6), never on a merely-non-empty supervisor: an `OneShot` drive with a parked/hung supervised
+strand is **armed-but-hung** and MUST hit the backstop (§8.3). The supervisor is thus in the
+*deadlock detector* (armed-ness) but NOT in the *wall-clock backstop hold-off*.
 
 > **The §10 honest caveat stands.** For detached strands there is **no "first error"
 > ordering** — each supervisor action is independent (gate (b)). A further sharp edge the
@@ -1728,8 +1733,9 @@ remains beyond this sprint's combinator surface stays an arch-track item:
    policy }`, constructed single-sited in `block_on_reactor` alongside the pool, threaded through
    `ReactorEnv`; the `supervised` wrapper (`catch_unwind` + `take_runtime_error` capture +
    `apply_policy` + `consume_io_tree` + global-`Permit` drop); extend the `block_on_reactor`
-   drive loop to drain the supervisor + exempt a non-empty supervisor from the `MAX_TOTAL_BLOCK`
-   no-progress cap. (§2.12)
+   drive loop to drain the supervisor + count a non-empty supervisor as **armed** in the §8
+   armed-ness deadlock detector (NOT a hold-off of the `OneShot` wall-clock backstop, which holds
+   off only on `pending_bridges > 0` — §8.3). (§2.12)
 5. **The `IO_TAG_LAUNCH` trampoline arm** (`io.rs`, `run_io_trampoline_inner_async`) — read the
    launched sub-tree field, acquire the global-budget permit (park if exhausted), mint the child
    strand, `supervisor.spawn(sub_tree, strand, permit)`, yield `Pure Unit`. **Co-requisite seam:
@@ -1811,7 +1817,7 @@ in-language combinators + structured cancellation. **No public-api / ABI change*
 ## 6. Host-construction sharability (FIXME 0419, R4) — divergence-proofing
 
 **The S94 wiring must not re-create the DEF-6 two-mirrored-sites divergence class.**
-FIXME 0419 (`target: /arch`, kept open + decoupled from 0407 per R4) is **off the S94
+FIXME 0419 (`target: /arch`, kept open + decoupled from the since-retired 0407 per R4) is **off the S94
 critical path** — only the `--run`/REPL host-construction site is active this sprint;
 `--link` concurrency is a later slice. But the reactor *freshly re-creates the hazard*
 the DEF-6 heap corruption came from (two hand-mirrored host-construction sites), so the
@@ -1877,9 +1883,11 @@ There are two distinct host-built values at the platform/host boundary; they hav
    time** (in `EffectPoll::poll`), not through `HostCallbacks` at DLL-load time (§2.5,
    R1 decisions 2+3). State construction is **backend-built, host-internal** — no
    `make_state` export, no new `HostCallbacks` field. So S94 keeps `HostCallbacks` at
-   its current two fields and does **not** multiply the 2-site hand-mirror. (This is the
-   same reason 0407's 3-field widening is blocked behind the shared builder — do not
-   pre-empt it from the reactor side either.)
+   its current two fields and does **not** multiply the 2-site hand-mirror. (The former
+   FIXME 0407's 3-field `HostCallbacks` widening — the closure-callback-into-cranelisp
+   capability — was **retired** this sprint by the closure-boundary ruling: poll-in/wake-out
+   is the complete platform-effect boundary, so that widening will never happen at all
+   (`effect-concurrency.md §12.1`). The reactor side likewise adds no new field.)
 
 3. **When `--link` concurrency lands (a later slice), it routes through the existing
    single entry — no new mirror.** Because the reactor lives in intrinsics and is
@@ -2266,9 +2274,30 @@ that arms an fd and hangs is a real hang worth a backstop. So `block_on_reactor`
 the §2.19 shutdown `Cell<bool>`, **no ABI/`cranelisp-types` touch**):
 - **`OneShot`** (default — `--run`, `--link` exe entry, REPL per-form eval): the armed-ness
   detector **plus** a wall-clock backstop (the old `MAX_TOTAL_BLOCK`, retained as a hang guard;
-  value configurable, 30s default).
+  value configurable, 30s default). **The wall-clock backstop holds off ONLY on
+  `pending_bridges > 0`** (genuine off-thread blocking work, uncapped to match feature-off —
+  §2.6) — **NOT on a merely-non-empty supervisor.** An `OneShot` drive whose supervised strand
+  is armed-but-hung (a handler parked reading a peer that never sends) reaches the cap; a finite
+  program whose supervised strands genuinely PROGRESS drains and returns before the window, so
+  only an armed-but-hung strand ever hits it. As shipped (S98) the rule is the pure predicate
+  `oneshot_backstop_action`, which **by construction takes no supervisor input** (only
+  `pending_bridges` + poll progress) — the supervisor belongs to the *deadlock detector*
+  (armed-ness, above), never to this *hang backstop* (§8.3).
 - **`Server`** (a long-running accept-loop drive): the armed-ness detector **only**; **no
   wall-clock cap**. An idle-but-armed server runs forever.
+
+**Termination on a fired backstop — clean exit, not panic→SIGABRT (as shipped, S98).** A fired
+`OneShot` backstop is a **deliberate host-policy termination of a hung batch program — not a
+bug/crash** — so on the production drive (`block_on_reactor`) it terminates via
+`std::process::exit(70)`: fast, no coredump, a diagnostic to stderr. This replaces an earlier
+`panic!` that propagated into the `cannot_unwind` `cranelisp_run_program` boundary and raised
+`SIGABRT`, core-dumping the (large) process — ~1.1s of coredump latency that made a hung program
+linger ~1.1s past its own deadline (measured: 2000 ms backstop → death ~3.15s). The mechanism is
+an **`OnBackstop` knob** (`ExitProcess` / `Panic`): the production drive uses
+`OnBackstop::ExitProcess` (exit 70); the **unit-test seam** (`block_on_reactor_capped` called
+directly) keeps `OnBackstop::Panic` so `#[should_panic]` still observes the trip. Exit code
+**70** (`EX_SOFTWARE`) is the record — a future reader must not "restore" the panic on the
+production path.
 
 How `src/` picks the mode is a small int policy decision deferred to Phase-5 /dev: the minimal
 form is a CLI/run-context signal (a server entry sets `Server`); a later refinement could
@@ -2296,15 +2325,24 @@ descriptor flag is the documented escalation — a FIXME `target: /arch` to add 
 - **/dev (intrinsics):** add `reactor_is_armed()` (reading the five reactor-internal sources
   above), the `drive_mode` knob on `block_on_reactor` (default `OneShot`), and the
   `!armed ⇒ abort` / `Server ⇒ no wall-clock cap` drive-loop logic; retire the unconditional
-  `MAX_TOTAL_BLOCK`. The §2.6 `pending_bridges`-exemption and the §2.12/§5.2 supervisor-exempt
-  fold into `reactor_is_armed()` (one predicate). Unit: a fixture future that returns `Pending`
-  with no armed interest trips the detector immediately; one that armed an fd does not.
+  `MAX_TOTAL_BLOCK`. **Two distinct mechanisms — do not conflate them (the S98 reconciliation,
+  FIXME 0495):** the §2.6 `pending_bridges`-exemption AND the §2.12/§5.2 supervisor fold into
+  `reactor_is_armed()` — the *deadlock detector*, where a non-empty supervisor is armed
+  (wakeable), not stuck. The **`OneShot` wall-clock backstop is separate** and holds off ONLY on
+  `pending_bridges > 0` (genuine off-thread work) — **the supervisor is NOT in the backstop
+  hold-off**, so an armed-but-hung one-shot still hits it. As shipped, the backstop rule is the
+  pure predicate `oneshot_backstop_action` (takes no supervisor input); its firing terminates the
+  production drive via `std::process::exit(70)` (the `OnBackstop::ExitProcess` knob — clean, no
+  coredump), while the unit-test seam keeps `OnBackstop::Panic`. Unit: a fixture future that
+  returns `Pending` with no armed interest trips the detector immediately; one that armed an fd
+  does not; a supervisor-holds-only-on-`pending_bridges` unit pins the backstop predicate
+  (`oneshot_backstop_action_ignores_supervisor_holds_off_only_on_bridge`).
 - **/dev (src/):** plumb `drive_mode` from the run context (server entry ⇒ `Server`).
 - **/qa (e2e — once it is no longer self-defeating):** a server that idles **past** the old
   30s cap and is **then** served — must succeed (today this e2e cannot exist because the cap
   aborts at 30s, the exact gap 0479 records). Plus a negative: a genuinely-stuck one-shot
   (armed nothing) still aborts promptly; a one-shot armed-but-hung still hits the `OneShot`
-  wall-clock backstop.
+  wall-clock backstop and exits cleanly (`process::exit(70)`, not a SIGABRT/coredump).
 
 ## 9. Empty `(select [])` — recoverable runtime error (S97, FIXME 0475; confirm approach)
 

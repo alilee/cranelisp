@@ -1,6 +1,24 @@
 # Runtime — master design
 
-Owner: `/design`. Single source of design intent for `crates/cranelisp-runtime/`. Authored Sprint 63; refreshed Sprint 64 against the pinned-Decision-40/41/42 + Principle-14/15 configuration.
+> **⚠ RETIRED — frozen historical record (disposition set S98, FIXME 0496).**
+> `crates/cranelisp-runtime/` was **dissolved at Decision 43** (S66 W4a) into two successor
+> crates: **`cranelisp-primitives`** (the user-callable conversion surface) + **`cranelisp-intrinsics`**
+> (the backend-emitted runtime library — heap/RC, drop glue, the IO trampoline, `IoObserver`).
+> This doc's still-live design intent was **already re-homed** and is superseded by:
+> - **`design/primitives/primitives.md`** — the primitives-surface master design.
+> - **`design/intrinsics/`** — the intrinsics-surface interior (`reactor.md`, `intrinsics-table.md`,
+>   `rc-inc-entry-point.md`, `implementation-slice-s66.md`).
+> - **Canonical bounded context:** `design/arch/bounded-contexts.md` **§4a** (primitives) / **§4b**
+>   (intrinsics), plus the two successor crates' crate-root `//!` + per-item `///` source rustdoc.
+>
+> The document below is **not maintained** and describes the pre-split (pre-D43) runtime crate. It
+> is kept in place — not deleted or moved — because it remains the narrative record of the
+> pre-split design AND a live design doc still cites it by anchor (`design/intrinsics/rc-inc-entry-point.md`
+> §"Nullary tags"). Read it as history; for current intent follow the successor docs above.
+> References to `crates/cranelisp-runtime/`, `design/arch/facades/runtime.md`, and BC §4 throughout
+> this file are all pre-D43 and retired.
+
+Owner: `/design`. Single source of design intent for `crates/cranelisp-runtime/`. Authored Sprint 63; refreshed Sprint 64 against the pinned-Decision-40/41/42 + Principle-14/15 configuration. **(Superseded — see the RETIRED banner above.)**
 
 This document elaborates *within* the bounded context fixed by `design/arch/bounded-contexts.md` §4 and the public surface fixed by `design/arch/facades/runtime.md`. Where this document and either of those drift, the bounded-context statement and facade win — file FIXME `target: /arch` or update this doc accordingly.
 
