@@ -512,11 +512,16 @@ fn spawn_server_env(fixture_rel: &str, port: u16, env: &[(&str, &str)]) -> Serve
 // server at ≈backstop — proving the knob actually controls drive. On HEAD both knobs are
 // ignored (the 30s cap is always on), so case B's "the OneShot backstop killed the idle
 // server" assertion fails (the server is still alive at 3s ≪ 30s) ⇒ RED. Flips GREEN when
-// 0479 + the `drive_mode`/backstop knob land (Wave 3). Time-boxed (G-D): backstop ≈2s,
-// idle ≈3s — NO real 30s wait.
+// 0479 + the `drive_mode`/backstop knob land (Wave 3). Time-boxed (G-D): backstop ≈1s,
+// idle ≈3s — NO real 30s wait (S98 band-C widened the margin from 2s→1s backstop).
 #[test]
 fn idle_armed_server_survives_then_serves() {
-    const BACKSTOP_MS: &str = "2000";
+    // S98 band-C (FIXME 0489 timing-margin): backstop 1000ms with a 3000ms idle gives a
+    // 2s margin between the OneShot backstop fire (≈1s after the reactor idles — startup
+    // is already excluded, spawn_server_env returns only once listening) and the case-B
+    // exit check (at 3s). Widened from the S97 2000ms/3000ms (1s margin) for determinism
+    // without lengthening the run (the wall-time is the fixed `idle` sleep, not backstop).
+    const BACKSTOP_MS: &str = "1000";
     let idle = Duration::from_millis(3000); // > backstop, ≪ the old 30s cap.
 
     // Case A — Server mode: the idle-armed accept survives the idle, then serves.

@@ -110,7 +110,7 @@ any ordinary 1-field ADT.
 
 | # | Test (file::fn) | Tier | spec anchor | Assertion | RED-until / state |
 |---|---|---|---|---|---|
-| 2.1 | `concurrency_v9_abi::connection_opaque_field_present_but_not_user_destructurable_neg` | e2e | (gap G-A) `poll-support.md §3.5.1` / `effect-concurrency.md §4.1.1` | `(deftype Connection [:primitives/Int fd])` is OPAQUE: the `fd` field is genuine (platform reads `r` back) but **not user-destructurable** → a user `(match c [(Connection f) f])` opening it MUST be a clean **opacity** type error (NOT the dead "wrong field count"; the field exists, opacity rejects). `// FIXME(/sprint S97 W2)` — the opacity MECHANISM is not yet pinned; written against intended behavior, flips green when the cutover lands the opaque-handle rule. | ADJUSTED, RED-until v9 |
+| 2.1 | `concurrency_v9_abi::connection_field_user_readable` | e2e | (gap G-A) `poll-support.md §3.5.1` / `effect-concurrency.md §4.1.1` | **INVERTED S98 band-C (FIXME 0489 / 0484):** `(deftype Connection [:primitives/Int fd])` is **tramp-opaque but USER-READABLE** — a user `(match c [(Connection fd) fd])` MUST typecheck + compile (exit 0) and yield the genuine fd. The prior `_not_user_destructurable_neg` asserted a NON-invariant (there is no ADT-level non-destructurability); it is corrected to a POSITIVE guard. Value-side "no scheduling state" negatives stay on 2.2/2.5. | GREEN (inverted) |
 | 2.2 | `concurrency_v9_abi::connection_display_shows_no_descriptor_neg` | e2e | (gap G-A) `poll-support.md §3.5.1` / `effect-concurrency.md §4.1.1` | a probe of `Connection` MUST NOT surface `token`/`capacity` at the value level — cleaner under ctx-vtable (nothing scheduling-related on the value at all). KEPT; assertion now anchored to the fd-field reality. | KEPT (adjusted), RED-until v9 |
 | 2.3 | `concurrency_fanout_web::web_server_fans_out_concurrent_requests_overlap` | e2e | `spec/10-io.md §10.12.7` | **EXISTING, currently GREEN** — the marquee overlap regression guard. MUST STAY GREEN through the v9 fixture reshape (opaque `Connection [fd]` + slim sigs in `tests/fixtures/web_fanout/main.cl`, rewritten by /port). Cross-ref, no new test. | existing GREEN — regression guard |
 | 2.4 | `concurrency_v9_abi::produce_consume_descriptor_no_rc_leak` | e2e (RC-balance) | (gap G-A) `effect-concurrency.md §4.1.1` | RE-EXPRESSED: there is no descriptor region — over a bounded produce→consume→retire cycle, `[RC] alloc == [RC] free` under `CRANELISP_RC_TRACE=1` because the opaque handle is a normal 1-field ADT (scalar `fd`, no RC) and scheduling is ctx-owned (no value-carried region to leak). Uses the `rc_alloc_free_counts` precedent. `// FIXME(/sprint S97 W3)` G-C bounded `poll-produce`/`poll-consume` fixture (else reduces to the /dev intrinsics RC unit). | RE-EXPRESSED, RED-until v9 — **gap G-C** |
@@ -154,7 +154,7 @@ e2e guard.
 | # | Test (file::fn) | Tier | spec anchor | Assertion | RED-until |
 |---|---|---|---|---|---|
 | 4.1 | `concurrency_v9_select::empty_select_heap_typed_fatal_runtime_error` | e2e | `spec/10-io.md §10.12.8 (Empty select)` | an empty `(select [])` instantiated at a **heap-typed `a`** (`String`/ADT), UNcaught, under `--run` → non-zero exit + stdout/stderr contains "select over empty collection"; `.timeout(…)` bounds the no-hang requirement | NEW, RED-until 0475 guard |
-| 4.2 | `concurrency_v9_select::empty_select_caught_by_catch_runtime_error` | e2e | `spec/12-runtime.md §12.7.2` | `(catch-runtime-error (fn [] <empty-select-thunk>))` → `(Err "select over empty collection…")`; program recovers and exits with the recovered branch value (recoverable at the catch boundary) | NEW, RED-until 0475 guard |
+| 4.2 | ~~`concurrency_v9_select::empty_select_caught_by_catch_runtime_error`~~ | — | `spec/10-io.md §10.12.8` / appendix-a §A.3 | **RETIRED S98 band-C (/spec ruling FIXME 0487 (a)):** wrong premise — an empty `(select [])` raises at effect-run time, OUTSIDE the temporal `catch-runtime-error` construction bracket, so it is **fatal, non-catchable** (not recoverable → exit 42). Deleted. Fatal-path invariants covered GREEN by 4.1/4.3/4.4. | RETIRED |
 | 4.3 | `concurrency_v9_select::empty_select_heap_typed_not_unit_zero_neg` | e2e | `spec/10-io.md §10.12.8 (Empty select)` | negative: the empty-select result MUST NOT be `0`/Unit/garbage flowing downstream (asserts the unsound-null path is gone — distinct from 4.1's fatal-exit assertion) | NEW, RED-until 0475 guard |
 | 4.4 | `concurrency_v9_select::empty_select_does_not_hang` | e2e | `spec/12-runtime.md §12.4.4` | a `.timeout(short)` witness that empty-select returns promptly (error), not a deadlock-hang (the "never completes is also non-conforming" clause) | NEW, RED-until 0475 guard — may fold into 4.1's timeout |
 
@@ -342,11 +342,12 @@ models slim the sigs identically). The **3 layout** e2e in `concurrency_v9_abi.r
 the new reality (`Connection` is now an opaque ADT with a GENUINE `fd` field, not a zero-field
 header-slot carrier), and **a 4th layout guard (2.5) was added**:
 
-- **2.1 RENAMED** `connection_is_opaque_zero_fields_destructure_rejected_neg` →
-  `connection_opaque_field_present_but_not_user_destructurable_neg`. Assertion: a user destructure
-  of the opaque handle is rejected by **opacity** (the `fd` field exists but is not
-  user-destructurable), NOT by "zero/wrong field count". Carries `// FIXME(/sprint S97 W2)` — the
-  opacity mechanism is not yet pinned; written against intended behavior.
+- **2.1 INVERTED (S98 band-C, FIXME 0489 / 0484)** → `connection_field_user_readable`. The S97
+  `connection_opaque_field_present_but_not_user_destructurable_neg` asserted a NON-invariant: /arch
+  ruled (FIXME 0484) `Connection` is **tramp-opaque but user-readable** — the trampoline never
+  introspects the handle, but user code CAN destructure it (`(match c [(Connection fd) fd])`
+  typechecks and yields the real fd; there is no ADT-level non-destructurability). Corrected to a
+  POSITIVE guard: the user destructure MUST typecheck + compile (exit 0). GREEN.
 - **2.2 KEPT** `connection_display_shows_no_descriptor_neg` — still holds, cleaner; assertion
   anchored to the fd-field reality (no `token`/`capacity` on the value).
 - **2.4 RE-EXPRESSED** `produce_consume_descriptor_no_rc_leak` — no descriptor region exists; now an

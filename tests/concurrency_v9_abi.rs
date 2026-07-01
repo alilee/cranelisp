@@ -219,31 +219,30 @@ fn accept_conn_listener_only_typechecks() {
 // =============================================================================
 
 // spec: design/platform/poll-support.md §3.5.1 — `(deftype Connection
-// [:primitives/Int fd])` is an OPAQUE handle: it carries a GENUINE `fd` field (the
-// platform's `r`, read back by the platform), but the field is **present-but-not-
-// user-destructurable** (`effect-concurrency.md §4.1.1`: user code threads the handle
-// from accept→read/send/close but cannot pattern-match it open to read or forge the
-// fd). So a user attempt to destructure/match it open `[(Connection f) …]` MUST be a
-// clean opacity type error — NOT the dead "zero-field, wrong field count" rejection
-// (the field exists; opacity, not arity, is what rejects). RED-until v9 cutover.
+// [:primitives/Int fd])` is **tramp-opaque but USER-READABLE** (`/arch`'s ruling,
+// FIXME 0484 / `effect-concurrency.md §4.1.1`): the load-bearing invariant is opacity
+// toward the *trampoline* — the trampoline threads the handle accept→read/send/close
+// without ever introspecting its fields, and only the *platform* (which built it) reads
+// `r`/`fd` back out. It is NOT opaque to the user: `Connection` is an ordinary 1-field
+// ADT, so user code CAN destructure/`match` it open — `(match c [(Connection fd) fd])`
+// typechecks and yields the real fd (the program's own connection datum). There is no
+// language mechanism that makes an ADT non-user-destructurable, and none is invented.
 //
-// FIXME(/sprint S97 W2): the exact opacity MECHANISM — how a platform/handle ADT is
-// marked non-user-destructurable while keeping a genuine field the platform reads back
-// (`CLAdt`/schema) — is not yet pinned in a way `/qa` can assert deterministically
-// against a specific error string. This row is written against the INTENDED behavior
-// (an opaque-handle destructure is rejected, no "schema"/"internal") so it stays RED
-// now and flips GREEN when the Wave-2 cutover lands the opacity rule. The cutover MUST
-// establish: (a) `web/Connection` is opaque (no exported user destructuring path) yet
-// (b) the `fd` field is genuine ADT data the platform reads. If the cutover instead
-// makes the field freely destructurable, this row stays RED and the opacity ruling is
-// re-opened with `/arch`.
+// POSITIVE guard (inverted S98 band-C, FIXME 0489): a user destructure of `Connection`
+// MUST typecheck + compile (exit 0) and read out the genuine `fd` field — if the handle
+// were non-user-destructurable this `match` would be a type/opacity error; it is not.
+// The value-side "no scheduling state on the handle" negatives (the RIGHT negatives to
+// keep — token/capacity/descriptor never ride the value; tramp-opacity is a codegen
+// invariant, not e2e-observable here) are covered by the sibling
+// `connection_display_shows_no_descriptor_neg` + `connection_carries_no_scheduling_
+// state_normal_adt_neg` rows.
 #[test]
-fn connection_opaque_field_present_but_not_user_destructurable_neg() {
+fn connection_field_user_readable() {
     let out = run_v9(
         "(import [web [Connection]])",
-        "(defn d [:web/Connection c] (match c [(Connection f) f]))",
+        "(defn d [:web/Connection c] (match c [(Connection fd) fd]))",
     );
-    assert_v9_rejected(out, "connection_opaque_field_present_but_not_user_destructurable_neg");
+    assert_v9_typechecks(out, "connection_field_user_readable");
 }
 
 // spec: design/platform/poll-support.md §3.5.1 — negative-coverage: NO scheduling

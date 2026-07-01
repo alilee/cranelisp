@@ -1,22 +1,28 @@
-//! Sprint 97 — concurrency-track drains: 0475 (empty `(select [])` recoverable
-//! runtime error) + 0479 (unarmed one-shot suspend trips the deadlock detector
-//! promptly). QA-first (Phase 5 Wave 1) failing-not-ignored e2e acceptance rows.
+//! Sprint 97 — concurrency-track drains: 0475 (empty `(select [])` **fatal,
+//! non-catchable** runtime error — /spec ruling FIXME 0487 resolution (a),
+//! spec/10-io.md §10.12.8) + 0479 (unarmed one-shot suspend trips the deadlock
+//! detector promptly). QA-first (Phase 5 Wave 1) failing-not-ignored e2e acceptance
+//! rows. The S97-era "recoverable" catchability row (4.2) retired S98 band-C — an
+//! empty select raises at effect-run time, outside the `catch-runtime-error`
+//! construction bracket (appendix-a §A.3), so it is uncatchable.
 //!
 //! Plan: `tests/plan/sprint-97.md` §"Item 4" (0475) + §"Item 5" row 5.2 (0479).
 //! Contracts of record: `design/int/reactor.md §9` (0475 — count-zero guard in
 //! `run_select_node`, `io.rs:496-500`) + `§8` (0479 — armed-ness deadlock detector
 //! + `drive_mode` knob). Spec of record: `spec/10-io.md §10.12.8` ("Empty
-//! `select`") / `spec/12-runtime.md §12.7.2` (Runtime Panics — recoverable via
-//! `catch-runtime-error`) / `§12.4.4` (combinators + cancellation; the "never
-//! completes is also non-conforming" clause).
+//! `select`") / `spec/12-runtime.md §12.7.2` (Runtime Panics — the empty-select raise
+//! is a fatal, non-catchable one, per the §A.3 catchability boundary) / `§12.4.4`
+//! (combinators + cancellation; the "never completes is also non-conforming" clause).
 //!
 //! ## Posture — failing-not-ignored, RED-until the Wave-3 /dev drains
 //!
 //! All rows are RED on HEAD (`memory/feedback_failing_not_ignored.md`):
 //!   - 0475: an empty `(select [])` at a HEAP-typed `a` is today an unsound null —
 //!     it SIGSEGVs (signal termination) when the synthesised `0` is dereferenced.
-//!     The fix routes a "select over empty collection" runtime error through the
-//!     standard recoverable slot. The rows assert the POST-FIX behaviour.
+//!     The fix routes a "select over empty collection" **fatal** runtime error (a
+//!     clean, prompt, message-bearing abort — NOT catchable; FIXME 0487 (a)). The
+//!     three surviving rows assert that POST-FIX fatal behaviour (raises, non-zero
+//!     exit, no unsound-null, no hang).
 //!   - 0479 (5.2): an unarmed one-shot suspend must trip the deadlock detector
 //!     PROMPTLY. This needs a `/dev` fixture leaf that returns `Pending` with nothing
 //!     armed (design §8.3 describes it as a fixture-future) — absent on HEAD ⇒ clean
@@ -78,44 +84,16 @@ fn empty_select_heap_typed_fatal_runtime_error() {
     );
 }
 
-// spec: spec/12-runtime.md §12.7.2 — the empty `(select [])` runtime error is
-// RECOVERABLE at a `catch-runtime-error` boundary: the bracket returns
-// `(Err "select over empty collection…")` and the program recovers (exits with the
-// recovered branch). Ok ⇒ exit 0; Err ⇒ exit 42 (the discriminator). RED on HEAD:
-// today the empty select is never raised through the recoverable slot.
-//
-// FIXME(/spec 0487) — GATED, catchability RULING PENDING (S98 band B). The exit-42
-// assertion below PRESUMES resolution (b) "construction-time-catchable". This is
-// NOT yet decided: FIXME 0487 (`design/arch/fixmes/0487-spec-empty-select-catchability
-// -semantics.md`) is the /spec ruling that finalizes the shape, and /arch's S98 Phase-2
-// steer is toward resolution **(a) honest fatal-runtime-error** — under which this row
-// is UNACHIEVABLE (the empty select raises at effect-RUN time, outside `catch-runtime-
-// error`'s pure-construction bracket, spec/appendix-a §A.3) and MUST be RETIRED, not
-// green-flipped. So this row is HELD RED pending 0487:
-//   - if /spec rules (b) construction-time-catchable → /backend `compile_select` raise
-//     makes exit 42 GREEN (this row is the acceptance);
-//   - if /spec rules (a) fatal-runtime-error → RETIRE this row; the "does raise, not
-//     unsound-null" invariant is already covered GREEN by the three sibling rows
-//     (`empty_select_heap_typed_fatal_runtime_error`, `_not_unit_zero_neg`,
-//     `_does_not_hang`). /qa re-points after the ruling. Do NOT green-flip by
-//     presuming either shape before 0487 resolves.
-#[test]
-fn empty_select_caught_by_catch_runtime_error() {
-    let src = "\
-(import [primitives [select Pure bind catch-runtime-error Result Ok Err String]])\n\
-(defn empty-sel []\n\
-  (bind (select :(primitives/Vec (primitives/IO primitives/String)) []) (fn [s] (Pure s))))\n\
-(defn main []\n\
-  (match (catch-runtime-error (fn [] (empty-sel)))\n\
-    [(Ok v)  (Pure 0)\n\
-     (Err m) (Pure 42)]))\n";
-    let out = Cranelisp::new()
-        .file("user.cl", src)
-        .run("user.cl")
-        .timeout(Duration::from_secs(5))
-        .output();
-    out.assert_exit(42);
-}
+// RETIRED S98 band-C (/spec ruling, FIXME 0487 resolution (a); `/spec` handoff to /qa):
+// the former `empty_select_caught_by_catch_runtime_error` asserted `(select [])` is
+// RECOVERABLE at a `catch-runtime-error` boundary (exit 42). That premise is WRONG.
+// `/spec` ruled (spec/10-io.md §10.12.8 + appendix-a §A.3 catchability boundary): an
+// empty `(select [])` raise is at **effect-run time**, which is OUTSIDE the temporal
+// `catch-runtime-error` construction bracket — so it is a **fatal, non-catchable**
+// runtime error, not a recoverable one. The row is therefore retired rather than
+// green-flipped. The fatal-path invariants (does raise, non-zero exit, no unsound-null,
+// no hang) are already covered GREEN by the three sibling rows below
+// (`empty_select_heap_typed_fatal_runtime_error`, `_not_unit_zero_neg`, `_does_not_hang`).
 
 // spec: spec/10-io.md §10.12.8 — negative: the empty-select result MUST NOT be a
 // synthesised `0`/Unit/garbage flowing downstream (the unsound-null path is gone).
