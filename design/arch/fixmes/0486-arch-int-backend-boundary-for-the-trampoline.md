@@ -25,6 +25,48 @@ status: open
 > fork"), the arg-lifetime-across-suspension contract (§"Proposed resolution" level 1),
 > and the bug-#2 fix + `tests/launch_grid_corrupt.rs` guard flip.
 
+> **S98 /arch RULING (Phase-2, 2026-07-01) — Level-1 LOCKED + SPECIFIED. FIXME STAYS OPEN
+> (Phase-5 fix + guard flip owed).** The keep-alive **ownership ruling** and the
+> **arg-lifetime-across-suspension contract** are now written down. Verdict:
+>
+> 1. **Keep-alive is RUNTIME-OWNED** at the intrinsics `EffectPoll`/`reg` seam — **NOT
+>    backend-emitted.** The reified-IO-as-data trade (`effect-concurrency.md §6`) placed
+>    lifetime-across-suspension as a runtime discipline; the backend emits reified IO *data*
+>    and does not model *when* the runtime polls, so deferral (and the keep-alive it
+>    necessitates) is the runtime's. Backend-emitted keep-alive would require modelling
+>    suspension = **Level-2**, which stays DEFERRED to its recurrence trigger. The scout's
+>    "no backend change" read is **architecturally correct** and confirmed against the code
+>    (`await_poll_node`/`EffectPoll::new`/`Poll::Ready`/`ReactorInterest::drop`/`drop.rs`
+>    tag-4 all verified).
+> 2. **Contract specified** — see BC §4b **invariant 15** (the canonical home) + the §3
+>    backend-obligation-unchanged note. Text: *a reactor-deferred effect's baked heap args
+>    (state-closure at `IO_TAG_EFFECT_POLL` field-0) are live from establish
+>    (`await_poll_node` → `EffectPoll`) until the reactor resolves the effect (`Poll::Ready`
+>    or cancel-drop); keep-alive is owned by the runtime, established at the `reg` establish
+>    site, released at the exactly-once two-path resolve keyed on `reg`; the backend's
+>    state-closure + drop-glue obligation is unchanged; consuming the state-closure is the
+>    runtime's job at resolve, exactly once, never by the sub-tree's own `consume_io_tree`
+>    tag-4 reclamation while the effect is still deferred.*
+> 3. **No interface / ABI / node-layout / cache / public-api change** for Level-1. Fix touches
+>    only `crates/cranelisp-intrinsics/src/{io.rs, reactor.rs, drop.rs}`. Confirmed NO
+>    `cranelisp-types` edge, NO `ABI_VERSION` bump, NO `CACHE_SCHEMA_VERSION` bump, NO
+>    baseline churn on any crate — so **no public-api baseline work for band A**.
+> 4. **Phase-5 owner: `/backend`** (narrow-deployed on `cranelisp-intrinsics`, the runtime
+>    library it is paired with — arch.md §"Runtime ownership note"; BC §4b). NOT `/int`
+>    (whose contact is only the host-client seam). Owed: land the fix (move-out-with-sentinel
+>    is the arch-coherent variant, mirroring launch `io-trampoline.md §15.5`; net-zero-inc is
+>    the alternative — RC-trace-decided on the reduced `redA` repro), flip
+>    `tests/launch_grid_corrupt.rs` guard green, un-quarantine `exemplar_web`, and unblock
+>    `0492`.
+> 5. **/design doc cascade owed WITH the Phase-5 fix (not by /arch):** `design/intrinsics/reactor.md`
+>    §0/§7 (the arg-lifetime mention that today only *names* the discipline) and
+>    `design/backend/io-trampoline.md` should cite BC §4b invariant 15 once the fix lands.
+>    Those are `/design`-owned per-crate docs; `/arch` does not edit them. This FIXME stays
+>    OPEN as the tracking record until the fix + guard flip land; do NOT delete it at Phase 2.
+>
+> Everything below is the pre-ruling diagnostic record (Level-2 fork analysis + the ownership
+> question that motivated the ruling) — preserved. Level-2 remains deferred.
+
 # Is "runtime" underspecified? — the /int ↔ intrinsics ↔ /backend boundary for the trampoline (and does intrinsics belong to /int at all?)
 
 **For /arch review NEXT sprint** (not S97 — S97 ships the tactical fix; this is the boundary question the fix exposed). User-raised (S97, 2026-07-01) after a launched-effect use-after-free (bug #2) fell in the /int↔/backend crack.
