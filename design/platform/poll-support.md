@@ -729,7 +729,7 @@ The launch-and-continue fan-out (sibling `/design` intrinsics — `effect-concur
 threading below is shaped so the fan-out drops in without touching the leaves or
 wrappers.
 
-#### 3.5.1 The handle ADTs (`exemplar/web.cl`, /port-owned) — Connection is opaque with a genuine `fd` field
+#### 3.5.1 The handle ADTs (`exemplar/web.cl`, /port-owned) — Connection is tramp-opaque (user-readable) with a genuine `fd` field
 
 `web/Request` / `web/Response` are unchanged (§3.2 — platforms still do not declare
 ADTs; the backend regenerates `web.platform-schema`). The two handle ADTs:
@@ -745,23 +745,40 @@ ADTs; the backend regenerates `web.platform-schema`). The two handle ADTs:
 ;;          NOT a per-connection capacity. A genuine field.
 (deftype Listener [:primitives/Int fd :primitives/Int pool])
 
-;; web/Connection — one accepted HTTP connection. OPAQUE handle carrying a GENUINE `fd`
-;; field. For web `r == fd`, so the connection fd lives in an ordinary opaque ADT field
-;; the PLATFORM reads back (it built the handle); the trampoline never introspects it.
+;; web/Connection — one accepted HTTP connection. TRAMP-OPAQUE handle (user-readable)
+;; carrying a GENUINE `fd` field. For web `r == fd`, so the connection fd lives in an
+;; ordinary ADT field the PLATFORM reads back (it built the handle); the TRAMPOLINE never
+;; introspects it. It is NOT opaque to the user — user code may destructure/`match` it open
+;; to read the fd (it is the program's own connection); the opacity is toward the trampoline.
 ;; The token is PROJECTED from this fd by the poll-fn (token == fd) — it is NOT stored
 ;; (no header slot, no desc_out, no ResourceDesc). The value is a normal 1-field object
 ;; = HeapHeader(16) + tag(8) + fd(8); `CLAdt::construct` mints it directly.
 (deftype Connection [:primitives/Int fd])
 ```
 
-**Opacity (per `/arch`'s ruling — BC §5 / `interfaces.md` §"Resource scheduling" /
-`effect-concurrency.md` §4.1.1).** `Connection` is an **opaque ADT**: the `fd` field is
-**present but not user-destructurable** — user code threads the handle from `accept` to
-`read`/`send`/`close` but cannot pattern-match it open to read or forge the fd. Opacity
-is expressed per `/arch`'s ruling on opaque ADTs (the field is genuine program/platform
-data; the type does not export a user destructuring path). The *platform* — which built
-the handle via `CLAdt::construct` — reads `r`/`fd` back out of the field (`CLAdt`/schema,
-§3.5.4), exactly as `std`'s `TcpStream` holds a private `RawFd` no user reads directly.
+**Opacity — it is toward the TRAMPOLINE, not the user (per `/arch`'s ruling — BC §5 /
+`interfaces.md` §"Resource scheduling" / `effect-concurrency.md` §4.1.1).** `Connection` is
+**tramp-opaque, user-readable**. The load-bearing invariant is **tramp-opacity**: the
+*trampoline* never introspects the handle — it threads the value from `accept` to
+`read`/`send`/`close` without ever reading its fields — and only the *platform* (which built
+the handle via `CLAdt::construct`) reads `r`/`fd` back out of the field (`CLAdt`/schema,
+§3.5.4). That is what lets **all** scheduling live in the `ctx` vtable with zero
+value-carried scheduling state; the handle is scheduling-invisible.
+
+It is **NOT opaque to the user**. `Connection` is an ordinary 1-field ADT: user code CAN
+read the genuine field by ordinary destructuring / `match` — `(match c [(Connection fd) fd])`
+typechecks and yields the real fd. It is the program's own connection, so reading its own
+datum is expected. There is no language mechanism that makes an ADT non-user-destructurable,
+and none is invented here — the analogy is `std`'s `TcpStream` *with `as_raw_fd()` available*,
+not a `RawFd` no user can reach. (The retired "present but not user-destructurable" / "does
+not export a user destructuring path" framing wrongly attributed a non-invariant to `/arch`;
+it is dropped.)
+
+**Fabrication is a platform-IO concern, not a host-soundness one.** User *construction* of a
+`Connection` (forging an fd) does not threaten host soundness: the OS syscall is the capability
+checkpoint, so a bad or unowned fd fails safely as an `EBADF`-class IO error — recoverable at
+`catch-runtime-error` — never host UB. See `/arch`'s full ruling in `effect-concurrency.md`
+§4.1.1 ("Handle fabrication is a platform-IO concern…").
 
 **Why `Connection` carries a genuine `fd` field, not the dead `[]`+header-slot shape.**
 For web the connection's only datum is its fd, and the platform's internal choice is

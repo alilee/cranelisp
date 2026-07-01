@@ -147,7 +147,8 @@ the C-ABI waker projection (§2.2), the `HostCtx` vtable + its `acquire`/`retire
 bodies (§2.3, §7), `EffectPoll` + the one await boundary (§2.5), the two-pool `Par` join
 (§2.6), the token-capacity permit pool + RAII `Permit` (§2.8, §2.9), launch/supervisor/
 admission (§2.11–§2.13), the combinator runtime + cancellation drop-paths (§2.15–§2.19),
-`consume_io_tree`/`feed_continuation`, and the arg-lifetime-across-suspension discipline. These
+`consume_io_tree`/`feed_continuation`, and the arg-lifetime-across-suspension discipline (§2.20,
+the invariant-15 keep-alive; `bounded-contexts.md §4b` invariant 15). These
 are the runtime-library guts that `/backend` emits calls into; a bug in any of them is an
 intrinsics/backend concern, not an `/int` orchestration concern (the mis-attribution FIXME
 0486 records). §6 (host-construction sharability) is the design commitment that *keeps* this
@@ -1470,6 +1471,45 @@ once). The shutdown hooks:
    platform (the web serve loop). The reactor owns the **mechanism** (drain / `clear` / the
    `StrandCancelled` emit); int/platform own the **trigger + policy**.
 
+### 2.20 Arg-lifetime across suspension — the invariant-15 keep-alive (S98, FIXME 0486; landed `75f286d`)
+
+The seam §0 line 150 names ("the arg-lifetime-across-suspension discipline") is now specified.
+Its canonical statement is **`bounded-contexts.md` §4b invariant 15** (`/arch`-owned; cite, do
+not restate); this is its interior realization.
+
+**The contract.** A reactor-deferred poll effect (any leaf that returns `Pending` — launch /
+`race` / `select` / `timeout` / `Par` / top-level poll) bakes its arguments into the
+**state-closure** field-0 of its `IO_TAG_EFFECT_POLL` node (§2.5). Between **establish**
+(`await_poll_node` → `EffectPoll::new`) and **resolve** (`Poll::Ready`, **or** cancel-drop), the
+frame that constructed the effect may be torn down while the poll is still parked — a launched
+per-connection handler whose terminal `send-conn` is polled *after* its launched frame unwinds is
+the motivating shape (`launch_grid_corrupt`, band A). The state-closure holding those baked heap
+args MUST therefore stay **live across the suspension**, released **exactly once**.
+
+**Where it rides — the reg-keyed two-path, unchanged.** The keep-alive needs no new lifecycle:
+it rides the **identical** `reg`/effect-identity two-path release §2.9/§2.16/§2.17/§7.3 already
+run for permits and reactor interest — held from establish, released on **`Ready` (eager)** at
+`EffectPoll::poll` and on **drop = cancel** via the guard's auto-generated drop glue, never
+re-entering the poll-fn. The `EffectPoll` owns the state-closure across the `await`; the
+backend-generated state-closure drop glue (which decs each heap-typed arg slot, §2.5,
+`io-trampoline.md §12.5`) is consumed exactly-once at resolve. **As shipped: the net-zero-inc
+variant** — the establish path does not add a balancing inc; the closure is held by the
+`EffectPoll` and its drop glue is the sole release (an `EffectPoll`/`StateClosure` RAII, exactly-once
+two-path). This is a **runtime-owned** discipline (arch Phase-2 ruling, `effect-concurrency.md §6`):
+the backend's state-closure layout + drop-glue obligation are **unchanged**; keep-alive is not
+backend-emitted (backend-emitted keep-alive would require modelling suspension points = the
+deferred Level-2).
+
+**⚠️ NECESSARY-BUT-NOT-SUFFICIENT for bug #2 (S98 finding).** The invariant-15 keep-alive is
+implemented, correct, and unit-tested — and it **stands** — but an A/B of both release variants
+proves it does **not** flip the band-A heap-corruption guards. The state-closure RC is balanced;
+the residual UAF is a **different object**. Bug #2 is a **`/backend` codegen defect**: a
+borrowed-`Var` **two-live-vec** RC miscount on the launched strand (a double-dec that frees the
+vec early, `ring2-rc.md §5.5` path) — **not** the state-closure and **not** an arg-lifetime gap.
+Tracked as **FIXME 0494** (`target: /backend`, `cranelisp-backend`); `0486`'s runtime half is
+**DONE** and `0486` stays open only carrying the pointer to 0494. The arch "no backend change for
+Level-1" premise held for the *keep-alive*; the *bug-#2 fix* is backend codegen, separately.
+
 ---
 
 ## 3. The strand observability sink (`strand.rs`)
@@ -2164,11 +2204,12 @@ arbitrarily long — so a **wall-clock total cap cannot separate them**. It must
 The separating fact is **armed-ness**. In this single-reactor-thread model (§2.1) a future
 that returns `Pending` has either:
 - **armed an external readiness source** — registered an fd in `fd_waiters` or a timer in
-  `timer_heap`, or has a rayon→reactor bridge outstanding (`pending_bridges > 0`), or has a
+  `timer_waiters` (the live-interest map — **not** `timer_heap`, which retains tombstones;
+  §8.2), or has a rayon→reactor bridge outstanding (`pending_bridges > 0`), or has a
   live supervised strand (§2.12), or has a parked permit waiter whose holder is in-flight
   (§2.8). The system **can** be woken; it is legitimately waiting. An idle `accept` is exactly
   this case — its listener fd sits in `fd_waiters`; mio will wake it on the next connection.
-- **armed nothing** — `Pending` with `fd_waiters` empty ∧ `timer_heap` empty ∧
+- **armed nothing** — `Pending` with `fd_waiters` empty ∧ `timer_waiters` empty ∧
   `pending_bridges == 0` ∧ the supervisor empty ∧ no parked permit waiter. Now `turn()` would
   block on an **empty interest set** forever: nothing can ever wake the suspended future. This
   is the **true deadlock signature**, and it is detectable the instant it occurs — no 30s wait.
@@ -2185,11 +2226,20 @@ evaluate `reactor_is_armed()`:
 
 ```
 armed  ⇔  !fd_waiters.is_empty()
-        ∨ !timer_heap.is_empty()
+        ∨ !timer_waiters.is_empty()     // NOT timer_heap — see the tombstone note below
         ∨ pending_bridges > 0
         ∨ !supervisor.is_empty()
         ∨ pool.any_waiter_parked()      // a permit-park; the holder is in-flight (§2.9 non-re-entry ⇒ no permit cycle)
 ```
+
+> **Why `timer_waiters`, not `timer_heap` (as shipped, 0479).** `timer_heap` is the ordered
+> deadline queue and **retains tombstones** — a cancelled/deregistered timer leaves a stale
+> `timer_heap` entry that `turn()` tolerates by skipping when its `timer_waiters` lookup misses
+> (§2.16 drop-path; the `if let Some(waker) = self.timer_waiters.remove(...)` guard). Testing
+> `timer_heap` for armed-ness would therefore read a **false positive** — a tombstone would look
+> like live timer interest and suppress a genuine no-armed-interest deadlock trip. `timer_waiters`
+> is the authoritative live-interest map (an entry exists **iff** a leaf is actually parked on a
+> timer), so the armed-ness predicate keys on it.
 
 - **`armed` ⇒ never trip.** `turn(MAX_TURN_BLOCK)` blocks up to the per-turn ceiling (a
   re-check cadence, **not** an abort), then the loop re-polls and re-evaluates. A healthy idle
