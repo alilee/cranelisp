@@ -393,28 +393,37 @@ is a straight application of it, with one named GAP (Model B) deferred.**
   TCO on `serve-loop` (an established language feature) bounds the stack.
 - **Model B** — `serve port handler`, where the platform DLL owns the loop and
   **calls back into a cranelisp closure `(Fn [Request] (Option Response))` per
-  request.** **NOT BUILDABLE NOW — platform-model GAP.** Calling a cranelisp
-  closure from native code is established as-built **only inside `cranelisp-intrinsics`**
-  (`io::call_continuation` `io.rs:405`, `ivar.rs:137`, `session_v4.rs:4778` — load
+  request.** **NOT BUILT — and RETIRED BY DESIGN (S98), not deferred.** Calling a
+  cranelisp closure from native code is established as-built **only inside
+  `cranelisp-intrinsics`** (`io::call_continuation`, `ivar.rs`, `session_v4.rs` — load
   `code_ptr` from the heap closure, transmute to `extern "C" fn`, call with the env
   pointer). The **platform crate's public surface exposes no such capability**: there
   is no `CLClosure`/`CLFn` wrapper type and no `HostCallbacks` method to invoke a
   passed-in closure. A platform fn taking `(Fn [Request] (Option Response))` would
   receive it as a raw `i64` with no host-side calling support, no RC discipline for
-  the captured closure across the boundary, and no error-slot ferry. Model B
-  therefore requires **new cross-crate machinery** (a `CLClosure` wrapper + a
-  `HostCallbacks::invoke_closure` callback wired host-side in `cranelisp-intrinsics`,
-  with a defined capture/RC/error-slot contract) — an ABI bump and a `/dev platform`
-  + `/dev` intrinsics change, out of S86's reach. **Deferred to FIXME 0407.**
+  the captured closure across the boundary, and no error-slot ferry.
+
+  **The S98 platform-effect-boundary ruling settles it** (`effect-concurrency.md`
+  §12.1, user 2026-07-01): the boundary is **poll-in / wake-out only** — the platform
+  returns `Ready`/`Pending` and signals the host waker; a cranelisp closure never
+  crosses it. Letting a platform own its loop and call back into a cranelisp handler is
+  the Roc/"Model B" platform-owned-loop degeneration the reactor rejects
+  (`effect-concurrency.md` §2, Appendix A). **No `CLClosure`/`CLFn` wrapper type and no
+  `HostCallbacks::invoke_closure` method will be introduced** — `HostCallbacks` stays
+  the two-pointer allocator surface. The concurrent-serve case is served by the
+  scheduler-trampoline (cranelisp owns the accept loop — Model A is the seed); the only
+  residual (an un-invertible synchronous C dispatcher — a `qsort` comparator, a GUI
+  `run()` loop) is handled one layer lower, with the callback written in the platform's
+  own language (Rust) exposing only a poll-shaped effect to cranelisp. The former
+  "escape hatch, build on demand" disposition (FIXME 0407) is retired.
 
   This is consistent with the deliberate design boundary recorded in `test-discovery.md`
   (the `catch-runtime-error` combinator is a `cranelisp-intrinsics` primitive *because*
   closure-calling is confined to intrinsics, where thread-locals, RC, and the error
-  slot can be managed safely — the platform crate is kept minimal for FFI safety). The
-  GAP is genuine and the fallback (Model A) loses nothing the S86 showcase needs:
-  Model A serves the full GET-form / POST-solve roundtrip; Model B's only added value
-  is the "purity enables concurrency" teaching moment, which is documentation, not a
-  required capability.
+  slot can be managed safely — the platform crate is kept minimal for FFI safety).
+  Model A loses nothing the showcase needs: it serves the full GET-form / POST-solve
+  roundtrip; Model B's only added value was the "purity enables concurrency" teaching
+  moment, which is documentation, not a required capability.
 
 **Decision — Request/Response representation: ordinary `.cl` ADTs, exactly the
 `shapes/Rectangle` precedent.** The plan's "opaque heap values (pointer as i64)"
@@ -470,7 +479,8 @@ as `shapes` did:
   web platform uses ABI v3 unchanged.
 
 No platform-model change is required for Model A. The model is sufficient as-is; Model B
-is the only extension, and it is deferred (FIXME 0407).
+is **retired by design** — the platform-effect boundary is poll-in / wake-out only, with
+no closure-callback-into-cranelisp capability (§3a; `effect-concurrency.md` §12.1).
 
 ---
 

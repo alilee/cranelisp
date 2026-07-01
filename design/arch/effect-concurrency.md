@@ -1064,6 +1064,56 @@ from scratch.
 decoupling but gives **no real cancellation** and is thread-per-call. Acceptable only
 for low-concurrency platforms; not the primary path.
 
+### 12.1 The boundary is complete: poll-in / wake-out only — no closure-callback-into-cranelisp (S98 ruling)
+
+**Exactly two functions cross the platform-effect boundary, and a cranelisp closure is
+not one of them.** The shipped v9 ctx-vtable model (§4.1.1 — the A2 reactor, generalized)
+has precisely:
+
+- **poll-in** — the host calls the platform's `PollFn` (GOT-dispatched over a host-built
+  state-closure), which returns `Ready(result)` or `Pending`. This is the *what*: the
+  platform tries its non-blocking syscall.
+- **wake-out** — the platform signals the host waker (the C-ABI projection of
+  `std::task::Context`) through the `ctx` vtable (`register_readable`/`register_writable`/
+  `register_timer` + `acquire`/`retire`). This is the *when*: the platform tells the host
+  reactor to re-poll it later.
+
+**Ruling (user, 2026-07-01): poll-in / wake-out is the COMPLETE platform-effect boundary.
+There is NO closure-callback-into-cranelisp capability, by design.** A cranelisp closure
+never crosses the boundary; a *continuation* is the trampoline's own suspended state
+(§2, §4), held host-side — never a handle the platform holds and calls back. The platform
+never re-enters cranelisp: it returns `Ready`/`Pending` and signals a waker, and the
+trampoline (host-side) resumes the continuation. Three grounds:
+
+1. **Thin, stateless platforms.** Poll-in/wake-out keeps every platform a C-ABI leaf that
+   owns only its domain protocol and holds no cranelisp state. Admitting a host-mediated
+   closure-call would push concurrency / state / RC / error-slot-ferry complexity into
+   *every* platform — the Roc "cranelisp is a DSL on a platform written in a real language"
+   platform-owned-loop degeneration this architecture rejects (§2, Appendix A). The reactor
+   already rejects "Model B" (a platform owning its event loop and calling pure handlers)
+   as a *concurrency mechanism*; this ruling closes the residual by rejecting it as a
+   *capability*.
+
+2. **The only residual — an un-invertible synchronous C dispatcher — is handled one layer
+   lower.** A native library that *forces* nested synchronous re-entry within a single
+   blocking call (a `qsort` comparator, an un-invertible GUI `run()` loop, a signal handler)
+   is served by writing the callback **in the platform's own language (Rust)** and exposing
+   only a poll-shaped effect to cranelisp. The re-entrant callback is a platform-interior
+   concern; it never becomes a cranelisp-closure-across-the-C-ABI contract.
+
+3. **The remaining sliver is economically void.** "A C library demanding a
+   *cranelisp-authored* synchronous callback" forfeits the C library's speed the moment the
+   comparator is cranelisp — which is the reason to reach for the C library at all. No real
+   workload both needs the native library's performance and requires its inner callback to
+   be cranelisp.
+
+**Consequence.** The `HostCallbacks` table stays the two-pointer allocator surface
+(`alloc` + `alloc_with_tag`); it is **not** widened with `invoke_closure` / `rc_inc` /
+`rc_dec`. No `CLClosure` / `CLFn` wrapper type is introduced. The "escape hatch, build on
+demand" disposition once parked against this gap is **retired**: the reactor (for
+concurrency) plus Rust-side platform-interior callback wrapping (for synchronous
+C-reentrancy) cover every real case. (This ruling retires the former FIXME 0407.)
+
 ## 13. Cascade-pending — `platform-interface.md` ABI-v4 rewrite
 
 The current `platform-interface.md` documents the **ABI v3** three-exports model

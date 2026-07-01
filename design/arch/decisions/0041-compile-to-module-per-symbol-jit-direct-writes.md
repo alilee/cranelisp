@@ -240,6 +240,18 @@ The per-symbol reclaim model above is enabled by — and depends on — Cranelif
 
 ## Callback support (forward commitment)
 
+> **SUPERSEDED (S98, 2026-07-01) — do NOT migrate this section into the canonical set.**
+> The S98 platform-effect-boundary ruling (`effect-concurrency.md` §12.1; canonical
+> statement at `bounded-contexts.md` §5 invariant 3 + the two-pointer-`HostCallbacks`
+> paragraph) retires this forward commitment: the platform-effect boundary is **poll-in
+> / wake-out only**, there is **no closure-callback-into-cranelisp capability**, and
+> `HostCallbacks` will NOT gain `invoke_closure`/`rc_inc`/`rc_dec`. A cranelisp closure
+> never crosses the DLL boundary. The heap-closure GOT-dispatch safety machinery below
+> remains valid ONLY as the *in-process* cranelisp-to-cranelisp model (e.g.
+> `io::call_continuation` inside `cranelisp-intrinsics`); it is not a DLL-ABI
+> capability. This section drains to nothing — the retirement, not the commitment, is
+> the durable record.
+
 The safety invariant above assumes platforms do not retain fn pointers across calls. The current platform calling convention (spec §10.10.1) permits only `Int`, `Bool`, `String`, and `IO a` as argument types — there is no `Fn a b` row in the `i64` interpretation table, so platforms cannot today receive or retain user function values. When that row is eventually added, the rules below MUST hold so that the safety invariant survives verbatim:
 
 1. The `i64` passed for a fn-typed argument is the address of the **heap closure struct** (Decision 11 layout: `[header | code_ptr | drop_glue_ptr | captures...]`), NOT the raw code pointer the closure would dispatch to. Platforms never see raw JIT addresses.
