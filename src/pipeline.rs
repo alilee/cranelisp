@@ -121,35 +121,77 @@ pub fn execute_compiled_expr(
         .or(expr_ty)
         .unwrap_or(Type::Int);
 
+    // Run through the SAME unified C-ABI driver `--run`/`--link` use
+    // (`cranelisp_intrinsics::panic::cranelisp_run_program`, FIXME 0366) —
+    // the single clear→call→pre-IO-peek→drive_io→post-IO-peek sequence
+    // documented on that function as "REPL-safe (no `process::exit` inside
+    // the driver)". FIXME 0499: the REPL eval path used to hand-roll a
+    // partial mirror of this sequence (`take_runtime_error()` immediately
+    // after `func()`, then `unwrap_io_inline` with no error-slot check
+    // afterward) — that mirror checked the runtime-error slot only BEFORE
+    // driving the IO tree, never AFTER. A fatal runtime error raised DURING
+    // the drive (e.g. an empty `(select [])` hitting the count-zero guard in
+    // `run_select_node`, `crates/cranelisp-intrinsics/src/io.rs`) therefore
+    // synthesised its sentinel `0` straight through to display instead of
+    // aborting the expression (spec/10-io.md §10.12.8 violation) — a
+    // single-driver/dual-host-wrapper divergence, not a second IO driver.
+    // Delegating to the shared driver here removes the second wrapper
+    // entirely: REPL and `--run`/`--link` now reach the identical
+    // clear→call→peek→drive→peek sequence, so every fatal-runtime-error-
+    // raising IO op (not just `select`) is observed identically in both
+    // modes.
+    //
     // SAFETY: `got_addr` is the finalized code pointer for the zero-arg
     // `__expr` wrapper, written by `compile_to_module`. The `Arc<Jit>` on the
-    // `__expr` entry keeps the pages mapped for the duration of this call.
-    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(got_addr) };
-    let _ = cranelisp_intrinsics::panic::take_runtime_error();
-    let raw_value = func();
+    // `__expr` entry keeps the pages mapped for the duration of this call +
+    // the IO drive the program driver performs internally.
+    let outcome =
+        cranelisp_intrinsics::panic::cranelisp_run_program(got_addr, ty.is_io());
 
-    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
-        return Err(CranelispError::CodegenError {
-            message: format!("runtime error: {msg}"),
-            location: ErrorLocation::from_span(Span::SYNTHETIC),
-        });
+    program_outcome_to_result(outcome, ty)
+}
+
+/// Translate a [`cranelisp_intrinsics::panic::ProgramOutcome`] into
+/// `execute_compiled_expr`'s `(value, Type)` / `Result` contract. Split out
+/// so this translation is unit-testable without a live JIT/symbol table —
+/// this is the exact seam where the pre-fix REPL path (FIXME 0499) silently
+/// dropped a runtime error raised DURING the IO drive: the former code never
+/// inspected an outcome/slot at this point at all.
+fn program_outcome_to_result(
+    outcome: cranelisp_intrinsics::panic::ProgramOutcome,
+    ty: Type,
+) -> Result<(i64, Type), CranelispError> {
+    match outcome.error_kind {
+        // 1 = runtime error: the runtime-error slot is SET (drain for text).
+        // Reached whether the panic occurred pre-IO (during the bare
+        // `__expr` call) or post-IO (during the trampoline/reactor drive,
+        // e.g. FIXME 0499's empty `(select [])`) — the driver collapses both
+        // cases into one outcome kind.
+        1 => {
+            let msg = cranelisp_intrinsics::panic::take_runtime_error()
+                .unwrap_or_else(|| "runtime panic".to_string());
+            Err(CranelispError::CodegenError {
+                message: format!("runtime error: {msg}"),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            })
+        }
+        // 2 = platform-dispatch fault (FIXME 0327, the dispatch funnel).
+        2 => {
+            let fault = cranelisp_intrinsics::panic::take_dispatch_fault()
+                .unwrap_or_else(|| cranelisp_intrinsics::panic::DispatchFault {
+                    fn_name: "<unknown>".to_string(),
+                    cause: "platform dispatch fault".to_string(),
+                });
+            Err(compose_dispatch_error(fault))
+        }
+        // 0 = clean: `outcome.exit_code` is the trampolined inner IO value
+        // (or `__expr`'s own result for a non-IO expression). Unwrap the
+        // type the same way `unwrap_io_inline` used to.
+        _ => {
+            let result_ty = if ty.is_io() { ty.unwrap_io().clone() } else { ty };
+            Ok((outcome.exit_code, result_ty))
+        }
     }
-
-    // IO trampoline inline (the code is still mapped via the entry's Arc<Jit>).
-    let result = unwrap_io_inline(raw_value, ty);
-
-    // A platform Effect forced during the trampoline may have faulted under the
-    // intrinsics fault guard (FIXME 0327, the dispatch funnel). The guard
-    // captured `(fn_name, cause)` into the dispatch-fault slot; compose the
-    // structured `PlatformError::DispatchError` here (the two-layer split:
-    // intrinsics sets the slot, int composes — BC §4b invariant 14 / §5
-    // invariant 9). This is checked AFTER the trampoline because the fault is
-    // raised during the IO force, not during the bare `__expr` call.
-    if let Some(fault) = cranelisp_intrinsics::panic::take_dispatch_fault() {
-        return Err(compose_dispatch_error(fault));
-    }
-
-    Ok(result)
 }
 
 /// Compose a structured `PlatformError::DispatchError` from an intrinsics
@@ -167,47 +209,18 @@ fn compose_dispatch_error(
     })
 }
 
-/// If `ty` is an `IO a` type, force the IO tree rooted at `raw_value` via
-/// `run_io_trampoline` and return `(inner_value, a)`. Otherwise return
-/// `(raw_value, ty)` unchanged.
-///
-/// This MUST be called before the per-eval `Jit` drops (see
-/// `compile_and_execute_expr` docstring). Mirrors the IO-aware post-call
-/// handling in `CompilerSession::trampoline` at `src/session_v4.rs`.
-///
-/// Decision 24 (consuming convention): `run_io_trampoline` is non-consuming
-/// of its input tree — it walks the caller's Pure/Effect/Bind/Par nodes
-/// read-only. The Rust-side boundary (this function) owns the tree and MUST
-/// release it via `drop::consume_io_tree` after the trampoline returns.
-/// Without this follow-up call, the outer caller-tree nodes (Bind/Pure +
-/// continuation closures) leak — the O(N) Wave-1-review Condition-6
-/// regression. This pairing mirrors the internal structure of the extern
-/// `cranelisp_run_io` entry point (see
-/// `crates/cranelisp-intrinsics/src/io.rs::cranelisp_run_io`).
-fn unwrap_io_inline(raw_value: i64, ty: Type) -> (i64, Type) {
-    if ty.is_io() {
-        // SAFETY: `raw_value` is either a heap pointer to an IO node (when
-        // the compiled expression built one) or 0 on early return. The
-        // trampoline tolerates null-ish inputs by dereferencing the tag
-        // field; a non-IO value here would indicate a typechecker bug, not
-        // a safety bug in this function. Behaviour mirrors
-        // `CompilerSession::trampoline`.
-        // Drive the IO tree through `cranelisp_run_io` — the single entry that
-        // cfg-splits to the host reactor under `concurrency-runtime` (so real
-        // poll-shape effect nodes suspend/resume on the reactor, FIXME 0457) and
-        // to the synchronous stepper otherwise (byte-identical). It ALSO releases
-        // the caller's tree internally (Decision 24 consuming convention —
-        // `drive_io` + `consume_io_tree`), so no separate consume is needed here.
-        // Routing `--run`/REPL through this same entry as `--link` keeps the IO
-        // forcing single-sited (the reactor is never re-driven by a parallel int
-        // path; 0419 divergence-proofing).
-        let inner_value = cranelisp_intrinsics::io::cranelisp_run_io(raw_value);
-        let inner_type = ty.unwrap_io().clone();
-        (inner_value, inner_type)
-    } else {
-        (raw_value, ty)
-    }
-}
+// `unwrap_io_inline` — DELETED (FIXME 0499 fix). It hand-rolled a
+// REPL-only "drive the IO tree" step that duplicated a SLICE of
+// `cranelisp_run_program`'s clear→call→peek→drive→peek sequence without the
+// post-IO error-slot peek — the single-driver/dual-host-wrapper divergence
+// this fix removes. `execute_compiled_expr` now calls
+// `cranelisp_intrinsics::panic::cranelisp_run_program` directly (the same
+// driver `--run`/`--link` use), and `program_outcome_to_result` performs the
+// same type-unwrap this function used to. Its dedicated RC-balance unit
+// tests are superseded by `cranelisp-intrinsics`'s own
+// `decision24_run_io_pure_rc_balanced` (`crates/cranelisp-intrinsics/src/io/tests.rs`),
+// which already pins the Decision-24 consuming-convention invariant at the
+// driver's actual home.
 
 // `compile_and_execute_expr_with_trace` — DELETED S76 (W-Collapse + trace
 // ruling). The trace eval path no longer hand-rolls a JIT; trace codegen +
@@ -218,13 +231,24 @@ fn unwrap_io_inline(raw_value: i64, ty: Type) -> (i64, Type) {
 // Unit tests
 // ---------------------------------------------------------------------------
 //
-// Sprint 57 Wave 6: lock in the IO-unwrap invariant. The larger
-// integration-level SIGBUS reproducer lives in `tests/io_minimal.rs`; these
-// unit tests verify the pipeline-level invariant directly.
+// FIXME 0499: these pin `program_outcome_to_result`, the seam where the REPL
+// eval path (`execute_compiled_expr`) translates the shared
+// `cranelisp_run_program` driver's `ProgramOutcome` into the
+// `(value, Type)` / `Result` contract. The former `unwrap_io_inline`
+// unit tests (Sprint 57 Wave 6) covered only the clean-IO-unwrap slice of
+// this seam and were deleted with the function — the driver's own
+// Decision-24 RC-balance invariant is now pinned at its actual home
+// (`decision24_run_io_pure_rc_balanced`,
+// `crates/cranelisp-intrinsics/src/io/tests.rs`). These tests instead cover
+// all three `ProgramOutcome::error_kind` discriminants this fn dispatches on,
+// including the exact case FIXME 0499 fixed: a fatal runtime error raised
+// DURING the IO drive (kind 1, post-IO) must produce an `Err`, not a
+// synthesised value.
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_intrinsics::panic::ProgramOutcome;
     use cranelisp_types::{FQTypeName, TypeName};
 
     fn io_int_type() -> Type {
@@ -262,112 +286,97 @@ mod tests {
         }
     }
 
-    /// Sprint 57 Wave 6 (IO-path SIGBUS fix): non-IO types flow through
-    /// `unwrap_io_inline` unchanged. This is the baseline — only IO values
-    /// incur the trampoline cost, so non-IO REPL eval results (the common
-    /// case) pay nothing for the fix.
+    /// error_kind 0 (clean), non-IO type: passthrough unchanged — the common
+    /// REPL case (a bare `Int`/`Bool`/etc result) pays nothing extra.
     #[test]
-    fn unwrap_io_inline_leaves_non_io_unchanged() {
-        let (value, ty) = unwrap_io_inline(42, Type::Int);
+    fn program_outcome_to_result_clean_non_io_passthrough() {
+        let outcome = ProgramOutcome { exit_code: 42, error_kind: 0 };
+        let (value, ty) = program_outcome_to_result(outcome, Type::Int).unwrap();
         assert_eq!(value, 42);
         assert_eq!(ty, Type::Int);
-
-        let (value, ty) = unwrap_io_inline(1, Type::Bool);
-        assert_eq!(value, 1);
-        assert_eq!(ty, Type::Bool);
     }
 
-    /// Sprint 57 Wave 6 (IO-path SIGBUS fix): when an IO-typed expression is
-    /// passed in, the type is unwrapped to the inner `a`. Wrapping this in
-    /// a unit test makes the fix's external contract visible: after
-    /// `compile_and_execute_expr` returns for an IO expression, the caller
-    /// sees a non-IO type and a fully-reduced inner value — the per-eval
-    /// `Jit` is safe to drop. Regression guard for the
-    /// `tests/io_minimal.rs::minimal_3_bind_pure_lambda_trampoline_after_eval_sigbus`
-    /// cluster: if this test fails (returns IO type), the invariant has
-    /// regressed and the minimal integration tests will SIGBUS again.
+    /// error_kind 0 (clean), IO type: the exit_code is already the
+    /// trampolined inner value (the driver forced the IO tree internally),
+    /// so this just unwraps the type `IO a` -> `a` — the same unwrap
+    /// `unwrap_io_inline` used to perform after driving IO itself.
     #[test]
-    fn unwrap_io_inline_strips_io_type_for_pure_node() {
-        // Build a bare Pure(42) node at the runtime boundary. Pure has no
-        // closure, so trampolining it is safe here (no JIT dependency) —
-        // this exercises the IO-stripping logic in isolation from the JIT
-        // lifecycle concern that motivates the fix.
-        use cranelisp_intrinsics::alloc_with_rc;
-        const TAG_OFFSET: isize = 16;
-        const FIELD_0_OFFSET: isize = 24;
-        const IO_TAG_PURE: i64 = 0;
-
-        let base = alloc_with_rc(16) as i64; // tag(8) + field0(8)
-        unsafe {
-            *((base + TAG_OFFSET as i64) as *mut i64) = IO_TAG_PURE;
-            *((base + FIELD_0_OFFSET as i64) as *mut i64) = 42;
-        }
-
-        let (value, ty) = unwrap_io_inline(base, io_int_type());
-
-        // Type was unwrapped: caller sees `Int`, not `IO Int`.
-        assert_eq!(ty, Type::Int, "expected unwrapped Int, got {ty:?}");
-        // Value was the trampolined inner, not the IO node pointer.
-        assert_eq!(value, 42, "expected trampolined inner 42, got {value}");
-        assert_ne!(
-            value, base,
-            "unwrap_io_inline must NOT leak the heap-IO pointer to caller"
-        );
-
-        // Sprint 57 Wave 6 (Decision 24 fix): `unwrap_io_inline` is a
-        // consuming Rust boundary — it MUST release the caller's tree via
-        // `consume_io_tree` after the non-consuming trampoline walk. If a
-        // future edit drops the `consume_io_tree` call, this allocation
-        // would leak and the QA-balance tests (g8_io_trampoline_rc_balanced,
-        // g8_rc_balance_bind_chain) would regress. Because `unwrap_io_inline`
-        // already owns the consume, there is nothing left for the caller to
-        // dec.
-    }
-
-    /// Sprint 57 Wave 6 (Decision 24 fix): `unwrap_io_inline` must balance
-    /// alloc/dealloc on the IO path. `run_io_trampoline` is non-consuming,
-    /// so `consume_io_tree` must release the outer caller-tree nodes
-    /// (Pure/Effect/Bind/Par + continuation closures). Regression guard for
-    /// the g8_io_trampoline_rc_balanced / g8_rc_balance_bind_chain failures.
-    /// If someone drops the `consume_io_tree` call, this test flips red.
-    #[test]
-    fn unwrap_io_inline_rc_balanced_for_pure_node() {
-        use cranelisp_intrinsics::alloc_with_rc;
-        const TAG_OFFSET: isize = 16;
-        const FIELD_0_OFFSET: isize = 24;
-        const IO_TAG_PURE: i64 = 0;
-
-        let allocs_before = cranelisp_intrinsics::alloc_count();
-        let deallocs_before = cranelisp_intrinsics::dealloc_count();
-
-        // Build a bare Pure(7) node and hand it to `unwrap_io_inline`.
-        // The only heap alloc in-scope is this Pure node — `unwrap_io_inline`
-        // must release it.
-        let base = alloc_with_rc(16) as i64;
-        unsafe {
-            *((base + TAG_OFFSET as i64) as *mut i64) = IO_TAG_PURE;
-            *((base + FIELD_0_OFFSET as i64) as *mut i64) = 7;
-        }
-
-        let (value, ty) = unwrap_io_inline(base, io_int_type());
+    fn program_outcome_to_result_clean_io_unwraps_type() {
+        let outcome = ProgramOutcome { exit_code: 7, error_kind: 0 };
+        let (value, ty) = program_outcome_to_result(outcome, io_int_type()).unwrap();
         assert_eq!(value, 7);
-        assert_eq!(ty, Type::Int);
+        assert_eq!(ty, Type::Int, "expected unwrapped Int, got {ty:?}");
+    }
 
-        let new_allocs = cranelisp_intrinsics::alloc_count() - allocs_before;
-        let new_deallocs = cranelisp_intrinsics::dealloc_count() - deallocs_before;
-        assert_eq!(
-            new_allocs, 1,
-            "only 1 alloc expected (the Pure node); got {new_allocs}"
+    /// error_kind 1 (runtime error): this is the exact FIXME 0499 case — a
+    /// fatal runtime error raised DURING the IO drive (e.g. empty `(select
+    /// [])`'s count-zero guard) reaches this discriminant, and MUST produce
+    /// `Err`, never a synthesised value. The pre-fix REPL path never checked
+    /// the runtime-error slot after driving IO at all, so this is the
+    /// regression this test guards.
+    #[test]
+    fn program_outcome_to_result_runtime_error_is_err() {
+        let _ = cranelisp_intrinsics::panic::take_runtime_error(); // clear any stale slot
+        cranelisp_intrinsics::panic::set_runtime_error(
+            "runtime panic: select over empty collection".to_string(),
         );
-        assert_eq!(
-            new_deallocs, 1,
-            "expected 1 dealloc from consume_io_tree; got {new_deallocs} \
-             — Decision 24 consuming-contract regression"
+        let outcome = ProgramOutcome { exit_code: 0, error_kind: 1 };
+        let err = program_outcome_to_result(outcome, io_int_type())
+            .expect_err("error_kind 1 must surface as Err, not a synthesised value");
+        match err {
+            CranelispError::CodegenError { message, .. } => {
+                assert!(
+                    message.contains("select over empty collection"),
+                    "expected the drained runtime-error text in the message, got: {message}"
+                );
+            }
+            other => panic!("expected CodegenError, got {other:?}"),
+        }
+        // The slot was drained (take, not peek) — a second read is empty.
+        assert_eq!(cranelisp_intrinsics::panic::take_runtime_error(), None);
+    }
+
+    /// error_kind 1 with an empty slot (defensive: the driver contract says
+    /// the slot is SET on a non-zero kind, but the translation must not
+    /// panic/unwrap if it somehow isn't) falls back to a generic message
+    /// rather than propagating a missing value.
+    #[test]
+    fn program_outcome_to_result_runtime_error_missing_slot_falls_back() {
+        let _ = cranelisp_intrinsics::panic::take_runtime_error(); // ensure empty
+        let outcome = ProgramOutcome { exit_code: 0, error_kind: 1 };
+        let err = program_outcome_to_result(outcome, Type::Int).unwrap_err();
+        match err {
+            CranelispError::CodegenError { message, .. } => {
+                assert!(message.contains("runtime panic"), "got: {message}");
+            }
+            other => panic!("expected CodegenError, got {other:?}"),
+        }
+    }
+
+    /// error_kind 2 (platform-dispatch fault, FIXME 0327): composed into a
+    /// structured `PlatformError::DispatchError` via `compose_dispatch_error`.
+    #[test]
+    fn program_outcome_to_result_dispatch_fault_is_err() {
+        let _ = cranelisp_intrinsics::panic::take_dispatch_fault(); // clear any stale slot
+        cranelisp_intrinsics::panic::set_dispatch_fault(
+            cranelisp_intrinsics::panic::DispatchFault {
+                fn_name: "stdio/read-line".to_string(),
+                cause: "device unavailable".to_string(),
+            },
         );
-        assert_eq!(
-            new_allocs, new_deallocs,
-            "unwrap_io_inline RC imbalance: {new_allocs} allocs vs \
-             {new_deallocs} deallocs"
-        );
+        let outcome = ProgramOutcome { exit_code: 0, error_kind: 2 };
+        let err = program_outcome_to_result(outcome, Type::Int).unwrap_err();
+        match err {
+            CranelispError::Platform(cranelisp_types::PlatformError::DispatchError {
+                fn_name,
+                cause,
+                ..
+            }) => {
+                assert_eq!(fn_name.as_ref(), "stdio/read-line");
+                assert_eq!(cause, "device unavailable");
+            }
+            other => panic!("expected Platform(DispatchError), got {other:?}"),
+        }
+        assert_eq!(cranelisp_intrinsics::panic::take_dispatch_fault(), None);
     }
 }

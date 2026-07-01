@@ -158,6 +158,69 @@ fn empty_select_does_not_hang() {
 }
 
 // =============================================================================
+// FIXME 0499 — REPL/`--run` parity: both modes must abort, neither may return
+// the synthesised unsound-null `:primitives/Int 0`.
+// =============================================================================
+
+/// A scalar-typed (`Int`) empty `(select [])`, entered directly at the REPL —
+/// the exact shape from FIXME 0499's repro. Scalar (not heap-typed) so a
+/// pre-fix REPL run does NOT SIGSEGV; it silently synthesises `0` and DISPLAYS
+/// it (`:primitives/Int 0`), which is the unsound-null violation this test
+/// pins — a divergence a heap-typed repro (which crashes) can't observe.
+const EMPTY_SELECT_REPL_INPUT: &str = "\
+(import [primitives [select Pure bind Int]])\n\
+(select :(primitives/Vec (primitives/IO primitives/Int)) [])\n";
+
+// spec: spec/10-io.md §10.12.8 — the REPL path for an uncaught empty
+// `(select [])` MUST abort the expression with the "select over empty
+// collection" runtime error, exactly like `--run` (§12.7.4: "expression-
+// aborting in the REPL"), and MUST NOT display a synthesised
+// `:primitives/Int 0` result line. FIXME 0499: pre-fix, `execute_compiled_expr`
+// (the REPL eval path, `src/pipeline.rs`) only checked the runtime-error slot
+// BEFORE driving IO, never after — so the count-zero guard's fatal error,
+// raised DURING the drive, fell through to a synthesised `0` displayed as
+// `:primitives/Int 0`. Post-fix both modes call the same
+// `cranelisp_intrinsics::panic::cranelisp_run_program` driver, so this and
+// `empty_select_heap_typed_fatal_runtime_error` must agree: both abort, both
+// surface the message, neither prints an unsound-null value.
+#[test]
+fn empty_select_repl_run_parity_no_unsound_null() {
+    let repl_out = Cranelisp::repl_capture(EMPTY_SELECT_REPL_INPUT);
+    let repl_combined = format!("{}{}", repl_out.stdout, repl_out.stderr);
+    assert!(
+        repl_combined.contains(EMPTY_SELECT_MSG),
+        "REPL: an uncaught empty (select []) MUST surface '{EMPTY_SELECT_MSG}' \
+         (spec/10-io.md §10.12.8 / §12.7.4 expression-aborting), like --run.\n\
+         combined:\n{repl_combined}"
+    );
+    assert!(
+        !repl_combined.contains(":primitives/Int 0"),
+        "REPL: an uncaught empty (select []) MUST NOT display the synthesised \
+         unsound-null `:primitives/Int 0` (FIXME 0499 regression) — the count-\
+         zero guard must abort the expression, not fall through to a value.\n\
+         combined:\n{repl_combined}"
+    );
+
+    let run_out = Cranelisp::new()
+        .file("user.cl", EMPTY_SELECT_HEAP_UNCAUGHT)
+        .run("user.cl")
+        .timeout(Duration::from_secs(5))
+        .output();
+    let run_combined = format!("{}{}", run_out.stdout, run_out.stderr);
+    assert_ne!(
+        run_out.status.code(),
+        Some(0),
+        "--run: an uncaught empty (select []) MUST be a non-zero-exit runtime \
+         error, matching the REPL's expression-abort.\ncombined:\n{run_combined}"
+    );
+    assert!(
+        run_combined.contains(EMPTY_SELECT_MSG),
+        "--run: an uncaught empty (select []) MUST surface '{EMPTY_SELECT_MSG}', \
+         matching the REPL.\ncombined:\n{run_combined}"
+    );
+}
+
+// =============================================================================
 // Item 5 row 5.2 — 0479: an unarmed one-shot suspend trips the deadlock detector
 // PROMPTLY (the negative face of the idle-armed-server survives row 5.1).
 // =============================================================================
