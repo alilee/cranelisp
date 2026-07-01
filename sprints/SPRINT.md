@@ -1,6 +1,6 @@
 # Sprint 98: Concurrency-track drain + the trampoline boundary defect — clear the slate before the parallelism axis
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — **Stage 1 QA-first** (sprint-wide RED baseline). Scope user-approved (full A–E drain; `0486` **Level-1 locked**). Phase-2 `/arch`: **SIGN-OFF**, no public-API impact. **Phase 3/4 compressed** (drain sprint — per-band design lives in the FIXMEs + the Phase-2 `0486` ruling; waves finalized as drafted below). `/qa` issued for the failing-not-ignored baseline.
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — **bands B/C/E COMPLETE** (all drains landed green; 12 FIXMEs resolved: `0475 0479 0483 0484 0485 0487 0488 0489 0490 0493 0407 0419`). Now on **band A `0494`** (timeboxed `/backend` codegen investigation, reduce-first gate). Then Phase 6 (`0491`/`0492`/assessment). Suite: 1791 passed / 2 known-RED band-A guards / (1 pre-existing timing flake to widen at close). New FIXMEs filed for deferred/routed work: `0494` (/backend), `0495`+`0496` (/design doc reconciliation).
 
 **Goal**: Drain the entire S97-carried defect/FIXME backlog — headlined by the `/int↔/backend` trampoline arg-lifetime boundary (`0486`) and the bug-#2 launched-effect UAF it names — so the parallelism/memory-contention axis (S99) tunes the spark gate against a fully-settled substrate, with zero known-defect REDs and zero open concurrency-track FIXMEs behind it.
 
@@ -79,7 +79,7 @@ The shipped v9 model has exactly two functions across the platform boundary — 
 | FIXME | Target skill | Status | Disposition this sprint |
 |---|---|---|---|
 | 0486 | /arch ✅ → runtime half **DONE** | open (residual) | **A** — invariant-15 keep-alive landed+kept (`75f286d`, net-zero-inc, unit-tested). Necessary-not-sufficient for bug #2; stays open carrying the residual → `0494`. `/design` cite-back owed (`reactor.md`/`io-trampoline.md` + "necessary-not-sufficient"). |
-| 0494 | /dev → **/backend** (`cranelisp-backend`) | open | **A (new critical path)** — the ACTUAL bug-#2 fix: borrowed-Var two-live-vec RC double-dec on the launched strand. Flips `launch_grid_corrupt` + `launch_vec_send_corrupt`, un-ignores `exemplar_web`. Timeboxed: non-server CLIF repro FIRST. Unblocks `0492`. |
+| 0494 | /dev(backend) GATE-STOP → **retarget** | open | **A** — `/backend` vec-RC hypothesis **REFUTED** (reduce-first gate, `e46b44d`; no wasted fix). RC trace shows NO double-dec/free-of-live; `MALLOC_CHECK_=3` flips the signature → **layout-sensitive overrun of UNTRACKED heap** (Vec data buffers are plain `alloc`, not `alloc_with_rc`), not an RC bug. Trigger = the **vec-sourced rendered String body → `send-conn` on a launched+`sleep`-suspended strand** (constant-body variant is CLEAN; so it's the interaction, not the vecs). Refined candidates: (1) reactor `send-conn` state-closure / **Response-body lifetime across suspension** (`cranelisp-intrinsics` reactor.rs/io.rs), (2) **DEF-6 `CLString` marshaling base-pointer** at the host↔DLL `send_conn_pollfn` crossing. Next: **ASAN to pin the write site** (available: nightly + rust-src). |
 | 0483 | /arch | **RESOLVED + deleted** | B — **Principle 21** authored (`principles/21-actors-and-functions-before-mechanism.md`) |
 | 0484 | /design | open | B — Connection opacity wording |
 | 0485 | /spec | open | B — submodule root-precedence ruling (**before** any `/int` reexport follow-up) |
