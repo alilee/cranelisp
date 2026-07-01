@@ -266,8 +266,8 @@ These will be addressed in the FIXME 0176 follow-up that lifts `ClusterContext::
 - `cranelisp-types`: no dependencies (except `serde`, `std`)
 - `cranelisp-frontend`: depends on `cranelisp-types`
 - `cranelisp-typecheck`: depends on `cranelisp-types`
-- `cranelisp-backend`: depends on `cranelisp-types`, `cranelisp-runtime`
-- `cranelisp-runtime`: depends on `cranelisp-platform`, `cranelisp-types`
+- `cranelisp-backend`: depends on `cranelisp-types`, `cranelisp-intrinsics` (+ `cranelisp-primitives`, transitive) — the backend-emitted runtime library
+- `cranelisp-intrinsics` + `cranelisp-primitives` (the former `cranelisp-runtime`, split at D43): depend on `cranelisp-platform`, `cranelisp-types`
 - `cranelisp-platform`: no dependencies (except `std`)
 - `cranelisp` (binary): depends on all above
 

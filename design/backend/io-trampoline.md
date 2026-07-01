@@ -10,7 +10,7 @@ This document covers:
 1. IO node heap layout and allocation (backend codegen responsibility)
 2. `bind` inline primitive codegen (backend responsibility)
 3. Drop glue for IO nodes (backend responsibility)
-4. Trampoline interpreter (runtime responsibility, `cranelisp-runtime`)
+4. Trampoline interpreter (runtime responsibility, `cranelisp-intrinsics`)
 5. Effect thunk mechanics (platform/runtime boundary)
 6. Integration points (batch entry and REPL eval, `/int` responsibility)
 
@@ -234,7 +234,7 @@ If an Effect node is dropped without being forced (unchosen branch), its thunk i
 
 ## 5. Trampoline Architecture
 
-The trampoline lives in `cranelisp-runtime`. It is the `cranelisp_run_io` extern function, called from JIT-compiled code (batch entry) or from the Rust REPL loop (direct call).
+The trampoline lives in `cranelisp-intrinsics` (the backend-emitted runtime library; former `cranelisp-runtime`, split at D43). It is the `cranelisp_run_io` extern function, called from JIT-compiled code (batch entry) or from the Rust REPL loop (direct call). See `design/intrinsics/reactor.md`.
 
 ### 5.1 Algorithm
 
@@ -399,7 +399,7 @@ pub extern "C" fn cranelisp_run_io(io_ptr: i64) -> i64
 
 ### 8.2 Crate Location
 
-Lives in `cranelisp-runtime`. Registered as a JIT builder symbol so it can be called from JIT-compiled code (batch entry stub) or called directly from Rust (REPL loop).
+Lives in `cranelisp-intrinsics` (the backend-emitted runtime library; former `cranelisp-runtime`, split at D43). Registered as a JIT builder symbol so it can be called from JIT-compiled code (batch entry stub) or called directly from Rust (REPL loop).
 
 ### 8.3 Dependencies
 
@@ -456,7 +456,7 @@ Adding a `drop_effect_thunk` extern that the Effect node's drop glue calls (to p
 | `/typecheck` | Seeds IO ADT (Pure/Effect/Bind) in `primitives` module. Marks Bind as internal. Types `bind` as inline primitive. |
 | `/backend` | Emits `bind` codegen (allocate Bind node, store fields, inc both args). Generates ADT drop glue for IO nodes. Registers `cranelisp_run_io` as a JIT symbol. |
 | `/platform` | Provides `CLIO::effect()`, `call_effect_thunk()`, IO tag constants, `CLOwned<T>` for capture RC. |
-| `cranelisp-runtime` | Implements `cranelisp_run_io` — the iterative trampoline. |
+| `cranelisp-intrinsics` | Implements `cranelisp_run_io` — the iterative trampoline (backend-emitted runtime library). |
 | `/int` | Calls trampoline at batch entry and REPL eval. Detects `IO` return type. Platform DLL loading. |
 | `/stdlib` | Provides `pure` (wraps in Pure), `do`/`bind!` macros (expand to `bind` calls). |
 

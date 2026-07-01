@@ -64,7 +64,7 @@ For parallel subagent work, use terminal tabs or tmux panes — one per agent �
 | `/sprint` | Sprint Manager — plans increments, coordinates skill execution, tracks delivery |
 | `/stdlib` | Standard Library Developer — owns `stdlib/` |
 | `/examples` | Example Developer — builds learning-sequence `examples/` |
-| `/platform` | Platform Developer — `cranelisp-platform/`, `cranelisp-runtime/`, DLLs |
+| `/platform` | Platform Developer — `cranelisp-platform/`, platform DLLs (the former `cranelisp-runtime` runtime library split at D43 → `cranelisp-primitives` + `cranelisp-intrinsics`, now **backend-emitted runtime, backend-paired — not `/platform`**) |
 | `/docs` | Documentation Owner — owns `user/` |
 | `/repl` | REPL Experience Developer — owns REPL experience spec, test scripts, and harness |
 | `/port` | Exemplar Project Developer — ports a showcase project to validate the language at scale |
