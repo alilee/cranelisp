@@ -87,10 +87,21 @@ unsafe fn atomic_dec_rc(ptr: i64) -> i64 {
          value was already freed and its memory reclaimed; the dec corrupts the \
          reused chunk. (FIXME 0494 bug #2 — free-ownership defect on launched teardown.)"
     );
-    let rc_ptr = unsafe {
-        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+    // S99 Wave 0 instrumentation + non-atomic-RC probe (byte-identical-off).
+    // See `crate::rc` for the switch contract; both gates are cached env reads.
+    if rc::rc_stats_enabled() {
+        rc::tally_rc_dec();
+    }
+    let old = if rc::nonatomic_rc_enabled() {
+        // S99 measurement-only: NON-ATOMIC dec — UNSOUND above one worker.
+        // SAFETY: caller guarantees ptr is a valid heap base with rc > 0.
+        unsafe { rc::nonatomic_rc_rmw(ptr, -1) }
+    } else {
+        let rc_ptr = unsafe {
+            &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+        };
+        rc_ptr.fetch_sub(1, Ordering::Release)
     };
-    let old = rc_ptr.fetch_sub(1, Ordering::Release);
     debug_assert!(
         old > 0,
         "RC underflow in drop glue: ptr={ptr:#x} had rc={old} before decrement"

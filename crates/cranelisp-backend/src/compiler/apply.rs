@@ -232,10 +232,10 @@ where
                 signature_heap_category(ty, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut self.builder, result);
+                    heap::emit_rc_inc(&mut self.builder, self.module, result);
                 }
                 HeapCategory::Mixed => {
-                    heap::emit_rc_inc_guarded(&mut self.builder, result);
+                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, result);
                 }
                 HeapCategory::NeverHeap => {}
             }
@@ -689,10 +689,10 @@ where
                         signature_heap_category(ty, Some(self.ctx.symbol_tables));
                     match category {
                         HeapCategory::AlwaysHeap => {
-                            heap::emit_rc_inc(&mut self.builder, val);
+                            heap::emit_rc_inc(&mut self.builder, self.module, val);
                         }
                         HeapCategory::Mixed => {
-                            heap::emit_rc_inc_guarded(&mut self.builder, val);
+                            heap::emit_rc_inc_guarded(&mut self.builder, self.module, val);
                         }
                         HeapCategory::NeverHeap => {}
                     }

@@ -134,3 +134,41 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
         "nested-in-sibling-arg occurrence of v must NOT be last-use"
     );
 }
+
+// spec: sprints/SPRINT.md §"Wave 0" R4 — byte-identical-off guard for the RC
+// inc codegen switch. With both S99 env gates unset (the test-process default),
+// `emit_rc_inc` must emit the blessed inline `atomic_rmw` and NO `rc_stat_inc`
+// tally call — i.e. the pre-S99 emission, unchanged.
+#[test]
+fn s99_emit_rc_inc_default_is_atomic_rmw_no_stat() {
+    use crate::jit::Jit;
+    use cranelift::prelude::*;
+
+    let mut jit = Jit::new_with_symbols(&[]).expect("jit construction");
+    let module = jit.jit_module();
+    let mut ctx = module.make_context();
+    ctx.func.signature.params.push(AbiParam::new(types::I64));
+
+    let mut fbc = FunctionBuilderContext::new();
+    {
+        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fbc);
+        let entry = fb.create_block();
+        fb.append_block_params_for_function_params(entry);
+        fb.switch_to_block(entry);
+        fb.seal_block(entry);
+        let ptr = fb.block_params(entry)[0];
+        super::emit_rc_inc(&mut fb, module, ptr);
+        fb.ins().return_(&[]);
+        fb.finalize();
+    }
+    let clif = ctx.func.display().to_string();
+
+    assert!(
+        clif.contains("atomic_rmw"),
+        "default RC inc must emit atomic_rmw (byte-identical-off), got:\n{clif}"
+    );
+    assert!(
+        !clif.contains("rc_stat_inc"),
+        "RC-stats gate must be off by default (no tally call emitted):\n{clif}"
+    );
+}

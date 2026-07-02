@@ -70,9 +70,10 @@
 //! The 12 `cranelisp_trace_*` entries (incl. the pure descriptor-driven
 //! `cranelisp_trace_format`) ARE in this catalog — the 2026-06-04 user ruling
 //! retracted D40's trace-relocation-to-int and hosts the bodies here (BC §4b
-//! invariant 12; `design/arch/tracing.md`). The table is 30 entries (17 core +
+//! invariant 12; `design/arch/tracing.md`). The table is 32 entries (17 core +
 //! 12 trace + `catch-runtime-error`, the protected-call combinator,
-//! `design/arch/test-discovery.md` §6). The 17th core entry is
+//! `design/arch/test-discovery.md` §6, + the 2 S99 `runtime/rc_stat_{inc,dec}`
+//! measurement tally helpers). The 17th core entry is
 //! `cranelisp_spark_budget_try_reserve` (the create-gate reservation primitive,
 //! lenient-eval.md §3.6.1, S92). The catalog + its tests are the single owner of
 //! the trace name-agreement contract (closing the prior no-owner gap).
@@ -105,7 +106,7 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 30 entries — 17 core (relocated verbatim
+/// Returns a `'static` slice of the 32 entries — 17 core (relocated verbatim
 /// from the retired `cranelisp_backend::jit::intrinsic_symbols()`, plus
 /// `cranelisp_ivar_dealloc`, the IVar-aware drop path, and
 /// `cranelisp_spark_budget_try_reserve`, the create-gate primitive) plus the 12
@@ -130,6 +131,13 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
         // (off by default ⇒ never emitted ⇒ this entry is inert). Registered
         // unconditionally so JIT can resolve the symbol when the gate is on.
         IntrinsicEntry { name: "runtime/rc_dec_check", ptr: crate::rc::rc_dec_check as *const u8, param_count: 1, has_return: true, is_runtime: true },
+        // S99 Wave 0 RC-op instrumentation: zero-arg tally helpers emitted before
+        // each inline RC inc/dec ONLY under the backend's codegen-time
+        // `CRANELISP_RC_STATS` gate (off by default ⇒ never emitted ⇒ these
+        // entries are inert). Registered unconditionally so JIT/link can resolve
+        // the symbols when the gate is on. Measurement-only; see `crate::rc`.
+        IntrinsicEntry { name: "runtime/rc_stat_inc", ptr: crate::rc::rc_stat_inc as *const u8, param_count: 0, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "runtime/rc_stat_dec", ptr: crate::rc::rc_stat_dec as *const u8, param_count: 0, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/alloc_string", ptr: crate::heap_string::heap_alloc_string as *const u8, param_count: 2, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/string_read", ptr: crate::heap_string::string_read as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/vec_new", ptr: crate::vec_runtime::vec_new as *const u8, param_count: 1, has_return: true, is_runtime: true },

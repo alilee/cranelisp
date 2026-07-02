@@ -127,3 +127,51 @@ fn rc_inc_traces_without_panic() {
     consume_shallow(base);
     consume_shallow(base);
 }
+
+// ---------------------------------------------------------------------------
+// S99 Wave 0 — non-atomic-RC probe + RC-op instrumentation (measurement)
+// ---------------------------------------------------------------------------
+
+// spec: sprints/SPRINT.md §"Wave 0" R4 — the non-atomic RC RMW helper reads the
+// OLD value and writes old+delta at the RC field (the measurement-only path).
+#[test]
+fn s99_nonatomic_rc_rmw_reads_old_and_writes_new() {
+    let base = alloc::alloc_with_rc(16) as i64; // rc initialised to 1
+    let rc_field =
+        |b: i64| unsafe { *((b as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const i64) };
+
+    // inc: returns old (1), field becomes 2.
+    let old = unsafe { nonatomic_rc_rmw(base, 1) };
+    assert_eq!(old, 1);
+    assert_eq!(rc_field(base), 2);
+
+    // dec: returns old (2), field becomes 1.
+    let old2 = unsafe { nonatomic_rc_rmw(base, -1) };
+    assert_eq!(old2, 2);
+    assert_eq!(rc_field(base), 1);
+
+    unsafe { alloc::dealloc(base as *mut u8) };
+}
+
+// spec: sprints/SPRINT.md §"Wave 0" — RC-op instrumentation: the backend-inline
+// tally helpers bump the inc/dec counters (confirms the copy-per-node volume).
+#[test]
+fn s99_rc_stat_helpers_tally_inc_and_dec() {
+    let inc0 = RC_INC_COUNT.load(Ordering::Relaxed);
+    let dec0 = RC_DEC_COUNT.load(Ordering::Relaxed);
+
+    rc_stat_inc();
+    rc_stat_inc();
+    rc_stat_dec();
+
+    assert_eq!(RC_INC_COUNT.load(Ordering::Relaxed) - inc0, 2);
+    assert_eq!(RC_DEC_COUNT.load(Ordering::Relaxed) - dec0, 1);
+}
+
+// spec: sprints/SPRINT.md §"Wave 0" R4 — byte-identical-off: with the env unset
+// (the test process default) both measurement gates are inert.
+#[test]
+fn s99_measurement_gates_off_by_default() {
+    assert!(!nonatomic_rc_enabled(), "CRANELISP_NONATOMIC_RC must default off");
+    assert!(!rc_stats_enabled(), "CRANELISP_RC_STATS must default off");
+}

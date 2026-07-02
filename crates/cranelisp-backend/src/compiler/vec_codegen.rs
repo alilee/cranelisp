@@ -210,10 +210,10 @@ where
             let category = signature_heap_category(&elem_type, Some(self.ctx.symbol_tables));
             match category {
                 HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut self.builder, elem);
+                    heap::emit_rc_inc(&mut self.builder, self.module, elem);
                 }
                 HeapCategory::Mixed => {
-                    emit_guarded_rc_inc(&mut self.builder, elem);
+                    emit_guarded_rc_inc(&mut self.builder, self.module, elem);
                 }
                 HeapCategory::NeverHeap => {}
             }
@@ -266,10 +266,10 @@ where
             let category = signature_heap_category(elem_ty, Some(self.ctx.symbol_tables));
             match element_consuming_inc(elem_arg, category) {
                 Some(HeapCategory::AlwaysHeap) => {
-                    heap::emit_rc_inc(&mut self.builder, new_val);
+                    heap::emit_rc_inc(&mut self.builder, self.module, new_val);
                 }
                 Some(HeapCategory::Mixed) => {
-                    emit_guarded_rc_inc(&mut self.builder, new_val);
+                    emit_guarded_rc_inc(&mut self.builder, self.module, new_val);
                 }
                 Some(HeapCategory::NeverHeap) | None => {}
             }
@@ -436,10 +436,10 @@ where
             let category = signature_heap_category(elem_ty, Some(self.ctx.symbol_tables));
             match element_consuming_inc(elem_arg, category) {
                 Some(HeapCategory::AlwaysHeap) => {
-                    heap::emit_rc_inc(&mut self.builder, new_val);
+                    heap::emit_rc_inc(&mut self.builder, self.module, new_val);
                 }
                 Some(HeapCategory::Mixed) => {
-                    emit_guarded_rc_inc(&mut self.builder, new_val);
+                    emit_guarded_rc_inc(&mut self.builder, self.module, new_val);
                 }
                 Some(HeapCategory::NeverHeap) | None => {}
             }
@@ -773,13 +773,13 @@ where
 
             builder.switch_to_block(inc_block);
             builder.seal_block(inc_block);
-            heap::emit_rc_inc(&mut builder, val);
+            heap::emit_rc_inc(&mut builder, self.module, val);
             builder.ins().jump(ret_block, &[]);
 
             builder.switch_to_block(ret_block);
             builder.seal_block(ret_block);
         } else {
-            heap::emit_rc_inc(&mut builder, val);
+            heap::emit_rc_inc(&mut builder, self.module, val);
         }
 
         builder.ins().return_(&[val]);
@@ -1257,7 +1257,10 @@ pub(crate) fn emit_vec_rc_dec_with_drop<M: Module>(
 }
 
 /// Emit guarded RC inc: skip if value is a bare nullary tag.
-fn emit_guarded_rc_inc(builder: &mut FunctionBuilder, val: Value) {
+///
+/// `module` is threaded for the S99 RC-op instrumentation gate (see
+/// `heap::emit_rc_inc`); inert with the gate off.
+fn emit_guarded_rc_inc<M: Module>(builder: &mut FunctionBuilder, module: &mut M, val: Value) {
     let threshold = builder.ins().iconst(types::I64, NULLARY_THRESHOLD_I64);
     let is_tag = builder.ins().icmp(IntCC::UnsignedLessThan, val, threshold);
 
@@ -1268,7 +1271,7 @@ fn emit_guarded_rc_inc(builder: &mut FunctionBuilder, val: Value) {
 
     builder.switch_to_block(inc_block);
     builder.seal_block(inc_block);
-    heap::emit_rc_inc(builder, val);
+    heap::emit_rc_inc(builder, module, val);
     builder.ins().jump(cont_block, &[]);
 
     builder.switch_to_block(cont_block);

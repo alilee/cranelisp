@@ -345,10 +345,10 @@ where
                 let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap => {
-                        heap::emit_rc_inc(&mut self.builder, body_val);
+                        heap::emit_rc_inc(&mut self.builder, self.module, body_val);
                     }
                     HeapCategory::Mixed => {
-                        heap::emit_rc_inc_guarded(&mut self.builder, body_val);
+                        heap::emit_rc_inc_guarded(&mut self.builder, self.module, body_val);
                     }
                     HeapCategory::NeverHeap => {}
                 }

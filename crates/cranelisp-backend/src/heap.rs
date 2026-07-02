@@ -170,25 +170,43 @@ pub(crate) fn heap_store(builder: &mut FunctionBuilder, val: Value, ptr: Value, 
 ///
 /// Cranelift atomic_rmw(Add, ptr + RC_OFFSET, 1, Release).
 /// This is an INLINE atomic op, NOT an extern function call.
-pub(crate) fn emit_rc_inc(builder: &mut FunctionBuilder, ptr: Value) {
+///
+/// `module` is threaded for the S99 instrumentation gate (an emitted
+/// `runtime/rc_stat_inc` call) and is otherwise unused; with both S99 gates off
+/// the emission is byte-identical to the pre-S99 `atomic_rmw` path.
+pub(crate) fn emit_rc_inc<M: Module>(builder: &mut FunctionBuilder, module: &mut M, ptr: Value) {
+    if rc_stats_codegen_enabled() {
+        emit_rc_stat_call(builder, module, "runtime/rc_stat_inc");
+    }
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
-    builder.ins().atomic_rmw(
-        types::I64,
-        MemFlags::trusted(),
-        AtomicRmwOp::Add,
-        rc_addr,
-        one,
-    );
+    if nonatomic_rc_codegen_enabled() {
+        // S99 measurement-only NON-ATOMIC inc — UNSOUND above one worker.
+        let cur = builder.ins().load(types::I64, MemFlags::trusted(), rc_addr, 0);
+        let new = builder.ins().iadd(cur, one);
+        builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
+    } else {
+        builder.ins().atomic_rmw(
+            types::I64,
+            MemFlags::trusted(),
+            AtomicRmwOp::Add,
+            rc_addr,
+            one,
+        );
+    }
 }
 
 /// Emit inline atomic RC increment with nullary tag guard.
 ///
 /// For Mixed HeapCategory types, checks if the value is a bare nullary tag
 /// (below NULLARY_TAG_THRESHOLD) before accessing the RC header.
-pub(crate) fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
+pub(crate) fn emit_rc_inc_guarded<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    ptr: Value,
+) {
     let cont_block = builder.create_block();
     let inc_block = builder.create_block();
 
@@ -201,17 +219,28 @@ pub(crate) fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
     builder.switch_to_block(inc_block);
     builder.seal_block(inc_block);
 
+    // S99 stats: count only a real inc (bare nullary tags took the skip branch).
+    if rc_stats_codegen_enabled() {
+        emit_rc_stat_call(builder, module, "runtime/rc_stat_inc");
+    }
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
-    builder.ins().atomic_rmw(
-        types::I64,
-        MemFlags::trusted(),
-        AtomicRmwOp::Add,
-        rc_addr,
-        one,
-    );
+    if nonatomic_rc_codegen_enabled() {
+        // S99 measurement-only NON-ATOMIC inc — UNSOUND above one worker.
+        let cur = builder.ins().load(types::I64, MemFlags::trusted(), rc_addr, 0);
+        let new = builder.ins().iadd(cur, one);
+        builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
+    } else {
+        builder.ins().atomic_rmw(
+            types::I64,
+            MemFlags::trusted(),
+            AtomicRmwOp::Add,
+            rc_addr,
+            one,
+        );
+    }
 
     builder.ins().jump(cont_block, &[]);
     builder.switch_to_block(cont_block);
@@ -239,6 +268,45 @@ pub(crate) fn emit_rc_inc_guarded(builder: &mut FunctionBuilder, ptr: Value) {
 fn rc_dec_check_enabled() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *E.get_or_init(|| std::env::var_os("CRANELISP_RC_DEC_CHECK").is_some())
+}
+
+/// S99 Wave 0 (arch Phase-2 ruling R4). Codegen-time gate for the NON-ATOMIC RC
+/// measurement build. When `CRANELISP_NONATOMIC_RC` is set, the inline RC inc/dec
+/// helpers emit a plain load-modify-store (`iadd`/`isub`) instead of an
+/// `atomic_rmw`. **This build is UNSOUND above one worker** — a lost-update race
+/// on the shared count corrupts the RC (use-after-free / leak). It exists ONLY to
+/// isolate the atomic-*instruction* cost at a single-worker spark pool
+/// (`RAYON_NUM_THREADS=1`, lenient still ON). Off by default ⇒ the exact
+/// `atomic_rmw` path as before (byte-identical-off). It is **excluded from the
+/// canonical `cargo nextest run`** and must NEVER ship. The intrinsic-side dec/inc
+/// paths (`cranelisp-intrinsics::rc`/`::drop`) read the same env so a whole run is
+/// consistently non-atomic.
+fn nonatomic_rc_codegen_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var_os("CRANELISP_NONATOMIC_RC").is_some())
+}
+
+/// S99 Wave 0. Codegen-time gate for RC-op instrumentation. When
+/// `CRANELISP_RC_STATS` is set, each inline RC inc/dec emits a call to the
+/// `runtime/rc_stat_inc` / `runtime/rc_stat_dec` catalog helper, which tallies the
+/// op (printed with the alloc counts at process exit — see `cranelisp-intrinsics::
+/// rc`). Off by default ⇒ no call emitted ⇒ byte-identical codegen.
+fn rc_stats_codegen_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| std::env::var_os("CRANELISP_RC_STATS").is_some())
+}
+
+/// Emit a call to a zero-arg `runtime/rc_stat_*` tally helper (S99 stats gate).
+/// Resolved by symbol name (`Linkage::Import`) against the intrinsics catalog, so
+/// it is mode-safe (JIT + object/link) and adds no public API. Emitted only when
+/// [`rc_stats_codegen_enabled`] is true.
+fn emit_rc_stat_call<M: Module>(builder: &mut FunctionBuilder, module: &mut M, symbol: &str) {
+    let mut sig = module.make_signature();
+    sig.returns.push(AbiParam::new(types::I64));
+    if let Ok(id) = module.declare_function(symbol, cranelift_module::Linkage::Import, &sig) {
+        let stat_ref = module.declare_func_in_func(id, builder.func);
+        builder.ins().call(stat_ref, &[]);
+    }
 }
 
 pub(crate) fn emit_rc_dec<M: Module>(
@@ -295,17 +363,31 @@ pub(crate) fn emit_rc_dec_guarded<M: Module>(
         }
     }
 
+    // S99 stats: count the dec (placed after the nullary skip so bare tags,
+    // which never reach here, are not counted).
+    if rc_stats_codegen_enabled() {
+        emit_rc_stat_call(builder, module, "runtime/rc_stat_dec");
+    }
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
-    let old_rc = builder.ins().atomic_rmw(
-        types::I64,
-        MemFlags::trusted(),
-        AtomicRmwOp::Sub,
-        rc_addr,
-        one,
-    );
+    let old_rc = if nonatomic_rc_codegen_enabled() {
+        // S99 measurement-only NON-ATOMIC dec — UNSOUND above one worker. The
+        // pre-decrement value stands in for the atomic_rmw's returned old value.
+        let cur = builder.ins().load(types::I64, MemFlags::trusted(), rc_addr, 0);
+        let new = builder.ins().isub(cur, one);
+        builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
+        cur
+    } else {
+        builder.ins().atomic_rmw(
+            types::I64,
+            MemFlags::trusted(),
+            AtomicRmwOp::Sub,
+            rc_addr,
+            one,
+        )
+    };
 
     // Branch: if old_rc == 1 (last reference), free the object.
     let cmp = builder.ins().icmp(IntCC::Equal, old_rc, one);

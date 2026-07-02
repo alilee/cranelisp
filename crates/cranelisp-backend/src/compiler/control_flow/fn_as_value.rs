@@ -669,7 +669,7 @@ where
                 HeapClosure::capture_offset(i),
             );
             // Inc heap-typed captures before passing to consuming callee.
-            emit_capture_inc_into(&mut builder, *category, cap_val);
+            emit_capture_inc_into(&mut builder, self.module, *category, cap_val);
             all_args.push(cap_val);
         }
         all_args.extend_from_slice(&remaining_args);

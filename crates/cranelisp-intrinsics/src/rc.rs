@@ -17,8 +17,8 @@
 //! ADTs with heap fields, and closures where inline drop glue is already
 //! emitted by the backend).
 
-use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{LazyLock, Once};
 
 use cranelisp_types::HeapHeader;
 
@@ -55,6 +55,129 @@ pub fn is_rc_trace_enabled() -> bool {
     RC_TRACE_ENABLED.load(Ordering::Relaxed)
 }
 
+// ---------------------------------------------------------------------------
+// S99 Wave 0 — RC-atomicity probe + RC-op/alloc instrumentation (measurement)
+// ---------------------------------------------------------------------------
+//
+// Two independent, env-gated, OFF-BY-DEFAULT measurement facilities. BOTH are
+// byte-identical-off: with the env unset, the blessed atomic RC paths run
+// exactly as before. These mirror the backend-side codegen switches in
+// `cranelisp-backend::heap` (arch Phase-2 ruling R4) so a whole run is
+// consistently instrumented / non-atomic across the inline-emitted and
+// intrinsic-implemented RC loci.
+//
+//   * `CRANELISP_NONATOMIC_RC` — execute NON-ATOMIC RC inc/dec (plain
+//     load-modify-store) instead of an atomic RMW. **UNSOUND above one worker**
+//     (a lost-update race corrupts the count → use-after-free / leak). It exists
+//     ONLY to isolate the atomic-*instruction* cost at a single-worker spark
+//     pool (`RAYON_NUM_THREADS=1`). NEVER ship it; it is excluded from the
+//     canonical `cargo nextest run`.
+//   * `CRANELISP_RC_STATS` — tally RC inc + RC dec operation counts across a run
+//     (these intrinsic-side dec/inc paths + the backend-inline ops via the
+//     `runtime/rc_stat_{inc,dec}` catalog helpers), printed once to stderr at
+//     process exit together with the alloc/dealloc counts. Confirms the
+//     copy-per-node RC-bump volume directly. Zero overhead when off.
+//
+// NOTE (scope): the IVar spark-machinery RC in `ivar.rs` deliberately stays
+// SeqCst-atomic (BC §4b invariant 3) and is NOT covered by either switch — it is
+// a small fixed per-spark cost shared by the atomic and non-atomic configs, not
+// the per-node data RC the volume claim is about (arch R4 named `heap.rs` +
+// `rc.rs`/`drop.rs` only).
+
+/// Whether the NON-ATOMIC RC measurement build is active. Read once. Off ⇒ the
+/// blessed atomic RC paths run unchanged (byte-identical-off).
+#[inline]
+pub(crate) fn nonatomic_rc_enabled() -> bool {
+    static E: LazyLock<bool> =
+        LazyLock::new(|| std::env::var_os("CRANELISP_NONATOMIC_RC").is_some());
+    *E
+}
+
+/// Non-atomic read-modify-write of the RC field at `ptr` (offset `RC_OFFSET`).
+/// Returns the OLD value. Measurement-only — a data race above one worker.
+///
+/// # Safety
+/// `ptr` must be a valid heap base pointer with a readable/writable RC i64.
+#[inline]
+pub(crate) unsafe fn nonatomic_rc_rmw(ptr: i64, delta: i64) -> i64 {
+    // SAFETY: caller guarantees ptr is a valid heap base with an aligned RC i64.
+    let p = unsafe { (ptr as *mut u8).add(HeapHeader::RC_OFFSET as usize) as *mut i64 };
+    let old = unsafe { *p };
+    unsafe { *p = old + delta };
+    old
+}
+
+static RC_INC_COUNT: AtomicU64 = AtomicU64::new(0);
+static RC_DEC_COUNT: AtomicU64 = AtomicU64::new(0);
+static STATS_ATEXIT: Once = Once::new();
+
+/// Whether RC-op/alloc instrumentation is active. Read once; the first `true`
+/// read registers the at-exit printer. Zero cost when off (one cached load).
+#[inline]
+pub(crate) fn rc_stats_enabled() -> bool {
+    static E: LazyLock<bool> = LazyLock::new(|| {
+        let on = std::env::var_os("CRANELISP_RC_STATS").is_some();
+        if on {
+            ensure_stats_atexit();
+        }
+        on
+    });
+    *E
+}
+
+/// Register the process-exit RC-stats printer exactly once.
+fn ensure_stats_atexit() {
+    // SAFETY: `print_rc_stats` is a plain `extern "C" fn()` with no arguments,
+    // the shape `libc::atexit` requires.
+    STATS_ATEXIT.call_once(|| unsafe {
+        libc::atexit(print_rc_stats);
+    });
+}
+
+/// Tally one RC inc. Called from the backend-inline `runtime/rc_stat_inc`
+/// catalog helper and the intrinsic-side [`rc_inc`].
+#[inline]
+pub(crate) fn tally_rc_inc() {
+    RC_INC_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Tally one RC dec. Called from the backend-inline `runtime/rc_stat_dec`
+/// catalog helper and the intrinsic-side dec paths ([`consume_shallow`],
+/// `drop::atomic_dec_rc`).
+#[inline]
+pub(crate) fn tally_rc_dec() {
+    RC_DEC_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// At-exit printer (stderr): RC inc/dec + alloc/dealloc counts, printed once.
+extern "C" fn print_rc_stats() {
+    let inc = RC_INC_COUNT.load(Ordering::Relaxed);
+    let dec = RC_DEC_COUNT.load(Ordering::Relaxed);
+    let allocs = alloc::alloc_count();
+    let deallocs = alloc::dealloc_count();
+    eprintln!("[RC_STATS] rc_inc={inc} rc_dec={dec} allocs={allocs} deallocs={deallocs}");
+}
+
+/// Backend-inline RC-inc tally hook (S99). Emitted as a `runtime/rc_stat_inc`
+/// call before each inline atomic inc ONLY under the backend's codegen-time
+/// `CRANELISP_RC_STATS` gate (off ⇒ never emitted ⇒ byte-identical codegen).
+/// `pub(crate)` + catalog-registered by fn pointer — NOT part of the crate's
+/// public surface.
+#[unsafe(export_name = "runtime/rc_stat_inc")]
+pub(crate) extern "C" fn rc_stat_inc() -> i64 {
+    ensure_stats_atexit();
+    tally_rc_inc();
+    0
+}
+
+/// Backend-inline RC-dec tally hook (S99). Sibling of [`rc_stat_inc`].
+#[unsafe(export_name = "runtime/rc_stat_dec")]
+pub(crate) extern "C" fn rc_stat_dec() -> i64 {
+    ensure_stats_atexit();
+    tally_rc_dec();
+    0
+}
+
 /// Consume a heap argument: atomically dec RC; if it was 1, free the allocation.
 ///
 /// This is the canonical "extern received a heap arg, does not return it,
@@ -87,11 +210,20 @@ pub fn consume_shallow(ptr: i64) {
         "STALE RC DEC (consume_shallow): dec of non-live heap pointer {ptr:#x} — \
          already freed + reclaimed; the dec corrupts the reused chunk. (FIXME 0494.)"
     );
-    // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
-    let rc_ptr = unsafe {
-        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+    if rc_stats_enabled() {
+        tally_rc_dec();
+    }
+    let old_rc = if nonatomic_rc_enabled() {
+        // S99 measurement-only: NON-ATOMIC dec — UNSOUND above one worker.
+        // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
+        unsafe { nonatomic_rc_rmw(ptr, -1) }
+    } else {
+        // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
+        let rc_ptr = unsafe {
+            &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+        };
+        rc_ptr.fetch_sub(1, Ordering::Release)
     };
-    let old_rc = rc_ptr.fetch_sub(1, Ordering::Release);
     debug_assert!(
         old_rc > 0,
         "consume_shallow underflow: ptr={ptr:#x} had rc={old_rc} before decrement"
@@ -136,11 +268,20 @@ pub fn rc_inc(ptr: i64) {
     if ptr < cranelisp_types::NULLARY_TAG_THRESHOLD as i64 {
         return; // bare tag — no heap alloc to inc
     }
-    // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
-    let rc_ptr = unsafe {
-        &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+    if rc_stats_enabled() {
+        tally_rc_inc();
+    }
+    let old_rc = if nonatomic_rc_enabled() {
+        // S99 measurement-only: NON-ATOMIC inc — UNSOUND above one worker.
+        // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
+        unsafe { nonatomic_rc_rmw(ptr, 1) }
+    } else {
+        // SAFETY: caller guarantees ptr is a valid heap base with RC > 0.
+        let rc_ptr = unsafe {
+            &*((ptr as *const u8).add(HeapHeader::RC_OFFSET as usize) as *const AtomicI64)
+        };
+        rc_ptr.fetch_add(1, Ordering::Release)
     };
-    let old_rc = rc_ptr.fetch_add(1, Ordering::Release);
     rc_trace("inc", ptr, old_rc + 1);
 }
 

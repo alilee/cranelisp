@@ -170,7 +170,7 @@ where
                 HeapClosure::capture_offset(cap_idx),
             );
             // IVars are unconditionally heap (no nullary-tag guard).
-            heap::emit_rc_inc(&mut self.builder, *ivar_val);
+            heap::emit_rc_inc(&mut self.builder, self.module, *ivar_val);
         }
 
         Ok(base_ptr)

@@ -28,8 +28,8 @@ where
     /// `NeverHeap` → nothing.
     pub(crate) fn emit_capture_inc(&mut self, category: HeapCategory, val: Value) {
         match category {
-            HeapCategory::AlwaysHeap => heap::emit_rc_inc(&mut self.builder, val),
-            HeapCategory::Mixed => heap::emit_rc_inc_guarded(&mut self.builder, val),
+            HeapCategory::AlwaysHeap => heap::emit_rc_inc(&mut self.builder, self.module, val),
+            HeapCategory::Mixed => heap::emit_rc_inc_guarded(&mut self.builder, self.module, val),
             HeapCategory::NeverHeap => {}
         }
     }
@@ -37,14 +37,18 @@ where
 
 /// Borrowed-builder form for wrapper-context emission (the auto-curry wrapper
 /// body builds in a separate Cranelift context, not `self.builder`).
-pub(crate) fn emit_capture_inc_into(
+///
+/// `module` is threaded for the S99 RC-op instrumentation gate (see
+/// `heap::emit_rc_inc`); it is inert with the gate off.
+pub(crate) fn emit_capture_inc_into<M: Module>(
     builder: &mut FunctionBuilder,
+    module: &mut M,
     category: HeapCategory,
     val: Value,
 ) {
     match category {
-        HeapCategory::AlwaysHeap => heap::emit_rc_inc(builder, val),
-        HeapCategory::Mixed => heap::emit_rc_inc_guarded(builder, val),
+        HeapCategory::AlwaysHeap => heap::emit_rc_inc(builder, module, val),
+        HeapCategory::Mixed => heap::emit_rc_inc_guarded(builder, module, val),
         HeapCategory::NeverHeap => {}
     }
 }
