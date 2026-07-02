@@ -154,7 +154,19 @@ where
                 );
 
                 // Inc heap-typed captures: the closure env needs its own reference.
-                if let Some(ty) = self.variable_types.get(cap_name) {
+                //
+                // Capture-by-borrow (S99, FIXME 0461; ring2-rc.md §5.5.2): when
+                // this closure is a structurally-joined spark thunk
+                // (`spark_capture_borrow` raised by the apply-arg / independent-
+                // `let` emission site, toggle-gated), the capture is a BORROW —
+                // the joined parent frame outlives the spark, so the parent's own
+                // scope-cleanup dec is the single dec accounting for the cell.
+                // Skip the inc here AND the matching drop-glue dec
+                // (`build_closure_drop_glue`), symmetrically. Skipping only one
+                // would leak (skip dec only) or UAF (skip inc only).
+                if !self.spark_capture_borrow
+                    && let Some(ty) = self.variable_types.get(cap_name)
+                {
                     let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
                     self.emit_capture_inc(category, cap_val);
                 }
@@ -177,6 +189,19 @@ where
         captures: &[Symbol],
         span: Span,
     ) -> Result<Option<cranelift_module::FuncId>, CranelispError> {
+        // Capture-by-borrow (S99, FIXME 0461; ring2-rc.md §5.5.2): a
+        // structurally-joined spark thunk borrows ALL its captures (rc-
+        // invisible), so it owns none of them — no drop glue. Return `None`
+        // symmetrically with the skipped capture-store inc (`compile_lambda` /
+        // `alloc_par_cont_closure`). The joined parent frame's own cleanup dec
+        // is the single dec accounting for every borrowed cell. This is
+        // reachable only from the flag-raising joined sites; the detached
+        // `LaunchContinue` path never raises the flag, so its drop glue is
+        // emitted as before.
+        if self.spark_capture_borrow {
+            return Ok(None);
+        }
+
         let dealloc_id = self.ctx.dealloc_func_id;
 
         // Collect (capture_index, type, heap_category) for heap-typed captures.

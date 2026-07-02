@@ -66,6 +66,258 @@ fn clif_of_body(body: Expr) -> String {
         .clif_ir
 }
 
+/// Like `clif_of_body`, but also declares the extra user functions in
+/// `extra` (name, arity) so a `Var`-apply against them resolves. Only the
+/// probe body is compiled+returned; the extras need only be *declared*.
+fn clif_of_body_with_fns(body: Expr, extra: &[(&str, usize)]) -> String {
+    let mut jit = Jit::new_with_symbols(&[]).expect("JIT construction");
+    jit.declare_intrinsics().expect("intrinsics declare");
+
+    let probe_name = Symbol::from("par_codegen_probe");
+    let probe = Defn {
+        name: probe_name.clone(),
+        docstring: None,
+        variants: vec![DefnVariant { params: vec![], body, span: Span::SYNTHETIC }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    };
+    let extra_defns: Vec<Defn> = extra
+        .iter()
+        .map(|(name, arity)| Defn {
+            name: Symbol::from(*name),
+            docstring: None,
+            variants: vec![DefnVariant {
+                params: (0..*arity)
+                    .map(|i| (Symbol::from(format!("p{i}")), None))
+                    .collect(),
+                body: int_lit(0),
+                span: Span::SYNTHETIC,
+            }],
+            visibility: Visibility::Public,
+            span: Span::SYNTHETIC,
+        })
+        .collect();
+
+    let all: Vec<&Defn> = std::iter::once(&probe).chain(extra_defns.iter()).collect();
+    let func_ids = jit.declare_functions(&all).expect("declare");
+    let func_arities: HashMap<Symbol, usize> = extra
+        .iter()
+        .map(|(name, arity)| (Symbol::from(*name), *arity))
+        .collect();
+    let symbol_tables: dashmap::DashMap<
+        cranelisp_types::ModuleFullPath,
+        cranelisp_types::SymbolTable,
+    > = dashmap::DashMap::new();
+    let module_path = cranelisp_types::ModuleFullPath::from("user");
+    symbol_tables.insert(
+        module_path.clone(),
+        cranelisp_types::SymbolTable::new(module_path.clone()),
+    );
+    let module_aliases: cranelisp_types::ModuleAliases = dashmap::DashMap::new();
+    let compile_ctx = jit.build_compile_context(
+        &func_ids,
+        &func_arities,
+        &symbol_tables,
+        &module_aliases,
+        module_path,
+    );
+    jit.compile_defn(&probe, compile_ctx).expect("compile").clif_ir
+}
+
+/// A String literal expression (a heap-typed `AlwaysHeap` value).
+fn str_lit(v: &str) -> Expr {
+    Expr::StringLit {
+        value: v.to_string(),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::String)),
+    }
+}
+
+/// A one-arg call `(f arg)` against a declared user fn `f`. Non-cheap,
+/// non-constructor ⇒ sparkable. When `arg` is a heap `Var`, the enclosing
+/// spark thunk `(fn [] (f arg))` closes over it — the capture under test.
+fn user_call1(f: &str, arg: Expr, span: Span) -> Expr {
+    Expr::Apply {
+        callee: Box::new(var_ref(f, span)),
+        args: vec![arg],
+        span,
+        resolved_call: None,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+/// A `String`-typed variable reference (heap capture source).
+fn str_var(name: &str, span: Span) -> Expr {
+    Expr::Var {
+        name: Symbol::from(name),
+        span,
+        resolved_call: None,
+        inferred_type: Some(Box::new(Type::String)),
+    }
+}
+
+/// A lenient `let` whose two independent sparkable bindings each capture the
+/// enclosing heap `String` `s` inside their spark thunk `(fn [] (strwork s))`.
+fn heap_capturing_spark_let() -> Expr {
+    Expr::Let {
+        bindings: vec![(Symbol::from("s"), str_lit("hi"))],
+        body: Box::new(Expr::Let {
+            bindings: vec![
+                (
+                    Symbol::from("a"),
+                    user_call1("strwork", str_var("s", Span::new(1, 2)), Span::new(1, 3)),
+                ),
+                (
+                    Symbol::from("b"),
+                    user_call1("strwork", str_var("s", Span::new(4, 5)), Span::new(4, 6)),
+                ),
+            ],
+            body: Box::new(int_lit(0)),
+            span: Span::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        }),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+/// A `LaunchContinue` whose continuation `(strwork s)` captures the enclosing
+/// heap `String` `s`. Detached — the continuation capture MUST retain.
+fn heap_capturing_launch() -> Expr {
+    Expr::Let {
+        bindings: vec![(Symbol::from("s"), str_lit("hi"))],
+        body: Box::new(Expr::LaunchContinue {
+            launched: Box::new(probe_call(Span::new(1, 2))),
+            continuation: Box::new(user_call1("strwork", str_var("s", Span::new(3, 4)), Span::new(3, 5))),
+            span: Span::SYNTHETIC,
+            inferred_type: Some(Box::new(Type::Int)),
+        }),
+        span: Span::SYNTHETIC,
+        inferred_type: Some(Box::new(Type::Int)),
+    }
+}
+
+// ===== Capture-by-borrow across structured fork-join (Sprint 99 Wave 1b,
+// FIXME 0461; ring2-rc.md §5.5.2, lenient-eval.md §4.4.1) — backend-seam guards.
+//
+// These pin that the `spark_capture_borrow` flag gates the capture-store inc AND
+// its symmetric drop-glue dec at the joined-spark emission sites, and that the
+// DETACHED `LaunchContinue` path is structurally excluded (never borrow-elided).
+//
+// The fixtures use a lenient `let` whose two independent sparkable bindings each
+// capture the enclosing heap `String` `s` in their spark thunk `(fn [] (strwork
+// s))`. The create-gate compiles BOTH arms: the lenient arm sparks (2 capture
+// incs on `s`), the direct/over-budget arm compiles the two `(strwork s)` calls
+// sequentially (2 consuming incs on `s`). So with the toggle OFF, four
+// `atomic_rmw … add` on `s` appear; capture-by-borrow elides ONLY the two
+// lenient-arm capture incs, leaving the two direct-arm consuming incs — 4 → 2.
+// Symmetrically the drop glue for each borrowed spark thunk is elided (no drop-
+// glue `func_addr` stored — a `0` sentinel instead), so the outer function's
+// `func_addr` count drops 4 → 2 (two thunks × code_ptr only, no drop-glue ptr).
+//
+// The env-var toggle (`CRANELISP_CAPTURE_BORROW`) is read once per process via a
+// `LazyLock`; nextest's process-per-test isolation makes the on/off split
+// between these tests reliable (a plain `cargo test` shared-process run would
+// race the LazyLock — the project mandates `cargo nextest run`).
+
+// spec: design/backend/ring2-rc.md §5.5.2 — with the toggle OFF (default), a
+//       structurally-joined spark thunk RETAINS its heap captures (byte-
+//       identical to pre-S99): the lenient arm emits a capture inc per thunk
+//       and a drop glue per thunk. This is the byte-identical-off baseline.
+#[test]
+fn capture_borrow_off_retains_joined_spark_heap_captures() {
+    assert!(
+        std::env::var("CRANELISP_CAPTURE_BORROW").is_err(),
+        "this baseline test must run with the toggle unset (nextest isolates it)"
+    );
+    let clif = clif_of_body_with_fns(heap_capturing_spark_let(), &[("strwork", 1)]);
+    // 2 lenient-arm capture incs + 2 direct-arm consuming incs on `s`.
+    assert_eq!(
+        clif.matches(" add ").count(),
+        4,
+        "toggle OFF: both spark thunks must RETAIN their heap capture (4 atomic \
+         adds on `s`: 2 lenient capture incs + 2 direct consuming incs); CLIF:\n{clif}"
+    );
+    // Each retaining thunk gets code_ptr + drop-glue-ptr func_addr = 4 total.
+    assert_eq!(
+        clif.matches("func_addr").count(),
+        4,
+        "toggle OFF: each spark thunk must emit drop glue (code_ptr + drop_glue \
+         func_addr per thunk = 4); CLIF:\n{clif}"
+    );
+}
+
+// spec: design/backend/ring2-rc.md §5.5.2 — with the toggle ON, a structurally-
+//       joined spark thunk BORROWS its heap captures: the capture-store inc AND
+//       the drop-glue dec are BOTH elided, symmetrically. The two lenient-arm
+//       capture incs disappear (4 → 2 adds; the 2 direct-arm consuming incs
+//       remain) and the two drop glues disappear (4 → 2 func_addr).
+#[test]
+fn capture_borrow_on_elides_joined_spark_heap_captures() {
+    // SAFETY: single-threaded test entry, before any spark compile reads the
+    // `CAPTURE_BORROW_ENABLED` LazyLock in this (nextest-isolated) process.
+    unsafe { std::env::set_var("CRANELISP_CAPTURE_BORROW", "1") };
+    let clif = clif_of_body_with_fns(heap_capturing_spark_let(), &[("strwork", 1)]);
+    // Only the 2 direct-arm consuming incs remain; the 2 lenient-arm capture
+    // incs are borrow-elided.
+    assert_eq!(
+        clif.matches(" add ").count(),
+        2,
+        "toggle ON: the two joined-spark capture incs must be BORROW-elided \
+         (4 → 2 atomic adds; only the direct-arm consuming incs remain); CLIF:\n{clif}"
+    );
+    // Symmetric dec elision: no drop glue for a borrowed-capture thunk.
+    assert_eq!(
+        clif.matches("func_addr").count(),
+        2,
+        "toggle ON: a borrowed-capture spark thunk owns nothing, so no drop glue \
+         is emitted (4 → 2 func_addr — code_ptr only per thunk); CLIF:\n{clif}"
+    );
+}
+
+// spec: design/backend/ring2-rc.md §5.5.2.1 / .6 — THE MANDATORY UAF exclusion
+//       guard. A DETACHED `LaunchContinue` effect that captures a heap value MUST
+//       STILL RETAIN it — the capture must NOT be borrow-elided — even with the
+//       toggle ON, because the detached strand outlives the parent's cleanup
+//       (borrowing there is a use-after-free of the S98 bug-#2 class). This is a
+//       single-process differential: under the SAME toggle-ON, the JOINED spark
+//       borrows (its capture incs elide) while the DETACHED launch continuation
+//       retains (its capture inc is present) — proving the exclusion is
+//       structural (launch never raises `spark_capture_borrow`), not global.
+#[test]
+fn capture_borrow_on_launch_continuation_still_retains_heap_capture_neg() {
+    // SAFETY: single-threaded test entry, before any spark compile reads the
+    // `CAPTURE_BORROW_ENABLED` LazyLock in this (nextest-isolated) process.
+    unsafe { std::env::set_var("CRANELISP_CAPTURE_BORROW", "1") };
+
+    // The joined spark elides its capture incs under the toggle (4 → 2)…
+    let spark_clif = clif_of_body_with_fns(heap_capturing_spark_let(), &[("strwork", 1)]);
+    assert_eq!(
+        spark_clif.matches(" add ").count(),
+        2,
+        "sanity: the JOINED spark must borrow under the toggle (2 adds); CLIF:\n{spark_clif}"
+    );
+
+    // …but the DETACHED launch continuation still RETAINS its heap capture: its
+    // one capture inc on `s` is present regardless of the toggle. If the launch
+    // path wrongly borrow-elided, this inc would vanish and the detached strand
+    // would read a freed `s` (the bug-#2-class UAF).
+    let launch_clif = clif_of_body_with_fns(heap_capturing_launch(), &[("strwork", 1)]);
+    assert_eq!(
+        launch_clif.matches(" add ").count(),
+        1,
+        "EXCLUSION VIOLATED: the detached LaunchContinue continuation MUST retain \
+         its heap capture (1 atomic add on `s`) even with CRANELISP_CAPTURE_BORROW=1 \
+         — borrow-eliding a detached capture is a use-after-free (ring2-rc.md \
+         §5.5.2.1 / §5.5.2.4); CLIF:\n{launch_clif}"
+    );
+    assert!(
+        launch_clif.contains("func_addr"),
+        "the detached launch continuation must still emit its drop glue (retain); \
+         CLIF:\n{launch_clif}"
+    );
+}
+
 fn int_lit(v: i64) -> Expr {
     Expr::IntLit {
         value: v,

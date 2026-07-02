@@ -17,6 +17,24 @@ pub(crate) static LENIENT_DISABLED: std::sync::LazyLock<bool> =
         std::env::var("CRANELISP_NO_LENIENT").is_ok_and(|v| v == "1")
     });
 
+/// Whether capture-by-borrow across structured fork-join is enabled via
+/// `CRANELISP_CAPTURE_BORROW=1` (Sprint 99 Wave 1b, FIXME 0461 / `ring2-rc.md`
+/// §5.5.2 + `lenient-eval.md` §4.4.1).
+///
+/// **OFF by default** — this cure is under A/B ablation measurement/review
+/// before it becomes default-on (a close-time decision after `/review`). When
+/// unset the flag is never raised at any emission site, so the capture-store
+/// inc + drop-glue dec path is **byte-identical** to the pre-S99 behaviour.
+/// When set, a *structurally-joined* spark thunk's heap captures become
+/// borrows (rc-invisible): the capture-store inc and its symmetric drop-glue
+/// dec are both elided, because the joined parent frame outlives every spark
+/// and its own scope-cleanup dec is the single dec accounting for the cell.
+/// The detached `LaunchContinue` path never raises the flag (§5.5.2.1 exclusion).
+pub(crate) static CAPTURE_BORROW_ENABLED: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("CRANELISP_CAPTURE_BORROW").is_ok_and(|v| v == "1")
+    });
+
 /// Known-cheap builtins that are not worth sparking.
 /// Single-instruction or near-single-instruction at the hardware level.
 const CHEAP_BUILTINS: &[&str] = &[

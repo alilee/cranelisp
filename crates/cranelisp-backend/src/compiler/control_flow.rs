@@ -39,7 +39,7 @@ pub(crate) use free_vars::find_free_vars;
 // (the apply-argument lenient pre-pass, lenient-eval.md §4.4) through this hub —
 // the `sparkability` submodule itself is private to `control_flow`. The unit
 // tests reach `find_sparkable_args` via `super::` on the same re-export.
-pub(crate) use sparkability::{find_sparkable_args, LENIENT_DISABLED};
+pub(crate) use sparkability::{find_sparkable_args, CAPTURE_BORROW_ENABLED, LENIENT_DISABLED};
 // Only the `sparkability_tests` sibling reaches this via `super::`.
 #[cfg(test)]
 pub(crate) use sparkability::find_sparkable_bindings;

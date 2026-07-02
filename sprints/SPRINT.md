@@ -1,6 +1,6 @@
 # Sprint 99: Parallelism/memory-contention — measure-first, decompose the 10×
 
-**Status**: PHASE 5 — WAVE 0 MEASUREMENT (ACTIVE). `/arch` signed off (SIGN-OFF WITH REVISIONS R1–R6, folded below); user directed 2026-07-02 to run the measurement pre-wave and report findings before any mechanism-wave design. **Mechanism-wave Phase-3 design is deferred until Wave 0 reports** — this sprint deliberately runs Wave 0 first, then re-enters design (`/design` backend via FIXME 0461, `/qa` cure test-plan) sized by the decision table.
+**Status**: PHASE 5 — WAVE 1 ABLATION (ACTIVE). Wave 0 complete + committed (`e63c4ca`/`262bd07`/`c9f4c0d`); verdict NOT "stop→Phase-H". **User direction 2026-07-02:** run the three cures as an **ablation study** — each behind its own toggle, re-benchmark after each via the existing harness, record marginal delta, flip sound cures default-on at close. **Re-sequenced (user, overriding arch R2's allocator-first):** (1) capture-by-borrow, (2) saturation gate, (3) allocator swap LAST (Ferroc-native preferred, only if residual justifies). **Cancellation / short-circuit algorithmic speedup DEFERRED** — the exhaustive (strict-`first-success`) search is kept as the clean deterministic/linear-speedup benchmark; adding cancellation now would destroy comparability. Starting 1a = `/design`(backend) FIXME 0461 (capture-by-borrow contract, design-only).
 
 **Goal**: Decompose the Sudoku parallel-search "~10× slower than serial" into its real terms — serial luck × speculative waste × contention — via a falsification-oriented **measurement pre-wave**, then fund only the substrate/RC cures the measurement justifies, so a *reasonable, idiomatic* nested-ADT workload runs near-serial-per-core up to core saturation — with cheap, durable changes that survive (not get thrown away by) the Phase-H stack/region/Perceus memory model.
 
@@ -85,7 +85,8 @@ Candidate cures, each pre-vetted against the survives-Phase-H + substrate-not-ex
 
 | FIXME | Target skill | Status | Notes |
 |---|---|---|---|
-| 0459 | /backend | open | Mechanism waves — saturation gate + floor-claim scoping; funded per Wave 0 |
+| 0459 | /backend | open | Mechanism waves — saturation gate + floor-claim scoping; funded per Wave 0. **Now the leading in-scope (b) lever** (1b capture-by-borrow missed) — does bounding concurrency reduce shared-cell cache-line bouncing? |
+| 0462 | /design | open (filed 1b) | **Re-diagnosis:** §5.5.2.6 volume *prediction* refuted (actual rc_inc drop ≈ budget-bounded hundreds, not leaf-scaled); soundness content §5.5.2.1–.5 + guards STAND. Re-point (b)-cure funding at the **vec-COW leaf-refcount term** (owned-copy mutate-in-place/last-use = Perceus/Phase-H, and/or the gate). |
 | 0408 | /port | open (narrowed) | Exemplar-as-witness (perf half); nested-ADT, idiomatic |
 | 0416 | /arch | parked | NOT the lever — keep nested ADTs |
 | 0430 | /design | deferred | off-track (docstring regen), unchanged |
@@ -172,7 +173,19 @@ Cross-crate interface work this sprint: **none** (no `cranelisp-types` edit). Ma
 
 ## Skill plans (Phase 3)
 
-_Pending Phase 3._
+### Wave 1 — ablation study (user-directed 2026-07-02)
+
+**Method:** each of the three cures built **behind its own toggle** (env/feature), re-benchmarked via `tests/perf/s99_measure.py` after it lands, marginal delta recorded in `tests/plan/s99-measurement.md`. Sound cures flip default-on at sprint close. **Serial pipeline** (shared-tree; one source-touching agent at a time). Ordered by (b)-dominance + "allocator last".
+
+| Step | Cure | Skill(s) | Toggle | Notes |
+|---|---|---|---|---|
+| 1a | **Capture-by-borrow** design | /design (backend) | — | Pin the FIXME-0461 contract: coarse borrowed-Var generalisation, structural-join gate, return-value-only retain via existing consuming convention + ring2-rc §5.6, **excludes `LaunchContinue`**, no per-capture escape traversal (R3). Design-only. | **DONE** (`cbef1ed`) — contract in ring2-rc §5.5.2 + lenient-eval §4.4.1. Seam: `FnCompiler.spark_capture_borrow` flag set only around the 3 joined emission sites (`apply.rs:129`, `let_if.rs`, `par_bind.rs`); inc (`lambda.rs:156`) + drop-glue dec (`lambda.rs:183`) skip symmetrically; `LaunchContinue` never sets it. **Carve-out:** §4.5 dependent-`let` synthetic IVar keepalive captures stay retained. FIXME 0461 open, close at wave gate. |
+| 1b | **Capture-by-borrow** impl | /dev (backend) → /review + /qa | `CRANELISP_CAPTURE_BORROW` | **DONE — NEGATIVE RESULT** (uncommitted at report time). Mechanism CORRECT + within-boundary (elides *exactly* the spark-capture incs; parallel `rc_inc` drops to the serial count; UAF exclusion guard green; 1807/1/0 byte-identical-off). **But recovers ~0% of (b):** spark-capture incs are only **hundreds** (F2 −897 of 170M; budget-bounded spark count × capture-arity ~1), while the dominant (b) traffic is the **in-leaf vec-COW cell-refcount bumps** (~81/copy × leaves ≈ 170M) — *inside* the computation, not fork-join captures, so borrow (correctly, by scope) never touches them. F4 wall "1.9×" = **false green** (search-path variance, verified). **Re-diagnosis → FIXME 0462.** ParBind-continuation borrow site has an **unverified lifetime-across-suspension concern** (captures live in a returned IO tree run later by the trampoline — parent may not outlive it; S98-0486 class) → **do NOT flip default-on**; land opt-in only. |
+| 1c | **Saturation gate** (0459) | /design + /dev (backend) | env/feature | Spark-iff-spare-capacity, inline-when-saturated. Re-benchmark; record delta. |
+| 1d | **Allocator swap** (LAST) | /dev (src/int) | `--features` | Only if 1b+1c residual justifies. Rust-native candidates to evaluate empirically (not by reputation): **Ferroc**, **rimalloc** (user-flagged 2026-07-02) — both mimalloc-lineage pure-Rust; C-mimalloc (already built, 0.2) as the proven fallback. Adopt the lightest sufficient option; **may be skipped entirely if capture-by-borrow + gate reach the floor** (native-only, no dependency). Re-benchmark; record delta. |
+| — | Floor-claim scoping (0459 doc half) | /design (backend) | — | Lands regardless (honesty-not-mechanism). |
+
+**Deferred out of Wave 1 (user):** cancellation / short-circuit search (`first-success` early-exit) — a scheduling/algorithmic speedup that recovers exhaustive-search waste, but would destroy the deterministic linear-speedup benchmark the ablation depends on. Follow-on once runtime cures settle.
 
 ## Waves (Phase 4)
 
@@ -180,9 +193,28 @@ _Mechanism-wave structure is written after Wave 0 reports (sized by the decision
 
 | Step | Skill | Crate/surface | Task | Status |
 |---|---|---|---|---|
-| 0.1 | /dev | cranelisp-backend (+intrinsics) | Confirm the pool-size knob (does the spark pool respect `RAYON_NUM_THREADS`?); implement the env-gated **non-atomic-RC codegen switch** (`heap.rs` + `intrinsics/rc.rs`, byte-identical-off, unsound>1-worker, excluded from canonical nextest); add **RC-op + alloc-count instrumentation** (env-gated counters). | in-progress |
-| 0.2 | /dev | src/ (binary/`int`) + exe-bundle | Feature-gated **thread-caching `#[global_allocator]`** (mimalloc/jemalloc, `default=[]`, byte-identical-off). Doubles as the first-line (a) cure per R2. | pending |
-| 0.3 | /qa | tests/ (+ harness) | Build **F1 naked-singles / F2 needed-reduce-ADT-copy / F3 inverted-search / F4 real-Sudoku** fixtures (free-standing, committed guards per R5); the measurement harness (each fixture × pool-size × allocator × RC-atomicity, collecting wall/user/sys + RC-op/alloc counts); run it; **report the decomposition + fill the decision table.** | pending |
+| 0.1 | /dev | cranelisp-backend (+intrinsics) | Confirm the pool-size knob (does the spark pool respect `RAYON_NUM_THREADS`?); implement the env-gated **non-atomic-RC codegen switch** (`heap.rs` + `intrinsics/rc.rs`, byte-identical-off, unsound>1-worker, excluded from canonical nextest); add **RC-op + alloc-count instrumentation** (env-gated counters). | **DONE** (`e63c4ca`) — pool knob free (`RAYON_NUM_THREADS`); `CRANELISP_NONATOMIC_RC` + `CRANELISP_RC_STATS`; 1798/1/0 byte-identical-off. Harness caveat: call `alloc::reset_counts()` before `main` (alloc counts are process-wide). |
+| 0.2 | /dev | src/ (binary/`int`) + exe-bundle | Feature-gated **thread-caching `#[global_allocator]`** (mimalloc/jemalloc, `default=[]`, byte-identical-off). Doubles as the first-line (a) cure per R2. | **DONE** (`262bd07`) — mimalloc behind `--features thread-caching-alloc`; byte-identical-off 1798/1/0; exe-bundle (staticlib) untouched, harness measures `--run` in-process. |
+| 0.3 | /qa | tests/ (+ harness) | Build **F1 naked-singles / F2 needed-reduce-ADT-copy / F3 inverted-search / F4 real-Sudoku** fixtures (free-standing, committed guards per R5); the measurement harness (each fixture × pool-size × allocator × RC-atomicity, collecting wall/user/sys + RC-op/alloc counts); run it; **report the decomposition + fill the decision table.** | **DONE** (`c9f4c0d`) — 4 fixtures + 4 correctness guards + harness + `tests/plan/s99-measurement.md`; 1802/1/0. Verdict below. |
+
+### Wave 0 findings — the funding decision (2026-07-02, `/qa`)
+
+Full report: `tests/plan/s99-measurement.md`. Headline: the hypothesis is **partly falsified, partly confirmed**, and it is **NOT the "stop→Phase-H" branch**.
+
+- **The "10×" is essentially ALL contention.** Machinery tax is negligible (F1 +0.01s). Serial-luck and speculative-waste **cancel** — because `first-success` is **strict** (both apply-args are forced even under `CRANELISP_NO_LENIENT`, so the serial baseline pays the same "waste" as parallel). So the ratio is pure contention, not the confounded product we assumed. *(Side-finding: a **short-circuiting** serial search would be a different, harder bar — and cancellation, killing losing siblings once a winner is found, is the lever that recovers that waste for BOTH baselines. Scheduling-domain, 0459-adjacent.)*
+- **Contention is far above the pencilled ≈1.4×:** F2 (clean, fixed-size) **3× slower parallel**; F4 (real Sudoku) up to **23× debug / ~5× release** post-mimalloc. So the "slight-discount-per-core" target is **not met today** (3× *slower* per core), and a Phase-H release backend alone does **not** fix it — the substrate cures are needed.
+- **The (a)/(b) split CORRECTS arch prior R1.** The debug ladder's sys-dominance (which pointed at (a) allocator-lock) **did not survive to release**: on release it is **(b) atomic-RC bouncing that dominates** — F2 contention delta is **99% user / 1% sys**, F4 **~70% user / ~30% sys**. The user/sys *method* was right; the debug *numbers* misled the prior. **(b) capture-by-borrow is now the MAIN prize, not the secondary** — which raises the stakes on R3's soundness boundary.
+- **RC/alloc counts confirmed exactly:** F2 = 81.0 rc_inc + 2.0 allocs per shared 81-cell copy (169.9M rc_inc / 2.1M copies). The "81 bumps + fresh cells per copy" claim is exact.
+- **non-atomic vs atomic @1w:** the atomic *instruction* is cheap (F2 −13%); the expensive (b) is the **contended cache-line bouncing** (+18s user @Nw), which capture-by-borrow removes by **not emitting the ops at all** on joined captures — the right shape of cure.
+
+**Decision-table verdict → MIX; fund both, sequenced:**
+
+| Row | Fires? | Action |
+|---|---|---|
+| (a) allocator-lock dominant | partial (F4 only, ~30%) | **Fund allocator swap FIRST** — already built (0.2 mimalloc); the cure is *adopting* it (recovers F4 sys 23×↓, wall 4.8×↓); near-free, survives Phase H. Per R2, try before any arena. |
+| (b) atomic-RC bouncing dominant | **YES (dominant)** | **Fund capture-by-borrow** — the F2 99% / F4 70% term; coarse borrowed-Var generalisation only, within the FIXME 0461 boundary (R3; bug-#2-class risk — now the main event). |
+| contention small, waste/luck dominant | no | — (but the **gate 0459** stays a complement: throttles concurrent RC bouncing + converts cheap branches to speedup) |
+| contention dominant even at saturation → stop | **no** | both cheap pre-Phase-H cures apply and are complementary. |
 
 ## Notes
 

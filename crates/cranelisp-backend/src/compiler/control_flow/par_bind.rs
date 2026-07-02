@@ -15,6 +15,7 @@ use cranelisp_types::{ConcreteType, CranelispError, ErrorLocation, MonoExpr, Spa
 use crate::heap::{self, HeapAdt, HeapClosure};
 
 use crate::compiler::signature_heap_category;
+use super::sparkability::CAPTURE_BORROW_ENABLED;
 use super::{find_free_vars, FnCompiler};
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -97,7 +98,19 @@ where
         }
 
         // Phase 3: Build continuation closure.
-        let cont_ptr = self.compile_par_bind_continuation(bindings, body, span)?;
+        //
+        // Capture-by-borrow (S99, FIXME 0461; ring2-rc.md §5.5.2.1): a `ParBind`
+        // is structured fork-join (spec §12.4.3 / §10.12) — the `Par` node does
+        // not yield until all branches join. Raise the borrow flag (toggle-
+        // gated; off ⇒ false ⇒ byte-identical) around the continuation build so
+        // its heap captures are borrowed. `launch.rs` reuses `alloc_par_cont_
+        // closure` for the DETACHED `LaunchContinue` continuation but never
+        // raises the flag (§5.5.2.1 exclusion), so a detached capture retains.
+        let saved_borrow = self.spark_capture_borrow;
+        self.spark_capture_borrow = *CAPTURE_BORROW_ENABLED;
+        let cont_res = self.compile_par_bind_continuation(bindings, body, span);
+        self.spark_capture_borrow = saved_borrow;
+        let cont_ptr = cont_res?;
 
         // Phase 4: Allocate Bind node.
         // Layout: [header(16) | tag=2(8) | inner(8) | cont(8)]
@@ -385,7 +398,18 @@ where
                 );
 
                 // Inc heap-typed captures: the closure env needs its own reference.
-                if let Some(ty) = self.variable_types.get(cap_name) {
+                //
+                // Capture-by-borrow (S99, FIXME 0461; ring2-rc.md §5.5.2): when
+                // this continuation closure is built for a structurally-joined
+                // `ParBind` (`spark_capture_borrow` raised by `compile_par_bind`,
+                // toggle-gated), its captures are BORROWS — skip the inc here and
+                // the matching `build_closure_drop_glue` dec (above), symmetric
+                // with the `lambda.rs` spark-thunk path. `launch.rs` reuses this
+                // helper for the *detached* `LaunchContinue` continuation but
+                // never raises the flag, so its captures keep the retain.
+                if !self.spark_capture_borrow
+                    && let Some(ty) = self.variable_types.get(cap_name)
+                {
                     let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
                     self.emit_capture_inc(category, cap_val);
                 }

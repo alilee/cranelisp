@@ -230,3 +230,71 @@ convert the now-cheap branches into speedup.
 - `tests/perf/s99_measure.py` — the measurement harness (NOT in canonical nextest).
   `SYS_BIN=… MI_BIN=… python3 tests/perf/s99_measure.py [--reps N] [--quick]`;
   builds/points at the two allocator-variant release binaries.
+
+---
+
+## 8. Wave 1b — capture-by-borrow ablation result (the deliverable)
+
+**Author:** `/dev`(backend) · **Date:** 2026-07-02 · **Status:** Wave-1b ablation
+payload — the A/B that decides whether the `CRANELISP_CAPTURE_BORROW` toggle
+flips default-on at sprint close.
+
+**Setup.** Release build, **system allocator** (the cure is allocator-independent).
+Capture-by-borrow across structured fork-join (FIXME 0461; `ring2-rc.md` §5.5.2,
+`lenient-eval.md` §4.4.1) implemented behind `CRANELISP_CAPTURE_BORROW=1`
+(byte-identical-off; canonical suite unaffected — **1807 pass / 1 skip / 0 fail**).
+Median of 5 reps, `/usr/bin/time`, `LEAVES=8192 COPIES=256`, 10 procs, N-worker =
+rayon default. rc_inc via `CRANELISP_RC_STATS`.
+
+### Numbers (N-worker, off → on)
+
+| fixture | wall off→on | user off→on | sys off→on | rc_inc off→on (drop) |
+|---|---|---|---|---|
+| F1 machinery | 0.02→0.01 | 0.04→0.04 | 0.00→0.00 | 2,130,924→2,129,921 (**−1,003**) |
+| **F2 contention** (clean probe) | 2.06→2.10 | 17.86→18.16 | 0.42→0.44 | 169,902,978→169,902,081 (**−897**) |
+| F3 inverted search | 2.11→2.11 | 18.18→18.29 | 0.44→0.44 | 169,935,424→169,934,847 (**−577**) |
+| F4-hard sudoku | 13.75→7.25 † | 41.47→29.58 † | 17.38→7.55 † | 52,599,528→52,576,384 (**−23,144**) |
+
+### Verdict — capture-by-borrow **alone recovers ~0% of the (b) contention** on F1–F4.
+
+1. **The mechanism is correct but the volume is negligible.** The toggle does elide
+   exactly the structurally-joined spark-capture incs — with it on, the parallel
+   `rc_inc` drops to **== the serial `rc_inc`** (F2: 169,902,081 both), confirming
+   the borrow removes precisely the spark-capture incs and nothing else. But that
+   drop is **897 of 170M (0.0005%)** on F2, **−577/−1,003/−23,144** on F3/F1/F4 —
+   three-to-five orders of magnitude below the contention it was funded to remove.
+2. **Why: the §5.5.2.6 volume prediction was wrong.** The prediction was
+   `rc_inc drops ≈ captures-per-spark × spark-count ≈ leaf-count × capture-arity`.
+   In reality (a) the **create-gate budget caps spark count far below leaf count**
+   (bounded `O(cap)`, §3.6), and (b) capture-arity is ~1 (the shared grid `g`). So
+   the elided incs number in the **hundreds**, not the millions. The **dominant (b)
+   atomic-RC traffic is the LEAF copy-work** — each `(vec-set g …)` COW-copies the
+   81-cell Vec and **bumps every retained `Cell`'s refcount** (~81 incs × 256 copies
+   × thousands of leaves ≈ the 170M) — and those bumps are **inside the computation,
+   not spark captures**, so capture-by-borrow does not touch them.
+3. **F2 (the clean, low-variance probe) is the honest headline: user-time is FLAT**
+   (17.86→18.16, within noise; sys flat; wall flat/slightly up). Capture-by-borrow
+   removes **none** of F2's measured contention.
+4. **† The F4-hard wall "1.9×" is a FALSE GREEN — search-path variance, not the
+   borrow.** F4-hard N-worker wall is dominated by speculative-backtracking
+   scheduling: verified across single reps, **OFF spans 4.99–16.66 s and ON spans
+   3.38–18.41 s** — fully overlapping. The 5-rep median simply caught an OFF-high /
+   ON-low draw. With `rc_inc` moving only 0.04%, the wall delta **cannot** be
+   attributed to capture-by-borrow (per `memory/feedback_verify_fix_not_symptom_absence.md`).
+
+### Implication for the close-time default-on decision
+
+On this evidence **do NOT flip `CRANELISP_CAPTURE_BORROW` default-on for a
+performance reason** — it recovers no measurable (b) contention on F1–F4. The
+implementation is sound (byte-identical-off, parallel≡serial, the mandatory
+`LaunchContinue`-exclusion + heap-balance + inc-drop guards all green) and the
+borrowed/owned classification is *permanent* and Phase-H-durable (§5.5.2.5), so it
+can land as a correct, zero-cost-off substrate; but the **(b) prize is elsewhere**:
+the vec-COW leaf refcount traffic. Candidate real (b)-cures on this evidence:
+(i) owned-copy mutate-in-place / last-use on the freshly-COW'd grid so the per-copy
+cell-refcount bumps are avoided (a §5.5 last-use extension, not a capture rule);
+(ii) the saturation gate (FIXME 0459) to throttle the *number* of branches
+concurrently bouncing those cell cache-lines. This finding is filed to `/design` +
+`/sprint` (the §5.5.2.6 volume prediction needs correction; the b-cure funding
+should re-point at the leaf-copy RC term). Raw ablation: 5-rep medians above,
+`scratchpad/ablation.py` methodology (mirrors `s99_measure.py` + a CAPTURE_BORROW axis).

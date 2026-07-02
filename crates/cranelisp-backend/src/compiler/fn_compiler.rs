@@ -184,6 +184,36 @@ where
     /// function whose body has ONE gate is unaffected (the body is compiled
     /// once); only static source nesting was the blowup.
     pub(crate) suppress_spark_gate: bool,
+
+    /// When true, the closure currently being compiled is a **structurally-
+    /// joined spark thunk** (an apply-argument spark, an independent-`let`
+    /// spark, or a `ParBind` continuation) whose heap captures are **borrows**,
+    /// not retains — the capture-by-borrow optimisation (Sprint 99 Wave 1b,
+    /// FIXME 0461; `ring2-rc.md` §5.5.2, `lenient-eval.md` §4.4.1). The join
+    /// proves the capturing parent frame outlives every spark, so the parent's
+    /// own scope-cleanup dec is the single dec that accounts for the cell.
+    ///
+    /// Set (RAII save/restore) at exactly the three joined emission sites —
+    /// `apply.rs` (§4.4 lenient arm), `let_if.rs` (§4.2 Phase 1 *independent*
+    /// thunk), `par_bind.rs` (continuation build) — and **only** when
+    /// `CAPTURE_BORROW_ENABLED` (the `CRANELISP_CAPTURE_BORROW=1` toggle) is on;
+    /// off ⇒ the flag stays false everywhere ⇒ byte-identical to pre-S99.
+    ///
+    /// When set, the capture-store inc (`lambda.rs` / `par_bind.rs
+    /// alloc_par_cont_closure`) **and** the matching `build_closure_drop_glue`
+    /// heap-capture dec are **both** skipped, symmetrically — exactly §5.5's
+    /// borrowed-`Var` rule (skip inc at introduction *and* dec at release).
+    /// Skipping only one is an under/over-count bug.
+    ///
+    /// **Never** raised on the `launch.rs` `LaunchContinue` (detached, fire-and-
+    /// forget) path — a detached strand has no join inside the parent's extent,
+    /// so its captures MUST retain (§5.5.2.1 exclusion). It is also scoped to
+    /// the *standard* `compile_lambda` capture path: the §4.5 dependent-thunk
+    /// synthetic `§ivar_*` keepalive captures are emitted by the manual
+    /// `dependent_spark.rs` path (never reached with the flag set) and stay
+    /// retained (§4.4.1 carve-out). Fresh inner compilers reset it to false, so
+    /// it governs only the immediate thunk's capture store, not nested closures.
+    pub(crate) spark_capture_borrow: bool,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -229,6 +259,7 @@ where
             gate_arm_disc: String::new(),
             gate_counter: 0,
             suppress_spark_gate: false,
+            spark_capture_borrow: false,
         }
     }
 
@@ -323,6 +354,7 @@ where
             gate_arm_disc: String::new(),
             gate_counter: 0,
             suppress_spark_gate: false,
+            spark_capture_borrow: false,
         };
 
         // Seed the function's parameters into scope + variable_types.

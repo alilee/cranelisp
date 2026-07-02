@@ -12,7 +12,7 @@ use cranelift_module::Module;
 
 use cranelisp_types::{ConcreteType, CranelispError, MonoExpr, Span, Symbol};
 
-use super::sparkability::{find_sparkable_bindings, LENIENT_DISABLED};
+use super::sparkability::{find_sparkable_bindings, CAPTURE_BORROW_ENABLED, LENIENT_DISABLED};
 use super::FnCompiler;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -198,10 +198,23 @@ where
                     span: val_expr.span(),
                     ty: ConcreteType::Fn(vec![], Box::new(val_expr.ty().clone())),
                 };
-                self.compile_expr(&thunk_expr)?
+                // Capture-by-borrow (S99, FIXME 0461; lenient-eval.md §4.4.1):
+                // this INDEPENDENT `let` spark is structurally joined — Phase 2
+                // forces it before the `let` body. Raise the borrow flag
+                // (toggle-gated) only around this independent-thunk compile.
+                // The DEPENDENT branch below is deliberately EXCLUDED: its
+                // synthetic `§ivar_*` IVar-pointer captures are load-bearing
+                // keepalives, not live-parent borrows (§4.4.1 carve-out) — the
+                // flag must not reach `compile_dependent_thunk`.
+                let saved_borrow = self.spark_capture_borrow;
+                self.spark_capture_borrow = *CAPTURE_BORROW_ENABLED;
+                let thunk_res = self.compile_expr(&thunk_expr);
+                self.spark_capture_borrow = saved_borrow;
+                thunk_res?
             } else {
                 // Dependent binding: build the thunk manually with a force
                 // prologue that forces each dependency IVar on demand (§4.5).
+                // NOTE: the borrow flag is NOT raised here — the §4.5 carve-out.
                 self.compile_dependent_thunk(val_expr, &deps, span)?
             };
 
