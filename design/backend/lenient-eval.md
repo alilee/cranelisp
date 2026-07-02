@@ -162,10 +162,22 @@ almost immediately — little is gained beyond `a`'s own parallelism. The real w
 **partially-dependent** RHS: in `(b (g (f a) (h c)))` where `c` is independent, the
 `(h c)` sub-work runs concurrently while `a` is still computing; the thunk blocks only
 at the `(f a)` force. The dependent spark pipelines the independent sub-work of `b`
-against `a`'s computation. The never-slower-than-serial floor (§3.6.3) is preserved:
+against `a`'s computation. The **spark-machinery floor** (§3.6.3) is preserved:
 forcing `a` is the same work sequential evaluation does, and the create-gate still
 bounds total IVar allocation to `O(cap)` (the dependent thunks count toward the same
 budget batch).
+
+> **Floor scope (S94 /port ruling + S99 ablation — FIXME 0459).** "Floor" here means the
+> **spark-*machinery* overhead** the create-gate genuinely bounds — IVar/thunk allocation, which
+> is `O(cap)` regardless of tree size. It does **NOT** bound **per-branch *user-level* contention**:
+> the heap allocation + atomic-RC cache-line bouncing (Decision 13) that each of the `cap` live
+> branches generates concurrently. Count is the wrong signal for contention — the create-gate
+> cannot see it. For allocation-/RC-heavy parallel workloads the never-slower-than-serial floor is
+> **VIOLATED**: S99's F2/F4 ablation on release measured parallel **2.3× slower** (F2) to **6–15×
+> slower** (F4) than serial even after the in-track cures, because the dominant cost is the in-leaf
+> vec-COW leaf-refcount traffic (`s99-measurement.md` §10.3; `ring2-rc.md` §5.5.2.7). The
+> user-level-contention floor is a **Phase-H** target (owned-copy mutate-in-place / non-atomic
+> thread-local RC), not a create-gate one. See §3.6.3 and `effect-concurrency.md` §3.1.
 
 #### 2.6.3 Why the dependency must be forced, not captured
 
@@ -365,6 +377,30 @@ join_block(result: i64):             // both arms produce the call's result valu
 - **Cost of the gate when there is no explosion.** Under any workload that stays at/below `cap`, every site's try-reserve is granted ⇒ every site takes the lenient arm ⇒ behaviour is byte-for-byte the pre-gate behaviour, plus one granted try-reserve per site. The gate engages its direct arm *only* under spark explosion.
 
 #### 3.6.3 Floor-restoration argument
+
+> **Scope of this argument (FIXME 0459 doc-half; S94 /port ruling + S99 ablation).** Everything
+> below restores the floor against **spark-*machinery* overhead** — the per-node IVar/thunk
+> allocation the create-gate bounds to `O(cap)`. That is the `fib`-explosion this section was built
+> for, and the argument is correct **within that scope**. It does **NOT** cover **per-branch
+> user-level contention** — the concurrent heap allocation + atomic-RC cache-line bouncing
+> (Decision 13) the `cap` live branches generate — which the count-only create-gate cannot see.
+> For allocation-/RC-heavy workloads that user-contention floor is **VIOLATED on release**: the S99
+> ablation measured F2 parallel **2.3–3× slower** than serial and F4 **6–15× slower**, and the
+> three in-track pre-Phase-H levers each moved the dominant term only single-digit percent
+> (capture-by-borrow ~0%, saturation gate ~9%, mimalloc user-neutral-to-worse on the clean probe —
+> `s99-measurement.md` §8–§10; `ring2-rc.md` §5.5.2.7). The contention floor is restored only by
+> **Phase-H** memory-model work. The `ON < 1.3·OFF` acceptance test below is therefore the
+> **spark-machinery** floor witness (allocation-/RC-*light* branches), not a universal
+> never-slower-than-serial guarantee.
+>
+> **The contention-aware gate ask (0459) landed opt-in as the *saturation gate*.** 0459 asked for
+> a contention-aware gate as the in-track path back toward the floor; Wave 1c delivered it as
+> `CRANELISP_SATURATION_GATE=1` (`ivar.rs`, off by default, byte-identical-off), which tightens the
+> in-flight cap from `4×threads` to `threads` so saturated subtrees run inline on the current
+> thread. It is sound and cheap but recovers only **~9%** of the (b) contention on the clean F2
+> probe (it throttles the *number* of bouncers at the margin; it cannot touch the leaf-copy RC
+> *volume*). Kept opt-in as honest scheduling hygiene / Phase-H-durable complement; **default-on is
+> deferred to Phase-H** (rests on the floor-restoration/honesty argument, not a (b)-cure magnitude).
 
 For a naive over-sparking recursion (`fib`): the first ≈`cap` sites reached at runtime (near the root, as rayon work-steals breadth-first) reserve and spark; once `IN_FLIGHT_SPARKS` saturates, every deeper site's try-reserve returns 0 on a **single load** and takes the direct arm. The direct arm is the existing sequential codegen — it recurses into `fib` whose body again hits the gate at runtime, gets 0 again while the budget stays full, and continues serially with **zero allocation**. As top-level sparks complete they release permits, re-admitting a bounded frontier of new sparks; in-flight sparks stay `O(cap)`, so total IVar/thunk allocation footprint is `O(cap)`, not `O(nodes)`. The whole exponential tail therefore runs at ≈ serial cost.
 

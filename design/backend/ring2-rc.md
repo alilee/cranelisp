@@ -640,6 +640,34 @@ The sketch was aware of match-arm borrowed bindings: `mark_borrowed_var` in `ske
 > retain / no escape analysis; read-only no-COW-hazard) are binding and MUST NOT be widened; the
 > place the design "wants to widen" is a Phase-H forward-pointer (§5.5.2.5), not this sprint's work.
 
+> **S99 ablation outcome (Wave 1b, `s99-measurement.md` §8; FIXME 0461 resolved, FIXME 0462 filed → this doc).**
+> The mechanism landed **within its boundary and is CORRECT** — implemented opt-in behind
+> `CRANELISP_CAPTURE_BORROW` (off by default, byte-identical-off; the mandatory
+> `LaunchContinue`-exclusion / parallel≡serial / heap-balance / inc-drop guards are all green,
+> and with the toggle on the parallel `rc_inc` drops to **exactly** the serial `rc_inc`, proving
+> it elides precisely the joined-spark-capture incs and nothing else). **But on the measured
+> workload it recovers ~0% of the (b) atomic-RC contention it was funded to remove** — the elided
+> incs number in the **hundreds** (F2: −897 of 170M = 0.0005%; F1/F3/F4: −1,003/−577/−23,144),
+> because the dominant (b) traffic is **not** fork-join captures but the **in-leaf vec-COW
+> refcount volume** (each `(vec-set g …)` COW-copies the 81-cell grid and bumps every retained
+> `Cell` — ~81 incs × copies × leaves ≈ the 170M). See §5.5.2.6 (the refuted volume prediction)
+> and §5.5.2.7 (the re-pointed (b)-cure). **Disposition: STAYS OPT-IN, NOT default-on** — there is
+> no measured (b) recovery to justify perturbing the canonical path, and the borrowed/owned
+> classification is permanent + Phase-H-durable (§5.5.2.5), so it carries at zero cost off as a
+> correct substrate until a real (b)-cure lands.
+>
+> **UNRESOLVED SOUNDNESS CAVEAT — MUST be cleared before any future default-on (flagged by the
+> Wave 1b impl).** The §5.5.2.3 parent-outlives-spark argument is proven for the *synchronous*
+> apply-arg / independent-`let` joins (the parent frame is live across spark→join→call within one
+> stack extent). It is **NOT yet established for the `ParBind`-continuation borrow site**: a
+> `ParBind` branch closure may capture values that live in a **returned IO tree run later by the
+> trampoline**, so — unlike the synchronous joins — the capturing parent frame may **not** outlive
+> the borrow (this is the S98-0486 "lifetime-across-suspension" class: the join is structural in
+> the source, but the *dynamic* extent is deferred into a trampoline-scheduled continuation). The
+> current opt-in default-off status contains this: it never reaches the canonical path. Any move to
+> default-on MUST first prove (or gate out) the ParBind-continuation site against this
+> across-suspension lifetime — treat it as a live open item, not a solved one.
+
 **The optimisation.** A sparked branch (a lenient-eval IVar thunk — the synthetic zero-arg
 `(Fn [] T)` wrapping an apply-argument (`lenient-eval.md` §4.4) or an independent `let` binding
 (§4.2), and the `ParBind` branch closures) captures free variables from its **enclosing scope**.
@@ -800,14 +828,57 @@ co-landing with the `/dev` fix):
 - **Inc-count reduction is directly observable (not a correctness gate, a witness).** The capture
   inc elision is measurable via the `CRANELISP_RC_STATS` counters (Wave 0.1 substrate,
   `crates/cranelisp-intrinsics/src/rc.rs:119`; `s99-measurement.md` records program-attributable
-  counts = raw − no-op baseline). **Prediction:** for the F2/F4 shape, the per-copy captures of the
-  shared grid (the 81-element Vec header + each retained `Cell` — the "~N RC bumps + fresh cells
-  per copy per node" volume claim, `f2_contention.cl` preamble) that today emit an
-  `rc_inc`+`rc_dec` pair **per capture per spark** become borrows: `rc_inc` should drop by
-  approximately (captures-per-spark × spark-count) — for F2 at LEAVES=8192 with the shared-grid
-  capture, on the order of the leaf count × the per-leaf shared-capture arity. The A/B toggle makes
-  this a direct before/after read, and it is the primary in-track witness that (b) is the term being
-  removed.
+  counts = raw − no-op baseline). The A/B toggle makes the elision a direct before/after read on
+  `rc_inc`, and the observable *is* real — with the toggle on, parallel `rc_inc` drops to exactly
+  the serial `rc_inc`, confirming the borrow elides precisely the joined-spark-capture incs.
+  > **VOLUME PREDICTION REFUTED (Wave 1b ablation, `s99-measurement.md` §8 — FIXME 0462).** The
+  > original prediction here — "`rc_inc` should drop by ≈ (captures-per-spark × spark-count) ≈
+  > leaf-count × per-leaf shared-capture arity", i.e. **millions** on the F2/F4 shape — was
+  > **empirically wrong by three-to-five orders of magnitude**. The measured drops are in the
+  > **hundreds**: F2 −897 (of 170M = 0.0005%), F1 −1,003, F3 −577, F4-hard −23,144 (of 52.6M).
+  > **Two errors in the prediction:** (1) **spark count is create-gate-budget-bounded (`O(cap)`,
+  > §3.6 of `lenient-eval.md`), NOT leaf-count** — the budget caps concurrent sparks far below the
+  > leaf count, so the number of elided spark-captures is small and size-insensitive; (2)
+  > **capture-arity is ~1** (the single shared grid `g`), not a wide fan. The dominant (b)
+  > atomic-RC traffic is **not** spark captures at all — it is the **in-leaf vec-COW refcount
+  > volume** (each `(vec-set g …)` COW-copies the 81-cell grid and bumps every retained `Cell`;
+  > ~81 incs × copies × leaves ≈ the 170M), which lives *inside the computation* and which
+  > capture-by-borrow — correctly, by its scope — never touches. **What STANDS:** the
+  > soundness/correctness content (§5.5.2.1–.5) and every guard in this test list are unaffected —
+  > the borrow is still correct and still elides exactly what it claims; only this *magnitude
+  > witness* was mis-predicted. The witness's true reading: capture-by-borrow removes a
+  > budget-bounded handful of incs and is **not** the (b)-contention lever (see §5.5.2.7).
+
+#### 5.5.2.7 The real (b)-cure is Phase-H (re-pointed, Wave 1b/1c/1d ablation)
+
+The Wave 1b ablation (§5.5.2.6) refuted capture-by-borrow as the (b) performance cure. The S99
+close-out ablation then tested every **pre-Phase-H substrate lever** against the dominant (b) term
+and found each moves it only single-digit percent on the clean F2 contention probe
+(`s99-measurement.md` §8–§10):
+
+- **capture-by-borrow (Wave 1b): ~0%** — wrong-scoped; the retain it elides is at the fork-join,
+  not the in-leaf vec-COW (§5.5.2.6).
+- **saturation gate (Wave 1c, `CRANELISP_SATURATION_GATE`, opt-in): ~9%** — caps concurrent sparks
+  from `4×threads` to `threads`, confining only the *overflow* subtrees to one thread; the top
+  ~`threads` branches still run parallel and still COW-copy + refcount-bump shared ancestor cells.
+  Pure locality, real but marginal.
+- **mimalloc (Wave 1d, `--features thread-caching-alloc`, opt-in): user-neutral-to-worse on the
+  clean probe** — its win is the (a) allocator-lock *sys* term (F4 ~6.7× median sys), but on the
+  fixed-work F2 probe it slightly *worsens* user, because (a) and (b) are **coupled**: removing the
+  allocator serialization lets threads run concurrently and bounce the shared-cell atomic-RC cache
+  lines *more*.
+
+After mimalloc + saturation gate, F2 parallel is still **2.3× slower** than serial and F4 is
+**6–15× slower** (`s99-measurement.md` §10.3). **The dominant (b) driver is confirmed genuinely
+Phase-H:** the removable term is the **vec-COW leaf-refcount volume** (the ~81 atomic bumps per
+grid COW-copy), and the only levers that touch it are **owned-copy mutate-in-place / last-use on
+the freshly-COW'd grid / Perceus reuse / non-atomic thread-local RC** — all **Phase-H memory-model
+work**, not scheduling and not a capture rule. This is a §5.5 last-use *extension* (mutate the
+freshly-COW'd, provably-unique grid in place instead of re-bumping every cell), NOT a widening of
+the §5.5.2 spark-capture borrow. The ablation numbers (`s99-measurement.md` §8–§10) are the
+evidence and the durable record of *why* three in-track cures were tried and set aside. **Forward
+item (Phase-H (b)-cure):** owned-copy mutate-in-place / last-use / Perceus reuse on COW'd
+heap-Vec leaves; the S99 ablation is the funding justification.
 
 ### 5.6 Capture-return inc
 
