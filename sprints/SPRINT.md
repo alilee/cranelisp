@@ -1,6 +1,6 @@
 # Sprint 99: Parallelism/memory-contention — measure-first, decompose the 10×
 
-**Status**: PHASE 5 — CLOSE-OUT WAVE (ACTIVE). **Ablation complete** (1a–1d committed): no pre-Phase-H substrate cure restores the floor; the dominant (b) contention (vec-COW leaf-refcount volume) is empirically confirmed **genuinely Phase-H** (Perceus/mutate-in-place). **User direction 2026-07-02 (post-1d):** keep all three cures **opt-in** (correct, byte-identical-off, durable substrate; none default-on), **accept the Phase-H re-sequence** of the (b) cure, **run the close-out wave** (record the knowledge + honesty doc corrections + cheap housekeeping) → Phase 7. Close-out: `/design`(backend) closes 0461 + actions 0462 + lands 0459 floor-scoping; `/arch` records the empirical Phase-H justification in `effect-concurrency.md §3.1`; `/design`(platform) stale-macro sweep; `/examples` network example. Then Phase-7 outcome for user approval.
+**Status**: PHASE 7 CLOSE — **PROPOSED CLOSE, awaiting user approval to archive.** All phases complete: ablation (1a–1d) + close-out wave (knowledge recording, floor-scoping, `effect-concurrency.md §3.1` settlement, platform doc sweep, deferral FIXMEs) landed + committed. Suite **1811 pass / 1 skip / 0 fail**. See Outcome below. **On approval:** `git mv` to archive, action the ROADMAP line + the candidate Principle, update ROADMAP (S99 closed → S100 = the parallelism knot's Phase-H home, or user's next pick).
 
 _Prior status (ablation): Wave 0 complete; ran the three cures as an ablation (each toggle-gated, re-benchmarked); re-sequenced capture-by-borrow → gate → allocator-last; cancellation/short-circuit DEFERRED (keeps the deterministic benchmark). See the Wave-1 table + `tests/plan/s99-measurement.md` §8–§10._
 
@@ -224,6 +224,41 @@ Full report: `tests/plan/s99-measurement.md`. Headline: the hypothesis is **part
 - **Design conversation (user-led, 2026-07-02)** produced the reframe above: measure-first/decompose-the-10× before funding any mechanism; keep nested ADTs (no bitmask dodge); the survives-Phase-H + substrate-not-exemplar filter; the saturation-shaped-gate + contention-to-near-zero performance model; the probabilistic-better-than-serial framing that makes the raw "10×" a confounded number. The two candidate substrate cures (thread-local arena; capture-by-borrow across structured fork-join) are recorded as candidates gated on Wave 0, not commitments — per Principle 21 (actors + functions before synthesising a mechanism) and the measure-first discipline.
 - **Pre-flight audit performed before Phase 1 scope** — verifying the previous sprint's Phase-6 self-report independently before trusting the roadmap's "next" pointer. Worth repeating whenever a sprint's close record is the sole basis for judging a prerequisite sound (generalises `memory/feedback_verify_fix_not_symptom_absence.md`'s "confirm behaviorally end-to-end").
 
-## Outcome (Phase 7)
+## Outcome (Phase 7) — PROPOSED CLOSE (awaiting user approval to archive)
 
-_Pending._
+**Headline:** S99 was a **measure-first sprint that answered its question with evidence instead of a mechanism.** A four-spike ablation decomposed the parallel-search slowdown, proved that **no pre-Phase-H substrate cure restores the floor**, and pinned the dominant contention term (vec-COW leaf-refcount volume) as **genuinely Phase-H work** — turning the Phase-H sequencing edge from a Principle-8 conjecture into a measured result. Three cure candidates were built, toggled, and measured; all land as correct, byte-identical-off, opt-in substrate; none default-on. Suite **1811 pass / 1 skip / 0 fail**.
+
+### Delivered (committed, clean tree)
+
+- **Pre-flight audit** (`51cbad7`) — independently verified (not a re-read of the S98 record; re-ran `exemplar_web` E2E) that user docs / examples / exemplar / platforms are all current on the v9 concurrency model. The base was sound; the sprint could open the knot.
+- **Wave 0 — the decomposition + harness** (`e63c4ca`/`262bd07`/`c9f4c0d`). F1–F4 free-standing nested-ADT fixtures (committed regression guards) + measurement harness + env probes (`CRANELISP_NONATOMIC_RC`, `CRANELISP_RC_STATS`, `RAYON_NUM_THREADS` pool knob) + the feature-gated mimalloc allocator. Finding: the "10×" is **all contention** (serial-luck/waste cancel — `first-success` is strict); split (a) allocator-lock / (b) atomic-RC; **(b) dominant** on release.
+- **Wave 1 — the ablation** (`0943e58`/`961945a`/`615307e`). Three cures, each behind its own toggle, each re-benchmarked:
+  - **1b capture-by-borrow** (`CRANELISP_CAPTURE_BORROW`) — correct, within the 0461 boundary, UAF-exclusion guard green; **~0%** recovery (the retain is the in-leaf vec-COW, not the fork-join capture).
+  - **1c saturation gate** (`CRANELISP_SATURATION_GATE`) — **~9%** of F2 (b) (real, not false-green; overflow-only).
+  - **1d mimalloc** (`--features thread-caching-alloc`) — F4 median sys 6.7×↓ but user-neutral-to-worse; **(a)/(b) coupling** discovered (removing the alloc lock lets threads bounce RC lines *more*). Combined stack still leaves F2 2.3× / F4 6–15× slower than serial.
+- **Durable knowledge recorded** (`02f519b`/`9fe0955`/`49854e8`): `ring2-rc.md §5.5.2` (capture-borrow outcome + ParBind soundness caveat), §5.5.2.6 (volume-prediction refutation), §5.5.2.7 (the real (b)-cure = Phase-H Perceus/mutate-in-place); `lenient-eval.md §2.6.2/§3.6.3` (floor scoped to spark-machinery vs per-branch contention); `effect-concurrency.md §3.1` (the empirical settlement — R1 prior corrected, floor-not-restorable, (a)/(b) coupling, Phase-H edge upgraded conjecture→measured). Full report: `tests/plan/s99-measurement.md` §1–§10.
+- **Housekeeping** (`1f6b936`): platform stale-`declare_concurrent_platform!` doc sweep (7 refs corrected to the unified `declare_platform!`).
+- **FIXMEs resolved (deleted):** `0461`, `0462` (capture-by-borrow contract + volume-refutation — knowledge migrated into the design docs).
+
+### Deferred (with rationale)
+
+- **The dominant (b) cure → Phase H.** Owned-copy mutate-in-place / last-use / Perceus reuse / non-atomic thread-local RC. Not a habitual deferral — a **measured** one: three in-track levers were built and each moved (b) single-digit. Recorded in `ring2-rc.md §5.5.2.7` + `effect-concurrency.md §3.1` (knowledge in the docs, not a dangling FIXME).
+- **FIXME 0459** — substance delivered (opt-in saturation gate + floor-scoping); the remainder (default-on + a gate that *restores* the floor) is the Phase-H (b)-cure. `target: /backend` → only `/backend`/`/dev` may set `status: deferred → Phase-H`. Carries as a substance-delivered down-payment.
+- **FIXME 0408** (Sudoku "make it fast" perf half, `/port`) — the ablation **proved** the substrate can't get there pre-Phase-H; the exemplar-witness-of-a-speedup defers to Phase H alongside the (b) cure.
+- **FIXME 0463** (`/examples` network poll-shape example) — deferred-with-FIXME: needs a shared socket-accept/read poll leaf + a server-driving harness that don't exist under an examples-only budget (owned by `/platform`+`/qa`).
+- **Cancellation / short-circuit search** — deferred (user): keeping the exhaustive strict-`first-success` search preserves the deterministic linear-speedup benchmark the ablation depends on. Follow-on once the runtime cures settle.
+- **FIXME 0464** (new, platform ABI-version doc stamp 7→9) — cheap doc refresh, opportunistic.
+- **Native allocators (Ferroc/rimalloc)** — Phase-H-adjacent follow-on; only matters if mimalloc goes default-on, which it shouldn't until Phase-H removes (b).
+
+### Findings (durable lessons)
+
+- **Measure-first earned its keep — twice over.** The reframe (measure before funding a mechanism, Principle 21) meant we spent four cheap spikes instead of building a large Phase-H-adjacent mechanism on a wrong hypothesis. Both the arch prior (R1: (a) dominant) and the sprint's own headline bet (capture-by-borrow as the (b) cure) were **refuted by measurement** — and being refuted cheaply *is the win*.
+- **The Wave-0 report's own words hid the mis-attribution.** "81 rc_inc per shared copy" was read (by arch, and by me) as the fork-join capture; it was the in-leaf vec-COW. The 1b ablation caught it. Lesson: a decomposition's *attribution* needs its own falsification pass, not just its magnitudes.
+- **False greens twice on F4 wall-time** (1b's "1.9×", 1d's wall swings) — both search-path variance, caught by per-rep spread + leading with sys-time. `memory/feedback_verify_fix_not_symptom_absence` generalised from bug-fixes to benchmarks.
+
+### For `/sprint` to action at close (with user)
+
+- **ROADMAP line** (`/arch`-recommended): add to `sprints/ROADMAP.md`'s Phase-H/effect-concurrency sequencing that **S99 empirically confirmed the (b) atomic-RC contention cure is Phase-H** (three in-track levers each single-digit; combined stack still F2 2.3× / F4 6–15×) — Principle-8 sequencing upgraded conjecture→measured.
+- **Candidate Principles** (`/arch`-surfaced, for user decision):
+  1. **"Attribute contention on the release tier, not debug."** Debug allocator-syscall (sys) overhead masks the atomic-RC (user) bouncing that dominates optimised code — the exact error that inverted R1. Reusable measurement discipline (sibling of Principle 21). **Recommended.**
+  2. **"Allocator and RC contention couple — co-design, don't independently optimise."** More Phase-H design-guidance than standing axiom; lean toward recording it *in* the Phase-H design rather than as a Principle.
