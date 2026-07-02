@@ -12,10 +12,14 @@ here:
   `/design` int);
 - the **poll-node bake** (`IO_TAG_EFFECT_POLL` + the host-built state-closure env
   layout) — `design/backend/io-trampoline.md` §12 (sibling `/design` backend);
-- the v7 C-ABI contract types (`HostCtx`, `Waker`, `WakerVTable`, `PollFn`,
-  `ConcurrentPlatformFn`, `ConcurrencyDescriptor`) — `crates/cranelisp-platform/
+- the async-leaf C-ABI contract types (`HostCtx`, `Waker`, `WakerVTable`, `PollFn`,
+  `ConcurrencyDescriptor`) — `crates/cranelisp-platform/
   src/concurrency.rs`, `design/arch/effect-concurrency.md` §12 (**`/arch`-owned —
-  read-only**), `design/arch/platform-interface.md` §6.8.
+  read-only**), `design/arch/platform-interface.md` §6.8. (The dual-channel
+  `ConcurrentPlatformFn` / `ConcurrentPlatformManifest` named in this Chunk-A
+  doc were **deleted** in the later single-ABI cutover — see the banners below;
+  the types are now core/ungated, absorbed into the unified `PlatformFn` /
+  `PlatformManifest`.)
 
 > **Evidence-first ordering — this design is the *target the hand-rewrite
 > converges to*, not a speculative pre-abstraction (Principle 8; Phase-2 scope
@@ -315,8 +319,8 @@ the scratch slot, it never dispatches another effect.
 
 - **The descriptor.** Token/capacity/blocking are the platform's trust assertion;
   the leaf author writes the `ConcurrencyDescriptor` literal in the
-  `declare_concurrent_platform!` invocation (§4). `poll_support` never synthesizes
-  one.
+  `declare_platform!` invocation (the per-fn `descriptor:` key). `poll_support`
+  never synthesizes one.
 - **The syscall + result meaning.** `TcpListener::accept`, `read`, the i64 the
   result slot carries — all hand-written. The scaffold locates and registers; it
   does not interpret.
@@ -692,14 +696,13 @@ land):
 - `poll-log   : (Int token, Int capacity, Int ms, String tag) -> IO Int` — poll-shape;
   prints `tag` to real stdout (the within-token source-order witness); returns `ms`.
 
-Declared via `declare_concurrent_platform!` with each effect's descriptor mapping to
+Declared via `declare_platform!` (each effect's per-fn `descriptor:` = poll) with each
+effect's descriptor mapping to
 `ResourceSerial` (`token 0, cardinality 1, blocking 0`) so the backend pass leaves the
 source-supplied leading pair intact and the A2 peel bakes the live `(token, capacity)`.
 token/capacity/ms are explicit cranelisp args (no handle re-pass — the timer leaf has
 no fd; leaf args are operands `2..`). Add it to `tests/scripts/build-link-prereqs.sh`.
-It is a **platform effect** (not stdlib), preserving the free-standing-test rule. (On
-v8 this is one unified `declare_platform!` with each effect's `descriptor:` poll —
-§4 banner.)
+It is a **platform effect** (not stdlib), preserving the free-standing-test rule.
 
 ---
 
@@ -1334,8 +1337,8 @@ already-gated types, and the macro spine names none.
 - `design/platform/poll-support.md §3.5` — the concrete web connection-handle cranelisp interface (resolves FIXME 0465); the Chunk-B keystone the slice-5 server demo exercises
 - `exemplar/web.cl`, `exemplar/main.cl` — the `/port`-owned `.cl` surface §3.5.1/§3.5.3/§3.5.5 specifies (handle ADTs + wrappers + serve loop)
 - `design/arch/platform-interface.md` §6.8 — the ABI-v4 cascade / numeric `ABI_VERSION` 6→7 (**`/arch`-owned**)
-- `crates/cranelisp-platform/src/concurrency.rs` — the v7 C-ABI contract types
-- `crates/cranelisp-platform/src/declare.rs` — `declare_platform!` / `__declare_platform_body!` / `declare_concurrent_platform!` (the macro pair the convergence reshapes)
+- `crates/cranelisp-platform/src/concurrency.rs` — the (now core/ungated) async-leaf C-ABI contract types (`HostCtx`/`Waker`/`WakerVTable`/`PollFn`; the dual-channel `ConcurrentPlatformFn`/`ConcurrentPlatformManifest` were **deleted** in the single-ABI cutover)
+- `crates/cranelisp-platform/src/declare.rs` — `declare_platform!` / `__declare_platform_body!` (the single unified macro; `declare_concurrent_platform!` was **deleted** in the single-ABI cutover, its poll-shape arm folded into `declare_platform!`)
 - `tests/facade_pif_rows.rs::concurrency_descriptor_absent_from_default_public_api_neg` — the `_neg` frozen-edge guard (gate (c) enforcement)
 - `exemplar/platforms/web/src/lib.rs`, `platforms/stdio/src/lib.rs` — the rewrite targets
 
