@@ -631,6 +631,184 @@ Three rules modify scope cleanup behavior:
 
 The sketch was aware of match-arm borrowed bindings: `mark_borrowed_var` in `sketch/src/codegen.rs:247` records the same concept, set from `sketch/src/codegen/match_compile.rs:231–235` when the scrutinee is a known-unique local. But the sketch's gating strategy diverges — rather than gating `is_last_use` on the borrowed set, the sketch took an orthogonal route: `emit_consuming_caller_rc` at `sketch/src/codegen.rs:295–303` short-circuits borrowed vars by emitting an unconditional inc ("auto-upgrade") and skipping `mark_consumed` entirely, which prevents last-use transfer as a side effect. Both designs reach the same invariant (borrowed binding never transfers ownership); the reimplementation's explicit `is_last_use` gate (§7 table row) is arguably clearer for future readers since the rule is named where the decision is made, rather than implied by the absence of a `mark_consumed` call. The sketch additionally predicated the borrow on a scrutinee-uniqueness check (`scrutinee_is_unique` at `match_compile.rs:37–42`, eliding both inc at extraction and dec at scope exit when safe) — an optimisation the reimplementation has not adopted; this sketch feature is tracked as a possible future refinement rather than a bug.
 
+### 5.5.2 Spark-capture borrow — the structured-fork-join generalisation (Sprint 99, FIXME 0461)
+
+> **Arch-ratified soundness boundary (FIXME 0461, `target: /design`).** This subsection pins the
+> contract `/dev`(backend) implements against in Wave 1b. It is a **generalisation of §5.5's
+> `borrowed_vars` discipline to a new binding-introduction site — the spark-capture** — NOT a new
+> RC discipline and NOT escape analysis. The three arch conditions (structural-join gate; coarse
+> retain / no escape analysis; read-only no-COW-hazard) are binding and MUST NOT be widened; the
+> place the design "wants to widen" is a Phase-H forward-pointer (§5.5.2.5), not this sprint's work.
+
+**The optimisation.** A sparked branch (a lenient-eval IVar thunk — the synthetic zero-arg
+`(Fn [] T)` wrapping an apply-argument (`lenient-eval.md` §4.4) or an independent `let` binding
+(§4.2), and the `ParBind` branch closures) captures free variables from its **enclosing scope**.
+Today each heap-typed capture is **retained** (`emit_capture_inc`, `lambda.rs:159`) when stored
+into the thunk env, and the thunk's drop glue **decs** it (`build_closure_drop_glue`,
+`lambda.rs:175`). Under N workers this atomic inc/dec on *shared parent cells* is the (b)
+cache-line-bouncing contention term the Wave-0 measurement found dominant (`s99-measurement.md`:
+F2 99% user, F4 ~70%). **Capture-by-borrow elides both ops:** the capture of a *structurally-joined*
+spark is a **borrow** — rc-invisible, exactly as a match-arm field binding in `borrowed_vars` is —
+because the join proves the parent frame outlives every spark, so the parent's own scope-cleanup
+dec is the single dec that accounts for the cell. The atomic-RC operations are removed **entirely**
+(not merely made non-atomic, which is all Phase-H thread-local RC would achieve).
+
+#### 5.5.2.1 The structural-join gate (load-bearing — eligibility)
+
+Borrow-elision is admissible **only** for a spark whose join is **within the capturing frame's
+dynamic extent** — the expression does not return until every branch has joined. The eligible
+sites, all of which barrier-join before their enclosing form completes:
+
+- **Apply-argument sparks** (`lenient-eval.md` §4.4) — the create-gate lenient arm forces every
+  sparked IVar (Phase 2 barrier) *before* the call instruction is emitted; the parent frame is
+  live across the whole spark→join→call sequence.
+- **Independent + dependent `let` sparks** (§4.2 / §4.5) — Phase 2 forces every sparked IVar before
+  the `let` body; same barrier.
+- **`ParBind` branches** (`par_bind.rs`) — structured fork-join (spec §12.4.3 / §10.12): the `Par`
+  node does not yield until all branches join.
+
+**EXCLUDED — the detached launch MUST retain.** `MonoExpr::LaunchContinue` (spec §10.12.7,
+`launch.rs`) is a **fire-and-forget** effect: its `launched` sub-tree is dispatched to a detached
+supervised strand (`IO_TAG_LAUNCH`) that has **no join inside the parent's extent** — the parent's
+continuation runs (and its scope cleanup decs) *before* the strand completes. A borrowed capture
+there is a use-after-free of the freed parent cell. `LaunchContinue` captures MUST keep the
+existing retain (`emit_capture_inc` + drop-glue dec), unchanged.
+
+**The discriminator `/dev` reads (a flag/variant, not a new analysis).** The joined-vs-detached
+signal is already carried **representationally** by the `MonoExpr` variant, per Principle 20
+(model invariants by representation) — `ast.rs:283–306` states this explicitly: `ParBind` =
+structured join, `LaunchContinue` = detached, deliberately kept as *distinct variants* precisely
+so "a structured-join spark cannot be mis-lowered as detached (or vice versa) by construction."
+The gate therefore **reads the lowering site**, it does not analyse. Concretely, the borrow is
+switched on at the three joined emission sites and is **never reachable** from the `launch.rs`
+`LaunchContinue` arm:
+  - The seam is a compiler flag on `FnCompiler` — a sibling of the existing `in_trace_body` /
+    `suppress_spark_gate` bools (`fn_compiler.rs:139,186`), e.g. `spark_capture_borrow: bool`,
+    set `true` only around the spark-thunk `compile_expr(&thunk_expr)` call in `apply.rs`
+    (the §4.4 lenient arm), the symmetric `let_if.rs` site, and the `par_bind.rs` branch-closure
+    build; restored (RAII/`saved`) after. `launch.rs` never sets it.
+  - Both the capture-store inc (`lambda.rs:156–160`) and `build_closure_drop_glue`'s heap-capture
+    dec (`lambda.rs:183–196`) read the flag: when set, **skip both** for every heap-typed capture.
+    The two skips are symmetric — exactly §5.5's borrowed-Var rule (skip inc at introduction *and*
+    dec at release). Skipping only one is the classic under/over-count bug; the design skips both,
+    coarsely, for the whole thunk.
+
+#### 5.5.2.2 Coarse retain — no per-capture escape decision (the Principle-8 line)
+
+Every capture of a joined spark **borrows** (rc-invisible). The **only** retain is on the spark's
+**return value**, and it flows through the **already-audited** machinery — the consuming convention
+(Decision 24, §3.1) at the join plus the §5.6 capture-return-inc rule — **not** a new path:
+
+- The apply-arg / `let` thunk body is, by the cost heuristic (`lenient-eval.md` §2.2), a
+  non-trivial `Apply`. Its result is a **fresh `rc=1` temporary** produced by the callee under
+  the consuming convention — it is NOT a borrowed capture, so it transfers ownership out of the
+  IVar into the joining frame with no special retain (`lenient-eval.md` §4.4 "RC / consuming
+  convention"). The single escape is this ordinary temporary.
+- In the degenerate case where a spark's return value *would* alias a borrowed capture (a bare
+  `(fn [] cap)` — which the cost heuristic already **excludes** from sparking, so it does not arise
+  in practice), the §5.6 capture-return-inc rule is the audited retain that balances it. This is
+  the one path S98 hardened (FIXME 0497); the design reuses it rather than inventing a per-capture
+  classifier.
+
+There is **NO per-capture escape decision.** The rule is: *structural join ⇒ borrow the capture;
+retain only the return value via the existing consuming/§5.6 path.* Any classification that inspects
+a capture's value-flow to prove it does-not-escape is **Phase-H escape analysis** and is OUT OF
+SCOPE (§5.5.2.5). The clean interim line is exactly: **structural join ⇒ borrow; anything needing
+non-escape analysis ⇒ Phase H.**
+
+#### 5.5.2.3 Why it is sound
+
+1. **Parent-outlives-spark (the structural guarantee).** For every eligible site the join happens
+   *inside* the capturing frame's dynamic extent (§5.5.2.1). The parent binding that a spark borrows
+   is therefore still owned by a live parent scope for the whole life of the spark; the parent's
+   `pop_scope_with_cleanup` dec (§5.1) runs **after** the join. The borrowed capture never needs its
+   own inc/dec because the parent's owning reference already covers the spark's read — identical
+   to how a match scrutinee's owning reference covers a `borrowed_vars` field binding (§5.5).
+
+2. **Immutability removes the §5.5 COW-mutate hazard.** §5.5 gates last-use on `borrowed_vars`
+   because a borrowed Vec that reached `is_last_use + rc==1` could be COW-mutated *in place*,
+   aliasing the still-live owner (the Sprint 61 regression). That hazard **cannot arise here**:
+   Cranelisp values are immutable and the spark only *reads* the borrowed cell. The borrow is
+   strictly **safer** than the match-arm case — being rc-invisible it *preserves* the parent's own
+   COW-last-use accounting (today's inc-on-capture inflates parent rc during the spark's life and
+   defeats parent-side mutate-in-place; the borrow removes that perturbation and may improve COW
+   hit-rate).
+
+3. **The single escape is already audited.** The only reference that crosses the join boundary
+   outward is the return value, and it rides the consuming convention + §5.6 — no new machinery,
+   no new invariant.
+
+#### 5.5.2.4 The failure mode if the gate is wrong (and how the coarse design precludes bug #2)
+
+This is a **"skip the inc" optimisation** — the exact class of S98 bug #2 (FIXME 0494:
+`find_var_type_in_expr` traversal-gap starved a required consuming-inc → heap corruption / UAF).
+State the failure mode plainly so the guard is legible:
+
+- **If a detached spark's capture is borrowed** (the gate wrongly admits `LaunchContinue`): the
+  parent frame's cleanup dec frees the cell while the still-running detached strand holds a
+  borrowed pointer into it → **use-after-free** on the strand's next read. This is why the gate
+  excludes `LaunchContinue` **structurally** (a distinct variant that never sets the borrow flag),
+  not by a predicate that could be mis-evaluated.
+- **If a capture escapes via a path other than the audited return value** (e.g. a bespoke analysis
+  wrongly classified a capture as non-escaping): the escaped reference outlives the parent's
+  cleanup dec → **use-after-free**. This is why the design forbids any per-capture escape traversal
+  and routes the *single* escape through the return-value path only.
+
+**How the coarse/structural design precludes the bug-#2 class.** Bug #2 was a *bespoke
+classification traversal with a blind spot* (`find_var_type_in_expr` missed a shape). The coarse
+design has **no bespoke traversal**: it borrows **all** captures of a joined spark uniformly (one
+flag, no per-capture inspection) and retains **only** the return value via already-audited paths
+(Decision 24 + §5.6). There is no value-flow classifier to have a blind spot in. The one decision
+that *is* made — joined vs detached — is read off the `MonoExpr` variant (Principle 20), not
+computed, so it has no traversal to under-cover. This is the structural mitigation: eliminate the
+class of bug by eliminating the class of code that produces it.
+
+#### 5.5.2.5 Phase-H forward-pointer (where the boundary wants to widen — DO NOT)
+
+The profitable-borrow set is *wider* than "structurally-joined captures": a capture the parent
+never reads again, or a value a whole-program escape analysis proves thread-local, could also be
+borrowed (or drop the atomic entirely). Widening "borrow" to "captures an analysis says don't
+escape" **IS Phase-H escape/thread-locality analysis** and is explicitly out of scope (Principle 8
+— no interim implementations against a moving target; the concurrency model that defines
+which-values-cross-threads has not settled). The borrowed/owned classification pinned here is
+**permanent** and survives Phase H unchanged; Phase H feeds a *sharper* signal into the *same*
+axis, widening the admit set (`effect-concurrency.md` §3.1). If `/dev` finds itself wanting a
+"does this capture escape?" traversal, STOP — that is the bug-#2-class risk returning (§5.5.2.4)
+and the arch boundary forbids it; file a Phase-H forward note, do not implement.
+
+#### 5.5.2.6 Test obligations (for `/qa` / `/dev`, Wave 1b)
+
+Per the per-fix discipline (`memory/feedback_unit_test_per_fix.md`) and the cross-skill defect
+protocol, Wave 1b lands with these guards (failing-first where they encode a defect class,
+co-landing with the `/dev` fix):
+
+- **(MANDATORY) UAF regression guard on the `LaunchContinue` exclusion.** A launched
+  (`LaunchContinue`) effect that captures a heap value MUST still **retain** it — the capture must
+  NOT be borrow-elided. This is the headline bug-#2-class guard: the detached strand outlives the
+  parent, so a borrowed capture there is a UAF. Backend-seam unit test — assert the
+  `LaunchContinue` lowering path emits the capture inc (and the drop-glue dec) with the borrow flag
+  *not* set; e2e — a launch-and-continue program capturing a heap value runs clean under `--run`
+  (and where applicable `--link`) with the borrow toggle **on** (the toggle must not reach the
+  detached path). This guard is un-ignored and permanent.
+- **Parallel ≡ serial correctness guard on a joined-spark capture.** A joined spark (apply-arg /
+  `let` / `ParBind`) that captures a heap value produces byte-identical results parallel vs serial.
+  The **F1–F4 fixtures already exist** (`tests/fixtures/s99/{f1_machinery,f2_contention,
+  f3_inverted_search,f4_sudoku}.cl`) and encode exactly this shape (shared-grid copy-per-guess,
+  captured `Grid`); the A/B is `default` (lenient/parallel) vs `CRANELISP_NO_LENIENT=1` (serial),
+  same result. Reference these; add a narrow heap-balance/`CRANELISP_RC_TRACE` guard that
+  `alloc == dealloc` across the joined-spark run (no borrow-elision leak or double-free).
+- **Inc-count reduction is directly observable (not a correctness gate, a witness).** The capture
+  inc elision is measurable via the `CRANELISP_RC_STATS` counters (Wave 0.1 substrate,
+  `crates/cranelisp-intrinsics/src/rc.rs:119`; `s99-measurement.md` records program-attributable
+  counts = raw − no-op baseline). **Prediction:** for the F2/F4 shape, the per-copy captures of the
+  shared grid (the 81-element Vec header + each retained `Cell` — the "~N RC bumps + fresh cells
+  per copy per node" volume claim, `f2_contention.cl` preamble) that today emit an
+  `rc_inc`+`rc_dec` pair **per capture per spark** become borrows: `rc_inc` should drop by
+  approximately (captures-per-spark × spark-count) — for F2 at LEAVES=8192 with the shared-grid
+  capture, on the order of the leaf count × the per-leaf shared-capture arity. The A/B toggle makes
+  this a direct before/after read, and it is the primary in-track witness that (b) is the term being
+  removed.
+
 ### 5.6 Capture-return inc
 
 **Rule (Slice 4, Sprint 61 Wave 4 — LANDED 2026-04-21).** When a lambda body's return expression resolves to a captured heap variable (i.e. `Expr::Var { name: cap }` where `cap ∈ captured_vars` and the capture's type is `AlwaysHeap` or `Mixed`), the body MUST emit `rc_inc` on the returned value before `return`.

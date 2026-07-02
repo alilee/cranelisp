@@ -482,6 +482,75 @@ The **create-gate is the structural change Sprint 92 Slice 1 (create-gate fix) l
 
 **Scope of the change.** The backend half is contained in `cranelisp-backend` (the sparkability sibling in `sparkability.rs`, the create-gate + lenient pre-pass in `apply.rs`/`compile_apply`, and the symmetric gate at the `let` site in `let_if.rs`). The IVar machinery (`cranelisp-intrinsics`) is reused unchanged except for the create-gate's budget primitive: `ivar_spark` reverts to always-spawn (§3.4), the in-`ivar_spark` budget is removed, and **one** new C-ABI symbol `cranelisp_spark_budget_try_reserve` is added (§3.6.1, §3.6.4). That new export is a `cranelisp-intrinsics` `public-api.txt` diff — routed to `/arch` per the baseline-diff discipline (§3.6.4); it is the *only* public-API change and is expected. The sparkability pass and the gate emission stay `pub(crate)` in backend (no backend `public-api.txt` diff).
 
+#### 4.4.1 Capture-by-borrow on the spark thunk (Sprint 99, FIXME 0461)
+
+> **Arch-ratified contract — the RC model is pinned in `ring2-rc.md` §5.5.2; this is the emission
+> half.** Wave-1b builds capture-by-borrow behind a toggle (env/feature; ablation study,
+> `SPRINT.md` §Wave 1) so the (b)-contention delta is A/B-measurable; the *contract* below is what
+> `/dev` implements regardless of the toggle's default. No `cranelisp-types` / public-API impact —
+> internal backend RC emission only.
+
+Phase-1 (Create + spark) compiles each sparkable argument's synthetic `(Fn [] T)` thunk via
+`this.compile_expr(&thunk_expr)` (`apply.rs:129–135`). That path runs `compile_lambda`, which for
+every heap-typed **capture** of the thunk emits `emit_capture_inc` at the capture-store
+(`control_flow/lambda.rs:159`) and a matching drop-glue dec in `build_closure_drop_glue`
+(`lambda.rs:175`). This inc/dec pair on **shared enclosing-scope cells** — under N workers, on the
+*same* parent bindings across all branches — is the (b) atomic-RC cache-line-bouncing term Wave 0
+found dominant (`tests/plan/s99-measurement.md`: F2 99% user / F4 ~70%).
+
+**The elision.** Because the apply-arg spark is **structurally joined** — Phase 2's barrier forces
+every sparked IVar *before* the call instruction (`apply.rs`, the §4.4 Phase-2 guard-rail), so the
+parent frame is provably live across the whole spark→join→call sequence — every capture of the
+thunk is a **borrow**, not a retain, per the `ring2-rc.md` §5.5.2 generalisation of the
+`borrowed_vars` discipline. Emission contract:
+
+1. **Set the borrow flag around the thunk compile only.** A `FnCompiler` bool (sibling of
+   `in_trace_body` / `suppress_spark_gate`, `fn_compiler.rs`), e.g. `spark_capture_borrow`, is set
+   `true` immediately before `this.compile_expr(&thunk_expr)` for a sparked argument and restored
+   after (save/restore, as `sparked_args` already does at `apply.rs:152,161`). The symmetric `let`
+   site (`let_if.rs`, §4.2 Phase 1) and the `ParBind` branch-closure build (`par_bind.rs`) set it
+   too. **`launch.rs`'s `LaunchContinue` arm never sets it** — the detached launch keeps the retain
+   (`ring2-rc.md` §5.5.2.1 exclusion; the join/detach signal is the `MonoExpr` variant itself,
+   Principle 20, read not analysed).
+
+2. **Skip both inc and dec, coarsely, for every heap capture of the thunk.** When the flag is set,
+   `lambda.rs`'s capture-store skips `emit_capture_inc` (`lambda.rs:156–160`) **and**
+   `build_closure_drop_glue` skips the heap-capture dec (`lambda.rs:183–196`) — symmetric, exactly
+   §5.5's borrowed-Var rule. Skipping only one is an under/over-count bug; skip **both** for the
+   whole thunk. No per-capture decision (`ring2-rc.md` §5.5.2.2 — the coarse Principle-8 line).
+
+3. **The single retain is the return value, via the unchanged path.** A sparked argument is a
+   non-trivial `Apply` (cost heuristic, §2.2), so the thunk's result is a **fresh `rc=1` temporary**
+   from the callee under the consuming convention — NOT a borrowed capture — and transfers ownership
+   out of the IVar into the joining call exactly as the existing "RC / consuming convention"
+   paragraph above states. **This paragraph is unchanged by the borrow:** the borrow elides the
+   *capture* incs on the thunk env, not the return-value transfer. The only escape rides Decision 24
+   + `ring2-rc.md` §5.6 (the S98-hardened path, FIXME 0497) — no new machinery.
+
+**Soundness + failure mode** are pinned in `ring2-rc.md` §5.5.2.3–.4: parent-outlives-spark makes
+the borrow sound; immutability removes the §5.5 COW hazard; a wrong gate (borrowing a detached
+capture, or an escape via any path but the audited return value) is a UAF of the S98-bug-#2 class,
+structurally precluded here because the design borrows **all** captures uniformly (one flag, no
+bespoke escape traversal with blind spots) and retains **only** the return value via already-audited
+paths. **Do not** widen "borrow" to a value-flow non-escape analysis — that is Phase H
+(`ring2-rc.md` §5.5.2.5), out of scope.
+
+**Carve-out — the §4.5 dependent-thunk `§ivar_a` captures are NOT borrows.** The borrow flag
+governs captures of **enclosing-scope owned parent bindings** taken by the *standard*
+`compile_lambda` capture-store path. It MUST NOT elide the synthetic `§ivar_a` IVar-pointer captures
+that a **dependent** `let` spark takes (§4.5), which are built by the *manual* par_bind-style inner
+fn and whose inc is a load-bearing **keepalive** (§4.5 "RC discipline for the captured IVar
+pointer": the inc is what keeps `ivar_a` alive until the dependent thunk forces it; eliding it frees
+the cell early → UAF). Two reasons the elision does not reach them, and `/dev` must keep both true:
+(i) the §4.5 dependency captures are emitted by the manual path, not the flag-reading capture-store
+loop; and (ii) an `ivar_a` cell is a *sibling spark's* cell, not a structurally-joined-parent-owned
+binding, so the §5.5.2 live-parent guarantee does not cover it. Scope the flag to the standard
+capture path only; when the dependent-thunk feature is in play, the manual `§ivar_a` inc/dec stays.
+
+**Test obligations** are enumerated in `ring2-rc.md` §5.5.2.6 (the mandatory `LaunchContinue`
+UAF-exclusion guard; the F1–F4 parallel≡serial correctness guard; the `CRANELISP_RC_STATS`
+inc-count-drop witness). Wave 1b co-lands them with the `/dev` fix.
+
 ### 4.5 Dependent-binding emission (S94, FIXME 0424 limit #2)
 
 `compile_let_lenient` (§4.2) grows to handle sparkable bindings whose thunks reference
