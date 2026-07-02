@@ -17,6 +17,24 @@
 // `--no-agent` wins on conflict) and are accepted no-ops in a feature-off
 // build. See `repl/spec.md §17.10` for the full normative enable+config scheme.
 
+// Sprint 99 Wave 0.2 — thread-caching global allocator (parallelism-perf
+// measurement pre-wave). Feature-gated + OFF by default: with the feature
+// absent this entire item does not exist, NO allocator static is emitted, and
+// the default system allocator is used — byte-identical to a build without this
+// change (arch ruling 4 + R2, `sprints/SPRINT.md` Wave 0). `#[global_allocator]`
+// MUST bind at the binary root, which is this crate (`[[bin]] cranelisp`,
+// path = "src/main.rs"); the `--run` JIT path the Wave-0.3 harness measures
+// executes entirely in-process here. (`cranelisp-exe-bundle` is a `staticlib`
+// library crate, not a binary root, so it is intentionally NOT touched.)
+//
+// The harness builds this variant with:
+//     cargo build --release --features thread-caching-alloc
+// or runs it directly with:
+//     cargo run --release --features thread-caching-alloc -- --run <fixture>
+#[cfg(feature = "thread-caching-alloc")]
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;

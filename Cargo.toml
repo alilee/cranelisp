@@ -88,6 +88,18 @@ features = ["derive"]
 # the accessor is purely additive (Principle 8 — no interim scaffolding).
 [features]
 bench = []
+# Sprint 99 Wave 0.2 (parallelism-perf measurement pre-wave): thread-caching
+# global allocator. OFF by default (`default = []`) — the `#[global_allocator]`
+# static in `src/main.rs` is entirely `#[cfg(feature = "thread-caching-alloc")]`,
+# so a default build emits NO allocator static and uses the system allocator
+# byte-identical to before. Pulls in the optional `mimalloc` crate ONLY when the
+# feature is on. Serves two purposes per arch ruling 4 + R2: (1) the Wave-0.3
+# harness measures system-allocator vs thread-caching-allocator to confirm/deny
+# the "(a) allocator-lock contention" hypothesis; (2) it doubles as the first-line
+# (a) cure. Harness builds the thread-caching variant with:
+#     cargo build --release --features thread-caching-alloc
+# (or `cargo run --release --features thread-caching-alloc -- --run <fixture>`).
+thread-caching-alloc = ["dep:mimalloc"]
 # Single-ABI + single-trampoline cutover (S96, `design/arch/platform-interface.md`
 # §6.8.0a): the `concurrency` / `concurrency-runtime` passthroughs are RETIRED —
 # the host reactor + the unified-ABI loader path are now UNCONDITIONAL in every
@@ -140,6 +152,18 @@ features = ["rt", "macros"]
 # default build's dependency surface is unchanged.
 [dependencies.serde_json]
 version = "1"
+optional = true
+
+# Sprint 99 Wave 0.2: the thread-caching global allocator (feature
+# `thread-caching-alloc`, above). `mimalloc` (Microsoft's mimalloc, wrapped by
+# the well-maintained `mimalloc` crate) is chosen over `tikv-jemallocator`
+# because it is the simplest to wire (`static G: MiMalloc = MiMalloc;` — no
+# `_unprefixed` symbol dance), builds mimalloc from vendored C via `cc` with no
+# system dependency, and is broadly used as a drop-in `#[global_allocator]`.
+# Optional + gated so the default dependency surface is unchanged (feature-off
+# it is never compiled).
+[dependencies.mimalloc]
+version = "0.1"
 optional = true
 
 [[bin]]
