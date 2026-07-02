@@ -102,9 +102,10 @@ parallelism, AND sparking must not drive shared-substrate contention (the global
 allocator lock + atomic RC, Decision 13) past the point where the contention cost exceeds
 the parallel-compute gain. The floor holds **unconditionally for compute-bound sparks**
 (allocation-light, RC-light branches); it is **contention-bounded — not yet guaranteed —
-for allocation-/RC-heavy sparks** until the contention-aware gate (§3.1) lands. The
-earlier unqualified "never slower than sequential" wording over-stated the guarantee; see
-§3.1 for the scope correction and the path back.
+for allocation-/RC-heavy sparks** until **Phase H** (the S99 ablation confirmed no
+pre-Phase-H substrate cure restores it — §3.1). The earlier unqualified "never slower than
+sequential" wording over-stated the guarantee; see §3.1 for the scope correction and the
+measured settlement.
 
 - **Web is the reference / lead workload.** The model is a natural fit (independent
   requests, per-connection tokens, I/O-bound). The §10 server example is the worked
@@ -207,47 +208,65 @@ unified-budget / backpressure slice (FIXME 0442). The **structural cure** is **P
 scoped to *spark-machinery* overhead, not per-branch user contention) is filed as FIXME
 `target: /backend` (0459).
 
-**S99 correction — the two contention terms have distinct in-track cures; RC-traffic is
-not only-Phase-H.** The paragraphs above route the *whole* of contention's structural cure
-to Phase H. That is right for the **allocator-lock** term (a) only insofar as the gate must
-*decline to spark* alloc-heavy branches; but it under-states what is reachable in-track for
-the **atomic-RC-bouncing** term (b). Contention decomposes into two serializing resources
-(a) global allocator lock + (b) atomic-RC cache-line bouncing, and each has a *different*
-in-track lever, both survives-Phase-H:
+**S99 settlement — the four-spike ablation resolved the pre-Phase-H hypothesis: the floor
+is NOT restorable in-track for alloc/RC-heavy parallel workloads.** The Sprint-99 close-out
+ran a falsification-first ablation (fixtures F1 machinery / F2 clean contention / F3 inverted
+search / F4 real Sudoku; `tests/plan/s99-measurement.md` §1–§10, on the **release** backend)
+to decide whether the two contention terms (a) allocator-lock + (b) atomic-RC cache-line
+bouncing could be cured before Phase H. The S94 framing above (contention splits (a)/(b); the
+(b) in-track cure is capture-by-borrow across structured fork-join) was a *hypothesis*; the
+ablation **measured** it and settled the question against an in-track cure. Four results are
+now on record:
 
-- **(a) allocator-lock** — a **thread-caching global allocator** swap (`#[global_allocator]`
-  in the binary surface, feature-gated, byte-identical-off) is a near-free, memory-model-
-  orthogonal cure that Phase H's region allocator later subsumes. It is also the cleanest
-  Wave-0 probe: sys-time collapse under the swap *confirms* (a). Note the /port ladder is
-  **sys-time-dominated**, which is a prior toward (a) (allocator syscalls: mmap/munmap/
-  futex) over (b) (atomic-RC bouncing manifests as inflated *user* time + IPC stall) — the
-  "contention ≈1.4×" figure is a guess in tension with the 10× sys-dominated raw number and
-  is held loosely pending Wave 0.
+- **The R1 prior was inverted — measure contention on release, not debug.** R1 read the /port
+  ladder's **debug** sys-dominance as a prior toward **(a) allocator-lock** as the larger term.
+  On **release** the sys-dominance did **not survive**: contention is (b)-dominated — F2's
+  N-worker contention delta is **99% user / 1% sys**, F4's **~70% user / ~30% sys**
+  (`s99-measurement.md` §4 isolation 3). The user/sys *method* was right; the debug *numbers*
+  misled the attribution. **Durable lesson: attribute contention on the release tier — a
+  debug build's allocator-syscall (sys) overhead masks the atomic-RC (user) cache-line
+  bouncing that dominates optimised code.**
 
-- **(b) atomic-RC bouncing** — **capture-by-borrow across structured fork-join** removes the
-  RC *operations entirely* (not merely makes them non-atomic, which is all Phase-H thread-
-  local RC would do): a rayon spark's capture of an enclosing-scope binding is a **borrow**,
-  not a retain, because structured join proves the parent frame outlives every spark. This
-  is a **generalisation of the existing `borrowed_vars` discipline** (`ring2-rc.md` §5.5) to
-  a new binding site, NOT a new RC discipline — so it survives Phase H (the borrowed/owned
-  classification is permanent; Phase H feeds a *sharper* escape signal into the same axis).
-  It is a **Wave-0-gated candidate**, funded iff the decision table lands on "(b) dominant".
-  Its soundness boundary is pinned (FIXME 0461, `target: /design`) and is load-bearing
-  precisely because it is a "skip the inc" optimisation of the S98-bug-#2 (FIXME 0494) kind:
-  (1) admissible **only** for a *structurally-joined* spark (rayon fork-join / `Par` /
-  apply-arg create-gate), **never** a detached `LaunchContinue` (fire-and-forget captures
-  MUST retain — the join/detach discriminator § 8.1 already carries the signal); (2)
-  **coarse only** — the single retain is on the spark's return value, flowing through the
-  already-audited consuming convention (Decision 24) + §5.6 capture-return-inc, with **no
-  per-capture escape decision** (per-value non-escape analysis is Phase-H escape analysis,
-  out of scope — the clean line is *structural join ⇒ borrow; needs non-escape analysis ⇒
-  Phase H*); (3) read-only (immutable values → no COW-aliasing hazard; the borrow is
-  rc-invisible, so it *preserves* owner-side COW-last-use accounting rather than perturbing
-  it — strictly safer than the §5.5 match-arm case).
+- **No pre-Phase-H substrate lever restores the floor.** Three independent in-track cures were
+  each built behind a toggle and re-benchmarked; each moves the dominant (b) term only
+  single-digit percent on the clean F2 probe (`s99-measurement.md` §8–§10):
+  - **capture-by-borrow (`CRANELISP_CAPTURE_BORROW`): ~0%.** The mechanism is correct (with it
+    on, parallel `rc_inc` drops to *exactly* the serial count) but wrong-scoped: the incs it
+    elides are the fork-join spark captures — **hundreds** (create-gate caps spark count far
+    below leaf count; capture-arity ~1), not the millions. The dominant (b) traffic is the
+    **in-leaf vec-COW leaf-refcount volume** (~81 atomic bumps per 81-cell grid COW-copy ×
+    copies × leaves ≈ 170M), *inside* the computation, which no capture rule touches.
+  - **saturation gate (`CRANELISP_SATURATION_GATE`): ~9%.** Caps concurrent sparks
+    `4×threads → threads`, confining only *overflow* subtrees to one thread; the top ~`threads`
+    branches still COW-copy + bump shared ancestor cells. Real, tight-spread, but marginal.
+  - **mimalloc (`--features thread-caching-alloc`): user-neutral-to-worse** on the clean probe.
+  After the best combined stack (mimalloc + saturation gate) F2 parallel is still **2.3× slower**
+  than serial and F4 **6–15× slower** (`s99-measurement.md` §10.3). The removable term is the
+  vec-COW leaf-refcount volume, curable only by **owned-copy mutate-in-place / last-use /
+  Perceus reuse / non-atomic thread-local RC — all Phase-H memory-model work** (backend-doc
+  contract: `design/backend/ring2-rc.md` §5.5.2.7). This is a §5.5 last-use *extension*, NOT a
+  widening of the §5.5.2 spark-capture borrow.
 
-Both (a) and (b) are **rayon-side CPU-spark increments** (§7 de-risking), independent of the
-reactor slices; neither pulls the Phase-H memory model forward (Principle 8): each is shaped
-to be *subsumed-and-widened* by Phase H, not thrown away by it.
+- **(a) and (b) are COUPLED — an allocator cure alone can be net-negative.** Removing the
+  allocator kernel-lock (sys↓) lets threads run concurrently and bounce the shared-cell
+  atomic-RC cache lines **more** (user↑): on fixed-work F2 mimalloc's user-side alloc-throughput
+  win dominates (net user↓), but on the deep/varied-alloc F4 the freed concurrency feeds (b)
+  and user **worsens** (`s99-measurement.md` §10.1). The two contention terms are not
+  independent, so **the RC/memory work and any allocator work must be co-designed for Phase H,
+  not independently optimised** — an (a)-only cure trades allocator-lock sys for extra (b)
+  user-bouncing.
+
+- **Phase-H sequencing is now empirically confirmed, not merely conjectured (Principle 8
+  vindicated by measurement).** The S94 floor-scope ruling said Phase H is the structural cure
+  and the sequencing edge is "reinforced, not pulled forward." S99 upgrades that: the in-track
+  path back was **attempted and measured insufficient** — the (b) cure is *confirmed* Phase-H,
+  not conjectured. Principle 8 refused to fund an interim contention cure against the unsettled
+  Phase-H memory model, and the ablation proved the interim cures cannot clear the bar without
+  the structural work. The three cures land as **correct, byte-identical-off, Phase-H-durable
+  opt-in substrate** (the borrowed/owned classification and the saturation gate both survive
+  Phase H and feed sharper signals into it); none flips default-on for a performance reason.
+  The ablation report §8–§10 is the durable record of *why* three in-track cures were tried
+  and set aside.
 
 ## 4. The inferred half — how concurrency is extracted
 
