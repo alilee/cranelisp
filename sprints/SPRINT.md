@@ -87,8 +87,9 @@ Candidate cures, each pre-vetted against the survives-Phase-H + substrate-not-ex
 
 | FIXME | Target skill | Status | Notes |
 |---|---|---|---|
-| 0459 | /backend | open | Mechanism waves — saturation gate + floor-claim scoping; funded per Wave 0. **Now the leading in-scope (b) lever** (1b capture-by-borrow missed) — does bounding concurrency reduce shared-cell cache-line bouncing? |
-| 0462 | /design | open (filed 1b) | **Re-diagnosis:** §5.5.2.6 volume *prediction* refuted (actual rc_inc drop ≈ budget-bounded hundreds, not leaf-scaled); soundness content §5.5.2.1–.5 + guards STAND. Re-point (b)-cure funding at the **vec-COW leaf-refcount term** (owned-copy mutate-in-place/last-use = Perceus/Phase-H, and/or the gate). |
+| 0459 | /backend | **substance delivered → defer remainder to Phase-H** | Contention-gate ask delivered as the opt-in **saturation gate** (1c); floor-claim **scoped** (lenient-eval §2.6.2/§3.6.3, `9fe0955`). Remainder (default-on + a gate that actually *restores* the floor) = the Phase-H (b)-cure (ring2-rc §5.5.2.7). `/backend` to set `status: deferred → Phase-H` (only the target skill may). |
+| 0461 | /design | **RESOLVED + deleted** (`02f519b`) | Capture-by-borrow contract satisfied; outcome + ParBind soundness caveat recorded in ring2-rc §5.5.2. |
+| 0462 | /design | **RESOLVED + deleted** (`02f519b`) | Volume prediction refuted; re-diagnosis → ring2-rc §5.5.2.6 + the Phase-H (b)-cure forward item §5.5.2.7. |
 | 0408 | /port | open (narrowed) | Exemplar-as-witness (perf half); nested-ADT, idiomatic |
 | 0416 | /arch | parked | NOT the lever — keep nested ADTs |
 | 0430 | /design | deferred | off-track (docstring regen), unchanged |
