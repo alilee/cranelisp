@@ -394,3 +394,171 @@ change *where* the ops run (thread-local vs bouncing).
   floor-restoration/honesty argument, not the (b)-cure magnitude.
 - Raw ablation: 7-rep min/med/max above; `scratchpad/ablation_1c.py` (mirrors
   `s99_measure.py` + a `CRANELISP_SATURATION_GATE` axis + per-rep spread).
+
+---
+
+## 10. Wave 1d — mimalloc (a)-cure benchmark + combined shippable stack (the deliverable)
+
+**Author:** `/qa` · **Date:** 2026-07-02 · **Status:** Wave-1d measurement — benchmark
+the already-built mimalloc `#[global_allocator]` (Wave 0.2, `--features
+thread-caching-alloc`) PROPERLY (Wave 0's "F4 sys 27→1s" was one cherry-picked
+best run) and recommend adoption posture. **Benchmark-only — no production source
+change.** Two release binaries: system (`cargo build --release`) vs mimalloc
+(`… --features thread-caching-alloc`); the saturation gate composes with either
+(runtime env, byte-identical-off, compiled into both). Canonical `cargo nextest
+run` re-verified **1811 pass / 1 skip / 0 fail** (unchanged — 1d adds only a
+non-compiled harness `tests/perf/s99_measure_1d.py`). `LEAVES=8192 COPIES=256`,
+10 procs, `/usr/bin/time`. **F1–F3 fixed-work: 7 reps. F4-hard variable-work:
+7 reps in the matrix + a dedicated 11-rep per-rep sweep (below) because F4's
+speculative-backtracking search path makes even sys-time work-variable.**
+
+> **Discipline note (`memory/feedback_verify_fix_not_symptom_absence`):** F4-hard
+> wall/user/sys are ALL search-path-variable (each run backtracks a different
+> amount → different total work), so *no* F4 metric is variance-immune — the
+> report's "lead with sys" holds only for the **fixed-work** probes (F1–F3).
+> Accordingly this section leads with **F2 (clean, fixed-work)** and treats every
+> F4 number as a **distribution**, never a single median. The Wave-0 "27→1s (23×)"
+> is confirmed to have been a **cherry-picked best-run pair** — see §10.1.
+
+### 10.1 The clean (a) recovery — system vs mimalloc, N-worker
+
+**F1–F3 (fixed-work, 7-rep min/med/max):**
+
+| fixture | metric | system N-worker | mimalloc N-worker | mimalloc effect |
+|---|---|---|---|---|
+| F1 machinery | wall/user/sys | 0.02 / 0.04 / 0.00 | 0.02 / 0.04 / 0.00 | none (no alloc volume) |
+| **F2 contention** (clean probe) | wall | 2.05 / **2.11** / 2.20 | 1.69 / **1.76** / 1.81 | **−17%** |
+| F2 | user | 17.62 / **18.16** / 19.00 | 14.18 / **14.81** / 15.31 | **−18% (non-overlapping)** |
+| F2 | **sys** | 0.45 / **0.46** / 0.50 | 0.57 / **0.59** / 0.65 | **+28% (WORSE)** |
+| F3 inv-search | wall/user/sys | 2.13 / 18.41 / 0.46 | 1.66 / 13.90 / 0.59 | −22% wall / −24% user / +sys |
+
+**The clean-probe headline overturns the Wave-0 framing.** On F2 (identical total
+work serial vs parallel, fixed-size allocation) mimalloc's entire win is
+**user-time** (−18%, tight and non-overlapping) — and it **slightly WORSENS sys**
+(+28%). **There is no (a) allocator-lock *sys* term on the fixed-work probe at all**
+(F2 sys is ~0.5s of an 18s-user / 2.1s-wall run either way). mimalloc helps F2 by
+making the *user-mode* alloc path cheaper (thread-local caches cut alloc CPU) — a
+per-thread-throughput win any modern allocator gives, **not** a lock-contention
+(sys) collapse. This is a materially different mechanism than "collapse sys" — and
+it is modest (~18%).
+
+**F4-hard (variable-work) — dedicated 11-rep per-rep sweep, N-worker:**
+
+| metric | system (med / min / max) | mimalloc (med / min / max) | median ratio |
+|---|---|---|---|
+| wall | **13.94** / 3.83 / 23.98 | **5.40** / 3.34 / 16.22 | 2.6× faster |
+| user | **40.81** / 22.03 / 57.84 | **43.27** / 26.35 / **98.92** | 0.94× (mimalloc WORSE) |
+| **sys** | **17.72** / 3.17 / 32.30 | **2.64** / 1.10 / **12.26** | **6.7× lower** |
+| total CPU (user+sys) | 58.9 | 45.4 | 1.30× lower |
+
+**F4 findings (all read as distributions):**
+
+1. **The (a) sys term is REAL and large on F4, and mimalloc addresses it — but
+   ~6.7× at the median, not 23×.** mimalloc's *entire* sys distribution
+   (1.10–12.26) sits below system's *median* (17.72); the reduction is the most
+   directionally-reliable F4 signal. **The Wave-0 "sys 27.3→1.2 (23×)" is confirmed
+   a cherry-picked best-run pair** — the honest robust (a) sys recovery is **~6.7×
+   median**, with single-rep pairs able to *look* like ~20× (system 23.01 vs
+   mimalloc 1.10) only by matching a system-unlucky rep to a mimalloc-lucky one.
+2. **mimalloc does NOT help user-time on F4 — it makes it WORSE (median 40.8→43.3,
+   tail 57.8→98.9).** Combined with F2's user-*win*, this exposes a **coupling
+   between (a) and (b): removing the allocator serialization (sys↓) lets threads
+   run concurrently and bounce the shared-cell atomic-RC cache lines MORE (user↑).**
+   mimalloc trades (a) kernel-lock sys for extra (b) user cache-bouncing. On the
+   fixed-work F2 the alloc pattern is uniform so the user-side alloc-throughput win
+   dominates (net user↓); on the deep/varied-alloc F4 the freed-up concurrency
+   feeds (b) (net user↑). This coupling is why F4 *wall* improves far less than the
+   6.7× sys reduction implies.
+3. **Net F4 median: wall 2.6× faster, total-CPU 1.30× lower — a real but
+   variance-obscured win** (wall spreads overlap: system min 3.83 < mimalloc median
+   5.40). "mimalloc collapses F4" is an overstatement; "mimalloc cuts F4 kernel-lock
+   sys ~6.7× and nets a ~2.6× median wall improvement, while shifting some cost into
+   (b) user-bouncing" is the honest claim.
+
+**Answer to "sys-only or also user?"** Allocator-dependent: on fixed-work (F2)
+mimalloc's win is **user-only** (and sys slightly worse); on varied/deep-alloc (F4)
+it is **sys-only** (6.7× down) while user gets **worse** via the (a)/(b) coupling.
+There is no regime where mimalloc helps both.
+
+### 10.2 The combined shippable stack — mimalloc + saturation gate (0459)
+
+Baseline (system alloc, default create-gate) vs **mimalloc + `CRANELISP_SATURATION_GATE=1`**, N-worker, 7-rep min/med/max:
+
+| fixture | stack | wall | user | sys |
+|---|---|---|---|---|
+| **F2** | system, no-gate | 2.05 / **2.11** / 2.20 | 17.62 / **18.16** / 19.00 | 0.45 / 0.46 / 0.50 |
+| F2 | **mimalloc + gate** | 1.61 / **1.68** / 1.71 | 13.49 / **14.01** / 14.20 | 0.58 / 0.61 / 0.65 |
+| **F4-hard** | system, no-gate | 6.20 / 9.70 / 20.12 | 27.55 / 34.57 / 52.23 | 6.96 / 11.83 / 26.38 |
+| F4-hard | mimalloc + gate | 4.87 / 12.80 / 23.52 | 34.28 / 48.53 / 69.03 | 4.36 / 13.90 / 27.55 |
+
+- **F2 (honest combined recovery):** mimalloc+gate cuts wall **2.11→1.68 (−20%)**
+  and user **18.16→14.01 (−23%)**. Decomposed: mimalloc ≈ −18% user, saturation
+  gate ≈ −5% more on top (consistent with 1c's ~9% standalone, partly subsumed once
+  mimalloc has sped the alloc path). **The honest "how much can we recover
+  pre-Phase-H" number on the clean probe is ~20–23%.**
+- **F4 combined-cell: variance too high to read** (this 7-rep cell drew hard: wall
+  9.70→12.80, sys 11.83→13.90 both worse; the dedicated 11-rep sweep §10.1 shows the
+  real mimalloc F4 direction is favourable at the median). **Per the discipline, do
+  NOT read the F4 combined medians as a result** — the reliable F4 (a) signal is the
+  isolated 11-rep sys distribution (6.7× median), not this variance-swamped cell.
+
+### 10.3 Where the floor lands — combined stack vs serial
+
+| fixture | serial (wall/user/sys med) | combined mimalloc+gate (med) | wall slowdown vs serial |
+|---|---|---|---|
+| **F2** (clean) | 0.74 / 0.36 / 0.31 | 1.68 / 14.01 / 0.61 | **2.3× SLOWER** |
+| F4-hard | 0.88 / 0.64 / 0.19 | 5.40–12.80 / 43–49 / 2.6–14 | **~6–15× SLOWER** |
+
+**The "never dramatically slower than serial" floor is NOT restored by the combined
+stack.** After mimalloc + saturation gate, F2 parallel is still **2.3× slower** than
+serial (was ~2.9× pre-cure) and F4 remains **6–15× slower**. The residual is exactly
+the **Phase-H (b) vec-COW leaf-refcount term** — the ~81-RC-bumps-per-copy in-leaf
+traffic (§3, §8) that neither in-scope cure touches: capture-by-borrow ≈0% (§8),
+saturation gate ≈9% (§9), mimalloc user-neutral-to-worse on the clean probe (§10.1).
+Three independent pre-Phase-H levers each move the dominant (b) term single-digit
+percent → **the (b) driver is confirmed genuinely Phase-H (Perceus / owned-copy
+mutate-in-place / non-atomic RC), consistent with FIXME 0462.** The floor-scoping
+doc correction (0459 doc half) stands: "near-serial per core" is a post-Phase-H
+target, not a pre-Phase-H one.
+
+### 10.4 Recommendation
+
+**mimalloc adoption posture — KEEP OPT-IN (`--features thread-caching-alloc`); do
+NOT flip default-on this sprint.** Rationale:
+
+1. **The honest win is modest and regime-dependent.** Clean fixed-work probe: ~18–23%
+   user/wall (user-side alloc throughput, not lock-collapse). Varied-work F4: a real
+   ~6.7×-median sys reduction, but **variance-obscured and partly given back as (b)
+   user-bouncing** via the (a)/(b) coupling (§10.1.2) — net median wall 2.6× with
+   fully-overlapping spreads.
+2. **It does not clear the floor.** The dominant residual is Phase-H (b) (§10.3);
+   mimalloc is a partial (a) cure for a term that is *secondary* on the clean probe
+   and coupled-to-(b) on the real workload.
+3. **Default-on carries a real cost:** a **vendored-C mimalloc build dependency
+   (via `cc`) on EVERY build**, plus cross-platform build-surface risk — paid by all
+   users to buy a modest, workload-dependent, Phase-H-subordinate win.
+4. **Posture:** land/keep it behind the feature flag, documented as the recommended
+   toggle for **allocation-heavy parallel** workloads (where the F4 sys term bites).
+   **Revisit default-on once Phase-H lands the (b) cure** — with (b) removed, the (a)
+   sys term becomes the visible bottleneck and mimalloc's value rises; the C-build-dep
+   trade then flips favourable. Byte-identical-off means the opt-in costs nothing to
+   carry until then.
+
+**Native alternatives (Ferroc / rimalloc) — NOT worth chasing this sprint;
+Phase-H-adjacent follow-on.** The *measured* (a) win does not justify pursuing a
+dependency-free rust-native allocator now: (i) on the clean probe there is no (a) sys
+term to cure (the win is user-side, which the system allocator nearly matches); (ii)
+on F4 the (a) sys win is real but variance-obscured, partly clawed back by (b), and
+subordinate to the Phase-H (b) residual that actually gates the floor; (iii) a native
+allocator's whole selling point over mimalloc is *dropping the C dep* — worth it only
+if we commit to default-on, which (per above) we should not until Phase-H. **Evaluate
+Ferroc/rimalloc alongside the Phase-H region-allocator work**, when (a) becomes the
+visible bottleneck and a default-on dep-free allocator earns its keep — not against
+today's modest, (b)-dominated numbers.
+
+### 10.5 Artifacts
+- `tests/perf/s99_measure_1d.py` — the 1d harness (NOT in canonical nextest): system
+  vs mimalloc × {serial, N-worker} + the mimalloc+gate combined stack + floor table,
+  per-rep min/med/max. `SYS_BIN=… MI_BIN=… python3 tests/perf/s99_measure_1d.py [reps]`.
+- Raw: §10.1/§10.2 7-rep matrix + the F4-hard 11-rep per-rep sys/user/wall sweep above.
+- Canonical suite re-verified **1811 pass / 1 skip / 0 fail** (1d adds no compiled test).
