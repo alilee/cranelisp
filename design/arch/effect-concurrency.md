@@ -207,6 +207,48 @@ unified-budget / backpressure slice (FIXME 0442). The **structural cure** is **P
 scoped to *spark-machinery* overhead, not per-branch user contention) is filed as FIXME
 `target: /backend` (0459).
 
+**S99 correction — the two contention terms have distinct in-track cures; RC-traffic is
+not only-Phase-H.** The paragraphs above route the *whole* of contention's structural cure
+to Phase H. That is right for the **allocator-lock** term (a) only insofar as the gate must
+*decline to spark* alloc-heavy branches; but it under-states what is reachable in-track for
+the **atomic-RC-bouncing** term (b). Contention decomposes into two serializing resources
+(a) global allocator lock + (b) atomic-RC cache-line bouncing, and each has a *different*
+in-track lever, both survives-Phase-H:
+
+- **(a) allocator-lock** — a **thread-caching global allocator** swap (`#[global_allocator]`
+  in the binary surface, feature-gated, byte-identical-off) is a near-free, memory-model-
+  orthogonal cure that Phase H's region allocator later subsumes. It is also the cleanest
+  Wave-0 probe: sys-time collapse under the swap *confirms* (a). Note the /port ladder is
+  **sys-time-dominated**, which is a prior toward (a) (allocator syscalls: mmap/munmap/
+  futex) over (b) (atomic-RC bouncing manifests as inflated *user* time + IPC stall) — the
+  "contention ≈1.4×" figure is a guess in tension with the 10× sys-dominated raw number and
+  is held loosely pending Wave 0.
+
+- **(b) atomic-RC bouncing** — **capture-by-borrow across structured fork-join** removes the
+  RC *operations entirely* (not merely makes them non-atomic, which is all Phase-H thread-
+  local RC would do): a rayon spark's capture of an enclosing-scope binding is a **borrow**,
+  not a retain, because structured join proves the parent frame outlives every spark. This
+  is a **generalisation of the existing `borrowed_vars` discipline** (`ring2-rc.md` §5.5) to
+  a new binding site, NOT a new RC discipline — so it survives Phase H (the borrowed/owned
+  classification is permanent; Phase H feeds a *sharper* escape signal into the same axis).
+  It is a **Wave-0-gated candidate**, funded iff the decision table lands on "(b) dominant".
+  Its soundness boundary is pinned (FIXME 0461, `target: /design`) and is load-bearing
+  precisely because it is a "skip the inc" optimisation of the S98-bug-#2 (FIXME 0494) kind:
+  (1) admissible **only** for a *structurally-joined* spark (rayon fork-join / `Par` /
+  apply-arg create-gate), **never** a detached `LaunchContinue` (fire-and-forget captures
+  MUST retain — the join/detach discriminator § 8.1 already carries the signal); (2)
+  **coarse only** — the single retain is on the spark's return value, flowing through the
+  already-audited consuming convention (Decision 24) + §5.6 capture-return-inc, with **no
+  per-capture escape decision** (per-value non-escape analysis is Phase-H escape analysis,
+  out of scope — the clean line is *structural join ⇒ borrow; needs non-escape analysis ⇒
+  Phase H*); (3) read-only (immutable values → no COW-aliasing hazard; the borrow is
+  rc-invisible, so it *preserves* owner-side COW-last-use accounting rather than perturbing
+  it — strictly safer than the §5.5 match-arm case).
+
+Both (a) and (b) are **rayon-side CPU-spark increments** (§7 de-risking), independent of the
+reactor slices; neither pulls the Phase-H memory model forward (Principle 8): each is shaped
+to be *subsumed-and-widened* by Phase H, not thrown away by it.
+
 ## 4. The inferred half — how concurrency is extracted
 
 The pure program emits effects ordered **only by data dependencies**. The trampoline
