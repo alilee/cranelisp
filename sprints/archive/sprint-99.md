@@ -1,6 +1,6 @@
 # Sprint 99: Parallelism/memory-contention — measure-first, decompose the 10×
 
-**Status**: PHASE 7 CLOSE — **PROPOSED CLOSE, awaiting user approval to archive.** All phases complete: ablation (1a–1d) + close-out wave (knowledge recording, floor-scoping, `effect-concurrency.md §3.1` settlement, platform doc sweep, deferral FIXMEs) landed + committed. Suite **1811 pass / 1 skip / 0 fail**. See Outcome below. **On approval:** `git mv` to archive, action the ROADMAP line + the candidate Principle, update ROADMAP (S99 closed → S100 = the parallelism knot's Phase-H home, or user's next pick).
+**Status**: COMPLETE (closed 2026-07-02, user-approved). Ablation (1a–1d) + close-out wave landed + committed; suite **1811 pass / 1 skip / 0 fail**. **User close decisions:** approve close; **no Principle authored** (both candidates declined — the release-tier-attribution discipline lives as a §3.1 lesson, not a standing axiom); **next = S100 opens Phase H** (the measured home of the (b) atomic-RC / vec-COW cure). See Outcome below.
 
 _Prior status (ablation): Wave 0 complete; ran the three cures as an ablation (each toggle-gated, re-benchmarked); re-sequenced capture-by-borrow → gate → allocator-last; cancellation/short-circuit DEFERRED (keeps the deterministic benchmark). See the Wave-1 table + `tests/plan/s99-measurement.md` §8–§10._
 
