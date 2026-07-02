@@ -71,20 +71,70 @@ const RESOLVED: i64 = 2;
 /// scheduling choice only); only the allocation/concurrency profile differs.
 static IN_FLIGHT_SPARKS: AtomicIsize = AtomicIsize::new(0);
 
+/// The **saturation-shaped spark gate** toggle (`CRANELISP_SATURATION_GATE=1`,
+/// Sprint 99 Wave 1c measurement spike, FIXME 0459).
+///
+/// **OFF by default** — a measurement spike under ablation, not yet default-on.
+/// When unset the create-gate cap stays at the pre-S99 `4 × threads` static
+/// budget, so the emitted code AND the runtime reservation are **byte-identical**
+/// to before. When set, the cap drops to exactly `rayon::current_num_threads()`
+/// — a *saturation* policy rather than a generous static budget: a batch is
+/// granted (⇒ sparked) only while there is spare worker capacity right now
+/// (`in_flight < threads`); once the pool is saturated the reservation is
+/// rejected and the create-gate's **direct arm runs the branch INLINE** on the
+/// current thread (the existing correct sequential lowering). Bounding
+/// concurrent sparks at worker-count keeps the overflow subtree thread-local, so
+/// its in-leaf vec-COW cell refcounts are touched by one thread instead of
+/// bouncing across cores. The spark-vs-inline choice is a scheduling decision
+/// only — both arms produce byte-identical values — so correctness holds on and
+/// off by construction. Read once per process via `LazyLock`.
+static SATURATION_GATE: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("CRANELISP_SATURATION_GATE").is_ok_and(|v| v == "1")
+});
+
 /// The cap on [`IN_FLIGHT_SPARKS`]. Default `4 × rayon::current_num_threads()`
 /// (a small multiple of the pool width — enough slack for load imbalance while
 /// keeping live IVar/thunk memory and scheduler pressure `O(threads)`). The env
 /// override `CRANELISP_SPARK_BUDGET=N` sets it explicitly (style consistent with
 /// `CRANELISP_NO_LENIENT`); a non-parsing value falls back to the default; `=0`
 /// makes [`spark_budget_try_reserve`] always reject ⇒ every gate site takes the
-/// direct arm (≡ fully serial at the runtime layer). Read once per process via
-/// `LazyLock`.
+/// direct arm (≡ fully serial at the runtime layer). The
+/// `CRANELISP_SATURATION_GATE=1` toggle (with no explicit budget) tightens the
+/// default to exactly the worker count (see [`effective_spark_cap`] and
+/// [`SATURATION_GATE`]). Read once per process via `LazyLock`.
 static SPARK_BUDGET: LazyLock<usize> = LazyLock::new(|| {
-    std::env::var("CRANELISP_SPARK_BUDGET")
+    let explicit = std::env::var("CRANELISP_SPARK_BUDGET")
         .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or_else(|| 4 * rayon::current_num_threads())
+        .and_then(|v| v.parse::<usize>().ok());
+    effective_spark_cap(explicit, *SATURATION_GATE, rayon::current_num_threads())
 });
+
+/// Compute the in-flight-spark cap from the three inputs, kept pure and
+/// side-effect-free so the policy is unit-testable without touching the
+/// process-global `LazyLock`/env (Principle 5 — testability is structural).
+///
+/// Precedence:
+/// 1. an explicit `CRANELISP_SPARK_BUDGET=N` override always wins (a manual cap);
+/// 2. else the **saturation gate** caps at exactly `num_threads` — spark iff a
+///    worker is free right now, else inline the overflow (Wave 1c);
+/// 3. else the default `4 × num_threads` static budget (pre-S99 behaviour).
+fn effective_spark_cap(explicit: Option<usize>, saturation_gate: bool, num_threads: usize) -> usize {
+    if let Some(n) = explicit {
+        return n;
+    }
+    if saturation_gate {
+        return num_threads;
+    }
+    4 * num_threads
+}
+
+/// Whether a batch of `n` permits fits under `cap` given `cur` already in
+/// flight. `true` ⇒ spare capacity ⇒ grant (spark); `false` ⇒ saturated /
+/// over-budget ⇒ reject (the caller inlines the branch via the direct arm).
+/// All-or-nothing: a batch overflowing the cap by even 1 does not fit.
+fn budget_grants(cur: isize, n: isize, cap: isize) -> bool {
+    cur + n <= cap
+}
 
 /// RAII release of one [`IN_FLIGHT_SPARKS`] permit. Placed at the top of the
 /// spawned rayon closure so the permit reserved by the create-gate's
@@ -122,13 +172,13 @@ pub extern "C" fn spark_budget_try_reserve(n: i64) -> i64 {
     let cap = *SPARK_BUDGET as isize;
     let n = n as isize;
     // Fast reject (the common case under explosion): a single load, no RMW.
-    if IN_FLIGHT_SPARKS.load(Ordering::SeqCst) + n > cap {
+    if !budget_grants(IN_FLIGHT_SPARKS.load(Ordering::SeqCst), n, cap) {
         return 0;
     }
     // Commit the whole batch atomically (CAS loop) — all-or-nothing.
     loop {
         let cur = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
-        if cur + n > cap {
+        if !budget_grants(cur, n, cap) {
             return 0;
         }
         if IN_FLIGHT_SPARKS

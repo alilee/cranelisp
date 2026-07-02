@@ -158,6 +158,67 @@ fn s99_f2_capture_borrow_drops_rc_inc() {
     );
 }
 
+/// Assert the fixture runs clean under the **saturation-gate toggle**
+/// (`CRANELISP_SATURATION_GATE=1`, Sprint 99 Wave 1c, FIXME 0459) and that the
+/// gated parallel run agrees with the genuinely-serial run. The gate is a pure
+/// scheduling choice (spark iff spare worker capacity; else inline the branch via
+/// the create-gate's already-correct direct arm), so it MUST NOT change the
+/// result — a divergence (or a SIGNAL, caught by `run_with_env`) would be a
+/// codegen/scheduling defect, not a scheduling no-op.
+fn assert_saturation_gate_parallel_equals_serial(name: &str, src: &str) {
+    let (gate_code, gate_err) =
+        run_with_env(name, src, &[("CRANELISP_SATURATION_GATE", "1")]);
+    let (serial_code, _) = run_with_env(name, src, &[("CRANELISP_NO_LENIENT", "1")]);
+    assert!(
+        !gate_err.contains("error"),
+        "{name} saturation-gate run produced a compile/runtime error:\n{gate_err}"
+    );
+    assert_eq!(
+        gate_code, serial_code,
+        "{name}: saturation-gate parallel exit {gate_code} != serial exit \
+         {serial_code} — inlining a saturated branch must be result-equivalent to \
+         sparking it (scheduling-only; both arms produce identical values)"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §3.6 — the parallel≡serial + no-corruption
+//       guard for the saturation-shaped spark gate, toggle ON, on F1–F4. Inlining
+//       the overflow branch (direct arm) must be byte-identical to sparking it.
+#[test]
+fn s99_f1_saturation_gate_parallel_equals_serial() {
+    assert_saturation_gate_parallel_equals_serial(
+        "f1.cl",
+        include_str!("fixtures/s99/f1_machinery.cl"),
+    );
+}
+
+// spec: design/backend/lenient-eval.md §3.6
+#[test]
+fn s99_f2_saturation_gate_parallel_equals_serial() {
+    assert_saturation_gate_parallel_equals_serial(
+        "f2.cl",
+        include_str!("fixtures/s99/f2_contention.cl"),
+    );
+}
+
+// spec: design/backend/lenient-eval.md §3.6
+#[test]
+fn s99_f3_saturation_gate_parallel_equals_serial() {
+    assert_saturation_gate_parallel_equals_serial(
+        "f3.cl",
+        include_str!("fixtures/s99/f3_inverted_search.cl"),
+    );
+}
+
+// spec: design/backend/lenient-eval.md §3.6
+#[test]
+fn s99_f4_saturation_gate_parallel_equals_serial() {
+    assert_saturation_gate_parallel_equals_serial(
+        "f4.cl",
+        include_str!("fixtures/s99/f4_sudoku.cl"),
+    );
+}
+
 #[test]
 fn s99_f1_machinery_parallel_equals_serial() {
     assert_parallel_equals_serial("f1.cl", include_str!("fixtures/s99/f1_machinery.cl"));

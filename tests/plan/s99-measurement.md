@@ -298,3 +298,99 @@ concurrently bouncing those cell cache-lines. This finding is filed to `/design`
 `/sprint` (the §5.5.2.6 volume prediction needs correction; the b-cure funding
 should re-point at the leaf-copy RC term). Raw ablation: 5-rep medians above,
 `scratchpad/ablation.py` methodology (mirrors `s99_measure.py` + a CAPTURE_BORROW axis).
+
+---
+
+## 9. Wave 1c — saturation-gate ablation result (the deliverable)
+
+**Author:** `/dev`(backend) · **Date:** 2026-07-02 · **Status:** Wave-1c
+measurement spike — does a saturation-shaped spark gate cut the (b) atomic-RC
+cache-line bouncing by confining saturated subtrees to one thread?
+
+### Mechanism (minimal, reuses the existing correct inline path)
+
+The create-gate (`lenient-eval.md` §3.6) *already* emits the spark-vs-inline
+choice: `cranelisp_spark_budget_try_reserve(n)` → **granted ⇒ lenient arm
+(spark)**, **rejected ⇒ direct arm (the existing fully-sequential inline
+lowering)**. The saturation gate is therefore **not** new eval logic — it is a
+one-line **cap-policy** change on the *same* reservation. `CRANELISP_SATURATION_GATE=1`
+(`ivar.rs`, byte-identical-off) tightens the in-flight-spark cap from the default
+`4 × threads` static budget to **exactly `threads`**: a batch is granted only
+while a worker is free right now (`in_flight < threads`); once the pool is
+saturated the reservation is rejected and the branch runs **inline on the current
+thread** via the unchanged direct arm. Because the inline path is the pre-existing
+sequential lowering and both arms produce byte-identical values, correctness holds
+on/off by construction (no soundness/UAF surface — unlike 1b). The gate does **not**
+change the RC-op *count* (F2 rc_inc 169.90M both, F4 52.60M both); it can only
+change *where* the ops run (thread-local vs bouncing).
+
+### Numbers (N-worker, system alloc, 7 reps, per-rep spread shown)
+
+| fixture | config | wall (min/med/max) | user (min/med/max) |
+|---|---|---|---|
+| **F2** (clean probe) | 1-worker | 0.72 / 0.72 / 0.73 | 0.93 / 0.94 / 0.95 |
+| F2 | N-worker gate **OFF** | 1.98 / 2.10 / 2.24 | 17.11 / **18.13** / 19.46 |
+| F2 | N-worker gate **ON** | 1.91 / 1.95 / 2.01 | 16.27 / **16.52** / 17.22 |
+| F2 | N-worker ON+borrow | 1.91 / 1.98 / 2.01 | 16.35 / 16.76 / 17.14 |
+| **F4-hard** | 1-worker | 1.17 / 1.28 / 1.42 | 1.91 / 2.03 / 2.18 |
+| F4-hard | N-worker gate **OFF** | 3.72 / **6.05** / 17.81 | 21.96 / **28.17** / 43.78 |
+| F4-hard | N-worker gate **ON** | 3.31 / **15.83** / 21.25 | 16.74 / **32.43** / 37.89 |
+| F4-hard | N-worker ON+borrow | 2.78 / 15.58 / 26.02 | 15.92 / 34.72 / 43.27 |
+
+- **F2 (the honest, low-variance headline):** user-time contention delta
+  `(Nworker_OFF − 1worker) = 17.19s`; gate recovers `18.13 − 16.52 = 1.61s`
+  = **≈9% of the (b) contention**; wall 2.10→1.95 (**≈7%**). The per-rep spread is
+  **tight and consistently ordered** — ON's *max* user (17.22) sits **below** OFF's
+  *median* (18.13), and every ON rep beats the OFF median. This is a **real,
+  reproducible effect, not a false green** — but small.
+- **F4-hard: inconclusive — variance swamps the signal.** Median user swings the
+  *wrong* way (−4.26s, −16%), but the per-rep spread is enormous and fully
+  overlapping (wall OFF 3.72–17.81 vs ON 3.31–21.25; ON's *min* wall 3.31 actually
+  beats OFF's min 3.72). This is exactly the 1b F4 false-green trap: F4-hard
+  N-worker wall/user is dominated by speculative-backtracking scheduling, so the
+  medians are draws, **not** a gate effect. **Do not read F4-hard as either help or
+  harm.** (rc_inc unchanged ⇒ nothing algorithmic moved.)
+- **Gate × capture-borrow (1b) interaction:** ON+borrow ≈ ON on F2 (16.76 vs 16.52,
+  within noise) — no additive win, consistent with 1b recovering ~0% and the gate's
+  small win being orthogonal to the (already-negligible) spark-capture incs.
+
+### Verdict — the gate is a **real but marginal** (b) mitigation, NOT a cure; NOT a false-green.
+
+1. **Directionally correct and honest.** On the clean F2 probe the gate removes a
+   small, consistent slice (~9% user / ~7% wall) of the (b) cache-line bouncing by
+   confining the *overflow* (11th–40th) subtrees to their own thread. rc_inc is
+   unchanged, confirming the win is pure locality, exactly the hypothesised
+   mechanism — just small.
+2. **Why only ~9%.** Bounding concurrency from `4×threads` (40) to `threads` (10)
+   inlines only the *deep overflow* sparks; the **top ~10 concurrent branches still
+   run in parallel and still COW-copy + refcount-bump shared ancestor cells** — and
+   that steady-state cross-core sharing over 10 cores is the bulk of the 170M-bump
+   bouncing. Capping at N (vs 4N) barely changes it because the cores are saturated
+   either way. The gate throttles the *number* of bouncers at the margin; it cannot
+   touch the leaf-copy RC *volume* (which is what actually drives (b), per §8's
+   re-diagnosis).
+3. **This reinforces the FIXME-0462 conclusion → the dominant (b) is genuinely
+   Phase-H.** Neither in-scope scheduling/borrow cure moves the F2 (b) term more
+   than single-digit percent: 1b ≈0%, 1c ≈9%. The real lever is the **vec-COW
+   leaf-refcount volume itself** — owned-copy mutate-in-place / last-use / Perceus
+   reuse on the freshly-COW'd grid — which is Phase-H memory-model work, not
+   scheduling. The gate is worth keeping as a cheap, sound, Phase-H-durable
+   *complement* (it is honest scheduling hygiene and restores the never-much-slower
+   floor), but it is **not** a standalone (b) fix and does not clear the
+   near-serial-per-core bar on its own.
+
+### Disposition
+- Implementation: `CRANELISP_SATURATION_GATE=1` in `ivar.rs` (cap = worker-count),
+  OFF by default, byte-identical-off. Canonical `cargo nextest run`: **1811 pass /
+  1 skip / 0 fail** (pre-1c 1804 + 3 unit + 4 e2e = +7; no regressions).
+- Tests: unit — `ivar/tests.rs::{saturation_gate_effective_cap_policy,
+  saturation_gate_budget_grants_iff_spare_capacity,
+  saturation_gate_env_caps_spark_budget_at_worker_count}` (pure cap/grant policy +
+  env wiring); e2e — `s99_fixtures.rs::s99_f{1..4}_saturation_gate_parallel_equals_serial`
+  (result-equivalence + no-signal heap guard, toggle ON).
+- **Do NOT flip default-on for a performance reason** on this evidence (F2 ~9% is
+  small; F4 inconclusive). It is sound and cheap, so it may land opt-in; a
+  default-on decision is `/design`+`/review`'s at close, and would rest on the
+  floor-restoration/honesty argument, not the (b)-cure magnitude.
+- Raw ablation: 7-rep min/med/max above; `scratchpad/ablation_1c.py` (mirrors
+  `s99_measure.py` + a `CRANELISP_SATURATION_GATE` axis + per-rep spread).

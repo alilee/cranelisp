@@ -456,6 +456,84 @@ fn spark_budget_zero_try_reserve_always_rejects() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Saturation-shaped spark gate (Sprint 99 Wave 1c, FIXME 0459). The gate reuses
+// the create-gate reservation machinery verbatim — the only change is the CAP
+// policy: `CRANELISP_SATURATION_GATE=1` (with no explicit budget) tightens the
+// cap from the default 4×threads static budget to exactly the worker count, so a
+// batch is granted (⇒ sparked) only while a worker is free right now and the
+// overflow runs INLINE via the create-gate's direct arm. Both the cap policy
+// (`effective_spark_cap`) and the grant decision (`budget_grants`) are pure and
+// exercised directly here, independent of env/LazyLock (Principle 5).
+// ---------------------------------------------------------------------------
+
+// spec: design/backend/lenient-eval.md §3.6 — the saturation gate caps concurrent
+// sparks at the worker count (spark iff spare capacity), while an explicit budget
+// override still wins and the default stays the 4× static budget (byte-identical
+// off).
+#[test]
+fn saturation_gate_effective_cap_policy() {
+    // Gate OFF: the pre-S99 default is 4× the worker count (byte-identical off).
+    assert_eq!(effective_spark_cap(None, false, 1), 4, "off ⇒ 4×threads");
+    assert_eq!(effective_spark_cap(None, false, 8), 32, "off ⇒ 4×threads");
+
+    // Gate ON (no explicit budget): cap at exactly the worker count — the
+    // saturation policy (spark iff a worker is free; inline the overflow).
+    assert_eq!(effective_spark_cap(None, true, 1), 1, "saturation ⇒ 1×threads");
+    assert_eq!(effective_spark_cap(None, true, 8), 8, "saturation ⇒ 1×threads");
+
+    // An explicit `CRANELISP_SPARK_BUDGET` override always wins, gate or not —
+    // including the `=0` always-reject cap.
+    assert_eq!(effective_spark_cap(Some(3), true, 8), 3, "explicit override wins over gate");
+    assert_eq!(effective_spark_cap(Some(3), false, 8), 3, "explicit override wins by default");
+    assert_eq!(effective_spark_cap(Some(0), true, 8), 0, "explicit 0 wins (always-reject)");
+}
+
+// spec: design/backend/lenient-eval.md §3.6 — the grant decision is the
+// saturation test: grant (spark) iff the batch fits under the cap; else reject so
+// the caller inlines the overflow on the current thread. All-or-nothing for n>1.
+#[test]
+fn saturation_gate_budget_grants_iff_spare_capacity() {
+    // With the saturation cap == worker-count, model a 4-worker pool (cap=4).
+    let cap = 4;
+    // Spare capacity: fewer sparks in flight than workers ⇒ grant (spark).
+    assert!(budget_grants(0, 1, cap), "empty pool ⇒ spark");
+    assert!(budget_grants(3, 1, cap), "1 free worker ⇒ spark the last slot");
+    // Saturated: a full pool rejects ⇒ the caller inlines the branch.
+    assert!(!budget_grants(4, 1, cap), "saturated pool ⇒ inline (no spark)");
+    assert!(!budget_grants(5, 1, cap), "over-saturated ⇒ inline");
+    // All-or-nothing for a batch: 1 free slot cannot admit a 2-spark batch.
+    assert!(!budget_grants(3, 2, cap), "batch overflowing by 1 ⇒ inline wholesale");
+    assert!(budget_grants(2, 2, cap), "an exact-fit batch ⇒ spark");
+}
+
+// spec: design/backend/lenient-eval.md §3.6 — end-to-end env wiring:
+// `CRANELISP_SATURATION_GATE=1` (with no explicit budget) makes the process-global
+// `SPARK_BUDGET` cap resolve to exactly `rayon::current_num_threads()`. Relies on
+// nextest process-per-test isolation: the env var is set before `SPARK_BUDGET` is
+// first read in THIS fresh process.
+#[test]
+fn saturation_gate_env_caps_spark_budget_at_worker_count() {
+    // SAFETY: single-threaded at this point in the test, before any reserve reads
+    // the LazyLock; nextest isolates each test in its own process.
+    unsafe { std::env::set_var("CRANELISP_SATURATION_GATE", "1") };
+    assert_eq!(
+        *SPARK_BUDGET,
+        rayon::current_num_threads(),
+        "CRANELISP_SATURATION_GATE=1 must cap the spark budget at the worker count \
+         (fresh process precondition; no explicit CRANELISP_SPARK_BUDGET)"
+    );
+    // Sanity: with the cap == worker count, a full pool rejects (inline overflow).
+    let cap = *SPARK_BUDGET as isize;
+    IN_FLIGHT_SPARKS.store(cap, Ordering::SeqCst);
+    assert_eq!(
+        spark_budget_try_reserve(1),
+        0,
+        "at saturation (in_flight == workers) the gate rejects ⇒ inline"
+    );
+    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+}
+
 /// Build a panicking thunk carrying a custom message (for the dual-panic test).
 fn make_panicking_thunk_msg(msg: &'static str) -> i64 {
     // We bake the message pointer/len into two captures so one generic body
