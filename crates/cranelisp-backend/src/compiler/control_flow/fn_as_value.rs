@@ -81,15 +81,23 @@ where
     // --- Named function as value ---
 
     /// Check if a name is a known top-level function (eligible for wrapping).
+    ///
+    /// Resolves via [`resolve_is_callable_target`] (FIXME 0476: the
+    /// `is_callable_target()` stop predicate), so an inline-dispatched vec-query
+    /// primitive (`PrimitiveBody::Inline`, no GOT slot) is recognised as a known
+    /// function and wraps to a closure whose body inline-emits the op — the
+    /// former `resolve_got_target(..).is_some()` gate missed it once the trio
+    /// lost its slot. Byte-identical to the old gate for every slot-carrying name.
+    ///
+    /// [`resolve_is_callable_target`]: crate::compiler::resolve_is_callable_target
     pub(crate) fn is_known_function(&self, name: &Symbol) -> bool {
         self.ctx.func_ids.contains_key(name)
-            || crate::compiler::resolve_got_target(
+            || crate::compiler::resolve_is_callable_target(
                 self.ctx.symbol_tables,
                 self.ctx.module_aliases,
                 &self.ctx.current_module,
                 name,
             )
-            .is_some()
     }
 
     /// Wrap a named top-level function as a zero-capture closure.
@@ -439,17 +447,18 @@ where
         }
 
         // Vec query family (`vec-get`/`vec-set`/`vec-push`) as a first-class
-        // value: these primitives-table entries are name-resolution-only —
-        // allocated-but-NULL GOT slots (no extern body can exist: a single
-        // monomorphic body cannot know the element's heap category). The
-        // GOT-indirect fallback below would `call_indirect` through NULL →
-        // jump to 0 → SIGSEGV (S100 triage; ownership-codegen.md §12.7).
-        // Inline-emit the op into the wrapper instead — the
+        // value: these primitives-table entries are `PrimitiveBody::Inline` —
+        // inline-dispatched, no GOT slot by construction (S102 FIXME 0476: no
+        // extern body can exist, since a single monomorphic body cannot know
+        // the element's heap category, so callability is a *kind*, not a
+        // NULL-slot proxy). The GOT-indirect fallback below has no slot to
+        // dispatch through; inline-emit the op into the wrapper instead — the
         // `emit_adt_construct_into` precedent — using the per-site element
         // type plumbed from the value-use site. The resolver is
         // precedence-faithful (a user fn shadowing the name resolves first and
         // keeps the GOT path); `vec-len` is excluded (real extern shim,
-        // populated slot — the working control path).
+        // populated slot — the working control path). Re-keys off the inline
+        // kind (§13.2 B1-be — the S101 name-list retired).
         if let Some(canonical) = crate::compiler::resolve_vec_query_primitive(
             self.ctx.symbol_tables,
             self.ctx.module_aliases,

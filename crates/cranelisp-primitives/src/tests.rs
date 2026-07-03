@@ -60,16 +60,71 @@
     }
 
     #[test]
-    fn every_entry_carries_got_slot() {
+    fn every_entry_is_a_callable_target() {
+        // FIXME-0476 consumption (S102 CS-B1-be): the invariant is
+        // *callability*, not slot-presence. Every primitives-table entry is a
+        // dispatchable call target — either slot-dispatched (`Extern`) or
+        // inline-dispatched (`Inline`). Post-cure the vec trio carries
+        // `PrimitiveBody::Inline` with NO slot, so the old
+        // `callable_got_slot().is_some()` assertion no longer holds for every
+        // entry; `is_callable_target()` is the right predicate (it covers both
+        // arms). This is the exact stop-predicate the backend's resolution
+        // walks now use.
         for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
             let ModuleEntry::Def { .. } = entry else {
                 panic!("entry {name} should be a Def");
             };
             assert!(
-                entry.callable_got_slot().is_some(),
-                "entry {name} missing got_slot"
+                entry.is_callable_target(),
+                "entry {name} is not a callable target"
             );
         }
+    }
+
+    #[test]
+    fn vec_trio_is_inline_no_slot_and_vec_len_is_extern() {
+        // FIXME-0476 consumption (S102 CS-B1-be): the representation cure. The
+        // three inline-only vec ops carry `PrimitiveBody::Inline` and answer
+        // `callable_got_slot() == None` **by construction** — no
+        // allocated-but-NULL phantom slot is ever constructed (the third
+        // phantom-slot instance is now unrepresentable, Principle 20). `vec-len`
+        // is the sole `Extern` member: it has a real shim and a populated slot.
+        for name in ["vec-get", "vec-set", "vec-push"] {
+            let entry = PRIMITIVES_TABLE
+                .get(name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            let ModuleEntry::Def { kind, .. } = entry else {
+                panic!("entry {name} should be a Def");
+            };
+            assert!(
+                matches!(**kind, DefKind::Primitive { body: PrimitiveBody::Inline, .. }),
+                "entry {name} must be PrimitiveBody::Inline; got {kind:?}"
+            );
+            assert!(
+                entry.callable_got_slot().is_none(),
+                "inline {name} must carry NO got_slot (no phantom NULL slot)"
+            );
+            assert!(
+                entry.is_callable_target(),
+                "inline {name} must still be a callable target (name-resolution stop)"
+            );
+        }
+
+        let vec_len = PRIMITIVES_TABLE.get("vec-len").expect("missing vec-len");
+        let ModuleEntry::Def { kind, .. } = vec_len else {
+            panic!("vec-len should be a Def");
+        };
+        assert!(
+            matches!(**kind, DefKind::Primitive { body: PrimitiveBody::Extern { .. }, .. }),
+            "vec-len must be PrimitiveBody::Extern; got {kind:?}"
+        );
+        let slot = vec_len
+            .callable_got_slot()
+            .expect("vec-len must carry a populated got_slot");
+        assert!(
+            !PRIMITIVES_TABLE.got.load_slot(slot).is_null(),
+            "vec-len GOT slot must hold its extern shim address"
+        );
     }
 
     #[test]
@@ -103,8 +158,11 @@
         // slot must hold the matching fn pointer.
         let shims = extern_shims();
         for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
+            // Inline-dispatched primitives (the vec trio, FIXME 0476) carry no
+            // slot and no shim by construction — skip them; only slot-carrying
+            // Extern entries have a GOT address to check.
             let Some(slot) = entry.callable_got_slot() else {
-                panic!("entry {name} should be a Def with got_slot");
+                continue;
             };
             let stored = PRIMITIVES_TABLE.got.load_slot(slot);
             if let Some(expected) = shims.get(name.as_ref()) {
@@ -144,8 +202,11 @@
         // param_names match the spec contract.
         let actual: Vec<&str> = param_names.iter().map(|p| p.as_ref()).collect();
         assert_eq!(actual.as_slice(), expected_params, "param_names mismatch for {name}");
-        // got_slot is allocated (now read through the kind via callable_got_slot).
-        assert!(entry.callable_got_slot().is_some(), "entry {name} missing got_slot");
+        // The entry is a dispatchable callable target — either slot-dispatched
+        // (`Extern`) or inline-dispatched (`Inline`, the vec trio; FIXME 0476).
+        // `is_callable_target()` covers both arms (the old
+        // `callable_got_slot().is_some()` excluded the slot-less inline trio).
+        assert!(entry.is_callable_target(), "entry {name} not a callable target");
         // kind is the primitive discriminator.
         assert!(matches!(**kind, DefKind::Primitive { .. }), "entry {name} kind != Primitive");
         // jit_name IS the symbol-table key (S69 Submission 36) — pinned by the

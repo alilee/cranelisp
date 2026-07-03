@@ -5439,26 +5439,27 @@ fn decision_23_got_data_symbol_not_in_bss() {
 
 // =========================================================================
 // S101 item 1 — vec query family (vec-get/vec-set/vec-push) as first-class
-// values must inline-emit in the generated wrapper, never call through the
-// primitives table's allocated-but-NULL GOT slots.
-// (`design/backend/ownership-codegen.md` §12.7; e2e guards:
+// values must inline-emit in the generated wrapper, never call through a GOT
+// slot. Post S102 FIXME-0476 (change-set B1-be), these entries are
+// `PrimitiveBody::Inline` — no slot at all, so "resolvable but not
+// slot-callable" is a KIND, not an allocated-but-NULL slot (Principle 20).
+// (`design/backend/ownership-codegen.md` §12.7/§13.2; e2e guards:
 // `tests/vec_query_value_use.rs`.)
 // =========================================================================
 
-/// Insert a `primitives`-style vec-query entry: a `DefKind::Primitive` Def
-/// with an ALLOCATED but **NULL** GOT slot — name-resolution-only, exactly as
-/// `cranelisp-primitives::insert_vec_query_entries` builds them (no extern
-/// body can exist because a single monomorphic body cannot know the element's
-/// heap category). Backend must never `call_indirect` through this slot.
-fn insert_null_slot_vec_query_entry(
+/// Insert a `primitives`-style vec-query entry: a `DefKind::Primitive` Def with
+/// `PrimitiveBody::Inline` — **no GOT slot**, exactly as
+/// `cranelisp-primitives::insert_vec_query_entries` builds `vec-get`/`vec-set`/
+/// `vec-push` post FIXME-0476 (no extern body can exist because a single
+/// monomorphic body cannot know the element's heap category). Backend inline-
+/// emits the op at value-use sites; it has no slot to `call_indirect` through.
+fn insert_inline_vec_query_entry(
     st: &mut SymbolTable,
     name: &str,
     param_names: &[&str],
     ty: Type,
 ) {
-    use cranelisp_types::{DefKind, ModuleEntry, Scheme};
-    let slot = st.allocate_got_slot();
-    // Deliberately NO `store_slot` — the slot stays NULL, as in production.
+    use cranelisp_types::{DefKind, ModuleEntry, PrimitiveBody, Scheme};
     let scheme = Scheme {
         type_vars: vec![],
         constraints: HashMap::new(),
@@ -5466,7 +5467,10 @@ fn insert_null_slot_vec_query_entry(
     };
     st.insert(
         Symbol::from(name),
-        ModuleEntry::def(scheme, DefKind::primitive(slot))
+        ModuleEntry::def(
+            scheme,
+            DefKind::Primitive { body: PrimitiveBody::Inline, mode_summary: None },
+        )
             .param_names(param_names.iter().map(|s| Symbol::from(*s)).collect())
             .build(),
     );
@@ -5502,19 +5506,19 @@ fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
     let tables = empty_tables();
     {
         let mut pst = SymbolTable::new(prims.clone());
-        insert_null_slot_vec_query_entry(
+        insert_inline_vec_query_entry(
             &mut pst,
             "vec-get",
             &["v", "idx"],
             Type::Fn(vec![vec_int(), Type::Int], Box::new(Type::Int)),
         );
-        insert_null_slot_vec_query_entry(
+        insert_inline_vec_query_entry(
             &mut pst,
             "vec-set",
             &["v", "idx", "val"],
             Type::Fn(vec![vec_int(), Type::Int, Type::Int], Box::new(vec_int())),
         );
-        insert_null_slot_vec_query_entry(
+        insert_inline_vec_query_entry(
             &mut pst,
             "vec-push",
             &["v", "val"],

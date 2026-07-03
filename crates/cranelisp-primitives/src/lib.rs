@@ -265,9 +265,20 @@ fn insert_primitive_entry(
 /// `compile_vec_set`, `compile_vec_push`, `compile_vec_len` in
 /// `cranelisp-backend::compiler::vec_codegen`) keyed by the primitive name, so
 /// the GOT slot is only ever consulted for `vec-len` (the one op carrying an
-/// `extern "C"` fallback shim, [`vec::vec_len`]); `vec-get`/`vec-set`/`vec-push`
-/// have no extern body and their GOT slots stay null — name resolution is the
-/// sole gap these entries close.
+/// `extern "C"` fallback shim, [`vec::vec_len`]). `vec-get`/`vec-set`/`vec-push`
+/// have no extern body, so they carry [`PrimitiveBody::Inline`] and **no GOT
+/// slot at all** (S102 FIXME 0476, the representation cure): "resolvable but not
+/// slot-callable" is now a *kind* — [`callable_got_slot`] answers `None` for
+/// them by construction — not an allocated-but-NULL slot proxying callability
+/// through slot presence (the third phantom-slot instance, Principle 20 applied
+/// one level down from the S83 kind⇔slot reshape). Only `vec-len` allocates a
+/// slot; name resolution (via [`is_callable_target`]) is the gap these entries
+/// close, and value-use paths inline-emit the op (never dispatch through a
+/// slot).
+///
+/// [`PrimitiveBody::Inline`]: cranelisp_types::PrimitiveBody::Inline
+/// [`callable_got_slot`]: cranelisp_types::ModuleEntry::callable_got_slot
+/// [`is_callable_target`]: cranelisp_types::ModuleEntry::is_callable_target
 ///
 /// The quantified-var `TypeId` value is arbitrary: `instantiate` remaps every
 /// scheme's `type_vars` to fresh ids on use, so the constant `0` here cannot
@@ -322,10 +333,21 @@ fn insert_vec_query_entries(
     ];
 
     for (name, ty, param_names, docstring) in entries {
-        let slot = table.allocate_got_slot();
-        if let Some(ptr) = shims.get(name) {
-            table.got.store_slot(slot, *ptr);
-        }
+        // FIXME-0476 consumption (S102 CS-B1-be): only `vec-len` has an extern
+        // shim, so only it is `PrimitiveBody::Extern` with an allocated GOT
+        // slot. `vec-get`/`vec-set`/`vec-push` are `PrimitiveBody::Inline` — no
+        // slot allocation, no NULL phantom slot — their body is backend inline
+        // emission keyed by canonical bare name (Principle 20: callability is a
+        // kind, not a slot-presence proxy).
+        let body = if name == "vec-len" {
+            let slot = table.allocate_got_slot();
+            if let Some(ptr) = shims.get(name) {
+                table.got.store_slot(slot, *ptr);
+            }
+            PrimitiveBody::Extern { got_slot: slot, borrowed_sibling_slot: None }
+        } else {
+            PrimitiveBody::Inline
+        };
         let scheme = Scheme {
             type_vars: vec![A],
             constraints: HashMap::new(),
@@ -333,10 +355,7 @@ fn insert_vec_query_entries(
         };
         table.insert(
             Symbol::from(name),
-            ModuleEntry::def(scheme, DefKind::Primitive {
-                body: PrimitiveBody::Extern { got_slot: slot, borrowed_sibling_slot: None },
-                mode_summary: None,
-            })
+            ModuleEntry::def(scheme, DefKind::Primitive { body, mode_summary: None })
                 .param_names(param_names)
                 .docstring(docstring)
                 .build(),

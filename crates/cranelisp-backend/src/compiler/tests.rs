@@ -6,8 +6,8 @@
 use super::*;
 use dashmap::DashMap;
 use cranelisp_types::{
-    DefKind, ModuleAliasEntry, ModuleAliases, ModuleEntry, ModuleFullPath, Scheme, Symbol,
-    SymbolTable, Type, UserFnState, Visibility,
+    DefKind, ModuleAliasEntry, ModuleAliases, ModuleEntry, ModuleFullPath, PrimitiveBody, Scheme,
+    Symbol, SymbolTable, Type, UserFnState, Visibility,
 };
 
 fn def_with_slot(slot: usize) -> ModuleEntry {
@@ -140,6 +140,135 @@ fn primitive_extern_def() -> ModuleEntry {
         code: None,
         value_use: false,
     }
+}
+
+/// An inline-dispatched primitive Def (`PrimitiveBody::Inline`) — the vec-query
+/// family post FIXME-0476: no GOT slot by construction.
+fn inline_primitive_def() -> ModuleEntry {
+    ModuleEntry::Def {
+        scheme: Scheme {
+            type_vars: vec![],
+            constraints: std::collections::HashMap::new(),
+            ty: Type::Int,
+        },
+        visibility: Visibility::Public,
+        docstring: None,
+        param_names: vec![],
+        kind: Box::new(DefKind::Primitive {
+            body: PrimitiveBody::Inline,
+            mode_summary: None,
+        }),
+        callees: vec![],
+        trait_origin: None,
+        seq: 0,
+        ast: None,
+        codegen_view: None,
+        code: None,
+        value_use: false,
+    }
+}
+
+/// A slot-dispatched (`Extern`) primitive Def — e.g. `vec-len` post FIXME-0476.
+fn extern_primitive_def(slot: usize) -> ModuleEntry {
+    ModuleEntry::Def {
+        scheme: Scheme {
+            type_vars: vec![],
+            constraints: std::collections::HashMap::new(),
+            ty: Type::Int,
+        },
+        visibility: Visibility::Public,
+        docstring: None,
+        param_names: vec![],
+        kind: Box::new(DefKind::Primitive {
+            body: PrimitiveBody::Extern { got_slot: slot, borrowed_sibling_slot: None },
+            mode_summary: None,
+        }),
+        callees: vec![],
+        trait_origin: None,
+        seq: 0,
+        ast: None,
+        codegen_view: None,
+        code: None,
+        value_use: false,
+    }
+}
+
+// spec: design/backend/ownership-codegen.md §13.2 (B1-be) + FIXME 0476 —
+//   `resolve_vec_query_primitive` re-keys off `PrimitiveBody::Inline`, and its
+//   resolution stop condition is `is_callable_target()` (covers the slot-less
+//   inline arm), NOT the S101 name-list + `callable_got_slot().is_some()` stop.
+//   An inline vec primitive resolves to its canonical bare name (→ inline-emit);
+//   a slot-carrying `Extern` primitive (vec-len) and a user-fn shadow resolve to
+//   `None` (→ GOT-indirect dispatch), preserving shadowing precedence.
+#[test]
+fn resolve_vec_query_primitive_keys_on_inline_kind() {
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    let prims = ModuleFullPath::from("primitives");
+    {
+        let mut st = SymbolTable::new(prims.clone());
+        // The vec trio: inline-dispatched, no slot.
+        st.insert(Symbol::from("vec-get"), inline_primitive_def());
+        st.insert(Symbol::from("vec-set"), inline_primitive_def());
+        st.insert(Symbol::from("vec-push"), inline_primitive_def());
+        // vec-len: slot-dispatched Extern — NOT matched (dispatches via slot).
+        st.insert(Symbol::from("vec-len"), extern_primitive_def(3));
+        tables.insert(prims.clone(), st);
+    }
+    let user = ModuleFullPath::from("user");
+    tables.insert(user.clone(), SymbolTable::new(user.clone()));
+    let aliases: ModuleAliases = DashMap::new();
+
+    // Each inline vec op resolves to its canonical bare name (→ inline emit).
+    for name in ["vec-get", "vec-set", "vec-push"] {
+        assert_eq!(
+            resolve_vec_query_primitive(&tables, &aliases, &user, &Symbol::from(name)),
+            Some(Symbol::from(name)),
+            "inline primitive {name} must resolve to its canonical name via is_callable_target()",
+        );
+    }
+    // vec-len is Extern (slot-carrying) → NOT an inline vec-query target.
+    assert_eq!(
+        resolve_vec_query_primitive(&tables, &aliases, &user, &Symbol::from("vec-len")),
+        None,
+        "vec-len dispatches through its slot — never inline-emitted as a value",
+    );
+    // Absent name → None.
+    assert_eq!(
+        resolve_vec_query_primitive(&tables, &aliases, &user, &Symbol::from("nonesuch")),
+        None,
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §13.2 (B1-be) + FIXME 0476 — a
+//   user-defined fn shadowing a vec-op name resolves FIRST (a callable target
+//   with a slot) and reports `None` here, so it keeps ordinary GOT-indirect
+//   dispatch. Precedence is unchanged by the slot-presence → is_callable_target
+//   stop-predicate flip.
+#[test]
+fn resolve_vec_query_primitive_user_shadow_keeps_got_dispatch() {
+    let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+    let user = ModuleFullPath::from("user");
+    {
+        let mut st = SymbolTable::new(user.clone());
+        // A user fn named `vec-get` shadows the primitive in the current module.
+        st.insert(Symbol::from("vec-get"), def_with_slot(9));
+        tables.insert(user.clone(), st);
+    }
+    let prims = ModuleFullPath::from("primitives");
+    {
+        let mut st = SymbolTable::new(prims.clone());
+        st.insert(Symbol::from("vec-get"), inline_primitive_def());
+        tables.insert(prims.clone(), st);
+    }
+    let aliases: ModuleAliases = DashMap::new();
+
+    // Current-module (user) shadow resolves first: a slot-carrying UserFn →
+    // `None` → GOT-indirect dispatch (not inline-emitted).
+    assert_eq!(
+        resolve_vec_query_primitive(&tables, &aliases, &user, &Symbol::from("vec-get")),
+        None,
+        "a user-fn shadow keeps GOT-indirect dispatch (precedence unchanged)",
+    );
 }
 
 // spec: design/arch/test-discovery.md §6 "Backend — one kind-dispatched

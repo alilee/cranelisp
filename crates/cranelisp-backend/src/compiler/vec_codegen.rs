@@ -979,10 +979,11 @@ where
 
     /// Inline-emit a vec-query op (`vec-get` / `vec-set` / `vec-push`) into a
     /// GENERATED WRAPPER body (fn-as-value / auto-curry / trait-method-value —
-    /// `control_flow::fn_as_value`). These primitives-table entries carry
-    /// allocated-but-**NULL** GOT slots (name-resolution-only — no extern body
-    /// can exist because a single monomorphic body cannot know the element's
-    /// heap category), so the wrapper MUST NOT dispatch through them
+    /// `control_flow::fn_as_value`). These primitives-table entries are
+    /// `PrimitiveBody::Inline` — inline-dispatched with **no GOT slot** by
+    /// construction (S102 FIXME 0476: no extern body can exist because a single
+    /// monomorphic body cannot know the element's heap category), so the wrapper
+    /// MUST synthesize this inline emission rather than dispatch through a slot
     /// (`design/backend/ownership-codegen.md` §12.7 — the S100 SIGSEGV defect).
     ///
     /// RC polarity: every wrapper param arrives OWNED (consuming closure

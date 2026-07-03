@@ -12,7 +12,7 @@
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, ModuleEntry, ModuleFullPath, Symbol, SymbolTable, Type,
+    DefKind, ModuleEntry, ModuleFullPath, PrimitiveBody, Symbol, SymbolTable, Type,
 };
 
 /// GOT data symbol name for a module. Single source of truth.
@@ -222,21 +222,58 @@ where
     })
 }
 
+/// Resolve whether `name` designates a **dispatchable call target** — a
+/// callable entry reachable by the same precedence walk `resolve_got_target`
+/// uses, but with the stop condition flipped from `callable_got_slot().is_some()`
+/// to [`ModuleEntry::is_callable_target`] (S102, FIXME 0476). This covers both
+/// slot-dispatched callables (concrete user fns, `Extern` primitives,
+/// constructors, platform effects — for which `resolve_got_target` also returns
+/// `Some`) AND **inline-dispatched primitives** (the vec-query trio,
+/// `PrimitiveBody::Inline`, which carry no slot and so are invisible to
+/// `resolve_got_target`).
+///
+/// Used by the fn-as-value gate (`is_known_function`): an inline vec primitive
+/// referenced as a value is a *known function* (it wraps to a closure whose body
+/// inline-emits the op), even though it has no GOT slot. For every non-inline
+/// name this is byte-identical to `resolve_got_target(..).is_some()` (they agree
+/// wherever a slot exists), so no shadowing precedence or emission changes.
+pub(crate) fn resolve_is_callable_target<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    current_module: &ModuleFullPath,
+    name: &Symbol,
+) -> bool
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    resolve_driven(symbol_tables, module_aliases, current_module, name, |_module, _bare, entry| {
+        entry.is_callable_target().then_some(())
+    })
+    .is_some()
+}
+
 /// Resolve a name to the canonical bare name of a **vec-query-family
 /// primitives-table entry** (`vec-get` / `vec-set` / `vec-push`) — the
-/// NULL-GOT-slot, name-resolution-only entries
+/// inline-dispatched, slot-less entries
 /// (`cranelisp-primitives::insert_vec_query_entries`) that the fn-as-value /
 /// auto-curry wrapper paths must INLINE-emit instead of calling through
 /// (`design/backend/ownership-codegen.md` §12.7 — the S100 SIGSEGV defect).
 ///
-/// Precedence-faithful: the `read` closure STOPS at the first entry carrying a
-/// callable GOT slot — the exact stop condition `resolve_got_target` uses — and
-/// only then reports whether that entry is a `DefKind::Primitive` named
-/// `vec-get`/`vec-set`/`vec-push`. A user-defined function shadowing one of
-/// these names resolves first (kind `UserFn` → `None` result) and keeps the
-/// ordinary GOT-indirect dispatch, exactly as before. `vec-len` is deliberately
-/// EXCLUDED: it has a real extern shim and a populated slot (the green control
-/// path — `tests/vec_query_value_use.rs`).
+/// Precedence-faithful: the `read` closure STOPS at the first **callable
+/// target** ([`ModuleEntry::is_callable_target`] — the resolution stop
+/// condition post-FIXME-0476, covering both slot-dispatched Extern
+/// primitives / user fns AND inline-dispatched primitives), then reports
+/// whether that entry is a [`PrimitiveBody::Inline`] primitive. A user-defined
+/// function shadowing one of these names resolves first (a callable target with
+/// a slot → `Some(None)` result) and keeps the ordinary GOT-indirect dispatch,
+/// exactly as before. The S101 stringly-typed name-list
+/// (`matches!(bare, "vec-get" | ...)`) retires: the inline-primitive *kind* is
+/// the discriminator (Principle 20 — the vec trio are the only inline
+/// primitives, so `PrimitiveBody::Inline` is exactly the vec-query family).
+/// `vec-len` is naturally EXCLUDED: it carries a real extern shim + populated
+/// slot (`PrimitiveBody::Extern`), so it reports `None` here and dispatches
+/// through its slot (the green control path — `tests/vec_query_value_use.rs`).
 pub(crate) fn resolve_vec_query_primitive<C, L>(
     symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
     module_aliases: &cranelisp_types::ModuleAliases,
@@ -253,12 +290,21 @@ where
         current_module,
         name,
         |_module, bare, entry| {
-            // Same stop condition as `resolve_got_target` (identical precedence).
-            entry.callable_got_slot()?;
+            // Stop at the first callable target (FIXME 0476: the resolution
+            // stop condition flips `callable_got_slot().is_some()` →
+            // `is_callable_target()` so inline primitives participate in
+            // shadowing precedence identically to slot-carrying ones). A
+            // non-callable terminal (type / macro / non-concrete template) is
+            // not a stop point — keep walking precedence.
+            if !entry.is_callable_target() {
+                return None;
+            }
             match entry {
                 ModuleEntry::Def { kind, .. }
-                    if matches!(kind.as_ref(), DefKind::Primitive { .. })
-                        && matches!(bare, "vec-get" | "vec-set" | "vec-push") =>
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::Primitive { body: PrimitiveBody::Inline, .. }
+                    ) =>
                 {
                     Some(Some(Symbol::from(bare)))
                 }
