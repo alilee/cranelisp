@@ -1465,6 +1465,83 @@ pub fn compile_trap_stub(
     Ok((code_ptr, Code::jit(jit_arc)))
 }
 
+/// Unit tests for [`compile_trap_stub`] (the R3 machinery's per-symbol trap
+/// stub — backend §8.1/§8.3). Relocated from the flat crate-root `tests.rs`
+/// to sit beside the code they exercise (S102 CS-B3.0, FIXME 0495; Principle
+/// 23 — tests mirror module composition). Self-contained: they depend only on
+/// `compile_trap_stub` + the `cranelisp-intrinsics` panic slot.
+#[cfg(test)]
+mod trap_stub_tests {
+    use super::compile_trap_stub;
+
+    // spec: design/backend/ownership-codegen.md §8.1 — the stub raises the baked
+    // provenance message through `runtime/panic` (thread-local slot + sentinel
+    // return); the host reads it via `take_runtime_error`.
+    #[test]
+    fn trap_stub_raises_provenance_message_and_returns_sentinel() {
+        let msg = String::from("g is broken by the redefinition of f: type error");
+        let (ptr, code) =
+            compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+        assert!(!ptr.is_null(), "trap stub must finalize to a non-null code ptr");
+
+        let _ = cranelisp_intrinsics::panic::take_runtime_error();
+        let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+        assert_eq!(stub(), 0, "trap stub returns the 0 sentinel");
+        let raised = cranelisp_intrinsics::panic::take_runtime_error()
+            .expect("trap stub must raise through the runtime/panic slot");
+        assert!(
+            raised.contains("g is broken by the redefinition of f: type error"),
+            "raised message must carry the baked provenance; got: {raised}"
+        );
+
+        // The provenance string + Code handle pair outlive the call — the
+        // caller-side lifetime contract (§8.1). Keep both live to here.
+        drop(code);
+        drop(msg);
+    }
+
+    // spec: design/backend/ownership-codegen.md §8.1 — the `() -> i64` stub is
+    // signature-safe for ANY caller arity/type vector under the uniform all-I64
+    // convention: callers that imported an N-arg signature reach the same slot
+    // and the stub never reads its argument registers. Pin the cross-arity call.
+    #[test]
+    fn trap_stub_is_callable_at_nonzero_arity() {
+        let msg = String::from("h is broken by the redefinition of k: arity change");
+        let (ptr, _code) =
+            compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+
+        let _ = cranelisp_intrinsics::panic::take_runtime_error();
+        // Call as a 3-arg function (register-passed, caller-owned scratch).
+        let stub3: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+        assert_eq!(stub3(1, 2, 3), 0, "sentinel through a 3-arg import signature");
+        assert!(
+            cranelisp_intrinsics::panic::take_runtime_error().is_some(),
+            "raise fires regardless of the caller's imported arity"
+        );
+    }
+
+    // spec: design/backend/ownership-codegen.md §8.1 — the message address is
+    // baked and read at INVOCATION time, so the stub is re-raisable (every call
+    // through the patched slot raises afresh; the slot may be hit many times in
+    // a dev session).
+    #[test]
+    fn trap_stub_raises_on_every_invocation() {
+        let msg = String::from("m is broken by the redefinition of n: gone");
+        let (ptr, _code) =
+            compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+        let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+
+        for i in 0..3 {
+            let _ = cranelisp_intrinsics::panic::take_runtime_error();
+            assert_eq!(stub(), 0);
+            assert!(
+                cranelisp_intrinsics::panic::take_runtime_error().is_some(),
+                "invocation {i} must raise"
+            );
+        }
+    }
+}
+
 // NOTE: `compile_to_object` was retracted in S75 W2 (`/dev backend`) per the
 // facade §"Free functions" tombstone + PIF Row 4 retraction. It was a
 // Sprint-67 facade-compliance scaffold returning `unimplemented!()` and
