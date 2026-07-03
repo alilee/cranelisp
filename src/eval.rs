@@ -17,9 +17,40 @@ use cranelisp_typecheck::{CheckResult, CheckState};
 
 use crate::session_v4::{
     extract_def_name_from_sexp, intrinsic_type_from_name, is_comment_only,
-    set_test_runner_state, CompilerSession, EvalResult,
+    set_test_runner_state, CompilerSession, EvalResult, Introspection,
 };
 use crate::worker::ModuleCompiler;
+
+/// Record the turn's verbatim source text on the defined symbol's
+/// introspection record — for GENUINE definition turns only (Matrix E
+/// recording rule; FIXME 0486, `design/int/s102-defect-wave.md` §7.3).
+///
+/// A display-only `EvalResult::Def` (`defined: false` — bare-symbol lookup)
+/// MUST NOT touch the record: the lookup text (`"solo"`) would clobber the
+/// authored `(defn …)` form that `/info`/`/source` serve (introspection-first
+/// precedence in `info_definition_source`). For real definition turns the
+/// write is load-bearing: it records the authored text that §4.2's
+/// source-first regeneration emits — coordinate any change with that seam
+/// (same authorship invariant).
+///
+/// `introspection` is `Some` only under `RunMode::Repl` (D1b ctor gate) —
+/// `None` in batch, no second discriminator to drift.
+pub(crate) fn record_defining_turn_source(
+    introspection: Option<&dashmap::DashMap<FQSymbol, Introspection>>,
+    result: &EvalResult,
+    src: &str,
+) {
+    let EvalResult::Def { symbol, defined: true, .. } = result else {
+        return;
+    };
+    if let Some(m) = introspection {
+        let fq = FQSymbol {
+            module: symbol.module.clone(),
+            symbol: symbol.symbol.clone(),
+        };
+        m.entry(fq).or_default().source = Some(src.to_string());
+    }
+}
 
 impl CompilerSession {
     /// Block the REPL-eval thread on the persistent worker pool driving a
@@ -128,21 +159,19 @@ impl CompilerSession {
                 Ok(Some(result)) => {
                     // Store source text for /source command — extract from
                     // original input using the cluster's span.
-                    if let EvalResult::Def { symbol, .. } = &result {
+                    {
                         let span = cluster_span;
                         let src = if span.start < span.end && (span.end as usize) <= source.len() {
                             &source[span.start as usize..span.end as usize]
                         } else {
                             source.trim()
                         };
-                        let fq = FQSymbol {
-                            module: symbol.module.clone(),
-                            symbol: symbol.symbol.clone(),
-                        };
                         // D1b: the store is REPL-only; absent in batch.
-                        if let Some(m) = self.shared.introspection.as_ref() {
-                            m.entry(fq).or_default().source = Some(src.to_string());
-                        }
+                        record_defining_turn_source(
+                            self.shared.introspection.as_ref(),
+                            &result,
+                            src,
+                        );
                     }
                     all_warnings.extend(result.warnings().iter().cloned());
                     last_result = Some(result);
@@ -306,6 +335,9 @@ impl CompilerSession {
                                 },
                                 ty: Type::Int,
                                 warnings: cluster_warnings,
+                                // Handled-during-expansion forms (defmacro)
+                                // are genuine definitions.
+                                defined: true,
                             })),
                             // import/platform/mod — no visible result.
                             None => Ok(None),
@@ -445,6 +477,8 @@ impl CompilerSession {
                 },
                 ty,
                 warnings: check.warnings.clone(),
+                // The definition-only codegen turn — the genuine writer.
+                defined: true,
             })
         }
     }
@@ -481,6 +515,8 @@ impl CompilerSession {
         }
 
         // Check primitive type names: Int, Bool, Float, String (spec §4.1.3).
+        // ALL results below are display-only (`defined: false`) — a bare
+        // lookup MUST NOT be recorded as the symbol's source (FIXME 0486).
         if intrinsic_type_from_name(name).is_some() {
             return Some(EvalResult::Def {
                 symbol: FQSymbol {
@@ -489,6 +525,7 @@ impl CompilerSession {
                 },
                 ty: Type::Int,
                 warnings: Vec::new(),
+                defined: false,
             });
         }
 
@@ -559,6 +596,7 @@ impl CompilerSession {
                         symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                         ty: Type::Int,
                         warnings: Vec::new(),
+                        defined: false,
                     })
                 }
                 DefKind::Constructor { field_count, .. } => {
@@ -571,6 +609,7 @@ impl CompilerSession {
                             symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                             ty: Type::Int,
                             warnings: Vec::new(),
+                            defined: false,
                         })
                     }
                 }
@@ -580,21 +619,120 @@ impl CompilerSession {
                     symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                     ty: scheme.ty.clone(),
                     warnings: Vec::new(),
+                    defined: false,
                 }),
             },
             ModuleEntry::SpecialForm { scheme, .. } => Some(EvalResult::Def {
                 symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                 ty: scheme.ty.clone(),
                 warnings: Vec::new(),
+                defined: false,
             }),
             ModuleEntry::TypeDef { .. } | ModuleEntry::TraitDecl { .. } => {
                 Some(EvalResult::Def {
                     symbol: FQSymbol { module: fq_module, symbol: Symbol::from(name) },
                     ty: Type::Int,
                     warnings: Vec::new(),
+                    defined: false,
                 })
             }
             _ => None,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests — the Matrix E recording rule at the writer seam (FIXME 0486)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_v4::Introspection;
+
+    fn fq(module: &str, name: &str) -> FQSymbol {
+        FQSymbol {
+            module: ModuleFullPath::from(module),
+            symbol: Symbol::from(name),
+        }
+    }
+
+    fn def_result(module: &str, name: &str, defined: bool) -> EvalResult {
+        EvalResult::Def {
+            symbol: fq(module, name),
+            ty: Type::Int,
+            warnings: Vec::new(),
+            defined,
+        }
+    }
+
+    fn store_with(fq_key: &FQSymbol, source: &str) -> dashmap::DashMap<FQSymbol, Introspection> {
+        let m: dashmap::DashMap<FQSymbol, Introspection> = dashmap::DashMap::new();
+        m.entry(fq_key.clone()).or_default().source = Some(source.to_string());
+        m
+    }
+
+    // spec: repl/spec.md §3.6 (FIXME 0486) / design/int/s102-defect-wave.md
+    // §7.3 Matrix E — a GENUINE definition turn records the turn's authored
+    // text: creates the record on first definition, updates it on
+    // redefinition (the load-bearing half §4.2's source-first regeneration
+    // reads).
+    #[test]
+    fn defining_turn_creates_and_updates_source_record() {
+        let solo = fq("user", "solo");
+        let m: dashmap::DashMap<FQSymbol, Introspection> = dashmap::DashMap::new();
+        record_defining_turn_source(
+            Some(&m),
+            &def_result("user", "solo", true),
+            "(defn solo [x] (mul-i64 x 3))",
+        );
+        assert_eq!(
+            m.get(&solo).unwrap().source.as_deref(),
+            Some("(defn solo [x] (mul-i64 x 3))"),
+            "definition turn creates the record"
+        );
+        record_defining_turn_source(
+            Some(&m),
+            &def_result("user", "solo", true),
+            "(defn solo [x] (mul-i64 x 4))",
+        );
+        assert_eq!(
+            m.get(&solo).unwrap().source.as_deref(),
+            Some("(defn solo [x] (mul-i64 x 4))"),
+            "redefinition turn updates the record"
+        );
+    }
+
+    // spec: repl/spec.md §3.6 + §18.4 (FIXME 0486) — Matrix E negative cells:
+    // a bare lookup (display-only Def, healthy or broken alike) MUST NOT
+    // touch an existing record and MUST NOT create one; an expression turn
+    // (`Val`) never writes.
+    #[test]
+    fn bare_lookup_neg_never_touches_or_creates_source_record() {
+        let solo = fq("user", "solo");
+        let m = store_with(&solo, "(defn solo [x] (mul-i64 x 3))");
+        // The corrupting shape: the bare-lookup turn's text is the bare name.
+        record_defining_turn_source(Some(&m), &def_result("user", "solo", false), "solo");
+        assert_eq!(
+            m.get(&solo).unwrap().source.as_deref(),
+            Some("(defn solo [x] (mul-i64 x 3))"),
+            "display-only Def must NOT overwrite the authored source"
+        );
+        // No record → no creation either (e.g. bare lookup of a prelude name
+        // must not seed a bogus record under the resolved primitive's FQ).
+        record_defining_turn_source(Some(&m), &def_result("primitives", "add-i64", false), "add-i64");
+        assert!(
+            !m.contains_key(&fq("primitives", "add-i64")),
+            "display-only Def must NOT create a record"
+        );
+        // Expression turns never write.
+        record_defining_turn_source(
+            Some(&m),
+            &EvalResult::Val { value: 1, ty: Type::Int, warnings: Vec::new() },
+            "(solo 2)",
+        );
+        assert_eq!(m.len(), 1, "Val results never write");
+        // Batch mode (store absent): a defining result is a silent no-op.
+        record_defining_turn_source(None, &def_result("user", "solo", true), "(defn solo [x] x)");
     }
 }

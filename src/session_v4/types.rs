@@ -99,11 +99,21 @@ pub enum CommandResult {
 /// Either a definition (which introduced a symbol) or a value (which
 /// was computed). Both carry zero or more warnings.
 pub enum EvalResult {
-    /// A definition was processed (defn, deftype, deftrait, impl, defmacro).
+    /// A definition was processed (defn, deftype, deftrait, impl, defmacro)
+    /// — or a bare symbol was introspected (a DISPLAY-ONLY `Def`, marked by
+    /// `defined: false`).
     Def {
         symbol: FQSymbol,
         ty: Type,
         warnings: Vec<Warning>,
+        /// `true` iff this turn genuinely (re)defined the symbol. `false`
+        /// for display-only results (bare-symbol lookup / introspection —
+        /// `check_bare_symbol_introspection`). Matrix E recording rule
+        /// (FIXME 0486, design/int/s102-defect-wave.md §7.3): only a genuine
+        /// definition turn may write the turn's text to the symbol's
+        /// introspection `source` — a bare lookup MUST NOT touch the record
+        /// (`/info`/`/source` render what introspection hands them).
+        defined: bool,
     },
     /// An expression was evaluated to a value.
     Val {
