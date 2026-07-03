@@ -430,6 +430,17 @@ impl ReverseIndex {
         for shard in tables.iter() {
             let module = shard.key().clone();
             for (name, entry) in shard.value().all_symbols() {
+                // Gate-exempt internals (`__expr`/`__macro_*`) never join the
+                // index as CALLERS (FIXME 0491): the eval wrapper's Def
+                // carries real callees, so it would otherwise join closures,
+                // get re-typechecked/marked, and leak into every report
+                // section (`broken:`/`recompiled:`/`stale:` — both the break
+                // and revert directions). Safe by the frozen-world argument:
+                // a stale wrapper is never re-invoked — each expression turn
+                // redefines it before invoking.
+                if is_gate_exempt_internal(name.as_ref()) {
+                    continue;
+                }
                 let callees = entry.callees();
                 if callees.is_empty() {
                     continue;
@@ -1397,6 +1408,42 @@ mod tests {
             "unrelated must NOT join the closure"
         );
         assert!(!closure.contains(&fq("user", "f")), "target is not a member");
+    }
+
+    // spec: repl/spec.md §18.3 (FIXME 0491) / design/int/s102-defect-wave.md
+    // §7.1 — gate-exempt internals are excluded at the FEED, not the
+    // rendering: `__expr`/`__macro_*` never appear as callers in the reverse
+    // index, so they never join a closure, are never re-typechecked/marked,
+    // and never appear in ANY report section (broken/recompiled/stale, break
+    // AND revert directions). Real user callers are unaffected.
+    #[test]
+    fn reverse_index_neg_excludes_gate_exempt_internal_callers() {
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let user = ModuleFullPath::from("user");
+        let mut ut = SessionSymbolTable::new_with_params(user.clone());
+        ut.insert(Symbol::from("f"), def_with_callees(vec![], Some(0)));
+        // The eval wrapper and a macro clause both carry a REAL callee edge
+        // to f — the exact shape that leaked into `broken:` (FIXME 0491).
+        ut.insert(
+            Symbol::from("__expr"),
+            def_with_callees(vec![fq("user", "f")], Some(1)),
+        );
+        ut.insert(
+            Symbol::from("__macro_m_clause_0"),
+            def_with_callees(vec![fq("user", "f")], Some(2)),
+        );
+        // Control: a real caller with the same edge stays in.
+        ut.insert(Symbol::from("g"), def_with_callees(vec![fq("user", "f")], Some(3)));
+        tables.insert(user.clone(), ut);
+
+        let reverse = ReverseIndex::build(&tables);
+        assert_eq!(
+            reverse.callers_of(&fq("user", "f")),
+            &[fq("user", "g")],
+            "only the real caller is indexed"
+        );
+        let closure = affected_closure(&reverse, &fq("user", "f"));
+        assert_eq!(closure, vec![fq("user", "g")], "wrappers never join the closure");
     }
 
     // spec: design/int/session-transaction.md §4.1 — SCC condensation emits
