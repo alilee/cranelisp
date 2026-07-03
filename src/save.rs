@@ -579,6 +579,25 @@ pub(crate) fn sexp_matches_source(sexp: &Sexp, source: &str) -> bool {
     }
 }
 
+/// The consistency-gated verbatim slice of `form` out of `text` (S102 CS-D2,
+/// §15.4.7 authorship fidelity): the form's span slice must re-parse to
+/// exactly the recorded form (`sexp_matches_source` is reader-desugar-aware,
+/// so authored shorthand like `` `(… ~e) `` passes). Returns `None` — callers
+/// fall back to `pretty_print` — when the span is out of bounds / off a char
+/// boundary, or the slice does not match (e.g. a REPL turn's fresh 0-based
+/// spans against a module's load-time file text). Shared by
+/// `process_form::verbatim_source_slice` (live-turn capture) and the
+/// introspection rehydrator below (S102 W5R M-5 — single gate, Principle 7).
+pub(crate) fn verbatim_slice(form: &Sexp, text: &str) -> Option<String> {
+    let span = form.span();
+    let slice = text.get(span.start as usize..span.end as usize)?;
+    if sexp_matches_source(form, slice) {
+        Some(slice.to_string())
+    } else {
+        None
+    }
+}
+
 /// Extract the §5.12 docstring-slot string from a parsed `defn`/`defn-` form
 /// (`children[2]` is the docstring iff it is a string literal — mirrors
 /// `ast_builder::extract_optional_docstring`).
@@ -910,15 +929,13 @@ pub(crate) fn rehydrate_userfn_introspection_from_source(
                 // holds the original file text — capture the VERBATIM span
                 // slice, not `pretty_print(sexp)` (which re-renders reader
                 // shorthand as its desugared form and destroys the user's
-                // authored text on the next regen). Consistency-gated; any
-                // bound/parse mismatch falls back to the pretty render.
-                let span = sexp.span();
-                let verbatim = backing_source
-                    .get(span.start as usize..span.end as usize)
-                    .filter(|s| sexp_matches_source(sexp, s))
-                    .map(str::to_string);
-                entry.source =
-                    Some(verbatim.unwrap_or_else(|| crate::pretty::pretty_print(sexp)));
+                // authored text on the next regen). Consistency-gated
+                // (`verbatim_slice`); any bound/parse mismatch falls back to
+                // the pretty render.
+                entry.source = Some(
+                    verbatim_slice(sexp, backing_source)
+                        .unwrap_or_else(|| crate::pretty::pretty_print(sexp)),
+                );
             }
             rehydrated += 1;
         }
@@ -1399,6 +1416,43 @@ mod tests {
         assert!(
             !sexp_matches_source(&desugared, "(defn a [] 1) (defn b [] 2)"),
             "a multi-form source does not match"
+        );
+    }
+
+    // S102 W5R M-5: the shared `verbatim_slice` gate slices a form's span out of
+    // a text and returns it ONLY when it re-parses to the same form — the exact
+    // behaviour both `process_form::verbatim_source_slice` and the introspection
+    // rehydrator now route through (Principle 7). Positive: an in-bounds,
+    // consistent slice returns byte-verbatim (reader shorthand preserved).
+    // Negative: an out-of-bounds span and a stale/mismatched text return None.
+    // spec: repl/spec.md §15.4 — invariant 7 (authorship fidelity)
+    #[test]
+    fn verbatim_slice_positive_and_negative_cells() {
+        // The whole text is the single form — its span covers it exactly.
+        let text = "(defmacro twice [e] `(add-i64 ~e ~e))";
+        let form = parse1(text);
+        assert_eq!(
+            verbatim_slice(&form, text).as_deref(),
+            Some(text),
+            "an in-bounds, consistent slice returns the verbatim authored text"
+        );
+
+        // A form whose recorded span points past the end of a (shorter) text:
+        // slice out of bounds → None → caller falls back to pretty_print.
+        assert_eq!(
+            verbatim_slice(&form, "(defmacro twice"),
+            None,
+            "an out-of-bounds span yields None"
+        );
+
+        // A form sliced against a DIFFERENT text of adequate length: the slice
+        // is in-bounds but does not re-parse to the recorded form → None.
+        let other = "(defn xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [] 1)";
+        assert!(other.len() >= text.len());
+        assert_eq!(
+            verbatim_slice(&form, other),
+            None,
+            "an in-bounds but inconsistent slice yields None"
         );
     }
 

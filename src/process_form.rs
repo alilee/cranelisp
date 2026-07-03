@@ -531,27 +531,22 @@ fn pass2_check_bodies_with_expansion(
 }
 
 /// The verbatim authored text of `form`, sliced from the module's recorded
-/// `source_text` by span and CONSISTENCY-GATED (S102 CS-D2, §15.4.7): the
-/// slice must re-parse to exactly the recorded form (`save::sexp_matches_source`
-/// is reader-desugar-aware, so authored shorthand like `` `(… ~e) `` passes).
-/// Returns `None` — callers fall back to `pretty_print` — when the module has
-/// no `source_text`, the span is out of bounds / off a char boundary, or the
-/// slice does not match (e.g. a REPL turn's fresh 0-based spans against the
-/// module's load-time file text).
+/// `source_text` by span and CONSISTENCY-GATED (S102 CS-D2, §15.4.7) via the
+/// shared `save::verbatim_slice` gate (S102 W5R M-5 — Principle 7): the slice
+/// must re-parse to exactly the recorded form (reader-desugar-aware, so
+/// authored shorthand like `` `(… ~e) `` passes). Returns `None` — callers
+/// fall back to `pretty_print` — when the module has no `source_text`, the
+/// span is out of bounds / off a char boundary, or the slice does not match
+/// (e.g. a REPL turn's fresh 0-based spans against the module's load-time
+/// file text).
 fn verbatim_source_slice(
     ctx: &ModuleCompiler,
     module: &ModuleFullPath,
     form: &Sexp,
 ) -> Option<String> {
-    let span = form.span();
     let tp = ctx.typecheck_products.get(module)?;
     let text = tp.source_text.as_ref()?;
-    let slice = text.get(span.start as usize..span.end as usize)?;
-    if crate::save::sexp_matches_source(form, slice) {
-        Some(slice.to_string())
-    } else {
-        None
-    }
+    crate::save::verbatim_slice(form, text)
 }
 
 /// Process a regular (non-module-declaration) form in Pass 2.
