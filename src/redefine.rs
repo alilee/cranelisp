@@ -983,7 +983,7 @@ pub(crate) fn run_transaction(
 }
 
 /// Strip a `$`-mangled variant name to its base defn FQ.
-fn base_fq(fq: &FQSymbol) -> FQSymbol {
+pub(crate) fn base_fq(fq: &FQSymbol) -> FQSymbol {
     match fq.symbol.as_ref().split_once('$') {
         Some((base, _)) => FQSymbol {
             module: fq.module.clone(),

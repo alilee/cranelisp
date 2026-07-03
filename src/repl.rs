@@ -1022,7 +1022,17 @@ impl CompilerSession {
             };
             let index = crate::redefine::ReverseIndex::build(&self.shared.symbol_tables);
             for caller in index.callers_of_with_variants(&target) {
-                referers.push(format!("{}/{}", caller.module.as_ref(), caller.symbol.as_ref()));
+                // Report at BASE-defn grain: `ReverseIndex::build` records
+                // `$`-mangled mono instances (e.g. `g$Int`) as callers. Surfacing
+                // them verbatim leaks the internal mangled name and — when the
+                // base body also token-references `target` — double-lists the same
+                // logical caller (`m/g` vs `m/g$Int`) across the two legs. Strip to
+                // base (mirroring `redefine::stale_callers`) so the sort+dedup below
+                // merges both legs into one entry per logical caller. Unlike
+                // `stale_callers`, `/refs` wants ALL referers (compiled or not), so
+                // the `code: Some` compiled-filter is intentionally NOT applied here.
+                let base = crate::redefine::base_fq(&caller);
+                referers.push(format!("{}/{}", base.module.as_ref(), base.symbol.as_ref()));
             }
         }
         // Token scan for non-callable referents + introspection-recorded bodies.
@@ -3739,6 +3749,44 @@ mod fq_arg_tests {
         assert!(
             referers.iter().any(|r| r == "m/mg"),
             "the reverse-index feed must list m/mg without an introspection body; got: {referers:?}",
+        );
+    }
+
+    // A `$`-mangled mono variant caller (`g$Int`) is reported at BASE grain
+    // (`m/g`), exactly once — never the internal mangled name `m/g$Int`, and
+    // never double-listed when the base defn `g` is ALSO a reverse-index caller
+    // of the target (both legs strip to `m/g`, then sort+dedup merges them).
+    // spec: §17.6.1
+    #[test]
+    fn collect_referers_reports_mono_variant_caller_at_base_grain_once() {
+        let s = session();
+        let m = ModuleFullPath::from("m");
+        let mut table = SessionSymbolTable::new_with_params(m.clone());
+        table.insert(Symbol::from("mf"), userfn_def(None));
+        // Base template `g` calls mf.
+        let mut g = userfn_def(None);
+        if let ModuleEntry::Def { callees, .. } = &mut g {
+            callees.push(FQSymbol { module: m.clone(), symbol: Symbol::from("mf") });
+        }
+        table.insert(Symbol::from("g"), g);
+        // A minted mono instance `g$Int` also calls mf — `ReverseIndex::build`
+        // records the mangled name verbatim as a caller.
+        let mut g_int = userfn_def(None);
+        if let ModuleEntry::Def { callees, .. } = &mut g_int {
+            callees.push(FQSymbol { module: m.clone(), symbol: Symbol::from("mf") });
+        }
+        table.insert(Symbol::from("g$Int"), g_int);
+        s.shared.symbol_tables.insert(m.clone(), table);
+
+        let referers = s.collect_referers(&m, "mf", false);
+        assert!(
+            !referers.iter().any(|r| r.contains('$')),
+            "the internal mangled name (m/g$Int) must NOT leak; got: {referers:?}",
+        );
+        let base_hits = referers.iter().filter(|r| r.as_str() == "m/g").count();
+        assert_eq!(
+            base_hits, 1,
+            "the mono variant + its base collapse to ONE m/g entry; got: {referers:?}",
         );
     }
 }
