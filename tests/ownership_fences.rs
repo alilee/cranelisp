@@ -695,33 +695,68 @@ fn clif_golden_single_module_smoke() {
             .join("tests/fixtures/clif_baseline/corpus/06_tco_loop.cl"),
     )
     .expect("corpus fixture 06_tco_loop.cl");
+    // `--no-cache` (Wave 3R, review F4): structurally eliminates the
+    // nice-worker `.o` cache-write pass, so each symbol dumps exactly ONCE
+    // (the JIT pass — the pass the goldens pinned). The env_remove set is
+    // the MANIFEST §Capture contract pin list — every emission-affecting
+    // toggle must be absent regardless of the ambient runner env (review
+    // F2: CAPTURE_BORROW was a live emission hole; RC_DEC_CHECK/RC_STATS
+    // gate extra RC emission; NO_IO_SCHEDULE reshapes bind chains
+    // pre-typecheck) — plus the compile-time trace vars, which write to
+    // stderr, the dump channel.
     let out = Cranelisp::new()
         .run("user.cl")
         .user(&corpus)
+        .cli_flag("--no-cache")
         .env("CRANELISP_CODEGEN_DUMP", "*")
         .env_remove("CRANELISP_NO_OWNERSHIP")
+        .env_remove("CRANELISP_NO_LENIENT")
+        .env_remove("CRANELISP_CAPTURE_BORROW")
+        .env_remove("CRANELISP_NONATOMIC_RC")
+        .env_remove("CRANELISP_RC_STATS")
+        .env_remove("CRANELISP_RC_DEC_CHECK")
+        .env_remove("CRANELISP_NO_IO_SCHEDULE")
+        .env_remove("CRANELISP_RC_TRACE")
+        .env_remove("CRANELISP_CODEGEN_TRACE")
+        .env_remove("CRANELISP_GOT_TRACE")
+        .env_remove("CRANELISP_MODULE_TRACE")
+        .env_remove("CRANELISP_SCHEDULER_TRACE")
+        .env_remove("CRANELISP_IO_TRACE")
         .output();
 
     // Extract + sort frames exactly as the script does (module::symbol,
-    // byte-verbatim bodies, duplicate frames dedup to FIRST occurrence —
-    // the deterministic initial compile; recompilation passes carry
-    // scheduler-timing-dependent FuncId numbering, B0-be finding, see
-    // ownership-codegen.md §13.1). CRANELISP_CODEGEN_DUMP frames arrive on
+    // byte-verbatim bodies). CRANELISP_CODEGEN_DUMP frames arrive on
     // STDERR (backend lib.rs) — stdout is the program's own output.
+    // NOTE (review F6): this extraction mirrors the Python one in
+    // tests/scripts/clif_golden.sh dump() — keep the two in lockstep; a
+    // THIRD consumer is the bar for unifying them into one tool.
     let re = regex::Regex::new(
         r"(?s); === CLIF (\S+) ===\n.*?; === end CLIF (\S+) ===\n",
     )
     .unwrap();
     let mut frames: std::collections::BTreeMap<String, String> = Default::default();
     for cap in re.captures_iter(&out.stderr) {
-        if cap[1] == cap[2] {
-            frames.entry(cap[1].to_string()).or_insert_with(|| cap[0].to_string());
-        }
+        assert_eq!(
+            &cap[1], &cap[2],
+            "malformed CLIF frame: start/end symbol names disagree \
+             (interleaved or truncated dump); stderr:\n{}",
+            out.stderr
+        );
+        let prev = frames.insert(cap[1].to_string(), cap[0].to_string());
+        assert!(
+            prev.is_none(),
+            "DUPLICATE FRAME: {} — under --no-cache each symbol dumps \
+             exactly once (JIT pass); a second frame means the nice-worker \
+             .o cache-write pass leaked into the capture (config drift). \
+             Hard error — do NOT dedup (review F4).",
+            &cap[1]
+        );
     }
     let dumped: String = frames.into_values().collect();
     assert!(
         !dumped.is_empty(),
-        "no CLIF frames captured from CRANELISP_CODEGEN_DUMP; stderr:\n{}",
+        "no CLIF frames captured from CRANELISP_CODEGEN_DUMP — the \
+         empty-vs-empty false-green class (S102 Wave 1, review F3); stderr:\n{}",
         out.stderr
     );
     assert_eq!(

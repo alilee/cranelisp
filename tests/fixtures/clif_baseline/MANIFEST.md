@@ -9,19 +9,38 @@ golden dumps beside this file under `golden/`.
 
 ## Capture contract (binding on the B0-be capture change-set)
 
-- **Mechanism:** `CRANELISP_CODEGEN_DUMP=*`, cold-cache `--run`, one
-  invocation per corpus entry in an isolated tmpdir (no prelude file — every
-  entry is self-importing). Script: `tests/scripts/clif_golden.sh`.
+- **Mechanism:** `CRANELISP_CODEGEN_DUMP=*`, cold-cache `--run --no-cache`,
+  one invocation per corpus entry in an isolated tmpdir (no prelude file —
+  every entry is self-importing). Script: `tests/scripts/clif_golden.sh`.
+  `--no-cache` (S102 Wave 3R, review F4) structurally eliminates the
+  nice-worker `.o` cache-write pass, so each symbol dumps exactly ONCE —
+  the JIT pass, which is what the goldens pinned (verified byte-identical
+  13/13 at adoption, zero churn). A **duplicate frame is a hard error**
+  (config drift — the cache pass leaked back in), never deduped.
 - **Frames** sorted by `module::symbol` (Hook H1 frame-atomic writes;
   harness-side sort is the default resolution unless the dump interleaves
-  mid-function — qa plan §6 G-1).
+  mid-function — qa plan §6 G-1). **Zero frames extracted is a hard error**
+  (the S102 Wave-1 empty-vs-empty false-green class, review F3) — the dump
+  channel is STDERR (backend lib.rs).
 - **Content byte-verbatim, NO canonicalization** — wrapper/slot identity is
   load-bearing (masking blinds the oracle to the 0483 class).
 - **Determinism self-test:** double capture per entry, byte-identical,
   BEFORE any golden commit.
-- **Config pins:** all perf toggles unset — `CRANELISP_NO_OWNERSHIP`,
-  `CRANELISP_NO_LENIENT`, `CRANELISP_RC_STATS`, worker-count flags all
-  absent; debug binary from a clean `cargo build`.
+- **Config pins (enforced by `env -u` in the script's `dump()` and by
+  `env_remove` in the in-suite smoke — keep the three sites in sync):**
+  all emission-affecting env unset — `CRANELISP_NO_OWNERSHIP`,
+  `CRANELISP_NO_LENIENT`, `CRANELISP_CAPTURE_BORROW`,
+  `CRANELISP_NONATOMIC_RC`, `CRANELISP_RC_STATS`, `CRANELISP_RC_DEC_CHECK`
+  (each gates CLIF emission — backend `heap.rs` / `sparkability.rs`), and
+  `CRANELISP_NO_IO_SCHEDULE` (pre-typecheck bind-chain transform,
+  `src/process_form.rs` — shapes the ParBind entries). Compile-time trace
+  vars (`CRANELISP_RC_TRACE`, `CRANELISP_CODEGEN_TRACE`,
+  `CRANELISP_GOT_TRACE`, `CRANELISP_MODULE_TRACE`,
+  `CRANELISP_SCHEDULER_TRACE`, `CRANELISP_IO_TRACE`) are also cleared —
+  they write to stderr, the dump channel. Worker-count flags absent;
+  runtime-only knobs (`CRANELISP_SPARK_BUDGET`, `CRANELISP_SATURATION_GATE`,
+  `CRANELISP_DEGREE`) do not affect CLIF and are unpinned; debug binary
+  from a clean `cargo build`.
 - **Green-only:** every entry runs green at capture time (verified at corpus
   authoring, 2026-07-03 — exit codes recorded below). Shapes under open
   failing-not-ignored guards are EXCLUDED — see `EXCLUSIONS.md`.

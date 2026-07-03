@@ -46,11 +46,21 @@ ENTRIES=(
 
 [ -x "$BIN" ] || { echo "error: $BIN not built (cargo build first)"; exit 2; }
 
-# dump <source.cl> <out-file> — cold-cache --run with the config pins
-# (MANIFEST §Capture contract): perf toggles UNSET, fresh tmpdir, dump
-# frames extracted from STDERR (the CRANELISP_CODEGEN_DUMP channel per
-# design/backend/ownership-codegen.md §13.1 and backend lib.rs — stdout
-# carries only the program's own output), sorted by module::symbol.
+# dump <source.cl> <out-file> — cold-cache `--run --no-cache` with the config
+# pins (MANIFEST §Capture contract): emission-affecting env UNSET, fresh
+# tmpdir, dump frames extracted from STDERR (the CRANELISP_CODEGEN_DUMP
+# channel per design/backend/ownership-codegen.md §13.1 and backend lib.rs —
+# stdout carries only the program's own output), sorted by module::symbol.
+#
+# `--no-cache` (Wave 3R, review F4): with the cache on, every symbol dumps
+# TWICE — the JIT pass plus the nice-worker `.o` cache-write pass
+# (`src/session_v4/nice_worker.rs::emit_object`; `dump_this` in backend
+# lib.rs ignores `capture_clif: false`), and first-occurrence-=-JIT-pass
+# relied only on the nice thread's OS priority (a race). `--no-cache`
+# structurally eliminates the second pass: each symbol dumps exactly ONCE
+# (the JIT pass — byte-identical to the committed goldens, verified 13/13
+# at adoption), so a duplicate frame is a HARD ERROR (config drift), not
+# something to dedup.
 dump() {
   local src="$1" out="$2"
   local d
@@ -58,25 +68,48 @@ dump() {
   cp "$src" "$d/user.cl"
   (
     cd "$d"
-    env -u CRANELISP_NO_OWNERSHIP -u CRANELISP_NO_LENIENT -u CRANELISP_RC_STATS \
+    # Emission-affecting pins (MANIFEST §Capture contract — keep in sync):
+    #   NO_OWNERSHIP / NO_LENIENT / CAPTURE_BORROW / NONATOMIC_RC /
+    #   RC_STATS / RC_DEC_CHECK (all gate CLIF emission in backend heap.rs /
+    #   sparkability.rs) + NO_IO_SCHEDULE (pre-typecheck bind-chain
+    #   transform, src/process_form.rs — shapes the ParBind entries).
+    # Trace vars are cleared for stderr-channel hygiene: the dump frames
+    # arrive on stderr, and compile-time trace lines could land mid-frame.
+    env -u CRANELISP_NO_OWNERSHIP -u CRANELISP_NO_LENIENT \
+        -u CRANELISP_CAPTURE_BORROW -u CRANELISP_NONATOMIC_RC \
+        -u CRANELISP_RC_STATS -u CRANELISP_RC_DEC_CHECK \
+        -u CRANELISP_NO_IO_SCHEDULE \
         -u CRANELISP_RC_TRACE -u CRANELISP_CODEGEN_TRACE \
-        CRANELISP_CODEGEN_DUMP='*' "$BIN" --run user.cl >raw.txt 2>err.txt
+        -u CRANELISP_GOT_TRACE -u CRANELISP_MODULE_TRACE \
+        -u CRANELISP_SCHEDULER_TRACE -u CRANELISP_IO_TRACE \
+        CRANELISP_CODEGEN_DUMP='*' "$BIN" --run user.cl --no-cache \
+        >raw.txt 2>err.txt
   ) || true   # program exit code is its return value, not a failure signal
-  # Extract frames and sort by the module::symbol header. Frames are
-  # `; === CLIF <name> ===` ... `; === end CLIF <name> ===`; duplicate
-  # frames (recompilation passes) dedup to the FIRST occurrence — the
-  # initial cold-cache compile, which is byte-deterministic. Later passes
-  # re-derive the JIT symbol set after scheduler-timing-dependent symbol
-  # registrations, so their FuncId immediates (`u0:N`) shuffle run-to-run
-  # and carry no emission signal (B0-be determinism finding, S102; see
-  # design/backend/ownership-codegen.md §13.1).
+  # Extract frames (`; === CLIF <name> ===` ... `; === end CLIF <name> ===`)
+  # and sort by the module::symbol header. Zero frames or a duplicate frame
+  # is a hard error (review F3/F4 — the Wave-1 empty-vs-empty false green
+  # and the cache-pass race, respectively).
+  # NOTE (review F6): this extraction is mirrored in Rust in
+  # tests/ownership_fences.rs::clif_golden_single_module_smoke — keep the
+  # two in lockstep; a THIRD consumer is the bar for unifying them.
   python3 - "$d/err.txt" "$out" <<'PY'
 import re, sys
 raw = open(sys.argv[1]).read()
 frames = {}
 for m in re.finditer(r'; === CLIF (\S+) ===\n(.*?); === end CLIF \1 ===\n',
                      raw, re.S):
-    frames.setdefault(m.group(1), m.group(0))
+    name = m.group(1)
+    if name in frames:
+        sys.exit(f"DUPLICATE FRAME: {name} — under --no-cache each symbol "
+                 "dumps exactly once (JIT pass); a second frame means the "
+                 "nice-worker .o cache-write pass leaked into the capture "
+                 "(config drift). Hard error — do NOT dedup.")
+    frames[name] = m.group(0)
+if not frames:
+    sys.exit("NO FRAMES: zero CLIF frames extracted from the dump stream — "
+             "the empty-vs-empty false-green class (S102 Wave 1). Check the "
+             "stderr channel and CRANELISP_CODEGEN_DUMP wiring before "
+             "trusting any diff.")
 with open(sys.argv[2], 'w') as f:
     for name in sorted(frames):
         f.write(frames[name])

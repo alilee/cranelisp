@@ -107,6 +107,47 @@ B3.1. Post-addendum canonical baseline (verified this wave, full-suite run @
 stage-1 set + #28/#29 above, itemized fail set checked name-by-name (no
 regression; the drafting-finding-2 flake did not recur this run).
 
+**Wave-3R addendum (oracle hardening + ratification, /qa, 2026-07-03):** the
+four B0-be review findings landed on the L-B1 lane
+(`tests/scripts/clif_golden.sh` `dump()` + the
+`ownership_fences::clif_golden_single_module_smoke` mirror +
+`tests/fixtures/clif_baseline/MANIFEST.md` §Capture contract) — no test-count
+change; goldens byte-untouched:
+
+- **F4** — capture adopts `--run --no-cache`: structurally eliminates the
+  nice-worker `.o` cache-write second dump pass (and the nice-thread-priority
+  race behind first-occurrence-=-JIT-pass). Dedup DELETED both sides; a
+  duplicate frame is now a **hard error**. Churn-free proof: `selftest`
+  deterministic 13/13 AND `diff` EMPTY 13/13 against the `05818e9` goldens —
+  the review's 3/3 spot-check extends to the full corpus; zero re-baseline.
+- **F2** — config pins enforced at both extraction sites (script `env -u`,
+  smoke `env_remove`): `CRANELISP_CAPTURE_BORROW` (the live emission hole),
+  `CRANELISP_NO_LENIENT`, `CRANELISP_NONATOMIC_RC`, plus **two additional
+  emission-affecting pins found unenforced and previously un-named**:
+  `CRANELISP_RC_DEC_CHECK` (backend `heap.rs:270` — emits guarded-dec code)
+  and `CRANELISP_NO_IO_SCHEDULE` (`src/process_form.rs:377` — pre-typecheck
+  bind-chain transform; shapes entry 09's ParBind CLIF). `CRANELISP_RC_STATS`
+  (MANIFEST-named, emission-affecting per `heap.rs:296`) was enforced in the
+  script but not the smoke — now both. Compile-time trace vars also cleared
+  (stderr = the dump channel). MANIFEST pin list updated; §13.1's doc-side
+  pin-list correction rides FIXME 0506 (/design backend).
+- **F3** — zero-frames-extracted is a hard error in `dump()` (inherited by
+  capture/diff/selftest) and asserted in the smoke. Demonstrated end-to-end:
+  a throwaway script copy with the dump env broken fails loudly
+  (`NO FRAMES … exit 1`); a copy with `--no-cache` stripped trips
+  `DUPLICATE FRAME: user::area … exit 1`.
+- **F6 (cheap part)** — dual-dialect mirror comments at both extraction
+  sites (script Python ↔ smoke Rust); third consumer = the unification bar.
+- **Ratification:** /dev(backend)'s Wave-3 cross-ownership edits to
+  `clif_golden.sh` (stderr channel + FIRST-occurrence dedup), the smoke
+  (same), and MANIFEST (Capture-SHA fill `05818e9` ×13) reviewed as owner —
+  **ratified**; the dedup halves are superseded (not reverted) by F4's
+  duplicate-hard-error, which is strictly stronger.
+
+Canonical suite post-3R: `3582 run: 3532 passed / 50 failed / 1 skipped` @
+113s — identical numbers AND itemized fail set to the post-Wave-3 baseline
+(50 unique names checked; the golden smoke stays green under `--no-cache`).
+
 **Canonical suite at stage-1 close: runs 2+3 (consecutive) =
 `3578 run: 3529 passed / 49 failed / 1 skipped` @ 108s / 122s — identical
 fail sets.** The 49 = the 22 S101-close intentional guards (one renamed:
