@@ -705,6 +705,50 @@ impl CompilerSession {
         None
     }
 
+    /// Resolve an introspection-command argument that may be a bare name or a
+    /// module-qualified `module/name` (§3.8/§3.6/§17.6.1; FIXME 0487) to its
+    /// home module + bare symbol. A `/`-qualified qualifier is alias-substituted
+    /// (§8.6.6 longest-prefix, the same substitution the FQ-autoload boundary
+    /// uses); a bare argument keeps the current REPL module as its home.
+    ///
+    /// This is the single argument-shape authority shared across `/sig`,
+    /// `/info`, `/source`, `/sexp`, `/clif`, and `/refs` — the FQ names the
+    /// transaction/cascade reports print (`; broken: n/ng — …`) MUST be
+    /// pasteable into every introspection command (0487's operational
+    /// complaint).
+    pub(crate) fn resolve_symbol_arg(&self, name: &str) -> (ModuleFullPath, String) {
+        match name.rsplit_once('/') {
+            Some((module_part, bare)) => {
+                let resolved = cranelisp_types::substitute_module_alias(
+                    &self.shared.module_aliases,
+                    &ModuleFullPath::from(module_part),
+                );
+                (resolved, bare.to_string())
+            }
+            None => (self.current_module_path(), name.to_string()),
+        }
+    }
+
+    /// FQ-aware entry lookup for the introspection commands. For a
+    /// module-qualified `module/name`, resolves the home module (alias-aware)
+    /// and looks the bare symbol up in that module's own table. For a bare
+    /// name, delegates to `lookup_with_prelude_fallback` (current → prelude →
+    /// root) so bare resolution is unchanged. Returns `(entry, home_module,
+    /// bare)`.
+    pub(crate) fn resolve_entry_arg(
+        &self,
+        name: &str,
+    ) -> Option<(ModuleEntry<Code>, ModuleFullPath, String)> {
+        if name.contains('/') {
+            let (home, bare) = self.resolve_symbol_arg(name);
+            let entry = self.shared.symbol_tables.get(&home)?.get(&bare)?.clone();
+            Some((entry, home, bare))
+        } else {
+            let (entry, module) = self.lookup_with_prelude_fallback(name)?;
+            Some((entry, module, name.to_string()))
+        }
+    }
+
     pub(crate) fn handle_sig(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /sig <name>".to_string();
@@ -712,9 +756,28 @@ impl CompilerSession {
         if intrinsic_type_from_name(name).is_some() {
             return format!("{name} ; type - builtin type");
         }
-        match self.lookup_with_prelude_fallback(name) {
-            Some((entry, lookup_module)) => {
-                let sig = format_entry_sig(&entry, name);
+        let was_qualified = name.contains('/');
+        match self.resolve_entry_arg(name) {
+            Some((entry, lookup_module, bare)) => {
+                // §3.8 (FIXME 0487): a module-qualified argument OR a bare
+                // IMPORTED name resolves through its import chain to the
+                // defining entry and shows that entry's FULL, module-qualified
+                // signature line (the same `:(Fn …) module/name ; defn` shape
+                // bare-value display uses) — not the bare `mf ; imported from
+                // …` stub. A bare name that resolves LOCALLY keeps the existing
+                // bare-name `/sig` rendering (the §3.8 local-agreement tightening
+                // is 0492 / a later wave).
+                let is_import = matches!(entry, ModuleEntry::Import { .. });
+                if was_qualified || is_import {
+                    let (resolved_entry, resolved_module) =
+                        self.resolve_entry_for_display(&entry, &lookup_module);
+                    let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
+                    return match self.broken_status_line(name, &resolved_module) {
+                        Some(line) => format!("{sig}\n{line}"),
+                        None => sig,
+                    };
+                }
+                let sig = format_entry_sig(&entry, &bare);
                 // S101 (repl/spec.md §18.4): a broken symbol's /sig shows the
                 // same primary line plus the provenance comment line.
                 match self.broken_status_line(name, &lookup_module) {
@@ -904,19 +967,65 @@ impl CompilerSession {
         if sym.is_empty() {
             return "Usage: /refs <symbol-name>".to_string();
         }
+        // §17.6.1 / FIXME 0487: accept a module-qualified argument (the cascade
+        // report's own FQ names) — resolve to (home, bare); the token scan +
+        // reverse-index target both key off the bare name.
+        let (home, bare) = self.resolve_symbol_arg(sym);
         // §17.6.1: a genuinely-unbound name is distinguished from a bound-but-
         // unreferenced one — report `unbound symbol '<sym>'` (consistent with
         // §4.1.10) rather than silently reporting no references.
-        if !self.symbol_is_bound(sym) {
+        if !self.symbol_is_bound(&bare) {
             return format!("unbound symbol '{sym}'");
         }
-        let referers = self.scan_referers(sym, false);
+        let referers = self.collect_referers(&home, &bare, false);
         if referers.is_empty() {
             return format!("; no references to {sym}");
         }
         let mut out = format!("; references to {sym}\n");
         out.push_str(&format_symbol_layout(&referers).join("\n"));
         out
+    }
+
+    /// The `/refs` referer set (§17.6.1 / FIXME 0487): the union of the
+    /// `redefine::ReverseIndex` callable-referent feed (`callers_of` over the
+    /// serialized, 0470-widened `callees` — **present for cache-restored modules
+    /// by construction**, so cross-project call sites do not silently vanish
+    /// when introspection is absent) and the retained token-scan
+    /// (`scan_referers`, which also catches non-callable referents — type names
+    /// in annotations — that carry no `callees` edge). Union + dedup.
+    ///
+    /// NOTE (FIXME 0507 Issue 2 / F3): `ReverseIndex::build` excludes
+    /// `__macro_*` clause defns as callers (the 0491 gate-exempt rule), so a
+    /// persistent macro-clause reference to `target` is NOT surfaced by the
+    /// callable feed. The token-scan leg only covers referents whose
+    /// introspection body was recorded — macro clauses generally are not — so
+    /// macro-clause references remain a `/refs` gap. Left for the 0507 drain
+    /// (the design's textual-scan-must-cover-macro-clauses leg), not patched by
+    /// weakening the 0491 exclusion here.
+    fn collect_referers(
+        &self,
+        home: &ModuleFullPath,
+        bare: &str,
+        tests_only: bool,
+    ) -> Vec<String> {
+        let mut referers: Vec<String> = Vec::new();
+        // Callable referents via the reverse index (skip for `/tests-for`,
+        // which filters to the token-scanned test-fn shape).
+        if !tests_only {
+            let target = FQSymbol {
+                module: home.clone(),
+                symbol: Symbol::from(bare),
+            };
+            let index = crate::redefine::ReverseIndex::build(&self.shared.symbol_tables);
+            for caller in index.callers_of_with_variants(&target) {
+                referers.push(format!("{}/{}", caller.module.as_ref(), caller.symbol.as_ref()));
+            }
+        }
+        // Token scan for non-callable referents + introspection-recorded bodies.
+        referers.extend(self.scan_referers(bare, tests_only));
+        referers.sort();
+        referers.dedup();
+        referers
     }
 
     /// `/tests-for <sym>` handler (repl/spec.md §17.6.2, design/int/agent.md §9).
@@ -927,10 +1036,11 @@ impl CompilerSession {
         if sym.is_empty() {
             return "Usage: /tests-for <symbol-name>".to_string();
         }
-        if !self.symbol_is_bound(sym) {
+        let (home, bare) = self.resolve_symbol_arg(sym);
+        if !self.symbol_is_bound(&bare) {
             return format!("unbound symbol '{sym}'");
         }
-        let referers = self.scan_referers(sym, true);
+        let referers = self.collect_referers(&home, &bare, true);
         if referers.is_empty() {
             return format!("; no tests reference {sym}");
         }
@@ -1183,11 +1293,15 @@ impl CompilerSession {
         );
     }
 
-    /// Look up introspection data for a bare symbol name in the current module.
+    /// Look up introspection data for a symbol name — bare (current module) or
+    /// module-qualified (§17.6.1 / FIXME 0487: `/source`, `/sexp`, `/clif`, and
+    /// `/info`'s code-size read accept the FQ names the reports print). A bare
+    /// name keeps the current-module home, so bare-name behaviour is unchanged.
     pub(crate) fn get_introspection(&self, name: &str) -> Option<dashmap::mapref::one::Ref<'_, FQSymbol, Introspection>> {
+        let (module, bare) = self.resolve_symbol_arg(name);
         let fq = FQSymbol {
-            module: self.current_module_path(),
-            symbol: Symbol::from(name),
+            module,
+            symbol: Symbol::from(bare),
         };
         self.shared.introspection.as_ref().and_then(|m| m.get(&fq))
     }
@@ -1283,22 +1397,26 @@ impl CompilerSession {
         if intrinsic_type_from_name(name).is_some() {
             return self.format_builtin_type_display(name);
         }
-        let (entry, lookup_module) = match self.lookup_with_prelude_fallback(name) {
-            Some(pair) => pair,
+        // §3.6 (FIXME 0487): accept a module-qualified argument — the FQ names
+        // the cascade reports print MUST be pasteable into `/info`. `bare` is
+        // the name without the qualifier so `format_def_entry` renders one
+        // clean `module/name`, not `module/mod/name`.
+        let (entry, lookup_module, bare) = match self.resolve_entry_arg(name) {
+            Some(triple) => triple,
             None => return format!("error: unknown symbol '{name}'"),
         };
         let (resolved_entry, resolved_module) =
             self.resolve_entry_for_display(&entry, &lookup_module);
-        let sig = self.format_def_entry(&resolved_entry, name, &resolved_module);
+        let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
         // §3.6 third MUST component (FIXME 0480): the definition source,
         // rendered for BOTH the broken and healthy arms.
-        let source = self.info_definition_source(name, &resolved_module);
+        let source = self.info_definition_source(&bare, &resolved_module);
         // S101 (repl/spec.md §18.4): a broken symbol's /info shows the primary
         // line (last-good signature) + the provenance comment line + the
         // definition source, and MUST NOT display code-size stats — its
         // compiled code is gone, and the trap stub is an implementation
         // detail, not the symbol's code.
-        if let Some(line) = self.broken_status_line(name, &resolved_module) {
+        if let Some(line) = self.broken_status_line(&bare, &resolved_module) {
             return match source {
                 Some(src) => format!("{sig}\n{line}\n{src}"),
                 None => format!("{sig}\n{line}"),
@@ -3439,6 +3557,173 @@ mod format_entry_sig_tests {
         assert!(
             !out.contains("clauses"),
             "single-clause macro card MUST NOT carry a clause count, got: {out}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CS-0487 (S102 Wave 7) — FQ introspection-argument resolution.
+// spec: repl/spec.md §3.8 (/sig FQ) + §3.6 (/info FQ) + §17.6.1 (/refs FQ);
+//       spec/08-modules.md §8.5.1 (module-qualified name is a symbol)
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod fq_arg_tests {
+    use super::*;
+    use crate::session_v4::{RunMode, SessionSettings};
+    use cranelisp_types::{
+        CodegenBehaviour, DefKind, ModuleAliasEntry, ModuleEntry, ModuleFullPath, Scheme, Span,
+        Symbol, Type, UserFnState, Visibility,
+    };
+    use std::collections::HashMap as StdHashMap;
+
+    fn session() -> CompilerSession {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings = SessionSettings {
+            no_color: true,
+            no_cache: true,
+            codegen_behaviour: CodegenBehaviour::InMemoryAndObject,
+            priority_workers: 1,
+            nice_workers: 1,
+            run_mode: RunMode::Repl,
+        };
+        CompilerSession::new(settings, tmp.keep(), "user")
+    }
+
+    fn int_fn_scheme() -> Scheme {
+        Scheme {
+            type_vars: vec![],
+            constraints: StdHashMap::new(),
+            ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
+        }
+    }
+
+    fn userfn_def(doc: Option<&str>) -> ModuleEntry<Code> {
+        ModuleEntry::Def {
+            scheme: int_fn_scheme(),
+            visibility: Visibility::Public,
+            docstring: doc.map(|s| s.to_string()),
+            param_names: vec![Symbol::from("x")],
+            kind: Box::new(DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+            }),
+            callees: Vec::new(),
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            codegen_view: None,
+            code: None,
+            value_use: false,
+        }
+    }
+
+    /// Install module `m` with a single Def `mf`.
+    fn install_m(s: &CompilerSession, doc: Option<&str>) {
+        let m = ModuleFullPath::from("m");
+        let mut table = SessionSymbolTable::new_with_params(m.clone());
+        table.insert(Symbol::from("mf"), userfn_def(doc));
+        s.shared.symbol_tables.insert(m, table);
+    }
+
+    // A bare argument keeps the current module as its home; the FQ split leaves
+    // it untouched. spec: §17.6.1
+    #[test]
+    fn resolve_symbol_arg_bare_keeps_current_module() {
+        let s = session();
+        let (home, bare) = s.resolve_symbol_arg("foo");
+        assert_eq!(home, s.current_module_path());
+        assert_eq!(bare, "foo");
+    }
+
+    // A module-qualified argument splits on the LAST `/` into (home, bare).
+    // spec: spec/08-modules.md §8.5.1
+    #[test]
+    fn resolve_symbol_arg_qualified_splits_home_and_bare() {
+        let s = session();
+        let (home, bare) = s.resolve_symbol_arg("m/mf");
+        assert_eq!(home.as_ref(), "m");
+        assert_eq!(bare, "mf");
+    }
+
+    // The qualifier is alias-substituted (§8.6.6): a `(mod util)`-style bare
+    // alias `u → real.mod` resolves the home.
+    #[test]
+    fn resolve_symbol_arg_substitutes_module_alias() {
+        let s = session();
+        s.shared.module_aliases.insert(
+            ModuleFullPath::from("u"),
+            ModuleAliasEntry::new(ModuleFullPath::from("real.mod"), Visibility::Private, Span::SYNTHETIC),
+        );
+        let (home, bare) = s.resolve_symbol_arg("u/helper");
+        assert_eq!(home.as_ref(), "real.mod");
+        assert_eq!(bare, "helper");
+    }
+
+    // resolve_entry_arg finds a module-qualified symbol in its home table.
+    #[test]
+    fn resolve_entry_arg_qualified_finds_entry_in_home_table() {
+        let s = session();
+        install_m(&s, None);
+        let got = s.resolve_entry_arg("m/mf");
+        assert!(got.is_some(), "m/mf must resolve to the Def in module m");
+        let (_, home, bare) = got.unwrap();
+        assert_eq!(home.as_ref(), "m");
+        assert_eq!(bare, "mf");
+    }
+
+    // /sig on a module-qualified name shows the full FQ signature line (not
+    // `unknown symbol`). spec: §3.8
+    #[test]
+    fn handle_sig_accepts_fq_name() {
+        let s = session();
+        install_m(&s, Some("doc mf"));
+        let out = s.handle_sig("m/mf");
+        assert!(!out.contains("unknown symbol"), "got: {out}");
+        assert!(out.contains("m/mf"), "the FQ name must appear; got: {out}");
+        assert!(out.contains("(Fn ["), "the full signature must appear; got: {out}");
+    }
+
+    // /info on a module-qualified name resolves (not `unknown symbol`) and
+    // renders one clean `module/name` (no `module/mod/name` double). spec: §3.6
+    #[test]
+    fn handle_info_accepts_fq_name_single_qualification() {
+        let s = session();
+        install_m(&s, Some("doc mf"));
+        let out = s.handle_info("m/mf");
+        assert!(!out.contains("unknown symbol"), "got: {out}");
+        assert!(out.contains("m/mf"), "got: {out}");
+        assert!(!out.contains("m/m/mf") && !out.contains("m/mf/mf"), "no double-qualification; got: {out}");
+    }
+
+    // /sig on an unknown FQ name is graceful.
+    #[test]
+    fn handle_sig_unknown_fq_is_graceful() {
+        let s = session();
+        let out = s.handle_sig("nope/missing");
+        assert!(out.contains("unknown symbol"), "got: {out}");
+    }
+
+    // collect_referers surfaces a caller via the reverse-index feed even when
+    // the caller carries no introspection body (cache-restored-shape: the
+    // `callees` edge is the authority). spec: §17.6.1
+    #[test]
+    fn collect_referers_reverse_index_finds_caller_without_introspection() {
+        let s = session();
+        let m = ModuleFullPath::from("m");
+        let mut table = SessionSymbolTable::new_with_params(m.clone());
+        table.insert(Symbol::from("mf"), userfn_def(None));
+        // mg calls mf — the `callees` edge (serialized for cache-restored
+        // modules) is present, but no introspection record exists.
+        let mut mg = userfn_def(None);
+        if let ModuleEntry::Def { callees, .. } = &mut mg {
+            callees.push(FQSymbol { module: m.clone(), symbol: Symbol::from("mf") });
+        }
+        table.insert(Symbol::from("mg"), mg);
+        s.shared.symbol_tables.insert(m.clone(), table);
+
+        let referers = s.collect_referers(&m, "mf", false);
+        assert!(
+            referers.iter().any(|r| r == "m/mg"),
+            "the reverse-index feed must list m/mg without an introspection body; got: {referers:?}",
         );
     }
 }
