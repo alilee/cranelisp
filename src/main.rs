@@ -467,7 +467,9 @@ fn run(
                                 eval_ms = (t2 - t1).as_millis() as u64;
                                 s.pretty_print(&text, &mut stdout);
                                 // Persist definitions to backing file (repl/spec.md §15).
-                                if result.is_def() {
+                                // Genuine definitions only (F6): a display-only
+                                // bare-lookup Def must not rewrite the file.
+                                if result.is_defining() {
                                     s.regenerate_backing_file();
                                 }
                             }

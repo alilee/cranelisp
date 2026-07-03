@@ -154,9 +154,50 @@ impl EvalResult {
         }
     }
 
-    /// Whether this is a definition.
-    pub fn is_def(&self) -> bool {
-        matches!(self, EvalResult::Def { .. })
+    /// Whether this turn GENUINELY (re)defined a symbol — the regeneration
+    /// trigger (repl/spec.md §15.1: regeneration fires on successful
+    /// DEFINITIONS only). A display-only `Def` (bare-symbol lookup,
+    /// `defined: false`) is NOT a defining turn: regenerating on it rewrote
+    /// the backing file on pure lookups (S102 W5 review F6 — with a
+    /// hand-authored adopted `user.cl` that was a data-loss surface, not a
+    /// harmless no-op). Replaces the shape-only `is_def()` so no caller can
+    /// key regen on the variant alone.
+    pub fn is_defining(&self) -> bool {
+        matches!(self, EvalResult::Def { defined: true, .. })
+    }
+}
+
+#[cfg(test)]
+mod eval_result_tests {
+    use super::*;
+    use cranelisp_types::ModuleFullPath;
+
+    // spec: repl/spec.md §15.1 — regen triggers on successful definitions
+    // only; a display-only bare-lookup Def MUST NOT trigger regen (F6 cell:
+    // regen-silence on bare lookup, pinned at the predicate seam both regen
+    // sites — main.rs and agent/pull.rs — gate on).
+    #[test]
+    fn is_defining_true_for_genuine_def_false_for_display_only_and_val() {
+        let fq = FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: cranelisp_types::Symbol::from("f"),
+        };
+        let genuine = EvalResult::Def {
+            symbol: fq.clone(),
+            ty: Type::Int,
+            warnings: Vec::new(),
+            defined: true,
+        };
+        let display_only = EvalResult::Def {
+            symbol: fq,
+            ty: Type::Int,
+            warnings: Vec::new(),
+            defined: false,
+        };
+        let val = EvalResult::Val { value: 1, ty: Type::Int, warnings: Vec::new() };
+        assert!(genuine.is_defining());
+        assert!(!display_only.is_defining(), "bare lookup must not trigger regen");
+        assert!(!val.is_defining());
     }
 }
 

@@ -404,7 +404,10 @@ impl CompilerSession {
                 Ok(Some(result)) => {
                     let text = self.format_eval_result(&result);
                     let _ = writeln!(stdout, "{text}");
-                    if result.is_def() {
+                    // Genuine definitions only (F6) — the P8 mirror of the
+                    // main.rs regen gate: a display-only bare-lookup Def must
+                    // not rewrite the backing file.
+                    if result.is_defining() {
                         self.regenerate_backing_file();
                     }
                     // The turn "produced something": a committed submit suppresses

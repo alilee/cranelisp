@@ -126,6 +126,22 @@ pub(crate) fn is_t1_downgrade(o: &RedefinitionOutcome) -> bool {
     o.prior_was_def && !o.per_symbol && !is_gate_exempt_internal(o.fq.symbol.as_ref())
 }
 
+/// Does this commit outcome clear the symbol's BROKEN record (§18.6 recovery
+/// direction 1 — an ordinary redefinition of a broken symbol recovers it)?
+///
+/// S102 W5 review F1: keying on `kind != New` alone missed the two
+/// `New`-classified REDEFINITION shapes that carry `prior_was_def: true`
+/// (a slot-less prior `Def` — template redefined, or a concrete fn displaced
+/// by a template — classifies `New` because there is no frozen slot to
+/// version), so a broken slot-less template redefined green kept printing
+/// "is broken by …". A genuinely-new definition (no prior `Def`, incl. the
+/// prior-`Import` shadow shape) has no broken record to clear — the remove
+/// is a no-op either way, but the predicate states the intent: every
+/// redefinition-of-a-prior-Def clears.
+pub(crate) fn outcome_clears_broken(o: &RedefinitionOutcome) -> bool {
+    o.kind != RedefKind::New || o.prior_was_def
+}
+
 /// True iff the entry is a concrete single-sig `UserFn` `Def` — the target
 /// kind per-symbol precision covers at stage M (design §2.2).
 pub(crate) fn is_concrete_userfn(entry: &ModuleEntry<Code>) -> bool {
@@ -494,10 +510,15 @@ impl ReverseIndex {
 /// reverse-edge callers of `target` and its `$`-mangled variants, restricted
 /// to entries that hold compiled code (`code: Some` — "compiled callers";
 /// never-compiled callers — templates, `ast`-only entries — late-bind at
-/// their next mint and MUST NOT appear), excluding `is_gate_exempt_internal`
-/// names (the 0491 rule applies here identically), reported at base-defn
-/// grain (a compiled mono caller `g$Int` names `g`), target excluded,
-/// sorted/deduped.
+/// their next mint and MUST NOT appear), reported at base-defn grain (a
+/// compiled mono caller `g$Int` names `g`), target excluded, sorted/deduped.
+///
+/// Gate-exempt internals (`__expr`/`__macro_*`) are excluded at the FEED —
+/// [`ReverseIndex::build`] never records them as callers (the 0491 rule; the
+/// single exclusion authority, Principle 7, pinned by
+/// `reverse_index_neg_excludes_gate_exempt_internal_callers`) — so no
+/// per-consumer re-filter exists here (S102 W5 review F4: the former
+/// belt-and-braces copy was unreachable and is deleted, not kept).
 ///
 /// Pure over the tables; the on-demand [`ReverseIndex`] build runs ONLY on
 /// downgrade turns, so the L-D1 pin (body-only concrete redefinitions at
@@ -506,9 +527,6 @@ pub(crate) fn stale_callers(tables: &SymbolTables, target: &FQSymbol) -> Vec<FQS
     let reverse = ReverseIndex::build(tables);
     let mut out: Vec<FQSymbol> = Vec::new();
     for caller in reverse.callers_of_with_variants(target) {
-        if is_gate_exempt_internal(caller.symbol.as_ref()) {
-            continue;
-        }
         // "Compiled caller" = the caller's own live entry holds compiled code.
         let compiled = tables
             .get(&caller.module)
@@ -1082,7 +1100,7 @@ impl CompilerSession {
     /// REPL printer.
     pub(crate) fn apply_redefinition_outcomes(&mut self, outcomes: &[RedefinitionOutcome]) {
         for o in outcomes {
-            if o.kind != RedefKind::New {
+            if outcome_clears_broken(o) {
                 self.shared.broken.remove(&o.fq);
             }
         }
@@ -1371,6 +1389,32 @@ mod tests {
             classify_redefinition("f", Some(&prior), &overloaded),
             (RedefKind::AbiPreserving, false)
         );
+    }
+
+    // spec: repl/spec.md §18.6 — recovery direction 1 holds across ALL T1
+    // shapes (S102 W5 review F1): the two `New`-classified REDEFINITION
+    // shapes (slot-less prior Def — template redefined / concrete displaced
+    // by template — carry `prior_was_def: true`) clear the broken record
+    // like any other redefinition; a genuinely-new definition (no prior Def,
+    // incl. the prior-Import shadow shape) does not claim to.
+    #[test]
+    fn outcome_clears_broken_covers_new_classified_redefinition_shapes() {
+        let outcome = |kind, prior_was_def| RedefinitionOutcome {
+            fq: fq("user", "k"),
+            kind,
+            per_symbol: false,
+            prior_was_def,
+            old_slot: None,
+            new_slot: None,
+        };
+        // The recovery cell the F1 defect missed: broken slot-less template
+        // redefined green → classified New + prior_was_def → CLEARS.
+        assert!(outcome_clears_broken(&outcome(RedefKind::New, true)));
+        // Ordinary redefinitions clear (both classifications).
+        assert!(outcome_clears_broken(&outcome(RedefKind::AbiPreserving, true)));
+        assert!(outcome_clears_broken(&outcome(RedefKind::AbiChanging, true)));
+        // Genuinely new (no prior Def, incl. Import-shadow) — no clear claim.
+        assert!(!outcome_clears_broken(&outcome(RedefKind::New, false)));
     }
 
     // spec: design/int/session-transaction.md §3.3 — the reverse index is
