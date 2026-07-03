@@ -1023,6 +1023,20 @@ CLIF and are unpinned.
 must be byte-identical before the golden commits. A mismatch is an H1-class finding
 routed to `/backend` — never worked around by masking.
 
+> **B0-be capture verdict (S102 Wave 3, goldens at commit `05818e9`): Hook H1 is a
+> NO-OP — not implemented.** Zero mid-frame interleaving across 25 raw capture runs
+> (every `; === CLIF` start/end pair balanced, strictly alternating); the multi-write
+> frames never race in practice — only one dump-eligible module compiles at a time in
+> this corpus. What the (repaired) selftest DID find was content variance, not framing:
+> recompilation passes re-derive the JIT symbol set after scheduler-timing-dependent
+> symbol registrations, so their `u0:N` FuncId immediates shuffle run-to-run (6/13
+> entries, ~50% of runs). First-occurrence frames — the initial cold-cache compile —
+> are byte-deterministic (20/20 single-entry, then 13/13 full-corpus selftest twice
+> consecutively); the harness therefore dedups duplicate frames to FIRST occurrence,
+> not last. Also repaired at capture: the harness parsed stdout while this section pins
+> the dump channel as stderr — the pre-capture "selftest passes" was an empty-vs-empty
+> false green. Fresh-capture diff after the golden commit: EMPTY (install witness).
+
 **Corpus composition** is `/qa`-owned (green-only; EXCLUSIONS = 0483 two-instantiation
 HOF, 0488 FQ-call/imported-value-use, 0484 shadow-order — qa plan §4). One backend pin:
 the corpus SHOULD include the vec COW loop and the *green single-instantiation*

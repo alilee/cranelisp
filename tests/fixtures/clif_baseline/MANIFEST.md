@@ -34,19 +34,19 @@ golden dumps beside this file under `golden/`.
 
 | # | Entry | Source fixture | Shape (mechanism surface) | Green witness (exit, 2026-07-03) | Capture SHA |
 |---|---|---|---|---|---|
-| 1 | 01_adt_construct_match | `corpus/01_adt_construct_match.cl` | ADT construct + match projections | 24 | *(pending B0-be)* |
-| 2 | 02_closures_fn_as_value | `corpus/02_closures_fn_as_value.cl` | closures + same-module fn-as-value (1 instantiation) | 22 | *(pending B0-be)* |
-| 3 | 03_auto_curry | `corpus/03_auto_curry.cl` | auto-curry partial application | 6 | *(pending B0-be)* |
-| 4 | 04_vec_cow_loop | `corpus/04_vec_cow_loop.cl` | vec COW loop (push/set/get/len, direct calls) | 220 | *(pending B0-be)* |
-| 5 | 05_string_externs | `corpus/05_string_externs.cl` | string externs (Decision-24 consuming; S5 sibling surface) | 6 | *(pending B0-be)* |
-| 6 | 06_tco_loop | `corpus/06_tco_loop.cl` | TCO self-recursion (stack-slot back-edge surface) | 186 | *(pending B0-be)* |
-| 7 | 07_trait_dispatch | `corpus/07_trait_dispatch.cl` | deftrait + impls + static dispatch | 8 | *(pending B0-be)* |
-| 8 | 08_adt_in_vec_projection | `corpus/08_adt_in_vec_projection.cl` | ADT-in-Vec projection-read loop (I-G1 class) | 45 | *(pending B0-be)* |
-| 9 | 09_parbind_launch | `corpus/09_parbind_launch.cl` | ParBind/LaunchContinue auto-spark D&C (R6 escape class) | 148 | *(pending B0-be)* |
-| 10 | f1_machinery | `tests/fixtures/s99/f1_machinery.cl` | S99 F1 — spark machinery + shared-grid reads | s99_fixtures.rs guards | *(pending B0-be)* |
-| 11 | f2_contention | `tests/fixtures/s99/f2_contention.cl` | S99 F2 — shared-Vec-of-ADTs copy contention | s99_fixtures.rs guards | *(pending B0-be)* |
-| 12 | f3_inverted_search | `tests/fixtures/s99/f3_inverted_search.cl` | S99 F3 — inverted search | s99_fixtures.rs guards | *(pending B0-be)* |
-| 13 | f4_sudoku | `tests/fixtures/s99/f4_sudoku.cl` | S99 F4 — copy-per-guess search | s99_fixtures.rs guards | *(pending B0-be)* |
+| 1 | 01_adt_construct_match | `corpus/01_adt_construct_match.cl` | ADT construct + match projections | 24 | `05818e9` |
+| 2 | 02_closures_fn_as_value | `corpus/02_closures_fn_as_value.cl` | closures + same-module fn-as-value (1 instantiation) | 22 | `05818e9` |
+| 3 | 03_auto_curry | `corpus/03_auto_curry.cl` | auto-curry partial application | 6 | `05818e9` |
+| 4 | 04_vec_cow_loop | `corpus/04_vec_cow_loop.cl` | vec COW loop (push/set/get/len, direct calls) | 220 | `05818e9` |
+| 5 | 05_string_externs | `corpus/05_string_externs.cl` | string externs (Decision-24 consuming; S5 sibling surface) | 6 | `05818e9` |
+| 6 | 06_tco_loop | `corpus/06_tco_loop.cl` | TCO self-recursion (stack-slot back-edge surface) | 186 | `05818e9` |
+| 7 | 07_trait_dispatch | `corpus/07_trait_dispatch.cl` | deftrait + impls + static dispatch | 8 | `05818e9` |
+| 8 | 08_adt_in_vec_projection | `corpus/08_adt_in_vec_projection.cl` | ADT-in-Vec projection-read loop (I-G1 class) | 45 | `05818e9` |
+| 9 | 09_parbind_launch | `corpus/09_parbind_launch.cl` | ParBind/LaunchContinue auto-spark D&C (R6 escape class) | 148 | `05818e9` |
+| 10 | f1_machinery | `tests/fixtures/s99/f1_machinery.cl` | S99 F1 — spark machinery + shared-grid reads | s99_fixtures.rs guards | `05818e9` |
+| 11 | f2_contention | `tests/fixtures/s99/f2_contention.cl` | S99 F2 — shared-Vec-of-ADTs copy contention | s99_fixtures.rs guards | `05818e9` |
+| 12 | f3_inverted_search | `tests/fixtures/s99/f3_inverted_search.cl` | S99 F3 — inverted search | s99_fixtures.rs guards | `05818e9` |
+| 13 | f4_sudoku | `tests/fixtures/s99/f4_sudoku.cl` | S99 F4 — copy-per-guess search | s99_fixtures.rs guards | `05818e9` |
 
 The S99 entries (10–13) are referenced in place, not copied — their
 parallel≡serial guards (`tests/s99_fixtures.rs`) are the green witness; the
