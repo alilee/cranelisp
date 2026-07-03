@@ -1,0 +1,10 @@
+cranelisp REPL — type /help for help
+\d+\+\d+ms; user> :(Fn [primitives/Int] primitives/Int) user/callee ; defn
+\d+\+\d+ms; user> :(Fn [primitives/Int] primitives/Int) user/caller-a ; defn
+\d+\+\d+ms; user> :(Fn [primitives/Int] primitives/Int) user/caller-p ; defn
+\d+\+\d+ms; user> :(Fn [primitives/String] primitives/Int) user/callee ; defn
+; recompiled:
+;  caller-p
+; broken:
+;  caller-a — type error at 24..34: type mismatch: expected primitives/String, got primitives/Int
+\d+\+\d+ms; user> 

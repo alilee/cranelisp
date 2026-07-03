@@ -683,6 +683,48 @@ impl CrOutput {
         self
     }
 
+    /// L-N2 — the no-internal-artifacts sweep (S102; `tests/plan/
+    /// coverage-audit-s101.md` §2.4 L-N2, curing miss-pattern P6). Asserts
+    /// captured stdout carries NONE of the known internal-artifact shapes
+    /// that leak into diagnostics: Rust Debug reprs (`FQSymbol {`,
+    /// `ModuleFullPath(`, `Symbol(`), synthetic wrapper names (`__expr`,
+    /// `__macro_`), the bogus `at 0..0` span, expansion-buffer internal
+    /// spans (`1000###..`), and the `'...'` placeholder. Apply to any test
+    /// that captures diagnostic output; it is a class guard, not a
+    /// per-defect assertion. NOT yet a harness default — flipping it default
+    /// is assessed after the S102 Block-A5 fixes land (qa plan §1.4).
+    pub fn assert_no_internal_artifacts(self) -> Self {
+        const NEEDLES: &[&str] = &[
+            "FQSymbol {",
+            "ModuleFullPath(",
+            "Symbol(",
+            "__expr",
+            "__macro_",
+            "at 0..0",
+            "'...'",
+        ];
+        for needle in NEEDLES {
+            if self.stdout.contains(needle) {
+                panic!(
+                    "stdout leaks internal artifact '{}' (L-N2 no-internal-artifacts \
+                     sweep; tests/plan/coverage-audit-s101.md §2.4)\nstdout:\n{}",
+                    needle, self.stdout
+                );
+            }
+        }
+        // Expansion-buffer internal spans: `1000###..` (macro-expansion
+        // offsets rebased at 1_000_000+) — first real use of the regex leg.
+        let internal_span = Regex::new(r"1000\d{3,}\.\.").unwrap();
+        if internal_span.is_match(&self.stdout) {
+            panic!(
+                "stdout leaks an internal expansion-buffer span (regex `1000\\d{{3,}}..`) \
+                 (L-N2 sweep)\nstdout:\n{}",
+                self.stdout
+            );
+        }
+        self
+    }
+
     /// Assert stdout matches the given pre-compiled regex.
     pub fn assert_stdout_matches(self, re: &Regex) -> Self {
         if !re.is_match(&self.stdout) {

@@ -42,6 +42,8 @@ fn type_error_arg_mismatch() {
         "type error must surface a 'type error' message; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: repl/spec.md §5.1 — if-condition wrong type
@@ -53,6 +55,8 @@ fn type_error_if_condition_wrong_type() {
         "if with non-Bool condition must error; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: repl/spec.md §5.1 — if-branch type mismatch
@@ -64,6 +68,8 @@ fn type_error_if_branches_mismatch() {
         "if with mismatched branches must error; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // =============================================================================
@@ -85,6 +91,8 @@ fn type_error_has_source_location() {
          repl/spec.md §5.3; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: repl/spec.md §5.3 — a type error MUST name the ACTUAL (inferred) type,
@@ -113,6 +121,8 @@ fn type_error_names_actual_type_fully_qualified() {
          (`primitives/String`) per repl/spec.md §5.3; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: repl/spec.md §5.3 — a type error MUST name the EXPECTED type, FULLY
@@ -137,6 +147,8 @@ fn type_error_names_expected_type_fully_qualified() {
          (`primitives/Int`) per repl/spec.md §5.3; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // =============================================================================
@@ -185,6 +197,8 @@ fn unbound_symbol_clear_error() {
         "unbound error must mention the name or 'undefined'; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: repl/spec.md §5.1 — unbound bare symbol produces error
@@ -196,6 +210,8 @@ fn unbound_bare_symbol_error() {
         "bare unbound symbol must error or report undefined; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // =============================================================================
@@ -213,6 +229,8 @@ fn wrong_arity_too_many_args() {
         "wrong arity must error; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: repl/spec.md §5.1 — too few args produces auto-curry (NOT an error)
@@ -244,6 +262,8 @@ NotAConstructor
         "undefined constructor must error; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: repl/spec.md §5.1 — constructor wrong arg count
@@ -257,6 +277,8 @@ fn constructor_wrong_arg_count_error() {
         "constructor with wrong arg count must error; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // =============================================================================
@@ -272,6 +294,8 @@ fn defmacro_missing_params_error() {
         "defmacro without params must error; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: spec/09-macros.md §9.9 — defmacro with numeric name is an error
@@ -283,6 +307,8 @@ fn defmacro_numeric_name_error() {
         "defmacro with numeric name must error; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: spec/09-macros.md §9.9 — defmacro missing body is an error
@@ -294,6 +320,8 @@ fn defmacro_missing_body_error() {
         "defmacro without body must error; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // =============================================================================
@@ -477,19 +505,25 @@ fn unknown_slash_command_graceful() {
 // spec: repl/spec.md §3.1 — /sig of unknown name does not crash
 #[test]
 fn sig_unknown_name_graceful() {
-    repl("/sig nonexistent-name\n").assert_ok();
+    repl("/sig nonexistent-name\n")
+        .assert_ok()
+        .assert_no_internal_artifacts(); // L-N2 retrofit (S102)
 }
 
 // spec: repl/spec.md §3.1 — /info of unknown name does not crash
 #[test]
 fn info_unknown_name_graceful() {
-    repl("/info nonexistent-name\n").assert_ok();
+    repl("/info nonexistent-name\n")
+        .assert_ok()
+        .assert_no_internal_artifacts(); // L-N2 retrofit (S102)
 }
 
 // spec: repl/spec.md §3.1 — /doc of unknown name does not crash
 #[test]
 fn doc_unknown_name_graceful() {
-    repl("/doc nonexistent-name\n").assert_ok();
+    repl("/doc nonexistent-name\n")
+        .assert_ok()
+        .assert_no_internal_artifacts(); // L-N2 retrofit (S102)
 }
 
 // =============================================================================
@@ -504,35 +538,45 @@ fn doc_unknown_name_graceful() {
 // (carry: legacy/e2e.rs::e2e_s3_1_source_neg_nonexistent)
 #[test]
 fn source_unknown_name_graceful() {
-    repl("/source nonexistent-name\n").assert_ok();
+    repl("/source nonexistent-name\n")
+        .assert_ok()
+        .assert_no_internal_artifacts(); // L-N2 retrofit (S102)
 }
 
 // spec: repl/spec.md §3.1 — /sexp of unknown name does not crash
 // (carry: legacy/e2e.rs::e2e_s3_1_sexp_neg_nonexistent)
 #[test]
 fn sexp_unknown_name_graceful() {
-    repl("/sexp nonexistent-name\n").assert_ok();
+    repl("/sexp nonexistent-name\n")
+        .assert_ok()
+        .assert_no_internal_artifacts(); // L-N2 retrofit (S102)
 }
 
 // spec: repl/spec.md §3.1 — /ast of unknown name does not crash
 // (carry: legacy/e2e.rs::e2e_s3_1_ast_neg_nonexistent)
 #[test]
 fn ast_unknown_name_graceful() {
-    repl("/ast nonexistent-name\n").assert_ok();
+    repl("/ast nonexistent-name\n")
+        .assert_ok()
+        .assert_no_internal_artifacts(); // L-N2 retrofit (S102)
 }
 
 // spec: repl/spec.md §3.1 — /clif of unknown name does not crash
 // (carry: legacy/e2e.rs::e2e_s3_1_clif_neg_nonexistent)
 #[test]
 fn clif_unknown_name_graceful() {
-    repl("/clif nonexistent-name\n").assert_ok();
+    repl("/clif nonexistent-name\n")
+        .assert_ok()
+        .assert_no_internal_artifacts(); // L-N2 retrofit (S102)
 }
 
 // spec: repl/spec.md §3.1 — /disasm of unknown name does not crash
 // (carry: legacy/e2e.rs::e2e_s3_1_disasm_neg_nonexistent)
 #[test]
 fn disasm_unknown_name_graceful() {
-    repl("/disasm nonexistent-name\n").assert_ok();
+    repl("/disasm nonexistent-name\n")
+        .assert_ok()
+        .assert_no_internal_artifacts(); // L-N2 retrofit (S102)
 }
 
 // =============================================================================
@@ -551,6 +595,8 @@ fn failed_defn_neg_no_partial_binding() {
         "failed defn must not register; got:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // spec: repl/spec.md §5.2 (neg) — failed redefn preserves original
@@ -601,6 +647,8 @@ fn duplicate_param_names_neg() {
         "duplicate-param defn must NOT register; got stdout:\n{}",
         out.stdout
     );
+    // L-N2 retrofit (S102): diagnostic output carries no internal artifacts.
+    out.assert_no_internal_artifacts();
 }
 
 // =============================================================================

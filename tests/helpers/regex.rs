@@ -47,6 +47,24 @@ pub mod compiler {
         static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b0x[0-9a-fA-F]+\b").unwrap());
         &RE
     }
+
+    /// The per-turn timing stamp inside the REPL prompt: `NN+NNms`.
+    /// For golden masking (the only nondeterministic bytes in a piped REPL
+    /// transcript) and for answer-line prompt stripping (L-N1,
+    /// tests/display_exact.rs).
+    pub fn prompt_timing() -> &'static Regex {
+        static RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\d+\+\d+ms").unwrap());
+        &RE
+    }
+
+    /// A full REPL prompt fragment (`NN+NNms; <module>> `), possibly
+    /// repeated — prompts for input-only turns are emitted inline before the
+    /// next answer line. For answer-line extraction (L-N1).
+    pub fn prompt_fragment() -> &'static Regex {
+        static RE: Lazy<Regex> =
+            Lazy::new(|| Regex::new(r"(\d+\+\d+ms; [a-zA-Z][a-zA-Z0-9._-]*> )+").unwrap());
+        &RE
+    }
 }
 
 // =============================================================================
