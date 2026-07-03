@@ -409,8 +409,11 @@ pub(crate) fn validate_forms_dry_run(
 /// template — FIXME 0479) takes the complementary displacement arm: the
 /// prior `Code` is retained in the pool (frozen supersession) so compiled
 /// callers keep dispatching the frozen old chain through the still-populated
-/// slot instead of a use-after-free; no `RedefinitionOutcome` is produced
-/// (the T1 semantic cure is FIXME 0477's design question).
+/// slot instead of a use-after-free. Since S102 (§9.1.1 gate widening) BOTH
+/// slot-less-staged shapes — displacement and template-over-template — emit a
+/// `RedefinitionOutcome` with `prior_was_def: true`, feeding the §18.1.1
+/// downgrade (`stale:`) print (the T1 semantic cure itself is S103 —
+/// design §10 T1).
 ///
 /// The returned [`RedefinitionOutcome`]s ride `ProcessedCluster` back to the
 /// eval driver, which runs the dependent-recompilation transaction for
@@ -499,18 +502,19 @@ fn commit_staging_to_live(
         // it. `AbiChanging` deliberately does NOT carry code: the fresh slot
         // is a new world, and the prior code's lifetime belongs to the pool.
         if entry.callable_got_slot().is_some() {
-            let (prior_slot, prior_code, kind, per_symbol) = match live.symbols.get(&name) {
-                Some(prior @ ModuleEntry::Def { code, .. }) => {
-                    let (kind, per_symbol) =
-                        classify_redefinition(name.as_ref(), Some(prior), &entry);
-                    (prior.callable_got_slot(), code.clone(), kind, per_symbol)
-                }
-                prior => {
-                    let (kind, per_symbol) =
-                        classify_redefinition(name.as_ref(), prior, &entry);
-                    (None, None, kind, per_symbol)
-                }
-            };
+            let (prior_slot, prior_code, kind, per_symbol, prior_was_def) =
+                match live.symbols.get(&name) {
+                    Some(prior @ ModuleEntry::Def { code, .. }) => {
+                        let (kind, per_symbol) =
+                            classify_redefinition(name.as_ref(), Some(prior), &entry);
+                        (prior.callable_got_slot(), code.clone(), kind, per_symbol, true)
+                    }
+                    prior => {
+                        let (kind, per_symbol) =
+                            classify_redefinition(name.as_ref(), prior, &entry);
+                        (None, None, kind, per_symbol, false)
+                    }
+                };
 
             // Fresh-slot is unconditional on ABI change, independent of the
             // recorded caller set (invisible value captures exist — design
@@ -575,40 +579,70 @@ fn commit_staging_to_live(
                 },
                 kind: effective_kind,
                 per_symbol,
+                prior_was_def,
                 old_slot: prior_slot,
-                new_slot,
+                new_slot: Some(new_slot),
             });
-        } else if let Some(shared) = shared
+        } else if matches!(entry, ModuleEntry::Def { .. })
             && let Some(prior) = live.symbols.get(&name)
-            && let Some(prior_slot) = prior.callable_got_slot()
-            && let ModuleEntry::Def { code: Some(prior_code), .. } = prior
+            && matches!(prior, ModuleEntry::Def { .. })
         {
-            // FIXME 0479 — the commit gate's THIRD displacement site: the
-            // STAGED entry is slot-less (a concrete fn redefined as a
-            // polymorphic/constrained template or an `Overloaded` base) while
-            // the PRIOR live entry is slotted with compiled code. The
-            // `live.insert` below drops the prior entry — possibly the last
-            // `Code` Arc, freeing mapped JIT pages — while compiled callers
-            // still embed the prior's GOT slot: a use-after-free SIGSEGV on
-            // the next call. Retain the prior `Code` (frozen supersession,
-            // design §6.3) so the still-populated slot keeps dispatching the
-            // frozen old chain — memory-safe coherent-stale execution (the
-            // §4.3 frozen-world argument). The *semantic* cure for this
-            // T1-kind target (recompile-or-trap; design §10 T1) is FIXME
-            // 0477's design question — no `RedefinitionOutcome` is pushed, so
-            // no per-symbol transaction runs. Pool-less contexts (`shared:
-            // None` — unit tests, dry-run shapes) keep the pre-S101 drop, as
-            // at the sibling displacement sites.
-            shared
-                .retained_code
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(RetainedCode::frozen(
-                    module,
-                    &name,
-                    Some(prior_slot),
-                    prior_code.clone(),
-                ));
+            // The SLOT-LESS-staged redefinition arms — both T1 shapes
+            // (S102 §9.1.1 gate widening: the gate emits an outcome for
+            // EVERY staged `Def` whose name had a prior live `Def`, any slot
+            // shape — outcomes are the only channel the driver sees, so a T1
+            // shape that produces no outcome is invisible to the §18.1.1
+            // downgrade print):
+            //
+            // (a) FIXME 0479 — a slotted prior with compiled code displaced
+            //     by a slot-less staged Def (a concrete fn redefined as a
+            //     polymorphic/constrained template or an `Overloaded` base).
+            //     The `live.insert` below drops the prior entry — possibly
+            //     the last `Code` Arc, freeing mapped JIT pages — while
+            //     compiled callers still embed the prior's GOT slot: a
+            //     use-after-free SIGSEGV on the next call. Retain the prior
+            //     `Code` (frozen supersession, design §6.3) so the
+            //     still-populated slot keeps dispatching the frozen old
+            //     chain — memory-safe coherent-stale execution (the §4.3
+            //     frozen-world argument). Pool-less contexts (`shared: None`
+            //     — unit tests, dry-run shapes) keep the pre-S101 drop, as
+            //     at the sibling displacement sites.
+            //
+            // (b) template-replacing-template (slot-less over slot-less
+            //     prior `Def`) — nothing to retain, but the outcome still
+            //     carries `prior_was_def` so the downgrade is not silent.
+            //
+            // The *semantic* cure for these T1-kind targets (module-grain
+            // reload with end-of-turn sequencing; design §10 T1) is S103;
+            // the outcome feeds the interim §18.1.1 `stale:` print.
+            let (kind, per_symbol) = classify_redefinition(name.as_ref(), Some(prior), &entry);
+            let prior_slot = prior.callable_got_slot();
+            if let Some(shared) = shared
+                && let Some(prior_slot) = prior_slot
+                && let ModuleEntry::Def { code: Some(prior_code), .. } = prior
+            {
+                shared
+                    .retained_code
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(RetainedCode::frozen(
+                        module,
+                        &name,
+                        Some(prior_slot),
+                        prior_code.clone(),
+                    ));
+            }
+            outcomes.push(RedefinitionOutcome {
+                fq: FQSymbol {
+                    module: module.clone(),
+                    symbol: name.clone(),
+                },
+                kind,
+                per_symbol,
+                prior_was_def: true,
+                old_slot: prior_slot,
+                new_slot: None,
+            });
         }
         live.insert(name, entry);
     }

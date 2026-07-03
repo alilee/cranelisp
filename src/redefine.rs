@@ -97,10 +97,33 @@ pub(crate) struct RedefinitionOutcome {
     /// (design §2.2/§10 T1). `false` routes the target conservatively
     /// (today's reuse-and-patch; no per-symbol transaction).
     pub per_symbol: bool,
+    /// `true` iff the committed name had a prior live `Def` (any slot shape —
+    /// S102 §9.1.1 gate widening). The [`RedefKind`] alone cannot carry this:
+    /// a slot-less prior classifies `New` (no frozen slot to version), which
+    /// conflates "genuinely new" with "template redefinition" — exactly the
+    /// T1 shape the §18.1.1 downgrade report must see. A prior non-`Def`
+    /// (e.g. an `Import` shadowed by a defn — 0484's territory) is `false`.
+    pub prior_was_def: bool,
     #[allow(dead_code)] // observability / unit-test seam
     pub old_slot: Option<usize>,
+    /// The committed live slot (`None` for a slot-less staged entry — the
+    /// template/overloaded T1 shapes have no callable slot to commit).
     #[allow(dead_code)] // observability / unit-test seam
-    pub new_slot: usize,
+    pub new_slot: Option<usize>,
+}
+
+/// The §18.1.1 downgrade-report trigger (design `s102-defect-wave.md` §1 /
+/// `session-transaction.md` §9.1.1): the commit took a redefinition-of-a-
+/// prior-`Def` route outside per-symbol precision — the T1 reuse-and-patch
+/// path. The trigger is the ROUTE, not the surface diff: even a scheme-equal
+/// redefinition of a polymorphic template leaves previously-minted mono
+/// instances (and their compiled callers) on the old body. Never fires for
+/// genuine `New` (no prior `Def`, incl. the prior-`Import` shadow shape),
+/// never for per-symbol outcomes (the transaction handles those — mutual
+/// exclusion with `recompiled:`/`broken:` by construction), never for
+/// gate-exempt internals (`__expr`/`__macro_*`).
+pub(crate) fn is_t1_downgrade(o: &RedefinitionOutcome) -> bool {
+    o.prior_was_def && !o.per_symbol && !is_gate_exempt_internal(o.fq.symbol.as_ref())
 }
 
 /// True iff the entry is a concrete single-sig `UserFn` `Def` — the target
@@ -434,6 +457,72 @@ impl ReverseIndex {
     pub(crate) fn callers_of(&self, fq: &FQSymbol) -> &[FQSymbol] {
         self.map.get(fq).map(Vec::as_slice).unwrap_or(&[])
     }
+
+    /// Callers of `target` and of its `$`-mangled variants (a mangled callee
+    /// whose base is `target` — mono instances minted from the template),
+    /// unioned, sorted, deduped (design §9.1.1: the stale-set feed is
+    /// variant-aware — a caller compiled against a minted instance embeds the
+    /// old chain exactly as a direct caller does).
+    pub(crate) fn callers_of_with_variants(&self, target: &FQSymbol) -> Vec<FQSymbol> {
+        let mut out: Vec<FQSymbol> = Vec::new();
+        for (callee, callers) in &self.map {
+            if callee == target || base_fq(callee) == *target {
+                out.extend(callers.iter().cloned());
+            }
+        }
+        out.sort_by(|a, b| {
+            (a.module.as_ref(), a.symbol.as_ref()).cmp(&(b.module.as_ref(), b.symbol.as_ref()))
+        });
+        out.dedup();
+        out
+    }
+}
+
+/// The §18.1.1 stale set for one T1 downgrade target (design
+/// `s102-defect-wave.md` §1, `session-transaction.md` §9.1.1): the DIRECT
+/// reverse-edge callers of `target` and its `$`-mangled variants, restricted
+/// to entries that hold compiled code (`code: Some` — "compiled callers";
+/// never-compiled callers — templates, `ast`-only entries — late-bind at
+/// their next mint and MUST NOT appear), excluding `is_gate_exempt_internal`
+/// names (the 0491 rule applies here identically), reported at base-defn
+/// grain (a compiled mono caller `g$Int` names `g`), target excluded,
+/// sorted/deduped.
+///
+/// Pure over the tables; the on-demand [`ReverseIndex`] build runs ONLY on
+/// downgrade turns, so the L-D1 pin (body-only concrete redefinitions at
+/// today's cost) is untouched.
+pub(crate) fn stale_callers(tables: &SymbolTables, target: &FQSymbol) -> Vec<FQSymbol> {
+    let reverse = ReverseIndex::build(tables);
+    let mut out: Vec<FQSymbol> = Vec::new();
+    for caller in reverse.callers_of_with_variants(target) {
+        if is_gate_exempt_internal(caller.symbol.as_ref()) {
+            continue;
+        }
+        // "Compiled caller" = the caller's own live entry holds compiled code.
+        let compiled = tables
+            .get(&caller.module)
+            .and_then(|t| {
+                t.get(caller.symbol.as_ref()).map(|e| {
+                    matches!(e, ModuleEntry::Def { code: Some(_), .. })
+                })
+            })
+            .unwrap_or(false);
+        if !compiled {
+            continue;
+        }
+        // Report at base-defn grain; the target itself (e.g. a recursive
+        // self-edge through an old mint) is not a member of its own set.
+        let base = base_fq(&caller);
+        if base == *target {
+            continue;
+        }
+        out.push(base);
+    }
+    out.sort_by(|a, b| {
+        (a.module.as_ref(), a.symbol.as_ref()).cmp(&(b.module.as_ref(), b.symbol.as_ref()))
+    });
+    out.dedup();
+    out
 }
 
 /// Transitive closure over reverse edges from `target` (design §4.1 step 1).
@@ -593,7 +682,6 @@ pub(crate) fn member_propagates(
 /// AND negative). `recompiled` is exact by the §4.1 skip test.
 #[derive(Debug)]
 pub(crate) struct TransactionReport {
-    #[allow(dead_code)] // observability
     pub target: FQSymbol,
     /// Exactly the members re-typechecked green (includes re-typechecked
     /// slot-less templates and recovered symbols).
@@ -604,6 +692,14 @@ pub(crate) struct TransactionReport {
     /// `recompiled`; kept separately for observability).
     #[allow(dead_code)]
     pub recovered: Vec<FQSymbol>,
+    /// Compiled callers left on the previous definition by a §10 T1
+    /// downgrade (`repl/spec.md` §18.1.1; data contract §9.1.1). Mutually
+    /// exclusive with `recompiled`/`broken` by construction: per-symbol
+    /// transactions never produce stale; downgrades never recompile/break.
+    /// This is a KEPT section of the one transaction report — the S103 full
+    /// cure recompiles exactly these callers and renders it empty
+    /// (Principle 8: not throwaway machinery).
+    pub stale: Vec<FQSymbol>,
 }
 
 impl TransactionReport {
@@ -613,17 +709,21 @@ impl TransactionReport {
             recompiled: Vec::new(),
             broken: Vec::new(),
             recovered: Vec::new(),
+            stale: Vec::new(),
         }
     }
 
-    /// Render the §18.3 cascade sections, or `None` when both are empty
-    /// (empty sections are omitted entirely; an `AbiChanging` redefinition
-    /// with no compiled dependents prints nothing extra).
+    /// Render the §18.3 cascade sections + the §18.1.1 `stale:` section, or
+    /// `None` when all are empty (empty sections are omitted entirely; an
+    /// `AbiChanging` redefinition with no compiled dependents — and a
+    /// downgrade with no compiled caller left behind — prints nothing extra).
     ///
     /// Symbols in `current_module` appear bare; others module-qualified
-    /// (§18.3 / §3.3 layout rule at the grain the report needs).
+    /// (§18.3 / §3.3 layout rule at the grain the report needs). The
+    /// `stale:` header line is byte-exact per §18.1.1, `{cause}` fully
+    /// qualified.
     pub(crate) fn render(&self, current_module: &ModuleFullPath) -> Option<String> {
-        if self.recompiled.is_empty() && self.broken.is_empty() {
+        if self.recompiled.is_empty() && self.broken.is_empty() && self.stale.is_empty() {
             return None;
         }
         let name_of = |fq: &FQSymbol| -> String {
@@ -645,6 +745,17 @@ impl TransactionReport {
             for (fq, err) in &self.broken {
                 out.push_str(&format!(";  {} — {}\n", name_of(fq), err));
             }
+        }
+        if !self.stale.is_empty() {
+            // §18.1.1: exact header, then the §1.1-layout name line(s) —
+            // same closure as the sections above.
+            out.push_str(&format!(
+                "; stale: compiled callers keep the previous definition of {}\n;  ",
+                self.target
+            ));
+            let names: Vec<String> = self.stale.iter().map(&name_of).collect();
+            out.push_str(&names.join(" "));
+            out.push('\n');
         }
         // Drop the trailing newline; the printer adds its own.
         while out.ends_with('\n') {
@@ -969,6 +1080,21 @@ impl CompilerSession {
                 let report = run_transaction(self, &o.fq);
                 if let Some(text) = report.render(&self.current_module_path()) {
                     self.pending_cascade_reports.push(text);
+                }
+            } else if is_t1_downgrade(o) {
+                // S102 §18.1.1 interim cure: the T1 reuse-and-patch route is
+                // never silent when it leaves compiled callers on the
+                // previous definition. Informational only — nothing is
+                // recompiled, broken, or trapped; the on-demand ReverseIndex
+                // scan runs ONLY here (L-D1 untouched). Omitted entirely when
+                // nothing is stale.
+                let stale = stale_callers(&self.shared.symbol_tables, &o.fq);
+                if !stale.is_empty() {
+                    let mut report = TransactionReport::new(o.fq.clone());
+                    report.stale = stale;
+                    if let Some(text) = report.render(&self.current_module_path()) {
+                        self.pending_cascade_reports.push(text);
+                    }
                 }
             }
         }
@@ -1441,6 +1567,169 @@ mod tests {
             "got: {err}"
         );
         assert_eq!(st.next_got_slot, GOT_TABLE_SIZE, "high-water untouched by refusal");
+    }
+
+    /// Attach a real (empty-table) JIT `Code` handle so the entry reads as a
+    /// "compiled caller" (`code: Some`) to [`stale_callers`]' filter.
+    fn compiled(mut entry: ModuleEntry<Code>) -> ModuleEntry<Code> {
+        if let ModuleEntry::Def { code, .. } = &mut entry {
+            let empty_tables: cranelisp_types::SymbolTables<Code, ()> = dashmap::DashMap::new();
+            // Same allow + rationale as the production composition site
+            // (`inline_jit_codegen_for_names`): the Arc is the lifecycle root
+            // for the mmap'd pages, never sent across threads.
+            #[allow(clippy::arc_with_non_send_sync)]
+            let jit_arc = std::sync::Arc::new(
+                cranelisp_backend::jit::Jit::new(&empty_tables).expect("test jit"),
+            );
+            *code = Some(Code::jit(jit_arc));
+        }
+        entry
+    }
+
+    fn outcome(
+        name: &str,
+        kind: RedefKind,
+        per_symbol: bool,
+        prior_was_def: bool,
+    ) -> RedefinitionOutcome {
+        RedefinitionOutcome {
+            fq: fq("user", name),
+            kind,
+            per_symbol,
+            prior_was_def,
+            old_slot: None,
+            new_slot: None,
+        }
+    }
+
+    // spec: design/int/s102-defect-wave.md §1 / session-transaction.md §9.1.1
+    // — Matrix C route-trigger cells: the §18.1.1 print triggers on the T1
+    // ROUTE (prior `Def`, outside per-symbol precision), whatever the surface
+    // diff or the classifier's kind (a slot-less prior classifies `New` —
+    // template redefinition rides `prior_was_def`, not the kind).
+    #[test]
+    fn t1_downgrade_trigger_route_cells() {
+        // Template redefinition (poly→poly, scheme-equal or changed; also the
+        // concrete-staged-over-template L-U1 shape): kind `New`, prior Def.
+        assert!(is_t1_downgrade(&outcome("f", RedefKind::New, false, true)));
+        // Concrete→overloaded/template displacement (slot-less staged): the
+        // classifier's conservative arm.
+        assert!(is_t1_downgrade(&outcome("f", RedefKind::AbiPreserving, false, true)));
+        // Mutual exclusion with the per-symbol transaction (negative cell):
+        // a concrete AbiChanging target never produces stale, and a body-only
+        // AbiPreserving edit never triggers.
+        assert!(!is_t1_downgrade(&outcome("f", RedefKind::AbiChanging, true, true)));
+        assert!(!is_t1_downgrade(&outcome("f", RedefKind::AbiPreserving, true, true)));
+        // Genuine New — no prior Def (incl. the prior-Import shadow shape,
+        // 0484's territory): never a downgrade.
+        assert!(!is_t1_downgrade(&outcome("f", RedefKind::New, false, false)));
+        // Gate-exempt internals: never (an expression turn redefines __expr
+        // every time — a per-turn trigger would break the L-D1 lane).
+        assert!(!is_t1_downgrade(&outcome("__expr", RedefKind::AbiPreserving, false, true)));
+        assert!(!is_t1_downgrade(&outcome(
+            "__macro_m_clause_0",
+            RedefKind::AbiPreserving,
+            false,
+            true
+        )));
+    }
+
+    // spec: repl/spec.md §18.1.1 / design §9.1.1 — the stale set is exact
+    // both ways: every compiled caller in; never-compiled template callers,
+    // gate-exempt internals, and edge-less compiled symbols out; cross-module
+    // callers included (module-qualified at render).
+    #[test]
+    fn stale_callers_set_exactness_cells() {
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let user = ModuleFullPath::from("user");
+        let lib = ModuleFullPath::from("lib");
+        let mut ut = SessionSymbolTable::new_with_params(user.clone());
+        ut.insert(Symbol::from("id"), concrete_def(fn_ty(vec![Type::Int], Type::Int), 0));
+        // Compiled caller: IN.
+        ut.insert(
+            Symbol::from("gcall"),
+            compiled(def_with_callees(vec![fq("user", "id")], Some(1))),
+        );
+        // Never-compiled template caller (code: None, slot-less): OUT —
+        // late-binds at its next mint (§18.1.1 negative half).
+        ut.insert(Symbol::from("bystander"), def_with_callees(vec![fq("user", "id")], None));
+        // Compiled internal wrapper: OUT (the 0491 rule applies identically).
+        ut.insert(
+            Symbol::from("__expr"),
+            compiled(def_with_callees(vec![fq("user", "id")], Some(2))),
+        );
+        // Compiled but no edge to the target: OUT.
+        ut.insert(
+            Symbol::from("unrelated"),
+            compiled(def_with_callees(vec![fq("primitives", "add-i64")], Some(3))),
+        );
+        tables.insert(user.clone(), ut);
+        // Cross-module compiled caller: IN.
+        let mut lt = SessionSymbolTable::new_with_params(lib.clone());
+        lt.insert(
+            Symbol::from("x"),
+            compiled(def_with_callees(vec![fq("user", "id")], Some(0))),
+        );
+        tables.insert(lib, lt);
+
+        let stale = stale_callers(&tables, &fq("user", "id"));
+        assert_eq!(stale, vec![fq("lib", "x"), fq("user", "gcall")], "exact set, sorted");
+    }
+
+    // spec: design/int/s102-defect-wave.md §1 — variant-awareness + base
+    // grain: a caller compiled against a `$`-mangled mint of the target is
+    // stale (its callee's base is the target) and reports at base-defn grain;
+    // an old mint of the TARGET itself is not a member of its own set; a
+    // target with no callers yields the empty set (section omitted).
+    #[test]
+    fn stale_callers_variant_aware_base_grain_and_empty() {
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let user = ModuleFullPath::from("user");
+        let mut ut = SessionSymbolTable::new_with_params(user.clone());
+        ut.insert(Symbol::from("id"), concrete_def(fn_ty(vec![Type::Int], Type::Int), 0));
+        // Compiled mono caller recorded against the MANGLED mint: IN, as `h`.
+        ut.insert(
+            Symbol::from("h$primitives/Int"),
+            compiled(def_with_callees(vec![fq("user", "id$primitives/Int")], Some(1))),
+        );
+        // The target's own old mint (recursive self-edge shape): excluded.
+        ut.insert(
+            Symbol::from("id$primitives/Int"),
+            compiled(def_with_callees(vec![fq("user", "id")], Some(2))),
+        );
+        tables.insert(user.clone(), ut);
+
+        let stale = stale_callers(&tables, &fq("user", "id"));
+        assert_eq!(stale, vec![fq("user", "h")], "mangled caller reports at base grain");
+
+        assert!(
+            stale_callers(&tables, &fq("user", "nobody")).is_empty(),
+            "no callers → empty set (renders nothing)"
+        );
+    }
+
+    // spec: repl/spec.md §18.1.1 — the section's bytes are exact: the header
+    // line names the fully-qualified cause; the name line uses the §1.1
+    // layout (bare in the current module, qualified elsewhere); an empty
+    // stale set renders nothing (omission rule).
+    #[test]
+    fn report_render_stale_section_exact_header_and_omission() {
+        let cur = ModuleFullPath::from("user");
+        let mut r = TransactionReport::new(fq("user", "id"));
+        r.stale.push(fq("user", "gcall"));
+        r.stale.push(fq("lib", "x"));
+        let text = r.render(&cur).unwrap();
+        assert_eq!(
+            text,
+            "; stale: compiled callers keep the previous definition of user/id\n;  gcall lib/x",
+            "byte-exact §18.1.1 section"
+        );
+        // Mutual exclusion in practice: a stale-only report has no
+        // recompiled/broken sections.
+        assert!(!text.contains("recompiled"), "{text}");
+        assert!(!text.contains("broken"), "{text}");
+        // Omission: an all-empty report renders nothing.
+        assert!(TransactionReport::new(fq("user", "id")).render(&cur).is_none());
     }
 
     // spec: repl/spec.md §18.3 — the cascade report renders `; recompiled:` /

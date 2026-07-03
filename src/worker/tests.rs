@@ -1652,6 +1652,154 @@
         );
     }
 
+    // spec: design/int/s102-defect-wave.md §1 item 3 / session-transaction.md
+    // §9.1.1 "Gate-side production" — the commit gate emits a
+    // `RedefinitionOutcome` for EVERY staged `Def` whose name had a prior
+    // live `Def`, including both T1 shapes that previously emitted none:
+    // (a) slot-less staged displacing a slotted prior (the FIXME-0479
+    // displacement arm) and (b) template-replacing-template (slot-less over
+    // slot-less). Outcomes are the driver's only channel — a shape emitting
+    // no outcome is invisible to the §18.1.1 downgrade print.
+    #[test]
+    fn commit_gate_emits_prior_was_def_outcome_for_both_t1_shapes() {
+        let module = ModuleFullPath::from("user");
+
+        // Shape (a): slotted concrete prior, slot-less staged (Overloaded).
+        // `shared: None` — the OUTCOME must not depend on the retention pool
+        // (only the code retention does).
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let prior_slot = live.allocate_got_slot();
+        live.insert(
+            Symbol::from("f"),
+            mk_def_with_got(
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
+                },
+                Some(trivial_variant()),
+                Some(prior_slot),
+            ),
+        );
+        symbol_tables.insert(module.clone(), live);
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        staging.insert(
+            Symbol::from("f"),
+            mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
+        );
+        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
+            .expect("slot-less commit cannot exhaust the GOT");
+        assert_eq!(outcomes.len(), 1, "displacement shape emits ONE outcome: {outcomes:?}");
+        let o = &outcomes[0];
+        assert_eq!(o.fq.symbol.as_ref(), "f");
+        assert!(o.prior_was_def, "prior was a live Def");
+        assert!(!o.per_symbol, "T1 route is outside per-symbol precision");
+        assert_eq!(o.old_slot, Some(prior_slot));
+        assert_eq!(o.new_slot, None, "slot-less staged entry commits no live slot");
+        assert!(
+            crate::redefine::is_t1_downgrade(o),
+            "the displacement shape must reach the §18.1.1 trigger"
+        );
+
+        // Shape (b): template-replacing-template (slot-less over slot-less).
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        live.insert(
+            Symbol::from("t"),
+            mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
+        );
+        symbol_tables.insert(module.clone(), live);
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        staging.insert(
+            Symbol::from("t"),
+            mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
+        );
+        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
+            .expect("slot-less commit cannot exhaust the GOT");
+        assert_eq!(outcomes.len(), 1, "template-over-template emits ONE outcome: {outcomes:?}");
+        let o = &outcomes[0];
+        assert!(o.prior_was_def && !o.per_symbol, "T1 trigger fields: {o:?}");
+        assert!(crate::redefine::is_t1_downgrade(o));
+    }
+
+    // spec: design/int/s102-defect-wave.md §1 item 3 — the SLOTTED-staged arm
+    // also carries `prior_was_def`: a concrete staged Def over a slot-less
+    // prior template (the L-U1 worked shape — generic `id` redefined with a
+    // concrete body) classifies `New` (no frozen slot to version) yet MUST
+    // reach the §18.1.1 trigger via `prior_was_def`. Negative cells: a
+    // genuinely fresh commit and a defn shadowing a prior `Import` (0484's
+    // territory) carry `prior_was_def: false` and never trigger.
+    #[test]
+    fn commit_gate_concrete_over_template_prior_and_negative_cells() {
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        // Slot-less prior template `id`; prior `Import` binding `imp`.
+        live.insert(
+            Symbol::from("id"),
+            mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
+        );
+        live.insert(
+            Symbol::from("imp"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("primitives"),
+                    symbol: Symbol::from("add-i64"),
+                },
+                visibility: Visibility::Private,
+            },
+        );
+        symbol_tables.insert(module.clone(), live);
+
+        let concrete = |slot: usize| {
+            mk_def_with_got(
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete {
+                        got_slot: 0,
+                        mode_summary: None,
+                    },
+                },
+                Some(trivial_variant()),
+                Some(slot),
+            )
+        };
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        staging.next_got_slot = 3;
+        staging.insert(Symbol::from("id"), concrete(0));
+        staging.insert(Symbol::from("imp"), concrete(1));
+        staging.insert(Symbol::from("fresh"), concrete(2));
+
+        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
+            .expect("commit cannot exhaust the GOT");
+        let by_name = |n: &str| {
+            outcomes
+                .iter()
+                .find(|o| o.fq.symbol.as_ref() == n)
+                .unwrap_or_else(|| panic!("outcome for {n}: {outcomes:?}"))
+        };
+        let id = by_name("id");
+        assert!(
+            id.prior_was_def && !id.per_symbol && crate::redefine::is_t1_downgrade(id),
+            "concrete-over-template reaches the trigger: {id:?}"
+        );
+        assert!(id.new_slot.is_some(), "concrete staged entry commits a live slot");
+        let imp = by_name("imp");
+        assert!(
+            !imp.prior_was_def && !crate::redefine::is_t1_downgrade(imp),
+            "prior-Import shadow is genuine New, never a downgrade: {imp:?}"
+        );
+        let fresh = by_name("fresh");
+        assert!(
+            !fresh.prior_was_def && !crate::redefine::is_t1_downgrade(fresh),
+            "fresh commit is genuine New, never a downgrade: {fresh:?}"
+        );
+    }
+
     // §11.3(b) / §24 (CF.1) unit-tier floor: a panic raised inside the
     // `checked_check_forms` catch-region is CONVERTED to `Err`, not propagated as
     // an unwind. This is the unit complement to the e2e CF.1
