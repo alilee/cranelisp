@@ -38,7 +38,7 @@ impl core::marker::UnsafeUnpin for cranelisp_backend::cache::linker::Linker
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::linker::Linker
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::linker::Linker
 pub mod cranelisp_backend::cache::manifest
-pub enum cranelisp_backend::cache::manifest::CacheInvalidReason
+#[non_exhaustive] pub enum cranelisp_backend::cache::manifest::CacheInvalidReason
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::CompilerChanged
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::CraneliftVersion
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::CraneliftVersion::cached: alloc::string::String
@@ -61,7 +61,7 @@ impl core::marker::Unpin for cranelisp_backend::cache::manifest::CacheInvalidRea
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CacheInvalidReason
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CacheInvalidReason
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CacheInvalidReason
-pub struct cranelisp_backend::cache::manifest::CacheManifest
+#[non_exhaustive] pub struct cranelisp_backend::cache::manifest::CacheManifest
 pub cranelisp_backend::cache::manifest::CacheManifest::cache_format_version: u32
 pub cranelisp_backend::cache::manifest::CacheManifest::compiler_mtime: alloc::string::String
 pub cranelisp_backend::cache::manifest::CacheManifest::cranelift_version: alloc::string::String
@@ -81,7 +81,7 @@ impl core::marker::Unpin for cranelisp_backend::cache::manifest::CacheManifest
 impl core::marker::UnsafeUnpin for cranelisp_backend::cache::manifest::CacheManifest
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_backend::cache::manifest::CacheManifest
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_backend::cache::manifest::CacheManifest
-pub struct cranelisp_backend::cache::manifest::CachedModuleRef
+#[non_exhaustive] pub struct cranelisp_backend::cache::manifest::CachedModuleRef
 pub cranelisp_backend::cache::manifest::CachedModuleRef::dependency_hashes: std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>
 pub cranelisp_backend::cache::manifest::CachedModuleRef::source_hash: alloc::string::String
 impl core::marker::Freeze for cranelisp_backend::cache::manifest::CachedModuleRef

@@ -31,7 +31,14 @@ use super::CACHE_SCHEMA_VERSION as CACHE_FORMAT_VERSION;
 
 /// Global cache manifest. Maps module paths to source hashes and
 /// stores global invalidation keys.
+///
+/// `#[non_exhaustive]` (S102 FIXME 0482 sibling-DTO audit): constructed only via
+/// [`CacheManifest::new`]/[`new_for_host`](CacheManifest::new_for_host) — no
+/// external struct-literal construction (audited: `src/session_setup.rs` uses
+/// the constructors and field reads only), so the attribute is compatible and
+/// makes the next invalidation-key field addition non-breaking (Principle 18).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CacheManifest {
     /// Cache format version. Mismatch invalidates all caches.
     pub cache_format_version: u32,
@@ -66,7 +73,13 @@ pub struct CacheManifest {
 }
 
 /// A single module's cache reference in the manifest.
+///
+/// `#[non_exhaustive]` (S102 FIXME 0482 sibling-DTO audit): constructed only
+/// within this crate (via [`CacheManifest::upsert_module`]); no external
+/// struct-literal construction or exhaustive match (audited workspace-wide), so
+/// the attribute is compatible (Principle 18).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CachedModuleRef {
     /// Hex-encoded SHA-256 of the module's source text.
     pub source_hash: String,
@@ -198,7 +211,16 @@ pub fn check_manifest(
 }
 
 /// Reason why the cache manifest is globally invalid.
+///
+/// `#[non_exhaustive]` (S102 FIXME 0482, `/arch` S101 Wave-5 ruling): a
+/// produced-by-backend, matched-by-consumers reason enum — the textbook facade
+/// convention case (`.claude/commands/arch.md` §"Facade convention" item 3).
+/// A future variant addition (e.g. the S101 `OwnershipToggle`) is then
+/// non-breaking by construction for any external matcher (Principle 18); the
+/// sole convention exemption is a `#[repr(C)]`/`transparent` layout contract,
+/// which this is not.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum CacheInvalidReason {
     FormatVersion { cached: u32, current: u32 },
     CompilerChanged,
