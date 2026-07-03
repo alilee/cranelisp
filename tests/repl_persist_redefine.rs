@@ -303,6 +303,53 @@ fn persist_body_only_redefinition_neg_keeps_slot() {
 }
 
 // =============================================================================
+// S102 Phase-5 Stage-1 — lane L-U1 sibling for the persistence lane
+// (`tests/plan/s102-test-plan.md` §1.1): the unannotated default path ×
+// restart. GREEN pin (probed 2026-07-03 on the CS-A binary).
+// =============================================================================
+
+// spec: repl/spec.md §18.1 — L-U1 persistence sibling: the T1 split world is
+// a SESSION-MEMORY commitment only (§18.7's frozen-world rule applied to the
+// downgrade residue). After an unannotated (T1) redefinition leaves a
+// compiled caller on the old chain, `/quit` + restart rebuilds everything
+// from source in the current world: the caller sees the NEW definition.
+// GREEN pin — probed: live session g→2 (stale), restarted session g→52.
+// FLIP NOTE: none needed — the S103 full cure only makes the live session
+// match what this restart pin already shows.
+#[test]
+fn persist_unannotated_downgrade_restart_unifies_on_latest_definition_sibling() {
+    let first = prims_repl_session(
+        "(defn f [x] x)\n\
+         (defn g [y] (f (add-i64 y 1)))\n\
+         (g 1)\n\
+         (defn f [x] (add-i64 x 50))\n\
+         (g 1)\n\
+         /quit\n",
+    )
+    .assert_ok();
+    // Live session: coherent-stale — both calls answer through the old chain.
+    assert_eq!(
+        first.stdout.matches(":primitives/Int 2").count(),
+        2,
+        "live session keeps the old chain for the compiled caller (T1 \
+         residue, §18.1 scope note); stdout={}",
+        first.stdout
+    );
+    let meta = first.read_tmp(META);
+    assert_meta_complete(&meta, &["f", "g"], "L-U1 persistence sibling");
+
+    // Restart: one world — the latest definition, for every route.
+    let second = first
+        .run_again()
+        .repl()
+        .stdin("(g 1)\n/quit\n")
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 52");
+    drop(second);
+}
+
+// =============================================================================
 // FIXME 0489 (S101 Phase 6a, /repl) — restart with a broken backing file
 // exits(1) BEFORE the first prompt, locking the user out of the §18.6
 // in-REPL repair path (the only recovery is hand-editing user.cl). Per

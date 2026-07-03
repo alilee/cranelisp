@@ -606,6 +606,11 @@ fn type_change_redefinition_polymorphic_caller_recompiles_and_works() {
 // (recompiled `g` → 5, or a trap with provenance); this test failing at that
 // point is the prompt to update it. The concrete → `Overloaded` (multi-sig)
 // sibling shape — same mechanism — is guarded by the next test (0478 drain).
+// S102 reconciliation: the full cure is ruled OUT of S102 → S103
+// (design/int/s102-defect-wave.md §2); the S102 A1 interim cure makes the
+// downgrade turn PRINT the §18.1.1 `stale:` section — additive, this pin's
+// assertions are unaffected. Acceptance wording for the S103 flip:
+// report-or-recompile per §18.1.1's cure note (stale set renders empty).
 #[test]
 fn redefine_concrete_to_polymorphic_caller_survives_coherent_stale() {
     let cap = repl_prims(
@@ -629,7 +634,9 @@ fn redefine_concrete_to_polymorphic_caller_survives_coherent_stale() {
 // (0479) must retain the prior slotted Code. Probed 2026-07-03 post-0479:
 // session survives; `(g 5)` runs the frozen old chain (6, not the new Int-arm's
 // 5) — coherent-stale, same residue + flip note as the polymorphic sibling
-// above: when the full T1 cure lands, the `:primitives/Int 6` pin MUST flip.
+// above: when the full T1 cure lands (S103 per the S102 ruling), the
+// `:primitives/Int 6` pin MUST flip; the S102 A1 `stale:` print (§18.1.1) is
+// additive and does not disturb this pin.
 #[test]
 fn redefine_concrete_to_overloaded_caller_survives_coherent_stale() {
     let cap = repl_prims(
@@ -773,4 +780,224 @@ fn bare_lookup_broken_symbol_info_still_shows_definition_source() {
     .assert_ok()
     .assert_stdout_contains("broken by the redefinition of user/f") // §18.4 provenance intact
     .assert_stdout_contains("(defn k [:Int y] (f y))"); // the definition source (the defect)
+}
+
+// =============================================================================
+// S102 Phase-5 Stage-1 — lane L-U1: unannotated-default siblings + the §18.1.1
+// downgrade-report acceptance pair (`tests/plan/s102-test-plan.md` §1.1;
+// `tests/plan/coverage-audit-s101.md` §2.4 L-U1).
+//
+// The at-scale DEFAULT path: unannotated fns generalize, so their
+// redefinition takes the §18.1 scope note's reuse-and-patch path (T1,
+// design/int/session-transaction.md §10) — no transaction, no cascade, no
+// trap. The audit found this path nearly unrepresented (39 concrete
+// annotation sites vs ~2 polymorphic-target pins across the redefine lanes).
+// The siblings below pin the CURRENT coherent-stale behaviour per transaction
+// lane shape (GREEN at draft, probed 2026-07-03 on the CS-A binary), each
+// with a flip note naming the cure acceptance; the report pair (RED at draft)
+// is the acceptance surface for the S102 A1 interim cure — the §18.1.1
+// `stale:` section, worded as a transaction-report line the S103 full cure
+// keeps (Principle-8 pin, rendered empty under the cure).
+//
+// FLIP NOTES (uniform for the siblings): when the full T1 cure lands (S103 —
+// end-of-turn-sequenced module reload, session-transaction.md §10; the two
+// S101 coherent-stale pins above carry the same note), the stale-old-chain
+// pins below MUST flip to the cured behaviour (caller recompiled against the
+// new definition, or broken+trapped with provenance) and the §18.1.1 section
+// renders empty. A sibling failing at that point is the prompt to update it.
+// =============================================================================
+
+// spec: repl/spec.md §18.1.1 — the downgrade report: a T1 (reuse-and-patch)
+// redefinition that leaves compiled callers on the previous definition MUST
+// print the `stale:` section — exact header line, exact caller set both
+// polarities. RED on HEAD (S102 A1 acceptance, positive leg): today the
+// downgrade turn prints only the §1.3 confirmation — silent split world.
+// Caller-set exactness: `gcall` was compiled against old `id` (named);
+// `bystander` is a generic caller never instantiated (never compiled — MUST
+// NOT be named); `unrelated` is compiled but has no edge to `id` (MUST NOT be
+// named); `newcomer` is defined after the turn (MUST NOT be named).
+#[test]
+fn t1_downgrade_report_names_stale_compiled_callers_exactly() {
+    let cap = repl_prims(
+        "(defn id [x] x)\n\
+         (defn gcall [x] (id (add-i64 x 1)))\n\
+         (defn bystander [x] (id x))\n\
+         (defn unrelated [:Int x] (add-i64 x 9))\n\
+         (gcall 1)\n\
+         (defn id [x] (add-i64 x 100))\n\
+         (gcall 1)\n\
+         (defn newcomer [x] (id x))\n\
+         (newcomer 1)\n",
+    )
+    .assert_ok()
+    // The exact §18.1.1 header line — `{cause}` fully qualified.
+    .assert_stdout_contains("; stale: compiled callers keep the previous definition of user/id");
+    // Positive set: the compiled caller is named on a report line.
+    assert!(
+        any_report_line_contains(&cap.stdout, "gcall"),
+        "the stale set must name the compiled caller `gcall` (§18.1.1); stdout={}",
+        cap.stdout
+    );
+    // Negative set: never-compiled, unaffected, and later-defined symbols
+    // MUST NOT be named (§18.1.1 "exact both ways").
+    for absent in ["bystander", "unrelated", "newcomer"] {
+        assert!(
+            !any_report_line_contains(&cap.stdout, absent),
+            "the stale set must NOT name `{absent}` (§18.1.1 exactness); stdout={}",
+            cap.stdout
+        );
+    }
+    // The report is informational only: the named caller still runs the old,
+    // internally-consistent chain (both (gcall 1) turns print 2)…
+    assert_eq!(
+        count(&cap.stdout, ":primitives/Int 2"),
+        2,
+        "the stale caller keeps the previous definition (informational report \
+         only, §18.1.1); stdout={}",
+        cap.stdout
+    );
+    // …while a caller compiled after the turn sees the new definition.
+    let cap = cap.assert_stdout_contains(":primitives/Int 101");
+    drop(cap);
+}
+
+// spec: repl/spec.md §18.1.1 — negative leg of the A1 acceptance pair: a
+// NON-downgrade body-only redefinition MUST NOT print the `stale:` section
+// (no over-triggering — §18.2 body-only turns print only the §1.3
+// confirmation). GREEN at draft (vacuously — no report machinery exists);
+// load-bearing the moment the A1 print lands.
+#[test]
+fn t1_downgrade_report_neg_body_only_turn_prints_no_stale_section() {
+    repl_prims(
+        "(defn f [:Int x] (add-i64 x 1))\n\
+         (defn g [:Int x] (f x))\n\
+         (g 1)\n\
+         (defn f [:Int x] (add-i64 x 2))\n\
+         (g 1)\n",
+    )
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 3") // late-bound new body (§18.2)
+    .assert_stdout_does_not_contain("; stale:");
+}
+
+// spec: repl/spec.md §18.1.1 — the section is omitted entirely when nothing
+// is stale: a downgraded (T1) redefinition with NO compiled caller left
+// behind prints only the §1.3 confirmation. GREEN at draft (vacuously);
+// load-bearing with the A1 print — guards the empty-set omission rule.
+#[test]
+fn t1_downgrade_report_neg_omitted_when_no_compiled_caller() {
+    repl_prims(
+        "(defn id [x] x)\n\
+         (defn id [x] (add-i64 x 100))\n\
+         (id 1)\n",
+    )
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 101") // new definition is live by name
+    .assert_stdout_does_not_contain("; stale:");
+}
+
+// spec: repl/spec.md §18.1 — L-U1 sibling of the trap lane (L-R1): with an
+// UNANNOTATED generic target, the redefinition takes the reuse-and-patch path
+// — the compiled caller is neither recompiled nor broken nor trapped; it
+// keeps executing the old, internally-consistent chain and the session
+// survives. GREEN pin (probed 2026-07-03); FLIP NOTE in the section header —
+// under the S103 full cure this coherent-stale pin flips.
+#[test]
+fn redefine_unannotated_generic_target_caller_keeps_old_chain_sibling() {
+    let cap = repl_prims(
+        "(defn f [x] x)\n\
+         (defn g [y] (f (add-i64 y 1)))\n\
+         (g 1)\n\
+         (defn f [x] (add-i64 x 50))\n\
+         (g 1)\n",
+    )
+    .assert_ok(); // the session never dies on the default path
+    // Coherent-stale: both calls print 2 — old chain, no trap, no garbage.
+    assert_eq!(
+        count(&cap.stdout, ":primitives/Int 2"),
+        2,
+        "T1 coherent-stale: the compiled caller keeps the old chain; stdout={}",
+        cap.stdout
+    );
+    let cap = cap.assert_stdout_does_not_contain("is broken by the redefinition");
+    drop(cap);
+}
+
+// spec: repl/spec.md §18.1 — L-U1 sibling of the cascade lane (L-R3): a T1
+// downgrade runs NO transaction — the turn prints no `recompiled:` and no
+// `broken:` section (contrast §18.3, which fires only for concrete
+// single-sig targets at stage M). GREEN pin. NOTE: deliberately does NOT
+// assert absence of the §18.1.1 `stale:` section — that section is the A1
+// acceptance (positive pair above) and appears on exactly this turn shape.
+#[test]
+fn redefine_unannotated_generic_target_no_cascade_sections_sibling() {
+    let cap = repl_prims(
+        "(defn f [x] x)\n\
+         (defn g [y] (f (add-i64 y 1)))\n\
+         (g 1)\n\
+         (defn f [x] (add-i64 x 50))\n\
+         (g 1)\n",
+    )
+    .assert_ok();
+    for needle in ["recompiled", "broken"] {
+        assert!(
+            !any_report_line_contains(&cap.stdout, needle),
+            "a T1 downgrade must not print a `{needle}:` cascade section \
+             (no transaction runs at stage M); stdout={}",
+            cap.stdout
+        );
+    }
+}
+
+// spec: repl/spec.md §18.1 — L-U1 sibling of the recovery lane (L-R1(e)):
+// on the T1 path the user's manual repair works — re-entering the CALLER's
+// definition compiles it against the NEW callee, healing the split world by
+// hand. GREEN pin (probed: 52 after the re-entry). This is the manual
+// counterpart of the §18.6 transactional recovery the full cure extends to
+// T1 targets.
+#[test]
+fn redefine_unannotated_caller_reentry_rejoins_new_world_sibling() {
+    let cap = repl_prims(
+        "(defn f [x] x)\n\
+         (defn g [y] (f (add-i64 y 1)))\n\
+         (g 1)\n\
+         (defn f [x] (add-i64 x 50))\n\
+         (defn g [y] (f (add-i64 y 1)))\n\
+         (g 1)\n",
+    )
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 2") // pre-downgrade world
+    .assert_stdout_contains(":primitives/Int 52"); // re-entered caller: new world
+    drop(cap);
+}
+
+// spec: repl/spec.md §18.1 — L-U1 sibling: the split world in one session.
+// After a T1 downgrade, a caller compiled BEFORE the turn keeps the old
+// definition while a caller defined AFTER sees the new one — the two answers
+// coexist. GREEN pin of the residue the §18.1.1 report exists to make
+// visible (and the S103 cure removes). Probed 2026-07-03: g→1, h→51.
+#[test]
+fn redefine_unannotated_split_world_old_and_new_callers_coexist_sibling() {
+    let cap = repl_prims(
+        "(defn f [x] x)\n\
+         (defn g [y] (f y))\n\
+         (g 1)\n\
+         (defn f [x] (add-i64 x 50))\n\
+         (defn h [y] (f y))\n\
+         (h 1)\n\
+         (g 1)\n",
+    )
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 51"); // h: the new world
+    // g's post-downgrade call still answers through the old chain: both
+    // (g 1) turns print 1 (pre-break sanity + coherent-stale).
+    assert_eq!(
+        count(&cap.stdout, ":primitives/Int 1\n"),
+        2,
+        "the pre-downgrade caller keeps the old chain while the new caller \
+         sees the new definition (T1 split world, §18.1 scope note); stdout={}",
+        cap.stdout
+    );
+    let cap = cap.assert_stdout_does_not_contain("is broken by the redefinition");
+    drop(cap);
 }
