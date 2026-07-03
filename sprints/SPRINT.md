@@ -88,6 +88,7 @@ Full open set at Phase 1 (31 files). Dispositions:
 | 0365 | /spec | open | Pin — `--release` polish |
 | 0416 | /arch | deferred | Pin — `--release` polish (trigger-based) |
 | 0466 | /design | deferred | Pin — indefinite, trigger-based (user-directed S100) |
+| 0505 | /repl | open (filed W1) | Unpinned `/mod` env-parity invariant (audit P5 rule 4 — neither /spec nor /repl pinned it in Phase 3); spec-half pin needed before the L-S3 guards' flip criteria are fully bound; slot with A-3/Wave-7 prep or Phase 6a |
 
 **Escalation check (METHOD §2.4)**: no item hits the 2×-deferral gate this sprint without an existing user sign-off or a standing trigger-based pin (0050/0416/0466 pins are user-ratified; 0430's third deferral was signed off S100 and it has since been drained).
 
@@ -215,7 +216,7 @@ Organized 2026-07-03 from the six Phase-3 plans + /arch's exit-gate verdict. CS-
 
 **Standing execution constraints** (every wave, every brief):
 - **All source-touching agents run strictly serially** (worktree isolation broken). Waves are dependency groupings and dispatch order, NOT parallelism.
-- One agent, one test run; canonical `cargo nextest run --no-fail-fast`; **post-CS-A baseline: 3496 run — 3474 passed / 22 failed / 1 skipped** (fail set = the itemized intentional guards). Any extra RED is a regression the owning agent fixes before returning.
+- One agent, one test run; canonical `cargo nextest run --no-fail-fast`; **post-Wave-1 baseline: 3578 run — 3529 passed / 49 failed / 1 skipped** (49 = 22 carried + 27 new stage-1 REDs, itemized with flip waves in `tests/plan/ledger.md` §"Sprint 102 Phase-5 Stage-1 QA-first RED set"). Any extra RED is a regression the owning agent fixes before returning. Watch item: suite wall time ~110s (subprocess-heavy new lanes) vs the 3-min kill threshold.
 - **Wave gate** (METHOD §2.5): before dispatching wave N+1, scan `design/arch/fixmes/` for `target:` matching wave-N's skill AND `status: open`.
 - Each source wave closes with **/review (narrow, same crate)** before the next wave dispatches; Blocker/Important findings resolve in-wave.
 - Emission-affecting change-sets after Wave 3 carry their **scoped re-baseline in the same change-set** (Q1 discipline); Block-A waves are capture-neutral by the Q1 classifier.
@@ -225,8 +226,8 @@ Organized 2026-07-03 from the six Phase-3 plans + /arch's exit-gate verdict. CS-
 
 | Wave | Skill | Crate | Task | Status |
 |---|---|---|---|---|
-| 1 | /qa | tests/ | Stage-1 failing tests per `tests/plan/s102-test-plan.md` drafting order: **L-U1 first** (incl. RED interim-print acceptance pair) → L-S2 (`repl_lifecycle_matrix.rs`) → L-S3 (`repl_mod_devloop.rs`) → L-N1 (`display_exact.rs`, first `assert_stdout_eq`) + L-N2 retrofits → increment-I set (L-B1 corpus modules + MANIFEST/EXCLUSIONS + capture-script contract, S1–S6 fences, fact-table rows, H2/H5 hook smokes RED-at-draft, `ig_gates` runner + I-G5 probe). 0499 head drains here. **Reconciliations carried**: both 0484 guards re-anchor to §8.6.4 error polarity; 0475 pin-comment anchors fixed opportunistically; 0492 guard stands (no re-anchor). | pending |
-| 2 | /qa | tests/ | **0488 isolation** (before any fix dispatch, CLAUDE.md minimal-repro rule): per-signature seam attribution — typecheck-side vs src/ batch-derivation vs backend resolution. Deliverable: attribution notes + unit-test shapes in a handoff brief; /sprint assigns the fix owner at wave close (conditional rider on Wave 11 B3.1 iff backend-attributed; else its own src//typecheck slot). | pending |
+| 1 | /qa | tests/ | Stage-1 failing tests per `tests/plan/s102-test-plan.md` drafting order: **L-U1 first** (incl. RED interim-print acceptance pair) → L-S2 (`repl_lifecycle_matrix.rs`) → L-S3 (`repl_mod_devloop.rs`) → L-N1 (`display_exact.rs`, first `assert_stdout_eq`) + L-N2 retrofits → increment-I set (L-B1 corpus modules + MANIFEST/EXCLUSIONS + capture-script contract, S1–S6 fences, fact-table rows, H2/H5 hook smokes RED-at-draft, `ig_gates` runner + I-G5 probe). 0499 head drains here. **Reconciliations carried**: both 0484 guards re-anchor to §8.6.4 error polarity; 0475 pin-comment anchors fixed opportunistically; 0492 guard stands (no re-anchor). | **done** (2026-07-03; 8 commits; ledger §"S102 Phase-5 Stage-1 QA-first RED set") |
+| 2 | /qa | tests/ | **0488 isolation** (before any fix dispatch, CLAUDE.md minimal-repro rule): per-signature seam attribution — typecheck-side vs src/ batch-derivation vs backend resolution. Deliverable: attribution notes + unit-test shapes in a handoff brief; /sprint assigns the fix owner at wave close (conditional rider on Wave 11 B3.1 iff backend-attributed; else its own src//typecheck slot). | in-progress |
 
 ### Stage 2 — per-crate D/D/R, serial ladder
 
@@ -251,7 +252,9 @@ Organized 2026-07-03 from the six Phase-3 plans + /arch's exit-gate verdict. CS-
 - 2026-07-03: **Scope APPROVED by user as proposed** (one interleaved sprint, close-short seam after B2 named). Phase 2 /arch review dispatched.
 - Operational rule carried from S101 finding 5: defect reports from parallel 6b proxies must be validated against the landed tree before hotfix dispatch.
 - 2026-07-03: **Phase 3 COMPLETE** — six design plans collected; /arch CS-A landed (v11→v12, all 12 needs-list items + backend rider; nextest 3496 run — 3474/22/1, fail set = intentional guards) with exit-gate **PASS**. FIXMEs resolved in-phase: 0459, 0494, 0503, 0504; 0476 types-half landed (deletes at B1-be); 0492 retargeted /int. **T1 full cure ruled OUT → S103** (pre-approved scope branch: A2/A4 fixes are hard preconditions; print ships as mitigation).
-- 2026-07-03: **Phase 4 COMPLETE** — 13-wave serial ladder written (§Waves); Status → PHASE 5. Wave 1 dispatch pending user review of the execution plan (commitment made at Phase 1). CS-A is landed but UNCOMMITTED — first commit rides Wave-1 dispatch or earlier at user direction.
+- 2026-07-03: **Phase 4 COMPLETE** — 13-wave serial ladder written (§Waves); Status → PHASE 5. CS-A + Phase 2–4 docs committed (`7800b9a`, `b203857`); user approved dispatch.
+- 2026-07-03: **Wave 1 DONE** (/qa stage-1, 8 commits). New baseline **3578 / 3529 / 49 / 1** (27 new intentional REDs, ledger-itemized with flip waves). Deliveries: 5 of 7 lanes exist; L-B1 corpus turnkey (13 MANIFEST entries, `clif_golden.sh` selftest passes on HEAD — G-1 answered: harness-side sorting suffices, H1 likely no-op); `ig_gates.py` ready incl. seam-mandatory `--gates g5`; I-G6 ready. **Two NEW defects discovered + guarded, both B3.1 seam**: span-keyed `curry_drop_glue_{span}` identifier collision (the exact (span×discriminator) anti-pattern backend §13 forbids — direct B3.1 input) + generic-fn-returned Vec temp 1-alloc leak (0474-adjacent). FIXME 0505 filed (/repl, `/mod` env-parity pin). 0499 stays open annotated (L-S1 + L-M1 remainder). Findings: RC_STATS ±1 exit jitter (fences carry ±2 tolerance); one 1-of-3 flake of pre-existing `mixed_blocking_and_poll_par_overlaps_on_both_pools` (recorded, symptom-framed, not chased); suite ~110s. Root-CLAUDE.md count update (22→49) = Phase 7 user-flagged.
+- Wave-gate scan before Wave 2: open /qa-targeted FIXMEs (0474/0483/0484/0486/0488/0491/0493/0499) all have explicit in-sprint wave dispositions in this plan — none blocks; 0505 targets /repl (not in wave).
 
 ## Outcome (Phase 7)
 
