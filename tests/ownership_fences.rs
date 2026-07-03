@@ -288,7 +288,7 @@ const S5_TEMPLATE: &str = "(import [primitives [*]])\n\
     \x20   (hot (sub-i64 n 1) (add-i64 acc (str-len s)) s)))\n\
     (defn main [] (Pure (hot {N} 0 \"xyz\")))\n";
 
-// spec: design/arch/ownership-inference.md §9.3 — S5 behavioral + balance
+// spec: design/backend/ownership-codegen.md §9.2 — S5 behavioral + balance
 // legs in one: the sibling-targeted call must preserve `s` across 1000
 // crossings AND the final use. GREEN at draft; the discriminating leg (no
 // adaptation inc) is I-G-side (H2/H3 counters) when B3.5 lands.
@@ -373,7 +373,7 @@ fn vec_returned_from_generic_fn_consumed_by_vec_op_releases_temp() {
     assert_iteration_independent_imbalance(template, "generic-fn-returned vec temp");
 }
 
-// spec: design/typecheck/ownership-inference.md §12.7 — L-D3c: a borrowed
+// spec: tests/plan/s100-ownership-verification.md §3.3 — L-D3c: a borrowed
 // capture crossing a SUSPENSION (auto-sparked divide-and-conquer args under
 // lenient eval — the ParBind/LaunchContinue class; the R6/S98-0486 UAF
 // site). The shared Vec is read inside every sparked leaf; 256 leaves,
@@ -414,7 +414,7 @@ fn l_d3d_root_last_use_write_with_live_projected_borrow() {
     assert_exit_value(out, 2 + 4);
 }
 
-// spec: design/typecheck/ownership-inference.md §12.7 — L-D3f: NO FALSE
+// spec: tests/plan/s100-ownership-verification.md §3.3 — L-D3f: NO FALSE
 // ELISION, asserted on the summary itself via Hook H5's classification dump:
 // a param the callee RETURNS must not be summarised Borrowed. RED on HEAD —
 // H5 (`CRANELISP_OWNERSHIP_TRACE`) does not exist until B2 CS-4
@@ -641,7 +641,7 @@ fn h3_rc_stats_reports_per_extern_adaptation_pairs() {
     );
 }
 
-// spec: design/typecheck/ownership-inference.md §11 — Hook H5:
+// spec: tests/plan/s100-ownership-verification.md §3.7 — Hook H5:
 // `CRANELISP_OWNERSHIP_TRACE` per-cluster summary + per-site verdict dump.
 // RED on HEAD (/typecheck, B2 CS-4; gate-blocking for I-G3 and L-D3f).
 #[test]
