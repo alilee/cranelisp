@@ -12,6 +12,8 @@ Test infrastructure for the Cranelisp reimplementation. Owned by `/qa`.
 | `plan/risks.md` | Qualitative risk register. |
 | `plan/coverage-gaps.md` | Per-crate coverage analysis. |
 | `plan/negative-coverage.md` | `[Tested]` → `[Tested+Neg]` upgrade register. |
+| `plan/s99-measurement.md` | S99 parallel-contention measurement record (F1–F4 fixtures, baselines, ablations). |
+| `plan/s100-ownership-verification.md` | Ownership-inference verification & acceptance plan (S100 parts 17–18): staged F1–F4 gates per increment, analysis-off differential oracle, starved-inc/UAF/stack-slot/reuse fences, R3 machinery lanes, owed observability hooks, vec-query value-use triage record. |
 | `plan/legacy/` | Superseded plans (rings, four-layer strategy, S61 retros). Provenance only. |
 
 ## Two tiers, no middle

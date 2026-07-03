@@ -36,6 +36,39 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 100 Phase-3 triage — vec-query-family value-use calls through NULL GOT slots → SIGSEGV (/qa, 2026-07-02)
+
+The spine-named triage item (`design/arch/ownership-inference.md` §3.1/§9): value-use
+of `vec-get`/`vec-set`/`vec-push` (passed to a HOF) rides GOT slots initialized NULL
+(`cranelisp-primitives/src/lib.rs::insert_vec_query_entries` — no extern body exists;
+only `vec-len` has a shim). Verdict: **real defect** — the fn-as-value wrapper
+(`fn_as_value.rs::emit_wrapper_call`) emits a GOT-indirect `call_indirect` through the
+NULL slot → SIGSEGV in BOTH `--run` and the REPL (session process dies). Full triage
+record + code path: `tests/plan/s100-ownership-verification.md` §7. No FIXME filed —
+the failing tests are the record (`memory/feedback_no_fixme_with_failing_test.md`).
+
+- **Tests (4 RED, failing-not-ignored; +1 GREEN control pinning the boundary):**
+  `vec_query_value_use::vec_get_as_value_through_hof_returns_element`,
+  `vec_query_value_use::vec_set_as_value_through_hof_returns_updated_vec`,
+  `vec_query_value_use::vec_push_as_value_through_hof_appends`,
+  `vec_query_value_use::vec_get_as_value_run_mode_returns_element`
+  (control: `vec_query_value_use::vec_len_as_value_through_hof_returns_length_control`, PASSING).
+- **Current commit SHA:** `78ac5dd` (+ uncommitted `tests/vec_query_value_use.rs`).
+- **Exact signature:** REPL shapes — harness panic
+  `expected exit 0, got status=ExitStatus(unix_wait_status(139))` (SIGSEGV, signal 11);
+  run-mode shape — `expected exit 20, got None` (signal termination, no exit code).
+- **Owning skill:** `/backend` — the fn-as-value wrapper body should inline-lower the
+  vec query family exactly as the auto-curry path does (`emit_curry_target_call` →
+  `primitives_inline`), or the S100 R2-wrapper work (`design/backend/ownership-codegen.md`
+  §3.5) subsumes it. A primitives-crate extern body is blocked on element-type erasure
+  (why the slots are NULL), so the fix seam is backend codegen, not `/platform`.
+- **Target sprint:** first Phase-H implementation sprint touching the fn-as-value /
+  R2-wrapper seam (increment I per `sprints/SPRINT.md` sequencing); backend
+  `ownership-codegen.md` §12.7 already requires this verified before the §9 sibling
+  registration lands.
+- **Disposition:** `out-of-scope (owner=/backend)` — S100 is a design sprint; the
+  narrow repros are the durable record + regression guard and flip GREEN with the fix.
+
 ### Sprint 98 Stage-1 — exemplar_web bug #2: SMALLER two-live-vec launched-send reduction + reduction findings (/qa, 2026-07-01)
 
 - **Test (smaller deterministic repro, un-ignored RED):**

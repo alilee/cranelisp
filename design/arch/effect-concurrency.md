@@ -268,6 +268,21 @@ now on record:
   The ablation report §8–§10 is the durable record of *why* three in-track cures were tried
   and set aside.
 
+**S100 — the (b)-cure now has a designed home: `design/arch/ownership-inference.md` (the
+memory-model spine).** Phase H opened at S100 with the design phase this section's settlement
+demanded: **interprocedural ownership inference computed at typecheck, consumed by the backend,
+no annotations** — one flow/lifetime analysis answering five queries (borrow, escape,
+confinement, uniqueness, duplication strategy), each driving a distinct codegen mechanism on the
+**shared** Cranelift lowering. The vec-COW leaf-refcount volume named above is attacked from
+three directions there: borrow-through-projection makes the read path rc-free (spine §4.4),
+uniqueness-driven in-place reuse serves the write path (spine §4.3, increment II — the §5.5.2.7
+last-use extension, generalised), and Copy value-flattening plausibly removes the leaf refcounts
+outright (spine §6.3). The (a)/(b) **coupling** finding is honoured as a carried constraint
+(storage+RC co-designed, spine §0), and the contention-aware gate (`0459`) is composed-not-blocked:
+its missing allocation/RC-density axis becomes derivable from the analysis outputs (spine §8.3),
+so the gate's conservative declines convert to admits as the memory model lands — exactly layer
+(c) above.
+
 ## 4. The inferred half — how concurrency is extracted
 
 The pure program emits effects ordered **only by data dependencies**. The trampoline

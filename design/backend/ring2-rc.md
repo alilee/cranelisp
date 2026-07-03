@@ -216,6 +216,20 @@ When `rc_dec` brings the old RC to 1 (meaning it was the last reference):
 
 There is exactly one calling convention, applied identically to direct user-function calls, closure calls (named or temporary callee), trait method dispatch (user impls and primitive/extern impls), sig-dispatch, data constructors, inline builtin operators, Vec primitives, and every extern Rust function that takes heap arguments.
 
+> **S100 forward note — Decision 24 becomes the conservative point of the mode lattice
+> (`design/arch/ownership-inference.md`, the S100 memory-model spine).** Decision 24 is retained
+> verbatim as the **conservative default / absent-summary semantics**: it is the ⊤ point of the
+> spine's per-param mode lattice (`Copy ⊑ Borrowed ⊑ Owned`, spine §2.1). The "exactly one calling
+> convention" sentence above is therefore scoped to **one *default* convention**: refinements are
+> inferred, never annotated — statically-resolved calls (`resolved_call = Some`) may carry an
+> inferred per-param mode vector (ABI-bearing; absence ⇒ byte-for-byte this convention) — and
+> every unrefined edge (closure-valued/HOF call sites, constructors, externs, intrinsics, platform
+> effects) keeps exactly this convention permanently (spine §3.1 boundary pins). The increment-I
+> `Borrowed` elision on statically-resolved calls is specified by
+> `design/backend/ownership-codegen.md` against the spine; under the master analysis-off toggle
+> the emitted code remains byte-identical to this section as written. Everything below in §3
+> stands unchanged as the as-built behaviour and the permanent conservative lowering.
+
 ### 3.1 The Uniform Consuming Convention
 
 **Protocol**:
@@ -627,6 +641,12 @@ Three rules modify scope cleanup behavior:
 
 - **Last-use analysis** (`compute_last_uses`): Walks the expression tree in pre-order to determine the final use of each variable. The last use of a variable reference is a candidate for ownership transfer (skip the inc at the call site because the callee gets the caller's last reference). Currently used by Vec COW to determine mutate-in-place eligibility, but the general mechanism is available for future optimization. Must be gated on both `captured_vars` and `borrowed_vars` — neither owns the value, so neither may transfer ownership.
 
+> **S100 note:** the general ownership analysis subsumes these rules as inferred cases
+> (`design/arch/ownership-inference.md` §8.2 — `borrowed_vars` is the intra-function seed of
+> borrow-through-projection, spine §4.4). The structural rules here remain correct and remain
+> the as-built behaviour until the analysis lands; the backend consumption design is
+> `design/backend/ownership-codegen.md` §3.
+
 #### 5.5.1 Sketch comparison
 
 The sketch was aware of match-arm borrowed bindings: `mark_borrowed_var` in `sketch/src/codegen.rs:247` records the same concept, set from `sketch/src/codegen/match_compile.rs:231–235` when the scrutinee is a known-unique local. But the sketch's gating strategy diverges — rather than gating `is_last_use` on the borrowed set, the sketch took an orthogonal route: `emit_consuming_caller_rc` at `sketch/src/codegen.rs:295–303` short-circuits borrowed vars by emitting an unconditional inc ("auto-upgrade") and skipping `mark_consumed` entirely, which prevents last-use transfer as a side effect. Both designs reach the same invariant (borrowed binding never transfers ownership); the reimplementation's explicit `is_last_use` gate (§7 table row) is arguably clearer for future readers since the rule is named where the decision is made, rather than implied by the absence of a `mark_consumed` call. The sketch additionally predicated the borrow on a scrutinee-uniqueness check (`scrutinee_is_unique` at `match_compile.rs:37–42`, eliding both inc at extraction and dec at scope exit when safe) — an optimisation the reimplementation has not adopted; this sketch feature is tracked as a possible future refinement rather than a bug.
@@ -639,6 +659,11 @@ The sketch was aware of match-arm borrowed bindings: `mark_borrowed_var` in `ske
 > RC discipline and NOT escape analysis. The three arch conditions (structural-join gate; coarse
 > retain / no escape analysis; read-only no-COW-hazard) are binding and MUST NOT be widened; the
 > place the design "wants to widen" is a Phase-H forward-pointer (§5.5.2.5), not this sprint's work.
+>
+> **S100 note:** the general ownership analysis subsumes spark-capture borrow as an inferred case
+> (`design/arch/ownership-inference.md` §8.2 — the escape query classifies suspension crossings as
+> escape edges, discharging the §5.5.2 ParBind caveat by classification, never by widening the
+> borrow). This section remains the as-built contract until the analysis lands.
 
 > **S99 ablation outcome (Wave 1b, `s99-measurement.md` §8; FIXME 0461 resolved, FIXME 0462 filed → this doc).**
 > The mechanism landed **within its boundary and is CORRECT** — implemented opt-in behind
@@ -878,7 +903,10 @@ freshly-COW'd, provably-unique grid in place instead of re-bumping every cell), 
 the §5.5.2 spark-capture borrow. The ablation numbers (`s99-measurement.md` §8–§10) are the
 evidence and the durable record of *why* three in-track cures were tried and set aside. **Forward
 item (Phase-H (b)-cure):** owned-copy mutate-in-place / last-use / Perceus reuse on COW'd
-heap-Vec leaves; the S99 ablation is the funding justification.
+heap-Vec leaves; the S99 ablation is the funding justification. **S100: the designed home now
+exists** — `design/arch/ownership-inference.md` (the memory-model spine; the (b)-cure is the Q4
+reuse / Q5 value-flattening write path, spine §6.3 + §10 items 10–11), with the backend emission
+half in `design/backend/ownership-codegen.md` §6–§7.
 
 ### 5.6 Capture-return inc
 

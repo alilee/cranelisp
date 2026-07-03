@@ -60,7 +60,7 @@ The load-bearing fork: *from what artifact does the release tier lower?*
 
 **Recommendation (b).** The S84 full-monomorphisation arc built `MonoExpr`/`MonoDefn`/`MonoDefnVariant` (`crates/cranelisp-types/src/mono_expr.rs`): a post-mono codegen AST where every node carries a non-optional `ty: ConcreteType` (`concrete.rs` — no `Var`, no `TyConApp`) and every call carries `resolved_call: Option<Box<ResolvedCall>>` (mono_expr.rs:124) naming a concrete target (`TraitMethod{mangled_name}`, `SigDispatch`, `BuiltinFn`, `AutoCurry`). **Trait dispatch is already statically resolved — there is no vtable.** This is exactly the artifact a second backend should consume. Everything above it — reader, macro expansion, Algorithm-W, trait resolution, monomorphisation — is reused verbatim. The LLVM backend is a function `MonoDefn → LLVM IR`, mirroring the Cranelift `FnCompiler::compile_expr` dispatch, one method per `MonoExpr` variant.
 
-**Single source of truth for codegen input (Principle 7):** the release tier consumes the *same* `MonoExpr` instances Cranelift would — never a re-derived or release-specific IR. If `--release` ever needs information `MonoExpr` doesn't carry, that information is added to `MonoExpr` (benefiting both tiers) — but §7 shows this is not needed for M1–M7 except one contingent case.
+**Single source of truth for codegen input (Principle 7):** the release tier consumes the *same* `MonoExpr` instances Cranelift would — never a re-derived or release-specific IR. If `--release` ever needs information `MonoExpr` doesn't carry, that information is added to `MonoExpr` (benefiting both tiers) — the S100 ownership-inference fields (`design/arch/ownership-inference.md` §3.3) are exactly this rule operating: one contingent case fired (§8.3), the facts joined the shared boundary, and both tiers consume them.
 
 ---
 
@@ -117,9 +117,9 @@ Every mechanism is unlocked by the closed-world property (§2): a `--release` bi
 - **M1 — GOT-elision / direct calls + inlining.** The per-module GOT (`got_data_symbol_name`, dispatched via `emit_got_indirect_call_via_data_id`) is a runtime-mutable `AtomicPtr` slab whose *only* load-bearing purposes are incremental-model concerns: JIT per-symbol patching (`got.rs:131-152`), `.o`-cache relink, REPL hot-reload, and **cdylib** platform dispatch. In `--link`/`--release` the platform rlib is `-force_load`'d and slots are resolved at `ld` time as ordinary linker symbols — the indirection is structural uniformity, not necessity. **In release, lower `resolved_call` to a direct `call @sym`** (platform effects included — they're static rlibs, so even effect calls are directly callable/inlinable). Because dispatch is already monomorphised, "inlining across calls" is just emitting a direct edge to a known body and letting LLVM inline. *(Note: the tempting "keep GOTs, let LTO devirtualize through them" route does **not** work — the optimizer can't prove a mutable atomic global has one value; you'd have to emit it as a constant, which is just an awkward direct call. So emit direct refs.)*
 - **M2 — Whole-program optimization (ThinLTO).** LTO spanning user objects + bundle `.a` + platform rlibs unlocks cross-module inlining, whole-program DCE (strip unused prelude/stdlib/runtime), and const-prop — and it is the **enabler** for M1's inlining and M3's RC-fusion (the optimizer can't fuse what it can't see across a native-object boundary). **Intrinsically Tier-2-only:** a Cranelift `.o` cannot join an LLVM LTO unit. ThinLTO default; fat-LTO opt-in for small programs.
 - **M3 — RC inc/dec fusion (peephole).** Once M2 inlines the RC intrinsics, `inc(x); dec(x)` cancellation and loop-hoisting become LLVM-IR/LTO passes. Safe freebie.
-- **M4 — Non-atomic RC (confinement-gated).** The atomics exist for two structured fork-join paths: lenient-eval IVar sparks (`ivar.rs`) and S85 auto-IO `ParBranch` (`io.rs`). Both boundaries are **visible on the facade** (`MonoExpr::ParBind`, mono_expr.rs:146). A backend confinement analysis marks allocations that never cross a spark/`ParBind`/IVar boundary as thread-local and emits *plain* add/sub for them (`emit_rc_inc_local` vs the atomic `emit_rc_inc`). Soundness-critical (conservative — atomic on any doubt); deferred behind the heaviest differential coverage.
-- **M5 — Escape analysis → stack/region alloc.** A direct extension of `compute_last_uses` (`heap.rs:912`): an allocation whose result never escapes its defining function is stack/region-allocated instead of `emit_alloc`, eliminating the alloc *and* its RC pair.
-- **M6 — Perceus precise-RC + in-place reuse.** Drop-guided reuse: a unique (`rc==1`) constructor consumed at last use, followed by a same-layout construction, reuses the memory in place. **This is the principled fix for FIXME 0408**: a uniquely-owned Sudoku grid's `set-cell` becomes an in-place store instead of an 81-cell copy, collapsing quadratic copy-per-guess to constant. Connects to the S83 §12.1 representation freedom. Watch-item: precision improves with borrow/own knowledge — see §7 (derived in-backend, not a facade ask).
+- **M4 — Non-atomic RC (confinement-gated).** The atomics exist for two structured fork-join paths: lenient-eval IVar sparks (`ivar.rs`) and S85 auto-IO `ParBranch` (`io.rs`). Both boundaries are **visible on the facade** (`MonoExpr::ParBind`, mono_expr.rs:146). Allocations that never cross a spark/`ParBind`/IVar boundary are thread-local and get *plain* add/sub (`emit_rc_inc_local` vs the atomic `emit_rc_inc`). Soundness-critical (conservative — atomic on any doubt); the heaviest differential coverage applies. *(S100: the confinement fact is the typecheck-computed Q3 advisory — spine §2.3 — interprocedural, not a backend-local walk; the emission mechanism stays here and lands on the shared lowering.)*
+- **M5 — Escape analysis → stack/region alloc.** An allocation whose result never escapes its defining function is stack/region-allocated instead of `emit_alloc`, eliminating the alloc *and* its RC pair. *(S100: the escape fact is the typecheck-computed Q2 advisory — spine §2.2, with suspension crossings as escape edges — superseding the earlier "direct extension of `compute_last_uses`" framing; the intra-function `compute_last_uses` walk stays in-backend for last-use, and the stack/region mechanism stays here, landing on the shared lowering.)*
+- **M6 — Perceus precise-RC + in-place reuse.** Drop-guided reuse: a unique (`rc==1`) constructor consumed at last use, followed by a same-layout construction, reuses the memory in place. **This is the principled fix for FIXME 0408**: a uniquely-owned Sudoku grid's `set-cell` becomes an in-place store instead of an 81-cell copy, collapsing quadratic copy-per-guess to constant. Connects to the S83 §12.1 representation freedom. *(S100: the borrow/own knowledge arrives from typecheck via the ownership-inference contract, and reuse lands on the shared lowering ahead of `--release` — see §8.3 ruling box + `design/arch/ownership-inference.md` §4.3/§7.)*
 - **M7 — Arena/region per lifetime.** The aggregate of M5 escape results — group allocations of common bounded lifetime (a `let` body, a `ParBind` arm) into one arena freed at scope exit. A natural fit for per-request lifetimes (the web exemplar). Region boundaries are structurally visible (`Let`, `Match` arms, `ParBind` arms).
 
 **No tracing GC** — it breaks deterministic destruction (the consuming convention assumes eager ordered finalization), the C-ABI/platform model + DEF-6 alloc contract (a moving collector invalidates pointers held across FFI), and the atomic-RC concurrency story. Perceus + escape/region gives most of GC's allocation-elision while *preserving* determinism, the FFI contract, and concurrency.
@@ -137,18 +137,18 @@ The decisive precedent: the two analyses beyond-RC needs **already live in the b
 | M1 | direct calls + inline | **ENCAPSULATED** | none — `resolved_call` already names the static callee; direct-call is a release lowering mode |
 | M2 | ThinLTO / WPO | **ENCAPSULATED (codegen) but BUILD-SYSTEM-impacting** | none on the facade; needs `[profile.release] lto` + bitcode-emitting platform/bundle rlibs (workspace `Cargo.toml` + platform crates) — the one non-facade exception |
 | M3 | RC fusion | **ENCAPSULATED** | none — post-lowering LLVM-IR/LTO peephole |
-| M4 | non-atomic RC | **ENCAPSULATED** (soundness obligation discharged in-backend) | none — `ParBind` boundary is already on the facade |
-| M5 | escape → stack/region | **ENCAPSULATED** | none — extends `compute_last_uses` |
-| M6 | Perceus reuse | **ENCAPSULATED — modulo one watch-item** | none *if* borrow/own is derived in-backend from use-structure; a typecheck-provided ownership annotation is the *declined* alternative (§8.3) |
-| M7 | arena/region | **ENCAPSULATED** | none — region boundaries (`Let`/`Match`/`ParBind`) are first-class facade nodes |
+| M4 | non-atomic RC | **mechanism ENCAPSULATED; precision fact CONSUMED from the facade** *(S100)* | consumes the typecheck-computed **confinement** advisory fact (ownership-inference spine §2.3/Q3); sound to ignore. Lands on the **shared** Cranelift lowering per the §8.3 ruling, no longer release-only. |
+| M5 | escape → stack/region | **mechanism ENCAPSULATED; precision fact CONSUMED from the facade** *(S100)* | consumes the typecheck-computed **escape** advisory fact (spine §2.2/Q2); `compute_last_uses` stays in-backend. Lands on the shared lowering. |
+| M6 | Perceus reuse | **mechanism ENCAPSULATED; contract facts CONSUMED from the facade** *(S100 — the §8.3 contingency FIRED)* | consumes the **ABI-bearing per-param mode vector** + advisory uniqueness facts (spine §3); dynamic rc==1 reuse tokens stay intra-function, off the call ABI (spine §3.5). Lands on the shared lowering. |
+| M7 | arena/region | **ENCAPSULATED** | none — region boundaries (`Let`/`Match`/`ParBind`) are first-class facade nodes; aggregation of M5 results, which now arrive via the spine's escape facts |
 
-**Summary: 6 of 7 mechanisms encapsulate with zero facade delta.** The lone non-codegen exception is **M2 (build-system, not facade)**. **M6** carries a contingent exception (see §8.3). The `MonoExpr` facade is **frozen** with respect to the efficiency tier — the only thing that could thaw it is M6-precision, and only if in-backend derivation proves insufficient.
+**Summary (amended S100): the codegen-engine mechanisms (M-LLVM, M1–M3, M7-aggregation) encapsulate with zero facade delta; the memory-model mechanisms (M4–M6) keep their *mechanisms* backend-encapsulated but consume interprocedural *facts* computed at typecheck and carried on the `MonoExpr`/signature boundary** — the S100 ownership-inference contract (`design/arch/ownership-inference.md` §3). The lone non-codegen exception remains **M2 (build-system, not facade)**. D-Rel-5's "`MonoExpr` frozen" is superseded for the ownership-inference fields (§8.3 ruling box); the line is now: **interprocedural facts above the boundary; intraprocedural analyses and all mechanisms below it.**
 
 ---
 
 ## §8. Memory management beyond RC — two layers
 
-**Layer 1 — RC peephole (LTO-reachable):** M3 fusion is a safe freebie once M2 inlines the intrinsics. M4 non-atomic RC is **not** a freebie — it needs the in-backend confinement analysis (§6) and is where over-optimization = use-after-free across a join.
+**Layer 1 — RC peephole (LTO-reachable):** M3 fusion is a safe freebie once M2 inlines the intrinsics. M4 non-atomic RC is **not** a freebie — it needs the confinement fact (S100: typecheck-computed, spine §2.3; consumed by the backend emission per §6) and is where over-optimization = use-after-free across a join.
 
 **Layer 2 — RC replacement/augmentation (compiler analyses over `MonoExpr`, NOT LLVM freebies):** M5 escape, M6 Perceus, M7 region. These cut allocation/RC-op *count* (algorithmic) — categorically distinct from LLVM's constant-factor wins.
 
@@ -159,6 +159,24 @@ The MVP proves **identical lowering** (parity by construction): same GOT-indirec
 Once release lowering legitimately diverges, the invariant becomes **same observable output across `--run`/`--link`/`--release`** for the whole corpus (§11). Differential testing replaces byte-identity as the oracle.
 
 ### 8.3 The M6 watch-item (the one standing facade exception)
+
+> **S100 RULING (2026-07-02, `/arch` Phase-2 review — the contingency below has FIRED; the default is INVERTED).**
+> The S99 measured settlement (`effect-concurrency.md` §3.1; `ring2-rc.md` §5.5.2.7) established that the
+> dominant contention term (vec-COW leaf-refcount volume) is curable only with interprocedural facts local
+> in-backend derivation cannot see — exactly the "can't reach the precision FIXME 0408 needs" condition this
+> section named. S100 rules: **ownership/mode inference is computed at typecheck (interprocedural, over the
+> resolved call graph, no annotations) and passed down on the `MonoExpr`/signature boundary.** Per-param
+> signature modes are ABI-bearing (absence ⇒ the Decision-24 Owned/consume default); per-site
+> escape/confinement/uniqueness facts are advisory (sound to ignore). Intraprocedural analyses
+> (`compute_last_uses`, `HeapCategory::classify`) and all codegen *mechanisms* stay backend-encapsulated;
+> the mechanisms additionally land in the shared Cranelift lowering (partially superseding D-Rel-4's
+> "dev path stays unoptimized" for the memory-model subset — the conservative all-Owned lowering remains
+> the correctness oracle). D-Rel-5's "`MonoExpr` frozen" is superseded for these fields. Full contract:
+> the S100 Phase-3 arch spine **`design/arch/ownership-inference.md`** (landed 2026-07-02 — the
+> lattice §2, the two-class contract §3, sequencing §4, the R3 dependent-recompilation model §5,
+> soundness discipline §6); the §7 table and §13 have been amended in step with it.
+> Recorded in `sprints/SPRINT.md` §Architecture review (S100).
+
 Perceus precision improves with borrow-vs-own knowledge. The calling convention is **uniformly consuming** (Decision 24 — the backend has no borrowing classification). **Recommendation: derive borrow/own in-backend** from `MonoExpr` use-structure (a parameter used only in non-escaping read positions is borrowable) rather than adding a facade field — preserving encapsulation at some precision cost. *Only if* in-backend derivation can't reach the precision FIXME 0408 needs does a typecheck-side ownership annotation on `MonoExpr` become warranted — and that piece would necessarily live above the backend. This is the single contingent breach of the encapsulation goal.
 
 ---
@@ -192,7 +210,7 @@ The release tier's codegen ends at emitting `.o`s; **everything downstream is th
 
 ## §12. Phased delivery
 
-- **H.0 — Pre-reqs.** Single-source the layout consts + fold the `got_data_symbol_name` duplicate (§5). (Note: this is *lighter* than the original design's "extract RC analysis above backend" — that is reversed; the analyses stay in-backend per §7.)
+- **H.0 — Pre-reqs.** Single-source the layout consts + fold the `got_data_symbol_name` duplicate (§5). (Note: this is *lighter* than the original design's "extract RC analysis above backend" — that is reversed; the *intraprocedural* analyses stay in-backend per §7. S100: the *interprocedural* facts arrive from typecheck per the ownership-inference spine — a different, designed split, not the extraction this note declined.)
 - **H.1 — MVP.** `cranelisp-backend/src/release/` behind `release`; lower `MonoExpr → .o` via inkwell at `-O2`, **calling all intrinsics (no inlining)**, GOT-indirect (parity-by-construction); reuse startup stub + linker tail; `--release` CLI. **Acceptance: three-mode byte-parity on Int→ADT→closure→Vec + one platform program + the sustained-load test.** No perf claim — correctness first.
 - **H.2 — Optimize.** M2 ThinLTO (substrate, first) → M1 direct calls → M3 RC fusion → M5 escape → M6 Perceus (parity-gated, ASan-checked) → M4 non-atomic RC (confinement-gated, last/hardest) → M7 region. `-O3` per-benchmark. **Acceptance: measured speedups.**
 - **H.3 — Exemplar perf numbers.** `--release` Sudoku, before/after the 0408 rework — the headline showcase number.
@@ -205,8 +223,8 @@ The release tier's codegen ends at emitting `.o`s; **everything downstream is th
 - **D-Rel-1 — Two-tier framing.** `--release` is the efficiency tier; LLVM is one component (M-LLVM); Cranelift stays the simple dev/correctness tier. (§2)
 - **D-Rel-2 — Second `MonoExpr` consumer** (option b), not CLIF→LLVM or emit-C. (§3)
 - **D-Rel-3 — Feature-gated submodule** `cranelisp-backend/src/release/`, not a split crate; `release` off by default; LLVM stays out of the dev build/9s suite. (§5)
-- **D-Rel-4 — Encapsulation over sharing.** Efficiency analyses (M1–M7) are release-only and backend-encapsulated; they are **NOT** extracted above the backend to benefit both tiers (this *inverts* the closed-world addendum's earlier recommendation). Consequence (accepted): the Cranelift dev path stays unoptimized — intended; it's the correctness oracle, not the efficiency path. (§7, §8)
-- **D-Rel-5 — `MonoExpr` facade frozen w.r.t. the efficiency tier**, with one contingent exception: M6 Perceus borrow-precision, declined in favor of in-backend derivation unless FIXME 0408 demands otherwise. (§7, §8.3)
+- **D-Rel-4 — Encapsulation over sharing.** Efficiency analyses (M1–M7) are release-only and backend-encapsulated; they are **NOT** extracted above the backend to benefit both tiers (this *inverts* the closed-world addendum's earlier recommendation). Consequence (accepted): the Cranelift dev path stays unoptimized — intended; it's the correctness oracle, not the efficiency path. (§7, §8) *[**AMENDED S100** (Phase-3, `design/arch/ownership-inference.md`): superseded for the memory-model subset — ownership/escape/confinement/uniqueness **facts** are computed at typecheck and carried on the boundary (the spine's two-class contract §3), and the M4–M6 **mechanisms** land in the **shared Cranelift lowering** (spine §3.4), no longer release-only. The correctness-oracle role is preserved by the analysis-off toggle (conservative all-Owned/atomic/heap lowering, spine §6.2). Intraprocedural analyses (`compute_last_uses`, `HeapCategory::classify`) and all mechanism internals stay backend-encapsulated. Codegen-engine mechanisms (M-LLVM, M1–M3) unaffected — still release-tier-only. See the §8.3 ruling box.]*
+- **D-Rel-5 — `MonoExpr` facade frozen w.r.t. the efficiency tier**, with one contingent exception: M6 Perceus borrow-precision, declined in favor of in-backend derivation unless FIXME 0408 demands otherwise. (§7, §8.3) *[**AMENDED S100**: the contingent exception FIRED (S99 measurement — in-backend derivation cannot see the interprocedural facts the dominant vec-COW term needs); the freeze is superseded for the ownership-inference fields (`ModeSummary` on `MonoDefnVariant` + advisory site facts on `MonoExpr` — designed in the spine §3.3, landed by the first implementation sprint, `/arch`-authored). The freeze STANDS for everything else; every further field is judged against the spine's narrowness counterweight (Principle 2 — the boundary carries only what locality cannot compute). See the §8.3 ruling box.]*
 - **D-Rel-6 — MVP proves identical lowering; optimizations layer on; parity then = semantic differential testing under sustained load.** (§4, §8.1–8.2, §11)
 - **D-Rel-7 — No tracing GC.** (§6, §8)
 
@@ -229,7 +247,7 @@ The release tier's codegen ends at emitting `.o`s; **everything downstream is th
 Before implementation (none block current work — Phase H is gated):
 - **U1 — D-Rel-2** (the `MonoExpr`-consumer boundary). Confirm.
 - **U2 — D-Rel-3** (feature-gated submodule + inkwell/LLVM 18, off by default). Confirm.
-- **U3 — D-Rel-4** (encapsulation over sharing; Cranelift dev path stays unoptimized). Confirm — this is the consequential inversion.
+- **U3 — D-Rel-4** (encapsulation over sharing; Cranelift dev path stays unoptimized). Confirm — this is the consequential inversion. *(S100: partially superseded for the memory-model subset — see the amended §13 entry; what remains to confirm is the codegen-engine half.)*
 - **U4 — H.0 timing.** The (now-light) pre-req consts/dedup work: in the first release sprint, or pulled into the S87 audit-remediation?
 
 ---
@@ -237,10 +255,10 @@ Before implementation (none block current work — Phase H is gated):
 ## Cross-skill handoffs / Next skills
 
 *(To be filed as `design/arch/fixmes/NNNN-*.md` when Phase H is scoped — not now; the design is unratified.)*
-- **`/backend`** — owns the whole efficiency tier: `src/release/` (M1–M7 + M-LLVM), the H.0 const-single-sourcing + `got_data_symbol_name` dedup, and the ABI-parity review. No request to typecheck for facade fields (D-Rel-4).
+- **`/backend`** — owns the whole efficiency tier: `src/release/` (M1–M7 + M-LLVM), the H.0 const-single-sourcing + `got_data_symbol_name` dedup, and the ABI-parity review. *(S100 amendment: the M4–M6 memory-model mechanisms are designed and landed on the **shared** lowering ahead of `--release`, consuming the ownership-inference facts — `design/backend/ownership-codegen.md` against the spine; `--release` inherits them.)*
 - **`/platform`** — M2 exception: platform rlibs + `cranelisp-exe-bundle` emit LLVM bitcode under release so ThinLTO sees across the FFI boundary.
 - **`/int`** — `--release` CLI routing, mode-exclusivity, `[profile.release] lto`, release-artifact cache namespacing (§10).
-- **`/typecheck`** — **no new work** under D-Rel-4. *Standing contingency only:* if `/backend` reports in-backend borrow-derivation can't reach the Perceus precision FIXME 0408 needs, typecheck would then own an `MonoExpr` ownership annotation (the single facade breach).
+- **`/typecheck`** — *(S100: the standing contingency FIRED — S99 measured exactly the precision ceiling this bullet reserved against.)* Typecheck owns the **interprocedural ownership/escape/confinement/uniqueness inference** (computed post-mono over the resolved call graph) whose outputs ride `MonoDefn`/`MonoExpr` per the S100 contract — see `design/arch/ownership-inference.md` (spine) and `design/typecheck/ownership-inference.md` (the per-crate proposal).
 - **`/qa`** — the three-mode differential + sustained-load/checking-allocator harness + the benchmark harness (§11). The sustained-load test is the DEF-6/Risk-11 guard and is not optional.
 - **`/port`** — the Sudoku `--release` measurement (§11, H.3), composed with the FIXME-0408 rework.
 - **`/repl`** — the `repl/spec.md §0.6` `--release` flag-table addition (file when scoped).
