@@ -56,6 +56,7 @@ fn poll_effect_entry(poll_shape: bool, params: Vec<Type>) -> ModuleEntry {
             scheduling_class: SchedulingClass::Commutative,
             poll_shape,
             got_slot: 0,
+            mode_summary: None,
         }),
         callees: vec![],
         trait_origin: None,
@@ -63,6 +64,7 @@ fn poll_effect_entry(poll_shape: bool, params: Vec<Type>) -> ModuleEntry {
         ast: None,
         codegen_view: None,
         code: None,
+        value_use: false,
     }
 }
 

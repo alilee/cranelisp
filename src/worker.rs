@@ -624,10 +624,14 @@ fn commit_staging_to_live(
 /// live slot. Non-callable kinds carry no slot and are left untouched
 /// (callers gate this on `callable_got_slot().is_some()`, S83 FIXME 0356/0357).
 fn repoint_callable_slot(kind: &mut cranelisp_types::DefKind, slot: usize) {
-    use cranelisp_types::{DefKind, UserFnState};
+    use cranelisp_types::{DefKind, PrimitiveBody, UserFnState};
     match kind {
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } } => *got_slot = slot,
-        DefKind::Primitive { got_slot } => *got_slot = slot,
+        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, .. } } => *got_slot = slot,
+        // Only the Extern arm carries a slot; an Inline primitive is
+        // slot-less by construction (S102 FIXME 0476) and falls to `_`.
+        DefKind::Primitive { body: PrimitiveBody::Extern { got_slot, .. }, .. } => {
+            *got_slot = slot
+        }
         DefKind::Constructor { got_slot, .. } => *got_slot = slot,
         DefKind::PlatformEffect { got_slot, .. } => *got_slot = slot,
         // Non-callable kinds carry no slot — nothing to re-point.

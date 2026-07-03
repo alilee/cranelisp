@@ -11,7 +11,7 @@
     fn mk_primitive_def(ty: Type, docstring: Option<&str>) -> ModuleEntry<Code> {
         let mut builder = ModuleEntry::def(
             Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty },
-            DefKind::Primitive { got_slot: 0 },
+            DefKind::primitive(0),
         )
         .visibility(Visibility::Public);
         if let Some(doc) = docstring {

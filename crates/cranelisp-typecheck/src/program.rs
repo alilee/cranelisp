@@ -269,6 +269,7 @@ pub(crate) fn build_concrete_codegen_view(
             params: variant.params.iter().map(|(n, _)| n.clone()).collect(),
             body: mono_body,
             span: variant.span,
+            mode_summary: None,
         }),
         Err(_) => None,
     }
@@ -1197,7 +1198,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 st.symbols.get_mut(&defn.name)
             {
                 *kind = Box::new(DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot },
+                    fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
                 });
             }
             None
@@ -1448,7 +1449,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     st.symbols.get_mut(&internal_name)
                 {
                     *kind = Box::new(DefKind::UserFn {
-                        fn_state: UserFnState::Concrete { got_slot },
+                        fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
                     });
                 }
             }
@@ -1640,7 +1641,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 if is_reslot_candidate {
                     if let Some(got_slot) = demoted_slot {
                         **kind = DefKind::UserFn {
-                            fn_state: UserFnState::Concrete { got_slot },
+                            fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
                         };
                     } else if let Some(variant) = ast.clone() {
                         // Still non-concrete: slot-less `Polymorphic`, carrying
@@ -2612,7 +2613,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let slot = st.allocate_got_slot();
             let mut builder = ModuleEntry::def(
                 scheme.clone(),
-                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: slot } },
+                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None } },
             )
             .visibility(defn.visibility)
             .param_names(variant.params.iter().map(|(n, _)| n.clone()).collect());
@@ -3000,6 +3001,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // concrete-boundary arc, Phase 2b/3 — /dev(typecheck)).
                 codegen_view: None,
                 code: existing_code,
+                value_use: false,
             },
         );
 
@@ -3193,7 +3195,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             {
                 *scheme = concrete_scheme;
                 **kind = DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot },
+                    fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
                 };
                 *ast = concrete_defn.variants.into_iter().next();
                 *cv = codegen_view;

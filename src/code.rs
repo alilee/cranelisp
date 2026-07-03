@@ -72,7 +72,7 @@ mod tests {
                 docstring: None,
                 param_names: vec![],
                 kind: Box::new(DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
                 }),
                 callees: Vec::new(),
                 trait_origin: None,
@@ -80,6 +80,7 @@ mod tests {
                 ast: Some(trivial_variant()),
                 codegen_view: None,
                 code,
+                value_use: false,
             }
         }
 

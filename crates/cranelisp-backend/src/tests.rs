@@ -308,6 +308,7 @@ fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp_types::Mod
             params: v.params.iter().map(|(n, _)| n.clone()).collect(),
             body,
             span: v.span,
+            mode_summary: None,
         }
     });
     ModuleEntry::Def {
@@ -319,7 +320,7 @@ fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp_types::Mod
         // → `Concrete`; no slot → the Pass-1 `NotDetermined` interim.
         kind: Box::new(DefKind::UserFn {
             fn_state: match slot {
-                Some(got_slot) => UserFnState::Concrete { got_slot },
+                Some(got_slot) => UserFnState::Concrete { got_slot, mode_summary: None },
                 None => UserFnState::NotDetermined,
             },
         }),
@@ -329,6 +330,7 @@ fn make_def_entry_inner(defn: Defn, slot: Option<usize>) -> cranelisp_types::Mod
         ast: variant,
         codegen_view,
         code: None,
+        value_use: false,
     }
 }
 
@@ -593,6 +595,7 @@ fn option_type_tables() -> DashMap<ModuleFullPath, SymbolTable> {
             field_count,
             internal: false,
             type_def: None,
+            mode_summary: None,
         }),
         callees: vec![],
         trait_origin: None,
@@ -600,6 +603,7 @@ fn option_type_tables() -> DashMap<ModuleFullPath, SymbolTable> {
         ast: None,
         codegen_view: None,
         code: None,
+        value_use: false,
     };
 
     // None: nullary; scheme is the bare ADT.
@@ -3315,6 +3319,7 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
                 field_count: 1,
                 internal: false,
                 type_def: None,
+                mode_summary: None,
             }),
             callees,
             trait_origin,
@@ -3322,6 +3327,7 @@ fn constructor_as_value_falls_through_to_fn_as_value() {
             ast,
             codegen_view: None,
             code,
+            value_use: false,
         },
         _ => unreachable!("make_def_entry_slot builds a Def"),
     };
@@ -3837,6 +3843,7 @@ fn test_compile_multi_sig_defn_end_to_end() {
             ast: None,
             codegen_view: None,
             code: None,
+            value_use: false,
         },
     );
     tables.insert(module_path, table);
@@ -3944,6 +3951,7 @@ fn test_compile_multi_sig_second_variant() {
             ast: None,
             codegen_view: None,
             code: None,
+            value_use: false,
         },
     );
     tables.insert(module_path, table);
@@ -4046,13 +4054,14 @@ fn test_extern_primitive_via_resolved_call_succeeds() {
             visibility: Visibility::Public,
             docstring: None,
             param_names: vec![Symbol::from("a"), Symbol::from("b")],
-            kind: Box::new(DefKind::Primitive { got_slot: slot }),
+            kind: Box::new(DefKind::primitive(slot)),
             callees: Vec::new(),
             trait_origin: None,
             seq: 0,
             ast: None,
             codegen_view: None,
             code: None,
+            value_use: false,
         },
     );
     tables.insert(primitives_path, prim_table);
@@ -4328,6 +4337,7 @@ fn sprint56_compile_to_module_ast_none_errors() {
                 ast: None,
                 codegen_view: None,
                 code: None,
+                value_use: false,
             },
         );
         tables.insert(module.clone(), st);
@@ -4427,6 +4437,7 @@ fn sprint56_compile_to_module_mangled_variant_compiles_without_expansion() {
                 ast: None,
                 codegen_view: None,
                 code: None,
+                value_use: false,
             },
         );
         // Mangled variant entry: ast: Some(variant_defn). Explicit GOT
@@ -4549,6 +4560,7 @@ fn sprint56_constrained_template_excluded_by_defined_symbols() {
                 ast: Some(template_defn.variants[0].clone()),
                 codegen_view: None,
                 code: None,
+                value_use: false,
             },
         );
         tables.insert(module.clone(), st);
@@ -4623,6 +4635,7 @@ fn table_with_def_and_slot(
             params: v.params.iter().map(|(n, _)| n.clone()).collect(),
             body,
             span: v.span,
+            mode_summary: None,
         }
     });
     st.insert(
@@ -4640,7 +4653,7 @@ fn table_with_def_and_slot(
             docstring: None,
             param_names,
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: slot },
+                fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
             }),
             callees: vec![],
             trait_origin: None,
@@ -4648,6 +4661,7 @@ fn table_with_def_and_slot(
             ast: variant,
             codegen_view,
             code: None,
+            value_use: false,
         },
     );
     tables.insert(module.clone(), st);
@@ -4825,6 +4839,7 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
                     scheduling_class: Default::default(),
                     poll_shape: false,
                     got_slot: 0,
+                    mode_summary: None,
                 }),
                 callees: vec![],
                 trait_origin: None,
@@ -4832,6 +4847,7 @@ fn platform_effect_dispatch_stamps_fn_name_on_bare_import_var_apply_path() {
                 ast: None,
                 codegen_view: None,
                 code: None,
+                value_use: false,
             },
         );
         tables.insert(plat.clone(), st);
@@ -5110,6 +5126,7 @@ fn decision_23_got_data_size_matches_slot_count() {
             params: vec![],
             body: MonoExpr::from_expr(&v.body).expect("concrete test body"),
             span: v.span,
+            mode_summary: None,
         });
         st.insert(
             defn.name.clone(),
@@ -5123,7 +5140,7 @@ fn decision_23_got_data_size_matches_slot_count() {
                 docstring: None,
                 param_names: vec![],
                 kind: Box::new(DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: slot },
+                    fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
                 }),
                 callees: vec![],
                 trait_origin: None,
@@ -5131,6 +5148,7 @@ fn decision_23_got_data_size_matches_slot_count() {
                 ast: variant,
                 codegen_view,
                 code: None,
+                value_use: false,
             },
         );
     }
@@ -5235,6 +5253,7 @@ fn decision_36_no_cross_module_function_imports() {
             params: vec![],
             body: MonoExpr::from_expr(&v.body).expect("concrete test body"),
             span: v.span,
+            mode_summary: None,
         })
     };
 
@@ -5253,7 +5272,7 @@ fn decision_36_no_cross_module_function_imports() {
             docstring: None,
             param_names: vec![],
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: 0 },
+                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
             }),
             callees: vec![],
             trait_origin: None,
@@ -5261,6 +5280,7 @@ fn decision_36_no_cross_module_function_imports() {
             ast: helper.variants.first().cloned(),
             codegen_view: int_view(&helper),
             code: None,
+            value_use: false,
         },
     );
     tables.insert(util_path.clone(), util_st);
@@ -5280,7 +5300,7 @@ fn decision_36_no_cross_module_function_imports() {
             docstring: None,
             param_names: vec![],
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: 0 },
+                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
             }),
             callees: vec![],
             trait_origin: None,
@@ -5288,6 +5308,7 @@ fn decision_36_no_cross_module_function_imports() {
             ast: caller.variants.first().cloned(),
             codegen_view: int_view(&caller),
             code: None,
+            value_use: false,
         },
     );
     user_st.insert(
@@ -5445,7 +5466,7 @@ fn insert_null_slot_vec_query_entry(
     };
     st.insert(
         Symbol::from(name),
-        ModuleEntry::def(scheme, DefKind::Primitive { got_slot: slot })
+        ModuleEntry::def(scheme, DefKind::primitive(slot))
             .param_names(param_names.iter().map(|s| Symbol::from(*s)).collect())
             .build(),
     );

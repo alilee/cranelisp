@@ -404,6 +404,7 @@ pub fn register_platform_in_tc(
                     scheduling_class: desc.scheduling_class,
                     poll_shape,
                     got_slot: slot,
+                    mode_summary: None,
                 },
             )
             .visibility(Visibility::Public)

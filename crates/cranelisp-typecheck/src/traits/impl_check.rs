@@ -619,7 +619,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             let got_slot = st.allocate_got_slot();
             let mut builder = ModuleEntry::def(
                 concrete_scheme,
-                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } },
+                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, mode_summary: None } },
             )
             .param_names(method_defn.params().iter().map(|(n, _)| n.clone()).collect());
             if let Some(doc) = method_defn.docstring.clone() {

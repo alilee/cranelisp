@@ -21,7 +21,7 @@
                 constraints: StdHashMap::new(),
                 ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
             },
-            DefKind::Primitive { got_slot: 0 },
+            DefKind::primitive(0),
         )
         .visibility(Visibility::Public)
         .build()

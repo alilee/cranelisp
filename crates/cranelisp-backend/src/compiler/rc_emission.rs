@@ -739,6 +739,10 @@ mod find_var_type_tests {
             span: Span::SYNTHETIC,
             resolved_call: None,
             ty: ConcreteType::Int,
+            confined: None,
+            escapes: None,
+            provenance: None,
+            unique_static: None,
         }
     }
 

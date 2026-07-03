@@ -87,6 +87,19 @@
 //!   marker traits with blanket impls per Decision 32. Crates implement
 //!   them by virtue of their concrete `C` and `L` satisfying the bounds;
 //!   there is no method surface to extend.
+//! - **Ownership-inference contract** ([`Mode`], [`ModeSummary`],
+//!   [`ResultMode`], [`ParamFlow`], [`PrimitiveBody`],
+//!   [`ownership_analysis_off`]) — the typecheck→backend memory-model
+//!   carrier (S102 CS-A): the mode lattice + per-callable summary riding the
+//!   callable [`DefKind`] variants' `mode_summary` slot (read via
+//!   [`ModuleEntry::mode_summary`]; ⊤-on-absence accessors live on
+//!   `ModeSummary` — the ONE home for conservative reads), advisory site
+//!   facts on [`MonoExpr`] alloc/capture/projection nodes, the per-entry
+//!   value-use mark, the [`PrimitiveBody`] body/dispatch discriminator
+//!   (FIXME 0476 — inline primitives are slot-less by construction;
+//!   resolution stops on [`ModuleEntry::is_callable_target`]), and the
+//!   read-once `CRANELISP_NO_OWNERSHIP` master toggle. Carrier only — no
+//!   analysis logic. See `design/arch/ownership-inference.md` §3.
 //! - **GOT** ([`GotTable`], [`GOT_TABLE_SIZE`]) — per-module Global Offset
 //!   Table. Pure data — boxed array of `AtomicPtr<u8>` — with no backend-
 //!   specific dependencies. The single source of truth for callable
@@ -204,6 +217,7 @@ pub(crate) mod parsed;
 // `Code` enum on `ModuleEntry::Def.code` without inverting the dependency
 // edge.
 pub(crate) mod module;
+pub(crate) mod ownership;
 pub(crate) mod got;
 pub(crate) mod heap;
 pub(crate) mod pipeline;
@@ -271,11 +285,20 @@ pub use module::{
     CHAIN_FOLLOW_DEPTH_LIMIT, CodeStore, ConstrainedFn, DefBuilder, DefKind, EnsureOutcome, ExportSpec,
     ImplSexp, ImportNames, ImportSpec, LinkerStore, MacroClauseInfo, MacroParam, ModDecl,
     ModuleAliasEntry, ModuleAliases, ModuleEntry, OverloadVariant, ParametricFn, PlatformSpec,
-    StructuralDeclEntry, SymbolTable, SymbolTables, UserFnState, ensure_module_exists, for_each_in_module,
+    PrimitiveBody, StructuralDeclEntry, SymbolTable, SymbolTables, UserFnState, ensure_module_exists,
+    for_each_in_module,
     get_impls_for_type_chain, get_implementing_types_chain, got_data_symbol_name, install_module,
     lookup_trait_decl_chain, lookup_type_def_chain, resolve_module_by_name_chain,
     resolve_terminal_entry_and_home,
 };
+// Ownership-inference carrier types (S102 CS-A) — the typecheck→backend
+// memory-model contract: the `Mode` lattice, per-callable `ModeSummary`
+// (ABI-bearing `param_modes`/`result` + advisory `param_flow`/`spark_ops`/
+// `result_unique`), and the read-once `CRANELISP_NO_OWNERSHIP` master toggle.
+// Carrier only — the producing pass is `cranelisp-typecheck`'s
+// `pass5_ownership`; consumers are backend emission + the R3 summary-diff
+// gate. `design/arch/ownership-inference.md` §3 (spine), BC §7.
+pub use ownership::{Mode, ModeSummary, ParamFlow, ResultMode, ownership_analysis_off};
 // `PrimitiveKind` enum retired (S69 Submission 36). PlatformEffect promoted
 // to its own `DefKind::PlatformEffect { scheduling_class }` sibling variant;
 // the prior `Inline` / `Extern` variants were vestigial — see the retirement

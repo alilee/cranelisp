@@ -126,7 +126,7 @@
         st.insert(
             Symbol::from("regular"),
             mk_def_with_got(
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } },
                 Some(trivial_variant()),
                 Some(0),
             ),
@@ -136,7 +136,7 @@
         st.insert(
             Symbol::from("add$Int+Int"),
             mk_def_with_got(
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } },
                 Some(trivial_variant()),
                 Some(1),
             ),
@@ -253,7 +253,7 @@
         st.insert(
             Symbol::from("target"),
             mk_def_with_got(
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } },
                 Some(trivial_variant()),
                 Some(3),
             ),
@@ -305,7 +305,7 @@
         st.insert(
             defn_name.clone(),
             mk_def_with_got(
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } },
                 Some(trivial_variant()),
                 Some(slot),
             ),
@@ -398,7 +398,7 @@
         st.insert(
             defn_name.clone(),
             mk_def_with_got(
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } },
                 Some(trivial_variant()),
                 Some(slot),
             ),
@@ -454,7 +454,7 @@
         st.insert(
             defn_name.clone(),
             mk_def_with_got(
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } },
                 Some(trivial_variant()),
                 Some(slot),
             ),
@@ -546,7 +546,7 @@
         st.insert(
             expr_name.clone(),
             mk_def_with_got(
-                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+                DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } },
                 Some(expr_variant.clone()),
                 Some(slot),
             ),
@@ -609,6 +609,7 @@
                 field_count: 1,
                 internal: false,
                 type_def: None,
+                mode_summary: None,
             },
             Some(trivial_variant()),
             Some(0),
@@ -1506,15 +1507,15 @@
         staging.next_got_slot = 3;
         staging.insert(
             Symbol::from("main"),
-            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } }, Some(trivial_variant()), Some(2)),
+            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } }, Some(trivial_variant()), Some(2)),
         );
         staging.insert(
             Symbol::from("reduce"),
-            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } }, Some(trivial_variant()), Some(0)),
+            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } }, Some(trivial_variant()), Some(0)),
         );
         staging.insert(
             Symbol::from("reduce-loop"),
-            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } }, Some(trivial_variant()), Some(1)),
+            mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } }, Some(trivial_variant()), Some(1)),
         );
 
         let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
@@ -1590,7 +1591,7 @@
         let prior_slot = live.allocate_got_slot();
         let mut prior = mk_def_with_got(
             DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
             },
             Some(trivial_variant()),
             Some(prior_slot),
@@ -1780,7 +1781,7 @@
 
         // Def(UserFn) → Fn
         let user_fn = mk_def_with_got(
-            DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } },
+            DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } },
             Some(trivial_variant()),
             Some(0),
         );
@@ -1811,6 +1812,7 @@
                 field_count: 1,
                 internal: false,
                 type_def: None,
+                mode_summary: None,
             },
             Some(trivial_variant()),
             Some(0),

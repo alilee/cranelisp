@@ -38,7 +38,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ConcreteType, Expr, FQTypeName, NotConcrete, Pattern, ResolvedCall, Span, Symbol,
+    ConcreteType, Expr, FQTypeName, ModeSummary, NotConcrete, Pattern, ResolvedCall, Span, Symbol,
 };
 
 /// One arm of a monomorphised match expression — a [`Pattern`] (reused verbatim:
@@ -48,6 +48,15 @@ pub struct MonoMatchArm {
     pub pattern: Pattern,
     pub body: MonoExpr,
     pub span: Span,
+    /// Advisory ownership site fact (S102 CS-A): the **borrowed-projection
+    /// root binding** for this arm's pattern bindings — `Some(root)` when the
+    /// arm's destructured bindings are borrowed views rooted in the named
+    /// in-scope binding (`design/arch/ownership-inference.md` §4.4;
+    /// `Symbol`-keyed matching the backend's `borrowed_vars` as-built —
+    /// typecheck §13.6(d): shadowing ⇒ `None` ⇒ Decision-24 materialization).
+    /// `None` ⇒ conservative (no provenance; treat as owned/materialized).
+    #[serde(default)]
+    pub provenance: Option<Symbol>,
 }
 
 /// Post-monomorphisation codegen AST node.
@@ -61,6 +70,25 @@ pub struct MonoMatchArm {
 ///
 /// **Structural guarantee:** there is no path from a `MonoExpr` to a `Type::Var`.
 /// `ty` is a [`ConcreteType`], whose recursion is on `ConcreteType` itself.
+///
+/// # Advisory ownership site facts (S102 CS-A)
+///
+/// The allocation/capture-producing variants (`StringLit`, `Lambda`, `Apply`,
+/// `VecLit`, `ConstrADT`) carry three advisory Class-B fields
+/// (`design/arch/ownership-inference.md` §3.2/§3.3), written by typecheck's
+/// ownership pass in one post-convergence walk and read by backend emission:
+///
+/// - `escapes: Option<bool>` — does the produced value escape its frame?
+/// - `confined: Option<bool>` — do all RC ops on it stay on one strand?
+/// - `unique_static: Option<bool>` — statically-proven uniqueness
+///   (increment II; present-but-never-`Some` in increment I).
+///
+/// All are `#[serde(default)]`; **`None` ⇒ conservative**
+/// (escapes / crossing / shared) — ignoring them is always sound (monotone
+/// soundness, spine §6.1). `Apply` and [`MonoMatchArm`] additionally carry
+/// `provenance: Option<Symbol>` — the borrowed-projection root binding
+/// (spine §4.4), the one interprocedural fact the backend cannot re-derive
+/// locally once a projection has crossed a call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MonoExpr {
     IntLit {
@@ -82,6 +110,13 @@ pub enum MonoExpr {
         value: String,
         span: Span,
         ty: ConcreteType,
+        // Advisory ownership site facts (enum-level rustdoc; None ⇒ conservative).
+        #[serde(default)]
+        escapes: Option<bool>,
+        #[serde(default)]
+        confined: Option<bool>,
+        #[serde(default)]
+        unique_static: Option<bool>,
     },
     Var {
         name: Symbol,
@@ -114,6 +149,13 @@ pub enum MonoExpr {
         body: Box<MonoExpr>,
         span: Span,
         ty: ConcreteType,
+        // Advisory ownership site facts (enum-level rustdoc; None ⇒ conservative).
+        #[serde(default)]
+        escapes: Option<bool>,
+        #[serde(default)]
+        confined: Option<bool>,
+        #[serde(default)]
+        unique_static: Option<bool>,
     },
     Apply {
         callee: Box<MonoExpr>,
@@ -123,6 +165,19 @@ pub enum MonoExpr {
         /// `Expr::Apply.resolved_call` (the backend reads it off the node).
         resolved_call: Option<Box<ResolvedCall>>,
         ty: ConcreteType,
+        // Advisory ownership site facts (enum-level rustdoc; None ⇒ conservative).
+        #[serde(default)]
+        escapes: Option<bool>,
+        #[serde(default)]
+        confined: Option<bool>,
+        #[serde(default)]
+        unique_static: Option<bool>,
+        /// Borrowed-projection root binding for a projection-producing call
+        /// (accessor / `vec-get` — `design/arch/ownership-inference.md` §4.4).
+        /// `Symbol`-keyed; shadowing ⇒ `None` ⇒ Decision-24 materialization
+        /// (typecheck §13.6(d)). `None` ⇒ conservative.
+        #[serde(default)]
+        provenance: Option<Symbol>,
     },
     Match {
         scrutinee: Box<MonoExpr>,
@@ -136,6 +191,13 @@ pub enum MonoExpr {
         elements: Vec<MonoExpr>,
         span: Span,
         ty: ConcreteType,
+        // Advisory ownership site facts (enum-level rustdoc; None ⇒ conservative).
+        #[serde(default)]
+        escapes: Option<bool>,
+        #[serde(default)]
+        confined: Option<bool>,
+        #[serde(default)]
+        unique_static: Option<bool>,
     },
     Trace {
         modules: Vec<Symbol>,
@@ -166,6 +228,13 @@ pub enum MonoExpr {
         fields: Vec<MonoExpr>,
         span: Span,
         ty: ConcreteType,
+        // Advisory ownership site facts (enum-level rustdoc; None ⇒ conservative).
+        #[serde(default)]
+        escapes: Option<bool>,
+        #[serde(default)]
+        confined: Option<bool>,
+        #[serde(default)]
+        unique_static: Option<bool>,
     },
 }
 
@@ -255,6 +324,9 @@ impl MonoExpr {
                 value: value.clone(),
                 span: *span,
                 ty: node_ty(expr)?,
+                escapes: None,
+                confined: None,
+                unique_static: None,
             }),
             Expr::Var { name, span, resolved_call, .. } => Ok(MonoExpr::Var {
                 name: name.clone(),
@@ -285,6 +357,9 @@ impl MonoExpr {
                 body: Box::new(MonoExpr::from_expr(body)?),
                 span: *span,
                 ty: node_ty(expr)?,
+                escapes: None,
+                confined: None,
+                unique_static: None,
             }),
             Expr::Apply { callee, args, span, resolved_call, .. } => Ok(MonoExpr::Apply {
                 callee: Box::new(MonoExpr::from_expr(callee)?),
@@ -295,6 +370,10 @@ impl MonoExpr {
                 span: *span,
                 resolved_call: resolved_call.clone(),
                 ty: node_ty(expr)?,
+                escapes: None,
+                confined: None,
+                unique_static: None,
+                provenance: None,
             }),
             Expr::Match { scrutinee, arms, span, compiler_generated, .. } => Ok(MonoExpr::Match {
                 scrutinee: Box::new(MonoExpr::from_expr(scrutinee)?),
@@ -305,6 +384,7 @@ impl MonoExpr {
                             pattern: arm.pattern.clone(),
                             body: MonoExpr::from_expr(&arm.body)?,
                             span: arm.span,
+                            provenance: None,
                         })
                     })
                     .collect::<Result<_, NotConcrete>>()?,
@@ -319,6 +399,9 @@ impl MonoExpr {
                     .collect::<Result<_, NotConcrete>>()?,
                 span: *span,
                 ty: node_ty(expr)?,
+                escapes: None,
+                confined: None,
+                unique_static: None,
             }),
             Expr::Trace { modules, body, span, .. } => Ok(MonoExpr::Trace {
                 modules: modules.clone(),
@@ -352,6 +435,9 @@ impl MonoExpr {
                     .collect::<Result<_, NotConcrete>>()?,
                 span: *span,
                 ty: node_ty(expr)?,
+                escapes: None,
+                confined: None,
+                unique_static: None,
             }),
         }
     }
@@ -393,6 +479,16 @@ pub struct MonoDefnVariant {
     pub params: Vec<Symbol>,
     pub body: MonoExpr,
     pub span: Span,
+    /// The callable's ownership summary ([`ModeSummary`]) — the
+    /// **compile-in-hand carrier** the backend reads during
+    /// `compile_to_module` (S102 CS-A; the persisted twin lives on the
+    /// callable `DefKind` variant's `mode_summary` slot, read via
+    /// `ModuleEntry::mode_summary()`). Written by typecheck's ownership pass
+    /// in the same post-convergence walk that annotates the body's site
+    /// facts. `None` ⇒ Decision-24 conservative
+    /// (`design/arch/ownership-inference.md` §3.3).
+    #[serde(default)]
+    pub mode_summary: Option<ModeSummary>,
 }
 
 #[cfg(test)]

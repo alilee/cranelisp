@@ -1061,7 +1061,7 @@ mod tests {
         ModuleEntry::def(
             Scheme { type_vars: vec![], constraints: HashMap::new(), ty },
             DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
             },
         )
         .visibility(Visibility::Public)
@@ -1339,7 +1339,7 @@ mod tests {
                 constraints: HashMap::new(),
                 ty: Type::Fn(vec![], Box::new(Type::Int)),
             },
-            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0 } },
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None } },
         )
         .visibility(Visibility::Public)
         .ast(DefnVariant { params: vec![], body, span: Span::SYNTHETIC })

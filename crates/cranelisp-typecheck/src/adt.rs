@@ -365,6 +365,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     field_count: ctor.fields.len(),
                     internal: ctor.internal,
                     type_def: ctor_type_def,
+                    mode_summary: None,
                 },
             )
             .visibility(visibility)
@@ -610,7 +611,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let canonical = ModuleEntry::def(
             scheme,
             DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: canonical_slot },
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: canonical_slot, mode_summary: None },
             },
         )
         .visibility(Visibility::Public)

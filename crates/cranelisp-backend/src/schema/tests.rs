@@ -62,6 +62,7 @@ fn register_product_named(
                 field_count: field_types.len(),
                 internal: false,
                 type_def: Some(Box::new(type_def)),
+                mode_summary: None,
             }),
             callees: vec![],
             trait_origin: None,
@@ -69,6 +70,7 @@ fn register_product_named(
             ast: None,
             codegen_view: None,
             code: None,
+            value_use: false,
         },
     );
     tables.insert(m, st);
@@ -183,6 +185,7 @@ fn platform_effect_roots_excludes_scalars() {
                 scheduling_class: cranelisp_types::SchedulingClass::Sequential,
                 poll_shape: false,
                 got_slot: 0,
+                mode_summary: None,
             }),
             callees: vec![],
             trait_origin: None,
@@ -190,6 +193,7 @@ fn platform_effect_roots_excludes_scalars() {
             ast: None,
             codegen_view: None,
             code: None,
+            value_use: false,
         },
     );
     tables.insert(plat.clone(), pt);

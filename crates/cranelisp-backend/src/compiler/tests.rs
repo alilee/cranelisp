@@ -21,7 +21,7 @@ fn def_with_slot(slot: usize) -> ModuleEntry {
         docstring: None,
         param_names: vec![],
         kind: Box::new(DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot },
+            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
         }),
         callees: vec![],
         trait_origin: None,
@@ -29,6 +29,7 @@ fn def_with_slot(slot: usize) -> ModuleEntry {
         ast: None,
         codegen_view: None,
         code: None,
+        value_use: false,
     }
 }
 
@@ -137,6 +138,7 @@ fn primitive_extern_def() -> ModuleEntry {
         ast: None,
         codegen_view: None,
         code: None,
+        value_use: false,
     }
 }
 
@@ -209,6 +211,7 @@ fn platform_effect_def_new_shape(slot: usize) -> ModuleEntry {
             scheduling_class: cranelisp_types::SchedulingClass::Sequential,
             poll_shape: false,
             got_slot: slot,
+            mode_summary: None,
         }),
         callees: vec![],
         trait_origin: None,
@@ -216,6 +219,7 @@ fn platform_effect_def_new_shape(slot: usize) -> ModuleEntry {
         ast: None,
         codegen_view: None,
         code: None,
+        value_use: false,
     }
 }
 
@@ -345,6 +349,7 @@ fn poll_effect_def(slot: usize) -> ModuleEntry {
             scheduling_class: cranelisp_types::SchedulingClass::Commutative,
             poll_shape: true,
             got_slot: slot,
+            mode_summary: None,
         }),
         callees: vec![],
         trait_origin: None,
@@ -352,6 +357,7 @@ fn poll_effect_def(slot: usize) -> ModuleEntry {
         ast: None,
         codegen_view: None,
         code: None,
+        value_use: false,
     }
 }
 

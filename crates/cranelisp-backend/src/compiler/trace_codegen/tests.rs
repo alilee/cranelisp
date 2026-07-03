@@ -221,7 +221,7 @@ fn discovery_includes_all_modules_and_primitives() {
         &mut user,
         "fact",
         |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot },
+            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
         },
         fn_scheme(vec![Type::Int], Type::Int),
         0x1000,
@@ -235,7 +235,7 @@ fn discovery_includes_all_modules_and_primitives() {
     insert_fn(
         &mut prims,
         "str-concat",
-        |slot| DefKind::Primitive { got_slot: slot },
+        |slot| DefKind::primitive(slot),
         fn_scheme(vec![Type::String, Type::String], Type::String),
         0x2000,
     );
@@ -301,7 +301,7 @@ fn discovery_skips_constrained_poly_base_and_overloaded() {
         &mut m,
         "double",
         |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot },
+            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
         },
         fn_scheme(vec![Type::Int], Type::Int),
         0x3200,
@@ -325,7 +325,7 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
     let entry = ModuleEntry::def(
         fn_scheme(vec![Type::Int], Type::Int),
         DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot },
+            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
         },
     )
     .build();
@@ -338,7 +338,7 @@ fn discovery_skips_empty_got_slots_and_non_fn_schemes() {
         &mut m,
         "konst",
         |slot| DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: slot },
+            fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
         },
         Scheme {
             type_vars: vec![],
@@ -429,6 +429,7 @@ fn recursive_intlist_tables() -> (DashMap<ModuleFullPath, SymbolTable<(), ()>>, 
                 field_count: 0,
                 internal: false,
                 type_def: None,
+                mode_summary: None,
             },
         )
         .visibility(Visibility::Public)
@@ -448,6 +449,7 @@ fn recursive_intlist_tables() -> (DashMap<ModuleFullPath, SymbolTable<(), ()>>, 
                 field_count: 2,
                 internal: false,
                 type_def: None,
+                mode_summary: None,
             },
         )
         .visibility(Visibility::Public)

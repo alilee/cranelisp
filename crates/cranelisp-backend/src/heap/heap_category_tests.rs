@@ -52,6 +52,7 @@ fn ctor_def_entry(
             field_count: spec.field_count,
             internal: false,
             type_def,
+            mode_summary: None,
         }),
         callees: vec![],
         trait_origin: None,
@@ -59,6 +60,7 @@ fn ctor_def_entry(
         ast: None,
         codegen_view: None,
         code: None,
+        value_use: false,
     }
 }
 

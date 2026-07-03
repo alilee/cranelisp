@@ -63,7 +63,7 @@
                 ModuleEntry::def(
                     mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
                     DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
                     },
                 )
                 .visibility(Visibility::Public)
@@ -97,6 +97,7 @@
                         field_count: 0,
                         internal: false,
                         type_def: None,
+                        mode_summary: None,
                     },
                 )
                 .visibility(Visibility::Public)
@@ -163,7 +164,7 @@
                 ModuleEntry::def(
                     mono(Type::Int),
                     DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
                     },
                 )
                 .visibility(Visibility::Public)
@@ -175,7 +176,7 @@
                 ModuleEntry::def(
                     mono(Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int))),
                     DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
                     },
                 )
                 .visibility(Visibility::Public)
@@ -187,7 +188,7 @@
                 ModuleEntry::def(
                     mono(Type::Fn(vec![Type::Int], Box::new(Type::Int))),
                     DefKind::UserFn {
-                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                        fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
                     },
                 )
                 .visibility(Visibility::Public)

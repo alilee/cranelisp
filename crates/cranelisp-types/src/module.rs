@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::{
-    DefnVariant, FQSymbol, FQTraitName, FQTypeName, GotTable, ModuleFullPath,
+    DefnVariant, FQSymbol, FQTraitName, FQTypeName, GotTable, ModeSummary, ModuleFullPath,
     ModuleName, MonoDefnVariant, Scheme, SchedulingClass, Sexp, Span, Symbol, TraitDeclInfo,
     TraitName, Type, TypeDefInfo, TypeName, Visibility,
 };
@@ -530,10 +530,10 @@ impl ModuleEntry<()> {
     pub fn into_concrete<C: CodeStore>(self) -> ModuleEntry<C> {
         match self {
             ModuleEntry::Def {
-                scheme, visibility, docstring, param_names, kind, callees,
+                scheme, visibility, docstring, param_names, kind, callees, value_use,
                 trait_origin, seq, ast, codegen_view, code: _,
             } => ModuleEntry::Def {
-                scheme, visibility, docstring, param_names, kind, callees,
+                scheme, visibility, docstring, param_names, kind, callees, value_use,
                 trait_origin, seq, ast, codegen_view, code: None,
             },
             ModuleEntry::SpecialForm { scheme, param_names, docstring, description, visibility } => {
@@ -727,6 +727,19 @@ pub enum ModuleEntry<C: CodeStore = ()> {
         /// Empty for primitives, special forms, and entries not yet body-checked.
         #[serde(default)]
         callees: Vec<FQSymbol>,
+        /// **Value-use mark** (S102 CS-A;
+        /// `design/typecheck/ownership-inference.md` §8.3): `true` iff this
+        /// callable is referenced in non-callee position somewhere in the
+        /// program (`(map f xs)`, stored, returned). Written by typecheck's
+        /// ownership pass alongside the summary; read by backend wrapper
+        /// emission — a value-used callable with a non-Decision-24 summary
+        /// needs its synthesized Decision-24 adapter wrapper (spine §8.2),
+        /// and this mark says so without the backend re-deriving it.
+        /// `#[serde(default)]` = `false` = the pre-analysis point (wrapper
+        /// decisions fall back to as-built behaviour). Like `callees`, a
+        /// pass-written runtime fact — no builder setter.
+        #[serde(default)]
+        value_use: bool,
         // **No flat `got_slot` field (S83, FIXME 0356/0357, Principle 20;
         // amends Decision 0035).** The module-local GOT slot through which an
         // entry is invoked now lives on the callable `DefKind` variants
@@ -1142,10 +1155,10 @@ impl<C: CodeStore> ModuleEntry<C> {
     /// Begin constructing a [`ModuleEntry::Def`] with the runtime-state
     /// fields defaulted.
     ///
-    /// `ModuleEntry::Def` carries ten fields, but five of them are always
+    /// `ModuleEntry::Def` carries eleven fields, but six of them are always
     /// construction-time defaults at every static-table / mount call site:
-    /// `callees: Vec::new()`, `trait_origin: None`, `seq: 0`, `ast: None`,
-    /// `code: None`. Enum variants cannot use `..Default::default()`, so
+    /// `callees: Vec::new()`, `value_use: false`, `trait_origin: None`,
+    /// `seq: 0`, `ast: None`, `code: None`. Enum variants cannot use `..Default::default()`, so
     /// without a builder every construction spells out all of them even though
     /// it only cares about a few (`scheme`, `kind`, and usually `visibility`).
     /// This builder lets callers specify only what they care about.
@@ -1154,9 +1167,11 @@ impl<C: CodeStore> ModuleEntry<C> {
     /// 20).** There is no `got_slot` builder setter — the slot is no longer a
     /// flat `Def` field. A caller that wants a got-slotted callable passes the
     /// slot *inside* the kind it builds with:
-    /// `ModuleEntry::def(scheme, DefKind::Primitive { got_slot })`,
+    /// `ModuleEntry::def(scheme, DefKind::primitive(got_slot))` (or the
+    /// explicit `DefKind::Primitive { body: PrimitiveBody::Extern { .. }, .. }`
+    /// form — S102 FIXME 0476),
     /// `… DefKind::Constructor { got_slot, .. }`, or
-    /// `… DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } }`.
+    /// `… DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, .. } }`.
     /// To read a prior entry's concrete slot for REPL-redefinition reuse, call
     /// [`ModuleEntry::callable_got_slot`] on the existing entry.
     ///
@@ -1182,7 +1197,7 @@ impl<C: CodeStore> ModuleEntry<C> {
     /// # Example
     ///
     /// ```ignore
-    /// let entry: ModuleEntry = ModuleEntry::def(scheme, DefKind::Primitive)
+    /// let entry: ModuleEntry = ModuleEntry::def(scheme, DefKind::primitive(slot))
     ///     .docstring("Add two integers")
     ///     .param_names(vec![Symbol::from("a"), Symbol::from("b")])
     ///     .build();
@@ -1303,8 +1318,16 @@ impl<C: CodeStore> ModuleEntry<C> {
     pub fn callable_got_slot(&self) -> Option<usize> {
         match self {
             ModuleEntry::Def { kind, .. } => match kind.as_ref() {
-                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } } => Some(*got_slot),
-                DefKind::Primitive { got_slot } => Some(*got_slot),
+                DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, .. } } => {
+                    Some(*got_slot)
+                }
+                // Only the Extern arm has a slot; an Inline primitive answers
+                // `None` BY CONSTRUCTION (S102 FIXME 0476 — no consumer can
+                // dispatch GOT-indirect through a body that cannot exist).
+                DefKind::Primitive { body: PrimitiveBody::Extern { got_slot, .. }, .. } => {
+                    Some(*got_slot)
+                }
+                DefKind::Primitive { body: PrimitiveBody::Inline, .. } => None,
                 DefKind::Constructor { got_slot, .. } => Some(*got_slot),
                 DefKind::PlatformEffect { got_slot, .. } => Some(*got_slot),
                 // NotDetermined / Constrained / Polymorphic user fns, Macro
@@ -1312,6 +1335,112 @@ impl<C: CodeStore> ModuleEntry<C> {
                 _ => None,
             },
             _ => None,
+        }
+    }
+
+    /// `true` iff this entry is a **dispatchable call target** — either
+    /// slot-dispatched ([`Self::callable_got_slot`] is `Some`) or an
+    /// inline-dispatched primitive ([`PrimitiveBody::Inline`], whose body is
+    /// backend inline emission with no slot by construction).
+    ///
+    /// This is the **resolution stop condition** (S102, FIXME 0476): name
+    /// resolution walks (`resolve_driven`-family precedence) stop at the
+    /// first entry that is a callable target, replacing the former
+    /// `callable_got_slot().is_some()` predicate so that inline primitives
+    /// participate in shadowing precedence identically to slot-carrying ones
+    /// — callability is a kind fact, not a slot-presence proxy. Dispatch
+    /// sites still read [`Self::callable_got_slot`] and must handle the
+    /// `is_callable_target() ∧ slot-less` case by inline emission.
+    pub fn is_callable_target(&self) -> bool {
+        if self.callable_got_slot().is_some() {
+            return true;
+        }
+        matches!(
+            self,
+            ModuleEntry::Def { kind, .. }
+                if matches!(kind.as_ref(), DefKind::Primitive { body: PrimitiveBody::Inline, .. })
+        )
+    }
+
+    /// The entry's ownership summary ([`ModeSummary`]), or `None` when the
+    /// entry carries none — the uniform read-through point for the
+    /// typecheck→backend ownership contract (S102 CS-A; the
+    /// [`Self::callable_got_slot`] precedent).
+    ///
+    /// `None` means the Decision-24 conservative point — both "not a
+    /// summary-carrying kind" (non-callable kinds have no summary slot by
+    /// construction) and "callable but not analysed / analysis off" read
+    /// identically conservative (monotone soundness,
+    /// `design/arch/ownership-inference.md` §6.1). For `DefKind::Primitive`
+    /// the same slot carries the hand-declared fact table (spine §3.1(a),
+    /// Principle 19 — one carrier, one read accessor).
+    pub fn mode_summary(&self) -> Option<&ModeSummary> {
+        match self {
+            ModuleEntry::Def { kind, .. } => match kind.as_ref() {
+                DefKind::UserFn { fn_state: UserFnState::Concrete { mode_summary, .. } } => {
+                    mode_summary.as_ref()
+                }
+                DefKind::Primitive { mode_summary, .. } => mode_summary.as_ref(),
+                DefKind::Constructor { mode_summary, .. } => mode_summary.as_ref(),
+                DefKind::PlatformEffect { mode_summary, .. } => mode_summary.as_ref(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Write this entry's ownership summary slot. Returns `true` iff the
+    /// entry is a summary-carrying callable kind and the write landed;
+    /// `false` (a did-not-write indicator, not an error) for every other
+    /// shape — non-callable kinds have no summary slot by construction, so
+    /// the caller (typecheck's publication walk, through
+    /// `current_symbol_table_mut`) can treat `false` as "not a publication
+    /// target" without pre-matching the kind.
+    pub fn set_mode_summary(&mut self, summary: Option<ModeSummary>) -> bool {
+        match self {
+            ModuleEntry::Def { kind, .. } => match kind.as_mut() {
+                DefKind::UserFn { fn_state: UserFnState::Concrete { mode_summary, .. } } => {
+                    *mode_summary = summary;
+                    true
+                }
+                DefKind::Primitive { mode_summary, .. } => {
+                    *mode_summary = summary;
+                    true
+                }
+                DefKind::Constructor { mode_summary, .. } => {
+                    *mode_summary = summary;
+                    true
+                }
+                DefKind::PlatformEffect { mode_summary, .. } => {
+                    *mode_summary = summary;
+                    true
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// The per-entry **value-use mark** (S102 CS-A;
+    /// `design/typecheck/ownership-inference.md` §8.3) — `true` iff this
+    /// callable is referenced in non-callee position somewhere in the
+    /// program. `false` for non-`Def` entries and pre-analysis entries.
+    pub fn value_use(&self) -> bool {
+        match self {
+            ModuleEntry::Def { value_use, .. } => *value_use,
+            _ => false,
+        }
+    }
+
+    /// Write the value-use mark. Returns `true` iff the entry is a `Def`
+    /// (the only shape carrying the mark) and the write landed.
+    pub fn set_value_use(&mut self, mark: bool) -> bool {
+        match self {
+            ModuleEntry::Def { value_use, .. } => {
+                *value_use = mark;
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -1334,6 +1463,7 @@ impl<C: CodeStore> ModuleEntry<C> {
 /// | `seq` | `0` | [`Self::seq`] |
 /// | `ast` | `None` | [`Self::ast`] |
 /// | `callees` | `vec![]` | (no setter — populated by typecheck's `finalize_check_result`, never at construction) |
+/// | `value_use` | `false` | (no setter — written by typecheck's ownership pass via [`ModuleEntry::set_value_use`], never at construction) |
 /// | `code` | `None` | (no setter — runtime-only, written by backend after `compile_to_module`) |
 ///
 /// `callees` and `code` deliberately have no setter: they are runtime-state
@@ -1432,6 +1562,7 @@ impl<C: CodeStore> DefBuilder<C> {
             param_names: self.param_names,
             kind: Box::new(self.kind),
             callees: Vec::new(),
+            value_use: false,
             trait_origin: self.trait_origin,
             seq: self.seq,
             ast: self.ast,
@@ -1494,14 +1625,33 @@ pub enum DefKind {
     /// See `DefKind::Primitive` rustdoc and
     /// Decision 48 (primitives uniform module + bundled provenance).
     ///
-    /// **Carries its `got_slot` (S83, FIXME 0356/0357, Principle 20).** A
-    /// primitive is an addressable callable — the operator-as-value path
-    /// (`(let [f +] (f 1 2))`) indirects through the GOT slot allocated for
-    /// the primitive at registration. The slot moved here off the retired flat
-    /// `ModuleEntry::Def.got_slot` field; it is **mandatory** (a registered
-    /// primitive always has an address), not `Option`.
+    /// **Body/dispatch discriminator (S102, FIXME 0476 — Principle 20 applied
+    /// one level down from the S83 kind⇔slot reshape).** How a primitive's
+    /// body is reached lives on [`PrimitiveBody`]: an **`Extern`** primitive
+    /// carries its mandatory GOT slot (an extern shim body is stored there at
+    /// registration; the operator-as-value path `(let [f +] (f 1 2))`
+    /// indirects through it), while an **`Inline`** primitive carries NO slot
+    /// **by construction** — its only body is backend inline emission keyed
+    /// by canonical bare name, so "resolvable but not slot-callable" is a
+    /// *kind*, not a name-list, and
+    /// [`ModuleEntry::callable_got_slot`] answers `None` for it structurally
+    /// (no consumer can dispatch GOT-indirect through a body that cannot
+    /// exist — the allocated-but-NULL-slot defect class is unrepresentable).
+    /// Resolution stop conditions use [`ModuleEntry::is_callable_target`],
+    /// which covers both arms.
+    ///
+    /// **`mode_summary` is the hand-declared primitive fact table** (spine
+    /// `design/arch/ownership-inference.md` §3.1(a); typecheck proposal §9) —
+    /// declared constants seeding the ownership fixpoint at the leaves,
+    /// populated at static registration (`cranelisp-primitives`). The SAME
+    /// carrier inferred summaries ride (Principle 19 — the pass cannot tell a
+    /// declared leaf from an inferred summary except by `DefKind`). Analysis
+    /// inputs only: the extern consuming convention is unchanged. `None` ⇒
+    /// the Decision-24 conservative point.
     Primitive {
-        got_slot: usize,
+        body: PrimitiveBody,
+        #[serde(default)]
+        mode_summary: Option<ModeSummary>,
     },
     /// A DLL-routed platform effect.
     ///
@@ -1558,6 +1708,14 @@ pub enum DefKind {
         /// pending `/arch` ratification.) `poll_shape` does not affect slotting:
         /// poll-shape and blocking effects are both GOT-addressable callables.
         got_slot: usize,
+        /// Ownership summary slot ([`ModeSummary`]) — carried for uniformity
+        /// with the other callable kinds (the summary rides where the slot
+        /// rides, `design/arch/ownership-inference.md` §3.3), but **stays
+        /// `None` throughout increment I**: platform calls are a pinned
+        /// Decision-24 boundary (mode vectors do NOT join the platform
+        /// manifest — spine §3.1 boundary pins).
+        #[serde(default)]
+        mode_summary: Option<ModeSummary>,
     },
     /// A host-promised extern primitive.
     ///
@@ -1684,6 +1842,15 @@ pub enum DefKind {
         /// on the Def's `param_names` (single source, Principle 7).
         #[serde(default)]
         type_def: Option<Box<TypeDefInfo>>,
+        /// Ownership summary slot ([`ModeSummary`]) — carried for uniformity
+        /// with the other callable kinds (the summary rides where the slot
+        /// rides, `design/arch/ownership-inference.md` §3.3). Constructors
+        /// are a Decision-24-by-construction boundary pin (field-store
+        /// consumes; always `Owned` per param — spine §3.1), so this stays
+        /// `None` in increment I; the classifier hardwires ctor behaviour
+        /// rather than reading a summary.
+        #[serde(default)]
+        mode_summary: Option<ModeSummary>,
     },
     /// A multi-clause macro parent entry (S69 Submission 13 macro-unification).
     ///
@@ -1820,6 +1987,63 @@ pub enum DefKind {
     },
 }
 
+impl DefKind {
+    /// Convenience constructor for the common extern-shimmed primitive shape:
+    /// `Primitive { body: Extern { got_slot, no sibling }, no declared facts }`.
+    ///
+    /// The registration sites that declare ownership facts or a borrowed
+    /// sibling (`cranelisp-primitives`) construct the variant literally; every
+    /// other site (typecheck bootstrap seeding, tests) uses this.
+    pub fn primitive(got_slot: usize) -> DefKind {
+        DefKind::Primitive {
+            body: PrimitiveBody::Extern { got_slot, borrowed_sibling_slot: None },
+            mode_summary: None,
+        }
+    }
+}
+
+/// How a [`DefKind::Primitive`]'s body is reached — the body/dispatch
+/// discriminator (S102, FIXME 0476; Principle 20 applied one level down from
+/// the S83 kind⇔slot reshape).
+///
+/// The defect class this makes unrepresentable: an entry whose *kind* says
+/// "slot-carrying callable" while its slot is allocated-but-NULL (no extern
+/// body can exist — the vec-query-family SIGSEGV, third instance of the
+/// phantom-slot class). With the discriminator, "resolvable but not
+/// slot-callable" is a *kind*, not a name-list:
+/// [`ModuleEntry::callable_got_slot`] answers `None` for [`Self::Inline`] by
+/// construction, and resolution stop conditions read
+/// [`ModuleEntry::is_callable_target`] (covering both arms) so shadowing
+/// precedence is unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PrimitiveBody {
+    /// An extern-shimmed primitive: a Rust body is stored in the GOT at
+    /// registration and the entry is GOT-indirect dispatchable (both at
+    /// statically-resolved sites and on the operator-as-value path).
+    Extern {
+        /// Module-local GOT slot holding the extern shim — **mandatory** (an
+        /// extern primitive always has an address).
+        got_slot: usize,
+        /// GOT slot of the optional **borrowed-convention sibling** export
+        /// (`<name>$borrowed` — `design/backend/ownership-codegen.md` §9.1):
+        /// a second entry point sharing the consuming export's core but
+        /// emitting no consuming dec, targeted by the backend at extern call
+        /// sites where the declared facts + site borrow-classification allow
+        /// (§9.3 four-leg gate). `None` ⇒ no sibling registered ⇒ every call
+        /// takes the consuming export (the Decision-24 path). Rides the
+        /// `Extern` arm only: an inline primitive has no extern body, so an
+        /// inline-with-sibling state is unrepresentable (Principle 20).
+        #[serde(default)]
+        borrowed_sibling_slot: Option<usize>,
+    },
+    /// An inline-lowered primitive (the vec query family): the ONLY body is
+    /// backend inline emission keyed by canonical bare name — no GOT slot, no
+    /// extern shim, **by construction**. Value-use paths (fn-as-value,
+    /// auto-curry) must synthesize inline-emitting wrappers rather than
+    /// dispatch through a slot.
+    Inline,
+}
+
 /// The determined-or-not callability state of a [`DefKind::UserFn`] entry
 /// (S83, FIXME 0356/0357, Principle 20; amends Decision 0035).
 ///
@@ -1889,6 +2113,17 @@ pub enum UserFnState {
     /// module-local GOT slot through which it is invoked.
     Concrete {
         got_slot: usize,
+        /// The callable's ownership summary ([`ModeSummary`]) — written by
+        /// typecheck's `pass5_ownership` after body analysis, read by backend
+        /// emission and the R3 summary-diff gate. Rides the `Concrete` arm
+        /// because the mode vector correlates with callable-ness exactly as
+        /// the slot does (templates carry per-INSTANCE summaries on their
+        /// mono variants' own `Concrete` entries, never on themselves —
+        /// `design/arch/ownership-inference.md` §3.3). `None` ⇒ the
+        /// Decision-24 conservative point (absent ⇒ ⊤; old caches
+        /// deserialise to today's behaviour).
+        #[serde(default)]
+        mode_summary: Option<ModeSummary>,
     },
     /// Determined constrained-fn template — slot-less. Only the monomorphised
     /// variants (`Concrete` entries under mangled names) are callable.

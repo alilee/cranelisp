@@ -197,6 +197,9 @@ where
                     body: Box::new(val_expr.clone()),
                     span: val_expr.span(),
                     ty: ConcreteType::Fn(vec![], Box::new(val_expr.ty().clone())),
+                    confined: None,
+                    escapes: None,
+                    unique_static: None,
                 };
                 // Capture-by-borrow (S99, FIXME 0461; lenient-eval.md §4.4.1):
                 // this INDEPENDENT `let` spark is structurally joined — Phase 2

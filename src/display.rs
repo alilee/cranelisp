@@ -903,6 +903,7 @@ mod tests {
                 field_count: 2,
                 internal: false,
                 type_def: Some(Box::new(info)),
+                mode_summary: None,
             })
             .param_names(vec![Symbol::from("x"), Symbol::from("y")])
             .build(),
@@ -953,6 +954,7 @@ mod tests {
                 field_count: 1,
                 internal: false,
                 type_def: None,
+                mode_summary: None,
             })
             .build(),
         );

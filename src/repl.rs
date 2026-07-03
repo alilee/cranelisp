@@ -3007,6 +3007,7 @@ mod collect_related_tests {
                 tag: 0,
                 field_count: 0,
                 internal: false,
+                mode_summary: None,
             },
         )
         .visibility(Visibility::Public)
@@ -3220,7 +3221,7 @@ mod format_entry_sig_tests {
         let mut builder = ModuleEntry::def(
             Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty },
             DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
             },
         )
         .visibility(Visibility::Public);

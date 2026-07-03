@@ -701,6 +701,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     // `Bind` is a sum ctor of `IO` (Pure/Effect/Bind), not a
                     // product type — it has no type facet (S79 Option 3a).
                     type_def: None,
+                    mode_summary: None,
                 },
             )
             .docstring("Chain IO actions (internal — constructed by bind primitive)")
@@ -1002,7 +1003,7 @@ where
             let kind = if name == "quote-sexp" {
                 DefKind::PrimitiveExtern
             } else {
-                DefKind::Primitive { got_slot: prims.allocate_got_slot() }
+                DefKind::primitive(prims.allocate_got_slot())
             };
             let mut builder = ModuleEntry::def(mono(ty), kind).param_names(param_names);
             if let Some(doc) = builtin_docstring(name) {
@@ -1080,7 +1081,7 @@ where
                 ty,
             };
             let got_slot = prims.allocate_got_slot();
-            let mut builder = ModuleEntry::def(scheme, DefKind::Primitive { got_slot })
+            let mut builder = ModuleEntry::def(scheme, DefKind::primitive(got_slot))
                 .param_names(param_names);
             if let Some(doc) = builtin_docstring(name) {
                 builder = builder.docstring(doc);
@@ -1138,7 +1139,7 @@ mod tests {
         let table: cranelisp_types::SymbolTable = SymbolTableBuilder::new(ModuleFullPath::from("t"))
             .entry(
                 Symbol::from("k"),
-                ModuleEntry::def(crate::scheme::mono(Type::Int), DefKind::Primitive { got_slot: 0 })
+                ModuleEntry::def(crate::scheme::mono(Type::Int), DefKind::primitive(0))
                     .docstring("const")
                     .build(),
             )

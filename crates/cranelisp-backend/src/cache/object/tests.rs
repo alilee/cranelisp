@@ -170,6 +170,7 @@ fn table_with_def(
             params: v.params.iter().map(|(n, _)| n.clone()).collect(),
             body,
             span: v.span,
+            mode_summary: None,
         }
     });
     st.insert(
@@ -180,7 +181,7 @@ fn table_with_def(
             docstring: None,
             param_names,
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: 0 },
+                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
             }),
             callees: vec![],
             trait_origin: None,
@@ -188,6 +189,7 @@ fn table_with_def(
             ast: variant,
             codegen_view,
             code: None,
+            value_use: false,
         },
     );
     tables.insert(module.clone(), st);

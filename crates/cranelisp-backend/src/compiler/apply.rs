@@ -131,6 +131,9 @@ where
                                 body: Box::new(arg.clone()),
                                 span: arg.span(),
                                 ty: ConcreteType::Fn(vec![], Box::new(arg.ty().clone())),
+                                confined: None,
+                                escapes: None,
+                                unique_static: None,
                             };
                             // Capture-by-borrow (S99, FIXME 0461; lenient-eval.md
                             // §4.4.1): this apply-arg spark is structurally

@@ -237,6 +237,7 @@ fn test_compile_load_and_execute_cached_module() {
             ast: defn.variants.first().cloned(),
             codegen_view: None,
             code: None,
+            value_use: false,
         },
     );
     tables.insert(module.clone(), st);
@@ -305,7 +306,7 @@ fn test_imported_modules_extracts_deps() {
             docstring: None,
             param_names: vec![],
             kind: Box::new(cranelisp_types::DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
             }),
             callees: vec![],
             trait_origin: None,
@@ -313,6 +314,7 @@ fn test_imported_modules_extracts_deps() {
             ast: None,
             codegen_view: None,
             code: None,
+            value_use: false,
         },
     );
 

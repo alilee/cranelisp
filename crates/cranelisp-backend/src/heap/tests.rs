@@ -54,6 +54,10 @@ fn test_compute_last_uses() {
         span: Span::new(0, 6),
         resolved_call: None,
         ty: ConcreteType::Int,
+        confined: None,
+        escapes: None,
+        provenance: None,
+        unique_static: None,
     };
 
     let last_uses = compute_last_uses(&expr);
@@ -97,6 +101,10 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
         span: Span::new(7, 12),
         resolved_call: None,
         ty: vec_ty.clone(),
+        confined: None,
+        escapes: None,
+        provenance: None,
+        unique_static: None,
     };
     let arg2 = MonoExpr::Apply {
         callee: Box::new(var(Symbol::from("h"), Span::new(6, 7), vec_ty.clone())),
@@ -104,6 +112,10 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
         span: Span::new(5, 13),
         resolved_call: None,
         ty: vec_ty.clone(),
+        confined: None,
+        escapes: None,
+        provenance: None,
+        unique_static: None,
     };
     let arg1 = MonoExpr::Apply {
         callee: Box::new(var(Symbol::from("g"), Span::new(4, 5), vec_ty.clone())),
@@ -111,6 +123,10 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
         span: Span::new(4, 6),
         resolved_call: None,
         ty: vec_ty.clone(),
+        confined: None,
+        escapes: None,
+        provenance: None,
+        unique_static: None,
     };
     let expr = MonoExpr::Apply {
         callee: Box::new(var(Symbol::from("loop"), Span::new(0, 1), vec_ty.clone())),
@@ -118,6 +134,10 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
         span: Span::new(0, 14),
         resolved_call: None,
         ty: vec_ty,
+        confined: None,
+        escapes: None,
+        provenance: None,
+        unique_static: None,
     };
 
     let last_uses = compute_last_uses(&expr);

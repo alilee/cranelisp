@@ -470,7 +470,7 @@ where
                 ..
             } => self.compile_if(cond, then_branch, else_branch),
             MonoExpr::Lambda {
-                params, body, span, ty,
+                params, body, span, ty, ..
             } => {
                 let lambda_type = ty.to_type();
                 self.compile_lambda(params, body, *span, Some(&lambda_type))
@@ -481,6 +481,7 @@ where
                 span,
                 resolved_call,
                 ty,
+                ..
             } => {
                 let apply_type = ty.to_type();
                 self.compile_apply(

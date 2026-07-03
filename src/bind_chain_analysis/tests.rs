@@ -51,7 +51,7 @@
                 constraints: std::collections::HashMap::new(),
                 ty: Type::Int,
             },
-            DefKind::PlatformEffect { scheduling_class: sc, poll_shape: false, got_slot: 0 },
+            DefKind::PlatformEffect { scheduling_class: sc, poll_shape: false, got_slot: 0, mode_summary: None },
         )
         .visibility(Visibility::Public)
         .build()
@@ -606,7 +606,7 @@
                 constraints: std::collections::HashMap::new(),
                 ty: Type::Int,
             },
-            DefKind::PlatformEffect { scheduling_class: sc, poll_shape: true, got_slot: 0 },
+            DefKind::PlatformEffect { scheduling_class: sc, poll_shape: true, got_slot: 0, mode_summary: None },
         )
         .visibility(Visibility::Public)
         .build()

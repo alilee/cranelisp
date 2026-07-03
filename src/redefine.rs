@@ -1111,7 +1111,7 @@ mod tests {
             docstring: None,
             param_names: vec![],
             kind: Box::new(DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot: slot },
+                fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
             }),
             callees: Vec::new(),
             trait_origin: None,
@@ -1119,13 +1119,14 @@ mod tests {
             ast: None,
             codegen_view: None,
             code: None,
+            value_use: false,
         }
     }
 
     fn def_with_callees(callees: Vec<FQSymbol>, slot: Option<usize>) -> ModuleEntry<Code> {
         let kind = match slot {
             Some(got_slot) => DefKind::UserFn {
-                fn_state: UserFnState::Concrete { got_slot },
+                fn_state: UserFnState::Concrete { got_slot, mode_summary: None },
             },
             // A slot-less template kind (Polymorphic carries a scheme id
             // payload in some shapes; Constrained carries the template).
@@ -1143,6 +1144,7 @@ mod tests {
             ast: None,
             codegen_view: None,
             code: None,
+            value_use: false,
         }
     }
 

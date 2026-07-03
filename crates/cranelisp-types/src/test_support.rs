@@ -116,7 +116,7 @@ mod tests {
             .def("id", mono_scheme(Type::Int), DefKind::UserFn { fn_state: UserFnState::NotDetermined })
             .entry(
                 Symbol::from("k"),
-                ModuleEntry::def(mono_scheme(Type::Bool), DefKind::Primitive { got_slot: 0 })
+                ModuleEntry::def(mono_scheme(Type::Bool), DefKind::primitive(0))
                     .docstring("constant")
                     .build(),
             )

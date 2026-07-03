@@ -240,24 +240,21 @@ impl std::fmt::Display for CacheInvalidReason {
 
 // --- The CRANELISP_NO_OWNERSHIP master toggle ---
 
-/// Read-once gate for the **`CRANELISP_NO_OWNERSHIP`** master analysis-off
-/// toggle (`design/backend/ownership-codegen.md` §2.1 — sibling of
-/// `CRANELISP_NO_LENIENT`; the same read-once `OnceLock` pattern as
-/// `CRANELISP_NONATOMIC_RC` in `heap.rs`, so one process observes one
-/// consistent polarity).
+/// Backend-side read of the **`CRANELISP_NO_OWNERSHIP`** master analysis-off
+/// toggle — a thin delegation to the canonical read-once gate
+/// [`cranelisp_types::ownership_analysis_off`] (relocated there at S102 CS-A,
+/// the needs-list item-12 ruling: typecheck's `pass5_ownership` entry and the
+/// backend's consumers must observe ONE polarity through ONE function —
+/// Principle 7 — and `cranelisp-types` is their only shared root).
 ///
-/// Semantics: when set, force the conservative point everywhere. Enforcement
-/// is **producer-primary** — with the toggle set, typecheck's
-/// `pass5_ownership` does not run (no summaries ⇒ every consumer is at the
-/// Decision-24 conservative point with zero consumer-side branching; that
-/// crate reads the same env when the pass lands at increment I). At stage M
-/// (pre-analysis) the backend's only consumer is the cache-manifest global
-/// key ([`CacheManifest::ownership_disabled`], §2.3): a polarity flip
-/// invalidates the cache wholesale so mixed-ownership-ABI caches are
-/// unrepresentable. Increment I's emission gates read this same fn.
+/// Semantics unchanged (`design/backend/ownership-codegen.md` §2.1): when
+/// set, force the conservative point everywhere; enforcement is
+/// producer-primary. Backend consumers: the cache-manifest global key
+/// ([`CacheManifest::ownership_disabled`], §2.3 — a polarity flip invalidates
+/// the cache wholesale so mixed-ownership-ABI caches are unrepresentable) and
+/// increment I's emission gates.
 pub(crate) fn no_ownership_enabled() -> bool {
-    static E: OnceLock<bool> = OnceLock::new();
-    *E.get_or_init(|| std::env::var_os("CRANELISP_NO_OWNERSHIP").is_some())
+    cranelisp_types::ownership_analysis_off()
 }
 
 // --- Source hashing ---

@@ -51,7 +51,7 @@
                     ty: Type::Fn(vec![Type::Int], Box::new(Type::Int)),
                 },
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: slot },
+                    fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
                 },
             )
             .visibility(Visibility::Public)

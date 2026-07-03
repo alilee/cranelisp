@@ -494,6 +494,7 @@ fn platform_effect_def(slot: usize) -> ModuleEntry {
             scheduling_class: SchedulingClass::Sequential,
             poll_shape: false,
             got_slot: slot,
+            mode_summary: None,
         }),
         callees: vec![],
         trait_origin: None,
@@ -501,6 +502,7 @@ fn platform_effect_def(slot: usize) -> ModuleEntry {
         ast: None,
         codegen_view: None,
         code: None,
+        value_use: false,
     }
 }
 

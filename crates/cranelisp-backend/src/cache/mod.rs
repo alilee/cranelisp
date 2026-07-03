@@ -215,7 +215,25 @@ pub mod linker;
 /// `CacheStale::SchemaMismatch` (cache-miss → recompile) so every loaded
 /// table's edges are extraction-current by construction. **One bump serves
 /// all S101 waves** — Wave 3's manifest-key work does NOT re-bump.
-pub const CACHE_SCHEMA_VERSION: u32 = 11;
+///
+/// **S102 bump 11 → 12 (ownership-inference carriers, CS-A — the single
+/// increment-I types change).** The cached `.meta.json` serde surface gained,
+/// in one change-set (`design/typecheck/ownership-inference.md` §13.1;
+/// `design/arch/ownership-inference.md` §3.3): `mode_summary:
+/// Option<ModeSummary>` on the callable `DefKind` variants
+/// (`UserFnState::Concrete`, `Primitive`, `Constructor`, `PlatformEffect`)
+/// and on `MonoDefnVariant`; advisory site-fact fields
+/// (`escapes`/`confined`/`unique_static`/`provenance`) on `MonoExpr`
+/// alloc/capture/projection nodes; the per-entry `value_use` mark on
+/// `ModuleEntry::Def`; and the FIXME-0476 `DefKind::Primitive` reshape
+/// (`got_slot: usize` → `body: PrimitiveBody::{Extern{got_slot,
+/// borrowed_sibling_slot}, Inline}` — a non-additive variant-payload change,
+/// the part that makes this bump mandatory rather than serde-default-safe).
+/// All additive fields are `#[serde(default)]` = the Decision-24 conservative
+/// point. The bump rejects every v11 cache as `CacheStale::SchemaMismatch`
+/// (cache-miss → recompile). **One bump serves all of increment I** — the
+/// consuming change-sets (CS-B/CS-1..4, backend B1-be..B3.x) do NOT re-bump.
+pub const CACHE_SCHEMA_VERSION: u32 = 12;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

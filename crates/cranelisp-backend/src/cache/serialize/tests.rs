@@ -24,7 +24,7 @@ fn make_def(_name: &str) -> ModuleEntry {
         docstring: None,
         param_names: vec![],
         kind: Box::new(DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: 7 },
+            fn_state: UserFnState::Concrete { got_slot: 7, mode_summary: None },
         }),
         callees: vec![],
         trait_origin: None,
@@ -32,6 +32,7 @@ fn make_def(_name: &str) -> ModuleEntry {
         ast: Some(variant),
         codegen_view: None,
         code: None,
+        value_use: false,
     }
 }
 

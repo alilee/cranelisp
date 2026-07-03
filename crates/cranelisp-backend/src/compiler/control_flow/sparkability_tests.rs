@@ -31,6 +31,10 @@ fn call(callee: &str) -> MonoExpr {
         span: span(),
         resolved_call: None,
         ty: ConcreteType::Int,
+        confined: None,
+        escapes: None,
+        provenance: None,
+        unique_static: None,
     }
 }
 
@@ -43,6 +47,10 @@ fn call_with_arg(callee: &str, dep_var: &str) -> MonoExpr {
         span: span(),
         resolved_call: None,
         ty: ConcreteType::Int,
+        confined: None,
+        escapes: None,
+        provenance: None,
+        unique_static: None,
     }
 }
 

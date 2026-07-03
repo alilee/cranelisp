@@ -107,6 +107,7 @@ fn register_type(
                             .map(|(c, _, _)| Symbol::from(*c))
                             .collect(),
                     })),
+                    mode_summary: None,
                 },
             )
             .param_names(field_names)

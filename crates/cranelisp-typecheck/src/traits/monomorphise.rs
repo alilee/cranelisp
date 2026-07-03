@@ -488,6 +488,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     params: mono_defn_ast.params().iter().map(|(n, _)| n.clone()).collect(),
                     body: mono_body,
                     span: defn_span,
+                    mode_summary: None,
                 }
             }
             // A genuinely-free residual (an unbound type variable, or an
@@ -566,7 +567,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
 
         let mut builder = ModuleEntry::def(
             scheme,
-            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } },
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, mode_summary: None } },
         )
         .visibility(mono.defn.visibility)
         .param_names(mono.defn.params().iter().map(|(n, _)| n.clone()).collect());

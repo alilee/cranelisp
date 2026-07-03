@@ -64,6 +64,7 @@
                 field_count: 0,
                 internal: false,
                 type_def: Some(Box::new(info)),
+                mode_summary: None,
             },
         )
         .build()

@@ -230,6 +230,7 @@ fn register_synth_adt(
                 field_count: ctor.fields.len(),
                 internal: ctor.internal,
                 type_def: ctor_type_def,
+                mode_summary: None,
             },
         )
         .visibility(Visibility::Public)
@@ -841,6 +842,7 @@ fn register_io_type(
                 // `IO` is a sum type (`Pure`/`Effect`/`Bind`) with a separate
                 // `TypeDef`; `Bind` is not its own type.
                 type_def: None,
+                mode_summary: None,
             },
         )
         .visibility(Visibility::Public)

@@ -77,6 +77,7 @@ pub cranelisp_types::DefKind::Constructor
 pub cranelisp_types::DefKind::Constructor::field_count: usize
 pub cranelisp_types::DefKind::Constructor::got_slot: usize
 pub cranelisp_types::DefKind::Constructor::internal: bool
+pub cranelisp_types::DefKind::Constructor::mode_summary: core::option::Option<cranelisp_types::ModeSummary>
 pub cranelisp_types::DefKind::Constructor::tag: usize
 pub cranelisp_types::DefKind::Constructor::type_def: core::option::Option<alloc::boxed::Box<cranelisp_types::TypeDefInfo>>
 pub cranelisp_types::DefKind::Constructor::type_name: cranelisp_types::FQTypeName
@@ -87,13 +88,17 @@ pub cranelisp_types::DefKind::Overloaded
 pub cranelisp_types::DefKind::Overloaded::variants: alloc::vec::Vec<cranelisp_types::OverloadVariant>
 pub cranelisp_types::DefKind::PlatformEffect
 pub cranelisp_types::DefKind::PlatformEffect::got_slot: usize
+pub cranelisp_types::DefKind::PlatformEffect::mode_summary: core::option::Option<cranelisp_types::ModeSummary>
 pub cranelisp_types::DefKind::PlatformEffect::poll_shape: bool
 pub cranelisp_types::DefKind::PlatformEffect::scheduling_class: cranelisp_types::SchedulingClass
 pub cranelisp_types::DefKind::Primitive
-pub cranelisp_types::DefKind::Primitive::got_slot: usize
+pub cranelisp_types::DefKind::Primitive::body: cranelisp_types::PrimitiveBody
+pub cranelisp_types::DefKind::Primitive::mode_summary: core::option::Option<cranelisp_types::ModeSummary>
 pub cranelisp_types::DefKind::PrimitiveExtern
 pub cranelisp_types::DefKind::UserFn
 pub cranelisp_types::DefKind::UserFn::fn_state: cranelisp_types::UserFnState
+impl cranelisp_types::DefKind
+pub fn cranelisp_types::DefKind::primitive(usize) -> cranelisp_types::DefKind
 impl core::marker::Freeze for cranelisp_types::DefKind
 impl core::marker::Send for cranelisp_types::DefKind
 impl core::marker::Sync for cranelisp_types::DefKind
@@ -246,6 +251,17 @@ impl core::marker::Unpin for cranelisp_types::MacroParam
 impl core::marker::UnsafeUnpin for cranelisp_types::MacroParam
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::MacroParam
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::MacroParam
+pub enum cranelisp_types::Mode
+pub cranelisp_types::Mode::Borrowed
+pub cranelisp_types::Mode::Copy
+pub cranelisp_types::Mode::Owned
+impl core::marker::Freeze for cranelisp_types::Mode
+impl core::marker::Send for cranelisp_types::Mode
+impl core::marker::Sync for cranelisp_types::Mode
+impl core::marker::Unpin for cranelisp_types::Mode
+impl core::marker::UnsafeUnpin for cranelisp_types::Mode
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::Mode
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::Mode
 pub enum cranelisp_types::ModuleEntry<C: cranelisp_types::CodeStore>
 pub cranelisp_types::ModuleEntry::Ambiguous
 pub cranelisp_types::ModuleEntry::Ambiguous::visibility: cranelisp_types::Visibility
@@ -260,6 +276,7 @@ pub cranelisp_types::ModuleEntry::Def::param_names: alloc::vec::Vec<cranelisp_ty
 pub cranelisp_types::ModuleEntry::Def::scheme: cranelisp_types::Scheme
 pub cranelisp_types::ModuleEntry::Def::seq: u64
 pub cranelisp_types::ModuleEntry::Def::trait_origin: core::option::Option<cranelisp_types::FQTraitName>
+pub cranelisp_types::ModuleEntry::Def::value_use: bool
 pub cranelisp_types::ModuleEntry::Def::visibility: cranelisp_types::Visibility
 pub cranelisp_types::ModuleEntry::Import
 pub cranelisp_types::ModuleEntry::Import::source: cranelisp_types::FQSymbol
@@ -294,8 +311,13 @@ pub fn cranelisp_types::ModuleEntry<C>::callable_got_slot(&self) -> core::option
 pub fn cranelisp_types::ModuleEntry<C>::callees(&self) -> &[cranelisp_types::FQSymbol]
 pub fn cranelisp_types::ModuleEntry<C>::codegen_view(&self) -> core::option::Option<&cranelisp_types::MonoDefnVariant>
 pub fn cranelisp_types::ModuleEntry<C>::def(cranelisp_types::Scheme, cranelisp_types::DefKind) -> cranelisp_types::DefBuilder<C>
+pub fn cranelisp_types::ModuleEntry<C>::is_callable_target(&self) -> bool
 pub fn cranelisp_types::ModuleEntry<C>::is_constrained_template(&self) -> bool
 pub fn cranelisp_types::ModuleEntry<C>::is_public(&self) -> bool
+pub fn cranelisp_types::ModuleEntry<C>::mode_summary(&self) -> core::option::Option<&cranelisp_types::ModeSummary>
+pub fn cranelisp_types::ModuleEntry<C>::set_mode_summary(&mut self, core::option::Option<cranelisp_types::ModeSummary>) -> bool
+pub fn cranelisp_types::ModuleEntry<C>::set_value_use(&mut self, bool) -> bool
+pub fn cranelisp_types::ModuleEntry<C>::value_use(&self) -> bool
 impl<C: cranelisp_types::CodeStore> core::convert::From<cranelisp_types::DefBuilder<C>> for cranelisp_types::ModuleEntry<C>
 pub fn cranelisp_types::ModuleEntry<C>::from(cranelisp_types::DefBuilder<C>) -> Self
 impl<C: cranelisp_types::CodeStore> core::marker::Send for cranelisp_types::ModuleEntry<C>
@@ -319,19 +341,26 @@ pub enum cranelisp_types::MonoExpr
 pub cranelisp_types::MonoExpr::Apply
 pub cranelisp_types::MonoExpr::Apply::args: alloc::vec::Vec<cranelisp_types::MonoExpr>
 pub cranelisp_types::MonoExpr::Apply::callee: alloc::boxed::Box<cranelisp_types::MonoExpr>
+pub cranelisp_types::MonoExpr::Apply::confined: core::option::Option<bool>
+pub cranelisp_types::MonoExpr::Apply::escapes: core::option::Option<bool>
+pub cranelisp_types::MonoExpr::Apply::provenance: core::option::Option<cranelisp_types::Symbol>
 pub cranelisp_types::MonoExpr::Apply::resolved_call: core::option::Option<alloc::boxed::Box<cranelisp_types::ResolvedCall>>
 pub cranelisp_types::MonoExpr::Apply::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::Apply::ty: cranelisp_types::ConcreteType
+pub cranelisp_types::MonoExpr::Apply::unique_static: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::BoolLit
 pub cranelisp_types::MonoExpr::BoolLit::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::BoolLit::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::BoolLit::value: bool
 pub cranelisp_types::MonoExpr::ConstrADT
+pub cranelisp_types::MonoExpr::ConstrADT::confined: core::option::Option<bool>
+pub cranelisp_types::MonoExpr::ConstrADT::escapes: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::ConstrADT::fields: alloc::vec::Vec<cranelisp_types::MonoExpr>
 pub cranelisp_types::MonoExpr::ConstrADT::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::ConstrADT::tag: usize
 pub cranelisp_types::MonoExpr::ConstrADT::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::ConstrADT::type_name: cranelisp_types::FQTypeName
+pub cranelisp_types::MonoExpr::ConstrADT::unique_static: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::FloatLit
 pub cranelisp_types::MonoExpr::FloatLit::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::FloatLit::ty: cranelisp_types::ConcreteType
@@ -348,9 +377,12 @@ pub cranelisp_types::MonoExpr::IntLit::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::IntLit::value: i64
 pub cranelisp_types::MonoExpr::Lambda
 pub cranelisp_types::MonoExpr::Lambda::body: alloc::boxed::Box<cranelisp_types::MonoExpr>
+pub cranelisp_types::MonoExpr::Lambda::confined: core::option::Option<bool>
+pub cranelisp_types::MonoExpr::Lambda::escapes: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::Lambda::params: alloc::vec::Vec<cranelisp_types::Symbol>
 pub cranelisp_types::MonoExpr::Lambda::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::Lambda::ty: cranelisp_types::ConcreteType
+pub cranelisp_types::MonoExpr::Lambda::unique_static: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::LaunchContinue
 pub cranelisp_types::MonoExpr::LaunchContinue::continuation: alloc::boxed::Box<cranelisp_types::MonoExpr>
 pub cranelisp_types::MonoExpr::LaunchContinue::launched: alloc::boxed::Box<cranelisp_types::MonoExpr>
@@ -373,8 +405,11 @@ pub cranelisp_types::MonoExpr::ParBind::body: alloc::boxed::Box<cranelisp_types:
 pub cranelisp_types::MonoExpr::ParBind::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::ParBind::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::StringLit
+pub cranelisp_types::MonoExpr::StringLit::confined: core::option::Option<bool>
+pub cranelisp_types::MonoExpr::StringLit::escapes: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::StringLit::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::StringLit::ty: cranelisp_types::ConcreteType
+pub cranelisp_types::MonoExpr::StringLit::unique_static: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::StringLit::value: alloc::string::String
 pub cranelisp_types::MonoExpr::Trace
 pub cranelisp_types::MonoExpr::Trace::body: alloc::boxed::Box<cranelisp_types::MonoExpr>
@@ -387,9 +422,12 @@ pub cranelisp_types::MonoExpr::Var::resolved_call: core::option::Option<alloc::b
 pub cranelisp_types::MonoExpr::Var::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::Var::ty: cranelisp_types::ConcreteType
 pub cranelisp_types::MonoExpr::VecLit
+pub cranelisp_types::MonoExpr::VecLit::confined: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::VecLit::elements: alloc::vec::Vec<cranelisp_types::MonoExpr>
+pub cranelisp_types::MonoExpr::VecLit::escapes: core::option::Option<bool>
 pub cranelisp_types::MonoExpr::VecLit::span: cranelisp_types::Span
 pub cranelisp_types::MonoExpr::VecLit::ty: cranelisp_types::ConcreteType
+pub cranelisp_types::MonoExpr::VecLit::unique_static: core::option::Option<bool>
 impl cranelisp_types::MonoExpr
 pub fn cranelisp_types::MonoExpr::from_expr(&cranelisp_types::Expr) -> core::result::Result<cranelisp_types::MonoExpr, cranelisp_types::NotConcrete>
 pub fn cranelisp_types::MonoExpr::span(&self) -> cranelisp_types::Span
@@ -411,6 +449,17 @@ impl core::marker::Unpin for cranelisp_types::NotConcrete
 impl core::marker::UnsafeUnpin for cranelisp_types::NotConcrete
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::NotConcrete
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::NotConcrete
+pub enum cranelisp_types::ParamFlow
+pub cranelisp_types::ParamFlow::Consumed
+pub cranelisp_types::ParamFlow::IntoResult
+pub cranelisp_types::ParamFlow::Retained
+impl core::marker::Freeze for cranelisp_types::ParamFlow
+impl core::marker::Send for cranelisp_types::ParamFlow
+impl core::marker::Sync for cranelisp_types::ParamFlow
+impl core::marker::Unpin for cranelisp_types::ParamFlow
+impl core::marker::UnsafeUnpin for cranelisp_types::ParamFlow
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ParamFlow
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ParamFlow
 #[non_exhaustive] pub enum cranelisp_types::ParsedEntry
 pub cranelisp_types::ParsedEntry::Constructor
 pub cranelisp_types::ParsedEntry::Constructor::fields: alloc::vec::Vec<cranelisp_types::FieldDef>
@@ -507,6 +556,18 @@ impl core::marker::Unpin for cranelisp_types::Poll
 impl core::marker::UnsafeUnpin for cranelisp_types::Poll
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::Poll
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::Poll
+pub enum cranelisp_types::PrimitiveBody
+pub cranelisp_types::PrimitiveBody::Extern
+pub cranelisp_types::PrimitiveBody::Extern::borrowed_sibling_slot: core::option::Option<usize>
+pub cranelisp_types::PrimitiveBody::Extern::got_slot: usize
+pub cranelisp_types::PrimitiveBody::Inline
+impl core::marker::Freeze for cranelisp_types::PrimitiveBody
+impl core::marker::Send for cranelisp_types::PrimitiveBody
+impl core::marker::Sync for cranelisp_types::PrimitiveBody
+impl core::marker::Unpin for cranelisp_types::PrimitiveBody
+impl core::marker::UnsafeUnpin for cranelisp_types::PrimitiveBody
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::PrimitiveBody
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::PrimitiveBody
 #[non_exhaustive] pub enum cranelisp_types::PrimitiveNaming
 pub cranelisp_types::PrimitiveNaming::Bare
 pub cranelisp_types::PrimitiveNaming::Qualified
@@ -600,6 +661,17 @@ impl core::marker::Unpin for cranelisp_types::ResourceRole
 impl core::marker::UnsafeUnpin for cranelisp_types::ResourceRole
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ResourceRole
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ResourceRole
+pub enum cranelisp_types::ResultMode
+pub cranelisp_types::ResultMode::AliasOf(usize)
+pub cranelisp_types::ResultMode::Fresh
+pub cranelisp_types::ResultMode::ProjectionOf(usize)
+impl core::marker::Freeze for cranelisp_types::ResultMode
+impl core::marker::Send for cranelisp_types::ResultMode
+impl core::marker::Sync for cranelisp_types::ResultMode
+impl core::marker::Unpin for cranelisp_types::ResultMode
+impl core::marker::UnsafeUnpin for cranelisp_types::ResultMode
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ResultMode
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ResultMode
 #[repr(u32)] pub enum cranelisp_types::SchedulingClass
 pub cranelisp_types::SchedulingClass::Commutative = 1
 pub cranelisp_types::SchedulingClass::ResourceSerial = 2
@@ -709,6 +781,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TypeExpr
 pub enum cranelisp_types::UserFnState
 pub cranelisp_types::UserFnState::Concrete
 pub cranelisp_types::UserFnState::Concrete::got_slot: usize
+pub cranelisp_types::UserFnState::Concrete::mode_summary: core::option::Option<cranelisp_types::ModeSummary>
 pub cranelisp_types::UserFnState::Constrained(alloc::boxed::Box<cranelisp_types::ConstrainedFn>)
 pub cranelisp_types::UserFnState::NotDetermined
 pub cranelisp_types::UserFnState::Polymorphic(alloc::boxed::Box<cranelisp_types::ParametricFn>)
@@ -1181,6 +1254,26 @@ impl core::marker::Unpin for cranelisp_types::ModDecl
 impl core::marker::UnsafeUnpin for cranelisp_types::ModDecl
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ModDecl
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ModDecl
+pub struct cranelisp_types::ModeSummary
+pub cranelisp_types::ModeSummary::param_flow: alloc::vec::Vec<cranelisp_types::ParamFlow>
+pub cranelisp_types::ModeSummary::param_modes: alloc::vec::Vec<cranelisp_types::Mode>
+pub cranelisp_types::ModeSummary::result: cranelisp_types::ResultMode
+pub cranelisp_types::ModeSummary::result_unique: bool
+pub cranelisp_types::ModeSummary::spark_ops: alloc::vec::Vec<bool>
+impl cranelisp_types::ModeSummary
+pub fn cranelisp_types::ModeSummary::abi_eq(&self, &Self) -> bool
+pub fn cranelisp_types::ModeSummary::abi_eq_opt(core::option::Option<&cranelisp_types::ModeSummary>, core::option::Option<&cranelisp_types::ModeSummary>) -> bool
+pub fn cranelisp_types::ModeSummary::is_abi_conservative(&self) -> bool
+pub fn cranelisp_types::ModeSummary::param_flow(&self, usize) -> cranelisp_types::ParamFlow
+pub fn cranelisp_types::ModeSummary::param_mode(&self, usize) -> cranelisp_types::Mode
+pub fn cranelisp_types::ModeSummary::spark_op(&self, usize) -> bool
+impl core::marker::Freeze for cranelisp_types::ModeSummary
+impl core::marker::Send for cranelisp_types::ModeSummary
+impl core::marker::Sync for cranelisp_types::ModeSummary
+impl core::marker::Unpin for cranelisp_types::ModeSummary
+impl core::marker::UnsafeUnpin for cranelisp_types::ModeSummary
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ModeSummary
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ModeSummary
 #[non_exhaustive] pub struct cranelisp_types::ModuleAliasEntry
 pub cranelisp_types::ModuleAliasEntry::span: cranelisp_types::Span
 pub cranelisp_types::ModuleAliasEntry::target: cranelisp_types::ModuleFullPath
@@ -1255,6 +1348,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::MonoDefn
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::MonoDefn
 pub struct cranelisp_types::MonoDefnVariant
 pub cranelisp_types::MonoDefnVariant::body: cranelisp_types::MonoExpr
+pub cranelisp_types::MonoDefnVariant::mode_summary: core::option::Option<cranelisp_types::ModeSummary>
 pub cranelisp_types::MonoDefnVariant::name: cranelisp_types::Symbol
 pub cranelisp_types::MonoDefnVariant::params: alloc::vec::Vec<cranelisp_types::Symbol>
 pub cranelisp_types::MonoDefnVariant::span: cranelisp_types::Span
@@ -1268,6 +1362,7 @@ impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::MonoDefnVariant
 pub struct cranelisp_types::MonoMatchArm
 pub cranelisp_types::MonoMatchArm::body: cranelisp_types::MonoExpr
 pub cranelisp_types::MonoMatchArm::pattern: cranelisp_types::Pattern
+pub cranelisp_types::MonoMatchArm::provenance: core::option::Option<cranelisp_types::Symbol>
 pub cranelisp_types::MonoMatchArm::span: cranelisp_types::Span
 impl core::marker::Freeze for cranelisp_types::MonoMatchArm
 impl core::marker::Send for cranelisp_types::MonoMatchArm
@@ -1614,6 +1709,7 @@ pub fn cranelisp_types::install_module<C, L>(&dashmap::DashMap<cranelisp_types::
 pub fn cranelisp_types::lookup_trait_decl_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TraitName) -> core::option::Option<cranelisp_types::TraitDeclInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::lookup_type_def_chain<C, L>(&dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::SymbolTable<C, L>>, &cranelisp_types::ModuleFullPath, &cranelisp_types::TypeName) -> core::option::Option<cranelisp_types::TypeDefInfo> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::max_type_var_id(&cranelisp_types::Type) -> core::option::Option<cranelisp_types::TypeId>
+pub fn cranelisp_types::ownership_analysis_off() -> bool
 pub fn cranelisp_types::render_type(&cranelisp_types::Type, cranelisp_types::PrimitiveNaming, cranelisp_types::VarNaming<'_>) -> alloc::string::String
 pub fn cranelisp_types::resolve<C, L>(&cranelisp_types::SymbolTables<C, L>, &cranelisp_types::ModuleAliases, &cranelisp_types::View<'_, C, L>, &cranelisp_types::ModuleFullPath, &str, cranelisp_types::Span) -> core::result::Result<cranelisp_types::Resolved<C>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::resolve_macro_head<C, L>(&cranelisp_types::SymbolTables<C, L>, &cranelisp_types::ModuleAliases, &cranelisp_types::View<'_, C, L>, &cranelisp_types::ModuleFullPath, &str, cranelisp_types::Span) -> core::result::Result<core::option::Option<cranelisp_types::FQSymbol>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore

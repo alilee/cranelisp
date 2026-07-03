@@ -23,6 +23,7 @@ fn mk_def(
         param_names: vec![],
         kind: Box::new(kind),
         callees: Vec::new(),
+        value_use: false,
         trait_origin: None,
         seq: 0,
         ast,
@@ -204,7 +205,7 @@ fn polymorphic_template_excluded_from_defined_symbols() {
     st.insert(
         Symbol::from("id$Int"),
         mk_def(
-            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0 } },
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None } },
             Some(trivial_variant("id$Int")),
         ),
     );
@@ -247,7 +248,7 @@ fn callable_got_slot_is_structural() {
     // A concrete UserFn carries its slot on the kind's Concrete fn_state.
     let concrete: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Int),
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 3 } },
+        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 3, mode_summary: None } },
     )
     .build();
     assert_eq!(concrete.callable_got_slot(), Some(3));
@@ -279,7 +280,7 @@ fn callable_got_slot_is_structural() {
 
     // Primitive and Constructor carry their (mandatory) slot too.
     let prim: ModuleEntry =
-        ModuleEntry::def(mono_scheme(Type::Int), DefKind::Primitive { got_slot: 9 }).build();
+        ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(9)).build();
     assert_eq!(prim.callable_got_slot(), Some(9));
 
     let ctor: ModuleEntry = ModuleEntry::def(
@@ -291,6 +292,7 @@ fn callable_got_slot_is_structural() {
             field_count: 1,
             internal: false,
             type_def: None,
+            mode_summary: None,
         },
     )
     .build();
@@ -417,6 +419,7 @@ fn code_serialise_round_trip_skips_field() {
         param_names: vec![],
         kind: Box::new(DefKind::UserFn { fn_state: UserFnState::NotDetermined }),
         callees: Vec::new(),
+        value_use: false,
         trait_origin: None,
         seq: 0,
         ast: Some(trivial_variant("with_code")),
@@ -493,6 +496,7 @@ fn def_kind_platform_effect_carries_scheduling_class() {
             scheduling_class: crate::SchedulingClass::Commutative,
             poll_shape: false,
             got_slot: 0,
+            mode_summary: None,
         },
         None,
     );
@@ -537,8 +541,10 @@ fn platform_effect_scheduling_class_round_trips() {
             scheduling_class: crate::SchedulingClass::ResourceSerial,
             poll_shape: true,
             got_slot: 0,
+            mode_summary: None,
         }),
         callees: Vec::new(),
+        value_use: false,
         trait_origin: None,
         seq: 0,
         ast: None,
@@ -608,12 +614,16 @@ fn platform_effect_poll_shape_defaults_to_false_for_pre_s94_cache() {
     let kind: DefKind =
         serde_json::from_str(legacy_json).expect("pre-S94 PlatformEffect must still deserialize");
     match kind {
-        DefKind::PlatformEffect { scheduling_class, poll_shape, got_slot } => {
+        DefKind::PlatformEffect { scheduling_class, poll_shape, got_slot, mode_summary } => {
             assert_eq!(scheduling_class, crate::SchedulingClass::Commutative);
             assert_eq!(got_slot, 3);
             assert!(
                 !poll_shape,
                 "a pre-S94 cache (no poll_shape key) MUST default to blocking (false)"
+            );
+            assert!(
+                mode_summary.is_none(),
+                "a pre-S102 cache (no mode_summary key) MUST default to None (Decision-24)"
             );
         }
         other => panic!("expected DefKind::PlatformEffect, got {:?}", other),
@@ -640,6 +650,7 @@ fn def_kind_primitive_extern_round_trips() {
         param_names: vec![],
         kind: Box::new(DefKind::PrimitiveExtern),
         callees: Vec::new(),
+        value_use: false,
         trait_origin: None,
         seq: 0,
         ast: None,
@@ -1175,6 +1186,7 @@ fn module_entry_def_code_field_is_optional_c() {
         param_names: vec![],
         kind: Box::new(DefKind::UserFn { fn_state: UserFnState::NotDetermined }),
         callees: Vec::new(),
+        value_use: false,
         trait_origin: None,
         seq: 0,
         ast: Some(trivial_variant("synthetic")),
@@ -1243,7 +1255,7 @@ fn def_builder_defaults() {
     assert_eq!(entry.callable_got_slot(), None, "default builder yields no callable slot");
     match entry {
         ModuleEntry::Def {
-            scheme, visibility, docstring, param_names, kind, callees,
+            scheme, visibility, docstring, param_names, kind, callees, value_use,
             trait_origin, seq, ast, codegen_view, code,
         } => {
             assert_eq!(scheme.ty, Type::Int);
@@ -1252,6 +1264,7 @@ fn def_builder_defaults() {
             assert!(param_names.is_empty());
             assert!(matches!(*kind, DefKind::UserFn { fn_state: UserFnState::NotDetermined }));
             assert!(callees.is_empty(), "callees defaulted, never settable");
+            assert!(!value_use, "value_use defaulted false, never settable at build");
             assert!(trait_origin.is_none());
             assert_eq!(seq, 0);
             assert!(ast.is_none());
@@ -1271,7 +1284,7 @@ fn def_builder_overrides() {
     // `.got_slot(_)` setter — the slot is part of the `kind` value passed in.
     let entry: ModuleEntry = ModuleEntry::def(
         mono_scheme(Type::Bool),
-        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 7 } },
+        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 7, mode_summary: None } },
     )
         .visibility(Visibility::Private)
         .docstring("doc")
@@ -1300,6 +1313,134 @@ fn def_builder_overrides() {
 #[test]
 fn def_builder_from_conversion() {
     let entry: ModuleEntry =
-        ModuleEntry::def(mono_scheme(Type::Int), DefKind::Primitive { got_slot: 0 }).into();
+        ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).into();
     assert!(matches!(entry, ModuleEntry::Def { .. }));
+}
+
+// =============================================================================
+// S102 CS-A — ownership carrier accessors + the FIXME-0476 PrimitiveBody shape
+// (design/arch/ownership-inference.md §3.3;
+//  design/typecheck/ownership-inference.md §13.1 items 6, 10, 11)
+// =============================================================================
+
+// spec: design/arch/fixmes/0476 §Ruling — an Inline primitive is slot-less BY
+//       CONSTRUCTION; callable_got_slot() answers None structurally, and
+//       is_callable_target() still answers true (the resolution stop
+//       condition covers slot-dispatched AND inline-dispatched kinds).
+#[test]
+fn inline_primitive_is_slotless_but_callable_target() {
+    let inline: ModuleEntry = ModuleEntry::def(
+        mono_scheme(Type::Int),
+        DefKind::Primitive { body: PrimitiveBody::Inline, mode_summary: None },
+    )
+    .build();
+    assert_eq!(inline.callable_got_slot(), None, "Inline carries no slot by construction");
+    assert!(inline.is_callable_target(), "Inline IS a dispatchable call target (inline emission)");
+
+    let ext: ModuleEntry = ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(5)).build();
+    assert_eq!(ext.callable_got_slot(), Some(5));
+    assert!(ext.is_callable_target());
+}
+
+// spec: design/arch/fixmes/0476 §Ruling — is_callable_target() preserves the
+//       negative half of the stop condition: non-callable kinds are NOT
+//       callable targets (shadowing precedence unchanged).
+#[test]
+fn non_callable_kinds_are_not_callable_targets() {
+    let template: ModuleEntry = ModuleEntry::def(
+        mono_scheme(Type::Int),
+        DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+    )
+    .build();
+    assert!(!template.is_callable_target());
+
+    let ext_prim: ModuleEntry =
+        ModuleEntry::def(mono_scheme(Type::Int), DefKind::PrimitiveExtern).build();
+    assert!(!ext_prim.is_callable_target(), "PrimitiveExtern dispatches by-name, never a target");
+}
+
+// spec: design/typecheck/ownership-inference.md §13.1 item 6 — uniform
+//       mode_summary() read + set_mode_summary() did-write mutator on the
+//       callable kinds; non-callable kinds answer None / false (no summary
+//       slot by construction).
+#[test]
+fn mode_summary_accessor_and_mutator_cover_callable_kinds() {
+    use crate::{Mode, ModeSummary};
+    let summary = ModeSummary { param_modes: vec![Mode::Borrowed], ..Default::default() };
+
+    // UserFn Concrete: writable, readable.
+    let mut concrete: ModuleEntry = ModuleEntry::def(
+        mono_scheme(Type::Int),
+        DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 1, mode_summary: None } },
+    )
+    .build();
+    assert!(concrete.mode_summary().is_none(), "pre-analysis entry carries no summary");
+    assert!(concrete.set_mode_summary(Some(summary.clone())), "Concrete is a publication target");
+    assert_eq!(concrete.mode_summary(), Some(&summary));
+
+    // Primitive: the SAME slot carries declared facts (item 7 — no separate type).
+    let mut prim: ModuleEntry =
+        ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).build();
+    assert!(prim.set_mode_summary(Some(summary.clone())));
+    assert_eq!(prim.mode_summary(), Some(&summary));
+
+    // Non-callable kind: did-not-write indicator, still None.
+    let mut nd: ModuleEntry = ModuleEntry::def(
+        mono_scheme(Type::Int),
+        DefKind::UserFn { fn_state: UserFnState::NotDetermined },
+    )
+    .build();
+    assert!(!nd.set_mode_summary(Some(summary)), "no summary slot on non-callable kinds");
+    assert!(nd.mode_summary().is_none());
+}
+
+// spec: design/typecheck/ownership-inference.md §13.1 item 10 /
+//       §8.3 — the per-entry value-use mark: builder-defaulted false,
+//       pass-written via set_value_use (did-write for Def entries only).
+#[test]
+fn value_use_mark_defaults_false_and_is_pass_written() {
+    let mut entry: ModuleEntry =
+        ModuleEntry::def(mono_scheme(Type::Int), DefKind::primitive(0)).build();
+    assert!(!entry.value_use(), "builder default is false (pre-analysis point)");
+    assert!(entry.set_value_use(true));
+    assert!(entry.value_use());
+
+    let mut imp: ModuleEntry = ModuleEntry::Import {
+        source: FQSymbol {
+            module: ModuleFullPath::from("m"),
+            symbol: Symbol::from("x"),
+        },
+        visibility: Visibility::Public,
+    };
+    assert!(!imp.set_value_use(true), "non-Def entries carry no mark");
+    assert!(!imp.value_use());
+}
+
+// spec: design/arch/ownership-inference.md §3.3 — serde strict-additivity: a
+//       pre-S102 Primitive JSON (bare got_slot shape) does NOT deserialize
+//       against the reshaped variant; the CACHE_SCHEMA_VERSION 11→12 bump is
+//       what rejects such caches wholesale (this pins that the reshape is
+//       non-additive, i.e. the bump is mandatory), while the NEW shape with
+//       absent mode_summary/borrowed_sibling_slot defaults conservatively.
+#[test]
+fn primitive_reshape_serde_shape() {
+    // Old v11 shape must NOT silently deserialize (field renamed to `body`).
+    let legacy = r#"{"Primitive":{"got_slot":3}}"#;
+    assert!(
+        serde_json::from_str::<DefKind>(legacy).is_err(),
+        "pre-S102 Primitive shape must not deserialize — schema bump covers it"
+    );
+    // New shape with only the mandatory Extern slot: sibling + summary default.
+    let v12 = r#"{"Primitive":{"body":{"Extern":{"got_slot":3}}}}"#;
+    match serde_json::from_str::<DefKind>(v12).expect("v12 shape deserializes") {
+        DefKind::Primitive {
+            body: PrimitiveBody::Extern { got_slot, borrowed_sibling_slot },
+            mode_summary,
+        } => {
+            assert_eq!(got_slot, 3);
+            assert!(borrowed_sibling_slot.is_none(), "absent sibling defaults None");
+            assert!(mode_summary.is_none(), "absent declared facts default None (Decision-24)");
+        }
+        other => panic!("expected Extern Primitive, got {other:?}"),
+    }
 }

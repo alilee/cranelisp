@@ -4483,7 +4483,7 @@
         match tc.symbol_table().get("id$Int") {
             Some(ModuleEntry::Def { kind, scheme, .. }) => {
                 let slot = match kind.as_ref() {
-                    DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot } } => {
+                    DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, .. } } => {
                         Some(*got_slot)
                     }
                     other => panic!("id$Int must be Concrete, got {other:?}"),
@@ -5804,7 +5804,7 @@
         // A concrete user fn IS callable through its slot.
         let concrete: ModuleEntry = ModuleEntry::def(
             crate::scheme::mono(Type::Fn(vec![Type::Var(0)], Box::new(Type::Var(0)))),
-            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 7 } },
+            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 7, mode_summary: None } },
         )
         .build();
         assert_eq!(concrete.callable_got_slot(), Some(7));

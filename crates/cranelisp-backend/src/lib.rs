@@ -682,7 +682,7 @@ pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_
         Expr::IntLit { value, span, .. } => MonoExpr::IntLit { value: *value, span: *span, ty: node_ty(expr) },
         Expr::FloatLit { value, span, .. } => MonoExpr::FloatLit { value: *value, span: *span, ty: node_ty(expr) },
         Expr::BoolLit { value, span, .. } => MonoExpr::BoolLit { value: *value, span: *span, ty: node_ty(expr) },
-        Expr::StringLit { value, span, .. } => MonoExpr::StringLit { value: value.clone(), span: *span, ty: node_ty(expr) },
+        Expr::StringLit { value, span, .. } => MonoExpr::StringLit { value: value.clone(), span: *span, ty: node_ty(expr), confined: None, escapes: None, unique_static: None },
         Expr::Var { name, span, resolved_call, .. } => MonoExpr::Var {
             name: name.clone(),
             span: *span,
@@ -707,6 +707,9 @@ pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_
             body: Box::new(lenient_mono_from_expr(body)),
             span: *span,
             ty: node_ty(expr),
+            confined: None,
+            escapes: None,
+            unique_static: None,
         },
         Expr::Apply { callee, args, span, resolved_call, .. } => MonoExpr::Apply {
             callee: Box::new(lenient_mono_from_expr(callee)),
@@ -714,6 +717,10 @@ pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_
             span: *span,
             resolved_call: resolved_call.clone(),
             ty: node_ty(expr),
+            confined: None,
+            escapes: None,
+            provenance: None,
+            unique_static: None,
         },
         Expr::Match { scrutinee, arms, span, compiler_generated, .. } => MonoExpr::Match {
             scrutinee: Box::new(lenient_mono_from_expr(scrutinee)),
@@ -721,6 +728,7 @@ pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_
                 pattern: arm.pattern.clone(),
                 body: lenient_mono_from_expr(&arm.body),
                 span: arm.span,
+                provenance: None,
             }).collect(),
             span: *span,
             compiler_generated: *compiler_generated,
@@ -730,6 +738,9 @@ pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_
             elements: elements.iter().map(lenient_mono_from_expr).collect(),
             span: *span,
             ty: node_ty(expr),
+            confined: None,
+            escapes: None,
+            unique_static: None,
         },
         Expr::Trace { modules, body, span, .. } => MonoExpr::Trace {
             modules: modules.clone(),
@@ -755,6 +766,9 @@ pub(crate) fn lenient_mono_from_expr(expr: &cranelisp_types::Expr) -> cranelisp_
             fields: fields.iter().map(lenient_mono_from_expr).collect(),
             span: *span,
             ty: node_ty(expr),
+            confined: None,
+            escapes: None,
+            unique_static: None,
         },
     }
 }
@@ -1559,7 +1573,7 @@ mod concrete_boundary_phase3_tests {
     #[test]
     fn concrete_userfn_requires_codegen_view() {
         let kind = DefKind::UserFn {
-            fn_state: UserFnState::Concrete { got_slot: 0 },
+            fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
         };
         assert!(
             requires_codegen_view(&kind),
@@ -1584,17 +1598,19 @@ mod concrete_boundary_phase3_tests {
             field_count: 1,
             internal: false,
             type_def: None,
+            mode_summary: None,
         };
         assert!(
             !requires_codegen_view(&ctor),
             "a Constructor is signature-driven and legitimately carries codegen_view: None"
         );
-        assert!(!requires_codegen_view(&DefKind::Primitive { got_slot: 0 }));
+        assert!(!requires_codegen_view(&DefKind::primitive(0)));
         assert!(!requires_codegen_view(&DefKind::PrimitiveExtern));
         assert!(!requires_codegen_view(&DefKind::PlatformEffect {
             scheduling_class: cranelisp_types::SchedulingClass::Sequential,
             poll_shape: false,
             got_slot: 0,
+            mode_summary: None,
         }));
     }
 

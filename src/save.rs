@@ -995,7 +995,7 @@ mod tests {
             ModuleEntry::def(
                 scheme,
                 DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
                 },
             )
             .build(),
@@ -1059,7 +1059,7 @@ mod tests {
             let mut entry = ModuleEntry::def(
                 scheme,
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: slot },
+                    fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
                 },
             )
             .build();
@@ -1371,7 +1371,7 @@ mod tests {
             ModuleEntry::def(
                 scheme,
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: 0 },
+                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
                 },
             )
             .docstring("doubles its argument")
@@ -1492,7 +1492,7 @@ mod tests {
             ModuleEntry::def(
                 scheme,
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: 0 },
+                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
                 },
             )
             .build(),

@@ -867,7 +867,7 @@ mod tests {
         let entry = ModuleEntry::def(
             empty_scheme(),
             DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
             },
         )
         .visibility(Visibility::Public)

@@ -100,7 +100,8 @@ use std::sync::atomic::AtomicPtr;
 use std::sync::{Arc, LazyLock};
 
 use cranelisp_types::{
-    DefKind, GOT_TABLE_SIZE, GotTable, ModuleEntry, ModuleFullPath, Scheme, SymbolTable,
+    DefKind, GOT_TABLE_SIZE, GotTable, ModuleEntry, ModuleFullPath, PrimitiveBody, Scheme,
+    SymbolTable,
 };
 
 /// The writable static slab backing the synthetic `primitives` module's GOT,
@@ -236,7 +237,14 @@ fn insert_primitive_entry(
     };
     table.insert(
         prim.name.clone(),
-        ModuleEntry::def(scheme, DefKind::Primitive { got_slot: slot })
+        // Explicit struct form (not the `DefKind::primitive` shorthand): this
+        // crate is where CS-B populates the declared fact table
+        // (`mode_summary`) and the §9.1 `borrowed_sibling_slot`, so the
+        // fields are spelled out at the declaration site.
+        ModuleEntry::def(scheme, DefKind::Primitive {
+            body: PrimitiveBody::Extern { got_slot: slot, borrowed_sibling_slot: None },
+            mode_summary: None,
+        })
             .param_names(prim.param_names.clone())
             .docstring(prim.docstring)
             .build(),
@@ -325,7 +333,10 @@ fn insert_vec_query_entries(
         };
         table.insert(
             Symbol::from(name),
-            ModuleEntry::def(scheme, DefKind::Primitive { got_slot: slot })
+            ModuleEntry::def(scheme, DefKind::Primitive {
+                body: PrimitiveBody::Extern { got_slot: slot, borrowed_sibling_slot: None },
+                mode_summary: None,
+            })
                 .param_names(param_names)
                 .docstring(docstring)
                 .build(),
