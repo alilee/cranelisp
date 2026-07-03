@@ -847,8 +847,10 @@ impl CompilerSession {
     /// Poll the file watcher for changed source files and reload them.
     ///
     /// Returns a list of user-visible messages (one per reloaded module).
-    /// On success, removes the module from `error_modules`. On failure,
-    /// adds it to `error_modules` to block subsequent evals.
+    /// On success, `reload_module` removes the module from `error_modules`
+    /// and drops its retained `failed_forms` (the new file content is the
+    /// authority — S102 W5R B-1). On failure, adds it to `error_modules`
+    /// to block subsequent evals.
     ///
     /// Per repl/spec.md §14: notification format is `[updated: file.cl]`
     /// on success, `[errors: file.cl]` on failure. Cascade invalidation
@@ -912,7 +914,8 @@ impl CompilerSession {
                 .unwrap_or_else(|| module_path.as_ref());
             match self.reload_module(&module_path, &file_path) {
                 Ok(()) => {
-                    self.error_modules.remove(&module_path);
+                    // `reload_module` itself clears `error_modules` +
+                    // `failed_forms` on success (S102 W5R B-1).
                     messages.push(format!("[updated: {}]", file_name));
                 }
                 Err(e) => {
@@ -1171,6 +1174,18 @@ impl CompilerSession {
                 location: ErrorLocation::from_span_file(Span::new(0, 0), None),
             });
         }
+
+        // S102 W5R B-1: a successful reload makes the NEW file content the
+        // authority — drop any retained degraded-startup failed forms for
+        // this module and lift the §14.4 error block. Without this, the next
+        // defining turn's regen would re-append the stale broken text after
+        // the user's external repair (silently undoing the hand-edit and
+        // re-poisoning the file for the next restart). Cleared here — not at
+        // the poll site — so EVERY successful reload path (watcher poll,
+        // T2 module-grain degrade) restores the invariant that a non-empty
+        // failed set implies membership in `error_modules`.
+        self.failed_forms.remove(module_path);
+        self.error_modules.remove(module_path);
 
         Ok(())
     }
@@ -1590,13 +1605,35 @@ impl CompilerSession {
         let _ = self.shared.scheduler.wait_inmem_complete_blocking();
 
         // 2. Disk-read-only re-read + degraded form-by-form load.
+        // S102 W5R M-4: a failed startup must not be zero-diagnostic — the
+        // resolve/read failure is eprinted (one line) before the session
+        // proceeds as an empty REPL.
         let lib_dirs = self.lib_dirs();
-        let path = crate::pipeline::resolve_module_file(
+        let path = match crate::pipeline::resolve_module_file(
             &module,
             &self.shared.project_root,
             &lib_dirs,
-        )?;
-        let source = std::fs::read_to_string(&path).ok()?;
+        ) {
+            Some(p) => p,
+            None => {
+                eprintln!(
+                    "Warning: startup recovery: no backing source file found for \
+                     module '{module_name}' — starting with an empty REPL"
+                );
+                return None;
+            }
+        };
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "Warning: startup recovery: cannot read {}: {e} — starting \
+                     with an empty REPL",
+                    path.display()
+                );
+                return None;
+            }
+        };
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())

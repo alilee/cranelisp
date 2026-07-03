@@ -612,6 +612,11 @@ impl CompilerSession {
                     w.clear_all();
                 }
                 self.error_modules.clear();
+                // S102 W5R M-1: the retained degraded-startup failed forms go
+                // with the error block (a non-empty failed set implies
+                // `error_modules` membership; clearing one without the other
+                // leaves regen re-appending stale broken text).
+                self.failed_forms.clear();
                 CommandResult::Final("command not yet available in v4 REPL".to_string())
             }
         }

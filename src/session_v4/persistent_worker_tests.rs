@@ -435,3 +435,88 @@
         }
         live
     }
+
+    // spec: repl/spec.md §18.8 — S102 W5R B-1 (data-loss Blocker). A successful
+    // reload makes the new file content the authority: the reloaded module's
+    // retained degraded-startup `failed_forms` MUST be dropped (and the §14.4
+    // error block lifted) so the next regen does not re-append stale broken
+    // text over the user's external repair — silently undoing the hand-edit
+    // and re-poisoning the file for the next restart.
+    #[test]
+    fn reload_success_drops_failed_forms_and_error_block() {
+        let (mut s, root) = test_session(2);
+
+        let file_path = root.join("repairme.cl");
+        std::fs::write(&file_path, "(defn fixed [] 1)\n").expect("seed repairme.cl");
+        s.register_module_with_source("repairme", "(defn fixed [] 1)", &file_path)
+            .expect("initial register");
+        let module = ModuleFullPath::from("repairme");
+
+        // Simulate degraded-startup residue: a broken FailedForm retained for
+        // the module + the module error-blocked (the §18.8 state).
+        s.failed_forms.insert(
+            module.clone(),
+            vec![FailedForm {
+                symbol: Some("broken".into()),
+                error: "undefined variable: nope".to_string(),
+                text: "(defn broken [] nope)".to_string(),
+            }],
+        );
+        s.error_modules.insert(module.clone());
+
+        // External repair: the user hand-edited the file; the watcher-driven
+        // reload succeeds.
+        std::fs::write(&file_path, "(defn fixed [] 1)\n(defn broken [] 2)\n")
+            .expect("rewrite repairme.cl");
+        s.reload_module(&module, &file_path)
+            .expect("reload of the repaired file succeeds");
+
+        assert!(
+            !s.failed_forms.contains_key(&module),
+            "reload success MUST drop the module's stale failed forms — \
+             regen would otherwise re-append the broken text after the repair"
+        );
+        assert!(
+            !s.error_modules.contains(&module),
+            "reload success MUST lift the module's §14.4 error block"
+        );
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // spec: repl/spec.md §18.8 — S102 W5R M-1. `/reset` clears `error_modules`
+    // but MUST also clear `failed_forms` (invariant: a non-empty failed set
+    // implies membership in `error_modules`; clearing one without the other
+    // leaves regen re-appending stale broken text with the eval gate open).
+    #[test]
+    fn reset_command_clears_failed_forms_with_error_modules() {
+        let (mut s, root) = test_session(1);
+
+        let module = ModuleFullPath::from("user");
+        s.failed_forms.insert(
+            module.clone(),
+            vec![FailedForm {
+                symbol: Some("broken".into()),
+                error: "type error".to_string(),
+                text: "(defn broken [] nope)".to_string(),
+            }],
+        );
+        s.error_modules.insert(module.clone());
+
+        let mut out: Vec<u8> = Vec::new();
+        let _ = s.dispatch_command(crate::repl::ReplCommand::Reset, &mut out);
+
+        assert!(
+            s.error_modules.is_empty(),
+            "/reset clears the error block"
+        );
+        assert!(
+            s.failed_forms.is_empty(),
+            "/reset MUST clear failed_forms with error_modules — \
+             a dangling failed set keeps re-appending stale text on regen"
+        );
+
+        s.shutdown();
+        let _ = std::fs::remove_dir_all(&root);
+    }
