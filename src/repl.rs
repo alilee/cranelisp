@@ -445,8 +445,12 @@ impl CompilerSession {
             return CommandResult::Final(display);
         }
 
-        // Error blocking: refuse eval when modules have errors.
-        if !self.error_modules.is_empty() {
+        // Error blocking (§14.4): refuse eval when modules have errors —
+        // EXCEPT definition turns, which are always accepted while
+        // error-blocked (they are the repair; repl/spec.md §18.8's explicit
+        // carve-out — a successful definition clears its failed form via
+        // `clear_repaired_failed_form`).
+        if !self.error_modules.is_empty() && !is_repair_definition_turn(trimmed) {
             let names: Vec<String> = self.error_modules.iter()
                 .map(|mp| mp.as_ref().to_string())
                 .collect();
@@ -2920,9 +2924,73 @@ pub(crate) fn append_docstring_comment(base: String, docstring: Option<&str>) ->
     }
 }
 
+/// Is `src` a pure DEFINITION (or structural) turn — the §14.4/§18.8 error-
+/// blocking carve-out? While a module is error-blocked, expression turns are
+/// refused with the §14.4 message but definition turns MUST be accepted:
+/// they are the repair path (repl/spec.md §18.8). Pure over the text; every
+/// top-level form must be a defining or structural special form — any
+/// expression member (including inside a mixed input), an empty input, or a
+/// parse failure classifies as NOT-a-definition-turn (refused; the parse
+/// error re-surfaces once the module is repaired). `begin` is deliberately
+/// excluded: a begin cluster may embed expressions the gate exists to refuse.
+pub(crate) fn is_repair_definition_turn(src: &str) -> bool {
+    let Ok(forms) = cranelisp_frontend::parse(src) else {
+        return false;
+    };
+    if forms.is_empty() {
+        return false;
+    }
+    forms.iter().all(|f| {
+        if let Sexp::List(items, _) = f
+            && let Some(Sexp::Symbol(head, _)) = items.first()
+        {
+            matches!(
+                head.as_str(),
+                "defn" | "defn-" | "defmacro" | "defmacro-" | "deftype" | "deftrait"
+                    | "impl" | "import" | "export" | "mod" | "mod-" | "platform"
+            )
+        } else {
+            false
+        }
+    })
+}
+
 // ==============================================================================
 // Tests migrated with their code from session_v4.rs (FIXME 0109 Wave D)
 // ==============================================================================
+
+#[cfg(test)]
+mod repair_definition_turn_tests {
+    use super::is_repair_definition_turn;
+
+    // spec: repl/spec.md §18.8 — a definition turn at the prompt MUST be
+    // accepted while the entry module is error-blocked (it is the repair);
+    // §14.4 — expression evaluation is refused.
+    #[test]
+    fn definition_and_structural_turns_pass_the_carve_out() {
+        assert!(is_repair_definition_turn("(defn k [:String y] (f y))"));
+        assert!(is_repair_definition_turn("(defmacro m [e] e)"));
+        assert!(is_repair_definition_turn("(deftype P [:Int x])"));
+        assert!(is_repair_definition_turn("(import [m [mf]])"));
+        // Multi-form all-definition input is still a repair turn.
+        assert!(is_repair_definition_turn("(defn a [] 1)\n(defn b [] 2)"));
+    }
+
+    // spec: repl/spec.md §14.4 — expressions (and anything not purely
+    // defining) stay refused: bare calls, literals, bare symbols, mixed
+    // defn+expression input, begin clusters (may embed expressions), empty
+    // and unparseable input.
+    #[test]
+    fn neg_expressions_mixed_and_malformed_are_refused() {
+        assert!(!is_repair_definition_turn("(k \"abcd\")"));
+        assert!(!is_repair_definition_turn("42"));
+        assert!(!is_repair_definition_turn("k"));
+        assert!(!is_repair_definition_turn("(defn a [] 1)\n(a)"));
+        assert!(!is_repair_definition_turn("(begin (defn a [] 1) (a))"));
+        assert!(!is_repair_definition_turn(""));
+        assert!(!is_repair_definition_turn("(defn broken ["));
+    }
+}
 
 #[cfg(test)]
 mod collect_related_tests {

@@ -256,7 +256,13 @@ fn run(
     // §3.1: Register the entry module. Front-end work (resolve, parse,
     // extract declarations) then enqueue for typechecking. Workers wake
     // and do expand+typecheck+codegen.
-    s.register_module(entry_module_name)?;
+    //
+    // S102 CS-0489 (repl/spec.md §18.8): the startup outcome is CAUGHT, not
+    // `?`-propagated — REPL mode degrades a broken backing file to a
+    // form-by-form entry load and still reaches a prompt (the repair path);
+    // `--run`/`--link` keep the exit-1 contract (the `startup?` re-raise in
+    // their arms below).
+    let startup = s.register_module(entry_module_name);
 
     match action {
         // §7: Run mode (spec §12.6).
@@ -265,6 +271,7 @@ fn run(
         // code is the inner Int value when main is `IO Int`; any other inner
         // IO result yields exit code 0.
         Action::Run => {
+            startup?;
             s.wait_inmem_complete()?;
             let (value, ty) = s.trampoline(entry_module_name)?;
             s.wait_object_complete()?;
@@ -281,6 +288,7 @@ fn run(
         }
         // §8: Link mode.
         Action::Link => {
+            startup?;
             s.wait_object_complete()?;
             s.link_by_name(entry_module_name)?;
         }
@@ -290,8 +298,20 @@ fn run(
             let stdout = io::stdout();
             let mut stdout = stdout.lock();
 
-            // Wait for entry module (prelude) to be ready.
-            s.wait_inmem_complete()?;
+            // Wait for entry module (prelude) to be ready. §18.8 restart
+            // floor (S102 CS-0489): an entry-restore failure MUST NOT
+            // prevent the REPL from starting — catch it and degrade to the
+            // form-by-form entry load (green forms commit; failed forms are
+            // retained + reported below, and the module enters the §14.4
+            // error-blocked state with the definition-turn carve-out).
+            let startup = match startup {
+                Ok(()) => s.wait_inmem_complete().map_err(CranelispError::from),
+                Err(e) => Err(e),
+            };
+            let degraded_report = match startup {
+                Ok(()) => None,
+                Err(_) => s.recover_startup_failure(entry_module_name),
+            };
 
             // S78 §3 / B1: startup typecheck is done — the eval thread now
             // becomes the entry module's SOLE orchestrator. Transfer ownership
@@ -331,6 +351,15 @@ fn run(
             // silent no-op — never fatal, the REPL launch proceeds regardless.
             if is_rule3 && matches!(s.scaffold_project_config(), Ok(true)) {
                 let _ = writeln!(stdout, "[created Cranelisp.toml]");
+            }
+
+            // §18.8/§5.1: the degraded-load report — one error line per
+            // failed form, naming the broken symbol — prints before the
+            // banner, so the first thing a locked-out user used to see (the
+            // fatal load error) is now the same information followed by a
+            // usable prompt.
+            if let Some(report) = &degraded_report {
+                let _ = writeln!(stdout, "{report}");
             }
 
             s.print_banner(&mut stdout);

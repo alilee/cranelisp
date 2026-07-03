@@ -242,6 +242,37 @@ pub struct Introspection {
     pub code_size: Option<usize>,
 }
 
+/// One backing-file form that failed the degraded form-by-form startup load
+/// (`repl/spec.md` §18.8 restart floor; FIXME 0489,
+/// `design/int/s102-defect-wave.md` §5.2). Retained on
+/// `CompilerSession.failed_forms` so that:
+///
+///  (a) the startup report can NAME the broken symbol (§18.8's naming MUST —
+///      unachievable from the raw batch-cluster error, it falls out of the
+///      form grain);
+///  (b) `regenerate_backing_file` re-emits the verbatim authored text until
+///      the symbol is repaired or the user removes it externally — ordinary
+///      regen rebuilds the file from the live table, which the failed forms
+///      never entered, so a regen that ignored them would silently DROP the
+///      broken definition from the user's file (the §18.8 silent-drop MUST
+///      NOT; the §15.4.7 authorship invariant applied to forms that never
+///      compiled: authored text is the authority, compile success is not a
+///      persistence gate);
+///  (c) the §14.4 expression gate knows when the module is repaired (the set
+///      empties → the module leaves `error_modules`).
+#[derive(Debug, Clone)]
+pub(crate) struct FailedForm {
+    /// The defining form's name when the form is a defining special form
+    /// (`defn`/`defn-`/`defmacro`/`defmacro-`/`deftype`/`deftrait`); `None`
+    /// for structural / expression / unparseable forms (those clear only via
+    /// an external file fix).
+    pub symbol: Option<cranelisp_types::Symbol>,
+    /// First line of the load error (report display).
+    pub error: String,
+    /// Verbatim source text of the form (regen re-emission).
+    pub text: String,
+}
+
 // ---------------------------------------------------------------------------
 // Sprint 67 W3 — Facade-prescribed introspection record types
 // (FIXME 0176 partial close; `facades/int.md` §"Introspection records")

@@ -28,8 +28,8 @@ use crate::scheduler::CompileScheduler;
 
 use super::{
     dedup_platform_names_preserving_order, nice_worker_loop, resolve_priority_worker_count,
-    CompilerSession, ModuleIntroductionOutcome, SessionSettings, SharedState, SymbolCategory,
-    SymbolInfo, TestRunnerState,
+    CompilerSession, FailedForm, ModuleIntroductionOutcome, SessionSettings, SharedState,
+    SymbolCategory, SymbolInfo, TestRunnerState,
 };
 
 /// Pillar-3 (S91): bounded grace period at shutdown for the in-flight
@@ -118,6 +118,7 @@ impl CompilerSession {
         CompilerSession {
             shared,
             error_modules: HashSet::new(),
+            failed_forms: HashMap::new(),
             watcher: None,
             worker_pool: crate::worker_pool::WorkerPool::new(
                 priority_worker_handles, nice_worker_handles, nice_workers,
@@ -998,6 +999,18 @@ impl CompilerSession {
             &module,
         );
 
+        // S102 CS-0489 (§18.8 no-silent-drop): re-emit the retained
+        // failed-form verbatim texts — the degraded startup load's broken
+        // definitions never entered the live table, so a regen built from
+        // the table alone would silently drop them from the user's file.
+        // Repaired symbols have already left the set
+        // (`clear_repaired_failed_form`), so a fully-repaired module writes
+        // a green file with no residue.
+        let source = match self.failed_forms.get(&module) {
+            Some(failed) => append_failed_forms(&source, failed),
+            None => source,
+        };
+
         // Skip writing empty source (no user-defined content).
         if source.trim().is_empty() {
             return;
@@ -1530,6 +1543,136 @@ impl CompilerSession {
         crate::session_setup::scaffold_project_config(&self.shared.project_root)
     }
 
+    // -----------------------------------------------------------------------
+    // Degraded startup load (S102 CS-0489; repl/spec.md §18.8 restart floor;
+    // design/int/s102-defect-wave.md §5.2)
+    // -----------------------------------------------------------------------
+
+    /// Recover from an entry-module startup failure in REPL mode: the §18.8
+    /// floor — "the restart MUST reach a prompt". Batch-cluster atomicity is
+    /// what turns one broken defn into a wholesale lockout; the REPL's own
+    /// per-form semantics are the natural degraded mode.
+    ///
+    /// 1. Reset the failed scheduler state and re-register the entry EMPTY,
+    ///    reaching the ordinary fresh-REPL scheduler state (terminal pool;
+    ///    the eval thread becomes the sole orchestrator exactly as on a
+    ///    healthy start).
+    /// 2. Re-read the backing source (disk-read-only — the loader itself
+    ///    never regenerates) and drive it FORM-BY-FORM through the ordinary
+    ///    eval path, output suppressed. Green forms commit; failing forms
+    ///    are retained as [`FailedForm`]s (symbol + error + verbatim text).
+    /// 3. Report: `[errors: <file>]` + one indented line per failed form
+    ///    naming the symbol and carrying the underlying error (§5.1/§14.3
+    ///    format family); the caller prints it before the banner.
+    /// 4. While the failed set is non-empty the entry sits in
+    ///    `error_modules` (§14.4: expressions refused, definitions accepted
+    ///    as the repair — the `process_commands` carve-out).
+    ///
+    /// Startup-print ruling (S102 W5, noted for /design): the degraded
+    /// re-drive against a warm (cache-preloaded) table classifies
+    /// Def-over-Def outcomes and would print `stale:`/cascade sections —
+    /// suppressed here (`pending_cascade_reports` drained), because startup
+    /// is a LOAD, not a user redefinition turn.
+    ///
+    /// Returns `Some(report)` when forms failed; `None` when the degraded
+    /// load came up fully green (the failure was transient — e.g. a
+    /// batch-order artifact) or no backing source could be read (the session
+    /// proceeds as an empty REPL).
+    pub fn recover_startup_failure(&mut self, module_name: &str) -> Option<String> {
+        let module = ModuleFullPath::from(module_name);
+
+        // 1. Reset failed scheduler state (entry + any failed deps are
+        //    removed; deps re-register on demand through the eval dep drive).
+        self.shared.scheduler.reset_all_failed_modules();
+        cranelisp_types::ensure_module_exists(&self.shared.symbol_tables, &module);
+        let empty: std::sync::Arc<[Sexp]> = std::sync::Arc::from(Vec::<Sexp>::new());
+        self.shared.scheduler.register_module(module.clone(), empty, false);
+        let _ = self.shared.scheduler.wait_inmem_complete_blocking();
+
+        // 2. Disk-read-only re-read + degraded form-by-form load.
+        let lib_dirs = self.lib_dirs();
+        let path = crate::pipeline::resolve_module_file(
+            &module,
+            &self.shared.project_root,
+            &lib_dirs,
+        )?;
+        let source = std::fs::read_to_string(&path).ok()?;
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(module_name)
+            .to_string();
+        let failed = self.degraded_form_load(&source);
+
+        // Startup-print suppression (ruling above).
+        self.pending_cascade_reports.clear();
+
+        if failed.is_empty() {
+            self.failed_forms.remove(&module);
+            self.error_modules.remove(&module);
+            return None;
+        }
+        let report = render_startup_error_report(&file_name, &failed);
+        self.error_modules.insert(module.clone());
+        self.failed_forms.insert(module, failed);
+        Some(report)
+    }
+
+    /// Drive `source` form-by-form through the ordinary eval path (each
+    /// toplevel form its own cluster, output suppressed), collecting the
+    /// forms that fail. A whole-source parse failure retains the entire text
+    /// as one symbol-less [`FailedForm`] (regen must not drop it either).
+    fn degraded_form_load(&mut self, source: &str) -> Vec<FailedForm> {
+        let sexps = match cranelisp_frontend::parse(source) {
+            Ok(s) => s,
+            Err(e) => {
+                return vec![FailedForm {
+                    symbol: None,
+                    error: first_line(&e.to_string()),
+                    text: source.trim_end().to_string(),
+                }];
+            }
+        };
+        let mut failed = Vec::new();
+        for sexp in &sexps {
+            match self.process_single_form(sexp) {
+                Ok(_) => {} // green form committed; output suppressed
+                Err(e) => {
+                    let span = sexp.span();
+                    let text = source
+                        .get(span.start as usize..span.end as usize)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| crate::pretty::pretty_print(sexp));
+                    failed.push(FailedForm {
+                        symbol: defined_symbol_of_form(sexp),
+                        error: first_line(&e.to_string()),
+                        text,
+                    });
+                }
+            }
+        }
+        failed
+    }
+
+    /// Remove a genuinely (re)defined symbol from its module's failed-form
+    /// set (§18.8: a successful definition turn IS the repair). When the set
+    /// empties, the module leaves `error_modules` — the §14.4 gate reopens
+    /// and the next regen writes a green backing file. Display-only `Def`s
+    /// (`defined: false`) and expression turns never clear anything.
+    pub(crate) fn clear_repaired_failed_form(&mut self, result: &super::EvalResult) {
+        let super::EvalResult::Def { symbol, defined: true, .. } = result else {
+            return;
+        };
+        let Some(list) = self.failed_forms.get_mut(&symbol.module) else {
+            return;
+        };
+        list.retain(|f| f.symbol.as_ref() != Some(&symbol.symbol));
+        if list.is_empty() {
+            self.failed_forms.remove(&symbol.module);
+            self.error_modules.remove(&symbol.module);
+        }
+    }
+
     /// §3.1: Register entry module by name. Session resolves the source
     /// file from project_root + lib_dirs, reads it, and registers with
     /// the scheduler.
@@ -1903,6 +2046,73 @@ impl Drop for CompilerSession {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Degraded-startup pure seams (S102 CS-0489; unit-tested below — the
+// lifecycle decision paths FIXME 0496 item 3 asks for)
+// ---------------------------------------------------------------------------
+
+/// The symbol a top-level form DEFINES, when it is a defining special form
+/// (`defn`/`defn-`/`defmacro`/`defmacro-`/`deftype`/`deftrait`). Structural
+/// forms (`import`/`export`/`mod`/`platform`), expressions, and malformed
+/// defining forms yield `None`. The degraded loader uses this to key
+/// [`FailedForm`]s so the load error can NAME the broken symbol (§18.8) and
+/// a later definition turn can repair it.
+pub(crate) fn defined_symbol_of_form(sexp: &Sexp) -> Option<Symbol> {
+    if let Sexp::List(items, _) = sexp
+        && items.len() >= 2
+        && let Sexp::Symbol(head, _) = &items[0]
+        && matches!(
+            head.as_str(),
+            "defn" | "defn-" | "defmacro" | "defmacro-" | "deftype" | "deftrait"
+        )
+        && let Sexp::Symbol(name, _) = &items[1]
+    {
+        return Some(Symbol::from(name.as_str()));
+    }
+    None
+}
+
+/// Render the degraded-load startup report: the §14.3/§14.4 `[errors: <file>]`
+/// header + one indented line per failed form, naming the symbol (§18.8's
+/// naming MUST) — or, for a symbol-less form, its leading text — and carrying
+/// the underlying error.
+pub(crate) fn render_startup_error_report(file_name: &str, failed: &[FailedForm]) -> String {
+    let mut out = format!("[errors: {file_name}]");
+    for f in failed {
+        let label = match &f.symbol {
+            Some(sym) => sym.to_string(),
+            None => f.text.lines().next().unwrap_or("").chars().take(40).collect(),
+        };
+        out.push_str(&format!("\n  {} — {}", label, f.error));
+    }
+    out
+}
+
+/// Append the retained failed-form verbatim texts to a regenerated module
+/// source (§18.8 no-silent-drop: the failed forms never entered the live
+/// table, so a regen built from the table alone would drop them from the
+/// user's file). Re-emitted until each form's symbol is repaired or the user
+/// removes it externally.
+pub(crate) fn append_failed_forms(generated: &str, failed: &[FailedForm]) -> String {
+    if failed.is_empty() {
+        return generated.to_string();
+    }
+    let mut out = generated.trim_end().to_string();
+    for f in failed {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str(f.text.trim_end());
+    }
+    out.push('\n');
+    out
+}
+
+/// First line of an error rendering (report display).
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or(s).trim().to_string()
+}
+
 pub(crate) fn populate_ring0_got_slots(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, SessionSymbolTable>,
 ) {
@@ -1931,5 +2141,93 @@ pub(crate) fn populate_ring0_got_slots(
             continue;
         };
         table.got.store_slot(dst_slot, ptr);
+    }
+}
+
+#[cfg(test)]
+mod degraded_startup_tests {
+    use super::*;
+
+    fn p(src: &str) -> Sexp {
+        cranelisp_frontend::parse(src).unwrap().remove(0)
+    }
+
+    fn failed(symbol: Option<&str>, error: &str, text: &str) -> FailedForm {
+        FailedForm {
+            symbol: symbol.map(Symbol::from),
+            error: error.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    // spec: repl/spec.md §18.8 — the load error names the broken symbol; the
+    // degraded loader keys failed forms by the DEFINING form's name. Matrix A
+    // "backing BROKEN" row, classification cells.
+    #[test]
+    fn defined_symbol_of_form_defining_heads_yield_symbol() {
+        assert_eq!(defined_symbol_of_form(&p("(defn k [:Int y] (f y))")), Some("k".into()));
+        assert_eq!(defined_symbol_of_form(&p("(defmacro m [e] e)")), Some("m".into()));
+        assert_eq!(defined_symbol_of_form(&p("(deftype P [:Int x])")), Some("P".into()));
+        assert_eq!(defined_symbol_of_form(&p("(deftrait Show (defn show [a] :String))")), Some("Show".into()));
+    }
+
+    // Negative cells: structural forms define no repairable symbol;
+    // expressions and malformed defining forms yield None.
+    // spec: repl/spec.md §18.8
+    #[test]
+    fn defined_symbol_of_form_neg_structural_expression_malformed() {
+        assert_eq!(defined_symbol_of_form(&p("(import [m [mf]])")), None);
+        assert_eq!(defined_symbol_of_form(&p("(mod child)")), None);
+        assert_eq!(defined_symbol_of_form(&p("(k 1)")), None);
+        assert_eq!(defined_symbol_of_form(&p("42")), None);
+        // Defining head with a non-symbol name slot (the D1 poison shape).
+        assert_eq!(defined_symbol_of_form(&p("(defn (weird) [] 1)")), None);
+    }
+
+    // spec: repl/spec.md §18.8 + §14.3 format family — the startup report is
+    // `[errors: <file>]` + one indented line per failed form naming the
+    // symbol and carrying the underlying error; a symbol-less form is
+    // identified by its leading text.
+    #[test]
+    fn render_startup_error_report_names_symbols_and_errors() {
+        let report = render_startup_error_report(
+            "user.cl",
+            &[
+                failed(Some("k"), "type error at 49..60: expected Int", "(defn k [:Int y] (f y))"),
+                failed(None, "macro error: boom", "(mystery-form 1)"),
+            ],
+        );
+        assert_eq!(
+            report,
+            "[errors: user.cl]\n  k — type error at 49..60: expected Int\n  (mystery-form 1) — macro error: boom"
+        );
+    }
+
+    // spec: repl/spec.md §18.8 — regen MUST NOT silently drop a broken
+    // definition: retained failed-form texts are re-emitted VERBATIM after
+    // the generated source; an empty failed set leaves the source untouched.
+    #[test]
+    fn append_failed_forms_reemits_verbatim_and_is_noop_when_empty() {
+        let generated = "(defn f [:String s] (str-len s))\n";
+        let out = append_failed_forms(
+            generated,
+            &[failed(Some("k"), "type error", "(defn k [:Int y]\n  (f y))")],
+        );
+        assert_eq!(
+            out,
+            "(defn f [:String s] (str-len s))\n\n(defn k [:Int y]\n  (f y))\n",
+            "authored text is the authority — appended verbatim, own block"
+        );
+        assert_eq!(
+            append_failed_forms(generated, &[]),
+            generated,
+            "no failed forms — regen output unchanged"
+        );
+        // An empty generated source still carries the failed forms (a module
+        // whose every form failed must not regenerate to an empty file).
+        assert_eq!(
+            append_failed_forms("", &[failed(None, "parse error", "(broken (")]),
+            "(broken (\n"
+        );
     }
 }

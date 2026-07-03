@@ -173,6 +173,11 @@ impl CompilerSession {
                             src,
                         );
                     }
+                    // S102 CS-0489 (§18.8 repair direction): a genuine
+                    // definition turn removes its symbol from the module's
+                    // degraded-load failed set; when the set empties the
+                    // module leaves the §14.4 error-blocked state.
+                    self.clear_repaired_failed_form(&result);
                     all_warnings.extend(result.warnings().iter().cloned());
                     last_result = Some(result);
                 }

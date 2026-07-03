@@ -46,7 +46,7 @@ pub use self::types::{
 };
 pub(crate) use self::types::{
     dedup_platform_names_preserving_order, extract_def_name_from_sexp, intrinsic_type_from_name,
-    is_comment_only, parens_balanced, resolve_priority_worker_count,
+    is_comment_only, parens_balanced, resolve_priority_worker_count, FailedForm,
 };
 
 // test_runner.rs — the `discover-tests` host-promised extern + `TestRunnerState`
@@ -388,9 +388,21 @@ pub struct CompilerSession {
 
     // -- REPL-specific state (pipeline-v4.md §6) --
 
-    /// Modules that failed reload (file watcher). While non-empty, expression
-    /// evaluation is blocked.
+    /// Modules that failed reload (file watcher) or the degraded startup load
+    /// (§18.8). While non-empty, expression evaluation is refused with the
+    /// §14.4 message — but DEFINITION turns are always accepted (they are the
+    /// repair; the `process_commands` carve-out).
     pub error_modules: HashSet<ModuleFullPath>,
+
+    /// Failed-form registry for the degraded form-by-form startup load
+    /// (repl/spec.md §18.8 restart floor; FIXME 0489). Keyed by module. While
+    /// a module's set is non-empty it sits in `error_modules`, and
+    /// `regenerate_backing_file` re-emits each failed form's verbatim text so
+    /// regen never silently drops a broken definition from the user's file.
+    /// A successful definition turn removes its symbol
+    /// (`clear_repaired_failed_form`); when the set empties, the module
+    /// leaves `error_modules` and the next regen writes a green backing file.
+    pub(crate) failed_forms: std::collections::HashMap<ModuleFullPath, Vec<FailedForm>>,
 
     /// File watcher for REPL mode. Initialized via `init_watcher()` after
     /// construction. None in batch/link modes or if OS watcher unavailable.
