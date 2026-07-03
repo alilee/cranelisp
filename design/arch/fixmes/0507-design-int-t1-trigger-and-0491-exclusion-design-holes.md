@@ -35,6 +35,15 @@ Two more /design(src/) items from the Wave-5 dev pass, same drain:
 4. **Startup-load exception pin**: `recover_startup_failure` (CS-0489) drains `pending_cascade_reports` — the degraded re-drive against a warm table classifies Def-over-Def outcomes but startup is a load, not a user redefinition turn, so `stale:`/cascade sections are suppressed. Record in `session-transaction.md` §9.1.1 as the startup-load exception.
 5. **§5.2 correction in `s102-defect-wave.md`**: the claim "today `error_modules` gates nothing" is wrong — the §14.4 gate WAS wired in `process_commands` (it gated everything, including definitions); the actual Wave-5 change was the §18.8 definition carve-out (`is_repair_definition_turn`, watcher-path included). Reconcile the doc with as-built.
 
+## Addendum 2 (filed_by /sprint, post-Wave-5 review, 2026-07-03)
+
+Four more /design(src/) items from the Wave-5 /review (full evidence: SPRINT.md §Notes Wave-5 review entry):
+
+6. **I-1 — repair carve-out taxonomy**: `is_repair_definition_turn` allowlists only special-form heads, so macro-mediated definitions (stdlib `def`/`mdef`) and `:Type`-annotated definitions are REFUSED as repair turns — a stdlib-def user with a broken backing file is expression-locked; and `defined_symbol_of_form` recognizes only special-form heads, so macro-mediated failed forms are symbol-less and unclearable in-REPL. D1 made macro-mediated definitions first-class in persistence; the repair machinery treats the same class as second-class. Rule the carve-out taxonomy (pre-expansion recognition vs expand-then-classify), then /dev mechanical half + /qa cells.
+7. **I-3 — binder-position class ruling**: the Wave-5 defmacro name shield is a spot-patch on the class "bare zero-arg macro symbols expand in ANY position" (unshielded siblings: `defn` name position, param-vector members, quoted data). The expansion walk has no binder-position concept. Rule where binder positions live in the walk.
+8. **I-4 — cross-section single-authority**: regen dedup + source-first emission are section-8-local (`generate_fns_and_macros`); sections 5–7 (traits/types/impls) keep render-only emission and no cross-section dedup — the D1 poison class could recur across sections. Extend the invariant or pin why 5–7 are exempt (Matrix B names the entry-kind axis).
+9. **M-3 — always-append acknowledgment**: failed forms are always appended at regen, not re-emitted "in seq position where known" (design §5.3). Benign for reload semantics; acknowledge the cut or require position preservation.
+
 ## Operational implication
 
 Issues 1–2 gate the §18.1.1 `[Tested+Neg]` annotation and should resolve within S102 (a small /design(src/) disposition, then /qa cells + possible one-line /dev predicate change). Not blocking Waves 5–8.
