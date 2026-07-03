@@ -28,6 +28,13 @@ Both fixes conform to their designs; the holes are in the designs' arguments. Fu
 
 defmacro turns return early (`eval.rs:329`) before `apply_redefinition_outcomes`, so macro-target outcomes are dropped — currently moot (macro heads have no reverse edges) but the S103 module-grain cure should carry a note that the T1 route cannot fire for macro targets today.
 
+## Addendum (filed_by /sprint, post-Wave-5, 2026-07-03)
+
+Two more /design(src/) items from the Wave-5 dev pass, same drain:
+
+4. **Startup-load exception pin**: `recover_startup_failure` (CS-0489) drains `pending_cascade_reports` — the degraded re-drive against a warm table classifies Def-over-Def outcomes but startup is a load, not a user redefinition turn, so `stale:`/cascade sections are suppressed. Record in `session-transaction.md` §9.1.1 as the startup-load exception.
+5. **§5.2 correction in `s102-defect-wave.md`**: the claim "today `error_modules` gates nothing" is wrong — the §14.4 gate WAS wired in `process_commands` (it gated everything, including definitions); the actual Wave-5 change was the §18.8 definition carve-out (`is_repair_definition_turn`, watcher-path included). Reconcile the doc with as-built.
+
 ## Operational implication
 
 Issues 1–2 gate the §18.1.1 `[Tested+Neg]` annotation and should resolve within S102 (a small /design(src/) disposition, then /qa cells + possible one-line /dev predicate change). Not blocking Waves 5–8.
