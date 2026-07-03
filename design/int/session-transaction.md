@@ -1,6 +1,9 @@
 # Session transaction — dependent recompilation + ABI-epoch slot versioning (R3 machinery, int half)
 
-> **Status: DESIGN (S101 Phase 3); implemented S101 Wave 4.** Three deliberate as-built
+> **Status: DESIGN (S101 Phase 3); implemented S101 Wave 4; amended S102 Phase 3** (the
+> §9.1.1 downgrade `stale:` section — interim T1 cure, `repl/spec.md` §18.1.1 — and the
+> §10 T1 full-cure end-of-turn mechanics + preconditions; companion doc
+> `design/int/s102-defect-wave.md`). Three deliberate as-built
 > divergences, upheld at change-set review (FIXME 0477, drained by this amendment), are
 > recorded in place: the §10 T1 module-grain downgrade, the §7.3 deleted-symbol leg
 > (recorded gap), and the §9.2 rendering seam (`broken_status_line`, not
@@ -612,8 +615,43 @@ struct TransactionReport {
     recompiled: Vec<FQSymbol>,        // exactly the SCC members actually re-typechecked green
     broken: Vec<(FQSymbol, String)>,  // member + original error
     recovered: Vec<FQSymbol>,         // previously-BROKEN symbols this transaction fixed
+    stale: Vec<FQSymbol>,             // §9.1.1 (S102): compiled callers left on the previous
+                                      // definition by a §10 T1 downgrade — mutually exclusive
+                                      // with recompiled/broken by construction (per-symbol
+                                      // transactions never produce stale; downgrades never
+                                      // recompile/break)
 }
 ```
+
+#### 9.1.1 The downgrade (`stale:`) section — S102 interim cure for §10 T1
+
+`repl/spec.md` §18.1.1 is the normative surface (header line, §1.1 name layout,
+omit-when-empty, informational-only). The data contract this design owes it:
+
+- **Trigger.** Every commit whose classification took the §2.2 `!per_symbol` arm with a
+  prior `Def` under the name (the T1 route — target kind outside per-symbol precision),
+  gate-exempt internals excluded. The trigger is the *route*, not the surface diff: even a
+  scheme-equal redefinition of a polymorphic template leaves previously-minted mono
+  instances (and their compiled callers) on the old body — the split world is about
+  artifacts, not schemes.
+- **`stale` set = the DIRECT reverse-edge callers of the target and of its `$`-mangled
+  variants** (`callers_of(f) ∪ callers_of(f$…)` where the variant's base is `f`),
+  restricted to entries that hold compiled code (`code: Some` — "compiled callers"),
+  excluding `is_gate_exempt_internal` names (`__expr`/`__macro_*` — the 0491 rule applies
+  here identically). Never-compiled callers (templates, `ast`-only entries) late-bind at
+  their next mint and MUST NOT appear (§18.1.1 exactness, negative half). The feed is the
+  same on-demand `ReverseIndex` (§3.3) — built only on downgrade turns, so the L-D1 pin
+  (body-only **concrete** redefinitions at today's cost) is untouched; a T1 turn pays one
+  table scan, microseconds against the honesty it buys.
+- **Rendering** rides the same `TransactionReport`/`pending_cascade_reports` channel as
+  §18.3's sections — the S102 arch review's Principle-8 pin verbatim: the full cure (§10
+  T1 end-of-turn reload) recompiles exactly the callers this section names, rendering it
+  empty, so the section is kept machinery, not throwaway.
+- **Gate-side production.** The commit gate must emit a `RedefinitionOutcome` for **every**
+  redefinition-of-a-prior-`Def`, including the T1 shapes (staged slot-less displacing a
+  slotted prior — the FIXME-0479 displacement site — and template-replacing-template);
+  outcomes are the only channel the driver sees, so a T1 shape that produces no outcome
+  is invisible to the print. `/dev` verifies and widens outcome production accordingly.
 
 `recompiled` is exact by §4.1's skip test — the positive **and** negative L-R3 assertions
 read this report. Normative rendering (grouping, phrasing, the trap message text) is the
@@ -682,7 +720,34 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
   `Code` retained in the pool at the commit gate, so the former last-Arc drop → freed
   JIT pages → SIGSEGV becomes **coherent-stale** old-chain execution through the
   still-populated slot (the §4.3 frozen-world argument). The failing guard is FIXME
-  0478's `/qa` repro (stale-execution leg RED by design until the cure). The sound cure
+  0478's `/qa` repro (stale-execution leg RED by design until the cure).
+
+  **S102 interim cure — the downgrade is no longer silent.** The T1 route prints the
+  `repl/spec.md` §18.1.1 `stale:` section (data contract: §9.1.1) naming the compiled
+  callers left on the previous definition. Informational only: nothing is recompiled,
+  broken, or trapped — the coherent-stale residue itself stands until the full cure.
+
+  **Full-cure mechanics (designed S102; sizing verdict + change-set list in
+  `design/int/s102-defect-wave.md` §2 — recommended to land S103).** End-of-turn
+  sequencing dissolves both named blockers with machinery that already exists:
+  (i) *resurrection* — the reload runs **after** `regenerate_backing_file`, so the
+  backing source carries the just-committed redefinition; (ii) *Invariant SW
+  re-entrancy* — the reload reuses the watcher discipline verbatim (`reload_module`:
+  pool-driven re-typecheck via `re_register_module`, eval thread blocked in
+  `wait_inmem_complete_blocking` — no second orchestrator because the eval thread is
+  waiting, exactly the S93 watcher ruling). The driver: after a turn whose outcomes
+  include a T1 downgrade, reload the target's module, then cascade dependents via the
+  `poll_and_reload` imports-scan, all through the §7.3 Replace commit gate (one slot
+  policy, both granularities). **Preconditions that gate the landing** — faithful
+  regeneration (D1/D2 cures: no expansion-artifact/origin double-persist; authorship
+  fidelity), the 0489 prompt floor (a reload failure must degrade to the §14.4
+  error-blocked state, never a lockout), and the FIXME-0343 `should_regenerate` guard
+  (a module whose regen is suppressed keeps the `stale:` print instead of reloading
+  stale disk source). Non-entry `/mod M` targets reload from `M`'s regenerated backing
+  file the same way — D2's authorship-fidelity cure is what makes that write
+  acceptable.
+
+  The sound cure
   is an **end-of-turn sequencing design** — module-grain reload *after*
   `regenerate_backing_file`, never mid-commit — an increment-I-or-later item.
   Consequence for the normative surface: `repl/spec.md` §18.1's coherence MUSTs are

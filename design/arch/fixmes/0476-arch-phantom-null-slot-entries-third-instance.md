@@ -5,9 +5,10 @@ filed_by: /review
 filed_at: 2026-07-03
 sprint_filed: 101
 refers_to: crates/cranelisp-backend/src/compiler/resolution.rs (resolve_vec_query_primitive), cranelisp-primitives::insert_vec_query_entries, design/backend/ownership-codegen.md §12.7, design/arch/principles/20-model-invariants-by-representation.md
-status: deferred
+status: types-half landed (S102 CS-A) — consumption half open, owner /dev (backend+primitives, change-set B1-be)
 deferred_to: increment I (ownership) — first change-sets, alongside the ModeSummary `cranelisp-types` surface
 ruled: S101 Wave 5 (/arch, 2026-07-03) — see §Ruling below; cure shape settled, implementation pinned
+landed: S102 Phase 3 CS-A (/arch, 2026-07-03) — see §Landing status below
 ---
 
 # Allocated-but-NULL GOT slots are a recurring class — third instance; consider a representation-level cure
@@ -116,3 +117,36 @@ rebuilds anyway — landing it separately would pay the cascade twice
 (Principle 8). `/arch` authors the types edit; `/dev` (backend, primitives
 paired) consumes. This FIXME is the tracking item; it deletes when the
 reshape lands.
+
+## Landing status (S102 Phase 3, /arch CS-A — 2026-07-03)
+
+**The types half LANDED** in the single CS-A change-set (`CACHE_SCHEMA_VERSION`
+11 → 12, riding the `ModeSummary` carrier per the pin above):
+
+- `DefKind::Primitive { body: PrimitiveBody, mode_summary }` with
+  `PrimitiveBody::Extern { got_slot, borrowed_sibling_slot } | Inline`;
+  `callable_got_slot()` answers `None` for `Inline` **by construction**.
+- `ModuleEntry::is_callable_target()` (slot-dispatched ∪ inline-dispatched)
+  defined as the target resolution stop predicate.
+- Canonical statements: BC §7 "S102 — Principle 20 applied one level down" +
+  `interfaces.md` §"Ownership-inference carriers".
+
+**Behaviour-identical at CS-A**: every registered primitive is still
+constructed `Extern` (the vec trio keeps its allocated-but-NULL slot), the
+S101 name-list resolver and both inline-emission exemption arms are still
+live, and `resolve_driven` still stops on `callable_got_slot().is_some()`.
+
+**Remaining — the consumption half (owner `/dev` backend + primitives paired,
+S102 change-set B1-be per `design/backend/ownership-codegen.md` §13.2)**:
+
+1. `insert_vec_query_entries` constructs `vec-get`/`vec-set`/`vec-push` as
+   `PrimitiveBody::Inline` (no slot allocation); `vec-len` stays `Extern`.
+2. The `resolve_driven` stop condition flips
+   `callable_got_slot().is_some()` → `is_callable_target()`.
+3. `resolve_vec_query_primitive`'s name-list and the `emit_wrapper_call` /
+   `emit_curry_target_call` exemption arms retire (re-key off
+   `PrimitiveBody::Inline`).
+4. Golden-CLIF diff expected EMPTY (representation cure, not an emission
+   change — the empty diff is B1-be's own correctness witness).
+
+**This FIXME deletes when B1-be lands.**

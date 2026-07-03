@@ -351,12 +351,24 @@ for non-escaping temporaries, non-atomic RC for confined values, and reuse are a
 per-site permissions; the ABI-bearing vector is what makes the *interprocedural* read-path
 (callee-borrows-its-param) reach through calls.
 
-### 3.3 The designed carrier fields (NOT landed this sprint)
+### 3.3 The designed carrier fields (LANDED S102 — CS-A)
 
 > **No `cranelisp-types` edit lands in S100.** The fields below are the designed shape the first
 > implementation sprint lands, `/arch`-authored, with the `public-api.txt` + `interfaces.md` +
 > BC §7 cascade and a `CACHE_SCHEMA_VERSION` bump in that change-set. Landing them now would be
 > speculative-interface debt (Phase-2 ruling).
+>
+> **LANDED 2026-07-03 (S102 Phase 3, CS-A)** — one `cranelisp-types` change-set, one
+> `CACHE_SCHEMA_VERSION` bump (11 → 12), covering this section's shape plus the typecheck
+> needs-list enrichments (`design/typecheck/ownership-inference.md` §13.1 items 1–12) and the
+> FIXME-0476 `PrimitiveBody::{Extern, Inline}` reshape riding the same bump. Carrier home:
+> `crates/cranelisp-types/src/ownership.rs` (+ `module.rs`/`mono_expr.rs` fields). Item-12
+> ruling: the read-once `CRANELISP_NO_OWNERSHIP` gate relocated to
+> `cranelisp_types::ownership_analysis_off()` (backend delegates; one polarity, one function —
+> Principle 7). Cascade landed: `public-api.txt` (types only; six consumer baselines verified
+> unchanged), `interfaces.md` §"Ownership-inference carriers", BC §7 "S102 — Principle 20
+> applied one level down". Carrier-only: nothing produces or consumes summaries until
+> typecheck CS-1..4 / backend B1-be+.
 
 Sketch (still subject to the implementing sprint's `/arch` pass; enriched shape folded in
 2026-07-03, resolving FIXME 0467 — the typecheck proposal's §2.2 carries the field-by-field
@@ -750,6 +762,23 @@ is a permanent, reachable configuration: the correctness oracle for `/qa`'s diff
 ASan/checking-allocator lanes for the UAF classes — S98 bug-#2, DEF-6, the R6 suspension site),
 and the honest baseline for every performance claim. This is the release-doc §11 discipline
 applied one tier earlier.
+
+**Golden-capture sequencing + scoped re-baseline (S102 Phase-2 ruling, `/arch` 2026-07-03).**
+The golden-CLIF capture (qa plan L-B1) is the **first Block-B change-set** and is **not gated
+on the co-scheduled defect wave**: the corpus is green-only by construction (shapes under open
+failing-not-ignored guards — crashing or uncompilable repros — are excluded), so open defects
+cannot block capture. Ordering rule for co-scheduled fixes, by classifier: a fix is
+**emission-affecting** iff it changes backend emission, primitives entry shapes,
+monomorphisation derivation, or name-resolution precedence for *green* programs;
+display-only, persistence/lifecycle, introspection, and diagnostic fixes have **no capture
+interaction**. An emission-affecting fix that is ready before capture lands before it (the
+capture parent floats forward for free). After capture, an emission-affecting fix carries a
+**scoped re-baseline in its own change-set** — re-dump only the corpus entries whose CLIF
+changed, golden diff in the same commit, delta attributed to the fix's seam in the commit
+body (the L-B1 / `public-api.txt` discipline). Wholesale re-capture without attribution is
+forbidden. When a fix makes a previously-excluded shape green, `/qa` **extends** the corpus
+with the newly-green shape in the fix change-set (extension, not re-baseline — the golden for
+existing entries is untouched). Corpus-construction pin routed to the qa plan as FIXME 0503.
 
 ### 6.3 The `Copy` row's mechanism (R5) — named, routed to the backend proposal
 

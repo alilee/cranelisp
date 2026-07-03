@@ -45,12 +45,17 @@ refusal, and reads the optional `/strand` dev sink. It never reaches into reacto
   (the host-side IO forcing + platform-DLL load wiring), `cache-hit-loading.md`,
   `session-persistence.md`, `symbol-table-cache.md`, `repl-lifecycle.md`, `observability.md`,
   `macro-resolver-impl.md`, `cranelisp-toml.md`, the `s7*`/`step*`/`wave-*` slice docs, etc.
-- **`session-transaction.md`** (S101) — the R3 dev-session redefinition machinery:
+- **`session-transaction.md`** (S101; amended S102 — §9.1.1 downgrade `stale:` contract,
+  §10 T1 full-cure mechanics) — the R3 dev-session redefinition machinery:
   summary-diff gate, reverse dependency index, dependent-recompilation transaction,
   BROKEN/trap-stub cascade management, ABI-epoch slot versioning bookkeeping + retention
   pools, persistence pins. Consumes the pinned backend interface
   (`design/backend/ownership-codegen.md` §8.3); scope authority
   `design/arch/ownership-inference.md` §5.
+- **`s102-defect-wave.md`** (S102) — the Block-A /int defect-wave cluster designs:
+  T1 downgrade print + full-cure sizing verdict, persistence integrity (D1/D2/0489),
+  file-backed dev-loop (D3/0487), display/diagnostic batch (0486/0491/trap-format/
+  0490/0484), and the Principle-23 scenario-space matrices feeding FIXME 0496.
 - **`bind-chain-analysis.md`** — the compile-time automatic-IO-scheduling pass (§10.12); its
   finer ownership is an open FIXME 0486 question, left here pending that ruling.
 

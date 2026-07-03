@@ -1,0 +1,258 @@
+# Sprint 102: Increment I (read path) opens + the S101 defect/T1 wave
+
+**Status**: PHASE 5 LANGUAGE (ACTIVE)
+
+**Goal**: Land ownership-inference increment I's read path (golden-CLIF baseline first, then `pass5_ownership` → `ModeSummary` → the four backend mechanisms) while draining the S101 defect wave with the T1 silent split-world at the top — the two are deliberately interleaved because the backend defect cluster (0474/0483/0476) rides increment I's own seam rework.
+
+## Scope
+
+Three blocks, priority-ordered. Block A and Block B are peers with an explicit coupling (A's backend cluster rides B's seams); Block C rides wherever its crate is already open.
+
+### Block A — the defect/T1 wave (risk-register order, `tests/plan/coverage-audit-s101.md` axis 4)
+
+1. **T1 silent split-world — ranked #1** (/port + audit: the at-scale DEFAULT path, not an edge). Two legs:
+   - **Interim cure ships regardless**: make the T1 downgrade PRINT (transaction report names the downgrade + affected callers instead of silence). Owner /int (src/), small.
+   - **Full cure assessed in Phase 3**: end-of-turn-sequenced module reload (`session-transaction.md` §10 named residue, "increment-I-or-later"). /design (int) sizes it; lands in-sprint only if it fits without displacing block B's baseline change-sets, else explicitly deferred to S103 with the print as shipped mitigation.
+   - /qa lane **L-U1** (unannotated-default siblings) lands FIRST in the QA-first stage — the register's own ordering.
+2. **Persistence-integrity cluster** — D1 (def-poisons-directory), D2 (cwd `user.cl` adoption/data-loss), 0489 (restart lockout). Owner /int; FIXME 0496 (`lifecycle.rs` 1,918 LOC / 0 tests — sits exactly under this cluster) is its mandatory unit half. /qa lanes L-S2 (session-lifecycle grid) + L-S3 (file-backed dev-loop).
+3. **0488 generic-fn missing monomorphisation (3 signatures)** — cross-skill **isolation owed BEFORE fix dispatch** (CLAUDE.md minimal-repro rule; audit register #3). /qa isolates; owner then assigned (/typecheck vs /backend seam).
+4. **File-backed dev-loop** — D3 (dependent recompilation false-BROKEN, restart-only recovery) + 0487 (`/mod` scope gaps). Owner /int.
+5. **Display/diagnostic batch** (register #6–8, capacity-gated tail): 0486 (bare-lookup corrupts /info//source — /int), 0484 (import-shadow order dependence — /int, /spec precedence pin first), 0491 (`__expr` cascade leak — /int), 0492 (`/sig` FQ — /repl arbitrates spec-vs-impl first, then fix), 0493 (nested parameterized-ADT display), trap-message §18.5 format (/int), 0490 (phantom-member misleading error — /int), 0485 (macro-clause diagnostic span — /frontend crate via /dev). /qa lanes L-N1 (display-exact) + L-N2 (no-internal-artifacts) back this batch.
+
+### Block B — increment I read path (the Phase-H spine; `design/arch/ownership-inference.md` §7, backend §0, qa plan §6)
+
+0. **Golden CLIF capture is the FIRST change-set** — pre-mechanism baseline for the differential oracle (hard sequencing pin from S100/S101). Phase-2 question for /arch: which Block-A backend-adjacent fixes must land before capture vs force re-baseline.
+1. **0476 phantom-NULL-slot representation cure** in the first change-sets — /arch-ruled IN; rides the `ModeSummary` types-surface schema cascade (one `CACHE_SCHEMA_VERSION` bump, Principle 8).
+2. **Typecheck + types**: `pass5_ownership` reverse-topo fixpoint, `ModeSummary` carrier (`cranelisp-types` change), primitive fact table on `DefKind::Primitive` (REQUIRED in increment I per the S100 spine amendment).
+3. **Backend mechanisms**: borrow-elision (`borrowed_vars`), stack slots (immortal-RC sentinels), per-site non-atomic Confined RC, `str-len$borrowed` sibling template. **Riding this seam rework**: 0474 COW copy-branch leak (3 guards, user-approved carry) + 0483 vec-op-as-value SIGBUS (3 guards) — same `fn_as_value` seam; 0482 `#[non_exhaustive]` attribute; 0495 backend `tests.rs` split + thin-submodule drain (§2.2 discipline applies to every new mechanism's scenario matrix).
+4. **0459 remainder** — floor-restoring gate + `lenient-eval.md` §2.6.2/§3.6.3 scope alignment (ROADMAP pins the remainder to increment I).
+
+**Acceptance**: qa gates **I-G1–I-G7** (`tests/plan/s100-ownership-verification.md`): F1 rc_inc ≥99% drop; F2–F4 rc_inc within 1% attribution; parallel ≤+5%; serial ≤+3%; compile ≤+10%; REPL body-only turn ≤1.10×. Differential oracle (`CRANELISP_NO_OWNERSHIP`, landed S101) byte-identical off.
+
+### Block C — methodology + enabler drains
+
+- **0494** (/arch): facade test-organization / module-composition convention — the architecture half of METHOD §2.2; /arch's first S102 touch, together with the P22 ratification-blockquote update (S101 close residual).
+- **0499** (/qa): e2e lane refactor — 7 lanes + 4 standing drafting rules, ordered L-U1 → L-S2+L-S3 → L-N1/L-N2 → L-S1 → L-M1-with-increment-I; includes registering `coverage-audit-s101.md` in `tests/CLAUDE.md` §Plan documents.
+- **0497/0498/0500/0501/0502** unit-tier drains (/dev typecheck, types, frontend, intrinsics, platform): ride wherever the crate is already open this sprint; otherwise capacity-gated tail, explicitly re-deferred with rationale if untouched.
+
+### Sizing + close-short seam (named up front)
+
+This is a large sprint — the S100 design docs themselves note increment I "may split". The coupling (0474/0483/0476 ride B's seams; T1's full cure is increment-I-or-later) makes one interleaved sprint MORE coherent than a split, but Phase 5 holds the close-short authority: if capacity runs out, the **clean seam is after B2** — golden capture + 0476 + `ModeSummary`/`pass5_ownership` land; the four backend mechanisms + their riding defect cluster carry to S103 as increment I's second half. Block A items 1–4 and Block C item 0494/0499-head do NOT slip past this seam.
+
+### Out of scope (deferred, with rationale)
+
+| Item | Rationale | Target |
+|---|---|---|
+| Increment II (write path: reuse tokens, R5 flattening, region arena) | Sequenced after increment I settles | S103+ |
+| `--release` tier + polish pins 0050/0052/0365/0416 | Gated behind the settled memory model (ROADMAP Phase-H table) | after increment II |
+| 0408 perf half (Sudoku parallel-search showcase) | Depends on increment II's write-path wins (vec unlock noted S101) | increment II |
+| 0463 network poll-shape example | Unmet trigger (blockers re-verified S101) | trigger-based |
+| 0466 GOT slot-hole reclamation | User-directed indefinite deferral, trigger-based | trigger-based |
+
+## FIXME debt
+
+Full open set at Phase 1 (31 files). Dispositions:
+
+| FIXME | Target | Status | S102 disposition |
+|---|---|---|---|
+| 0474 | /qa→/backend | open | Block B3 — rides `fn_as_value` seam rework (user-approved S101 carry) |
+| 0476 | /arch→/dev (backend) | types-half LANDED P3 | CS-A delivered the `PrimitiveBody::{Extern,Inline}` reshape (behaviour-identical); consumption half = Wave 6 B1-be (trio→Inline, stop-predicate flip, name-list retirement, golden-diff-EMPTY witness) — FIXME deletes there |
+| 0482 | /dev (backend) | open | Block B3 — next backend change-set (/arch-timed) |
+| 0483 | /qa→/backend | open | Block B3 — same seam as 0474 |
+| 0484 | /qa→/int (+/spec) | open | Block A5 |
+| 0485 | /frontend | open | Block A5 tail |
+| 0486 | /qa→/int | open | Block A5 |
+| 0487 | /int | open | Block A4 |
+| 0488 | /qa | open | Block A3 — isolation before fix dispatch |
+| 0489 | /int | open | Block A2 |
+| 0490 | /int | open | Block A5 tail |
+| 0491 | /qa→/int | open | Block A5 |
+| 0492 | /repl→/int | open (retargeted P3) | Block A5 — arbitration CLOSED (spec stands, impl defective; `handle_sig` repl.rs:711); fix rides Wave 10 |
+| 0493 | /qa | open | Block A5 |
+| 0494 | /arch | **RESOLVED P2** | Authored as Principle 23 + command-file imports; FIXME deleted by /arch |
+| 0495 | /dev (backend) | open | Block B3 rider |
+| 0496 | /dev (src/) | open | Block A2 unit half |
+| 0497 | /dev (typecheck) | open | Block C — rides B2 typecheck work |
+| 0498 | /dev (types) | open | Block C — rides B2 types change |
+| 0499 | /qa | open | Block C — QA-first stage head |
+| 0500 | /dev (frontend) | open | Block C tail — capacity-gated (frontend only open if A5/0485 dispatched) |
+| 0501 | /dev (intrinsics) | open | Block C tail — capacity-gated |
+| 0502 | /dev (platform) | open | Block C tail — capacity-gated |
+| 0459 | /backend | **RESOLVED P3** | Doc half landed by /design(backend); gate design = lenient-eval §2.7; impl rides ladder B4 |
+| 0503 | /qa | **RESOLVED P3** | Filed by /arch P2 (golden corpus pin); actioned + deleted by /qa P3 |
+| 0504 | /design (backend) | **RESOLVED P3** | Filed by /design(typecheck) P3 (`neq-string` audit row); drained in-flight by /design(backend) |
+| 0408 | /port | open | Deferred — increment II (unmet dependency) |
+| 0463 | /examples | open | Deferred — unmet trigger |
+| 0050 | /int | deferred | Pin — `--release` polish (display protocol) |
+| 0052 | /repl | open | Pin — `--release` polish |
+| 0365 | /spec | open | Pin — `--release` polish |
+| 0416 | /arch | deferred | Pin — `--release` polish (trigger-based) |
+| 0466 | /design | deferred | Pin — indefinite, trigger-based (user-directed S100) |
+
+**Escalation check (METHOD §2.4)**: no item hits the 2×-deferral gate this sprint without an existing user sign-off or a standing trigger-based pin (0050/0416/0466 pins are user-ratified; 0430's third deferral was signed off S100 and it has since been drained).
+
+## Architecture review (Phase 2)
+
+**Verdict: COHERENT — approved as drafted, with the rulings and pins below. No scope moves in or out.** Reviewed 2026-07-03 (/arch) against technical coherence, interim-architecture risk (Principle 8), and public-API impact per METHOD §2 Phase 2. Sign-off gates Phase 3: **given**.
+
+### Q1 — Golden-CLIF capture sequencing (RULED; canonical home = spine §6.2, `design/arch/ownership-inference.md`)
+
+**Capture-then-scoped-rebaseline. The capture is the first Block-B change-set and is NOT gated on any Block-A fix.** The corpus is **green-only by construction** — shapes under open failing-not-ignored guards (0483's two-instantiation HOF, 0488's FQ-call/imported-value-use, 0484's shadow-order shapes) are excluded, which is exactly what makes 0488 isolation and the /int wave non-blocking for capture.
+
+- **Classifier** (for /sprint's Phase-4 wave ordering): a fix is *emission-affecting* iff it changes backend emission, primitives entry shapes, monomorphisation derivation, or name-resolution precedence **for green programs**. By this test: Block-A items 1 (T1 print), 2 (D1/D2/0489 persistence), 4 (D3/0487), and the whole item-5 display/diagnostic batch (0486/0491/0492/0493/0490/0485/trap-format) have **no capture interaction** — schedule freely. 0484 and 0488 are potentially emission-affecting but their shapes are corpus-excluded, so they don't block capture either.
+- **Before vs after**: an emission-affecting fix that happens to be ready before Block B opens lands before capture (the capture parent floats forward for free). After capture, an emission-affecting fix carries a **scoped re-baseline in its own change-set** — re-dump only the corpus entries whose CLIF changed, golden diff in the same commit, delta attributed to the fix's seam (the L-B1 / `public-api.txt` discipline). Wholesale re-capture without attribution is forbidden.
+- **Extension ≠ re-baseline**: when a fix makes a previously-excluded shape green (0483/0488/0484 post-fix), /qa *extends* the corpus with the newly-green shape in the fix change-set; existing golden entries are untouched. 0474/0483/0476 land at B3/B1 *after* capture **by design** — their emission deltas are precisely what the oracle should see attributed; their scoped re-baselines ride those change-sets.
+- **Recorded**: spine §6.2 (the ruling's manifestation site); corpus-construction pin for the L-B1 lane spec filed as **FIXME 0503** (`target: /qa` — the verification plan is /qa-owned; natural slot is the 0499 head or L-B1 drafting, whichever comes first).
+
+### Q2 — FIXME 0494 (RESOLVED — numbered principle, not a facade-convention item; FIXME deleted)
+
+**Authored as Principle 23 — "Unit tests mirror module composition (submodule × scenario class)"** (`design/arch/principles/23-tests-mirror-module-composition.md`), index updated, and the `@import` line added to all four command-file import blocks (`arch`/`design`/`dev`/`review`) per the `principles/CLAUDE.md` filer convention — that import mechanism is exactly the "Principle-22 precedent propagation" 0494 asked for, and it is the only /arch-owned channel that reaches the triad. Rationale for principle-over-facade-convention: the facade conventions govern the *public* surface (`lib.rs` mechanics); this convention governs **crate interiors** (module composition + per-submodule test accounting) and carries role bindings the triad must see — filing it under facade conventions would misfile it and hide it from the triad. The principle carries the architectural axiom + role bindings and **cites METHOD §2.2 for the methodology half (maintained there, not duplicated — Principle 7)**. Mid-sprint authoring follows the P21/P22 user-directed precedent: provisional blockquote now, **formal ratification at S102 Phase-7 close**.
+
+### Q3 — Close-short seam after B2 (CONFIRMED CLEAN, with three pins)
+
+The seam splits cleanly. Post-seam state = golden capture + 0476 reshape + `ModeSummary`/fact-table types change + `pass5_ownership` landed, **zero backend mechanisms consuming summaries**. This state is sound by the spine's monotone-soundness contract (§6.1): summaries emitted but unconsumed ⇒ codegen remains strictly Decision-24; the §5.7 precondition is already satisfied (R3 machinery landed S101). Pins:
+
+1. **ABI-diff widening at the seam**: once summaries exist, the R3 transaction's `AbiSurface` comparison gains mode vectors — mode-changing redefinitions classify ABI-changing and take fresh slots/recompiles that are semantically unnecessary but conservative-correct. Acceptable across one sprint boundary; /qa's L-R lanes should expect the stage-M "type-scheme-only" degeneration to end at the seam.
+2. **Gates at the seam**: if closed short, perf gates I-G1–I-G4 + I-G7 defer wholesale to S103 (they grade mechanisms). But **I-G5 (compile ≤ +10%) and I-G6 (REPL turn ≤ 1.10×) MUST run at the seam** — pass5's cost is live the moment it runs, consumers or not. L-B1/L-B2 protocol lanes are live from capture (trivially green, which is their install value). The differential oracle stays byte-identical-off throughout.
+3. **Guard bookkeeping**: 0474 (3) + 0483 (3) guards stay RED across a short close — already itemized intentional; no CLAUDE.md §Testing count change until B3 lands.
+
+### Q4 — P22 ratification blockquote: DONE
+
+`principles/22-*.md` blockquote now records the 2026-07-03 user ratification at S101 Phase-7 close (audit trail: `sprints/archive/sprint-101.md` §Outcome); index entry updated to match.
+
+### Public-API impact statement (increment I)
+
+**One `cranelisp-types` change-set, one `CACHE_SCHEMA_VERSION` bump (v11→v12) — confirmed.** Phase 3 (/arch authors; it is the types crate) must define, in that single change-set: (i) `Mode`/`ModeSummary`/`ResultMode`/`ParamFlow` + `mode_summary` on the four callable `DefKind` variants + advisory site-fact fields on `MonoExpr` nodes (spine §3.3 shapes, `#[serde(default)]` = Decision-24 conservative point); (ii) the per-entry value-use mark; (iii) the declared-fact payload on `DefKind::Primitive` (+ optional `borrowed_sibling_slot`); (iv) the **0476 `PrimitiveBody::{Extern, Inline}` discriminator + `is_callable_target()` accessor** (the ruled representation cure — same crate, same bump, one cascade per Principle 8). Cascade in the same change-set: `public-api.txt` regen for `cranelisp-types` + consumer baselines where accessor signatures surface (backend, primitives, typecheck), `interfaces.md`, BC §7.
+
+Other public-API edges this sprint: **0482** (`CacheInvalidReason` `#[non_exhaustive]`, backend — additive attribute, baseline regen). **Expected new public functions: ZERO** — increment I's mechanisms are crate-interior (borrow-elision, stack slots, non-atomic gating, R2 wrappers all sit behind existing entry points; S101's `compile_trap_stub` remains the last public addition); pass5 is internal to the `check_forms` seam; the T1 print is `src/` binary-side. Any /dev deviation files FIXME `target: /arch` before publishing.
+
+### Interim-architecture check (Principle 8)
+
+The **T1 interim print** passes: it is additive diagnostic honesty (a transaction-report line naming the downgrade + affected callers), not throwaway infrastructure — the full end-of-turn-reload cure subsumes its trigger without rework. Pin: word the print as a transaction-report line the full cure keeps. The interleave itself (A's backend cluster riding B's seams) is Principle-8-positive: one cascade, one seam visit, no interim duplication.
+
+### Scope adjustments (in-scope timing only; nothing moves in/out)
+
+1. **0482 re-timed to B1**, not B3: it rides the *first* backend-crate change-set of the sprint (the 0476 consumer-side edit), so it lands even under a short close instead of stranding a third sprint.
+2. Golden capture is **Wave 1 of Block B and may run before/parallel to Block-A waves** (per Q1's classifier — nothing in Block A blocks it). /sprint should not serialize A-then-B.
+3. If close-short triggers: run I-G5/I-G6 at the seam (Q3 pin 2) — add to the Phase-5 close-short checklist.
+
+### Doc-set triage (standing Phase-2 duty)
+
+No archive moves: the ownership four-doc set is live (this sprint's spine), no working doc is past its trigger; Decisions drain stays opportunistic (no S102 fire touches a Decision-grounded section yet). FIXMEs against /arch at review close: **none open** (0476 is ruled + pinned to B1, /arch authors its types half in Phase 3; 0494 resolved + deleted this review; 0503 newly filed against /qa).
+
+## Skill plans (Phase 3)
+
+### /spec — DONE Phase 3
+
+- **Task**: 0484 precedence ruling + /port D4 designed-vs-gap verdicts.
+- **Ruling (0484)**: **Definition-over-explicit-import is a compile-time ERROR — order-independent, mode-uniform** (spec §8.6.4 already ruled it; §8.6.1 layer 2 clarified — no def-over-import tier; new pinned subsection "Definition-Over-Import: Order-Independent, All Modes `[S102]`"). Rejected form has no effect; import stays the binding; introspection agrees; symmetric for import-over-def; prelude-provided names stay shadowable (0475 cells unaffected, but their comments mis-cite the anchor — /qa opportunistic fix).
+- **Consequences**: BOTH 0484 guards re-anchor (the RED guard AND the currently-green control — its shadow-wins pass is itself the violation). /int's A5 fix = reject the later-arriving conflicting form, not resolution-caching. Diagnostic SHOULD name import source + remediations.
+- **D4 verdicts**: (a) arity-error shape DESIGNED (auto-curry §4.6.3; wording quality → /frontend, rides 0485/0500 — /sprint note, no FIXME); (b) `match` Int-literal patterns DESIGNED (§6.6.2 explicit exclusion). No FIXMEs filed.
+- **Next skills**: /qa (re-anchor both guards to §8.6.4), /int (rejection fix), /frontend (arity wording rides 0485/0500).
+
+### /repl (spec half) — DONE Phase 3
+
+- **Task**: §18 T1-downgrade-report wording; 0492 arbitration; §18.5 trap-format check.
+- **T1 report contract**: new `repl/spec.md` §18.1.1 `[S102]` — one comment-line section after the §1.3 confirmation, exact header `; stale: compiled callers keep the previous definition of {cause}`, exact caller set both ways (every stale caller named; no late-bound/never-compiled names), omitted entirely when nothing stale, informational-only. Display-exact worked example included. WHAT-only — mechanism left to /design(int); Principle-8 pin recorded (section survives the full cure, rendered empty post-reload).
+- **0492 arbitration**: spec stands, **implementation is the defect** (FQ `:Type value` principle held consistently across §1.1/§1.4/§4.1/§18.4). New §3.8 makes bare-lookup/`/sig` primary-line byte-identity an explicit MUST. **Fix owner /int** (`handle_sig`, repl.rs:711); FIXME 0492 retargeted /repl→/int; guard polarity CORRECT, no re-anchor.
+- **§18.5 verdict**: exact as written; one ambiguity amended (`[S102]` bullet: no own span, no wrapper chain — §5.1 satisfied by the span inside the original error). Fix is mechanical, /int.
+- **Next skills**: /int (A5 batch against pinned bytes: §18.1.1 + §3.8 + §18.5 — three guards flip), /qa (L-N1 display-exact tests for §18.1.1 both polarities), /design(int) (consume §18.1.1 as fixed output contract).
+
+### /qa — DONE Phase 3
+
+- **Task**: S102 test plan. Durable doc: `tests/plan/s102-test-plan.md`. Housekeeping landed: `tests/CLAUDE.md` §Plan documents registers both audit + plan (0499 item 3); **FIXME 0503 actioned + DELETED** (corpus pins in `s100-ownership-verification.md` §3.1 L-B1: green-only corpus, committed EXCLUSIONS.md keyed to guard flips, extension-≠-rebaseline).
+- **Stage-1 drafting order**: L-U1 (~8–12; incl. RED interim-print acceptance pair for A1) → L-S2 (new `repl_lifecycle_matrix.rs`, ~15–20) → L-S3 (new `repl_mod_devloop.rs`, ~10–14) → L-N1 (new `display_exact.rs`, ~12–18, first `assert_stdout_eq` adoption) + L-N2 (harness helper + ~15–25 retrofits) → increment-I set (L-B1 golden capture corpus ~10–12 modules + MANIFEST/EXCLUSIONS/script; S1–S6 fences; fact-table rows; H2/H5 hook smokes RED-at-draft; `ig_gates` runner). L-S1 capacity-gated; L-M1 rides B3.
+- **0488 isolation = its own EARLY wave** (recommended, accepted): per-signature seam attribution (typecheck-side vs src/ batch-derivation vs backend resolution — the two error classes suggest the 3 signatures may not share one home); deliverable = attribution notes + unit-test shapes in the handoff brief. Doesn't block/isn't blocked by capture (shapes corpus-excluded).
+- **Guard-flip map (22 REDs)**: 0474×3+0483×3 → B3 (stay RED at close-short); 0488×3 → post-isolation wave; 0489+D1+D2 → A2; D3 → A4; the 9 display/misc → A5. Root-CLAUDE.md count update = Phase 7 user-flagged item.
+- **I-G readiness gaps**: H2 per-mechanism counters (/backend, B3, gate-blocking I-G3/I-G7); H5 ownership-trace (/typecheck, B2); `ig_gates` differential runner + I-G5 compile probe = /qa stage 1 EARLY (I-G5/I-G6 run even at close-short); fresh toggle-off baseline on S102 HEAD. I-G6 ready today.
+- **/sprint reconciliations (post-ruling, carry into stage-1 brief)**: (a) BOTH 0484 guards re-anchor to §8.6.4 error polarity (/spec ruling postdates this plan) — fold into L-S2/A5 acceptance; 0475 pin comment anchors fixed opportunistically; (b) 0492 guard confirmed correct — no re-anchor (arbitration closed).
+- **Next skills**: /sprint (fold + schedule 0488 isolation early, capture as B Wave 1), /dev per crate (fixes against lane acceptance surfaces), hook obligations H2→/backend, H5→/typecheck.
+
+### /design (cranelisp-typecheck) — DONE Phase 3
+
+- **Task**: pass5_ownership change-set staging. Design recorded: `design/typecheck/ownership-inference.md` §13 (staging/feed-verification/fact-verdict/toggle-pin/refinements/P23 matrices).
+- **Staging**: **CS-A** (/arch types v11→v12, hard dep) → {**CS-B** (/dev primitives: fact table on the same `mode_summary` slot — no separate type, Principle 19), **CS-1** (classifier + 0476 `PrimitiveBody` consumption)} → **CS-2** (pure transfer fn) → **CS-3** (fixpoint+SCC+confinement+memo; toggle gate at driver entry) → **CS-4** (publication + **H5 `CRANELISP_OWNERSHIP_TRACE`** — qa I-G3/L-D3f dep). New `ownership/` module cluster, per-submodule sibling tests (P23 from birth). Out-of-crate rider: **/int `abi_eq` summary-diff-gate widening rides with/after CS-4**.
+- **Graph-feed verdict**: S101 v11 widening sufficient at template grain; **fixpoint re-entry rides transfer-harvested `DepSet` edges (exact grain); `call_graph_edges` demoted to seeding-order hint** (bad order = revisits, never wrong). Accepted risk: mutual-import cycle edges go Decision-24 (monotone-sound). Coordination: 0497 rider vs /qa's 0488 isolation on `monomorphise.rs`.
+- **Fact-table verdict**: ring2-rc §3.3 sufficient seed; **gap: `neq-string` (no audit row) → FIXME 0504 filed** (target /design backend — blocks CS-B transcription + L-D3e); named scope cut: `PrimitiveExtern` (sconcat/bind/…) = pinned Decision-24 boundary, watch item.
+- **Toggle-off pinned**: emit NOTHING (return at pass entry; `.meta.json` field-identical; emit-but-ignored rejected on oracle-honesty/behavioral/persistence grounds). Needs-list item 12: /arch rules on relocating the toggle read-once gate to cranelisp-types.
+- **Needs list (12 items)**: Mode/ModeSummary (full Eq)/ResultMode/ParamFlow; conservative-read accessors (⊤-on-absence single home); `abi_eq` shared view; `mode_summary` on callable DefKinds + MonoDefnVariant; MonoExpr site facts incl. symbol-keyed `provenance` w/ shadowing⇒None; value-use mark; 0476 reshape; toggle relocation. /arch verifies at exit gate.
+- **Next skills**: /arch (CS-A + needs-list verification + item-12 ruling), /dev typecheck (CS-1–4 + 0497 stages), /dev primitives (CS-B after 0504), /design backend (consume §13.6 pins), /qa (L-D3e gated on 0504; I-G5/I-G6 at B2 seam).
+
+### /design (cranelisp-backend) — DONE Phase 3
+
+- **Task**: Block B backend half. Design recorded: `ownership-codegen.md` §13 (capture §13.1 / ladder §13.2 / seam rework §13.3 / 0459 §13.4 / matrices §13.5); `lenient-eval.md` §2.7 + §9 scoping. **FIXME 0459 RESOLVED+deleted** (doc half landed; gate design = §2.7; impl = ladder B4). **FIXME 0504 RESOLVED+deleted** (`neq-string` audit row added, body-verified).
+- **Change-set ladder** (each independently landable; else-arm discipline = pre-change helper verbatim): **B0-be** capture substrate + Hook H1 frame-atomic dumps (Wave 1, NOT gated on /arch types CS) → **B1-be** 0476 consumption + 0482 (golden diff expected EMPTY — the CS's own witness) → **B3.0** 0495 tests.rs relocation (pre-seam) → *B2 = typecheck; I-G5/I-G6 at seam* → **CLOSE-SHORT SEAM** → **B3.1** fn_as_value defect half (0483 root-cause pin: collision is a HYPOTHESIS — investigate vs the instantiation matrix first; 0474 RC-polarity contract `SourceOwnership::{Owned,Borrowed}`, static polarity NOT uniformly Borrowed; 0488 conditional rider iff isolation attributes here; corpus EXTENSION) → **B3.2** borrow-elision core, one atomic CS (I-G1/I-G2; H2 counters; biggest re-baseline) → **B3.3** confined non-atomic RC (I-G3) → **B3.4** stack slots (I-G7; L-C2 ASan) → **B3.5** `str-len$borrowed` sibling (S5) → **B4** 0459 density gate on `is_worth_sparking` (facts-absent ⇒ axis inert; I-G4 progress). B3.3/B3.4 individually droppable at squeeze.
+- **Capture spec**: `CRANELISP_CODEGEN_DUMP=*` cold-cache `--run`; frames sorted by module::symbol; content **byte-verbatim, NO canonicalization** (wrapper/slot identity is load-bearing — masking blinds the oracle to 0483's class); config pins in MANIFEST (all perf toggles unset); determinism self-test (double capture) before golden commits; binding 5-step scoped-rebaseline procedure; 0474's leaking shapes may join the corpus (green programs).
+- **Wrapper-identity ruling**: (dispatch identity × concrete signature), never (span × discriminator) — `__d24wrap_{fq}_{slot}__` / `__inlwrap_{bare}_{monosig}__`; dedup via declare-idempotency.
+- **Typecheck consumption contracts folded** (`ownership-codegen.md` §13.6): (b) site facts arrive in ONE post-convergence walk — fact-absent always means "concluded conservative", never "not yet written" (no backend staleness handling); (d) provenance `Symbol`-keyed matching `borrowed_vars` as-built; shadowing⇒None⇒D24 materialization — pinned scenario row in both matrices.
+- **Next skills**: /arch (types CS = B1-be dep; B0-be independent), /dev backend (ladder in order; B0-be starts with capture wave), /qa (corpus per §13.1 contract), /sprint (wave per dependency column).
+
+### /design (src/) — DONE Phase 3
+
+- **Task**: Block A defect-wave designs + T1 sizing. Recorded: `session-transaction.md` §9.1.1 + §10 amendment; new `design/int/s102-defect-wave.md` (§1–§9, root causes source-verified, five P23 matrices A–E); 0496 annotated (unit briefs derive from the matrices).
+- **T1 print (A1)**: one small CS, wave-ready — `TransactionReport.stale` + pure `stale_callers()` over on-demand ReverseIndex + **load-bearing gate widening** (`RedefinitionOutcome.prior_was_def`; both T1 shapes emit NO outcome today — trigger is the route, not the surface diff). Binds exactly to /repl's §18.1.1. L-D1 untouched.
+- **T1 full cure — VERDICT: OUT, defer S103.** Both original blockers dissolve at end-of-turn (~3 CSes), BUT this sprint's A2/A4 fixes are hard preconditions (regen fidelity, 0489 floor, D3/0487 env). S102 leaves in place exactly the in-scope wave + the print (Principle-8 kept-report pin). S103 = one wave incl. flipping the two coherent-stale pins.
+- **Persistence cluster**: D1 = two recording sites disagree (original outer form vs expanded defmacro) → origin-uniform recording + regen dedup (CS-D1). D2 = regen renders from desugared Sexp + rehydration overwrites source → source-text-first emission + verbatim slicing (CS-D2; hybrid-meta arm unreduced, re-probe post-cluster). 0489 = startup exit at `main.rs:146` → REPL-mode catch + degraded form-by-form entry load (green forms commit; failed forms kept as (symbol, error, verbatim text), re-emitted by regen until repaired) (CS-0489).
+- **File-backed dev-loop**: unified root cause — session-env companions populated only on fresh-typecheck path; `TypecheckProduct.file_path` never `Some` on ANY path (rehydration/T2 reload dead as wired). Cure: `install_module_session_env` at every install route + FQ `resolve_symbol_arg` shared across introspection commands + `/refs` fed by `redefine::ReverseIndex` (CS-D3a→D3b→CS-0487).
+- **Display batch**: 0491/0486/trap-format trivially small (0491 = `__expr` exclusion at ReverseIndex::build; 0486 = display-only Def writing `.source` at eval.rs:130–146; trap = int-side `program_outcome_to_result` only). 0490 one confirmation step; 0484 commit-side verified CLEAN, best-evidenced pin typecheck-side overload rehydration — **reconcile with /spec's landed ruling** (rejection polarity, below).
+- **Wave order (input to Phase 4)**: A-1 (print+0491+0486, shared seams) → A-2 (D1→D2→0489 + 0496 drain) → A-3 (D3a→D3b→0487) → A-4 tail (trap, 0490, 0484-post-spec). All capture-neutral per /arch Q1. Waits on /arch types CS: nothing.
+- **/sprint reconciliation**: /spec's 0484 ruling (landed concurrently) = definition-over-import is a compile-time ERROR, order-independent — the A-4 fix is *rejection of the later-arriving form*, and BOTH guards re-anchor; the typecheck-rehydration hypothesis is re-evaluated under that polarity at fix time (order-dependence itself should vanish with rejection).
+- **Next skills**: /qa (L-U1 before A-1 close; L-S2/L-S3 from matrices A/D before A-2/A-3 close), /dev src/ (Wave A-1 first), /sprint (Phase 4 from §8 wave table).
+
+### /arch CS-A + exit gate — Phase 3 (final invocation, 2026-07-03)
+
+- **CS-A LANDED** — the single `cranelisp-types` interface change-set, exactly one `CACHE_SCHEMA_VERSION` bump (**v11→v12**, `cranelisp-backend/src/cache/mod.rs`, S102 entry documented). New `crates/cranelisp-types/src/ownership.rs`: `Mode`/`ResultMode`/`ParamFlow`/`ModeSummary` (full `Eq`; all fields `#[serde(default)]`; ⊤-on-absence accessors `param_mode`/`param_flow`/`spark_op` as the ONE conservative-read home; `abi_eq` + `abi_eq_opt`/`is_abi_conservative` over `(param_modes, result)` only) + the relocated read-once `ownership_analysis_off()` toggle. `module.rs`: `mode_summary` on all four callable kind carriers (`UserFnState::Concrete`, `Primitive`, `Constructor`, `PlatformEffect`) + uniform `ModuleEntry::mode_summary()`/`set_mode_summary()` (did-write bool) + per-entry `value_use` mark (`value_use()`/`set_value_use()`; builder-defaulted, no setter) + the **0476 reshape**: `DefKind::Primitive { body: PrimitiveBody::{Extern{got_slot, borrowed_sibling_slot}, Inline}, mode_summary }` + `is_callable_target()` + `DefKind::primitive(slot)` convenience ctor. `mono_expr.rs`: `MonoDefnVariant.mode_summary`; `escapes`/`confined`/`unique_static` on `StringLit`/`Lambda`/`Apply`/`VecLit`/`ConstrADT`; `provenance: Option<Symbol>` on `Apply` + `MonoMatchArm`. 16 new unit tests (11 ownership + 5 module-accessor incl. the v11-shape-must-not-deserialize serde pin).
+- **Needs-list verification (typecheck §13.1, item-by-item): items 1–11 delivered as specified; item 12 RULED YES + implemented** — the `CRANELISP_NO_OWNERSHIP` gate lives in `cranelisp-types` (`ownership_analysis_off()`); `cranelisp-backend::cache::manifest::no_ownership_enabled()` is now a thin delegation (manifest key untouched, call sites unchanged). Backend §13 hard-dependency rider delivered: `borrowed_sibling_slot` rides `PrimitiveBody::Extern` only (inline-with-sibling unrepresentable, Principle 20).
+- **Behaviour-identical by construction**: every primitive still constructs `Extern` (vec trio keeps its NULL slot), the S101 name-list + wrapper exemption arms stay live, `resolve_driven` still stops on `callable_got_slot()`. **FIXME 0476 ANNOTATED, not deleted** — types-half landed; the consumption half (trio→`Inline`, stop-predicate flip to `is_callable_target()`, name-list retirement, golden-diff-EMPTY witness) is B1-be (/dev backend+primitives); the FIXME deletes there.
+- **Cascade landed**: `crates/cranelisp-types/public-api.txt` regenerated (canonical command); the six consumer baselines verified byte-identical (no other crate's surface moved); `interfaces.md` §"Ownership-inference carriers"; BC §7 "S102 — Principle 20 applied one level down"; spine §3.3 blockquote records the landing. Sequence-diagram sweep: no facade signature changed shape (`callable_got_slot` contract intact; new accessors are additive) — no diagram edits required.
+- **Verification**: `cargo check --workspace --all-targets` clean, zero warnings. Canonical run: **3496 tests — 3474 passed / 22 failed / 1 skipped**; the 22 are exactly the itemized intentional guards (root CLAUDE.md §Testing), fail-set unchanged. Two transient extras surfaced and fixed in-set: the stale types `public-api.txt` (regenerated) and `s68_primitives_uniform`'s source-grep (primitives constructions restored to the explicit `DefKind::Primitive { .. }` struct form — also the right declaration-site shape for CS-B's fact population).
+- **Out-of-types files touched (mechanical/mandated, flagged)**: `cranelisp-backend/src/cache/mod.rs` (schema bump) + `cache/manifest.rs` (toggle delegation); `cranelisp-primitives/src/lib.rs` (explicit-form construction, behaviour-identical); mechanical `mode_summary: None`/`value_use: false`/`..`-pattern updates across ~40 files in `cranelisp-typecheck` (`adt.rs`, `builtins.rs`, `program.rs`, `traits/{impl_check,monomorphise}.rs` + tests), `cranelisp-backend` (`lib.rs`, `compiler/{apply,fn_compiler,rc_emission,control_flow/let_if}.rs` + tests), `src/` (`bootstrap.rs`, `code.rs`, `display.rs`, `exe.rs`, `expander.rs`, `platform.rs`, `repl.rs`, `save.rs`, `worker.rs`, `redefine.rs` tests + other test files), and one line in `tests/platform_schema_roundtrip.rs` (E0063 default — flagged: `tests/` is /qa-owned; /qa may re-express).
+- **EXIT-GATE VERDICT: PASS — the interface set is complete for Phase 5.** (i) All 12 needs-list items + the backend `borrowed_sibling_slot` rider are landed; (ii) no other public-API edges remain pending for the sprint: 0482 (`CacheInvalidReason` `#[non_exhaustive]`) is B1-be's additive attribute per the Phase-2 re-timing, and expected new public functions outside CS-A remain ZERO (consumer baselines verified unchanged; `compile_trap_stub` stays the last backend addition); (iii) the /design(src/) claim that Block A needs NOTHING from `cranelisp-types` is verified — `TransactionReport`/`RedefinitionOutcome`/`AbiSurface` are `src/redefine.rs` pub(crate) types, the §18.5 trap-format fix is `src/pipeline.rs::program_outcome_to_result` int-side, and the future R3 `AbiSurface` mode-widening consumes `ModeSummary::abi_eq_opt` already provided. One watch item (not a gap): /dev deviations from this surface file FIXME `target: /arch` before publishing, per the Phase-2 statement.
+
+## Waves (Phase 4)
+
+Organized 2026-07-03 from the six Phase-3 plans + /arch's exit-gate verdict. CS-A is already landed (Phase 3), so the B-ladder's hard dependency is satisfied from Wave 1.
+
+**Standing execution constraints** (every wave, every brief):
+- **All source-touching agents run strictly serially** (worktree isolation broken). Waves are dependency groupings and dispatch order, NOT parallelism.
+- One agent, one test run; canonical `cargo nextest run --no-fail-fast`; **post-CS-A baseline: 3496 run — 3474 passed / 22 failed / 1 skipped** (fail set = the itemized intentional guards). Any extra RED is a regression the owning agent fixes before returning.
+- **Wave gate** (METHOD §2.5): before dispatching wave N+1, scan `design/arch/fixmes/` for `target:` matching wave-N's skill AND `status: open`.
+- Each source wave closes with **/review (narrow, same crate)** before the next wave dispatches; Blocker/Important findings resolve in-wave.
+- Emission-affecting change-sets after Wave 3 carry their **scoped re-baseline in the same change-set** (Q1 discipline); Block-A waves are capture-neutral by the Q1 classifier.
+- Forbidden-git list verbatim in every brief; commit per change-set on `main`, no branches, no push.
+
+### Stage 1 — QA-first (sprint-wide)
+
+| Wave | Skill | Crate | Task | Status |
+|---|---|---|---|---|
+| 1 | /qa | tests/ | Stage-1 failing tests per `tests/plan/s102-test-plan.md` drafting order: **L-U1 first** (incl. RED interim-print acceptance pair) → L-S2 (`repl_lifecycle_matrix.rs`) → L-S3 (`repl_mod_devloop.rs`) → L-N1 (`display_exact.rs`, first `assert_stdout_eq`) + L-N2 retrofits → increment-I set (L-B1 corpus modules + MANIFEST/EXCLUSIONS + capture-script contract, S1–S6 fences, fact-table rows, H2/H5 hook smokes RED-at-draft, `ig_gates` runner + I-G5 probe). 0499 head drains here. **Reconciliations carried**: both 0484 guards re-anchor to §8.6.4 error polarity; 0475 pin-comment anchors fixed opportunistically; 0492 guard stands (no re-anchor). | pending |
+| 2 | /qa | tests/ | **0488 isolation** (before any fix dispatch, CLAUDE.md minimal-repro rule): per-signature seam attribution — typecheck-side vs src/ batch-derivation vs backend resolution. Deliverable: attribution notes + unit-test shapes in a handoff brief; /sprint assigns the fix owner at wave close (conditional rider on Wave 11 B3.1 iff backend-attributed; else its own src//typecheck slot). | pending |
+
+### Stage 2 — per-crate D/D/R, serial ladder
+
+| Wave | Skill | Crate | Task | Status |
+|---|---|---|---|---|
+| 3 | /dev → /review | cranelisp-backend | **B0-be golden CLIF capture** (Block B Wave 1; `ownership-codegen.md` §13.1): dump substrate + Hook H1 frame-atomic writes, `CRANELISP_CODEGEN_DUMP=*` cold-cache `--run`, frames sorted module::symbol, byte-verbatim (NO canonicalization), determinism self-test before golden commit; corpus per /qa L-B1 contract (green-only + EXCLUSIONS.md). | pending |
+| 4 | /dev → /review | src/ | **A-1** (risk-register #1): T1 interim print — `TransactionReport.stale` + `stale_callers()` + `RedefinitionOutcome.prior_was_def` gate widening, bytes bound to `repl/spec.md` §18.1.1 — plus 0491 (`__expr` exclusion at ReverseIndex::build) + 0486 (display-only Def `.source` write, eval.rs). Guards flip: 0491×2, 0486×2 + L-U1 print pair. | pending |
+| 5 | /dev → /review | src/ | **A-2** (persistence-integrity cluster): CS-D1 (origin-uniform recording + regen dedup) → CS-D2 (source-text-first emission + verbatim slicing) → CS-0489 (REPL-mode degraded form-by-form entry load) + **0496 unit drain** (lifecycle.rs briefs from matrices A–E). Guards flip: D1, D2, 0489. | pending |
+| 6 | /dev → /review | cranelisp-backend (+primitives) | **B1-be**: 0476 consumption (vec trio→`Inline`, stop-predicate→`is_callable_target()`, name-list retirement) — **golden diff EMPTY is the change-set's own witness; FIXME 0476 deletes here** — + 0482 `#[non_exhaustive]` + baseline regen; then **B3.0** 0495 tests.rs relocation (pre-seam, mechanical). | pending |
+| 7 | /dev → /review | src/ | **A-3** (file-backed dev-loop): CS-D3a (`install_module_session_env` at every install route) → CS-D3b (FQ `resolve_symbol_arg` shared across introspection) → CS-0487 (`/mod` scope + `/refs` via `redefine::ReverseIndex`). Guard flips: D3. | pending |
+| 8 | /dev → /review | cranelisp-primitives, then cranelisp-typecheck | **B2**: CS-B (declared-fact table on the `mode_summary` slot; ring2-rc §3.3 + `neq-string` row; `PrimitiveExtern` = pinned Decision-24 boundary) → CS-1 (classifier + 0476 typecheck-side consumption) → CS-2 (pure transfer fn) → CS-3 (fixpoint+SCC+confinement+memo; toggle gate at driver entry — toggle-off emits NOTHING) → CS-4 (publication + **H5 `CRANELISP_OWNERSHIP_TRACE`**). New `ownership/` module cluster with per-submodule sibling tests (P23 from birth). **0497 rides** the typecheck visit. | pending |
+| 9 | /qa + /dev src/ | — | **SEAM CHECKPOINT**: (a) /qa runs **I-G5 (compile ≤+10%) + I-G6 (REPL turn ≤1.10×)** — mandatory even at close-short; L-B1/L-B2 live; differential oracle byte-identical-off verified; (b) /dev src/ small CS: R3 `AbiSurface` mode-vector widening via `ModeSummary::abi_eq_opt` (rides with/after CS-4). **This is the named close-short seam** — /sprint + user assess capacity here; if short, Waves 11–12 carry to S103 as increment I's second half. | pending |
+| 10 | /dev → /review | src/ (+ cranelisp-frontend if capacity) | **A-4 display/diagnostic tail** (capacity-gated per scope item 5): trap-format §18.5 (`program_outcome_to_result`), 0490 (one confirmation step first), 0484 rejection fix per /spec §8.6.4 ruling (re-evaluate typecheck-rehydration hypothesis under rejection polarity), 0492 (`handle_sig` FQ per §3.8), 0493 (owner attributed at fix time). If frontend opens: 0485 span fix + arity-error wording (D4a) + **0500 rides**. | pending |
+| 11 | /dev → /review | cranelisp-backend | **B3.1–B3.5 mechanism ladder** (post-seam; each CS independently landable, scoped re-baseline riding): B3.1 fn_as_value seam rework — 0483 root-cause FIRST (collision is a hypothesis) + 0474 `SourceOwnership::{Owned,Borrowed}` RC-polarity + 0488 rider iff attributed here + corpus extension (guards 0474×3/0483×3 flip) → B3.2 borrow-elision core, one atomic CS (H2 counters; I-G1/I-G2; biggest re-baseline) → B3.3 confined non-atomic RC (I-G3) → B3.4 stack slots (I-G7; L-C2 ASan) → B3.5 `str-len$borrowed` sibling (S5). B3.3/B3.4 individually droppable at squeeze. **0495 remainder** (thin-submodule drain) rides. | pending |
+| 12 | /dev → /review | cranelisp-backend | **B4**: 0459 remainder — lenient-eval §2.7 floor-restoring density gate on `is_worth_sparking` (facts-absent ⇒ axis inert); I-G4 progress measured. | pending |
+| 13 | /qa | tests/ | **Gate + wrap**: full `ig_gates` I-G1–I-G7 run; L-M1 (rides B3 landing); guard-flip verification against the Wave-map; corpus EXTENSION for newly-green shapes (0483/0488/0484); intentional-count reconciliation drafted for Phase 7 (root-CLAUDE.md §Testing update is user-flagged). | pending |
+| tail | /dev | types/intrinsics/platform | **Capacity-gated drains**: 0498 (types was open at CS-A), 0501, 0502 — dispatched only if capacity remains post-Wave-12; else re-deferred with rationale at Phase 7. | pending |
+
+## Notes
+
+- 2026-07-03: Phase 1 scope drafted from S101 close record + ROADMAP §Phase-H table + `tests/plan/coverage-audit-s101.md` risk register. Presented to user for approval.
+- 2026-07-03: **Scope APPROVED by user as proposed** (one interleaved sprint, close-short seam after B2 named). Phase 2 /arch review dispatched.
+- Operational rule carried from S101 finding 5: defect reports from parallel 6b proxies must be validated against the landed tree before hotfix dispatch.
+- 2026-07-03: **Phase 3 COMPLETE** — six design plans collected; /arch CS-A landed (v11→v12, all 12 needs-list items + backend rider; nextest 3496 run — 3474/22/1, fail set = intentional guards) with exit-gate **PASS**. FIXMEs resolved in-phase: 0459, 0494, 0503, 0504; 0476 types-half landed (deletes at B1-be); 0492 retargeted /int. **T1 full cure ruled OUT → S103** (pre-approved scope branch: A2/A4 fixes are hard preconditions; print ships as mitigation).
+- 2026-07-03: **Phase 4 COMPLETE** — 13-wave serial ladder written (§Waves); Status → PHASE 5. Wave 1 dispatch pending user review of the execution plan (commitment made at Phase 1). CS-A is landed but UNCOMMITTED — first commit rides Wave-1 dispatch or earlier at user direction.
+
+## Outcome (Phase 7)
+
+{Pending.}

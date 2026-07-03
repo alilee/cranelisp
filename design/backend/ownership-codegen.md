@@ -2,7 +2,11 @@
 
 **Status:** DESIGN (S100 Phase 3, stage 2; amended S101 Phase 3 — §2.3 toggle-timing
 reconciled to the `/arch` S101 Phase-2 ruling, §8.1/§8.3 implementation pins added, §12
-item 7 upgraded from triage note to fix brief) — the per-crate codegen proposal for the five
+item 7 upgraded from triage note to fix brief; **amended S102 Phase 3 — §13 added: the
+increment-I implementation staging** — golden-CLIF capture backend half, the ordered
+change-set ladder with per-change-set oracle/gate obligations, the `fn_as_value` seam
+rework folding 0474/0483/0476, and the Principle-23 scenario matrices + `tests.rs` split
+plan) — the per-crate codegen proposal for the five
 ownership-consuming backend mechanisms. Authored by `/design` narrow-deployed on
 `cranelisp-backend`, against the S100 sprint scope (`sprints/SPRINT.md` parts 12–16).
 **Governing authority:** `design/arch/ownership-inference.md` (the S100 master spine, as amended
@@ -959,13 +963,301 @@ analysis-off is the interim guard until the machinery lands).
 variants (§5.2); region arena detail (§4.4, with the (a)-allocator co-design); sibling
 expansion (§9.2); the heap-field stack-slot extension (§4.1 gate 2). None block increment I.
 
+## §13. Increment-I implementation staging (S102 Phase 3)
+
+Authored by `/design` (backend, narrow) against `sprints/SPRINT.md` S102 Block B. Governing
+rulings inherited: the spine §6.2 capture-then-scoped-rebaseline ruling (`/arch` S102
+Phase 2), the FIXME-0476 `/arch` ruling (`PrimitiveBody::{Extern, Inline}` reshape,
+consumed here), and the close-short seam after B2 (`sprints/SPRINT.md` §Sizing). `/qa`'s
+concurrent Phase-3 plan (`tests/plan/s102-test-plan.md`) owns the corpus, MANIFEST,
+EXCLUSIONS, capture/diff script, and the lane specs; this section owns the backend half —
+dump determinism, the normalization contract, the change-set ladder, and the seam-rework
+design.
+
+### 13.1 Golden-CLIF capture — the backend half (Block B Wave 1; L-B1 substrate)
+
+**Mechanism.** Capture = `CRANELISP_CODEGEN_DUMP=*` on a **cold-cache `--run`** of each
+corpus module (cache hits do not re-codegen and dump nothing — cold cache is mandatory
+for full coverage; fresh tmpdir per capture run). The dump machinery exists
+(`lib.rs:203–253`: filter grammar, `; === CLIF <module>::<symbol> ===` framing,
+`write_clif_dump`). `/qa`'s script harvests stderr; goldens live in
+`tests/fixtures/clif_baseline/` per the qa plan.
+
+**Hook H1 — dump frame atomicity (the one backend change in the capture change-set).**
+`write_clif_dump` issues multiple writes per frame (header, body, footer) without holding
+the stderr lock across them; under the concurrent scheduler two workers CAN interleave
+mid-frame. Fix: compose the full framed dump into one `String` and emit it via a single
+locked write (one `eprint!`-class call). Emission-neutral — CLIF *content* is untouched;
+only the observability channel changes. This resolves qa-plan gap G-1's "then /backend"
+arm pre-emptively; harness-side sorting (below) handles frame *order*.
+
+**Normalization contract (harness-side, `/qa`'s script; pinned here so both sides agree):**
+
+1. Split stderr on the CLIF frames; discard all non-frame lines.
+2. Sort frames by `<module>::<symbol>` — compile *order* is scheduler-dependent and
+   carries no signal; frame *content* does.
+3. Frame content is **byte-verbatim — no canonicalization** of wrapper names, GOT slot
+   immediates, or SSA numbering. Rationale: (a) span-derived wrapper names and slot
+   immediates are deterministic for a fixed source + fixed capture configuration (slots
+   are per-module, allocated in form order; the primitives table is static); (b) wrapper
+   identity and slot identity are load-bearing semantics — 0483's defect class is
+   precisely a wrapper-identity cell, and slot identity IS ABI identity (spine §5.6) —
+   masking them would blind the oracle to the defect classes it exists to catch;
+   (c) deliberate renaming (the §13.3 identity rework) surfaces as an attributed scoped
+   re-baseline, which is the correct visibility, not noise.
+4. **No runtime addresses may reach the corpus's CLIF.** Shapes that bake session
+   addresses as immediates are excluded: `(trace …)` bodies (descriptor-blob pointers,
+   `bake_descriptor_blob`) and platform-effect shapes (layout-hash bakes). If a future
+   entry legitimately needs one, the masking rule is designed then, not pre-emptively
+   (Principle 6).
+
+**Capture-configuration pins (recorded in the corpus MANIFEST):** all emission-affecting
+env unset — `CRANELISP_NO_LENIENT`, `CRANELISP_NONATOMIC_RC`, `CRANELISP_CAPTURE_BORROW`,
+`CRANELISP_NO_OWNERSHIP` (pre-mechanism both polarities are byte-identical; the L-B1 lane
+thereafter compares HEAD **toggle-off** against this golden). Lenient-spark emission is
+deliberately part of the golden surface (the corpus's ParBind/spark shapes pin it).
+Runtime-only knobs (`CRANELISP_SPARK_BUDGET`, `CRANELISP_SATURATION_GATE`) do not affect
+CLIF and are unpinned.
+
+**Determinism self-test at capture:** capture twice back-to-back; the normalized outputs
+must be byte-identical before the golden commits. A mismatch is an H1-class finding
+routed to `/backend` — never worked around by masking.
+
+**Corpus composition** is `/qa`-owned (green-only; EXCLUSIONS = 0483 two-instantiation
+HOF, 0488 FQ-call/imported-value-use, 0484 shadow-order — qa plan §4). One backend pin:
+the corpus SHOULD include the vec COW loop and the *green single-instantiation*
+wrapper/curry shapes (the `vec_query_value_use.rs` green set), so the §13.3 seam rework's
+CLIF delta is captured and attributed. Note 0474's leaking shapes are *green programs*
+(leak-only — correct output); their CLIF is deterministic and they may join the corpus:
+the 0474 fix then re-baselines them attributed, which is exactly the oracle's value.
+
+**Scoped-rebaseline procedure (the developer protocol, binding on every backend
+change-set from capture onward):**
+
+1. **Before** an emission-affecting change-set (classifier: spine §6.2), run the capture
+   script on the parent commit — confirm clean against the golden. A dirty start means a
+   previous change-set skipped this discipline: stop and attribute that first.
+2. Land the change; run the script; collect the per-entry diff.
+3. **Attribute every changed entry to the change-set's seam.** Any diff that cannot be
+   attributed is a defect finding — stop; do not re-baseline over it.
+4. Re-dump ONLY the changed entries; golden diff + source change + attribution paragraph
+   land in the **same commit**. Wholesale re-capture is forbidden.
+5. If the change-set turns an EXCLUSIONS shape green: **extend** (new entry, fresh
+   capture, EXCLUSIONS row struck) in the same change-set; existing entries untouched.
+   Extension ≠ re-baseline.
+
+### 13.2 The change-set ladder (ordered; each independently landable)
+
+Every change-set below obeys the §2.2 else-arm discipline, so any suffix of the ladder
+can carry to S103 without unsoundness (monotone soundness; the close-short seam sits
+after B2). Per-change-set obligations: **[oracle]** = the differential-oracle duty
+(`CRANELISP_NO_OWNERSHIP` byte-identical off — L-B1 golden diff expectation stated
+per change-set; L-B2 both-polarity suite at wave gates) and **[gate]** = the I-G
+acceptance gate(s) it makes gradeable.
+
+| # | Change-set | Contents | Depends on | [oracle] | [gate] |
+|---|---|---|---|---|---|
+| **B0-be** | Capture substrate | Hook H1 dump-frame atomicity (§13.1); rides the same wave as `/qa`'s corpus + golden commit | nothing (Wave 1, not gated on Block A) | CLIF content byte-identical (channel-only change); golden commits here | installs L-B1 |
+| **B1-be** | 0476 consumption + 0482 | Backend + primitives (paired) consumption of the `/arch` types change-set: `resolve_vec_query_primitive` name-list retires; the resolution stop-predicate flips `callable_got_slot().is_some()` → `is_callable_target()`; `emit_wrapper_call`/`emit_curry_target_call` exemption arms re-key off `PrimitiveBody::Inline`; **0482** `#[non_exhaustive]` on `CacheInvalidReason` + sibling-DTO audit; `public-api.txt` regens | `/arch` types change-set (ModeSummary + fact-table + `PrimitiveBody` reshape + `CACHE_SCHEMA_VERSION` v11→v12) | **golden diff EMPTY** — a representation cure, not an emission change; the empty diff is the change-set's own correctness witness | — |
+| **B3.0** | 0495 relocation | `tests.rs` split: pure relocation of the 76 crate-root tests to their submodule homes per the 0495 bucket map; zero behaviour change. Scheduled with B1-be's wave (crate already open, pre-seam) so subsequent change-sets land their scenario tests in the right homes | B1-be (avoids relocating tests the 0476 edit touches twice) | no CLIF surface | — |
+| — | *(B2 = typecheck/types: `pass5_ownership` + summaries. Not this crate. Backend expectation: summaries emitted, zero consumers ⇒ golden diff EMPTY. I-G5/I-G6 run here — mandatory at the seam if the sprint closes short)* | | | | |
+| — | **CLOSE-SHORT SEAM** (`sprints/SPRINT.md` §Sizing; `/arch` Q3) | | | | |
+| **B3.1** | `fn_as_value` seam rework — the defect half | §13.3: wrapper-identity scheme (0483 cure) + COW consumed-source polarity (0474 cure) + curry-path coverage; scenario-matrix unit tests per §13.5; 0488's fix rides here as a conditional rider iff `/qa`'s A3 isolation attributes it to this seam | B1-be (kinds), B3.0 (test homes) | emission-affecting: **scoped re-baseline** (wrapper names/COW branches) + **corpus extension** (newly-green 0483 shapes; EXCLUSIONS struck) | flips 0474×3 + 0483×3 guards; L-M1 matrix rides here |
+| **B3.2** | Borrow-elision core (modes-live) | §3.1 caller skip-inc + temp post-call dec; §3.2 `Borrowed` params join `borrowed_vars`; §3.3 ResultMode consumption + provenance-rooted `compute_last_uses` extension; §3.4 adaptation algebra; §3.5 R2 `__d24wrap_{fq}_{slot}__` wrapper + curry composition. **One atomic change-set**: the callee-side moded compilation, the caller-side vector consumption, and the R2 wrapper flip together (a moded body reachable from a Decision-24 value use without its adapter is the §3.5 invariant violated) | B2 (summaries), B3.1 (the wrapper machinery base + a clean seam) | emission-affecting: the largest attributed re-baseline of the sprint (elided incs/decs across the corpus); H2 elision counters land here | **I-G1** (F1 ≥99% rc_inc drop), I-G2 attribution honesty; S1–S4+S6 fences discriminating |
+| **B3.3** | Confined non-atomic RC | §5 re-gate of the existing `heap.rs` non-atomic arms on the per-site `confined` fact (`RcAtomicity` input on the emit helpers); `emit_vec_rc_dec_with_drop` gains the same input (§5.2's one moving inventory item); H2 non-atomic-op-share counter | B2 (facts); independent of B3.2 in soundness, sequenced after it because the surviving-op population I-G3 grades is post-elision | emission-affecting: scoped re-baseline (atomic→plain ops on Confined-classified corpus sites) | **I-G3** (F2 board classifies Confined; surviving parent-side ops non-atomic) |
+| **B3.4** | Stack slots | §4.1–§4.3: `create_sized_stack_slot` + immortal-RC sentinel (`IMMORTAL_RC` header init) at `escapes = Some(false)` sites passing the four eligibility gates (statically sized, all-scalar payload, no TCO back-edge flow, backend-emitted); scope-exit skip mark; vec write-use decline heuristic; H2 stack-slot-hit counter | B2 (facts); independent of B3.2/B3.3 | emission-affecting: scoped re-baseline (alloc→stack_slot at eligible corpus sites) | **I-G7** (eligible-site heap allocs → 0); L-C2 ASan lanes |
+| **B3.5** | `str-len$borrowed` sibling | §9.1 authoring template (shared core, two exports) + primitives-table sibling slot + `borrowed_sibling_slot` linkage + §9.3 four-leg emission gate; `ring2-rc.md` §3.3 audit table gains the "borrowed sibling?" column | B3.2 (site borrow-classification is a gate leg) | consuming export untouched ⇒ Rust side byte-identical off; sibling call sites re-baseline scoped | S5 fence; L-D5 attribution lane seeds |
+| **B4** | 0459 density gate | The static allocation/RC-density admission axis on sparkability — designed in `lenient-eval.md` §2.7 (this sprint's doc edit); consumes the same per-site facts as B3.3/B3.4, active only when pass5 ran (facts-absent ⇒ axis inert ⇒ today's admission verbatim) | B2 (facts); most valuable after B3.2–B3.4 (density measures the *surviving* atomic/alloc population) | emission-affecting where it declines a spark (gate branch not emitted); toggle-off byte-identical by the axis-inert rule | **I-G4** (parallel non-regression) progress; lenient-eval §9 three-regime equivalence extended |
+
+Ordering rationale: B3.1 immediately before B3.2 is the point of the fold — the R2
+wrapper (B3.2) builds on the seam B3.1 just cured, one seam visit (Principle 8). B3.3/B3.4
+are advisory-class consumers, mutually independent and independently droppable at a
+capacity squeeze; they sit after B3.2 only because their *measured* value (I-G3's
+surviving-op population, I-G7's candidate set) is defined post-elision. B3.5 needs B3.2's
+borrow classification as an emission-gate leg. B4 is last: its signal is the residue the
+other mechanisms leave.
+
+### 13.3 The `fn_as_value` seam rework (B3.1) — folding 0474 / 0483 / 0476
+
+**Actors (Principle 21).** The three wrapper families and their naming
+(`__wrap_{name}_{disc}{span}__` at `fn_as_value.rs:135`, `__wrap_tmv_…` at `:246`,
+`__curry_…` at `:715`); `emit_wrapper_call`'s dispatch ladder (`:361` family — the S101
+NULL-slot fix's home); `emit_vec_query_into` + the shared COW cores
+(`emit_vec_set_cow_core` / `emit_vec_push_cow_core`, `vec_codegen.rs`); the operator
+wrapper precedent (`literals.rs:263`); post-0476 `PrimitiveBody::{Extern, Inline}` +
+`is_callable_target()`; and the incoming R2 `__d24wrap_` adapter (§3.5). The functions
+between them: value-use compilation → wrapper synthesis → wrapper-body emission →
+(inline arm | GOT-indirect arm | adaptation arm).
+
+**Ruling 1 — wrapper identity derives from (dispatch identity × concrete signature),
+never (span × enclosing-fn discriminator).** The as-built naming keys on span + inner-fn
+discriminator (the FIXME-0347 cure for enclosing-fn mono collisions); 0483 shows the
+per-instantiation matrix still holds a fatal cell (≥2 wrapper-backed instantiations of
+one HOF → SIGBUS). Target scheme, one identity rule for all families:
+
+- slot-dispatched callables → `__d24wrap_{fq}_{slot}__` (§3.5 — slot identity is ABI
+  identity; summary-trivial targets skip the adapter and close over the body directly,
+  as today);
+- `PrimitiveBody::Inline` targets (the vec trio; ctor family) →
+  `__inlwrap_{bare}_{mangled concrete sig}__` — keyed by the *mono signature* (which
+  determines the element heap category the wrapper body bakes), so two instantiations
+  yield two names by construction, and identical instantiations share one symbol via
+  `declare_function` name-idempotency (the body is a pure function of the key — dedup is
+  sound);
+- curry wrappers likewise re-key on (target identity × applied-prefix signature).
+
+Properties: deterministic, deduplicable, collision-free across monomorphisations *by
+representation* (Principle 20), and cache-safe (names are functions of persisted facts,
+not compile-order accidents). **Investigation pin (binding on `/dev`, per
+`memory/feedback_investigate_suspected_dual_path.md` discipline):** 0483's "wrapper-name
+or slot collision" is a *hypothesis*; root-cause against the §13.5 instantiation matrix
+FIRST (candidates: name collision, `vec_elem` type plumbed from the wrong instantiation,
+shared-`ctx` clobber across the separate `FunctionBuilder`). The identity scheme lands as
+the durable convention regardless; the fix must address the actual failing cell, and the
+unit matrix is the arbiter.
+
+**Ruling 2 — one explicit RC-polarity contract on the COW cores.** The cores gain a
+consumed-source polarity parameter (illustrative: `SourceOwnership::{Owned, Borrowed}`);
+the **copy branch emits the source release iff `Owned`** (`emit_vec_rc_dec_with_drop`),
+the mutate/grow branches are unchanged (ownership transfers into the returned pointer).
+Every call site states its truth explicitly: wrapper and curry bodies pass `Owned`
+(consuming closure protocol); static sites pass what their arg-compilation actually did —
+and note the 0474 *widening* (guard 3: plain static `(vec-set v 0 9)` with `v` live also
+leaks the protect-inc'd reference) means the static-site polarity is NOT uniformly
+`Borrowed`; `/dev` derives each static call site's polarity from its actual inc emission,
+with the §13.5 branch×polarity unit matrix pinning balance per cell. Leak-only class (no
+UAF) — but the fix is a polarity *contract*, not a spot dec, so the next call-site shape
+cannot re-introduce it (Principle 18).
+
+**Ruling 3 — the dispatch ladder becomes kind-driven.** Post-B1-be, `emit_wrapper_call`'s
+arm selection reads the entry: `PrimitiveBody::Inline` → borrowed-builder inline emission
+(the §12.7 mechanism, now kind-keyed — the S101 name-list is gone); slotted +
+summary-trivial → GOT-indirect through the slot (today's path verbatim — the toggle-off
+arm); slotted + non-trivial summary (B3.2 onward) → adapter body = GOT-indirect +
+`emit_d24_adaptation` (§3.4). `emit_curry_target_call` consumes the summary directly
+(compose-don't-stack, §3.5). One ladder, kinds not names, and the 0476 cure means no
+consumer can route a value-use through a slot that cannot be stored.
+
+**Guard-flip mapping (how the 6 guards go green as mechanisms land, not as patches):**
+0483×3 flip on Ruling 1 (B3.1); 0474×3 flip on Ruling 2 (B3.1); the `vec_query_value_use`
+green controls and shadowing pins stay green through Rulings 1/3 (regression fence); the
+corpus extends with the newly-green two-instantiation shapes in the same change-set
+(§13.1 step 5).
+
+### 13.4 0459 — division between this doc and `lenient-eval.md`
+
+The floor-scope doc half and the **static allocation/RC-density admission axis** are
+designed in `lenient-eval.md` §2.7 (landed with this S102 amendment — the gate consumes
+this doc's per-site facts and nothing else; zero new analysis, Principle 7). The
+implementation is ladder entry **B4** (§13.2). This doc's obligation is only the fact
+supply: the axis reads `escapes`/`confined` site facts and the borrow-elision outcomes
+that B3.2–B3.4 make real; it is keyed off "pass5 ran" so the facts-absent path is
+admission-identical to today (the §2.2 discipline applied to a *scheduling* emission).
+
+### 13.5 Scenario matrices + `tests.rs` split (0495; Principle 23)
+
+**The split (B3.0):** pure relocation of the crate-root `tests.rs` buckets to submodule
+homes per the 0495 audit map (vec_codegen 20+, got 6–20, lib/module-assembly 6–20,
+resolution/apply 6–20, fn_as_value ~5, trap stub 3, fn_compiler 3, extern_call 2,
+lambda/launch 3, literals/match 2, jit ~3). No behaviour change; lands pre-seam so every
+subsequent change-set's scenario tests have a home.
+
+**Per-mechanism strategy scenario spaces** (per Principle 23 /
+`memory/feedback_dev_strategy_derived_unit_scenarios.md` — `/dev` derives unit scenarios
+at submodule × scenario-class grain, through the facade where expressible, and `/qa`
+audits coverage against these matrices):
+
+- **`compiler/rc_emission.rs` + `heap.rs` (B3.3):** {`emit_rc_inc`, `emit_rc_inc_guarded`,
+  `emit_rc_dec`, `emit_rc_dec_guarded`, `emit_vec_rc_dec_with_drop`} ×
+  {`confined = Some(true)`, `Some(false)`, `None`, toggle-off} → {non-atomic arm, atomic
+  arm *verbatim*}. Negative class: fact-absent path emits the identical instruction
+  sequence as pre-change (the else-arm identity, CLIF-text asserted); the probe env
+  (`CRANELISP_NONATOMIC_RC`) still overrides as measurement ceiling.
+- **`compiler/apply.rs` (B3.2):** {Var arg, temporary arg} × {callee param `Owned`,
+  `Borrowed`, no summary} × {toggle on/off} → {consuming inc, skip-inc, skip-inc +
+  post-call dec, verbatim today}; adaptation row (member of `borrowed_vars` at an `Owned`
+  position ⇒ ordinary Var inc); result-mode consumption {`Fresh`, `AliasOf(i)`,
+  `ProjectionOf(i)`, absent} × {result used / released / escapes}. Edge class: arity >8
+  (stack-passed args), recursive callee mid-fixpoint summary.
+- **`heap.rs::compute_last_uses` provenance extension (B3.2):** {projection chain depth
+  1/2/n} × {root's textual last use before vs after the projection's last use} ×
+  {projection escapes (rule-5 inc) vs frame-local} — the root's release must order after
+  every rooted projection's last use (the Sprint-61-one-level-up shape). Negative:
+  borrowed projections never appear as last-use candidates. **Shadowing row (typecheck
+  §13.6(d))**: a `let x … let x …` rebind over a live provenance root arrives as
+  `provenance: None` — the backend takes the Decision-24 materialization path (ordinary
+  inc, no `borrowed_vars` entry); the row asserts that path fires and stays balanced.
+- **`control_flow/fn_as_value.rs` (B3.1/B3.2):** dispatch-kind {UserFn slotted,
+  `PrimitiveBody::Extern`, `PrimitiveBody::Inline` (vec trio), constructor, trait method,
+  operator} × use-position {HOF arg, curried partial, returned from fn, stored in ADT
+  field, direct value binding} × **instantiation count {1, 2-same-op-two-elem-types,
+  2-different-ops-one-HOF, n}** × summary {trivial, non-trivial (B3.2)} × mode {REPL,
+  `--run`}. Identity class: wrapper-name uniqueness/dedup per (target, mono sig) —
+  asserted at the `declare_function` seam. The 0483 crashing cells and the green controls
+  are rows of this matrix, not ad-hoc tests.
+- **`compiler/vec_codegen.rs` COW cores (B3.1):** branch {mutate (rc==1), copy (rc>1),
+  grow} × source polarity {`Owned`, `Borrowed`} × call-site kind {static, wrapper,
+  curry} → exact RC balance per cell (allocs−deallocs = 0 over the cell's contract);
+  COW value semantics asserted alongside (result correct, source unchanged on copy).
+- **`control_flow/let_if.rs` + stack slots (B3.4):** eligibility gates {statically
+  sized ±} × {all-scalar payload ±} × {TCO back-edge flow ±} × {`escapes` =
+  `Some(false)`/`Some(true)`/`None`} × site kind {ADT ctor, closure, VecLit} → {stack
+  slot, heap verbatim}; sentinel behaviour class: inc/dec drift on `IMMORTAL_RC` is
+  value-preserving, free path unreachable, COW rc==1 never satisfied on a stack vec,
+  write-use vecs decline stack.
+- **`extern_call.rs` sibling gate (B3.5):** the four-leg truth table {declared only-read
+  ±} × {arg borrowed at site ±} × {sibling registered ±} × {toggle ±} — exactly one
+  TRUE-all cell targets `str-len$borrowed`; all 15 other cells target the consuming
+  export with today's emission (byte-identity leg included).
+- **`got.rs` (with B1-be/B3.0):** exhaustion / freeze semantics / trap-patch-in-place —
+  the 0495-named unchecked-allocation cells.
+- **`control_flow/sparkability.rs` density axis (B4):** {facts present, absent} ×
+  {alloc-dense body, compute-dense body, mixed} × {threshold boundary −1/at/+1} →
+  {admitted, declined, axis-inert}; negative: facts-absent admission set identical to
+  pre-change for the full existing sparkability fixture set.
+
+Every matrix's negative/else-arm class doubles as the unit-tier half of the L-B1
+byte-identity obligation. `/qa`'s e2e lanes (fences S1–S6, L-C1/L-C2, L-M1) sit above
+these; the matrices are the `/dev` unit tier `/qa` audits at seam × class grain.
+
+### 13.6 Typecheck consumption contracts (S102 coordination pins)
+
+Two producer-side pins from the typecheck staging plan
+(`design/typecheck/ownership-inference.md` §13.6) that the backend consumers in this
+ladder rely on — recorded here so `/dev` builds against them, not against §3.3's earlier
+per-visit phrasing:
+
+- **(b) Site facts are written in ONE post-convergence annotation walk**, never
+  incrementally mid-fixpoint. Backend consequence: when codegen receives a `MonoDefn`,
+  its facts and provenance are **complete and final** — there is no partially-annotated
+  state. `fact-absent` therefore always means "the analysis concluded conservative (or
+  did not run)", never "not yet written", which is exactly the reading the §2.2
+  else-arm discipline assumes. No backend staleness handling, no re-read, no ordering
+  dependence on fixpoint internals.
+- **(d) Projection provenance is `Symbol`-keyed, with a shadowing guard.** The
+  provenance root arrives as the root binding's `Symbol` — matching the as-built keying
+  of `borrowed_vars` and the last-use machinery, so the §3.3 provenance-map parameter to
+  `collect_var_uses` plumbs without a new key type. Where a body rebinds a name that is
+  (or roots) a live provenance root, typecheck emits `provenance: None` for projections
+  whose root would be ambiguous under that name — the backend performs **no
+  disambiguation of its own** (the §3.3 narrowness counterweight): `None` selects the
+  ordinary Decision-24 materialization path. The shadowing shape is a pinned scenario
+  row on both sides (typecheck §13.7 transfer matrix; the §13.5 `compute_last_uses`
+  matrix here).
+
+---
+
 ## Next skills
 
-- `/qa` — author the verification/acceptance plan (parts 17–18, `tests/plan/`) inheriting
-  spine §9 + §12 items 1–7 here + typecheck §12 items 5–8.
-- `/arch` — evaluate FIXME 0467 (summary shape) and FIXME 0468 (Copy-predicate home)
-  alongside the §3.3 carrier design at the implementing sprint; no S100 action.
-- `/sprint` — sequence at close per spine §5.7: R3 machinery (§8) → increment I → increment
-  II; `--release` stays gated behind the settled memory model.
-- `/design` (int, later fire) — consume §8.3 and design the session transaction in
-  `design/int/`.
+- `/dev` (backend, narrow) — execute the §13.2 ladder in order: B0-be (H1) with the
+  capture wave; B1-be + B3.0 once the `/arch` types change-set lands; B3.1–B3.5 + B4
+  after the seam, each with its scenario matrix (§13.5) and scoped re-baseline (§13.1).
+- `/qa` — corpus + capture script + goldens per `tests/plan/s102-test-plan.md` §1.5/§4,
+  consuming the §13.1 normalization contract; observe guard flips per their §5 map.
+- `/arch` — author the types change-set (ModeSummary carrier + fact tables +
+  `PrimitiveBody::{Extern, Inline}` + `is_callable_target()` + `CACHE_SCHEMA_VERSION`
+  v11→v12) — B1-be and B2 consume it; approve the B1-be/0482 `public-api.txt` diffs.
+- `/sprint` — wave the ladder per §13.2's dependency column; hold the close-short
+  protocol (I-G5/I-G6 at the seam; 0474/0483 guards stay RED if B3.1 carries).
+- `/design` (int) — the T1 full-cure sizing is Block A's; no backend seam changes
+  needed beyond §8.3 (unchanged).

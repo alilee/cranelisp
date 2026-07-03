@@ -15,6 +15,8 @@ Test infrastructure for the Cranelisp reimplementation. Owned by `/qa`.
 | `plan/s99-measurement.md` | S99 parallel-contention measurement record (F1–F4 fixtures, baselines, ablations). |
 | `plan/s100-ownership-verification.md` | Ownership-inference verification & acceptance plan (S100 parts 17–18): staged F1–F4 gates per increment, analysis-off differential oracle, starved-inc/UAF/stack-slot/reuse fences, R3 machinery lanes, owed observability hooks, vec-query value-use triage record. |
 | `plan/s101-coverage-postmortem.md` | S101 coverage post-mortem (Wave 1): per-find root cause of the three Phase-3 coverage misses; cat-1 convention-populated-metadata field inventory + `callees` completeness-contract test spec (Wave 2); cat-3 use-position × builtin-family matrix sweep (NULL-slot class widened, 3 new guards); cat-2 lifetime-across-suspension lineage routed to `/arch`. |
+| `plan/coverage-audit-s101.md` | S101 special risk review + coverage audit (Phase 6b, user-mandated): miss-pattern taxonomy P1–P6 over the 17-item 6a/6b defect set; assertion-vocabulary + lifecycle-coverage audit of the e2e suite; the 7 lane proposals (L-N1/L-N2/L-S1/L-S2/L-S3/L-M1/L-U1) + 4 standing drafting rules (§2.5, binding from S102); per-crate unit-tier thinness map (the 0495–0498/0500–0502 drain work-list); S102 risk register (Phase-1 scoping input). |
+| `plan/s102-test-plan.md` | S102 test plan (Phase 3): QA-first stage-1 drafting order (L-U1 → L-S2/L-S3 → L-N1/L-N2 → increment-I set; L-S1 later; L-M1 rides B3); 0488 isolation plan; golden-CLIF corpus pins (0503 intake); the 22-guard flip map; I-G gate harness-readiness gaps. |
 | `plan/legacy/` | Superseded plans (rings, four-layer strategy, S61 retros). Provenance only. |
 
 ## Two tiers, no middle

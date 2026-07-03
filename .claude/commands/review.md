@@ -23,6 +23,7 @@
 @design/arch/principles/20-model-invariants-by-representation.md
 @design/arch/principles/21-actors-and-functions-before-mechanism.md
 @design/arch/principles/22-published-pointers-have-retention-owners.md
+@design/arch/principles/23-tests-mirror-module-composition.md
 
 # /review — Per-crate Reviewer
 

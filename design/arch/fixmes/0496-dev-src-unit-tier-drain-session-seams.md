@@ -57,3 +57,13 @@ the drain).
 This is the unit-tier half of the S102 /int defect wave (risk register §4 items
 2, 5, 6, 8 in the audit doc) — not separate work. e2e lanes L-S1/L-S2/L-S3
 (audit §2.4) are the /qa-side complement.
+
+## /design (int) S102 Phase 3: scenario-space matrices named
+
+Per Principle 23's role binding, the implementation strategy's scenario space for
+this drain is named explicitly in `design/int/s102-defect-wave.md` §3 — Matrices
+A (session lifecycle, `lifecycle.rs`), B (regeneration grammar, `save.rs`),
+C (redefinition target-kind × artifact world, `redefine.rs`), D (module-turn
+environment, install routes × env dimensions), E (introspection recording).
+Derive the per-fix unit briefs from those matrices; the per-section change-set
+plans (§1, §4–§7) name which cells each fix must pin.

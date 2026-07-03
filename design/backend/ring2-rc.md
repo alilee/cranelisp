@@ -266,6 +266,7 @@ The authoritative per-extern table is:
 |---|---|---|---|---|---|
 | `str-concat` | runtime/string.rs | `a`, `b` (String) | No (returns new String) | No | **DONE**: dec both via `rc::consume_shallow` before return; caller uses `compile_consuming_arg_list` |
 | `str-eq` | runtime/string.rs | `a`, `b` (String) | No (returns Bool) | No | **DONE**: dec both |
+| `neq-string` | primitives/string.rs (post-D43 path; `crates/cranelisp-primitives/src/string.rs:109–116`) | `a`, `b` (String) | No (returns Bool) | No | verified consuming (S102, FIXME 0504): dec both via `rc::consume_shallow` — same pattern as `str-eq` (its `Eq.!=` counterpart) |
 | `str-len` | runtime/string.rs | `s` (String) | No (returns Int) | No | **DONE**: dec |
 | `string-identity` | runtime/string.rs | `s` (String) | Yes (returns same ptr after inc) | Yes (inc'd) | **DONE** (semantics-preserving): inc-and-return is already consuming — the returned pointer carries the caller's consumed reference plus a fresh inc. Caller uses `compile_arg_list` (no inc) because inc-and-return would double-up otherwise. |
 | `substring` | runtime/string.rs | `s` | No (returns new String) | No | **DONE**: dec |

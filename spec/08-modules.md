@@ -570,7 +570,7 @@ Resolution proceeds through three layers, in order:
 
 1. **Local environment**: `let` bindings, `fn` parameters, and `match` pattern variables. These are lexically scoped -- pushed on entry to a binding form and popped on exit.
 
-2. **Module scope**: Definitions within the current module, plus names brought in via `import`. This layer consults the current module's symbol table (the **inner scope**), following `Import` and `Reexport` references to their source modules. When the inner scope misses and the module receives the implicit prelude (§8.8.1), this layer falls back to the prelude's public bindings (the **outer scope**, per §8.6.4) before proceeding to the root module.
+2. **Module scope**: Definitions within the current module, plus names brought in via `import`. This layer consults the current module's symbol table (the **inner scope**), following `Import` and `Reexport` references to their source modules. When the inner scope misses and the module receives the implicit prelude (§8.8.1), this layer falls back to the prelude's public bindings (the **outer scope**, per §8.6.4) before proceeding to the root module. Within the inner scope there is **no def-over-import precedence tier**: a module-local definition and an explicit import are peers, and their contesting the same bare name is a **conflict** per §8.6.4 (definition-over-import), not a shadow. Only the inner-vs-outer boundary is a shadowing relation (local definitions and explicit imports shadow prelude-fallback names, §8.6.4).
 
 3. **Root module**: Special forms (`if`, `let`, `fn`, `match`, `do`, etc.) live in a distinguished root module that is always consulted. Special forms are available without import or qualification.
 
@@ -608,12 +608,14 @@ The following conflicts MUST produce compile-time errors:
   (import [math [add] util [add]])    ; error: ambiguous bare name 'add'
   ```
 
-- **Definition over import**: A definition (`defn`, `deftype`, etc.) in the current module that has the same name as an explicitly imported name:
+- **Definition over import** `[S102]`: A definition (`defn`, `deftype`, etc.) in the current module that has the same name as an explicitly imported name:
 
   ```clojure
   (import [math [add]])
   (defn add [x y] (+ x y))           ; error: definition conflicts with import
   ```
+
+  This conflict is order-independent and applies in every mode, including forms entered interactively at the REPL — see §"Definition-Over-Import: Order-Independent, All Modes" below for the full pinned statement.
 
 - **Rename collisions**: Two import (or export) entries — whether via rename or bare — producing the same local (or exported) name MUST produce a compile-time error. Example: `(import [m [(Some X) (None X)]])` is an error — duplicate local name `X`.
 
@@ -640,6 +642,42 @@ When an explicit glob import brings in a name that the prelude would also provid
 - **Explicit prelude re-import**: Add `(import [prelude [Some None]])` after the glob import to restore specific prelude names.
 
 **Practical note**: Glob imports from modules with large public APIs can silently displace prelude bindings (e.g., a module that re-exports `Some`/`None` for convenience). When debugging unexpected type errors after adding a glob import, check whether prelude names have been shadowed.
+
+#### Definition-Over-Import: Order-Independent, All Modes [S102]
+
+Arbitrated S102 (FIXME 0484). The definition-over-import conflict above is pinned as follows:
+
+**A definition form (`defn`, `def`, `deftype`, `deftrait`, `defmacro`, and their private `-` variants) whose name is already bound in the current module's inner scope by an explicit import — specific, renamed, member, or glob — MUST be rejected with a compile-time error.** The rejected form has no effect on the module: the bare name continues to resolve to the import, and introspection MUST continue to describe the imported definition. A local definition is always a fresh terminal source, so the terminal-source dedup above can never reconcile it with the import — the collision is unconditional.
+
+The rule is:
+
+- **Order-independent.** Whether the imported name was *used* before the conflicting definition appears MUST NOT affect the outcome. Name resolution is a property of the module's binding set, never of call history. There is no normative pre-shadow/post-shadow distinction: an implementation in which an already-exercised import behaves differently from an unexercised one under a same-name definition is defective on both legs — the definition must be rejected in both.
+
+- **Uniform across modes.** The rule applies identically to batch compilation (`--run`, `--link`) and to forms entered interactively at the REPL. In interactive mode, the **later-arriving form is the rejected one**: a definition entered over an existing explicit import fails, and symmetrically, an `import` entry that would bind a bare name already bound by a module-local definition fails; in both cases the pre-existing binding and the rest of the session state are unchanged. A REPL session MUST NOT accept a binding set that its own regenerated backing file would reject when batch-compiled — an interactive definition-over-import shadow would produce a module source containing both the import and the definition, which this section rejects, breaking session/file round-trip.
+
+```
+user> (import [util [measure]])
+user> (measure [1 2 3])
+:primitives/Int 3
+user> (defn measure "user shadow" [v] :Int 99)
+error: definition of 'measure' conflicts with the explicit import from 'util'
+       (rename the definition, use a renamed import (§8.3.5), or drop
+       'measure' from the import list)
+user> (measure [1 2 3])
+:primitives/Int 3                    ; the import remains the binding
+```
+
+The transcript is identical with or without the pre-definition call to `(measure ...)` — the definition is rejected either way.
+
+**Contrast — prelude-provided names remain shadowable.** A module-local definition over a name that reaches the module only through the implicit-prelude fallback (the outer scope, §8.8.1) is NOT a conflict: the inner-scope definition shadows the outer scope structurally, per §"Explicit Imports Shadow the Implicit Prelude" above. Redefining `count` is permitted when `count` arrives via the prelude; it is an error when the module *explicitly imported* `count`. The distinction is intent: an explicit import is the author's statement "this module's `count` is `collections.vec/count`", which a same-name local definition contradicts rather than refines — whereas prelude names are ambient convenience the author never asked for by name. (Clojure draws the same line: defining over a `:refer`ed name is an error; defining over a `clojure.core`-provided name — the prelude analogue — is a permitted shadow.)
+
+**Rationale.**
+
+1. **No silent winner.** §8.6.5 pins that two distinct terminal sources contesting one bare name MUST error rather than one silently winning ("glob imports are peers of specific imports"). A local definition versus an explicit import is exactly such a contest; resolving it silently in either direction is the footgun this section exists to prevent.
+2. **Round-trip validity.** The REPL `user` module persists to a backing file and must batch-compile. Any interactive precedence other than rejection would admit sessions whose regenerated source is an invalid module.
+3. **The nearest-scope precedent does not apply.** §8.11.2.1 (S98, submodule-first) orders *search tiers* for bare **module** names, where the losing candidate remains independently reachable by its own path. Here two bindings contest a single inner-scope name slot — §8.6.4/§8.6.5 conflict territory, not search-order territory. The analogous nearest-scope shadow in name resolution is layer 1 (`let`/`fn` bindings, §8.6.3) and the inner-over-outer prelude shadow — both scope *layerings*, not same-layer collisions.
+
+**Diagnostics.** The error SHOULD name the import's source module and offer remediations: rename the local definition; convert the import to a renamed import (§8.3.5) to move it out of the way; drop the name from the import list (using a qualified reference where the import was used); or suppress the import entirely. Whether a REPL additionally offers an affordance to *remove* an import binding from a live session (so the name can then be defined) is a REPL-experience concern (`repl/spec.md`), not specified here.
 
 ### 8.6.5 Ambiguity and Disambiguation
 

@@ -589,6 +589,14 @@ in-place trap-stub slots + provenance (`/info`/`/sig` answer broken status). Ful
 watcher Replace path joins the same commit gate (per-symbol slot policy; slot-zeroing
 retired) at module grain.
 
+**S102 amendments**: the §10 T1 downgrade (non-concrete targets) is no longer silent —
+the turn prints the `repl/spec.md` §18.1.1 `stale:` section (data contract:
+`session-transaction.md` §9.1.1); the T1 full cure (end-of-turn module-grain reload) is
+designed with preconditions and recommended for S103. The S102 /int defect-wave cluster
+designs (persistence integrity D1/D2/0489, file-backed dev-loop D3/0487,
+display/diagnostic batch) live in **`design/int/s102-defect-wave.md`**, including the
+Principle-23 scenario-space matrices that FIXME 0496's unit drain derives from.
+
 ---
 
 ## 9. Error formatting (Decisions 39 + 42)
@@ -727,6 +735,16 @@ The destination shape is the working reference for design. The as-built reality 
 > dependent-recompilation transaction, BROKEN/trap-stub cascade, ABI-epoch slot versioning
 > + retention pools, persistence pins). Cited from §8.6; consumes backend §8.3's pinned
 > interface; elaborates spine `design/arch/ownership-inference.md` §5 within BC §6.
+> Amended S102 (§9.1.1 downgrade `stale:` contract; §10 T1 full-cure mechanics).
+
+> **S102 — `s102-defect-wave.md` is a current, load-bearing subordinate doc (KEEP until
+> the wave lands; then fold residuals into §8/§9 and archive).** The Block-A /int
+> defect-wave cluster designs: T1 downgrade-print change-set plan + full-cure sizing
+> verdict (S103 recommendation), persistence-integrity cures (D1/D2 regeneration
+> fidelity, 0489 restart floor), file-backed dev-loop cures (D3/0487 module-env
+> install invariant + FQ introspection), display/diagnostic batch sketches, and the
+> Principle-23 scenario-space matrices (A–E) that FIXME 0496 derives its unit briefs
+> from. Cited from §8.6.
 
 The 32 docs in `design/int/` plus the `concurrency/` subdirectory were authored over 12+ sprints and reflect the historical evolution of int. Sprint 64 triage applies the methodology rule: *delete files, rely on git for history if work is fully embodied; preserve if still load-bearing*. Below is the per-doc disposition.
 

@@ -512,7 +512,7 @@ Per-row annotations below indicate test coverage for each command. Ring 4 intros
 | Command | Aliases | Description | Ring | Test |
 |---|---|---|---|---|
 | `/help` | `/h` | Show available commands and usage | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
-| `/sig <name>` | `/s` | Show signature with typed parameters | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
+| `/sig <name>` | `/s` | Show signature with typed parameters (§3.8) | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/doc <name>` | `/d` | Show docstring (including builtins — see spec/appendix-a-builtins.md §A.5) | 0 | [R1] |
 | `/type <expr>` | `/t` | Show type without evaluating | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
 | `/info <name>` | `/i` | Full details: type, classification, code size, compile time | 0 | [Tested tests/repl_introspection::sig_shows_type_signature] |
@@ -740,6 +740,36 @@ Evaluation errors MUST still emit the delta line — observation is the point, a
 | signed `bytes` and `live` deltas | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
 | baseline counters at process start are zero | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
 | `/m` short alias produces snapshot | [Tested tests/repl_introspection::mem_snapshot_emits_live_and_allocs_neg_no_delta] |
+
+### 3.8 `/sig` Output — Same Primary Line as Bare Lookup [S102]
+
+`/sig <name>` shows the symbol's signature. Its output is not a separate format: the
+primary line(s) `/sig` prints MUST be **byte-identical** to the primary line(s) a bare
+lookup of the same name prints (§1.1 universal format, §4.1 per-class rules) —
+fully-qualified type per §1.4, fully-qualified symbol name, and the same
+`; {classification} - {docstring}` drawer. For overloaded functions and macros, `/sig`
+prints the same per-variant / per-clause signature lines as bare lookup (§4.1.1, §11.2.3).
+On a broken symbol, the §18.4 provenance comment line follows, identical to bare lookup's
+(§18.4). [S102]
+
+```
+user> /sig double
+:(Fn [primitives/Int] primitives/Int) user/double ; defn - Multiply by 2
+```
+
+Unqualified type names or an unqualified symbol name in `/sig` output are non-conformances
+(root `CLAUDE.md` §Design Principles — `:Type value` notation with fully-qualified names):
+`:(Fn [Int] Int) double ; defn` is wrong in both positions. [S102]
+
+> Arbitration record (FIXME 0492, S102): the short-form rendering the binary produces today
+> was ruled an implementation defect, not a spec defect — every governing display rule
+> (§1.1, §1.4, §4.1, §11.2.3, §17.18.1, §18.4) already mandated the fully-qualified form;
+> this section makes the `/sig`-specific consequence explicit. Fix owner: `/int`
+> (`repl.rs` `handle_sig` display seam).
+
+| Requirement | Test |
+|---|---|
+| `/sig` primary line is byte-identical to bare lookup's (FQ type + FQ name + drawer) | [S102 — guard tests/repl_redefinition.rs::sig_broken_symbol_primary_line_matches_bare_lookup_fully_qualified, failing-not-ignored until the /int fix (FIXME 0492)] |
 
 ## 4. Self-Documentation Contract
 
@@ -2770,7 +2800,7 @@ produced it. The `turn` index is the only coupling required between the sinks �
 independently writable (one may be set without the other), but when **both** are set they share the
 index so the index→content join is mechanical. [S90]
 
-## 18. Redefinition Semantics — Dependent Recompilation, Broken Symbols, and the Frozen World [S101]
+## 18. Redefinition Semantics — Dependent Recompilation, Broken Symbols, and the Frozen World [S102]
 
 Redefining a symbol in a live session is not always a local act: callers were compiled against the
 old definition's **signature** — its type scheme today, and, once ownership modes ship, every other
@@ -2784,7 +2814,7 @@ dependent-recompilation subsystem), `design/backend/ownership-codegen.md` §8 (t
 versioning). This section is the **normative user-facing contract**; the design docs describe
 mechanism.
 
-### 18.1 Two Classes of Redefinition [S101]
+### 18.1 Two Classes of Redefinition [S102]
 
 Every successful redefinition of an existing symbol is classified by the compiler into exactly one
 of two classes. The classification itself is internal, but the observable split is normative:
@@ -2810,7 +2840,10 @@ caller invoking a new-signature body) MUST NOT occur. [S101]
 > plain `defn` with one monomorphic signature). For every other target kind —
 > generic/constrained function, overloaded function, macro, type/constructor, trait declaration
 > or impl — redefinition takes the legacy reuse-and-patch path: **no dependent-recompilation
-> transaction runs, no cascade report is printed, and no symbol is marked broken or trapped.**
+> transaction runs, no §18.3 cascade report is printed, and no symbol is marked broken or
+> trapped.** (From S102 the downgrade itself is no longer silent — the turn prints the
+> §18.1.1 `stale:` section when compiled callers are left behind — but nothing is
+> recompiled, broken, or trapped.)
 > For those kinds a compiled caller of the old signature is neither recompiled nor trapped: it
 > keeps executing the **old, internally-consistent chain** (coherent-stale — e.g. redefining a
 > concrete `Int -> Int` function to a polymorphic `(Fn [a] a)` leaves an existing compiled
@@ -2824,9 +2857,75 @@ caller invoking a new-signature body) MUST NOT occur. [S101]
 > for when the cure lands). Requirements throughout §18.2–§18.8 are written against the full
 > guarantee; until the cure lands they are testable only within this scope.
 
+#### 18.1.1 The Downgrade Report — a Split World Is Never Silent [S102]
+
+When a redefinition takes the scope note's reuse-and-patch path (a non-concrete target —
+the at-scale default for unannotated, generalizing functions) and at least one compiled
+caller keeps executing the previous definition, the turn MUST report it. The silent
+outcome — old behaviour continuing behind a fresh confirmation line with no indication —
+MUST NOT occur. [S102]
+
+The report is one comment-line section printed after the §1.3 confirmation, in the same
+layout family as §18.3's `recompiled:`/`broken:` sections:
+
+```
+:{NewType} {module}/{name} ; defn
+; stale: compiled callers keep the previous definition of {module}/{name}
+;  {name} {name} ...
+```
+
+- **The section header line is exact**: `; stale: compiled callers keep the previous
+  definition of {cause}`, where `{cause}` is the fully-qualified name of the redefined
+  symbol. [S102]
+- **The name lines** use the related-symbols layout of §1.1 (the §3.3 L0–L4 layout
+  algorithm), exactly as §18.3's sections: callers in the current module appear bare;
+  callers in other modules appear module-qualified. [S102]
+- **The set MUST be exact both ways**: it MUST name every compiled caller that keeps
+  reaching the previous definition after this turn, and MUST NOT name any symbol that picks
+  up the new definition at its next call (late-bound callers and never-compiled callers do
+  not appear). [S102]
+- **The section is omitted entirely when nothing is stale** — a downgraded redefinition
+  that leaves no compiled caller on the previous definition prints only the §1.3
+  confirmation, exactly like a body-only edit (§18.2). The report exists to prevent a
+  silent split world, not to annotate every redefinition. [S102]
+- **The report is informational only.** It recompiles, breaks, and traps nothing: the named
+  callers remain callable and run the old, internally-consistent chain (the scope note's
+  coherent-stale residue). [S102]
+
+Worked example — `id`'s prior definition is generic, so its redefinition takes the
+reuse-and-patch path; `g` was compiled against the old `id` and keeps it:
+
+```
+user> (defn id [x] x)
+:(Fn [a] a) user/id ; defn
+
+user> (defn g [x] (id (+ x 1)))
+:(Fn [primitives/Int] primitives/Int) user/g ; defn
+
+user> (g 1)
+:primitives/Int 2
+
+user> (defn id [x] (+ x 100))
+:(Fn [primitives/Int] primitives/Int) user/id ; defn
+; stale: compiled callers keep the previous definition of user/id
+;  g
+
+user> (g 1)                          ; still the old id — but the report said so
+:primitives/Int 2
+```
+
+> **Relationship to the cure (non-normative).** The full cure — module-grain dependent
+> reload with end-of-turn sequencing (`design/int/session-transaction.md` §10 T1) —
+> recompiles exactly the callers this report names, so under the cure the stale set is
+> empty and the section never prints. The `stale:` section is therefore a section of the
+> same transaction report the cure keeps (rendered empty), not throwaway output — the
+> Principle-8 shape the S102 architecture review pinned.
+
 | Requirement | Test |
 |---|---|
 | A type-changing redefinition with a compiled caller either recompiles the caller or marks it broken — the caller MUST NOT reach the new body uncorrected | [Tested+Neg tests/repl_redefinition.rs::type_change_redefinition_compiled_caller_never_reaches_new_body_uncorrected, tests/repl_redefinition.rs::type_change_redefinition_polymorphic_caller_recompiles_and_works] (stage-M scope per the §18.1 scope note: concrete single-sig UserFn targets — T1-kind targets remain coherent-stale, pinned by tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale and tests/repl_redefinition.rs::redefine_concrete_to_overloaded_caller_survives_coherent_stale with flip notes) |
+| A downgraded (reuse-and-patch) redefinition that leaves compiled callers on the previous definition prints the §18.1.1 `stale:` section — exact set, exact header line, never silent | [S102] |
+| A downgraded redefinition with no compiled caller left behind prints only the §1.3 confirmation — no `stale:` section | [S102] |
 
 ### 18.2 Signature-Preserving Redefinition — Late Binding Preserved [Tested]
 
@@ -2984,7 +3083,7 @@ the trap through the broken symbol at runtime (§18.5). [S101]
 | `/info` shows broken status + provenance + source, no code-size/compile-time stats | [Tested+Neg tests/repl_redefinition.rs::redefine_broken_caller_info_and_sig_report_broken_status] |
 | callers of a broken symbol are not marked broken | [Gap(S101): depth-1 provenance not directly pinned e2e; the trap lanes exercise unrecompiled callers reaching the trap without themselves breaking] |
 
-### 18.5 The Trap — Calling a Broken Symbol [Tested]
+### 18.5 The Trap — Calling a Broken Symbol [S102]
 
 Any call that reaches a broken symbol at runtime MUST raise a clean runtime error — the **trap** —
 presented through the standard runtime-error format (§5.1, `runtime error: ` category prefix) with
@@ -3002,6 +3101,12 @@ user> (k 3)
 runtime error: user/k is broken by the redefinition of user/f: type error at 12..23: type mismatch: expected primitives/String, got primitives/Int
 ```
 
+- **The presentation is exact.** The `runtime error: ` category prefix is followed directly
+  by the trap message, exactly as the transcript above shows. The trap line carries no
+  location span of its own — a runtime trap has no meaningful source location, and §5.1's
+  location requirement is satisfied by the location inside `{original error}`. No internal
+  wrapper text (e.g. an `Error:` / `codegen error at 0..0:` / `runtime panic:` chain) may
+  appear before, between, or around the category prefix and the trap message. [S102]
 - **Every route traps.** The trap MUST be reached by every call path into the broken symbol:
   direct by-name calls, calls from compiled (unrecompiled) callers, closure values minted from the
   symbol **before** the break, and curried partials of it — regardless of when the value was
@@ -3022,6 +3127,7 @@ runtime error: user/k is broken by the redefinition of user/f: type error at 12.
 | Requirement | Test |
 |---|---|
 | direct call of a broken symbol raises the trap message with provenance | [Tested+Neg tests/repl_redefinition.rs::redefine_abi_change_broken_caller_direct_call_traps_with_provenance] |
+| trap presentation is exact: `runtime error: ` + trap message — no synthetic span, no wrapper chain | [S102 — guard tests/repl_redefinition.rs::trap_presented_in_normative_runtime_error_format, failing-not-ignored until the /int fix] |
 | a closure value minted before the break reaches the trap | [Tested tests/repl_redefinition.rs::redefine_broken_caller_value_use_wrapper_minted_before_break_reaches_trap (closest-reachable stage-M carrier — see the test-file header residue note)] |
 | a curried partial minted before the break reaches the trap | [Tested+Neg tests/repl_redefinition.rs::redefine_broken_caller_curried_partial_reaches_trap] |
 | repeated traps neither crash nor corrupt; leak is bounded per invocation | [Tested tests/repl_redefinition.rs::redefine_trap_invocations_leak_bounded_per_trap] |

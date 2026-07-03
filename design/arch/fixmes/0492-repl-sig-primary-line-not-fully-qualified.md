@@ -1,14 +1,42 @@
 ---
 number: 0492
-target: /repl
+target: /int
 filed_by: /docs
 filed_at: 2026-07-03
 sprint_filed: 101
-refers_to: repl/spec.md §18.4 ("`/sig` on a broken symbol MUST show the same primary line and provenance comment line as bare lookup"), §3.1 (/sig row), §1.4 (fully-qualified type display)
+refers_to: repl/spec.md §3.8 (new, S102 — `/sig` primary line byte-identical to bare lookup), §18.4 ("`/sig` on a broken symbol MUST show the same primary line and provenance comment line as bare lookup"), §3.1 (/sig row), §1.4 (fully-qualified type display)
 status: open
 ---
 
 # `/sig` primary line is not fully qualified — diverges from §18.4's "same primary line as bare lookup"
+
+## ARBITRATED (/repl, S102 Phase 3, 2026-07-03) — option (a): spec stands, implementation is the defect; retargeted to /int
+
+Ruling: the short-form `/sig` rendering is an **implementation defect**, not a spec bug.
+Every governing display rule already mandated the fully-qualified form — root `CLAUDE.md`
+§Design Principles (`:Type value` notation with fully-qualified names), `repl/spec.md`
+§1.1 (primary-line name is fully qualified for lookups), §1.4 (type names MUST always be
+fully qualified), §4.1 (bare lookup per-class formats), §11.2.3 (macro `/sig` uses the
+universal format), §17.18.1 (harvest reads "the same signature `/sig` and bare lookup
+render — fully-qualified"), and §18.4's "same primary line" MUST. No amendment of §18.4 or
+§3.1 wording was needed; instead the `/sig`-specific consequence is now explicit as **new
+§3.8** ("`/sig` Output — Same Primary Line as Bare Lookup", [S102]): the primary line(s)
+`/sig` prints MUST be byte-identical to bare lookup's, for healthy and broken symbols
+alike (the divergence is general `/sig` rendering, not a broken-path special case).
+
+Consequences:
+- **Fix owner: `/int`** — `repl.rs` `handle_sig` display seam (`repl.rs:711`); render the
+  same fully-qualified primary line the bare-symbol lookup path renders (one shared
+  composition seam preferred, per the P7 pattern `broken_status_line` already follows for
+  the provenance line).
+- **Guard polarity is CORRECT as authored** —
+  `tests/repl_redefinition.rs::sig_broken_symbol_primary_line_matches_bare_lookup_fully_qualified`
+  asserts the FQ primary line ≥3 times per §18.4 as written; no re-anchor needed. It stays
+  failing-not-ignored until the /int fix flips it green.
+- The `/int` fixer deletes this FIXME with the fixing change-set (plus the mandatory unit
+  test at the display seam, per `memory/feedback_unit_test_per_fix.md`).
+- No doc change owed either way (per the /docs note below); `user/guide/live-development.md`
+  transcripts re-verify when the binary changes.
 
 ## Issue
 

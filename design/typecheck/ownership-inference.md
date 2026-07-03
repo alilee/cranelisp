@@ -3,6 +3,12 @@
 **Status:** DESIGN (S100 Phase 3, stage 2) — the per-crate inference proposal for the
 interprocedural ownership-inference analysis. Authored by `/design` narrow-deployed on
 `cranelisp-typecheck`, against the S100 sprint scope (`sprints/SPRINT.md` parts 6–11).
+**S102 Phase 3 addendum: §13 is the implementation-ready change-set staging for
+increment I's typecheck half (Sprint 102 Block B2)** — ordered change-sets, the
+types-crate dependency pin, the graph-feed verification against the S101 `callees`
+widening (0470/0472), the fact-table coverage verdict, the toggle-off semantics pin,
+and the Principle-23 scenario space (the 0497 rider). §§0–12 stand unchanged except
+where §13.6 records refinements the implementation problem forces.
 **Governing authority:** `design/arch/ownership-inference.md` (the S100 master spine, as amended
 2026-07-02). Where this proposal and the spine disagree, **the spine governs**; this proposal
 resolves the spine's §10 typecheck items 1–6 and elaborates within the spine's lattice
@@ -795,7 +801,417 @@ in-function (the narrowness counterweight — any candidate is an `/arch` FIXME 
 **Deferred by design:** `Transferred` promotion (§5.4 trigger); mode-in-key (§7.3 data
 question); Hoogle-style anything — none block increments I/II.
 
+---
+
+## §13. Increment-I change-set staging (S102 Phase 3 — Sprint 102 Block B2)
+
+Authored by `/design` (cranelisp-typecheck) at S102 Phase 3, against
+`sprints/SPRINT.md` Block B2 and the Phase-2 rulings (Q1 capture-first, Q3 close-short
+seam after B2, the public-API impact statement). Everything here elaborates §§1–10;
+where §13.6 amends an earlier section it says so explicitly.
+
+### 13.1 Dependency pin — CS-A, the `/arch` `cranelisp-types` change-set (v11→v12)
+
+All typecheck change-sets sequence **after** one `/arch`-authored `cranelisp-types`
+change-set (one `CACHE_SCHEMA_VERSION` bump v11→v12, riding the 0476
+`PrimitiveBody` reshape per the Phase-2 public-API statement). What this crate needs
+from it, exactly — the list `/arch` verifies at the Phase-3 exit gate:
+
+1. **`Mode { Copy, Borrowed, Owned }`** — all three points from day one (the contract
+   never migrates, spine §7), even though the increment-I classifier mints `Copy` for
+   scalars only (§2.2).
+2. **`ModeSummary { param_modes: Vec<Mode>, result: ResultMode, param_flow:
+   Vec<ParamFlow>, spark_ops: Vec<bool>, result_unique: bool }`** (spine §3.3 enriched
+   shape) with derives `Clone + Debug + PartialEq + Eq + Serialize + Deserialize`;
+   `#[serde(default)]` on the advisory half. Full `Eq` is load-bearing for the
+   fixpoint's change detection (an advisory-half change must re-enter callers too —
+   `param_flow`/`spark_ops` feed caller classification, §2.2).
+3. **`ResultMode { Fresh, ProjectionOf(usize), AliasOf(usize) }`** (default `Fresh`)
+   and **`ParamFlow { Consumed, IntoResult, Retained }`**.
+4. **Conservative-read accessors on `ModeSummary`** — the single home for ⊤-on-absence
+   (Principle 7/18; both typecheck and backend read through them):
+   `param_mode(i) -> Mode` (missing/short ⇒ `Owned`), `param_flow(i) -> ParamFlow`
+   (⇒ `Retained`), `spark_op(i) -> bool` (⇒ `true`). A bare-serde-default empty `Vec`
+   MUST read as conservative through these accessors — no consumer indexes the vectors
+   directly.
+5. **`abi_eq(&self, &Self) -> bool`** (or an `AbiModeSurface` projection view)
+   comparing `(param_modes, result)` only — one definition serving the R3
+   summary-diff gate (`/int`'s `AbiSurface` comparison) and any future consumer, so
+   the ABI half is never hand-picked field-by-field at two sites (mirror hazard).
+6. **`mode_summary: Option<ModeSummary>` on the callable `DefKind` variants** (spine
+   §3.3; `UserFn`-Concrete and `Primitive` are the increment-I load-bearing two) +
+   a uniform **`ModuleEntry::mode_summary() -> Option<&ModeSummary>`** read accessor
+   (the `callable_got_slot()` precedent, `module.rs:1303`) + a
+   **`set_mode_summary(...)`-style mutator** returning a did-write indicator for
+   non-callable kinds, usable through `current_symbol_table_mut`.
+7. **The `DefKind::Primitive` declared-fact payload IS the same `mode_summary` slot**
+   — no separate `PrimitiveFacts` type. Principle 19 demands the pass cannot tell a
+   declared leaf from an inferred summary except by `DefKind`; one carrier + one read
+   accessor (item 6) delivers that structurally. The declaration site populates it at
+   entry construction (§13.4). (`borrowed_sibling_slot: Option<...>` is the backend's
+   §3.1(b) sibling carrier — same change-set, not consumed by this crate.)
+8. **`MonoDefnVariant.mode_summary: Option<ModeSummary>`** — the compile-in-hand
+   carrier the backend reads.
+9. **`MonoExpr` advisory site-fact fields** (`#[serde(default)]` = `None` =
+   conservative): `escapes: Option<bool>` + `confined: Option<bool>` on the
+   allocation/capture-producing variants (`ConstrADT`, `VecLit`, `Lambda`,
+   `StringLit`, `Apply`), `unique_static: Option<bool>` present-but-never-`Some` in
+   increment I, and **`provenance: Option<Symbol>`** (the borrowed-projection root
+   binding) on the projection-producing sites (`Apply` — accessor/`vec-get` calls —
+   and match-arm pattern bindings). Symbol-keyed provenance carries the §13.6(d)
+   shadowing rule. `/arch` pins the exact variant set; this is the minimum this
+   crate's §2.3 emission needs.
+10. **The per-entry value-use mark** (§8.3) — a per-entry bool the pass writes and the
+    backend's wrapper emission reads.
+11. **0476's `PrimitiveBody::{Extern, Inline}` + `is_callable_target()`** — consumed
+    by the §2.1 classifier: the inline-lowered vs extern-shimmed distinction (§9.3)
+    becomes representational instead of name-keyed (Principle 19 — the classifier
+    reads `PrimitiveBody::Inline`, never matches `"vec-get"` by name).
+12. **Toggle relocation — the one-master-switch need (spine §6.2).** The read-once
+    `CRANELISP_NO_OWNERSHIP` gate currently lives in
+    `cranelisp-backend/src/cache/manifest.rs:243–260`; typecheck cannot depend on
+    backend. Ask: relocate the accessor to `cranelisp-types` (e.g.
+    `ownership_analysis_off()`), backend delegates, manifest key untouched. Fallback
+    if `/arch` rejects env-reading in the types crate: a typecheck-local read-once
+    reader of the same env name with a cross-referencing comment; the L-B2(i)
+    suite-polarity lane is the divergence guard. The relocation is preferred —
+    two independent readers of one polarity is the Principle-7 mirror class.
+
+### 13.2 The ordered change-sets
+
+Each CS is one `/dev` change-set with its Principle-23 scenario matrix (§13.7) landing
+in the same commit. Sequencing: CS-A → {CS-B, CS-1} → CS-2 → CS-3 → CS-4. CS-B and
+CS-1 are order-independent (CS-1's leaf-read unit tests build `DefKind::Primitive`
+entries via `TestFixture` — `builtins.rs:1005/1083` already mints them — so CS-1 does
+not block on CS-B; only the e2e fact-table lanes L-D3e need CS-B).
+
+**Proposed module composition (Principle 23 — strategy seams as named submodules):**
+a new `crates/cranelisp-typecheck/src/ownership/` cluster — `mod.rs` (the
+`pass5_ownership` driver), `classify.rs` (static-call classifier + `Copy` predicate),
+`transfer.rs` (the body walk), `fixpoint.rs` (worklist/SCC/memo),
+`confinement.rs` (strand classification + per-cell join), `publish.rs`
+(summary/site-fact/value-use publication) — each with a sibling per-submodule test
+module. Pass entry wires into `program.rs::finalize_check_result_inner` after the
+callee write-back (current anchors: `pass4_monomorphise` call at `program.rs:1986`,
+accumulator callee write-back at `:2082–2084`; the §3.1 `:1901`/`:1999` anchors have
+drifted with S101's edits — same seam, same order).
+
+- **CS-B — primitive fact-table declaration** (owner: `/dev` narrow on
+  `cranelisp-primitives`, backend-paired per root `CLAUDE.md`; NOT a typecheck
+  change-set — named here because pass5's leaf reads consume it). `PrimitiveDef`
+  gains a declared-facts field (a `ModeSummary` value per item 7);
+  `insert_primitive_entry` + `insert_vec_query_entries` populate the entry's
+  `mode_summary` at construction. Content per §13.4; audit-table cross-check +
+  FIXME 0504 (the missing `neq-string` row) resolve before or with it.
+- **CS-1 — classifier + `Copy` predicate + declared-leaf reads** (`classify.rs`).
+  The §2.1 static-call classifier as a pure function over an `Apply` shape + a
+  chain-follow lookup (`resolve_terminal_entry_and_home`); `PrimitiveBody`
+  consumption (item 11); the memoized scalars-only `Copy` classifier (§2.2); leaf
+  fact reads through `ModuleEntry::mode_summary()`. No fixpoint, no writes —
+  unit-tested standalone.
+- **CS-2 — the transfer function** (`transfer.rs`). One pre-order `MonoExpr` body
+  walk per §3.3: per-binding abstract state (mode + provenance root), mode/flow
+  joins, escape edges (§2.2-spine rules 1–5 incl. R6 suspension), projection rules
+  §4.2 1–5, `ResultMode` derivation (with the §13.6(c) multi-path join),
+  `result_unique` hardwired `false`, value-use marks. Signature per the §11
+  testability pin: `(body, lookup: impl Fn(&FQSymbol) -> Option<ModeSummary>) →
+  (ModeSummary, SiteFacts, DepSet)` — pure, no table access, `TestFixture` +
+  hand-built bodies. `DepSet` is the harvested dependency set (§13.3).
+- **CS-3 — fixpoint driver + SCC + confinement + memo** (`fixpoint.rs` +
+  `confinement.rs`). The §3.2 worklist: universe = cluster's codegen-bound callables
+  (defined-symbols + `codegen_view.is_some()`, incl. mono instances registered by
+  `register_mono_entry`); reverse-topo seeding from the S101-widened
+  `call_graph_edges` (template grain — §13.3); re-entry driven by the harvested
+  `DepSet`, not the persisted edges; stratification (modes/escape/flow converge, then
+  the §5 confinement join over surviving ops with `spark_ops` propagation and the
+  §5.4 `Transferred`→`Crossing` emission collapse); the §6 session memo
+  (`DashMap` on the checker env, keyed `(template home, mangled name)`). The
+  toggle gate lives at the driver entry: `pass5_ownership` returns immediately when
+  analysis is off (§13.5).
+- **CS-4 — publication + observability** (`publish.rs`). Post-convergence: summaries
+  onto entries via `current_symbol_table_mut` (staging-aware, cluster-atomic —
+  Decision 44, exactly the `write_callees_to_module_entries` write path); the
+  §13.6(b) one-shot site-fact walk annotating the stored `codegen_view`
+  (`MonoDefnVariant.mode_summary` + per-node facts + provenance); value-use marks;
+  the **H5 `CRANELISP_OWNERSHIP_TRACE`** dump (per-cluster summaries + per-site
+  verdicts — an in-increment deliverable, not a follow-up: I-G3 and L-D3f are
+  unmeasurable without it, qa plan §6/G-3).
+
+**Out of this crate, named for `/sprint`:** (i) the R3 summary-diff gate widening
+(type-scheme-only → + `abi_eq`) is a small `src/` change-set (`/int` owns the
+transaction; item 5 is its input) — Q3 pin 1 expects it live the moment summaries
+exist; (ii) I-G5/I-G6 run at the B2 seam even under a short close (Q3 pin 2) —
+`/qa` executes, CS-3/CS-4's memo + H5 are the support surface.
+
+### 13.3 Graph-feed verification — what the S101 `callees` widening does and does not give pass5
+
+Verified against the landed S101 work (0470 resolved: single-chokepoint recorder in
+`infer_var`, call- **and** value-position user-fn references, span-keyed delta into
+`call_graph_edges`; 0472 resolved: `harvest_callee_edges` at all body-check seam
+families incl. impl-provided/default/HKT method bodies; schema v11):
+
+- **What pass5 assumed (§3.2) and now verifiably has:** complete forward
+  statically-resolved user-fn edges at **template/defn grain** — plain direct calls,
+  SigDispatch/TraitMethod targets, value-position references, impl/default/HKT method
+  bodies. Sufficient for **reverse-topo worklist seeding** (Kahn's over intra-cluster
+  edges; the `dependency_sort` precedent) and for the R3 reverse index (one graph,
+  two consumers — spine §5.3). The widening delivers what §3.2's *seeding* assumes.
+- **Residual gap 1 — grain (the design consequence, not just a risk).** The recorder
+  runs at infer time, pre-mono: edges are template-grain (`f → g`), never
+  instance-grain (`f$Int → g$Int`); the 0472 cure deliberately excluded the
+  mono-recheck seam (mono instances never appear as edge sources — documented
+  template-chain rationale, S101 Wave 2b). pass5 computes **per-instance** summaries,
+  so caller re-entry keyed on template edges would over-approximate (re-enter every
+  instance of a caller template) — sound but wasteful, and worse, it makes fixpoint
+  correctness depend on a persisted feed with a known deliberate exclusion.
+  **Ruling: the fixpoint's re-entry edges are harvested by the transfer walk itself**
+  (`DepSet`: every callee whose summary an `Apply` classification consulted, at the
+  exact grain consulted — mangled instance or concrete FQSymbol). Correctness then
+  depends only on what the walk actually read (self-describing, immune to any feed
+  gap); `call_graph_edges` is demoted to a **seeding-order hint** (a bad order costs
+  extra revisits, never a wrong result — the seed-order-independence scenario in
+  §13.7 pins this). Mono instances, absent from the persisted graph, are appended to
+  the seed in registration order after the template-sorted members.
+- **Residual gap 2 — self-edges** are structurally skipped by the recorder (recursion
+  binds locally). Irrelevant to pass5: the harvested `DepSet` sees a self-call's
+  `resolved_call` like any other, and a self-recursive summary change re-enters its
+  own frame via the ordinary fixpoint revisit.
+- **Residual gap 3 — target population**: `call_graph_edges` records user-fn
+  references only (no primitive/constructor/platform edges). Correct for pass5 —
+  those are constant leaves/pinned boundaries (§9.2), never on the worklist.
+- **Residual gap 4 — cross-module ordering** (risk, accepted): imported summaries are
+  boundary conditions read by chain-follow; a mutual-import cycle compiled under the
+  S93 signature/body pre-pass can read an importee whose pass5 has not yet run —
+  absent summary ⇒ ⊤ ⇒ Decision-24 on those edges (monotone-sound, precision-only
+  loss, confined to mutual-import cycles). Not cured in increment I; named for the
+  F-series attribution if a fixture ever shows it.
+- **Residual gap 5 — 0488 adjacency** (risk, coordination): the missing-mono defect
+  class (FQ-call/imported-value-use instances never minted) means those shapes have
+  no compiled body — a compile-level defect upstream of pass5, not a summary gap
+  (nothing to summarize). Corpus-excluded per the Q1 ruling; when the fix lands,
+  newly-minted instances enter the universe by the existing predicate with no pass5
+  change. `/qa`'s isolation (Block A3, `tests/plan/s102-test-plan.md` §3) may land
+  in `monomorphise.rs` mid-sprint — the 0497 rider (§13.7) coordinates on that file.
+
+### 13.4 Fact-table staging and the coverage verdict
+
+**Where declared (confirms §9.1 against as-built source):** `PrimitiveDef` rows
+(`cranelisp-primitives/src/operator.rs` — `ring0/ring1/ring3_primitives()`) gain a
+declared `ModeSummary`; `insert_primitive_entry` (`lib.rs:223`) and
+`insert_vec_query_entries` (`lib.rs:267`) place it on the entry's `mode_summary`
+slot at static construction. No typecheck-side table of any kind (Principle 19).
+
+**Coverage cross-check against the `ring2-rc.md` §3.3 extern audit (the seed):**
+
+- **Covered, transcribed mechanically:** the 15 string externs with heap args +
+  `parse-int` (audit "Action" column ⇒ `param_flow: Consumed`, `result: Fresh`);
+  `string-identity` (⇒ `AliasOf(0)` — the one alias row, why `AliasOf` exists);
+  `quote-sexp` (`Consumed`/`Fresh`); `str-eq`-family (⇒ analysis-fact `Borrowed` +
+  extern body keeps consuming — the §9.1 split ruling; declared `Borrowed` is per
+  the only-read column, the ABI stays Decision-24).
+- **Covered, hand-built (no audit row needed — no extern body):** the vec query
+  family per §9.3 — `vec-get: [Borrowed], ProjectionOf(0)`;
+  `vec-set`/`vec-push`: `[Owned/Consumed, …], Fresh`; `vec-len:
+  [Borrowed(analysis)/Consumed], Fresh`.
+- **Trivial, generated:** the ~30 ring0 scalar ops + `int/float/bool-to-string`
+  (all-`Copy` params; `Fresh` results) — mechanical, zero audit dependency.
+- **Gap found: `neq-string`** — shimmed + registered post-audit, two heap args,
+  body verified consuming (`string.rs:109–116`), **no audit row**. FIXME 0504 filed
+  (`target: /design`, backend deployment): the row must exist before CS-B
+  transcribes and before L-D3e generates its per-row guards, or both silently skip
+  the leaf.
+- **Deliberate scope cut, named:** `DefKind::PrimitiveExtern` entries (`sconcat`,
+  `bind`, `catch-runtime-error`, `discover-tests` — slot-less, by-name
+  `Linkage::Import` dispatch) carry **no facts in increment I** and stay at the
+  pinned Decision-24 boundary (spine §3.1 "named-extern intrinsic" pin); §2.2 rule 5
+  fires on their args. `sconcat` has an audit row ready if macro-infrastructure
+  volume ever makes this measurable — it is a watch item, not a gap.
+- **Correctly excluded (not `DefKind::Primitive`):** trace-family accessors,
+  `cranelisp_run_io`, IVar intrinsics (intrinsics crate), platform fns
+  (`PlatformEffect`), `heap_alloc_string`/`string_read`/`vec-push-grow` (internal,
+  never name-resolvable). All boundary-pinned per the spine.
+
+**Verdict: the audit table is a sufficient seed — coverage is complete for every
+heap-arg extern-shimmed `DefKind::Primitive` except the one filed gap (0504), plus
+the named `PrimitiveExtern` scope cut.** Audit mechanism: CS-B lands a completeness
+contract test (every `DefKind::Primitive` entry with a heap-typed param in its
+scheme carries a declared summary — the S101 cat-1 "convention-populated field"
+lesson applied at birth), and `/qa`'s L-D3e generates one wrong-direction e2e guard
+per audit row.
+
+### 13.5 Monotone-soundness obligations and the toggle pin
+
+- **Absent facts ⇒ Decision-24, structurally.** Every read of a summary or site fact
+  goes through the CS-A conservative-read accessors (§13.1 items 4–6); no pass5 code
+  path indexes the raw vectors or interprets absence. An absent summary is ⊤
+  (all-`Owned`, `Fresh`, all-`Retained`, all-`spark_ops`); an absent site fact is
+  `None` = escapes/crossing/shared/no-provenance. Joins only widen; init is
+  optimistic per fresh run; `Transferred` collapses to `Crossing` at emission (§5.4);
+  `result_unique` and `unique_static` are never emitted true in increment I (§10).
+- **The toggle pin (stated with explicit polarity): when `CRANELISP_NO_OWNERSHIP` is
+  SET (analysis disabled), typecheck emits NO summaries** — `pass5_ownership`
+  returns at entry before any walk: no `ModeSummary` computed or published,
+  `mode_summary = None` on every entry and every `MonoDefnVariant`, all site facts
+  `None`, no value-use marks, memo untouched. This is the spine's own wording
+  (§5.7: "with analysis off, summaries are absent") — the
+  emit-but-ignored alternative is REJECTED on three grounds: (i) **oracle honesty** —
+  I-G5 measures toggle-on vs toggle-off compile cost; running pass5 under both
+  polarities hides exactly the cost the gate exists to bound; (ii) **behavioral
+  fidelity** — with summaries present, the R3 `AbiSurface` gate would classify
+  mode-changing edits ABI-changing and take slow-path recompiles in a configuration
+  whose whole purpose is to reproduce the pre-increment (stage-M, type-scheme-only)
+  session byte-for-byte; (iii) **persistence coherence** — the manifest polarity key
+  (landed S101) wholesale-invalidates on flip precisely so off-polarity caches never
+  carry facts the polarity says do not exist; emitting them anyway re-opens the
+  question the key closed. When the env var is UNSET (the default), the pass runs
+  and emits; the backend consumes or ignores per its own gating (one master switch,
+  read through the §13.1-item-12 shared accessor on both sides).
+- **What typecheck guarantees under toggle-set, testably:** entries and
+  `.meta.json` payloads are field-identical to a stage-M compile (serde: absent
+  optional fields serialize away), so the differential oracle's byte-identity
+  obligation (spine §6.2) holds on this crate's outputs by construction, not by
+  filtering.
+
+### 13.6 Refinements the implementation problem forces (amendments to §§2–4)
+
+- **(a) The internal `OwnershipSummary` (§2.2) is superseded by the boundary
+  `ModeSummary`.** FIXME 0467's folding put the identical field set on the §3.3
+  carrier; a parallel crate-internal struct would be a Principle-7 mirror. pass5
+  computes `ModeSummary` values directly; only per-walk working state (the
+  binding→(mode, provenance) map, the strand-context stack, `DepSet`) stays
+  internal. §2.2's field-by-field justification stands, read onto `ModeSummary`.
+- **(b) Site-fact emission moves to a one-shot post-convergence walk** (amends
+  §3.3's "producing (i) … and (ii) site facts" per visit). Facts written mid-fixpoint
+  from a not-yet-converged summary environment could be stale on revisit; rather than
+  re-writing per visit, the repeated transfer walk computes summaries + `DepSet`
+  only, and one annotation walk per callable runs after both strata converge,
+  writing facts + provenance onto the stored `codegen_view`. Budget: ≤ one extra
+  linear walk per callable — inside §3.4's structural budget (still
+  annotation-only, no `Type` traffic).
+- **(c) Multi-path `ResultMode` join, pinned** (completes §3.3's return-position
+  rule): all return paths `ProjectionOf(i)` for the same `i` ⇒ `ProjectionOf(i)`;
+  all paths `AliasOf(i)` for the same `i` ⇒ `AliasOf(i)`; any disagreement (mixed
+  roots, mixed kinds, any `Fresh` path) ⇒ `Fresh`, with §4.2-rule-5 materialization
+  emitted on each non-`Fresh` path (the returned borrow escapes at that return
+  edge). Monotone: `Fresh` is the result-mode conservative point (Decision-24
+  as-built).
+- **(d) Provenance is symbol-keyed, with a shadowing guard.** `MonoExpr` bindings
+  are `Symbol`-named; the backend's `borrowed_vars`/last-use machinery is
+  symbol-keyed already, so the provenance site fact carries the root binding's
+  `Symbol`. Where a body rebinds a name that is (or roots) a live provenance root
+  (`let x … let x …` shadowing), the walk emits `provenance: None` for projections
+  whose root would be ambiguous under that name — conservative (the backend treats
+  no-provenance as materialize-at-Decision-24), and pinned as a scenario row
+  (§13.7 transfer matrix) so the cut is visible, not accidental.
+- **(e) Fixpoint re-entry rides harvested `DepSet` edges, not `call_graph_edges`**
+  (§13.3's ruling; amends §3.2's "caller lookup inverts the cluster's `callees`
+  edges" — the inversion now inverts the walk-harvested instance-grain set;
+  `call_graph_edges` seeds order only).
+- **(f) Anchor drift recorded:** §3.1's `program.rs:1901/:1999` are now
+  `:1986/:2082–2084` post-S101; the seam and ordering are unchanged.
+
+### 13.7 The Principle-23 scenario space (the 0497 rider) — submodule × scenario class
+
+**0497 staging.** The de-pool rides B2 in three steps: (i) a **mechanical relocation
+commit** (the pooled `traits/tests.rs` 41 tests + `primitive_dispatch_tests.rs` move
+to sibling per-submodule test modules — `monomorphise`, `impl_check`, `dispatch`,
+`type_resolve`, `registry` — content-unchanged) lands with CS-1's window, before new
+strategy tests, so attribution exists when the gap-fill starts; (ii)
+**`monomorphise.rs` gap-fill** (instantiation matrices: value-position, FQ-reference,
+≥2 instantiations — the 0488-class crate-side pins) rides CS-3 (the memo/instance
+work touches those seams; coordinate with `/qa`'s 0488 isolation, which may add the
+attribution test first); (iii) **scheme/cluster/scope negatives**: `cluster.rs` SCC
+negatives ride CS-3 (the fixpoint exercises SCC shapes); `scheme.rs`/`scope.rs`
+negatives are the capacity-gated tail, re-deferred with rationale if untouched
+(0497's own terms). The new `ownership/` cluster is born compliant — per-submodule
+test modules from CS-1 onward, scenarios through the crate facade (`check_forms` +
+`TestFixture`) wherever facade-reachable.
+
+**The matrices `/dev` derives from (a design that does not name its matrix has not
+laid the strategy bare):**
+
+- **`classify.rs` (CS-1).** *Complexity matrix* — Apply-shape × `resolved_call`, all
+  eight §2.1 rows: {`Var`+`SigDispatch`, `Var`+`TraitMethod`, `Var`+`BuiltinFn`,
+  `Var`+`None`→chain-resolves-`UserFn`, `Var`+`None`→`Primitive`/`Constructor`/
+  `PlatformEffect`, `Var`→let/param binding (closure value), non-`Var` callee,
+  `AutoCurry`} → {static-moded, declared-leaf, pinned-boundary, Decision-24}.
+  *Edge* — imported callee through `Import`/`Reexport` chain; `PrimitiveExtern`
+  (`sconcat`) ⇒ Decision-24; `Primitive` with `PrimitiveBody::Inline` vs `Extern`
+  (0476 consumption); `Primitive` with NO declared facts ⇒ leaf-with-⊤. *Negative* —
+  never moded for closure-valued/`AutoCurry` sites; `Copy` classifier: exactly
+  {`Int`,`Bool`,`Float`} in, `String`/`Vec _`/ADT/`Fn` out; memo determinism.
+- **`transfer.rs` (CS-2).** *Mode/flow join matrix* — use-shape × callee fact:
+  {borrowed handoff (non-widening — the load-bearing negative), owned handoff
+  (widen + callee's `ParamFlow` applied), Decision-24 site (widen + `Retained`),
+  constructor field-store (`Owned`), declared-`Borrowed` leaf (no widen, no escape —
+  rule 5 stops), absent-fact leaf (widen + escape)} plus multi-site joins
+  (`Borrowed ⊔ Owned = Owned`; `Consumed ⊔ IntoResult ⊔ Retained` full triangle).
+  *Escape-edge matrix* — all §2.2-spine rules: return direct / return embedded in
+  `ConstrADT` / store into escaping aggregate / escaping-closure capture /
+  non-escaping closure capture (negative) / `ParBind` joined (non-escape) /
+  `LaunchContinue.launched` (escape) / deferred continuation (escape) /
+  owned-handoff opaque edge (escape) / borrowed handoff (non-escape, negative).
+  *Projection-depth matrix* — proj-of-`Borrowed`-param (root = param), chained
+  projection collapses to ONE root (depth ≥ 3), proj-of-`Owned`-local (root =
+  local), match-arm binding, accessor call with `ProjectionOf` summary
+  (interprocedural root composition), `vec-get` declared row, escape-of-borrowed-proj
+  ⇒ materialization fact at the edge (rule 5), return-proj-of-param ⇒
+  `ProjectionOf(i)`, return-param ⇒ `AliasOf(i)`, return-proj-of-LOCAL ⇒ local
+  escapes + `Fresh`, the §13.6(c) mixed-path joins, the §13.6(d) shadowed-root ⇒
+  `None` row. *Negative* — `result_unique` never set (increment-I pin); no RC-op
+  fact at any projection extraction (rule 3).
+- **`fixpoint.rs` (CS-3).** *SCC-shape matrix* — {straight chain (1 visit each in
+  reverse-topo), self-recursive (≤2 visits), mutual 2-cycle, 3-cycle, mono-instance
+  recursion (`reduce$…`↔`reduce-loop$…`), imported callee (boundary condition —
+  never enqueued, negative)}. *Ordering/determinism* — scrambled seed order converges
+  to the identical summary set (the §13.3 demotion pin); instances appended after
+  templates. *Re-entry* — callee widens ⇒ exactly the harvested `DepSet` callers
+  re-enter (negative: an unrelated cluster member is not revisited). *Termination* —
+  adversarial widening chain bounded by O(Σ per-param lattice heights). *Memo* —
+  hit skips the walk; template-module recompile drops entries; cross-module
+  duplicate instances produce equal summaries (determinism pin). *Toggle* —
+  env-set ⇒ driver returns at entry: zero summaries, zero facts, zero marks, memo
+  untouched (§13.5, all four as negatives).
+- **`confinement.rs` (CS-3).** *Strand-context matrix* — {plain body op = parent;
+  `ParBind` binding RHS = potential-fork; lenient-eligible let-RHS / apply-arg =
+  potential-fork (the over-approximation rows); `LaunchContinue` / IO-capture =
+  deferred}. *Join matrix* — {all ops parent ⇒ `Confined`; any spark-side surviving
+  op ⇒ `Crossing`; borrowed spark read with zero surviving ops ⇒ `Confined` (the F2
+  shape — the S99 target, positive AND its widening twin where the spark
+  materializes); callee `spark_op(i)` set ⇒ `Crossing`; deferred edge ⇒ `Crossing`}.
+  *Propagation* — `spark_ops` transitive through a two-deep callee chain.
+  *Negative* — emission never carries `Transferred` (collapse pin, §5.4); confinement
+  never feeds back into modes (stratification pin, §3.2).
+- **`publish.rs` (CS-4).** *Placement matrix* — summary lands on `UserFn`-Concrete;
+  `Constructor`/`PlatformEffect` stay `None` (negative); declared `Primitive` facts
+  never overwritten by the pass (negative); staging vs live table mode
+  (`SymbolTableAccess` both arms — cluster-atomic commit). *Round-trip* — serde:
+  absent summary/facts deserialize to the conservative point; toggle-set output
+  field-identical to stage-M (§13.5). *Marks/facts* — value-use mark set exactly for
+  value-position references; site facts + provenance present on the stored
+  `codegen_view` post-pass; H5 dump smoke (present under the env var, silent
+  without).
+
 ## Next skills
+
+- `/arch` — verify the §13.1 needs list at the Phase-3 exit gate and author CS-A
+  (the v11→v12 `cranelisp-types` change-set, riding 0476); rule on item 12 (toggle
+  relocation).
+- `/dev` (cranelisp-typecheck) — implement CS-1→CS-4 per §13.2 with the §13.7
+  matrices; carry the 0497 rider stages (i)–(iii).
+- `/dev` (cranelisp-primitives, backend-paired) — CS-B fact-table declaration per
+  §13.4, after 0504 resolves the audit row.
+- `/design` (cranelisp-backend) — ownership-codegen consumption unchanged; note
+  §13.6(b) (facts arrive post-convergence, one write) and §13.6(d) (symbol-keyed
+  provenance + shadow rule) as consumption pins.
+- `/qa` — L-D3e per-row generation depends on 0504; H5 (CS-4) unblocks L-D3f/I-G3;
+  I-G5/I-G6 run at the B2 seam per Q3 pin 2.
+- `/sprint` — sequence CS-A → {CS-B, CS-1} → CS-2 → CS-3 → CS-4; the `/int`
+  summary-diff-gate widening rides after CS-4 (or with it, same wave).
+
+---
+
+### Next skills (S100 original — superseded by the §13 list above for S102)
 
 - `/design` (cranelisp-backend) — author `design/backend/ownership-codegen.md` (parts 12–16)
   against the spine, consuming §8.4/§12 items 1–4 of this doc as its typecheck-side inputs.

@@ -191,6 +191,67 @@ CAS+spin state machine (whoever wins computes; the other reads the resolved valu
 work conservation). The substitution `a → ivar_force(ivar_a)` is the mechanism the arch
 brief names; §4.5 is the codegen.
 
+### 2.7 The static allocation/RC-density admission axis (FIXME 0459 gate half — designed S102; implementation rides increment I)
+
+The contention-aware gate 0459 asked for, static layer (`effect-concurrency.md` §3.1's
+first layer). The dynamic layer landed opt-in as the saturation gate (§3.6.3) and stays
+deferred with the FIXME-0442 unified-budget family; this section designs the **static
+axis** — the piece that becomes possible only now, because the ownership-inference read
+path (`design/backend/ownership-codegen.md`; spine `design/arch/ownership-inference.md`
+§8.3) supplies the signal the S94 create-gate could not see: *which of a branch's
+allocations and RC ops actually survive*.
+
+**The signal — zero new analysis (Principle 7).** Per spark candidate (a `let` binding's
+RHS or a sparkable apply argument — the same `MonoExpr` subtree `find_sparkable_bindings`
+/ `find_sparkable_args` already walk), a **density score** computed from the per-site
+facts `pass5_ownership` annotates:
+
+- +1 per heap-allocation site NOT covered by a `NoEscape` fact (i.e. not
+  stack/region-servable — it will contend on the shared allocator);
+- +1 per RC-op-emitting site on a cell that is neither `Confined` (it will emit atomic)
+  nor borrow-elided (the op survives at all).
+
+Fact-absent sites count as dense (they compile conservative — atomic + heap — which is
+precisely the contention being scored). The score is a static per-instantiation proxy for
+the S99 (b) term: the concurrent atomic-RC + allocator traffic each of the `cap` live
+branches generates.
+
+**The rule.** `is_worth_sparking` (§2.2) gains the density axis alongside the compute
+axis: a candidate whose score exceeds the threshold is **declined** — it compiles on the
+sequential arm exactly as a cheap candidate does today. Declining is always sound:
+granted-vs-direct is a scheduling choice only (§8 observational equivalence), and the
+decline direction restores the floor rather than risking it.
+
+**Activation gating — admission-identical when facts are absent (the byte-identity
+discipline, ownership-codegen §2.2 applied to a scheduling emission).** The axis is keyed
+off "pass5 ran" (the compile unit carries summaries/facts). `CRANELISP_NO_OWNERSHIP=1`,
+pre-increment-I builds, and any facts-absent unit ⇒ the axis is **inert** and the
+admission set is byte-for-byte today's. (This polarity matters: if the axis naively
+scored a facts-absent build, everything would score dense and sparking would vanish —
+the wrong failure mode for the oracle toggle.)
+
+**Threshold + knob.** A named constant with an env override
+(`CRANELISP_SPARK_DENSITY_MAX=N`; `0` disables the axis), default set **by measurement at
+the landing change-set** against the F2/F4 fixtures (must decline their
+allocation-dominated shared-data branches) and the fib/compute-bound shapes (must stay
+admitted — the §9 near-linear-speedup acceptance is unchanged). No number is pinned in
+this doc; the sprint plan's gate (I-G4 parallel non-regression) is the arbiter.
+
+**Acceptance shape (for `/qa`):** the §9 three-regime equivalence gains a fourth regime
+(density-declined ≡ serial ≡ the other three); the F4-hard distribution's parallel wall
+must move toward serial when the axis activates; the existing `let`-path perf tests must
+be re-checked exactly as §3.6.3's `let`-path note prescribes for the create-gate. Unit
+tier: the §2.2 sparkability fixtures extended with the {facts present/absent} ×
+{alloc-dense/compute-dense/mixed} × {threshold boundary} matrix
+(ownership-codegen §13.5).
+
+**Sequencing.** Implementation = ladder entry **B4** in ownership-codegen §13.2 — after
+the borrow-elision / non-atomic / stack-slot mechanisms, because the score measures the
+*surviving* population those mechanisms define. The Phase-H structural cure (the
+mechanisms themselves) remains the primary attack on the S99 term; this axis is the
+scheduler-side complement that stops sparking the branches the mechanisms cannot yet
+serve.
+
 ## 3. IVar Runtime Primitives
 
 IVars are write-once synchronization cells. They live in `cranelisp-runtime` as `extern "C"` functions registered as JIT builder symbols.
@@ -401,6 +462,8 @@ join_block(result: i64):             // both arms produce the call's result valu
 > probe (it throttles the *number* of bouncers at the margin; it cannot touch the leaf-copy RC
 > *volume*). Kept opt-in as honest scheduling hygiene / Phase-H-durable complement; **default-on is
 > deferred to Phase-H** (rests on the floor-restoration/honesty argument, not a (b)-cure magnitude).
+> **The STATIC axis is now designed — §2.7** (S102; consumes the ownership-inference per-site
+> facts; implementation rides increment I as ownership-codegen §13.2 ladder entry B4).
 
 For a naive over-sparking recursion (`fib`): the first ≈`cap` sites reached at runtime (near the root, as rayon work-steals breadth-first) reserve and spark; once `IN_FLIGHT_SPARKS` saturates, every deeper site's try-reserve returns 0 on a **single load** and takes the direct arm. The direct arm is the existing sequential codegen — it recurses into `fib` whose body again hits the gate at runtime, gets 0 again while the budget stays full, and continues serially with **zero allocation**. As top-level sparks complete they release permits, re-admitting a bounded frontier of new sparks; in-flight sparks stay `O(cap)`, so total IVar/thunk allocation footprint is `O(cap)`, not `O(nodes)`. The whole exponential tail therefore runs at ≈ serial cost.
 
@@ -770,7 +833,7 @@ What `/qa` and `/dev` should target (unit test mandatory per fix; e2e assessed a
 - A test that would fail if a sparked argument reached the call unforced — e.g. asserting equivalence under a tail-position apply with sparkable arguments (apply-arg sparking must be gated off the TCO self-call fast path, §2.5.3), so no path bypasses the barrier.
 
 **Performance (demo / acceptance, per SPRINT.md):**
-- A `par-map` / parallel benchmark showing near-linear speedup to N cores for ≥1µs/element work; observational equivalence with the serial result; **never slower than serial** (the overhead-bounded floor — the ≥2 gate + cost heuristic must keep cheap work on the sequential path).
+- A `par-map` / parallel benchmark showing near-linear speedup to N cores for ≥1µs/element work; observational equivalence with the serial result; **never slower than serial** *for allocation-/RC-light branches* (the spark-machinery floor, per the §2.6.2/§3.6.3 scope notes — the ≥2 gate + cost heuristic must keep cheap work on the sequential path; allocation-/RC-heavy branches are covered only once the §2.7 density axis + the Phase-H memory-model mechanisms land).
 
 **Spark budget — the create-gate (§3.6, Sprint 92 — `/dev`(backend)+`/dev`(intrinsics)+`/qa` targets):**
 - *Floor restored under explosion (the create-gate's reason to exist):* naive recursive `(add-i64 (fib a) (fib b))` with the default budget is **not dramatically slower than serial** — the over-budget remainder takes the direct arm and allocates nothing (`ON < 1.3·OFF`, the loose CI witness). This is now *achievable* (it was architecturally unachievable with the in-`ivar_spark` budget, FIXME 0444) because the budget decision precedes allocation. `examples/30` likewise completes in test time.
@@ -798,7 +861,8 @@ What `/qa` and `/dev` should target (unit test mandatory per fix; e2e assessed a
 - *Parallelism achieved (acceptance):* a partially-dependent binding whose independent
   sub-work is expensive (`(b (g (h c) (f a)))`, `c` independent, `a` sparked) overlaps
   `(h c)` with `a`'s computation — measured faster than serial for ≥1µs/element work,
-  never slower than serial (the §2.6.2 floor).
+  never slower than serial (the §2.6.2 **spark-machinery** floor — scope per the §2.6.2
+  note; allocation-/RC-heavy shapes are out of this test's scope until §2.7 lands).
 - *Captured-IVar RC (unit, mandatory — the one new RC rule, §4.5):* after a workload
   with a dependent spark (including one whose **dependency thunk panics**),
   `IN_FLIGHT_SPARKS` returns to 0 and no IVar cell leaks — the dependent thunk's capture

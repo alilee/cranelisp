@@ -156,13 +156,29 @@ Requirements — `/qa` specifies, the owning skill builds); §3.7 collects them.
   *Mechanics:* corpus = the S99 fixtures + a curated spec-shape corpus (one module each:
   ADT construct/match, closures + fn-as-value + auto-curry, vec COW loop, string
   externs, ParBind/LaunchContinue, TCO loop, trait dispatch — the shapes the five
-  mechanisms touch). At the **parent commit of the increment-I change-set**, capture the
-  per-function CLIF of the corpus via `CRANELISP_CODEGEN_DUMP` and commit it as a golden
-  (`tests/fixtures/clif_baseline/`). Lane: toggle-off build of HEAD dumps the same
-  corpus; normalized diff (sort by function symbol; strip nondeterministic ordering —
-  see Hook H1) must be **empty**. The golden is re-captured ONLY with an explicit
-  change-set rationale (a compiler change that legitimately reshapes CLIF re-baselines
-  in its own commit, exactly the `public-api.txt` discipline).
+  mechanisms touch). **The corpus is green-only by construction** (S102 Phase-2 /arch
+  ruling; canonical home `design/arch/ownership-inference.md` §6.2): every shape under
+  an open failing-not-ignored guard at capture time is EXCLUDED — at S102 capture that
+  is the 0483 two-instantiation-HOF, 0488 FQ-call/imported-value-use, and 0484
+  shadow-order shapes (live list = whatever the ledger's intentional-RED set covers).
+  Exclusions are committed as `EXCLUSIONS.md` beside the corpus, each entry naming the
+  guard whose flip triggers extension; a `MANIFEST.md` records entry → source fixture →
+  capture SHA so extensions and re-baselines stay attributable. This is what makes the
+  capture non-blocking on the co-scheduled defect wave. At the **parent commit of the
+  increment-I change-set**, capture the per-function CLIF of the corpus via
+  `CRANELISP_CODEGEN_DUMP` and commit it as a golden (`tests/fixtures/clif_baseline/`).
+  Lane: toggle-off build of HEAD dumps the same corpus; normalized diff (sort by
+  function symbol; strip nondeterministic ordering — see Hook H1) must be **empty**.
+  **Extension ≠ re-baseline** (the 0503 pin): when a defect fix makes a
+  previously-excluded shape green, the corpus is *extended* with the newly-green shape
+  in the fix change-set — existing golden entries untouched, the `EXCLUSIONS.md` entry
+  struck. A *re-baseline* — re-dump of only the entries whose CLIF changed, golden
+  diff in the same commit, delta attributed to the change's seam (exactly the
+  `public-api.txt` discipline) — happens only for an **emission-affecting** change:
+  one that changes backend emission, primitives entry shapes, monomorphisation
+  derivation, or name-resolution precedence *for green programs* (the §6.2
+  classifier). Display/persistence/introspection/diagnostic fixes have no capture
+  interaction. Wholesale re-capture without attribution is forbidden.
   *Gate:* zero diff. *Stage:* I onward, every change-set touching the five mechanisms.
   *Tier:* script lane + one in-suite smoke (single module golden compared in a nextest
   test, so the canonical suite catches gross breakage).
