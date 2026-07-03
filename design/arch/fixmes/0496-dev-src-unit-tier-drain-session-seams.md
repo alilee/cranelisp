@@ -58,6 +58,46 @@ This is the unit-tier half of the S102 /int defect wave (risk register §4 items
 2, 5, 6, 8 in the audit doc) — not separate work. e2e lanes L-S1/L-S2/L-S3
 (audit §2.4) are the /qa-side complement.
 
+## /dev (src/) S102 Wave 5 (A-2): partial drain — cluster seams landed, remainder itemized
+
+Drained with the persistence-integrity cluster (commits `98894d8`, `5f011b6`,
+`85baa9c`, `172c57b`):
+
+- **`lifecycle.rs` gains its first unit module** (`degraded_startup_tests`,
+  Matrix A "backing BROKEN" row decision cells): `defined_symbol_of_form`
+  (defining/structural/expression/malformed), `render_startup_error_report`
+  (exact bytes, symbol-naming MUST), `append_failed_forms` (verbatim
+  re-emission / no-op / all-failed) — the pure seams extracted per item 3.
+- **`save.rs` regeneration-grammar cells** (Matrix B): D1 single-authority
+  dedup (expansion-artifact origin ×1-emission, literal-begin multi-defn,
+  distinct-forms negative), D2 source-first (`sexp_matches_source` 4-cell,
+  verbatim shorthand emission, inconsistent-source fallback, docstring
+  mismatch/consistent pair, rehydration verbatim slice).
+- **`process_form/tests.rs`**: `register_macro_in_module` recording seam
+  (Matrix E origin-authority + direct-authored negative).
+- **`expander.rs`**: defmacro name-position shield pair.
+- **`repl.rs`**: `is_repair_definition_turn` §14.4/§18.8 carve-out cells.
+- **`redefine.rs`**: `outcome_clears_broken` T1-shape recovery cell (review F1).
+- (`eval.rs` Matrix-E writer cells landed Wave 4 with 0486.)
+
+**Precise remainder (this FIXME stays open):**
+
+1. `display.rs` ADT-value rendering module (`format_adt_value`/
+   `format_adt_heap_value`, nested parameterized shapes, balanced-parens
+   invariant) — rides Wave 10 with the 0493 fix (proposed-resolution item 1).
+2. `process_form/cache_restore.rs` (448/0 — the D3 axis) + the module-env
+   install seams — rides Wave 7 (A-3, CS-D3a Matrix D grid).
+3. `repl.rs` handler tests through the facade (`handle_sig` 0492,
+   `handle_mod` 0487, `handle_source`) — rides Wave 7 CS-0487 + Wave 10 0492
+   per `s102-defect-wave.md` §6.4.
+4. `process_form/macro_resolution.rs` (617/0) and
+   `process_form/dependency.rs` happy-only neighborhood — no in-sprint fix
+   touches them after the 0488 attribution moved typecheck-side; drain when
+   a fix next opens those seams.
+5. `lifecycle.rs` restore-path decisions beyond the degraded loader
+   (`introduce_module` 4-branch gate, `preload_entry_slot_assignments`
+   validity gate) — natural rider on Wave 7's install-route work.
+
 ## /design (int) S102 Phase 3: scenario-space matrices named
 
 Per Principle 23's role binding, the implementation strategy's scenario space for

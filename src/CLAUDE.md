@@ -30,6 +30,29 @@ The former `session_v4.rs` god-file is decomposed along the `design/int/int.md`
 | `process_form.rs` | The shared gap-orchestration form chain (Wave C). |
 | `redefine.rs` | The S101 dependent-recompilation session transaction (`design/int/session-transaction.md`): `AbiSurface` summary-diff comparand + `RedefKind` classification (consumed by the commit gate in `worker::commit_staging_to_live` — the single slot-policy authority), on-demand `ReverseIndex` from `Def.callees`, affected-set closure + SCC reverse-topo walk with the §4.1 slot-less pass-through, `run_transaction` (eval-thread-synchronous), `mark_broken` (trap-stub patch + retention pool + `SharedState.broken` registry), `TransactionReport` (`repl/spec.md` §18.3 rendering). Key invariants: a BROKEN entry's `code` field holds the trap stub's `Code` handle (a `code: None` + `ast: Some` entry would be silently RECOMPILED against the new-world callee by `derive_codegen_batch`'s synth-def sweep — the exact unsoundness the trap closes); the retention pool (`SharedState.retained_code`) is append-only to session end and pairs each trap stub with the provenance buffer its baked address reads; `__expr`/`__macro_*` are gate-exempt (fresh-slot churn on every expression turn would exhaust the 1024-slot GOT); a SLOT-LESS staged Def displacing a slotted prior with compiled code (concrete fn redefined as polymorphic/overloaded — the T1 shape) must route the prior `Code` through the pool at the commit gate (`RetainedCode::frozen`, the shared displace-to-pool constructor) — dropping it is a UAF through the still-embedded GOT slot (FIXME 0479; the T1 *semantic* cure is FIXME 0477). |
 
+**Degraded startup load (S102 CS-0489, `repl/spec.md` §18.8).** A REPL
+startup failure on the entry module no longer exits — `main.rs` catches it and
+`lifecycle.rs::recover_startup_failure` re-drives the backing source
+form-by-form through the eval path (green forms commit; failures retained as
+`FailedForm` on `CompilerSession.failed_forms`, keyed by module). While a
+module's failed set is non-empty it sits in `error_modules`: `process_commands`
+refuses expressions with the §14.4 message but ACCEPTS definition turns
+(`is_repair_definition_turn` — they are the repair), `eval` clears repaired
+symbols (`clear_repaired_failed_form`), and `regenerate_backing_file` re-emits
+each failed form's verbatim text (`append_failed_forms`) so regen never
+silently drops a broken definition. The loader drains
+`pending_cascade_reports` (startup is a load, not a user redefinition turn —
+no `stale:` prints at startup). Regeneration itself is **source-text-first**
+(S102 CS-D2): `save::generate_fns_and_macros` emits the record's verbatim
+`Introspection.source` when it re-parses to the recorded sexp
+(`sexp_matches_source`, reader-desugar-aware) and carries the live docstring;
+all introspection source capture goes through the consistency-gated
+`process_form::verbatim_source_slice`. Macro-expansion-produced definitions
+record the turn's ORIGINAL outer form as the regen authority (S102 CS-D1;
+the expanded `(defmacro …)` artifact stays on `.expanded` + `macro_sexp`),
+and regen dedupes by authored-form identity — never author a second
+regen-source channel.
+
 **Module-scoped field privacy.** The `eval.rs`/`repl.rs` methods are
 `impl CompilerSession` blocks in sibling modules, so the `CompilerSession`
 private fields they reach were widened to `pub(crate)`
