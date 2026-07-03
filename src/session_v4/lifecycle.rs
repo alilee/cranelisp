@@ -543,6 +543,21 @@ impl CompilerSession {
             cranelisp_types::install_module(
                 &self.shared.symbol_tables, path.clone(), decoded,
             );
+            // S102 CS-D3a (§6.2): uniformly with the worker's `try_cache_hit_load`
+            // route, establish the session-env companions (prelude-fallback bit +
+            // aliases) and the `file_path` authority from the restored table.
+            crate::imports::install_module_session_env(
+                &self.shared.symbol_tables,
+                path,
+                &self.shared.module_aliases,
+                &self.shared.prelude_fallback,
+            );
+            if let Some(src_file) = self.find_module_source(path) {
+                crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, path);
+                if let Some(mut tp) = self.shared.typecheck_products.get_mut(path) {
+                    tp.file_path = Some(src_file);
+                }
+            }
             return Ok(ModuleIntroductionOutcome::CachedLoad);
         }
 
@@ -1220,7 +1235,7 @@ impl CompilerSession {
         &mut self,
         module_name: &str,
         source: &str,
-        _entry_module_path: &Path,
+        entry_module_path: &Path,
     ) -> Result<Vec<Warning>, CranelispError> {
         let module = ModuleFullPath::from(module_name);
         let sexps: std::sync::Arc<[Sexp]> =
@@ -1244,6 +1259,12 @@ impl CompilerSession {
         if self.shared.introspection.is_some() && !source.is_empty() {
             crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, &module);
             if let Some(mut tp) = self.shared.typecheck_products.get_mut(&module) {
+                // S102 CS-D3a (§6.2.1): make `file_path` authoritative on the
+                // entry route too — `regenerate_backing_file` reads it as the
+                // save target (its `{root}/{module}.cl` fallback stops being
+                // load-bearing), and it converges with the dep-load + cache
+                // routes on one file authority.
+                tp.file_path = Some(entry_module_path.to_path_buf());
                 tp.source_text = Some(source.to_string());
             }
         }

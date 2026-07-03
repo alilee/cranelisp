@@ -1,0 +1,13 @@
+# Cranelisp.toml — project configuration (auto-created)
+#
+# Lib directories. Paths are relative to this file's directory, or absolute.
+# Under the additive model (spec §8.11.4), entries here are ADDED to the set
+# already resolved from CRANELISP_LIB and {project-root}/stdlib/ — they never
+# replace or suppress those sources. Uncomment to make a path permanent.
+#
+# lib-dirs = [
+#   "stdlib",          # example: a vendored stdlib beside this file
+# ]
+
+# Platform DLL search dirs (§8.11.5). Same additive semantics.
+# platform-dirs = ["target/debug"]

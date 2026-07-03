@@ -478,3 +478,128 @@
             other => panic!("expected a TypeError, got {other:?}"),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // install_module_session_env (S102 CS-D3a) — the cache-restore / blank-mod
+    // env-companion recompute from a table's structural fields.
+    // spec: spec/08-modules.md §8.8.1 (implicit prelude suppression) + §8.3.4
+    // (import alias) + §8.2.6 (submodule short-name alias)
+    // -----------------------------------------------------------------------
+
+    fn env_maps() -> (ModuleAliases, cranelisp_typecheck::PreludeFallback) {
+        (ModuleAliases::default(), cranelisp_typecheck::PreludeFallback::default())
+    }
+
+    fn set_imports(tables: &SessionTables, module: &str, imports: Vec<ImportSpec>) {
+        let mut g = tables.get_mut(&ModuleFullPath::from(module)).unwrap();
+        g.imports = imports;
+    }
+
+    // A plain module that does not reference prelude gets the fallback bit ON —
+    // the structural mirror of `inject_prelude_if_needed`'s ON path, so a
+    // cache-restored/blank module's next `/mod` turn compiles with the implicit
+    // prelude (bare `+`/`:Int` resolve).
+    #[test]
+    fn session_env_plain_module_sets_prelude_bit_on() {
+        let tables = tables();
+        ensure(&tables, "m");
+        let (aliases, fallback) = env_maps();
+        install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback);
+        assert_eq!(
+            fallback.get(&ModuleFullPath::from("m")).map(|b| *b),
+            Some(true),
+            "a module with no explicit prelude reference gets the fallback bit ON",
+        );
+    }
+
+    // A module that imports prelude EXPLICITLY keeps the bit OFF (absence-is-OFF)
+    // — the §8.8.1 suppression, structural half. Negative cell.
+    #[test]
+    fn session_env_explicit_prelude_import_keeps_bit_off() {
+        let tables = tables();
+        ensure(&tables, "m");
+        set_imports(&tables, "m", vec![glob_spec("prelude")]);
+        let (aliases, fallback) = env_maps();
+        install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback);
+        assert!(
+            fallback.get(&ModuleFullPath::from("m")).map(|b| *b) != Some(true),
+            "a module importing prelude explicitly must NOT get the implicit-fallback bit",
+        );
+    }
+
+    // The prelude module itself never gets the fallback bit (it IS the outer
+    // scope). Negative cell.
+    #[test]
+    fn session_env_prelude_module_never_gets_bit() {
+        let tables = tables();
+        ensure(&tables, "prelude");
+        let (aliases, fallback) = env_maps();
+        install_module_session_env(&tables, &ModuleFullPath::from("prelude"), &aliases, &fallback);
+        assert!(
+            fallback.get(&ModuleFullPath::from("prelude")).is_none(),
+            "prelude must not fall back to itself",
+        );
+    }
+
+    // Import `as`-aliases are re-registered keyed `<module>.<alias>` — the alias
+    // half of `install_imports`, restored from the serialized `imports` field.
+    #[test]
+    fn session_env_reregisters_import_alias() {
+        let tables = tables();
+        ensure(&tables, "m");
+        let aliased = ImportSpec {
+            module_path: ModuleFullPath::from("util"),
+            alias: Some(cranelisp_types::ModuleName::from("u")),
+            names: ImportNames::Glob,
+            span: Span::SYNTHETIC,
+        };
+        set_imports(&tables, "m", vec![aliased]);
+        let (aliases, fallback) = env_maps();
+        install_module_session_env(&tables, &ModuleFullPath::from("m"), &aliases, &fallback);
+        let entry = aliases.get(&ModuleFullPath::from("m.u"));
+        assert!(entry.is_some(), "alias `<module>.<alias>` (m.u) must be registered");
+        assert_eq!(
+            entry.unwrap().target.as_ref(),
+            "util",
+            "the alias must point at the imported module",
+        );
+    }
+
+    // Submodule short-name aliases are re-registered keyed by the bare name →
+    // `<module>.<name>` — mirror of `register_submodule_alias`.
+    #[test]
+    fn session_env_reregisters_submodule_alias() {
+        let tables = tables();
+        ensure(&tables, "shell");
+        {
+            let mut g = tables.get_mut(&ModuleFullPath::from("shell")).unwrap();
+            g.submodules = vec![cranelisp_types::ModDecl {
+                name: cranelisp_types::ModuleName::from("child"),
+                visibility: Visibility::Private,
+                inline_body: None,
+                span: Span::SYNTHETIC,
+            }];
+        }
+        let (aliases, fallback) = env_maps();
+        install_module_session_env(&tables, &ModuleFullPath::from("shell"), &aliases, &fallback);
+        let entry = aliases.get(&ModuleFullPath::from("child"));
+        assert!(entry.is_some(), "submodule short-name alias `child` must be registered");
+        assert_eq!(
+            entry.unwrap().target.as_ref(),
+            "shell.child",
+            "the short-name alias must point at the full submodule path",
+        );
+    }
+
+    // Idempotent: re-running yields the same bit (a cache-restore install
+    // followed by a `/mod` turn both call it).
+    #[test]
+    fn session_env_is_idempotent() {
+        let tables = tables();
+        ensure(&tables, "m");
+        let (aliases, fallback) = env_maps();
+        let m = ModuleFullPath::from("m");
+        install_module_session_env(&tables, &m, &aliases, &fallback);
+        install_module_session_env(&tables, &m, &aliases, &fallback);
+        assert_eq!(fallback.get(&m).map(|b| *b), Some(true));
+    }

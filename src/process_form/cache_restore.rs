@@ -345,8 +345,29 @@ fn register_cached_with_scheduler(
         ctx.scheduler.register_module_cached_no_object(dep.clone(), symbols);
     }
 
-    // 6. Create typecheck product with GOT table for cached module.
+    // 6. Create typecheck product with GOT table for cached module, and make
+    //    `file_path` authoritative (S102 CS-D3a, §6.2.1): the restore is keyed
+    //    by the source file it hashed, so `dep_file` is the module's real
+    //    backing file. The rehydration chokepoint (`resolve_recheck_sexps`),
+    //    `module_grain_reload`, and `regenerate_backing_file` all read this —
+    //    a cache-restored module carries no introspection, so dependent
+    //    recompilation reaches its stored bodies ONLY via this file authority.
     ensure_typecheck_product(ctx.typecheck_products, dep);
+    if let Some(mut tp) = ctx.typecheck_products.get_mut(dep) {
+        tp.file_path = Some(dep_file.to_path_buf());
+    }
+
+    // Establish the session-env companions (prelude-fallback bit + aliases) from
+    // the just-installed table's structural fields (S102 CS-D3a, §6.2.2). The
+    // cache-restore path populated none of them, so a `/mod {dep}` turn would
+    // otherwise typecheck with no prelude fallback (`undefined variable: +`) and
+    // no aliases — the /port D3 / FIXME 0487 env wall.
+    crate::imports::install_module_session_env(
+        ctx.symbol_tables,
+        dep,
+        ctx.module_aliases,
+        ctx.prelude_fallback,
+    );
 
     // 7. Record cache hit. Sprint 67 Cluster B sub-fire 3: ObjectCache facade.
     shared.cache.record_cache_hit(dep, source_hash);

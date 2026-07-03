@@ -149,6 +149,82 @@ pub(crate) fn install_exports(
     Ok(())
 }
 
+/// Establish a module's session-env companions (prelude-fallback bit, import
+/// `as`-aliases, submodule short-name aliases) from its **already-installed**
+/// symbol table's structural fields (S102 CS-D3a; `design/int/s102-defect-wave.md`
+/// §6.2). These companions are session-side and UNSERIALIZED, so a module that
+/// enters the session by any route OTHER than the fresh-typecheck path (cache
+/// restore, blank `/mod` creation) would otherwise have none of them — its next
+/// `/mod`-namespace turn typechecks with no prelude fallback (bare `+`/`:Int`
+/// unresolved) and no aliases.
+///
+/// **Invariant (Principle 18/20):** the companions are computed at INSTALL time,
+/// uniformly across every route, from the table's OWN structural representation
+/// — never as a side effect of one route's Pass 0. This is the structural mirror
+/// of the fresh path's `inject_prelude_if_needed` (`!sexps_reference_prelude`),
+/// `install_imports` (alias registration), and `register_submodule_alias`.
+///
+/// Idempotent: re-running for an already-established module recomputes the same
+/// bit + aliases (DashMap insert overwrites with the same values).
+pub(crate) fn install_module_session_env(
+    symbol_tables: &SessionTables,
+    module: &ModuleFullPath,
+    module_aliases: &ModuleAliases,
+    prelude_fallback: &cranelisp_typecheck::PreludeFallback,
+) {
+    let prelude_path = ModuleFullPath::from("prelude");
+    let Some(table) = symbol_tables.get(module) else {
+        return;
+    };
+
+    // (a) Prelude-fallback bit. ON for every non-prelude module that does not
+    //     explicitly reference `prelude` in its imports/exports — the structural
+    //     equivalent of the fresh path's `!sexps_reference_prelude` gate
+    //     (§8.8.1). A module that imports prelude explicitly keeps the bit OFF
+    //     (absence-is-OFF), exactly as `inject_prelude_if_needed`'s early return
+    //     leaves it.
+    if *module != prelude_path && !table_references_prelude(&table) {
+        prelude_fallback.insert(module.clone(), true);
+    }
+
+    // (b) Import `as`-aliases (`(import [(target alias) …])`) → `<module>.<alias>`
+    //     — the alias half of `install_imports` (the per-symbol Import bindings
+    //     themselves were serialized in the restored table; only the session-side
+    //     alias map needs re-populating).
+    for spec in &table.imports {
+        if let Some(alias) = &spec.alias {
+            module_aliases.insert(
+                alias_key(module, alias.as_ref()),
+                ModuleAliasEntry::new(
+                    spec.module_path.clone(),
+                    Visibility::Private,
+                    spec.span,
+                ),
+            );
+        }
+    }
+
+    // (c) Submodule short-name aliases (`(mod util)` → bare `util/…` resolves to
+    //     `<module>.util`) — mirror of `register_submodule_alias`, keyed by the
+    //     bare short name so §8.6.6 longest-prefix substitution matches.
+    for decl in &table.submodules {
+        let sub_path = ModuleFullPath::from(format!("{module}.{}", decl.name));
+        module_aliases.insert(
+            ModuleFullPath::from(decl.name.as_ref()),
+            ModuleAliasEntry::new(sub_path, Visibility::Private, decl.span),
+        );
+    }
+}
+
+/// Structural equivalent of `dependency::sexps_reference_prelude` (§8.8.1) over a
+/// restored table's `imports`/`exports` fields: does the module explicitly name
+/// `prelude` in an import or export? Used by `install_module_session_env` to
+/// decide the prelude-fallback bit without the source sexps in hand.
+fn table_references_prelude(table: &SessionSymbolTable) -> bool {
+    table.imports.iter().any(|s| s.module_path.as_ref() == "prelude")
+        || table.exports.iter().any(|s| s.module_path.as_ref() == "prelude")
+}
+
 /// `<owner>.<alias>` key for the session-level alias table; owner is the
 /// declaring module.
 fn alias_key(current_module: &ModuleFullPath, alias: &str) -> ModuleFullPath {

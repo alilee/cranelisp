@@ -1167,7 +1167,20 @@ impl CompilerSession {
         } else {
             ModuleFullPath::from(name)
         };
-        self.set_current_module(path);
+        self.set_current_module(path.clone());
+        // S102 CS-D3a (§6.2.3): establish the target module's session-env
+        // companions. `set_current_module` creates a blank table via
+        // `ensure_module_exists` for a not-yet-loaded module — a blank module
+        // cannot reference prelude, so its fallback bit is ON (its next defining
+        // turn must compile with the implicit prelude, exactly as its file body
+        // would). Idempotent for an already-loaded/cache-restored target
+        // (recomputes the same bit + aliases from its own structural fields).
+        crate::imports::install_module_session_env(
+            &self.shared.symbol_tables,
+            &path,
+            &self.shared.module_aliases,
+            &self.shared.prelude_fallback,
+        );
     }
 
     /// Look up introspection data for a bare symbol name in the current module.

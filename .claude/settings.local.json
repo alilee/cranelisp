@@ -73,7 +73,8 @@
       "Read(//private/tmp/cltest/**)",
       "Bash(rm -rf *)",
       "Bash(cp /Users/alilee/Projects.nosync/rust/cranelisp/tests/fixtures/preludes/test-standard.cl prelude.cl)",
-      "Bash(/Users/alilee/Projects.nosync/rust/cranelisp/target/debug/cranelisp)"
+      "Bash(/Users/alilee/Projects.nosync/rust/cranelisp/target/debug/cranelisp)",
+      "Bash(/home/alilee/cranelisp/target/debug/cranelisp)"
     ]
   }
 }

@@ -477,10 +477,16 @@ pub(super) fn register_dep(
         shared.cache.record_source_hash(dep, hash);
     }
 
-    // 4. store source text for /source introspection (--repl).
+    // 4. store source text for /source introspection (--repl) + make `file_path`
+    //    authoritative (S102 CS-D3a, §6.2.1): the fresh dep-load path knows the
+    //    module's real backing file, so record it uniformly with the
+    //    cache-restore path — `regenerate_backing_file`'s private
+    //    `{root}/{module}.cl` fallback stops being load-bearing when a `/mod`
+    //    turn edits a fresh file-backed dep.
     if ctx.introspection.is_some() {
         ensure_typecheck_product(ctx.typecheck_products, dep);
         if let Some(mut tp) = ctx.typecheck_products.get_mut(dep) {
+            tp.file_path = Some(dep_file.to_path_buf());
             tp.source_text = Some(source);
         }
     }
