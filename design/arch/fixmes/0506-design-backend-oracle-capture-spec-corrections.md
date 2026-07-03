@@ -24,6 +24,10 @@ The Wave-3 B0-be review (S102) confirmed the golden-oracle first-occurrence dedu
 
 Edit §13.1: (a) add normative item 5 — duplicate frames dedup to FIRST occurrence, naming the `.o` cache-write pass as the source (or, if /qa adopts `--no-cache` capture per review F4, document the `--no-cache` pin instead and make a duplicate frame a hard error); (b) state the JIT-pass-only scope pin + the mode-equivalence-lane guard for the object side; (c) correct/remove the ~:980 claim; (d) fold the reproducibility sentence. Coordinate (a) with the state of `tests/scripts/clif_golden.sh` at drain time.
 
+## Addendum (filed_by /sprint, post-Wave-3R, 2026-07-03)
+
+Wave 3R landed the harness side (`b82ebf1`): capture now runs `--no-cache`, dedup logic is deleted, duplicate frame = hard error, non-empty guard installed, full pin set enforced. Resolution option (a) should therefore take the **"document the `--no-cache` pin + duplicate=hard-error" branch** — that is the as-built state. Also add to §13.1's pin list two emission-affecting vars named nowhere in the spec: `CRANELISP_RC_DEC_CHECK` (backend `heap.rs:270`, guarded-dec emission) and `CRANELISP_NO_IO_SCHEDULE` (`src/process_form.rs:377`, pre-typecheck bind-chain transform shaping ParBind CLIF).
+
 ## Operational implication
 
 Must land **with or before the first B3.x scoped re-baseline** (S102 Wave 11) so delta-attribution reasoning starts from the correct mechanism model. Full evidence: S102 Wave-3 /review report (see `sprints/SPRINT.md` §Notes Wave-3 entries).
