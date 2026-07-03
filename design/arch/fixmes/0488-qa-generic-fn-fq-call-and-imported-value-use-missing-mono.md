@@ -134,6 +134,39 @@ Likely pre-existing (not S101-caused — the S101 cat-3 sweep covered
 work as first-class values, users will immediately pass stdlib HOFs/fns
 around, and the imported-generic cell is the first one they hit.
 
+## /qa isolation (S102 Wave 2, 2026-07-03): SEAM ATTRIBUTED — see `tests/plan/0488-isolation.md`
+
+All three signatures attribute to **/dev(typecheck)** — the mono instance is
+**never minted** (category (i) of the seam question; fresh-dir `/sig` probes
+show no mangled entry under any name after each failing turn; REPL ≡ `--run`
+on all three). None attributes to backend `fn_as_value.rs` → **0488 does NOT
+ride Wave 11 B3.1**; /sprint schedules typecheck slot(s). Per-signature:
+
+- **(a) FQ call** — pass-4 collection misses FQ-qualified callee heads.
+  Same-module FQ: both collector gates exclude it
+  (`resolve_terminal_entry_and_home` raw-key probe; the imported-collector's
+  `home != current_module` gate). Cross-module FQ: collected, but
+  `get_constrained_fn`'s home-probe uses the raw qualified string as a
+  symbol-table key → no mint. New RED guard:
+  `generic_value_use_mono::generic_fn_cross_module_fq_call_monomorphises`.
+- **(b) imported value-use** — `collect_parametric_fn_value_args`'s explicit
+  `home == current_module` gate (program.rs:3629) excludes imported generics;
+  the fn-value mint call (program.rs:3415) also hard-codes `home: None`.
+- **(c) fold-bodied composition** — DISTINCT mechanism: the defining module's
+  generalization publishes an over-general template scheme
+  (`vconcat : (Fn [a (Vec b)] c)`, result untied) → the inner call's result
+  is a free var at the consuming turn → the OUTER site fails pass-4's
+  all-args-concrete guard → no rewrite → `undefined function: <outer>`.
+  Annotation cure verified (`(vcount :(Vec Int) (vconcat …))` works). This
+  root-causes the §Addendum inference collateral. New RED guard (root-cause
+  level): `generic_value_use_mono::fold_bodied_generic_template_scheme_ties_params_and_result`.
+  Residue: WHERE the unification is lost (0344-guard interplay suspected) —
+  unit-tier question for the fixing dev.
+
+Unit-test shapes + owner recommendation: `tests/plan/0488-isolation.md`.
+0488 guard count 3 → 5 (+2 green controls); ledger §"Sprint 102 Phase-5
+Stage-1 QA-first RED set" Wave-2 addendum.
+
 ## /qa guard batch (S101 6b, 2026-07-03): guards LANDED — this file is now redundant as a record
 
 New `tests/generic_value_use_mono.rs`: all THREE signatures reproduce
