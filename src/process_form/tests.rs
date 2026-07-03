@@ -39,6 +39,7 @@
             &info,
             &expanded,
             &original,
+            Some("(mdef x 1)".to_string()),
         )
         .unwrap();
 
@@ -53,6 +54,11 @@
             rec.expanded.as_ref().map(|s| s.format_flat()),
             Some(expanded.format_flat()),
             "the expansion artifact rides .expanded"
+        );
+        assert_eq!(
+            rec.source.as_deref(),
+            Some("(mdef x 1)"),
+            "the verbatim authored text is the recorded source (CS-D2)"
         );
         // Compile-path authority unchanged: macro_sexp is the expanded defmacro.
         let table = symbol_tables.get(&module).unwrap();
@@ -92,6 +98,7 @@
             &info,
             &direct,
             &direct,
+            None,
         )
         .unwrap();
 

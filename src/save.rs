@@ -540,13 +540,90 @@ fn introspection_sexp(
     module_path: &ModuleFullPath,
     name: &cranelisp_types::Symbol,
 ) -> Option<Sexp> {
+    introspection_sexp_and_source(introspection, module_path, name).0
+}
+
+/// The (sexp, source) pair off a symbol's introspection record. The verbatim
+/// `source` text is the S102 CS-D2 emission authority (§15.4.7 authorship
+/// fidelity); the `sexp` remains the structural authority (dedup identity,
+/// dependency sort, render fallback).
+fn introspection_sexp_and_source(
+    introspection: Option<&DashMap<FQSymbol, Introspection>>,
+    module_path: &ModuleFullPath,
+    name: &cranelisp_types::Symbol,
+) -> (Option<Sexp>, Option<String>) {
     let fq = FQSymbol {
         module: module_path.clone(),
         symbol: name.clone(),
     };
-    introspection
-        .and_then(|m| m.get(&fq))
-        .and_then(|intro| intro.sexp.clone())
+    match introspection.and_then(|m| m.get(&fq)) {
+        Some(intro) => (intro.sexp.clone(), intro.source.clone()),
+        None => (None, None),
+    }
+}
+
+/// Does `source` re-parse to exactly the recorded `sexp`? (S102 CS-D2 — the
+/// consistency gate for verbatim source-first emission.)
+///
+/// The comparison is reader-desugar-aware: the parse of a reader-shorthand
+/// text (`` `(add-i64 ~e ~e) ``) yields the SAME desugared structure
+/// (`(quasiquote (add-i64 (unquote e) (unquote e)))`) as the recorded sexp,
+/// so authored shorthand passes while a stale / mis-sliced / garbage `source`
+/// (whose parse fails, yields a different form count, or a different
+/// structure) fails and the caller falls back to the reconciled sexp render —
+/// verbatim emission can never corrupt the regenerated file.
+pub(crate) fn sexp_matches_source(sexp: &Sexp, source: &str) -> bool {
+    match cranelisp_frontend::parse(source) {
+        Ok(forms) if forms.len() == 1 => forms[0].format_flat() == sexp.format_flat(),
+        _ => false,
+    }
+}
+
+/// Extract the §5.12 docstring-slot string from a parsed `defn`/`defn-` form
+/// (`children[2]` is the docstring iff it is a string literal — mirrors
+/// `ast_builder::extract_optional_docstring`).
+fn form_docstring(form: &Sexp) -> Option<String> {
+    let Sexp::List(children, _) = form else { return None };
+    let is_defn = matches!(
+        children.first(),
+        Some(Sexp::Symbol(head, _)) if head == "defn" || head == "defn-"
+    );
+    if !is_defn {
+        return None;
+    }
+    match children.get(2) {
+        Some(Sexp::Str(text, _)) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+/// Choose the emitted text for one fn/macro item (S102 CS-D2 — source-text-
+/// first emission, `design/int/s102-defect-wave.md` §4.2 rule 2): the verbatim
+/// recorded `source` when present and CONSISTENT — it re-parses to the
+/// recorded sexp AND already carries the live docstring in the §5.12 slot
+/// (the reconciling renderer exists precisely because `Def.docstring` can be
+/// edited out-of-band — `set-doc`, agent Document-mode; those fall back to
+/// the render, which splices the live docstring); otherwise the reconciled
+/// sexp render (byte-behaviour identical to pre-D2 for entries with no
+/// verbatim record).
+fn emit_decl_text(sexp: &Sexp, source: Option<&str>, live_doc: Option<&str>) -> String {
+    if let Some(src) = source {
+        let src = src.trim();
+        if sexp_matches_source(sexp, src) {
+            let doc_consistent = match live_doc {
+                None => true,
+                Some(d) => cranelisp_frontend::parse(src)
+                    .ok()
+                    .and_then(|mut v| if v.len() == 1 { Some(v.remove(0)) } else { None })
+                    .and_then(|form| form_docstring(&form))
+                    .is_some_and(|doc| doc == d),
+            };
+            if doc_consistent {
+                return src.to_string();
+            }
+        }
+    }
+    render_decl_sexp(sexp, live_doc)
 }
 
 fn generate_traits(
@@ -620,8 +697,8 @@ fn generate_fns_and_macros(
     // reference. Per the locked model a macro depends only on PRIOR modules +
     // other macros (never a same-module non-macro def), so emitting all macros
     // first is always valid; functions then see every macro defined above them.
-    let mut macro_items: Vec<(String, Sexp)> = Vec::new();
-    let mut fn_items: Vec<(String, Sexp)> = Vec::new();
+    let mut macro_items: Vec<FnMacroItem> = Vec::new();
+    let mut fn_items: Vec<FnMacroItem> = Vec::new();
     // Live docstrings, keyed by symbol name (FIXME 0430, §11.3a). The live
     // `ModuleEntry::Def.docstring` is AUTHORITATIVE — threaded into the renderer
     // at emit time so a `set-doc` edit round-trips through regen. Only `UserFn`
@@ -665,13 +742,22 @@ fn generate_fns_and_macros(
         };
         // Prefer the introspection record (carries the verbatim REPL input text
         // when present); fall back to the symbol-table `macro_sexp` for macros.
-        let sexp = introspection_sexp(introspection, module_path, name)
-            .or(macro_table_sexp);
+        // S102 CS-D2: the record's verbatim `source` rides along as the
+        // emission authority; `emit_decl_text`'s consistency gate makes a
+        // stale or mispaired source harmless (render fallback).
+        let (record_sexp, record_source) =
+            introspection_sexp_and_source(introspection, module_path, name);
+        let sexp = record_sexp.or(macro_table_sexp);
         if let Some(sexp) = sexp {
+            let item = FnMacroItem {
+                name: name.to_string(),
+                sexp,
+                source: record_source,
+            };
             if is_macro {
-                macro_items.push((name.to_string(), sexp));
+                macro_items.push(item);
             } else {
-                fn_items.push((name.to_string(), sexp));
+                fn_items.push(item);
             }
         }
     }
@@ -696,16 +782,33 @@ fn generate_fns_and_macros(
     macros_sorted
         .into_iter()
         .chain(fns_sorted)
-        .filter(|(_, sexp)| {
-            let span = sexp.span();
-            seen_authored.insert((span.start, span.end, sexp.format_flat()))
+        .filter(|item| {
+            let span = item.sexp.span();
+            seen_authored.insert((span.start, span.end, item.sexp.format_flat()))
         })
         // Macros carry `None` (they are absent from `docstrings`); UserFns thread
-        // their live, authoritative docstring (§11.3a). The renderer is a strict
-        // no-op when the lookup misses — a never-`set-doc`'d def stays unchanged.
-        .map(|(name, sexp)| render_decl_sexp(&sexp, docstrings.get(&name).map(String::as_str)))
+        // their live, authoritative docstring (§11.3a). Emission is source-text-
+        // first (CS-D2): the verbatim authored text when consistent, else the
+        // reconciled render (a strict no-op for a never-`set-doc`'d def).
+        .map(|item| {
+            emit_decl_text(
+                &item.sexp,
+                item.source.as_deref(),
+                docstrings.get(&item.name).map(String::as_str),
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// One fn/macro regeneration item: the symbol, its structural authority
+/// (`sexp` — dedup identity + dependency sort + render fallback), and the
+/// verbatim authored text when recorded (`source` — the CS-D2 emission
+/// authority, consistency-gated at emit time).
+struct FnMacroItem {
+    name: String,
+    sexp: Sexp,
+    source: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -803,7 +906,19 @@ pub(crate) fn rehydrate_userfn_introspection_from_source(
             let mut entry = introspection.entry(fq).or_default();
             entry.sexp = Some(sexp.clone());
             if entry.source.is_none() {
-                entry.source = Some(crate::pretty::pretty_print(sexp));
+                // S102 CS-D2 (§15.4.7 authorship fidelity): the rehydrator
+                // holds the original file text — capture the VERBATIM span
+                // slice, not `pretty_print(sexp)` (which re-renders reader
+                // shorthand as its desugared form and destroys the user's
+                // authored text on the next regen). Consistency-gated; any
+                // bound/parse mismatch falls back to the pretty render.
+                let span = sexp.span();
+                let verbatim = backing_source
+                    .get(span.start as usize..span.end as usize)
+                    .filter(|s| sexp_matches_source(sexp, s))
+                    .map(str::to_string);
+                entry.source =
+                    Some(verbatim.unwrap_or_else(|| crate::pretty::pretty_print(sexp)));
             }
             rehydrated += 1;
         }
@@ -818,16 +933,17 @@ pub(crate) fn rehydrate_userfn_introspection_from_source(
 /// Sort functions/macros by dependency order using callee lists from the
 /// symbol table (Decision 21). Items with no intra-module deps appear first.
 /// Cycles are broken alphabetically.
-fn dependency_sort(items: Vec<(String, Sexp)>, st: &crate::code::SessionSymbolTable) -> Vec<(String, Sexp)> {
+fn dependency_sort(items: Vec<FnMacroItem>, st: &crate::code::SessionSymbolTable) -> Vec<FnMacroItem> {
     if items.len() <= 1 {
         return items;
     }
 
-    let names: HashSet<&str> = items.iter().map(|(n, _)| n.as_str()).collect();
+    let names: HashSet<&str> = items.iter().map(|i| i.name.as_str()).collect();
 
     // Build adjacency from callee lists (intra-module only)
     let mut deps: std::collections::HashMap<&str, HashSet<&str>> = std::collections::HashMap::new();
-    for (name, _) in &items {
+    for item in &items {
+        let name = &item.name;
         let mut item_deps = HashSet::new();
         if let Some(entry) = st.get(name) {
             for callee in entry.callees() {
@@ -848,8 +964,8 @@ fn dependency_sort(items: Vec<(String, Sexp)>, st: &crate::code::SessionSymbolTa
         std::collections::HashMap::new();
     let mut dependents: std::collections::HashMap<&str, Vec<&str>> =
         std::collections::HashMap::new();
-    for (name, _) in &items {
-        in_degree.entry(name.as_str()).or_insert(0);
+    for item in &items {
+        in_degree.entry(item.name.as_str()).or_insert(0);
     }
     for (name, item_deps) in &deps {
         for dep in item_deps {
@@ -885,17 +1001,18 @@ fn dependency_sort(items: Vec<(String, Sexp)>, st: &crate::code::SessionSymbolTa
     let ordered_set: HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
     let mut remaining: Vec<String> = items
         .iter()
-        .filter(|(n, _)| !ordered_set.contains(n.as_str()))
-        .map(|(n, _)| n.clone())
+        .filter(|i| !ordered_set.contains(i.name.as_str()))
+        .map(|i| i.name.clone())
         .collect();
     remaining.sort();
     order.extend(remaining);
 
     // Reorder items according to order
-    let item_map: std::collections::HashMap<String, Sexp> = items.into_iter().collect();
+    let mut item_map: std::collections::HashMap<String, FnMacroItem> =
+        items.into_iter().map(|i| (i.name.clone(), i)).collect();
     order
         .into_iter()
-        .filter_map(|name| item_map.get(&name).map(|sexp| (name, sexp.clone())))
+        .filter_map(|name| item_map.remove(&name))
         .collect()
 }
 
@@ -1101,13 +1218,17 @@ mod tests {
         insert_fn("selfy", 6, vec![fq("user", "selfy"), fq("other", "leaf")]);
 
         let p = |s: &str| cranelisp_frontend::parse(s).unwrap().remove(0);
-        let items: Vec<(String, Sexp)> = ["top", "mid", "leaf", "pa", "pb", "pc", "selfy"]
+        let items: Vec<FnMacroItem> = ["top", "mid", "leaf", "pa", "pb", "pc", "selfy"]
             .iter()
-            .map(|n| (n.to_string(), p(&format!("(defn {n} [] 1)"))))
+            .map(|n| FnMacroItem {
+                name: n.to_string(),
+                sexp: p(&format!("(defn {n} [] 1)")),
+                source: None,
+            })
             .collect();
 
         let sorted = dependency_sort(items, &st);
-        let order: Vec<&str> = sorted.iter().map(|(n, _)| n.as_str()).collect();
+        let order: Vec<&str> = sorted.iter().map(|i| i.name.as_str()).collect();
 
         // Termination + totality: every item exactly once, cycles included.
         assert_eq!(order.len(), 7, "no item lost or duplicated: {order:?}");
@@ -1249,6 +1370,204 @@ mod tests {
         assert!(out.contains("(defn f [] 1)"), "f emitted: {out:?}");
         assert!(out.contains("(defn g [] 1)"), "g emitted: {out:?}");
         assert!(out.contains("(defmacro twice"), "direct defmacro emitted: {out:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // S102 CS-D2 — source-text-first emission (Matrix B: authorship fidelity)
+    // -----------------------------------------------------------------------
+
+    // The consistency gate is reader-desugar-aware: authored shorthand
+    // re-parses to the recorded (desugared) sexp; garbage / stale / multi-form
+    // sources fail.
+    // spec: repl/spec.md §15.4 — invariant 7 (authorship fidelity)
+    #[test]
+    fn sexp_matches_source_desugar_aware_positive_and_negative_cells() {
+        let shorthand = "(defmacro twice [e] `(add-i64 ~e ~e))";
+        let desugared = parse1(shorthand); // parse desugars `~`/`` ` ``
+        assert!(
+            sexp_matches_source(&desugared, shorthand),
+            "authored shorthand matches its own desugared parse"
+        );
+        assert!(
+            !sexp_matches_source(&desugared, "(defn other [] 1)"),
+            "a different form does not match"
+        );
+        assert!(
+            !sexp_matches_source(&desugared, "garbage ("),
+            "an unparseable source does not match"
+        );
+        assert!(
+            !sexp_matches_source(&desugared, "(defn a [] 1) (defn b [] 2)"),
+            "a multi-form source does not match"
+        );
+    }
+
+    // Matrix B {file-originated hand-authored × authorship fidelity}: an entry
+    // whose record carries the verbatim authored text emits it BYTE-EXACT —
+    // reader shorthand preserved, never the desugared render (/port D2).
+    // spec: repl/spec.md §15.4 — invariant 7
+    #[test]
+    fn regen_emits_verbatim_authored_source_reader_shorthand() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let authored = "(defmacro twice [e] `(add-i64 ~e ~e))";
+        let desugared = parse1(authored);
+        st.insert("twice".into(), macro_entry(desugared.clone()));
+
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let fq = FQSymbol { module: module.clone(), symbol: "twice".into() };
+        {
+            let mut rec = introspection.entry(fq).or_default();
+            rec.sexp = Some(desugared);
+            rec.source = Some(authored.to_string());
+        }
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains(authored),
+            "the authored bytes are what gets written back (§15.4.7): {out:?}"
+        );
+        assert!(
+            !out.contains("quasiquote"),
+            "the desugared render must NOT replace the authored shorthand: {out:?}"
+        );
+    }
+
+    // Negative: an INCONSISTENT recorded source (stale text that no longer
+    // parses to the recorded sexp) falls back to the reconciled render —
+    // verbatim emission can never corrupt the file.
+    // spec: repl/spec.md §15.4 — invariant 1 (round-trip)
+    #[test]
+    fn regen_source_first_neg_inconsistent_source_falls_back_to_render() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("f".into(), userfn_entry(0));
+
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let fq = FQSymbol { module: module.clone(), symbol: "f".into() };
+        {
+            let mut rec = introspection.entry(fq).or_default();
+            rec.sexp = Some(parse1("(defn f [x] (add-i64 x 1))"));
+            rec.source = Some("stale garbage ( not the defn".to_string());
+        }
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains("(defn f [x] (add-i64 x 1))"),
+            "inconsistent source falls back to the sexp render: {out:?}"
+        );
+        assert!(!out.contains("garbage"), "the stale text never reaches the file: {out:?}");
+    }
+
+    // Negative: a live `Def.docstring` edited out-of-band (set-doc / agent
+    // Document-mode) makes the recorded source inconsistent — emission falls
+    // back to the reconciled render carrying the LIVE docstring (§11.3a
+    // authority preserved through the source-first path).
+    // spec: design/int/session-persistence.md §11.3a
+    #[test]
+    fn regen_source_first_docstring_mismatch_falls_back_to_reconciled_render() {
+        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert(
+            "f".into(),
+            ModuleEntry::def(
+                Scheme {
+                    type_vars: vec![],
+                    constraints: std::collections::HashMap::new(),
+                    ty: Type::Int,
+                },
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                },
+            )
+            .docstring("new doc")
+            .build(),
+        );
+
+        let authored = "(defn f \"old doc\" [x] x)";
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let fq = FQSymbol { module: module.clone(), symbol: "f".into() };
+        {
+            let mut rec = introspection.entry(fq).or_default();
+            rec.sexp = Some(parse1(authored));
+            rec.source = Some(authored.to_string());
+        }
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains("\"new doc\""),
+            "the live docstring wins over the recorded source: {out:?}"
+        );
+        assert!(!out.contains("old doc"), "the stale docstring is dropped: {out:?}");
+    }
+
+    // Positive twin: a recorded source that ALREADY carries the live docstring
+    // is consistent and emits verbatim.
+    // spec: design/int/session-persistence.md §11.3a
+    #[test]
+    fn regen_source_first_docstring_consistent_emits_verbatim() {
+        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert(
+            "f".into(),
+            ModuleEntry::def(
+                Scheme {
+                    type_vars: vec![],
+                    constraints: std::collections::HashMap::new(),
+                    ty: Type::Int,
+                },
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                },
+            )
+            .docstring("the doc")
+            .build(),
+        );
+
+        let authored = "(defn f \"the doc\" [x]    x)"; // authored spacing preserved
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let fq = FQSymbol { module: module.clone(), symbol: "f".into() };
+        {
+            let mut rec = introspection.entry(fq).or_default();
+            rec.sexp = Some(parse1(authored));
+            rec.source = Some(authored.to_string());
+        }
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains(authored),
+            "a docstring-consistent source emits byte-verbatim: {out:?}"
+        );
+    }
+
+    // Rehydration captures the VERBATIM span slice off the backing file (it
+    // holds the file text at that moment), never `pretty_print(sexp)` — the
+    // reader-shorthand-loss half of /port D2's rehydration compounding.
+    // spec: repl/spec.md §15.4 — invariant 7
+    #[test]
+    fn rehydrate_captures_verbatim_source_slice() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("g".into(), userfn_entry(0));
+
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        // Authored formatting a pretty-printer would not reproduce.
+        let backing = ";; header\n(defn g [x]\n    (mul-i64 x   2))\n";
+        let n = rehydrate_userfn_introspection_from_source(
+            &st,
+            &introspection,
+            &module,
+            backing,
+        );
+        assert_eq!(n, 1);
+        let fq = FQSymbol { module: module.clone(), symbol: "g".into() };
+        assert_eq!(
+            introspection.get(&fq).unwrap().source.as_deref(),
+            Some("(defn g [x]\n    (mul-i64 x   2))"),
+            "rehydrated source is the exact file slice"
+        );
     }
 
     #[test]

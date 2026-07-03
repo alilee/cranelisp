@@ -228,6 +228,7 @@ pub(super) fn register_macro_in_module(
     info: &cranelisp_frontend::DefmacroInfo,
     sexp: &Sexp,
     authored: &Sexp,
+    authored_source: Option<String>,
 ) -> Result<(), CranelispError> {
     let clause_infos: Vec<MacroClauseInfo> = info
         .clauses
@@ -281,7 +282,11 @@ pub(super) fn register_macro_in_module(
             entry.expanded = Some(sexp.clone());
         }
         if entry.source.is_none() {
-            entry.source = Some(crate::pretty::pretty_print(authored));
+            // S102 CS-D2: prefer the verbatim authored text (the caller's
+            // consistency-gated `source_text` span slice — preserves reader
+            // shorthand like `` `(… ~e) ``); fall back to the pretty render.
+            entry.source =
+                Some(authored_source.unwrap_or_else(|| crate::pretty::pretty_print(authored)));
         }
     }
     if let Some(mut table) = symbol_tables.get_mut(module) {

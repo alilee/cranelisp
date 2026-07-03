@@ -1203,6 +1203,23 @@ impl CompilerSession {
         // this (entry) module's live `SymbolTable.module_preamble`.
         crate::save::apply_module_preamble(&self.shared.symbol_tables, &module, source);
 
+        // S102 CS-D2 (§15.4.7 authorship fidelity): record the module's source
+        // text for verbatim introspection capture — REPL only, mirroring the
+        // dep-load path (`dependency.rs::register_dep` step 4). Without it the
+        // ENTRY module's load-time introspection records fall back to
+        // `pretty_print` (which desugars reader shorthand), so adopting a
+        // hand-authored backing file destroyed the user's authored text on the
+        // first regenerating turn (/port D2). Every consumer of the recorded
+        // text consistency-gates its span slice (`verbatim_source_slice`), so
+        // later REPL-turn spans against this load-time text can never
+        // mis-record.
+        if self.shared.introspection.is_some() && !source.is_empty() {
+            crate::worker::ensure_typecheck_product(&self.shared.typecheck_products, &module);
+            if let Some(mut tp) = self.shared.typecheck_products.get_mut(&module) {
+                tp.source_text = Some(source.to_string());
+            }
+        }
+
         // Record source hash for manifest generation. Sprint 67 Cluster B
         // sub-fire 3: dispatch via the `ObjectCache` facade method.
         {

@@ -288,7 +288,11 @@ pub fn process_cluster_once(
     let intr = ctx.introspection;
     for (name, info, sexp) in &macro_infos {
         // Direct top-level defmacro: the authored form IS the defmacro form.
-        register_macro_in_module(ctx.symbol_tables, intr, module, name, info, sexp, sexp)?;
+        // CS-D2: capture the verbatim authored text (reader shorthand intact).
+        let authored_source = verbatim_source_slice(ctx, module, sexp);
+        register_macro_in_module(
+            ctx.symbol_tables, intr, module, name, info, sexp, sexp, authored_source,
+        )?;
     }
 
     let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut accumulator)?;
@@ -526,6 +530,30 @@ fn pass2_check_bodies_with_expansion(
     Ok(Pass2Result::Complete)
 }
 
+/// The verbatim authored text of `form`, sliced from the module's recorded
+/// `source_text` by span and CONSISTENCY-GATED (S102 CS-D2, §15.4.7): the
+/// slice must re-parse to exactly the recorded form (`save::sexp_matches_source`
+/// is reader-desugar-aware, so authored shorthand like `` `(… ~e) `` passes).
+/// Returns `None` — callers fall back to `pretty_print` — when the module has
+/// no `source_text`, the span is out of bounds / off a char boundary, or the
+/// slice does not match (e.g. a REPL turn's fresh 0-based spans against the
+/// module's load-time file text).
+fn verbatim_source_slice(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    form: &Sexp,
+) -> Option<String> {
+    let span = form.span();
+    let tp = ctx.typecheck_products.get(module)?;
+    let text = tp.source_text.as_ref()?;
+    let slice = text.get(span.start as usize..span.end as usize)?;
+    if crate::save::sexp_matches_source(form, slice) {
+        Some(slice.to_string())
+    } else {
+        None
+    }
+}
+
 /// Process a regular (non-module-declaration) form in Pass 2.
 ///
 /// Tries macro expansion via the SymbolTableMacroResolver, builds AST,
@@ -581,7 +609,10 @@ fn process_regular_form(
             // or a literal-`begin` member. The regen authority is therefore
             // the ORIGINAL outer form `sexp`, exactly what the sibling defn
             // records below — one turn, one authored form, one emission.
-            register_macro_in_module(ctx.symbol_tables, intr, module, &info.name, &info, &form, sexp)?;
+            let authored_source = verbatim_source_slice(ctx, module, sexp);
+            register_macro_in_module(
+                ctx.symbol_tables, intr, module, &info.name, &info, &form, sexp, authored_source,
+            )?;
             compile_macro_if_needed(ctx, module, &info, form.span(), accumulator)?;
         } else {
             regular_sexps.push(form);
@@ -617,20 +648,13 @@ fn process_regular_form(
                     symbol: defn.name.clone(),
                 };
                 let mut entry = intr_map.entry(fq).or_default();
-                // Source: extract from module source_text via sexp span.
-                // REPL eval may overwrite with the actual input text later.
+                // Source: extract VERBATIM from module source_text via sexp
+                // span, consistency-gated (S102 CS-D2 — the slice must
+                // re-parse to the recorded form; a stale `source_text` from a
+                // previous load never mis-slices into the record). REPL eval
+                // may overwrite with the actual input text later.
                 if entry.source.is_none() {
-                    let span = sexp.span();
-                    let src = ctx.typecheck_products.get(module)
-                        .and_then(|tp| tp.source_text.as_ref().and_then(|text| {
-                            let start = span.start as usize;
-                            let end = span.end as usize;
-                            if start < end && end <= text.len() {
-                                Some(text[start..end].to_string())
-                            } else {
-                                None
-                            }
-                        }));
+                    let src = verbatim_source_slice(ctx, module, sexp);
                     entry.source = src.or_else(|| Some(crate::pretty::pretty_print(sexp)));
                 }
                 entry.sexp = Some(sexp.clone());
