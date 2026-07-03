@@ -794,7 +794,11 @@ impl CompilerSession {
         if name.is_empty() {
             return "usage: /doc <name>".to_string();
         }
-        let Some((local, lookup_module)) = self.lookup_with_prelude_fallback(name) else {
+        // §3.6 (FIXME 0487): accept a module-qualified argument, like the other
+        // introspection commands. A bare name still routes through the
+        // prelude-fallback lookup (unchanged); the module-preamble fallback
+        // below is preserved for the `/doc <module>` form.
+        let Some((local, lookup_module, _bare)) = self.resolve_entry_arg(name) else {
             // §17.5.1 / spec §8.16.4 — `/doc <module>` reads a module's preamble
             // (the leading `;;` block) when the name resolves to a module rather
             // than a symbol. The module's `module_preamble` is the durable record
@@ -3692,6 +3696,17 @@ mod fq_arg_tests {
         assert!(!out.contains("unknown symbol"), "got: {out}");
         assert!(out.contains("m/mf"), "got: {out}");
         assert!(!out.contains("m/m/mf") && !out.contains("m/mf/mf"), "no double-qualification; got: {out}");
+    }
+
+    // /doc on a module-qualified name resolves the symbol (not `unknown
+    // symbol`). spec: §3.6 / §17.5.1
+    #[test]
+    fn handle_doc_accepts_fq_name() {
+        let s = session();
+        install_m(&s, Some("doc mf"));
+        let out = s.handle_doc("m/mf");
+        assert!(!out.contains("unknown symbol"), "got: {out}");
+        assert!(out.contains("doc mf"), "the docstring must appear; got: {out}");
     }
 
     // /sig on an unknown FQ name is graceful.
