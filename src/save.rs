@@ -678,11 +678,28 @@ fn generate_fns_and_macros(
 
     // Dependency-sort each section independently (macro→macro and fn→fn
     // intra-section edges still matter), then concatenate macros-first.
+    //
+    // S102 CS-D1 — single-authority dedup (§15.4.7; s102-defect-wave.md §4.2):
+    // N records sharing ONE authored form emit that form exactly once, at its
+    // first position in the macros-first stream. Two shapes produce shared
+    // authored forms: a macro-expansion-produced defmacro records the turn's
+    // ORIGINAL outer form (as does the defn the same expansion produced —
+    // e.g. `(mdef x 1)` under both `x` and `x-def`), and a literal
+    // `(begin (defn a …) (defn b …))` records the begin under both names.
+    // Emitting the authored form twice poisons the file: the original
+    // re-expands at reload while its expansion artifacts are already
+    // registered, and the two do not co-load (/port D1). Identity is the
+    // authored form itself: (span, rendered text).
+    let mut seen_authored: HashSet<(u32, u32, String)> = HashSet::new();
     let macros_sorted = dependency_sort(macro_items, st);
     let fns_sorted = dependency_sort(fn_items, st);
     macros_sorted
         .into_iter()
         .chain(fns_sorted)
+        .filter(|(_, sexp)| {
+            let span = sexp.span();
+            seen_authored.insert((span.start, span.end, sexp.format_flat()))
+        })
         // Macros carry `None` (they are absent from `docstrings`); UserFns thread
         // their live, authoritative docstring (§11.3a). The renderer is a strict
         // no-op when the lookup misses — a never-`set-doc`'d def stays unchanged.
@@ -1103,6 +1120,135 @@ mod tests {
         // Callee-before-caller on the acyclic chain.
         assert!(pos("leaf") < pos("mid"), "leaf before mid: {order:?}");
         assert!(pos("mid") < pos("top"), "mid before top: {order:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // S102 CS-D1 — origin-uniform regen dedup (Matrix B: single-authority)
+    // -----------------------------------------------------------------------
+
+    fn userfn_entry(slot: usize) -> ModuleEntry<crate::code::Code> {
+        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
+        ModuleEntry::def(
+            Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: Type::Int,
+            },
+            DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: slot, mode_summary: None },
+            },
+        )
+        .build()
+    }
+
+    fn macro_entry(macro_sexp: Sexp) -> ModuleEntry<crate::code::Code> {
+        use cranelisp_types::{DefKind, Scheme, Type};
+        ModuleEntry::def(
+            Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: Type::Int,
+            },
+            DefKind::Macro { clauses_meta: vec![], macro_sexp },
+        )
+        .build()
+    }
+
+    // Matrix B {defmacro (macro-expansion artifact) × single-authority}: a
+    // macro-defining-macro turn records the ORIGINAL outer form under BOTH the
+    // produced macro (`x`) and the produced defn (`x-def`). Regen MUST emit
+    // that authored form exactly once and MUST NOT emit the expansion
+    // artifact — persisting both was /port D1's directory poison (the pair
+    // does not co-load).
+    // spec: repl/spec.md §15.1 — round-trip; §15.4 invariant 7
+    #[test]
+    fn regen_macro_expansion_artifact_emits_authored_origin_once() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let expanded_defmacro =
+            parse1("(defmacro x [] (macros/SexpList (macros/SCons x-def macros/SNil)))");
+        st.insert("x".into(), macro_entry(expanded_defmacro));
+        st.insert("x-def".into(), userfn_entry(0));
+
+        let original = parse1("(mdef x 1)");
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        for name in ["x", "x-def"] {
+            let fq = FQSymbol { module: module.clone(), symbol: name.into() };
+            introspection.entry(fq).or_default().sexp = Some(original.clone());
+        }
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert_eq!(
+            out.matches("(mdef x 1)").count(),
+            1,
+            "the authored form is the single regeneration authority, emitted once: {out:?}"
+        );
+        assert!(
+            !out.contains("defmacro"),
+            "the expansion artifact must NOT co-persist with its origin (D1): {out:?}"
+        );
+    }
+
+    // Matrix B {literal-begin multi-defn × single-authority}: a user-typed
+    // `(begin (defn a …) (defn b …))` records the begin form under both names;
+    // regen emits it once (the latent sibling of the D1 cell — same dedup).
+    // spec: repl/spec.md §15.1
+    #[test]
+    fn regen_literal_begin_multi_defn_emits_once() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("a".into(), userfn_entry(0));
+        st.insert("b".into(), userfn_entry(1));
+
+        let begin_form = parse1("(begin (defn a [] 1) (defn b [] 2))");
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        for name in ["a", "b"] {
+            let fq = FQSymbol { module: module.clone(), symbol: name.into() };
+            introspection.entry(fq).or_default().sexp = Some(begin_form.clone());
+        }
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert_eq!(
+            out.matches("(begin").count(),
+            1,
+            "one authored begin form, one emission: {out:?}"
+        );
+    }
+
+    // Control (negative boundary): two DISTINCT defns — same shape, different
+    // names/spans — are NOT deduped; and a direct-authored defmacro still
+    // emits its own defmacro form (the dedup keys on authored-form identity,
+    // never on kind).
+    // spec: repl/spec.md §15.1
+    #[test]
+    fn regen_dedup_neg_distinct_forms_and_direct_defmacro_all_emit() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("f".into(), userfn_entry(0));
+        st.insert("g".into(), userfn_entry(1));
+        let twice = parse1("(defmacro twice [e] (add-i64 e e))");
+        st.insert("twice".into(), macro_entry(twice.clone()));
+
+        // Distinct spans: parse the two defns from one source string.
+        let sexps = cranelisp_frontend::parse("(defn f [] 1)\n(defn g [] 1)").unwrap();
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "f".into() })
+            .or_default()
+            .sexp = Some(sexps[0].clone());
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "g".into() })
+            .or_default()
+            .sexp = Some(sexps[1].clone());
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "twice".into() })
+            .or_default()
+            .sexp = Some(twice);
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(out.contains("(defn f [] 1)"), "f emitted: {out:?}");
+        assert!(out.contains("(defn g [] 1)"), "g emitted: {out:?}");
+        assert!(out.contains("(defmacro twice"), "direct defmacro emitted: {out:?}");
     }
 
     #[test]

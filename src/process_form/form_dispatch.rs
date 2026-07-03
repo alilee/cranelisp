@@ -206,16 +206,28 @@ pub(super) fn separate_macros(
 /// Parses clause info and stores it as `ModuleEntry::Macro` with the
 /// original sexp for later compilation. No codegen — deferred until
 /// first use.
+///
+/// `authored` is the turn's ORIGINAL authored form — the regeneration
+/// authority (S102 CS-D1, `design/int/s102-defect-wave.md` §4.2 rule 1:
+/// origin-uniform recording). For a direct top-level `(defmacro …)` it is the
+/// defmacro form itself (same as `sexp`); for a macro-expansion-produced
+/// defmacro (a macro-defining macro like stdlib `def`) it is the outer call
+/// form (e.g. `(mdef x 1)`), so ALL introspection records created by one turn
+/// carry the SAME authored sexp and `save::generate_fns_and_macros` can dedup
+/// to a single emission. The expanded `(defmacro …)` artifact stays on
+/// `.expanded` (introspection) and on the entry's `macro_sexp` (the
+/// clause-recompile authority — that role is unchanged); persisting it as
+/// regen source alongside the original was the D1 directory poison (the two
+/// forms do not co-load).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn register_macro_in_module(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-    _next_type_id: &std::sync::atomic::AtomicU32,
-    _check_state: &mut CheckState,
     introspection: Option<&dashmap::DashMap<FQSymbol, crate::session_v4::Introspection>>,
     module: &ModuleFullPath,
     name: &Symbol,
     info: &cranelisp_frontend::DefmacroInfo,
     sexp: &Sexp,
+    authored: &Sexp,
 ) -> Result<(), CranelispError> {
     let clause_infos: Vec<MacroClauseInfo> = info
         .clauses
@@ -251,6 +263,11 @@ pub(super) fn register_macro_in_module(
     // Mirrors the regular-defn introspection population in `process_regular_form`
     // (worker.rs ~1670). Only sets `sexp`/`source` when absent so a later REPL
     // eval that captures the verbatim input text can still override `source`.
+    //
+    // S102 CS-D1: the regen-facing `sexp` is the AUTHORED form; when the
+    // defmacro arrived via expansion (`authored` ≠ `sexp` — compared by span,
+    // expansion output carries synthetic rewritten spans) the expanded
+    // artifact rides `.expanded` for `/sexp` display.
     if let Some(intr_map) = introspection {
         let fq = FQSymbol {
             module: module.clone(),
@@ -258,10 +275,13 @@ pub(super) fn register_macro_in_module(
         };
         let mut entry = intr_map.entry(fq).or_default();
         if entry.sexp.is_none() {
-            entry.sexp = Some(sexp.clone());
+            entry.sexp = Some(authored.clone());
+        }
+        if entry.expanded.is_none() && authored.span() != sexp.span() {
+            entry.expanded = Some(sexp.clone());
         }
         if entry.source.is_none() {
-            entry.source = Some(crate::pretty::pretty_print(sexp));
+            entry.source = Some(crate::pretty::pretty_print(authored));
         }
     }
     if let Some(mut table) = symbol_tables.get_mut(module) {

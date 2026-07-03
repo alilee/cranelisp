@@ -1,5 +1,108 @@
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // S102 CS-D1 — origin-uniform macro recording (Matrix E: the
+    // `register_macro_in_module` writer; design/int/s102-defect-wave.md §4.2)
+    // -----------------------------------------------------------------------
+
+    // spec: repl/spec.md §15.4 — invariant 7 (the authored form is the single
+    // regeneration authority). An expansion-produced defmacro records the
+    // ORIGINAL outer form as the regen-facing introspection `sexp`; the
+    // expanded artifact rides `.expanded`, and the entry's compile-path
+    // `macro_sexp` keeps the expanded defmacro (clause recompilation).
+    #[test]
+    fn register_macro_records_origin_as_regen_authority_for_expansion_artifact() {
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+        let introspection: dashmap::DashMap<FQSymbol, crate::session_v4::Introspection> =
+            dashmap::DashMap::new();
+
+        // Distinct spans: the original comes from one parse, the expanded
+        // artifact from another (real expansion output carries synthetic
+        // rewritten spans; span inequality is the discriminator).
+        let original = cranelisp_frontend::parse("(mdef x 1)").unwrap().remove(0);
+        let expanded = cranelisp_frontend::parse("      (defmacro x [] 1)")
+            .unwrap()
+            .remove(0);
+        let info = cranelisp_frontend::parse_defmacro(&expanded).unwrap();
+
+        form_dispatch::register_macro_in_module(
+            &symbol_tables,
+            Some(&introspection),
+            &module,
+            &info.name,
+            &info,
+            &expanded,
+            &original,
+        )
+        .unwrap();
+
+        let fq = FQSymbol { module: module.clone(), symbol: Symbol::from("x") };
+        let rec = introspection.get(&fq).expect("record created");
+        assert_eq!(
+            rec.sexp.as_ref().map(|s| s.format_flat()),
+            Some(original.format_flat()),
+            "regen-facing sexp is the AUTHORED original"
+        );
+        assert_eq!(
+            rec.expanded.as_ref().map(|s| s.format_flat()),
+            Some(expanded.format_flat()),
+            "the expansion artifact rides .expanded"
+        );
+        // Compile-path authority unchanged: macro_sexp is the expanded defmacro.
+        let table = symbol_tables.get(&module).unwrap();
+        match table.get("x") {
+            Some(cranelisp_types::ModuleEntry::Def { kind, .. }) => match kind.as_ref() {
+                cranelisp_types::DefKind::Macro { macro_sexp, .. } => {
+                    assert_eq!(macro_sexp.format_flat(), expanded.format_flat());
+                }
+                other => panic!("expected Macro kind, got {other:?}"),
+            },
+            other => panic!("expected Def entry, got {other:?}"),
+        }
+    }
+
+    // Negative twin: a DIRECT-authored defmacro (authored == sexp) records the
+    // defmacro form itself and sets NO `.expanded` (nothing was expanded).
+    // spec: repl/spec.md §15.4 — invariant 7
+    #[test]
+    fn register_macro_direct_authored_neg_no_expanded_artifact() {
+        let module = ModuleFullPath::from("user");
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        symbol_tables.insert(
+            module.clone(),
+            crate::code::SessionSymbolTable::new_with_params(module.clone()),
+        );
+        let introspection: dashmap::DashMap<FQSymbol, crate::session_v4::Introspection> =
+            dashmap::DashMap::new();
+
+        let direct = cranelisp_frontend::parse("(defmacro m [e] e)").unwrap().remove(0);
+        let info = cranelisp_frontend::parse_defmacro(&direct).unwrap();
+        form_dispatch::register_macro_in_module(
+            &symbol_tables,
+            Some(&introspection),
+            &module,
+            &info.name,
+            &info,
+            &direct,
+            &direct,
+        )
+        .unwrap();
+
+        let fq = FQSymbol { module: module.clone(), symbol: Symbol::from("m") };
+        let rec = introspection.get(&fq).expect("record created");
+        assert_eq!(
+            rec.sexp.as_ref().map(|s| s.format_flat()),
+            Some(direct.format_flat()),
+        );
+        assert!(rec.expanded.is_none(), "direct authorship has no expansion artifact");
+    }
 
     // -----------------------------------------------------------------------
     // FQ auto-loading gap→load→retry mechanism (FIXME 0268, spec §8.5.4/§9.3.6)

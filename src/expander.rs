@@ -694,12 +694,35 @@ pub(crate) fn expand_sexp_recursive(
                     return expand_recognized_macro(fq, args, span, resolver, depth);
                 }
             // Not a macro call — recurse into children.
+            //
+            // `(defmacro name …)` shield (S102 CS-D1): the NAME position of a
+            // `defmacro` form is a binder, never an expression — expanding it
+            // would rewrite a zero-arg macro's own (re)definition name into its
+            // expansion (`(defmacro x …)` → `(defmacro (x-def) …)`), which then
+            // fails `parse_defmacro` with "defmacro name must be a symbol".
+            // The shape arises whenever a macro-defining macro's expansion
+            // output redefines a name that is ALREADY a registered macro
+            // (poisoned-regen co-load, or a cache-preloaded table during the
+            // restart recompile). Hold the head + name verbatim; the clauses
+            // are recursed normally.
             let Sexp::List(children, span) = sexp else {
                 unreachable!("invariant: sexp matched Sexp::List in outer arm");
             };
+            let is_defmacro_form = matches!(
+                children.first(),
+                Some(Sexp::Symbol(head, _)) if head == "defmacro" || head == "defmacro-"
+            );
+            let hold_verbatim = if is_defmacro_form { 2 } else { 0 };
             let expanded: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| expand_sexp_recursive(c, resolver, depth))
+                .enumerate()
+                .map(|(i, c)| {
+                    if i < hold_verbatim {
+                        Ok(c)
+                    } else {
+                        expand_sexp_recursive(c, resolver, depth)
+                    }
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::List(expanded, span))
         }
@@ -785,6 +808,94 @@ mod tests {
         st.insert(Symbol::from(name), entry);
         tables.insert(path, st);
         tables
+    }
+
+    /// Recognition stub that recognizes exactly one zero-arg macro name and
+    /// records every name the walk asked about (the shield assertions read it).
+    struct RecognizeOneStub {
+        tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
+        macro_name: &'static str,
+        asked: Vec<String>,
+    }
+    impl MacroResolver for RecognizeOneStub {
+        fn recognize(
+            &mut self,
+            name: &str,
+            _span: Span,
+        ) -> Result<Option<FQSymbol>, CranelispError> {
+            self.asked.push(name.to_string());
+            if name == self.macro_name {
+                Ok(Some(FQSymbol {
+                    module: ModuleFullPath::from("user"),
+                    symbol: Symbol::from(name),
+                }))
+            } else {
+                Ok(None)
+            }
+        }
+        fn symbol_tables(
+            &self,
+        ) -> &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> {
+            &self.tables
+        }
+    }
+
+    // spec: repl/spec.md §15.1 (round-trip) / design/int/s102-defect-wave.md §4.2
+    // — the NAME position of a `(defmacro …)` form is a binder, never an
+    // expression: the walk MUST NOT expand it even when that name is currently
+    // registered as a zero-arg macro. This is the D1 co-load shape (a
+    // macro-defining macro's output redefines a name that is already a macro —
+    // poisoned-regen reload, or the cache-preloaded table during a restart
+    // recompile); without the shield the name rewrites to its expansion and
+    // `parse_defmacro` dies with "defmacro name must be a symbol".
+    #[test]
+    fn expand_defmacro_name_position_shielded_from_zero_arg_macro() {
+        let mut resolver = RecognizeOneStub {
+            tables: dashmap::DashMap::new(),
+            macro_name: "x",
+            asked: Vec::new(),
+        };
+        let form = cranelisp_frontend::parse("(defmacro x [] 1)")
+            .unwrap()
+            .remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0)
+            .expect("shielded name position must not attempt macro invocation");
+        assert_eq!(
+            expanded.format_flat(),
+            form.format_flat(),
+            "the defmacro form must round-trip unchanged"
+        );
+        assert!(
+            !resolver.asked.contains(&"x".to_string()),
+            "the walk must not even ASK about the name position: asked={:?}",
+            resolver.asked
+        );
+    }
+
+    // Negative twin: outside the shielded positions the walk still expands —
+    // a bare zero-arg macro symbol in an ordinary list IS recognized (and here
+    // fails at invocation, since the stub's tables hold no clause code) —
+    // pinning that the shield is defmacro-name-scoped, not a blanket skip.
+    // spec: design/int/s102-defect-wave.md §4.2
+    #[test]
+    fn expand_zero_arg_macro_outside_defmacro_name_still_recognized() {
+        let mut resolver = RecognizeOneStub {
+            tables: dashmap::DashMap::new(),
+            macro_name: "x",
+            asked: Vec::new(),
+        };
+        let form = cranelisp_frontend::parse("(add-i64 x 1)").unwrap().remove(0);
+        let result = expand_sexp_recursive(form, &mut resolver, 0);
+        assert!(
+            resolver.asked.contains(&"x".to_string()),
+            "a bare symbol in an ordinary argument position is still walked: asked={:?}",
+            resolver.asked
+        );
+        assert!(
+            result.is_err(),
+            "recognition led to invocation (which fails without clause code) — \
+             the walk did not skip it"
+        );
     }
 
     // spec: macro-availability-model.md §0.7 — recognition is the types primitive

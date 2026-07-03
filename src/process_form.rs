@@ -287,7 +287,8 @@ pub fn process_cluster_once(
 
     let intr = ctx.introspection;
     for (name, info, sexp) in &macro_infos {
-        register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, intr, module, name, info, sexp)?;
+        // Direct top-level defmacro: the authored form IS the defmacro form.
+        register_macro_in_module(ctx.symbol_tables, intr, module, name, info, sexp, sexp)?;
     }
 
     let defaults = register_default_methods(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, module, &mut accumulator)?;
@@ -574,7 +575,13 @@ fn process_regular_form(
         if cranelisp_frontend::is_defmacro(&form) {
             let info = cranelisp_frontend::parse_defmacro(&form)?;
             let intr = ctx.introspection;
-            register_macro_in_module(ctx.symbol_tables, ctx.next_type_id, &mut ctx.check_state, intr, module, &info.name, &info, &form)?;
+            // S102 CS-D1 (origin-uniform recording): a defmacro reaching this
+            // loop is never the whole top-level form (direct defmacros route
+            // through Pass 1's `separate_macros`) — it is an expansion product
+            // or a literal-`begin` member. The regen authority is therefore
+            // the ORIGINAL outer form `sexp`, exactly what the sibling defn
+            // records below — one turn, one authored form, one emission.
+            register_macro_in_module(ctx.symbol_tables, intr, module, &info.name, &info, &form, sexp)?;
             compile_macro_if_needed(ctx, module, &info, form.span(), accumulator)?;
         } else {
             regular_sexps.push(form);
