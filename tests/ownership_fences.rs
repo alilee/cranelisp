@@ -703,22 +703,26 @@ fn clif_golden_single_module_smoke() {
         .output();
 
     // Extract + sort frames exactly as the script does (module::symbol,
-    // byte-verbatim bodies, duplicate frames dedup to last occurrence).
+    // byte-verbatim bodies, duplicate frames dedup to FIRST occurrence —
+    // the deterministic initial compile; recompilation passes carry
+    // scheduler-timing-dependent FuncId numbering, B0-be finding, see
+    // ownership-codegen.md §13.1). CRANELISP_CODEGEN_DUMP frames arrive on
+    // STDERR (backend lib.rs) — stdout is the program's own output.
     let re = regex::Regex::new(
         r"(?s); === CLIF (\S+) ===\n.*?; === end CLIF (\S+) ===\n",
     )
     .unwrap();
     let mut frames: std::collections::BTreeMap<String, String> = Default::default();
-    for cap in re.captures_iter(&out.stdout) {
+    for cap in re.captures_iter(&out.stderr) {
         if cap[1] == cap[2] {
-            frames.insert(cap[1].to_string(), cap[0].to_string());
+            frames.entry(cap[1].to_string()).or_insert_with(|| cap[0].to_string());
         }
     }
     let dumped: String = frames.into_values().collect();
     assert!(
         !dumped.is_empty(),
-        "no CLIF frames captured from CRANELISP_CODEGEN_DUMP; stdout:\n{}",
-        out.stdout
+        "no CLIF frames captured from CRANELISP_CODEGEN_DUMP; stderr:\n{}",
+        out.stderr
     );
     assert_eq!(
         dumped, golden,

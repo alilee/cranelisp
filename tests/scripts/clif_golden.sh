@@ -48,7 +48,9 @@ ENTRIES=(
 
 # dump <source.cl> <out-file> — cold-cache --run with the config pins
 # (MANIFEST §Capture contract): perf toggles UNSET, fresh tmpdir, dump
-# frames extracted from stdout, sorted by module::symbol.
+# frames extracted from STDERR (the CRANELISP_CODEGEN_DUMP channel per
+# design/backend/ownership-codegen.md §13.1 and backend lib.rs — stdout
+# carries only the program's own output), sorted by module::symbol.
 dump() {
   local src="$1" out="$2"
   local d
@@ -62,14 +64,19 @@ dump() {
   ) || true   # program exit code is its return value, not a failure signal
   # Extract frames and sort by the module::symbol header. Frames are
   # `; === CLIF <name> ===` ... `; === end CLIF <name> ===`; duplicate
-  # frames (recompilation passes) dedup to the LAST occurrence.
-  python3 - "$d/raw.txt" "$out" <<'PY'
+  # frames (recompilation passes) dedup to the FIRST occurrence — the
+  # initial cold-cache compile, which is byte-deterministic. Later passes
+  # re-derive the JIT symbol set after scheduler-timing-dependent symbol
+  # registrations, so their FuncId immediates (`u0:N`) shuffle run-to-run
+  # and carry no emission signal (B0-be determinism finding, S102; see
+  # design/backend/ownership-codegen.md §13.1).
+  python3 - "$d/err.txt" "$out" <<'PY'
 import re, sys
 raw = open(sys.argv[1]).read()
 frames = {}
 for m in re.finditer(r'; === CLIF (\S+) ===\n(.*?); === end CLIF \1 ===\n',
                      raw, re.S):
-    frames[m.group(1)] = m.group(0)
+    frames.setdefault(m.group(1), m.group(0))
 with open(sys.argv[2], 'w') as f:
     for name in sorted(frames):
         f.write(frames[name])

@@ -1,0 +1,338 @@
+; === CLIF user::Given ===
+function %Given(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iconst.i64 16
+    v3 = call fn0(v2)  ; v2 = 16
+    v4 = iconst.i64 0
+    store notrap aligned v4, v3+16  ; v4 = 0
+    store notrap aligned v1, v3+24
+    return v3
+}
+; === end CLIF user::Given ===
+; === CLIF user::Solved ===
+function %Solved(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iconst.i64 16
+    v3 = call fn0(v2)  ; v2 = 16
+    v4 = iconst.i64 1
+    store notrap aligned v4, v3+16  ; v4 = 1
+    store notrap aligned v1, v3+24
+    return v3
+}
+; === end CLIF user::Solved ===
+; === CLIF user::build ===
+function %build(i64, i64, i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64, i64) -> i64 system_v
+    sig3 = (i64, i64, i64) -> i64 system_v
+    sig4 = (i64) -> i64 system_v
+    sig5 = (i64, i64) system_v
+    fn0 = u0:0 sig0
+    fn1 = colocated u0:40 sig1
+    fn2 = u0:21 sig2
+    fn3 = u0:20 sig3
+    fn4 = colocated u0:41 sig4
+    fn5 = u0:11 sig5
+
+block0(v0: i64, v1: i64, v2: i64):
+    jump block1(v0, v1, v2)
+
+block1(v3: i64, v4: i64, v5: i64):
+    v29 -> v4
+    v32 -> v5
+    v6 = icmp eq v4, v5
+    v7 = uextend.i64 v6
+    brif v7, block2, block3
+
+block2:
+    jump block4(v3, v3)
+
+block3:
+    v9 = iconst.i64 1
+    v10 = iadd.i64 v4, v9  ; v9 = 1
+    v11 = iconst.i64 16
+    v12 = call fn0(v11)  ; v11 = 16
+    v13 = iconst.i64 0
+    store notrap aligned v13, v12+16  ; v13 = 0
+    store notrap aligned v10, v12+24
+    v14 = func_addr.i64 fn1
+    v15 = load.i64 notrap aligned v3+8
+    v16 = iconst.i64 1
+    v17 = icmp eq v15, v16  ; v16 = 1
+    brif v17, block5, block6
+
+block5:
+    v19 = load.i64 notrap aligned v3+16
+    v20 = load.i64 notrap aligned v3+24
+    v21 = icmp slt v19, v20
+    brif v21, block8, block9
+
+block8:
+    v22 = load.i64 notrap aligned v3+32
+    v23 = iconst.i64 8
+    v24 = imul.i64 v19, v23  ; v23 = 8
+    v25 = iadd v22, v24
+    store.i64 notrap aligned v12, v25
+    v26 = iadd_imm.i64 v19, 1
+    store notrap aligned v26, v3+16
+    jump block7(v3)
+
+block9:
+    v27 = call fn2(v3, v12)
+    jump block7(v27)
+
+block6:
+    v28 = call fn3(v3, v12, v14)
+    jump block7(v28)
+
+block7(v18: i64):
+    v30 = iconst.i64 1
+    v31 = iadd.i64 v4, v30  ; v30 = 1
+    jump block1(v18, v31, v5)
+
+block10:
+    v39 = iconst.i64 0
+    v38 -> v39
+    v33 = iconst.i64 0
+    jump block4(v33, v39)  ; v33 = 0, v39 = 0
+
+block4(v8: i64, v37: i64):
+    v34 = iadd_imm v8, 8
+    v35 = iconst.i64 1
+    v36 = atomic_rmw.i64 add v34, v35  ; v35 = 1
+    v40 = func_addr.i64 fn4
+    v41 = iadd_imm v37, 8
+    v42 = iconst.i64 1
+    v43 = atomic_rmw.i64 sub v41, v42  ; v42 = 1
+    v44 = icmp eq v43, v42  ; v42 = 1
+    brif v44, block12, block11
+
+block12:
+    fence 
+    call fn5(v37, v40)
+    jump block11
+
+block11:
+    return v8
+}
+; === end CLIF user::build ===
+; === CLIF user::cell-value ===
+function %cell-value(i64) -> i64 system_v {
+    gv0 = symbol colocated userextname0
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    fn0 = u0:2 sig0
+    fn1 = u0:1 sig1
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v15 -> v1
+    jump block4
+
+block4:
+    jump block6
+
+block6:
+    v3 = load.i64 notrap aligned v1+16
+    v4 = iconst.i64 0
+    v5 = icmp eq v3, v4  ; v4 = 0
+    brif v5, block7, block5
+
+block7:
+    v6 = load.i64 notrap aligned v1+24
+    jump block2(v6)
+
+block5:
+    jump block8
+
+block8:
+    v7 = load.i64 notrap aligned v1+16
+    v8 = iconst.i64 1
+    v9 = icmp eq v7, v8  ; v8 = 1
+    brif v9, block9, block3
+
+block9:
+    v10 = load.i64 notrap aligned v1+24
+    jump block2(v10)
+
+block3:
+    v11 = global_value.i64 gv0
+    v12 = iconst.i64 12
+    v13 = call fn0(v11, v12)  ; v12 = 12
+    v14 = iconst.i64 0
+    return v14  ; v14 = 0
+
+block2(v2: i64):
+    v16 = iadd_imm.i64 v1, 8
+    v17 = iconst.i64 1
+    v18 = atomic_rmw.i64 sub v16, v17  ; v17 = 1
+    v19 = icmp eq v18, v17  ; v17 = 1
+    brif v19, block11, block10
+
+block11:
+    fence 
+    v20 = call fn1(v1)
+    jump block10
+
+block10:
+    return v2
+}
+; === end CLIF user::cell-value ===
+; === CLIF user::main ===
+function %main() -> i64 system_v {
+    gv0 = symbol userextname1
+    gv1 = symbol userextname1
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64, i64, i64) -> i64 system_v
+    sig2 = (i64, i64, i64, i64) -> i64 system_v
+    sig3 = (i64) -> i64 system_v
+    sig4 = (i64) -> i64 system_v
+    sig5 = (i64, i64) system_v
+    fn0 = u0:10 sig0
+    fn1 = u0:0 sig3
+    fn2 = colocated u0:41 sig4
+    fn3 = u0:11 sig5
+
+block0:
+    jump block1
+
+block1:
+    v0 = iconst.i64 0
+    v1 = call fn0(v0)  ; v0 = 0
+    v2 = load.i64 notrap aligned v1+32
+    v3 = iconst.i64 0
+    store notrap aligned v3, v1+16  ; v3 = 0
+    v4 = iconst.i64 0
+    v5 = iconst.i64 9
+    v6 = global_value.i64 gv0
+    v7 = iadd_imm v6, 24
+    v8 = load.i64 notrap aligned v7
+    v9 = call_indirect sig1, v8(v1, v4, v5)  ; v4 = 0, v5 = 9
+    v10 = iadd_imm v9, 8
+    v11 = iconst.i64 1
+    v12 = atomic_rmw.i64 add v10, v11  ; v11 = 1
+    v13 = iconst.i64 0
+    v14 = load.i64 notrap aligned v9+16
+    v15 = iconst.i64 0
+    v16 = global_value.i64 gv1
+    v17 = iadd_imm v16, 32
+    v18 = load.i64 notrap aligned v17
+    v19 = call_indirect sig2, v18(v9, v13, v14, v15)  ; v13 = 0, v15 = 0
+    v20 = iconst.i64 16
+    v21 = call fn1(v20)  ; v20 = 16
+    v22 = iconst.i64 0
+    store notrap aligned v22, v21+16  ; v22 = 0
+    store notrap aligned v19, v21+24
+    v23 = iadd_imm v21, 8
+    v24 = iconst.i64 1
+    v25 = atomic_rmw.i64 add v23, v24  ; v24 = 1
+    v26 = func_addr.i64 fn2
+    v27 = iadd_imm v9, 8
+    v28 = iconst.i64 1
+    v29 = atomic_rmw.i64 sub v27, v28  ; v28 = 1
+    v30 = icmp eq v29, v28  ; v28 = 1
+    brif v30, block3, block2
+
+block3:
+    fence 
+    call fn3(v9, v26)
+    jump block2
+
+block2:
+    return v21
+}
+; === end CLIF user::main ===
+; === CLIF user::total ===
+function %total(i64, i64, i64, i64) -> i64 system_v {
+    gv0 = symbol colocated userextname0
+    gv1 = symbol userextname2
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64, i64) system_v
+    fn0 = u0:2 sig0
+    fn1 = colocated u0:41 sig2
+    fn2 = u0:11 sig3
+
+block0(v0: i64, v1: i64, v2: i64, v3: i64):
+    jump block1(v0, v1, v2, v3)
+
+block1(v4: i64, v5: i64, v6: i64, v7: i64):
+    v8 = icmp eq v5, v6
+    v9 = uextend.i64 v8
+    brif v9, block2, block3
+
+block2:
+    jump block4(v7, v4)
+
+block3:
+    v11 = iconst.i64 1
+    v12 = iadd.i64 v5, v11  ; v11 = 1
+    v13 = load.i64 notrap aligned v4+16
+    v14 = iconst.i64 0
+    v15 = icmp.i64 slt v5, v14  ; v14 = 0
+    v16 = icmp.i64 sge v5, v13
+    v17 = bor v15, v16
+    brif v17, block6, block5
+
+block6:
+    v18 = global_value.i64 gv0
+    v19 = iconst.i64 28
+    v20 = call fn0(v18, v19)  ; v19 = 28
+    v21 = iconst.i64 0
+    return v21  ; v21 = 0
+
+block5:
+    v22 = load.i64 notrap aligned v4+32
+    v23 = iconst.i64 8
+    v24 = imul.i64 v5, v23  ; v23 = 8
+    v25 = iadd v22, v24
+    v26 = load.i64 notrap aligned v25
+    v27 = iadd_imm v26, 8
+    v28 = iconst.i64 1
+    v29 = atomic_rmw.i64 add v27, v28  ; v28 = 1
+    v30 = global_value.i64 gv1
+    v31 = iadd_imm v30, 16
+    v32 = load.i64 notrap aligned v31
+    v33 = call_indirect sig1, v32(v26)
+    v34 = iadd.i64 v7, v33
+    jump block1(v4, v12, v6, v34)
+
+block7:
+    v38 = iconst.i64 0
+    v37 -> v38
+    v35 = iconst.i64 0
+    jump block4(v35, v38)  ; v35 = 0, v38 = 0
+
+block4(v10: i64, v36: i64):
+    v39 = func_addr.i64 fn1
+    v40 = iadd_imm v36, 8
+    v41 = iconst.i64 1
+    v42 = atomic_rmw.i64 sub v40, v41  ; v41 = 1
+    v43 = icmp eq v42, v41  ; v41 = 1
+    brif v43, block9, block8
+
+block9:
+    fence 
+    call fn2(v36, v39)
+    jump block8
+
+block8:
+    return v10
+}
+; === end CLIF user::total ===

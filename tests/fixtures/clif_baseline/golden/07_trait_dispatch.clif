@@ -1,0 +1,310 @@
+; === CLIF user::MkBox ===
+function %MkBox(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iconst.i64 16
+    v3 = call fn0(v2)  ; v2 = 16
+    v4 = iconst.i64 0
+    store notrap aligned v4, v3+16  ; v4 = 0
+    store notrap aligned v1, v3+24
+    return v3
+}
+; === end CLIF user::MkBox ===
+; === CLIF user::MkTag ===
+function %MkTag(i64) -> i64 system_v {
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    fn0 = u0:0 sig0
+    fn1 = u0:1 sig1
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    v2 = iadd_imm v1, 8
+    v3 = iconst.i64 1
+    v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
+    v5 = iconst.i64 16
+    v6 = call fn0(v5)  ; v5 = 16
+    v7 = iconst.i64 0
+    store notrap aligned v7, v6+16  ; v7 = 0
+    store notrap aligned v1, v6+24
+    v8 = iadd_imm v1, 8
+    v9 = iconst.i64 1
+    v10 = atomic_rmw.i64 sub v8, v9  ; v9 = 1
+    v11 = icmp eq v10, v9  ; v9 = 1
+    brif v11, block3, block2
+
+block3:
+    fence 
+    v12 = call fn1(v1)
+    jump block2
+
+block2:
+    return v6
+}
+; === end CLIF user::MkTag ===
+; === CLIF user::Sizeable.size$Box ===
+function %Sizeable.size$Box(i64) -> i64 system_v {
+    gv0 = symbol colocated userextname0
+    sig0 = (i64, i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    fn0 = u0:2 sig0
+    fn1 = u0:1 sig1
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    jump block4
+
+block4:
+    jump block5
+
+block5:
+    v3 = load.i64 notrap aligned v1+16
+    v4 = iconst.i64 0
+    v5 = icmp eq v3, v4  ; v4 = 0
+    brif v5, block6, block3
+
+block6:
+    v6 = load.i64 notrap aligned v1+24
+    jump block2(v6)
+
+block3:
+    v7 = global_value.i64 gv0
+    v8 = iconst.i64 12
+    v9 = call fn0(v7, v8)  ; v8 = 12
+    v10 = iconst.i64 0
+    return v10  ; v10 = 0
+
+block2(v2: i64):
+    v11 = iadd_imm.i64 v1, 8
+    v12 = iconst.i64 1
+    v13 = atomic_rmw.i64 sub v11, v12  ; v12 = 1
+    v14 = icmp eq v13, v12  ; v12 = 1
+    brif v14, block8, block7
+
+block8:
+    fence 
+    v15 = call fn1(v1)
+    jump block7
+
+block7:
+    return v2
+}
+; === end CLIF user::Sizeable.size$Box ===
+; === CLIF user::Sizeable.size$Tag ===
+function %Sizeable.size$Tag(i64) -> i64 system_v {
+    gv0 = symbol userextname0
+    gv1 = symbol colocated userextname1
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64, i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64) -> i64 system_v
+    fn0 = u0:2 sig1
+    fn1 = u0:1 sig2
+    fn2 = u0:1 sig3
+
+block0(v0: i64):
+    jump block1(v0)
+
+block1(v1: i64):
+    jump block4
+
+block4:
+    jump block5
+
+block5:
+    v3 = load.i64 notrap aligned v1+16
+    v4 = iconst.i64 0
+    v5 = icmp eq v3, v4  ; v4 = 0
+    brif v5, block6, block3
+
+block6:
+    v6 = load.i64 notrap aligned v1+24
+    v7 = iadd_imm v6, 8
+    v8 = iconst.i64 1
+    v9 = atomic_rmw.i64 add v7, v8  ; v8 = 1
+    v10 = global_value.i64 gv0
+    v11 = iadd_imm v10, 232
+    v12 = load.i64 notrap aligned v11
+    v13 = call_indirect sig0, v12(v6)
+    jump block2(v13)
+
+block3:
+    v14 = global_value.i64 gv1
+    v15 = iconst.i64 12
+    v16 = call fn0(v14, v15)  ; v15 = 12
+    v17 = iconst.i64 0
+    return v17  ; v17 = 0
+
+block2(v2: i64):
+    v18 = iadd_imm.i64 v1, 8
+    v19 = iconst.i64 1
+    v20 = atomic_rmw.i64 sub v18, v19  ; v19 = 1
+    v21 = icmp eq v20, v19  ; v19 = 1
+    brif v21, block8, block7
+
+block8:
+    fence 
+    v22 = load.i64 notrap aligned v1+24
+    v23 = iadd_imm v22, 8
+    v24 = iconst.i64 1
+    v25 = atomic_rmw.i64 sub v23, v24  ; v24 = 1
+    v26 = icmp eq v25, v24  ; v24 = 1
+    brif v26, block10, block9
+
+block10:
+    fence 
+    v27 = call fn1(v22)
+    jump block9
+
+block9:
+    v28 = call fn2(v1)
+    jump block7
+
+block7:
+    return v2
+}
+; === end CLIF user::Sizeable.size$Tag ===
+; === CLIF user::main ===
+function %main() -> i64 system_v {
+    gv0 = symbol userextname8
+    gv1 = symbol colocated userextname9
+    gv2 = symbol userextname8
+    sig0 = (i64) -> i64 system_v
+    sig1 = (i64) -> i64 system_v
+    sig2 = (i64) -> i64 system_v
+    sig3 = (i64) -> i64 system_v
+    sig4 = (i64) -> i64 system_v
+    sig5 = (i64) -> i64 system_v
+    sig6 = (i64) -> i64 system_v
+    sig7 = (i64) -> i64 system_v
+    sig8 = (i64) -> i64 system_v
+    sig9 = (i64) -> i64 system_v
+    sig10 = (i64) -> i64 system_v
+    sig11 = (i64) -> i64 system_v
+    sig12 = (i64) -> i64 system_v
+    sig13 = (i64) -> i64 system_v
+    sig14 = (i64) -> i64 system_v
+    sig15 = (i64, i64) -> i64 system_v
+    sig16 = (i64) -> i64 system_v
+    sig17 = (i64) -> i64 system_v
+    sig18 = (i64) -> i64 system_v
+    fn0 = u0:18 sig0
+    fn1 = u0:0 sig1
+    fn2 = colocated u0:39 sig2
+    fn3 = u0:14 sig3
+    fn4 = u0:15 sig4
+    fn5 = u0:0 sig5
+    fn6 = colocated u0:40 sig6
+    fn7 = u0:14 sig7
+    fn8 = u0:15 sig8
+    fn9 = u0:16 sig9
+    fn10 = u0:17 sig10
+    fn11 = u0:16 sig11
+    fn12 = u0:17 sig12
+    fn13 = u0:0 sig13
+    fn14 = u0:8 sig15
+    fn15 = u0:0 sig16
+    fn16 = u0:0 sig18
+
+block0:
+    jump block1
+
+block1:
+    v0 = iconst.i64 2
+    v1 = call fn0(v0)  ; v0 = 2
+    brif v1, block2, block3
+
+block2:
+    v3 = iconst.i64 16
+    v4 = call fn1(v3)  ; v3 = 16
+    v5 = func_addr.i64 fn2
+    store notrap aligned v5, v4+16
+    v6 = iconst.i64 0
+    store notrap aligned v6, v4+24  ; v6 = 0
+    v7 = call fn3(v4)
+    v8 = call fn4(v7)
+    v9 = iconst.i64 16
+    v10 = call fn5(v9)  ; v9 = 16
+    v11 = func_addr.i64 fn6
+    store notrap aligned v11, v10+16
+    v12 = iconst.i64 0
+    store notrap aligned v12, v10+24  ; v12 = 0
+    v13 = call fn7(v10)
+    v14 = call fn8(v13)
+    v15 = call fn9(v7)
+    v16 = iconst.i64 8
+    v17 = iadd v7, v16  ; v16 = 8
+    v18 = iconst.i64 1
+    v19 = atomic_rmw.i64 sub v17, v18  ; v18 = 1
+    v20 = iconst.i64 1
+    v21 = icmp eq v19, v20  ; v20 = 1
+    brif v21, block5, block6
+
+block5:
+    fence 
+    v22 = call fn10(v7)
+    jump block6
+
+block6:
+    v23 = call fn11(v13)
+    v24 = iconst.i64 8
+    v25 = iadd.i64 v13, v24  ; v24 = 8
+    v26 = iconst.i64 1
+    v27 = atomic_rmw.i64 sub v25, v26  ; v26 = 1
+    v28 = iconst.i64 1
+    v29 = icmp eq v27, v28  ; v28 = 1
+    brif v29, block7, block8
+
+block7:
+    fence 
+    v30 = call fn12(v13)
+    jump block8
+
+block8:
+    v31 = iadd.i64 v15, v23
+    jump block4(v31)
+
+block3:
+    v32 = iconst.i64 5
+    v33 = iconst.i64 16
+    v34 = call fn13(v33)  ; v33 = 16
+    v35 = iconst.i64 0
+    store notrap aligned v35, v34+16  ; v35 = 0
+    store notrap aligned v32, v34+24  ; v32 = 5
+    v36 = global_value.i64 gv0
+    v37 = iadd_imm v36, 16
+    v38 = load.i64 notrap aligned v37
+    v39 = call_indirect sig14, v38(v34)
+    v40 = global_value.i64 gv1
+    v41 = iconst.i64 3
+    v42 = call fn14(v40, v41)  ; v41 = 3
+    v43 = iconst.i64 16
+    v44 = call fn15(v43)  ; v43 = 16
+    v45 = iconst.i64 0
+    store notrap aligned v45, v44+16  ; v45 = 0
+    store notrap aligned v42, v44+24
+    v46 = global_value.i64 gv2
+    v47 = iadd_imm v46, 24
+    v48 = load.i64 notrap aligned v47
+    v49 = call_indirect sig17, v48(v44)
+    v50 = iadd v39, v49
+    jump block4(v50)
+
+block4(v2: i64):
+    v51 = iconst.i64 16
+    v52 = call fn16(v51)  ; v51 = 16
+    v53 = iconst.i64 0
+    store notrap aligned v53, v52+16  ; v53 = 0
+    store notrap aligned v2, v52+24
+    return v52
+}
+; === end CLIF user::main ===
