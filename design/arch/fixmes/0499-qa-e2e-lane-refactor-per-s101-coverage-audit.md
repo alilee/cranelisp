@@ -23,3 +23,21 @@ The S101 risk review + coverage audit classified 12/17 misses as e2e-constructio
 ## Operational implication / Context
 
 This is the /qa half of the S101 audit's action set; FIXMEs 0495–0498 + 0500–0502 are the per-crate /dev unit-tier half. Partial-resolution is expected — the FIXME defers per-lane with rationale at each sprint gate rather than closing all-at-once; delete when all 7 lanes exist (or are explicitly retired) and the drafting rules are in the qa skill's working docs.
+
+## Per-lane status (S102 Phase-5 Stage-1 gate, 2026-07-03, /qa)
+
+| Lane | Status | Where |
+|---|---|---|
+| **L-U1** unannotated-default siblings | **EXISTS** (S102 stage 1) | `tests/repl_redefinition.rs` + `tests/repl_persist_redefine.rs` — 8 tests incl. the §18.1.1 report acceptance pair |
+| **L-S2** session-lifecycle grid | **EXISTS** | new `tests/repl_lifecycle_matrix.rs` (14 tests; grows with new session-visible state kinds per drafting rule 3) |
+| **L-S3** file-backed dev-loop | **EXISTS** | new `tests/repl_mod_devloop.rs` (11 tests; + FIXME 0505 filed for the missing /repl spec pin) |
+| **L-N1** display-exact | **EXISTS** | new `tests/display_exact.rs` (16 tests; first exact-line + `assert_golden_masked` adoption) |
+| **L-N2** no-internal-artifacts | **EXISTS** | harness helper `assert_no_internal_artifacts` (`tests/helpers/e2e.rs`) + 24 retrofits in `repl_negative.rs` + 3 new diagnostic-shape guards; harness-DEFAULT flip deliberately deferred until Block A5 lands (would drown the signal in known-defect REDs) |
+| **L-S1** session-history preambles | **DEFERRED in-sprint** (capacity-gated tail per plan §1.6) | may ride the A5 wave or defer to S103 with rationale at that gate |
+| **L-M1** reference×referent×instantiation matrix | **SEEDED, rides B3** (plan §1.7) | grows with the Wave-11 `fn_as_value` seam rework — the 0483/0474 flips + corpus extension + new cells land in that wave |
+
+Standing drafting rules (§2.5): adopted and exercised this pass (rule 1 —
+the two drafting-discovered fn_as_value defects came from artifact-minting
+probes; rule 2 — L-N1; rule 3 — L-S2 dirty-world rows; rule 4 — FIXME 0505).
+Item-3 housekeeping (tests/CLAUDE.md registration): DONE at Phase 3.
+**Remainder blocking deletion: L-S1 + L-M1's B3-wave growth.**

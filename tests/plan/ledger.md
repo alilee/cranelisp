@@ -36,6 +36,67 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 102 Phase-5 Stage-1 QA-first RED set (/qa, 2026-07-03)
+
+The S102 stage-1 drafting batch (lanes L-U1, L-S2, L-S3, L-N1+L-N2, the
+increment-I set, and the 0484 re-anchor — `tests/plan/s102-test-plan.md`
+§1–§2; wave: `sprints/SPRINT.md` §Waves Wave 1). **27 new intentional RED
+tests** across 7 files (+56 new GREEN pins/controls/fences and 24 L-N2
+retrofits, all green). Common fields: **SHA** the Wave-1 change-set commits
+(bdc23aa..this batch); **owning skill / target / disposition** per item
+below — all `out-of-scope (owner=named resolver)` waiting on their named
+wave, except the two drafting-discovered defects (same form). Every item
+carries `// spec:` anchors (spec_link_check clean) and a flip note in its
+file.
+
+| # | Tests (file :: name) | Lane / defect | Flips with |
+|---|---|---|---|
+| 1 | `repl_redefinition::t1_downgrade_report_names_stale_compiled_callers_exactly` | L-U1 — §18.1.1 downgrade report (exact header + exact caller set) | Wave 4 (A-1 T1 interim print, /int) |
+| 2–4 | `repl_lifecycle_matrix::{broken_symbol_restart_no_cache_reaches_prompt_and_accepts_repair, broken_symbol_restart_cache_wiped_reaches_prompt_and_accepts_repair, macro_defining_macro_restart_no_cache_recovers}` | L-S2 — 0489/D1 restart-mode neighbours (§18.8 floor / §15.1 round-trip) | Wave 5 (A-2 persistence cluster, /int) |
+| 5–10 | `repl_mod_devloop::{devloop_cache_restored_prelude_using_mod_turn_compiles, sig_accepts_fq_module_qualified_name, info_accepts_fq_module_qualified_name, refs_accepts_fq_module_qualified_name, sig_imported_name_shows_full_signature_line, cascade_report_broken_name_pasteable_into_info}` | L-S3 — 0487 faces 1+3 / D3 class (§8.8 env parity; §3.8/§3.6/§17.6.1 FQ args) | Wave 7 (A-3 dev-loop, /int) |
+| 11–14 | `display_exact::{display_exact_nested_parameterized_adt_wrap_in_wrap, display_exact_option_in_option_value_line, display_exact_vec_of_parameterized_adt_value_line, display_exact_user_list_recursive_form_whole_line}` | L-N1 — 0493 exact-shape acceptance (§1.5) | Wave 10 (A-4/A5 display batch) |
+| 15 | `display_exact::sig_info_bare_lookup_primary_line_agreement_healthy` | L-N1 — 0492 §3.8 byte-agreement | Wave 10 (0492 fix, /int `handle_sig`) |
+| 16 | `display_exact::trap_answer_line_exact_normative_format` | L-N1 — §18.5 exact trap line | Wave 10 (trap-format fix, /int) |
+| 17–18 | `display_exact::{macro_arity_diagnostic_carries_no_internal_artifacts, macro_arity_diagnostic_plain_call_no_debug_repr}` | L-N2 — 0485 class (FQSymbol Debug repr; internal `1000###..` span on the recursive shape) | Wave 10 tail (/frontend 0485) |
+| 19 | `display_exact::qualified_ref_missing_member_diagnostic_names_real_module` | L-N2 — 0490 phantom-module diagnostic | Wave 10 tail (/int 0490) |
+| 20 | `ownership_fences::clif_golden_single_module_smoke` | L-B1 in-suite smoke (golden not yet captured) | Wave 3 (B0-be golden capture, /dev backend) |
+| 21 | `ownership_fences::h2_rc_stats_reports_per_mechanism_counters` | Hook H2 owed (gate-blocking I-G3/I-G7) | Wave 11 (B3.2, /backend) |
+| 22 | `ownership_fences::h3_rc_stats_reports_per_extern_adaptation_pairs` | Hook H3 owed (L-D5 report lane) | Wave 11 (B3, /backend) — or re-dispositioned here if the sibling-expansion decision defers H3 to increment II |
+| 23 | `ownership_fences::h5_ownership_trace_emits_verdicts` | Hook H5 owed (gate-blocking I-G3, L-D3f) | Wave 8 (B2 CS-4, /typecheck) |
+| 24 | `ownership_fences::l_d3f_stored_param_not_summarised_borrowed` | L-D3f no-false-elision (needs H5) | Wave 8 (B2 CS-4) |
+| 25 | `ownership_fences::curried_partial_and_static_call_of_same_fn_in_one_body_compiles` | **NEW DEFECT (drafting find):** span-keyed `curry_drop_glue_{span}` identifier collision — static call + curried partial of one fn in one body dies `Duplicate definition of identifier`. 4-line repro; `fn_as_value.rs::build_auto_curry_drop_glue`; the exact (span × discriminator) wrapper-identity anti-pattern backend §13 rules against. Signature: `codegen error … failed to define auto-curry drop glue: Duplicate definition of identifier: runtime/curry_drop_glue_139_150`, exit 1 | Wave 11 (B3.1 fn_as_value seam rework, /backend) |
+| 26 | `ownership_fences::vec_returned_from_generic_fn_consumed_by_vec_op_releases_temp` | **NEW DEFECT (drafting find):** a fresh Vec returned from a GENERIC helper and consumed by an inline vec op leaks exactly 1 alloc/call (RC_STATS imbalance 5@N=5 → 20@N=20; inline-constructed sibling balanced; non-generic String-pushing helper balanced). 5-line Int-only repro; 0474-adjacent vec-op caller handling | Wave 11 (B3.1, /backend) |
+| 27 | `spec_08_modules::import_shadowed_by_defn_before_first_call_is_rejected_error` | 0484 re-anchor: the formerly-GREEN shadow-wins "control" is itself the violation under the §8.6.4 ruling — now expects rejection (its sibling `import_used_then_shadowed_by_defn_is_rejected_error` replaces the old RED guard 1:1, renamed). 0484 count 1 → 2 | Wave 10 (A5 rejection fix, /int, post-/spec-ruling) |
+
+**Drafting findings (recorded, not chased — S101 ledger rule):**
+
+1. **RC_STATS exit-accounting jitter (±1) under parallel suite load** — the
+   fence balance legs' `[RC_STATS]` alloc/dealloc imbalance intermittently
+   reads ±1 (N-independent; 0 vs 1 across repeats; standalone 20/20 stable)
+   only when the suite runs at full parallelism. One dealloc appears to race
+   the at-exit stats print (same at-exit accounting family as the S101 R18
+   abandon-on-shutdown class). The fence helper carries a documented ±2
+   tolerance (`ownership_fences.rs::assert_iteration_independent_imbalance`)
+   — a genuine per-iteration leak exceeds it by orders of magnitude (the #26
+   guard reads delta 950). Owner routing if it widens: /backend//int
+   (intrinsics rc.rs stats vs process-exit ordering).
+2. **One-of-three-runs failure:**
+   `concurrency_capacity::mixed_blocking_and_poll_par_overlaps_on_both_pools`
+   failed in full-suite run 1 of the stage-1 verification (passed runs 2+3
+   and 3/3 standalone). Pre-existing test, untouched by this batch
+   (tests-only change-set); symptom class: load-sensitive overlap assertion.
+   Recorded per the flake-recording rule; if it recurs, it is an unisolated
+   recurring suite failure to prioritise, not "flaky".
+
+**Canonical suite at stage-1 close: runs 2+3 (consecutive) =
+`3578 run: 3529 passed / 49 failed / 1 skipped` @ 108s / 122s — identical
+fail sets.** The 49 = the 22 S101-close intentional guards (one renamed:
+`import_used_then_shadowed_by_defn_subsequent_call_takes_shadow` →
+`import_used_then_shadowed_by_defn_is_rejected_error`, same 0484 defect,
+rejection polarity) + the 27 above. A genuine regression is any RED beyond
+these 49 named guards. Root-`CLAUDE.md` §Testing count update is flagged for
+/sprint (user edit): intentional 22 → **49**, total 3496 → **3578**.
+
 ### Sprint 101 Phase 6a/6b defect set — proxy-exercise guards (/qa guard batch, 2026-07-03)
 
 The S101 Phase 6a/6b user-proxy exercise surfaced 12 defect items; per the

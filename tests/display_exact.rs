@@ -39,7 +39,7 @@
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::{Cranelisp, PreludeVariant};
+use helpers::e2e::Cranelisp;
 use helpers::regex::compiler;
 
 fn repl(lines: &str) -> helpers::e2e::CrOutput {
