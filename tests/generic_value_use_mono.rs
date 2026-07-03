@@ -34,6 +34,39 @@
 //!
 //! Failing-not-ignored per `memory/feedback_failing_not_ignored.md`; ledger:
 //! `tests/plan/ledger.md` §"Sprint 101 Phase 6a/6b defect set".
+//!
+//! SEAM ATTRIBUTION (S102 Wave 2, /qa isolation — full notes + call-chain
+//! evidence in `tests/plan/0488-isolation.md`): all THREE signatures attribute
+//! to `/dev(typecheck)` — the mono instance is NEVER MINTED (category (i):
+//! "never requested"), verified by fresh-dir `/sig` probes showing no mangled
+//! entry under any name after the failing turn, plus REPL ≡ `--run` parity on
+//! all three. None attributes to the backend `fn_as_value.rs` seam (the
+//! backend's "undefined function/variable" is the correct last-resort
+//! fallthrough for a slot-less `Polymorphic` template reference).
+//!   (a) pass-4 collection misses FQ-qualified callee heads: same-module FQ
+//!       fails both collector gates (`resolve_terminal_entry_and_home` probes
+//!       the table with the raw qualified key; the imported-collector's
+//!       `home != current_module` gate excludes it); cross-module FQ is
+//!       collected but `get_constrained_fn`'s home-probe re-uses the raw
+//!       qualified string as a key in the home module's table → no mint.
+//!   (b) `collect_parametric_fn_value_args`'s `home == current_module` gate
+//!       (program.rs:3629) excludes imported generics in value position; the
+//!       mint call (program.rs:3415) also hard-codes `home: None`.
+//!   (c) DISTINCT mechanism: the fold-bodied template's DEFINING-module
+//!       generalization publishes an over-general scheme — `vconcat` renders
+//!       `(Fn [a (Vec b)] c)` (result UNTIED, first param degraded) where the
+//!       loop-bodied control renders `(Fn [(Vec a) (Vec a)] (Vec a))`. At the
+//!       composed turn the inner call's result type is then a free var, the
+//!       OUTER site fails pass-4's all-args-concrete guard, no SigDispatch
+//!       rewrite → codegen `undefined function: <outer>`. Pinning the free var
+//!       (`(vcount :(Vec Int) (vconcat …))`) cures the whole composition —
+//!       the annotation-cure control below pins that causal chain.
+//!       Residue: WHERE gen3's own check loses the va/result↔vreduce
+//!       unifications (0344 over-unification-guard interplay suspected) is
+//!       for /dev(typecheck)'s isolating unit test. The minted
+//!       `vconcat$Vec+Vec` entry also carries a residual-var scheme
+//!       (`(Fn [(Vec Int) (Vec Int)] t16)`) — `register_mono_entry` captures
+//!       `concrete_ret_ty` before the body re-check pins it (secondary find).
 
 #[path = "helpers/mod.rs"]
 mod helpers;
@@ -184,4 +217,104 @@ fn composition_over_fold_bodied_imported_generic_monomorphises() {
         .assert_stdout_contains(":primitives/Int 3") // bare outer call: control
         .assert_stdout_contains(":primitives/Int 5") // the composed turn — the defect
         .assert_stdout_does_not_contain("undefined function");
+}
+
+// =============================================================================
+// S102 Wave-2 isolation reductions (`tests/plan/0488-isolation.md`)
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.2.2 — a qualified reference resolves through
+// the module system identically to the bare name, cross-module included. RED
+// on HEAD (FIXME 0488 sig a, CROSS-module sub-cause): `undefined function:
+// gen/iden2`. Distinct sub-cause from the same-module guard above — the
+// isolation found the cross-module FQ site IS collected by pass-4
+// (`collect_imported_constrained_calls` resolves qualified heads) but the
+// mint dies in `get_constrained_fn`, whose home-probe re-uses the raw
+// qualified string as a symbol-table key in the home module. A fix that only
+// cures the same-module collector gates leaves this shape RED.
+#[test]
+fn generic_fn_cross_module_fq_call_monomorphises() {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("gen.cl", GEN_MODULE)
+        .stdin(
+            "(import [gen [iden2]])\n\
+             (gen/iden2 5)\n",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 5")
+        .assert_stdout_does_not_contain("undefined function");
+}
+
+// spec: spec/04-expressions.md §4.2.2 — CONTROL (GREEN on HEAD): the
+// cross-module FQ call on a CONCRETE (annotated) fn works; a concrete fn
+// needs no mono mint, pinning the 0488 boundary to generics on the
+// cross-module axis too.
+#[test]
+fn concrete_fn_cross_module_fq_call_control() {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("gen.cl", GEN_MODULE)
+        .stdin(
+            "(import [gen [incr2]])\n\
+             (gen/incr2 5)\n",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 6");
+}
+
+// spec: spec/03-types.md §3.4 — after generalization a defn's scheme
+// quantifies the type variables of its inferred type; the fold body
+// `(vreduce vec-push va vb)` unifies va, vb, and the result with vreduce's
+// accumulator (`vreduce : (Fn [(Fn [a b] a) a (Vec b)] a)`, which HEAD
+// publishes correctly), so `vconcat` MUST generalize to
+// `(Fn [(Vec a) (Vec a)] (Vec a))` — exactly what the loop-bodied sibling
+// publishes. RED on HEAD (FIXME 0488 sig c ROOT CAUSE, isolated S102 W2):
+// HEAD publishes `(Fn [a (Vec b)] c)` — result untied, first param degraded —
+// which is what makes every composed consumer turn fail pass-4's
+// all-args-concrete guard and die at codegen attributed to the OUTER fn.
+// This is the tightest (c) reduction: the defect is observable at the
+// DEFINING module's check, one bare lookup, no composition needed.
+#[test]
+fn fold_bodied_generic_template_scheme_ties_params_and_result() {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("gen3.cl", FOLD_MODULE)
+        .stdin(
+            "(import [gen3 [vconcat]])\n\
+             vconcat\n",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(
+            ":(Fn [(primitives/Vec a) (primitives/Vec a)] (primitives/Vec a)) gen3/vconcat",
+        );
+}
+
+// spec: spec/04-expressions.md §4.6.2 — CONTROL (GREEN on HEAD), the sig-(c)
+// annotation cure: pinning the inner call's result type with a `:Type`
+// annotation makes the SAME composed turn that the RED guard above pins
+// compile and run. Green today because the annotation substitutes for the
+// scheme linkage the fold-bodied template lost — pinning the causal chain
+// (free inner-result var → outer site skipped by the all-args-concrete
+// guard). MUST stay green after the (c) fix (the annotation becomes
+// redundant, never harmful).
+#[test]
+fn fold_bodied_composition_with_pinning_annotation_control() {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("gen3.cl", FOLD_MODULE)
+        .stdin(
+            "(import [gen3 [vconcat vcount]])\n\
+             (vcount :(Vec Int) (vconcat [1 2] [3 4 5]))\n",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 5");
 }

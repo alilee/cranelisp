@@ -88,6 +88,25 @@ file.
    Recorded per the flake-recording rule; if it recurs, it is an unisolated
    recurring suite failure to prioritise, not "flaky".
 
+**Wave-2 addendum (0488 isolation, /qa, 2026-07-03 —
+`tests/plan/0488-isolation.md`):** the 0488 seam attribution landed 2 further
+intentional REDs + 2 GREEN controls in `tests/generic_value_use_mono.rs`
+(0488 guard count 3 → **5**; suite intentional count 49 → **51**):
+
+| # | Tests (file :: name) | Lane / defect | Flips with |
+|---|---|---|---|
+| 28 | `generic_value_use_mono::generic_fn_cross_module_fq_call_monomorphises` | 0488 sig (a) CROSS-module sub-cause — collected by pass-4 but `get_constrained_fn`'s home-probe uses the raw qualified key → no mint | the (a)+(b) /dev(typecheck) mono-derivation slot (post-isolation dispatch; NOT B3.1) |
+| 29 | `generic_value_use_mono::fold_bodied_generic_template_scheme_ties_params_and_result` | 0488 sig (c) ROOT CAUSE — fold-bodied template publishes over-general scheme `(Fn [a (Vec b)] c)`; must tie `(Fn [(Vec a) (Vec a)] (Vec a))` | the (c) /dev(typecheck) generalization slot (0344-guard interplay; NOT B3.1) |
+
+GREEN controls: `concrete_fn_cross_module_fq_call_control`,
+`fold_bodied_composition_with_pinning_annotation_control` (the sig-(c)
+annotation cure — pins the causal chain). Attribution outcome: all three 0488
+signatures = typecheck-side "never minted" (category (i)); none rides Wave 11
+B3.1. Post-addendum canonical baseline (verified this wave, full-suite run @
+86s): `3582 run: 3531 passed / 51 failed / 1 skipped` — the 51 = the 49
+stage-1 set + #28/#29 above, itemized fail set checked name-by-name (no
+regression; the drafting-finding-2 flake did not recur this run).
+
 **Canonical suite at stage-1 close: runs 2+3 (consecutive) =
 `3578 run: 3529 passed / 49 failed / 1 skipped` @ 108s / 122s — identical
 fail sets.** The 49 = the 22 S101-close intentional guards (one renamed:
