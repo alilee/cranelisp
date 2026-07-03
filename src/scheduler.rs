@@ -83,6 +83,18 @@ pub struct ModuleState {
     /// The module's .o file has been written (or existed from cache).
     pub object_done: bool,
 
+    /// Object-staleness generation (S101 R18). Bumped by `mark_object_stale`
+    /// every time the module's live table changes after a defining turn /
+    /// transaction; snapshotted into `object_claimed_gen` when a nice worker
+    /// claims the module. `notify_object_codegen_complete` sets `object_done`
+    /// only when the generations still match — a mark that lands while a
+    /// write is in flight is NOT lost (the completed write observed an older
+    /// table, so the module stays claimable and is rewritten).
+    pub object_gen: u64,
+
+    /// The `object_gen` value at the current/most-recent nice-worker claim.
+    pub object_claimed_gen: u64,
+
     /// Error that caused this module to fail, if any.
     pub error: Option<CranelispError>,
 
@@ -138,6 +150,8 @@ impl ModuleState {
             inmem_claimed: false,
             object_working: false,
             object_done: false,
+            object_gen: 0,
+            object_claimed_gen: 0,
             error: None,
             static_closure_memo: None,
             sexps,
@@ -158,6 +172,8 @@ impl ModuleState {
             inmem_claimed: false,
             object_working: false,
             object_done: true,
+            object_gen: 0,
+            object_claimed_gen: 0,
             error: None,
             static_closure_memo: None,
             sexps: None,
@@ -181,6 +197,8 @@ impl ModuleState {
             inmem_claimed: false,
             object_working: false,
             object_done: true,
+            object_gen: 0,
+            object_claimed_gen: 0,
             error: None,
             static_closure_memo: None,
             sexps: None,
@@ -581,6 +599,11 @@ impl CompileScheduler {
                 inmem_claimed: false,
                 object_working: false,
                 object_done: false,
+                // S101 R18: bump the staleness generation so an in-flight
+                // nice-worker write (claimed pre-reload) cannot mark the
+                // reloaded module object-done with a pre-reload table.
+                object_gen: ms.object_gen + 1,
+                object_claimed_gen: ms.object_claimed_gen,
                 error: None,
                 // Source changed — the static closure must be re-walked.
                 static_closure_memo: None,
@@ -1062,9 +1085,11 @@ impl CompileScheduler {
                     .map(|_| module.clone())
             });
             if let Some(module) = found {
-                // Claim the module while holding the lock.
+                // Claim the module while holding the lock (snapshotting the
+                // staleness generation — S101 R18 lost-update fix).
                 if let Some(ms) = state.modules.get_mut(&module) {
                     ms.object_working = true;
+                    ms.object_claimed_gen = ms.object_gen;
                 }
                 return Some(module);
             }
@@ -1095,6 +1120,7 @@ impl CompileScheduler {
         if let Some(module) = found {
             if let Some(ms) = state.modules.get_mut(&module) {
                 ms.object_working = true;
+                ms.object_claimed_gen = ms.object_gen;
             }
             return Some(module);
         }
@@ -1156,20 +1182,72 @@ impl CompileScheduler {
         })
     }
 
+    /// Re-enqueue a module for nice-worker object codegen after its live
+    /// symbol table changed (S101 R18 fix — the deterministic final persist).
+    ///
+    /// Called by the session after every defining REPL turn
+    /// (`regenerate_backing_file`) and by the dependent-recompilation
+    /// transaction for each touched module: clears `object_done` so the
+    /// `.o`/`.meta.json` pair is rewritten from the CURRENT live table, and
+    /// wakes the nice workers. The `/quit` path's existing
+    /// `wait_object_complete` then genuinely waits for the rewrite, making
+    /// the post-quit `.meta` deterministically reflect the last defining
+    /// turns (spine §5.6 pin (ii) — faithful write after every
+    /// redefinition; formerly the rewrite depended on an incidental
+    /// watcher-reload race and was abandoned at shutdown).
+    ///
+    /// No-op for modules the scheduler doesn't know or whose typecheck has
+    /// not reached a terminal pool (nothing coherent to persist yet). A
+    /// module already claimed by a nice worker (`object_working`) is simply
+    /// marked not-done: when the in-flight write completes it becomes
+    /// claimable again and is rewritten with the newer table.
+    pub fn mark_object_stale(&self, module: &ModuleFullPath) {
+        let mut state = self.lock();
+        let Some(ms) = state.modules.get_mut(module) else {
+            return;
+        };
+        if !matches!(ms.pool, ModulePool::TypecheckDone | ModulePool::Complete) {
+            return;
+        }
+        ms.object_gen += 1;
+        ms.object_done = false;
+        // A completed module left the object-claim scan's view; restore it.
+        if ms.pool == ModulePool::Complete {
+            ms.pool = ModulePool::TypecheckDone;
+        }
+        if !state.typecheck_done.contains(module) {
+            state.typecheck_done.push_back(module.clone());
+        }
+        drop(state);
+        self.object_work_available.notify_all();
+    }
+
     /// Object codegen for a module is complete (.o written).
     /// Clears `object_working`, sets `object_done`. If completion
     /// condition is met, moves to Complete.
     pub fn notify_object_codegen_complete(&self, module: &ModuleFullPath) {
         let mut state = self.lock();
+        let mut still_stale = false;
         if let Some(ms) = state.modules.get_mut(module) {
             ms.object_working = false;
-            ms.object_done = true;
+            // S101 R18 lost-update fix: a `mark_object_stale` that landed
+            // WHILE this write was in flight bumped `object_gen` past the
+            // claim snapshot — the completed write observed an older table,
+            // so the module must stay not-done (re-claimable) rather than
+            // have the pending rewrite silently clobbered.
+            ms.object_done = ms.object_claimed_gen == ms.object_gen;
+            still_stale = !ms.object_done;
         }
         Self::try_complete_locked(&mut state, module);
 
-        // Wake wait_object_complete callers.
+        // Wake wait_object_complete callers — and, when the module went
+        // stale mid-write, the nice workers (so the rewrite is picked up
+        // even if every worker is parked).
         drop(state);
         self.completion.notify_all();
+        if still_stale {
+            self.object_work_available.notify_all();
+        }
     }
 
     // -----------------------------------------------------------------------

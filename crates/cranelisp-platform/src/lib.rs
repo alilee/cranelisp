@@ -278,6 +278,23 @@ pub use std::sync::atomic::AtomicPtr as MacroAtomicPtr;
 /// `concurrency`/`concurrency-runtime` features are RETIRED. Layout-affecting
 /// (Principle 14): the `PlatformFn` field set changed. With no out-of-tree DLLs
 /// every in-tree platform rebuilds against v8 in the cutover change-set.
+/// v9 (Sprint 97, the ctx-vtable handle-model cutover —
+/// `design/arch/platform-interface.md` §6.8.0b /
+/// `design/arch/effect-concurrency.md` §4.1.1) — scheduling moves off values
+/// into the trampoline-owned ctx vtable. [`HostCtx`] gains **`acquire`**
+/// (token + capacity + [`Waker`] → [`Acquire`]) and **`retire`** (token)
+/// fn-ptrs; the new [`Acquire`] result enum (`Acquired`/`Parked`) lands; and
+/// [`ConcurrencyDescriptor`] gains a `role` byte ([`ResourceRole`], carved
+/// from a reserved byte — descriptor size unchanged). [`PollFn`] / [`Poll`]
+/// are UNCHANGED. Resource handles are opaque ADTs carrying their own genuine
+/// fields — no header admission slot, no `desc_out` out-param — and all
+/// runtime scheduling (permit acquire/release/retire) flows through the
+/// trampoline-owned ctx vtable; the backend's poll-node leading-pair
+/// injection pass is deleted (the poll node stays v8-uniform, its admission
+/// slots inert). Layout-affecting (Principle 14, rule (i) analogue at the
+/// host-reactor edge): the `HostCtx` vtable and `ConcurrencyDescriptor` field
+/// sets changed. With no out-of-tree DLLs the cutover landed as one atomic
+/// in-tree change-set, every in-tree platform rebuilding against v9.
 pub const ABI_VERSION: u32 = 9;
 
 /// The exported-symbol name of a platform's manifest entry point, namespaced by

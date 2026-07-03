@@ -19,6 +19,23 @@ members = [
     "platforms/poll-pool",
     "exemplar/platforms/web",
 ]
+# S101 Wave 2b (user-approved): bare `cargo nextest run` / `cargo test` cover
+# the root package AND every `crates/*` library's unit tier (previously only
+# the root package ran, leaving crate lib tests invisible to the default
+# suite). Platform DLL fixtures (`platforms/*`, `exemplar/platforms/web`) stay
+# out — they are cdylib test fixtures built by tests/scripts, not test hosts;
+# reach them explicitly via `-p <name>` or `--workspace`.
+default-members = [
+    ".",
+    "crates/cranelisp-types",
+    "crates/cranelisp-frontend",
+    "crates/cranelisp-typecheck",
+    "crates/cranelisp-backend",
+    "crates/cranelisp-primitives",
+    "crates/cranelisp-intrinsics",
+    "crates/cranelisp-platform",
+    "crates/cranelisp-exe-bundle",
+]
 resolver = "2"
 
 [workspace.dependencies]

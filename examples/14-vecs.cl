@@ -18,6 +18,12 @@
 ;;
 ;; vec-set and vec-push use copy-on-write: if the Vec has only one
 ;; reference, mutation happens in-place for efficiency.
+;;
+;; The vec primitives are also ordinary VALUES: they can be passed to
+;; higher-order functions like any user-defined function (see the
+;; "Vec operations as ordinary values" section below).
+;;
+;; Expected exit code: 81 (sum of sub-test results 593, mod 256).
 
 ;; --- Basic operations ---
 
@@ -62,6 +68,30 @@
 (defn test-as-arg []
   (sum-first-two [100 200 300]))
 
+;; --- Vec operations as ordinary values ---
+
+;; The vec primitives are first-class: a name like `vec-get` is an
+;; ordinary function value, so it can be passed to a higher-order
+;; function just like a user-defined one (higher-order functions are
+;; example 13's capability). Each helper below forwards its function
+;; argument to a call — note each helper is used with ONE vec primitive.
+
+(defn call-get [f v i] (f v i))
+(defn call-set [f v i x] (f v i x))
+(defn call-push [f v x] (f v x))
+
+;; Pass vec-get itself as the argument: (vec-get [7 8 9] 1) = 8
+(defn test-get-as-value []
+  (call-get vec-get [7 8 9] 1))
+
+;; Pass vec-set: replace index 0 with 40, then read it back.
+(defn test-set-as-value []
+  (vec-get (call-set vec-set [1 2 3] 0 40) 0))
+
+;; Pass vec-push: append a fourth element, then measure.
+(defn test-push-as-value []
+  (vec-len (call-push vec-push [1 2 3] 4)))
+
 ;; --- Vecs in ADTs ---
 
 (deftype (Pair a b) (MkPair [:a fst :b snd]))
@@ -72,7 +102,8 @@
 
 ;; --- Summing results ---
 
-;; Expected: 5 + 60 + 99 + 6 + 3 + 6 + 300 + 62 = 541
+;; Expected: 5 + 60 + 99 + 6 + 3 + 6 + 300 + 62 + 8 + 40 + 4 = 593
+;; Exit code is the low byte of main's return: 593 mod 256 = 81.
 (defn main []
   ;; Wrap the sum-of-pass-counts in `Pure`: every batch `main` must
   ;; return `IO _`. The inner Int is the exit code (preserved).
@@ -84,4 +115,7 @@
             (add-i64 (test-from-empty)
               (add-i64 (test-set-chain)
                 (add-i64 (test-as-arg)
-                         (test-vec-in-adt))))))))))
+                  (add-i64 (test-vec-in-adt)
+                    (add-i64 (test-get-as-value)
+                      (add-i64 (test-set-as-value)
+                               (test-push-as-value)))))))))))))

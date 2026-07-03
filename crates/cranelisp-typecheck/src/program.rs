@@ -297,12 +297,53 @@ pub(crate) fn annotate_variant_from_maps(
 
 // --- Callee write helper (Decision 21) ---
 
+/// Extract the user-fn reference edges added to `state.user_fn_refs` during
+/// one form's checking (FIXME 0470, S101), attributed to `caller`.
+///
+/// Sibling of the `form_mr` span-set delta for `method_resolutions`: `before`
+/// is the key snapshot taken at the top of `check_form_body_*`; everything
+/// newer belongs to the form under check (including references inside nested
+/// lambdas, which are inferred within the enclosing defn's body — the L-R2
+/// carrier attribution).
+fn extract_user_fn_ref_edges(
+    state: &CheckState,
+    caller: &Symbol,
+    before: &HashSet<Span>,
+) -> Vec<(Symbol, FQSymbol)> {
+    state
+        .user_fn_refs
+        .iter()
+        .filter(|(span, _)| !before.contains(span))
+        .map(|(_, fq)| (caller.clone(), fq.clone()))
+        .collect()
+}
+
 /// Group call graph edges by caller, sort + deduplicate, and write to `ModuleEntry`.
 ///
 /// Used by both `merge_form_result` (eager write so the scheduler can read callees
 /// immediately) and `finalize_check_result` (canonical final write that includes
 /// any edges from post-passes).
-fn write_callees_to_module_entries<C, L>(
+///
+/// **Completeness contract (FIXME 0470 + 0472, S101).** The edge feed is the
+/// union of `ResolvedCall`-derived edges (trait methods, sig-dispatch,
+/// auto-curry) and the `CheckState.user_fn_refs` recording (every
+/// statically-resolved call- OR value-position reference to a
+/// `DefKind::UserFn` `Def`), harvested by the ONE shared
+/// `harvest_callee_edges` helper at every body-check seam: the two Pass-2
+/// per-form seams (through this sink) AND the Pass-1
+/// `finalize_impl_method_writeback` seam (impl-provided, default, and HKT
+/// trait-method bodies — written directly to the mangled entry). A checked
+/// entry's `callees` therefore names EVERY statically-resolved user-fn
+/// reference in its body, with one deliberate residue: mono-instance bodies
+/// (`recheck_body_for_mono`) carry no own edges — their constrained
+/// TEMPLATE's entry carries the complete set and the call-site recorder gives
+/// the caller→template edge, so the reverse closure is preserved through the
+/// template chain. The S101 dependent-recompilation transaction derives its
+/// reverse index from this set (`design/int/session-transaction.md`
+/// §3.2/§3.3); silently dropping edges starves the affected-set closure.
+/// Guarded by the `program::tests::callees_*` completeness-contract tests
+/// (`tests/plan/s101-coverage-postmortem.md` §2.1).
+pub(crate) fn write_callees_to_module_entries<C, L>(
     sym_table: &mut SymbolTable<C, L>,
     edges: &[(Symbol, FQSymbol)],
 )
@@ -705,6 +746,42 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         edges
     }
 
+    /// The ONE shared callee-edge harvest, applied at EVERY body-check seam
+    /// (FIXME 0472 — the `codegen_view` precedent: one helper, all seams).
+    ///
+    /// Combines the two edge channels for the body just checked, attributed
+    /// to `caller`:
+    /// - `ResolvedCall`-derived edges from the caller-supplied
+    ///   method-resolutions delta (trait methods, sig-dispatch, auto-curry);
+    /// - the `CheckState.user_fn_refs` delta since `ufr_before` (every
+    ///   statically-resolved call-/value-position user-fn reference,
+    ///   FIXME 0470).
+    ///
+    /// Seams wired: `check_form_body_single_defn` / `check_form_body_multi_sig`
+    /// (edges ride `FormCheckResult.call_graph_edges` into the merge/finalize
+    /// sinks) and `finalize_impl_method_writeback` (impl-provided, default,
+    /// and HKT trait-method bodies — Pass-1 bodies outside the per-form
+    /// channel; edges written directly to the mangled entry, mirroring its
+    /// `ast`/`codegen_view` direct writes). Deliberately NOT wired:
+    /// `recheck_body_for_mono` — a mono instance's body duplicates its
+    /// constrained TEMPLATE's body, whose edges are already complete via the
+    /// template's own defn-form check, and the call-site recorder gives the
+    /// caller→template edge; the reverse closure reaches the minting caller
+    /// through the template chain, and mono instances are re-minted whenever
+    /// that caller re-typechecks.
+    pub(crate) fn harvest_callee_edges(
+        &self,
+        state: &CheckState,
+        caller: &Symbol,
+        method_resolutions_delta: &HashMap<Span, ResolvedCall>,
+        ufr_before: &HashSet<Span>,
+    ) -> Vec<(Symbol, FQSymbol)> {
+        let mut edges =
+            self.extract_call_graph_edges(state, caller, method_resolutions_delta);
+        edges.extend(extract_user_fn_ref_edges(state, caller, ufr_before));
+        edges
+    }
+
     /// Derive the callee `FQSymbol` from a `ResolvedCall`, if it represents
     /// a user-defined dependency (not a builtin).
     fn resolved_call_to_fqsymbol(
@@ -963,6 +1040,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // just the new entries added during this form's checking.
         let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
+        let ufr_before: HashSet<Span> = state.user_fn_refs.keys().copied().collect();
 
         self.check_defn_body(state, defn, param_types, ret_ty)
             .map_err(|e| enrich_macro_clause_resolution_error(defn.name.as_ref(), e))?;
@@ -1195,8 +1273,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        // Extract call graph edges from method resolutions (Decision 21).
-        let call_graph_edges = self.extract_call_graph_edges(state, &defn.name, &form_mr);
+        // Harvest call graph edges (Decision 21 + FIXME 0470/0472): the
+        // ResolvedCall channel + the user-fn references recorded during this
+        // form's body inference — call- and value-position alike, uniform
+        // carrier. ONE shared helper across all body-check seams.
+        let call_graph_edges =
+            self.harvest_callee_edges(state, &defn.name, &form_mr, &ufr_before);
 
         let warnings = std::mem::take(&mut state.warnings);
 
@@ -1221,6 +1303,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     ) -> Result<FormCheckResult, CranelispError> {
         let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
+        let ufr_before: HashSet<Span> = state.user_fn_refs.keys().copied().collect();
 
         // Check each variant body
         for (i, variant) in defn.variants.iter().enumerate() {
@@ -1385,10 +1468,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
-        // Extract call graph edges for each variant (Decision 21).
+        // Harvest call graph edges for the variants (Decision 21 + FIXME
+        // 0470/0472) — ONE shared helper across all body-check seams.
         // Multi-sig variant edges are attributed to the base defn name since
         // the mangled names aren't known until overload resolution in finalize.
-        let call_graph_edges = self.extract_call_graph_edges(state, &defn.name, &form_mr);
+        let call_graph_edges =
+            self.harvest_callee_edges(state, &defn.name, &form_mr, &ufr_before);
 
         let warnings = std::mem::take(&mut state.warnings);
 

@@ -41,7 +41,7 @@ skill; the authoritative inventory is the on-disk file set itself.
 
 ## 2. The Learning Sequence (current on-disk set)
 
-31 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
+32 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
 is the **capability taught**. Exit code is the documented `main` return
 (sum of sub-test passes); it is the value `tests/examples.rs` asserts.
 
@@ -60,7 +60,7 @@ is the **capability taught**. Exit code is the documented `main` return
 | 11 | `11-destructuring.cl` | Pattern matching that binds constructor fields | 69 |
 | 12 | `12-closures.cl` | Anonymous functions (`fn`) and variable capture | 7 |
 | 13 | `13-higher-order.cl` | Functions as arguments and return values; composition | 203 |
-| 14 | `14-vecs.cl` | `Vec` literals and operations | 29 |
+| 14 | `14-vecs.cl` | `Vec` literals and operations; vec primitives as first-class values | 81 |
 | 15 | `15-traits.cl` | Trait-based operator dispatch (`Num`/`Eq`/`Ord`) + constrained polymorphism | 58 |
 | 16 | `16-modules/` | Multi-file programs: `mod`, `import`, `export`, `defn-` | 47 |
 | 17 | `17-display.cl` | User-defined traits and the `Display` trait | 176 |
@@ -79,6 +79,7 @@ is the **capability taught**. Exit code is the documented `main` return
 | 30 | `30-parallel-map-reduce.cl` | A general parallel `par-map` over a Functor: apply-argument sparking makes recursive divide-and-conquer and `fmap` of an expensive function parallelise automatically | 56 |
 | 31 | `31-bitwise.cl` | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) as bitmask set operations; inline single-bit helpers (`bit-test`/`bit-set`/`bit-clear`/`bit-flip`) and a permission bitmask | 19 |
 | 32 | `32-concurrency-combinators.cl` | Explicit-control concurrency (the CONTROL peer to 28/30's inferred half): `sleep` timer leaf, `race` (first-to-complete wins, loser cancelled), `select` (n-ary race over a Vec), and the `timeout` pattern expressed inline as `race`-against-a-deadline (stdlib `timeout` is off-limits to free-standing examples) | 6 |
+| 33 | `33-redefinition.cl` | Definitions are live: a later `defn` replaces the earlier one, existing dependents rebind, and rebinding cascades transitively | 136 |
 
 ### Notes on specific entries
 
@@ -154,6 +155,63 @@ is the **capability taught**. Exit code is the documented `main` return
     Handoff repro in the S96 Phase-6 /examples report (for the consolidated /qa
     narrow-test pass).
 
+- **14-vecs** (extended S101 Phase 6b) — added a "vec operations as
+  ordinary values" section: `vec-get`/`vec-set`/`vec-push` each passed as a
+  first-class value through a HOF (the S101 fn-as-value fix made this work;
+  previously it SIGSEGV'd through NULL GOT slots — the S100 failing-guard
+  defect). **Deliberate shape constraint: each generic HOF is instantiated
+  with exactly ONE vec primitive** — using one generic HOF at TWO vec-trio
+  instantiations SIGBUSes (open defect, FIXME 0483). Three helpers
+  (`call-get`/`call-set`/`call-push`), one op each. Sub-test contributions
+  8 + 40 + 4; sum moved 541 → 593, exit code moved 29 → **81** (593 mod
+  256 — first example whose sum exceeds the exit-code byte).
+
+- **33-redefinition** (S101 Phase 6b) — teaches "definitions are live": a
+  later `defn` REPLACES the earlier one, existing dependents rebind, and
+  rebinding cascades transitively through a dependency chain (the S101
+  redefinition-machinery R3 transaction made this sound; previously the
+  latent unsound hole). Batch-observable green path only — the interactive
+  half of the surface (cascade `; broken:` reports, trap stubs with
+  provenance, `/info` broken-status, recovery loop) is REPL-only UX owned
+  by `/repl` scripts + `/docs` guide. Three sub-tests: direct call sees
+  the later defn (6), dependent rebinds (18), transitive cascade (112) —
+  exit **136**.
+
+## 2a. S101 Phase-6a assessment record (2026-07-03) — EXECUTED in 6b
+
+> Both 6b candidates below were executed the same day: `33-redefinition.cl`
+> shipped (exit 136) and `14-vecs.cl` gained the vec-ops-as-values
+> sub-tests (exit 29 → 81). See §"Notes on specific entries" for the
+> shipped shapes. `tests/examples.rs` reconciliation is with `/qa`.
+
+Full replay green: 32/32 (31 top-level files at their documented exit codes
++ `16-modules/` at 47), pre-built binary, Linux `.so` symlinks resolving via
+Tier 2. No regression from the S101 redefinition-machinery + vec fn-as-value
+changes.
+
+New-surface findings feeding the 6b plan:
+
+- **Redefinition semantics ARE batch-observable.** A `--run` file that
+  redefines a `defn` succeeds, and an ALREADY-DEFINED dependent rebinds to
+  the new definition (verified: `f`/`g`-uses-`f`/redefine-`f` → `g` sees the
+  new `f`). That is genuinely new, exit-code-verifiable language semantics
+  (previously the latent unsound hole; now the R3 transaction). 6b candidate:
+  `33-redefinition.cl` teaching "definitions are live — a later `defn`
+  replaces the earlier one and existing dependents rebind". The *interactive*
+  half of the surface (cascade `; broken:` reports, trap stubs with
+  provenance, `/info` broken-status + definition source, recovery loop) is
+  REPL-only UX and belongs to `/repl` scripts + `/docs` guide, not the batch
+  learning sequence.
+- **vec ops as values now work single-instantiation** (S101 fix): passing
+  `vec-get`/`vec-set`/`vec-push` to a HOF returns correct results through the
+  examples prelude re-export (verified `--run`). 6b candidate: one sub-test in
+  `14-vecs.cl` ("vec ops are ordinary values") — exit-code bump needs the
+  `tests/examples.rs` table updated in the same change-set (coordinate with
+  `/qa`). **Constraint: keep to ONE instantiation per HOF** — a vec-trio op
+  as a value at TWO instantiations of the same generic HOF SIGBUSes (new
+  defect, filed as FIXME 0483 with the full repro matrix; `vec-len` and user
+  fns are unaffected).
+
 ## 3. Platform / IO examples (21–24) — running without an env var
 
 The IO examples load a platform DLL (`stdio` or `test-capture`). The
@@ -216,7 +274,7 @@ the spec when annotating coverage.)
 | Strings | 09 |
 | Closures / lambdas / capture | 12 |
 | Higher-order functions, composition | 13 |
-| Vec | 14 |
+| Vec (incl. vec primitives as first-class values) | 14 |
 | Traits + operator dispatch + constrained poly | 15, 17, 20 |
 | Modules / imports / exports | 16 |
 | Macros (defmacro, quasiquote, multi-clause) | 18 |
@@ -228,6 +286,7 @@ the spec when annotating coverage.)
 | Parallel evaluation (lenient eval: independent `let` bindings + apply-arguments) | 28, 30 |
 | Explicit-control concurrency combinators (`sleep`/`race`/`select` + inline `timeout` pattern) | 32 |
 | `:Type` annotation model | 29 |
+| Redefinition (later `defn` replaces; dependents rebind) | 33 |
 | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) | 31 |
 
 ## 5. Verification
@@ -250,6 +309,10 @@ to reconcile that table.
 
 ## Next skills
 
+- `/qa` (S101 Phase 6b) — reconcile the `tests/examples.rs` expected-exit
+  table: `14-vecs.cl` **29 → 81** (new vec-ops-as-values sub-tests) and NEW
+  file `33-redefinition.cl` => **136**. Both verified via
+  `target/debug/cranelisp --run` on 2026-07-03.
 - `/qa` — (1) The S96 `32-concurrency-combinators.cl => 6` row is already in the
   `tests/examples.rs` table (added with the example so the umbrella stays green —
   the test's own assertion instructs the file-adder to update `expected_exits()`);

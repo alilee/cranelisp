@@ -290,6 +290,10 @@ impl CompilerSession {
                     // them with a hardcoded empty `Vec`, so they never reached
                     // `format_eval_result`.
                     let cluster_warnings = processed.warnings().to_vec();
+                    // S101: the commit gate's redefinition classifications —
+                    // consumed AFTER the target's own codegen succeeds
+                    // (design/int/session-transaction.md §13).
+                    let redefinitions = processed.redefinitions().to_vec();
                     // If program is empty, the form was handled during expansion
                     // (defmacro, import, platform, mod). Return Def with name
                     // extracted from the original sexp.
@@ -308,7 +312,13 @@ impl CompilerSession {
                         };
                     }
                     let check = CheckResult { warnings: cluster_warnings, display: None };
-                    return self.codegen_and_execute(&module, &program, &check).map(Some);
+                    let eval_result = self.codegen_and_execute(&module, &program, &check)?;
+                    // S101 dependent-recompilation transaction: clears broken
+                    // records for recovered symbols (§18.6 direction 1) and
+                    // runs the affected-set walk for AbiChanging redefinitions,
+                    // stashing the §18.3 cascade report for the REPL printer.
+                    self.apply_redefinition_outcomes(&redefinitions);
+                    return Ok(Some(eval_result));
                 }
                 ClusterOnce::Gap { dep } => {
                     // The dep has already been registered + blocked on inside

@@ -1517,7 +1517,13 @@
             mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 } }, Some(trivial_variant()), Some(1)),
         );
 
-        commit_staging_to_live(&symbol_tables, &module, staging);
+        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
+            .expect("commit into an empty live table cannot exhaust the GOT");
+        // Fresh symbols into an empty live table classify `New` (S101 gate).
+        assert!(
+            outcomes.iter().all(|o| o.kind == crate::redefine::RedefKind::New),
+            "fresh commits classify New: {outcomes:?}"
+        );
 
         let live = symbol_tables.get(&module).unwrap();
         let slot_of = |name: &str| live.get(name).and_then(|e| e.callable_got_slot());
@@ -1525,6 +1531,124 @@
         assert_eq!(slot_of("reduce"), Some(0), "reduce keeps staged slot 0");
         assert_eq!(slot_of("reduce-loop"), Some(1), "reduce-loop keeps staged slot 1");
         assert_eq!(slot_of("main"), Some(2), "main keeps staged slot 2");
+    }
+
+    /// Minimal `SharedState` for commit-gate unit tests that need the S101
+    /// retention pool (`retained_code`). Mirrors the construction in
+    /// `scheduler/tests.rs::nice_worker_lifecycle_spawn_and_shutdown`; no
+    /// workers are spawned and no codegen runs against it.
+    fn test_shared_state() -> crate::session_v4::SharedState {
+        use std::sync::atomic::{AtomicBool, AtomicU32};
+        use std::sync::Mutex;
+        crate::session_v4::SharedState {
+            scheduler: crate::scheduler::CompileScheduler::new(),
+            project_root: std::path::PathBuf::new(),
+            lib_dirs: Mutex::new(Vec::new()),
+            platform_dirs: Mutex::new(Vec::new()),
+            module_aliases: cranelisp_types::ModuleAliases::default(),
+            prelude_fallback: cranelisp_typecheck::PreludeFallback::default(),
+            cache: std::sync::Arc::new(crate::cache::ObjectCache::new(None, None)),
+            promote_nice_workers: AtomicBool::new(false),
+            file_to_module: Mutex::new(std::collections::HashMap::new()),
+            symbol_tables: dashmap::DashMap::new(),
+            next_type_id: AtomicU32::new(0),
+            typecheck_products: dashmap::DashMap::new(),
+            kept_dlls: Mutex::new(Vec::new()),
+            introspection: Some(dashmap::DashMap::new()),
+            importable_indices: crate::session_v4::ImportableIndices::default(),
+            broken: dashmap::DashMap::new(),
+            retained_code: Mutex::new(Vec::new()),
+            run_mode: crate::session_v4::RunMode::Repl,
+            test_runner_state: Box::new(crate::session_v4::TestRunnerState::stub()),
+        }
+    }
+
+    // spec: design/int/session-transaction.md §6.3/§7.1 (FIXME 0479) — the
+    // commit gate's THIRD displacement site: a SLOT-LESS staged Def (a concrete
+    // fn redefined as a polymorphic/constrained template or an `Overloaded`
+    // base) replacing a SLOTTED prior with compiled code must move the prior
+    // `Code` into the session retention pool (frozen supersession,
+    // `trap_msg: None`), pairing it with the frozen slot. Before the fix the
+    // `callable_got_slot().is_some()` gate skipped this case entirely:
+    // `live.insert` dropped the possibly-last `Code` Arc (JIT pages freed)
+    // while the prior's GOT slot still held the raw pointer — a use-after-free
+    // for every compiled caller (SIGSEGV, exit 139; e2e guard:
+    // tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale).
+    #[test]
+    fn commit_slotless_staged_over_slotted_prior_retains_prior_code_in_pool() {
+        use cranelisp_backend::jit::Jit;
+        use std::sync::Arc;
+
+        let module = ModuleFullPath::from("user");
+        let shared = test_shared_state();
+
+        // Live: slotted concrete `f` carrying compiled code (the possibly-last
+        // Arc — a real Jit so the retention is meaningful, not a stub enum).
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        let prior_slot = live.allocate_got_slot();
+        let mut prior = mk_def_with_got(
+            DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0 },
+            },
+            Some(trivial_variant()),
+            Some(prior_slot),
+        );
+        if let ModuleEntry::Def { code, .. } = &mut prior {
+            let empty_tables: cranelisp_types::SymbolTables<crate::code::Code, ()> =
+                dashmap::DashMap::new();
+            // Same allow + rationale as the production composition site
+            // (`inline_jit_codegen_for_names`, worker.rs): the Arc is the
+            // lifecycle root for the mmap'd pages, never sent across threads.
+            #[allow(clippy::arc_with_non_send_sync)]
+            let jit_arc = Arc::new(Jit::new(&empty_tables).expect("test jit"));
+            *code = Some(crate::code::Code::jit(jit_arc));
+        }
+        live.insert(Symbol::from("f"), prior);
+        symbol_tables.insert(module.clone(), live);
+
+        // Staging: `f` redefined as a slot-less template
+        // (`callable_got_slot() == None` — same shape for Polymorphic /
+        // Constrained / Overloaded; the Overloaded base is the simplest).
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        staging.insert(
+            Symbol::from("f"),
+            mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
+        );
+
+        commit_staging_to_live(&symbol_tables, &module, staging, Some(&shared))
+            .expect("slot-less commit cannot exhaust the GOT");
+
+        // The staged slot-less entry replaced the prior in live...
+        {
+            let live = symbol_tables.get(&module).unwrap();
+            let entry = live.get("f").expect("staged entry committed");
+            assert!(
+                entry.callable_got_slot().is_none(),
+                "committed entry is the slot-less template"
+            );
+        }
+
+        // ...and the prior's Code landed in the retention pool WITH its slot —
+        // not dropped (the UAF the gate previously allowed).
+        let pool = shared.retained_code.lock().unwrap();
+        assert_eq!(
+            pool.len(),
+            1,
+            "displaced prior Code must be retained in the pool, not dropped"
+        );
+        assert_eq!(pool[0].fq.symbol.as_ref(), "f");
+        assert_eq!(pool[0].fq.module, module);
+        assert_eq!(
+            pool[0].slot,
+            Some(prior_slot),
+            "pool entry pairs the frozen slot with the retained code"
+        );
+        assert!(
+            pool[0].trap_msg.is_none(),
+            "frozen supersession, not a trap stub"
+        );
     }
 
     // §11.3(b) / §24 (CF.1) unit-tier floor: a panic raised inside the

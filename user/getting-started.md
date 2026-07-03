@@ -35,6 +35,19 @@ current module (`user`). Type `/help` to list the slash commands, `/quit` (or
 Ctrl-D) to exit. The full REPL experience is specified in
 [`repl/spec.md`](../repl/spec.md).
 
+One thing to know about `+` in that transcript: operators come from the standard
+prelude, which is optional — in a bare directory with no `stdlib/` on the
+[lib search path](cli-reference.md#where-cranelisp-looks-for-libraries-cranelisptoml),
+the REPL starts with no prelude and `+` is not defined (fully-qualified
+primitives such as `(primitives/add-i64 1 2)` always work). Run the REPL from
+this repository's root, as above, and the prelude is found in `stdlib/`.
+
+The REPL is a live development environment: redefine a function and the change
+takes effect immediately — body edits are picked up by every caller on the next
+call, and signature changes recompile the functions that depend on the changed
+one and report exactly which survived. See the
+[live development guide](guide/live-development.md).
+
 ## Your first program
 
 A runnable program defines a zero-argument `main` and runs under `--run`. The
@@ -171,7 +184,10 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
 - [`cli-reference.md`](cli-reference.md) — every command-line mode and option, how
   the entry-module target is resolved, how the lib search path / `Cranelisp.toml`
   works, and the `/search` command for finding an importable function.
-- **Guide** — feature-by-feature pages: [`guide/bitwise.md`](guide/bitwise.md)
+- **Guide** — feature-by-feature pages:
+  [`guide/live-development.md`](guide/live-development.md) (redefining functions
+  in a live session: late binding, the cascade report, broken symbols and
+  recovery), [`guide/bitwise.md`](guide/bitwise.md)
   (bit-level arithmetic and the `num.bits` module),
   [`guide/field-accessors.md`](guide/field-accessors.md) (`Type.field` accessors and
   the bare-name alias),

@@ -1028,6 +1028,83 @@ mod tests {
         );
     }
 
+    // Consumer-audit guard for the S101 `Def.callees` enrichment (FIXME 0470;
+    // gate note 2). With the denser edge set — plain direct-call and
+    // fn-as-value edges now recorded, where before only trait/sig-dispatch/
+    // auto-curry edges existed — `dependency_sort` must still produce a
+    // correct, complete emission order: callees before callers on acyclic
+    // edges, termination + no item loss on the newly-representable cycles
+    // (mutual recursion is a 2-cycle in the enriched graph), self-edges
+    // filtered, cross-module edges ignored. The e2e cover is the existing
+    // `repl_persist.rs` §15.4 round-trips; this pins the seam directly.
+    // spec: tests/plan/s101-coverage-postmortem.md §2.1 item 4
+    #[test]
+    fn dependency_sort_correct_and_total_under_dense_callee_edges() {
+        use cranelisp_types::{DefKind, Scheme, Type, UserFnState};
+        use std::collections::HashMap as StdHashMap;
+
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+
+        let fq = |m: &str, s: &str| FQSymbol {
+            module: ModuleFullPath::from(m),
+            symbol: s.into(),
+        };
+        let mut insert_fn = |name: &str, slot: usize, callees: Vec<FQSymbol>| {
+            let scheme = Scheme {
+                type_vars: vec![],
+                constraints: StdHashMap::new(),
+                ty: Type::Int,
+            };
+            let mut entry = ModuleEntry::def(
+                scheme,
+                DefKind::UserFn {
+                    fn_state: UserFnState::Concrete { got_slot: slot },
+                },
+            )
+            .build();
+            if let ModuleEntry::Def { callees: c, .. } = &mut entry {
+                *c = callees;
+            }
+            st.insert(name.into(), entry);
+        };
+
+        // Acyclic chain: top → mid → leaf (dense direct-call edges).
+        insert_fn("leaf", 0, vec![]);
+        insert_fn("mid", 1, vec![fq("user", "leaf")]);
+        insert_fn("top", 2, vec![fq("user", "mid")]);
+        // Mutual recursion: pa ↔ pb (a 2-cycle, newly representable with
+        // enriched edges), plus a caller pc → pa whose in-degree never
+        // resolves through the cycle.
+        insert_fn("pa", 3, vec![fq("user", "pb")]);
+        insert_fn("pb", 4, vec![fq("user", "pa")]);
+        insert_fn("pc", 5, vec![fq("user", "pa")]);
+        // Self-recursion (filtered by the `callee_name != name` guard) and a
+        // cross-module edge (filtered by the `callee.module == st.path` guard).
+        insert_fn("selfy", 6, vec![fq("user", "selfy"), fq("other", "leaf")]);
+
+        let p = |s: &str| cranelisp_frontend::parse(s).unwrap().remove(0);
+        let items: Vec<(String, Sexp)> = ["top", "mid", "leaf", "pa", "pb", "pc", "selfy"]
+            .iter()
+            .map(|n| (n.to_string(), p(&format!("(defn {n} [] 1)"))))
+            .collect();
+
+        let sorted = dependency_sort(items, &st);
+        let order: Vec<&str> = sorted.iter().map(|(n, _)| n.as_str()).collect();
+
+        // Termination + totality: every item exactly once, cycles included.
+        assert_eq!(order.len(), 7, "no item lost or duplicated: {order:?}");
+        let pos = |n: &str| {
+            order
+                .iter()
+                .position(|x| *x == n)
+                .unwrap_or_else(|| panic!("{n} missing from {order:?}"))
+        };
+        // Callee-before-caller on the acyclic chain.
+        assert!(pos("leaf") < pos("mid"), "leaf before mid: {order:?}");
+        assert!(pos("mid") < pos("top"), "mid before top: {order:?}");
+    }
+
     #[test]
     fn sexp_defines_symbol_matches_defining_forms() {
         let p = |s: &str| cranelisp_frontend::parse(s).unwrap().remove(0);

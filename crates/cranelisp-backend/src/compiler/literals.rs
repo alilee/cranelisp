@@ -145,7 +145,7 @@ where
                     });
                 }
             };
-            return self.compile_trait_method_as_value(resolved, arity, span);
+            return self.compile_trait_method_as_value(resolved, arity, span, inferred_type);
         }
 
         // Nullary constructor reference (e.g. `None`, `Red`): fold to a bare
@@ -181,9 +181,11 @@ where
             return self.compile_operator_as_value(primitive_name, span);
         }
 
-        // Named function as value: wrap in a zero-capture closure.
+        // Named function as value: wrap in a zero-capture closure. The
+        // inferred `Fn` type rides along so the vec-query wrapper arm can
+        // recover the per-site element type (§12.7).
         if self.is_known_function(name) {
-            return self.compile_fn_as_value(name, span);
+            return self.compile_fn_as_value(name, span, inferred_type);
         }
 
         Err(CranelispError::CodegenError {

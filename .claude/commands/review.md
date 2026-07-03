@@ -22,6 +22,7 @@
 @design/arch/principles/19-no-module-privileged-by-name.md
 @design/arch/principles/20-model-invariants-by-representation.md
 @design/arch/principles/21-actors-and-functions-before-mechanism.md
+@design/arch/principles/22-published-pointers-have-retention-owners.md
 
 # /review — Per-crate Reviewer
 

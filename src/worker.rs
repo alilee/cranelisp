@@ -173,8 +173,15 @@ pub(crate) fn check_program_compat(
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
-) -> Result<(Option<cranelisp_types::ResolutionGap>, Vec<cranelisp_types::Warning>), CranelispError>
-{
+    shared: Option<&crate::session_v4::SharedState>,
+) -> Result<
+    (
+        Option<cranelisp_types::ResolutionGap>,
+        Vec<cranelisp_types::Warning>,
+        Vec<crate::redefine::RedefinitionOutcome>,
+    ),
+    CranelispError,
+> {
     // Wave 3b-2c.3: FIXME 0179 (cluster-mode read-union via View::union) has
     // landed in typecheck. Cluster mode is now activated as the hot path —
     // writes flow to a fresh staging table, reads union staging-first with
@@ -184,12 +191,18 @@ pub(crate) fn check_program_compat(
     // Returns `Ok(Some(gap))` when typecheck surfaces a recoverable
     // `CheckError::Gap` — the FQ-auto-load orchestration (spec §8.5.4 / §9.3.6,
     // FIXME 0268) catches an unloaded-module gap here and loads-and-retries.
+    //
+    // S101: `shared` carries the session retention pool for the commit gate's
+    // ABI-epoch slot policy (design/int/session-transaction.md §7.1); the
+    // returned `RedefinitionOutcome`s ride `ProcessedCluster` back to the
+    // eval driver.
     process_cluster_with_staging(
         symbol_tables,
         module_aliases,
         prelude_fallback,
         module,
         working_program,
+        shared,
     )
 }
 
@@ -217,9 +230,15 @@ pub(crate) fn check_program_compat_no_gap(
         prelude_fallback,
         module,
         working_program,
+        // No session context on these paths: the gate falls back to the
+        // reuse-and-patch slot policy (no retention pool to freeze into) and
+        // the redefinition outcomes are dropped. The internal-name shapes
+        // these callers commit (`__expr`, `__macro_*` clauses) are
+        // gate-exempt anyway (S101, `redefine::is_gate_exempt_internal`).
+        None,
     )? {
-        (None, _warnings) => Ok(()),
-        (Some(gap), _warnings) => Err(CranelispError::TypeError {
+        (None, _warnings, _redefs) => Ok(()),
+        (Some(gap), _warnings, _redefs) => Err(CranelispError::TypeError {
             message: format!("unresolved cross-module reference: {gap:?}"),
             location: ErrorLocation::from_span(Span::SYNTHETIC),
         }),
@@ -246,13 +265,20 @@ pub(crate) fn process_cluster_with_staging(
     prelude_fallback: &cranelisp_typecheck::PreludeFallback,
     module: &ModuleFullPath,
     working_program: &[TopLevel],
-) -> Result<(Option<cranelisp_types::ResolutionGap>, Vec<cranelisp_types::Warning>), CranelispError>
-{
+    shared: Option<&crate::session_v4::SharedState>,
+) -> Result<
+    (
+        Option<cranelisp_types::ResolutionGap>,
+        Vec<cranelisp_types::Warning>,
+        Vec<crate::redefine::RedefinitionOutcome>,
+    ),
+    CranelispError,
+> {
     use cranelisp_typecheck::{check_forms, CheckError, SymbolTableAccess};
 
     let parsed = top_level_to_parsed_entries(working_program);
     if parsed.is_empty() {
-        return Ok((None, Vec::new()));
+        return Ok((None, Vec::new(), Vec::new()));
     }
 
     let mut staging: crate::code::SessionSymbolTable =
@@ -276,15 +302,15 @@ pub(crate) fn process_cluster_with_staging(
         // so int can thread them onto `ProcessedCluster.warnings` and the
         // REPL can render them as `; warning: <message>` lines.
         Ok(warnings) => {
-            commit_staging_to_live(symbol_tables, module, staging);
-            Ok((None, warnings))
+            let redefs = commit_staging_to_live(symbol_tables, module, staging, shared)?;
+            Ok((None, warnings, redefs))
         }
         // A recoverable resolution gap (e.g. an FQ reference to a module not
         // yet loaded). Staging drops here (atomic discard, live unchanged);
         // the gap is handed back to `finalize_module` for FQ-auto-load
         // orchestration (FIXME 0268). On retry a fresh staging frame runs.
         // No warnings on the gap path — the cluster re-runs from the top.
-        Err(CheckError::Gap(gap)) => Ok((Some(gap), Vec::new())),
+        Err(CheckError::Gap(gap)) => Ok((Some(gap), Vec::new(), Vec::new())),
         // A genuine type error — staging drops, live unchanged.
         Err(e) => Err(check_error_to_cranelisp_error(e)),
     }
@@ -365,14 +391,43 @@ pub(crate) fn validate_forms_dry_run(
 /// single `DashMap::get_mut` write guard. Per `facades/int.md` invariant 5b
 /// — entries land per-symbol; the drain is committed before this function
 /// returns. GOT slot indices on `ModuleEntry::Def` entries are re-pointed
-/// to freshly-allocated live slots (staging's GOT is about to be dropped
-/// when `staging` falls out of scope at the caller's `Ok(())`).
+/// to live slots (staging's GOT is about to be dropped when `staging` falls
+/// out of scope at the caller).
+///
+/// **This is the S101 commit gate — the single slot-policy authority**
+/// (`design/int/session-transaction.md` §2/§7.1). Every staged callable `Def`
+/// classifies against the prior live entry via the `AbiSurface` summary diff:
+///
+/// | Kind | Slot | Prior `Code` |
+/// |---|---|---|
+/// | `New` | fresh `allocate_got_slot` (exhaustion-guarded) | — |
+/// | `AbiPreserving` | reuse prior slot; codegen patches in place | carried |
+/// | `AbiChanging` | fresh slot; the old slot is never written again | pushed to `SharedState.retained_code` BEFORE `live.insert` |
+///
+/// A staged entry with NO callable slot displacing a slotted prior `Def`
+/// with compiled code (concrete fn redefined as a polymorphic/overloaded
+/// template — FIXME 0479) takes the complementary displacement arm: the
+/// prior `Code` is retained in the pool (frozen supersession) so compiled
+/// callers keep dispatching the frozen old chain through the still-populated
+/// slot instead of a use-after-free; no `RedefinitionOutcome` is produced
+/// (the T1 semantic cure is FIXME 0477's design question).
+///
+/// The returned [`RedefinitionOutcome`]s ride `ProcessedCluster` back to the
+/// eval driver, which runs the dependent-recompilation transaction for
+/// `AbiChanging` outcomes (design §13). When `shared` is `None` (no session —
+/// unit tests, dry-run shapes) there is no retention pool to freeze into, so
+/// the gate degrades to the reuse-and-patch policy for every redefinition.
 fn commit_staging_to_live(
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     module: &ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
-) {
-    use cranelisp_types::ModuleEntry;
+    shared: Option<&crate::session_v4::SharedState>,
+) -> Result<Vec<crate::redefine::RedefinitionOutcome>, CranelispError> {
+    use crate::redefine::{
+        allocate_live_got_slot, classify_redefinition, RedefKind, RedefinitionOutcome,
+        RetainedCode,
+    };
+    use cranelisp_types::{FQSymbol, ModuleEntry};
 
     // Drain staging into a Vec before acquiring the live write guard to
     // avoid simultaneous borrow paths on `staging`. `staging` is owned
@@ -415,59 +470,150 @@ fn commit_staging_to_live(
         // registration discipline (live exists for the current module
         // before `process_cluster` runs), but a no-op is safer than a
         // panic at commit.
-        return;
+        return Ok(Vec::new());
     };
 
+    let mut outcomes: Vec<RedefinitionOutcome> = Vec::new();
+
     for (name, mut entry) in drained.drain(..) {
-        // Re-allocate GOT slot for `Def` entries that hold a staged slot
-        // index. The staged index is meaningless in live's GOT (different
-        // Arc); replace with a fresh live slot. Codegen will write the
-        // code pointer to the live slot.
-        //
-        // Redefinition discipline: if the symbol already exists in live with
-        // a GOT slot, REUSE that slot. Also CARRY OVER the prior `code` field
-        // — codegen's redefinition detection compares prior `code` against
-        // None to decide whether to emit a `Redefinition` event. If we
-        // overwrite live's prior entry (and its `code`) here, the detection
-        // would always see `None` and miss the redefinition tag.
         // The staged slot (read via the `callable_got_slot()` chokepoint —
-        // the slot now rides on the callable `DefKind` variant per the S83
+        // the slot rides on the callable `DefKind` variant per the S83
         // reshape, FIXME 0356/0357) is meaningless in live's GOT (staging
         // holds a fresh GOT Arc). Re-point every callable `Def` to a live
-        // slot before commit.
+        // slot before commit, applying the S101 slot policy.
         //
-        // Redefinition: typecheck's Pass-1 already captured the prior live
-        // slot (`redef_slots`, read through the SAME `callable_got_slot()`
-        // chokepoint) and pinned it into the staged `Concrete`/ctor/etc.
-        // variant — so for a redefinition the staged slot *is already* the
-        // reused live slot, and reading the prior live entry's slot here
-        // returns the same value (the two redef-reuse reads agree, no
-        // divergence — cascade-spec invariant). We still re-point explicitly:
-        // it is identity for the redef case (reuse == staged) and the
-        // necessary fresh-live allocation for a brand-new symbol (whose staged
-        // slot was a fresh-from-0 staging index). We must NOT introduce a
-        // *second* allocation policy that could disagree with typecheck's.
+        // Redefinition slot authority (supersedes the pre-S101 "we must NOT
+        // introduce a second allocation policy" invariant): typecheck's
+        // Pass-1 `redef_slots` pin remains the fast-path identity — for an
+        // `AbiPreserving` redefinition the staged slot already equals the
+        // reused live slot — but THIS gate is the documented single
+        // authority that overrides it on `AbiChanging`, allocating a fresh
+        // live slot and freezing the old one (its code retained in the
+        // session pool so stale closures and in-flight frames keep a
+        // coherent old-ABI chain — design §4.3, no quiesce needed).
+        //
+        // `AbiPreserving` also CARRIES OVER the prior `code` field — codegen's
+        // redefinition detection compares prior `code` against None to decide
+        // whether to emit a `Redefinition` trace event, and Decision 31
+        // Scenario 2's per-redefinition reclaim happens when codegen replaces
+        // it. `AbiChanging` deliberately does NOT carry code: the fresh slot
+        // is a new world, and the prior code's lifetime belongs to the pool.
         if entry.callable_got_slot().is_some() {
-            let (reuse_slot, prior_code) = match live.symbols.get(&name) {
+            let (prior_slot, prior_code, kind, per_symbol) = match live.symbols.get(&name) {
                 Some(prior @ ModuleEntry::Def { code, .. }) => {
-                    (prior.callable_got_slot(), code.clone())
+                    let (kind, per_symbol) =
+                        classify_redefinition(name.as_ref(), Some(prior), &entry);
+                    (prior.callable_got_slot(), code.clone(), kind, per_symbol)
                 }
-                _ => (None, None),
+                prior => {
+                    let (kind, per_symbol) =
+                        classify_redefinition(name.as_ref(), prior, &entry);
+                    (None, None, kind, per_symbol)
+                }
             };
-            let new_slot = reuse_slot.unwrap_or_else(|| live.allocate_got_slot());
-            if let ModuleEntry::Def { kind, code, .. } = &mut entry {
-                repoint_callable_slot(kind, new_slot);
-                // Preserve the prior code handle if staging didn't already
-                // write one (staging-side typecheck does not run codegen, so
-                // `code` is normally `None` for staged Def entries; if a
-                // future change populates it, prefer the staged value).
-                if code.is_none() {
+
+            // Fresh-slot is unconditional on ABI change, independent of the
+            // recorded caller set (invisible value captures exist — design
+            // §7.1) — but freezing requires the retention pool: without it
+            // the displaced `Code`'s pages would be freed while the frozen
+            // slot still points at them, so a pool-less context degrades to
+            // reuse-and-patch.
+            let effective_kind = match kind {
+                RedefKind::AbiChanging if shared.is_none() => RedefKind::AbiPreserving,
+                k => k,
+            };
+
+            let new_slot = match effective_kind {
+                RedefKind::New => match prior_slot {
+                    // Defensive: a `New`-classified commit with a prior slot
+                    // cannot arise (classification requires no prior Def
+                    // slot), but reuse would be the safe answer.
+                    Some(slot) => slot,
+                    None => allocate_live_got_slot(&mut live, module)?,
+                },
+                RedefKind::AbiPreserving => match prior_slot {
+                    Some(slot) => slot,
+                    None => allocate_live_got_slot(&mut live, module)?,
+                },
+                RedefKind::AbiChanging => {
+                    // Freeze: push the superseded `Code` into the retention
+                    // pool BEFORE `live.insert` replaces the entry (the pool
+                    // clone keeps the pages mapped; the old slot is never
+                    // written again — Principle 20: after this commit no live
+                    // entry carries the old index, so the illegal write is
+                    // unreachable by representation).
+                    let shared = shared.expect("AbiChanging requires a session (gated above)");
+                    let old_slot = prior_slot.expect("AbiChanging requires a prior slot");
+                    if let Some(code) = prior_code.clone() {
+                        shared
+                            .retained_code
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(RetainedCode::frozen(module, &name, Some(old_slot), code));
+                    }
+                    let fresh = allocate_live_got_slot(&mut live, module)?;
+                    crate::got_trace::emit_slot_freeze(module, &name, old_slot, fresh);
+                    fresh
+                }
+            };
+
+            if let ModuleEntry::Def { kind: def_kind, code, .. } = &mut entry {
+                repoint_callable_slot(def_kind, new_slot);
+                // Preserve the prior code handle on the reuse path if staging
+                // didn't already write one (staging-side typecheck does not
+                // run codegen, so `code` is normally `None` for staged Def
+                // entries). `AbiChanging` starts its fresh slot code-less.
+                if code.is_none() && effective_kind != RedefKind::AbiChanging {
                     *code = prior_code;
                 }
             }
+
+            outcomes.push(RedefinitionOutcome {
+                fq: FQSymbol {
+                    module: module.clone(),
+                    symbol: name.clone(),
+                },
+                kind: effective_kind,
+                per_symbol,
+                old_slot: prior_slot,
+                new_slot,
+            });
+        } else if let Some(shared) = shared
+            && let Some(prior) = live.symbols.get(&name)
+            && let Some(prior_slot) = prior.callable_got_slot()
+            && let ModuleEntry::Def { code: Some(prior_code), .. } = prior
+        {
+            // FIXME 0479 — the commit gate's THIRD displacement site: the
+            // STAGED entry is slot-less (a concrete fn redefined as a
+            // polymorphic/constrained template or an `Overloaded` base) while
+            // the PRIOR live entry is slotted with compiled code. The
+            // `live.insert` below drops the prior entry — possibly the last
+            // `Code` Arc, freeing mapped JIT pages — while compiled callers
+            // still embed the prior's GOT slot: a use-after-free SIGSEGV on
+            // the next call. Retain the prior `Code` (frozen supersession,
+            // design §6.3) so the still-populated slot keeps dispatching the
+            // frozen old chain — memory-safe coherent-stale execution (the
+            // §4.3 frozen-world argument). The *semantic* cure for this
+            // T1-kind target (recompile-or-trap; design §10 T1) is FIXME
+            // 0477's design question — no `RedefinitionOutcome` is pushed, so
+            // no per-symbol transaction runs. Pool-less contexts (`shared:
+            // None` — unit tests, dry-run shapes) keep the pre-S101 drop, as
+            // at the sibling displacement sites.
+            shared
+                .retained_code
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(RetainedCode::frozen(
+                    module,
+                    &name,
+                    Some(prior_slot),
+                    prior_code.clone(),
+                ));
         }
         live.insert(name, entry);
     }
+
+    Ok(outcomes)
 }
 
 /// Re-point the GOT slot carried on a callable [`DefKind`] variant

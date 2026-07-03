@@ -102,7 +102,14 @@ unsafe fn write_data_ptr(base: *mut u8, data_ptr: *mut i64) {
 
 /// Allocate a data buffer of `cap` elements (each i64 = 8 bytes).
 /// Returns null if cap == 0.
-fn alloc_data_buffer(cap: i64) -> *mut i64 {
+///
+/// This is the **single** vec-data-buffer alloc path (Principle 7), paired with
+/// [`free_data_buffer`]. `pub(crate)` so test fixtures that hand-build Vec structs
+/// (e.g. `drop::tests::make_vec_struct`) allocate through it and register with the
+/// debug data-buffer guard ([`databuf_guard::on_alloc`]) — a raw `alloc_zeroed`
+/// bypass leaves the buffer untracked and trips the guard's "NOT live" tripwire
+/// the moment the buffer crosses [`debug_assert_live_buffer`].
+pub(crate) fn alloc_data_buffer(cap: i64) -> *mut i64 {
     if cap <= 0 {
         return std::ptr::null_mut();
     }

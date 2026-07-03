@@ -45,6 +45,12 @@ refusal, and reads the optional `/strand` dev sink. It never reaches into reacto
   (the host-side IO forcing + platform-DLL load wiring), `cache-hit-loading.md`,
   `session-persistence.md`, `symbol-table-cache.md`, `repl-lifecycle.md`, `observability.md`,
   `macro-resolver-impl.md`, `cranelisp-toml.md`, the `s7*`/`step*`/`wave-*` slice docs, etc.
+- **`session-transaction.md`** (S101) — the R3 dev-session redefinition machinery:
+  summary-diff gate, reverse dependency index, dependent-recompilation transaction,
+  BROKEN/trap-stub cascade management, ABI-epoch slot versioning bookkeeping + retention
+  pools, persistence pins. Consumes the pinned backend interface
+  (`design/backend/ownership-codegen.md` §8.3); scope authority
+  `design/arch/ownership-inference.md` §5.
 - **`bind-chain-analysis.md`** — the compile-time automatic-IO-scheduling pass (§10.12); its
   finer ownership is an open FIXME 0486 question, left here pending that ruling.
 

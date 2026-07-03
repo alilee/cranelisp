@@ -309,6 +309,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
 
+        // FIXME 0470 (S101): record a statically-resolved user-fn reference —
+        // call-position and value-position alike — into the `Def.callees`
+        // edge feed. Placed after every rejection gate above so only a
+        // successfully-typed reference records an edge. See
+        // `record_user_fn_ref` for the gates (local-shadow skip, UserFn-kind
+        // filter, chain-follow to the home module).
+        self.record_user_fn_ref(state, name.as_ref(), span);
+
         let ty = self.instantiate(state, &scheme);
         let resolved = self.apply_subst(state, &ty);
         self.record_expr_type(state, span, resolved.clone());

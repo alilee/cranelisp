@@ -3438,3 +3438,115 @@ fn set_doc_does_not_duplicate_docstring_on_restart_neg() {
          live `Def.docstring` is authoritative (§17.15.3); user.cl={regen:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// FIXME 0460 drain (S101 Wave 5) — §17.15.4 honest-failure e2e lane. The
+// contract is unit-covered in `src/agent/pull.rs` (S94); these are the e2e
+// complements so the honest-failure UX is guarded at the binary's outside
+// surface (agent prose, not a raw compiler error — U5, §16.4) and §17.15.4
+// gains its `[Tested+Neg …]` citations. GREEN at draft (coverage gap, not a
+// defect — per the FIXME).
+// ---------------------------------------------------------------------------
+
+// spec: repl/spec.md §17.15.4 — honest failure, face 1: a `set-doc` on a
+// target with NO LOCAL Def is refused with the not-found error (`no such
+// definition`) — pinned for BOTH spec-named shapes: a never-defined name
+// (`ghost`) AND a name that is only a re-exported prelude IMPORT (`add-i64`
+// under PrimitivesOnly resolves as an Import entry, not a local `Def` —
+// probed 2026-07-03). The consultative success line MUST NOT appear, and the
+// live state is unchanged — the follow-up `/doc ghost` shows no
+// spuriously-recorded docstring.
+#[cfg(feature = "agent")]
+#[test]
+fn set_doc_missing_target_e2e_refused_no_false_recorded_neg() {
+    let doc_text = "a ghost docstring that must never persist";
+    let script = format!(
+        "tool: set-doc ghost {doc_text}\n\
+         done: tried to document ghost\n\
+         tool: set-doc add-i64 an import docstring that must never persist\n\
+         done: tried to document add-i64\n"
+    );
+    let out = stub_repl(
+        &script,
+        PreludeVariant::PrimitivesOnly,
+        "/ask add a docstring to ghost\n\
+         y\n\
+         /ask add a docstring to add-i64\n\
+         y\n\
+         /doc ghost\n",
+    );
+    assert!(
+        out.stdout.matches("no such definition").count() >= 2,
+        "both the never-defined and import-only targets must surface `no such \
+         definition` at the REPL (§17.15.4); stdout={}",
+        out.stdout
+    );
+    // The consultative success line has the exact shape `recorded {target}'s
+    // {noun}` (src/agent/pull.rs) — pin its absence precisely, since the
+    // consultative QUESTION legitimately contains "record".
+    assert!(
+        !out.stdout.contains("recorded ghost's docstring")
+            && !out.stdout.contains("recorded add-i64's docstring"),
+        "a missing-target set-doc must NOT print the success line (§17.15.4); \
+         stdout={}",
+        out.stdout
+    );
+    // The live state is unchanged: after the refusals, /doc shows no recorded
+    // text. Scoped to the tail AFTER the last refusal because the consultative
+    // gate legitimately echoes the proposed text (§17.15.2a render-always).
+    let tail = out.stdout.rsplit("no such definition").next().unwrap_or("");
+    assert!(
+        !tail.contains(doc_text),
+        "/doc after the refusal must show no spuriously-recorded docstring \
+         (§17.15.4); tail={tail} full stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.15.4 — honest failure, face 2: a `set-doc` on a
+// target that DOES resolve locally but is NOT a user-defined function (here
+// an ADT constructor, spec-named; a bare primitive under the prelude is an
+// Import and takes face 1) is refused with a message naming that only a
+// FUNCTION definition's docstring persists; no success line; the live
+// docstring field stays unset (`/doc Red` after the refusal shows no
+// recorded text).
+#[cfg(feature = "agent")]
+#[test]
+fn set_doc_non_function_target_e2e_refused_not_recorded_neg() {
+    let doc_text = "the colour of stop signs and sunsets";
+    let script = format!("tool: set-doc Red {doc_text}\ndone: tried to document Red\n");
+    let out = stub_repl(
+        &script,
+        PreludeVariant::PrimitivesOnly,
+        "(deftype Color (Red))\n\
+         /ask add a docstring to Red\n\
+         y\n\
+         /doc Red\n",
+    );
+    assert!(
+        out.stdout.contains("only function definitions persist a docstring"),
+        "the non-function refusal must name the function-only contract \
+         (§17.15.4); stdout={}",
+        out.stdout
+    );
+    // Exact success-line shape (see the missing-target sibling's note).
+    assert!(
+        !out.stdout.contains("recorded Red's docstring"),
+        "a non-function set-doc must NOT print the success line (§17.15.4); \
+         stdout={}",
+        out.stdout
+    );
+    // Live field unset: /doc after the refusal carries no recorded text
+    // (scoped past the gate's legitimate render-always echo of the proposal).
+    let tail = out
+        .stdout
+        .rsplit("only function definitions persist a docstring")
+        .next()
+        .unwrap_or("");
+    assert!(
+        !tail.contains(doc_text),
+        "/doc Red after the refusal must show no docstring (§17.15.4); \
+         tail={tail} full stdout={}",
+        out.stdout
+    );
+}

@@ -5415,3 +5415,447 @@ fn decision_23_got_data_symbol_not_in_bss() {
         "GOT data symbol '{got_name}' must live in a regular initialized data section; got {kind:?}"
     );
 }
+
+// =========================================================================
+// S101 item 1 — vec query family (vec-get/vec-set/vec-push) as first-class
+// values must inline-emit in the generated wrapper, never call through the
+// primitives table's allocated-but-NULL GOT slots.
+// (`design/backend/ownership-codegen.md` §12.7; e2e guards:
+// `tests/vec_query_value_use.rs`.)
+// =========================================================================
+
+/// Insert a `primitives`-style vec-query entry: a `DefKind::Primitive` Def
+/// with an ALLOCATED but **NULL** GOT slot — name-resolution-only, exactly as
+/// `cranelisp-primitives::insert_vec_query_entries` builds them (no extern
+/// body can exist because a single monomorphic body cannot know the element's
+/// heap category). Backend must never `call_indirect` through this slot.
+fn insert_null_slot_vec_query_entry(
+    st: &mut SymbolTable,
+    name: &str,
+    param_names: &[&str],
+    ty: Type,
+) {
+    use cranelisp_types::{DefKind, ModuleEntry, Scheme};
+    let slot = st.allocate_got_slot();
+    // Deliberately NO `store_slot` — the slot stays NULL, as in production.
+    let scheme = Scheme {
+        type_vars: vec![],
+        constraints: HashMap::new(),
+        ty,
+    };
+    st.insert(
+        Symbol::from(name),
+        ModuleEntry::def(scheme, DefKind::Primitive { got_slot: slot })
+            .param_names(param_names.iter().map(|s| Symbol::from(*s)).collect())
+            .build(),
+    );
+}
+
+/// Read element `idx` from a Vec base pointer (layout per Decision 11:
+/// `[size@+0 | rc@+8 | len@+16 | cap@+24 | data_ptr@+32]`). Test-only inline
+/// (Decision 0048 backend dep-ban — no `cranelisp-primitives` dep).
+///
+/// SAFETY: `ptr` must be a valid Vec base pointer with `idx < len`.
+fn vec_elem_for_test(ptr: i64, idx: usize) -> i64 {
+    unsafe {
+        let data_ptr = *((ptr as *const u8).add(32) as *const *const i64);
+        *data_ptr.add(idx)
+    }
+}
+
+/// Shared fixture driver for the vec-query fn-as-value seam: builds a
+/// `primitives` table holding NULL-slotted `vec-get`/`vec-set`/`vec-push`
+/// entries and a `user` module with the given consumer defn, compiles the
+/// consumer, and runs it end-to-end. Returns the consumer's i64 result.
+fn run_vec_query_value_consumer(consumer: Defn) -> i64 {
+    let user = ModuleFullPath::from("user");
+    let prims = ModuleFullPath::from("primitives");
+    let vec_int = || {
+        Type::adt(
+            ModuleFullPath::from("primitives"),
+            cranelisp_types::TypeName::from("Vec"),
+            vec![Type::Int],
+        )
+    };
+
+    let tables = empty_tables();
+    {
+        let mut pst = SymbolTable::new(prims.clone());
+        insert_null_slot_vec_query_entry(
+            &mut pst,
+            "vec-get",
+            &["v", "idx"],
+            Type::Fn(vec![vec_int(), Type::Int], Box::new(Type::Int)),
+        );
+        insert_null_slot_vec_query_entry(
+            &mut pst,
+            "vec-set",
+            &["v", "idx", "val"],
+            Type::Fn(vec![vec_int(), Type::Int, Type::Int], Box::new(vec_int())),
+        );
+        insert_null_slot_vec_query_entry(
+            &mut pst,
+            "vec-push",
+            &["v", "val"],
+            Type::Fn(vec![vec_int(), Type::Int], Box::new(vec_int())),
+        );
+        tables.insert(prims.clone(), pst);
+    }
+    let consumer_name = consumer.name.clone();
+    {
+        let mut st = SymbolTable::new(user.clone());
+        st.insert(consumer_name.clone(), make_def_entry_slot(consumer.clone(), 0));
+        st.next_got_slot = 1;
+        tables.insert(user.clone(), st);
+    }
+
+    // Register both GOT data symbols. The user slab backs the consumer's own
+    // slot write; the primitives slab is what the DEFECTIVE path GOT-indirects
+    // through (registering it makes the RED failure the production SIGSEGV,
+    // not an unresolved-symbol artifact).
+    let got_user_name = crate::compiler::got_data_symbol_name(&user);
+    let got_prims_name = crate::compiler::got_data_symbol_name(&prims);
+    let (got_user_base, got_prims_base) = (
+        tables.get(&user).map(|st| st.got.base_ptr()).expect("user table"),
+        tables.get(&prims).map(|st| st.got.base_ptr()).expect("prims table"),
+    );
+    let extras: Vec<(&str, *const u8)> = vec![
+        (got_user_name.as_str(), got_user_base),
+        (got_prims_name.as_str(), got_prims_base),
+    ];
+
+    let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
+    let aliases = empty_aliases();
+    compile_to_module(
+        user.clone(),
+        std::slice::from_ref(&consumer_name),
+        &tables,
+        &aliases,
+        jit.jit_module(),
+        true,
+    )
+    .expect("vec-query value-use consumer must compile");
+
+    let ptr = jit
+        .get_ptr_by_name(&consumer_name, 0)
+        .expect("finalize consumer");
+    assert!(!ptr.is_null(), "consumer must finalize to a non-null fn ptr");
+    let _ = cranelisp_intrinsics::panic::take_runtime_error();
+    let func: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+    let result = func();
+    if let Some(msg) = cranelisp_intrinsics::panic::take_runtime_error() {
+        panic!("runtime panic running vec-query consumer: {msg}");
+    }
+    result
+}
+
+/// Fully-annotated `(Vec Int)` literal `[e0 e1 ...]` fixture node.
+fn vec_int_lit(elements: &[i64], span_base: u32) -> Expr {
+    let vec_int = Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::Int],
+    );
+    Expr::VecLit {
+        elements: elements
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| Expr::IntLit {
+                value: v,
+                span: Span::new(span_base + i as u32, span_base + i as u32 + 1),
+                inferred_type: Some(Box::new(Type::Int)),
+            })
+            .collect(),
+        span: Span::new(span_base, span_base + elements.len() as u32 + 1),
+        inferred_type: Some(Box::new(vec_int)),
+    }
+}
+
+/// `(let [f <prim>] (f <args...>))` consumer fixture: the vec-query primitive
+/// referenced as a VALUE (resolved_call: None — the fn-as-value fall-through
+/// in `compile_var`), then applied through the local closure binding.
+fn vec_query_value_consumer(prim: &str, prim_ty: Type, args: Vec<Expr>, result_ty: Type) -> Defn {
+    let body = Expr::Let {
+        bindings: vec![(
+            Symbol::from("f"),
+            Expr::Var {
+                name: Symbol::from(prim),
+                span: Span::new(10, 17),
+                resolved_call: None,
+                inferred_type: Some(Box::new(prim_ty.clone())),
+            },
+        )],
+        body: Box::new(Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("f"),
+                span: Span::new(20, 21),
+                resolved_call: None,
+                inferred_type: Some(Box::new(prim_ty)),
+            }),
+            args,
+            span: Span::new(19, 60),
+            resolved_call: None,
+            inferred_type: Some(Box::new(result_ty.clone())),
+        }),
+        span: Span::new(5, 61),
+        inferred_type: Some(Box::new(result_ty)),
+    };
+    Defn {
+        name: Symbol::from("use-vec-query"),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![],
+            body,
+            span: Span::new(0, 62),
+        }],
+        visibility: Visibility::Public,
+        span: Span::new(0, 62),
+    }
+}
+
+// spec: design/backend/ownership-codegen.md §12.7 — `vec-get` used as a VALUE
+// wraps via `compile_fn_as_value` → `emit_wrapper_call`; the wrapper must
+// inline-emit the bounds-checked read (element type plumbed from the Var's
+// concrete `inferred_type`), never `call_indirect` through the NULL
+// primitives-table slot. RED on HEAD: SIGSEGV (jump to address 0).
+#[test]
+fn vec_get_as_value_wrapper_inline_emits_and_returns_element() {
+    let vec_int = Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::Int],
+    );
+    let prim_ty = Type::Fn(vec![vec_int.clone(), Type::Int], Box::new(Type::Int));
+    let consumer = vec_query_value_consumer(
+        "vec-get",
+        prim_ty,
+        vec![
+            vec_int_lit(&[10, 20, 30], 30),
+            Expr::IntLit {
+                value: 1,
+                span: Span::new(40, 41),
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+        ],
+        Type::Int,
+    );
+    assert_eq!(run_vec_query_value_consumer(consumer), 20);
+}
+
+// spec: design/backend/ownership-codegen.md §12.7 — `vec-set` as a VALUE: the
+// wrapper takes the owned-temporary polarity (no consuming inc on the new
+// element; vec trivially at last use ⇒ COW rc==1 mutate-in-place). RED on
+// HEAD: SIGSEGV.
+#[test]
+fn vec_set_as_value_wrapper_inline_emits_and_updates_element() {
+    let vec_int = Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::Int],
+    );
+    let prim_ty = Type::Fn(
+        vec![vec_int.clone(), Type::Int, Type::Int],
+        Box::new(vec_int.clone()),
+    );
+    let consumer = vec_query_value_consumer(
+        "vec-set",
+        prim_ty,
+        vec![
+            vec_int_lit(&[10, 20, 30], 30),
+            Expr::IntLit {
+                value: 1,
+                span: Span::new(40, 41),
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+            Expr::IntLit {
+                value: 99,
+                span: Span::new(42, 44),
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+        ],
+        vec_int,
+    );
+    let vec_ptr = run_vec_query_value_consumer(consumer);
+    assert!(vec_ptr != 0, "vec-set-as-value must return a Vec pointer");
+    assert_eq!(vec_len_for_test(vec_ptr), 3, "length preserved");
+    assert_eq!(vec_elem_for_test(vec_ptr, 1), 99, "element 1 updated");
+    assert_eq!(vec_elem_for_test(vec_ptr, 0), 10, "element 0 retained");
+}
+
+// spec: design/backend/ownership-codegen.md §12.7 — `vec-push` as a VALUE:
+// same owned-temporary polarity; COW rc==1 fast path appends. RED on HEAD:
+// SIGSEGV.
+#[test]
+fn vec_push_as_value_wrapper_inline_emits_and_appends() {
+    let vec_int = Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::Int],
+    );
+    let prim_ty = Type::Fn(vec![vec_int.clone(), Type::Int], Box::new(vec_int.clone()));
+    let consumer = vec_query_value_consumer(
+        "vec-push",
+        prim_ty,
+        vec![
+            vec_int_lit(&[10, 20], 30),
+            Expr::IntLit {
+                value: 30,
+                span: Span::new(40, 42),
+                inferred_type: Some(Box::new(Type::Int)),
+            },
+        ],
+        vec_int,
+    );
+    let vec_ptr = run_vec_query_value_consumer(consumer);
+    assert!(vec_ptr != 0, "vec-push-as-value must return a Vec pointer");
+    assert_eq!(vec_len_for_test(vec_ptr), 3, "length incremented");
+    assert_eq!(vec_elem_for_test(vec_ptr, 2), 30, "pushed element present");
+}
+
+// spec: design/backend/ownership-codegen.md §12.7 — the CURRY seam is distinct:
+// a partial application `(vec-get v)` routes `compile_auto_curry` →
+// `emit_curry_target_call` with `trait_resolution: BuiltinFn{vec-get}`; the
+// vec family is NOT in `primitives_inline`, so on HEAD the wrapper declares a
+// `Linkage::Import` for `vec-get` and JIT-finalize panics
+// ("can't resolve symbol vec-get" — the e2e exit-101 signature). The curry
+// wrapper must inline-emit instead, with the element type recovered from the
+// applied Vec argument's concrete type.
+#[test]
+fn vec_get_curried_partial_wrapper_inline_emits_and_applies() {
+    use cranelisp_types::ResolvedCall;
+    let vec_int = Type::adt(
+        ModuleFullPath::from("primitives"),
+        cranelisp_types::TypeName::from("Vec"),
+        vec![Type::Int],
+    );
+    let get_ty = Type::Fn(vec![vec_int.clone(), Type::Int], Box::new(Type::Int));
+    let curried_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+
+    // (defn use1 [] (let [g (vec-get [10 20 30])] (g 1)))
+    let body = Expr::Let {
+        bindings: vec![(
+            Symbol::from("g"),
+            Expr::Apply {
+                callee: Box::new(Expr::Var {
+                    name: Symbol::from("vec-get"),
+                    span: Span::new(10, 17),
+                    resolved_call: None,
+                    inferred_type: Some(Box::new(get_ty)),
+                }),
+                args: vec![vec_int_lit(&[10, 20, 30], 30)],
+                span: Span::new(9, 45),
+                resolved_call: Some(Box::new(ResolvedCall::AutoCurry {
+                    target_name: Symbol::from("vec-get"),
+                    applied_count: 1,
+                    total_count: 2,
+                    trait_resolution: Some(Box::new(ResolvedCall::BuiltinFn {
+                        name: Symbol::from("vec-get"),
+                    })),
+                })),
+                inferred_type: Some(Box::new(curried_ty.clone())),
+            },
+        )],
+        body: Box::new(Expr::Apply {
+            callee: Box::new(Expr::Var {
+                name: Symbol::from("g"),
+                span: Span::new(50, 51),
+                resolved_call: None,
+                inferred_type: Some(Box::new(curried_ty)),
+            }),
+            args: vec![Expr::IntLit {
+                value: 1,
+                span: Span::new(52, 53),
+                inferred_type: Some(Box::new(Type::Int)),
+            }],
+            span: Span::new(49, 54),
+            resolved_call: None,
+            inferred_type: Some(Box::new(Type::Int)),
+        }),
+        span: Span::new(5, 55),
+        inferred_type: Some(Box::new(Type::Int)),
+    };
+    let consumer = Defn {
+        name: Symbol::from("use-vec-query"),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![],
+            body,
+            span: Span::new(0, 56),
+        }],
+        visibility: Visibility::Public,
+        span: Span::new(0, 56),
+    };
+    assert_eq!(run_vec_query_value_consumer(consumer), 20);
+}
+
+// =========================================================================
+// S101 item 5 — `compile_trap_stub` (backend §8.1/§8.3): the R3 machinery's
+// per-symbol trap stub over the existing raise machinery.
+// =========================================================================
+
+// spec: design/backend/ownership-codegen.md §8.1 — the stub raises the baked
+// provenance message through `runtime/panic` (thread-local slot + sentinel
+// return); the host reads it via `take_runtime_error`.
+#[test]
+fn trap_stub_raises_provenance_message_and_returns_sentinel() {
+    let msg = String::from("g is broken by the redefinition of f: type error");
+    let (ptr, code) =
+        compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+    assert!(!ptr.is_null(), "trap stub must finalize to a non-null code ptr");
+
+    let _ = cranelisp_intrinsics::panic::take_runtime_error();
+    let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+    assert_eq!(stub(), 0, "trap stub returns the 0 sentinel");
+    let raised = cranelisp_intrinsics::panic::take_runtime_error()
+        .expect("trap stub must raise through the runtime/panic slot");
+    assert!(
+        raised.contains("g is broken by the redefinition of f: type error"),
+        "raised message must carry the baked provenance; got: {raised}"
+    );
+
+    // The provenance string + Code handle pair outlive the call — the
+    // caller-side lifetime contract (§8.1). Keep both live to here.
+    drop(code);
+    drop(msg);
+}
+
+// spec: design/backend/ownership-codegen.md §8.1 — the `() -> i64` stub is
+// signature-safe for ANY caller arity/type vector under the uniform all-I64
+// convention: callers that imported an N-arg signature reach the same slot
+// and the stub never reads its argument registers. Pin the cross-arity call.
+#[test]
+fn trap_stub_is_callable_at_nonzero_arity() {
+    let msg = String::from("h is broken by the redefinition of k: arity change");
+    let (ptr, _code) =
+        compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+
+    let _ = cranelisp_intrinsics::panic::take_runtime_error();
+    // Call as a 3-arg function (register-passed, caller-owned scratch).
+    let stub3: extern "C" fn(i64, i64, i64) -> i64 = unsafe { std::mem::transmute(ptr) };
+    assert_eq!(stub3(1, 2, 3), 0, "sentinel through a 3-arg import signature");
+    assert!(
+        cranelisp_intrinsics::panic::take_runtime_error().is_some(),
+        "raise fires regardless of the caller's imported arity"
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §8.1 — the message address is
+// baked and read at INVOCATION time, so the stub is re-raisable (every call
+// through the patched slot raises afresh; the slot may be hit many times in
+// a dev session).
+#[test]
+fn trap_stub_raises_on_every_invocation() {
+    let msg = String::from("m is broken by the redefinition of n: gone");
+    let (ptr, _code) =
+        compile_trap_stub(msg.as_ptr(), msg.len()).expect("trap stub compiles");
+    let stub: extern "C" fn() -> i64 = unsafe { std::mem::transmute(ptr) };
+
+    for i in 0..3 {
+        let _ = cranelisp_intrinsics::panic::take_runtime_error();
+        assert_eq!(stub(), 0);
+        assert!(
+            cranelisp_intrinsics::panic::take_runtime_error().is_some(),
+            "invocation {i} must raise"
+        );
+    }
+}

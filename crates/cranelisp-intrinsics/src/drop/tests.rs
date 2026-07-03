@@ -48,13 +48,11 @@ fn make_vec_struct(cap: i64) -> (i64, *mut i64) {
     let base = alloc_slot(24); // len + cap + data_ptr
     write_field(base, VEC_LEN_OFFSET, 0);
     write_field(base, VEC_CAP_OFFSET, cap);
-    let data: *mut i64 = if cap > 0 {
-        let byte_size = cap as usize * 8;
-        let layout = std::alloc::Layout::from_size_align(byte_size, 8).unwrap();
-        unsafe { std::alloc::alloc_zeroed(layout) as *mut i64 }
-    } else {
-        std::ptr::null_mut()
-    };
+    // Allocate through the tracked path (Principle 7 / Principle 22): a raw
+    // `alloc_zeroed` here would bypass `databuf_guard::on_alloc`, so the guard's
+    // "NOT live" tripwire in `consume_vec_with` would fire on a never-registered
+    // buffer. `consume_vec_with` frees via `free_data_buffer`, closing the pair.
+    let data: *mut i64 = crate::vec_runtime::alloc_data_buffer(cap);
     write_field(base, VEC_DATA_PTR_OFFSET, data as i64);
     (base, data)
 }
@@ -161,6 +159,25 @@ fn decision24_consume_vec_of_string_frees_elements() {
     consume_vec_of_string(vec);
     assert_eq!(alloc_count() - allocs, 4); // vec struct + 3 strings
     assert_eq!(dealloc_count() - deallocs, 4);
+}
+
+// spec: design/arch/principles/22-published-pointers-have-retention-owners.md —
+// the databuf guard's freed-buffer tripwire must stay armed for fixture-built
+// vecs: after the product consume path frees the data buffer (via
+// `free_data_buffer` → `databuf_guard::on_free`), touching the stale pointer
+// fires "NOT live". Pins that routing `make_vec_struct` through the tracked
+// `alloc_data_buffer` registers AND releases — the guard is not neutered.
+// Deterministic: `assert_live` only reads, and nothing re-allocates the address
+// between the consume and the assert.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "NOT live")]
+fn databuf_guard_still_trips_on_stale_fixture_buffer_after_consume() {
+    let (vec, data) = make_vec_struct(2);
+    // len stays 0 — no elements to walk; consume frees the data buffer + struct.
+    consume_vec_of_string(vec);
+    // The buffer is now deregistered (FREED). A stale touch must trip the guard.
+    crate::vec_runtime::debug_assert_live_buffer(data, 2, "test(stale-fixture)");
 }
 
 // spec: design/arch/CLAUDE.md Decision 24 — consume_io_tree Pure is scalar

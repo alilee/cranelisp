@@ -1199,6 +1199,29 @@ fn info_shows_symbol_metadata_with_code_size() {
     );
 }
 
+// spec: repl/spec.md §3.6 — `/info <name>` MUST display the definition
+// source between the signature line and the code stats (the §3.6 worked
+// example's second line). FIXME 0480: this third MUST component was omitted
+// for both the healthy and broken arms; the broken-arm guard lives in
+// tests/repl_redefinition.rs::redefine_broken_caller_info_and_sig_report_broken_status.
+#[test]
+fn info_shows_definition_source_line() {
+    let out = repl_prims("(defn double [x] (mul-i64 x 2))\n/info double\n");
+    assert!(
+        out.stdout.contains("(defn double") && out.stdout.contains("(mul-i64 x 2)"),
+        "/info MUST display the definition source (repl/spec.md §3.6); got:\n{}",
+        out.stdout
+    );
+    // Order: the source block precedes the code-size stats line.
+    let src_pos = out.stdout.find("(defn double").unwrap();
+    let bytes_pos = out.stdout.find(" bytes").unwrap_or(usize::MAX);
+    assert!(
+        src_pos < bytes_pos,
+        "definition source must precede the code stats (§3.6 layout); got:\n{}",
+        out.stdout
+    );
+}
+
 // spec: repl/spec.md §3.1 — `/time <expr>` displays elapsed evaluation time
 // in milliseconds.
 // (carry: legacy/e2e.rs::e2e_s3_1_time)
@@ -2960,6 +2983,125 @@ fn display_user_list_value_shows_elements_and_nil() {
     assert!(
         !out.stdout.contains("<closure>"),
         "list value MUST NOT display as `<closure>` per §1.5; got:\n{}",
+        out.stdout
+    );
+    // STRENGTHENED (S101 6b guard batch, FIXME 0493): the presence-only
+    // assertions above stayed green over garbled output — the renderer emits
+    // the nested instance's TYPE ARGUMENT plus a premature `)` instead of
+    // recursing (`(List.Cons 1 primitives/Int) (List.Cons 2 primitives/Int)
+    // (List.Cons 3 List.Nil)))` observed on HEAD). §1.5's List row pins the
+    // generic ADT recursive form as normative, so assert the exact nested
+    // string. RED on HEAD — deliberate (the strengthening IS the guard);
+    // resolver TBD (/int display seam or /backend show path), FIXME 0493.
+    assert!(
+        out.stdout
+            .contains("(List.Cons 1 (List.Cons 2 (List.Cons 3 List.Nil)))"),
+        "nested generic ADT value MUST render in the §1.5 recursive form \
+         `(List.Cons 1 (List.Cons 2 (List.Cons 3 List.Nil)))` (FIXME 0493); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("(List.Cons 1 primitives/Int)"),
+        "list value display MUST NOT interleave type tokens into the value \
+         form (FIXME 0493); got:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
+// FIXME 0493 (S101 Phase 6b, /repl) — nested parameterized-ADT payload display
+// is garbled: instead of recursing into a nested PARAMETERIZED constructor,
+// the renderer emits the nested instance's type argument followed by a
+// premature `)`, leaving the line with unbalanced parens. Concrete payloads
+// (and non-generic ADT payloads inside a generic wrapper) render correctly —
+// the single-level control below pins that boundary. Resolver TBD (/int
+// display seam or /backend). Ledger: tests/plan/ledger.md §"Sprint 101 Phase
+// 6a/6b defect set".
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — ADT fields MUST be recursively formatted; a
+// parameterized ADT instance nested as a field renders as the nested
+// constructor form. Expected: `:(user/Wrap (user/Wrap primitives/Int))
+// (Wrap.MkWrap (Wrap.MkWrap 7))`. RED on HEAD (FIXME 0493): renders
+// `(Wrap.MkWrap primitives/Int) (Wrap.MkWrap 7))` — type token + unbalanced
+// parens.
+#[test]
+fn display_nested_parameterized_adt_value_recursive_form() {
+    let out = repl("(deftype (Wrap a) (MkWrap [:a v]))\n(MkWrap (MkWrap 7))\n");
+    assert!(
+        out.stdout.contains("(Wrap.MkWrap (Wrap.MkWrap 7))"),
+        "nested parameterized ADT payload MUST render recursively as \
+         `(Wrap.MkWrap (Wrap.MkWrap 7))` per §1.5 (FIXME 0493); got:\n{}",
+        out.stdout
+    );
+    assert!(
+        !out.stdout.contains("(Wrap.MkWrap primitives/Int)"),
+        "value display MUST NOT emit the nested instance's type argument in \
+         place of the nested constructor (FIXME 0493); got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §1.5 — CONTROL (GREEN on HEAD): a single-level
+// parameterized ADT with a primitive payload renders correctly
+// (`(Wrap.MkWrap 7)`), pinning the 0493 boundary to PARAMETERIZED payloads.
+#[test]
+fn display_single_level_parameterized_adt_value_control() {
+    repl("(deftype (Wrap a) (MkWrap [:a v]))\n(MkWrap 7)\n")
+        .assert_stdout_contains(":(user/Wrap primitives/Int) (Wrap.MkWrap 7)");
+}
+
+// =============================================================================
+// FIXME 0486 (S101 Phase 6a, /docs) — evaluating a defined symbol BARE at the
+// prompt corrupts that symbol's in-session introspection source: every
+// subsequent `/info <name>` and `/source <name>` renders the definition
+// source as the bare lookup text instead of the `(defn …)` form. The trigger
+// is the bare-lookup turn only (a call form does not corrupt; the no-lookup
+// control below is GREEN); the backing file stays correct and a restart
+// self-heals — the corruption is live-session introspection metadata only
+// (the lookup form appears to be recorded as the symbol's latest source).
+// Likely owner /int (bare-lookup evaluation path recording); the
+// `info_definition_source` display seam renders what introspection hands it.
+// Ledger: tests/plan/ledger.md §"Sprint 101 Phase 6a/6b defect set".
+// =============================================================================
+
+// spec: repl/spec.md §3.6 — `/info` MUST display the definition source; §3.1
+// — `/source` shows the original source text. A prior bare lookup of the
+// symbol MUST NOT change what they display. RED on HEAD (FIXME 0486): after
+// the bare `solo` turn, both render the source line as `solo`.
+#[test]
+fn bare_lookup_does_not_corrupt_info_and_source_definition_display() {
+    let out = repl_prims(
+        "(defn solo [x] (mul-i64 x 3))\n\
+         solo\n\
+         /info solo\n\
+         /source solo\n",
+    );
+    let src_occurrences = out.stdout.matches("(defn solo [x] (mul-i64 x 3))").count();
+    assert!(
+        src_occurrences >= 2,
+        "after a bare lookup, /info AND /source MUST still show the defn form \
+         `(defn solo [x] (mul-i64 x 3))` (expected ≥2 occurrences, got {src_occurrences}) \
+         — FIXME 0486; stdout:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.6 — CONTROL (GREEN on HEAD): without the bare-lookup
+// turn, `/info` and `/source` both show the defn form. Pins the 0486 trigger
+// boundary to the bare-lookup turn.
+#[test]
+fn info_and_source_show_defn_form_without_prior_bare_lookup_control() {
+    let out = repl_prims(
+        "(defn solo [x] (mul-i64 x 3))\n\
+         /info solo\n\
+         /source solo\n",
+    );
+    let src_occurrences = out.stdout.matches("(defn solo [x] (mul-i64 x 3))").count();
+    assert!(
+        src_occurrences >= 2,
+        "control: /info + /source MUST show the defn form (expected ≥2 \
+         occurrences, got {src_occurrences}); stdout:\n{}",
         out.stdout
     );
 }

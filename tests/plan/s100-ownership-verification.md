@@ -6,6 +6,12 @@ implementation. The failing tests named here are drafted QA-first at the start o
 implementing increment sprint (METHOD Phase 5 stage 1); this document must be concrete
 enough that a future `/qa` invocation drafts them directly from it.
 
+**Revised 2026-07-03 (S101 Phase 3):** stage-M portions made sprint-ready — L-B2(i) +
+L-B3(1)–(3) staging reconciled to the `/arch` S101 Phase-2 ruling (toggle + manifest
+key ship at stage M); new §6.1 stage-M drafting specification (files, fixtures,
+assertions, RED/GREEN-at-draft per lane); new §7.1 vec-query flip protocol; §4 stage-M
+unit-tier handoff additions; §5 limit 6 extended to all R3 wording surfaces.
+
 **Governing authority:** `design/arch/ownership-inference.md` (the spine — §9 is this
 plan's inheritance; §3.4/§6.2 the oracle obligation; §7 the increment staging). Inputs
 consumed: `design/typecheck/ownership-inference.md` §12 items 5–8;
@@ -93,10 +99,14 @@ rationale, not in the harness.
 
 ### 2.1 Stage M — the R3 machinery (no performance gates; correctness only)
 
-The machinery sprint is graded by §4's R3 lanes (trap stubs, cascade, slot versioning,
+The machinery sprint is graded by §3.6's R3 lanes (trap stubs, cascade, slot versioning,
 summary-diff fast path) plus one latency pin: the **body-only redefinition turn** is
 observably at today's cost (§3.5 L-D1 gate applies from this stage on, since the
-summary-diff gate is machinery, not increment-I analysis).
+summary-diff gate is machinery, not increment-I analysis). Per the `/arch` S101 Phase-2
+ruling (`sprints/SPRINT.md` §Architecture review) the `CRANELISP_NO_OWNERSHIP` toggle
+**and its cache-manifest key** ship at stage M, so the L-B2(i) suite-polarity leg and
+the L-B3(1)–(3) manifest-key lanes also grade this stage (§3.1). Sprint-ready drafting
+specification: §6.1.
 
 ### 2.2 Stage I — increment I (read path: borrow-elision, projection, stack slots, confined non-atomic RC, fact table, str-len sibling)
 
@@ -166,8 +176,14 @@ Requirements — `/qa` specifies, the owning skill builds); §3.7 collects them.
   **Byte-differential leg:** a runner script executes the F-fixtures + `examples/`
   corpus + the mechanism micro-fixtures under both polarities and byte-compares
   stdout/stderr/exit status.
-  *Gate:* identical pass-set (i); byte-identical observables (ii). *Stage:* I onward.
-  *Tier:* (i) CI double-run; (ii) script lane.
+  *Gate:* identical pass-set (i); byte-identical observables (ii). *Stage:* (i)
+  **M onward** — the toggle + manifest key ship at stage M per the `/arch` S101 Phase-2
+  ruling (`sprints/SPRINT.md` §Architecture review); at M both polarities are
+  behaviourally identical by construction (no analysis exists yet), so the leg's
+  M-stage value is installing the protocol and guarding the toggle plumbing. (ii) I
+  onward — the byte-differential only becomes discriminating once mechanisms land.
+  *Tier:* (i) CI double-run (a gate-time lane — two full suite runs, executed at
+  Phase-5 exit / wave gates, not in the per-commit loop); (ii) script lane.
 - **L-B3 — cache-manifest invalidation key.**
   *Mechanics/tests:* (1) compile a multi-module project toggle-on, flip the toggle,
   re-run: assert **wholesale invalidation** (full recompile observed via
@@ -176,8 +192,9 @@ Requirements — `/qa` specifies, the owning skill builds); §3.7 collects them.
   unrepresentable (backend §2.3). (3) Round-trip: flip back, again wholesale, output
   identical. (4) At R5 landing: `CACHE_SCHEMA_VERSION` bump invalidates every pre-R5
   cache (backend §7.4).
-  *Stage:* (1)–(3) increment I; (4) increment II. *Tier:* canonical nextest (`cache.rs`
-  family).
+  *Stage:* (1)–(3) **stage M** (the manifest key lands at M with the toggle, per the
+  same `/arch` S101 ruling — these lanes are the manifest-plumbing witness, drafted RED
+  at M per §6.1); (4) increment II. *Tier:* canonical nextest (`cache.rs` family).
 
 ### 3.2 Starved-inc fences — every skip-the-inc emission site (the S98-bug-#2 class)
 
@@ -236,9 +253,10 @@ Wrong things must NOT happen:
   trampoline-deferred `ParBind` continuation / `LaunchContinue` tree. Fixture drives
   the suspension 200–2000 crossings; ASan + behavioral legs. The existing guards carry
   forward unchanged as this fence's floor: `ring2-rc.md` §5.5.2.6's UAF/exclusion
-  guards, `tests/launch_grid_corrupt.rs`, `tests/launch_vec_send_corrupt.rs` (both
-  currently RED for 0486 — they remain the launched-strand fence and flip green on the
-  0486 fix, independent of this design).
+  guards, `tests/launch_grid_corrupt.rs`, `tests/launch_vec_send_corrupt.rs` (flipped
+  green with the 0486 fix — the S100-close suite state carries only the §7 guards as
+  intentional failures, per root `CLAUDE.md` §Testing; they remain the standing
+  launched-strand fence, independent of this design).
 - **L-C2 — stack-slot lanes** (backend §12.3):
   (a) **TCO back-edge negative:** allocation in a TCO loop body flowing into recur args
   must NOT stack-allocate — stack-slot-hit counter attribution + ASan under ≥10k
@@ -365,6 +383,19 @@ in the same change-set (`memory/feedback_unit_test_per_fix.md`):
   pure predicates (incl. the TCO flow check); `compute_last_uses` provenance extension
   against hand-built bodies; trap-stub invoke-and-read-error-slot; the wrapper naming/
   dedup (`__d24wrap_{fq}_{slot}__`); non-atomic arm selection per site fact.
+  **Stage M additions (S101):** the NULL-slot fn-as-value fix's unit test at the
+  `fn_as_value.rs::emit_wrapper_call` / `primitives_inline` seam (same change-set as
+  the fix, per `memory/feedback_unit_test_per_fix.md`); `compile_trap_stub` emission
+  unit (args untouched, message baked, sentinel return); the manifest-key global-key
+  membership unit.
+- **int / `src/` (stage M — the transaction, per the `design/int/` fire):**
+  reverse-index derivation from `Def.callees` + incremental maintenance on entry
+  (re)registration; summary-diff gate classification (at M: type-scheme-only ABI
+  surface — body-only vs ABI-changing); affected-set closure over statically-resolved
+  edges (positive + the unrelated-fn negative); reverse-topo ordering; BROKEN-state
+  bookkeeping incl. provenance-string/`Code`-handle lifetime pairing (the `/arch` fire
+  checklist item 2(i)); frozen-pool retention (superseded `Code` moves to the pool,
+  not dropped).
 
 ---
 
@@ -391,7 +422,14 @@ in the same change-set (`memory/feedback_unit_test_per_fix.md`):
    lands (spine §11 routes it to the machinery sprint) — L-R1 uses substring anchors
    (`broken`, the redefined symbol, the original error) so the failing-first tests
    don't fossilize unratified UX text; `/qa` flags the spec-side anchor obligation at
-   that sprint.
+   that sprint. The same bridge covers **every** R3 wording surface: the §5.5-spine
+   cascade report (L-R3's needles are symbol names, not report prose) and the
+   `/info`/`/sig` broken-status display (L-R1(d)). At the machinery sprint the `/repl`
+   half lands in-sprint (S101 scope item 7), so drafted tests cite the spine/backend
+   design anchors and are **re-anchored to `repl/spec.md`** (needles tightened where
+   the ratified wording allows) before sprint close — see §6.1 anchor policy. No L-R
+   lane is blocked on the wording: L-R2/L-R4/L-R5 assertions are behavioural
+   (values, exit status, `.meta.json` contents) and wording-independent.
 7. **F4 is never a single-number gate** (distribution discipline, §0.3).
 8. **The perf gates live outside canonical nextest** (30s cap); CI carries them as
    scheduled lanes, not per-commit blockers, with per-increment acceptance runs
@@ -402,8 +440,10 @@ in the same change-set (`memory/feedback_unit_test_per_fix.md`):
 ## §6. QA-first drafting lists per implementing sprint (Phase 5 stage 1)
 
 - **Machinery sprint (M):** L-R1…L-R5 drafted failing-first (L-R4 is the sprint's own
-  RED witness); L-D1 script + its M-stage gate; the toggle ships here (spine §5.7) so
-  L-B2(i) suite-polarity starts here too.
+  RED witness); L-D1 script + its M-stage gate; the toggle **and its manifest key**
+  ship here (spine §5.7; `/arch` S101 Phase-2 ruling) so L-B2(i) suite-polarity and
+  the L-B3(1)–(3) manifest lanes start here too. **Sprint-ready drafting
+  specification: §6.1** (authored S101 Phase 3).
 - **Increment I sprint:** L-B1 golden capture (BEFORE mechanisms land — schedule the
   baseline commit first), L-B1/L-B2/L-B3(1–3); S1–S4 + S6 fences; L-D3a–f (incl. the
   per-row fact-table tests generated from the audit table); L-C1, L-C2; str-len sibling
@@ -413,6 +453,279 @@ in the same change-set (`memory/feedback_unit_test_per_fix.md`):
 - **Every sprint:** ledger discipline — new intentional-failing guards enter
   `tests/plan/ledger.md` with the six fields; the canonical-suite intentional-failure
   count in root `CLAUDE.md` §Testing is updated by `/sprint` at close.
+
+### 6.1 Stage-M drafting specification (S101 Phase 3 — sprint-ready)
+
+Authored by `/qa` at S101 Phase 3 so Phase-5 stage 1 drafts directly from it. Governing
+design: spine §5.2–§5.7; backend §8.1–§8.3; `/arch` S101 Phase-2 verdict (at stage M
+the summary-diff gate degenerates to **type-scheme-only** comparison — "ABI-changing"
+below means a type-scheme change, e.g. a param type change; mode vectors do not exist
+until increment I).
+
+**Files (new and touched):**
+
+| File | Lanes | Tier |
+|---|---|---|
+| `tests/repl_redefinition.rs` (NEW) | L-R1(a)–(f), L-R2, L-R3, L-R4 | canonical nextest |
+| `tests/repl_persist_redefine.rs` (NEW) | L-R5 | canonical nextest (two-session) |
+| `tests/cache.rs` (extend) | L-B3(1)–(3) | canonical nextest |
+| `tests/scripts/suite_polarity.sh` (NEW) | L-B2(i) | gate-time script |
+| `tests/perf/l_d1_turn_latency.py` (NEW) | L-D1 | perf script |
+
+**Common conventions.** REPL scripts use `Cranelisp::new().repl()` with
+`PreludeVariant::PrimitivesOnly` (`add-i64`, `sub-i64`, `eq-i64`, `str-len` suffice —
+no traits, no stdlib). Redefinition is a dev-session concept: all L-R lanes are
+REPL-mode only (no `--run`/`--link` legs; batch modes have no redefinition, spine
+§5.6). Every test asserts **process survival** (`assert_ok` — the REPL must never die
+on a redefinition, however hostile) in addition to its lane assertion.
+
+**Anchor policy (per §5 limit 6).** At draft, `// spec:` cites the design anchors —
+`design/arch/ownership-inference.md §5.2/§5.4/§5.5/§5.6` and
+`design/backend/ownership-codegen.md §8.1/§2.3` (design-doc citations are established
+practice — the `repl_persist.rs` family cites `design/int/session-persistence.md`).
+When the `/repl` spec half lands (in-sprint, S101 scope item 7), a **re-anchor pass**
+re-points the L-R1/L-R2/L-R3 citations to the new `repl/spec.md` sections and tightens
+substring needles where the ratified wording allows; `spec_link_check.py` runs on both
+the drafting and re-anchor commits.
+
+**Ledger discipline for the RED-first set.** The drafting commit adds ONE ledger entry
+("S101 Phase-5 Stage-1 — R3 machinery QA-first RED set", the S93-precedent form) with
+the six fields covering all RED-at-draft tests below; they flip green as the `/dev`
+waves land. At close the entry is annotated resolved (or any carried RED gets its own
+full entry and joins the root `CLAUDE.md` intentional-failing count).
+
+#### L-R1 — trap stubs (`tests/repl_redefinition.rs`; spine §5.5, backend §8.1)
+
+Base fixture (all sub-lanes; concrete forms):
+
+```clojure
+(defn f [:Int x] (add-i64 x 1))
+(defn g [:Int y] (f y))
+(g 41)                            ; :primitives/Int 42 — pre-break sanity
+(defn f [:String s] (str-len s))  ; ABI-(type-scheme-)changing ⇒ g fails re-typecheck ⇒ BROKEN
+```
+
+- **(a) `redefine_abi_change_broken_caller_direct_call_traps_with_provenance` — RED.**
+  Post-break `(g 5)`: positive — stdout carries the trap substrings (`broken`, `g`,
+  `f`; wording-provisional per §5 limit 6); negative — stdout does NOT contain
+  `:primitives/Int 6` (silent stale/garbage execution) and the session exits 0 (no
+  SIGSEGV — today this shape dies passing an Int as a String pointer).
+- **(b) `redefine_broken_caller_value_use_minted_before_break_reaches_trap` — RED.**
+  Pre-break `(def gv g)` (fn-as-value — deliberately the same wrapper seam as §7's
+  defect); post-break `(gv 5)` reaches the trap (in-place stub patch on g's existing
+  slot). Same positive/negative legs as (a).
+- **(c) `redefine_broken_caller_curried_partial_minted_before_break_reaches_trap` —
+  RED.** Caller `(defn g2 [:Int a :Int b] (f (add-i64 a b)))`; pre-break partial
+  `(def p (g2 1))` (auto-curry); post-break `(p 5)` traps; NOT `:primitives/Int 7`.
+- **(d) `redefine_broken_caller_info_and_sig_report_broken_status` — RED.**
+  Post-break `/info g` and `/sig g` outputs contain `broken` + `f` (provenance).
+  Negative: `/info f` (the redefined symbol itself, healthy) does NOT contain
+  `broken`.
+- **(e) recovery, both directions — two tests, both RED.**
+  `redefine_recovery_fixing_caller_clears_broken`: post-break
+  `(defn g [:String s] (f s))` then `(g "a")` → `:primitives/Int 1`, and `/info g` no
+  longer says `broken`. `redefine_recovery_reverting_callee_recompiles_caller`:
+  post-break redefine `f` back to the Int form; `(g 41)` → 42 again; `/info g` clean.
+- **(f) `redefine_trap_invocations_leak_bounded_per_trap` — RED.** Variant fixture
+  where broken `g` takes a heap arg: `(defn g [:String s] (f 1))`, break `f`
+  Int→String ⇒ g BROKEN; drive `(g "abc")` × 20 REPL turns under
+  `.env("CRANELISP_RC_STATS","1")`; assert allocs−deallocs ≤ 20 × (heap args per
+  call) + documented baseline — **bounded, not zero** (backend §8.1 RC-mid-panic
+  caveat). Stats parse at exit; nextest per-process isolation keeps this serial-safe.
+
+#### L-R2 — frozen-world / late-binding (`tests/repl_redefinition.rs`; spine §5.6)
+
+- **(a) `redefine_abi_change_stale_closure_sees_frozen_old_chain` — RED.**
+
+  ```clojure
+  (defn base [:Int x] (add-i64 x 10))
+  (defn wrap [:Int y] (base y))
+  (def c (fn [z] (wrap z)))                     ; closure compiled against OLD slots
+  (defn spin [:Int n :Int acc]                  ; pre-break sustained driver
+    (if (eq-i64 n 0) acc (spin (sub-i64 n 1) (add-i64 acc (c 1)))))
+  (c 1)                                         ; :primitives/Int 11
+  (defn base [:String s] (str-len s))           ; ABI-changing — fresh slots
+  (defn wrap [:String s] (base s))              ; by-name world moves on
+  (wrap "abcd")                                 ; :primitives/Int 4 — new world by name
+  (c 1)                                         ; :primitives/Int 11 — frozen old chain
+  (spin 500 0)                                  ; :primitives/Int 5500 — sustained (S98-class fence)
+  ```
+
+  Positive: post-break `(c 1)` → 11 (transitively frozen: old wrap → old base) and
+  `(spin 500 0)` → 5500 under sustained invocation. Negative: exit 0, no mixed-ABI
+  crash (today the in-place patch sends the stale closure into the new-ABI body —
+  RED by crash/garbage). Exact primitive spellings per `spec/appendix-a-builtins.md`
+  at drafting.
+- **(b) `redefine_body_only_stale_closure_late_binds_new_body` — GREEN at draft
+  (pin).** Same shape, body-only redefinition `(defn base [:Int x] (add-i64 x 20))`;
+  `(c 2)` → 22 post-edit (late binding — today's prized semantic, pinned so slot
+  versioning never eats it). Negative: NOT 12 (the old body).
+
+#### L-R3 — summary-diff / cascade report (`tests/repl_redefinition.rs`; spine §5.4–§5.5)
+
+Fixture: `callee`; annotated caller `caller-a` (will break), polymorphic caller
+`caller-p` `(defn caller-p [x] (callee x))` (re-typechecks, recompiles), and
+`unrelated` (no edge to `callee`).
+
+- **(a) `redefine_body_only_neg_no_cascade_report_no_dependent_recompiles` —
+  vacuously GREEN at draft (pin, stated honestly).** Body-only edit of `callee`: the
+  redefinition turn's output contains NO recompiled-set report and does NOT name
+  `caller-a`/`caller-p`; `(caller-a 1)` still works (late-bound). Today no report
+  machinery exists so the absence legs pass vacuously; the lane becomes load-bearing
+  the moment the transaction lands — it guards the fast path against over-triggering
+  (L-D1 is its latency twin).
+- **(b) `redefine_abi_change_cascade_report_names_exact_affected_set` — RED.**
+  ABI-changing edit of `callee` (Int→String): the turn report names `caller-p`
+  (recompiled OK) and `caller-a` (broken, with the original type error); **negative:
+  does NOT name `unrelated`**. Needles are the symbol names, not report prose (§5
+  limit 6). Follow-up turns assert both worlds: `(caller-p "abcd")` works;
+  `(caller-a 1)` traps.
+
+#### L-R4 — the type-change hole cure (`tests/repl_redefinition.rs`; spine §5.2) — the sprint's RED witness
+
+- **(a) `type_change_redefinition_compiled_caller_never_reaches_new_body_uncorrected`
+  — RED (the named witness).** The §2.1-sprint fixture verbatim — Int→String param
+  change with a compiled annotated caller:
+
+  ```clojure
+  (defn f [:Int x] (add-i64 x 1))
+  (defn g [:Int y] (f y))
+  (g 1)                             ; :primitives/Int 2
+  (defn f [:String s] (str-len s))
+  (g 5)                             ; MUST trap-or-recompile; MUST NOT reach new body with an Int
+  ```
+
+  Assertion is the soundness disjunction: session exits 0 AND post-break `(g 5)`
+  yields an error naming `g` (at stage M the annotated caller cannot re-typecheck, so
+  the sanctioned outcome is BROKEN+trap) AND stdout does NOT contain
+  `:primitives/Int 6`. Today: silently unsound (crash or garbage) — RED.
+- **(b) `type_change_redefinition_polymorphic_caller_recompiles_and_works` — RED.**
+  Same but unannotated caller `(defn g [y] (f y))`; post-break `(g "abcd")` →
+  `:primitives/Int 4` (g re-inferred + recompiled against new f). Today the call is
+  rejected against g's stale Int→Int scheme — RED.
+
+#### L-R5 — persistence pins (`tests/repl_persist_redefine.rs`; spine §5.6 (i)–(iv))
+
+Two-session scripts per the `repl_persist.rs` family: session 1 `.repl()` + `/quit`,
+then `out.run_again()` in the same tmpdir; `.meta.json` inspected via
+`read_tmp(".cranelisp-cache/…meta.json")` (exact module path per the `cache.rs`
+precedent, resolved at drafting).
+
+- **(a) `persist_abi_change_redefinition_restart_runs_correctly_from_cache` — GREEN
+  at draft expected (pin (ii): slot numbers load-bearing against the `.o`).**
+  Session 1: define `f`(Int) + `g`; redefine both to the String forms (coherent final
+  source); `(g "hi")` → value; `/quit`. Session 2 (warm cache): `(g "abc")` → correct
+  value. Persisted `user.cl` regeneration already yields a coherent restart today;
+  the pin guards that slot versioning never breaks cache-restore.
+- **(b) `persist_abi_change_allocates_fresh_slot_hole_survives_restart` — RED.**
+  Same session-1 script PLUS a **control run in a second tmpdir** with identical
+  definitions but NO redefinition (same definition prefix ⇒ deterministic same
+  initial slots). Assert from the two `.meta.json`s: (i) redefined `f`'s persisted
+  `got_slot` > control `f`'s (fresh slot allocated; today in-place patch ⇒ equal —
+  RED); (ii) `next_got_slot`(redef) > `next_got_slot`(control) with symbol counts
+  equal (the hole exists and is persisted). Session 2 (`run_again`): define a new fn
+  `h`; re-read `.meta.json`: `h`'s slot ≥ session-1 `next_got_slot` (high-water
+  respected — pin (iv)); `f`'s slot unchanged (no renumbering — pin (ii)); the
+  frozen old slot number is NOT reassigned to `h` (hole survives — pin (iii)).
+- **(c) `persist_body_only_redefinition_neg_keeps_slot` — GREEN at draft (pin).**
+  Body-only redefinition keeps `f`'s slot and `next_got_slot` identical to control —
+  the §5.4 fast path must NOT churn slots (guards against over-allocating once fresh
+  slots exist).
+
+#### L-B3(1)–(3) — manifest key (`tests/cache.rs`; backend §2.3)
+
+- **`cache_ownership_toggle_flip_invalidates_wholesale_no_stale_objects` — RED.**
+  Multi-module `--run` project; run once (populate cache); run again with
+  `.env("CRANELISP_NO_OWNERSHIP","1")` + `CRANELISP_MODULE_TRACE=1`: positive — every
+  module recompiles, output correct; negative — **zero** cache-hit lines (no stale
+  `.o` consumed; mixed-ABI caches unrepresentable). Today the unknown env var is a
+  no-op ⇒ full cache hits ⇒ RED.
+- **`cache_ownership_toggle_round_trip_and_same_polarity_stability` — RED.** Flip
+  back (unset): wholesale again, output identical; then re-run same polarity: full
+  cache HITS (the key is *stable*, guarding against an always-miss implementation —
+  this last leg is the lane's green-at-draft component but the test as a whole is RED
+  on the flip legs).
+
+#### L-B2(i) — suite polarity (`tests/scripts/suite_polarity.sh`)
+
+Script: run `cargo nextest run` twice (default env; `CRANELISP_NO_OWNERSHIP=1`),
+compare pass/fail sets; allowed delta = the ledgered intentional-failing set,
+identical under both polarities (post-flip at S101 close: expected empty). Trivially
+green at draft (env no-op) and still identical-by-construction once the toggle lands
+at M — the M-stage deliverable is the installed protocol, executed at Phase-5 exit and
+carried by CI as a gate-time lane (two full suite runs; never the per-commit loop).
+
+#### L-D1 — body-only turn latency (`tests/perf/l_d1_turn_latency.py`)
+
+Per §3.5 mechanics verbatim (scripted REPL, ~50-defn generated module, 30+ body-only
+redefinition turns of one hot fn, parse the `NN+NNms` prompt stamps; second session:
+one ABI-changing redefinition — report turn time + recompiled-set size, report-only).
+M-stage gate: body-only median ≤ 1.10× toggle-off median. At M both polarities run no
+analysis, so the gate is measuring exactly what stage M adds — summary-diff gate +
+reverse-index maintenance overhead on the fast path. Evaluated attended at wave
+close/acceptance (perf lanes live outside canonical nextest, §0.4/§5 limit 8).
+
+#### RED/GREEN-at-draft summary
+
+| Drafted RED (14 — flip green as `/dev` waves land) | GREEN-at-draft pins (4) |
+|---|---|
+| L-R1(a)(b)(c)(d)(e×2)(f); L-R2(a); L-R3(b); L-R4(a)(b); L-R5(b); L-B3 ×2 | L-R2(b) late-binding; L-R3(a) no-cascade (vacuous until landing); L-R5(a) cache-restore; L-R5(c) body-only-keeps-slot |
+
+Scripts (not RED/GREEN entries): `suite_polarity.sh` + `l_d1_turn_latency.py` — both
+authored at stage 1, executed at the wave gate / Phase-5 exit.
+
+#### 6.1.1 Drafting-notes addendum (authored at Wave-1 drafting, 2026-07-03)
+
+The set above was drafted and committed in S101 Phase-5 Wave 1. Deviations from the
+spec as written, discovered at drafting:
+
+1. **The pre-break VALUE carrier does not exist at stage M — L-R1(b)/(c) and
+   L-R2(a) use closest-reachable shapes.** `(def gv g)` as written above is not
+   REPL-reachable in a free-standing test: `def` is a **stdlib macro** (stdlib is
+   out of bounds for `tests/`, root `CLAUDE.md` §Stdlib separation) and expands to
+   a zero-arg `defn` + bare-symbol macro — i.e. it re-evaluates through a
+   recompiled static caller, exactly the `/repl` Phase-3 finding. No cross-turn
+   value carrier exists in the core REPL (bare-expression results are dropped;
+   strand/channel carriers are not deterministically REPL-drivable from stdin).
+   Drafted instead: pre-break-COMPILED zero-arg minting fns — `(defn hold [] g)`
+   (fn-as-value wrapper compiled pre-break, targets g's slot) and
+   `(defn mkp [] (g2 1))` (auto-curry wrapper ditto) for the trap lanes; for
+   L-R2(a) the by-name/new-world half of §18.7 + the no-mixed-ABI coherence fence
+   (`redefine_abi_change_closure_minting_caller_rejoins_new_world_coherently`).
+   **Residue:** the direct frozen-world assertion (§18.7 requirement 1 — a
+   pre-break heap value sees OLD-chain behaviour) is not e2e-assertable at stage M;
+   its structural witness is L-R5(b) (fresh slot + surviving hole). When a
+   cross-turn value carrier ships (session value bindings, or REPL-drivable strand
+   state), add the direct test. Full reasoning: `tests/repl_redefinition.rs`
+   module header.
+2. **Anchor policy executed at draft, not as a later re-anchor pass**: `repl/spec.md`
+   §18 landed in Phase 3 BEFORE this drafting, so the L-R1/L-R2/L-R3/L-R4 tests cite
+   §18.x directly and use its normative needles (`is broken by the redefinition of
+   {cause}` with FQ names; `recompiled`/`broken` report sections). The §5-limit-6
+   re-anchor obligation for these tests is therefore already discharged;
+   `spec_link_check.py` runs clean on the drafting commit.
+3. **§7.1 flip count superseded 4 → 7**: the Wave-1 cat-3 sweep
+   (`tests/plan/s101-coverage-postmortem.md` §3) widened the vec-query NULL-slot
+   class to curried / returned / stored-in-ADT positions — 3 more failing-not-
+   ignored guards in `tests/vec_query_value_use.rs`. The §7.1 protocol applies
+   unchanged with "4 guards" read as "7 guards" (ledger §"Sprint 101 Wave-1 cat-3
+   sweep"); the curried guard's DISTINCT signature (JIT `can't resolve symbol`
+   panic, exit 101 — the curry path's `primitives_inline` fallback gap) is new
+   information for the Wave-3 resolver.
+4. **L-R2(b)'s pin carrier** is likewise the factory shape (`(defn c [] (fn [z]
+   (base z)))`) rather than `def` — same reason; the late-binding semantics it pins
+   are identical.
+5. **L-R5(c) reclassified green-pin → RED, and a drafting FINDING recorded**: the
+   post-`/quit` `.meta.json` is only intermittently complete — the nice workers'
+   R18 abandon-on-shutdown races the last defining-turn persist (observed
+   non-deterministic `symbol f/g not found` across consecutive suite runs). The
+   L-R5 meta tests now assert meta completeness first (burst-amplified ×8 for (c),
+   S98 precedent) and slot policy second; Wave-4 `/dev`(src/) must make the final
+   persist deterministic at `/quit` (the fire's faithful-write pin) for L-R5(b)/(c)
+   to flip. L-R5(a) remains a stable green pin (restore correctness rides
+   `user.cl`, not the meta). Full record: ledger §"Sprint 101 Phase-5 Stage-1"
+   FINDING + `tests/repl_persist_redefine.rs` module header. Drafted totals are
+   therefore **15 RED / 3 green pins** (vs the table's 14/4).
 
 ---
 
@@ -453,6 +766,49 @@ in the same change-set (`memory/feedback_unit_test_per_fix.md`):
   value-use of summary-carrying primitives through a NULL slot — the fix is a
   precondition for the "every primitive gets a real GOT-backed value entry" target the
   spine records.
+
+### 7.1 Flip protocol (S101 — executed when the `/dev`(backend) fix lands)
+
+> **EXECUTED at S101 Wave 5 (2026-07-03), with the 4→7 supersession** (§6.1.1
+> note 3): all 7 guards GREEN after the Wave-3 fix, control green throughout;
+> ledger entries annotated in place; test-file docs updated; the close-time
+> canonical intentional-failing count is **3** (the NEW
+> `tests/vec_cow_value_use_leak.rs` FIXME-0474 guards — the COW copy-branch
+> leak residual on the same seam, incl. a static-site widening), flagged to
+> `/sprint` for the root-`CLAUDE.md` user update. `suite_polarity.sh`
+> protocol run post-flip: polarity-identical
+> (ledger §"Sprint 101 Wave-5 close-out records").
+
+The fix is S101 scope item 1; when it lands, in order:
+
+1. **Fix + unit test in the same change-set** (`/dev` on `cranelisp-backend`): the
+   mandatory unit test pins the `emit_wrapper_call`/`primitives_inline` seam (§4
+   stage-M backend list). The e2e need is already met — the 4 guards ARE the e2e
+   (assessed before the fix per `memory/feedback_unit_test_per_fix.md`); no new e2e
+   is owed.
+2. **Observe the flip**: the 4 guards
+   (`vec_get_as_value_through_hof_returns_element`,
+   `vec_set_as_value_through_hof_returns_updated_vec`,
+   `vec_push_as_value_through_hof_appends`,
+   `vec_get_as_value_run_mode_returns_element`) green in the canonical run; the
+   control (`vec_len_…_control`) stays green. The tests are permanent regression
+   guards — never deleted, never weakened.
+3. **Ledger update** (`/qa`): annotate the `tests/plan/ledger.md` §"Sprint 100
+   Phase-3 triage" entry in place with a resolution line — sprint (S101), fixing SHA,
+   "4 RED → GREEN; control green throughout" — the S81→S82 flip-recording precedent.
+4. **Test-file docs** (`/qa`, same change-set as 3): update the
+   `tests/vec_query_value_use.rs` module comment and per-test "RED on HEAD" notes to
+   record the resolution (the triage narrative stays as history).
+5. **Root `CLAUDE.md` §Testing count**: the intentional-failing count drops 4 → 0
+   (plus any stage-M RED-first guards still carried at that moment — the §6.1 ledger
+   entry tracks those; at close the expected canonical state is **0 intentional
+   failures** since the machinery lands in-sprint). The root-CLAUDE.md edit is
+   outside `/qa` and `/sprint` edit boundaries — `/sprint` **flags it for the user at
+   close** (S101 acceptance line 1), with `/qa` supplying the exact close-state
+   counts in its Phase-7 suite report.
+6. **L-B2(i) interaction**: `suite_polarity.sh`'s allowed-delta set is the ledgered
+   intentional-failure set *at execution time* — run it after the flip so the
+   expected delta is empty.
 
 ---
 

@@ -565,9 +565,16 @@ signature-coherence subsystem, not a mode-special-case.
 - **The symbol-level dependency graph** — forward edges **already persisted**:
   `ModuleEntry::Def.callees: Vec<FQSymbol>` (Decision 21, `module.rs:725`, serde-visible in
   `.meta.json`). The subsystem adds the **reverse index** (who-calls-whom⁻¹), *derived* from
-  `callees` — never a second authored store (Principle 7) — maintained incrementally as entries
-  are (re)registered. **The ownership fixpoint (§4.1) walks the same edges**: one graph, two
-  consumers; building the index is not R3-only cost.
+  `callees` — never a second authored store (Principle 7) — **derived on demand at transaction
+  time** (S101 fire ruling, `design/int/session-transaction.md` §3.3: zero fast-path cost per
+  L-D1, correct-by-construction against whatever the live tables hold; incremental maintenance
+  is the named upgrade option if the increment-I fixpoint makes scanning measurably hot — the
+  `ReverseIndex` surface does not change, only its refresh policy). **The ownership fixpoint
+  (§4.1) walks the same edges**: one graph, two consumers; building the index is not R3-only
+  cost. Edge *completeness* is FIXME 0470 (`target: /typecheck`): as-built `callees` records
+  only trait-method/SigDispatch/AutoCurry resolutions — plain direct calls and value-position
+  references to ordinary user fns are missing; the widening (+ `CACHE_SCHEMA_VERSION` bump)
+  must land before or with the transaction.
 - **The scheduler / worker machinery** — the recompilation executor. Precedents generalised:
   module-level dependent reload (the file-watcher path in `session_v4/lifecycle.rs` scans all
   tables' `imports` for dependents of a changed module and `reload_module`s each — S35/S37
@@ -624,8 +631,11 @@ design generalises the S45 model (module-level `reset_module` + embedded-origina
 symbol level:
 
 - **The failing caller `g` is marked BROKEN, with provenance.** Its entry stays in the table
-  (scheme/docstring/ast intact for introspection and recovery) but its `code` is cleared and its
-  **GOT slot is patched to a trap stub** that, if called, raises a clean runtime error naming the
+  (scheme/docstring/ast intact for introspection and recovery) but its `code` **moves to the
+  session retention pool** (never `None`d in place — dropping what may be the last `Arc<Jit>`
+  frees machine-code pages in-flight frames or heap closures can still execute; the pool pairs
+  each retained handle with its trap-message buffer, `design/int/session-transaction.md` §6)
+  and its **GOT slot is patched to a trap stub** that, if called, raises a clean runtime error naming the
   provenance: `g is broken by the redefinition of f: <original type/mode error>`. Note that under
   §5.6's slot versioning `g`'s *old* code is ABI-consistent (it references frozen old slots), so
   serving it stale would be memory-safe — the trap is a **deliberate UX ruling**, not a soundness

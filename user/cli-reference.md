@@ -8,7 +8,7 @@ the practical reference for the command line. The normative contract lives in
 ## Synopsis
 
 ```
-cranelisp [target] [--run | --link] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N]
+cranelisp [target] [--run | --link] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent] [--yes]
 ```
 
 - `[target]` is an optional positional argument naming the entry module / project
@@ -120,6 +120,9 @@ which mode is selected except `--run` / `--link` above.
 | `--no-cache` | Bypass the on-disk module cache (recompile from source). **Error if combined with `--link`.** | cache on |
 | `--priority-workers N` | Number of priority compilation workers. `N` must be numeric (non-numeric is an error). | `1` |
 | `--nice-workers N` | Number of background ("nice") compilation workers. `N` must be numeric. | `1` |
+| `--agent` | Enable the embedded LLM agent for the session (REPL only). Opt-in-twice: it only takes effect on a binary **built** with the agent feature *and* with a provider key configured at runtime — otherwise the agent stays dormant. Always accepted (a no-op, never `unknown flag`) on default builds and in `--run`/`--link`. See [`repl/spec.md §0.6.1`](../repl/spec.md). | agent off |
+| `--no-agent` | Force the embedded agent off for the session, even on an agent build with a key present. Wins when both `--agent` and `--no-agent` are given. Always accepted. | — |
+| `--yes` (short: `-y`) | Autonomous-submit: auto-accept the agent's write-consent `[y/N]` gates, so an active agent submits code and edits docs without per-action confirmation. Consent only — the agent's pre-flight validator still checks every submission. It does not itself enable the agent (pair it with `--agent`), and it is a no-op whenever no agent is active. See [`repl/spec.md §0.6.2`](../repl/spec.md). | off |
 
 Notes:
 
@@ -127,6 +130,9 @@ Notes:
   the two cannot be combined.
 - An unknown flag, or a second positional argument, prints an error plus the usage
   line and exits with status `1`.
+- The three agent flags are REPL-session knobs: in `--run`/`--link` they are
+  accepted and do nothing. The embedded agent experience itself is specified in
+  [`repl/spec.md §17`](../repl/spec.md).
 
 ## Choosing what to compile (the target)
 

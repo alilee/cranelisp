@@ -10,6 +10,13 @@ const EXPECTED_NAMES: &[&str] = &[
     "catch-runtime-error",
     "runtime/rc_underflow_check",
     "runtime/rc_dec_check",
+    // S99 Wave 0.1 RC-op instrumentation tally helpers (env-gated via the
+    // backend's `CRANELISP_RC_STATS` codegen gate; inert off). Added to the
+    // table in S99 (`e63c4ca`); joined this expected set at S101 when the
+    // crate lib tier entered the canonical run (default-members) and exposed
+    // the stale 32-name pin.
+    "runtime/rc_stat_inc",
+    "runtime/rc_stat_dec",
     "runtime/alloc_string",
     "runtime/string_read",
     "runtime/vec_new",
@@ -39,13 +46,13 @@ const EXPECTED_NAMES: &[&str] = &[
     "cranelisp_trace_format",
 ];
 
-/// Name-set completeness + uniqueness: the table contains exactly the 32
+/// Name-set completeness + uniqueness: the table contains exactly the 34
 /// expected names — no more, no fewer — and no name repeats (BC §6
 /// guardrail; positive + negative coverage).
 #[test]
-fn name_set_is_exactly_the_expected_32() {
+fn name_set_is_exactly_the_expected_34() {
     let names: Vec<&str> = intrinsics_table().iter().map(|e| e.name).collect();
-    assert_eq!(names.len(), 32, "table must hold exactly 32 entries");
+    assert_eq!(names.len(), 34, "table must hold exactly 34 entries");
     assert_eq!(names.len(), EXPECTED_NAMES.len());
 
     // Every expected name present (no drop).
@@ -88,6 +95,8 @@ fn arity_matches_historical_signature() {
         ("catch-runtime-error", 1, true),
         ("runtime/rc_underflow_check", 1, true),
         ("runtime/rc_dec_check", 1, true),
+        ("runtime/rc_stat_inc", 0, true),
+        ("runtime/rc_stat_dec", 0, true),
         ("runtime/alloc_string", 2, true),
         ("runtime/string_read", 1, true),
         ("runtime/vec_new", 1, true),

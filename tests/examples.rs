@@ -122,7 +122,10 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         ("11-destructuring.cl", &[69]),
         ("12-closures.cl", &[7]),
         ("13-higher-order.cl", &[203]),
-        ("14-vecs.cl", &[29]),
+        // 14: vecs. S101 6b added a vec-ops-as-values section (one
+        // instantiation per HOF per FIXME 0483); sum of sub-test pass
+        // counts 29 → 81.
+        ("14-vecs.cl", &[81]),
         ("15-traits.cl", &[58]),
         // 16-modules/ is a directory, not a top-level .cl file.
         ("17-display.cl", &[176]),
@@ -156,6 +159,12 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // the inline timeout pattern). main returns the sum of 6 sub-test pass
         // counts = 6 → exit 6.
         ("32-concurrency-combinators.cl", &[6]),
+        // 33: redefinition (batch-observable rebind semantics; S101 6b).
+        // Sum of sub-test pass counts = 136 — a normal exit(136), NOT a
+        // 128+signal encoding: `ExitStatus::code()` returns Some(136) for a
+        // normal exit, so the harness observes 136 directly (verified
+        // round-tripping through run_example at authoring, 2026-07-03).
+        ("33-redefinition.cl", &[136]),
     ]
 }
 

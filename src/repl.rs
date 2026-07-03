@@ -704,7 +704,15 @@ impl CompilerSession {
             return format!("{name} ; type - builtin type");
         }
         match self.lookup_with_prelude_fallback(name) {
-            Some((entry, _)) => format_entry_sig(&entry, name),
+            Some((entry, lookup_module)) => {
+                let sig = format_entry_sig(&entry, name);
+                // S101 (repl/spec.md §18.4): a broken symbol's /sig shows the
+                // same primary line plus the provenance comment line.
+                match self.broken_status_line(name, &lookup_module) {
+                    Some(line) => format!("{sig}\n{line}"),
+                    None => sig,
+                }
+            }
             None => format!("error: unknown symbol '{name}'"),
         }
     }
@@ -1245,7 +1253,7 @@ impl CompilerSession {
         }
     }
 
-    /// /info handler: show full details (sig + code size + compile time).
+    /// /info handler: show full details (sig + definition source + code size).
     pub(crate) fn handle_info(&self, name: &str) -> String {
         if name.is_empty() {
             return "usage: /info <name>".to_string();
@@ -1260,6 +1268,25 @@ impl CompilerSession {
         let (resolved_entry, resolved_module) =
             self.resolve_entry_for_display(&entry, &lookup_module);
         let sig = self.format_def_entry(&resolved_entry, name, &resolved_module);
+        // §3.6 third MUST component (FIXME 0480): the definition source,
+        // rendered for BOTH the broken and healthy arms.
+        let source = self.info_definition_source(name, &resolved_module);
+        // S101 (repl/spec.md §18.4): a broken symbol's /info shows the primary
+        // line (last-good signature) + the provenance comment line + the
+        // definition source, and MUST NOT display code-size stats — its
+        // compiled code is gone, and the trap stub is an implementation
+        // detail, not the symbol's code.
+        if let Some(line) = self.broken_status_line(name, &resolved_module) {
+            return match source {
+                Some(src) => format!("{sig}\n{line}\n{src}"),
+                None => format!("{sig}\n{line}"),
+            };
+        }
+        let mut out = sig;
+        if let Some(src) = source {
+            out.push('\n');
+            out.push_str(&src);
+        }
         // Append code info if available.
         let is_macro = matches!(&resolved_entry,
             ModuleEntry::Def { kind, .. } if matches!(kind.as_ref(), DefKind::Macro { .. }));
@@ -1269,9 +1296,65 @@ impl CompilerSession {
                 let size_str = intr.code_size
                     .map(|s| format!("{s} bytes"))
                     .unwrap_or_else(|| "? bytes".to_string());
-                return format!("{sig}\n  {size_str}");
+                out.push_str(&format!("\n  {size_str}"));
             }
-        sig
+        out
+    }
+
+    /// The definition-source component of `/info` (`repl/spec.md` §3.6 MUST,
+    /// second display line; the §18.4 broken arm inherits it — FIXME 0480):
+    /// the pretty-printed defining form as a 2-space-indented block, or
+    /// `None` when no source is recoverable (batch mode, special forms,
+    /// primitives with no recorded definition). Reads the introspection store
+    /// first (populated at every REPL definition); on a miss, attempts the
+    /// FIXME-0220 lazy rehydration from the module's backing `.cl` — the same
+    /// resolution `redefine::resolve_recheck_sexps` uses for cache-restored
+    /// modules — then re-reads.
+    fn info_definition_source(&self, name: &str, module: &ModuleFullPath) -> Option<String> {
+        // Accept both bare and module-qualified spellings (mirrors
+        // `broken_status_line`).
+        let (module, bare) = match name.rsplit_once('/') {
+            Some((m, n)) => (ModuleFullPath::from(m), n),
+            None => (module.clone(), name),
+        };
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: Symbol::from(bare),
+        };
+        let intr_map = self.shared.introspection.as_ref()?;
+        let render = |rec: &Introspection| -> Option<String> {
+            // Original source text preferred; the parsed sexp is the fallback
+            // (the same precedence as `handle_source`).
+            if let Some(src) = rec.source.as_deref() {
+                return Some(crate::pretty::pretty_print_str(src));
+            }
+            rec.sexp.as_ref().map(crate::pretty::pretty_print)
+        };
+        if let Some(rec) = intr_map.get(&fq)
+            && let Some(text) = render(&rec)
+        {
+            return Some(indent_source_block(&text));
+        }
+        // Cache-restored modules never populate introspection; rehydrate from
+        // the backing `.cl` (the cache key — normally present) and re-read.
+        let backing_source = self
+            .shared
+            .typecheck_products
+            .get(&module)
+            .and_then(|tp| tp.file_path.clone())
+            .and_then(|p| std::fs::read_to_string(p).ok())?;
+        let table = {
+            let st = self.shared.symbol_tables.get(&module)?;
+            st.clone()
+        };
+        crate::save::rehydrate_userfn_introspection_from_source(
+            &table,
+            intr_map,
+            &module,
+            &backing_source,
+        );
+        let rec = intr_map.get(&fq)?;
+        render(&rec).map(|text| indent_source_block(&text))
     }
 
     /// /type handler: typecheck expression without executing.
@@ -2137,7 +2220,14 @@ impl CompilerSession {
                         return format!("{symbol} ; defined");
                     }
                 };
-                self.format_def_entry(&entry, name, &resolved_module)
+                let body = self.format_def_entry(&entry, name, &resolved_module);
+                // S101 (repl/spec.md §18.4): bare lookup of a broken symbol is
+                // self-documenting — the ordinary per-class display (last-good
+                // signature) plus the provenance comment line.
+                match self.broken_status_line(name, &resolved_module) {
+                    Some(line) => format!("{body}\n{line}"),
+                    None => body,
+                }
             }
             EvalResult::Val { value, ty, .. } => {
                 if ty.is_io() {
@@ -2551,6 +2641,16 @@ pub(crate) fn format_related_section(label: &str, names: &[&str]) -> String {
         out.push_str(&row);
     }
     out
+}
+
+/// Indent every line of a rendered definition source by two spaces — the
+/// `/info` block layout (`repl/spec.md` §3.6 worked example; the §18.4
+/// broken-symbol example uses the same indentation).
+fn indent_source_block(text: &str) -> String {
+    text.lines()
+        .map(|l| format!("  {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Classification of an imported symbol for category-based display.

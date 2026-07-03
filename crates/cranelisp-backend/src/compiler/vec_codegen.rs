@@ -17,20 +17,26 @@ use cranelisp_types::{ErrorLocation,
 
 use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64};
 
+use super::control_flow::emit_extern_call_in_wrapper;
 use super::{collect_var_ids_from_type, signature_heap_category, substitute_type_inline, CtorMeta, FnCompiler};
 
-/// The new-element descriptor threaded through `vec-set` codegen (COW path).
+/// Bundled operands for [`emit_vec_set_cow_core`] (argument-count budget — the
+/// successor of the former `VecSetElem` bundle after the COW core was
+/// builder-parameterized for the §12.7 wrapper emission).
 ///
-/// Bundles the element-related parameters so the per-path helpers stay under the
-/// argument-count budget: the value to store, the per-element-type RC inc
-/// function pointer (for the runtime copy helper's retained-element incs), and
-/// the Vec's element type (for old-element dec + heap-category lookups). The
-/// new-element consuming inc is emitted up-front in `compile_vec_set` (gated by
-/// `element_consuming_inc`, mirroring vec-push) — it is NOT carried here.
-struct VecSetElem<'t> {
-    new_val: Value,
-    inc_fn_ptr: Value,
-    elem_type: &'t Option<Type>,
+/// The new-element consuming inc is the CALLER's decision (static sites gate on
+/// `element_consuming_inc`; wrapper params arrive owned and transfer) — it is
+/// NOT carried here and NOT emitted by the core.
+pub(crate) struct VecSetCow {
+    pub vec_val: Value,
+    pub idx_val: Value,
+    pub new_val: Value,
+    /// Per-element-type RC inc fn pointer for the runtime copy helper's
+    /// retained-element incs (iconst 0 for NeverHeap).
+    pub inc_fn_ptr: Value,
+    /// The OLD element's heap category (drives the mutate-in-place dec).
+    pub old_elem_category: Option<HeapCategory>,
+    pub dealloc_id: cranelift_module::FuncId,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -139,9 +145,9 @@ where
 
     /// Compile `vec-get`: bounds-checked element access.
     ///
-    /// 1. Load len, check idx >= 0 && idx < len, trap on out-of-bounds
-    /// 2. Load data_ptr, load element at data_ptr + idx * 8
-    /// 3. If element type is heap, call emit_rc_inc on loaded value
+    /// Delegates to the shared [`emit_vec_get_core`] (single source with the
+    /// §12.7 fn-as-value wrapper emission — Principle 7); this method computes
+    /// the element heap category from the Vec expression's concrete type.
     fn compile_vec_get(
         &mut self,
         vec_expr: &MonoExpr,
@@ -155,71 +161,18 @@ where
                 location: ErrorLocation::from_span(span),
             }
         })?;
-
-        // Load len from Vec.
-        let len = heap::heap_load(&mut self.builder, vec_val, HeapVec::LEN_OFFSET);
-
-        // Bounds check: idx < 0 || idx >= len → panic.
-        let zero = self.builder.ins().iconst(types::I64, 0);
-        let neg_check = self
-            .builder
-            .ins()
-            .icmp(IntCC::SignedLessThan, idx_val, zero);
-        let bounds_check = self
-            .builder
-            .ins()
-            .icmp(IntCC::SignedGreaterThanOrEqual, idx_val, len);
-        let out_of_bounds = self.builder.ins().bor(neg_check, bounds_check);
-
-        let ok_block = self.builder.create_block();
-        let panic_block = self.builder.create_block();
-
-        self.builder
-            .ins()
-            .brif(out_of_bounds, panic_block, &[], ok_block, &[]);
-
-        // Panic path: call runtime/panic with error message.
-        self.builder.switch_to_block(panic_block);
-        self.builder.seal_block(panic_block);
-        emit_vec_bounds_panic(&mut self.builder, self.module, panic_id, span)?;
-
-        // OK path: load element.
-        self.builder.switch_to_block(ok_block);
-        self.builder.seal_block(ok_block);
-
-        // Load data_ptr.
-        let data_ptr = heap::heap_load(
+        let elem_category = self
+            .vec_elem_type(vec_expr)
+            .map(|t| signature_heap_category(&t, Some(self.ctx.symbol_tables)));
+        emit_vec_get_core(
             &mut self.builder,
+            self.module,
+            panic_id,
+            elem_category,
             vec_val,
-            HeapVec::DATA_PTR_OFFSET,
-        ); // data_ptr: i64
-
-        // Compute element address: data_ptr + idx * 8.
-        let eight = self.builder.ins().iconst(types::I64, 8);
-        let byte_offset = self.builder.ins().imul(idx_val, eight);
-        let elem_addr = self.builder.ins().iadd(data_ptr, byte_offset);
-
-        // Load element value.
-        let elem = self
-            .builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), elem_addr, 0);
-
-        // If element type is heap, emit RC inc on the loaded value.
-        if let Some(elem_type) = self.vec_elem_type(vec_expr) {
-            let category = signature_heap_category(&elem_type, Some(self.ctx.symbol_tables));
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut self.builder, self.module, elem);
-                }
-                HeapCategory::Mixed => {
-                    emit_guarded_rc_inc(&mut self.builder, self.module, elem);
-                }
-                HeapCategory::NeverHeap => {}
-            }
-        }
-
-        Ok(elem)
+            idx_val,
+            span,
+        )
     }
 
     /// Compile `vec-set`: COW inline + extern fallback.
@@ -279,13 +232,24 @@ where
         let is_last = self.is_vec_last_use(vec_expr);
 
         if is_last {
-            // Runtime COW: check rc == 1.
-            let elem = VecSetElem {
-                new_val,
-                inc_fn_ptr,
-                elem_type: &elem_type,
-            };
-            self.compile_vec_set_cow(vec_val, idx_val, elem, span)
+            // Runtime COW: check rc == 1. Shared core with the §12.7 wrapper
+            // emission (Principle 7).
+            let old_elem_category = elem_type
+                .as_ref()
+                .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
+            emit_vec_set_cow_core(
+                &mut self.builder,
+                self.module,
+                VecSetCow {
+                    vec_val,
+                    idx_val,
+                    new_val,
+                    inc_fn_ptr,
+                    old_elem_category,
+                    dealloc_id: self.ctx.dealloc_func_id,
+                },
+                span,
+            )
         } else {
             // Copy path (non-last-use Vec): call vec-set-copy extern. The runtime
             // inc's only the retained copied-over elements; the new `val`'s
@@ -294,117 +258,6 @@ where
                 "vec-set-copy", &[vec_val, idx_val, new_val, inc_fn_ptr], span,
             )
         }
-    }
-
-    /// Compile vec-set COW inline path with runtime RC check fallback to copy.
-    ///
-    /// `elem` bundles the new-element descriptor (value, per-element inc fn
-    /// pointer for the runtime copy helper's retained-element incs, and Vec
-    /// element type). The new-element consuming inc was already emitted up-front
-    /// in `compile_vec_set` (mirroring vec-push) — both the mutate-in-place and
-    /// copy sub-paths below store `new_val` WITHOUT an additional inc.
-    fn compile_vec_set_cow(
-        &mut self,
-        vec_val: Value,
-        idx_val: Value,
-        elem: VecSetElem<'_>,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        let VecSetElem {
-            new_val,
-            inc_fn_ptr,
-            elem_type,
-        } = elem;
-        let dealloc_id = self.ctx.dealloc_func_id;
-
-        // Load RC and check if == 1 (unique owner).
-        let rc = heap::heap_load(
-            &mut self.builder,
-            vec_val,
-            HeapHeader::RC_OFFSET,
-        ); // rc: i64
-        let one = self.builder.ins().iconst(types::I64, 1);
-        let is_unique = self.builder.ins().icmp(IntCC::Equal, rc, one);
-
-        let mutate_block = self.builder.create_block();
-        let copy_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
-        self.builder.append_block_param(merge_block, types::I64);
-
-        self.builder
-            .ins()
-            .brif(is_unique, mutate_block, &[], copy_block, &[]);
-
-        // Mutate-in-place path: dec old element, store new, return same vec.
-        self.builder.switch_to_block(mutate_block);
-        self.builder.seal_block(mutate_block);
-
-        // Load data_ptr and old element.
-        let data_ptr = heap::heap_load(
-            &mut self.builder,
-            vec_val,
-            HeapVec::DATA_PTR_OFFSET,
-        );
-        let eight = self.builder.ins().iconst(types::I64, 8);
-        let byte_off = self.builder.ins().imul(idx_val, eight);
-        let elem_addr = self.builder.ins().iadd(data_ptr, byte_off);
-        let old_elem = self
-            .builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), elem_addr, 0);
-
-        // Dec the old element (if heap type).
-        if let Some(ty) = &elem_type {
-            let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
-            match category {
-                HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_dec(
-                        &mut self.builder,
-                        self.module,
-                        old_elem,
-                        dealloc_id,
-                        None,
-                    );
-                }
-                HeapCategory::Mixed => {
-                    heap::emit_rc_dec_guarded(
-                        &mut self.builder,
-                        self.module,
-                        old_elem,
-                        dealloc_id,
-                        None,
-                        true,
-                    );
-                }
-                HeapCategory::NeverHeap => {}
-            }
-        }
-
-        // The new-element consuming inc (heap-typed Var ⇒ inc; temporary ⇒
-        // transfer) was emitted up-front in `compile_vec_set` (mirrors
-        // vec-push). Store the value directly — no inc here.
-
-        // Store new value.
-        self.builder
-            .ins()
-            .store(MemFlags::trusted(), new_val, elem_addr, 0);
-
-        self.builder.ins().jump(merge_block, &[vec_val]);
-
-        // Copy path: call vec-set-copy extern. The runtime inc's only the
-        // retained copied-over elements; the new `val`'s consuming inc was
-        // emitted up-front in `compile_vec_set`.
-        self.builder.switch_to_block(copy_block);
-        self.builder.seal_block(copy_block);
-        let copy_result = self.emit_extern_call(
-            "vec-set-copy", &[vec_val, idx_val, new_val, inc_fn_ptr], span,
-        )?;
-        self.builder.ins().jump(merge_block, &[copy_result]);
-
-        // Merge.
-        self.builder.switch_to_block(merge_block);
-        self.builder.seal_block(merge_block);
-        Ok(self.builder.block_params(merge_block)[0])
     }
 
     /// Compile `vec-push`: COW inline + extern fallback.
@@ -448,111 +301,29 @@ where
         let is_last = self.is_vec_last_use(vec_expr);
 
         if is_last {
-            self.compile_vec_push_cow(vec_val, new_val, inc_fn_ptr, span)
+            // Shared core with the §12.7 wrapper emission (Principle 7).
+            emit_vec_push_cow_core(
+                &mut self.builder,
+                self.module,
+                vec_val,
+                new_val,
+                inc_fn_ptr,
+                span,
+            )
         } else {
             // Copy path: call vec-push-copy extern.
             self.emit_extern_call("vec-push-copy", &[vec_val, new_val, inc_fn_ptr], span)
         }
     }
 
-    /// Compile vec-push COW inline path with runtime RC check.
-    fn compile_vec_push_cow(
-        &mut self,
-        vec_val: Value,
-        new_val: Value,
-        inc_fn_ptr: Value,
-        span: Span,
-    ) -> Result<Value, CranelispError> {
-        // Load RC.
-        let rc = heap::heap_load(
-            &mut self.builder,
-            vec_val,
-            HeapHeader::RC_OFFSET,
-        );
-        let one = self.builder.ins().iconst(types::I64, 1);
-        let is_unique = self.builder.ins().icmp(IntCC::Equal, rc, one);
-
-        let unique_block = self.builder.create_block();
-        let copy_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
-        self.builder.append_block_param(merge_block, types::I64);
-
-        self.builder
-            .ins()
-            .brif(is_unique, unique_block, &[], copy_block, &[]);
-
-        // Unique path: check if len < cap.
-        self.builder.switch_to_block(unique_block);
-        self.builder.seal_block(unique_block);
-
-        let len = heap::heap_load(
-            &mut self.builder,
-            vec_val,
-            HeapVec::LEN_OFFSET,
-        );
-        let cap = heap::heap_load(
-            &mut self.builder,
-            vec_val,
-            HeapVec::CAP_OFFSET,
-        );
-        let has_capacity = self
-            .builder
-            .ins()
-            .icmp(IntCC::SignedLessThan, len, cap);
-
-        let fast_block = self.builder.create_block();
-        let grow_block = self.builder.create_block();
-
-        self.builder
-            .ins()
-            .brif(has_capacity, fast_block, &[], grow_block, &[]);
-
-        // Fast path: store at data[len], increment len.
-        self.builder.switch_to_block(fast_block);
-        self.builder.seal_block(fast_block);
-
-        let data_ptr = heap::heap_load(
-            &mut self.builder,
-            vec_val,
-            HeapVec::DATA_PTR_OFFSET,
-        );
-        let eight = self.builder.ins().iconst(types::I64, 8);
-        let byte_off = self.builder.ins().imul(len, eight);
-        let elem_addr = self.builder.ins().iadd(data_ptr, byte_off);
-        self.builder
-            .ins()
-            .store(MemFlags::trusted(), new_val, elem_addr, 0);
-
-        // Increment len.
-        let new_len = self.builder.ins().iadd_imm(len, 1);
-        heap::heap_store(&mut self.builder, new_len, vec_val, HeapVec::LEN_OFFSET);
-
-        self.builder.ins().jump(merge_block, &[vec_val]);
-
-        // Grow path: call vec-push-grow extern.
-        self.builder.switch_to_block(grow_block);
-        self.builder.seal_block(grow_block);
-        let grow_result = self.emit_extern_call("vec-push-grow", &[vec_val, new_val], span)?;
-        self.builder.ins().jump(merge_block, &[grow_result]);
-
-        // Copy path: call vec-push-copy extern.
-        self.builder.switch_to_block(copy_block);
-        self.builder.seal_block(copy_block);
-        let copy_result = self.emit_extern_call(
-            "vec-push-copy", &[vec_val, new_val, inc_fn_ptr], span,
-        )?;
-        self.builder.ins().jump(merge_block, &[copy_result]);
-
-        // Merge.
-        self.builder.switch_to_block(merge_block);
-        self.builder.seal_block(merge_block);
-        Ok(self.builder.block_params(merge_block)[0])
-    }
-
     // --- Helpers ---
 
     /// Extract the element type from a Vec expression's concrete type.
-    fn vec_elem_type(&self, vec_expr: &MonoExpr) -> Option<Type> {
+    ///
+    /// `pub(crate)`: also read by `control_flow::fn_as_value::compile_auto_curry`
+    /// to recover the element type from the applied Vec argument on the
+    /// curried-vec-query path (§12.7).
+    pub(crate) fn vec_elem_type(&self, vec_expr: &MonoExpr) -> Option<Type> {
         if let ConcreteType::ADT(fqtn, args) = vec_expr.ty()
             && fqtn.name.as_ref() == "Vec" && args.len() == 1 {
                 return Some(args[0].to_type());
@@ -1176,6 +947,146 @@ where
         }
     }
 
+    /// Resolve or generate a per-element-type inc function pointer into a
+    /// specific builder (for wrapper-body emission — the mirror of
+    /// `resolve_elem_dec_fn_ptr_into`, and the `_into` sibling of
+    /// `resolve_elem_inc_fn_ptr`, which emits into `self.builder`).
+    fn resolve_elem_inc_fn_ptr_into(
+        &mut self,
+        elem_type: &Option<Type>,
+        builder: &mut FunctionBuilder,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let Some(ty) = &elem_type else {
+            return Ok(builder.ins().iconst(types::I64, 0));
+        };
+
+        let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
+        match category {
+            HeapCategory::NeverHeap => Ok(builder.ins().iconst(types::I64, 0)),
+            HeapCategory::AlwaysHeap => {
+                let func_id = self.build_elem_inc_fn(false, span)?;
+                let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                Ok(builder.ins().func_addr(types::I64, func_ref))
+            }
+            HeapCategory::Mixed => {
+                let func_id = self.build_elem_inc_fn(true, span)?;
+                let func_ref = self.module.declare_func_in_func(func_id, builder.func);
+                Ok(builder.ins().func_addr(types::I64, func_ref))
+            }
+        }
+    }
+
+    /// Inline-emit a vec-query op (`vec-get` / `vec-set` / `vec-push`) into a
+    /// GENERATED WRAPPER body (fn-as-value / auto-curry / trait-method-value —
+    /// `control_flow::fn_as_value`). These primitives-table entries carry
+    /// allocated-but-**NULL** GOT slots (name-resolution-only — no extern body
+    /// can exist because a single monomorphic body cannot know the element's
+    /// heap category), so the wrapper MUST NOT dispatch through them
+    /// (`design/backend/ownership-codegen.md` §12.7 — the S100 SIGSEGV defect).
+    ///
+    /// RC polarity: every wrapper param arrives OWNED (consuming closure
+    /// protocol), so the emission takes the owned-temporary polarity uniformly:
+    ///
+    /// - `vec-get` — bounds check + element load + element inc (per element
+    ///   heap category), then a vec-aware rc-checked release of the consumed
+    ///   Vec (the temporary branch of `emit_vec_drop_if_temporary`).
+    /// - `vec-set` / `vec-push` — the element's reference TRANSFERS into the
+    ///   Vec with NO consuming inc (the temporary branch of
+    ///   `element_consuming_inc`), and the Vec is trivially at last use, so
+    ///   the COW rc==1 path applies (the shared cores).
+    ///
+    /// `elem_type` is the per-site element type plumbed from the value-use
+    /// site's concrete `Fn` type (or from the applied Vec argument on the
+    /// auto-curry path). `None` degrades to the no-elem-RC-ops shape — the
+    /// same safe default as `resolve_elem_inc_fn_ptr`'s unknown-type arm.
+    pub(crate) fn emit_vec_query_into(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        name: &str,
+        params: &[Value],
+        elem_type: &Option<Type>,
+        span: Span,
+    ) -> Result<Value, CranelispError> {
+        let elem_category = elem_type
+            .as_ref()
+            .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
+        match (name, params.len()) {
+            ("vec-get", 2) => {
+                let panic_id = self.ctx.panic_func_id.ok_or_else(|| {
+                    CranelispError::CodegenError {
+                        message: "runtime/panic not declared".into(),
+                        location: ErrorLocation::from_span(span),
+                    }
+                })?;
+                let vec_drop_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
+                    CranelispError::CodegenError {
+                        message: "runtime/vec_drop not declared".into(),
+                        location: ErrorLocation::from_span(span),
+                    }
+                })?;
+                let dec_fn_ptr =
+                    self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
+                let elem = emit_vec_get_core(
+                    builder,
+                    self.module,
+                    panic_id,
+                    elem_category,
+                    params[0],
+                    params[1],
+                    span,
+                )?;
+                // Release the consumed (owned) Vec — rc-checked, and AFTER the
+                // element inc inside the core, so the element survives a
+                // last-reference Vec teardown.
+                emit_vec_rc_dec_with_drop(
+                    builder,
+                    self.module,
+                    params[0],
+                    vec_drop_id,
+                    dec_fn_ptr,
+                );
+                Ok(elem)
+            }
+            ("vec-set", 3) => {
+                let inc_fn_ptr =
+                    self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
+                emit_vec_set_cow_core(
+                    builder,
+                    self.module,
+                    VecSetCow {
+                        vec_val: params[0],
+                        idx_val: params[1],
+                        new_val: params[2],
+                        inc_fn_ptr,
+                        old_elem_category: elem_category,
+                        dealloc_id: self.ctx.dealloc_func_id,
+                    },
+                    span,
+                )
+            }
+            ("vec-push", 2) => {
+                let inc_fn_ptr =
+                    self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
+                emit_vec_push_cow_core(
+                    builder,
+                    self.module,
+                    params[0],
+                    params[1],
+                    inc_fn_ptr,
+                    span,
+                )
+            }
+            _ => Err(CranelispError::CodegenError {
+                message: format!(
+                    "vec-query wrapper: unexpected op/arity {name}/{}",
+                    params.len()
+                ),
+                location: ErrorLocation::from_span(span),
+            }),
+        }
+    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -1197,6 +1108,251 @@ pub(crate) fn vec_element_type(ty: &Type) -> Option<&Type> {
         return Some(&args[0]);
     }
     None
+}
+
+/// Shared emission core for `vec-get`: bounds check (trap via `runtime/panic`)
+/// + element load + element RC inc per `elem_category`.
+///
+/// Builder-parameterized (the `emit_adt_construct_into` precedent) so ONE body
+/// serves both the statically-resolved inline site (`compile_vec_get`, over
+/// `self.builder`) and the §12.7 fn-as-value / auto-curry wrapper bodies
+/// (`emit_vec_query_into`), which build in a separate Cranelift context.
+/// Consuming the Vec (the temporary/owned release) is the CALLER's decision —
+/// not emitted here.
+pub(crate) fn emit_vec_get_core<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    panic_id: cranelift_module::FuncId,
+    elem_category: Option<HeapCategory>,
+    vec_val: Value,
+    idx_val: Value,
+    span: Span,
+) -> Result<Value, CranelispError> {
+    // Load len from Vec.
+    let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
+
+    // Bounds check: idx < 0 || idx >= len → panic.
+    let zero = builder.ins().iconst(types::I64, 0);
+    let neg_check = builder.ins().icmp(IntCC::SignedLessThan, idx_val, zero);
+    let bounds_check = builder
+        .ins()
+        .icmp(IntCC::SignedGreaterThanOrEqual, idx_val, len);
+    let out_of_bounds = builder.ins().bor(neg_check, bounds_check);
+
+    let ok_block = builder.create_block();
+    let panic_block = builder.create_block();
+
+    builder
+        .ins()
+        .brif(out_of_bounds, panic_block, &[], ok_block, &[]);
+
+    // Panic path: call runtime/panic with error message.
+    builder.switch_to_block(panic_block);
+    builder.seal_block(panic_block);
+    emit_vec_bounds_panic(builder, module, panic_id, span)?;
+
+    // OK path: load element.
+    builder.switch_to_block(ok_block);
+    builder.seal_block(ok_block);
+
+    // Load data_ptr.
+    let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
+
+    // Compute element address: data_ptr + idx * 8.
+    let eight = builder.ins().iconst(types::I64, 8);
+    let byte_offset = builder.ins().imul(idx_val, eight);
+    let elem_addr = builder.ins().iadd(data_ptr, byte_offset);
+
+    // Load element value.
+    let elem = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+
+    // If element type is heap, emit RC inc on the loaded value.
+    match elem_category {
+        Some(HeapCategory::AlwaysHeap) => {
+            heap::emit_rc_inc(builder, module, elem);
+        }
+        Some(HeapCategory::Mixed) => {
+            emit_guarded_rc_inc(builder, module, elem);
+        }
+        Some(HeapCategory::NeverHeap) | None => {}
+    }
+
+    Ok(elem)
+}
+
+/// Shared emission core for the `vec-set` COW path: rc==1 → mutate-in-place
+/// (dec old element, store new, return the same Vec); rc>1 → `vec-set-copy`
+/// extern (the runtime inc's only the retained copied-over elements).
+///
+/// Builder-parameterized single source (Principle 7) for the static
+/// `compile_vec_set` last-use arm and the §12.7 wrapper emission. The
+/// new-element consuming inc is the CALLER's decision (static sites gate on
+/// `element_consuming_inc`; wrapper params arrive owned and transfer) — both
+/// sub-paths store `new_val` WITHOUT an additional inc.
+pub(crate) fn emit_vec_set_cow_core<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    op: VecSetCow,
+    span: Span,
+) -> Result<Value, CranelispError> {
+    let VecSetCow {
+        vec_val,
+        idx_val,
+        new_val,
+        inc_fn_ptr,
+        old_elem_category,
+        dealloc_id,
+    } = op;
+
+    // Load RC and check if == 1 (unique owner).
+    let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
+    let one = builder.ins().iconst(types::I64, 1);
+    let is_unique = builder.ins().icmp(IntCC::Equal, rc, one);
+
+    let mutate_block = builder.create_block();
+    let copy_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder.append_block_param(merge_block, types::I64);
+
+    builder
+        .ins()
+        .brif(is_unique, mutate_block, &[], copy_block, &[]);
+
+    // Mutate-in-place path: dec old element, store new, return same vec.
+    builder.switch_to_block(mutate_block);
+    builder.seal_block(mutate_block);
+
+    // Load data_ptr and old element.
+    let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
+    let eight = builder.ins().iconst(types::I64, 8);
+    let byte_off = builder.ins().imul(idx_val, eight);
+    let elem_addr = builder.ins().iadd(data_ptr, byte_off);
+    let old_elem = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), elem_addr, 0);
+
+    // Dec the old element (if heap type).
+    match old_elem_category {
+        Some(HeapCategory::AlwaysHeap) => {
+            heap::emit_rc_dec(builder, module, old_elem, dealloc_id, None);
+        }
+        Some(HeapCategory::Mixed) => {
+            heap::emit_rc_dec_guarded(builder, module, old_elem, dealloc_id, None, true);
+        }
+        Some(HeapCategory::NeverHeap) | None => {}
+    }
+
+    // Store new value (the consuming inc was the caller's decision — none here).
+    builder
+        .ins()
+        .store(MemFlags::trusted(), new_val, elem_addr, 0);
+
+    builder.ins().jump(merge_block, &[vec_val]);
+
+    // Copy path: call vec-set-copy extern.
+    builder.switch_to_block(copy_block);
+    builder.seal_block(copy_block);
+    let copy_result = emit_extern_call_in_wrapper(
+        builder,
+        module,
+        "vec-set-copy",
+        &[vec_val, idx_val, new_val, inc_fn_ptr],
+        span,
+    )?;
+    builder.ins().jump(merge_block, &[copy_result]);
+
+    // Merge.
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+    Ok(builder.block_params(merge_block)[0])
+}
+
+/// Shared emission core for the `vec-push` COW path: rc==1 → len<cap fast
+/// store / `vec-push-grow` extern; rc>1 → `vec-push-copy` extern.
+///
+/// Builder-parameterized single source (Principle 7) for the static
+/// `compile_vec_push` last-use arm and the §12.7 wrapper emission. The
+/// new-element consuming inc is the CALLER's decision — not emitted here.
+pub(crate) fn emit_vec_push_cow_core<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    vec_val: Value,
+    new_val: Value,
+    inc_fn_ptr: Value,
+    span: Span,
+) -> Result<Value, CranelispError> {
+    // Load RC.
+    let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
+    let one = builder.ins().iconst(types::I64, 1);
+    let is_unique = builder.ins().icmp(IntCC::Equal, rc, one);
+
+    let unique_block = builder.create_block();
+    let copy_block = builder.create_block();
+    let merge_block = builder.create_block();
+    builder.append_block_param(merge_block, types::I64);
+
+    builder
+        .ins()
+        .brif(is_unique, unique_block, &[], copy_block, &[]);
+
+    // Unique path: check if len < cap.
+    builder.switch_to_block(unique_block);
+    builder.seal_block(unique_block);
+
+    let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
+    let cap = heap::heap_load(builder, vec_val, HeapVec::CAP_OFFSET);
+    let has_capacity = builder.ins().icmp(IntCC::SignedLessThan, len, cap);
+
+    let fast_block = builder.create_block();
+    let grow_block = builder.create_block();
+
+    builder
+        .ins()
+        .brif(has_capacity, fast_block, &[], grow_block, &[]);
+
+    // Fast path: store at data[len], increment len.
+    builder.switch_to_block(fast_block);
+    builder.seal_block(fast_block);
+
+    let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
+    let eight = builder.ins().iconst(types::I64, 8);
+    let byte_off = builder.ins().imul(len, eight);
+    let elem_addr = builder.ins().iadd(data_ptr, byte_off);
+    builder
+        .ins()
+        .store(MemFlags::trusted(), new_val, elem_addr, 0);
+
+    // Increment len.
+    let new_len = builder.ins().iadd_imm(len, 1);
+    heap::heap_store(builder, new_len, vec_val, HeapVec::LEN_OFFSET);
+
+    builder.ins().jump(merge_block, &[vec_val]);
+
+    // Grow path: call vec-push-grow extern.
+    builder.switch_to_block(grow_block);
+    builder.seal_block(grow_block);
+    let grow_result =
+        emit_extern_call_in_wrapper(builder, module, "vec-push-grow", &[vec_val, new_val], span)?;
+    builder.ins().jump(merge_block, &[grow_result]);
+
+    // Copy path: call vec-push-copy extern.
+    builder.switch_to_block(copy_block);
+    builder.seal_block(copy_block);
+    let copy_result = emit_extern_call_in_wrapper(
+        builder,
+        module,
+        "vec-push-copy",
+        &[vec_val, new_val, inc_fn_ptr],
+        span,
+    )?;
+    builder.ins().jump(merge_block, &[copy_result]);
+
+    // Merge.
+    builder.switch_to_block(merge_block);
+    builder.seal_block(merge_block);
+    Ok(builder.block_params(merge_block)[0])
 }
 
 /// Emit an RC dec on a Vec value that properly tears down the Vec on rc=0.

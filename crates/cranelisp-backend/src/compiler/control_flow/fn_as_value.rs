@@ -9,12 +9,32 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, ResolvedCall, Span, Symbol};
+use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, ResolvedCall, Span, Symbol, Type};
 
 use crate::heap::{self, HeapCategory, HeapClosure};
 use crate::primitives_inline;
 
 use super::{emit_capture_inc_into, FnCompiler};
+
+/// If `fn_type` is a `Fn` whose first parameter is `(Vec t)`, return `t`.
+///
+/// The per-site element-type recovery for the vec-query wrapper emission
+/// (`design/backend/ownership-codegen.md` §12.7): a value-position `Var`
+/// naming `vec-get`/`vec-set`/`vec-push` carries a concrete post-mono
+/// `inferred_type` (S84 ruling) like `(Fn [(Vec Int) Int] Int)`, whose first
+/// param names the element type the wrapper's RC emission needs — exactly the
+/// knowledge a primitives-crate extern body cannot have (why the entries'
+/// GOT slots are NULL and the wrapper is the fix location).
+fn vec_query_elem_from_fn_type(fn_type: Option<&Type>) -> Option<Type> {
+    if let Some(Type::Fn(params, _)) = fn_type
+        && let Some(Type::ADT(fqtn, args)) = params.first()
+        && fqtn.name.as_ref() == "Vec"
+        && args.len() == 1
+    {
+        return Some(args[0].clone());
+    }
+    None
+}
 
 #[cfg(test)]
 mod ctor_value_tests;
@@ -77,10 +97,15 @@ where
     /// Generates a wrapper function with signature `(env_ptr, params...) -> i64`
     /// that ignores env_ptr and calls the real function directly.
     /// Allocates a closure `[header | code_ptr]` with zero captures.
+    ///
+    /// `fn_type` is the value-use site's concrete `Fn` type (the Var's
+    /// `inferred_type`) — consumed only to recover the vec-query element type
+    /// for the §12.7 wrapper emission; `None` elsewhere is harmless.
     pub(crate) fn compile_fn_as_value(
         &mut self,
         name: &Symbol,
         span: Span,
+        fn_type: Option<&Type>,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
             self.ctx
@@ -128,7 +153,8 @@ where
                 location: ErrorLocation::from_span(span),
             })?;
 
-        self.compile_fn_wrapper_body(wrapper_func_id, name, arity, span)?;
+        let vec_elem = vec_query_elem_from_fn_type(fn_type);
+        self.compile_fn_wrapper_body(wrapper_func_id, name, arity, span, vec_elem.as_ref())?;
 
         // Allocate a closure with zero captures: [header | code_ptr].
         let payload_size = HeapClosure::payload_size(0) as i64;
@@ -191,6 +217,7 @@ where
         resolved: &ResolvedCall,
         arity: usize,
         span: Span,
+        fn_type: Option<&Type>,
     ) -> Result<Value, CranelispError> {
         let alloc_id =
             self.ctx
@@ -253,12 +280,14 @@ where
         let user_args: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
 
         // Dispatch through the SAME path direct application uses.
+        let vec_elem = vec_query_elem_from_fn_type(fn_type);
         let result = self.emit_curry_target_call(
             &mut builder,
             &target_name,
             &user_args,
             span,
             Some(resolved),
+            vec_elem.as_ref(),
         )?;
 
         builder.ins().return_(&[result]);
@@ -307,12 +336,17 @@ where
 
     /// Compile a wrapper function body: (env_ptr, params...) -> i64.
     /// Ignores env_ptr and calls the real function with the params.
+    ///
+    /// `vec_elem` is the vec-query element type recovered from the value-use
+    /// site (`vec_query_elem_from_fn_type`), threaded to `emit_wrapper_call`'s
+    /// vec-query arm (§12.7).
     fn compile_fn_wrapper_body(
         &mut self,
         func_id: cranelift_module::FuncId,
         target_name: &Symbol,
         arity: usize,
         span: Span,
+        vec_elem: Option<&Type>,
     ) -> Result<(), CranelispError> {
         let mut inner_ctx = self.module.make_context();
         let mut inner_func_ctx = FunctionBuilderContext::new();
@@ -335,7 +369,7 @@ where
         let user_params: Vec<Value> = block_params[1..].to_vec(); // skip env_ptr
 
         let result = self.emit_wrapper_call(
-            &mut builder, target_name, &user_params, span,
+            &mut builder, target_name, &user_params, span, vec_elem,
         )?;
 
         builder.ins().return_(&[result]);
@@ -364,6 +398,7 @@ where
         target_name: &Symbol,
         user_params: &[Value],
         span: Span,
+        vec_elem: Option<&Type>,
     ) -> Result<Value, CranelispError> {
         // If the function is declared in the current compilation unit, emit a
         // direct call — cheaper and avoids an unnecessary GOT dereference. User
@@ -401,6 +436,28 @@ where
                 user_params,
                 span,
             );
+        }
+
+        // Vec query family (`vec-get`/`vec-set`/`vec-push`) as a first-class
+        // value: these primitives-table entries are name-resolution-only —
+        // allocated-but-NULL GOT slots (no extern body can exist: a single
+        // monomorphic body cannot know the element's heap category). The
+        // GOT-indirect fallback below would `call_indirect` through NULL →
+        // jump to 0 → SIGSEGV (S100 triage; ownership-codegen.md §12.7).
+        // Inline-emit the op into the wrapper instead — the
+        // `emit_adt_construct_into` precedent — using the per-site element
+        // type plumbed from the value-use site. The resolver is
+        // precedence-faithful (a user fn shadowing the name resolves first and
+        // keeps the GOT path); `vec-len` is excluded (real extern shim,
+        // populated slot — the working control path).
+        if let Some(canonical) = crate::compiler::resolve_vec_query_primitive(
+            self.ctx.symbol_tables,
+            self.ctx.module_aliases,
+            &self.ctx.current_module,
+            target_name,
+        ) {
+            let elem = vec_elem.cloned();
+            return self.emit_vec_query_into(builder, canonical.as_ref(), user_params, &elem, span);
         }
 
         // Otherwise: GOT-indirect call via __cranelisp_got_{module} data sym.
@@ -447,6 +504,7 @@ where
         all_args: &[Value],
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
+        vec_elem: Option<&Type>,
     ) -> Result<Value, CranelispError> {
         if let Some(resolved) = trait_resolution {
             match resolved {
@@ -465,9 +523,30 @@ where
                     // typecheck emit `BuiltinFn { name: "add-i64" }` for
                     // primitive-implemented trait methods directly.
                     let sym = Symbol::from(mangled_name.as_ref());
-                    return self.emit_wrapper_call(builder, &sym, all_args, span);
+                    return self.emit_wrapper_call(builder, &sym, all_args, span, vec_elem);
                 }
                 ResolvedCall::BuiltinFn { name: jit_name } => {
+                    // Vec query family (§12.7 — the CURRY seam): the vec family
+                    // is NOT in `primitives_inline`, so without this arm a
+                    // curried `(vec-get v)` falls to the unknown-builtin extern
+                    // Import below and dies at JIT-finalize
+                    // ("can't resolve symbol vec-get"). Inline-emit instead,
+                    // element type recovered from the applied Vec argument.
+                    if let Some(canonical) = crate::compiler::resolve_vec_query_primitive(
+                        self.ctx.symbol_tables,
+                        self.ctx.module_aliases,
+                        &self.ctx.current_module,
+                        jit_name,
+                    ) {
+                        let elem = vec_elem.cloned();
+                        return self.emit_vec_query_into(
+                            builder,
+                            canonical.as_ref(),
+                            all_args,
+                            &elem,
+                            span,
+                        );
+                    }
                     // Named builtin resolved by the typechecker.
                     if is_extern_primitive_in_wrapper(jit_name) {
                         return emit_extern_call_in_wrapper(
@@ -485,7 +564,9 @@ where
                                 // inline table — fall through to wrapper
                                 // GOT-indirect call.
                                 let sym = Symbol::from(jit_name.as_ref());
-                                return self.emit_wrapper_call(builder, &sym, all_args, span);
+                                return self.emit_wrapper_call(
+                                    builder, &sym, all_args, span, vec_elem,
+                                );
                             }
                         }
                     }
@@ -499,7 +580,7 @@ where
         }
 
         // No trait resolution, or resolution didn't match — call by name.
-        self.emit_wrapper_call(builder, target_name, all_args, span)
+        self.emit_wrapper_call(builder, target_name, all_args, span, vec_elem)
     }
 
     // --- Auto-curry codegen ---
@@ -537,6 +618,14 @@ where
             .map(|arg| HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables)))
             .collect();
 
+        // Vec-query element type for the §12.7 curry seam: a partial
+        // application of `vec-get`/`vec-set`/`vec-push` always includes the
+        // Vec as the first applied argument, whose concrete type names the
+        // element. Harmless `Some` for non-vec-query targets whose first
+        // applied arg happens to be a Vec — consumed only by the vec-query
+        // arm in `emit_curry_target_call`.
+        let vec_elem = args.first().and_then(|a| self.vec_elem_type(a));
+
         // 1. Compile the wrapper function.
         let wrapper_func_id = self.compile_auto_curry_wrapper(
             target_name,
@@ -545,6 +634,7 @@ where
             &arg_categories,
             span,
             trait_resolution,
+            vec_elem.as_ref(),
         )?;
 
         // 2. Build drop glue for heap-typed captures.
@@ -610,6 +700,7 @@ where
     ///
     /// Signature: `(env_ptr, remaining_0, ..., remaining_k) -> i64`
     /// Body: load captures from env, inc heap captures, call target with all args.
+    #[allow(clippy::too_many_arguments)] // Curry context requires all parameters
     fn compile_auto_curry_wrapper(
         &mut self,
         target_name: &Symbol,
@@ -618,6 +709,7 @@ where
         arg_categories: &[HeapCategory],
         span: Span,
         trait_resolution: Option<&ResolvedCall>,
+        vec_elem: Option<&Type>,
     ) -> Result<cranelift_module::FuncId, CranelispError> {
         // Mono-discriminated span name (FIXME 0347 defect 1).
         let wrapper_name = format!(
@@ -684,6 +776,7 @@ where
             &all_args,
             span,
             trait_resolution,
+            vec_elem,
         )?;
 
         builder.ins().return_(&[result]);
@@ -836,8 +929,12 @@ fn is_extern_primitive_in_wrapper(name: &str) -> bool {
 }
 
 /// Emit an extern function call inside a wrapper function body.
-/// Used by auto-curry wrappers to call extern primitives like `str-eq`.
-fn emit_extern_call_in_wrapper(
+/// Used by auto-curry wrappers to call extern primitives like `str-eq`, and by
+/// the vec-query COW emission cores (`vec_codegen`) for the
+/// `vec-set-copy`/`vec-push-copy`/`vec-push-grow` runtime externs when emitting
+/// into a borrowed builder (wrapper bodies build in a separate Cranelift
+/// context, so `FnCompiler::emit_extern_call` over `self.builder` cannot serve).
+pub(crate) fn emit_extern_call_in_wrapper(
     builder: &mut FunctionBuilder,
     module: &mut dyn Module,
     name: &str,

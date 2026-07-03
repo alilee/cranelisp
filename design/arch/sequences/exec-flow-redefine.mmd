@@ -1,0 +1,64 @@
+sequenceDiagram
+    title Execution flow — REPL redefinition turn, the session transaction
+
+    participant User as User<br/>REPL prompt
+    participant Eval as Eval thread<br/>eval.rs::process_form_cluster<br/>sole driver — whole transaction synchronous inside the turn
+    participant TC as Typecheck facade<br/>cranelisp_typecheck::check_forms<br/>cluster staging
+    participant Gate as Commit gate<br/>src/worker.rs::commit_staging_to_live<br/>THE single slot-policy authority — session-transaction.md §7.1
+    participant TX as Transaction executor<br/>src/redefine.rs::run_transaction
+    participant Backend as Backend facade<br/>cranelisp_backend
+    participant GOT as GOT — per-module GotTable<br/>append-only monotone slots, atomic per-slot writes
+    participant Pool as Retention pool + broken registry<br/>SharedState.retained_code / SharedState.broken
+    participant Persist as Persistence writers<br/>lifecycle.rs::regenerate_backing_file, nice-worker .o/.meta
+
+    Note over User, Persist: Scope — one REPL turn redefining a live, compiled, concrete UserFn f (dev session only).<br/>Entry condition — f already has a committed live entry with a populated GOT slot and compiled callers embedding that slot index.<br/>Canonical design — design/int/session-transaction.md (§ refs below), spine design/arch/ownership-inference.md §5, backend interface pinned at design/backend/ownership-codegen.md §8.3 — three calls, all shown here.<br/>Actors follow session-transaction.md §1 (Principle 21). The heap + runtime cadence — closures embedding direct code ptrs, suspended continuations, detached strands — never appears as a lifeline: it is exactly the actor recompilation CANNOT reach, which is why the frozen-world discipline below exists.
+
+    User ->> Eval: (defn f …) — redefinition submitted at the prompt
+    Eval ->> TC: cranelisp_typecheck::check_forms(parsed, &mut ctx [fresh staging], symbol_tables) -> Result[(), CheckError]
+    Note over TC: new scheme for f — forward call-graph edges recorded on Def.callees (Wave-2 enriched harvest, FIXME 0470)<br/>Pass-1 redef_slots pin: staged slot = prior live slot
+    TC -->> Eval: Ok — staged entries
+
+    Eval ->> Gate: staging→live commit, redefinition branch
+    Note over Gate: classify_redefinition — RedefKind via AbiSurface::of(prior) != AbiSurface::of(staged)<br/>AbiSurface = alpha-canonical rendering of the FQ type scheme (§2.2) — increment I adds ONLY the ABI-bearing mode half: param_modes + result (§2.4)<br/>docstring / param-name / body edits are NOT in the comparand
+
+    alt AbiPreserving — body-only edit (the fast path, L-D1 pin §2.3)
+        Gate ->> GOT: reuse prior slot — staged entry keeps slot identity
+        Eval ->> Backend: cranelisp_backend::compile_to_module(module, [f], symbol_tables, module_aliases, &mut jit_module, capture_clif) -> Result[CompilationArtifacts, CompilationError]
+        Backend ->> GOT: got().store_slot(slot_f, new_ptr) — in-place patch
+        Note over Eval, GOT: DONE — no reverse index, no closure, no transaction (§2.3).<br/>Late binding preserved verbatim: stale closures and in-flight strands pick up the new body at their next call — L-R2 ABI-preserving leg.
+    else AbiChanging — type scheme changed
+        Note over Gate, Pool: ABI-EPOCH SLOT VERSIONING (§7, spine §5.6, Principle 20) — ABI identity is encoded in slot identity, so a mixed-ABI edge is UNREPRESENTABLE: old callers embed the old slot index, which keeps pointing at old code forever.
+        Gate ->> GOT: SymbolTable::allocate_got_slot() -> fresh slot for f
+        Gate ->> Pool: prior Code Arc moved into retention, paired with its slot — old slot FROZEN on retained old code (§6.1/§7.2)
+        Eval ->> Backend: cranelisp_backend::compile_to_module(module, [f], symbol_tables, module_aliases, &mut jit_module, capture_clif) -> Result[CompilationArtifacts, CompilationError]
+        Backend ->> GOT: got().store_slot(fresh_slot_f, new_ptr)
+        Note over Eval, GOT: NO QUIESCE, NO PATCH WINDOW (§4.3) — between f's commit and each caller's recompile, old caller code chains through frozen slots to old f: a coherent old-ABI world, transitively. Each store_slot is independently atomic. Trampoline, watcher, nice workers never pause.
+
+        Eval ->> TX: run_transaction — target f
+        TX ->> TX: derive ReverseIndex ON DEMAND from ModuleEntry::Def.callees across live tables (§3.3 — same edge set the ownership fixpoint walks, one graph two consumers, Principle 7 — never a second authored store)
+        TX ->> TX: affected closure over reverse edges from f → SCC condensation → reverse-topological order, callees before callers (§4.1)
+
+        loop per SCC, reverse-topological
+            opt skip test — no in-closure callee propagates (§4.1)
+                Note over TX: slotted AbiPreserving and slotted BROKEN callees do NOT propagate.<br/>A slot-less member — constrained template, Overloaded base, callable_got_slot() = None — passes through UNCONDITIONALLY whatever its own outcome (FIXME-0473 ruling): the artifact embedding the changed slot is the mono instance in each CALLER's module, which only the caller's re-typecheck re-mints.<br/>SCC skipped → not re-typechecked, not in the report — L-R3 exactness.
+            end
+            TX ->> TC: re-typecheck SCC from raw stored sexps — introspection[fq].sexp, rehydrated from backing .cl for cache-restored modules (§4.2) — expand → build → check_forms, fresh staging, NO pool transitions
+            alt re-typecheck Ok
+                TX ->> Gate: commit through the SAME gate — each member's OWN ABI diff decides reuse-and-patch vs fresh-slot-and-propagate (§4.1)
+                TX ->> Backend: inline_jit_codegen_for_names(module, members) → cranelisp_backend::compile_to_module(…) per SCC
+                Backend ->> GOT: got().store_slot per member — recompiled caller codegen reads each callee's NEW slot off the committed entry: callee-first ordering makes embedded slot indices land right with no second bookkeeping
+            else re-typecheck Err — member goes BROKEN (§5)
+                TX ->> Pool: member's Code Arc → retention pool, PAIRED with its trap-message buffer (§6.2 — the message string must outlive the stub: compile_trap_stub bakes the message ADDRESS, bytes are read per invocation)
+                TX ->> Backend: cranelisp_backend::compile_trap_stub(msg_ptr: *const u8, msg_len: usize) -> Result[(*const u8, Code), CompilationError]
+                Backend -->> TX: Ok — trap_ptr + stub Code — ~5-instruction stub raising a clean runtime error over the existing raise machinery, backend §8.1
+                TX ->> GOT: got().store_slot(member_slot, trap_ptr) — trap patched IN PLACE: a broken symbol's ABI did not change, so slot identity is kept and breakage does not propagate (§5.1, spine §5.5 at slotted grain)
+                TX ->> Pool: broken registry record — broken_by: f + the member's own type error (depth-1 provenance, §5.2)
+                Note over TX, Pool: slot-less member breaking = registry record ONLY — no code to retain, no slot to trap-patch.<br/>Its callers are still visited, fail the same instantiation, and break AS THEMSELVES — slotted, so the trap lands at the nearest slotted ancestor instead of vanishing (§4.1 case B).
+            end
+        end
+
+        TX -->> Eval: TransactionReport — recompiled set + broken set with provenance (§9.1 data contract — wording is /repl's, repl/spec.md §18)
+        Eval ->> User: cascade report printed in the turn
+        Note over User, Eval: thereafter /info, /sig, and bare lookup answer BROKEN status + provenance until recovery (§9.2)<br/>recovery is both directions — redefine the broken symbol, or re-redefine f compatibly (§5.3)
+        Eval ->> Persist: regenerate_backing_file + faithful .meta/.o writes — slot numbers load-bearing (§8)<br/>cache-write POISONING for broken modules: a module with BROKEN members never persists, so no session ever restores a trap stub from cache
+    end

@@ -118,6 +118,12 @@ pub struct Cranelisp {
     mode: Mode,
     stdin: String,
     env: Vec<(String, String)>,
+    /// Env keys to REMOVE from the inherited environment before spawn.
+    /// Needed for presence-gated vars (e.g. `CRANELISP_NO_OWNERSHIP`) whose
+    /// "off" polarity a test must pin regardless of the ambient runner env —
+    /// the L-B2(i) suite-polarity lane runs the whole suite under
+    /// `CRANELISP_NO_OWNERSHIP=1`, and polarity-META tests must not inherit it.
+    env_remove: Vec<String>,
     cli_flags: Vec<String>,
     /// Directories under TempDir to add to CRANELISP_LIB.
     lib_dirs: Vec<PathBuf>,
@@ -138,6 +144,7 @@ impl Cranelisp {
             mode: Mode::Repl,
             stdin: String::new(),
             env: Vec::new(),
+            env_remove: Vec::new(),
             cli_flags: Vec::new(),
             lib_dirs: Vec::new(),
             use_workspace_stdlib: false,
@@ -300,6 +307,14 @@ impl Cranelisp {
         self
     }
 
+    /// Remove `key` from the child's inherited environment. Use for
+    /// presence-gated vars a test must pin OFF regardless of the ambient
+    /// runner env (see the `env_remove` field doc).
+    pub fn env_remove(mut self, key: &str) -> Self {
+        self.env_remove.push(key.to_string());
+        self
+    }
+
     /// Append a raw CLI flag passed to the cranelisp binary. Escape hatch.
     pub fn cli_flag(mut self, flag: &str) -> Self {
         self.cli_flags.push(flag.to_string());
@@ -413,6 +428,7 @@ impl Cranelisp {
             args,
             cwd,
             env,
+            env_remove: self.env_remove,
             stdin: self.stdin,
             timeout: self.timeout,
             tmpdir: self.tmpdir,
@@ -456,6 +472,7 @@ struct CrInvocationOwned {
     args: Vec<String>,
     cwd: PathBuf,
     env: Vec<(String, String)>,
+    env_remove: Vec<String>,
     stdin: String,
     timeout: Duration,
     tmpdir: tempfile::TempDir,
@@ -476,6 +493,9 @@ impl CrInvocationOwned {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for k in &self.env_remove {
+            cmd.env_remove(k);
+        }
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
@@ -529,6 +549,9 @@ impl CrInvocationOwned {
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
+                for k in &self.env_remove {
+                    cmd2.env_remove(k);
+                }
                 for (k, v) in &self.env {
                     cmd2.env(k, v);
                 }
@@ -789,6 +812,7 @@ impl CrOutput {
             mode: Mode::Repl,
             stdin: String::new(),
             env: Vec::new(),
+            env_remove: Vec::new(),
             cli_flags: Vec::new(),
             lib_dirs: Vec::new(),
             use_workspace_stdlib: false,

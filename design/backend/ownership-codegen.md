@@ -1,6 +1,8 @@
 # Ownership codegen — the backend-crate proposal (parts 12–16)
 
-**Status:** DESIGN (S100 Phase 3, stage 2) — the per-crate codegen proposal for the five
+**Status:** DESIGN (S100 Phase 3, stage 2; amended S101 Phase 3 — §2.3 toggle-timing
+reconciled to the `/arch` S101 Phase-2 ruling, §8.1/§8.3 implementation pins added, §12
+item 7 upgraded from triage note to fix brief) — the per-crate codegen proposal for the five
 ownership-consuming backend mechanisms. Authored by `/design` narrow-deployed on
 `cranelisp-backend`, against the S100 sprint scope (`sprints/SPRINT.md` parts 12–16).
 **Governing authority:** `design/arch/ownership-inference.md` (the S100 master spine, as amended
@@ -43,7 +45,9 @@ one interprocedural analysis' outputs (ABI-bearing mode vectors + advisory site 
 | 14. Dual-symbol extern convention | §9 | Sibling = shared-core Rust fn + second export (`<name>$borrowed`); increment I ships the pattern + **one template instance: `str-len`** (`vec-len` is NOT a candidate — its static sites are inline-lowered, no pair to elide; correction of the spine's example against source); expansion is data-driven via `CRANELISP_RC_STATS` attribution |
 
 **Increment staging (binding, spine §7).** Increment I ships §2 + §3 + §4 (stack slots) + §5 +
-§9's single sibling. Increment II ships §6 + §7 + §4's region arena. §8 (the R3 half) lands
+§9's single sibling (§2's toggle + manifest key were pulled forward to the S101 stage-M
+machinery sprint by the `/arch` S101 Phase-2 ruling — see §2.3). Increment II ships §6 +
+§7 + §4's region arena. §8 (the R3 half) lands
 **before or with** increment I's ABI-bearing modes per spine §5.7 — it is machinery, not a
 mechanism, and is valuable standalone (it also cures the latent type-change hole). Every
 section below is tagged where the distinction bites.
@@ -176,7 +180,12 @@ callees — the §3.1-spine leak/double-free, arriving through the cache instead
 version). Flipping the toggle invalidates the whole cache — a full recompile, exactly as a
 compiler upgrade does. This makes mixed-ABI caches unrepresentable (Principle 18/20) at the
 cost of a rebuild on flip, which is the correct price for an oracle switch. One new manifest
-field, backend cache submodule work, landing with increment I's change-set.
+field, backend cache submodule work — landing in **S101 (stage M, the R3-machinery sprint),
+with the toggle itself**, pulled forward from increment I by the `/arch` S101 Phase-2 ruling
+(recorded in `sprints/SPRINT.md` §Architecture review): pre-analysis the key is inert — no
+summaries exist, both toggle polarities are byte-identical — but landing it with the toggle
+means increment I's differential oracle has its cache substrate in place before the first
+moded emission exists.
 
 ### 2.4 Relation to the existing probes
 
@@ -643,11 +652,24 @@ symbol was hit). So:
 - **Args untouched** — the stub never reads its argument registers, so one stub body is
   signature-safe for any arity/type vector, which is precisely what makes the **in-place
   slot patch** on the BROKEN symbol's existing slot sound (spine §5.5: existing unrecompiled
-  callers must reach the trap through the slot they already embed).
+  callers must reach the trap through the slot they already embed). Concretely: the stub
+  **compiles with signature `() -> i64`** (zero declared params, one I64 return). This is
+  well-defined against a caller's imported N-arg signature under the uniform all-I64
+  convention on both supported ABIs (SysV x86-64 / AAPCS64): register-passed args are
+  caller-owned scratch the stub never touches, stack-passed args (arity > 8) are
+  caller-cleaned in both conventions, and the sentinel comes back in the single return
+  register.
 - **The message** is the session-composed provenance string
-  (`g is broken by the redefinition of f: <original error>`) — session-owned memory,
-  retained for the stub's lifetime (until the symbol recompiles or session end), its address
-  and length baked as `iconst`s. No JIT data section needed.
+  (`g is broken by the redefinition of f: <original error>`) — UTF-8 bytes, **no NUL
+  terminator** (`runtime_panic` takes an explicit `(ptr, len)` pair) — session-owned memory,
+  its address and length baked as `iconst`s. No JIT data section needed. **Lifetime
+  contract on the caller (`/int`):** the string must live **exactly as long as the returned
+  `Code` retention handle**, stored paired with it in the session pool ("until the symbol
+  recompiles" understates it — a broken symbol later recovered with a *new* ABI freezes its
+  old slot pointing at the stub permanently, so in that path string and handle live to
+  session end). The pairing design is the `design/int/` fire's, checklist item (i) per the
+  `/arch` S101 Phase-2 review; the backend's obligation is only that the baked pointer is
+  never read after the `Code` handle drops.
 - **RC-mid-panic caveat, carried:** the caller has already emitted consuming incs for its
   heap args when the trap fires; the raise path releases none of them — one leaked reference
   per trap invocation. This is the same caveat class as every runtime panic
@@ -695,9 +717,16 @@ Three calls, two of which exist:
 2. **`compile_trap_stub(msg_ptr: *const u8, msg_len: usize) -> Result<(ptr, Code), CompilationError>`**
    — NEW, tiny: emits the §8.1 stub into a fresh per-symbol `Jit`, returns the code pointer
    (for the session to `store_slot` onto the broken symbol's existing slot) and the `Code::Jit`
-   retention handle (for the session's entry/pool). This is the one public-surface addition
-   of the R3 backend half — a backend `public-api.txt` diff at the implementing change-set,
-   flagged for `/arch` per the baseline-diff discipline.
+   retention handle (for the session's entry/pool). Approved as shaped by `/arch` (S101
+   Phase 2); implementation pins: the returned `ptr` is **`*const u8`** — exactly what
+   `store_slot(slot, ptr: *const u8)` (`cranelisp-types/src/got.rs:135`) consumes;
+   `CompilationError` is the crate's existing facade error type (the same one
+   `compile_to_module` returns); the fresh `Jit` is constructed through the standard
+   per-symbol path, so **`runtime/panic` resolves through the ordinary intrinsics
+   registration** (`register_intrinsics` → `JITBuilder::symbol`, `jit.rs:93–97`) with no
+   bespoke symbol wiring — per-symbol JIT cardinality is the Decision-41 norm. This is the
+   one public-surface addition of the R3 backend half — a backend `public-api.txt` diff at
+   the implementing change-set, flagged for `/arch` per the baseline-diff discipline.
 3. **`got().store_slot` / `allocate_got_slot`** — existing; the session patches and allocates
    as today. Freeze semantics are session bookkeeping (never rebind a frozen slot), not a GOT
    mechanism.
@@ -790,7 +819,8 @@ the landing change-set — the audit remains the single registry of extern RC be
 ## §10. What ships when — and what must not ship
 
 **Increment I (with, or after, the §8 machinery per spine §5.7):**
-§2 toggle + manifest key; §3 borrow-elision (caller skip-inc, `borrowed_vars` params,
+§2 toggle + manifest key (pulled forward — land S101 stage M alongside §8, `/arch` Phase-2
+ruling, §2.3); §3 borrow-elision (caller skip-inc, `borrowed_vars` params,
 result-mode consumption, `compute_last_uses` provenance extension, adaptation algebra, R2
 wrapper + curry composition); §4.1–§4.3 stack slots (immortal header, scalar-payload class);
 §5 confined-gated non-atomic inline RC (+ gating `emit_vec_rc_dec_with_drop`); §9's authoring
@@ -875,8 +905,50 @@ fact-absent path (§2.2 discipline); GOT slot-hole reclamation (FIXME 0466 stand
    leak is bounded (heap-balance tolerance documented, not asserted to zero).
 6. A per-extern `CRANELISP_RC_STATS` attribution lane funding (or burying) §9.2's deferred
    sibling candidates.
-7. Inherited from the spine (§9): the vec-query-family NULL-GOT-slot value-use triage — §9.1
-   touches the same registration site; verify before the sibling lands.
+7. The vec-query-family NULL-GOT-slot value-use defect — **triage complete (S100: REAL
+   DEFECT), fix scheduled S101** (`sprints/SPRINT.md` item 1), sequenced **before** increment
+   I's §9 `str-len$borrowed` sibling and §3.5 R2-wrapper work, which land on the same seam
+   (§9.1 also touches the same registration site). `/qa`'s repro guards exist and are
+   failing-not-ignored: `tests/vec_query_value_use.rs` — 4 RED (`vec-get`/`vec-set`/
+   `vec-push` as values through a HOF, REPL + `--run`) + the GREEN `vec-len` control pinning
+   the working path. Fix brief for `/dev` (account verified against source, S101 Phase 3):
+   - **Root cause.** `vec-get`/`vec-set`/`vec-push` sit in the static primitives table with
+     allocated-but-NULL GOT slots (`insert_vec_query_entries` — name-resolution-only
+     entries; no extern body can exist because a single monomorphic body cannot know the
+     element's heap category). Statically-resolved sites are inline-lowered
+     (`compile_vec_op`, `vec_codegen.rs:95`) and work. Value use routes `compile_var` →
+     `is_known_function` (the slotted entry satisfies `resolve_got_target`) →
+     `compile_fn_as_value` → `compile_fn_wrapper_body` → `emit_wrapper_call`
+     (`fn_as_value.rs:361`), whose fallback is a GOT-indirect `call_indirect` through the
+     NULL slot → jump to 0 → SIGSEGV.
+   - **Fix location and shape.** `emit_wrapper_call` needs a vec-query arm before its
+     GOT-indirect fallback — the in-file precedent is the primitive-constructor arm
+     (`fn_as_value.rs:388`), which inline-emits instead of calling through a non-callable
+     slot. Note two non-drop-ins: the vec family is **not** in `primitives_inline`
+     (`is_known_builtin` has no vec entries — the curry path's inline fallback does not
+     cover it), and `compile_vec_op` is not directly reusable in a wrapper body (it builds
+     on `self.builder` and takes `MonoExpr` args for element-type/last-use analysis; the
+     wrapper builds in a separate `FunctionBuilder` context). The fix wants borrowed-builder
+     emission — the `emit_adt_construct_into` precedent in the same file.
+   - **RC semantics inside the wrapper.** Every wrapper param arrives **owned** (consuming
+     closure protocol), so the inline emission takes the owned-temporary polarity uniformly:
+     `vec-get` → bounds check + element load + element inc (per element heap category) +
+     vec-aware dec of the consumed vec; `vec-set`/`vec-push` → the element's reference
+     transfers into the vec with **no** consuming inc (the temporary branch of
+     `element_consuming_inc`), and the vec is trivially at last use, so the COW rc==1 path
+     applies.
+   - **Element heap category is available per-site.** `compile_var` receives the Var's
+     concrete `inferred_type` (post-mono types are concrete — S84 ruling): `(Fn [(Vec t)
+     Int] t)` etc. The fix plumbs it into `compile_fn_as_value` (today name + span only) and
+     down to the wrapper-body emission. This per-site type knowledge is exactly what a
+     primitives-crate extern body cannot have — why the wrapper is the right fix location
+     and the alternative stays blocked on element-type erasure.
+   - **Curry-shape coverage.** By inspection, a partial application (e.g. `(vec-get v)`)
+     reaches the same NULL slot: `emit_curry_target_call` has no trait resolution for the
+     vec family and the inline table misses it, so it falls through to `emit_wrapper_call`.
+     Not covered by the S100 repro; `/dev` assesses during the fix (unit-test-per-fix
+     discipline) — a fix at/below `emit_wrapper_call` covers it only if the element-type
+     plumbing also reaches the auto-curry path.
 
 **To the `/int` design fire (`design/int/`, later):** the §8.3 interface consumption — the
 redefinition transaction, reverse index lifecycle, frozen-`Code` retention pool, cascade

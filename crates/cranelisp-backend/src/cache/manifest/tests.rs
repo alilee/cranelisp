@@ -357,3 +357,109 @@ fn check_manifest_empty_hash_not_wildcard() {
         "empty presented hash must not match a real cached hash"
     );
 }
+
+// =========================================================================
+// S101 item 6 — CRANELISP_NO_OWNERSHIP cache-manifest global key
+// (design/backend/ownership-codegen.md §2.3, stage M).
+// =========================================================================
+
+// spec: design/backend/ownership-codegen.md §2.3 — a manifest written under
+// the OTHER toggle polarity is globally invalid (wholesale invalidation), and
+// the reason is the typed OwnershipToggle variant.
+#[test]
+fn check_manifest_ownership_toggle_flip_is_globally_invalid() {
+    let triple = target_lexicon::Triple::host().to_string();
+    let mut manifest = CacheManifest::new(&triple);
+    let mp = ModuleFullPath::from("user");
+    let source_hash = hash_source("(defn main [] 42)");
+    manifest.upsert_module(&mp, source_hash.clone(), HashMap::new());
+
+    // Simulate the cache having been written under the OTHER polarity.
+    manifest.ownership_disabled = !no_ownership_enabled();
+
+    let result = check_manifest(&manifest, &mp, &source_hash, &HashMap::new());
+    match result {
+        Err(CacheInvalidReason::OwnershipToggle { cached, current }) => {
+            assert_ne!(cached, current, "the flip is what invalidates");
+        }
+        other => panic!(
+            "polarity flip must be a GLOBAL invalidation with the typed \
+             OwnershipToggle reason; got {other:?}"
+        ),
+    }
+}
+
+// spec: design/backend/ownership-codegen.md §2.3 — key STABILITY (the L-B3
+// leg-4 guard against an always-miss implementation): a fresh manifest stamps
+// the current polarity, so a same-polarity check passes.
+#[test]
+fn check_manifest_same_ownership_polarity_is_stable() {
+    let triple = target_lexicon::Triple::host().to_string();
+    let mut manifest = CacheManifest::new(&triple);
+    assert_eq!(
+        manifest.ownership_disabled,
+        no_ownership_enabled(),
+        "CacheManifest::new must stamp the current toggle polarity"
+    );
+    let mp = ModuleFullPath::from("user");
+    let source_hash = hash_source("(defn main [] 42)");
+    manifest.upsert_module(&mp, source_hash.clone(), HashMap::new());
+
+    let result = check_manifest(&manifest, &mp, &source_hash, &HashMap::new());
+    assert!(
+        result.unwrap(),
+        "same-polarity manifest must remain a cache hit (key stability)"
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §2.3 — a PRE-KEY manifest (no
+// `ownership_disabled` field in the JSON) deserializes to the serde default
+// `false` — sound because pre-key caches were written pre-analysis where both
+// polarities are byte-identical; it invalidates iff the session sets the env.
+#[test]
+fn manifest_missing_ownership_field_defaults_to_analysis_on() {
+    let json = r#"{
+        "cache_format_version": 11,
+        "compiler_mtime": "",
+        "target_triple": "aarch64-unknown-linux-gnu",
+        "cranelift_version": "0.116.1",
+        "modules": {}
+    }"#;
+    let manifest: CacheManifest =
+        serde_json::from_str(json).expect("pre-key manifest must deserialize");
+    assert!(
+        !manifest.ownership_disabled,
+        "absent field must default to ownership_disabled: false"
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §2.3 — CONVERGENCE: a manifest on
+// disk written under the OTHER polarity does not load (`read_manifest` treats
+// it as absent), so the session starts from a fresh manifest stamped with the
+// current polarity — the flip run recompiles wholesale AND the next
+// same-polarity run serves hits again (the session rewrites the loaded
+// manifest object, so a surviving stale-polarity manifest would never
+// converge).
+#[test]
+fn read_manifest_rejects_other_polarity_manifest() {
+    let dir = tempfile::tempdir().unwrap();
+    let triple = target_lexicon::Triple::host().to_string();
+
+    // Same-polarity manifest round-trips.
+    let manifest = CacheManifest::new(&triple);
+    write_manifest(dir.path(), &manifest).unwrap();
+    assert!(
+        read_manifest(dir.path()).is_some(),
+        "same-polarity manifest must load"
+    );
+
+    // Other-polarity manifest is treated as absent.
+    let mut flipped = CacheManifest::new(&triple);
+    flipped.ownership_disabled = !no_ownership_enabled();
+    write_manifest(dir.path(), &flipped).unwrap();
+    assert!(
+        read_manifest(dir.path()).is_none(),
+        "an other-polarity manifest must not load (wholesale invalidation + \
+         convergence — the fresh replacement stamps the current polarity)"
+    );
+}

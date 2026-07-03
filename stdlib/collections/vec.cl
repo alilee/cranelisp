@@ -121,6 +121,20 @@
     (vec-zip-loop f va vb len (add-i64 i 1)
       (vec-push acc (f (vec-get va i) (vec-get vb i))))))
 
+;; NOTE(0488-family, S101 6b): the intended simplification
+;; `(vec-reduce vec-push va vb)` (builtin-as-value fold) is HELD. The bare
+;; standalone call works with that body, but it poisons COMPOSED use at the
+;; consuming turn: with the fold body, `(count (vec-concat [1 2] [3 4 5]))`
+;; from user code fails codegen "undefined function: count" (any imported
+;; generic applied over the result — `get` likewise). The loop body below
+;; composes fine. Re-attempt the fold body when the 0488 generic-value-use
+;; mono-instance defect class is fixed; the composed self-test rows in
+;; vec/test.cl (test-vec-concat-*) are the guard that will catch it.
+;; ALSO (6b follow-up): with the fold body the empty-vec rows
+;; (test-vec-concat-empty-*) fail TYPECHECK ("ambiguous type", even with
+;; a :(Vec Int) [] pin), which ABORTS cold-cache prelude compile / REPL
+;; startup — so a fold-body re-attempt fails loudly at startup, not just
+;; on composed calls. See FIXME 0488 §Addendum.
 (defn vec-concat "Concatenate two Vecs"
   [va vb]
   (vec-concat-loop va vb (vec-len vb) 0))
@@ -130,6 +144,11 @@
   (if (ge-i64 i len) acc
     (vec-concat-loop (vec-push acc (vec-get vb i)) vb len (add-i64 i 1))))
 
+;; NOTE(0488): vec-flatten is currently UNUSABLE from user code — passing
+;; the same-module generic `vec-concat` as a value to `vec-reduce` loses
+;; its mono instance at the consuming turn's codegen batch (FIXME 0488,
+;; imported/generic value-use; /qa guard in flight). Its self-test is owed
+;; and rides 0488's fix — see collections/vec/test.cl.
 (defn vec-flatten "Flatten a Vec of Vecs into a single Vec"
   [vv]
   (vec-reduce vec-concat [] vv))

@@ -484,13 +484,15 @@ pub(super) fn qualify_expanded_sexp(
 // Macro expansion for Pass 2
 // ---------------------------------------------------------------------------
 
-/// Attempt to expand macros in a sexp tree.
-///
 /// Compile all clauses of a macro if any clause lacks a function pointer.
 ///
-/// Before compiling macro clauses, walks the transitive callees of the
-/// macro (from `ModuleEntry.callees`) and compiles any uncompiled
-/// dependencies first. Notifies the scheduler after each symbol is compiled.
+/// No dependency pre-walk: the former transitive-callee walk was deleted in
+/// S76 (see the in-body note below) — the locked macro-availability model
+/// forbids a clause from calling a same-module non-macro definition at
+/// expansion time, so a clause's callees are either dependency-module
+/// functions (already compiled by ordinary module compilation) or same-module
+/// macros (compiled in source order). Notifies the scheduler per compiled
+/// clause (never claiming module-level `inmem_done`).
 pub(super) fn compile_macro_if_needed(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,

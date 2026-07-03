@@ -6,9 +6,9 @@
 ;; the vec combinators, and the new eager `range` (gap G3). Vec values reduce
 ;; to Int scalars (count/get/vec-reduce) for assert-eq.
 
-(import [super [count get conj assoc range vec-map vec-filter vec-reduce vec-reverse]])
+(import [super [count get conj assoc range vec-map vec-filter vec-reduce vec-reverse vec-concat]])
 (import [testing.assertions [assert-eq]])
-(import [primitives [Option String Int add-i64 mul-i64 eq-i64 gt-i64]])
+(import [primitives [Option String Int Vec add-i64 mul-i64 eq-i64 gt-i64]])
 
 (defn test-count [] :(Option String)
   (assert-eq 3 (count [1 2 3])))
@@ -36,6 +36,33 @@
 
 (defn test-vec-reverse [] :(Option String)
   (assert-eq 1 (get (vec-reverse [1 2 3]) 2)))
+
+;; vec-concat — S101 6b. The composed shapes (count/get over the result)
+;; double as the guard for the held fold-body simplification: with
+;; `(vec-reduce vec-push va vb)` as the body they fail codegen
+;; ("undefined function: count") — see vec.cl §vec-concat NOTE(0488-family).
+;; The empty-vec rows guard harder still: under the fold body they fail
+;; TYPECHECK ("ambiguous type", annotation does not pin), aborting cold
+;; prelude compile at REPL startup. Under the landed loop body both rows
+;; compile cold with OR without the :(Vec Int) pins (the sibling literal
+;; unifies `a`); the pins are kept as S84-defensive documentation.
+(defn test-vec-concat-length [] :(Option String)
+  (assert-eq 5 (count (vec-concat [1 2] [3 4 5]))))
+
+(defn test-vec-concat-order [] :(Option String)
+  (assert-eq 3 (get (vec-concat [1 2] [3 4 5]) 2)))
+
+(defn test-vec-concat-empty-left [] :(Option String)
+  (assert-eq 7 (get (vec-concat :(Vec Int) [] [7 8]) 0)))
+
+(defn test-vec-concat-empty-right [] :(Option String)
+  (assert-eq 2 (count (vec-concat [1 2] :(Vec Int) []))))
+
+;; vec-flatten — self-test OWED, held per the green-self-test convention:
+;; vec-flatten is unusable from user code today (FIXME 0488 — same-module
+;; generic `vec-concat` passed as a value to `vec-reduce` loses its mono
+;; instance at the consuming turn; /qa failing guard is the durable
+;; record). Add `test-vec-flatten` rows here when 0488's fix lands.
 
 ;; range — G3
 (defn test-range-count [] :(Option String)

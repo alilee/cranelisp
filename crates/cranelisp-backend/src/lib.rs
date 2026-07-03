@@ -1333,6 +1333,124 @@ fn disasm_host(code_bytes: &[u8], addr: u64) -> Result<String, String> {
     }
 }
 
+// =========================================================================
+// Free function — `compile_trap_stub` (S101 R3 machinery, backend §8.1/§8.3)
+// =========================================================================
+
+/// Compile a per-symbol **trap stub** — the R3 redefinition machinery's
+/// backend half (`design/backend/ownership-codegen.md` §8.1/§8.3; spine §5.5).
+///
+/// A BROKEN symbol's GOT slot is patched (by the session, via
+/// `got().store_slot`) to point at this stub, so every existing unrecompiled
+/// caller that dispatches through the slot raises a clean runtime error with
+/// per-symbol provenance instead of executing stale code. The stub is ~5
+/// instructions over the EXISTING raise machinery — `iconst msg_ptr; iconst
+/// msg_len; call runtime/panic; return 0` — no new intrinsic (`runtime/panic`
+/// resolves through the ordinary intrinsics registration,
+/// `register_intrinsics` → `JITBuilder::symbol`).
+///
+/// **Signature `() -> i64`, sound for any caller arity** under the uniform
+/// all-I64 value representation on both supported ABIs (SysV x86-64 /
+/// AAPCS64): the stub never reads its argument registers (caller-owned
+/// scratch), stack-passed args (arity > 8) are caller-cleaned in both
+/// conventions, and the `0` sentinel comes back in the single return register.
+/// The host surfaces the raised message via
+/// `cranelisp_intrinsics::panic::take_runtime_error()` after the invocation,
+/// in every mode.
+///
+/// Returns `(code_ptr, Code)`: the code pointer is `*const u8` — exactly what
+/// `store_slot(slot, ptr)` consumes — and the `Code::Jit` handle is the
+/// retention root for the stub's JIT pages (per-symbol JIT cardinality, the
+/// Decision-41 norm; keep it alive for as long as the slot may be called).
+///
+/// # Message lifetime — the CALLER's obligation
+///
+/// `msg_ptr`/`msg_len` name a UTF-8, **no-NUL** provenance string
+/// (`"g is broken by the redefinition of f: <original error>"`) whose ADDRESS
+/// is baked into the stub as `iconst`s and read at every trap **invocation**,
+/// not at compile time. The string MUST live exactly as long as the returned
+/// `Code` retention handle — the session stores them paired
+/// (`design/int/session-transaction.md`; `/arch` S101 Phase-2 checklist (i)).
+/// The backend's obligation is only that the baked pointer is never read
+/// after the `Code` handle drops.
+///
+/// RC-mid-panic caveat (carried, documented): a caller has already emitted
+/// consuming incs for its heap args when the trap fires; the raise path
+/// releases none of them — one leaked reference per trap invocation, the same
+/// caveat class as every `runtime/panic` raise. Dev-session-bounded.
+pub fn compile_trap_stub(
+    msg_ptr: *const u8,
+    msg_len: usize,
+) -> Result<(*const u8, Code), CompilationError> {
+    let mut jit = jit::Jit::new_with_symbols(&[]).map_err(CompilationError::from)?;
+    let module = jit.jit_module();
+
+    // `runtime/panic` via the ordinary intrinsics declaration path (no
+    // bespoke symbol wiring — §8.1).
+    let intrinsic_ids = declare_intrinsics_generic(module).map_err(CompilationError::from)?;
+    let panic_id = intrinsic_ids.panic.unwrap_or_else(|| {
+        unreachable!("invariant: runtime/panic is in the intrinsics catalog")
+    });
+
+    // Stub signature: () -> i64 (see the fn-level ABI note).
+    let mut sig = module.make_signature();
+    sig.returns.push(AbiParam::new(types::I64));
+
+    let func_id = module
+        .declare_function("__cranelisp_trap_stub__", cranelift_module::Linkage::Local, &sig)
+        .map_err(|e| CompilationError::from(CranelispError::CodegenError {
+            message: format!("failed to declare trap stub: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }))?;
+
+    let mut ctx = module.make_context();
+    ctx.func.signature = sig;
+    let mut func_ctx = FunctionBuilderContext::new();
+    {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        // Bake the provenance string's address + length; call runtime/panic
+        // (stores the message in the thread-local slot and returns); return
+        // the 0 sentinel.
+        let ptr_val = builder.ins().iconst(types::I64, msg_ptr as i64);
+        let len_val = builder.ins().iconst(types::I64, msg_len as i64);
+        let panic_ref = module.declare_func_in_func(panic_id, builder.func);
+        builder.ins().call(panic_ref, &[ptr_val, len_val]);
+        let sentinel = builder.ins().iconst(types::I64, 0);
+        builder.ins().return_(&[sentinel]);
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+
+    module
+        .define_function(func_id, &mut ctx)
+        .map_err(|e| CompilationError::from(CranelispError::CodegenError {
+            message: format!("failed to define trap stub: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }))?;
+    module
+        .finalize_definitions()
+        .map_err(|e| CompilationError::from(CranelispError::CodegenError {
+            message: format!("failed to finalize trap stub: {e}"),
+            location: ErrorLocation::from_span(Span::SYNTHETIC),
+        }))?;
+
+    let code_ptr = module.get_finalized_function(func_id);
+
+    // Post-finalize the Jit is effectively read-only; `Code`'s
+    // `unsafe impl Send + Sync` (code.rs module docs) carries the safety
+    // argument. Same allow as the int-side `Arc<Jit>` construction
+    // (`src/worker.rs` precedent).
+    #[allow(clippy::arc_with_non_send_sync)]
+    let jit_arc = std::sync::Arc::new(jit);
+
+    Ok((code_ptr, Code::jit(jit_arc)))
+}
+
 // NOTE: `compile_to_object` was retracted in S75 W2 (`/dev backend`) per the
 // facade §"Free functions" tombstone + PIF Row 4 retraction. It was a
 // Sprint-67 facade-compliance scaffold returning `unimplemented!()` and

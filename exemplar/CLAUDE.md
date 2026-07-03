@@ -6,6 +6,53 @@ The **committed showcase target is the stdio CLI** — `user.cl` tells the full
 story end-to-end. The web platform is now built (S96) and is the marquee for
 **inferred concurrency**; see the S96 Phase 6 note below and `plan-exemplar.md`.
 
+## Current State (Sprint 101 Phase 6a — no regression; redefinition dev-loop assessed at scale)
+
+**Full regression pass on the S101 binary (commit-gate rewrite + GOT-slot
+policy + vec value-use fixes): green.** `--run exemplar/user.cl` solves
+end-to-end (identical solution + 2886-byte HTML); `tests.cl` **40/40 under
+both default and `CRANELISP_NO_LENIENT=1`**; the web showcase serves the form,
+404s, and returns a complete valid solution grid over HTTP (`/solve`, 81
+digits). Solve timing unchanged (~8-10 s wall, sys-dominated — the known
+FIXME 0408 copy-per-guess contention, deferred to increment II).
+
+**Redefinition machinery, at-scale verdict (S101 R3):** excellent where it
+fires, but it rarely fires on exemplar-shaped code. In the `user` module the
+UX is exactly right — `; recompiled:` / `; broken:` cascade reports, 1 ms
+trap with full provenance, `/info` broken-status + source, clean two-way
+recovery, body-only fast path at 0-1 ms; loading the whole
+grid/solver/html/form slice costs ~560 ms once (≈1 ms cached). But (a)
+unannotated redefinitions generalize to polymorphic schemes → §10 T1
+downgrade → **silent split-world** (REPL sees the new def; compiled callers
+like `solve` silently keep the frozen old one — no report, no trap); (b) in
+`/mod grid`/`/mod solver` the prelude (`=`, `+`, `None`, `:Int`) is not in
+scope, so real exemplar bodies can't be pasted back (FIXME 0487, /int); (c)
+when the transaction does fire (FQ-annotated concrete target), dependents of
+file-backed symbols fail recompilation ("definition source unavailable";
+false `undefined variable: None` — repros with /qa via the S101 Phase 6a
+/port report). Net: the live mid-stack edit loop is not yet usable on the
+exemplar; it is on REPL-defined code.
+
+**WARNING — do not run bare REPL sessions with `exemplar/` as cwd.** The
+REPL session's `user` module uses `./user.cl` as its regenerated backing
+file and shares the `user` cache slot in `./.cranelisp-cache/` — a session
+here restores the exemplar's `user.cl` module, then rewrites both at every
+defining turn and at `/quit` (observed: mtime-only rewrite this time; the
+hybrid poisoned cache made the *next* REPL session fail to start until
+`.cranelisp-cache/` was deleted). Also: any session using `(def x …)`
+poisons the dir for subsequent sessions ("defmacro name must be a symbol"),
+`--no-cache` does not recover. Repros filed with /qa via the Phase 6a
+report. Use a scratch directory with copies of the modules for REPL work.
+
+**Vec value-use unlock (S101) noted for 0408:** `vec-get`/`vec-set`/
+`vec-push` now work as first-class values (HOF args, curried) — verified
+live. No exemplar code change needed now; the increment-II non-copying grid
+representation can thread vec accessors through `par-map-reduce`/fold HOFs
+without wrapper lambdas. Caveat: the carried 0474 COW copy-branch leak
+(static `vec-set` with source live also leaks) is exactly the shape of the
+solver's copy-per-guess `set-cell`/`assoc` — expect leak growth on deep
+backtracking until the S102 fix.
+
 ## Current State (Sprint 98 Phase 6 — exemplar adopts the v9 ctx-vtable handle model + marquee replays GREEN)
 
 The web exemplar is now on the **v9 ctx-vtable handle model** (S97 model pivot;

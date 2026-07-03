@@ -19,7 +19,7 @@ Do not add a sprint-named demo to the active set.
 
 ## The active set
 
-Eight capability-named demos, each self-contained, each replaying green against
+Ten capability-named demos, each self-contained, each replaying green against
 the prebuilt binary. They consume the **curated surface** (see below) — the same
 idiomatic surface the exemplar uses.
 
@@ -39,9 +39,12 @@ only: `./repl/showcase tour` (bare name) resolves to `01-tour.demo` just as
 | `06-modules.demo` | `/imports`; import-on-demand; fully-qualified origins; unbound-name discoverability; how the exemplar's modules fit together. |
 | `07-io-and-effects.demo` | `(IO a)` values; `platform stdio`/`print`; `do`/`bind!` sequencing; `Pure`/`bind`; effects in control flow; the exemplar's main shape. |
 | `08-sudoku.demo` | The centerpiece: ADT domain types, grid geometry, a backtracking solver, formatted output, and a single `print` effect — a 4×4 sibling of `exemplar/user.cl`. |
+| `09-library-discovery.demo` | `/search` across the not-yet-imported lib path; "is there already a function for this?" answered before importing. |
+| `10-redefinition.demo` | Live-editing with a safety net: body edits late-bind; signature edits recompile dependents and print the cascade report; broken symbols introspect with provenance, trap loudly, and recover by redefinition in either direction. |
 
-The arc deliberately ends at `08-sudoku.demo`, which reuses every concept the prior
-demos introduced.
+The language arc deliberately ends at `08-sudoku.demo`, which reuses every concept
+the prior demos introduced. The demos after it showcase the development *workflow*
+around that language — library discovery, live redefinition.
 
 ## The archive (regression guards)
 

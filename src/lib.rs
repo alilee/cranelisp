@@ -70,6 +70,13 @@ pub(crate) mod pretty;
 // `process_regular_form` + their family-private helpers. The permanent home
 // named in `design/int/int.md` §3.3 Wave-D target map.
 pub(crate) mod process_form;
+// redefine — the dependent-recompilation session transaction (S101 R3
+// machinery, `design/int/session-transaction.md`): the AbiSurface summary-diff
+// comparand + RedefKind classification consumed by the commit gate in
+// `worker.rs`, the on-demand reverse dependency index, the affected-set
+// closure/SCC walk, BROKEN marking (trap stubs + retention pool + registry),
+// and the cascade-report data contract (`repl/spec.md` §18).
+pub(crate) mod redefine;
 // eval — REPL eval form-chain extracted from session_v4.rs (FIXME 0109 Wave D).
 // `eval` + `process_form_cluster`/`process_single_form` (eval-thread dep-retry
 // loop) + `codegen_and_execute` + `check_bare_symbol_introspection` +

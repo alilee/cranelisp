@@ -29,13 +29,25 @@ use cranelisp_backend::got_observer::{
 // Event taxonomy (consumer-side; mirrors backend's GotEvent for storage)
 // ---------------------------------------------------------------------------
 
+/// Consumer-side event tag: the backend-emitted tags plus the two int-owned
+/// redefinition-machinery kinds (S101, `design/int/session-transaction.md`
+/// §9.3) that backend's `GotEventTag` does not carry — **slot-freeze** (an
+/// ABI-changing redefinition froze the old slot and allocated a fresh one)
+/// and **trap-patch** (a BROKEN symbol's slot was patched to a trap stub).
+#[derive(Debug, Clone, Copy)]
+pub enum StoredTag {
+    Backend(GotEventTag),
+    SlotFreeze,
+    TrapPatch,
+}
+
 /// Stored event with timestamp + thread-ordering metadata for merge-sort.
 #[derive(Debug, Clone)]
 pub struct StoredGotEvent {
     pub timestamp_ns: u64,
     pub thread_id: ThreadId,
     pub thread_ord_id: u64,
-    pub tag: GotEventTag,
+    pub tag: StoredTag,
     pub module: String,
     pub symbol: String,
     pub slot: usize,
@@ -109,7 +121,7 @@ pub fn record(tag: GotEventTag, event: &GotEvent) {
         timestamp_ns,
         thread_id: std::thread::current().id(),
         thread_ord_id: ord,
-        tag,
+        tag: StoredTag::Backend(tag),
         module: event.module.to_string(),
         symbol: event.symbol.to_string(),
         slot: event.slot,
@@ -176,10 +188,12 @@ fn dump_all_buffers() -> Vec<StoredGotEvent> {
 
 fn format_event_line(e: &StoredGotEvent) -> String {
     let tag_name = match e.tag {
-        GotEventTag::JitWrite => "JitWrite",
-        GotEventTag::LinkerWrite => "LinkerWrite",
-        GotEventTag::Redefinition => "Redefinition",
-        _ => "Unknown",
+        StoredTag::Backend(GotEventTag::JitWrite) => "JitWrite",
+        StoredTag::Backend(GotEventTag::LinkerWrite) => "LinkerWrite",
+        StoredTag::Backend(GotEventTag::Redefinition) => "Redefinition",
+        StoredTag::Backend(_) => "Unknown",
+        StoredTag::SlotFreeze => "SlotFreeze",
+        StoredTag::TrapPatch => "TrapPatch",
     };
     let prov = match e.provenance {
         GotProvenance::Jit { jit_addr } => format!("jit_addr={jit_addr:#x}"),
@@ -299,6 +313,73 @@ pub fn emit_redefinition(
     // ptr, provenance)`) so int's Redefinition emission can use the same
     // `emit(tag, &event)` dispatch path as the backend-internal JitWrite +
     // LinkerWrite sites. Today we record directly into the consumer ring.
+    record_int_event(
+        StoredTag::Backend(GotEventTag::Redefinition),
+        module,
+        symbol,
+        slot,
+        new_ptr as usize,
+        GotProvenance::Jit {
+            jit_addr: prior_ptr as usize,
+        },
+    );
+}
+
+/// Emit a `SlotFreeze` event (S101 §9.3): an ABI-changing redefinition froze
+/// `old_slot` (never written again; its code retained in the session pool)
+/// and allocated `new_slot` for the new world. `slot` = old slot; `ptr`
+/// carries the new slot index for correlation.
+pub fn emit_slot_freeze(
+    module: &cranelisp_types::ModuleFullPath,
+    symbol: &cranelisp_types::Symbol,
+    old_slot: usize,
+    new_slot: usize,
+) {
+    if !filter_enabled() {
+        return;
+    }
+    record_int_event(
+        StoredTag::SlotFreeze,
+        module,
+        symbol,
+        old_slot,
+        new_slot,
+        GotProvenance::Jit { jit_addr: 0 },
+    );
+}
+
+/// Emit a `TrapPatch` event (S101 §9.3): a BROKEN symbol's slot was patched
+/// in place to a trap stub (`ptr` = the stub's code address).
+pub fn emit_trap_patch(
+    module: &cranelisp_types::ModuleFullPath,
+    symbol: &cranelisp_types::Symbol,
+    slot: usize,
+    stub_ptr: *const u8,
+) {
+    if !filter_enabled() {
+        return;
+    }
+    record_int_event(
+        StoredTag::TrapPatch,
+        module,
+        symbol,
+        slot,
+        stub_ptr as usize,
+        GotProvenance::Jit { jit_addr: 0 },
+    );
+}
+
+/// Shared int-side ring-buffer push for events the backend observer does not
+/// emit (Redefinition / SlotFreeze / TrapPatch — see `emit_redefinition`'s
+/// rustdoc for why these record directly into the consumer ring).
+fn record_int_event(
+    tag: StoredTag,
+    module: &cranelisp_types::ModuleFullPath,
+    symbol: &cranelisp_types::Symbol,
+    slot: usize,
+    ptr: usize,
+    provenance: GotProvenance,
+) {
     let anchor = cranelisp_intrinsics::trace_anchor();
     let timestamp_ns = anchor.elapsed().as_nanos() as u64;
     let ord = thread_ord_id();
@@ -306,14 +387,12 @@ pub fn emit_redefinition(
         timestamp_ns,
         thread_id: std::thread::current().id(),
         thread_ord_id: ord,
-        tag: GotEventTag::Redefinition,
+        tag,
         module: module.to_string(),
         symbol: symbol.to_string(),
         slot,
-        ptr: new_ptr as usize,
-        provenance: GotProvenance::Jit {
-            jit_addr: prior_ptr as usize,
-        },
+        ptr,
+        provenance,
     };
     GOT_TRACE_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();

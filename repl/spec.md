@@ -697,6 +697,8 @@ Categories follow the same order as `/list`: Modules, Macros, Traits, Types, Fns
 
 For overloaded functions, all variants MUST be listed. For constrained functions, specializations MUST be shown.
 
+For a symbol broken by a redefinition cascade, `/info` (and `/sig`) display broken status + provenance per §18.4. [S101]
+
 ### 3.7 `/mem` — Allocation Statistics [Tested]
 
 `/mem` reports the runtime allocation counters maintained by `cranelisp-runtime`: total allocations observed, total deallocations, and bytes currently live. The command has two shapes — a **snapshot** (no argument) and a **delta** (with an expression argument). Both are comment lines (`;`-prefixed), consistent with the self-documentation convention in §1.5.
@@ -1672,6 +1674,8 @@ The file watcher (§14) MUST ignore writes triggered by the REPL's own source re
 
 When the user redefines a name that already exists in the session, the regenerated source file MUST contain only the latest definition — the previous definition MUST be replaced, not duplicated. [R4 S52]
 
+The runtime semantics of redefinition — dependent recompilation on signature-changing edits, the cascade report, broken symbols, and frozen-world behaviour for pre-break closure values — are specified in §18. The persistence interaction (restoring a session that contains broken symbols) is §18.8. [S101]
+
 ## 16. Test Discovery and Execution [R4]
 
 The REPL provides commands for discovering and running test functions. Test infrastructure rests on two ordinary `primitives`-module entries — `discover-tests` and `catch-runtime-error` — plus the existing macro system. Both parse as plain applications, type by ordinary scheme resolution, and require import or FQ reference like any other `primitives` name (zero frontend and zero typecheck special-casing). Everything above them — selection, filtering, iteration, result interpretation, reporting, timing — is ordinary in-language code in the stdlib.
@@ -2258,7 +2262,7 @@ The byte-stable round-trip (§8.16.5) and the durable-memory promise (§17.15.3)
 
 A Document edit is **durable**: it round-trips byte-stably through source regeneration (§17.5.2, §8.16.5) — the recorded text persists in the code exactly as endorsed. Because the agent's harvested context reads module preambles and docstrings back from the live session (§17.8, the agent's durable memory is the code, `design/arch/repl-embedded-agent.md §3.1`), a preamble the agent helps write **this** session is read back by the agent **next** session. The experience-level promise the user can rely on: **what the agent records, it remembers** — and because the record lives in the code as ordinary, readable documentation, improving a module's docs and growing the agent's memory are the **same activity** (§17.5.2). The user never maintains a separate agent memory; the documentation *is* the memory, and it is durable across sessions. [S89]
 
-#### 17.15.4 Honest Failure — No False "Recorded" [S94]
+#### 17.15.4 Honest Failure — No False "Recorded" [Tested+Neg tests/agent.rs::set_doc_missing_target_e2e_refused_no_false_recorded_neg, tests/agent.rs::set_doc_non_function_target_e2e_refused_not_recorded_neg (agent-feature lane: cargo nextest run --features agent --test agent)]
 
 The durable-memory promise (§17.15.3) only holds for a target the edit **can** record durably. When the proposed docstring target is **not durably recordable**, the Document edit MUST **fail honestly**: the agent surfaces a clear error naming why, MUST NOT claim it "recorded" anything, and MUST leave the live state unchanged (no ephemeral in-session write that vanishes on restart). The honesty contract has two faces, both of which are refusals — not silent no-ops:
 
@@ -2765,3 +2769,377 @@ then **scroll the trace** to that same `turn` marker to read the **full request 
 produced it. The `turn` index is the only coupling required between the sinks — each remains
 independently writable (one may be set without the other), but when **both** are set they share the
 index so the index→content join is mechanical. [S90]
+
+## 18. Redefinition Semantics — Dependent Recompilation, Broken Symbols, and the Frozen World [S101]
+
+Redefining a symbol in a live session is not always a local act: callers were compiled against the
+old definition's **signature** — its type scheme today, and, once ownership modes ship, every other
+ABI-bearing component of its compiled calling convention. This section specifies what the user
+observes when a redefinition invalidates those compiled assumptions: which callers are recompiled,
+how the turn reports it, what a symbol that can no longer compile looks like, and which world —
+old or new — every route into the code sees afterwards.
+
+Design references (non-normative): `design/arch/ownership-inference.md` §5.2–§5.7 (the
+dependent-recompilation subsystem), `design/backend/ownership-codegen.md` §8 (trap stubs, slot
+versioning). This section is the **normative user-facing contract**; the design docs describe
+mechanism.
+
+### 18.1 Two Classes of Redefinition [S101]
+
+Every successful redefinition of an existing symbol is classified by the compiler into exactly one
+of two classes. The classification itself is internal, but the observable split is normative:
+
+- **Signature-preserving (ABI-preserving, "body-only")** — the redefinition leaves the symbol's
+  compiled signature unchanged: same type scheme and, from increment I, same ABI-bearing
+  ownership-mode surface. Body edits and docstring edits are the common case.
+- **Signature-changing (ABI-changing)** — the redefinition changes any part of that surface.
+
+The wording "signature-changing" is deliberately cause-agnostic: today the only signature-changing
+cause is a type-scheme change; ownership-mode changes join the same class when they ship. All
+requirements in this section apply uniformly to both causes.
+
+**The coherence guarantee.** After any redefinition, a caller compiled against the old signature
+MUST NOT reach the new body uncorrected. A signature-changing redefinition MUST leave every
+compiled caller in one of exactly three states: **recompiled** against the new signature (§18.3),
+**broken** — marked and trapped, never silently wrong (§18.4–§18.5) — or **frozen** on the old,
+internally-consistent chain (closure values only, §18.7). Silent unsoundness (an old-signature
+caller invoking a new-signature body) MUST NOT occur. [S101]
+
+> **Stage-M scope note (S101).** The coherence guarantee's MUSTs are currently delivered only
+> when the redefinition **target** is a **concrete single-signature function definition** (a
+> plain `defn` with one monomorphic signature). For every other target kind —
+> generic/constrained function, overloaded function, macro, type/constructor, trait declaration
+> or impl — redefinition takes the legacy reuse-and-patch path: **no dependent-recompilation
+> transaction runs, no cascade report is printed, and no symbol is marked broken or trapped.**
+> For those kinds a compiled caller of the old signature is neither recompiled nor trapped: it
+> keeps executing the **old, internally-consistent chain** (coherent-stale — e.g. redefining a
+> concrete `Int -> Int` function to a polymorphic `(Fn [a] a)` leaves an existing compiled
+> caller silently running the old concrete body). This does not crash and does not mix
+> signatures, but it is a scoped, known residue of the coherence guarantee — not conformance.
+> The cure is module-grain dependent reload with end-of-turn sequencing, an
+> increment-I-or-later item; see `design/int/session-transaction.md` §10 T1 (rationale and
+> triggers) and the pinning tests
+> `tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale`
+> / `redefine_concrete_to_overloaded_caller_survives_coherent_stale` (each carries a flip note
+> for when the cure lands). Requirements throughout §18.2–§18.8 are written against the full
+> guarantee; until the cure lands they are testable only within this scope.
+
+| Requirement | Test |
+|---|---|
+| A type-changing redefinition with a compiled caller either recompiles the caller or marks it broken — the caller MUST NOT reach the new body uncorrected | [Tested+Neg tests/repl_redefinition.rs::type_change_redefinition_compiled_caller_never_reaches_new_body_uncorrected, tests/repl_redefinition.rs::type_change_redefinition_polymorphic_caller_recompiles_and_works] (stage-M scope per the §18.1 scope note: concrete single-sig UserFn targets — T1-kind targets remain coherent-stale, pinned by tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale and tests/repl_redefinition.rs::redefine_concrete_to_overloaded_caller_survives_coherent_stale with flip notes) |
+
+### 18.2 Signature-Preserving Redefinition — Late Binding Preserved [Tested]
+
+A signature-preserving redefinition behaves exactly as today, and this section pins that behaviour
+against regression:
+
+- The turn's output is the ordinary definition confirmation (§1.3) and nothing else. No dependent
+  recompilation is performed and **no cascade report is printed** (§18.3) — body-only edits MUST
+  NOT produce cascade noise. [S101]
+- **Late binding is preserved.** Every existing route into the symbol — direct callers, closure
+  values minted before the edit, curried partials, in-flight computations — picks up the new body
+  at its next call. This is the prized REPL semantic for body edits and it MUST be retained. [S101]
+- **Cost is a single-symbol compile.** The turn MUST remain at today's cost — typecheck + codegen
+  of the redefined symbol only, with no per-dependent work. [S101]
+
+```
+user> (defn f [x] (+ x 1))
+:(Fn [primitives/Int] primitives/Int) user/f ; defn
+
+user> (defn g [x] (f x))
+:(Fn [primitives/Int] primitives/Int) user/g ; defn
+
+user> (defn f [x] (+ x 10))        ; body-only: same signature
+:(Fn [primitives/Int] primitives/Int) user/f ; defn
+
+user> (g 1)
+:primitives/Int 11
+```
+
+| Requirement | Test |
+|---|---|
+| body-only redefinition prints only the §1.3 confirmation — no cascade sections | [Tested+Neg tests/repl_redefinition.rs::redefine_body_only_neg_no_cascade_report_no_dependent_recompiles] |
+| existing closure values pick up the new body at their next call | [Tested+Neg tests/repl_redefinition.rs::redefine_body_only_stale_closure_late_binds_new_body] |
+| body-only redefinition turn stays at today's single-symbol cost | [Tested tests/perf/l_d1_turn_latency.py (gate-time perf lane, not in canonical nextest; S101 Wave-5 record: median 0.0ms both polarities, tests/plan/ledger.md); slot-churn negative: tests/repl_persist_redefine.rs::persist_body_only_redefinition_neg_keeps_slot] |
+
+### 18.3 Signature-Changing Redefinition — The Cascade Report [S101]
+
+A signature-changing redefinition triggers **dependent recompilation**: the session re-typechecks
+and recompiles the affected callers (transitively, callees before callers). The turn's output
+reports the outcome so the user knows exactly which world every symbol is in.
+
+The turn prints the ordinary definition confirmation (§1.3) for the redefined symbol, followed by
+up to two comment-line sections in this order:
+
+```
+:{NewType} {module}/{name} ; defn - {docstring}
+; recompiled:
+;  {name} {name} ...
+; broken:
+;  {name} — {original error}
+```
+
+- **`recompiled:`** names the symbols the transaction re-typechecked and recompiled successfully.
+  The section uses the related-symbols layout of §1.1 (the §3.3 L0–L4 layout algorithm): symbols
+  in the current module appear bare; dependents in other modules appear module-qualified. The set
+  MUST be exact — it MUST name every symbol recompiled by the transaction and MUST NOT name any
+  symbol that was not (unaffected functions never appear). [S101]
+- **`broken:`** names the symbols that no longer typecheck under the new signature, one line per
+  symbol: the name, an em-dash, and the error that broke it (category + location + message per
+  §5.1, types fully qualified per §5.3; the location span is within the broken symbol's source).
+  The reason SHOULD fit on one line; the full error remains readable via `/info` (§18.4). [S101]
+- Either section is **omitted entirely when empty**. A signature-changing redefinition with no
+  compiled dependents prints only the §1.3 confirmation, exactly like a body-only edit. [S101]
+
+Worked example — `g` survives the change (its own signature updates in turn), `k` does not:
+
+```
+user> (defn f [x] (+ x 1))
+:(Fn [primitives/Int] primitives/Int) user/f ; defn
+
+user> (defn g [x] (f x))
+:(Fn [primitives/Int] primitives/Int) user/g ; defn
+
+user> (defn k [x] (f (* x 2)))
+:(Fn [primitives/Int] primitives/Int) user/k ; defn
+
+user> (defn f [s] (primitives/str-len s))   ; signature change: Int -> Int becomes String -> Int
+:(Fn [primitives/String] primitives/Int) user/f ; defn
+; recompiled:
+;  g
+; broken:
+;  k — type error at 12..23: type mismatch: expected primitives/String, got primitives/Int
+```
+
+`g`'s body still typechecks (`x` flows through unconstrained), so `g` is recompiled — and its own
+signature is now `(Fn [primitives/String] primitives/Int)`; if `g` had compiled callers they would
+join the transaction in turn and appear in the same `recompiled:`/`broken:` sections. `k`'s body
+pins its argument to `Int`, so `k` cannot be recompiled: it is marked **broken** (§18.4).
+
+**Errors are reported, never hidden — and never block the session.** A broken dependent is
+ordinary session state, not a module-level error: evaluation of everything else continues, and the
+§14.4 error-blocking mechanism (which governs whole-module recompile failures from external file
+edits) MUST NOT be triggered by symbol-level breaks. Only calls that actually reach a broken
+symbol fail — loudly, per §18.5. [S101]
+
+| Requirement | Test |
+|---|---|
+| recompiled set names exactly the recompiled callers, positive and negative | [Tested+Neg tests/repl_redefinition.rs::redefine_abi_change_cascade_report_names_exact_affected_set] |
+| broken set names each broken symbol with its §5.1-format reason | [Tested tests/repl_redefinition.rs::redefine_abi_change_cascade_report_names_exact_affected_set] |
+| empty sections are omitted | [Tested tests/repl_redefinition.rs::redefine_recovery_reverting_callee_recompiles_caller (broken: omitted on the all-green revert turn); Gap(S101): the signature-changing-with-zero-dependents shape is not directly pinned] |
+| symbol-level breaks do not block unrelated evaluation | [Tested tests/repl_redefinition.rs::redefine_abi_change_cascade_report_names_exact_affected_set (recompiled caller runs while its sibling is broken)] |
+
+### 18.4 Broken Symbols — Status and Provenance Introspection [S101]
+
+A symbol that failed re-typechecking during a cascade is **broken**. Its definition metadata —
+last-good signature, docstring, source — remains intact and introspectable; only its compiled code
+is gone. Broken-ness is ordinary, recoverable session state (§18.6), not a sticky mode.
+
+**The provenance phrase.** Everywhere broken status is displayed, provenance uses one normative
+phrase:
+
+```
+broken by the redefinition of {cause}: {original error}
+```
+
+where `{cause}` is the fully-qualified name of the redefined symbol that broke this one, and
+`{original error}` is the §5.1-format error (category + message, types fully qualified) produced
+when re-typechecking failed. [S101]
+
+**Bare lookup is self-documenting.** A broken symbol entered bare at the prompt MUST respond with
+what it is and why it is broken — never an opaque error (root `CLAUDE.md` §Design Principles). The
+display is the symbol's ordinary per-class §4.1 display — the type shown is the **last successfully
+compiled signature** — plus one comment line carrying the provenance phrase: [S101]
+
+```
+user> k
+:(Fn [primitives/Int] primitives/Int) user/k ; defn
+; broken by the redefinition of user/f: type error at 12..23: type mismatch: expected primitives/String, got primitives/Int
+```
+
+**`/sig` on a broken symbol** MUST show the same primary line and provenance comment line as bare
+lookup. [S101]
+
+**`/info` on a broken symbol** MUST include the primary line, the provenance comment line, and the
+definition source (per §3.6). It MUST NOT display code size or compile-time statistics for a broken
+symbol — there is no compiled code, and the trap stub is an implementation detail that MUST NOT be
+presented as the symbol's code. [S101]
+
+```
+user> /info k
+:(Fn [primitives/Int] primitives/Int) user/k ; defn
+; broken by the redefinition of user/f: type error at 12..23: type mismatch: expected primitives/String, got primitives/Int
+  (defn k [x] (f (* x 2)))
+```
+
+**Provenance is depth-1.** `{cause}` names the redefinition that directly broke the symbol. Callers
+of a broken symbol are NOT themselves marked broken — their compiled code is still valid (the
+broken symbol's signature did not change; it failed before producing a new one) — they simply reach
+the trap through the broken symbol at runtime (§18.5). [S101]
+
+| Requirement | Test |
+|---|---|
+| bare lookup of a broken symbol shows per-class display + provenance line, no opaque error | [Gap(S101): bare-lookup leg not directly pinned — the rendering is the same shared `broken_status_line` seam `/sig` exercises (design/int/session-transaction.md §9.2), covered there] |
+| `/sig` shows broken status + provenance | [Tested+Neg tests/repl_redefinition.rs::redefine_broken_caller_info_and_sig_report_broken_status] |
+| `/info` shows broken status + provenance + source, no code-size/compile-time stats | [Tested+Neg tests/repl_redefinition.rs::redefine_broken_caller_info_and_sig_report_broken_status] |
+| callers of a broken symbol are not marked broken | [Gap(S101): depth-1 provenance not directly pinned e2e; the trap lanes exercise unrecompiled callers reaching the trap without themselves breaking] |
+
+### 18.5 The Trap — Calling a Broken Symbol [Tested]
+
+Any call that reaches a broken symbol at runtime MUST raise a clean runtime error — the **trap** —
+presented through the standard runtime-error format (§5.1, `runtime error: ` category prefix) with
+the trap message:
+
+```
+{broken} is broken by the redefinition of {cause}: {original error}
+```
+
+where `{broken}` and `{cause}` are fully-qualified symbol names and `{original error}` is the same
+embedded error as §18.4's provenance phrase. As seen at the prompt: [S101]
+
+```
+user> (k 3)
+runtime error: user/k is broken by the redefinition of user/f: type error at 12..23: type mismatch: expected primitives/String, got primitives/Int
+```
+
+- **Every route traps.** The trap MUST be reached by every call path into the broken symbol:
+  direct by-name calls, calls from compiled (unrecompiled) callers, closure values minted from the
+  symbol **before** the break, and curried partials of it — regardless of when the value was
+  created. [S101]
+- **Trapping is a deliberate ruling, not a necessity.** The broken symbol's stale code would be
+  memory-safe to serve (it is internally consistent with the frozen old chain, §18.7) — but
+  silently executing code that diverges from the source the user just changed is the worse
+  experience. A broken symbol MUST fail loud, with provenance, recoverably; it MUST NOT serve its
+  stale behaviour. [S101]
+- **The session survives.** A trap is an ordinary runtime error under §5: the REPL prints it,
+  recovers per §5.2, and all other definitions remain callable. Repeated trap invocations MUST NOT
+  crash or corrupt the session. [S101]
+- **Bounded leak note.** A trap fires after the caller has already prepared the call's arguments;
+  the raise path does not release them. One bounded reference leak per trap invocation is
+  permitted — the same caveat class as every runtime panic — and is reclaimed at session end.
+  Heap-balance checks around traps assert boundedness, not zero. [S101]
+
+| Requirement | Test |
+|---|---|
+| direct call of a broken symbol raises the trap message with provenance | [Tested+Neg tests/repl_redefinition.rs::redefine_abi_change_broken_caller_direct_call_traps_with_provenance] |
+| a closure value minted before the break reaches the trap | [Tested tests/repl_redefinition.rs::redefine_broken_caller_value_use_wrapper_minted_before_break_reaches_trap (closest-reachable stage-M carrier — see the test-file header residue note)] |
+| a curried partial minted before the break reaches the trap | [Tested+Neg tests/repl_redefinition.rs::redefine_broken_caller_curried_partial_reaches_trap] |
+| repeated traps neither crash nor corrupt; leak is bounded per invocation | [Tested tests/repl_redefinition.rs::redefine_trap_invocations_leak_bounded_per_trap] |
+
+### 18.6 Recovery — Both Directions [Tested+Neg]
+
+Broken-ness is repaired **by redefinition**, in either direction; each redefinition re-runs the
+same transaction:
+
+- **Fix the broken symbol**: redefine it to match the new signature. It re-typechecks, recompiles,
+  and is green — the turn prints the ordinary §1.3 confirmation (plus its own cascade sections if
+  *its* signature changed for its callers). [S101]
+- **Fix the cause**: redefine the causing symbol back to a signature under which the broken symbol
+  typechecks. The broken symbol is a static caller, so it rejoins the transaction, recompiles, and
+  appears in the turn's `recompiled:` section. [S101]
+
+```
+user> (defn f [x] (+ x 1))          ; put f back
+:(Fn [primitives/Int] primitives/Int) user/f ; defn
+; recompiled:
+;  g k
+```
+
+After recovery the symbol MUST be indistinguishable from one that was never broken: calls succeed,
+and bare lookup, `/sig`, and `/info` MUST NOT show any broken/provenance line. [S101]
+
+| Requirement | Test |
+|---|---|
+| redefining the broken symbol to match ⇒ green, callable, no provenance residue | [Tested+Neg tests/repl_redefinition.rs::redefine_recovery_fixing_caller_clears_broken] |
+| redefining the cause back ⇒ broken symbol recompiles and appears in `recompiled:` | [Tested+Neg tests/repl_redefinition.rs::redefine_recovery_reverting_callee_recompiles_caller] |
+
+### 18.7 Frozen-World vs Late-Binding — Which World a Value Sees [S101]
+
+The two redefinition classes give two deliberately different semantics for values that already
+exist when the redefinition lands:
+
+- **Signature-preserving ⇒ late binding (today's semantic, §18.2).** Every existing value and
+  caller sees the new body at its next call.
+- **Signature-changing ⇒ frozen world for pre-break closure values.** Recompilation can reach
+  everything callable **by name**, but not closure values already on the heap — they embed direct
+  code pointers. Rather than allow a mixed-signature call (unsound) or invalidate live values
+  (stop-the-world), the old code chain is **frozen**: a closure value minted before a
+  signature-changing redefinition, invoked after it, MUST see the **old chain's behaviour,
+  transitively** — its calls resolve to the pre-redefinition definitions all the way down,
+  consistently. It MUST NOT crash, MUST NOT corrupt memory, and MUST NOT observe a mix of old and
+  new signatures, including under sustained repeated invocation. [S101]
+- **By-name calls always see the current world.** Recompiled callers and every call made by name
+  after the turn MUST see the new definitions (or trap, if broken). The cascade report (§18.3) is
+  where the user sees which world each *symbol* is in; frozen behaviour is reachable only through
+  *values* minted before the break. [S101]
+
+Worked example — the contract for any pre-break closure value still live at the break (held in a
+container, captured by a suspended computation, or pinned by an in-flight strand):
+
+```
+user> (defn f [x] (+ x 1))
+:(Fn [primitives/Int] primitives/Int) user/f ; defn
+
+user> (defn g [x] (f x))
+:(Fn [primitives/Int] primitives/Int) user/g ; defn
+
+;; a closure value over g is minted here and stays live on the heap:
+;;   stale = (fn [x] (g x))          — compiled against g's Int -> Int chain
+
+user> (defn f [s] (primitives/str-len s))   ; signature change
+:(Fn [primitives/String] primitives/Int) user/f ; defn
+; recompiled:
+;  g
+
+user> (g "hello")                    ; by name: the new world
+:primitives/Int 5
+
+;; (stale 5) — the pre-break closure: the frozen old chain, transitively
+;; => 6   (old g -> old f: 5 + 1), not a type error, not a crash
+```
+
+The frozen world is a **session-memory commitment only**: frozen chains die with the session, and
+a restart rebuilds everything from source in the current world (§18.8).
+
+| Requirement | Test |
+|---|---|
+| pre-break closure invoked after a signature change sees old-chain behaviour transitively | [Gap(S101): no cross-turn value carrier is REPL-reachable at stage M (qa plan §6.1.1 addendum); structural witness: tests/repl_persist_redefine.rs::persist_abi_change_allocates_fresh_slot_hole_survives_restart — add the direct test when a carrier ships] |
+| sustained invocation of a stale closure: no crash, no mixed-signature corruption | [Tested tests/repl_redefinition.rs::redefine_abi_change_closure_minting_caller_rejoins_new_world_coherently (400-invocation sustained leg)] |
+| by-name calls and recompiled callers see the new definitions | [Tested+Neg tests/repl_redefinition.rs::redefine_abi_change_closure_minting_caller_rejoins_new_world_coherently] |
+
+### 18.8 Interaction with Session Persistence [S101]
+
+Redefinition persistence follows §15: the backing file always reflects the latest source of every
+definition (§15.6), including definitions that are currently broken — the broken symbol's *source*
+is unchanged and still the user's authored truth. Broken-ness itself is session state, not
+persisted state: it is never written to disk as a trap, and is re-derived from source at restart.
+Consequences:
+
+- After a signature-changing redefinition that leaves symbols broken, the regenerated backing file
+  taken as a whole does not typecheck. On session restore (§15.2), the session MUST NOT silently
+  serve stale compiled code for those symbols and MUST NOT silently drop them. The normative floor
+  is **reconstruction as a load-time compile error**: the backing file is recompiled from source
+  through the standard load-error path, and the broken definition MUST surface as an ordinary
+  compile error naming the broken symbol and carrying the underlying type error. [S101] [Gap(S101): the broken-then-restart floor is not directly pinned e2e; the L-R5 lanes (tests/repl_persist_redefine.rs) assert the floor's substrate — complete metas, no stale-slot serve — per the S101 Phase-3 gate note 3]
+- **The restart MUST reach a prompt.** A backing file that fails to recompile at restore MUST
+  NOT prevent the REPL from starting: broken-ness is ordinary, recoverable session state
+  (§18.4), and the primary repair path is redefinition at the prompt (§18.6) — a startup that
+  exits on the load error locks the user out of exactly that repair path, leaving hand-editing
+  the backing file as the only recovery. Instead the session MUST start, display the load error
+  (per §5.1, naming the broken symbol), and enter the §14.4 error-blocked state for the failing
+  module: slash commands remain available, evaluation is refused with the §14.4 message, and the
+  error clears when a subsequent definition turn (or an external file fix, §14.6) makes the
+  module compile — at which point the session proceeds normally. [S102] (As-built at S101 the
+  REPL exits with code 1 before the first prompt — see FIXME 0489.)
+- To guarantee that floor, a compiled-cache snapshot (`.o`/`.meta`) MUST NOT be written for a
+  module that holds a broken symbol at write time — a cache MUST never capture a trap stub as the
+  module's compiled truth, so no restart can serve stale code for a broken definition. Skipped
+  writes self-heal: the first fully-green turn persists normally. [S101] [Gap(S101): poisoning implemented at src/session_v4/nice_worker.rs (broken-module persist gate, verified live at Wave 4) — no direct e2e pin yet]
+- This qualifies §15.4's round-trip invariant for the broken-session case: symbol-grain broken
+  state (status + provenance, §18.4) degrades at restart to a load-grain compile error. Restoring
+  broken symbols *as broken, with the same provenance* — so the §15.4 round-trip reproduces the
+  full session state, broken-ness included — is a **non-normative future target** (MAY), not
+  asserted by the current test lanes; any implementation of it MUST still satisfy the floor above
+  (same errors surfaced, no stale code, no silent drop). [S101]
+- Definitions recompiled or redefined across signature changes MUST restore correctly from a valid
+  cache after restart — a program that ran before `/quit` runs identically after. [Tested tests/repl_persist_redefine.rs::persist_abi_change_redefinition_restart_runs_correctly_from_cache]

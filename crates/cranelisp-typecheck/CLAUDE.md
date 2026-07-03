@@ -38,6 +38,60 @@ node `inferred_type`). Hard-erroring would reject valid programs. The
 not the whole `defined_symbols()` set). The `--workspace` e2e suite produced ZERO
 `from_expr`-fail on a real concrete defn — the validation payoff holds.
 
+## `Def.callees` completeness contract (S101, FIXME 0470 + 0472)
+
+A checked entry's `callees` names **every statically-resolved user-fn
+reference** in its body — call-position AND value-position (HOF arg, returned,
+stored, curried, nested-lambda), same-module and imported alike — recorded
+uniformly as `Vec<FQSymbol>` (value vs call edges indistinguishable to
+consumers; `design/int/session-transaction.md` §3.2). The feed is two-channel:
+
+- `ResolvedCall`-derived edges (`extract_call_graph_edges` — trait methods,
+  sig-dispatch, auto-curry), unchanged;
+- `CheckState.user_fn_refs` — recorded at the `infer_var` chokepoint by
+  `checker::record_user_fn_ref` for every successfully-typed `Var` whose name
+  is NOT locally shadowed and resolves (chain-follow to home,
+  prelude-fallback-aware, `lookup`-mirroring qualified candidate order) to a
+  `DefKind::UserFn` `Def`.
+
+Both channels are combined by the ONE shared **`harvest_callee_edges`** helper
+(the `codegen_view` all-seams precedent — FIXME 0472) at every body-check
+seam:
+
+- **Pass-2 per-form** — `check_form_body_single_defn` / `_multi_sig`
+  (span-set snapshot deltas like `form_mr`; edges ride
+  `FormCheckResult.call_graph_edges` into the merge/finalize sinks, attributed
+  to the enclosing defn — nested-lambda refs included, the L-R2 carrier);
+- **Pass-1 impl-method writeback** — `finalize_impl_method_writeback`
+  (impl-provided, default, AND HKT trait-method bodies; these are checked
+  outside every per-form delta, so the edges are written DIRECTLY to the
+  mangled entry, mirroring its `ast`/`codegen_view` direct writes; default
+  bodies harvest under the D1 trait-home module switch, so their edge FQs
+  resolve in the defining module's context).
+
+When adding a NEW body-check seam, snapshot `state.user_fn_refs` before the
+body check and route the delta through `harvest_callee_edges` — a seam that
+skips the harvest silently starves the S101 transaction's reverse index (the
+0472 defect class).
+
+Dispositions: **self-edges are skipped** (the recursion name is a local
+binding in `check_defn_body`, so the shadow gate filters it); non-`UserFn`
+kinds (primitives, constructors, macros, overloaded bases) record no edge —
+their redefinition falls back to module grain (session-transaction §10 T1);
+dotted `Type.member` accessor references are un-recorded residue (T1 covers
+deftype redefinition); **mono-instance bodies (`recheck_body_for_mono`) are a
+deliberate exclusion** — the constrained TEMPLATE's entry carries the complete
+edge set from its own defn-form check, the call-site recorder gives the
+caller→template edge, and mono instances are re-minted whenever their minting
+caller re-typechecks, so the reverse closure is preserved through the template
+chain. Consumers: `save.rs::dependency_sort` (emission order; filters
+self-edges, Kahn's + alphabetical cycle fallback) and the S101 R3
+transaction's reverse index — **silently dropping edges starves its
+affected-set closure**. Changing what `callees` records is a `.meta.json`
+meaning change: bump `CACHE_SCHEMA_VERSION` in the same change-set (the 0472
+seam cure landed inside the S101 v10→v11 window — no re-bump). Guarded by
+`program::tests::callees_*` (`tests/plan/s101-coverage-postmortem.md` §2.1).
+
 ## Bare-name resolution & the implicit-prelude OUTER SCOPE (S78 §2)
 
 The prelude is an **outer scope**, not flattened into each module's table

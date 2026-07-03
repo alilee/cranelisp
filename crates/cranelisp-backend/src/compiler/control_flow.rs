@@ -34,6 +34,9 @@ mod sparkability;
 // `pub(crate)` so the hub is a single resolution point and the imports are not
 // flagged unused.
 pub(crate) use capture_rc::emit_capture_inc_into;
+// The borrowed-builder extern-call helper — reached by `compiler::vec_codegen`
+// (the vec-query COW emission cores) through this hub.
+pub(crate) use fn_as_value::emit_extern_call_in_wrapper;
 pub(crate) use free_vars::find_free_vars;
 // `find_sparkable_args` + `LENIENT_DISABLED` are reached by `compiler::apply`
 // (the apply-argument lenient pre-pass, lenient-eval.md §4.4) through this hub —

@@ -36,7 +36,469 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 101 Phase 6a/6b defect set — proxy-exercise guards (/qa guard batch, 2026-07-03)
+
+The S101 Phase 6a/6b user-proxy exercise surfaced 12 defect items; per the
+defect discipline every one now has narrow failing-not-ignored repros
+(RED-first-verified on the S101 change-set binary) plus green boundary
+controls. **19 intentional-RED guards** across 7 files (18 new + 1
+deliberately-strengthened existing test), 9 new GREEN controls/pins. All are
+known-defect guards, not regressions; they flip green as resolvers land.
+Where a FIXME file exists it is annotated "guards landed / redundant as a
+record" and left for the resolver to delete (`memory/feedback_no_fixme_with_failing_test.md`);
+the three no-FIXME items (trap format, D1/D2, D3) have these guards as their
+only record. Common fields: **SHA** `0b0e234` + the uncommitted S101
+change-set (lands with the sprint close commit); **target sprint** S102
+unless /sprint schedules earlier; **disposition** `out-of-scope
+(owner=named resolver)` — 6a/6b finds, fix not in S101 scope.
+
+1. **FIXME 0483 — vec trio op as value at ≥2 instantiations of one HOF →
+   SIGBUS** (3 RED + 1 control, `tests/vec_query_value_use.rs`):
+   `vec_get_as_value_two_instantiations_of_one_hof_repl`, `…_run_mode`,
+   `vec_get_and_vec_push_as_values_through_one_hof_run_mode`; green control
+   `vec_len_as_value_two_instantiations_of_one_hof_control`. Signature:
+   REPL harness panic `expected exit 0, got status=ExitStatus(unix_wait_status(135))`
+   (SIGBUS); run-mode `expected exit 22, got None` (signal termination).
+   Owner /backend (`fn_as_value.rs` seam, backend §12.7 — rides the 0474
+   S102 seam rework per the Phase-7 disposition note in `sprints/SPRINT.md`).
+2. **FIXME 0484 — import-shadow order-dependent resolution + /info
+   disagreement** (1 RED + 1 control, `tests/spec_08_modules.rs`):
+   `import_used_then_shadowed_by_defn_subsequent_call_takes_shadow`
+   (reduced stdlib-free: local `util`/`measure`); control
+   `import_shadowed_by_defn_before_first_call_takes_shadow_control`.
+   Signature: missing-needle panic — post-shadow call prints
+   `:primitives/Int 3` (import) while `/info` claims `user/measure`.
+   Owner likely /int; /spec may re-pin precedence (guard re-anchors if so).
+3. **FIXME 0486 — bare lookup corrupts introspection source** (2 RED + 1
+   control): `repl_introspection::bare_lookup_does_not_corrupt_info_and_source_definition_display`
+   (healthy arm; `/info`+`/source` render `solo` instead of the defn form —
+   0 occurrences vs ≥2 required), control
+   `info_and_source_show_defn_form_without_prior_bare_lookup_control`;
+   broken arm `repl_redefinition::bare_lookup_broken_symbol_info_still_shows_definition_source`
+   (§18.4 /info source line degrades to `  k`). Owner likely /int.
+4. **FIXME 0488 — generic-fn value-use missing mono, THREE signatures**
+   (3 RED + 3 controls, new `tests/generic_value_use_mono.rs`; ALL reduced
+   stdlib-free): (a) `generic_fn_fq_call_monomorphises_like_bare_call` —
+   `undefined function: user/iden`; (b)
+   `imported_generic_in_value_position_monomorphises` — `undefined
+   variable: iden2`; (c) `composition_over_fold_bodied_imported_generic_monomorphises`
+   — `undefined function: vcount` attributed to the OUTER fn (local fold
+   fixture mirroring stdlib vec-reduce/vec-concat). Partial-reduction
+   residue recorded in the file header: (c) is micro-shape-sensitive (a
+   reversed-branch sibling shape passed; the flipping micro-detail is
+   unknown — do not simplify the fixture without re-verifying RED).
+   Owner: /backend//typecheck seam (consuming-turn codegen-batch
+   derivation).
+5. **FIXME 0489 — restart with broken backing file exits(1) before the
+   first prompt** (1 RED, `tests/repl_persist_redefine.rs`):
+   `restart_with_broken_backing_file_reaches_prompt_and_accepts_repair`.
+   Signature: `expected exit 0, got Some(1)`; stdout is the bare load error
+   `user.cl:1:1: error: module error at 0..0: module 'user' failed: type
+   error …` — no banner, no prompt, `k` never named. Owner /int (§18.8
+   [S102] floor).
+6. **FIXME 0491 — `__expr` leaks into the cascade `broken:` list** (2 RED,
+   `tests/repl_redefinition.rs`): `redefine_cascade_report_neg_no_internal_expr_wrapper_in_broken`
+   (break direction) and `redefine_revert_after_expression_turn_neg_no_wrapper_broken_section`
+   (revert direction — the /repl 6b sharpening: the eval wrapper rejoins
+   any later transaction on signature change of anything it called).
+   Signature: stdout unexpectedly contains `__expr` / `; broken:` on the
+   revert turn. Owner /int (redefine.rs report rendering).
+7. **Trap presentation format** (§18.5 MUST; no FIXME — guard is the
+   record; 1 RED, `tests/repl_redefinition.rs`):
+   `trap_presented_in_normative_runtime_error_format`. Signature: actual
+   output `Error: codegen error at 0..0: runtime error: runtime panic:
+   user/g is broken …` vs normative `runtime error: user/g is broken …`.
+   Owner /int.
+8. **FIXME 0492 — `/sig` primary line ≠ bare lookup** (1 RED,
+   `tests/repl_redefinition.rs`):
+   `sig_broken_symbol_primary_line_matches_bare_lookup_fully_qualified` —
+   authored against the CURRENT normative §18.4 "same primary line" text;
+   /sig renders `:(Fn [Int] Int) g` (FQ-line count 2 vs required 3). 0492
+   asks /repl to arbitrate spec-vs-impl; the guard re-anchors if §18.4 is
+   amended. Owner /int (display seam) pending arbitration.
+9. **FIXME 0493 — nested parameterized-ADT payload display garbled** (2 RED
+   + 1 control, `tests/repl_introspection.rs`):
+   `display_nested_parameterized_adt_value_recursive_form` (`(MkWrap
+   (MkWrap 7))` → `(Wrap.MkWrap primitives/Int) (Wrap.MkWrap 7))`,
+   unbalanced parens) and the STRENGTHENED existing guard
+   `display_user_list_value_shows_elements_and_nil` (presence-only → exact
+   `(List.Cons 1 (List.Cons 2 (List.Cons 3 List.Nil)))`; now RED by design
+   — the weak assertion is exactly what let this class go undated); control
+   `display_single_level_parameterized_adt_value_control`. Owner TBD (/int
+   display seam or /backend show path).
+10. **/port D1 — macro-defining-macro use poisons the directory** (1 RED,
+    `tests/repl_persist.rs`): `persist_macro_defining_macro_use_survives_restart`
+    (reduced stdlib-free: local `mdef` mirroring stdlib `def`; the
+    regenerated backing file persists BOTH the `(defmacro x …)` expansion
+    artifact AND the original `(mdef x 1)` form, which do not co-load).
+    Signature: session 2 `expected exit 0, got Some(1)`, stdout
+    `parse error at 1000028..1000028: defmacro name must be a symbol`.
+    Owner /int (§15.1/§15.4.1 round-trip).
+11. **/port D2 — batch `user.cl` adoption rewrites hand-authored source**
+    (1 RED + 1 control, `tests/repl_persist.rs`):
+    `persist_defining_turn_preserves_hand_authored_macro_source_text`
+    (reader-shorthand macro text re-rendered as
+    `quasiquote`/`unquote` on an unrelated defining turn — §15.4.7
+    authorship fidelity); green boundary pin
+    `persist_expression_only_session_leaves_hand_authored_user_cl_untouched`.
+    **Partial reduction**: /port's second arm (hybrid batch/REPL cache meta
+    breaks the NEXT session outright) did NOT reproduce in six reductions
+    (defmacro / imports / stdlib prelude / platform decl / batch-first
+    cache / combinations — all restarted green); exemplar-only so far,
+    UNREDUCED — carried as a note, not a guard. Owner /int.
+12. **/port D3 — dependent recompilation of file-backed module symbols
+    false-BREAKS** (1 RED + 1 control, `tests/repl_persist_redefine.rs`):
+    `redefine_file_backed_module_symbol_after_cache_restore_works_like_fresh`
+    — the reduced deterministic face: in a CACHE-RESTORED session, the
+    `/mod m` redefining turn fails `type error at 0..33: unknown type
+    `String` (from module ``)` (recompile-env class; FIXME 0487 adjacency).
+    Green control `redefine_file_backed_module_symbol_fresh_session_cross_module_control`
+    pins that FRESH sessions break-true + revert-heal correctly (same-module,
+    cross-module, third-module, implicit-prelude and prelude-ADT bodies all
+    probed correct). **Partial reduction**: the exemplar-reported faces
+    ("definition source unavailable"; false `undefined variable: None`;
+    revert-no-heal) need the cache-restored path, which today dies earlier
+    at the unknown-type wall — exact exemplar shape UNREDUCED, noted in the
+    test-file comment. Owner /int.
+
+Also for awareness (no guard): /docs' 1-of-7 unreproduced spurious-broken
+under fast piped input — none of this batch's REPL-session guards flaked in
+authoring runs; if one does, record it here rather than chasing (per the
+guard-batch brief).
+
+**Exit-table update (rides this batch):** `tests/examples.rs` — `14-vecs.cl`
+29 → **81** (6b vec-ops-as-values section) and NEW `33-redefinition.cl` →
+**136** (verified round-tripping through the harness: a normal `exit(136)`
+is observed by `ExitStatus::code()` as `Some(136)`, no >127 masking; both
+examples tests green).
+
+**Canonical suite at guard-batch close (S101 6b): two consecutive
+`cargo nextest run --no-fail-fast` runs = `3480 run: 3458 passed / 22
+failed / 1 skipped` @ 59.6s / 60.6s — identical fail sets.** The 22 =
+**3** carried 0474 COW-leak guards (entry below) + **19** this batch's
+intentional-RED defect guards (items 1–12 above: 0483 ×3, 0484 ×1, 0486 ×2,
+0488 ×3, 0489 ×1, 0491 ×2, trap-format ×1, 0492 ×1, 0493 ×2 [incl. the
+strengthened `display_user_list_value_shows_elements_and_nil`], D1 ×1,
+D2 ×1, D3 ×1). A genuine regression is any RED beyond these 22 named
+guards. These are the close-out canonical numbers for the root-`CLAUDE.md`
+§Testing flag (user edit at Phase 7: intentional count 3 → **22**, total
+3453 → **3480**).
+
+### Sprint 101 Wave-5 — FIXME 0474 repro: vec COW copy branch leaks the consumed source Vec (/qa, 2026-07-03)
+
+The FIXME-0474 narrow repro set (failing-not-ignored, per
+`memory/feedback_failing_not_ignored.md`), drafted RED-first at Wave 5 with a
+**WIDENING finding**: the leak class is broader than the FIXME's claim. The
+COW cores (`vec_codegen.rs` `emit_vec_set_cow_core`/`emit_vec_push_cow_core`)
+release the source Vec only on the mutate/grow branches; the rc>1 **copy
+branch** releases nothing — so ANY site handing the core an extra owned
+source reference leaks one Vec (header + data buffer = 2 allocs) per call.
+Probed shapes: curried partial (every call, capture-held rc≥2), HOF value-use
+with live source (wrapper owned-param protocol), **and a plain STATIC site
+with the source still live after the call** — the last contradicts 0474's
+"static sites are balanced" premise and, since the Wave-3 cores are
+line-identical to the pre-S101 static bodies, is almost certainly
+PRE-EXISTING, newly pinned. The mutate-branch control probes exactly balanced
+(imbalance 0), so the signal is clean: leak sessions imbalance ≈ 2×ITERS=400.
+
+**These 3 tests are the canonical suite's ONLY intentional failures at S101
+close** (one root class, one resolver).
+
+- **Tests (3 RED, failing-not-ignored; `tests/vec_cow_value_use_leak.rs`):**
+  `vec_cow_value_use_leak::vec_set_curried_call_loop_neg_does_not_leak_source_vec`,
+  `vec_cow_value_use_leak::vec_set_as_value_shared_source_neg_does_not_leak`,
+  `vec_cow_value_use_leak::vec_set_static_site_shared_source_neg_does_not_leak`.
+- **Current commit SHA:** `0b0e234` (+ the uncommitted S101 change-set; lands
+  with the sprint close commit).
+- **Exact signature:** assertion panic, e.g. `curried vec-set loop leaks the
+  consumed source Vec on the COW copy branch (FIXME 0474, /backend): curried
+  imbalance 400 vs balanced control 0 (allowed delta 16; leak signature ~400)`
+  — from the `[RC_STATS]` `allocs`/`deallocs` exit line
+  (`CRANELISP_RC_STATS=1`). Leak-only: no crash, COW value semantics asserted
+  correct in the same tests.
+- **Owning skill:** `/backend` (`/dev` cranelisp-backend) — cure per FIXME
+  0474's proposed resolution: a consumed-source polarity on the COW cores /
+  call sites so the copy branch releases exactly when an owned reference was
+  handed in (and the static shared-source protect-inc is balanced).
+  Sequencing: before/with increment I's R2-wrapper + `str-len$borrowed` work
+  on the same seam (backend §12.7).
+- **Target sprint:** S102 (increment I) unless `/sprint` schedules the small
+  fix earlier; the guards flip green with it.
+- **Disposition:** `out-of-scope (owner=/backend)` — known-defect guards, not
+  regressions; the FIXME file `0474-*.md` is left in place for the /sprint
+  scheduling decision but is REDUNDANT as a record now these tests exist
+  (`memory/feedback_no_fixme_with_failing_test.md`).
+
+### Sprint 101 Wave-5 close-out records (/qa, 2026-07-03)
+
+- **Canonical suite at Wave-5 close (CONFIRMED):** `cargo nextest run
+  --no-fail-fast` = **3453 run: 3450 passed / 3 failed / 1 skipped @ 60.1s**
+  (3447 baseline + 6 new default-suite /qa tests: 3 leak guards + 2
+  shadowing pins + 1 Overloaded T1 sibling; the 2 new agent-lane tests are
+  `--features agent`, outside the canonical count). The 3 failures = exactly
+  the 0474 entry above. Toggled polarity run: **identical 3450/3/1** — same
+  fail set (L-B2(i) certified). Runtime ~57–60s default / ~89s toggled (the
+  toggle wholesale-invalidates cache fixtures; the ~9s figure in older docs
+  is stale — default-members since Wave 2b).
+- **Suite polarity double-run (flake watch):** two consecutive full runs at
+  default polarity = 3447/0/1 both (60.0s / 59.1s) BEFORE the Wave-5 test
+  additions — zero flakes; the R18 fix held (no `search_burndown` or L-R5
+  recurrence).
+- **L-B2(i) suite-polarity lane (qa plan §3.1/§6.1):** full suite under
+  `CRANELISP_NO_OWNERSHIP=1` — polarity-identical after two Wave-5 test-side
+  fixes, both ledgered here:
+  1. **Polarity-META ambient-env hygiene:** the two L-B3 cache tests built
+     their "default polarity" sessions by inheriting the runner env, so the
+     lane's ambient `CRANELISP_NO_OWNERSHIP=1` erased the flip and both
+     failed. The toggle is PRESENCE-gated, so pinning OFF requires env
+     REMOVAL: `env_remove()` added to the e2e harness
+     (`tests/helpers/e2e.rs`), every session in both tests now pins its
+     polarity explicitly. Verified green under both ambient polarities.
+  2. **`concurrency_reactor::two_real_leaves_in_par_overlap_max_not_sum_one_thread`
+     latent margin defect (NOT polarity divergence):** the overlap assertion
+     bounded whole-invocation elapsed (compile+startup ~25–40ms INCLUDED) at
+     1.5×60ms — isolated sampling failed 2/8 at default polarity and 3/7
+     toggled at 90–97ms measured. Fixed test-side: delay 60→100ms and the
+     SHARP structural bound `elapsed < 2×delay` (serialization ≥ 2×delay +
+     overhead can never false-pass; false-fail needs >100ms overhead).
+     8/8 green across both polarities post-fix. Not "flaky" — the margin
+     was the bug (§Discipline).
+  After the fixes: toggled full-suite polarity-identical (fail set = the
+  ledgered intentional set only). `suite_polarity.sh` remains the installed
+  gate-time protocol.
+- **L-D1 lane (qa plan §3.5/§6.1, M-stage gate):** `tests/perf/
+  l_d1_turn_latency.py` — 30 body-only redefinition turns over a 50-defn
+  module, prompt-stamp parsing: **median 0.0ms (sub-ms stamps) at BOTH
+  polarities → PASS** (gate: ≤1.10× on a ≥1ms floor). ABI-changing turn:
+  1ms, recompiled-set 0 / broken 1 (report-only at stage M). The body-only
+  fast path takes no dependent recompiles (cascade-absence pinned by
+  `redefine_body_only_neg_no_cascade_report_no_dependent_recompiles`); the
+  per-defining-turn background persists added at Wave 4 do not visibly
+  regress the eval turn.
+- **FIXME 0478 drain — polarity reconciliation (task ruling):** the landed
+  guard `redefine_concrete_to_polymorphic_caller_survives_coherent_stale`
+  (authored by `/dev`(src/) with the 0479 fix, RED-first against the live
+  SIGSEGV) pins GREEN coherent-stale + a T1-residue flip note. /qa **agrees
+  this is the right polarity** over the design doc §10's "stays RED by
+  design" framing: failing-not-ignored guards are for *defects*; post-0479
+  the crash (the defect) is cured, and coherent-stale is the *designed*
+  stage-M behaviour per the amended `design/int/session-transaction.md` §10
+  (T1 downgrade + named residue). A permanently-RED test for designed
+  behaviour would burn the intentional-failing budget on a non-defect; the
+  flip note makes the test fail loudly exactly when the full T1 cure lands —
+  the correct prompt to re-pin. Sibling shape added at Wave 5:
+  `redefine_concrete_to_overloaded_caller_survives_coherent_stale`
+  (concrete→multi-sig Overloaded staged entry, same slot-less T1 mechanism,
+  probed same coherent-stale behaviour). FIXME 0478 deleted.
+- **FIXME 0460 drain:** §17.15.4 honest-failure e2e lane authored in
+  `tests/agent.rs` (agent-feature lane):
+  `set_doc_missing_target_e2e_refused_no_false_recorded_neg` (never-defined
+  AND import-only targets — probing showed a bare primitive under the
+  prelude is an Import entry, so `add-i64` takes face 1 `no such
+  definition`, exactly as §17.15.4 names for re-exported imports) +
+  `set_doc_non_function_target_e2e_refused_not_recorded_neg` (local ADT
+  constructor — the face-2 "only function definitions persist a docstring"
+  refusal). Both GREEN (coverage gap, not defect). §17.15.4 heading now
+  carries the `[Tested+Neg …]` citations. FIXME 0460 deleted. NOTE: the
+  agent lane is `--features agent` (absent from the canonical suite);
+  verified 4/4 green including the S94 positive pair.
+- **Drop-trio disposition (per /arch's Wave-5 diagnosis + /dev
+  cranelisp-intrinsics fix):** the 3 `cranelisp-intrinsics`
+  `drop::tests::*` failures that became visible when Wave-2b's
+  `default-members` exposed the crate lib tiers were **test-fixture
+  artifacts, NOT product UAF, NOT intentional guards**: the
+  `drop/tests.rs::make_vec_struct` helper allocated buffers via raw
+  `alloc_zeroed`, bypassing `databuf_guard::on_alloc`, so the (correct,
+  Principle-22) tripwire panicked on never-registered buffers (`previous
+  free site = None`). Fixed at Wave 5 by `/dev`(cranelisp-intrinsics):
+  `alloc_data_buffer` → `pub(crate)` (Principle-7 pair with
+  `free_data_buffer`), fixture routes through the tracked path, +1
+  `should_panic` pin proving the tripwire still fires on stale buffers.
+  **Coverage post-mortem angle:** invisible pre-default-members because NO
+  runner exercised crate lib tiers in the canonical loop — the same F5 gap
+  (`tests/plan/s101-coverage-postmortem.md` context) that hid them since
+  their 0494-era authoring; default-members is the structural cure (the
+  canonical run now compiles + runs every crate's unit tier, so a fixture
+  rotting against a product-side guard surfaces at the next run, not at the
+  next audit). 0494 bug #2 closure undisturbed.
+
+> **RESOLVED — flip record (S101 Wave 5 close, /qa 2026-07-03, S82/S93 precedent).**
+> All 15 RED flipped GREEN in-sprint: the 2 L-B3 cache lanes at **Wave 3**
+> (`/dev` cranelisp-backend — toggle + manifest key + `read_manifest`
+> other-polarity-as-absent), the 13 stage-M lanes at **Wave 4** (`/dev` src/ —
+> the session transaction; incl. the R18 deterministic-final-persist fix that
+> L-R5(b)/(c) required). Verified stable at Wave 5: two consecutive
+> `cargo nextest run --no-fail-fast` = **3447/0/1 both runs** (60.0s / 59.1s),
+> no R18-class recurrence. Change-set uncommitted at ledger time (lands with
+> the S101 close commit; last commit `0b0e234`). The GREEN pins stand as
+> permanent regression guards. Wave-4 amendment confirmed by /qa at Wave 5:
+> `redefine_broken_caller_info_and_sig_report_broken_status`'s negative leg
+> narrowed to post-report scope (whole-stdout absence unsatisfiable vs
+> normative §18.3) — SOUND; its fragile `.skip(1)` (review F8) fixed at Wave 5
+> (explicit `skip_while` over the report's `;`-prefixed section body); the
+> 0480 source-line assertion in the same test confirmed sound (§18.4 /info
+> MUST include definition source).
+
+The stage-M failing-first set per `tests/plan/s100-ownership-verification.md` §6.1
+(S93-precedent single entry covering the whole RED set; the GREEN pins drafted
+alongside are not ledger material). These are **drafted-RED TDD guards, not
+regressions**: they pin `repl/spec.md` §18 (landed S101 Phase 3) + spine §5.6
+persistence pins + backend §2.3 manifest-key behaviour that the S101 `/dev` waves
+(2: typecheck 0470; 3: backend; 4: src/ transaction) make pass. Every RED shape was
+probed by hand on HEAD before drafting (crash signatures below).
+
+- **Tests (15 RED, failing-not-ignored — 14 per the §6.1 spec + L-R5c reclassified
+  at drafting, see FINDING):**
+  `repl_redefinition::redefine_abi_change_broken_caller_direct_call_traps_with_provenance` (L-R1a),
+  `repl_redefinition::redefine_broken_caller_value_use_wrapper_minted_before_break_reaches_trap` (L-R1b),
+  `repl_redefinition::redefine_broken_caller_curried_partial_reaches_trap` (L-R1c),
+  `repl_redefinition::redefine_broken_caller_info_and_sig_report_broken_status` (L-R1d),
+  `repl_redefinition::redefine_recovery_fixing_caller_clears_broken` (L-R1e),
+  `repl_redefinition::redefine_recovery_reverting_callee_recompiles_caller` (L-R1e),
+  `repl_redefinition::redefine_trap_invocations_leak_bounded_per_trap` (L-R1f),
+  `repl_redefinition::redefine_abi_change_closure_minting_caller_rejoins_new_world_coherently` (L-R2a, closest-reachable carrier — residue documented in the test-file header + qa plan §6.1 addendum),
+  `repl_redefinition::redefine_abi_change_cascade_report_names_exact_affected_set` (L-R3b),
+  `repl_redefinition::type_change_redefinition_compiled_caller_never_reaches_new_body_uncorrected` (L-R4a — the sprint's named witness),
+  `repl_redefinition::type_change_redefinition_polymorphic_caller_recompiles_and_works` (L-R4b),
+  `repl_persist_redefine::persist_abi_change_allocates_fresh_slot_hole_survives_restart` (L-R5b),
+  `repl_persist_redefine::persist_body_only_redefinition_neg_keeps_slot` (L-R5c —
+  RECLASSIFIED from green pin at drafting; see FINDING below),
+  `cache::cache_ownership_toggle_flip_invalidates_wholesale_no_stale_objects` (L-B3),
+  `cache::cache_ownership_toggle_round_trip_and_same_polarity_stability` (L-B3).
+  (GREEN pins drafted alongside, for the record: L-R2b late-binding, L-R3a
+  no-cascade (vacuous until landing), L-R5a cache-restore.)
+- **FINDING (Wave-1 drafting): the final `.meta.json` persist races `/quit` (R18
+  abandon-on-shutdown).** The §6.1 spec expected L-R5c green-at-draft; the suite run
+  showed it (and L-R5b) failing NON-deterministically with `symbol f/g not found in
+  meta` — the nice workers abandon pending `.o`/`.meta` persist work at shutdown
+  (`src/session_v4/nice_worker.rs` R18; `main.rs s.shutdown()`), so the post-`/quit`
+  meta intermittently misses the last defining turns under load (hand probes,
+  unloaded, were always complete; two consecutive loaded runs raced on different
+  symbols). Benign for restore correctness today (`user.cl` is truth; stale meta
+  fails the hash check and recompiles — L-R5a stays a stable green pin), but the
+  spine §5.6 pins make the persisted meta load-bearing at stage M, so **Wave-4
+  `/dev`(src/) must make the final defining-turn persist deterministic at `/quit`**
+  (fire §"Persistence" faithful-write pin). Both L-R5 meta tests now assert meta
+  COMPLETENESS first (the finding's needle, named in the panic message) and slot
+  policy second; L-R5c is burst-amplified (×8, S98 precedent) so the race fires
+  reliably under load — a single opportunistically-green run is NOT a flip; the
+  flip criterion is deterministic green including the completeness legs. Not
+  "flaky": the race is the bug, named and pinned (this file §Discipline). No FIXME
+  filed — these failing tests are the record and trigger
+  (`memory/feedback_no_fixme_with_failing_test.md`).
+- **Current commit SHA:** `0b0e234` (+ this uncommitted drafting change-set).
+- **Exact signatures:** trap/coherence lanes — harness panic
+  `expected exit 0, got status=ExitStatus(unix_wait_status(135))` (SIGBUS; probed:
+  post-break stale-typed calls jump Int-as-String into the new body) or missing-
+  needle panics (`broken by the redefinition of`, `recompiled` absent — no
+  machinery on HEAD); L-R5b — assertion
+  `ABI-changing redefinition must allocate a fresh slot for f: redef=0 vs control=0`;
+  L-B3 — `toggle flip must invalidate wholesale … stderr: module-trace: cache hit
+  (.meta valid) for util` (env var is a no-op today).
+- **Owning skill:** `/dev` per wave — Wave 2 `cranelisp-typecheck` (0470 edge feed),
+  Wave 3 `cranelisp-backend` (trap stub, toggle+manifest key), Wave 4 `src/`
+  (the transaction) — per `sprints/SPRINT.md` §Waves; `/qa` re-verifies at Wave 5.
+- **Target sprint:** S101 (in-sprint flips; any RED carried past close gets its own
+  full entry and joins the root `CLAUDE.md` intentional-failing count).
+- **Disposition:** `out-of-scope (owner=/dev per wave)` at drafting time by
+  construction — QA-first stage-1 guards awaiting the implementing waves; annotate
+  this entry with the flip record at close (S82/S93 precedent).
+
+### Sprint 101 Wave-1 — intermittent: startup index-burndown `.meta` write races `/quit` (same R18 abandon-on-shutdown class) (/qa, 2026-07-03)
+
+> **RESOLVED (S101 Wave 5 close, /qa 2026-07-03).** The Wave-4 `/dev`(src/)
+> R18 fix (per-turn `mark_object_stale` + generation-counted completion +
+> `flush_final_persist` at `/quit`) roots this class. Stability confirmed at
+> Wave 5: `search_burndown_arms_at_repl_startup_neg_not_on_first_search` green
+> in two consecutive full parallel suite runs (3447/0/1) plus the toggled
+> polarity run — no recurrence of the load-dependent window.
+
+- **Test (pre-existing, intermittently RED under parallel suite load):**
+  `search::search_burndown_arms_at_repl_startup_neg_not_on_first_search`
+- **Current commit SHA:** `0b0e234` (+ the Wave-1 test-only change-set — which does
+  not touch this test or any source; the added test binaries shift suite scheduling
+  enough to surface the window).
+- **Exact signature:** assertion
+  `the burn-down MUST arm at REPL start-up … a no-search REPL session over
+  reachable modules still produces the index .meta`s` — i.e.
+  `.cranelisp-cache/mathx.meta.json` absent after a clean no-op-session `/quit`.
+  Sampling: failed 1 of 2 full parallel `cargo nextest run`s this wave; PASSES in
+  isolation (0.03s).
+- **Root-cause class:** the same finding as the stage-M L-R5 entry above — the
+  session piped only `\n` then EOF/`/quit`, and the nice-worker index burn-down's
+  `.meta` write is abandoned at shutdown (`nice_worker.rs` R18 abandon-on-shutdown)
+  when the shutdown flag wins the race. The test's assertion is exactly an
+  "index write landed by exit" claim, which today's shutdown semantics do not
+  guarantee. NOT caused by the Wave-1 change-set; latent since S91, surfaced by
+  load. Not "flaky" — the race is named (this file §Discipline).
+- **Owning skill:** `/dev`(src/) — same Wave-4 seam as the L-R5 finding
+  (deterministic flush/drain of pending nice-worker persists at `/quit`), or `/int`
+  rules the eager-burndown contract to be "armed, best-effort by exit" and the test
+  gains an explicit completion barrier. Decide with the Wave-4 fix.
+- **Target sprint:** S101 Wave 4 (rides the same deterministic-persist fix the
+  L-R5 lanes require).
+- **Disposition:** `out-of-scope (owner=/dev src/)` for this wave — load-dependent
+  (usually green); NOT added to the intentional-failing count; recorded so a wave
+  gate seeing it RED attributes it here, not to a new regression.
+
+### Sprint 101 Wave-1 cat-3 sweep — vec-query NULL-slot class widened to 3 more use positions (/qa, 2026-07-03)
+
+> **RESOLVED — flip record (S101 Wave 5 close, /qa 2026-07-03; qa plan §7.1
+> executed with the 4→7 supersession).** The Wave-3 `/dev`(cranelisp-backend)
+> fix cured BOTH seams (fn-as-value wrapper inline-lowering via shared
+> emission cores + the curry path's unknown-builtin Import arm): all **3**
+> guards here + the **4** S100-triage guards below flipped GREEN; the
+> `vec-len` control stayed green throughout. 7/7 verified stable at Wave 5
+> (double-run 3447/0/1). Uncommitted at ledger time (lands with the S101
+> close commit). Test-file docs updated same change-set (§7.1 step 4).
+> Residual on the SAME new paths: the COW copy-branch leak — see §"Sprint 101
+> Wave-5 — FIXME 0474 repro" (the suite's only intentional RED at close).
+> Also drained at Wave 5: FIXME 0475 — shadowing-precedence pins
+> (`user_fn_shadowing_vec_get_direct_call_takes_user_body`,
+> `user_fn_shadowing_vec_get_as_value_through_hof_neg_not_inline_semantics`,
+> GREEN pins; the shadow shape IS constructible, so the FIXME's
+> negative-rejection fallback did not apply).
+
+The coverage post-mortem's use-position × builtin-family matrix sweep
+(`tests/plan/s101-coverage-postmortem.md` §3) probed 25 family × position cells;
+every failure traces to the SAME root cause as the S100 triage entry below (NULL
+GOT slots for `vec-get`/`vec-set`/`vec-push`), in three use positions the S100
+guards did not cover. Same owner, same fix, same flip protocol — the qa plan §7.1
+flip count is superseded: the Wave-3 fix must flip **7** vec-query guards (4 S100 +
+these 3), control green throughout.
+
+- **Tests (3 RED, failing-not-ignored; extend `tests/vec_query_value_use.rs`):**
+  `vec_query_value_use::vec_get_curried_partial_applies`,
+  `vec_query_value_use::vec_get_returned_from_fn_applies`,
+  `vec_query_value_use::vec_get_stored_in_adt_field_applies`.
+- **Current commit SHA:** `0b0e234` (+ this uncommitted change-set).
+- **Exact signatures:** curried — Rust panic
+  `thread 'main' panicked at …cranelift-jit-0.116.1/src/backend.rs:345:21: can't
+  resolve symbol vec-get` → exit 101 (a DISTINCT, earlier signature: the auto-curry
+  wrapper's `primitives_inline` fallback does not cover the vec family — confirms
+  the `/design`(backend) §12.7 suspicion); returned / stored-in-ADT — harness panic
+  `expected exit 0, got status=ExitStatus(unix_wait_status(139))` (SIGSEGV through
+  the NULL slot). `vec-set`/`vec-push` curried probed with the identical exit-101
+  signature (recorded in the post-mortem, not separately guarded — one guard per
+  position on the family exemplar).
+- **Owning skill:** `/backend` (S101 sprint item 1, Wave 3 — the same
+  `fn_as_value.rs`/`primitives_inline` seam; the curried signature tells the
+  resolver the curry path needs the cure too).
+- **Target sprint:** S101 Wave 3.
+- **Disposition:** `out-of-scope (owner=/backend)` — narrow repros are the durable
+  record + regression guard; flip with the sprint-item-1 fix alongside the S100
+  four.
+
 ### Sprint 100 Phase-3 triage — vec-query-family value-use calls through NULL GOT slots → SIGSEGV (/qa, 2026-07-02)
+
+> **RESOLVED — flip record (S101 Wave 5 close, /qa 2026-07-03; qa plan §7.1
+> step 3, S81→S82 precedent).** Fixed by S101 sprint item 1 (`/dev`
+> cranelisp-backend, Wave 3): **4 RED → GREEN; control green throughout.**
+> Root cause cured at both seams — see the cat-3 sweep entry's flip record
+> above for the mechanism + the 7-guard total. Root `CLAUDE.md` §Testing
+> intentional-failing count 4→0 for THIS class (the close-time canonical
+> count is 3 — the new 0474 leak guards; flagged to `/sprint` for the user).
+> Uncommitted at ledger time (lands with the S101 close commit).
 
 The spine-named triage item (`design/arch/ownership-inference.md` §3.1/§9): value-use
 of `vec-get`/`vec-set`/`vec-push` (passed to a HOF) rides GOT slots initialized NULL

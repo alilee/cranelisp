@@ -40,8 +40,23 @@ pub struct CacheState {
 
 impl CacheState {
     /// Initialize cache state: load existing manifest or create a new one.
+    ///
+    /// **Global-key convergence (S101 obligation).** The session loads the
+    /// on-disk manifest into memory here and re-flushes THAT object after
+    /// recompiles — global keys preserved. A manifest whose global keys no
+    /// longer match the running environment (compiler rebuilt →
+    /// `compiler_mtime` stale; format-version / target-triple / cranelift /
+    /// ownership-polarity mismatch likewise) must therefore be discarded at
+    /// load, not carried: carrying it means every post-recompile flush
+    /// re-writes the STALE fingerprint, so every future session misses
+    /// forever (a permanent cache miss after any compiler rebuild). Starting
+    /// from `new_for_host()` makes the first post-rebuild session a wholesale
+    /// recompile whose flush stamps CURRENT keys — the next session hits.
+    /// This is the src/-side cure for the class; backend's `read_manifest`
+    /// already cures the ownership-polarity instance the same way.
     pub fn new(cache_dir: PathBuf) -> Self {
         let manifest = cache_manifest::read_manifest(&cache_dir)
+            .filter(manifest_globals_current)
             .unwrap_or_else(cache_manifest::CacheManifest::new_for_host);
         CacheState {
             manifest,
@@ -129,6 +144,26 @@ impl CacheState {
     pub fn record_cache_hit(&mut self, module_path: &ModuleFullPath, source_hash: String) {
         self.source_hashes.insert(module_path.clone(), source_hash);
     }
+}
+
+/// True iff a loaded manifest's GLOBAL invalidation keys match the current
+/// environment (compiler fingerprint, format version, target triple,
+/// cranelift version, ownership polarity).
+///
+/// Probed through `check_manifest` with a module name that can never exist —
+/// the global checks run first and return `Err(CacheInvalidReason)` on any
+/// mismatch; a globally-valid manifest reaches the per-module lookup and
+/// answers `Ok(false)` for the absent probe. Reusing the one validity gate
+/// keeps this check covering any future global key without a second list
+/// (Principle 7).
+fn manifest_globals_current(manifest: &cache_manifest::CacheManifest) -> bool {
+    cache_manifest::check_manifest(
+        manifest,
+        &ModuleFullPath::from("__manifest_global_key_probe__"),
+        "",
+        &HashMap::new(),
+    )
+    .is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +572,85 @@ pub(crate) fn apply_bind_chain_analysis<
             | TopLevel::TypeDef { .. }
             | TopLevel::Expr(_) => {}
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S101 — manifest global-key convergence tests (accumulated obligation 2).
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod manifest_convergence_tests {
+    use super::*;
+
+    fn write_manifest_json(dir: &Path, compiler_mtime: &str) {
+        // Build a manifest with CURRENT global keys, then stamp a stale
+        // compiler fingerprint — isolates the compiler_mtime key.
+        let mut manifest = cache_manifest::CacheManifest::new_for_host();
+        manifest.compiler_mtime = compiler_mtime.to_string();
+        manifest.upsert_module(
+            &ModuleFullPath::from("user"),
+            "stale-module-hash".to_string(),
+            HashMap::new(),
+        );
+        cache_manifest::write_manifest(dir, &manifest).unwrap();
+    }
+
+    // spec: design/int/session-transaction.md §8 — after a compiler rebuild
+    // the loaded manifest's stale global fingerprint must NOT be carried into
+    // the session (and re-flushed forever); the session starts from a fresh
+    // host manifest so the first post-rebuild flush stamps CURRENT keys and
+    // the NEXT session's cache-hit check converges.
+    #[test]
+    fn stale_compiler_fingerprint_manifest_is_discarded_and_flush_converges() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest_json(tmp.path(), "mtime-1.1");
+
+        let mut cs = CacheState::new(tmp.path().to_path_buf());
+        // Record a recompiled module and flush — the manifest on disk must
+        // now carry the CURRENT compiler fingerprint, not the stale one.
+        cs.record_module(
+            &ModuleFullPath::from("user"),
+            "fresh-hash".to_string(),
+            HashMap::new(),
+        );
+        cs.flush().unwrap();
+
+        let reread = cache_manifest::read_manifest(tmp.path()).expect("manifest re-reads");
+        assert_eq!(
+            reread.compiler_mtime,
+            cache_manifest::binary_fingerprint(),
+            "post-rebuild flush must stamp the CURRENT compiler fingerprint"
+        );
+        assert_ne!(reread.compiler_mtime, "mtime-1.1");
+        // The stale per-module entries were discarded with the stale manifest
+        // (they reference caches the fingerprint invalidated wholesale).
+        assert_eq!(
+            reread
+                .get_module(&ModuleFullPath::from("user"))
+                .map(|m| m.source_hash.as_str()),
+            Some("fresh-hash"),
+            "the fresh session's own record survives"
+        );
+    }
+
+    // spec: (same anchor) — negative: a manifest whose global keys are
+    // CURRENT is preserved (its module entries stay valid across sessions).
+    #[test]
+    fn current_manifest_neg_is_preserved_not_discarded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut manifest = cache_manifest::CacheManifest::new_for_host();
+        manifest.upsert_module(
+            &ModuleFullPath::from("user"),
+            "kept-hash".to_string(),
+            HashMap::new(),
+        );
+        cache_manifest::write_manifest(tmp.path(), &manifest).unwrap();
+
+        let cs = CacheState::new(tmp.path().to_path_buf());
+        assert!(
+            cs.is_cache_valid(&ModuleFullPath::from("user"), "kept-hash", &HashMap::new()),
+            "a globally-current manifest's module entries must survive the load"
+        );
     }
 }
 

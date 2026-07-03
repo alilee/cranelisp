@@ -138,7 +138,7 @@ here:
 
 ## 1. Why a `poll_support` module at all
 
-The ABI-v7 contract (`concurrency.rs`) gives a platform author the raw C-ABI: a
+The C-ABI poll contract (`concurrency.rs`; introduced at ABI v7, core/ungated since the v8 single-ABI cutover — current stamp v9) gives a platform author the raw C-ABI: a
 `PollFn = unsafe extern "C" fn(state: *mut c_void, host: *const HostCtx, waker:
 *const Waker) -> Poll`. Three things are repeated, error-prone, and `unsafe` in
 every poll leaf, and S95's synthetic `async-demo` / `timer_write_pollfn` leaves
@@ -159,18 +159,22 @@ already paid the cost by hand:
    yet?" across polls — phase state that lives in the env scratch and is
    hand-encoded as a sentinel today.
 
-`poll_support` codifies these three into a small, total, `concurrency`-gated
-helper layer so a leaf author writes intent (`"try the syscall; if it'd block,
+`poll_support` codifies these three into a small, total helper layer (authored
+`concurrency`-gated; core/ungated since the v8 single-ABI cutover) so a leaf
+author writes intent (`"try the syscall; if it'd block,
 tell the host to wake me"`), not offset math. The **descriptor** (the trust
 assertion — token/capacity/blocking), the **syscall** (the platform's domain),
 and the **result interpretation** (what the i64 means) stay hand-written — those
 are the irreducible per-platform parts.
 
-The module is `#[cfg(feature = "concurrency")]` throughout, so it enters neither
-the default build nor the frozen `public-api.txt` edge — the `_neg` frozen-edge
-guard (`tests/facade_pif_rows.rs::concurrency_descriptor_absent_from_default_public_api_neg`)
-keeps it off the default surface byte-identical-when-off, exactly as the v7
-contract types already are.
+*(Historical — Chunk-A authoring state.)* The module was `#[cfg(feature =
+"concurrency")]` throughout, entering neither the default build nor the frozen
+`public-api.txt` edge — the `_neg` frozen-edge guard
+(`tests/facade_pif_rows.rs::concurrency_descriptor_absent_from_default_public_api_neg`)
+kept it off the default surface byte-identical-when-off, exactly as the v7
+contract types were. The v8 single-ABI cutover **retired the `concurrency`
+feature**: `poll_support` and the contract types are core/ungated, on the default
+`public-api.txt` edge (top banner).
 
 ---
 
@@ -397,7 +401,7 @@ is a single-stream blocking `listen`/`accept`/`send` (one accepted `TcpStream`
 held in a process-global `Mutex` between `accept` and `send`). The v7 rewrite turns
 the connection lifecycle into poll-shape leaves over a **per-connection token**:
 
-| Effect | v6 (today) | v7 (target) |
+| Effect | v6 (then-current, at S96 authoring) | v7 (target) |
 |---|---|---|
 | `listen` | blocking `bind`, store listener | stays simple: a one-shot poll (or v6 blocking) that binds the listener. Mints **nothing** per-call; the listener is the long-lived resource. |
 | `accept` | blocking `accept()`, hold stream | **poll-shape**: park on the listener fd's readable readiness; on wake, `accept()` a connection and **mint a FRESH connection token** for it; return a `web/Request`-bearing value (or a connection handle) carrying that token. |

@@ -43,9 +43,9 @@ platforms/test-capture/ ──> cranelisp-platform
 
 ### ABI Version
 
-The reimplementation started at **ABI version 1**; it is now at **ABI version 7** (the bump trail is canonical in `platform.md` §3 "ABI version history" + the `ABI_VERSION` rustdoc: v2 ADT marshaling, v3 three-exports, v4 fn-name node widen, v5 EffectOutcome/fault-catch, v6 namespaced manifest export, v7 effect-concurrency cascade). The host (`int::load_platform_dll`) checks `manifest.abi_version == ABI_VERSION` at load time and rejects mismatches with `PlatformError::AbiVersionMismatch` (Decision 42).
+The reimplementation started at **ABI version 1**; it is now at **ABI version 9** (the bump trail is canonical in `platform.md` §3 "ABI version history" + the `ABI_VERSION` rustdoc: v2 ADT marshaling, v3 three-exports, v4 fn-name node widen, v5 EffectOutcome/fault-catch, v6 namespaced manifest export, v7 effect-concurrency cascade, v8 single-ABI cutover — one macro/manifest/loader, `concurrency` feature retired, v9 ctx-vtable handle-model cutover — `HostCtx` `acquire`/`retire`, `ConcurrencyDescriptor.role`, opaque resource-handle ADTs). The host (`int::load_platform_dll`) checks `manifest.abi_version == ABI_VERSION` at load time and rejects mismatches with `PlatformError::AbiVersionMismatch` (Decision 42).
 
-Future breaking changes (struct layout changes, new required fields) bump the version. Additive changes (new optional fields at the end of structs) may be handled without a version bump if backward compatibility is maintained, but a bump is preferred for clarity. The S95 capacity carrier (`IO_EFFECT_CAPACITY_OFFSET = 32`) and the S94 R1 poll-shape `drop_state` reserve were appended in place **without** a bump only because the v7 layout is not yet frozen (no out-of-tree cdylib has shipped against it) — once a v7 platform ships externally, the append-in-place latitude ends.
+Future breaking changes (struct layout changes, new required fields) bump the version. Additive changes (new optional fields at the end of structs) may be handled without a version bump if backward compatibility is maintained, but a bump is preferred for clarity. The S95 capacity carrier (`IO_EFFECT_CAPACITY_OFFSET = 32`) and the S94 R1 poll-shape `drop_state` reserve were appended in place **without** a bump only because the v7 layout was not yet frozen (no out-of-tree cdylib had shipped against it); the same no-users latitude carried the v8/v9 cutovers. Once a platform ships externally against the current stamp, the append-in-place latitude ends.
 
 ### IO Tag Constants
 
@@ -57,9 +57,11 @@ Shared between platform DLLs and the host trampoline:
 | `IO_TAG_EFFECT` | 1 | Deferred effect (opaque closure) |
 | `IO_TAG_BIND` | 2 | Chain (internal) |
 | `IO_TAG_PAR` | 3 | Automatic IO scheduling (spec §10.12) |
-| `IO_TAG_EFFECT_POLL` | 4 | Poll-shape async leaf (`concurrency`-gated; backend-built state-closure node, io-trampoline §12) |
+| `IO_TAG_EFFECT_POLL` | 4 | Poll-shape async leaf (core/ungated since v8; backend-built state-closure node, io-trampoline §12) |
+| `IO_TAG_LAUNCH` | 5 | Launch-and-continue (S96 Chunk B; host-built/host-interpreted, never crosses the DLL ABI) |
+| `IO_TAG_SELECT` | 6 | Race/select combinator (S96 Chunk C; host-built/host-interpreted, never crosses the DLL ABI) |
 
-`IO_TAG_PAR` (tag 3) is now present (automatic IO scheduling landed). `IO_TAG_EFFECT_POLL` (tag 4) is the poll-shape async-leaf node, reserved with the v7 `concurrency` layout contracts; it is built by the **backend** (a host-built state-closure), not the DLL — see `design/backend/io-trampoline.md` §12 and `design/platform/poll-support.md`.
+`IO_TAG_PAR` (tag 3) is now present (automatic IO scheduling landed). `IO_TAG_EFFECT_POLL` (tag 4) is the poll-shape async-leaf node, introduced with the v7 `concurrency` layout contracts and core/ungated since the v8 single-ABI cutover; it is built by the **backend** (a host-built state-closure), not the DLL — see `design/backend/io-trampoline.md` §12 and `design/platform/poll-support.md`.
 
 ### `PlatformManifest`
 

@@ -222,6 +222,53 @@ where
     })
 }
 
+/// Resolve a name to the canonical bare name of a **vec-query-family
+/// primitives-table entry** (`vec-get` / `vec-set` / `vec-push`) — the
+/// NULL-GOT-slot, name-resolution-only entries
+/// (`cranelisp-primitives::insert_vec_query_entries`) that the fn-as-value /
+/// auto-curry wrapper paths must INLINE-emit instead of calling through
+/// (`design/backend/ownership-codegen.md` §12.7 — the S100 SIGSEGV defect).
+///
+/// Precedence-faithful: the `read` closure STOPS at the first entry carrying a
+/// callable GOT slot — the exact stop condition `resolve_got_target` uses — and
+/// only then reports whether that entry is a `DefKind::Primitive` named
+/// `vec-get`/`vec-set`/`vec-push`. A user-defined function shadowing one of
+/// these names resolves first (kind `UserFn` → `None` result) and keeps the
+/// ordinary GOT-indirect dispatch, exactly as before. `vec-len` is deliberately
+/// EXCLUDED: it has a real extern shim and a populated slot (the green control
+/// path — `tests/vec_query_value_use.rs`).
+pub(crate) fn resolve_vec_query_primitive<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    current_module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<Symbol>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    resolve_driven(
+        symbol_tables,
+        module_aliases,
+        current_module,
+        name,
+        |_module, bare, entry| {
+            // Same stop condition as `resolve_got_target` (identical precedence).
+            entry.callable_got_slot()?;
+            match entry {
+                ModuleEntry::Def { kind, .. }
+                    if matches!(kind.as_ref(), DefKind::Primitive { .. })
+                        && matches!(bare, "vec-get" | "vec-set" | "vec-push") =>
+                {
+                    Some(Some(Symbol::from(bare)))
+                }
+                _ => Some(None),
+            }
+        },
+    )
+    .flatten()
+}
+
 /// Resolve a callee name to `(defining_module, slot, defining_bare_name)` **iff**
 /// the resolved entry is a `DefKind::PlatformEffect` Def (the GOT-indirect
 /// platform-dispatch arm).

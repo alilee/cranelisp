@@ -46,6 +46,9 @@ pub cranelisp_backend::cache::manifest::CacheInvalidReason::CraneliftVersion::cu
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::FormatVersion
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::FormatVersion::cached: u32
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::FormatVersion::current: u32
+pub cranelisp_backend::cache::manifest::CacheInvalidReason::OwnershipToggle
+pub cranelisp_backend::cache::manifest::CacheInvalidReason::OwnershipToggle::cached: bool
+pub cranelisp_backend::cache::manifest::CacheInvalidReason::OwnershipToggle::current: bool
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::TargetTriple
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::TargetTriple::cached: alloc::string::String
 pub cranelisp_backend::cache::manifest::CacheInvalidReason::TargetTriple::current: alloc::string::String
@@ -63,6 +66,7 @@ pub cranelisp_backend::cache::manifest::CacheManifest::cache_format_version: u32
 pub cranelisp_backend::cache::manifest::CacheManifest::compiler_mtime: alloc::string::String
 pub cranelisp_backend::cache::manifest::CacheManifest::cranelift_version: alloc::string::String
 pub cranelisp_backend::cache::manifest::CacheManifest::modules: std::collections::hash::map::HashMap<alloc::string::String, cranelisp_backend::cache::manifest::CachedModuleRef>
+pub cranelisp_backend::cache::manifest::CacheManifest::ownership_disabled: bool
 pub cranelisp_backend::cache::manifest::CacheManifest::target_triple: alloc::string::String
 impl cranelisp_backend::cache::manifest::CacheManifest
 pub fn cranelisp_backend::cache::manifest::CacheManifest::get_module(&self, &cranelisp_types::newtype::ModuleFullPath) -> core::option::Option<&cranelisp_backend::cache::manifest::CachedModuleRef>
@@ -577,5 +581,6 @@ pub fn cranelift_object::backend::ObjectModule::finalize_for_code_read(&mut self
 pub fn cranelift_object::backend::ObjectModule::try_get_finalized_function(&self, cranelift_module::module::FuncId) -> core::option::Option<*const u8>
 pub fn cranelisp_backend::build_isa(bool) -> core::result::Result<alloc::sync::Arc<dyn cranelift_codegen::isa::TargetIsa>, cranelisp_types::error::CranelispError>
 pub fn cranelisp_backend::compile_to_module<M, C, L>(cranelisp_types::newtype::ModuleFullPath, &[cranelisp_types::newtype::Symbol], &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>, &cranelisp_types::module::ModuleAliases, &mut M, bool) -> core::result::Result<cranelisp_backend::CompilationArtifacts, cranelisp_backend::error::CompilationError> where M: cranelift_module::module::Module + cranelisp_backend::CodeFinalizer, C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
+pub fn cranelisp_backend::compile_trap_stub(*const u8, usize) -> core::result::Result<(*const u8, cranelisp_backend::code::Code), cranelisp_backend::error::CompilationError>
 pub fn cranelisp_backend::load_object<C, L>(&cranelisp_types::newtype::ModuleFullPath, &[u8], &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<cranelisp_backend::artefact::LinkerArtefact, cranelisp_types::error::CranelispError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore
 pub fn cranelisp_backend::produce_disasm<C, L>(&cranelisp_types::newtype::FQSymbol, usize, &dashmap::DashMap<cranelisp_types::newtype::ModuleFullPath, cranelisp_types::module::SymbolTable<C, L>>) -> core::result::Result<alloc::string::String, cranelisp_backend::error::CompilationError> where C: cranelisp_types::module::CodeStore, L: cranelisp_types::module::LinkerStore

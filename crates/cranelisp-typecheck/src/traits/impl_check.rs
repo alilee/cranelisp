@@ -448,6 +448,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Snapshot side maps for per-defn delta extraction
         let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
+        // FIXME 0472: user-fn reference snapshot — this Pass-1 body check is
+        // outside every Pass-2 per-form delta, so the callee edges are
+        // harvested + written HERE (finalize_impl_method_writeback).
+        let ufr_before: HashSet<Span> = state.user_fn_refs.keys().copied().collect();
 
         // Clone the method defn and check the body with the mutable copy.
         //
@@ -506,6 +510,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &ret_ty,
             &mr_before,
             &et_before,
+            &ufr_before,
         )
     }
 
@@ -516,7 +521,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// clone with those types + resolved calls, apply the final substitution,
     /// and write the annotated `DefnVariant` into the symbol table (inserting a
     /// concrete-scheme `Def` entry if one doesn't already exist). `mr_before` /
-    /// `et_before` are the side-map key snapshots taken *before* the body check.
+    /// `et_before` / `ufr_before` are the side-map key snapshots taken *before*
+    /// the body check.
+    ///
+    /// **Callee edges (FIXME 0472).** These Pass-1 bodies are outside every
+    /// Pass-2 per-form delta, so the `FormCheckResult.call_graph_edges`
+    /// channel never sees them. The edges are harvested here via the ONE
+    /// shared `harvest_callee_edges` helper and written DIRECTLY to the
+    /// mangled entry — mirroring the `ast`/`codegen_view` direct writes this
+    /// tail already performs (the `codegen_view` all-seams precedent).
     ///
     /// The symbol table entry may not yet exist because `register_trait_impl`
     /// runs during Pass 1's TraitImpl processing, BEFORE the mangled-name Defns
@@ -540,6 +553,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         ret_ty: &Type,
         mr_before: &HashSet<Span>,
         et_before: &HashSet<Span>,
+        ufr_before: &HashSet<Span>,
     ) -> Result<Defn, CranelispError> {
         // Extract delta: only entries added during this method's body check
         let method_mr: HashMap<Span, ResolvedCall> = state.method_resolutions
@@ -587,6 +601,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let codegen_view: Option<MonoDefnVariant> = ast_variant
             .as_ref()
             .and_then(|v| crate::program::build_concrete_codegen_view(&mangled_sym, v));
+        // FIXME 0472: harvest this method body's callee edges (ResolvedCall
+        // channel + user-fn references) BEFORE taking the table guard; write
+        // them onto the mangled entry after it exists below. This is the
+        // impl/default/HKT-method seam of the ONE shared harvest helper.
+        let callee_edges =
+            self.harvest_callee_edges(state, &mangled_sym, &method_mr, ufr_before);
         let mut st = self.current_symbol_table_mut(state);
         if let Some(ModuleEntry::Def { ast, codegen_view: cv, .. }) =
             st.symbols.get_mut(&mangled_sym)
@@ -612,6 +632,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 builder = builder.codegen_view(view);
             }
             st.insert(mangled_sym.clone(), builder.build());
+        }
+        if !callee_edges.is_empty() {
+            crate::program::write_callees_to_module_entries(&mut *st, &callee_edges);
         }
 
         Ok(annotated)
@@ -695,6 +718,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Snapshot side maps for per-defn delta extraction
         let mr_before: HashSet<Span> = state.method_resolutions.resolved_calls.keys().copied().collect();
         let et_before: HashSet<Span> = state.expr_types.keys().copied().collect();
+        // FIXME 0472: user-fn reference snapshot (see check_impl_method_with_sig).
+        let ufr_before: HashSet<Span> = state.user_fn_refs.keys().copied().collect();
 
         // Clone the method defn and check the body with the mutable copy
         let mut method_clone = method_defn.clone();
@@ -719,6 +744,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             &ret_ty,
             &mr_before,
             &et_before,
+            &ufr_before,
         )
     }
 

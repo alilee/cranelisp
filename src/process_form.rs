@@ -382,12 +382,16 @@ fn finalize_cluster(
         );
     }
 
-    let (maybe_gap, cluster_warnings) = check_program_compat(
+    let (maybe_gap, cluster_warnings, redefinitions) = check_program_compat(
         ctx.symbol_tables,
         ctx.module_aliases,
         ctx.prelude_fallback,
         module,
         &final_working,
+        // S101: the session context carries the retention pool the commit
+        // gate's ABI-epoch slot policy freezes superseded code into
+        // (design/int/session-transaction.md §7.1).
+        ctx.shared_state,
     )?;
     if let Some(gap) = maybe_gap {
         // Map the gap to its target module and drive it (register + block) if
@@ -421,12 +425,17 @@ fn finalize_cluster(
     // `ProcessedCluster.warnings` so the REPL driver renders each as a
     // `; warning: <message>` line. The `ProcessedCluster` carrier is committed
     // via `cluster::insert_cluster`.
-    let processed = crate::cluster::ProcessedCluster::from_parts(
+    let mut processed = crate::cluster::ProcessedCluster::from_parts(
         Vec::new(),
         cluster_warnings,
         Vec::new(),
         Vec::new(),
     );
+    // S101: the commit gate's redefinition classifications ride the cluster
+    // carrier back to the driver; the eval path runs the dependent-
+    // recompilation transaction for `AbiChanging` outcomes after the target's
+    // own codegen succeeds (design §13).
+    processed.set_redefinitions(redefinitions);
 
     Ok(ClusterOnce::Done { processed, program })
 }
@@ -637,13 +646,24 @@ fn process_regular_form(
     Ok(None)
 }
 
-/// Inject a wildcard import of the `primitives` module into the current module.
+/// Clear codegen artifacts for a module's symbols at the start of Replace
+/// (watcher-reload) processing.
 ///
-/// Zero GOT slots and clear codegen artifacts for a module's symbols.
+/// S101 (design/int/session-transaction.md §7.3): this path **no longer
+/// zeroes GOT slots**. The former zeroing opened a NULL window — a stale
+/// closure calling mid-recompilation SIGSEGV'd — and provided no soundness
+/// (per-slot `store_slot` writes are individually atomic). Old pointers now
+/// stay live until each symbol's new pointer lands: ABI-preserving members
+/// get gap-free late binding, and ABI-changing members are re-slotted by the
+/// commit gate (fresh slot + freeze) like any other redefinition.
 ///
-/// Called at the start of Replace processing. Preserves GOT slot assignments
-/// so re-compiled definitions land in the same slots. Zeroing the slots
-/// ensures stale code pointers are not callable during recompilation.
+/// Displaced `Code` handles move into the session retention pool instead of
+/// being `None`-d (§6.3): the former comment here claimed the `Arc<Jit>`
+/// handles "in `kept_jits`" kept the old pages alive, but `kept_jits` was
+/// dissolved in S58 (Decision 35) — `*code = None` could drop the LAST Arc
+/// and free machine code still reachable from in-flight frames or heap
+/// closures. With no session context (unit tests), the pre-S101 drop
+/// behaviour is preserved (nothing executes concurrently there).
 fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
     // Collect qualified symbol names for this module from the TC symbol table.
     let symbols: Vec<cranelisp_types::Symbol> = {
@@ -673,36 +693,28 @@ fn clear_module_codegen(ctx: &mut ModuleCompiler, module: &ModuleFullPath) {
             .collect()
     };
 
-    // Zero GOT slots via per-module GOT table (keep slot assignments in TC).
-    // G7 (Wave 0): GOT lives on SymbolTable; grab the Arc so we can release
-    // the DashMap read guard before acquiring another guard on a potentially
-    // different module.
-    {
-        let module_got = ctx.symbol_tables.get(module).map(|st| st.got.clone());
-        if let Some(got_table) = module_got
-            && let Some(table) = ctx.symbol_tables.get(&ctx.current_module) {
-                for (_name, entry) in table.all_symbols() {
-                    // The callable slot rides on the `DefKind` variant (S83
-                    // reshape, FIXME 0356/0357); read it via the
-                    // `callable_got_slot()` chokepoint. A `Macro` parent is
-                    // non-callable so it answers `None` and is skipped
-                    // structurally (no explicit kind exclusion needed).
-                    if let Some(slot) = entry.callable_got_slot() {
-                        got_table.store_slot(slot, std::ptr::null());
-                    }
-                }
-            }
-    }
+    // S101 §7.3: GOT slots are NOT zeroed. Each old pointer stays callable
+    // (frozen-world-coherent) until the recompiled symbol's new pointer lands
+    // via an atomic per-slot `store_slot` — no NULL window, nothing for a
+    // stale closure to SIGSEGV through.
 
-    // Clear compiled code on each `ModuleEntry::Def.code` for this module
-    // (Sprint 57 Wave 2 G6: `CodegenProduct` was deleted; `code` lives on the
-    // entry). The `Arc<Jit>` handles in `SharedState.kept_jits` keep the old
-    // mmap'd pages alive until the next drain (they are never drained today —
-    // redefinition policy is: keep old code alive for in-flight calls).
+    // Displace compiled code on each `ModuleEntry::Def.code` into the session
+    // retention pool (§6.3) so the pages stay mapped for in-flight frames and
+    // heap closures; without a session context, fall back to dropping (the
+    // pre-S101 behaviour — unit-test-only shapes).
     if let Some(mut st) = ctx.symbol_tables.get_mut(module) {
-        for entry in st.symbols.values_mut() {
-            if let cranelisp_types::ModuleEntry::Def { code, .. } = entry {
-                *code = None;
+        let mut pool = ctx
+            .shared_state
+            .map(|s| s.retained_code.lock().unwrap_or_else(|e| e.into_inner()));
+        for (name, entry) in st.symbols.iter_mut() {
+            let slot = entry.callable_got_slot();
+            if let cranelisp_types::ModuleEntry::Def { code, .. } = entry
+                && let Some(displaced) = code.take()
+                && let Some(pool) = pool.as_mut()
+            {
+                pool.push(crate::redefine::RetainedCode::frozen(
+                    module, name, slot, displaced,
+                ));
             }
         }
     }

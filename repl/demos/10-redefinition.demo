@@ -1,0 +1,76 @@
+; Redefinition — editing live code with a safety net
+; Body edits late-bind silently; signature edits recompile every dependent
+; and report exactly which world each symbol is in.
+
+; A small call chain. Annotated params pin concrete signatures:
+
+(defn price [:Int n] (* n 3))
+(defn total [:Int n] (price (+ n 1)))
+(total 9)
+
+; A body-only edit keeps the signature. No ceremony, no recompiles —
+; total picks up the new price body at its next call (late binding):
+
+(defn price [:Int n] (* n 4))
+(total 9)
+
+; Now a chain where the edit will change a signature. g's body follows f
+; wherever it goes; k pins its argument to Int:
+
+(defn f [:Int x] (+ x 1))
+(defn g [y] (f y))
+(defn k [:Int x] (f (* x 2)))
+
+; Redefine f to take a String. The session recompiles every dependent and
+; reports the outcome: g rode along into the new world; k no longer
+; typechecks, so it is marked broken — never silently wrong:
+
+(defn f [:String s] (str s "!"))
+
+; A broken symbol is not gone. Its definition survives, and every lookup
+; explains what broke it — /info shows the provenance and the source:
+
+/info k
+/sig k
+k
+
+; Calling a broken symbol fails loud, with the same provenance.
+; (The Error:-wrapper around the trap is a known presentation defect —
+; repl/spec.md §18.5 specifies the bare runtime-error line.)
+
+(k 3)
+
+; The session shrugs it off: everything else still works, and g really
+; is in the new world now:
+
+(total 2)
+/sig g
+
+; Recovery, direction one: put f back. k is a static caller, so it
+; rejoins the transaction and recompiles — good as new, zero residue:
+
+(defn f [:Int x] (+ x 1))
+(k 3)
+k
+
+; Recovery, direction two: fix the broken symbol itself. Break a fresh
+; pair the same way:
+
+(defn fee [:Int n] (* n 10))
+(defn invoice [:Int n] (fee (+ n 2)))
+(defn fee [:String tier] (str tier "-rate"))
+
+; This time, redefine the broken caller to match fee's new signature:
+
+(defn invoice [:String tier] (fee (str tier "+")))
+(invoice "gold")
+invoice
+
+; And when a signature change has no compiled dependents, there is no
+; report at all — as quiet as a body edit:
+
+(defn solo [:Int n] (+ n 1))
+(defn solo [:String s] (str s "?"))
+
+; Edit boldly: body edits are free, signature edits are accounted for,
+; and nothing is ever silently wrong.

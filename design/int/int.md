@@ -572,6 +572,23 @@ Per `facades/int.md` §"Composed introspection flows": slash commands are compos
 
 Universal output format (Sprint 14): `:Type {value|name} ; {classification} - {docstring}` + optional related symbol comment lines. Defined in `repl/spec.md`; implemented across `Sess::format_*` family.
 
+### 8.6 Redefinition transaction — dependent recompilation + ABI-epoch slot versioning (S101)
+
+Redefinition is no longer unconditionally a GOT-slot patch. The staging→live commit gains a
+**summary-diff gate** (at stage M: alpha-canonical type scheme; increment I appends the
+ABI-bearing `ModeSummary` half): ABI-preserving redefinitions keep today's reuse-and-patch
+late-binding path at today's cost (L-D1); ABI-changing redefinitions allocate a **fresh GOT
+slot**, freeze the old one on retained code, and run the **dependent-recompilation
+transaction** on the eval thread — reverse-index-derived affected-set closure, SCC
+reverse-topo re-typecheck + recompile, cascade failures surfaced as **BROKEN** symbols with
+in-place trap-stub slots + provenance (`/info`/`/sig` answer broken status). Full design:
+**`design/int/session-transaction.md`** (scope authority
+`design/arch/ownership-inference.md` §5; pinned backend interface
+`design/backend/ownership-codegen.md` §8.3). New session state: `SharedState.broken` +
+`SharedState.retained_code` (the paired provenance-string/`Code` retention pool). The
+watcher Replace path joins the same commit gate (per-symbol slot policy; slot-zeroing
+retired) at module grain.
+
 ---
 
 ## 9. Error formatting (Decisions 39 + 42)
@@ -704,6 +721,12 @@ The destination shape is the working reference for design. The as-built reality 
 > and refines `design/arch/repl-embedded-agent.md` (U1–U6 ratified). Feature-off ⇒ the binary
 > is byte-identical to today (the classifier's `Err(other parse error)` arm falls back to
 > today's diagnostic). Cited from §8.5 (slash commands) once `/ask`/`/refs`/`/tests-for` land.
+
+> **S101 — `session-transaction.md` is a current, load-bearing subordinate doc (KEEP).**
+> The R3 redefinition-machinery design (summary-diff gate, reverse dependency index,
+> dependent-recompilation transaction, BROKEN/trap-stub cascade, ABI-epoch slot versioning
+> + retention pools, persistence pins). Cited from §8.6; consumes backend §8.3's pinned
+> interface; elaborates spine `design/arch/ownership-inference.md` §5 within BC §6.
 
 The 32 docs in `design/int/` plus the `concurrency/` subdirectory were authored over 12+ sprints and reflect the historical evolution of int. Sprint 64 triage applies the methodology rule: *delete files, rely on git for history if work is fully embodied; preserve if still load-bearing*. Below is the per-doc disposition.
 

@@ -12,10 +12,12 @@
 (import [collections.vec [count get assoc]])
 /imports
 
-; An imported name reports its fully-qualified origin when you type it:
+; An imported name reports its fully-qualified origin — /info shows its
+; signature, docstring, and source, and typing it bare gives the one-line
+; description:
 
-count
 /info count
+count
 
 ; Now use them unqualified:
 
@@ -23,11 +25,12 @@ count
 (get (vec 10 20 30) 1)
 (assoc (vec 10 20 30) 0 99)
 
-; List operations live in collections.list — first and rest return Option:
+; List operations live in collections.list — first and rest return Option;
+; match takes the tail apart:
 
 (import [collections.list [first rest]])
 (first (list 1 2 3))
-(rest (list 1 2 3))
+(match (rest (list 1 2 3)) [(Some more) (first more) None None])
 
 ; A name you have not imported is simply unbound — the REPL tells you what
 ; it knows, it does not guess. Type one and see:

@@ -168,6 +168,96 @@
         assert!(result.is_err());
     }
 
+    // spec: design/int/session-transaction.md §8 — R18 deterministic persist:
+    // a completed module marked object-stale re-enters the nice-worker claim
+    // scan and `wait_object_complete` genuinely waits for the rewrite.
+    #[test]
+    fn mark_object_stale_requeues_completed_module_for_object_codegen() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("user");
+        sched.register_module(m.clone(), no_sexps(), false);
+        sched.notify_typecheck_done(&m);
+
+        // First object pass completes normally.
+        assert_eq!(sched.try_take_object_codegen(), Some(m.clone()));
+        sched.notify_object_codegen_complete(&m);
+        assert!(
+            sched.try_take_object_codegen().is_none(),
+            "object-done module must not be re-claimable without a mark"
+        );
+
+        // A defining turn marks the table stale — the module is claimable
+        // again and wait_object_complete blocks until the rewrite lands.
+        sched.mark_object_stale(&m);
+        {
+            let state = sched.lock();
+            let ms = state.modules.get(&m).unwrap();
+            assert!(!ms.object_done, "mark must clear object_done");
+        }
+        assert_eq!(
+            sched.try_take_object_codegen(),
+            Some(m.clone()),
+            "stale module must be re-claimable for the rewrite"
+        );
+        sched.notify_object_codegen_complete(&m);
+        assert!(sched.wait_object_complete().is_ok());
+    }
+
+    // spec: (same anchor) — the lost-update race: a mark that lands WHILE a
+    // write is in flight must NOT be clobbered by the write's completion
+    // (the completed write observed an older table).
+    #[test]
+    fn mark_object_stale_neg_mid_write_mark_is_not_lost() {
+        let sched = CompileScheduler::new();
+        let m = mod_path("user");
+        sched.register_module(m.clone(), no_sexps(), false);
+        sched.notify_typecheck_done(&m);
+
+        // Nice worker claims (write in flight)…
+        assert_eq!(sched.try_take_object_codegen(), Some(m.clone()));
+        // …a defining turn marks the module stale mid-write…
+        sched.mark_object_stale(&m);
+        // …and the in-flight write completes: the module must STAY not-done
+        // (re-claimable), not be marked complete with the older table.
+        sched.notify_object_codegen_complete(&m);
+        {
+            let state = sched.lock();
+            let ms = state.modules.get(&m).unwrap();
+            assert!(
+                !ms.object_done,
+                "a mid-write mark must survive the write's completion"
+            );
+            assert!(!ms.object_working);
+        }
+        assert_eq!(
+            sched.try_take_object_codegen(),
+            Some(m.clone()),
+            "the pending rewrite must be claimable after the stale write"
+        );
+        sched.notify_object_codegen_complete(&m);
+        assert!(sched.wait_object_complete().is_ok());
+    }
+
+    // spec: (same anchor) — negative: marking is a no-op for modules the
+    // scheduler doesn't know or that never reached a terminal typecheck pool
+    // (nothing coherent to persist yet).
+    #[test]
+    fn mark_object_stale_neg_noop_for_unknown_or_mid_typecheck_module() {
+        let sched = CompileScheduler::new();
+        // Unknown module: no panic, nothing claimable.
+        sched.mark_object_stale(&mod_path("ghost"));
+        assert!(sched.try_take_object_codegen().is_none());
+
+        // Registered but not yet terminal: still not claimable.
+        let m = mod_path("user");
+        sched.register_module(m.clone(), no_sexps(), false);
+        sched.mark_object_stale(&m);
+        assert!(
+            sched.try_take_object_codegen().is_none(),
+            "a mid-typecheck module must not enter the object queue via a mark"
+        );
+    }
+
     #[test]
     fn nice_worker_lifecycle_spawn_and_shutdown() {
         use std::sync::Arc;
@@ -203,6 +293,10 @@
             // S91 Pillar-3: importable-symbol indices (empty/unarmed default —
             // this scheduler unit test does not arm the burn-down).
             importable_indices: crate::session_v4::ImportableIndices::default(),
+            // S101: broken registry + retention pool start empty (no
+            // redefinition transaction runs in this lifecycle test).
+            broken: dashmap::DashMap::new(),
+            retained_code: Mutex::new(Vec::new()),
             // D1 ruling §4: run-mode carrier. This scheduler unit test does not
             // exercise the introspection gate or the layout-hash gate; `Repl`
             // is an inert default here.

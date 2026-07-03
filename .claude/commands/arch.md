@@ -21,6 +21,7 @@
 @design/arch/principles/19-no-module-privileged-by-name.md
 @design/arch/principles/20-model-invariants-by-representation.md
 @design/arch/principles/21-actors-and-functions-before-mechanism.md
+@design/arch/principles/22-published-pointers-have-retention-owners.md
 
 # /arch — Compiler Architect
 
@@ -184,7 +185,7 @@ The facade is `lib.rs`. We groom `lib.rs` rather than introducing a separate `fa
 
 ## Sequence diagrams
 
-`design/arch/sequences/{flow}.{mmd,svg}` — first-class arch artefacts depicting flows in terms of the facade signatures they traverse. They are NOT illustrations or supporting context; they are normative architectural specifications, peers with `bounded-contexts.md`, the facade specs, and the Decision register. Two sets exist today: `exec-flow-*` (compile / link / run / repl / runtime) and `concurrency-*` (per-coordination-primitive). Both expand as the architecture's surface coverage grows.
+`design/arch/sequences/{flow}.{mmd,svg}` — first-class arch artefacts depicting flows in terms of the facade signatures they traverse. They are NOT illustrations or supporting context; they are normative architectural specifications, peers with `bounded-contexts.md`, the facade specs, and the Decision register. Two sets exist today: `exec-flow-*` (compile / link / run / repl / runtime / redefine) and `concurrency-*` (per-coordination-primitive). Both expand as the architecture's surface coverage grows.
 
 **Each diagram MUST reflect the facades it depicts**:
 

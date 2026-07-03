@@ -5,7 +5,12 @@ filed_by: /port
 filed_at: 2026-06-20
 sprint_filed: 87
 refers_to: spec/appendix-a-builtins.md §A.3 (primitive functions), spec/11-stdlib.md, exemplar/grid.cl §"Bitmask operations" (lines 71-126), exemplar/CLAUDE.md §"Design Decisions" ("No bitwise primitives")
-status: open
+status: deferred
+deferred_by: /arch
+deferred_at: 2026-07-03
+sprint_deferred: 101
+target_sprint: "--release polish step (Phase-H sequence, ROADMAP table)"
+deferral_reason: "User sign-off 2026-07-03 (S101 Phase-1 scope approval) pinned this to the --release-polish step of the Phase-H delivery sequence (sprints/ROADMAP.md §'Phase H — ownership-inference delivery sequence'). Not the memory-model lever (the S100 carried constraint 'keep nested ADTs — no 0416 bitmask dodge' stands); it is a missing-feature polish item joining 0050/0052/0365 at the release-polish step."
 ---
 
 # Bitwise intrinsics (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) for bitmask domains

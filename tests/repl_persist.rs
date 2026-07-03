@@ -862,3 +862,135 @@ fn mod_submodule_body_survives_source_regeneration() {
         regenerated
     );
 }
+
+// =============================================================================
+// /port D1 + D2 (S101 Phase 6a exemplar assessment; no FIXME — these guards
+// are the record, per the defect discipline). Ledger:
+// tests/plan/ledger.md §"Sprint 101 Phase 6a/6b defect set". Resolver: /int.
+//
+// D1 — a macro-defining macro used at the prompt poisons the directory: the
+// regenerated backing file persists BOTH the expansion artifact
+// (`(defmacro x [] …)`) AND the original call form (`(mdef x 1)`); at
+// restart the original form re-expands while `x` is already a macro, so the
+// re-expanded `defmacro`'s name position macro-expands and the load dies
+// `parse error … defmacro name must be a symbol` — exit 1 before the first
+// prompt, `--no-cache` does not recover. Reduced stdlib-free (probed
+// 2026-07-03): the stdlib `def` macro (the /port shape `(def x 1)`) is
+// mirrored by a local module macro expanding to `(begin (defn …)
+// (defmacro …))`.
+//
+// D2 — the REPL adopts a pre-existing hand-authored `user.cl` as the session
+// backing file and REWRITES it on the first defining turn, re-rendering the
+// user's source text (reader shorthand `` `(… ~e) `` becomes
+// `(quasiquote (… (unquote e)))`) — the data-loss arm of /port's D2.
+// PARTIAL REDUCTION: /port's second arm (hybrid batch/REPL cache meta breaks
+// the NEXT session outright) did NOT reproduce in six reductions (defmacro /
+// imports / stdlib prelude / platform decl / batch-first cache / hybrid
+// combinations all restarted green) — exemplar-only so far; recorded in the
+// ledger entry, not pinned here.
+// =============================================================================
+
+// A macro-defining macro mirroring stdlib defs.cl `def` (D1's mechanism),
+// hosted in a local fixture module — stdlib-free per tests/CLAUDE.md.
+const MDEF_MODULE: &str = "(import [primitives [*]])\n\
+                           (defmacro mdef \"define a named value\" [name value]\n\
+                           \x20 (match name\n\
+                           \x20   [(macros/SexpSym s)\n\
+                           \x20    (let [impl-name (macros/SexpSym (primitives/str-concat s \"-def\"))]\n\
+                           \x20      `(begin\n\
+                           \x20        (defn ~impl-name [] ~value)\n\
+                           \x20        (defmacro ~name [] (macros/SexpList (macros/SCons ~(primitives/quote-sexp impl-name) macros/SNil)))))\n\
+                           \x20    _ name]))\n";
+
+// spec: repl/spec.md §15.1 — loading the regenerated backing file MUST
+// reproduce the same session state (round-trip MUST, §15.4 invariant 1).
+// RED on HEAD (/port D1): session 2 exits 1 before the first prompt with
+// `defmacro name must be a symbol` — the regenerated file persists both the
+// macro-expansion artifact and the original call form, which do not co-load.
+#[test]
+fn persist_macro_defining_macro_use_survives_restart() {
+    let first = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("mac.cl", MDEF_MODULE)
+        .stdin("(import [mac [mdef]])\n(mdef x 1)\nx\n/quit\n")
+        .output();
+    assert!(
+        first.status.success(),
+        "session 1 should exit cleanly; stdout={} stderr={}",
+        first.stdout,
+        first.stderr
+    );
+    assert!(
+        first.stdout.contains(":primitives/Int 1"),
+        "session 1 sanity: `x` evaluates to 1; stdout={}",
+        first.stdout
+    );
+
+    first
+        .run_again()
+        .repl()
+        .stdin("x\n")
+        .output()
+        .assert_ok() // D1: exits 1 at load today, before any prompt
+        .assert_stdout_does_not_contain("defmacro name must be a symbol")
+        .assert_stdout_contains(":primitives/Int 1");
+}
+
+// spec: repl/spec.md §15.4 — invariant 7 (authorship fidelity: "the
+// regenerated file is a faithful record of what the user typed") + invariant
+// 3's preservation spirit: a defining turn that never touches a hand-authored
+// definition MUST NOT destroy the user's source text for it. RED on HEAD
+// (/port D2, data-loss arm): the adopted batch `user.cl`'s reader-shorthand
+// macro text is re-rendered from sexps (`` ` ``/`~` become
+// `quasiquote`/`unquote`), losing the authored form.
+#[test]
+fn persist_defining_turn_preserves_hand_authored_macro_source_text() {
+    let original_macro_line = "(defmacro twice [e] `(add-i64 ~e ~e))";
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(
+            ";; hand-authored batch module\n\
+             (defmacro twice [e] `(add-i64 ~e ~e))\n\
+             (defn square [x] (mul-i64 x x))\n\
+             (defn main [] (Pure (twice (square 4))))\n",
+        )
+        .stdin("(defn extra [y] (add-i64 y 10))\n/quit\n")
+        .output();
+    let out = out.assert_ok();
+    let regenerated = out.read_tmp("user.cl");
+    assert!(
+        regenerated.contains(original_macro_line),
+        "a defining turn MUST NOT re-render an untouched hand-authored \
+         definition's source text (§15.4 authorship fidelity; /port D2 \
+         data-loss arm); regenerated user.cl:\n{regenerated}"
+    );
+    drop(out);
+}
+
+// spec: repl/spec.md §15.1 — CONTROL (GREEN on HEAD): regeneration triggers
+// on successful DEFINITIONS only; an expression-only session leaves a
+// hand-authored `user.cl` byte-identical. Pins the D2 boundary: adoption
+// rewrites happen at defining turns, and must never widen to expression
+// turns.
+#[test]
+fn persist_expression_only_session_leaves_hand_authored_user_cl_untouched() {
+    let original = ";; hand-authored batch module\n\
+                    (defmacro twice [e] `(add-i64 ~e ~e))\n\
+                    (defn square [x] (mul-i64 x x))\n\
+                    (defn main [] (Pure (twice (square 4))))\n";
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user(original)
+        .stdin("(square 3)\n/quit\n")
+        .output();
+    let out = out.assert_ok().assert_stdout_contains(":primitives/Int 9");
+    let after = out.read_tmp("user.cl");
+    assert_eq!(
+        after, original,
+        "an expression-only session MUST NOT rewrite the backing file (§15.1)"
+    );
+    drop(out);
+}

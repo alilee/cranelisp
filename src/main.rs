@@ -102,6 +102,27 @@ fn main() {
     // emit hot path is a relaxed-load null check.
     io_trace::install_if_enabled();
     got_trace::install_if_enabled();
+    // S101: arm the intrinsics `[RC_STATS]` at-exit printer when the env var
+    // is set. The printer registers lazily on the FIRST tallied RC/alloc op
+    // (`cranelisp-intrinsics/src/rc.rs::ensure_stats_atexit`), so a session
+    // whose heap traffic is all static literals would exit silently and a
+    // stats-reading harness (e.g. the L-R1(f) bounded-leak fence) could not
+    // distinguish "no ops" from "died before exit". Poking the exported
+    // tally hook once guarantees the line is emitted whenever the env var is
+    // on; the single +1 on `rc_inc` is uniform across sessions and the
+    // alloc/dealloc fields the fences read are untouched.
+    if std::env::var_os("CRANELISP_RC_STATS").is_some() {
+        unsafe extern "C" {
+            #[link_name = "runtime/rc_stat_inc"]
+            fn cranelisp_arm_rc_stats() -> i64;
+        }
+        // SAFETY: `runtime/rc_stat_inc` is a zero-arg statically-linked
+        // export from cranelisp-intrinsics; calling it only bumps an atomic
+        // counter and registers the atexit printer.
+        unsafe {
+            cranelisp_arm_rc_stats();
+        }
+    }
     let _io_flush = io_trace::IoTraceFlushGuard::new();
     let _got_flush = got_trace::GotTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
@@ -405,7 +426,13 @@ fn run(
                         match s.eval(&src) {
                             Ok(Some(result)) => {
                                 let t1 = Instant::now();
-                                let text = s.format_eval_result(&result);
+                                let mut text = s.format_eval_result(&result);
+                                // S101 (repl/spec.md §18.3): the cascade
+                                // report renders after the §1.3 confirmation.
+                                if let Some(report) = s.take_cascade_report() {
+                                    text.push('\n');
+                                    text.push_str(&report);
+                                }
                                 let t2 = Instant::now();
                                 compile_ms = (t1 - t0).as_millis() as u64;
                                 eval_ms = (t2 - t1).as_millis() as u64;
@@ -463,7 +490,11 @@ fn run(
                     // somehow parses, surface any result for symmetry with the
                     // in-loop path.
                     Ok(Some(result)) => {
-                        let text = s.format_eval_result(&result);
+                        let mut text = s.format_eval_result(&result);
+                        if let Some(report) = s.take_cascade_report() {
+                            text.push('\n');
+                            text.push_str(&report);
+                        }
                         s.pretty_print(&text, &mut stdout);
                     }
                     Ok(None) => {}
@@ -471,6 +502,10 @@ fn run(
             }
 
             let _ = writeln!(stdout);
+            // S101 R18: pin the final `.o`/`.meta` persist to the session's
+            // FINAL table state (expression turns mutate the table without a
+            // per-turn persist trigger), then drain it deterministically.
+            s.flush_final_persist();
             s.wait_object_complete()?;
         }
     }

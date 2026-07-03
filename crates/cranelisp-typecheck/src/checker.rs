@@ -121,6 +121,24 @@ pub struct CheckState {
     pub(crate) expr_types: HashMap<Span, Type>,
     /// How each call site was resolved (builtin operators in Ring 0).
     pub(crate) method_resolutions: MethodResolutions,
+    /// Statically-resolved user-fn references discovered during body
+    /// inference (FIXME 0470 + 0472, S101). Span-keyed — like
+    /// `method_resolutions.resolved_calls` — so snapshot-delta extraction via
+    /// the ONE shared `program::harvest_callee_edges` helper attributes each
+    /// reference to the body under check at EVERY body-check seam: the Pass-2
+    /// per-form seams (`check_form_body_*`) and the Pass-1 impl-method
+    /// writeback (`finalize_impl_method_writeback` — impl/default/HKT method
+    /// bodies). Covers BOTH call-position and value-position `Var` references
+    /// that resolve (chain-follow, current-module-rooted,
+    /// prelude-fallback-aware) to a module-resident `DefKind::UserFn` entry.
+    /// Flows through the `write_callees_to_module_entries` sink, making
+    /// `Def.callees` the COMPLETE static user-fn reference set required by
+    /// the S101 dependent-recompilation transaction's reverse index
+    /// (`design/int/session-transaction.md` §3.2; sole residue: mono-instance
+    /// bodies, covered via their template — see `harvest_callee_edges`).
+    /// Value and call edges are recorded uniformly — indistinguishable to
+    /// consumers.
+    pub(crate) user_fn_refs: HashMap<Span, FQSymbol>,
     /// Non-fatal warnings accumulated during checking.
     pub(crate) warnings: Vec<Warning>,
     /// Active type variable constraints during body checking (Ring 2).
@@ -185,6 +203,7 @@ impl CheckState {
             env: ScopeStack::new(),
             expr_types: HashMap::new(),
             method_resolutions: MethodResolutions::new(),
+            user_fn_refs: HashMap::new(),
             warnings: Vec::new(),
             active_constraints: ActiveConstraints::default(),
             pending_gap: None,
@@ -1210,6 +1229,101 @@ where
         (None, None)
     }
 
+    /// Record a statically-resolved reference to a module-resident user fn
+    /// (FIXME 0470, S101 — the `Def.callees` completeness contract,
+    /// `tests/plan/s101-coverage-postmortem.md` §2.1).
+    ///
+    /// Called from `infer_var` for every successfully-typed `Expr::Var`, so
+    /// call-position callees and value-position references (HOF argument,
+    /// returned, stored, curried, nested-lambda) are recorded UNIFORMLY —
+    /// consumers of `callees` cannot distinguish them
+    /// (`design/int/session-transaction.md` §3.2).
+    ///
+    /// Gates, in order:
+    /// - a LOCAL binding (fn param, `let`, `match`, lambda param) shadows
+    ///   module scope — a shadowed name is not a module reference, no edge;
+    /// - the name must resolve — chain-follow to the defining (home) module,
+    ///   prelude-fallback-aware; for a qualified `mod/sym` the
+    ///   child-of-current-module candidate is probed before the absolute
+    ///   path, mirroring [`Self::lookup`] — to a `ModuleEntry::Def` whose
+    ///   kind is `DefKind::UserFn` (any `fn_state`). Primitives,
+    ///   constructors, macros, overloaded bases, special forms, and trait
+    ///   decls record NO edge: `BuiltinFn` is always available (no codegen
+    ///   dependency), and non-`UserFn` redefinition falls back to
+    ///   module-grain reload (session-transaction §10 trigger T1).
+    ///
+    /// Self-edges (recursion) are SKIPPED — the documented cheap disposition
+    /// (FIXME 0470 allows either): `check_defn_body` binds the recursion name
+    /// as a LOCAL (`mono(fn_type)`), so the local-shadow gate above filters
+    /// it with zero extra checks. The transaction's SCC condensation is
+    /// indifferent and `save.rs::dependency_sort` filters self-edges anyway.
+    ///
+    /// Residue (documented, monotone-safe under the module-grain fallbacks):
+    /// dotted `Type.member` accessor references are not recorded (accessors
+    /// regenerate with their `deftype`, which is T1 module-grain anyway).
+    pub(crate) fn record_user_fn_ref(
+        &self,
+        state: &mut CheckState,
+        name: &str,
+        span: Span,
+    ) {
+        // Local scope shadows module scope (spec §8.6.1 resolution order).
+        if state.env.lookup(name).is_some() {
+            return;
+        }
+        if let Some(fq) = self.resolve_user_fn_ref_fq(state, name, span) {
+            state.user_fn_refs.insert(span, fq);
+        }
+    }
+
+    /// Resolve `name` to the FQ identity of a module-resident `UserFn` `Def`,
+    /// or `None` for anything else. Mirrors [`Self::lookup`]'s qualified-name
+    /// candidate order (child-of-current-module before absolute path) so the
+    /// recorded edge agrees with the scheme the reference type-checked
+    /// against.
+    fn resolve_user_fn_ref_fq(
+        &self,
+        state: &CheckState,
+        name: &str,
+        span: Span,
+    ) -> Option<FQSymbol> {
+        if let Some(slash_pos) = name.find('/') {
+            let module_part = &name[..slash_pos];
+            let name_part = &name[slash_pos + 1..];
+            if !module_part.is_empty() && !name_part.is_empty() {
+                let child = format!(
+                    "{}.{}/{}",
+                    state.current_module, module_part, name_part,
+                );
+                if let Some(fq) = self.user_fn_fq_of(state, &child, span) {
+                    return Some(fq);
+                }
+            }
+        }
+        self.user_fn_fq_of(state, name, span)
+    }
+
+    /// Terminal-entry probe for [`Self::resolve_user_fn_ref_fq`]: resolve one
+    /// candidate spelling through the shared chain-follow +
+    /// prelude-fallback primitive and keep it only when the canonical entry
+    /// is a `DefKind::UserFn` `Def`.
+    fn user_fn_fq_of(
+        &self,
+        state: &CheckState,
+        name: &str,
+        span: Span,
+    ) -> Option<FQSymbol> {
+        let resolved = self.resolve_current_or_prelude(state, name, span).ok()?;
+        match &resolved.entry {
+            ModuleEntry::Def { kind, .. }
+                if matches!(kind.as_ref(), cranelisp_types::DefKind::UserFn { .. }) =>
+            {
+                Some(resolved.fq)
+            }
+            _ => None,
+        }
+    }
+
     /// Resolve a dotted `Type.member` field-accessor reference to its accessor
     /// `Scheme` (FIXME 0365 Item 1 / spec §8.5.2, INVERTED model §1.6).
     ///
@@ -1851,6 +1965,7 @@ where
     pub(crate) fn clear_transient_state(state: &mut CheckState) {
         state.expr_types.clear();
         state.method_resolutions.resolved_calls.clear();
+        state.user_fn_refs.clear();
         state.active_constraints = ActiveConstraints::default();
     }
 

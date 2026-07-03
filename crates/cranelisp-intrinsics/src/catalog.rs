@@ -70,12 +70,12 @@
 //! The 12 `cranelisp_trace_*` entries (incl. the pure descriptor-driven
 //! `cranelisp_trace_format`) ARE in this catalog — the 2026-06-04 user ruling
 //! retracted D40's trace-relocation-to-int and hosts the bodies here (BC §4b
-//! invariant 12; `design/arch/tracing.md`). The table is 32 entries (17 core +
-//! 12 trace + `catch-runtime-error`, the protected-call combinator,
-//! `design/arch/test-discovery.md` §6, + the 2 S99 `runtime/rc_stat_{inc,dec}`
-//! measurement tally helpers). The 17th core entry is
-//! `cranelisp_spark_budget_try_reserve` (the create-gate reservation primitive,
-//! lenient-eval.md §3.6.1, S92). The catalog + its tests are the single owner of
+//! invariant 12; `design/arch/tracing.md`). The table is 34 entries: 22 core
+//! (incl. `catch-runtime-error`, the protected-call combinator,
+//! `design/arch/test-discovery.md` §6; `cranelisp_spark_budget_try_reserve`,
+//! the create-gate reservation primitive, lenient-eval.md §3.6.1, S92; and the
+//! 2 S99 `runtime/rc_stat_{inc,dec}` measurement tally helpers) + the 12
+//! `cranelisp_trace_*` family. The catalog + its tests are the single owner of
 //! the trace name-agreement contract (closing the prior no-owner gap).
 
 /// One backend-emitted-call target in the published intrinsics catalog.
@@ -106,12 +106,13 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 32 entries — 17 core (relocated verbatim
+/// Returns a `'static` slice of the 34 entries — 22 core (the set relocated
 /// from the retired `cranelisp_backend::jit::intrinsic_symbols()`, plus
-/// `cranelisp_ivar_dealloc`, the IVar-aware drop path, and
-/// `cranelisp_spark_budget_try_reserve`, the create-gate primitive) plus the 12
-/// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12) plus
-/// `catch-runtime-error` (the protected-call combinator, test-discovery.md §6).
+/// `cranelisp_ivar_dealloc`, the IVar-aware drop path;
+/// `cranelisp_spark_budget_try_reserve`, the create-gate primitive;
+/// `catch-runtime-error`, the protected-call combinator, test-discovery.md §6;
+/// and the 2 S99 `runtime/rc_stat_{inc,dec}` tally helpers) plus the 12
+/// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12).
 /// See this module's `//!` for the consumer contract, the ABI guardrail, and the
 /// scope boundary.
 pub fn intrinsics_table() -> &'static [IntrinsicEntry] {

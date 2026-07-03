@@ -17,11 +17,11 @@ Per `design/arch/bounded-contexts.md` §5 — platform is the *shared interface 
 - C-ABI manifest types — `PlatformManifest`, `PlatformFn`, `HostCallbacks` (all `#[repr(C)]`)
 - Manifest parsing — `manifest_to_descriptors()` → `OwnedPlatformFnDescriptor`
 - Effect-thunk consumption primitive — `call_effect_thunk` (single-shot, called from runtime)
-- Constants — `ABI_VERSION` (= **7**), `IO_TAG_PURE`/`IO_TAG_EFFECT`/`IO_TAG_BIND`/`IO_TAG_PAR`, `HEAP_HEADER_SIZE`, `IO_EFFECT_RESOURCE_OFFSET` (16), `IO_EFFECT_FN_NAME_OFFSET` (24, ABI v4), `IO_EFFECT_CAPACITY_OFFSET` (32, S95 slice-3 carrier), `STRING_HEADER_BYTES`
+- Constants — `ABI_VERSION` (= **9**, the S97 ctx-vtable handle-model cutover), `IO_TAG_PURE`/`IO_TAG_EFFECT`/`IO_TAG_BIND`/`IO_TAG_PAR`/`IO_TAG_EFFECT_POLL`/`IO_TAG_LAUNCH`/`IO_TAG_SELECT`, `HEAP_HEADER_SIZE`, `IO_EFFECT_RESOURCE_OFFSET` (16), `IO_EFFECT_FN_NAME_OFFSET` (24, ABI v4), `IO_EFFECT_CAPACITY_OFFSET` (32, S95 slice-3 carrier), `STRING_HEADER_BYTES`
 - Resource/capacity effect constructors — `CLIO::effect_on_resource(token, f)` and the additive sibling `CLIO::effect_on_resource_with_capacity(token, capacity, f)` (S95 slice-3 carrier; `effect_on_resource(token, f) = …_with_capacity(token, 1, f)`)
 - DLL author macro — `declare_platform!` (the single unified emitter in `declare.rs`; one platform mixes blocking effects via the per-fn `scheduling:` key and poll-shape async leaves via `descriptor:` in ONE manifest). The former `concurrency`-gated `declare_concurrent_platform!` was **deleted** in the single-ABI cutover — its poll-shape arm folded into `declare_platform!`.
 - Host-reactor C-ABI contract types (`concurrency.rs`, now core/ungated) — `HostCtx`, `Waker`, `WakerVTable`, `PollFn` (+ `cranelisp_types::{ConcurrencyDescriptor, Poll}` re-exports). The former dual-channel `ConcurrentPlatformFn` / `ConcurrentPlatformManifest` were **deleted** in the single-ABI cutover — absorbed into the unified `PlatformFn` / `PlatformManifest`.
-- `concurrency`-gated `poll_support` ergonomics module (S96) — typed env accessor + fd/timer reactor scaffold + `PollState` phase scaffold (`design/platform/poll-support.md`)
+- `poll_support` ergonomics module (S96; core/ungated — the v8 single-ABI cutover retired the `concurrency` feature) — typed env accessor + fd/timer reactor scaffold + `PollState` phase scaffold (`design/platform/poll-support.md`)
 - Per-DLL write-once globals — `HostContext`, the two allocator slots (`GLOBAL_ALLOC`, `GLOBAL_ALLOC_WITH_TAG`), and the schema `OnceLock` (`GLOBAL_SCHEMA` in `adt.rs`)
 - ADT marshaling — `CLAdt<T>` heap-ADT wrapper, `CLAdtType` marker trait, `EffectOutcome` `#[repr(C)]` fault-outcome carrier
 - Schema parser — `Schema`/`TypeShape`/`Ctor`/`Field` + the tiny S-expr lexer/parser (`schema.rs`), reading the backend-generated `/platform-schema` artifact for name→offset field lookup
@@ -51,7 +51,7 @@ Per `design/arch/bounded-contexts.md` §5 — platform is the *shared interface 
 - **Safe descriptor**: `OwnedPlatformFnDescriptor` — UTF-8-validated Rust mirror of `PlatformFn`, returned by `manifest_to_descriptors()`.
 - **DLL author macro**: `declare_platform!` (+ the internal `__declare_platform_body!`) — the **three-exports** emitter: the GOT (`__cranelisp_got_platform_<name>`), the `cranelisp_platform_manifest` extern, and (with the `schema:` arm) the `__cranelisp_layout_hash_<name>` data symbol. `extract_layout_hash()` is the const-fn it uses to pull the hash from the embedded artifact.
 - **Schema parser** (`schema.rs`): `Schema`/`TypeShape`/`Ctor`/`Field`/`FieldType` + a tiny S-expr lexer/parser, total and frontend-independent (Principle 3), reading the backend-generated `/platform-schema` artifact for `read_field` name→index resolution.
-- **Constants**: `ABI_VERSION = 7`, `IO_TAG_*` (incl. the reserved `IO_TAG_EFFECT_POLL`, gated), `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, `IO_EFFECT_RESOURCE_OFFSET = 16`, `IO_EFFECT_FN_NAME_OFFSET = 24`, `IO_EFFECT_CAPACITY_OFFSET = 32`.
+- **Constants**: `ABI_VERSION = 9`, `IO_TAG_*` (incl. the poll-shape `IO_TAG_EFFECT_POLL` and the host-built/host-interpreted `IO_TAG_LAUNCH`/`IO_TAG_SELECT` — all core/ungated since the v8 single-ABI cutover), `HEAP_HEADER_SIZE`, `STRING_HEADER_BYTES`, `IO_EFFECT_RESOURCE_OFFSET = 16`, `IO_EFFECT_FN_NAME_OFFSET = 24`, `IO_EFFECT_CAPACITY_OFFSET = 32`.
 - **Re-exports** (per Principle 15 external-audience exception): `pub use cranelisp_types::SchedulingClass`; `pub use cranelisp_types::PlatformError` (per Decision 42, when adopted — see §3 divergence list).
 
 Per Principle 15 the exception is justified inline in the facade: out-of-tree DLL author crates depend ONLY on `cranelisp-platform` and have no reason to depend on `cranelisp-types`. This is the only crate in the workspace that exercises the external-audience exception.
@@ -60,10 +60,25 @@ Drift detection between facade and implementation is the job of `cargo-public-ap
 
 ---
 
-## 3. Current state (as-built — audit 2026-06-14; ABI/file refresh S96 FIXME 0461)
+## 3. Current state (as-built — audit 2026-06-14; ABI/file refresh S96 FIXME 0461; stamp refresh S101 FIXME 0464)
+
+> **S101 stamp refresh (FIXME 0464 drain).** Two bumps landed after the S96 note
+> below: **v8** (S96 — the single-ABI cutover: `PlatformFn` absorbs the former
+> `ConcurrentPlatformFn`, `scheduling_class: u32` is replaced by
+> `concurrency: ConcurrencyDescriptor`, a `drop_state` poll-leaf teardown hook is
+> added; ONE manifest type / ONE macro / ONE GOT export / ONE loader path; the
+> host-reactor ABI types graduate to the default edge and the `concurrency` /
+> `concurrency-runtime` features are RETIRED) and **v9** (S97 — the ctx-vtable
+> handle-model cutover: `HostCtx` gains `acquire`/`retire` fn-ptrs,
+> `ConcurrencyDescriptor` gains a `role` byte, the new `Acquire` result enum lands;
+> `PollFn`/`Poll` unchanged; resource handles are opaque ADTs and all runtime
+> scheduling flows through the trampoline-owned ctx vtable —
+> `effect-concurrency.md` §4.1.1, `platform-interface.md` §6.8.0b,
+> `poll-support.md` top banner). As-built today the stamp is **`ABI_VERSION = 9`**;
+> the full bump trail is in "ABI version history" below.
 
 > **S96 refresh (FIXME 0461 drain).** The audit headline below was written at
-> ABI v5 / three files. As-built today the stamp is **ABI v7** and the crate is
+> ABI v5 / three files. As-built at that refresh (S96) the stamp was **ABI v7** and the crate was
 > **five files** — the macro pair split out to `declare.rs` (S84 MED-4 extract),
 > and the v7 host-reactor C-ABI contract types landed in `concurrency.rs`
 > (`#[cfg(feature = "concurrency")]`, off the default edge). Two bumps since the
@@ -77,7 +92,7 @@ Drift detection between facade and implementation is the job of `cargo-public-ap
 > `io-trampoline.md` §13 / `effect-concurrency.md` §8.1 / `platform-interface.md`
 > §6.8.
 
-The crate is **five files, ABI v7**, dispatching **GOT-indirect** with **ADT marshaling**. It has cleanly absorbed five major reworks since the S71-era reading this section used to describe: S71 ADT marshaling, S76 three-exports, S81 fault-guarded dispatch funnel, S86 manifest-export namespacing (v6), S93 effect-concurrency ABI-v7 cascade (gated). The audit's verdict (at v5): it **conforms to all nine BC §5 invariants and the three-exports model**, with **no HIGH findings**.
+The crate is **six source modules (`lib`, `schema`, `adt`, `declare`, `concurrency`, `poll_support`; tests extracted to sibling `tests.rs` files), ABI v9**, dispatching **GOT-indirect** with **ADT marshaling**. It has cleanly absorbed seven major reworks since the S71-era reading this section used to describe: S71 ADT marshaling, S76 three-exports, S81 fault-guarded dispatch funnel, S86 manifest-export namespacing (v6), S93 effect-concurrency ABI-v7 cascade (then gated), S96 single-ABI cutover (v8 — feature retired, one macro/manifest/loader), S97 ctx-vtable handle-model cutover (v9). The audit's verdict (at v5): it **conforms to all nine BC §5 invariants and the three-exports model**, with **no HIGH findings**.
 
 ### File metrics (from `audits/platform-2026-06-14.md`)
 
@@ -107,7 +122,7 @@ The DLL-local fault catch (FIXME 0327 Option A, S81) is monomorphised into the D
 
 ### ABI version history
 
-`ABI_VERSION = 7` (was `1` in the S71-era reading this section replaced). The bump trail (canonical in the `ABI_VERSION` rustdoc): **v1** primitive marshaling → **v2** S71 ADT marshaling (`alloc_with_tag`, schema DSL) → **v3** S76 three-exports (`validate_schema` removed, layout-hash gate) → **v4** S81 fn-name node widen (`IO_EFFECT_FN_NAME_OFFSET = 24`; the `IO_TAG_EFFECT` node 24 → 32) → **v5** S81 EffectOutcome / DLL-local fault-catch (`call_effect_thunk` returns `EffectOutcome`) → **v6** S86 namespaced manifest export (`cranelisp_platform_manifest_<name>`, DEF-5; resolves the two-platforms-one-binary symbol collision) → **v7** S93 effect-concurrency ABI-v4 cascade (the poll-shape async-leaf boundary: `ConcurrentPlatformFn`/`PollFn` + `HostCtx`/`Waker` host-reactor C-ABI + `ConcurrencyDescriptor` subsuming `scheduling_class`; **landed-and-dormant behind the off-by-default `concurrency` feature**, so the default `public-api.txt` edge stays byte-identical-when-off — the `_neg` frozen-edge guard enforces this). `int`'s `load_platform_dll` refuses any DLL whose `manifest.abi_version != ABI_VERSION` (Principle 14; on mismatch → `PlatformError::AbiVersionMismatch`). The v7 stamp is bumped now (in-workspace host + DLLs rebuild together) even though the macro still emitted the v6 `PlatformFn` shape until a platform opted into the poll-shape arm — v7 was **not frozen** (no out-of-tree cdylib had shipped against it), which is why the S94 R1 `drop_state` reserve + the S95 capacity slots could be appended in place with no further bump. *(Historical: the separate `declare_concurrent_platform!` macro named just above, and the v7 `ConcurrentPlatformFn`/`ConcurrentPlatformManifest` types, were superseded by the later single-ABI cutover, which deleted them and folded the poll-shape arm into the one `declare_platform!` macro. This paragraph records the v7-era ABI bump trail, not the current stamp.)*
+`ABI_VERSION = 9` (was `1` in the S71-era reading this section replaced). The bump trail (canonical in the `ABI_VERSION` rustdoc): **v1** primitive marshaling → **v2** S71 ADT marshaling (`alloc_with_tag`, schema DSL) → **v3** S76 three-exports (`validate_schema` removed, layout-hash gate) → **v4** S81 fn-name node widen (`IO_EFFECT_FN_NAME_OFFSET = 24`; the `IO_TAG_EFFECT` node 24 → 32) → **v5** S81 EffectOutcome / DLL-local fault-catch (`call_effect_thunk` returns `EffectOutcome`) → **v6** S86 namespaced manifest export (`cranelisp_platform_manifest_<name>`, DEF-5; resolves the two-platforms-one-binary symbol collision) → **v7** S93 effect-concurrency ABI-v4 cascade (the poll-shape async-leaf boundary: `ConcurrentPlatformFn`/`PollFn` + `HostCtx`/`Waker` host-reactor C-ABI + `ConcurrencyDescriptor` subsuming `scheduling_class`; at the time **landed-and-dormant behind the off-by-default `concurrency` feature**) → **v8** S96 single-ABI cutover (the v6/v7 split collapses into ONE ABI: `PlatformFn` absorbs the former `ConcurrentPlatformFn` — `scheduling_class: u32` replaced by `concurrency: ConcurrencyDescriptor`, each effect independently blocking or poll-shape via `concurrency.blocking`, plus a `drop_state` poll-leaf teardown hook; `ConcurrentPlatformFn`/`ConcurrentPlatformManifest`/`declare_concurrent_platform!` **deleted**; the host-reactor ABI types graduate to the default ungated edge and the `concurrency`/`concurrency-runtime` features are RETIRED) → **v9** S97 ctx-vtable handle-model cutover (`HostCtx` gains `acquire`/`retire` fn-ptrs, `ConcurrencyDescriptor` gains a `role` byte, the new `Acquire` result enum; `PollFn`/`Poll` unchanged; resource handles are opaque ADTs carrying their own genuine fields — no header slot, no `desc_out` — and all runtime scheduling flows through the trampoline-owned ctx vtable; `platform-interface.md` §6.8.0b, `effect-concurrency.md` §4.1.1). `int`'s `load_platform_dll` refuses any DLL whose `manifest.abi_version != ABI_VERSION` (Principle 14; on mismatch → `PlatformError::AbiVersionMismatch`). The v7 stamp was bumped at S93 (in-workspace host + DLLs rebuild together) even though the macro still emitted the v6 `PlatformFn` shape until a platform opted into the poll-shape arm — v7 was **not frozen** (no out-of-tree cdylib had shipped against it), which is why the S94 R1 `drop_state` reserve + the S95 capacity slots could be appended in place with no further bump; the same no-out-of-tree-users latitude carried the v8 and v9 cutovers as single atomic in-tree change-sets. *(Historical: the separate `declare_concurrent_platform!` macro named just above, and the v7 `ConcurrentPlatformFn`/`ConcurrentPlatformManifest` types, were superseded by the v8 single-ABI cutover, which deleted them and folded the poll-shape arm into the one `declare_platform!` macro.)*
 
 ### Capacity carrier (S95 slice 3 — `effect_on_resource_with_capacity`)
 
@@ -197,13 +212,15 @@ The platform calling convention is the contract that compiled cranelisp code, th
 | 1 | `IO_TAG_EFFECT` | **40** (ABI v7; S95 capacity widen) | `[tag, thunk_ptr, resource_token, fn_name, capacity]` — `thunk_ptr` is a `Box<Box<dyn FnOnce() -> i64>>` ptr; `resource_token` @16, `fn_name` @24 (the dispatch funnel coordinate, §9a), `capacity` @32 (`IO_EFFECT_CAPACITY_OFFSET`, the S95 slice-3 carrier — `effect_on_resource(token, f)` writes capacity 1). Append-only — no existing offset moved. |
 | 2 | `IO_TAG_BIND` | (set by runtime) | Internal — reserved tag, not constructed by platform DLLs |
 | 3 | `IO_TAG_PAR` | (set by runtime) | spec §10.12 automatic IO scheduling |
-| 4 | `IO_TAG_EFFECT_POLL` | 16 payload (`concurrency`-gated) | `[tag, state_closure]` — the poll-shape async-leaf node; field-0 is a host-built state-closure (`[header | code_ptr=poll-fn | drop_glue | env]`); the `(token, capacity)` reserve the same slots. Built by the **backend** (io-trampoline §12), not the DLL. |
+| 4 | `IO_TAG_EFFECT_POLL` | 16 payload (core/ungated since v8) | `[tag, state_closure]` — the poll-shape async-leaf node; field-0 is a host-built state-closure (`[header | code_ptr=poll-fn | drop_glue | env]`). The v8-era `(token, capacity)` node-slot reserve is retired at v9 — scheduling flows through the trampoline-owned ctx vtable (`acquire`/`retire`), never node slots. Built by the **backend** (io-trampoline §12), not the DLL. |
+| 5 | `IO_TAG_LAUNCH` | (host-built) | `[tag, detached IO sub-tree]` — launch-and-continue (S96 Chunk B, spec §10.12.7); backend↔intrinsics convention, never crosses the DLL ABI (no `ABI_VERSION` bump). |
+| 6 | `IO_TAG_SELECT` | (host-built) | `[tag, Vec (IO a) branch carrier]` — race/select combinator node (S96 Chunk C); host-built and host-interpreted, never crosses the DLL ABI. |
 
 The double-boxed thunk on Effect nodes is a thin pointer (one `i64`) over a trait object (two `i64`s). `call_effect_thunk` reclaims via `Box::from_raw`, invokes once **under the DLL-local `catch_unwind`**, and returns a `#[repr(C)] EffectOutcome` (ABI v4→v5 — the fault-outcome carrier; §9a). The trampoline (in intrinsics) MUST not call `call_effect_thunk` on the same node twice — single-shot, by contract.
 
 **Scheduling class** is a per-fn property declared in the manifest (Decision 26). It lives inside the typecheck variant `PrimitiveKind::PlatformEffect { scheduling_class }` so ill-formed states are unrepresentable. The IO trampoline / `int`'s scheduler reads `scheduling_class` to decide whether to dispatch on the IO threadpool, the CPU pool, or serialise on a resource token. Three values: `Sequential`, `Commutative`, `ResourceSerial`.
 
-**ABI version**. `ABI_VERSION = 5` is checked at DLL load time by `int`'s `load_platform_dll`. Version mismatch is an unconditional load failure — the host refuses to call any function from an ABI-mismatched DLL. Layout drift at the C-ABI surface is governed by the version bump per Principle 14 (`#[non_exhaustive]` does NOT apply — see §6). The failure path surfaces as `PlatformError::AbiVersionMismatch { … }` (Decision 42 — adopted; `PlatformError` lives in `cranelisp-types` and is re-exported here), not a bare `String`.
+**ABI version**. `ABI_VERSION` (= 9; §3 "ABI version history") is checked at DLL load time by `int`'s `load_platform_dll`. Version mismatch is an unconditional load failure — the host refuses to call any function from an ABI-mismatched DLL. Layout drift at the C-ABI surface is governed by the version bump per Principle 14 (`#[non_exhaustive]` does NOT apply — see §6). The failure path surfaces as `PlatformError::AbiVersionMismatch { … }` (Decision 42 — adopted; `PlatformError` lives in `cranelisp-types` and is re-exported here), not a bare `String`.
 
 **Cite**: Decision 26 (scheduling class on variant), Decision 42 (`PlatformError`), spec §10.10.1 (calling convention), spec §10.12 (Par scheduling — future), Principle 14.
 
@@ -670,5 +687,5 @@ This pass files three FIXMEs (filing skill: `/design` (platform)):
 - `design/arch/CLAUDE.md` — Decisions index (11, 13, 24, 26, 27, 31, 38, 39, 40, 41, 42 cited above)
 - `design/platform/platform-dlls.md` — DLL loading mechanics (subordinate; refresh deferred to FIXME 0104 sprint)
 - `design/platform/archive/platform-registry-removal.md` — G8 deletion (subordinate; archived per FIXME 0106)
-- `crates/cranelisp-platform/src/{lib,schema,adt}.rs` — current implementation (3 files, ~3,816 source lines, ABI v5); `audits/platform-2026-06-14.md` for the structural snapshot
+- `crates/cranelisp-platform/src/{lib,schema,adt,declare,concurrency,poll_support}.rs` — current implementation (six source modules, ABI v9; §3 for the shape); `audits/platform-2026-06-14.md` for the structural snapshot (taken at 3 files / ABI v5)
 - `src/platform.rs` — `int`'s platform load + path resolution + type signature parser (the integration-side enactment of this crate's contract)

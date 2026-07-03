@@ -4,7 +4,7 @@
 
 ## The language and the system
 
-Cranelisp is a statically typed, pure-functional Lisp with type inference, trait-based dispatch, and Cranelift-backed JIT compilation. It is REPL-first: definitions accumulate during a session, redefinition is cheap, and JIT-emitted code is reclaimed when superseded. A persistent on-disk cache makes module loads incremental across sessions. A `--link` mode produces a standalone executable that links the user-callable primitives crate, the backend-emitted-call intrinsics crate, and any platform DLLs the program calls.
+Cranelisp is a statically typed, pure-functional Lisp with type inference, trait-based dispatch, and Cranelift-backed JIT compilation. It is REPL-first: definitions accumulate during a session and redefinition is cheap — an ABI-preserving redefinition (body-only edit) is an in-place code patch, while an ABI-changing one runs a dependent-recompilation transaction that recompiles static callers and freezes the old code chain for anything still referencing it (`design/int/session-transaction.md`; `sequences/exec-flow-redefine.svg`). JIT-emitted code is reclaimed when nothing references it any longer. A persistent on-disk cache makes module loads incremental across sessions. A `--link` mode produces a standalone executable that links the user-callable primitives crate, the backend-emitted-call intrinsics crate, and any platform DLLs the program calls.
 
 The project is one Rust workspace of seven crates. Six of them are *surfaces* — bounded contexts the development triad (`/design`, `/dev`, `/review`) narrow-deploys to one at a time. The seventh, `cranelisp-types`, is owned by `/arch` and is the single home for everything that crosses crate boundaries. The full per-surface bounded contexts live in `bounded-contexts.md`; this overview introduces them in the order a reader meets them.
 
@@ -56,7 +56,7 @@ The crate is `/arch`'s own; consumers file `target: /arch` to add or change shap
 
 - **Per-surface depth** → `bounded-contexts.md` — what each crate is responsible for, why the boundary is there, what crosses it
 - **Architectural principles** → `principles.md` — the criteria every design decision is held against
-- **As-designed public API** → `facades/{crate}.md` — one spec per surface; the integration-layer facade additionally enumerates cadences, handoffs, and windows
+- **As-designed public API** → per-crate source rustdoc (crate-root `//!` + per-item `///`) with the cross-surface narrative in `bounded-contexts.md`; the tracked `crates/{crate}/public-api.txt` baselines are the mechanical contract. (The `facades/{crate}.md` spec files are all retired — see `design/arch/CLAUDE.md` §Canonical documents for the per-crate canonical homes; int's cadences, handoffs, and windows live in `bounded-contexts.md` §6.)
 - **Cross-crate types** → `interfaces.md` — narrative companion to `cranelisp-types`
 - **Language definition** → `spec/`
 - **Per-crate design** → `design/{crate}/{crate}.md` (per-surface implementation direction; one per surface)

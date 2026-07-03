@@ -198,7 +198,24 @@ pub mod linker;
 /// a `role` byte. A stale `.o`/`.meta.json` cached under the v8 convention would marshal
 /// args at the wrong capture slots, so the bump rejects every pre-v9 cache as
 /// `CacheStale::SchemaMismatch` (cache-miss → recompile). This is the v8→v9 marker.
-pub const CACHE_SCHEMA_VERSION: u32 = 10;
+/// **S101 bump 10 → 11 (`Def.callees` enrichment, FIXME 0470 + 0472).** No
+/// serde-shape change — the carrier stays `callees: Vec<FQSymbol>` — but the
+/// field's *meaning* changed: typecheck now records EVERY statically-resolved
+/// user-fn reference (plain direct calls + value-position fn references), at
+/// EVERY body-check seam including trait-impl / default / HKT method bodies
+/// (the 0472 seam cure landed inside this same S101 bump window — no
+/// re-bump), where the old extraction recorded only `ResolvedCall`-derived
+/// edges (trait methods, sig-dispatch, auto-curry). Deliberate residue:
+/// mono-instance bodies carry no own edges — their constrained template's
+/// entry carries the complete set. A cache-restored module carrying
+/// pre-enrichment sparse `callees` would silently starve the S101
+/// dependent-recompilation transaction's affected-set closure
+/// (`design/int/session-transaction.md` §3.2 — the reverse index is derived
+/// from these edges). The bump rejects every v10 cache as
+/// `CacheStale::SchemaMismatch` (cache-miss → recompile) so every loaded
+/// table's edges are extraction-current by construction. **One bump serves
+/// all S101 waves** — Wave 3's manifest-key work does NOT re-bump.
+pub const CACHE_SCHEMA_VERSION: u32 = 11;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

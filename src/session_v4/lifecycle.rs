@@ -128,6 +128,7 @@ impl CompilerSession {
             repl_check_state: Mutex::new(Some(CheckState::new(entry_module.clone()))),
             repl_input_active: std::sync::Arc::new(AtomicBool::new(false)),
             warnings: Vec::new(),
+            pending_cascade_reports: Vec::new(),
             entry_module,
             // Agent starts unconfigured; `enable_agent` wires it in REPL mode
             // when `--agent` is set + the `agent` feature is built (S88 W3).
@@ -322,6 +323,11 @@ impl CompilerSession {
             // REPL startup only (R17 — REPL-only by construction). In
             // `--run`/`--link`/`--release` the worklist is never enumerated.
             importable_indices: crate::session_v4::ImportableIndices::default(),
+            // S101 R3 machinery: the broken registry + the session retention
+            // pool (design/int/session-transaction.md §5.1/§6.1). Both start
+            // empty; populated only by dev-session redefinition transactions.
+            broken: dashmap::DashMap::new(),
+            retained_code: Mutex::new(Vec::new()),
             run_mode,
             test_runner_state,
         });
@@ -1010,7 +1016,7 @@ impl CompilerSession {
         // (design/int/session-persistence.md §4).
         if let Some(ref mut watcher) = self.watcher {
             let canonical = file_path.canonicalize().unwrap_or_else(|_| file_path.clone());
-            watcher.update_content_hash(canonical.clone(), hash);
+            watcher.update_content_hash(canonical.clone(), hash.clone());
         }
 
         // Register the file in file_to_module so the watcher can find it.
@@ -1020,6 +1026,19 @@ impl CompilerSession {
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(canonical, module.clone());
         }
+
+        // S101 R18 fix — deterministic per-turn persist (spine §5.6 pin (ii)).
+        // (a) Refresh the cache's source-hash stash to the JUST-WRITTEN
+        //     backing source, so the nice worker's manifest record matches the
+        //     on-disk `.cl` and the next session's cache-hit check converges
+        //     (previously the stash kept the STARTUP hash forever, so a
+        //     restart always missed and renumbered persisted GOT slots).
+        // (b) Re-enqueue the module for object codegen so the `.o`/`.meta`
+        //     pair is rewritten from the current live table; `/quit`'s
+        //     `wait_object_complete` drains this deterministically instead of
+        //     abandoning the last defining turns at shutdown.
+        self.shared.cache.record_source_hash(&module, hash.clone());
+        self.shared.scheduler.mark_object_stale(&module);
 
         // S78: the former `module_sexps[module]` republish is gone — there is
         // no shared sexps map to keep current. A persistent worker only
@@ -1056,21 +1075,39 @@ impl CompilerSession {
 
         // Remove stale products before recompilation.
         // Sprint 57 Wave 2 G6: `codegen_products` was deleted; compiled code
-        // lives on `ModuleEntry::Def.code`. Walk the module's symbols and
-        // clear each `code` field so stale pointers are not callable during
-        // recompilation. The `Arc<Jit>` handles in `kept_jits` keep the old
-        // mmap'd pages alive until the session ends (preserves the Phase-2
-        // redefinition policy of "old code stays callable for in-flight
-        // calls" — same behaviour as before, just via a different store).
+        // lives on `ModuleEntry::Def.code`.
+        //
+        // S101 (design/int/session-transaction.md §6.3): move each displaced
+        // `Code` handle into the session retention pool instead of `None`-ing
+        // it. The former comment here claimed "`kept_jits` keeps the old
+        // mmap'd pages alive" — but `kept_jits` was dissolved in S58
+        // (Decision 35; retention moved per-entry onto `Code::Jit`), so
+        // `*code = None` dropped what may be the LAST Arc and freed machine
+        // code that in-flight frames or heap closures could still execute.
+        // The pool restores the intended policy ("old code stays callable for
+        // in-flight calls"): pages stay mapped for the session lifetime.
         crate::observability::record_module_event(
             crate::observability::SchedulerTraceTag::ClearModuleState,
             module_path.as_ref(),
         );
         self.shared.typecheck_products.remove(module_path);
         if let Some(mut st) = self.shared.symbol_tables.get_mut(module_path) {
-            for entry in st.symbols.values_mut() {
-                if let ModuleEntry::Def { code, .. } = entry {
-                    *code = None;
+            let mut pool = self
+                .shared
+                .retained_code
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for (name, entry) in st.symbols.iter_mut() {
+                let slot = entry.callable_got_slot();
+                if let ModuleEntry::Def { code, .. } = entry
+                    && let Some(displaced) = code.take()
+                {
+                    pool.push(crate::redefine::RetainedCode::frozen(
+                        module_path,
+                        name,
+                        slot,
+                        displaced,
+                    ));
                 }
             }
         }
@@ -1393,6 +1430,26 @@ impl CompilerSession {
         result
     }
 
+    /// Flush the final `.o`/`.meta.json` persist for the REPL's mutated
+    /// modules (S101 R18 — deterministic final persist at `/quit`).
+    ///
+    /// Defining turns already re-enqueue their module per-turn
+    /// (`regenerate_backing_file` → `mark_object_stale`), but EXPRESSION
+    /// turns mutate the live table too (the synthetic `__expr` wrapper
+    /// allocates a live GOT slot on the module's monotone counter) without
+    /// any persist trigger — so the on-disk meta's `next_got_slot` snapshot
+    /// raced whatever turn the nice worker last observed. Marking the REPL's
+    /// active modules stale here, BEFORE the caller's `wait_object_complete`,
+    /// pins the persisted snapshot to the session's FINAL table state.
+    pub fn flush_final_persist(&self) {
+        self.shared.scheduler.mark_object_stale(&self.entry_module);
+        if self.current_repl_module != self.entry_module {
+            self.shared
+                .scheduler
+                .mark_object_stale(&self.current_repl_module);
+        }
+    }
+
     /// Shut down the session: signal workers to drain and exit.
     ///
     /// Sets the scheduler shutdown flag (wakes all condvars) and joins
@@ -1485,10 +1542,66 @@ impl CompilerSession {
             self.shared.file_to_module
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(canonical, module);
+                .insert(canonical, module.clone());
         }
 
+        // S101 persistence pins (ii)–(iv) (spine §5.6; design/int/
+        // session-transaction.md §8): when the entry module's persisted
+        // `.meta.json` is still valid for THIS source, pre-seed the live
+        // table from it BEFORE the from-source recompile. Persisted GOT slot
+        // numbers are load-bearing against the cached `.o`'s machine code —
+        // the recompile's staging→live commit then REUSES each symbol's
+        // persisted slot (the ordinary redefinition discipline) instead of
+        // renumbering from 0, `next_got_slot` restores the high-water mark so
+        // new definitions allocate strictly above every frozen hole, and the
+        // holes survive un-renumbered. Bodies are still recompiled from
+        // source (no stale code is ever served — the §18.8 floor); only the
+        // slot assignments and schemes carry over.
+        self.preload_entry_slot_assignments(&module, &source);
+
         self.register_module_with_source(module_name, &source, &entry_path)
+    }
+
+    /// Pre-seed the entry module's live table from its persisted `.meta.json`
+    /// when (and only when) the cache manifest validates the CURRENT backing
+    /// source — the slot-stability half of the L-R5 persistence pins. On any
+    /// miss (no cache, hash changed, schema bump, decode failure) this is a
+    /// silent no-op and the from-source build starts from an empty table
+    /// (fresh numbering — correct, since the persisted slots' `.o` is invalid
+    /// anyway).
+    fn preload_entry_slot_assignments(&self, module: &ModuleFullPath, source: &str) {
+        use cranelisp_backend::cache;
+
+        if source.trim().is_empty() {
+            return;
+        }
+        let Some(cache_dir) = self.shared.cache.cache_dir() else {
+            return;
+        };
+        let hash = cache::manifest::hash_source(source);
+        if !self
+            .shared
+            .cache
+            .is_cache_valid(module, &hash, &std::collections::HashMap::new())
+        {
+            return;
+        }
+        let Ok(Some(cached)) = cache::try_load_cached_module(&cache_dir, module) else {
+            return;
+        };
+        let mut table = cached
+            .metadata
+            .symbol_table
+            .into_concrete::<Code, ()>();
+        // The synthetic `__expr` wrapper is a per-turn artifact, not a user
+        // definition — dropping it keeps the codegen batch sweep from
+        // recompiling a stale persisted expression body.
+        table
+            .symbols
+            .remove(crate::worker::SYNTHETIC_EXPR_WRAPPER);
+        // Fresh type vars must not collide with the persisted schemes' ids.
+        cranelisp_typecheck::advance_next_id_past_table(&self.shared.next_type_id, &table);
+        cranelisp_types::install_module(&self.shared.symbol_tables, module.clone(), table);
     }
 
     /// §8: Link by module name. Collects .o files produced by nice workers,

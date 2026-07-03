@@ -131,10 +131,22 @@ fn real_leaf_suspends_and_resumes_through_run_io() {
 // RED-first: the in-tree leaf does not exist on HEAD (Wave 2).
 #[test]
 fn two_real_leaves_in_par_overlap_max_not_sum_one_thread() {
-    // Two data-independent 60ms async reads (`a` not free in the second, `b` not
-    // free in the first) so the independence analysis can Par-group them. Summed
-    // result = 120 (exit byte) proves both ran; the wall-clock proves overlap.
-    let delay_ms: u64 = 60;
+    // Two data-independent 100ms async reads (`a` not free in the second, `b`
+    // not free in the first) so the independence analysis can Par-group them.
+    // Summed result = 200 (exit byte) proves both ran; the wall-clock proves
+    // overlap.
+    //
+    // Margin fix (S101 Wave 5): `out.elapsed` covers the WHOLE child
+    // invocation — compile + startup (~25–40ms observed) rides on top of the
+    // sleep. At the original 60ms delay + 1.5× midpoint the overhead budget
+    // was ~30ms and the test failed intermittently at 90–97ms under BOTH
+    // toggle polarities (isolated sampling 2026-07-03: 2/8 default, 1/4 + 2/3
+    // toggled — NOT a polarity divergence; ledgered S101 Wave 5). New bound:
+    // the SHARP structural inequality `elapsed < 2×delay` — serialization is
+    // ≥ 2×delay + overhead, so it can never false-pass; overlap is
+    // delay + overhead, so a false-fail needs overhead > delay = 100ms,
+    // 2.5–4× the observed maximum.
+    let delay_ms: u64 = 100;
     let prog = format!(
         "(platform {plat})\n\
          (import [platform.{plat} [{eff}]])\n\
@@ -152,16 +164,17 @@ fn two_real_leaves_in_par_overlap_max_not_sum_one_thread() {
         .run("user.cl")
         .user(&prog)
         .output();
-    // Both leaves ran: 60 + 60 = 120 (exit byte).
+    // Both leaves ran: 100 + 100 = 200 (exit byte).
     let elapsed_ms = out.elapsed.as_millis();
-    out.assert_exit(120);
-    // Overlap, not serialization: ≈ max(60) not sum(120). Generous midpoint
-    // (1.5×delay = 90ms) so the structural inequality is robust to jitter (timing
-    // flakiness is banned as a disposition — the margin is wide, not tight).
+    out.assert_exit(200);
+    // Overlap, not serialization: ≈ max(100) not sum(200). The sharp
+    // structural bound `< 2×delay` (see the margin-fix note above): a
+    // serialized run is ≥ 2×delay + compile overhead and can never pass;
+    // an overlapped run needs > 100ms of overhead to fail.
     assert!(
-        elapsed_ms < (delay_ms as u128 * 3) / 2,
-        "two async leaves must OVERLAP on one reactor thread (≈max {delay_ms}ms, \
-         not sum {}ms); measured {elapsed_ms}ms >= 90ms midpoint",
+        elapsed_ms < (delay_ms as u128) * 2,
+        "two async leaves must OVERLAP on one reactor thread (≈max {delay_ms}ms + \
+         compile overhead, not sum {}ms+); measured {elapsed_ms}ms",
         delay_ms * 2,
     );
 }

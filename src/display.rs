@@ -711,7 +711,8 @@ mod tests {
     #[test]
     fn format_value_float_with_decimal() {
         let empty: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
-        let bits = 3.14_f64.to_bits() as i64;
+        // 3.25, not 3.14: clippy::approx_constant (deny) rejects near-PI literals.
+        let bits = 3.25_f64.to_bits() as i64;
         let v = format_value(bits, &Type::Float, &empty);
         assert!(v.contains('.'), "float display should contain a decimal point: {v}");
     }

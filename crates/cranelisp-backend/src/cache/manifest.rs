@@ -42,6 +42,25 @@ pub struct CacheManifest {
     pub target_triple: String,
     /// Cranelift version string.
     pub cranelift_version: String,
+    /// The `CRANELISP_NO_OWNERSHIP` master-toggle polarity this cache was
+    /// written under (`design/backend/ownership-codegen.md` §2.1/§2.3 — the
+    /// S101 stage-M manifest key, pulled forward by the `/arch` S101 Phase-2
+    /// ruling). A cache written analysis-ON persists moded summaries +
+    /// machine code compiled against moded conventions; loading it under the
+    /// other polarity would mix ABIs (the §3.1-spine leak/double-free through
+    /// the cache). Flipping the toggle therefore invalidates the whole cache
+    /// — a full recompile, exactly as a compiler upgrade does — making
+    /// mixed-ABI caches unrepresentable (Principle 18/20). Pre-analysis
+    /// (stage M) the key is inert: both polarities produce byte-identical
+    /// code, but the invalidation discipline is already load-bearing as
+    /// increment I's differential-oracle substrate.
+    ///
+    /// `#[serde(default)]`: a pre-key manifest was written pre-analysis
+    /// (both polarities byte-identical), so treating it as
+    /// `ownership_disabled: false` is sound — it invalidates iff the current
+    /// session sets the toggle.
+    #[serde(default)]
+    pub ownership_disabled: bool,
     /// Per-module entries: module path -> source hash.
     pub modules: HashMap<String, CachedModuleRef>,
 }
@@ -65,6 +84,7 @@ impl CacheManifest {
             compiler_mtime: binary_fingerprint(),
             target_triple: target_triple.to_string(),
             cranelift_version: cranelift_version(),
+            ownership_disabled: no_ownership_enabled(),
             modules: HashMap::new(),
         }
     }
@@ -145,6 +165,16 @@ pub fn check_manifest(
         });
     }
 
+    // Ownership-toggle polarity (§2.3): a polarity flip invalidates the
+    // whole cache — mixed-ownership-ABI caches are unrepresentable.
+    let current_ownership_disabled = no_ownership_enabled();
+    if manifest.ownership_disabled != current_ownership_disabled {
+        return Err(CacheInvalidReason::OwnershipToggle {
+            cached: manifest.ownership_disabled,
+            current: current_ownership_disabled,
+        });
+    }
+
     // Per-module check
     let entry = match manifest.get_module(module_path) {
         Some(e) => e,
@@ -174,6 +204,10 @@ pub enum CacheInvalidReason {
     CompilerChanged,
     TargetTriple { cached: String, current: String },
     CraneliftVersion { cached: String, current: String },
+    /// The `CRANELISP_NO_OWNERSHIP` master-toggle polarity flipped since the
+    /// cache was written (§2.3 — wholesale invalidation; mixed-ownership-ABI
+    /// caches unrepresentable).
+    OwnershipToggle { cached: bool, current: bool },
 }
 
 impl std::fmt::Display for CacheInvalidReason {
@@ -191,8 +225,39 @@ impl std::fmt::Display for CacheInvalidReason {
             CacheInvalidReason::CraneliftVersion { cached, current } => {
                 write!(f, "Cranelift version mismatch: cached={cached}, current={current}")
             }
+            CacheInvalidReason::OwnershipToggle { cached, current } => {
+                write!(
+                    f,
+                    "CRANELISP_NO_OWNERSHIP polarity flipped since the cache was \
+                     written: cached ownership_disabled={cached}, current={current} \
+                     (wholesale invalidation — mixed-ownership-ABI caches are \
+                     unrepresentable)"
+                )
+            }
         }
     }
+}
+
+// --- The CRANELISP_NO_OWNERSHIP master toggle ---
+
+/// Read-once gate for the **`CRANELISP_NO_OWNERSHIP`** master analysis-off
+/// toggle (`design/backend/ownership-codegen.md` §2.1 — sibling of
+/// `CRANELISP_NO_LENIENT`; the same read-once `OnceLock` pattern as
+/// `CRANELISP_NONATOMIC_RC` in `heap.rs`, so one process observes one
+/// consistent polarity).
+///
+/// Semantics: when set, force the conservative point everywhere. Enforcement
+/// is **producer-primary** — with the toggle set, typecheck's
+/// `pass5_ownership` does not run (no summaries ⇒ every consumer is at the
+/// Decision-24 conservative point with zero consumer-side branching; that
+/// crate reads the same env when the pass lands at increment I). At stage M
+/// (pre-analysis) the backend's only consumer is the cache-manifest global
+/// key ([`CacheManifest::ownership_disabled`], §2.3): a polarity flip
+/// invalidates the cache wholesale so mixed-ownership-ABI caches are
+/// unrepresentable. Increment I's emission gates read this same fn.
+pub(crate) fn no_ownership_enabled() -> bool {
+    static E: OnceLock<bool> = OnceLock::new();
+    *E.get_or_init(|| std::env::var_os("CRANELISP_NO_OWNERSHIP").is_some())
 }
 
 // --- Source hashing ---
@@ -252,12 +317,28 @@ fn cranelift_version() -> String {
 
 // --- Manifest I/O ---
 
-/// Read the cache manifest from disk. Returns None if file doesn't exist
-/// or cannot be parsed.
+/// Read the cache manifest from disk. Returns None if file doesn't exist,
+/// cannot be parsed, or was written under the OTHER `CRANELISP_NO_OWNERSHIP`
+/// polarity.
+///
+/// The polarity gate here (not only in [`check_manifest`]) is what makes the
+/// §2.3 invalidation CONVERGE: the session loads the on-disk manifest into
+/// memory at startup and re-writes that same object (global keys preserved)
+/// after recompiles — so an other-polarity manifest surviving the load would
+/// be flushed back with the stale polarity and the next same-polarity run
+/// would still miss. Treating it as absent starts the session from a fresh
+/// manifest stamped with the current polarity ([`CacheManifest::new`]):
+/// wholesale invalidation on the flip run, ordinary cache hits on the next
+/// same-polarity run. Mixed-ownership-ABI caches are unrepresentable
+/// (Principle 18/20).
 pub fn read_manifest(cache_dir: &Path) -> Option<CacheManifest> {
     let path = cache_dir.join("manifest.json");
     let content = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+    let manifest: CacheManifest = serde_json::from_str(&content).ok()?;
+    if manifest.ownership_disabled != no_ownership_enabled() {
+        return None;
+    }
+    Some(manifest)
 }
 
 /// Write the cache manifest to disk atomically.

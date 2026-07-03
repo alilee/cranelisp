@@ -85,6 +85,16 @@ Until one of those exists, the poll-shape network showcase stays in the
 exemplar only, and the learning sequence keeps the combinators example (32) as
 its concurrency capstone.
 
+## S101 Phase-6a readiness re-check (2026-07-03, /examples)
+
+All three blockers re-verified STANDING at S101 Phase 6a: `platforms/` still
+contains no socket leaf (`grep accept|connect|TcpListener platforms/` hits
+only comment prose in `poll-pool`/`pool-demo`), no client-connect leaf exists
+anywhere, and `tests/examples.rs` remains the bare exit-code umbrella. S101
+(redefinition machinery + vec fn-as-value fix) landed nothing enabling. NOT
+ready to headline 6b; remains deferred pending `/platform` net-leaf or `/qa`
+harness-driver infra per the resolution paths above.
+
 ## Operational implication / Context
 
 This is close-out housekeeping, not a headline gap — a learner still meets the

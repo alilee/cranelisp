@@ -2187,3 +2187,75 @@ fn bare_relative_submodule_reexport_resolves() {
         // "module 'child' not found (re-exported by 'shell')".
         .assert_exit(42);
 }
+
+// =============================================================================
+// FIXME 0484 (S101 Phase 6a, /stdlib) — shadowing an IMPORTED name with a user
+// defn is order-dependent, and `/info` disagrees with call resolution. The
+// 0475 pins (tests/vec_query_value_use.rs) cover builtin-vs-user shadowing —
+// a module-local defn shadows the primitives import (§8.6.1 layer 2, direct
+// call takes the user body). This is the unpinned import-vs-user cell: when
+// the imported name was *used before* the shadowing defn, subsequent bare
+// calls keep resolving to the import, while `/info` claims `user/<name>` in
+// both orders. The two orders MUST agree with each other and with `/info`
+// (self-documenting-REPL principle); §8.6.1 layer 2 pins the expected winner
+// as the module-local definition. NOTE: FIXME 0484 flags that /spec may pin
+// the normative precedence differently (e.g. Clojure-style warning/error) —
+// if that arbitration lands, re-anchor these expected values. Resolver:
+// likely /int (session resolution caching). Failing-not-ignored; ledger:
+// tests/plan/ledger.md §"Sprint 101 Phase 6a/6b defect set".
+// Reduced stdlib-free (probed 2026-07-03): local module `util`, fn `measure`.
+// =============================================================================
+
+// spec: spec/08-modules.md §8.6.1 — module-scope resolution: a module-local
+// definition shadows an import REGARDLESS of whether the import was already
+// exercised. Order: import → call (3, control) → shadowing defn → call MUST
+// take the shadow (99) and `/info` MUST describe the same definition the call
+// resolves to. RED on HEAD (FIXME 0484): the post-shadow call still returns 3
+// while `/info` claims `user/measure ; defn - user shadow`.
+#[test]
+fn import_used_then_shadowed_by_defn_subsequent_call_takes_shadow() {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "util.cl",
+            "(import [primitives [*]])\n\
+             (defn measure \"module count\" [v] (vec-len v))\n",
+        )
+        .stdin(
+            "(import [util [measure]])\n\
+             (measure [1 2 3])\n\
+             (defn measure \"user shadow\" [v] :Int 99)\n\
+             (measure [1 2 3])\n\
+             /info measure\n",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 3") // pre-shadow call: the import (control)
+        .assert_stdout_contains("user/measure") // /info: the shadow is the session's truth...
+        .assert_stdout_contains(":primitives/Int 99"); // ...so the post-shadow call MUST match it
+}
+
+// spec: spec/08-modules.md §8.6.1 — CONTROL (GREEN on HEAD): the same four
+// forms WITHOUT the pre-shadow call — import → shadowing defn → call takes
+// the shadow (99). Pins the order-INdependence boundary of FIXME 0484: only
+// the exercised-import order resolves wrong.
+#[test]
+fn import_shadowed_by_defn_before_first_call_takes_shadow_control() {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "util.cl",
+            "(import [primitives [*]])\n\
+             (defn measure \"module count\" [v] (vec-len v))\n",
+        )
+        .stdin(
+            "(import [util [measure]])\n\
+             (defn measure \"user shadow\" [v] :Int 99)\n\
+             (measure [1 2 3])\n",
+        )
+        .output()
+        .assert_ok()
+        .assert_stdout_contains(":primitives/Int 99");
+}

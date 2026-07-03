@@ -28,6 +28,7 @@ Each diagram is a temporal walkthrough of one execution mode. The actor grain is
 | `exec-flow-link.svg` | `--link` — compilation cadence only; runtime cadence activates only when the produced binary is later executed. |
 | `exec-flow-compilation.svg` | Compilation cadence in isolation — scheduler, priority/nice workers, Phase 0 (synchronous parse + structural decls) then form-by-form typecheck + JIT + object codegen with cache-hit / cache-miss branches. |
 | `exec-flow-runtime.svg` | Runtime + platform cadence in isolation — trampoline entry, JIT'd user code, RC inc/dec, heap allocator, cross-module GOT dispatch, IO trampoline (Pure / Effect / Bind / Par) with platform-DLL effect calls. |
+| `exec-flow-redefine.svg` | **(S101)** REPL redefinition turn — the dependent-recompilation session transaction: summary-diff commit gate (`AbiSurface` classify), ABI-epoch slot versioning (fresh slot + freeze into the retention pool), on-demand reverse-index closure walk, reverse-topo recompile via `compile_to_module`, BROKEN marking via `compile_trap_stub` in-place trap patch, cascade report. Doubles as the proof sketch for the frozen-world invariant (no quiesce, no patch window — mixed-ABI edges unrepresentable, Principle 20). Canonical design: `design/int/session-transaction.md`; backend seam `design/backend/ownership-codegen.md` §8.3. |
 
 ## Reading order for a newcomer
 
@@ -36,7 +37,7 @@ Each diagram is a temporal walkthrough of one execution mode. The actor grain is
 3. `exec-flow-run.svg` and `exec-flow-link.svg` — narrower modes, easier once REPL is understood.
 4. `exec-flow-compilation.svg` and `exec-flow-runtime.svg` — the two cadences in isolation, when narrower depth is wanted than the per-mode flows.
 5. The five concurrency-invariant diagrams — verify the correctness claims.
-6. Crate surfaces — once the choreography is in mind, the typed Rust signatures fall into place. For most crates: `../facades/{crate}.md` (per-surface facade specs). For `cranelisp-types`: source rustdoc — `crates/cranelisp-types/src/lib.rs` module-level `//!` is the curated entry point + per-item `///` docstrings; cross-type narrative lives at `../bounded-contexts.md` §7.
+6. Crate surfaces — once the choreography is in mind, the typed Rust signatures fall into place. All `facades/{crate}.md` specs are retired (see `../CLAUDE.md` §Canonical documents): the canonical surface per crate is the source rustdoc (crate-root `//!` + per-item `///`) plus the tracked `crates/{crate}/public-api.txt` baseline, with cross-surface narrative in `../bounded-contexts.md` (§7 for types, §1 frontend, §2 typecheck, §3 backend, §4a primitives, §4b intrinsics, §5 platform, §6 int).
 
 ## Regenerating
 

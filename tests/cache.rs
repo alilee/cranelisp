@@ -1115,3 +1115,127 @@ fn cache_meta_without_build_id_field_triggers_recompile() {
         "rebuild must stamp the current build_id on pre-Sprint-60-shape caches"
     );
 }
+
+// =============================================================================
+// L-B3(1)–(3) — CRANELISP_NO_OWNERSHIP cache-manifest key (S101 stage M)
+// =============================================================================
+//
+// S101 Phase-5 stage 1 QA-first RED set (`tests/plan/s100-ownership-verification.md`
+// §3.1 L-B3 / §6.1). The `CRANELISP_NO_OWNERSHIP` analysis-off toggle ships at
+// stage M with its cache-manifest global key (`/arch` S101 Phase-2 ruling,
+// `sprints/SPRINT.md` §Architecture review): flipping the toggle must
+// invalidate the module cache WHOLESALE — mixed-ownership-ABI caches must be
+// unrepresentable (`design/backend/ownership-codegen.md` §2.3). RED at draft
+// (the env var was a no-op); RESOLVED S101 Wave 3 — the toggle + manifest key
+// + `read_manifest` other-polarity-as-absent landed; both tests GREEN.
+// Wave-5 amendment: every session pins its polarity EXPLICITLY (env_remove
+// for OFF) so the tests hold under the L-B2(i) ambient-polarity lane.
+// Ledger: `tests/plan/ledger.md` §"Sprint 101 Phase-5 Stage-1" + Wave-5
+// close-out records.
+//
+// Observability: dep-module cache hits emit `module-trace: cache hit …` on
+// stderr under CRANELISP_MODULE_TRACE=1 (tests/CLAUDE.md §Diagnostic Logging);
+// recompilation is additionally pinned via the dep's `.o` mtime.
+
+const LB3_MAIN: &str = "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))";
+const LB3_UTIL: &str = "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))";
+
+// spec: design/backend/ownership-codegen.md §2.3 — flipping the ownership
+// toggle invalidates the cache wholesale: every module recompiles (zero cache
+// hits — no stale `.o` of the other polarity is ever consumed) and output is
+// identical. RED on HEAD (env var unknown ⇒ full cache hits on the flip run).
+#[test]
+fn cache_ownership_toggle_flip_invalidates_wholesale_no_stale_objects() {
+    // Polarity-META test: every session pins its polarity EXPLICITLY
+    // (`env_remove` for OFF — the toggle is presence-gated) so the flip legs
+    // hold under the L-B2(i) lane, which runs the whole suite with
+    // CRANELISP_NO_OWNERSHIP=1 in the ambient env (found at S101 Wave 5).
+    let first = project(&[("main.cl", LB3_MAIN), ("util.cl", LB3_UTIL)])
+        .env_remove("CRANELISP_NO_OWNERSHIP")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+    let o_mtime1 = mtime(&first, ".cranelisp-cache/util.o");
+    nap_for_mtime();
+
+    let flipped = first
+        .run_again()
+        .env("CRANELISP_NO_OWNERSHIP", "1")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .run("main.cl")
+        .output()
+        .assert_exit(42); // identical observable output under the other polarity
+    assert!(
+        !flipped.stderr.contains("cache hit"),
+        "toggle flip must invalidate wholesale — no module may cache-hit \
+         (mixed-ABI caches unrepresentable); stderr:\n{}",
+        flipped.stderr
+    );
+    let o_mtime2 = mtime(&flipped, ".cranelisp-cache/util.o");
+    assert_ne!(
+        o_mtime1, o_mtime2,
+        "the dep's .o must be recompiled (rewritten) on the flipped run, \
+         not served stale"
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §2.3 — round-trip: flipping back
+// invalidates wholesale again (the key is part of the manifest, both
+// directions), and a re-run at the SAME polarity serves full cache hits (the
+// key is stable — guards against an always-miss implementation). RED on HEAD
+// (the flip legs observe cache hits today).
+#[test]
+fn cache_ownership_toggle_round_trip_and_same_polarity_stability() {
+    // Polarity-META test: every session pins its polarity EXPLICITLY (see the
+    // sibling test's note — ambient-env robustness for the L-B2(i) lane).
+    // Leg 1: populate at default polarity.
+    let first = project(&[("main.cl", LB3_MAIN), ("util.cl", LB3_UTIL)])
+        .env_remove("CRANELISP_NO_OWNERSHIP")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+
+    // Leg 2: flip on ⇒ wholesale.
+    let on = first
+        .run_again()
+        .env("CRANELISP_NO_OWNERSHIP", "1")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+    assert!(
+        !on.stderr.contains("cache hit"),
+        "flip ON must recompile wholesale; stderr:\n{}",
+        on.stderr
+    );
+
+    // Leg 3: flip back off ⇒ wholesale again (round-trip), output identical.
+    let off = on
+        .run_again()
+        .env_remove("CRANELISP_NO_OWNERSHIP")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+    assert!(
+        !off.stderr.contains("cache hit"),
+        "flip back OFF must recompile wholesale again; stderr:\n{}",
+        off.stderr
+    );
+
+    // Leg 4: same polarity re-run ⇒ full cache hits (key stability — this leg
+    // is green-at-draft by itself; the test is RED on the flip legs above).
+    let stable = off
+        .run_again()
+        .env_remove("CRANELISP_NO_OWNERSHIP")
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+    assert!(
+        stable.stderr.contains("cache hit"),
+        "same-polarity re-run must serve cache hits (the manifest key must be \
+         stable, not always-miss); stderr:\n{}",
+        stable.stderr
+    );
+}
