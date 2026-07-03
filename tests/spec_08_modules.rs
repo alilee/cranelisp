@@ -2189,32 +2189,33 @@ fn bare_relative_submodule_reexport_resolves() {
 }
 
 // =============================================================================
-// FIXME 0484 (S101 Phase 6a, /stdlib) — shadowing an IMPORTED name with a user
-// defn is order-dependent, and `/info` disagrees with call resolution. The
-// 0475 pins (tests/vec_query_value_use.rs) cover builtin-vs-user shadowing —
-// a module-local defn shadows the primitives import (§8.6.1 layer 2, direct
-// call takes the user body). This is the unpinned import-vs-user cell: when
-// the imported name was *used before* the shadowing defn, subsequent bare
-// calls keep resolving to the import, while `/info` claims `user/<name>` in
-// both orders. The two orders MUST agree with each other and with `/info`
-// (self-documenting-REPL principle); §8.6.1 layer 2 pins the expected winner
-// as the module-local definition. NOTE: FIXME 0484 flags that /spec may pin
-// the normative precedence differently (e.g. Clojure-style warning/error) —
-// if that arbitration lands, re-anchor these expected values. Resolver:
-// likely /int (session resolution caching). Failing-not-ignored; ledger:
-// tests/plan/ledger.md §"Sprint 101 Phase 6a/6b defect set".
-// Reduced stdlib-free (probed 2026-07-03): local module `util`, fn `measure`.
+// FIXME 0484 (S101 Phase 6a, /stdlib) — definition over an explicit import.
+// RE-ANCHORED S102 Phase 5 stage 1 to the /spec ruling (spec/08-modules.md
+// §8.6.4 §"Definition-Over-Import: Order-Independent, All Modes", landed
+// S102 Phase 3): a definition whose name is bound by an EXPLICIT import MUST
+// be REJECTED with a compile-time error — order-independent, all modes; the
+// rejected form has no effect (the import stays the binding, introspection
+// keeps describing it). The originally-drafted polarity (shadow-wins per the
+// pre-ruling §8.6.1 reading) was itself the violation, so BOTH tests below
+// now expect rejection and BOTH are RED on HEAD: today the binary neither
+// rejects nor resolves order-independently (used-first order keeps the
+// import silently; unused order silently takes the shadow — the S101 6a
+// finding). Resolver: /int (Block A5 — reject the later-arriving conflicting
+// form). Failing-not-ignored; ledger: tests/plan/ledger.md §"Sprint 101
+// Phase 6a/6b defect set" (+ S102 re-anchor note).
+// Contrast pins (unaffected by the ruling): prelude-PROVIDED names remain
+// shadowable — the 0475 pins in tests/vec_query_value_use.rs.
+// Reduced stdlib-free: local module `util`, fn `measure`.
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.1 — module-scope resolution: a module-local
-// definition shadows an import REGARDLESS of whether the import was already
-// exercised. Order: import → call (3, control) → shadowing defn → call MUST
-// take the shadow (99) and `/info` MUST describe the same definition the call
-// resolves to. RED on HEAD (FIXME 0484): the post-shadow call still returns 3
-// while `/info` claims `user/measure ; defn - user shadow`.
+// spec: spec/08-modules.md §8.6.4 — definition-over-import is a compile-time
+// ERROR regardless of call history: import → call (3) → conflicting defn
+// MUST be rejected; the import remains the binding (post-turn call still 3,
+// never 99). RED on HEAD (FIXME 0484): today this order silently keeps the
+// import while `/info` claims the shadow — no rejection, split introspection.
 #[test]
-fn import_used_then_shadowed_by_defn_subsequent_call_takes_shadow() {
-    Cranelisp::new()
+fn import_used_then_shadowed_by_defn_is_rejected_error() {
+    let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .file(
@@ -2226,22 +2227,34 @@ fn import_used_then_shadowed_by_defn_subsequent_call_takes_shadow() {
             "(import [util [measure]])\n\
              (measure [1 2 3])\n\
              (defn measure \"user shadow\" [v] :Int 99)\n\
-             (measure [1 2 3])\n\
-             /info measure\n",
+             (measure [1 2 3])\n",
         )
         .output()
         .assert_ok()
-        .assert_stdout_contains(":primitives/Int 3") // pre-shadow call: the import (control)
-        .assert_stdout_contains("user/measure") // /info: the shadow is the session's truth...
-        .assert_stdout_contains(":primitives/Int 99"); // ...so the post-shadow call MUST match it
+        // The conflicting definition is rejected with an error naming the
+        // symbol (§8.6.4: the diagnostic SHOULD also name the import source).
+        .assert_stdout_contains("error")
+        .assert_stdout_does_not_contain(":primitives/Int 99"); // rejected form has NO effect
+    // Both calls resolve through the import — pre-conflict AND
+    // post-rejection print 3 (the §8.6.4 transcript is identical with or
+    // without the pre-definition call).
+    assert_eq!(
+        out.stdout.matches(":primitives/Int 3").count(),
+        2,
+        "the import must remain the binding before AND after the rejected \
+         definition (spec/08-modules.md §8.6.4); stdout:\n{}",
+        out.stdout
+    );
 }
 
-// spec: spec/08-modules.md §8.6.1 — CONTROL (GREEN on HEAD): the same four
-// forms WITHOUT the pre-shadow call — import → shadowing defn → call takes
-// the shadow (99). Pins the order-INdependence boundary of FIXME 0484: only
-// the exercised-import order resolves wrong.
+// spec: spec/08-modules.md §8.6.4 — the SAME rejection with NO pre-conflict
+// call (order-independence: "an implementation in which an already-exercised
+// import behaves differently from an unexercised one … is defective on both
+// legs"). RED on HEAD (FIXME 0484): today this order silently ACCEPTS the
+// shadow (99) — the formerly-"control" behaviour is itself the violation per
+// the S102 /spec ruling.
 #[test]
-fn import_shadowed_by_defn_before_first_call_takes_shadow_control() {
+fn import_shadowed_by_defn_before_first_call_is_rejected_error() {
     Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -2257,5 +2270,7 @@ fn import_shadowed_by_defn_before_first_call_takes_shadow_control() {
         )
         .output()
         .assert_ok()
-        .assert_stdout_contains(":primitives/Int 99");
+        .assert_stdout_contains("error") // the definition is rejected
+        .assert_stdout_does_not_contain(":primitives/Int 99") // no silent shadow
+        .assert_stdout_contains(":primitives/Int 3"); // the import stays the binding
 }

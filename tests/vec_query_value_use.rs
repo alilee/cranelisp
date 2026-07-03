@@ -185,16 +185,22 @@ fn vec_get_stored_in_adt_field_applies() {
 // resolver) claims a user fn shadowing `vec-get`/`vec-set`/`vec-push` keeps
 // ordinary GOT-indirect dispatch and is never inline-lowered as vec semantics.
 // Constructibility probed 2026-07-03: `(defn vec-get [v i] 42)` IS accepted
-// (a module-local Def shadows the primitives import, spec/08-modules.md
-// §8.6.1 layer 2), so the positive pins below apply — not the FIXME's
-// negative-rejection fallback. GREEN at draft (sound by construction; pinned
+// — `vec-get` reaches the user module through the implicit-PRELUDE fallback
+// (outer scope), and a module-local definition shadows a prelude-provided
+// name structurally (spec/08-modules.md §8.6.4 §"Explicit Imports Shadow the
+// Implicit Prelude" + the §"Definition-Over-Import" contrast paragraph:
+// prelude names stay shadowable; only EXPLICIT imports are rejection
+// territory — anchor corrected S102, was mis-cited "§8.6.1 layer 2"). The
+// positive pins below therefore apply — not the FIXME's negative-rejection
+// fallback. GREEN at draft (sound by construction; pinned
 // so a resolver/walk-order refactor can't silently inline vec semantics for a
 // user fn, or re-open the NULL-slot SIGSEGV).
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.1 — a module-local definition shadows an
-// imported primitive name: the DIRECT call takes the user body, not the
-// inline-lowered vec semantics (42, not element 20). GREEN pin (FIXME 0475).
+// spec: spec/08-modules.md §8.6.4 — a module-local definition shadows a
+// PRELUDE-PROVIDED primitive name (inner scope over outer; not a
+// definition-over-import conflict): the DIRECT call takes the user body, not
+// the inline-lowered vec semantics (42, not element 20). GREEN pin (FIXME 0475).
 #[test]
 fn user_fn_shadowing_vec_get_direct_call_takes_user_body() {
     repl_prims(
@@ -206,8 +212,8 @@ fn user_fn_shadowing_vec_get_direct_call_takes_user_body() {
     .assert_stdout_does_not_contain(":primitives/Int 20");
 }
 
-// spec: spec/08-modules.md §8.6.1 — the same precedence holds in VALUE
-// position: the shadowing user fn passed through a HOF dispatches through its
+// spec: spec/08-modules.md §8.6.4 — the same prelude-shadow precedence holds
+// in VALUE position: the shadowing user fn passed through a HOF dispatches through its
 // own GOT slot (the resolver's shadow arm — kind UserFn stops the primitive
 // walk), returns the user body's result, and neither applies inline vec
 // semantics (20) nor re-opens the NULL-slot crash. GREEN pin (FIXME 0475).
