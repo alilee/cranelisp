@@ -25,8 +25,8 @@
 
 use cranelisp_types::{ErrorLocation,
     CranelispError,
-    ModuleFullPath, ModuleStrategy,
-    Sexp, Span, TopLevel,
+    Expr, MatchArm, ModuleFullPath, ModuleStrategy,
+    ResolutionGap, Sexp, Span, TopLevel,
 };
 
 use crate::worker::{
@@ -399,6 +399,21 @@ fn finalize_cluster(
         ctx.shared_state,
     )?;
     if let Some(gap) = maybe_gap {
+        // FIXME 0490 — phantom-member diagnostic. typecheck's qualified-name
+        // resolution (`checker::lookup`) probes a current-module-relative CHILD
+        // path `<current>.<qualifier>` BEFORE the absolute module; when the
+        // absolute module IS loaded but the MEMBER is missing, the absolute
+        // candidate produces NO gap, so the CHILD gap (`user.primitives/…`)
+        // survives and would drive here — hunting a phantom submodule and
+        // reporting `module 'user.primitives' referenced by 'user.primitives/...'
+        // not found` at `0..0` (three lies: phantom module, `'...'` placeholder,
+        // bogus span). Detect the shape at this int seam and report
+        // member-not-found against the REAL loaded module instead. (The deeper
+        // ordering cure — typecheck preferring the loaded absolute module over
+        // the phantom child — is a `/typecheck` FIXME.)
+        if let Some(err) = phantom_member_diagnostic(ctx, module, &gap, expanded_program) {
+            return Err(err);
+        }
         // Map the gap to its target module and drive it (register + block) if
         // it is a not-yet-loaded module we can act on.
         if let Some(dep) = gap_target_module(&gap)
@@ -443,6 +458,105 @@ fn finalize_cluster(
     processed.set_redefinitions(redefinitions);
 
     Ok(ClusterOnce::Done { processed, program })
+}
+
+/// FIXME 0490 — turn a phantom-submodule resolution gap into an honest
+/// member-not-found diagnostic against the REAL loaded module.
+///
+/// Fires only for the exact shape the mis-resolution produces: a gap whose
+/// module is `<current>.<qualifier>` (a single-component child of the
+/// referencing module — typecheck's `checker::lookup` synthesises this
+/// current-module-relative probe) where `<qualifier>` names a REAL, loaded
+/// module. That is precisely the "qualified reference to a loaded module whose
+/// member does not exist" case: the loaded absolute-module candidate produced
+/// no gap of its own, so the phantom child gap survived. Every other shape —
+/// a genuine unloaded nested submodule (`<current>.<child>` where `<child>` is
+/// NOT itself a loaded module), a bare-module gap, a non-child qualifier —
+/// returns `None` and drives/errors normally.
+fn phantom_member_diagnostic(
+    ctx: &ModuleCompiler,
+    module: &ModuleFullPath,
+    gap: &ResolutionGap,
+    program: &[TopLevel],
+) -> Option<CranelispError> {
+    let (gap_module, member) = match gap {
+        ResolutionGap::SymbolTypechecked(fq) | ResolutionGap::MacroInMem(fq) => {
+            (fq.module.clone(), fq.symbol.to_string())
+        }
+        ResolutionGap::Type(fqt) => (fqt.module.clone(), fqt.name.to_string()),
+        _ => return None,
+    };
+    // Is `gap_module` a single-component child `<current>.<qualifier>` of the
+    // referencing module? (A genuine dotted submodule path is not this shape.)
+    let qualifier = gap_module.as_ref().strip_prefix(&format!("{module}."))?;
+    if qualifier.is_empty() || qualifier.contains('.') {
+        return None;
+    }
+    // Only fire when `<qualifier>` names a REAL loaded module — a genuine
+    // missing submodule (`<qualifier>` not a loaded module) must still drive.
+    if !fq_module_is_loaded(ctx, &ModuleFullPath::from(qualifier)) {
+        return None;
+    }
+    // Locate the user's reference span so the diagnostic carries a real source
+    // location (`<qualifier>/<member>` is the verbatim AST var name) rather
+    // than the `0..0` the phantom-module path emitted.
+    let referenced = format!("{qualifier}/{member}");
+    let span = program
+        .iter()
+        .find_map(|tl| find_named_var_span_in_toplevel(tl, &referenced))
+        .unwrap_or(Span::SYNTHETIC);
+    Some(CranelispError::ModuleError {
+        message: format!("module '{qualifier}' has no member '{member}'"),
+        location: ErrorLocation::from_span_file(span, None),
+    })
+}
+
+/// Find the span of an `Expr::Var` named `target` inside a top-level form (a
+/// bare expression or a defn body). Used only by `phantom_member_diagnostic`
+/// to attribute the member-not-found diagnostic to the user's reference.
+fn find_named_var_span_in_toplevel(tl: &TopLevel, target: &str) -> Option<Span> {
+    match tl {
+        TopLevel::Expr(e) => find_named_var_span(e, target),
+        TopLevel::Defn(d) => d
+            .variants
+            .iter()
+            .find_map(|v| find_named_var_span(&v.body, target)),
+        _ => None,
+    }
+}
+
+/// Recursively search `expr` for an `Expr::Var` whose name equals `target`,
+/// returning its span. Covers every child-bearing `Expr` variant.
+fn find_named_var_span(expr: &Expr, target: &str) -> Option<Span> {
+    let arm = |e: &Expr| find_named_var_span(e, target);
+    match expr {
+        Expr::Var { name, span, .. } if name.as_ref() == target => Some(*span),
+        Expr::IntLit { .. }
+        | Expr::FloatLit { .. }
+        | Expr::BoolLit { .. }
+        | Expr::StringLit { .. }
+        | Expr::Var { .. } => None,
+        Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => bindings
+            .iter()
+            .find_map(|(_, e)| arm(e))
+            .or_else(|| arm(body)),
+        Expr::If { cond, then_branch, else_branch, .. } => {
+            arm(cond).or_else(|| arm(then_branch)).or_else(|| arm(else_branch))
+        }
+        Expr::Lambda { body, .. } | Expr::Annotate { expr: body, .. } | Expr::Trace { body, .. } => {
+            arm(body)
+        }
+        Expr::Apply { callee, args, .. } => {
+            arm(callee).or_else(|| args.iter().find_map(&arm))
+        }
+        Expr::Match { scrutinee, arms, .. } => arm(scrutinee)
+            .or_else(|| arms.iter().find_map(|a: &MatchArm| arm(&a.body))),
+        Expr::VecLit { elements, .. } => elements.iter().find_map(&arm),
+        Expr::ConstrADT { fields, .. } => fields.iter().find_map(&arm),
+        Expr::LaunchContinue { launched, continuation, .. } => {
+            arm(launched).or_else(|| arm(continuation))
+        }
+    }
 }
 
 /// Internal result from Pass 2 — either complete or blocked.

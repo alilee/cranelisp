@@ -684,3 +684,81 @@
              drive_submodules after finalize)",
         );
     }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0490 — phantom-member diagnostic: the span-attribution walker
+    // (`find_named_var_span`) that gives the member-not-found error a real
+    // source location instead of the phantom path's `0..0`.
+    // -----------------------------------------------------------------------
+
+    fn var(name: &str, start: u32, end: u32) -> Expr {
+        Expr::Var {
+            name: Symbol::from(name),
+            span: Span::new(start, end),
+            resolved_call: None,
+            inferred_type: None,
+        }
+    }
+
+    fn int_lit(value: i64) -> Expr {
+        Expr::IntLit { value, span: Span::new(0, 1), inferred_type: None }
+    }
+
+    // The reference-span is found through the `Apply` callee — the exact
+    // `(primitives/nosuchfn 1 2)` shape 0490 diagnoses.
+    #[test]
+    fn find_named_var_span_locates_qualified_callee() {
+        let apply = Expr::Apply {
+            callee: Box::new(var("primitives/nosuchfn", 1, 20)),
+            args: vec![int_lit(1), int_lit(2)],
+            span: Span::new(0, 25),
+            resolved_call: None,
+            inferred_type: None,
+        };
+        assert_eq!(
+            find_named_var_span(&apply, "primitives/nosuchfn"),
+            Some(Span::new(1, 20)),
+        );
+    }
+
+    // A non-matching name yields None (the diagnostic then falls back to the
+    // cluster's synthetic span rather than mis-attributing).
+    #[test]
+    fn find_named_var_span_none_for_absent_name() {
+        let apply = Expr::Apply {
+            callee: Box::new(var("primitives/nosuchfn", 1, 20)),
+            args: vec![int_lit(1)],
+            span: Span::new(0, 25),
+            resolved_call: None,
+            inferred_type: None,
+        };
+        assert_eq!(find_named_var_span(&apply, "some/other"), None);
+    }
+
+    // The walker recurses through a defn body via the top-level wrapper (the
+    // reference need not be a bare top-level expression).
+    #[test]
+    fn find_named_var_span_in_toplevel_recurses_defn_body() {
+        let body = Expr::If {
+            cond: Box::new(var("cond", 0, 4)),
+            then_branch: Box::new(var("core/absent", 10, 21)),
+            else_branch: Box::new(int_lit(0)),
+            span: Span::new(0, 30),
+            inferred_type: None,
+        };
+        let defn = TopLevel::Defn(cranelisp_types::Defn {
+            name: Symbol::from("f"),
+            docstring: None,
+            variants: vec![cranelisp_types::DefnVariant {
+                params: vec![],
+                body,
+                span: Span::new(0, 40),
+            }],
+            visibility: Visibility::Public,
+            span: Span::new(0, 40),
+        });
+        assert_eq!(
+            find_named_var_span_in_toplevel(&defn, "core/absent"),
+            Some(Span::new(10, 21)),
+        );
+    }
