@@ -326,7 +326,7 @@ See §8.6.4 for the general conflict rules and §8.6.5 for the ambiguity resolut
 
 ## 8.4 Export [Tested crates/cranelisp-frontend/src/module_extract.rs::test_export_specific, crates/cranelisp-frontend/src/module_extract.rs::test_export_glob]
 
-The `export` special form re-exports names from imported modules, making them part of the current module's public API.
+The `export` special form brings names from other modules into the current module's scope as bare (unqualified) symbols **and** marks them public — part of the current module's public API (re-exposed to downstream consumers).
 
 ```ebnf
 export_form  = '(' 'export' '[' export_entry+ ']' ')'
@@ -334,6 +334,23 @@ export_entry = module_spec names_list      ; same module_spec and names_list as 
 ```
 
 The full §8.3 grammar (`module_spec` including the `(module alias)` pair form; `names_list` including the symbol-rename forms `(symbol symbol)` and `(dotted_symbol symbol)`) applies symmetrically to exports. Anywhere an import may rename a name or alias a module, an export may do the same.
+
+### 8.4.0 Import and Export Are One Operation, Differing Only in Visibility `[S102]`
+
+Arbitrated S102. `import` and `export` are the **same** "bring the name into the current module's bare scope" operation. They differ in exactly one respect: the **visibility flag** stamped on the resulting symbol-table entry (the `ModuleEntry`).
+
+- `import` (§8.3) binds the brought-in name **private**: usable within the module, but NOT part of the module's public API — it is not re-exposed to downstream consumers.
+- `export` binds the brought-in name **public**: usable within the module (identical bare-scope effect to `import`) AND part of the module's public API — re-exposed to any module that imports from this one.
+
+**A module can always use a name it exports.** Export provides import semantics (the name is in the exporting module's bare scope, resolving per §8.6.2) *plus* public visibility. It was never the case that a module cannot reference its own public API. Every accessibility-after-import statement of §8.3.11 (bare-scope effect of `Symbol` / `Symbol.member` / `Symbol.*` / `*` entries, the `:Type` annotation matrix, derived dotted access, renames) applies **identically** to an `export` entry — an exported name is in bare scope on exactly the same terms as an imported one.
+
+This parallels the local-definition split (§5.7): `def` binds a public named value, `def-` a private one; `defn`/`defn-`, `deftype`/`deftype-`, etc., all carry the same public/private accessor on a name (§8.7.2). `export`/`import` is that same public/private accessor applied to a **brought-in** name rather than a locally-defined one — public vs private is the sole axis in both cases.
+
+**Consequence — import-then-export of the same name is redundant.** Because `export` already brings the name into bare scope, an `(import [m [X]])` followed by `(export [m [X]])` for the same `X` is redundant: the export alone makes `X` usable in the module *and* public; the private import adds nothing (a private binding wholly subsumed by the public one). Both entries name the same terminal source (`m/X`), so they dedup per §8.6.4 rather than colliding — but the import is dead weight. The previously-common "import a name, then re-export it" pattern is unnecessary: **export it directly.** (See the /stdlib import-hygiene consequence under §8.6.4.)
+
+**Implementation consequence (informative — /int).** `export` MUST bring the exported name into the exporting module's bare scope, resolving per §8.6.2 exactly as `import` does — an implementation that treats `export` as downstream-only (populating only the public API without making the name usable within the module) is non-conforming under this ruling, and if the current implementation does so, correcting it is an implementation change. The `import`/`export` distinction is a single **visibility flag** on the `ModuleEntry` (private vs public); both forms produce the same inner-scope binding otherwise. The definition-over-name-in-scope rejection (§8.6.4, FIXME 0484) checks a definition against **any** name in the inner scope, whether it arrived private via `import` or public via `export`.
+
+**Implementation consequence (informative — /stdlib).** Modules that currently write `(import [m [X]])` followed by `(export [m [X]])` for the same `X` SHOULD drop the redundant import — the `export` alone brings `X` into scope and marks it public. This is import hygiene, not a correctness fix (the redundant pair dedups per §8.6.4 rather than erroring), but it removes dead declarations.
 
 ### 8.4.1 Specific Re-export
 
@@ -450,7 +467,7 @@ A rename of a symbol to itself in an export (e.g. `[(Some Some)]`) MUST NOT be r
 
 ### 8.4.6 Semantics
 
-A re-exported name becomes a public name of the exporting module. When another module imports from the exporting module (via `[*]` or by name), re-exported names are included.
+An exported name becomes a public name of the exporting module **and** is in that module's own bare scope (§8.4.0) — it is usable within the exporting module on the same terms as an imported name, and it is re-exposed downstream. When another module imports from the exporting module (via `[*]` or by name), exported names are included.
 
 An implementation MUST track re-export provenance so that introspection can display the original defining module, not the re-exporting module. For example, if `prelude` re-exports `print` from `platform.stdio`, introspection SHOULD display `platform.stdio/print` as the origin.
 
@@ -608,11 +625,18 @@ The following conflicts MUST produce compile-time errors:
   (import [math [add] util [add]])    ; error: ambiguous bare name 'add'
   ```
 
-- **Definition over import** `[S102]`: A definition (`defn`, `deftype`, etc.) in the current module that has the same name as an explicitly imported name:
+- **Definition over a name in scope (via import or export)** `[S102]`: A definition (`defn`, `deftype`, etc.) in the current module that has the same name as a name already brought into the module's inner scope — whether brought in **private via `import`** or **public via `export`** (§8.4.0):
 
   ```clojure
   (import [math [add]])
   (defn add [x y] (+ x y))           ; error: definition conflicts with import
+  ```
+
+  Because `export` brings its name into bare scope on the same terms as `import` (differing only in visibility, §8.4.0), the conflict is identical when the in-scope name arrived via `export`:
+
+  ```clojure
+  (export [math [add]])
+  (defn add [x y] (+ x y))           ; error: definition conflicts with the exported name
   ```
 
   This conflict is order-independent and applies in every mode, including forms entered interactively at the REPL — see §"Definition-Over-Import: Order-Independent, All Modes" below for the full pinned statement.
@@ -647,9 +671,9 @@ When an explicit glob import brings in a name that the prelude would also provid
 
 Arbitrated S102 (FIXME 0484). The definition-over-import conflict above is pinned as follows.
 
-**Framing — a collision is not resolved by importing; the resolution is the fully-qualified reference.** Creating a symbol (a definition in the current module) whose name collides with a name that an import brought into scope is **not** an import-resolution question — there is no shadowing, no precedence, and no "which import wins." It is a **compile-time error**. The mechanism the language offers for reaching a *different* module's same-named symbol is the **fully-qualified reference** (`module/name`, §8.6.6): a module owns its own public `foo`, and to reach another module's `foo` it writes `other/foo`. The two `foo`s never share a bare binding, so there is nothing to disambiguate. This rests on the nominal-typing property (§3.8.4): same-named types/values from different modules are genuinely distinct, so the fully-qualified name denotes exactly one of them. A definition that collides with an import is telling the compiler two incompatible things about one bare name; the remedy is to stop importing the name you define and fully-qualify the reference to the other module's symbol where it was used.
+**Framing — a collision is not resolved by importing; the resolution is the fully-qualified reference.** Creating a symbol (a definition in the current module) whose name collides with a name that an import brought into scope is **not** an import-resolution question — there is no shadowing, no precedence, and no "which import wins." It is a **compile-time error**. The mechanism the language offers for reaching a *different* module's same-named symbol is the **fully-qualified reference** (`module/name`, §8.6.6): a module owns its own public `foo`, and to reach another module's `foo` it writes `other/foo`. The two `foo`s never share a bare binding, so there is nothing to disambiguate. This rests on the nominal-typing property (§3.8.4): same-named types/values from different modules are genuinely distinct, so the fully-qualified name denotes exactly one of them. A definition that collides with an import is telling the compiler two incompatible things about one bare name; the remedy is to stop importing the name you define and fully-qualify the reference to the other module's symbol where it was used. (The same reasoning applies unchanged when the colliding name was brought in **public via `export`** rather than private via `import` — §8.4.0 makes the two the same bring-into-scope operation, so the normative rule below reads over both.)
 
-**A definition form (`defn`, `def`, `deftype`, `deftrait`, `defmacro`, and their private `-` variants) whose name is already bound in the current module's inner scope by an explicit import — specific, renamed, member, or glob — MUST be rejected with a compile-time error.** The rejected form has no effect on the module: the bare name continues to resolve to the import, and introspection MUST continue to describe the imported definition. A local definition is always a fresh terminal source, so the terminal-source dedup above can never reconcile it with the import — the collision is unconditional.
+**A definition form (`defn`, `def`, `deftype`, `deftrait`, `defmacro`, and their private `-` variants) whose name is already bound in the current module's inner scope by a name brought in via `import` or `export` — specific, renamed, member, or glob, private (`import`) or public (`export`) — MUST be rejected with a compile-time error.** Under the unified model (§8.4.0) `import` and `export` populate the inner scope identically, differing only in visibility; the collision check reads over the inner scope uniformly and does not distinguish which of the two brought the name in. The rejected form has no effect on the module: the bare name continues to resolve to the in-scope name, and introspection MUST continue to describe that definition. A local definition is always a fresh terminal source, so the terminal-source dedup above can never reconcile it with the in-scope name — the collision is unconditional.
 
 **Uniform across glob and specific imports — there is NO glob-exemption.** The rule bites identically whether the colliding imported name arrived via a specific import (`(import [m [name]])`), a renamed or member import, a glob import (`(import [m [*]])`), or a glob **re-export** (`(export [m [*]])`, which populates the inner scope per §8.6.2). A glob is a convenience for pulling in the *non-colliding* names of a module; it does not license silently redefining one of the names it would have brought in. A name you define is yours, and if a glob would also have supplied that name, defining it is the collision this section rejects — not a permitted shadow. *(An earlier S102 draft floated exempting glob imports from the error — the "glob-of-seeded-ADT-constructors" prelude pattern — so that a glob-brought name could be silently redefined. That draft is **superseded**: there is no glob-exemption. A module that both glob-imports a source and defines one of that source's names must instead fully-qualify its references to the colliding source symbol rather than importing a name it defines — see the stdlib-hygiene consequence below.)*
 
@@ -1052,12 +1076,12 @@ Typing a module name at the REPL SHOULD display information about that module: i
 | `(mod name)` | Declare public submodule | Public |
 | `(mod name forms...)` | Declare inline submodule (extracted to file) | Public |
 | `(mod- name)` | Declare private submodule | Private |
-| `(import [mod [names]])` | Import names into current scope | N/A |
-| `(import [(mod alias) [names]])` | Import names + register private module alias | N/A |
-| `(import [mod [(src local) ...]])` | Renamed import — bind source name as local | N/A |
-| `(import [super [*]])` | Import from parent module | N/A |
-| `(export [mod [names]])` | Re-export names as public API | Public |
-| `(export [(mod alias) [names]])` | Re-export names + mount module at public alias | Public |
+| `(import [mod [names]])` | Bring names into current scope (§8.4.0) | Private |
+| `(import [(mod alias) [names]])` | Bring names into scope + register private module alias | Private |
+| `(import [mod [(src local) ...]])` | Renamed import — bind source name as local | Private |
+| `(import [super [*]])` | Bring names from parent module into scope | Private |
+| `(export [mod [names]])` | Bring names into scope + expose as public API (§8.4.0) | Public |
+| `(export [(mod alias) [names]])` | Bring names into scope + expose as public API + mount module at public alias | Public |
 | `(export [mod [(src local) ...]])` | Renamed re-export — exported name differs from source | Public |
 | `module/name` | Qualified name reference | N/A |
 | `Type.member` | Dotted member access | N/A |
