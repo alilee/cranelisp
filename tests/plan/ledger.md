@@ -157,6 +157,88 @@ rejection polarity) + the 27 above. A genuine regression is any RED beyond
 these 49 named guards. Root-`CLAUDE.md` §Testing count update is flagged for
 /sprint (user edit): intentional 22 → **49**, total 3496 → **3578**.
 
+### Sprint 102 name-shadowing matrix (FIXME 0514) — /qa, 2026-07-04
+
+The §8.6.4 no-exception name-shadowing ruling (user 2026-07-04; /spec `a953de0`).
+Failing-not-ignored positive/negative matrix + re-anchor of the allow-shadow
+pins, authored as the evidence signal for the implement-now-vs-defer decision.
+**16 new intentional RED** (9 new-file + 5 re-anchored in
+`spec_08_prelude_outer_scope.rs` + 2 re-anchored in `vec_query_value_use.rs`)
++ 8 new GREEN legal-escape-hatch guards. All flip GREEN when FIXME 0514 lands
+(rejection at the shared typecheck `check_forms` two-scope seam, incl. the
+prelude arm). Current impl `e1fe4a8` rejects only inner-table import/export on
+the REPL path — so the REPL def-over-{import,export} legs are GREEN today (they
+flip RED if /sprint reverts e1fe4a8 per the defer branch), while every batch,
+mode-parity, and prelude leg is RED = the signal.
+
+| # | Tests (file :: name) | Case / polarity | Current |
+|---|---|---|---|
+| N1 | `spec_08_name_shadowing::def_over_import_repl_rejected` | def-over-import, REPL | GREEN (REPL already rejects) |
+| N2 | `spec_08_name_shadowing::def_over_import_run_rejected` | def-over-import, `--run` | RED signal |
+| N3 | `spec_08_name_shadowing::def_over_import_link_rejected` | def-over-import, `--link` | RED signal |
+| N4 | `spec_08_name_shadowing::import_over_def_run_rejected` | import-over-def (symmetric), `--run` | RED signal |
+| N5 | `spec_08_name_shadowing::def_over_glob_import_run_rejected` | def-over-GLOB-import (no glob exemption), `--run` | RED signal |
+| N6 | `spec_08_name_shadowing::def_over_export_repl_rejected` | def-over-export (§8.4.0), REPL | GREEN (REPL already rejects) |
+| N7 | `spec_08_name_shadowing::def_over_export_run_rejected` | def-over-export, `--run` | RED signal |
+| N8 | `spec_08_name_shadowing::def_over_prelude_repl_rejected` | def-over-prelude (no exception), REPL | RED signal (prelude arm) |
+| N9 | `spec_08_name_shadowing::def_over_prelude_run_rejected` | def-over-prelude, `--run` | RED signal (prelude arm) |
+| N10 | `spec_08_name_shadowing::def_over_prelude_link_rejected` | def-over-prelude, `--link` | RED signal (prelude arm) |
+| N11 | `spec_08_name_shadowing::mode_parity_def_over_import_same_rejection_all_modes` | mode-parity MUST (§8.6.4 "[S102 test owed]") — one binding set, REPL≡run≡link | RED signal (run/link diverge) |
+| P1 | `spec_08_name_shadowing::fq_reference_reaches_shadowed_prelude_name` | FQ `prelude/gulp` reaches shadowed name | GREEN (legal) |
+| P2 | `spec_08_name_shadowing::suppressed_prelude_allows_local_def_of_prelude_name` | suppress prelude (not-loading) → define freely | GREEN (legal) |
+| P3 | `spec_08_name_shadowing::no_prelude_allows_local_def_of_would_be_prelude_name` | no prelude → define freely (§8.8.3) | GREEN (legal) |
+| P4 | `spec_08_name_shadowing::reuse_by_reexport_same_terminal_dedups` | import+export same terminal dedups (§8.4.0) | GREEN (legal) |
+| P5 | `spec_08_name_shadowing::lexical_let_binding_of_prelude_name_allowed` | lexical `let` shadow (§8.6.3 layer 1) | GREEN (legal) |
+| P6 | `spec_08_name_shadowing::lexical_fn_param_of_prelude_name_allowed` | lexical `fn` param shadow (§8.6.3) | GREEN (legal) |
+| R1–R2 | `spec_08_prelude_outer_scope::{local_defn_over_prelude_is_rejected, local_defn_over_prelude_neg_emits_collision_diagnostic}` | re-anchor: def-over-prelude allow→ERROR | RED signal (prelude arm) |
+| R3–R5 | `spec_08_prelude_outer_scope::{explicit_glob_import_over_prelude_distinct_terminal_poisons, explicit_specific_import_over_prelude_distinct_terminal_poisons, explicit_import_over_prelude_neg_emits_ambiguity}` | re-anchor: explicit-import-over-prelude (distinct terminal) allow→POISON | RED signal (outer-scope reshape) |
+| R6–R7 | `vec_query_value_use::{user_fn_over_prelude_vec_get_is_rejected, user_fn_over_prelude_vec_get_rejected_even_with_value_use}` | re-anchor: FIXME-0475 def-over-prelude-`vec-get` allow→ERROR | RED signal (prelude arm) |
+
+Also re-anchored (comment only, no polarity change): the
+`spec_08_modules.rs:~2206` contrast note (prelude names no longer shadowable).
+The two existing REPL guards `spec_08_modules::import_used_then_shadowed_by_defn_is_rejected_error`
+and `::import_shadowed_by_defn_before_first_call_is_rejected_error` stay GREEN
+(specific-import REPL rejection landed by e1fe4a8).
+
+**Canonical suite (one run, 2026-07-04, HEAD 8d4fc85 + this change-set):**
+`3744 run — 3715 passed / 29 failed / 1 skipped` @ 65s. The 29 = 13 pre-existing
+intentional guards (3× `vec_cow_value_use_leak` 0474, 3× `vec_query_value_use`
+0483, 3× `display_exact` {option-in-option, 2× macro-arity}, 4×
+`ownership_fences` {curry_drop_glue collision, h2/h3 hooks owed, generic-Vec
+temp leak}) + the 16 new intentional REDs above. No genuine regression (every
+RED is a named intentional guard). Suite before this change-set = 3727 run /
+13 failed (the 17 new `spec_08_name_shadowing` tests are the only net-new; the
+7 re-anchor flips were passing before, now RED = signal).
+
+**Blast-radius measure (deliverable 2 — implement-now evidence):**
+- **(a) test-flip count** = **7** existing allow-shadow pins flipped to error
+  (5 in `spec_08_prelude_outer_scope.rs` + 2 in `vec_query_value_use.rs`).
+- **(b) Tier-b `.cl` survey** (top-level `defn`/`deftype`/`deftrait`/`defmacro`
+  of a prelude-provided bare name, trait-IMPL methods excluded): raw hit = 24
+  files / 54 defs, but **genuine implicit-prelude collisions ≈ ZERO** —
+  all 11 stdlib domain modules both suppress the implicit prelude
+  (`(import [prelude []])`) and are the defining source (same-terminal dedup);
+  all 10 example files use the minimal `examples/lib/prelude.cl` (provides only
+  `Int Bool Float String` + raw prims + `Pure`, none of the names they define);
+  exemplar defines NO prelude names. The only real `.cl` collisions are
+  **tier-a glob-then-define fixtures** (below), all on the seeded
+  `Option`/`Result`/`Pair`.
+- **(c) Tier-a glob-then-define** = **3 fixtures**:
+  `tests/fixtures/preludes/test-standard.cl` (`export [primitives [*]]` +
+  `deftype (Option a)` + `deftype (Result a b)`), `tests/fixtures/prelude.cl`
+  (same shape), `tests/fixtures/s99/f4_sudoku.cl` (`import [primitives [*]]` +
+  `deftype Option`). Fix = re-export the seeded types instead of redefining
+  (exactly what `stdlib/fn/option.cl` already does) — a 3-file, net-simplifying
+  edit. Collateral until fixed: ~45 tests requesting `PreludeVariant::TestStandard`
+  + 6 files using `CRANELISP_LIB=tests/fixtures/` would go RED (fixture stops
+  compiling) — un-broken by the same 3-file edit, NOT a broad code sweep.
+- **VERDICT: SMALL.** The Tier-b sweep is near-zero genuine implicit-prelude
+  collisions; the real work is import-hygiene on 3 QA fixture files (redefine →
+  re-export). Combined with /arch's fix deleting the two mode-gated gates + the
+  `additive` flag, implement-now is net-simplifying. (Also 2 unit-test
+  inversions named by /arch: `worker::tests::commit_allows_defn_over_import_on_replace_path`,
+  `imports/tests.rs:685`.)
+
 ### Sprint 101 Phase 6a/6b defect set — proxy-exercise guards (/qa guard batch, 2026-07-03)
 
 The S101 Phase 6a/6b user-proxy exercise surfaced 12 defect items; per the

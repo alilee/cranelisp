@@ -2203,8 +2203,12 @@ fn bare_relative_submodule_reexport_resolves() {
 // finding). Resolver: /int (Block A5 — reject the later-arriving conflicting
 // form). Failing-not-ignored; ledger: tests/plan/ledger.md §"Sprint 101
 // Phase 6a/6b defect set" (+ S102 re-anchor note).
-// Contrast pins (unaffected by the ruling): prelude-PROVIDED names remain
-// shadowable — the 0475 pins in tests/vec_query_value_use.rs.
+// Re-anchored S102 (user no-exception ruling 2026-07-04; /spec `a953de0`;
+// FIXME 0514/0515): prelude-PROVIDED names are NO LONGER shadowable — the
+// prelude is just an implicit `(import [prelude [*]])`, so a def over a
+// prelude name is the SAME error (§8.6.4/§8.8.1). The former "contrast pins"
+// in tests/vec_query_value_use.rs are FLIPPED to expect rejection; the full
+// positive/negative matrix (all modes) lives in tests/spec_08_name_shadowing.rs.
 // Reduced stdlib-free: local module `util`, fn `measure`.
 // =============================================================================
 

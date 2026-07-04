@@ -36,11 +36,54 @@
 // `(export [primitives [*]])` so primitive names flow as bare names through
 // the implicit glob, and defines `gulp` as a sentinel prelude-provided name
 // to shadow / refuse / collide against.
+//
+// ─────────────────────────────────────────────────────────────────────────
+// S102 RE-ANCHOR (user ruling 2026-07-04; /spec `a953de0`; FIXME 0514/0515):
+// the "explicit/local SILENTLY shadows the prelude" model this file was built
+// around is REVERSED. The prelude is just an implicit `(import [prelude [*]])`;
+// its provided names are in scope like any import, and redefining/shadowing a
+// prelude-provided name is the SAME compile-time error as shadowing an
+// explicit import — NO exceptions (spec/08-modules.md §8.6.4/§8.8.1). The
+// outer/inner-scope layering is retained as an IMPLEMENTATION detail of
+// resolution, but it grants no exemption. Consequently the five §1
+// "silently shadows" tests below are FLIPPED to expect REJECTION:
+//   * def-over-prelude   → §8.6.4 def-over-name-in-scope error
+//   * explicit-import-over-prelude (distinct terminal) → §8.6.5 ambiguity poison
+// They FAIL against the current impl (`e1fe4a8`, which rejects only inner-table
+// import/export on the REPL path — the prelude/outer-scope + batch arms are
+// unimplemented) — that failure IS the signal of FIXME 0514's prelude arm.
+// Failing-not-ignored; flip GREEN when 0514 lands. The §2 (ambiguity), §3
+// (refusal/selective = not-loading, legal), and §4 (primitives-via-prelude,
+// legal) tests are UNAFFECTED — they were already error-preserving or legal
+// under the rule and stay as-is. Ledger: `tests/plan/ledger.md` §"Sprint 102
+// name-shadowing matrix (FIXME 0514)".
+// ─────────────────────────────────────────────────────────────────────────
 
 #[path = "helpers/mod.rs"]
 mod helpers;
 
-use helpers::e2e::Cranelisp;
+use helpers::e2e::{Cranelisp, CrOutput};
+
+/// A §8.6.4/§8.6.5 shadow/collision rejection: a collision diagnostic is
+/// present AND the shadow did not run to its exit code (no effect). Used by
+/// the flipped §1 tests. RED against `e1fe4a8` (prelude arm unimplemented).
+fn assert_shadow_rejected(out: &CrOutput, shadow_exit: i32) {
+    let c = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        c.contains("conflict") || c.contains("ambiguous") || c.contains("error"),
+        "expected a §8.6.4/§8.6.5 collision rejection diagnostic;\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(shadow_exit),
+        "the shadow MUST be rejected (must not run to exit {});\nstdout:\n{}\nstderr:\n{}",
+        shadow_exit,
+        out.stdout,
+        out.stderr
+    );
+}
 
 /// A test prelude that re-exports primitives and defines a sentinel
 /// prelude-provided function `gulp`. Mirrors the `(export [primitives [*]])`
@@ -54,34 +97,16 @@ const PRELUDE_WITH_GULP: &str = "\
 // 1. SHADOW — explicit/local silently shadows prelude (no ambiguity error)
 // =============================================================================
 
-// spec: design/int/s78-entry-module.md §2 — a local `defn` of a name the
-//   prelude also provides silently shadows the prelude binding. NO ambiguity
-//   error; the local definition wins.
+// spec: spec/08-modules.md §8.6.4/§8.8.1 — a local `defn` of a name the
+//   prelude also provides is a compile-time error (def-over-name-in-scope);
+//   the prelude carries no exemption. The rejected def has no effect.
 //
-// CLASSIFICATION: GREEN. The directly-defined-takes-priority branch already
-// holds under the current model (a local def over an indirect prelude entry
-// is not poisoned). This guards that the local-shadows-prelude path survives
-// `is_seeded` deletion.
+// CLASSIFICATION: RED signal (S102 re-anchor, FIXME 0514 prelude arm). Under
+// `e1fe4a8` the local def silently wins (exit 105); flips GREEN when 0514
+// adds the prelude/outer-scope arm at the shared typecheck seam.
 #[test]
-fn local_defn_silently_shadows_prelude() {
-    // prelude `gulp` is (+1); local `gulp` is (+100). Local must win → 105.
-    Cranelisp::new()
-        .prelude(PRELUDE_WITH_GULP)
-        .file(
-            "user.cl",
-            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (Pure (gulp 5)))",
-        )
-        .run("user.cl")
-        .output()
-        .assert_exit(105);
-}
-
-// spec: design/int/s78-entry-module.md §2 — a local `defn` shadowing a
-//   prelude name MUST NOT raise an ambiguity / duplicate error.
-//
-// CLASSIFICATION: GREEN (negative guard companion to the above).
-#[test]
-fn local_defn_shadows_prelude_neg_no_ambiguity_error() {
+fn local_defn_over_prelude_is_rejected() {
+    // prelude `gulp` is (+1); local `gulp` is (+100) → would be 105 if it won.
     let out = Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
         .file(
@@ -90,35 +115,53 @@ fn local_defn_shadows_prelude_neg_no_ambiguity_error() {
         )
         .run("user.cl")
         .output();
-    let lower = out.stderr.to_lowercase();
-    assert!(
-        !lower.contains("ambiguous")
-            && !lower.contains("conflict")
-            && !lower.contains("duplicate"),
-        "local shadow of a prelude name MUST NOT raise ambiguity/conflict/duplicate; \
-         stderr=\n{}",
-        out.stderr
-    );
-    out.assert_exit(105);
+    assert_shadow_rejected(&out, 105);
 }
 
-// spec: design/int/s78-entry-module.md §2 — an EXPLICIT import of a name the
-//   prelude also provides silently shadows the prelude binding; the explicit
-//   import wins, with NO ambiguity error.
+// spec: spec/08-modules.md §8.6.4 — the def-over-prelude rejection names the
+//   collision (conflict/ambiguity), NOT a silent accept. Negative companion
+//   to the above: the diagnostic MUST be present.
 //
-// CLASSIFICATION: GREEN (was RED-by-design until the outer-scope reshape
-// landed). The outer-scope model makes prelude an OUTER scope, so the inner
-// explicit `libc/gulp` import is the sole inner-table entry and wins — no
-// poisoning. `(gulp 5)` = (add-i64 5 100) = 105.
-//
-// NOTE the body is `+100 → 105` (NOT `+1000 → 1005`): a POSIX process exit
-// code is a u8 (0–255), so `1005` truncates to `1005 % 256 == 237` and could
-// never match `assert_exit(1005)`. 105 fits in a u8 and matches the sibling
-// `local_defn_silently_shadows_prelude`, so the exit code transports the
-// shadow result faithfully. (FIXME 0313 issue 2.)
+// CLASSIFICATION: RED signal (S102 re-anchor, FIXME 0514 prelude arm). Under
+// `e1fe4a8` NO diagnostic appears (silent accept); flips GREEN with 0514.
 #[test]
-fn explicit_glob_import_silently_shadows_prelude() {
-    Cranelisp::new()
+fn local_defn_over_prelude_neg_emits_collision_diagnostic() {
+    let out = Cranelisp::new()
+        .prelude(PRELUDE_WITH_GULP)
+        .file(
+            "user.cl",
+            "(defn gulp [x] (add-i64 x 100))\n(defn main [] (Pure (gulp 5)))",
+        )
+        .run("user.cl")
+        .output();
+    let lower = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        lower.contains("conflict") || lower.contains("ambiguous"),
+        "def-over-prelude MUST emit a §8.6.4 collision diagnostic;\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(105),
+        "the rejected def MUST have no effect (must not run to 105);\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: spec/08-modules.md §8.6.4/§8.6.5 — an EXPLICIT GLOB import bringing a
+//   name that the prelude also provides is a DISTINCT-terminal collision
+//   (libc/gulp vs prelude/gulp): the bare name is POISONED (ambiguous), not
+//   silently won by the explicit import. There is no "explicit shadows
+//   prelude" precedence tier.
+//
+// CLASSIFICATION: RED signal (S102 re-anchor, FIXME 0514/0515). Under
+// `e1fe4a8` the explicit import silently wins (exit 105); flips GREEN when the
+// outer-scope reshape poisons distinct-terminal prelude overlaps.
+#[test]
+fn explicit_glob_import_over_prelude_distinct_terminal_poisons() {
+    let out = Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
         .file(
@@ -126,19 +169,18 @@ fn explicit_glob_import_silently_shadows_prelude() {
             "(import [libc [*]])\n(defn main [] (Pure (gulp 5)))",
         )
         .run("user.cl")
-        .output()
-        .assert_exit(105);
+        .output();
+    assert_shadow_rejected(&out, 105);
 }
 
-// spec: design/int/s78-entry-module.md §2 — an explicit SPECIFIC import of a
-//   prelude-provided name silently shadows the prelude binding.
+// spec: spec/08-modules.md §8.6.4/§8.6.5 — an explicit SPECIFIC import of a
+//   name the prelude also provides (distinct terminal) is the same poison.
 //
-// CLASSIFICATION: GREEN (was RED-by-design). The explicit specific import
-// wins under the outer-scope model. `(gulp 5)` = 105. Body is `+100` (not
-// `+1000`) for the u8-exit-code reason above (FIXME 0313 issue 2).
+// CLASSIFICATION: RED signal (S102 re-anchor). Under `e1fe4a8` the explicit
+// specific import silently wins (105); flips GREEN with the reshape.
 #[test]
-fn explicit_specific_import_silently_shadows_prelude() {
-    Cranelisp::new()
+fn explicit_specific_import_over_prelude_distinct_terminal_poisons() {
+    let out = Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
         .file(
@@ -146,22 +188,18 @@ fn explicit_specific_import_silently_shadows_prelude() {
             "(import [libc [gulp]])\n(defn main [] (Pure (gulp 5)))",
         )
         .run("user.cl")
-        .output()
-        .assert_exit(105);
+        .output();
+    assert_shadow_rejected(&out, 105);
 }
 
-// spec: design/int/s78-entry-module.md §2 — when an explicit import shadows a
-//   prelude name, the SHADOWING binding (not the prelude one) is the bare
-//   resolution. Asserts the explicit import's behaviour is observed, and no
-//   ambiguity error appears.
+// spec: spec/08-modules.md §8.6.5 — the distinct-terminal explicit-over-prelude
+//   overlap MUST poison the bare name (a collision diagnostic), NOT silently
+//   resolve to the explicit import's binding. Negative companion.
 //
-// CLASSIFICATION: GREEN (was RED-by-design). Companion negative guard to
-// `explicit_glob_import_silently_shadows_prelude`: the explicit import shadow
-// MUST NOT raise an ambiguity error, and the shadowing binding (libc's `+100`)
-// is the observed bare resolution. Body is `+100 → 105` for the u8-exit-code
-// reason above (FIXME 0313 issue 2).
+// CLASSIFICATION: RED signal (S102 re-anchor). Under `e1fe4a8` NO ambiguity
+// appears (silent win, 105); flips GREEN with the reshape.
 #[test]
-fn explicit_import_shadows_prelude_neg_no_ambiguity_error() {
+fn explicit_import_over_prelude_neg_emits_ambiguity() {
     let out = Cranelisp::new()
         .prelude(PRELUDE_WITH_GULP)
         .file("libc.cl", "(defn gulp [x] (add-i64 x 100))")
@@ -171,13 +209,22 @@ fn explicit_import_shadows_prelude_neg_no_ambiguity_error() {
         )
         .run("user.cl")
         .output();
+    let lower = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
     assert!(
-        !out.stderr.to_lowercase().contains("ambiguous"),
-        "explicit import shadowing a prelude name MUST NOT poison the bare name \
-         as ambiguous; stderr=\n{}",
+        lower.contains("ambiguous") || lower.contains("conflict"),
+        "distinct-terminal explicit-over-prelude MUST poison the bare name;\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout,
         out.stderr
     );
-    out.assert_exit(105);
+    assert_ne!(
+        out.status.code(),
+        Some(105),
+        "the poisoned bare name MUST NOT silently resolve to the explicit import \
+         (must not run to 105);\nstdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
 }
 
 // =============================================================================

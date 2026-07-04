@@ -180,53 +180,71 @@ fn vec_get_stored_in_adt_field_applies() {
 }
 
 // =============================================================================
-// FIXME 0475 drain (S101 Wave 5) — shadowing-precedence pins for the vec-query
-// resolver. `resolve_vec_query_primitive` (the S101 Wave-3 inline-emission
-// resolver) claims a user fn shadowing `vec-get`/`vec-set`/`vec-push` keeps
-// ordinary GOT-indirect dispatch and is never inline-lowered as vec semantics.
-// Constructibility probed 2026-07-03: `(defn vec-get [v i] 42)` IS accepted
-// — `vec-get` reaches the user module through the implicit-PRELUDE fallback
-// (outer scope), and a module-local definition shadows a prelude-provided
-// name structurally (spec/08-modules.md §8.6.4 §"Explicit Imports Shadow the
-// Implicit Prelude" + the §"Definition-Over-Import" contrast paragraph:
-// prelude names stay shadowable; only EXPLICIT imports are rejection
-// territory — anchor corrected S102, was mis-cited "§8.6.1 layer 2"). The
-// positive pins below therefore apply — not the FIXME's negative-rejection
-// fallback. GREEN at draft (sound by construction; pinned
-// so a resolver/walk-order refactor can't silently inline vec semantics for a
-// user fn, or re-open the NULL-slot SIGSEGV).
+// FIXME 0475 drain (S101 Wave 5) — RE-ANCHORED S102 (FIXME 0514/0515). These
+// were "prelude names stay shadowable" pins asserting `(defn vec-get …)` is
+// ACCEPTED and shadows the prelude-provided `vec-get`. The user's no-exception
+// ruling (2026-07-04; /spec `a953de0`) REVERSES that: the prelude is just an
+// implicit `(import [prelude [*]])`, so a module-local definition over a
+// prelude-provided name (`vec-get` reaches here via `primitives-only.cl`'s
+// `(export [primitives [*]])`) is the SAME compile-time error as over an
+// explicit import (spec/08-modules.md §8.6.4/§8.8.1) — NO exception. The pins
+// below are FLIPPED to expect REJECTION. RED against the current impl
+// (`e1fe4a8`, prelude/outer-scope arm unimplemented); flip GREEN when FIXME
+// 0514's prelude arm lands. Ledger: `tests/plan/ledger.md` §"Sprint 102
+// name-shadowing matrix (FIXME 0514)". (The resolver's "user fn shadows
+// vec-get" arm is now unreachable via a prelude-provided vec-get; a user that
+// wants its OWN `vec-get` must suppress/not-load the prelude name, §8.8.3.)
 // =============================================================================
 
-// spec: spec/08-modules.md §8.6.4 — a module-local definition shadows a
-// PRELUDE-PROVIDED primitive name (inner scope over outer; not a
-// definition-over-import conflict): the DIRECT call takes the user body, not
-// the inline-lowered vec semantics (42, not element 20). GREEN pin (FIXME 0475).
+// spec: spec/08-modules.md §8.6.4/§8.8.1 — a module-local definition over the
+// PRELUDE-PROVIDED `vec-get` is a compile-time error (def-over-name-in-scope);
+// the prelude carries no exemption. RED signal (S102 re-anchor, FIXME 0514).
 #[test]
-fn user_fn_shadowing_vec_get_direct_call_takes_user_body() {
-    repl_prims(
+fn user_fn_over_prelude_vec_get_is_rejected() {
+    let out = repl_prims(
         "(defn vec-get [v i] 42)\n\
          (vec-get [10 20 30] 1)\n",
-    )
-    .assert_ok()
-    .assert_stdout_contains(":primitives/Int 42")
-    .assert_stdout_does_not_contain(":primitives/Int 20");
+    );
+    let lower = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        lower.contains("conflict") || lower.contains("ambiguous"),
+        "def-over-prelude `vec-get` MUST emit a §8.6.4 collision diagnostic;\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    // The rejected def has no effect: neither the user body (42) nor a
+    // silently-shadowed result appears as a resolved value.
+    assert!(
+        !out.stdout.contains(":primitives/Int 42"),
+        "the rejected def MUST have no effect (found user-body 42);\nstdout:\n{}",
+        out.stdout
+    );
 }
 
-// spec: spec/08-modules.md §8.6.4 — the same prelude-shadow precedence holds
-// in VALUE position: the shadowing user fn passed through a HOF dispatches through its
-// own GOT slot (the resolver's shadow arm — kind UserFn stops the primitive
-// walk), returns the user body's result, and neither applies inline vec
-// semantics (20) nor re-opens the NULL-slot crash. GREEN pin (FIXME 0475).
+// spec: spec/08-modules.md §8.6.4/§8.8.1 — the same def-over-prelude rejection
+// holds regardless of value-position use downstream: the colliding definition
+// is rejected before any HOF dispatch. RED signal (S102 re-anchor, FIXME 0514).
 #[test]
-fn user_fn_shadowing_vec_get_as_value_through_hof_neg_not_inline_semantics() {
-    repl_prims(
+fn user_fn_over_prelude_vec_get_rejected_even_with_value_use() {
+    let out = repl_prims(
         "(defn vec-get [v i] 42)\n\
          (defn call-get [f v i] (f v i))\n\
          (call-get vec-get [10 20 30] 1)\n",
-    )
-    .assert_ok()
-    .assert_stdout_contains(":primitives/Int 42")
-    .assert_stdout_does_not_contain(":primitives/Int 20");
+    );
+    let lower = format!("{}\n{}", out.stdout, out.stderr).to_lowercase();
+    assert!(
+        lower.contains("conflict") || lower.contains("ambiguous"),
+        "def-over-prelude `vec-get` MUST be rejected before value-use;\n\
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.stdout.contains(":primitives/Int 42"),
+        "the rejected def MUST have no effect (found user-body 42);\nstdout:\n{}",
+        out.stdout
+    );
 }
 
 // =============================================================================
