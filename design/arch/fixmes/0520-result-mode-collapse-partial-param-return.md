@@ -1,6 +1,6 @@
 ---
-number: 0516
-target: /design
+number: 0520
+target: /dev  # cranelisp-typecheck (pass5 result-mode); /sprint re-routed from /design — resolution is a join-lattice fix, not a design-space question
 filed_by: /dev
 filed_at: 2026-07-04
 sprint_filed: 102
