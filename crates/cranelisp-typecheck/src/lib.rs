@@ -223,6 +223,7 @@ mod checker;
 mod cluster;
 mod form;
 mod infer;
+mod ownership;
 mod program;
 mod resolve;
 mod result;
