@@ -30,9 +30,15 @@ where
     ) -> Result<Value, CranelispError> {
         let saved_tail = self.in_tail_position;
 
-        // Scrutinee is never in tail position.
+        // Scrutinee is never in tail position, and is never itself a tail-call
+        // arg — it is consumed by the match, not forwarded to the loop param.
+        // Clear `tail_arg_protect` so a heap binding aliased in the scrutinee is
+        // not spuriously protected; the arm bodies restore it below.
+        let saved_protect = self.tail_arg_protect;
         self.in_tail_position = false;
+        self.tail_arg_protect = false;
         let scrut_val = self.compile_expr(scrutinee)?;
+        self.tail_arg_protect = saved_protect;
 
         let merge_block = self.builder.create_block();
         self.builder.append_block_param(merge_block, types::I64);
@@ -65,9 +71,14 @@ where
 
             match &arm.pattern {
                 Pattern::Wildcard { .. } => {
-                    // Always matches -- compile body and jump to merge.
+                    // Always matches -- compile body and jump to merge. A
+                    // wildcard arm pushes no bindings, so the body's value is the
+                    // arm value directly; protect it when this match is a tail-
+                    // call arg aliasing a live let-binding (F1 UAF cure).
                     self.in_tail_position = saved_tail;
                     let body_val = self.compile_expr(&arm.body)?;
+                    let body_val =
+                        self.maybe_protect_tail_arg_alias(&arm.body, body_val);
                     self.builder.ins().jump(merge_block, &[body_val]);
                 }
                 Pattern::Var { name, .. } => {
@@ -149,7 +160,16 @@ where
         self.in_tail_position = saved_tail;
         let skip_var = Self::return_var_in_scope(body, self.scope_stack.last());
         let body_val = self.compile_expr(body)?;
-        self.protect_return_value(&skip_var, body_val, body);
+        // In a tail-call-arg context (`(recur (match … v))`) use the tail-arg
+        // alias protection instead of `protect_return_value`: the tail-jump flush
+        // is the balancing dec, not a caller, so an unconditional protect inc on
+        // a fresh arm value would leak. `maybe_protect_tail_arg_alias` incs only a
+        // direct scope-binding-`Var` arm the flush will dec (F1 UAF cure).
+        if self.tail_arg_protect {
+            self.maybe_protect_tail_arg_alias(body, body_val);
+        } else {
+            self.protect_return_value(&skip_var, body_val, body);
+        }
         self.pop_scope_with_cleanup(skip_var.as_ref());
         self.builder.ins().jump(merge_block, &[body_val]);
 
@@ -353,6 +373,12 @@ where
                     HeapCategory::NeverHeap => {}
                 }
             }
+        } else if self.tail_arg_protect {
+            // Tail-call-arg context: the tail-jump flush is the balancing dec
+            // (not a caller), so protect only a direct scope-binding-`Var` arm
+            // the flush will dec — never an unconditional inc on a fresh value,
+            // which would leak here (F1 UAF cure).
+            self.maybe_protect_tail_arg_alias(body, body_val);
         } else {
             self.protect_return_value(&skip_var, body_val, body);
         }

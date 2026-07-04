@@ -107,8 +107,6 @@ where
     pub(crate) variable_types: HashMap<Symbol, Type>,
     /// Last-use information: (var_name, span) -> is_last_use.
     pub(crate) last_uses: HashMap<(Symbol, Span), bool>,
-    /// Set of variables whose ownership has been transferred (consumed).
-    pub(crate) consumed_vars: std::collections::HashSet<Symbol>,
     /// Variables that borrow from a parent (e.g., pattern match field bindings).
     /// Borrowed vars skip both inc (at extraction) and dec (at scope exit).
     /// The owner (scrutinee) handles cleanup via its own RC management.
@@ -116,6 +114,19 @@ where
     /// Captured variable names (variables closed over by a lambda).
     /// These are NEVER eligible for last-use transfer.
     pub(crate) captured_vars: std::collections::HashSet<Symbol>,
+
+    /// Set while compiling an `if`/`match` that is itself a **direct tail-call
+    /// argument** (`compile_tail_self_call`). Under this flag, `compile_if` /
+    /// `compile_match` emit a protective `rc_inc` on any branch/arm result that
+    /// directly aliases a live heap `let`-scope binding the subsequent tail-jump
+    /// flush will `rc_dec` (`flush_let_scopes_before_tail_jump`). The inc balances
+    /// the uniform flush dec so the value handed to the next iteration's loop
+    /// param owns exactly one reference — curing the F1 use-after-free where a
+    /// control-flow-aliased binding was flushed while still reachable
+    /// (`design/backend/ownership-codegen.md` §13.3 — the TCO-flush skip-predicate
+    /// correctness contract). Saved/restored per-arg so it never leaks into a
+    /// sibling or nested non-tail position.
+    pub(crate) tail_arg_protect: bool,
 
     /// Drop glue FuncIds for closure variables.
     /// When a closure with heap-typed captures is bound to a variable,
@@ -248,9 +259,9 @@ where
             fn_param_count,
             variable_types: HashMap::new(),
             last_uses,
-            consumed_vars: std::collections::HashSet::new(),
             borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
+            tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
             drop_glue_depth: 0,
             pending_closure_drop_glue: None,
@@ -343,9 +354,9 @@ where
             fn_param_count: defn.params().len(),
             variable_types: HashMap::new(),
             last_uses,
-            consumed_vars: std::collections::HashSet::new(),
             borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
+            tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
             drop_glue_depth: 0,
             pending_closure_drop_glue: None,
@@ -571,10 +582,6 @@ where
                     && name == skip {
                         return true;
                     }
-                // Skip consumed variables (ownership transferred to callee).
-                if this.consumed_vars.contains(name) {
-                    return true;
-                }
                 // Skip borrowed variables (owner handles cleanup).
                 this.borrowed_vars.contains(name)
             });
@@ -688,14 +695,79 @@ where
                 if transfer_skip.contains(name) {
                     return true;
                 }
-                if this.consumed_vars.contains(name) {
-                    return true;
-                }
                 this.borrowed_vars.contains(name)
             });
             to_dec.append(&mut frame_decs);
         }
         self.emit_heap_binding_decs(&to_dec);
+    }
+
+    /// True iff `flush_let_scopes_before_tail_jump` would emit an `rc_dec` for
+    /// `name`: it lives in a `let`/match/lambda frame (`scope_stack[1..]` — NOT
+    /// the param frame `[0]`, which the loop header reuses and the flush leaves
+    /// untouched), is heap-typed, and is not borrowed. This is the exact
+    /// predicate the flush's `collect_frame_heap_decs` filter applies, so a
+    /// protective inc gated on it balances the flush dec one-for-one.
+    pub(crate) fn tail_flush_will_dec(&self, name: &Symbol) -> bool {
+        let in_let_frame = self
+            .scope_stack
+            .iter()
+            .skip(1)
+            .any(|frame| frame.contains(name));
+        if !in_let_frame || self.borrowed_vars.contains(name) {
+            return false;
+        }
+        self.variable_types
+            .get(name)
+            .is_some_and(|ty| self.is_heap_type(ty))
+    }
+
+    /// Under `tail_arg_protect` (set while compiling an `if`/`match` that is a
+    /// direct tail-call argument), emit a protective `rc_inc` on `val` iff
+    /// `branch` is a bare `Var` that directly aliases a live heap `let`-binding
+    /// the tail-jump flush will `rc_dec` (`tail_flush_will_dec`).
+    ///
+    /// Why this is correct for the F1 cases (design/backend/ownership-codegen.md
+    /// §13.3):
+    /// - `(recur (if c v v))` — each branch result is the binding `v`; one branch
+    ///   runs, incs `v` once, the flush decs it once → the loop param owns `v`.
+    /// - `(recur (if c lo hi))` — distinct bindings: the taken branch incs its
+    ///   binding, the flush decs BOTH `lo` and `hi`, so the moved one nets to the
+    ///   loop param and the dead one is freed — impossible with a single static
+    ///   skip-dec, which is why per-branch protection + uniform flush is used.
+    /// - `(recur (if c (wrap v) v))` — the `wrap` branch result is fresh (an
+    ///   `Apply`, not a scope-binding `Var`) so it is NOT protected; `wrap`
+    ///   already inc'd `v` internally and the flush's dec of `v` balances it. The
+    ///   bare-`v` branch IS protected. Both runtime paths balance.
+    ///
+    /// A branch whose result reaches the tail through a nested scope exit
+    /// (`(if c (let [w …] v) …)`) is already protected by that scope's own
+    /// `protect_return_value` inc (the tail flush being the balancing "caller"
+    /// dec), so this helper only needs to cover the DIRECT bare-`Var` branch.
+    /// Returns `val` unchanged so callers can thread it inline.
+    pub(crate) fn maybe_protect_tail_arg_alias(
+        &mut self,
+        branch: &MonoExpr,
+        val: Value,
+    ) -> Value {
+        if !self.tail_arg_protect {
+            return val;
+        }
+        if let MonoExpr::Var { name, .. } = branch
+            && self.tail_flush_will_dec(name)
+            && let Some(ty) = self.variable_types.get(name).cloned()
+        {
+            match signature_heap_category(&ty, Some(self.ctx.symbol_tables)) {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_inc(&mut self.builder, self.module, val);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, val);
+                }
+                HeapCategory::NeverHeap => {}
+            }
+        }
+        val
     }
 
     /// If `body` is a direct variable reference to a name in the current scope

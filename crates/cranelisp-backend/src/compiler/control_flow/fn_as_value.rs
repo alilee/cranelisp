@@ -16,6 +16,19 @@ use crate::primitives_inline;
 
 use super::{emit_capture_inc_into, FnCompiler};
 
+/// Linker name for an auto-curry closure's capture drop glue.
+///
+/// Keyed by `disc` (`FnCompiler::inner_fn_discriminator()` — the mono instance +
+/// create-gate arm) and `span`, IDENTICALLY to its sibling wrapper name
+/// `__curry_{target}_{disc}{span}__` (F2, P7/P8: wrapper + drop glue must share
+/// one identity). Span alone under-keys: two monomorphizations of one span with
+/// different capture `HeapCategory`s produce distinct wrappers but would collide
+/// on a span-only glue name, silently mis-dropping captures. Folding `disc` makes
+/// glue identity track wrapper identity.
+pub(crate) fn curry_drop_glue_name(disc: &str, span: Span) -> String {
+    format!("runtime/curry_drop_glue_{}{}_{}", disc, span.start, span.end)
+}
+
 /// If `fn_type` is a `Fn` whose first parameter is `(Vec t)`, return `t`.
 ///
 /// The per-site element-type recovery for the vec-query wrapper emission
@@ -38,6 +51,9 @@ fn vec_query_elem_from_fn_type(fn_type: Option<&Type>) -> Option<Type> {
 
 #[cfg(test)]
 mod ctor_value_tests;
+
+#[cfg(test)]
+mod curry_glue_name_tests;
 
 // Relocated crate-root fn-as-value + value-use tests (FIXME 0495 step 1).
 #[cfg(test)]
@@ -839,24 +855,33 @@ where
             return Ok(None);
         }
 
-        let glue_name = format!(
-            "runtime/curry_drop_glue_{}_{}",
-            span.start, span.end
-        );
+        // Key the drop glue IDENTICALLY to its sibling `__curry_…` wrapper —
+        // fold in `inner_fn_discriminator()` (the mono/gate-arm discriminator),
+        // NOT span alone (F2, P7/P8: a closure wrapper and its drop glue MUST
+        // share one identity). The wrapper name `__curry_{target}_{disc}{span}__`
+        // already folds the disc; the glue previously used span alone, so two
+        // DISTINCT monomorphizations of the same span with DIFFERENT
+        // `arg_categories` (a capture position's `HeapCategory` differing across
+        // instantiations) produced distinct wrapper names but a COLLIDING glue
+        // name — and the `get_name` idempotency skip below would then hand the
+        // 2nd mono the 1st mono's glue → wrong capture-drop (dec a non-heap
+        // capture / skip a heap one → corruption or leak), silently. Folding the
+        // disc makes glue identity track wrapper identity: distinct monos get
+        // distinct glue; the two arms of ONE create-gate (same disc + span,
+        // identical `arg_categories` by construction) still share one glue.
+        let glue_name = curry_drop_glue_name(&self.inner_fn_discriminator(), span);
 
         // `declare_function` is idempotent (returns the existing FuncId on a
         // name match), but `define_function` is NOT — a second definition of the
-        // same identifier is a hard `Duplicate definition` codegen error. The
-        // span-keyed glue name carries no gate-arm discriminator (unlike the
-        // sibling `__curry_…` wrapper, which folds in `inner_fn_discriminator()`
-        // → `gate_arm_disc`), so when a create-gate compiles the SAME auto-curry
-        // expression on BOTH its lenient and sequential arms (ledger item 25),
-        // the glue is declared once but the second arm's `define_function` dies
-        // `Duplicate definition of identifier: runtime/curry_drop_glue_{span}`.
-        // Skip re-definition when this glue was already built — the body is a
-        // pure function of `arg_categories` at a fixed span, so the two arms
-        // sharing one glue definition is sound (the `build_elem_dec_fn` /
-        // `build_adt_drop_glue_fn` idempotency precedent, vec_codegen.rs).
+        // same identifier is a hard `Duplicate definition` codegen error. When a
+        // create-gate compiles the SAME auto-curry expression on BOTH its lenient
+        // and sequential arms (ledger item 25), the glue is declared once but the
+        // second arm's `define_function` would die `Duplicate definition`. Skip
+        // re-definition when this glue was already built — with the disc-keyed
+        // name a `get_name` hit means the SAME mono instance at the SAME span, so
+        // `arg_categories` are identical by construction and sharing one glue
+        // definition is sound (the `build_elem_dec_fn` / `build_adt_drop_glue_fn`
+        // idempotency precedent, vec_codegen.rs).
         if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
             self.module.get_name(&glue_name)
         {

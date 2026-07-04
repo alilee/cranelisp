@@ -439,9 +439,16 @@ where
     ) -> Result<Value, CranelispError> {
         let saved_tail = self.in_tail_position;
 
-        // Condition is never in tail position.
+        // Condition is never in tail position, and is never a tail-call arg —
+        // its value is consumed as the branch selector, not forwarded to the
+        // loop param. Clear `tail_arg_protect` so a heap binding aliased inside a
+        // nested `if`/`match` condition is not spuriously protected; the branches
+        // (below) restore it.
+        let saved_protect = self.tail_arg_protect;
         self.in_tail_position = false;
+        self.tail_arg_protect = false;
         let cond_val = self.compile_expr(cond)?;
+        self.tail_arg_protect = saved_protect;
 
         let then_block = self.builder.create_block();
         let else_block = self.builder.create_block();
@@ -457,6 +464,12 @@ where
         self.builder.seal_block(then_block);
         self.in_tail_position = saved_tail;
         let then_val = self.compile_expr(then_branch)?;
+        // Tail-call-arg alias protection (F1 UAF cure): if this `if` is a direct
+        // tail-call argument and this branch yields a live heap let-binding the
+        // tail-jump flush will dec, inc it so the value survives the flush. No-op
+        // otherwise. Nested control flow inherits the flag → its branches protect
+        // too; a non-control-flow branch (`(wrap v)`) is left unprotected.
+        let then_val = self.maybe_protect_tail_arg_alias(then_branch, then_val);
         self.builder.ins().jump(merge_block, &[then_val]);
 
         // Else branch.
@@ -464,6 +477,7 @@ where
         self.builder.seal_block(else_block);
         self.in_tail_position = saved_tail;
         let else_val = self.compile_expr(else_branch)?;
+        let else_val = self.maybe_protect_tail_arg_alias(else_branch, else_val);
         self.builder.ins().jump(merge_block, &[else_val]);
 
         // Merge block.

@@ -287,13 +287,13 @@ where
             return;
         }
         // Only protect if the current scope has heap-typed bindings that
-        // scope cleanup will dec. Borrowed and consumed vars are skipped by
+        // scope cleanup will dec. Borrowed vars are skipped by
         // `pop_scope_with_cleanup`, so their presence alone does NOT justify
         // a protective inc — emitting one would leave the return value with
         // an inflated RC that the caller cannot balance.
         let has_cleanup_targets = self.scope_stack.last().is_some_and(|frame| {
             frame.iter().any(|name| {
-                if self.borrowed_vars.contains(name) || self.consumed_vars.contains(name) {
+                if self.borrowed_vars.contains(name) {
                     return false;
                 }
                 self.variable_types.get(name).is_some_and(|ty| self.is_heap_type(ty))

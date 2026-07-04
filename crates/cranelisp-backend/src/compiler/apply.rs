@@ -34,6 +34,27 @@ use super::{signature_heap_category, FnCompiler};
 const EFFECT_FN_NAME_ABS_OFFSET: i64 =
     HeapHeader::SIZE as i64 + cranelisp_platform::IO_EFFECT_FN_NAME_OFFSET;
 
+/// The set of let-scope bindings that the tail-jump flush must NOT dec because
+/// their reference MOVES into a tail-call argument as a bare top-level `Var`
+/// (compiled with no consuming inc — the loop param inherits the single
+/// reference).
+///
+/// ONLY a literal top-level `MonoExpr::Var` argument is a move. A binding
+/// aliased into a tail argument *through a control-flow form* (`(if c v v)`,
+/// `(match … v)`) is deliberately EXCLUDED: those are protected by an explicit
+/// inc at the control-flow branch tail (`tail_arg_protect`) and then flushed
+/// uniformly, so adding them here would leak the protective inc (and, for
+/// distinct-per-branch bindings like `(if c lo hi)`, would wrongly retain the
+/// dead branch's binding). See `compile_tail_self_call` and the F1 UAF cure.
+pub(crate) fn tail_transfer_skip(args: &[MonoExpr]) -> std::collections::HashSet<Symbol> {
+    args.iter()
+        .filter_map(|a| match a {
+            MonoExpr::Var { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -1323,27 +1344,43 @@ where
         // CRITICAL: Args are not in tail position.
         self.in_tail_position = false;
 
-        // Compile all arguments.
+        // Compile all arguments. A control-flow arg (`if`/`match`) can alias a
+        // live heap `let`-binding into the tail call with NO owning inc (the
+        // branch value is a raw `use_var`) — the uniform flush below would then
+        // free a value the next iteration still owns (F1 use-after-free). Under
+        // `tail_arg_protect`, `compile_if` / `compile_match` emit a protective
+        // inc on any branch/arm result that directly aliases a binding the flush
+        // will dec, so the value handed forward owns exactly one reference.
+        // A bare top-level `Var` arg needs no protection: it MOVES (no inc) and
+        // is excluded from the flush by `tail_transfer_skip`; a non-Var, non-
+        // control-flow arg (`(wrap v)`) already inc's any binding it consumes via
+        // `compile_consuming_arg_list`, so the flush dec is balanced.
         let arg_vals: Vec<Value> = args
             .iter()
-            .map(|a| self.compile_expr(a))
+            .map(|a| {
+                if matches!(a, MonoExpr::If { .. } | MonoExpr::Match { .. }) {
+                    let saved = self.tail_arg_protect;
+                    self.tail_arg_protect = true;
+                    let v = self.compile_expr(a);
+                    self.tail_arg_protect = saved;
+                    v
+                } else {
+                    self.compile_expr(a)
+                }
+            })
             .collect::<Result<_, _>>()?;
 
         // Flush the live LET-scope heap bindings BEFORE the jump: the enclosing
         // `compile_let_sequential`'s `pop_scope_with_cleanup` runs only AFTER
         // `compile_expr(body)` returns, i.e. after this jump terminates the
         // block, so those decs land dead. Skip any binding whose reference
-        // transfers into a tail argument (a direct `Var` arg — compiled with no
-        // consuming inc), else dec'ing it here double-frees the value the new
-        // iteration owns. (design/backend/ownership-codegen.md §13.3 — the
-        // vec_cow_value_use TCO leak the Ruling-2 COW-copy attribution missed.)
-        let transfer_skip: std::collections::HashSet<Symbol> = args
-            .iter()
-            .filter_map(|a| match a {
-                MonoExpr::Var { name, .. } => Some(name.clone()),
-                _ => None,
-            })
-            .collect();
+        // transfers into a tail argument as a bare top-level `Var` (a MOVE — no
+        // consuming inc, so dec'ing it here would double-free the value the new
+        // iteration owns). Control-flow-aliased bindings are NOT skipped — they
+        // are flushed uniformly and balanced by the protective inc above.
+        // (design/backend/ownership-codegen.md §13.3 — the TCO-flush skip-
+        // predicate correctness contract; the F1 UAF cure.)
+        let transfer_skip = tail_transfer_skip(args);
         self.flush_let_scopes_before_tail_jump(&transfer_skip);
 
         // Jump to loop header with new argument values.
@@ -1749,3 +1786,6 @@ mod io_combinator_spark_tests;
 
 #[cfg(test)]
 mod dispatch_tests;
+
+#[cfg(test)]
+mod tail_transfer_skip_tests;

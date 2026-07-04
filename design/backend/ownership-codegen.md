@@ -1199,6 +1199,74 @@ cannot re-introduce it (Principle 18).
 > carry to B2. Same mis-attribution shape as Ruling 1: the design named a plausible seam (COW copy
 > branch); investigation named the real ones (TCO cleanup, curry double-inc, `protect_return_value`).
 
+> **B3.1a-R CORRECTION — the TCO scope-flush introduced a use-after-free (`f87b128`); F1 cure
+> = the tail-flush skip-predicate correctness contract (Wave 11 B3.1a-R /review BLOCKER).** The
+> G3 flush (`flush_let_scopes_before_tail_jump`) dec's every heap `let`-binding in scope frames
+> `[1..]` before the tail-jump, skipping only those in `transfer_skip`. As first shipped,
+> `transfer_skip` held only bindings passed as a **literal top-level `MonoExpr::Var`** tail
+> argument. A binding **aliased into a tail argument through a control-flow form** — `(recur (if
+> c a a))`, `(recur (match … a))` — reaches the arg value with NO owning inc (`compile_if` merges
+> the raw branch value; a bare local `Var` is a plain `use_var`), is NOT in `transfer_skip`, so
+> the flush frees it and the jump hands the freed pointer to the next iteration's loop param →
+> **UAF**. The RC-balance stays near-balanced (`allocs≈201 deallocs≈200`) because the freed alloc
+> *is* accounted — a leak-balance guard reads green over corrupt memory (`feedback_verify_fix_not
+> _symptom_absence`); the repro asserts the computed RESULT, not balance.
+>
+> **The correctness contract (the skip-predicate invariant):** a tail-call argument transfers a
+> live let-binding's reference forward in exactly one of three ways, each with a distinct RC
+> treatment; the flush + protection must together net the binding to exactly one owner (the loop
+> param):
+> - **(a) bare top-level `Var`** `(recur v)` — a MOVE (no inc). `transfer_skip` excludes it; the
+>   flush leaves it; the single reference passes to the loop param. Unchanged (byte-identical
+>   golden — the corpus TCO fixtures f2/f3/f4 have no control-flow-aliased args, so the diff is
+>   EMPTY).
+> - **(b) control-flow-aliased** `(recur (if c v v))` / `(recur (if c lo hi))` / `(recur (match …
+>   v))` — NOT a move (no inc on the merged value). Excluded from `transfer_skip` (flushed
+>   uniformly) and instead protected by an explicit per-branch inc at the branch/arm tail
+>   (`maybe_protect_tail_arg_alias`), gated on `tail_flush_will_dec(name)` — the exact predicate
+>   the flush applies (in a `[1..]` frame, heap, not borrowed). Per-branch (not a single static
+>   skip) is REQUIRED: for distinct-per-branch bindings `(if c lo hi)` the taken branch incs its
+>   binding while the flush decs BOTH, so the moved one nets to the loop param and the dead one is
+>   freed — "dec lo XOR dec hi" is impossible statically. The protection is CONDITIONAL on the
+>   result being a will-be-flushed scope-binding `Var` (never an unconditional `protect_return
+>   _value`-style inc): the tail flush is the balancing dec, not a caller, so incing a fresh branch
+>   value `(if c (wrap v) v)`-then-arm would leak. A branch reaching the tail through a nested
+>   scope exit `(if c (let [w …] v) …)` is already protected by that scope's own `protect_return
+>   _value` (the tail flush being its balancing "caller" dec), so the per-branch helper only covers
+>   the DIRECT bare-`Var` branch.
+> - **(c) consumed into a fresh value** `(recur (wrap v))` — `compile_consuming_arg_list` inc's the
+>   bare-`Var` heap arg, so the fresh value owns its own reference and the flush's dec of `v`'s now-
+>   dead scope reference is balanced. No protection; NOT in `transfer_skip`.
+>
+> The flag `tail_arg_protect` is set only while compiling an `if`/`match` that is itself a direct
+> tail-call argument, saved/restored per-arg, and CLEARED around the `if` condition / `match`
+> scrutinee (consumed, not forwarded) so a heap binding aliased there is never spuriously
+> protected; it propagates into nested control-flow branches (which correctly protect their own
+> aliases). In `match`, tail-arg protection REPLACES `protect_return_value` for the arm value (the
+> unconditional protect would leak a fresh arm value in the tail context); the borrowed-return
+> auto-upgrade is retained (it produces an owned reference the flush does not touch). The dead
+> `consumed_vars` skip arm (a `HashSet` initialised empty and never inserted into — it read as
+> protection but was inert) is REMOVED from all three readers (`pop_scope_with_cleanup`, the flush,
+> `protect_return_value`). Seam pins: `tail_transfer_skip` unit cells (bare-Var skipped;
+> control-flow-aliased NOT skipped; distinct-branch both flushed) + the e2e value + `MALLOC
+> _PERTURB_` UAF repros (`tests/tco_tail_arg_alias_uaf.rs`).
+
+> **F2 — the auto-curry drop-glue identity (Wave 11 B3.1a-R /review Important; P7/P8).** The
+> capture drop glue (`build_auto_curry_drop_glue`) was named `runtime/curry_drop_glue_{span}` —
+> span-only, no `inner_fn_discriminator()` — while its paired wrapper `__curry_{target}_{disc}
+> {span}__` folds the mono/gate-arm discriminator. The `get_name` idempotency skip (added for the
+> item-25 lenient+sequential double-compile) then returns the first-defined glue for any later
+> same-span build; two DISTINCT monomorphizations of one span with DIFFERENT capture
+> `HeapCategory`s (distinct wrappers) would COLLIDE on the glue name → the 2nd mono silently gets
+> the 1st's glue → wrong capture-drop (dec a non-heap / skip a heap capture → corruption or leak),
+> replacing the earlier loud `Duplicate definition`. **Cure:** key the glue IDENTICALLY to its
+> wrapper via `curry_drop_glue_name(disc, span)` folding `inner_fn_discriminator()` — a closure and
+> its drop glue are one object with one identity. Distinct monos → distinct glue (each installs its
+> own correct drop); the two arms of ONE create-gate (same disc + span, identical `arg_categories`
+> by construction) still share one glue, preserving the item-25 idempotency. Pinned by the
+> `curry_glue_name_tests` cells (distinct monos → distinct glue at a shared span; the name folds
+> the disc; same-mono-same-span shares one name).
+
 **Ruling 3 — the dispatch ladder becomes kind-driven.** Post-B1-be, `emit_wrapper_call`'s
 arm selection reads the entry: `PrimitiveBody::Inline` → borrowed-builder inline emission
 (the §12.7 mechanism, now kind-keyed — the S101 name-list is gone); slotted +
