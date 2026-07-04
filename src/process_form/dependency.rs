@@ -136,6 +136,10 @@ pub(super) fn handle_import(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     specs: Vec<ImportSpec>,
+    // §8.6.4 (FIXME 0484): reject an import over a module-local definition only
+    // on the incremental REPL (Additive) path — a whole-module (Replace) load's
+    // own defs and imports co-arrive (same-cluster; the local def wins).
+    additive: bool,
 ) -> Result<BlockAction, CranelispError> {
     for spec in &specs {
         // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
@@ -201,7 +205,7 @@ pub(super) fn handle_import(
                 crate::observability::SchedulerTraceTag::RegisterImportsLookup,
                 dep.as_ref(),
             );
-            crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, std::slice::from_ref(spec))?;
+            crate::imports::install_imports_gated(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, std::slice::from_ref(spec), additive)?;
             continue;
         }
 
@@ -227,7 +231,7 @@ pub(super) fn handle_import(
 
         // Cache check: try to load from disk cache before parsing.
         if try_cache_hit_load(ctx, dep, &dep_file) {
-            crate::imports::install_imports(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, std::slice::from_ref(spec))?;
+            crate::imports::install_imports_gated(ctx.symbol_tables, &ctx.current_module, ctx.module_aliases, std::slice::from_ref(spec), additive)?;
             continue;
         }
 
@@ -778,6 +782,9 @@ pub(super) fn handle_export(
     ctx: &mut ModuleCompiler,
     module: &ModuleFullPath,
     specs: &[ExportSpec],
+    // §8.6.4 (FIXME 0484): reject an export over a module-local definition only
+    // on the incremental REPL (Additive) path — see `handle_import`.
+    additive: bool,
 ) -> Result<BlockAction, CranelispError> {
     for spec in specs {
         // §8.11.2 step 1 — resolve a bare submodule name current-module-relative
@@ -796,7 +803,7 @@ pub(super) fn handle_export(
 
         // Already loaded — register the re-export and continue.
         if ctx.symbol_tables.contains_key(dep) {
-            crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, std::slice::from_ref(spec))?;
+            crate::imports::install_exports_gated(ctx.symbol_tables, &ctx.current_module, std::slice::from_ref(spec), additive)?;
             continue;
         }
 
@@ -852,7 +859,7 @@ pub(super) fn handle_export(
     }
 
     // All source modules loaded — register the re-exports.
-    crate::imports::install_exports(ctx.symbol_tables, &ctx.current_module, specs)?;
+    crate::imports::install_exports_gated(ctx.symbol_tables, &ctx.current_module, specs, additive)?;
     Ok(BlockAction::Continue)
 }
 

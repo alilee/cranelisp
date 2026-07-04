@@ -159,6 +159,18 @@ pub fn process_cluster_once(
     let mut accumulator = ModuleCheckAccumulator::new();
     let mut expanded_program: Vec<TopLevel> = Vec::new();
 
+    // §8.6.4 (FIXME 0484) — the definition-over-(import|export) rejection and
+    // its symmetric import/export-over-local-def peer fire ONLY on the
+    // incremental REPL path (`ModuleStrategy::Additive`). A whole-module
+    // (`Replace`) load processes a module's own imports/exports and its own
+    // definitions as one cluster: the module's own definition co-arrives with
+    // (and legitimately wins over) its own glob/specific import — same-cluster,
+    // never a cross-turn contest. This is what keeps a re-exporting-and-
+    // redefining prelude fixture loading while the REPL cross-turn shadow (the
+    // 0484 guards) is rejected. The flag is uniform across glob/specific
+    // (constraint #3): it selects the PATH, never consulting the import shape.
+    let additive = strategy == ModuleStrategy::Additive;
+
     // S93 signature/body pre-pass — the cluster's STATIC import closure
     // (`signature-body-prepass.md` §3.1/§4). Computed ONCE from this cluster's
     // Pass-0 `(import …)` decls; a cycle is a clean compile-time error (D0030
@@ -216,7 +228,7 @@ pub fn process_cluster_once(
         match classify_form(sexp, module)? {
             FormKind::Import(specs) => {
                 record_imports_on_symbol_table(ctx, module, &specs);
-                match handle_import(ctx, module, specs)? {
+                match handle_import(ctx, module, specs, additive)? {
                     BlockAction::Continue => {}
                     BlockAction::Block { dep_module } => {
                         return Ok(ClusterOnce::Gap { dep: dep_module });
@@ -225,7 +237,7 @@ pub fn process_cluster_once(
             }
             FormKind::Export(specs) => {
                 record_exports_on_symbol_table(ctx, module, &specs);
-                match handle_export(ctx, module, &specs)? {
+                match handle_export(ctx, module, &specs, additive)? {
                     BlockAction::Continue => {}
                     BlockAction::Block { dep_module } => {
                         return Ok(ClusterOnce::Gap { dep: dep_module });
@@ -309,7 +321,7 @@ pub fn process_cluster_once(
             // cluster. A surviving FQ-auto-load gap is driven (register +
             // block) and surfaces as `Gap`; any other gap is a hard error.
             let outcome = finalize_cluster(
-                ctx, module, &expanded_program, &mut accumulator,
+                ctx, module, &expanded_program, &mut accumulator, additive,
             )?;
             // FIXME 0342 — only AFTER the parent's symbols are committed to live
             // (finalize_cluster done) do we drive declared submodules. This is
@@ -357,6 +369,7 @@ fn finalize_cluster(
     module: &ModuleFullPath,
     expanded_program: &[TopLevel],
     accumulator: &mut ModuleCheckAccumulator,
+    reject_def_over_import: bool,
 ) -> Result<ClusterOnce, CranelispError> {
     let mut final_working = wrap_exprs_as_defns(expanded_program);
 
@@ -397,6 +410,9 @@ fn finalize_cluster(
         // gate's ABI-epoch slot policy freezes superseded code into
         // (design/int/session-transaction.md §7.1).
         ctx.shared_state,
+        // §8.6.4 (FIXME 0484): reject a definition over an explicit
+        // import/export only on the incremental REPL (Additive) path.
+        reject_def_over_import,
     )?;
     if let Some(gap) = maybe_gap {
         // FIXME 0490 — phantom-member diagnostic. typecheck's qualified-name

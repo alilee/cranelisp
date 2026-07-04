@@ -39,6 +39,29 @@ pub(crate) fn install_imports(
     module_aliases: &ModuleAliases,
     specs: &[ImportSpec],
 ) -> Result<(), CranelispError> {
+    // Default (non-incremental) install: a whole-module (Replace) load, a
+    // background index worker, cache restore, or a unit-test harness. These do
+    // NOT reject an import bringing a name a local definition already owns —
+    // the module re-establishes itself as one unit (same-cluster; the local
+    // def wins). Only the incremental REPL (Additive) Pass-0 path opts into the
+    // symmetric §8.6.4 import-over-def rejection via `install_imports_gated`.
+    install_imports_gated(symbol_tables, current_module, module_aliases, specs, false)
+}
+
+/// As [`install_imports`], but `reject_over_local_def` opts into the §8.6.4
+/// symmetric rejection: an import whose bare name is already bound by a
+/// module-local definition (`Def`/`TypeDef`) is a compile-time error. The REPL
+/// Additive Pass-0 sets it `true` (an import entered over an existing local
+/// definition is the later-arriving conflicting form); every whole-module load
+/// leaves it `false` (Replace re-establishes its own defs and its own imports
+/// co-arrive — same-cluster, the local def wins).
+pub(crate) fn install_imports_gated(
+    symbol_tables: &SessionTables,
+    current_module: &ModuleFullPath,
+    module_aliases: &ModuleAliases,
+    specs: &[ImportSpec],
+    reject_over_local_def: bool,
+) -> Result<(), CranelispError> {
     for spec in specs {
         // Module-path alias (§8.3.4) → ModuleAliases keyed by <owner>.<alias>.
         if let Some(alias) = &spec.alias {
@@ -96,7 +119,13 @@ pub(crate) fn install_imports(
         if !symbol_tables.contains_key(current_module) {
             return Err(missing_current_module(current_module, spec.span));
         }
-        insert_detecting_ambiguity(symbol_tables, current_module, to_add, spec.span)?;
+        insert_detecting_ambiguity(
+            symbol_tables,
+            current_module,
+            to_add,
+            spec.span,
+            reject_over_local_def,
+        )?;
     }
     Ok(())
 }
@@ -110,6 +139,21 @@ pub(crate) fn install_exports(
     symbol_tables: &SessionTables,
     current_module: &ModuleFullPath,
     specs: &[ExportSpec],
+) -> Result<(), CranelispError> {
+    // Default (non-incremental) install — see `install_imports` for the
+    // gating rationale. `export` populates the inner scope identically to
+    // `import` (§8.4.0, differing only in visibility), so it carries the same
+    // symmetric-rejection opt-in.
+    install_exports_gated(symbol_tables, current_module, specs, false)
+}
+
+/// As [`install_exports`], but `reject_over_local_def` opts into the §8.6.4
+/// symmetric rejection (export-over-local-def). See [`install_imports_gated`].
+pub(crate) fn install_exports_gated(
+    symbol_tables: &SessionTables,
+    current_module: &ModuleFullPath,
+    specs: &[ExportSpec],
+    reject_over_local_def: bool,
 ) -> Result<(), CranelispError> {
     for spec in specs {
         // Resolve module path: try as-is, then as child-of-current.
@@ -144,7 +188,13 @@ pub(crate) fn install_exports(
         if !symbol_tables.contains_key(current_module) {
             return Err(missing_current_module(current_module, spec.span));
         }
-        insert_detecting_ambiguity(symbol_tables, current_module, to_add, spec.span)?;
+        insert_detecting_ambiguity(
+            symbol_tables,
+            current_module,
+            to_add,
+            spec.span,
+            reject_over_local_def,
+        )?;
     }
     Ok(())
 }
@@ -239,6 +289,57 @@ fn alias_key(current_module: &ModuleFullPath, alias: &str) -> ModuleFullPath {
 fn missing_current_module(current_module: &ModuleFullPath, span: Span) -> CranelispError {
     CranelispError::TypeError {
         message: format!("current module '{current_module}' has no symbol table"),
+        location: ErrorLocation::from_span(span),
+    }
+}
+
+/// §8.6.4 definition-over-(import|export) collision diagnostic — the single
+/// message source for BOTH the commit-gate def-over-import direction
+/// (`worker::commit_staging_to_live`) and the symmetric Pass-0 import-over-def
+/// direction ([`insert_detecting_ambiguity`]).
+///
+/// `import_entry` is the in-scope `ModuleEntry::Import` binding the definition
+/// contests — a private `(import …)` or a public `(export …)` edge (§8.4.0
+/// makes them the same bring-into-scope operation, differing only in
+/// visibility); it carries the terminal source that becomes the fully-qualified
+/// remedy. `def_is_later` selects the phrasing: `true` when a definition arrives
+/// over an existing import/export (commit gate), `false` when an import/export
+/// arrives over an existing local definition (Pass-0). The message names the
+/// source module and the `module/name` FQ remedy per §8.6.4's diagnostics
+/// requirement.
+pub(crate) fn def_over_binding_error(
+    name: &Symbol,
+    import_entry: &ModuleEntry<Code>,
+    span: Span,
+    def_is_later: bool,
+) -> CranelispError {
+    let (src_module, src_symbol) = match import_entry {
+        ModuleEntry::Import { source, .. } => {
+            (source.module.to_string(), source.symbol.to_string())
+        }
+        _ => (String::new(), name.to_string()),
+    };
+    let kind = if import_entry.is_public() { "export" } else { "import" };
+    let message = if def_is_later {
+        format!(
+            "error: definition of '{name}' conflicts with the explicit {kind} of \
+             '{name}' from '{src_module}' (spec/08-modules.md §8.6.4): a definition \
+             may not shadow a name brought into scope via import or export. Rename \
+             the definition, use a renamed {kind} (§8.3.5), or drop '{name}' from \
+             the {kind} list and reference the other symbol fully-qualified as \
+             '{src_module}/{src_symbol}'"
+        )
+    } else {
+        format!(
+            "error: {kind} of '{name}' from '{src_module}' conflicts with the local \
+             definition of '{name}' (spec/08-modules.md §8.6.4): an import or export \
+             may not shadow a module-local definition. Rename the definition, use a \
+             renamed {kind} (§8.3.5), or drop '{name}' from the {kind} list and \
+             reference the other symbol fully-qualified as '{src_module}/{src_symbol}'"
+        )
+    };
+    CranelispError::TypeError {
+        message,
         location: ErrorLocation::from_span(span),
     }
 }
@@ -409,6 +510,7 @@ fn insert_detecting_ambiguity(
     current_module: &ModuleFullPath,
     imports: Vec<(Symbol, ModuleEntry<Code>)>,
     span: Span,
+    reject_over_local_def: bool,
 ) -> Result<(), CranelispError> {
     for (name, new_entry) in imports {
         // Snapshot the existing entry (clone + release the read guard) before
@@ -434,6 +536,26 @@ fn insert_detecting_ambiguity(
             (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
         );
         if !both_indirect {
+            // The existing entry is a module-LOCAL definition (`Def`/`TypeDef`),
+            // and `new_entry` is an incoming import/export binding. Under the
+            // §8.6.4 unified rule this is the symmetric collision: an import (or
+            // export) that would bind a bare name already bound by a local
+            // definition is the later-arriving conflicting form. Reject it when
+            // the caller is the incremental REPL (Additive) path — a whole-module
+            // (Replace) load's own imports co-arrive with its own defs
+            // (same-cluster; the local def legitimately wins, and this is also
+            // how a module re-establishes itself on reload). NB: the glob/specific
+            // shape is NOT consulted — the decision is prior-local-def vs
+            // co-arriving, per constraint #3.
+            if reject_over_local_def
+                && matches!(new_entry, ModuleEntry::Import { .. })
+                && matches!(
+                    existing,
+                    ModuleEntry::Def { .. } | ModuleEntry::TypeDef { .. }
+                )
+            {
+                return Err(def_over_binding_error(&name, &new_entry, span, false));
+            }
             // Existing directly-defined entry takes priority — skip new.
             continue;
         }

@@ -603,3 +603,190 @@
         install_module_session_env(&tables, &m, &aliases, &fallback);
         assert_eq!(fallback.get(&m).map(|b| *b), Some(true));
     }
+
+    // =====================================================================
+    // §8.6.4 (FIXME 0484) — definition/import symmetric collision (the
+    // import-over-local-def direction; the def-over-import direction lives at
+    // the commit gate in `worker::commit_staging_to_live`).
+    // =====================================================================
+
+    // spec: 08-modules.md §8.6.4 — an import that would bind a bare name
+    // ALREADY bound by a module-local definition is the later-arriving
+    // conflicting form and MUST be rejected on the incremental (REPL/Additive)
+    // path. `install_imports_gated(reject_over_local_def=true)` is that path.
+    #[test]
+    fn import_over_local_def_rejected_on_additive_path() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "user");
+        let aliases = ModuleAliases::default();
+
+        // user has a module-LOCAL definition of `measure`.
+        tables
+            .get_mut(&ModuleFullPath::from("user"))
+            .unwrap()
+            .insert(Symbol::from("measure"), primitive_def());
+        // base publishes a DIFFERENT `measure` for the import to try to bind.
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("measure"), primitive_def());
+
+        let err = install_imports_gated(
+            &tables,
+            &ModuleFullPath::from("user"),
+            &aliases,
+            &[specific_spec("base", "measure")],
+            true, // Additive/REPL path — reject over a local def.
+        )
+        .expect_err("import over a local definition MUST be rejected (§8.6.4)");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("measure") && msg.contains("base/measure"),
+            "diagnostic must name the symbol + the FQ remedy; got: {msg}",
+        );
+        // The local definition is UNCHANGED (the rejected import has no effect).
+        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+        assert!(
+            matches!(user.get("measure"), Some(ModuleEntry::Def { .. })),
+            "the local definition MUST remain the binding after rejection",
+        );
+    }
+
+    // spec: 08-modules.md §8.6.4 — glob and specific BOTH reject (constraint
+    // #3: the decision does not consult the import shape). Same shape as above
+    // but the colliding name arrives via a GLOB import.
+    #[test]
+    fn glob_import_over_local_def_rejected_on_additive_path() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "user");
+        let aliases = ModuleAliases::default();
+        tables
+            .get_mut(&ModuleFullPath::from("user"))
+            .unwrap()
+            .insert(Symbol::from("base-val"), primitive_def());
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("base-val"), primitive_def());
+
+        let err = install_imports_gated(
+            &tables,
+            &ModuleFullPath::from("user"),
+            &aliases,
+            &[glob_spec("base")],
+            true,
+        )
+        .expect_err("glob import over a local def MUST reject too (§8.6.4)");
+        assert!(format!("{err}").contains("base-val"));
+    }
+
+    // spec: 08-modules.md §8.6.4 — a whole-module (Replace / non-incremental)
+    // load does NOT reject: the module's own defs and its own imports/exports
+    // co-arrive as one cluster (same-cluster; the local def legitimately wins).
+    // This is the negative that keeps a re-exporting-and-redefining prelude
+    // fixture (`(export [primitives [*]])` + `(deftype (Option a) …)`) loading.
+    #[test]
+    fn import_over_local_def_allowed_on_replace_path() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "user");
+        let aliases = ModuleAliases::default();
+        tables
+            .get_mut(&ModuleFullPath::from("user"))
+            .unwrap()
+            .insert(Symbol::from("measure"), primitive_def());
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("measure"), primitive_def());
+
+        // reject_over_local_def = false (Replace/batch/index/cache path).
+        install_imports_gated(
+            &tables,
+            &ModuleFullPath::from("user"),
+            &aliases,
+            &[specific_spec("base", "measure")],
+            false,
+        )
+        .expect("Replace-path import over a local def must NOT reject");
+        // The local def wins (import skipped) — current same-cluster behaviour.
+        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+        assert!(matches!(user.get("measure"), Some(ModuleEntry::Def { .. })));
+    }
+
+    // spec: 08-modules.md §8.4.0 — a module can USE a name it only EXPORTS.
+    // `export` populates the exporting module's OWN bare scope (a resolvable
+    // `ModuleEntry::Import` entry, Public), identically to `import` but Public.
+    // Part A: no prior `(import …)` of the name is needed for it to be usable.
+    #[test]
+    fn export_only_binds_name_in_exporting_module_scope() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "user");
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("helper"), primitive_def());
+
+        // user does ONLY `(export [base [helper]])` — no import of `helper`.
+        install_exports(
+            &tables,
+            &ModuleFullPath::from("user"),
+            &[specific_export("base", "helper")],
+        )
+        .unwrap();
+
+        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+        let entry = user
+            .get("helper")
+            .expect("export must bring the name into the exporting module's scope");
+        // It is an Import edge (resolvable per §8.6.2 chain-follow → usable in
+        // this module's own bodies) AND Public (part of the public API).
+        assert!(
+            matches!(entry, ModuleEntry::Import { .. }) && entry.is_public(),
+            "an export-only name is a Public inner-scope Import edge (§8.4.0)",
+        );
+    }
+
+    // spec: 08-modules.md §8.6.4 (terminal-source dedup) — the redundant
+    // `(import [base [x]]) (export [base [x]])` pair is NOT a collision even on
+    // the incremental (Additive) path: both edges name the same terminal
+    // (`base/x`), so they dedup (import → Public upgrade), never reject. The
+    // critical negative for constraint #2.
+    #[test]
+    fn redundant_import_then_export_allowed_on_additive_path() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "user");
+        let aliases = ModuleAliases::default();
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("x"), primitive_def());
+
+        install_imports_gated(
+            &tables,
+            &ModuleFullPath::from("user"),
+            &aliases,
+            &[specific_spec("base", "x")],
+            true,
+        )
+        .expect("import installs cleanly");
+        // The SAME name via export — redundant, must dedup+upgrade, not reject.
+        install_exports_gated(
+            &tables,
+            &ModuleFullPath::from("user"),
+            &[specific_export("base", "x")],
+            true,
+        )
+        .expect("redundant import+export of the same terminal must NOT collide");
+
+        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+        let entry = user.get("x").expect("x is bound");
+        assert!(
+            matches!(entry, ModuleEntry::Import { .. }) && entry.is_public(),
+            "redundant pair upgrades to a Public import edge (§8.4.0)",
+        );
+    }
