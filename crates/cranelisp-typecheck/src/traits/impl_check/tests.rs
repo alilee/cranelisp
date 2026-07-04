@@ -168,11 +168,18 @@ fn test_generate_default_methods_produces_real_bodies() {
 
     let decl = tc.lookup_trait_decl(&TraitName::from("Eq"))
         .expect("Eq trait should be registered");
-    let defaults = tc.generate_default_methods(&tc.state, &decl, &impl_).unwrap();
+    // S102 4th lossy-head cure: the default-method `$Type` suffix is now the FQ
+    // home-qualified type head (`primitives/Int`), lock-step with the dispatch
+    // mangle, so two same-bare-named types from different modules don't collide.
+    let fq_int = cranelisp_types::FQTypeName::new(
+        cranelisp_types::ModuleFullPath::from("primitives"),
+        TypeName::from("Int"),
+    );
+    let defaults = tc.generate_default_methods(&tc.state, &decl, &impl_, &fq_int).unwrap();
 
     assert_eq!(defaults.len(), 1, "should generate 1 default method (!=)");
     let neq = &defaults[0];
-    assert_eq!(neq.name.as_ref(), "Eq.!=$Int");
+    assert_eq!(neq.name.as_ref(), "Eq.!=$primitives/Int");
     assert_eq!(neq.params().len(), 2);
 
     // Body should be (not (= x y)), not IntLit 0

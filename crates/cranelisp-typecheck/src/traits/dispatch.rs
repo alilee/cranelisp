@@ -85,24 +85,31 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }));
         }
 
-        let mangled = format!(
-            "{}.{}${}",
-            trait_name, callee_name, impl_type_name
-        );
-
         // Build FQTraitName — chain-follow the trait reference to its
         // defining module per Decision 45 Pattern B. `has_impl_with_state`
         // succeeded just above, so the chain-follow is guaranteed.
         let trait_defining_module = self
             .resolve_trait(state, trait_name.as_ref(), span)
             .map_err(cranelisp_types::CranelispError::from)?;
-        let fq_trait_name = FQTraitName::new(trait_defining_module, trait_name);
+        let fq_trait_name = FQTraitName::new(trait_defining_module, trait_name.clone());
 
         // Build FQTypeName for the impl type — works for both ADT and
         // intrinsic targets (Phase B Part 5).
         let fq_impl_type = self
             .resolve_type(state, &impl_type_name, span)
             .map_err(cranelisp_types::CranelispError::from)?;
+
+        // FQ type identity for the dispatch mangle (S102 — 4th lossy-head cure,
+        // extends the 0519 unification to the trait-method grain), then mangle
+        // in lock-step with the impl-method definition symbol minted in
+        // `impl_check` — both route through `mangle_trait_method` against the
+        // same canonical `FQTypeName` (name-path == definition-path).
+        let fq_for_mangle = fq_type_for_dispatch_mangle(&resolved_arg, &fq_impl_type);
+        let mangled = mangle_trait_method(
+            trait_name.as_ref(),
+            callee_name.as_ref(),
+            &fq_for_mangle,
+        );
 
         Ok(Some(ResolvedCall::TraitMethod {
             trait_name: fq_trait_name,
@@ -201,6 +208,37 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     /// `state.current_module` per Principle 17.
     pub(crate) fn is_trait_method_with_state(&self, state: &CheckState, name: &Symbol) -> bool {
         self.method_to_trait_with_state(state, name).is_some()
+    }
+}
+
+/// The FQ type identity to embed in a trait-method dispatch mangle (S102 — 4th
+/// lossy-head cure). The mangled linker symbol MUST carry the receiver's FULL
+/// nominal identity so `a/Widget` and `b/Widget` (§3.8.4: distinct types)
+/// dispatch to their own impls rather than colliding on one bare-head symbol.
+///
+/// **The authoritative source is the resolved argument's OWN type.** An ADT
+/// receiver carries its home directly in the `FQTypeName` head — use it. This is
+/// deliberately NOT a re-resolution of the bare head in the CALLER's module (the
+/// `fallback`, computed via `resolve_type`): that re-resolution is exactly the
+/// home-erasing bug, since a caller-local same-named type would capture the
+/// dispatch. The `fallback` is used only for an intrinsic receiver (`Type::Int`
+/// etc.), whose bare head is globally unambiguous (one canonical
+/// `primitives/Int`) so caller-scope re-resolution is safe there.
+///
+/// **Grain: receiver HEAD only.** ADT type-args are intentionally dropped (the
+/// `_` below) — the trait-impl registration grain names by the impl target head
+/// (`impl_target_name_or_panic`), so both `(impl T (Vec Int))` and
+/// `(impl T (Vec String))` share the head key `T.m$…/Vec` on BOTH the dispatch
+/// and definition sides. Distinguishing them would require changing impl
+/// registration too; out of scope for this cure. Keeping the head-only grain is
+/// what preserves the lock-step invariant.
+pub(super) fn fq_type_for_dispatch_mangle(
+    resolved_arg: &Type,
+    fallback: &cranelisp_types::FQTypeName,
+) -> cranelisp_types::FQTypeName {
+    match resolved_arg {
+        Type::ADT(fqtn, _) => fqtn.clone(),
+        _ => fallback.clone(),
     }
 }
 

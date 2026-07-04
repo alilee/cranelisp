@@ -128,27 +128,69 @@ This scheme says: `+` is polymorphic over one type variable, constrained to type
 
 2. **Required method check**: `check_impl_methods_present` verifies all methods without `default_body` are provided. Methods with defaults may be omitted.
 
-3. **Default method generation**: `generate_default_methods` creates `Defn` nodes for any missing methods that have defaults. Each gets a mangled name `TraitName.method_name$TargetType` (e.g., `Eq.!=$Int`). The body is constructed by `build_default_body` (see Section 4).
+3. **Default method generation**: `generate_default_methods` creates `Defn` nodes for any missing methods that have defaults. Each gets a mangled name `TraitName.method_name$FQTargetType` (e.g., `Eq.!=$primitives/Int`) — the `$Type` suffix is the **home-qualified** type head (see §"Mangling Convention"). The body is constructed by `build_default_body` (see Section 4).
 
 4. **Impl registration**: Inserts a `RegisteredImpl` into `impl_registry.impls[trait_name][target_type]`.
 
 5. **Method body type-checking**: For each provided method, `check_impl_method` resolves the concrete type for `Self` (e.g., `Int`), builds concrete parameter and return types by substituting the trait type parameter with the concrete type, then calls `check_defn_body_with_types` to type-check the body.
 
-6. **Mangled Defn emission**: Each method produces a `Defn` with mangled name `TraitName.method_name$TargetType` (e.g., `Num.+$Int`). These are returned to the caller for codegen.
+6. **Mangled Defn emission**: Each method produces a `Defn` with mangled name `TraitName.method_name$FQTargetType` (e.g., `Num.+$primitives/Int`). These are returned to the caller for codegen.
 
 ### Mangling Convention
 
 Trait method implementations use the naming pattern:
 
 ```
-{TraitName}.{method_name}${TargetType}
+{TraitName}.{method_name}${home}/{TargetType}
 ```
 
 Examples:
-- `Num.+$Int` -- addition for integers
-- `Eq.=$String` -- equality for strings
-- `Display.show$Bool` -- string conversion for booleans
-- `Eq.!=$Int` -- default method, inequality for integers
+- `Num.+$primitives/Int` -- addition for integers
+- `Eq.=$primitives/String` -- equality for strings
+- `Display.show$primitives/Bool` -- string conversion for booleans
+- `Eq.!=$primitives/Int` -- default method, inequality for integers
+- `Describe.describe$a/Widget` -- a user impl for a module-`a` ADT
+
+**FQ `$Type` suffix (S102 — 4th lossy-head cure).** The `$Type` suffix carries
+the **fully-qualified, home-qualified** type head (`module/Type`), NOT the bare
+head. Spec §3.8.4 makes two same-bare-named types from different modules
+(`a/Widget` ≠ `b/Widget`) DISTINCT; the pre-S102 bare-head grammar
+(`Describe.describe$Widget`) collapsed both onto one linker symbol, so their two
+impl bodies collided and every `(describe x)` call dispatched to whichever
+same-named `Widget` was in the caller's scope — a silent wrong-dispatch. This is
+the same lossy-head class 0519 cured for the mono-instance mangler, now extended
+to the trait-method grain. Home-qualifying the suffix makes the symbol
+collision-free by construction (Principle 20).
+
+**One mint, both sides — the lock-step invariant (name-path == definition-path).**
+The dispatch site (`dispatch::try_resolve_trait_method`) and the
+definition/writeback site (`impl_check` — `check_impl_method_with_sig`,
+`check_hkt_impl_method`, `generate_default_methods`) mint through the ONE shared
+`mangle_trait_method(trait, method, &FQTypeName)` helper against the SAME
+canonical `FQTypeName`, or the call's linker symbol would not match the impl
+method's definition symbol and dispatch would not resolve. The two sides derive
+the `FQTypeName` differently but land on the same value for a given impl:
+- **Definition side** — `resolve_type` on the impl target (`impl a/Widget` in
+  module `a` → `a/Widget`), resolved ONCE in `register_trait_impl` and threaded
+  to all three writeback paths (Principle 7).
+- **Dispatch side** — `fq_type_for_dispatch_mangle(&resolved_arg, &fallback)`
+  takes the FQ head from the resolved argument's OWN type (an ADT carries its
+  home directly). It does NOT re-resolve the bare head in the caller's module
+  (the `fallback`, used only for intrinsic receivers whose bare head is globally
+  unambiguous) — that re-resolution is exactly the home-erasing bug.
+
+**Grain: receiver HEAD only.** The suffix carries the receiver type's FQ head;
+ADT type-args are NOT recursed (`Vec Int` and `Vec String` both yield the head
+`primitives/Vec`). This MATCHES the trait-impl registration grain, which names by
+the impl target head (`impl_target_name_or_panic`), so the two sides agree.
+Arg-distinguishing the trait-method grain would require a coordinated change to
+impl registration too and is out of scope for this cure — keeping the head-only
+grain is what preserves the lock-step invariant.
+
+*(The `primitive_for_trait_method` short-circuit means Ring-0 operator impls on
+primitive types — `Num.+$…/Int`, `Display.show$…/Int`, etc. — never actually
+mint a trait-method symbol; they collapse to `ResolvedCall::BuiltinFn` and inline.
+The mangle path is exercised by user traits and user impls on ADTs.)*
 
 ### Body Type-Checking
 
@@ -184,7 +226,7 @@ For the core traits, default bodies are flagged with a placeholder (`Sexp::Symbo
 
 When `register_trait_impl` finds a method not provided by the impl but present in the trait decl with a default body:
 
-1. A mangled name `TraitName.method$TargetType` is generated.
+1. A mangled name `TraitName.method$home/TargetType` is generated (FQ suffix; see §"Mangling Convention").
 2. `build_default_body` constructs the AST body.
 3. A `Defn` is created with the default parameter names and the constructed body.
 4. The `Defn` is included in the returned vector alongside explicitly provided methods.

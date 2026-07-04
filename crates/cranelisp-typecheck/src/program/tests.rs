@@ -2612,8 +2612,8 @@
         );
         // The mangled defn name should follow the pattern Trait.method$Type
         assert!(
-            result.default_method_defns.iter().any(|d| d.name.as_ref().contains("Eq.eq$Int")),
-            "should contain Eq.eq$Int mangled defn"
+            result.default_method_defns.iter().any(|d| d.name.as_ref().contains("Eq.eq$primitives/Int")),
+            "should contain Eq.eq$primitives/Int mangled defn (S102 FQ `$Type` suffix)"
         );
     }
 
@@ -3930,15 +3930,16 @@
         let result = tc.check_form(&module, &impl_form, CheckPass::Register, &mut accumulator).unwrap();
         tc.merge_form_result(&module, &mut accumulator, result);
 
-        // The register pass should produce the mangled defn
-        let mangled_name = Symbol::from("Double.double$Int");
+        // The register pass should produce the mangled defn (S102 FQ `$Type`
+        // suffix: `primitives/Int`, lock-step with the dispatch site).
+        let mangled_name = Symbol::from("Double.double$primitives/Int");
         assert!(
             !accumulator.default_method_defns.is_empty(),
             "register should produce default_method_defns"
         );
         assert!(
             accumulator.default_method_defns.iter().any(|d| d.name == mangled_name),
-            "should contain Double.double$Int"
+            "should contain Double.double$primitives/Int"
         );
 
         // Step: Run register for the mangled defn (like register_default_methods does)
@@ -7037,7 +7038,7 @@
         };
         tc.register_trait_impl_self(&impl_).unwrap();
 
-        let edges = callees_of(&tc, "test", "Sizey.bump$Int");
+        let edges = callees_of(&tc, "test", "Sizey.bump$primitives/Int");
         assert!(
             edges.contains(&fq_sym("test", "helper")),
             "an impl-method body reference must record the edge on the \
@@ -7123,7 +7124,7 @@
         };
         tc.register_trait_impl_self(&impl_).unwrap();
 
-        let edges = callees_of(&tc, "test", "Doubly.dbl$Int");
+        let edges = callees_of(&tc, "test", "Doubly.dbl$primitives/Int");
         assert!(
             edges.contains(&fq_sym("test", "dhelper")),
             "a default-method body reference must record the edge on the \

@@ -49,8 +49,8 @@ block2:
     return v6
 }
 ; === end CLIF user::MkTag ===
-; === CLIF user::Sizeable.size$Box ===
-function %Sizeable.size$Box(i64) -> i64 system_v {
+; === CLIF user::Sizeable.size$user/Box ===
+function %Sizeable.size$user/Box(i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
@@ -98,9 +98,9 @@ block8:
 block7:
     return v2
 }
-; === end CLIF user::Sizeable.size$Box ===
-; === CLIF user::Sizeable.size$Tag ===
-function %Sizeable.size$Tag(i64) -> i64 system_v {
+; === end CLIF user::Sizeable.size$user/Box ===
+; === CLIF user::Sizeable.size$user/Tag ===
+function %Sizeable.size$user/Tag(i64) -> i64 system_v {
     gv0 = symbol userextname0
     gv1 = symbol colocated userextname1
     sig0 = (i64) -> i64 system_v
@@ -172,7 +172,7 @@ block9:
 block7:
     return v2
 }
-; === end CLIF user::Sizeable.size$Tag ===
+; === end CLIF user::Sizeable.size$user/Tag ===
 ; === CLIF user::main ===
 function %main() -> i64 system_v {
     gv0 = symbol userextname8

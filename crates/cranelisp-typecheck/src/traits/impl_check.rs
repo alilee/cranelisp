@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use cranelisp_types::{ErrorLocation, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, ModuleEntry, ModuleFullPath, MonoDefnVariant, ResolvedCall,
+use cranelisp_types::{ErrorLocation, CranelispError, DefKind, Defn, DefnVariant, FQTraitName, FQTypeName, ModuleEntry, ModuleFullPath, MonoDefnVariant, ResolvedCall,
     Span, Symbol, TraitDeclInfo, TraitImpl, TraitMethodSig, Type, TypeId,
     TypeName, UserFnState, Visibility, apply,
 };
@@ -86,9 +86,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Check all required methods are present (that don't have defaults)
         self.check_impl_methods_present(state, &decl, impl_)?;
 
+        // Resolve the trait's defining module + the impl target's FQ type
+        // identity ONCE (Principle 7). `fq_impl_type` is the home-qualified type
+        // head (`module/Type`) that every impl-method symbol minted below —
+        // default, explicit, and HKT — carries in its `$Type` suffix, kept in
+        // lock-step with the dispatch site (S102 4th lossy-head cure).
+        // `impl_.trait_name: TraitRef` carries `name: TraitName` + optional
+        // module qualification (Decision 47 — syntactic-stage shape).
+        let bare_trait_name = impl_.trait_name.name.clone();
+        let trait_home = self
+            .resolve_trait(state, bare_trait_name.as_ref(), impl_.span)
+            .map_err(cranelisp_types::CranelispError::from)?;
+        let fq_trait_name = FQTraitName::new(trait_home.clone(), bare_trait_name.clone());
+        let fq_impl_type = self
+            .resolve_type(state, impl_target_name_or_panic(&impl_.target), impl_.span)
+            .map_err(cranelisp_types::CranelispError::from)?;
+
         // Generate default method implementations for missing methods
         let default_defns =
-            self.generate_default_methods(state, &decl, impl_)?;
+            self.generate_default_methods(state, &decl, impl_, &fq_impl_type)?;
 
         // Register the impl as a ModuleEntry::TraitImpl in the trait's
         // **defining module** (Decision 45 / Pattern B). The write target is
@@ -105,17 +121,9 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // above; the chain-follow must succeed. Treat absence as a typecheck
         // invariant violation (post-FIXME 0192 method 6 deletion: no
         // `defining_module_for` fallback).
-        // `impl_.trait_name: TraitRef` carries `name: TraitName` + optional
-        // module qualification (Decision 47 — syntactic-stage shape).
-        let bare_trait_name = impl_.trait_name.name.clone();
-        let trait_home = self
-            .resolve_trait(state, bare_trait_name.as_ref(), impl_.span)
-            .map_err(cranelisp_types::CranelispError::from)?;
-        let fq_trait_name = FQTraitName::new(trait_home.clone(), bare_trait_name.clone());
-        let fq_impl_type = self
-            .resolve_type(state, impl_target_name_or_panic(&impl_.target), impl_.span)
-            .map_err(cranelisp_types::CranelispError::from)?;
-
+        // (`trait_home` / `fq_trait_name` / `fq_impl_type` resolved above — the
+        // single-source-of-truth for both the impl registry key and every
+        // impl-method mangle in this impl.)
         let method_names: Vec<Symbol> = impl_.methods.iter()
             .map(|m| m.name.clone())
             .collect();
@@ -128,7 +136,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             impl_key,
             ModuleEntry::TraitImpl {
                 trait_name: fq_trait_name,
-                impl_type: fq_impl_type,
+                impl_type: fq_impl_type.clone(),
                 methods: method_names,
                 visibility: Visibility::Public,
             },
@@ -148,10 +156,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // (→ null GOT slot → SIGSEGV on dispatch).
         for default_defn in &default_defns {
             // Recover the unmangled method name from the mangled form.
-            // Expected format: "{trait_name}.{method_name}${target_type}"
+            // Expected format: "{trait_name}.{method_name}${home}/{target_type}"
+            // (the `$Type` suffix is FQ per `mangle_trait_method`, so the strip
+            // suffix is `${fq_impl_type}`, not the bare target head).
             let mangled = default_defn.name.as_ref();
             let prefix = format!("{}.", decl.name);
-            let suffix = format!("${}", impl_target_name_or_panic(&impl_.target));
+            let suffix = format!("${}", fq_impl_type);
             let method_name = mangled
                 .strip_prefix(&prefix)
                 .and_then(|s| s.strip_suffix(&suffix))
@@ -183,6 +193,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // D1 (S86): a synthesized default-method body resolves its free
                 // names in the trait's DEFINING module, not the impl writer's.
                 Some(&trait_home),
+                &fq_impl_type,
             )?;
             all_defns.push(annotated);
         }
@@ -193,6 +204,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 &decl,
                 impl_,
                 method_defn,
+                &fq_impl_type,
             )?;
             all_defns.push(annotated);
         }
@@ -313,6 +325,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         decl: &TraitDeclInfo,
         impl_: &TraitImpl,
         method_defn: &Defn,
+        fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
         // Look up the method signature from the trait by the defn's (unmangled) name.
         let method_sig = decl
@@ -328,7 +341,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             })?;
         // `home: None` — an explicit impl-provided method body is correct in the
         // writer's (current) module scope; no defining-module switch (D1, S86).
-        self.check_impl_method_with_sig(state, decl, impl_, method_defn, method_sig, false, None)
+        self.check_impl_method_with_sig(state, decl, impl_, method_defn, method_sig, false, None, fq_impl_type)
     }
 
     /// Type-check an impl method (or default method) given an explicit trait method sig.
@@ -355,6 +368,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         method_sig: &TraitMethodSig,
         is_default_mangled: bool,
         home: Option<&ModuleFullPath>,
+        fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
         let mut local_next_id = self.next_id_snapshot();
 
@@ -368,7 +382,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
 
         if is_hkt {
-            return self.check_hkt_impl_method(state, decl, impl_, method_defn, method_sig);
+            return self.check_hkt_impl_method(state, decl, impl_, method_defn, method_sig, fq_impl_type);
         }
 
         // Resolve the concrete type for Self.
@@ -494,9 +508,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         let mangled_sym = if is_default_mangled {
             method_defn.name.clone()
         } else {
-            let mangled = format!(
-                "{}.{}${}",
-                impl_.trait_name, method_defn.name, impl_target_name_or_panic(&impl_.target)
+            // FQ `$Type` suffix, lock-step with the dispatch site
+            // (`mangle_trait_method`) — S102 4th lossy-head cure.
+            let mangled = mangle_trait_method(
+                &impl_.trait_name.to_string(),
+                method_defn.name.as_ref(),
+                fq_impl_type,
             );
             Symbol::from(mangled.as_str())
         };
@@ -654,6 +671,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         impl_: &TraitImpl,
         method_defn: &Defn,
         method_sig: &TraitMethodSig,
+        fq_impl_type: &FQTypeName,
     ) -> Result<Defn, CranelispError> {
         let mut local_next_id = self.next_id_snapshot();
         // Build con_var_map: constructor variable name -> resolve to ADT name
@@ -728,10 +746,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Per-defn post-passes (auto-curry only; overloads deferred to finalize)
         self.resolve_auto_curry(state);
 
-        // Build the mangled name and create annotated defn for symbol table
-        let mangled = format!(
-            "{}.{}${}",
-            impl_.trait_name, method_defn.name, impl_target_name_or_panic(&impl_.target)
+        // Build the mangled name and create annotated defn for symbol table.
+        // FQ `$Type` suffix, lock-step with the dispatch site
+        // (`mangle_trait_method`) — S102 4th lossy-head cure.
+        let mangled = mangle_trait_method(
+            &impl_.trait_name.to_string(),
+            method_defn.name.as_ref(),
+            fq_impl_type,
         );
         let mangled_sym = Symbol::from(mangled.as_str());
 
@@ -788,6 +809,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         _state: &CheckState,
         decl: &TraitDeclInfo,
         impl_: &TraitImpl,
+        fq_impl_type: &FQTypeName,
     ) -> Result<Vec<Defn>, CranelispError> {
         let provided: std::collections::HashSet<&str> = impl_
             .methods
@@ -804,10 +826,14 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
 
-            // Create a mangled name for this default method
-            let mangled = format!(
-                "{}.{}${}",
-                decl.name, method_sig.name, impl_target_name_or_panic(&impl_.target)
+            // Create a mangled name for this default method. FQ `$Type` suffix
+            // (via `mangle_trait_method`) — the trait part is `decl.name`
+            // (bare), matching the `{decl.name}.` / `${fq_impl_type}` demangle
+            // in `register_trait_impl`. S102 4th lossy-head cure.
+            let mangled = mangle_trait_method(
+                decl.name.as_ref(),
+                method_sig.name.as_ref(),
+                fq_impl_type,
             );
 
             let span = impl_.span;

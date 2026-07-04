@@ -544,17 +544,20 @@ impl TestFixture {
     }
 
     /// Generate default methods (test convenience).
-    /// Note: the real method takes (state, decl, impl_) but this wrapper
-    /// keeps state implicit. Tests that need to pass decl explicitly can
-    /// use `env().generate_default_methods(state, decl, impl_)`.
+    /// Note: the real method takes (state, decl, impl_, fq_impl_type) but this
+    /// wrapper keeps state implicit. `fq_impl_type` is the home-qualified impl
+    /// target type carried in the default-method `$Type` mangle suffix (S102 —
+    /// the trait-method FQ-key cure); the isolated caller supplies it directly
+    /// rather than depending on the fixture having the target type in scope.
     pub fn generate_default_methods(
         &self,
         _state: &CheckState,
         decl: &cranelisp_types::TraitDeclInfo,
         impl_: &cranelisp_types::TraitImpl,
+        fq_impl_type: &cranelisp_types::FQTypeName,
     ) -> Result<Vec<cranelisp_types::Defn>, CranelispError> {
         let env = TypeCheckEnv::new(&self.modules, &self.next_id, &self.module_aliases, &self.prelude_fallback);
-        env.generate_default_methods(&self.state, decl, impl_)
+        env.generate_default_methods(&self.state, decl, impl_, fq_impl_type)
     }
 
     // ---------------------------------------------------------------------
