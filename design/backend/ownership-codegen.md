@@ -212,15 +212,26 @@ fence, spine §8.2).
 > `FnCompiler.current_mode_summary` (`lib.rs` `compile_to_module_impl` →
 > `compile_defn_in_module` → `compile_body`; the lenient JIT/REPL path passes
 > `None`). At the function-return site (`fn_compiler.rs::compile_body`),
-> `return_is_fresh_by_summary(body, summary)` elides `protect_return_value`'s inc
-> when a PRESENT summary has `result == Fresh` **and the body is a direct `Apply`**.
-> The `Apply` restriction is a soundness counterweight to FIXME 0516 (the ABI
-> `result` collapses a partial control-flow param-return to `Fresh` — trusting it
-> for `if`/`match`/`let` bodies SIGABRTs `build` in `04_vec_cow_loop`). Byte-identical
+> `return_is_fresh_by_summary(summary)` elides `protect_return_value`'s inc
+> when a PRESENT summary has `result == Fresh`. Byte-identical
 > under `CRANELISP_NO_OWNERSHIP` (all 13 corpus entries); scoped ON re-baseline =
 > `05_string_externs` + `f4_sudoku`. Flips the G2 (`vec_set_as_value_shared_source_neg`)
 > and item-26 (`vec_returned_from_generic_fn…`) guards. Unit matrix:
 > `fn_compiler::return_protect_tests`.
+>
+> **AS-BUILT UPDATE — B3.2 Wave 11 (Apply restriction DROPPED, this change-set).**
+> FIXME 0520 (`8b0237f`) cured the typecheck-side result-mode collapse — `join_origin`
+> no longer widens a partial control-flow param-return toward the dangerous `Fresh`
+> (`build`'s base-case-returns-`v` body now reports `AliasOf(0)`, not `Fresh`). The
+> `Apply`-body restriction that the partial slice carried is therefore **removed**:
+> `return_is_fresh_by_summary` now elides the return protect for ANY body shape whose
+> PRESENT summary has `result == Fresh`. Verified: `04_vec_cow_loop`'s `build`
+> (`result=AliasOf(0)`) keeps its protect and runs correct (exit 220) under
+> `MALLOC_PERTURB_`; the newly-unrestricted elision now fires on genuinely-`Fresh`
+> if/match/let-bodied functions. Byte-identical-off proven (toggle-off HEAD ==
+> toggle-off parent, f3+f4). Scoped ON re-baseline = `f3_inverted_search` +
+> `f4_sudoku` (each = one protect inc elided on a `Fresh` non-`Apply` return; the
+> param scope-dec retained). Unit matrix updated: `fresh_summary_elides_all_body_shapes`.
 >
 > **NOT YET BUILT (remaining B3.2 ladder):** §3.1 caller skip-inc + temp post-call
 > dec; §3.2 `Borrowed` params → `borrowed_vars` + the Borrowed-never-returns

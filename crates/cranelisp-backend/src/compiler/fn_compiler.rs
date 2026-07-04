@@ -326,26 +326,21 @@ where
     /// so `protect_return_value`'s inc is dead weight and is elided (curing the
     /// G2 / item-26 over-inc leak).
     ///
-    /// Two conditions, both required for soundness:
+    /// One condition, sufficient for soundness post-FIXME-0520:
     ///
-    /// 1. **`body` is a direct `Apply`.** The ABI-bearing `result` mode is
-    ///    reliable for a single-`Apply` body — the interprocedural fixpoint
-    ///    composes the callee's result, so `(idv v)` correctly yields
-    ///    `AliasOf(0)` and a param-aliasing Apply body is never `Fresh`. It
-    ///    COLLAPSES a *partial* control-flow return to `Fresh` when only one arm
-    ///    returns a param (`(if (eq i n) v (build …))` reports `result=Fresh`
-    ///    yet returns param `v` in the base case), so trusting `Fresh` for an
-    ///    `if`/`match`/`let` body would drop a NEEDED inc and free the returned
-    ///    param → UAF (verified: `04_vec_cow_loop`'s `build` SIGABRTs under the
-    ///    unrestricted gate). Restricting to `Apply` excludes exactly that
-    ///    control-flow-collapse class.
-    /// 2. **A summary is PRESENT with `result == Fresh`.** Absent ⇒ Decision-24
-    ///    (protect verbatim), so a `CRANELISP_NO_OWNERSHIP` build (no summaries)
-    ///    is byte-identical to pre-B3.2.
+    /// - **A summary is PRESENT with `result == Fresh`.** Absent ⇒ Decision-24
+    ///   (protect verbatim), so a `CRANELISP_NO_OWNERSHIP` build (no summaries)
+    ///   is byte-identical to pre-B3.2.
     ///
-    /// The typecheck-side result-mode collapse (case 1) is reported as a
-    /// separate finding; the `Apply` restriction is the sound consumer-side
-    /// counterweight until the analysis widens partial param-returns.
+    /// The Apply-body restriction the partial slice (`d7b6a0f`) carried is
+    /// **dropped** here: FIXME 0520 cured the typecheck-side result-mode collapse
+    /// (`join_origin` no longer widens a partial control-flow param-return toward
+    /// the dangerous `Fresh` — a `(if (eq i n) v (build …))` base-case-returns-`v`
+    /// body now reports `AliasOf(0)`, not `Fresh`). `result == Fresh` is therefore
+    /// now sound for *any* body shape: it means no reachable return path carries a
+    /// param, so the returned value is genuinely fresh and scope cleanup can never
+    /// free it. Verified: `04_vec_cow_loop`'s `build` (result `AliasOf(0)`) keeps
+    /// its protect and runs correct under the unrestricted gate.
     pub(crate) fn return_is_fresh_by_summary(&self, body: &MonoExpr) -> bool {
         return_is_fresh_by_summary(body, self.current_mode_summary.as_ref())
     }
@@ -896,23 +891,20 @@ where
 /// function's return-protect inc (`protect_return_value`) may be elided because
 /// its ownership summary proves the return value is a fresh (non-aliased) value.
 ///
-/// Sound-consumer contract — BOTH conditions required (see
+/// Sound-consumer contract (post-FIXME-0520, see
 /// [`FnCompiler::return_is_fresh_by_summary`] for the full rationale):
+/// `summary` is `Some` with `result == ResultMode::Fresh`. `None` ⇒ Decision-24
+/// (protect verbatim) — the byte-identical-`CRANELISP_NO_OWNERSHIP` guarantee.
 ///
-/// 1. `body` is a direct [`MonoExpr::Apply`] — the ABI `result` mode is reliable
-///    for a single-`Apply` body (the fixpoint composes the callee's result;
-///    `(idv v)` → `AliasOf(0)`), but COLLAPSES a partial control-flow return to
-///    `Fresh` (`(if c v (mk …))` reports `Fresh` yet returns param `v` on one
-///    arm). The `Apply` restriction excludes that unsound-`Fresh` class, keeping
-///    `if`/`match`/`let` bodies at Decision-24.
-/// 2. `summary` is `Some` with `result == ResultMode::Fresh`. `None` ⇒ Decision-24
-///    (protect verbatim) — the byte-identical-`CRANELISP_NO_OWNERSHIP` guarantee.
+/// `Fresh` is sound for **any** body shape now that `join_origin` no longer
+/// collapses a partial control-flow param-return to `Fresh` (a body that returns
+/// a param on any reachable path reports `AliasOf`/`ProjectionOf`, never
+/// `Fresh`). `_body` is retained for the seam signature but no longer read.
 pub(crate) fn return_is_fresh_by_summary(
-    body: &MonoExpr,
+    _body: &MonoExpr,
     summary: Option<&cranelisp_types::ModeSummary>,
 ) -> bool {
-    matches!(body, MonoExpr::Apply { .. })
-        && summary.is_some_and(|s| s.result == cranelisp_types::ResultMode::Fresh)
+    summary.is_some_and(|s| s.result == cranelisp_types::ResultMode::Fresh)
 }
 
 #[cfg(test)]
@@ -970,10 +962,15 @@ mod return_protect_tests {
         ModeSummary { result: ResultMode::ProjectionOf(0), ..Default::default() }
     }
 
-    // POSITIVE: only cell that elides — direct Apply body + PRESENT Fresh summary.
+    // POSITIVE: a PRESENT Fresh summary elides for ANY body shape (post-0520 —
+    // the Apply-body restriction is dropped; `Fresh` is now sound for if/match/
+    // var bodies because `join_origin` never collapses a partial param-return to
+    // `Fresh`).
     #[test]
-    fn apply_body_fresh_summary_elides() {
+    fn fresh_summary_elides_all_body_shapes() {
         assert!(return_is_fresh_by_summary(&apply_body(), Some(&fresh())));
+        assert!(return_is_fresh_by_summary(&if_body(), Some(&fresh())));
+        assert!(return_is_fresh_by_summary(&var_body(), Some(&fresh())));
     }
 
     // NEGATIVE (byte-identical-off): no summary ⇒ never elide, ANY body.
@@ -982,14 +979,6 @@ mod return_protect_tests {
         assert!(!return_is_fresh_by_summary(&apply_body(), None));
         assert!(!return_is_fresh_by_summary(&if_body(), None));
         assert!(!return_is_fresh_by_summary(&var_body(), None));
-    }
-
-    // NEGATIVE (control-flow-collapse safety): if/match/var bodies keep protect
-    // even under a Fresh summary — the `build` UAF class.
-    #[test]
-    fn non_apply_body_never_elides_even_fresh() {
-        assert!(!return_is_fresh_by_summary(&if_body(), Some(&fresh())));
-        assert!(!return_is_fresh_by_summary(&var_body(), Some(&fresh())));
     }
 
     // NEGATIVE (aliasing result modes): AliasOf / ProjectionOf keep protect —

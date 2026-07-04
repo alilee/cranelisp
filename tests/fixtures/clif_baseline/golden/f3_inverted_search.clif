@@ -758,10 +758,10 @@ block0(v0: i64, v1: i64):
     jump block1(v0, v1)
 
 block1(v2: i64, v3: i64):
+    v82 -> v2
+    v83 -> v2
+    v84 -> v2
     v85 -> v2
-    v86 -> v2
-    v87 -> v2
-    v88 -> v2
     v63 -> v3
     v64 -> v3
     v65 -> v3
@@ -880,19 +880,16 @@ block10:
     jump block11(v80)
 
 block11(v74: i64):
-    v82 = iadd_imm v74, 8
-    v83 = iconst.i64 1
-    v84 = atomic_rmw.i64 add v82, v83  ; v83 = 1
-    v89 = func_addr.i64 fn16
-    v90 = iadd_imm.i64 v2, 8
-    v91 = iconst.i64 1
-    v92 = atomic_rmw.i64 sub v90, v91  ; v91 = 1
-    v93 = icmp eq v92, v91  ; v91 = 1
-    brif v93, block13, block12
+    v86 = func_addr.i64 fn16
+    v87 = iadd_imm.i64 v2, 8
+    v88 = iconst.i64 1
+    v89 = atomic_rmw.i64 sub v87, v88  ; v88 = 1
+    v90 = icmp eq v89, v88  ; v88 = 1
+    brif v90, block13, block12
 
 block13:
     fence 
-    call fn17(v2, v89)
+    call fn17(v2, v86)
     jump block12
 
 block12:
@@ -954,10 +951,10 @@ block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
 
 block1(v3: i64, v4: i64, v5: i64):
+    v85 -> v3
+    v86 -> v3
+    v87 -> v3
     v88 -> v3
-    v89 -> v3
-    v90 -> v3
-    v91 -> v3
     v6 = isub v5, v4
     v7 = iconst.i64 1
     v8 = icmp sle v6, v7  ; v7 = 1
@@ -1077,19 +1074,16 @@ block7(v20: i64):
     jump block4(v20)
 
 block4(v10: i64):
-    v85 = iadd_imm v10, 8
-    v86 = iconst.i64 1
-    v87 = atomic_rmw.i64 add v85, v86  ; v86 = 1
-    v92 = func_addr.i64 fn15
-    v93 = iadd_imm.i64 v3, 8
-    v94 = iconst.i64 1
-    v95 = atomic_rmw.i64 sub v93, v94  ; v94 = 1
-    v96 = icmp eq v95, v94  ; v94 = 1
-    brif v96, block13, block12
+    v89 = func_addr.i64 fn15
+    v90 = iadd_imm.i64 v3, 8
+    v91 = iconst.i64 1
+    v92 = atomic_rmw.i64 sub v90, v91  ; v91 = 1
+    v93 = icmp eq v92, v91  ; v91 = 1
+    brif v93, block13, block12
 
 block13:
     fence 
-    call fn16(v3, v92)
+    call fn16(v3, v89)
     jump block12
 
 block12:
