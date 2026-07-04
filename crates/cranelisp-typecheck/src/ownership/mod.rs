@@ -38,5 +38,9 @@
 // `dead_code` allow is removed when CS-3 wires the driver.
 #[allow(dead_code)]
 pub(crate) mod classify;
-// CS-2..CS-4 submodules (transfer, fixpoint, confinement, publish) and the
+// CS-2 lands `transfer` (the pure body walk); consumed by CS-3's driver. The
+// scoped `dead_code` allow is removed when CS-3 wires the driver.
+#[allow(dead_code)]
+pub(crate) mod transfer;
+// CS-3..CS-4 submodules (fixpoint, confinement, publish) and the
 // `pass5_ownership` driver land in the subsequent change-sets.
