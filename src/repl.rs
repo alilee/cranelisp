@@ -1961,7 +1961,7 @@ impl CompilerSession {
             prelude_fallback: &self.shared.prelude_fallback,
             current_module: module,
         };
-        crate::expander::expand_sexp_recursive(sexp, &mut resolver, 0)
+        crate::expander::expand_sexp_recursive(sexp, &mut resolver, 0, None)
     }
 
     /// /time handler: evaluate with timing.

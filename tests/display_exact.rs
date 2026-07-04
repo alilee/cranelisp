@@ -290,6 +290,10 @@ fn macro_arity_diagnostic_carries_no_internal_artifacts() {
     )
     .assert_ok()
     .assert_stdout_contains("user/mycond") // the macro named by display FQ name…
+    // …with the accepted clause arities surfaced (derived from the clause set:
+    // `([] …)` → 0, `([t b &rest] …)` → 2+), so the recursion-bottom grain is
+    // interpretable rather than an opaque "0 argument(s)" (FIXME 0485 cure)…
+    .assert_stdout_contains("clauses accept 0 or 2+")
     .assert_no_internal_artifacts(); // …with no Debug repr / internal span
 }
 

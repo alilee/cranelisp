@@ -129,19 +129,12 @@ impl MacroExpander for JitMacroExpander<'_> {
             });
         }
 
-        // 3. Select the matching clause by arity/bracket shape.
-        let clause = find_matching_clause(&compiled, args).ok_or_else(|| {
-            MacroInvokeError::Malformed {
-                fq: fq.clone(),
-                message: format!(
-                    "no matching clause for macro `{}/{}` with {} argument(s)",
-                    fq.module,
-                    fq.symbol,
-                    args.len()
-                ),
-                span: call_span,
-            }
-        })?;
+        // 3. Select the matching clause by arity/bracket shape. On no match,
+        //    surface the user-call span (threaded down as `call_span` — the
+        //    ORIGINAL top-level invocation, not a synthetic recursive-expansion
+        //    offset; FIXME 0485) plus the clause set's accepted arities.
+        let clause = find_matching_clause(&compiled, args)
+            .ok_or_else(|| no_matching_clause_error(fq, &compiled, args, call_span))?;
 
         // 4. Marshal + signal-protected invoke + unmarshal + span-rewrite.
         execute_matched_clause(clause, args, call_span)
@@ -162,6 +155,66 @@ pub(crate) fn execute_matched_clause(
     let mut result = invoke_clause(clause, args, span)?;
     rewrite_spans(&mut result, span);
     Ok(result)
+}
+
+/// Build the `no matching clause` diagnostic for a multi-clause macro whose
+/// arguments matched no clause, anchored at the user-call span (`call_span`)
+/// with the clause set's accepted arities surfaced (FIXME 0485).
+///
+/// `call_span` is the span threaded down the expansion recursion — the ORIGINAL
+/// top-level user call, not the synthetic recursive-expansion offset, so the
+/// inner [`MacroInvokeError`] `Display` renders a real source position. The
+/// arity hint is derived from the actual [`MacroClauseEntry`] shapes (see
+/// [`describe_clause_arities`]), so it is correct for ANY multi-clause macro,
+/// not just `cond`.
+fn no_matching_clause_error(
+    fq: &FQSymbol,
+    clauses: &[MacroClauseEntry],
+    args: &[Sexp],
+    call_span: Span,
+) -> MacroInvokeError {
+    MacroInvokeError::Malformed {
+        fq: fq.clone(),
+        message: format!(
+            "no matching clause for macro `{}/{}` with {} argument(s); \
+             clauses accept {} argument(s)",
+            fq.module,
+            fq.symbol,
+            args.len(),
+            describe_clause_arities(clauses),
+        ),
+        span: call_span,
+    }
+}
+
+/// Describe the argument arities a macro's clause set accepts, derived from the
+/// actual [`MacroClauseEntry`] shapes: each clause's fixed parameter count, with
+/// a trailing `+` when a `rest_param` makes the clause variadic ("N or more").
+/// Duplicate arities are collapsed and the distinct descriptions joined for
+/// display (e.g. `"1 or 2+"`, `"0, 1 or 3+"`, `"2"`).
+///
+/// General over any multi-clause macro — nothing here is `cond`-specific.
+fn describe_clause_arities(clauses: &[MacroClauseEntry]) -> String {
+    let mut descs: Vec<String> = Vec::new();
+    for c in clauses {
+        let n = c.params.len();
+        let desc = if c.rest_param.is_some() {
+            format!("{n}+")
+        } else {
+            format!("{n}")
+        };
+        if !descs.contains(&desc) {
+            descs.push(desc);
+        }
+    }
+    match descs.len() {
+        0 => "no".to_string(),
+        1 => descs.pop().unwrap_or_default(),
+        _ => {
+            let last = descs.pop().unwrap_or_default();
+            format!("{} or {}", descs.join(", "), last)
+        }
+    }
 }
 
 impl JitMacroExpander<'_> {
@@ -671,10 +724,20 @@ fn rewrite_spans_unique(sexp: &mut Sexp) {
 /// - List forms where head is a known macro -> dispatch and re-expand result
 /// - Bare symbols that are zero-arg macros
 /// - Recursive children expansion
+///
+/// `origin_span` carries the ORIGINAL user-call span down the recursion so a
+/// diagnostic raised while expanding a macro's OWN output (a recursive macro
+/// like `cond`, whose expansion re-invokes itself with synthetic
+/// expansion-buffer spans) is anchored at the source position the user typed,
+/// not the internal offset (FIXME 0485). At the top-level entry it is `None`,
+/// and each recognized invocation uses the form's real span; once inside an
+/// expansion result it is `Some(user_span)` and every nested invocation
+/// inherits it.
 pub(crate) fn expand_sexp_recursive(
     sexp: Sexp,
     resolver: &mut dyn MacroResolver,
     depth: usize,
+    origin_span: Option<Span>,
 ) -> Result<Sexp, CranelispError> {
     if depth > EXPANSION_DEPTH_LIMIT {
         return Err(CranelispError::MacroError {
@@ -691,7 +754,10 @@ pub(crate) fn expand_sexp_recursive(
             if let Sexp::Symbol(ref name, sym_span) = children[0]
                 && let Some(fq) = resolver.recognize(name, sym_span)? {
                     let args = &children[1..];
-                    return expand_recognized_macro(fq, args, span, resolver, depth);
+                    // Anchor errors at the original user call when we are inside
+                    // an expansion; otherwise this form IS the user call.
+                    let call_span = origin_span.unwrap_or(span);
+                    return expand_recognized_macro(fq, args, call_span, resolver, depth);
                 }
             // Not a macro call — recurse into children.
             //
@@ -720,7 +786,7 @@ pub(crate) fn expand_sexp_recursive(
                     if i < hold_verbatim {
                         Ok(c)
                     } else {
-                        expand_sexp_recursive(c, resolver, depth)
+                        expand_sexp_recursive(c, resolver, depth, origin_span)
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -729,14 +795,15 @@ pub(crate) fn expand_sexp_recursive(
         Sexp::Symbol(ref name, span) => {
             // Bare symbol: check for zero-arg macro.
             if let Some(fq) = resolver.recognize(name, span)? {
-                return expand_recognized_macro(fq, &[], span, resolver, depth);
+                let call_span = origin_span.unwrap_or(span);
+                return expand_recognized_macro(fq, &[], call_span, resolver, depth);
             }
             Ok(sexp)
         }
         Sexp::Bracket(children, span) => {
             let expanded: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| expand_sexp_recursive(c, resolver, depth))
+                .map(|c| expand_sexp_recursive(c, resolver, depth, origin_span))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::Bracket(expanded, span))
         }
@@ -748,24 +815,30 @@ pub(crate) fn expand_sexp_recursive(
 /// (`cranelisp_types::MacroExpander`) boundary, then re-expand the result to
 /// fixpoint. The walk recognized `fq` via the LOCKED types primitive and the
 /// resolver ensured its clause code is in memory; execution is uniform.
+///
+/// `call_span` is the user-call span to attribute this invocation to — the
+/// original top-level call, not the synthetic offset of a recursive-expansion
+/// self-call (FIXME 0485). The result's nested calls inherit it via
+/// `origin_span = Some(call_span)`.
 fn expand_recognized_macro(
     fq: FQSymbol,
     args: &[Sexp],
-    span: Span,
+    call_span: Span,
     resolver: &mut dyn MacroResolver,
     depth: usize,
 ) -> Result<Sexp, CranelispError> {
     let result = {
         let expander = JitMacroExpander { symbol_tables: resolver.symbol_tables() };
         expander
-            .invoke(&fq, args, span)
+            .invoke(&fq, args, call_span)
             .map_err(|e| CranelispError::MacroError {
                 message: e.to_string(),
-                location: ErrorLocation::from_span(span),
+                location: ErrorLocation::from_span(call_span),
             })?
     };
-    // Re-expand the result (may contain further macro calls).
-    expand_sexp_recursive(result, resolver, depth + 1)
+    // Re-expand the result (may contain further macro calls); nested calls in
+    // the expansion inherit the user-call span as their error-attribution origin.
+    expand_sexp_recursive(result, resolver, depth + 1, Some(call_span))
 }
 
 // ---------------------------------------------------------------------------
@@ -858,7 +931,7 @@ mod tests {
         let form = cranelisp_frontend::parse("(defmacro x [] 1)")
             .unwrap()
             .remove(0);
-        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0)
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
             .expect("shielded name position must not attempt macro invocation");
         assert_eq!(
             expanded.format_flat(),
@@ -885,7 +958,7 @@ mod tests {
             asked: Vec::new(),
         };
         let form = cranelisp_frontend::parse("(add-i64 x 1)").unwrap().remove(0);
-        let result = expand_sexp_recursive(form, &mut resolver, 0);
+        let result = expand_sexp_recursive(form, &mut resolver, 0, None);
         assert!(
             resolver.asked.contains(&"x".to_string()),
             "a bare symbol in an ordinary argument position is still walked: asked={:?}",
@@ -965,6 +1038,84 @@ mod tests {
             }
             other => panic!("expected Aborted, got {other:?}"),
         }
+    }
+
+    /// Hand-build a `MacroClauseEntry` with the given fixed-param count and
+    /// variadic flag; the `func_ptr` is never dereferenced by the diagnostic
+    /// path (clause matching + message building read only `params`/`rest_param`).
+    fn clause(fixed: usize, variadic: bool) -> MacroClauseEntry {
+        MacroClauseEntry {
+            func_ptr: std::ptr::null(),
+            params: (0..fixed)
+                .map(|i| MacroParam::Name(Symbol::from(format!("p{i}"))))
+                .collect(),
+            rest_param: variadic.then(|| Symbol::from("rest")),
+        }
+    }
+
+    // spec: spec/09-macros.md §9.4 (multi-clause defmacro) + CLAUDE.md §Design
+    // Principles (self-documenting REPL) — the clause-exhaustion diagnostic
+    // anchors at the USER-CALL span (threaded down the expansion recursion, NOT
+    // a synthetic ≥1_000_000 expansion-buffer offset) and surfaces the accepted
+    // clause arities derived from the actual clause set. Guards FIXME 0485.
+    #[test]
+    fn no_matching_clause_error_reports_user_span_and_clause_arities() {
+        // A `cond`-shaped clause set: `([] …)` (0, no rest) + `([t b &rest] …)`
+        // (2, variadic) → accepted arities "0 or 2+".
+        let clauses = vec![clause(0, false), clause(2, true)];
+        let fq = FQSymbol {
+            module: ModuleFullPath::from("user"),
+            symbol: Symbol::from("mycond"),
+        };
+        // The user typed the call at a REAL source position, not synthetic.
+        let user_span = Span::new(42, 63);
+        // 1 argument matches neither clause (the recursion bottom).
+        let args = [Sexp::Bool(false, Span::SYNTHETIC)];
+        let err = no_matching_clause_error(&fq, &clauses, &args, user_span);
+        match err {
+            MacroInvokeError::Malformed { message, span, fq: efq } => {
+                // (a) span IS the user-call span, never a synthetic offset.
+                assert_eq!(span, user_span, "must carry the user-call span");
+                assert!(
+                    span.start < 1_000_000 && span.end < 1_000_000,
+                    "must not be a synthetic expansion-buffer span: {span}"
+                );
+                // (b) arity hint derived from the clause set.
+                assert!(
+                    message.contains("0 or 2+"),
+                    "arity hint from the clause set: {message}"
+                );
+                assert!(message.contains("1 argument(s)"), "the call's grain: {message}");
+                assert_eq!(efq.symbol, Symbol::from("mycond"));
+            }
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    // spec: spec/09-macros.md §9.4 — the arity description is derived from the
+    // MacroClauseEntry shapes for ANY multi-clause macro, not a cond-hardcoded
+    // string: fixed count, `+` for variadic, dedup, joined for display.
+    #[test]
+    fn describe_clause_arities_is_general_not_cond_specific() {
+        // Single fixed-arity clause.
+        assert_eq!(describe_clause_arities(&[clause(2, false)]), "2");
+        // Single variadic clause.
+        assert_eq!(describe_clause_arities(&[clause(1, true)]), "1+");
+        // cond shape: 0 fixed + 2-variadic → "0 or 2+".
+        assert_eq!(
+            describe_clause_arities(&[clause(0, false), clause(2, true)]),
+            "0 or 2+"
+        );
+        // A different multi-clause macro: 1, 2, 3+.
+        assert_eq!(
+            describe_clause_arities(&[clause(1, false), clause(2, false), clause(3, true)]),
+            "1, 2 or 3+"
+        );
+        // Duplicate arities collapse.
+        assert_eq!(
+            describe_clause_arities(&[clause(2, false), clause(2, false)]),
+            "2"
+        );
     }
 
     // spec: macro-availability-model.md §0.7 — a name resolving to a non-macro

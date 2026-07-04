@@ -388,7 +388,7 @@ pub(super) fn try_expand_sexp(
             blocked_on_fq_module: None,
         };
 
-        let r = expander::expand_sexp_recursive(sexp.clone(), &mut resolver, 0);
+        let r = expander::expand_sexp_recursive(sexp.clone(), &mut resolver, 0, None);
         let dms = std::mem::take(&mut resolver.macro_defining_modules);
         let blocked = resolver.blocked_on_fq_module.take();
         (r, dms, blocked)
