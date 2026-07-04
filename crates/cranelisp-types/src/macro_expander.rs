@@ -89,10 +89,10 @@ impl std::fmt::Display for MacroInvokeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MacroInvokeError::Aborted { fq, message, span } => {
-                write!(f, "macro `{fq:?}` aborted at {span}: {message}")
+                write!(f, "macro `{fq}` aborted at {span}: {message}")
             }
             MacroInvokeError::Malformed { fq, message, span } => {
-                write!(f, "macro `{fq:?}` returned malformed sexp at {span}: {message}")
+                write!(f, "macro `{fq}` returned malformed sexp at {span}: {message}")
             }
         }
     }
@@ -134,4 +134,56 @@ pub trait MacroExpander: Send + Sync {
         args: &[Sexp],
         call_span: Span,
     ) -> Result<Sexp, MacroInvokeError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cond_fq() -> FQSymbol {
+        FQSymbol {
+            module: "control".into(),
+            symbol: "cond".into(),
+        }
+    }
+
+    // The user-facing Display of a macro-invocation error must name the macro
+    // by its `module/symbol` form (FQSymbol's own Display), never leak the
+    // struct's `Debug` shape. Guards FIXME 0485.
+    #[test]
+    fn malformed_display_uses_fq_display_not_debug() {
+        let err = MacroInvokeError::Malformed {
+            fq: cond_fq(),
+            message: "not a heap pointer".into(),
+            span: Span::new(3, 7),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("control/cond"),
+            "expected `control/cond`, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("FQSymbol {"),
+            "Debug FQSymbol leaked into user-facing text: {rendered}"
+        );
+    }
+
+    // Sibling arm on the same diagnostic path — must render identically.
+    #[test]
+    fn aborted_display_uses_fq_display_not_debug() {
+        let err = MacroInvokeError::Aborted {
+            fq: cond_fq(),
+            message: "body panicked".into(),
+            span: Span::new(3, 7),
+        };
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("control/cond"),
+            "expected `control/cond`, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("FQSymbol {"),
+            "Debug FQSymbol leaked into user-facing text: {rendered}"
+        );
+    }
 }
