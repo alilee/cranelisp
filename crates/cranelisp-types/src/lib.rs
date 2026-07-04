@@ -315,8 +315,8 @@ pub use pipeline::{
 };
 pub use view::View;
 pub use resolve::{
-    Resolved, ResolveError, resolve, resolve_macro_head, resolve_with_fallback,
-    substitute_module_alias,
+    BindingProvenance, Resolved, ResolveError, check_binding_addition, resolve,
+    resolve_macro_head, resolve_with_fallback, substitute_module_alias,
 };
 pub use macro_expander::{MacroExpander, MacroInvokeError};
 pub use marshal::{

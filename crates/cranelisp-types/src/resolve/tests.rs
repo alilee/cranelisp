@@ -213,3 +213,86 @@ fn substitute_module_alias_prefers_longest_prefix() {
         "longest-prefix `a.b` wins over `a`",
     );
 }
+
+// ---------------------------------------------------------------------------
+// check_binding_addition — the shared §8.6.4 collision predicate (FIXME 0516).
+// The rule is a pure function of the (incoming, existing) provenance pair;
+// these cells assert IDENTICAL rejection at both binding events (def-event and
+// import-event × both orders) plus the allowed/free pairings.
+// ---------------------------------------------------------------------------
+
+fn remedy() -> FQSymbol {
+    FQSymbol { module: ModuleFullPath::from("util"), symbol: Symbol::from("measure") }
+}
+
+use crate::resolve::{BindingProvenance as BP, check_binding_addition};
+
+#[test]
+fn binding_addition_def_over_import_rejects() {
+    // spec: 08-modules §8.6.4 — the def-event: incoming Definition over an
+    // existing explicit import is a collision.
+    let name = Symbol::from("measure");
+    let e = check_binding_addition(&name, BP::Definition, BP::Import, &remedy(), Span::SYNTHETIC);
+    let msg = e.unwrap_err().to_string().to_lowercase();
+    assert!(msg.contains("conflict"), "{msg}");
+    assert!(msg.contains("util/measure"), "remedy FQ present: {msg}");
+}
+
+#[test]
+fn binding_addition_def_over_export_and_prelude_reject() {
+    let name = Symbol::from("measure");
+    for existing in [BP::Export, BP::Prelude] {
+        assert!(
+            check_binding_addition(&name, BP::Definition, existing, &remedy(), Span::SYNTHETIC)
+                .is_err(),
+            "def over {existing:?} MUST reject"
+        );
+    }
+}
+
+#[test]
+fn binding_addition_import_over_def_rejects() {
+    // spec: 08-modules §8.6.4 — the SYMMETRIC companion (the arm the import
+    // event was missing; the #8 hole). Incoming Import/Export over an existing
+    // local Definition MUST reject IDENTICALLY to the def-event direction.
+    let name = Symbol::from("measure");
+    for incoming in [BP::Import, BP::Export] {
+        let e = check_binding_addition(
+            &name,
+            incoming,
+            BP::Definition,
+            &remedy(),
+            Span::SYNTHETIC,
+        );
+        let msg = e.unwrap_err().to_string().to_lowercase();
+        assert!(msg.contains("conflict"), "{incoming:?} over def rejects: {msg}");
+        assert!(msg.contains("§8.6.4"), "{msg}");
+    }
+}
+
+#[test]
+fn binding_addition_def_over_def_allowed_redefinition() {
+    // Own prior definition of the same name — ordinary REPL redefinition.
+    let name = Symbol::from("measure");
+    assert!(
+        check_binding_addition(&name, BP::Definition, BP::Definition, &remedy(), Span::SYNTHETIC)
+            .is_ok(),
+        "def-over-def is redefinition, allowed"
+    );
+}
+
+#[test]
+fn binding_addition_import_over_import_not_this_predicate() {
+    // Import-over-import is the §8.6.5 distinct-terminal rule, NOT this
+    // predicate — every import/export vs import/export pairing passes here.
+    let name = Symbol::from("measure");
+    for incoming in [BP::Import, BP::Export, BP::Prelude] {
+        for existing in [BP::Import, BP::Export, BP::Prelude] {
+            assert!(
+                check_binding_addition(&name, incoming, existing, &remedy(), Span::SYNTHETIC)
+                    .is_ok(),
+                "{incoming:?} over {existing:?} is not a §8.6.4 collision"
+            );
+        }
+    }
+}

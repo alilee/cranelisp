@@ -392,6 +392,97 @@ where
     }
 }
 
+/// The provenance of a name binding, for the §8.6.4 / §8.4.0 name-collision
+/// rule ([`check_binding_addition`]). A binding of a bare name arises from one
+/// of four sources; the collision rule is a pure function of the (incoming,
+/// existing) provenance pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingProvenance {
+    /// A module-local definition (`defn` / `def` / `deftype`).
+    Definition,
+    /// A name brought into scope by an explicit `(import …)` (spec §8.3 — a
+    /// `Private` inner `Import` edge).
+    Import,
+    /// A name brought into scope by an `(export …)` re-export (spec §8.4.0 — a
+    /// `Public` inner `Import` edge; it enters the exporting module's own bare
+    /// scope).
+    Export,
+    /// A name reachable only through the implicit-prelude OUTER SCOPE
+    /// (spec §8.8.1).
+    Prelude,
+}
+
+/// The §8.6.4 / §8.4.0 name-binding collision rule — the SINGLE shared
+/// predicate, called at BOTH binding events (definition-register on the
+/// typecheck side, import/export-install on the int side). Single-sources the
+/// symmetric rule AND its FQ-remedy diagnostic so the two events can never
+/// drift (the FIXME-0516 unification — before it, each event carried its own
+/// copy of the rule and the import-event silently skipped the local-def case,
+/// the #8 mode-divergence hole).
+///
+/// `name` is the contested bare name; `incoming` is the provenance of the
+/// binding being added; `existing` is the provenance of the binding already in
+/// scope for that name; `remedy` is the fully-qualified identity of the OTHER
+/// symbol (the one the user should reference qualified to resolve the clash).
+///
+/// **Symmetric rule** (spec §8.6.4, all modes, no exceptions):
+///
+/// - incoming `Definition` vs existing `Import`/`Export`/`Prelude` ⇒ **error**
+///   (a definition may not shadow a name brought into scope);
+/// - incoming `Import`/`Export` vs existing `Definition` ⇒ **error** (the
+///   symmetric companion — an import/export may not shadow a local definition;
+///   this is the arm the import-event was missing);
+/// - incoming `Definition` vs existing `Definition` ⇒ **ok** (the module's own
+///   prior definition of the same name — ordinary REPL redefinition);
+/// - any other pairing ⇒ **ok** (import-over-import dedup/ambiguity is the
+///   §8.6.5 distinct-terminal rule, handled at the install seam, not here).
+///
+/// Both binding events install imports/exports (Pass-0) before registering
+/// definitions (Pass-1), so def-over-import AND import-over-def both reduce to
+/// this one probe, identically in every mode (the mode-parity MUST).
+pub fn check_binding_addition(
+    name: &Symbol,
+    incoming: BindingProvenance,
+    existing: BindingProvenance,
+    remedy: &FQSymbol,
+    span: Span,
+) -> Result<(), CranelispError> {
+    use BindingProvenance::{Definition, Export, Import, Prelude};
+    let collides = matches!(
+        (incoming, existing),
+        (Definition, Import | Export | Prelude) | (Import | Export, Definition)
+    );
+    if !collides {
+        // Def-over-def is ordinary redefinition; import-over-import is the
+        // §8.6.5 distinct-terminal rule (not this predicate's concern).
+        return Ok(());
+    }
+    let incoming_desc = match incoming {
+        Definition => "definition",
+        Import => "import",
+        Export => "export",
+        Prelude => "implicit-prelude binding",
+    };
+    let existing_desc = match existing {
+        Definition => "a local definition",
+        Import => "an explicit import",
+        Export => "an export",
+        Prelude => "the implicit prelude",
+    };
+    let message = format!(
+        "error: {incoming_desc} of '{name}' conflicts with '{name}' already in \
+         scope via {existing_desc} (spec/08-modules.md §8.6.4): a name may not be \
+         bound by both a definition and an import, export, or the implicit \
+         prelude. Rename or remove one binding (§8.3.5 / §8.8.3), or reference \
+         the other symbol fully-qualified as '{}/{}'",
+        remedy.module, remedy.symbol,
+    );
+    Err(CranelispError::TypeError {
+        message,
+        location: ErrorLocation::from_span(span),
+    })
+}
+
 /// Qualified `mod/sym` resolution (Principle 17 shape 2). Applies §8.6.6
 /// longest-prefix alias substitution to `module_part`, then looks `symbol_part`
 /// up directly in the alias-resolved module. No chain-follow on the symbol —
