@@ -616,6 +616,8 @@ unify(ADT(name1, [A1..An]), ADT(name2, [B1..Bm])):
 
 ADTs unify when they have the same name. Type arguments are unified pairwise.
 
+**Type identity is nominal and fully-qualified.** The `name` compared above is the ADT's fully-qualified identity — its home module together with its type name (`FQTypeName`), not the bare name. Two ADTs declared in **different modules** are therefore **distinct types even when they share a bare name and have byte-identical definitions**: `primitives/Option` and `fn.option/Option` do NOT unify, and a value of one does not match a constructor pattern of the other (`primitives/None` does not match `fn.option/Option`'s `None`). This is the standard nominal-typing property; structural coincidence never causes two independently-declared types to be interchangeable. It is the type-system backdrop for the fully-qualified name-resolution discipline in [§8.6.4](08-modules.md#864-conflict-rules): because same-named types from different modules are genuinely different, the fully-qualified reference (`module/Name`) is the unambiguous way to name exactly the one intended.
+
 ### 3.8.5 Type Constructor Application
 
 ```
