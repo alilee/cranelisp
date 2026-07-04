@@ -55,6 +55,75 @@ pub(crate) fn tail_transfer_skip(args: &[MonoExpr]) -> std::collections::HashSet
         .collect()
 }
 
+/// A compiled argument value paired with the [`HeapCategory`] to release it by
+/// — the element of a §3.1 post-call dec list (a temporary passed to a
+/// `Borrowed` param that the callee/adapter will not dec).
+type PostCallDec = (Value, HeapCategory);
+
+/// Result of [`FnCompiler::compile_consuming_arg_list_moded`]: the compiled arg
+/// values and the post-call decs owed after the call returns.
+type ModedArgList = (Vec<Value>, Vec<PostCallDec>);
+
+/// The per-position RC action the §3.1 caller-side borrow-elision emits for one
+/// argument (`design/backend/ownership-codegen.md` §3.1). The pure decision
+/// core of [`FnCompiler::compile_consuming_arg_list_moded`], factored out so the
+/// full `{arg-kind} × {mode} × {category}` matrix (§13.5 apply row, Principle 23)
+/// is unit-testable without a live `FnCompiler`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModedArgRc {
+    /// No RC op (scalar; or a transferred temporary; or an elided consuming inc).
+    None,
+    /// Pre-call consuming inc, unguarded (AlwaysHeap owned-binding to `Owned`).
+    Inc,
+    /// Pre-call consuming inc, guarded (Mixed owned-binding to `Owned`).
+    IncGuarded,
+    /// Post-call dec, unguarded (AlwaysHeap temporary to `Borrowed`).
+    PostDec,
+    /// Post-call dec, guarded (Mixed temporary to `Borrowed`).
+    PostDecGuarded,
+}
+
+/// Decide the §3.1 per-argument RC action from the arg's heap category, the
+/// callee's param mode, and whether the arg is an **owned-binding** (a local
+/// variable whose enclosing scope decs it at exit) vs a **temporary** (a fresh
+/// rc=1 value with no scope owner — a non-`Var`, OR a `Var` naming a
+/// fn-as-value / constructor that mints a fresh closure/ADT).
+///
+/// The matrix (heap positions only; `NeverHeap` ⇒ [`ModedArgRc::None`] always):
+///
+/// | owned-binding | mode | action |
+/// |---|---|---|
+/// | yes | `Owned` | consuming inc (also the adaptation path) |
+/// | yes | `Borrowed`/`Copy` | none (owner's scope-dec is the single accounting) |
+/// | no (temp) | `Owned`/`Copy` | none (rc=1 transfers into the callee) |
+/// | no (temp) | `Borrowed` | post-call dec (the callee/adapter will not dec it) |
+///
+/// `Copy` is never minted for a heap category in increment I; it is mapped to
+/// pass-through here for total, defensive coverage.
+pub(crate) fn moded_arg_rc(
+    category: HeapCategory,
+    mode: cranelisp_types::Mode,
+    owned_binding: bool,
+) -> ModedArgRc {
+    use cranelisp_types::Mode;
+    match category {
+        HeapCategory::NeverHeap => ModedArgRc::None,
+        HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
+            let guarded = matches!(category, HeapCategory::Mixed);
+            match (owned_binding, mode) {
+                (true, Mode::Owned) => {
+                    if guarded { ModedArgRc::IncGuarded } else { ModedArgRc::Inc }
+                }
+                (true, Mode::Borrowed | Mode::Copy) => ModedArgRc::None,
+                (false, Mode::Owned | Mode::Copy) => ModedArgRc::None,
+                (false, Mode::Borrowed) => {
+                    if guarded { ModedArgRc::PostDecGuarded } else { ModedArgRc::PostDec }
+                }
+            }
+        }
+    }
+}
+
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
 where
     C: cranelisp_types::CodeStore,
@@ -545,17 +614,26 @@ where
                 // optimisation by having typecheck emit `BuiltinFn { name:
                 // "add-i64" }` directly for primitive-implemented trait
                 // methods, bypassing the `TraitMethod` route entirely.
+                // User (trait-impl) function — moded consuming convention
+                // (§3.1): the callee's `ModeSummary` keys the per-position inc;
+                // temporaries to `Borrowed` params owe a post-call dec.
                 let sym = Symbol::from(mangled_name.as_ref());
-                let arg_vals = self.compile_consuming_arg_list(args)?;
+                let (arg_vals, post_call_decs) =
+                    self.compile_consuming_arg_list_moded(args, &sym)?;
                 self.in_tail_position = saved_tail;
-                self.compile_direct_call(&sym, &arg_vals, span)
+                let result = self.compile_direct_call(&sym, &arg_vals, span)?;
+                self.emit_post_call_decs(&post_call_decs);
+                Ok(result)
             }
             ResolvedCall::SigDispatch { mangled_name } => {
-                // User function — consuming convention.
-                let arg_vals = self.compile_consuming_arg_list(args)?;
-                self.in_tail_position = saved_tail;
+                // User function — moded consuming convention (§3.1).
                 let sym = Symbol::from(mangled_name.as_ref());
-                self.compile_direct_call(&sym, &arg_vals, span)
+                let (arg_vals, post_call_decs) =
+                    self.compile_consuming_arg_list_moded(args, &sym)?;
+                self.in_tail_position = saved_tail;
+                let result = self.compile_direct_call(&sym, &arg_vals, span)?;
+                self.emit_post_call_decs(&post_call_decs);
+                Ok(result)
             }
             ResolvedCall::AutoCurry {
                 ref target_name,
@@ -632,10 +710,15 @@ where
             return self.compile_closure_call(callee_val, &arg_vals, span);
         }
 
-        // Not a local variable: user function — consuming convention.
-        let arg_vals = self.compile_consuming_arg_list(args)?;
+        // Not a local variable: user function — moded consuming convention
+        // (§3.1). A bare `Var` callee with no resolved_call reaches dispatch
+        // here; `resolve_callee_summary` keys the per-position elision off the
+        // resolved callee, byte-identical when the callee carries no summary.
+        let (arg_vals, post_call_decs) = self.compile_consuming_arg_list_moded(args, name)?;
         self.in_tail_position = saved_tail;
-        self.compile_direct_call(name, &arg_vals, var_span)
+        let result = self.compile_direct_call(name, &arg_vals, var_span)?;
+        self.emit_post_call_decs(&post_call_decs);
+        Ok(result)
     }
 
     /// Compile a list of argument expressions into Cranelift values.
@@ -739,6 +822,131 @@ where
             vals.push(val);
         }
         Ok(vals)
+    }
+
+    /// §3.1 borrow-elision, caller side
+    /// (`design/backend/ownership-codegen.md` §3.1): compile args for a
+    /// statically-resolved user-function call whose callee carries an ownership
+    /// [`ModeSummary`], keying the per-position RC emission off the callee's
+    /// param modes instead of the uniform Decision-24 consuming inc.
+    ///
+    /// Returns `(arg_vals, post_call_decs)`. The caller MUST emit the returned
+    /// post-call decs (via [`Self::emit_post_call_decs`]) AFTER the call
+    /// instruction returns — they release temporaries passed to `Borrowed`
+    /// params that the callee will not dec.
+    ///
+    /// Per heap-typed position (scalars are never RC-touched):
+    /// - **Var arg, param `Owned`** — `emit_rc_inc[_guarded]`, verbatim today.
+    ///   This is ALSO the adaptation path (a caller-borrowed Var handed to an
+    ///   `Owned` position incs here, exactly as a match-field binding does).
+    /// - **Var arg, param `Borrowed`/`Copy`** — SKIP the inc; the caller retains
+    ///   ownership and its scope-cleanup dec is the single accounting; the callee
+    ///   (compiled against the same vector, §3.2) emits no param dec.
+    /// - **Temporary arg, param `Owned`** — no inc (ownership transfers at rc=1).
+    /// - **Temporary arg, param `Borrowed`** — no inc AND record a post-call dec
+    ///   (the callee will not dec the rc=1 temporary).
+    ///
+    /// **Byte-identical-off:** a `None` summary (analysis off, or a non-summary
+    /// callee) reads every param `Owned` through [`ModeSummary::param_mode`], so
+    /// the emission collapses to exactly [`Self::compile_consuming_arg_list`] and
+    /// `post_call_decs` is empty — no moded edge, no new instruction (§2.2).
+    fn compile_consuming_arg_list_moded(
+        &mut self,
+        args: &[MonoExpr],
+        callee: &Symbol,
+    ) -> Result<ModedArgList, CranelispError> {
+        let summary = crate::compiler::resolve_callee_summary(
+            self.ctx.symbol_tables,
+            self.ctx.module_aliases,
+            &self.ctx.current_module,
+            callee,
+        );
+        // Fast path: no summary (or an ABI-conservative one) ⇒ the elision cannot
+        // fire on any position, so route through the unmodified consuming helper.
+        // This is the structural byte-identical-off guarantee — the moded arm
+        // below is never entered when no summary exists.
+        let Some(summary) = summary.filter(|s| !s.is_abi_conservative()) else {
+            return Ok((self.compile_consuming_arg_list(args)?, Vec::new()));
+        };
+
+        let args_ptr = args.as_ptr();
+        let mut vals = Vec::with_capacity(args.len());
+        let mut post_call_decs: Vec<PostCallDec> = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let mode = summary.param_mode(i);
+
+            // Sparked argument: forced rc=1 temporary (like any temporary). With
+            // an `Owned` param it transfers; with `Borrowed` it owes a post-call
+            // dec.
+            if let Some(forced) = self.maybe_force_sparked_arg(i, args_ptr, arg.span())? {
+                if mode == cranelisp_types::Mode::Borrowed {
+                    // The forced value is a heap IVar result (rc=1); guarded dec
+                    // is layout-safe whether AlwaysHeap or Mixed.
+                    post_call_decs.push((forced, HeapCategory::Mixed));
+                }
+                vals.push(forced);
+                continue;
+            }
+
+            let val = self.compile_expr(arg)?;
+
+            // An **owned-binding Var** is a local variable (present in
+            // `variable_types`) whose owner (the enclosing scope) decs it at
+            // scope exit. Anything else at a `Var` position — a fn-as-value name,
+            // a bare constructor — mints a FRESH rc=1 value (no scope owner)
+            // exactly like a non-`Var` temporary, so it takes the temporary path.
+            // This mirrors the pre-S102 `compile_consuming_arg_list` gate, which
+            // inc'd ONLY Vars found in `variable_types`. The arg's category comes
+            // from that binding's authoritative type, else from the node type.
+            let (owned_binding, category) = match arg {
+                MonoExpr::Var { name, .. } if self.variable_types.contains_key(name) => {
+                    let ty = self.variable_types.get(name).cloned().unwrap_or_else(|| {
+                        unreachable!("contains_key checked above")
+                    });
+                    (true, signature_heap_category(&ty, Some(self.ctx.symbol_tables)))
+                }
+                _ => (false, HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables))),
+            };
+            match moded_arg_rc(category, mode, owned_binding) {
+                ModedArgRc::None => {}
+                ModedArgRc::Inc => heap::emit_rc_inc(&mut self.builder, self.module, val),
+                ModedArgRc::IncGuarded => {
+                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, val)
+                }
+                ModedArgRc::PostDec => post_call_decs.push((val, HeapCategory::AlwaysHeap)),
+                ModedArgRc::PostDecGuarded => post_call_decs.push((val, HeapCategory::Mixed)),
+            }
+
+            vals.push(val);
+        }
+        Ok((vals, post_call_decs))
+    }
+
+    /// Emit the post-call decs recorded by
+    /// [`Self::compile_consuming_arg_list_moded`] for temporaries passed to
+    /// `Borrowed` params. Emitted AFTER the call returns; each releases an rc=1
+    /// temporary the callee borrowed but did not consume (§3.1). Guarded/unguarded
+    /// dec per the recorded [`HeapCategory`].
+    fn emit_post_call_decs(&mut self, decs: &[PostCallDec]) {
+        let dealloc_id = self.ctx.dealloc_func_id;
+        for (val, category) in decs {
+            match category {
+                HeapCategory::AlwaysHeap => {
+                    heap::emit_rc_dec(&mut self.builder, self.module, *val, dealloc_id, None);
+                }
+                HeapCategory::Mixed => {
+                    heap::emit_rc_dec_guarded(
+                        &mut self.builder,
+                        self.module,
+                        *val,
+                        dealloc_id,
+                        None,
+                        true,
+                    );
+                }
+                HeapCategory::NeverHeap => {}
+            }
+        }
     }
 
     /// Compile a call to a named function.
@@ -1789,3 +1997,6 @@ mod dispatch_tests;
 
 #[cfg(test)]
 mod tail_transfer_skip_tests;
+
+#[cfg(test)]
+mod moded_arg_rc_tests;

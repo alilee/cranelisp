@@ -140,15 +140,12 @@ block11:
 function %cell-value(i64) -> i64 system_v {
     gv0 = symbol colocated userextname0
     sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64) -> i64 system_v
     fn0 = u0:2 sig0
-    fn1 = u0:1 sig1
 
 block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v15 -> v1
     jump block4
 
 block4:
@@ -185,18 +182,6 @@ block3:
     return v14  ; v14 = 0
 
 block2(v2: i64):
-    v16 = iadd_imm.i64 v1, 8
-    v17 = iconst.i64 1
-    v18 = atomic_rmw.i64 sub v16, v17  ; v17 = 1
-    v19 = icmp eq v18, v17  ; v17 = 1
-    brif v19, block11, block10
-
-block11:
-    fence 
-    v20 = call fn1(v1)
-    jump block10
-
-block10:
     return v2
 }
 ; === end CLIF user::cell-value ===
@@ -220,21 +205,23 @@ function %copy-work(i64, i64, i64, i64) -> i64 system_v {
     sig3 = (i64, i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
     sig5 = (i64) -> i64 system_v
-    sig6 = (i64, i64) system_v
-    sig7 = (i64) -> i64 system_v
-    sig8 = (i64, i64) system_v
-    sig9 = (i64) -> i64 system_v
-    sig10 = (i64, i64) system_v
+    sig6 = (i64) -> i64 system_v
+    sig7 = (i64, i64) system_v
+    sig8 = (i64) -> i64 system_v
+    sig9 = (i64, i64) system_v
+    sig10 = (i64) -> i64 system_v
+    sig11 = (i64, i64) system_v
     fn0 = u0:0 sig0
     fn1 = colocated u0:46 sig1
     fn2 = u0:19 sig2
     fn3 = u0:2 sig3
-    fn4 = colocated u0:47 sig5
-    fn5 = u0:11 sig6
-    fn6 = colocated u0:47 sig7
-    fn7 = u0:11 sig8
-    fn8 = colocated u0:47 sig9
-    fn9 = u0:11 sig10
+    fn4 = u0:1 sig5
+    fn5 = colocated u0:47 sig6
+    fn6 = u0:11 sig7
+    fn7 = colocated u0:47 sig8
+    fn8 = u0:11 sig9
+    fn9 = colocated u0:47 sig10
+    fn10 = u0:11 sig11
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
@@ -256,6 +243,7 @@ block3:
     store.i64 notrap aligned v6, v13+24
     v15 = func_addr.i64 fn1
     v16 = call fn2(v4, v5, v13, v15)
+    v46 -> v16
     v17 = iconst.i64 1
     v18 = isub.i64 v6, v17  ; v17 = 1
     v19 = load.i64 notrap aligned v16+16
@@ -285,58 +273,70 @@ block5:
     v37 = iadd_imm v36, 16
     v38 = load.i64 notrap aligned v37
     v39 = call_indirect sig4, v38(v32)
-    v40 = iadd.i64 v7, v39
-    v41 = func_addr.i64 fn4
-    v42 = iadd_imm.i64 v16, 8
-    v43 = iconst.i64 1
-    v44 = atomic_rmw.i64 sub v42, v43  ; v43 = 1
-    v45 = icmp eq v44, v43  ; v43 = 1
-    brif v45, block8, block7
+    v40 = iadd_imm v32, 8
+    v41 = iconst.i64 1
+    v42 = atomic_rmw.i64 sub v40, v41  ; v41 = 1
+    v43 = icmp eq v42, v41  ; v41 = 1
+    brif v43, block8, block7
 
 block8:
     fence 
-    call fn5(v16, v41)
+    v44 = call fn4(v32)
     jump block7
 
 block7:
-    jump block1(v4, v5, v18, v40)
-
-block9:
-    v57 = iconst.i64 0
-    v55 -> v57
-    v56 -> v57
-    v48 = iconst.i64 0
-    v47 -> v48
-    v46 = iconst.i64 0
-    v49 = func_addr.i64 fn6
-    v50 = iadd_imm v48, 8  ; v48 = 0
-    v51 = iconst.i64 1
-    v52 = atomic_rmw.i64 sub v50, v51  ; v51 = 1
-    v53 = icmp eq v52, v51  ; v51 = 1
-    brif v53, block11, block10
-
-block11:
-    fence 
-    call fn7(v48, v49)  ; v48 = 0
-    jump block10
+    v45 = iadd.i64 v7, v39
+    v47 = func_addr.i64 fn5
+    v48 = iadd_imm.i64 v16, 8
+    v49 = iconst.i64 1
+    v50 = atomic_rmw.i64 sub v48, v49  ; v49 = 1
+    v51 = icmp eq v50, v49  ; v49 = 1
+    brif v51, block10, block9
 
 block10:
-    jump block4(v46, v57)  ; v46 = 0, v57 = 0
+    fence 
+    call fn6(v16, v47)
+    jump block9
 
-block4(v11: i64, v54: i64):
-    v58 = func_addr.i64 fn8
-    v59 = iadd_imm v54, 8
-    v60 = iconst.i64 1
-    v61 = atomic_rmw.i64 sub v59, v60  ; v60 = 1
-    v62 = icmp eq v61, v60  ; v60 = 1
-    brif v62, block13, block12
+block9:
+    jump block1(v4, v5, v18, v45)
+
+block11:
+    v63 = iconst.i64 0
+    v61 -> v63
+    v62 -> v63
+    v54 = iconst.i64 0
+    v53 -> v54
+    v52 = iconst.i64 0
+    v55 = func_addr.i64 fn7
+    v56 = iadd_imm v54, 8  ; v54 = 0
+    v57 = iconst.i64 1
+    v58 = atomic_rmw.i64 sub v56, v57  ; v57 = 1
+    v59 = icmp eq v58, v57  ; v57 = 1
+    brif v59, block13, block12
 
 block13:
     fence 
-    call fn9(v54, v58)
+    call fn8(v54, v55)  ; v54 = 0
     jump block12
 
 block12:
+    jump block4(v52, v63)  ; v52 = 0, v63 = 0
+
+block4(v11: i64, v60: i64):
+    v64 = func_addr.i64 fn9
+    v65 = iadd_imm v60, 8
+    v66 = iconst.i64 1
+    v67 = atomic_rmw.i64 sub v65, v66  ; v66 = 1
+    v68 = icmp eq v67, v66  ; v66 = 1
+    brif v68, block15, block14
+
+block15:
+    fence 
+    call fn10(v60, v64)
+    jump block14
+
+block14:
     return v11
 }
 ; === end CLIF user::copy-work ===

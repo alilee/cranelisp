@@ -420,6 +420,21 @@ where
         // heap-typed parameters and dec's them at exit. The caller inc's
         // variable arguments before the call.
         let skip_var = Self::return_var_in_scope(body, compiler.scope_stack.last());
+        // §3.2 soundness tripwire (`design/backend/ownership-codegen.md` §3.2):
+        // a `Borrowed` param must NEVER be the function's returned value — the
+        // ownership analysis widens any returned/escaping param off `Borrowed`
+        // (to `Owned`/`AliasOf`) before the summary is emitted (typecheck
+        // §3.3/§4.2 rule 5). If a returned bare `Var` names a `borrowed_vars`
+        // member, the analysis violated that rule and the elided caller-side inc
+        // + elided callee-side dec would hand the caller a borrowed view it then
+        // frees (UAF). Cheap debug-build guard; no emission rule is owed.
+        debug_assert!(
+            skip_var
+                .as_ref()
+                .is_none_or(|rv| !compiler.borrowed_vars.contains(rv)),
+            "§3.2 invariant violated: Borrowed param {skip_var:?} reached the return path \
+             — the ownership analysis must widen returned params off Borrowed"
+        );
         let result = compiler.compile_expr(body)?;
         // B3.2 borrow-elision (`design/backend/ownership-codegen.md` §3.3): skip
         // the function-return protect inc when the ownership summary proves this
@@ -490,6 +505,37 @@ where
                 self.variable_types.insert(param_name.clone(), ty.clone());
             } else if let Some(ty) = Self::derive_param_type_from_body(body, param_name) {
                 self.variable_types.insert(param_name.clone(), ty);
+            }
+        }
+
+        // §3.2 borrow-elision, callee side
+        // (`design/backend/ownership-codegen.md` §3.2): each parameter whose
+        // ownership summary says `Borrowed` joins `borrowed_vars`. Everything
+        // then follows from the existing §5.5 discipline with ZERO new emission
+        // logic — no dec at `pop_scope_with_cleanup` (the caller owns the
+        // reference), never eligible for last-use ownership transfer
+        // (`is_last_use` gate), and passed onward to an `Owned` position gets the
+        // ordinary Var consuming inc (§3.1's adaptation). This is the spine §8.2
+        // subsumption made literal: an inferred `Borrowed` param is *implemented
+        // as* the discipline `borrowed_vars` already enforces for match-arm field
+        // bindings. Summary absent (⇒ every param `Owned`) or a `Copy`/scalar
+        // param ⇒ nothing inserted, so the callee body is byte-identical to the
+        // pre-S102 consuming compilation under `CRANELISP_NO_OWNERSHIP`.
+        if let Some(summary) = self.current_mode_summary.clone() {
+            for (i, (param_name, _)) in defn.params().iter().enumerate() {
+                if summary.param_mode(i) == cranelisp_types::Mode::Borrowed {
+                    // Borrowed only ever applies to a heap-typed reference; the
+                    // heap-typedness check keeps a mis-shaped summary (a Borrowed
+                    // mode on a scalar position) from wrongly suppressing a dec
+                    // that never existed — a no-op either way, but explicit.
+                    let is_heap = self
+                        .variable_types
+                        .get(param_name)
+                        .is_some_and(|ty| self.is_heap_type(ty));
+                    if is_heap {
+                        self.mark_borrowed(param_name);
+                    }
+                }
             }
         }
     }

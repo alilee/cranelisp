@@ -156,6 +156,23 @@ and the deeper rc_emission cells REMAIN. Status stays **open** — the drain
 shrank by rc_emission (COW polarity) + fn_as_value (curry/TCO covered at
 e2e/golden grain), not the whole taxonomy.
 
+## Progress — S102 Wave 11b B3.2 (step 2 PARTIAL: apply moded-arg matrix; 2026-07-04)
+
+**Step-2 drain SHRINKS by the `apply` caller-side borrow-elision cells.** The
+B3.2 borrow-elision core (`design/backend/ownership-codegen.md` §3.1–§3.5) landed
+its §3.1 per-argument RC decision as the pure `moded_arg_rc(category, mode,
+owned_binding)` and pinned the FULL `{heap category} × {mode} × {owned-binding vs
+temporary}` matrix (3×3×2, all 18 cells + the negative/scalar, byte-identical-off,
+elision, post-call-dec, and Copy classes) in
+`compiler/apply/moded_arg_rc_tests.rs` (6 tests). This is the §13.5 apply-row
+scenario space; the temp+`Borrowed` post-call-dec cell is the one whose absence
+leaked a fn-as-value closure in isolation testing (caught by the RC-balance
+oracle, now a pinned matrix cell + design as-built note). The §3.2 callee
+`borrowed_vars`, §3.4 adaptation, and §3.5 R2 wrapper are covered at e2e/golden
+grain (the 9-entry ON re-baseline + the a–e class repros; §3 as-built). Status
+stays **open** — the drain shrank by the `apply` caller matrix, not the whole
+taxonomy.
+
 ## Operational implication / Context
 
 Sequencing: rides increment I's first backend change-sets — increment I lands on

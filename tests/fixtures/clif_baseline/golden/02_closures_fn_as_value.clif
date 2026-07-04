@@ -30,10 +30,11 @@ function %main() -> i64 system_v {
     sig14 = (i64, i64) -> i64 system_v
     sig15 = (i64, i64) -> i64 system_v
     sig16 = (i64) -> i64 system_v
-    sig17 = (i64, i64) -> i64 system_v
-    sig18 = (i64) system_v
-    sig19 = (i64) -> i64 system_v
+    sig17 = (i64) -> i64 system_v
+    sig18 = (i64, i64) -> i64 system_v
+    sig19 = (i64) system_v
     sig20 = (i64) -> i64 system_v
+    sig21 = (i64) -> i64 system_v
     fn0 = u0:18 sig0
     fn1 = u0:0 sig1
     fn2 = colocated u0:39 sig2
@@ -49,8 +50,9 @@ function %main() -> i64 system_v {
     fn12 = u0:17 sig12
     fn13 = u0:0 sig13
     fn14 = colocated u0:42 sig14
-    fn15 = u0:1 sig19
-    fn16 = u0:0 sig20
+    fn15 = u0:1 sig16
+    fn16 = u0:1 sig20
+    fn17 = u0:0 sig21
 
 block0:
     jump block1
@@ -122,46 +124,58 @@ block3:
     v38 = iadd_imm v37, 24
     v39 = load.i64 notrap aligned v38
     v40 = call_indirect sig15, v39(v33, v36)  ; v36 = 4
-    v41 = iconst.i64 10
-    v42 = global_value.i64 gv1
-    v43 = iadd_imm v42, 8
-    v44 = load.i64 notrap aligned v43
-    v45 = call_indirect sig16, v44(v41)  ; v41 = 10
-    v46 = iconst.i64 7
-    v47 = load.i64 notrap aligned v45+16
-    v48 = call_indirect sig17, v47(v45, v46)  ; v46 = 7
-    v49 = iadd_imm v45, 8
-    v50 = iconst.i64 1
-    v51 = atomic_rmw.i64 sub v49, v50  ; v50 = 1
-    v52 = icmp eq v51, v50  ; v50 = 1
-    brif v52, block10, block9
+    v41 = iadd_imm v33, 8
+    v42 = iconst.i64 1
+    v43 = atomic_rmw.i64 sub v41, v42  ; v42 = 1
+    v44 = icmp eq v43, v42  ; v42 = 1
+    brif v44, block10, block9
 
 block10:
     fence 
-    v53 = load.i64 notrap aligned v45+24
-    v54 = iconst.i64 0
-    v55 = icmp ne v53, v54  ; v54 = 0
-    brif v55, block11, block12
-
-block11:
-    call_indirect.i64 sig18, v53(v45)
-    jump block12
-
-block12:
-    v56 = call fn15(v45)
+    v45 = call fn15(v33)
     jump block9
 
 block9:
-    v57 = iadd.i64 v40, v48
-    jump block4(v57)
+    v46 = iconst.i64 10
+    v47 = global_value.i64 gv1
+    v48 = iadd_imm v47, 8
+    v49 = load.i64 notrap aligned v48
+    v50 = call_indirect sig17, v49(v46)  ; v46 = 10
+    v51 = iconst.i64 7
+    v52 = load.i64 notrap aligned v50+16
+    v53 = call_indirect sig18, v52(v50, v51)  ; v51 = 7
+    v54 = iadd_imm v50, 8
+    v55 = iconst.i64 1
+    v56 = atomic_rmw.i64 sub v54, v55  ; v55 = 1
+    v57 = icmp eq v56, v55  ; v55 = 1
+    brif v57, block12, block11
+
+block12:
+    fence 
+    v58 = load.i64 notrap aligned v50+24
+    v59 = iconst.i64 0
+    v60 = icmp ne v58, v59  ; v59 = 0
+    brif v60, block13, block14
+
+block13:
+    call_indirect.i64 sig19, v58(v50)
+    jump block14
+
+block14:
+    v61 = call fn16(v50)
+    jump block11
+
+block11:
+    v62 = iadd.i64 v40, v53
+    jump block4(v62)
 
 block4(v2: i64):
-    v58 = iconst.i64 16
-    v59 = call fn16(v58)  ; v58 = 16
-    v60 = iconst.i64 0
-    store notrap aligned v60, v59+16  ; v60 = 0
-    store notrap aligned v2, v59+24
-    return v59
+    v63 = iconst.i64 16
+    v64 = call fn17(v63)  ; v63 = 16
+    v65 = iconst.i64 0
+    store notrap aligned v65, v64+16  ; v65 = 0
+    store notrap aligned v2, v64+24
+    return v64
 }
 ; === end CLIF user::main ===
 ; === CLIF user::make-adder ===
@@ -188,9 +202,6 @@ block1(v1: i64):
 ; === CLIF user::user/call1$Fn(Int;Int)+Int ===
 function %user/call1$Fn(Int;Int)+Int(i64, i64) -> i64 system_v {
     sig0 = (i64, i64) -> i64 system_v
-    sig1 = (i64) system_v
-    sig2 = (i64) -> i64 system_v
-    fn0 = u0:1 sig2
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)
@@ -198,28 +209,6 @@ block0(v0: i64, v1: i64):
 block1(v2: i64, v3: i64):
     v4 = load.i64 notrap aligned v2+16
     v5 = call_indirect sig0, v4(v2, v3)
-    v6 = iadd_imm v2, 8
-    v7 = iconst.i64 1
-    v8 = atomic_rmw.i64 sub v6, v7  ; v7 = 1
-    v9 = icmp eq v8, v7  ; v7 = 1
-    brif v9, block3, block2
-
-block3:
-    fence 
-    v10 = load.i64 notrap aligned v2+24
-    v11 = iconst.i64 0
-    v12 = icmp ne v10, v11  ; v11 = 0
-    brif v12, block4, block5
-
-block4:
-    call_indirect.i64 sig1, v10(v2)
-    jump block5
-
-block5:
-    v13 = call fn0(v2)
-    jump block2
-
-block2:
     return v5
 }
 ; === end CLIF user::user/call1$Fn(Int;Int)+Int ===

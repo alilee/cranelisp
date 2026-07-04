@@ -12,7 +12,7 @@
 use dashmap::DashMap;
 
 use cranelisp_types::{
-    DefKind, ModuleEntry, ModuleFullPath, PrimitiveBody, Symbol, SymbolTable, Type,
+    DefKind, ModeSummary, ModuleEntry, ModuleFullPath, PrimitiveBody, Symbol, SymbolTable, Type,
 };
 
 /// GOT data symbol name for a module. Single source of truth.
@@ -312,6 +312,43 @@ where
             }
         },
     )
+    .flatten()
+}
+
+/// Resolve a callee name to its per-callable ownership [`ModeSummary`], walking
+/// the SAME current → qualified → global precedence `resolve_got_target` uses
+/// (`design/backend/ownership-codegen.md` §3.1 — the caller-side borrow-elision
+/// lookup). The walk STOPS at the first **callable target**
+/// ([`ModuleEntry::is_callable_target`], the FIXME-0476 stop predicate — a
+/// shadowing user fn resolves first exactly as for dispatch), then reads that
+/// entry's summary through [`ModuleEntry::mode_summary`].
+///
+/// Returns `None` when the name is absent, resolves to a non-callable, or the
+/// callable carries no summary — **all three read as the Decision-24
+/// conservative point** (every param `Owned`, result `Fresh`) through the
+/// [`ModeSummary`] ⊤-on-absence accessors. Under `CRANELISP_NO_OWNERSHIP`
+/// typecheck emits no summaries, so every callee resolves `None` here and the
+/// caller-side emission is byte-identical to the pre-S102 consuming path (§2.2
+/// else-arm discipline).
+pub(crate) fn resolve_callee_summary<C, L>(
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+    module_aliases: &cranelisp_types::ModuleAliases,
+    current_module: &ModuleFullPath,
+    name: &Symbol,
+) -> Option<ModeSummary>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    resolve_driven(symbol_tables, module_aliases, current_module, name, |_module, _bare, entry| {
+        // Stop at the first callable target (dispatch-faithful precedence); a
+        // non-callable terminal is not a stop point — keep walking. A callable
+        // with no summary stops here and reports `Some(None)` ⇒ conservative.
+        if !entry.is_callable_target() {
+            return None;
+        }
+        Some(entry.mode_summary().cloned())
+    })
     .flatten()
 }
 

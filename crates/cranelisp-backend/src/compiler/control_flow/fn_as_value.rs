@@ -414,12 +414,63 @@ where
         Ok(())
     }
 
+    /// §3.4 adaptation algebra (`design/backend/ownership-codegen.md` §3.4): emit
+    /// the per-edge delta between the closure-protocol Decision-24 convention
+    /// (every param arrives owned/consumed, result is Fresh/owned) and the
+    /// target's moded [`ModeSummary`], onto a wrapper's borrowed `builder` AFTER
+    /// the target call returns. ONE helper, and the sole consumers all reach it
+    /// through [`Self::emit_wrapper_call`] (the fn-as-value / trait-method-value
+    /// wrapper bodies and the auto-curry target call) — no per-site reinvention
+    /// (Principle 7), no stacked adapters.
+    ///
+    /// - param `Owned→Borrowed` ⇒ **post-call dec** of the received-owned arg:
+    ///   the wrapper owns its params (closure protocol) but the moded callee
+    ///   borrowed (did not dec) the `Borrowed` positions, so the wrapper releases
+    ///   them.
+    /// - result `ProjectionOf→Fresh` ⇒ **materialization inc**: the moded callee
+    ///   returned a borrowed view rooted in a param, but the closure protocol
+    ///   owes the caller a fresh owned value.
+    /// - everything else (Owned/Copy params, `AliasOf`/`Fresh` result) ⇒
+    ///   pass-through.
+    ///
+    /// Guarded RC ops throughout (layout-safe for AlwaysHeap and Mixed alike).
+    /// Reached ONLY for a non-ABI-conservative summary, so with analysis off it
+    /// never runs — the wrapper body is byte-identical to today (§2.2).
+    fn emit_d24_adaptation(
+        &mut self,
+        builder: &mut FunctionBuilder,
+        summary: &cranelisp_types::ModeSummary,
+        args: &[Value],
+        result: Value,
+    ) {
+        let dealloc_id = self.ctx.dealloc_func_id;
+        for (i, &arg) in args.iter().enumerate() {
+            if summary.param_mode(i) == cranelisp_types::Mode::Borrowed {
+                heap::emit_rc_dec_guarded(builder, self.module, arg, dealloc_id, None, true);
+            }
+        }
+        if matches!(summary.result, cranelisp_types::ResultMode::ProjectionOf(_)) {
+            heap::emit_rc_inc_guarded(builder, self.module, result);
+        }
+    }
+
     /// Emit the call instruction inside a wrapper function body.
     ///
     /// Prefers a direct `call` via FuncId when the target is in the current
     /// unit's `func_ids` map. Otherwise emits a GOT-indirect `call_indirect`
     /// using the uniform `__cranelisp_got_{module}` data-symbol strategy
     /// (design/backend/compile-to-module.md §12).
+    ///
+    /// §3.5 R2 wrapper coupling: when the resolved call target carries a
+    /// **non-trivial** ownership summary (any param non-`Owned`, or result
+    /// non-`Fresh`), the moded-body call is wrapped with [`Self::emit_d24_adaptation`]
+    /// so the closure-reachable code pointer (this wrapper) is Decision-24
+    /// conformant. THE INVARIANT: every code pointer reachable from a closure
+    /// value targets a Decision-24-conformant entry; a moded body is reachable
+    /// ONLY through statically-resolved call sites (§3.1) and these adapter
+    /// wrapper bodies — its address never escapes into a closure unadapted.
+    /// A summary-trivial (or absent) target synthesizes directly over the body
+    /// call as today (zero new emission — byte-identical-off).
     fn emit_wrapper_call(
         &mut self,
         builder: &mut FunctionBuilder,
@@ -428,6 +479,18 @@ where
         span: Span,
         vec_elem: Option<&Type>,
     ) -> Result<Value, CranelispError> {
+        // §3.5: the target's summary, kept only when non-ABI-conservative — the
+        // moded-body arms below adapt against it. `None` for every summary-trivial
+        // or non-summary target (constructors, inline vec primitives, unanalysed
+        // fns), so those arms emit exactly today's shape.
+        let target_summary = crate::compiler::resolve_callee_summary(
+            self.ctx.symbol_tables,
+            self.ctx.module_aliases,
+            &self.ctx.current_module,
+            target_name,
+        )
+        .filter(|s| !s.is_abi_conservative());
+
         // If the function is declared in the current compilation unit, emit a
         // direct call — cheaper and avoids an unnecessary GOT dereference. User
         // ADT constructors have a compiled constructor function here, so this
@@ -436,7 +499,11 @@ where
             let target_ref =
                 self.module.declare_func_in_func(*target_id, builder.func);
             let call = builder.ins().call(target_ref, user_params);
-            return Ok(builder.inst_results(call)[0]);
+            let result = builder.inst_results(call)[0];
+            if let Some(ref summary) = target_summary {
+                self.emit_d24_adaptation(builder, summary, user_params, result);
+            }
+            return Ok(result);
         }
 
         // Data constructor as a first-class value with NO callable function in
@@ -518,7 +585,15 @@ where
         let sig_ref = builder.import_signature(sig);
 
         let call = builder.ins().call_indirect(sig_ref, func_ptr, user_params);
-        Ok(builder.inst_results(call)[0])
+        let result = builder.inst_results(call)[0];
+        // §3.5: adapt the moded-body call so this wrapper (the closure-reachable
+        // code pointer) is Decision-24 conformant. `None` ⇒ no emission (today's
+        // shape). Auto-curry composes here directly (it reaches this arm through
+        // `emit_curry_target_call`) — one adapter, never stacked.
+        if let Some(ref summary) = target_summary {
+            self.emit_d24_adaptation(builder, summary, user_params, result);
+        }
+        Ok(result)
     }
 
     /// Emit the call to the auto-curry target inside a wrapper function body.

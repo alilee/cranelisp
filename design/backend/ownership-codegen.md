@@ -233,16 +233,59 @@ fence, spine §8.2).
 > `f4_sudoku` (each = one protect inc elided on a `Fresh` non-`Apply` return; the
 > param scope-dec retained). Unit matrix updated: `fresh_summary_elides_all_body_shapes`.
 >
-> **NOT YET BUILT (remaining B3.2 ladder):** §3.1 caller skip-inc + temp post-call
-> dec; §3.2 `Borrowed` params → `borrowed_vars` + the Borrowed-never-returns
-> `debug_assert`; §3.3 in-frame `vec-get` projection + `ProjectionOf`/`AliasOf`
-> consumption + the `compute_last_uses` provenance extension; §3.4 `emit_d24_adaptation`;
-> §3.5 the R2 `__d24wrap` wrapper + curry composition. These are the coupled
-> caller/callee ABI change (the largest re-baseline) and MUST co-land §3.2+§3.5
-> (the closure-value invariant). Blocked-adjacent: FIXME 0516 constrains how far
-> `result` alone can be trusted for non-`Apply` bodies. The H2 per-mechanism
-> RC_STATS counter (§ below) is owed and needs the `cranelisp-intrinsics`
-> `print_rc_stats` surface (backend-paired runtime, out of the backend crate).
+> **AS-BUILT — B3.2 borrow-elision core (S102 Wave 11b, this change-set).** The
+> coupled caller/callee ABI change landed as ONE atomic unit (§3.1 + §3.2 + §3.4
+> + §3.5). Seams:
+> - **§3.1 caller** — `compile_consuming_arg_list_moded` (`apply.rs`) reads the
+>   callee summary via `resolve_callee_summary` (new; `resolution.rs`, stops at
+>   `is_callable_target`, ⊤-on-absence). Per-position emission is the pure
+>   `moded_arg_rc(category, mode, owned_binding)` (matrix in
+>   `apply/moded_arg_rc_tests.rs`). Threaded through the three user-fn arms —
+>   `SigDispatch`, `TraitMethod`, `compile_var_apply` global — each emitting the
+>   returned `post_call_decs` after `compile_direct_call`. **As-built
+>   sharpening:** a `Var` naming a fn-as-value / bare constructor (NOT in
+>   `variable_types`) is a fresh rc=1 **temporary**, not an owned binding — it
+>   gets the temp+`Borrowed` post-call dec (the cell whose absence leaked a
+>   fn-as-value closure in isolation testing). Constructors / closures / externs
+>   / platform effects UNTOUCHED (Decision-24 permanent).
+> - **§3.2 callee** — `bind_defn_params` (`fn_compiler.rs`) registers each
+>   `Borrowed` heap param into `borrowed_vars` (via `mark_borrowed`); everything
+>   follows from the existing §5.5 discipline (no scope dec, never last-use). The
+>   Borrowed-never-returns `debug_assert!` fires at the `compile_body` return
+>   site.
+> - **§3.4 adaptation** — `emit_d24_adaptation(summary, args, result)`
+>   (`fn_as_value.rs`): per `Borrowed` param a guarded post-call dec; a
+>   `ProjectionOf` result a guarded materialization inc; else pass-through. ONE
+>   helper.
+> - **§3.5 R2 wrapper** — realized by injecting `emit_d24_adaptation` into the
+>   EXISTING `emit_wrapper_call` moded-body arms (the func-id direct call and the
+>   GOT-indirect call), gated on a non-ABI-conservative target summary. The
+>   existing `__wrap_` / `__wrap_tmv_` / `__curry_` wrapper body IS the
+>   Decision-24 adapter (its code pointer is the only closure-reachable pointer;
+>   the moded body is reached ONLY through it and through §3.1 static sites) — so
+>   no separate `__d24wrap_` artifact is minted (simpler, and satisfies THE
+>   INVARIANT directly). Auto-curry composes through `emit_curry_target_call →
+>   emit_wrapper_call`: ONE adapter, never stacked.
+>
+> **Proof (this change-set): byte-identical-OFF confirmed** (toggle-off HEAD ==
+> toggle-off parent, all 13 corpus entries, manual capture since `clif_golden.sh`
+> strips the toggle). **Analysis-ON re-baseline: 9 entries** (01/02/04/07/08 +
+> f1/f2/f3/f4) — categories: §3.1 caller skip-inc (reduced incs), §3.2 callee
+> dec-elide (reduced decs), §3.1/§3.5 adaptation post-call dec (added decs on 01,
+> f3), FuncId/value renumber ripple (02, f2); `clif_golden.sh diff` EMPTY.
+> **Behavioral (ON==OFF observable + RC-balanced under `MALLOC_PERTURB_` +
+> `RC_DEC_CHECK`):** all 13 corpus ON==OFF; `04_vec_cow_loop` exit 220; the five
+> elision classes a–e each pinned by a value-correct + balanced repro (borrowed
+> pass-through; borrowed→Owned adaptation inc; temp+Borrowed post-call dec; moded
+> fn as closure value; auto-curry of a moded target).
+>
+> **STILL DEFERRED (optional follow-on, §3.3):** in-frame `vec-get` projection
+> elision + `ProjectionOf`/`AliasOf` in-frame consumption + the
+> `compute_last_uses` provenance extension. Not required by the coupled core; the
+> `ProjectionOf` **result-mode** materialization inc IS built (§3.4). The H2
+> per-mechanism RC_STATS counter (`ownership_fences::h2_*`, RED) is owed and needs
+> the `cranelisp-intrinsics` `print_rc_stats` surface (backend-paired runtime, out
+> of this crate); h3 (per-extern adaptation pairs) rides B3.3/B3.5.
 
 ### 3.1 Caller side — `compile_consuming_arg_list` keyed off the vector
 
