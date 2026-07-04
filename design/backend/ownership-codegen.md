@@ -206,6 +206,33 @@ fence, spine §8.2).
 
 ## §3. Borrow-elision emission (spine §10 item 7)
 
+> **AS-BUILT — B3.2 Wave 11 (partial, commit `d7b6a0f`).** The **first summary
+> consumer** landed: §3.3's `ResultMode::Fresh` protect-elision. The compile-in-hand
+> `ModeSummary` (`codegen_view.mode_summary`, `MonoDefnVariant`) is threaded into
+> `FnCompiler.current_mode_summary` (`lib.rs` `compile_to_module_impl` →
+> `compile_defn_in_module` → `compile_body`; the lenient JIT/REPL path passes
+> `None`). At the function-return site (`fn_compiler.rs::compile_body`),
+> `return_is_fresh_by_summary(body, summary)` elides `protect_return_value`'s inc
+> when a PRESENT summary has `result == Fresh` **and the body is a direct `Apply`**.
+> The `Apply` restriction is a soundness counterweight to FIXME 0516 (the ABI
+> `result` collapses a partial control-flow param-return to `Fresh` — trusting it
+> for `if`/`match`/`let` bodies SIGABRTs `build` in `04_vec_cow_loop`). Byte-identical
+> under `CRANELISP_NO_OWNERSHIP` (all 13 corpus entries); scoped ON re-baseline =
+> `05_string_externs` + `f4_sudoku`. Flips the G2 (`vec_set_as_value_shared_source_neg`)
+> and item-26 (`vec_returned_from_generic_fn…`) guards. Unit matrix:
+> `fn_compiler::return_protect_tests`.
+>
+> **NOT YET BUILT (remaining B3.2 ladder):** §3.1 caller skip-inc + temp post-call
+> dec; §3.2 `Borrowed` params → `borrowed_vars` + the Borrowed-never-returns
+> `debug_assert`; §3.3 in-frame `vec-get` projection + `ProjectionOf`/`AliasOf`
+> consumption + the `compute_last_uses` provenance extension; §3.4 `emit_d24_adaptation`;
+> §3.5 the R2 `__d24wrap` wrapper + curry composition. These are the coupled
+> caller/callee ABI change (the largest re-baseline) and MUST co-land §3.2+§3.5
+> (the closure-value invariant). Blocked-adjacent: FIXME 0516 constrains how far
+> `result` alone can be trusted for non-`Apply` bodies. The H2 per-mechanism
+> RC_STATS counter (§ below) is owed and needs the `cranelisp-intrinsics`
+> `print_rc_stats` surface (backend-paired runtime, out of the backend crate).
+
 ### 3.1 Caller side — `compile_consuming_arg_list` keyed off the vector
 
 At a statically-resolved call site whose callee carries a summary, the arg loop (`apply.rs:682`)
