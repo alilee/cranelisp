@@ -1134,6 +1134,53 @@
         );
     }
 
+    // spec: 08-modules §8.6.4 — the DEF-EVENT routes through the shared
+    // `check_binding_addition` predicate (FIXME 0516). A `defn` whose bare name
+    // is already bound by an explicit import in the current module is a
+    // compile-time collision; the diagnostic names the FQ remedy.
+    #[test]
+    fn reject_def_over_import_via_shared_predicate() {
+        let mut tf = tf();
+        // M defines `measure`; N imports it, then N tries to define it locally.
+        seed_value(&mut tf, "m", "measure");
+        let n = ModuleFullPath::from("n");
+        tf.set_current_module(n.clone());
+        tf.symbol_table_mut().insert(
+            Symbol::from("measure"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("m"),
+                    symbol: Symbol::from("measure"),
+                },
+                visibility: Visibility::Private,
+            },
+        );
+        let state = CheckState::new(n.clone());
+        let res = tf
+            .env()
+            .reject_def_over_binding(&state, &Symbol::from("measure"), Span::SYNTHETIC);
+        let msg = res.unwrap_err().to_string().to_lowercase();
+        assert!(msg.contains("conflict"), "def-over-import rejects: {msg}");
+        assert!(msg.contains("m/measure"), "remedy FQ present: {msg}");
+    }
+
+    // spec: 08-modules §8.6.4 — the module's OWN prior definition is ordinary
+    // redefinition (the shared predicate's Def-over-Def arm returns Ok).
+    #[test]
+    fn reject_def_over_binding_allows_own_redefinition() {
+        let mut tf = tf();
+        let m = ModuleFullPath::from("appredef");
+        seed_value(&mut tf, "appredef", "measure");
+        tf.set_current_module(m.clone());
+        let state = CheckState::new(m.clone());
+        assert!(
+            tf.env()
+                .reject_def_over_binding(&state, &Symbol::from("measure"), Span::SYNTHETIC)
+                .is_ok(),
+            "redefining the module's own prior def is allowed"
+        );
+    }
+
     // spec: 08-modules §8.6.4 — primitives reach user code VIA prelude's
     // re-export, resolved THROUGH the fallback (not a name-key). prelude holds
     // an `Import` edge to a primitive; a bare reference in M falls back to

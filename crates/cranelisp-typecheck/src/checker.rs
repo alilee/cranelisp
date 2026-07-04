@@ -29,10 +29,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dashmap::DashMap;
 
 use cranelisp_types::{ErrorLocation,
-    CranelispError, FQSymbol, MethodResolutions, ModuleAliases, ModuleEntry,
-    ModuleFullPath, ResolutionGap, ResolveError, ResolvedCall, Scheme, Span,
-    Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
-    Warning, apply,
+    BindingProvenance, CranelispError, FQSymbol, MethodResolutions, ModuleAliases,
+    ModuleEntry, ModuleFullPath, ResolutionGap, ResolveError, ResolvedCall, Scheme,
+    Span, Subst, Symbol, SymbolTable, TraitName, Type, TypeDefInfo, TypeId, TypeName,
+    Warning, apply, check_binding_addition,
 };
 
 // Per single-pair invariant (`facades/typecheck.md` §"Single-pair invariant"):
@@ -1028,32 +1028,29 @@ where
             Ok(r) => r,
             Err(_) => return Ok(()), // not in scope — free to define (§8.8.3)
         };
-        if resolved.home == state.current_module {
-            return Ok(()); // own prior def/typedef — ordinary redefinition
-        }
-        // Collision. Name the source kind from the inner head (staging-aware,
-        // no chain-follow, no fallback): an inner `Import` entry is an explicit
-        // import (Private) or export (Public); absence means the binding came
-        // from the implicit-prelude outer scope.
-        let inner_head = self.probe_module_entry_owned(&state.current_module, n);
-        let kind = match &inner_head {
-            Some(e) if matches!(e, ModuleEntry::Import { .. }) && e.is_public() => "export",
-            Some(ModuleEntry::Import { .. }) => "import",
-            _ => "the implicit prelude",
+        // Classify the existing binding's provenance, then delegate to the ONE
+        // shared §8.6.4 predicate (FIXME 0516 — the def-event and the import-
+        // event now enforce the identical rule through this single helper).
+        let existing = if resolved.home == state.current_module {
+            // The module's OWN prior def/typedef — ordinary redefinition.
+            BindingProvenance::Definition
+        } else {
+            // The sole in-scope binding is an explicit `import`/`export` inner
+            // entry (§8.4.0 — exports are Public `Import` edges) OR a prelude
+            // PUBLIC outer terminal. Name the source kind from the inner head
+            // (staging-aware, no chain-follow, no fallback): an inner `Import`
+            // entry is an explicit import (Private) or export (Public); absence
+            // means the binding came from the implicit-prelude outer scope.
+            let inner_head = self.probe_module_entry_owned(&state.current_module, n);
+            match &inner_head {
+                Some(e) if matches!(e, ModuleEntry::Import { .. }) && e.is_public() => {
+                    BindingProvenance::Export
+                }
+                Some(ModuleEntry::Import { .. }) => BindingProvenance::Import,
+                _ => BindingProvenance::Prelude,
+            }
         };
-        let remedy = format!("{}/{}", resolved.home, resolved.fq.symbol);
-        let message = format!(
-            "error: definition of '{name}' conflicts with '{name}' already in scope \
-             via {kind} (spec/08-modules.md §8.6.4): a definition may not shadow a \
-             name brought into scope by import, export, or the implicit prelude. \
-             Rename the definition, suppress or rename the binding \
-             (§8.3.5 / §8.8.3), or reference the other symbol fully-qualified as \
-             '{remedy}'"
-        );
-        Err(CranelispError::TypeError {
-            message,
-            location: ErrorLocation::from_span(span),
-        })
+        check_binding_addition(name, BindingProvenance::Definition, existing, &resolved.fq, span)
     }
 
     /// Whether a [`ResolveError`] is the neutral bare-name not-found class that
