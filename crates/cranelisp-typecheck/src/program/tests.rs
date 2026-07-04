@@ -7168,3 +7168,211 @@
             callees_of(&tc, "test", "r"),
         );
     }
+
+    // =====================================================================
+    // FIXME 0488 — generic-fn missing monomorphisation (typecheck-side)
+    // Unit shapes per `tests/plan/0488-isolation.md` §"Unit-test shapes".
+    // =====================================================================
+
+    /// Collect the first `SigDispatch` mangled name found on any Apply node in
+    /// a body Expr tree (helper for the 0488 collection-shape tests).
+    fn first_sig_dispatch(expr: &Expr) -> Option<String> {
+        if let Expr::Apply { callee, args, resolved_call, .. } = expr {
+            if let Some(ResolvedCall::SigDispatch { mangled_name }) = resolved_call.as_deref() {
+                return Some(mangled_name.as_ref().to_string());
+            }
+            if let Some(m) = first_sig_dispatch(callee) {
+                return Some(m);
+            }
+            for a in args {
+                if let Some(m) = first_sig_dispatch(a) {
+                    return Some(m);
+                }
+            }
+        }
+        None
+    }
+
+    /// Does any `Var` node in the tree carry the given name? (fn-value rewrite
+    /// witness for signature (b)).
+    fn body_has_var_named(expr: &Expr, target: &str) -> bool {
+        match expr {
+            Expr::Var { name, .. } => name.as_ref() == target,
+            Expr::Apply { callee, args, .. } => {
+                body_has_var_named(callee, target)
+                    || args.iter().any(|a| body_has_var_named(a, target))
+            }
+            Expr::If { cond, then_branch, else_branch, .. } => {
+                body_has_var_named(cond, target)
+                    || body_has_var_named(then_branch, target)
+                    || body_has_var_named(else_branch, target)
+            }
+            Expr::Let { bindings, body, .. } | Expr::ParBind { bindings, body, .. } => {
+                bindings.iter().any(|(_, b)| body_has_var_named(b, target))
+                    || body_has_var_named(body, target)
+            }
+            Expr::Lambda { body, .. }
+            | Expr::Annotate { expr: body, .. }
+            | Expr::Trace { body, .. } => body_has_var_named(body, target),
+            Expr::VecLit { elements, .. } => {
+                elements.iter().any(|e| body_has_var_named(e, target))
+            }
+            _ => false,
+        }
+    }
+
+    /// The stored annotated body of `name` in the fixture's current module.
+    fn stored_body(tc: &TestFixture, name: &str) -> Expr {
+        match tc.symbol_table().get(name) {
+            Some(ModuleEntry::Def { ast: Some(variant), .. }) => variant.body.clone(),
+            other => panic!("`{name}` has no stored annotated body: {other:?}"),
+        }
+    }
+
+    // spec: spec/04-expressions.md §4.2.2 — a same-module qualified call to a
+    //   generic fn MUST monomorphise/dispatch under the BARE mangled name,
+    //   identically to the bare call. RED on HEAD (FIXME 0488 sig a, same-module
+    //   sub-cause): the pass-4 local collector probes the module table with the
+    //   RAW qualified key (`test/iden`) and misses, so no `iden$Int` is minted
+    //   and the call node carries no SigDispatch.
+    #[test]
+    fn u_a1_same_module_fq_call_mints_bare_and_dispatches() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn iden [x] x)\n\
+             (defn caller [] (test/iden 5))",
+        );
+
+        // `iden$Int` minted, concrete + slotted, in the current module.
+        match tc.symbol_table().get("iden$Int") {
+            Some(ModuleEntry::Def { kind, scheme, .. }) => {
+                assert!(
+                    matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
+                    ),
+                    "iden$Int must be a Concrete (slotted) mono instance, got {kind:?}",
+                );
+                assert!(scheme.ty.is_concrete(), "iden$Int type must be concrete");
+            }
+            other => panic!(
+                "same-module FQ call must mint `iden$Int` (FIXME 0488 sig a); got {other:?}"
+            ),
+        }
+        // The caller's Apply node carries SigDispatch{iden$Int}.
+        assert_eq!(
+            first_sig_dispatch(&stored_body(&tc, "caller")).as_deref(),
+            Some("iden$Int"),
+            "the same-module FQ call node must carry SigDispatch{{iden$Int}}",
+        );
+    }
+
+    // spec: spec/04-expressions.md §4.2.2 — CONTROL: a same-module FQ call on a
+    //   CONCRETE fn mints NO mono instance (concrete fns need no specialisation).
+    #[test]
+    fn u_a1_neg_same_module_fq_concrete_call_mints_nothing() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn incr [:primitives/Int x] (add-i64 x 1))\n\
+             (defn caller [] (test/incr 5))",
+        );
+        assert!(
+            tc.symbol_table().get("incr$Int").is_none(),
+            "a concrete FQ callee must NOT mint a mono instance",
+        );
+    }
+
+    // spec: spec/04-expressions.md §4.2.2 — a CROSS-module qualified call to an
+    //   imported generic fn MUST mint under the BARE mangled name (`iden2$Int`),
+    //   NOT `gen/iden2$Int`. RED on HEAD (FIXME 0488 sig a, cross-module
+    //   sub-cause): the imported collector records the raw qualified callee name,
+    //   and `get_constrained_fn`'s home-probe re-uses it as a table key in `gen`
+    //   → no mint.
+    #[test]
+    fn u_a2_cross_module_fq_call_mints_bare_name() {
+        let mut tc = tc_with_prims();
+        // Build the fixture module `gen` with a generic `iden2`.
+        tc.set_current_module(ModuleFullPath::from("gen"));
+        check_src(&mut tc, "(defn iden2 [x] x)");
+
+        // Back in `test`, import + call by FQ name.
+        tc.set_current_module(ModuleFullPath::from("test"));
+        seed_specific_import(&mut tc, &ModuleFullPath::from("gen"), &["iden2"]);
+        check_src(&mut tc, "(defn caller [] (gen/iden2 5))");
+
+        assert!(
+            tc.symbol_table().get("iden2$Int").is_some(),
+            "cross-module FQ call must mint the BARE-mangled `iden2$Int` in the \
+             caller module (FIXME 0488 sig a)",
+        );
+        assert!(
+            tc.symbol_table().get("gen/iden2$Int").is_none(),
+            "the mono must NOT be minted under the qualified `gen/iden2$Int` name",
+        );
+        assert_eq!(
+            first_sig_dispatch(&stored_body(&tc, "caller")).as_deref(),
+            Some("iden2$Int"),
+            "the cross-module FQ call node must carry SigDispatch{{iden2$Int}}",
+        );
+    }
+
+    // spec: spec/04-expressions.md §4.6.2 — an IMPORTED generic fn passed as a
+    //   VALUE into a HOF MUST be monomorphised and the fn-value `Var` rewritten
+    //   to the mangled name in the caller's stored AST. RED on HEAD (FIXME 0488
+    //   sig b): `collect_parametric_fn_value_args` carries a `home ==
+    //   current_module` gate excluding imported generics, and the mint call
+    //   hard-codes `home: None`.
+    #[test]
+    fn u_b_imported_fn_value_use_mints_and_rewrites() {
+        let mut tc = tc_with_prims();
+        tc.set_current_module(ModuleFullPath::from("gen"));
+        check_src(&mut tc, "(defn iden2 [x] x)");
+
+        tc.set_current_module(ModuleFullPath::from("test"));
+        seed_specific_import(&mut tc, &ModuleFullPath::from("gen"), &["iden2"]);
+        check_src(
+            &mut tc,
+            "(defn call1 [f x] (f x))\n\
+             (defn use1 [] (call1 iden2 5))",
+        );
+
+        assert!(
+            tc.symbol_table().get("iden2$Int").is_some(),
+            "imported fn-value use must mint `iden2$Int` (FIXME 0488 sig b)",
+        );
+        // The fn-value `Var` in use1's body is rewritten to the mangled name.
+        let body = stored_body(&tc, "use1");
+        assert!(
+            body_has_var_named(&body, "iden2$Int"),
+            "the imported fn-value `Var` must be rewritten to `iden2$Int` in the \
+             caller AST; body = {body:?}",
+        );
+        assert!(
+            !body_has_var_named(&body, "iden2"),
+            "the un-rewritten bare `iden2` fn-value `Var` must be gone; body = {body:?}",
+        );
+    }
+
+    // spec: spec/04-expressions.md §4.6.2 — CONTROL / regression fence for the
+    //   0374 LOCAL fn-value path: a SAME-module generic passed as a value still
+    //   mints + rewrites (must stay green after the sig-(b) gate relaxation).
+    #[test]
+    fn u_b_neg_same_module_fn_value_use_unchanged() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            "(defn iden [x] x)\n\
+             (defn call1 [f x] (f x))\n\
+             (defn use1 [] (call1 iden 5))",
+        );
+        assert!(
+            tc.symbol_table().get("iden$Int").is_some(),
+            "same-module fn-value use must still mint `iden$Int` (0374 regression fence)",
+        );
+        assert!(
+            body_has_var_named(&stored_body(&tc, "use1"), "iden$Int"),
+            "same-module fn-value `Var` must still be rewritten to `iden$Int`",
+        );
+    }

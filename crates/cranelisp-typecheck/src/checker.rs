@@ -1641,9 +1641,33 @@ where
         state: &CheckState,
         name: &str,
     ) -> Option<(ModuleEntry<C>, ModuleFullPath)> {
+        // Project the fq-carrying resolver's `Resolved` to (terminal entry, home).
+        self.resolve_terminal_fq_or_prelude(state, name)
+            .map(|resolved| (resolved.entry, resolved.home))
+    }
+
+    /// Like [`Self::resolve_terminal_entry_or_prelude`] but returns the full
+    /// [`Resolved`] triple so the caller can read the canonical **terminal**
+    /// symbol (`resolved.fq.symbol`) — the bare local name in the home module,
+    /// with any `module/symbol` qualifier and module alias already resolved away.
+    ///
+    /// FIXME 0488 (sig a/b): the pass-4 monomorphisation collectors record the
+    /// callee's *reference* name and re-use it downstream as a symbol-table key
+    /// (`get_constrained_fn`'s home-probe, the mangled-name builder). For an FQ
+    /// reference (`gen/iden2`, `user/iden`) that reference name is the raw
+    /// qualified string, which is never a table key — so no mono is minted.
+    /// Canonicalising at collection to the terminal symbol + home makes the FQ
+    /// reference mint/dispatch under the same bare-mangled name as the bare call.
+    ///
+    /// [`Resolved`]: cranelisp_types::Resolved
+    pub(crate) fn resolve_terminal_fq_or_prelude(
+        &self,
+        state: &CheckState,
+        name: &str,
+    ) -> Option<cranelisp_types::Resolved<C>> {
         // Staging-view first hop stays caller-side; resolve+fallback+public-filter
         // (with chain-follow to the terminal) is the shared primitive
-        // (FIXME 0316(c)). Project the `Resolved` triple to (terminal entry, home).
+        // (FIXME 0316(c)).
         let read = self.current_symbol_table(state);
         let prelude = self.prelude_fallback_target(&state.current_module);
         cranelisp_types::resolve_with_fallback(
@@ -1657,7 +1681,6 @@ where
             Span::default(),
         )
         .ok()
-        .map(|resolved| (resolved.entry, resolved.home))
     }
 
     /// Chain-follow a name starting from `module_path` to its canonical home,

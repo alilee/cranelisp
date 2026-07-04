@@ -538,6 +538,12 @@ type MangledVariantInfo = (Vec<Type>, Type, Symbol);
 /// `{name}__v{i}` keys.
 type MangledNamesByBase = HashMap<Symbol, Vec<Symbol>>;
 
+/// A polymorphic fn-value passed as an argument into a HOF, recorded per
+/// enclosing defn for post-mint `Var` rewrite (FIXME 0374 / 0488 sig b):
+/// (enclosing_defn, bare_fn_value_symbol, arg_span, concrete_param_types,
+/// home_of_imported_callee).
+type FnValueArgSite = (Symbol, Symbol, Span, Vec<Type>, Option<ModuleFullPath>);
+
 // --- Name mangling for multi-sig overload dispatch ---
 
 /// Mangle a function name with its parameter type signature.
@@ -3308,12 +3314,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // mono instance — see `collect_parametric_fn_value_args`. Recorded
         // per enclosing defn so the fn-value `Var` can be rewritten to the
         // mangled name in that defn's stored AST after minting.
-        let mut fn_value_arg_sites: Vec<(Symbol, Symbol, Span, Vec<Type>)> = Vec::new();
+        let mut fn_value_arg_sites: Vec<FnValueArgSite> = Vec::new();
         for defn in defns {
             let mut sites = Vec::new();
             self.collect_parametric_fn_value_args(state, defn.body(), &mut sites);
-            for (arg_name, arg_span, param_types) in sites {
-                fn_value_arg_sites.push((defn.name.clone(), arg_name, arg_span, param_types));
+            for (arg_name, arg_span, param_types, home) in sites {
+                fn_value_arg_sites.push((defn.name.clone(), arg_name, arg_span, param_types, home));
             }
         }
 
@@ -3400,7 +3406,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // body re-checks at the concrete param types, so its `(Box a)` field
         // becomes `(Box Int)` — concrete, classifying cleanly, no RC guard.
         let mut fn_value_rewrites: Vec<(Symbol, Span, Symbol)> = Vec::new();
-        for (enclosing, arg_name, arg_span, param_types) in &fn_value_arg_sites {
+        for (enclosing, arg_name, arg_span, param_types, home) in &fn_value_arg_sites {
             let key = crate::traits::build_mangled_name(arg_name, param_types);
             let mangled_sym = if let Some(existing) = seen.get(&key) {
                 Symbol::from(existing.as_ref())
@@ -3411,8 +3417,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 // expr-type with the mono's RETURN type) must NOT fire — the
                 // arg-span's type is the fn's FULL `(Fn ..)` type, not its
                 // return. A synthetic span misses the `expr_types` lookup and
-                // skips that unify cleanly.
-                self.monomorphise_call(state, arg_name, param_types, Span::SYNTHETIC, None)?
+                // skips that unify cleanly. `home` is `Some(defining_module)` for
+                // an IMPORTED generic fn-value (FIXME 0488 sig b), `None` local.
+                self.monomorphise_call(
+                    state, arg_name, param_types, Span::SYNTHETIC, home.as_ref(),
+                )?
             {
                 let mangled = JitSymbol::from(mono.defn.name.as_ref());
                 seen.insert(key, mangled.clone());
@@ -3479,13 +3488,17 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         if let Expr::Apply { callee, args, span, .. } = expr
             && let Expr::Var { name, .. } = callee.as_ref()
             && !constrained_fn_names.contains(name)
-            && let Some((entry, home)) =
-                self.resolve_terminal_entry_or_prelude(state, name.as_ref())
-            && home != state.current_module
-            && Self::entry_is_monomorphisable_polymorphic(&entry)
+            && let Some(resolved) = self.resolve_terminal_fq_or_prelude(state, name.as_ref())
+            && resolved.home != state.current_module
+            && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
         {
+            // FIXME 0488 sig a (cross-module FQ): record the BARE terminal symbol
+            // (`resolved.fq.symbol`), not the raw reference `name` — a qualified
+            // callee (`gen/iden2`) would otherwise reach `get_constrained_fn`'s
+            // home-probe as a `/`-bearing key in the home module → no mint. The
+            // resolver already split `mod/sym` and resolved the module alias.
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
-            out.push((name.clone(), arg_spans, *span, Some(home)));
+            out.push((resolved.fq.symbol.clone(), arg_spans, *span, Some(resolved.home)));
         }
         for_each_child_expr(expr, |child| {
             self.collect_imported_constrained_calls(state, child, constrained_fn_names, out)
@@ -3572,13 +3585,19 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             && name != self_name
             && !constrained_fn_names.contains(name)
             && Self::local_parametric_call_triggers(state, span, args)
-            && let Some((entry, home)) =
-                self.resolve_terminal_entry_and_home(&state.current_module, name.as_ref())
-            && home == state.current_module
-            && Self::entry_is_monomorphisable_polymorphic(&entry)
+            && let Some(resolved) = self.resolve_terminal_fq_or_prelude(state, name.as_ref())
+            && resolved.home == state.current_module
+            && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
         {
+            // FIXME 0488 sig a (same-module FQ): resolve via the `/`-splitting
+            // fallback resolver (the raw `resolve_terminal_entry_and_home` probe
+            // keyed the qualified `test/iden` string and missed) and record the
+            // BARE terminal symbol so `(test/iden 5)` mints/dispatches under the
+            // same `iden$Int` name as the bare call. A cross-module qualifier
+            // resolves with `home != current` and is left to the imported
+            // collector; a prelude fn likewise (home == prelude != current).
             let arg_spans: Vec<Span> = args.iter().map(|a| a.span()).collect();
-            out.push((name.clone(), arg_spans, *span, None));
+            out.push((resolved.fq.symbol.clone(), arg_spans, *span, None));
         }
         for_each_child_expr(expr, |child| {
             self.collect_local_parametric_calls(
@@ -3612,7 +3631,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         &self,
         state: &CheckState,
         expr: &Expr,
-        out: &mut Vec<(Symbol, Span, Vec<Type>)>,
+        out: &mut Vec<(Symbol, Span, Vec<Type>, Option<ModuleFullPath>)>,
     ) {
         if let Expr::Apply { args, .. } = expr {
             for arg in args {
@@ -3624,12 +3643,25 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                     // residual ADT-field `Type::Var`.
                     && param_types.iter().all(|p| p.is_concrete())
                     && ret_ty.is_concrete()
-                    && let Some((entry, home)) = self
-                        .resolve_terminal_entry_and_home(&state.current_module, name.as_ref())
-                    && home == state.current_module
-                    && Self::entry_is_monomorphisable_polymorphic(&entry)
+                    && let Some(resolved) =
+                        self.resolve_terminal_fq_or_prelude(state, name.as_ref())
+                    && Self::entry_is_monomorphisable_polymorphic(&resolved.entry)
                 {
-                    out.push((name.clone(), *span, param_types));
+                    // FIXME 0488 sig b: the 0374 implementation only handled the
+                    // LOCAL case (`home == current_module` gate + `home: None` at
+                    // the mint). An IMPORTED generic fn-value resolves with `home`
+                    // == its defining module; carry that home so the mint re-checks
+                    // the body in the DEFINING scope and probes the callee there
+                    // (mirroring the cross-module call path, FIXME 0355). Record
+                    // the BARE terminal symbol so the mangled key + `rename_var_at_span`
+                    // target agree (`iden2` → `iden2$Int`). Same-module keeps
+                    // `home: None` (byte-identical to the 0374 path).
+                    let home = if resolved.home == state.current_module {
+                        None
+                    } else {
+                        Some(resolved.home.clone())
+                    };
+                    out.push((resolved.fq.symbol.clone(), *span, param_types, home));
                 }
             }
         }
