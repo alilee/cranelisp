@@ -128,6 +128,34 @@ adding them now would be premature (they must land against the fixed mechanism,
 not HEAD). Status stays **open**; the per-submodule homes are now in place for
 step 2 to drop scenarios into.
 
+## Progress — S102 Wave 11 B3.1a (step 2 PARTIAL: vec_codegen COW-polarity cells; 2026-07-04)
+
+**Step-2 drain SHRINKS by the `vec_codegen` COW-core cells.** The §13.5
+branch × polarity matrix for the `SourceOwnership` consumed-source contract
+(design/backend/ownership-codegen.md §13.3 Ruling 2) landed as
+`compiler/vec_codegen/cow_polarity_tests.rs` (5 cells): copy-branch release
+present iff `Owned` (vec-set + vec-push), Borrowed releases nothing on any
+branch (the negative/static-site cells), and the owned−borrowed rc-dec delta is
+exactly one release (the contract, not a spot dec — Principle 18). These assert
+the SPECIFIC copy-branch rc-emission (`atomic_rmw.i64 sub` count) at the core
+seam, co-landing with the mechanism that flips the vec-set-as-value COW leak.
+
+The `fn_as_value` / `rc_emission` seam-drain cells for the OTHER Wave-11 fixes
+are covered at their landing grain as follows (the AST-scaffolding cost of an
+isolated in-process unit cell for each is disproportionate, so they are pinned
+where the seam is observable): **item 25** curry-glue idempotency + the
+**auto-curry capture double-inc** cure → the `vec_cow_value_use_leak` curry +
+`curried_partial_and_static_call…` e2e guards (flipped GREEN); the **TCO
+scope-cleanup flush** (`flush_let_scopes_before_tail_jump`) → the golden-CLIF
+re-baseline (f2/f3/f4 — the dead-block-after-jump → live-before-jump structural
+delta) + the static-site `vec_cow_value_use_leak` e2e guard (flipped GREEN).
+
+**Step-2 remainder still OPEN:** got (exhaustion/freeze/trap-patch), let_if
+branch RC, match_codegen shape matrix, resolution/primitives_inline curry arms,
+and the deeper rc_emission cells REMAIN. Status stays **open** — the drain
+shrank by rc_emission (COW polarity) + fn_as_value (curry/TCO covered at
+e2e/golden grain), not the whole taxonomy.
+
 ## Operational implication / Context
 
 Sequencing: rides increment I's first backend change-sets — increment I lands on

@@ -1130,6 +1130,24 @@ shared-`ctx` clobber across the separate `FunctionBuilder`). The identity scheme
 the durable convention regardless; the fix must address the actual failing cell, and the
 unit matrix is the arbiter.
 
+> **CORRECTION — Ruling 1 root-cause was MIS-ATTRIBUTED (Wave 11 B3.1 investigation; the
+> pin WORKED).** 0483's SIGBUS at ≥2 wrapper-backed instantiations was NOT a backend
+> wrapper-identity collision at all — it was the **typecheck mono-mangler** (FIXME 0519:
+> ADT-arg + home erasure in the monomorphisation name mangler, since cured by one unified
+> lossless FQ mangler). The investigation pin above is exactly what surfaced this: forcing
+> root-cause-before-fix against the instantiation matrix showed the crashing cell was a
+> lossy-head *mono-name* mirror one layer UP in typecheck, not the backend wrapper name.
+> 0483's three `vec_query_value_use` guards flipped GREEN on 0519, out of this change-set.
+>
+> Ruling 1's wrapper-identity scheme (`__d24wrap_{fq}_{slot}__` / `__inlwrap_{bare}_{sig}__`
+> / re-keyed curry) **STANDS as a durable convention** (deterministic, dedup-safe,
+> cache-safe) but does NOT itself fix 0483. **Crucial derived rule:** any signature
+> embedded in a wrapper name MUST use the same TOTAL FQ grammar the mono-mangler now uses
+> (recursive ADT args + home module + `Fn` shape) — a lossy-head wrapper key would re-open
+> the exact same lossy-head mirror one level down in the backend. This is the same
+> mis-attribution shape that recurs in Ruling 2 below (the design hypothesis named a
+> plausible-but-wrong seam; investigation named the real one).
+
 **Ruling 2 — one explicit RC-polarity contract on the COW cores.** The cores gain a
 consumed-source polarity parameter (illustrative: `SourceOwnership::{Owned, Borrowed}`);
 the **copy branch emits the source release iff `Owned`** (`emit_vec_rc_dec_with_drop`),
@@ -1142,6 +1160,44 @@ leaks the protect-inc'd reference) means the static-site polarity is NOT uniform
 with the §13.5 branch×polarity unit matrix pinning balance per cell. Leak-only class (no
 UAF) — but the fix is a polarity *contract*, not a spot dec, so the next call-site shape
 cannot re-introduce it (Principle 18).
+
+> **CORRECTION — Ruling 2's COW-copy attribution is INCOMPLETE for the `vec_cow_value_use`
+> ×3 guards (Wave 11 B3.1a investigation; RC_STATS + CLIF evidence).** The COW polarity
+> contract IS landed and correct — `emit_vec_set_cow_core` / `emit_vec_push_cow_core` gain
+> `SourceOwnership::{Owned, Borrowed}`; wrapper/curry pass `Owned` (copy branch releases via
+> `emit_vec_rc_dec_with_drop`), static in-place sites pass `Borrowed` — and it cures a real
+> wrapper/curry vec-set/push value-use leak (non-recursive HOF imbalance 2→1). But it is
+> NOT the dominant cause of the three guards, which behaviourally decompose as:
+>
+> - **`vec_set_static_site_shared_source_neg` (G3):** a **TCO scope-cleanup leak**, not COW.
+>   Non-recursive it is *balanced*; it leaks only in the tail-recursive loop. Root cause:
+>   `compile_let_sequential`'s `pop_scope_with_cleanup` runs AFTER `compile_expr(body)`, but a
+>   tail self-call emits its jump-to-loop-header first, so every heap-typed `let` binding that
+>   survives to a tail-recursive scope exit has its dec emitted in the DEAD post-jump block and
+>   never runs (leaks 1 alloc/iter/binding). Cured by `flush_let_scopes_before_tail_jump`
+>   (`compile_tail_self_call`), which flushes the live let-scope decs before the jump, skipping
+>   bindings that transfer into a tail argument. **FLIPPED GREEN.** (Golden re-baseline:
+>   f2/f3/f4 — the corpus's TCO-loop-with-surviving-heap-binding fixtures.)
+> - **`vec_set_curried_call_loop_neg` (G1):** an **auto-curry capture double-inc**, not COW.
+>   The `ResolvedCall::AutoCurry` apply arm compiles applied args with `compile_consuming_arg_list`
+>   (correct: inc Var / transfer temporary = the closure's one reference) AND `compile_auto_curry`
+>   inc'd them AGAIN via `emit_capture_inc` (the lambda-capture precedent incs ONCE). Cured by
+>   removing the redundant capture-store inc; curry now aligns with lambda. **FLIPPED GREEN.**
+> - **`vec_set_as_value_shared_source_neg` (G2) + `ownership_fences::vec_returned_from_generic_fn…`
+>   (item 26):** the SAME class — `protect_return_value` (rc_emission.rs) over-incs a return value
+>   whenever the callee has heap cleanup targets, but the return is a **fresh Apply-body value**
+>   (`(f v 0 9)` returning a vec-set copy; `(vec-push [] …)`) that scope cleanup can never free →
+>   the protect leaks exactly 1/call. A SAFE narrowing needs to know whether the callee returns an
+>   aliased argument (the `(idv v)` UAF class the protect guards) — i.e. **callee ownership
+>   summaries (B2 / typecheck, `§13.6`)**. It is NOT the COW copy branch and NOT safely fixable in
+>   the backend alone. **RED pending B2** (the failing tests are the record; owner /typecheck-half
+>   of the ownership-inference summaries). Item 26's "fix in the vec-op caller handling / call-result
+>   temp is Owned" framing was likewise mis-attributed: the caller does the correct single dec; the
+>   surplus reference is minted in the callee's `protect_return_value`.
+>
+> Net Wave 11 B3.1a guard flips: item 25 (curry-glue idempotency) + G1 + G3 = **3**; G2 + item 26
+> carry to B2. Same mis-attribution shape as Ruling 1: the design named a plausible seam (COW copy
+> branch); investigation named the real ones (TCO cleanup, curry double-inc, `protect_return_value`).
 
 **Ruling 3 — the dispatch ladder becomes kind-driven.** Post-B1-be, `emit_wrapper_call`'s
 arm selection reads the entry: `PrimitiveBody::Inline` → borrowed-builder inline emission
