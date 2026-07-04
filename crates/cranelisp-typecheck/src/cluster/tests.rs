@@ -124,3 +124,60 @@
         let ctx: SymbolTableAccess<'_, (), ()> = SymbolTableAccess::live(&modules, module_path());
         assert_eq!(ctx.current_module(), &module_path());
     }
+
+    // -------------------------------------------------------------------
+    // Negative / edge cells (S102 FIXME 0497 gap-fill — cluster.rs was
+    // happy-path-only). The read accessors carry an unconditional precondition
+    // (the current module MUST be present in `modules`); these pin the
+    // precondition-violation panic + the empty-staging union edge.
+    // -------------------------------------------------------------------
+
+    // NEGATIVE: in Live mode, reading the current symbol table when the current
+    // module is absent from `modules` is a precondition violation (the module
+    // graph must always carry the scoped module) — the accessor panics rather
+    // than silently returning an empty table.
+    #[test]
+    #[should_panic(expected = "not present in live modules")]
+    fn live_mode_absent_current_module_panics() {
+        let modules = empty_modules();
+        let ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, ModuleFullPath::from("absent_mod"));
+        // `absent_mod` was never inserted → precondition violated.
+        let _ = ctx.current_symbol_table();
+    }
+
+    // NEGATIVE: the same precondition holds in Cluster mode — the LIVE table for
+    // the current module must exist even though writes go to staging (reads
+    // union staging over live).
+    #[test]
+    #[should_panic(expected = "cluster precondition")]
+    fn cluster_mode_absent_current_module_panics() {
+        let modules = empty_modules();
+        let mut staging =
+            SymbolTable::<(), ()>::new_with_params(ModuleFullPath::from("absent_mod"));
+        let ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::cluster(&modules, &mut staging, ModuleFullPath::from("absent_mod"));
+        let _ = ctx.current_symbol_table();
+    }
+
+    // EDGE: an EMPTY staging table unions to exactly the live entries — nothing
+    // is shadowed or hidden, and a genuinely-absent name still resolves to None.
+    #[test]
+    fn cluster_mode_empty_staging_reads_live_only() {
+        let modules = empty_modules();
+        {
+            let mut live = modules.get_mut(&module_path()).unwrap();
+            live.insert(Symbol::from("live_only"), dummy_module_entry());
+        }
+        // Staging is empty.
+        let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
+        let ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::cluster(&modules, &mut staging, module_path());
+        let r = ctx.current_symbol_table();
+        let v = r.view();
+        assert!(
+            v.lookup(&Symbol::from("live_only")).is_some(),
+            "empty staging → live entry still visible through the union"
+        );
+        assert!(v.lookup(&Symbol::from("absent")).is_none());
+    }
