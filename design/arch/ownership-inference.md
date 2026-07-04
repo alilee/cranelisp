@@ -70,6 +70,27 @@ actors map — one producer, one boundary, five queries, five consumers.
   (`src/mono_expr.rs`) + the callable's symbol-table entry (`src/module.rs`). Carries the
   analysis outputs down; persists the per-function **mode summary** via `.meta.json`
   (a serialised `SymbolTable` — `module-caching.md` §14.1).
+
+  **Boundary invariant — `MonoExpr` carries NO binding-name uniqueness / alpha-rename
+  guarantee (S102 F4 ruling, 2026-07-04).** Binding names are copied verbatim from source
+  through `MonoExpr::from_expr` (`n.clone()` at every `Let` / `Lambda` / `Match` / `ParBind`
+  seam); neither monomorphisation (which substitutes *types*, not names) nor macro expansion
+  globally renames them. Two witnesses fix this authoritatively: the stdlib `case`/`cond`
+  macros expand to a literally reused `(let [__case__ __case__] …)` (the frontend's only
+  renaming is opt-in `x#` auto-gensym in quasiquote templates — `__case__` is a fixed name,
+  never uniquified), and ordinary user-source shadowing (a `let`/pattern binding rebinding a
+  param or outer name) is preserved into `MonoExpr` unchanged. **Consequence for every
+  consumer:** any per-callable analysis that walks `MonoExpr` and resolves a binding name to
+  its lexical binding MUST model lexical scope itself (scope-save/restore of shadowed state on
+  binding entry/exit). Resolving names against a flat, scope-unrestored map is a **soundness**
+  defect on the read-path queries — a branch-sibling shadow leaks a stale inner `BindState`
+  past its scope, so `param_root` returns `None`, the widen is missed, and the ABI-bearing
+  param mode narrows **below** truth (`Owned` → `Borrowed`, the unsound direction). The
+  scope-modeling burden lives in the walker, not the boundary type: the cure is contained in
+  `cranelisp-typecheck` with **no `cranelisp-types` edit** (an alpha-rename invariant on the
+  boundary type was considered and rejected — larger surface, a schema-relevant commitment on
+  a serialised type, for a bug local to one walk; Principle 8). See
+  `design/typecheck/ownership-inference.md` §13.6(i) + FIXME 0518.
 - **The backend lowering** (shared Cranelift path — see §3.4): five mechanisms, each consuming
   one query's output; all intra-function analyses (`compute_last_uses`,
   `HeapCategory::classify`) and all mechanism internals stay here.
