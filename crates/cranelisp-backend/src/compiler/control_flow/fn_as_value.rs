@@ -693,7 +693,18 @@ where
             HeapClosure::DROP_GLUE_PTR_OFFSET,
         );
 
-        // 4. Store applied args as captures, with RC inc for heap-typed values.
+        // 4. Store applied args as captures. The closure env's own reference was
+        // ALREADY established by the apply site: the `ResolvedCall::AutoCurry`
+        // arm compiles the applied args with `compile_consuming_arg_list`, which
+        // inc's a heap-typed Var (the enclosing scope keeps its independent
+        // reference, dec'd at scope exit) and transfers a temporary's rc=1
+        // outright — exactly the "closure env gains one reference" rule (the
+        // lambda-capture precedent, `lambda.rs`). A second `emit_capture_inc`
+        // here would DOUBLE-count that reference: +1 for a Var (the drop glue
+        // dec's only once → the source leaks one alloc), and +1 for a temporary
+        // (which owns no scope binding to dec the surplus). Removed — the applied
+        // values arrive with correct ownership; just store them. (FIXME 0474 /
+        // the S102 `vec_cow_value_use` curry-capture residue; a leak-only class.)
         for (i, &val) in applied_vals.iter().enumerate() {
             heap::heap_store(
                 &mut self.builder,
@@ -701,9 +712,6 @@ where
                 base_ptr,
                 HeapClosure::capture_offset(i),
             );
-
-            // Inc heap-typed captures: closure env needs its own reference.
-            self.emit_capture_inc(arg_categories[i], val);
         }
 
         Ok(base_ptr)
@@ -835,6 +843,25 @@ where
             "runtime/curry_drop_glue_{}_{}",
             span.start, span.end
         );
+
+        // `declare_function` is idempotent (returns the existing FuncId on a
+        // name match), but `define_function` is NOT — a second definition of the
+        // same identifier is a hard `Duplicate definition` codegen error. The
+        // span-keyed glue name carries no gate-arm discriminator (unlike the
+        // sibling `__curry_…` wrapper, which folds in `inner_fn_discriminator()`
+        // → `gate_arm_disc`), so when a create-gate compiles the SAME auto-curry
+        // expression on BOTH its lenient and sequential arms (ledger item 25),
+        // the glue is declared once but the second arm's `define_function` dies
+        // `Duplicate definition of identifier: runtime/curry_drop_glue_{span}`.
+        // Skip re-definition when this glue was already built — the body is a
+        // pure function of `arg_categories` at a fixed span, so the two arms
+        // sharing one glue definition is sound (the `build_elem_dec_fn` /
+        // `build_adt_drop_glue_fn` idempotency precedent, vec_codegen.rs).
+        if let Some(cranelift_module::FuncOrDataId::Func(existing_id)) =
+            self.module.get_name(&glue_name)
+        {
+            return Ok(Some(existing_id));
+        }
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64)); // closure ptr
