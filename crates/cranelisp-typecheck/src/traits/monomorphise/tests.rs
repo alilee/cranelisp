@@ -7,8 +7,8 @@
 //! crate-side pins for the 0488 defect class), per METHOD §2.2 / Principle 23.
 
 use cranelisp_types::{
-    DefKind, Defn, DefnVariant, Expr, ModuleEntry, Span, Symbol, TopLevel, Type,
-    TypeName, UserFnState, Visibility,
+    DefKind, Defn, DefnVariant, Expr, ModuleEntry, ModuleFullPath, Span, Symbol, TopLevel,
+    Type, TypeName, UserFnState, Visibility,
 };
 
 use crate::checker::TypeCheckEnv;
@@ -67,11 +67,12 @@ fn test_concrete_type_name_var_is_none() {
     assert_eq!(concrete_type_name(&Type::Var(0)), None);
 }
 
-// spec: 07-traits §7.4.1 — NEGATIVE/edge: a `Fn` type is concrete but has no
-// single bare TypeName (`concrete_type_name` returns `None`). This is the
-// concrete-but-unnameable case the mangler relies on to DROP `Fn`-typed
-// params (e.g. `reduce$Int+Vec` omits its `(Fn ..)` first param) — see
-// `build_mangled_name`'s Fn-drop cell below.
+// spec: 07-traits §7.4.1 — a `Fn` type is concrete but has no single bare
+// TypeName (`concrete_type_name` returns `None`). `concrete_type_name` is
+// retained for trait-impl TARGET naming (impl-on-type-constructor, head-name
+// only); the mono mangler no longer routes through it (FIXME 0519 — it routes
+// through the total `program::mangle_type`, which recurses `Fn` rather than
+// dropping it; see the Fn-axis cell below).
 #[test]
 fn concrete_type_name_fn_is_none() {
     let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
@@ -79,71 +80,198 @@ fn concrete_type_name_fn_is_none() {
     assert_eq!(concrete_type_name(&fn_ty), None);
 }
 
-// -----------------------------------------------------------------------
-// build_mangled_name — the instance-key mangler. {complexity, edge, negative}
-// matrix (0497 step ii). Each cell asserts the SPECIFIC mangled key, not
-// "no panic".
-// -----------------------------------------------------------------------
+// =======================================================================
+// build_mangled_name — THE canonical home-qualified lossless mono mangler
+// (FIXME 0519). Grammar: `{home}/{bare}${recursive-concrete-sig}`. The
+// strategy-derived matrix below (METHOD §2.2, seam × class) asserts the
+// SPECIFIC produced key on every distinguishing axis — ADT-arg, home, Fn-arg,
+// nesting, arg-order — plus idempotency/dedup, mirror consistency, and the
+// scalar regression. Each cell asserts a string, not "no panic".
+// =======================================================================
 
-// spec: design/typecheck/ast-annotation.md §9.4 — two-arg mangle joins with `+`
+// A stable home for the pure-mangler cells.
+fn m() -> ModuleFullPath {
+    ModuleFullPath::from("m")
+}
+
+// --- Scalar regression (class: complexity — the common path stays sane) ---
+
+// spec: design/typecheck/monomorphisation.md §3.5 — two scalar args join with
+// `+`, home-qualified prefix `{home}/`.
 #[test]
 fn build_mangled_name_two_int_args() {
     assert_eq!(
-        build_mangled_name(&Symbol::from("add"), &[Type::Int, Type::Int]),
-        "add$Int+Int"
+        build_mangled_name(&m(), &Symbol::from("add"), &[Type::Int, Type::Int]),
+        "m/add$Int+Int"
     );
 }
 
-// spec: design/typecheck/ast-annotation.md §9.4 — a distinct type set yields a
-// distinct key (the collision-freedom property the mint seam depends on).
+// spec: design/typecheck/monomorphisation.md §3.5 — a distinct scalar set
+// yields a distinct key (the collision-freedom property the mint seam needs).
 #[test]
 fn build_mangled_name_two_float_args_distinct_from_int() {
-    let int_key = build_mangled_name(&Symbol::from("add"), &[Type::Int, Type::Int]);
-    let float_key = build_mangled_name(&Symbol::from("add"), &[Type::Float, Type::Float]);
-    assert_eq!(float_key, "add$Float+Float");
+    let int_key = build_mangled_name(&m(), &Symbol::from("add"), &[Type::Int, Type::Int]);
+    let float_key = build_mangled_name(&m(), &Symbol::from("add"), &[Type::Float, Type::Float]);
+    assert_eq!(float_key, "m/add$Float+Float");
     assert_ne!(int_key, float_key);
 }
 
-// spec: design/typecheck/ast-annotation.md §9.4 — edge: single-arg mangle has
+// spec: design/typecheck/monomorphisation.md §3.5 — edge: single-arg mangle has
 // no `+` separator.
 #[test]
 fn build_mangled_name_single_arg_no_separator() {
     assert_eq!(
-        build_mangled_name(&Symbol::from("id"), &[Type::Int]),
-        "id$Int"
+        build_mangled_name(&m(), &Symbol::from("id"), &[Type::Int]),
+        "m/id$Int"
     );
 }
 
-// spec: design/typecheck/ast-annotation.md §9.4 — edge: an ADT param mangles
-// to its bare TypeName.
+// --- ADT-arg axis (0483: erasing ADT args collapsed distinct bodies) ---
+
+// spec: design/typecheck/monomorphisation.md §3.5 — a nullary ADT param mangles
+// to its FQTypeName (`{type-home}/{name}`, the canonical `mangle_type` form the
+// multi-sig mangler already used — unified here, Principle 7). `test_fqtn`
+// homes the type in module `test`.
 #[test]
-fn build_mangled_name_adt_arg() {
+fn build_mangled_name_adt_nullary() {
     assert_eq!(
-        build_mangled_name(&Symbol::from("f"), &[Type::ADT(test_fqtn("Color"), vec![])]),
-        "f$Color"
+        build_mangled_name(&m(), &Symbol::from("f"), &[Type::ADT(test_fqtn("Color"), vec![])]),
+        "m/f$test/Color"
     );
 }
 
-// spec: design/typecheck/ast-annotation.md §9.4 — edge: a `Fn`-typed param is
-// concrete-but-unnameable, so the mangler DROPS it (only the head-named `Int`
-// contributes). This is the legitimate drop the tripwire below allows.
+// spec: design/typecheck/monomorphisation.md §3.5 — CURE 0483: `Vec Int` and
+// `Vec String` mint DISTINCT keys (the ADT arg is recursed, not erased). On
+// HEAD both collapsed to `f$Vec`.
 #[test]
-fn build_mangled_name_drops_fn_typed_param() {
+fn build_mangled_name_adt_arg_distinguishes_element_type() {
+    let vec_int = Type::ADT(test_fqtn("Vec"), vec![Type::Int]);
+    let vec_str = Type::ADT(test_fqtn("Vec"), vec![Type::String]);
+    let ki = build_mangled_name(&m(), &Symbol::from("f"), &[vec_int]);
+    let ks = build_mangled_name(&m(), &Symbol::from("f"), &[vec_str]);
+    assert_eq!(ki, "m/f$test/Vec$Int");
+    assert_eq!(ks, "m/f$test/Vec$String");
+    assert_ne!(ki, ks, "distinct ADT element types MUST mint distinct keys (0483)");
+}
+
+// spec: design/typecheck/monomorphisation.md §3.5 — edge: NESTED ADT args
+// recurse fully — `Vec (Vec Int)` ≠ `Vec (Vec String)`.
+#[test]
+fn build_mangled_name_nested_adt_arg() {
+    let vv_int = Type::ADT(test_fqtn("Vec"), vec![Type::ADT(test_fqtn("Vec"), vec![Type::Int])]);
+    let vv_str = Type::ADT(test_fqtn("Vec"), vec![Type::ADT(test_fqtn("Vec"), vec![Type::String])]);
+    assert_eq!(build_mangled_name(&m(), &Symbol::from("f"), &[vv_int]), "m/f$test/Vec$test/Vec$Int");
+    assert_eq!(build_mangled_name(&m(), &Symbol::from("f"), &[vv_str]), "m/f$test/Vec$test/Vec$String");
+}
+
+// spec: design/typecheck/monomorphisation.md §3.5 — edge: a 2-arg ADT preserves
+// arg ORDER — `Pair Int String` ≠ `Pair String Int`.
+#[test]
+fn build_mangled_name_two_arg_adt_order_matters() {
+    let pair_is = Type::ADT(test_fqtn("Pair"), vec![Type::Int, Type::String]);
+    let pair_si = Type::ADT(test_fqtn("Pair"), vec![Type::String, Type::Int]);
+    let k1 = build_mangled_name(&m(), &Symbol::from("f"), &[pair_is]);
+    let k2 = build_mangled_name(&m(), &Symbol::from("f"), &[pair_si]);
+    assert_eq!(k1, "m/f$test/Pair$Int+String");
+    assert_eq!(k2, "m/f$test/Pair$String+Int");
+    assert_ne!(k1, k2, "ADT arg order MUST be distinguishing");
+}
+
+// --- Home axis (0508: home-blindness silently mis-dispatched) ---
+
+// spec: design/typecheck/monomorphisation.md §3.5 — CURE 0508: the SAME bare
+// name at the SAME arg type in two DIFFERENT defining modules mints DISTINCT
+// keys (home-qualified). On HEAD both minted `twist$Int`.
+#[test]
+fn build_mangled_name_home_distinguishes_same_named_generics() {
+    let ka = build_mangled_name(&ModuleFullPath::from("a"), &Symbol::from("twist"), &[Type::Int]);
+    let kb = build_mangled_name(&ModuleFullPath::from("b"), &Symbol::from("twist"), &[Type::Int]);
+    assert_eq!(ka, "a/twist$Int");
+    assert_eq!(kb, "b/twist$Int");
+    assert_ne!(ka, kb, "same name + same args + different home MUST be distinct (0508)");
+}
+
+// spec: design/typecheck/monomorphisation.md §3.5 — NEGATIVE/dedup: same
+// name + same home + same args mint the IDENTICAL key (the legitimate share —
+// the fix must NOT over-split the genuine same-instantiation case).
+#[test]
+fn build_mangled_name_same_home_same_args_dedups() {
+    let k1 = build_mangled_name(&ModuleFullPath::from("a"), &Symbol::from("twist"), &[Type::Int]);
+    let k2 = build_mangled_name(&ModuleFullPath::from("a"), &Symbol::from("twist"), &[Type::Int]);
+    assert_eq!(k1, k2, "identical (home, name, sig) MUST mangle identically — dedup still works");
+}
+
+// --- Fn-arg axis (the latent third: filter_map dropped `Fn` params) ---
+
+// spec: design/typecheck/monomorphisation.md §3.5 — CURE the latent Fn-drop:
+// a `Fn`-typed param is RECURSED (arg+ret), not dropped. On HEAD the whole `Fn`
+// param vanished (`concrete_type_name` → None → filter_map drop).
+#[test]
+fn build_mangled_name_recurses_fn_typed_param() {
     let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
     assert_eq!(
-        build_mangled_name(&Symbol::from("reduce"), &[Type::Int, fn_ty]),
-        "reduce$Int"
+        build_mangled_name(&m(), &Symbol::from("reduce"), &[Type::Int, fn_ty]),
+        "m/reduce$Int+Fn(Int;Int)"
     );
 }
 
-// spec: design/typecheck/ast-annotation.md §4-A (Principle 18) — NEGATIVE: a
-// non-concrete (`Var`) param is a lossy-name hazard (two partial
-// instantiations would collide). The `build_mangled_name` tripwire
-// (`debug_assert`) fires on it rather than silently dropping it.
+// spec: design/typecheck/monomorphisation.md §3.5 — CURE the latent Fn-drop:
+// two instantiations distinguished ONLY by a `Fn`-typed param mint DISTINCT
+// keys. On HEAD both dropped the `Fn` → both `apply$` → collision.
+#[test]
+fn build_mangled_name_fn_param_distinguishes_instantiations() {
+    let fn_ii = Type::Fn(vec![Type::Int], Box::new(Type::Int));
+    let fn_bb = Type::Fn(vec![Type::Bool], Box::new(Type::Bool));
+    let k1 = build_mangled_name(&m(), &Symbol::from("apply"), &[fn_ii]);
+    let k2 = build_mangled_name(&m(), &Symbol::from("apply"), &[fn_bb]);
+    assert_eq!(k1, "m/apply$Fn(Int;Int)");
+    assert_eq!(k2, "m/apply$Fn(Bool;Bool)");
+    assert_ne!(k1, k2, "a Fn-param-only difference MUST be distinguishing (latent third axis)");
+}
+
+// spec: design/typecheck/monomorphisation.md §3.5 — edge: NESTED `Fn` (a Fn
+// returning a Fn) recurses with balanced parens keeping extents unambiguous.
+#[test]
+fn build_mangled_name_nested_fn_param() {
+    // (Fn [Int] (Fn [Int] Bool))
+    let inner = Type::Fn(vec![Type::Int], Box::new(Type::Bool));
+    let outer = Type::Fn(vec![Type::Int], Box::new(inner));
+    assert_eq!(
+        build_mangled_name(&m(), &Symbol::from("k"), &[outer]),
+        "m/k$Fn(Int;Fn(Int;Bool))"
+    );
+}
+
+// --- Mirror consistency (the 0508 dedup/name inconsistency guard) ---
+
+// spec: design/typecheck/monomorphisation.md §3.5 — the pass4 seen-dedup key and
+// the minted mono name are produced by the SAME function over the SAME inputs,
+// so they are byte-identical for one instantiation. This cell pins that the
+// key path (`build_mangled_name(home, fn, arg_types)`) and the name path
+// (`build_mangled_name(home, fn, concrete_param_types)`) agree when arg_types ==
+// concrete_param_types (the concrete-dispatch case) — the inconsistency 0508
+// exploited (home-blind key vs would-be home-name).
+#[test]
+fn build_mangled_name_dedup_key_equals_minted_name() {
+    let home = ModuleFullPath::from("a");
+    let name = Symbol::from("twist");
+    let args = [Type::Int, Type::Int];
+    // "name path" — what monomorphise_call mints from concrete_param_types.
+    let minted = build_mangled_name(&home, &name, &args);
+    // "key path" — what the pass4 seen map keys on from the call-site arg_types.
+    let dedup_key = build_mangled_name(&home, &name, &args);
+    assert_eq!(minted, dedup_key, "dedup key and minted name MUST be one string (mirror)");
+    assert_eq!(minted, "a/twist$Int+Int");
+}
+
+// spec: design/typecheck/monomorphisation.md §9.3 (Principle 18) — NEGATIVE: a
+// non-concrete (`Var`) param is a lossy-name hazard. The `build_mangled_name`
+// tripwire (`debug_assert`) fires rather than emitting the shared `Var` token
+// that would collapse two distinct partial instantiations.
 #[test]
 #[should_panic(expected = "non-concrete param")]
 fn build_mangled_name_tripwire_on_non_concrete_param() {
-    let _ = build_mangled_name(&Symbol::from("f"), &[Type::Int, Type::Var(7)]);
+    let _ = build_mangled_name(&m(), &Symbol::from("f"), &[Type::Int, Type::Var(7)]);
 }
 
 // -----------------------------------------------------------------------
@@ -231,14 +359,16 @@ fn wave0_mono_entry_registered_with_distinct_got_slot() {
     // Mono entry: kind UserFn(Concrete), ast: Some(..), has a GOT slot distinct from template.
     let mono_got_slot = {
         let st = tc.symbol_table();
-        match st.get("add$Int+Int") {
+        // FIXME 0519: mono names are home-qualified `{home}/{bare}$sig`; the
+        // fixture's current module is `test`.
+        match st.get("test/add$Int+Int") {
             Some(entry @ ModuleEntry::Def { kind, ast, .. }) => {
                 assert!(
                     matches!(
                         kind.as_ref(),
                         DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
                     ),
-                    "mono 'add$Int+Int' kind should be UserFn(Concrete), got {:?}",
+                    "mono 'test/add$Int+Int' kind should be UserFn(Concrete), got {:?}",
                     kind
                 );
                 let defn = ast.as_ref().expect("mono must carry ast: Some(..)");
@@ -261,7 +391,7 @@ fn wave0_mono_entry_registered_with_distinct_got_slot() {
 
                 entry.callable_got_slot().expect("mono must have a GOT slot assigned")
             }
-            other => panic!("'add$Int+Int' mono should be Def entry, got {:?}", other),
+            other => panic!("'test/add$Int+Int' mono should be Def entry, got {:?}", other),
         }
     };
 
@@ -436,8 +566,8 @@ fn two_instantiations_mint_two_distinct_concrete_mono_entries() {
     tc.check_repl_input_self(&use_float).unwrap();
 
     // BOTH mono instances must be minted, each Concrete, under its own key.
-    let int_slot = assert_concrete_mono_slot(&tc, "add$Int+Int");
-    let float_slot = assert_concrete_mono_slot(&tc, "add$Float+Float");
+    let int_slot = assert_concrete_mono_slot(&tc, "test/add$Int+Int");
+    let float_slot = assert_concrete_mono_slot(&tc, "test/add$Float+Float");
 
     // Distinct instantiations get distinct GOT slots.
     assert_ne!(

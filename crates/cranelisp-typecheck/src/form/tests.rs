@@ -556,11 +556,12 @@
         check_forms::<(), ()>(vec![caller_defn], &mut ctx2, &modules, &no_aliases(), &no_fallback())
             .expect("call 2: monomorphise (id 7) — must not overflow");
 
-        // Assert: `id$Int` mono entry is registered in live.
+        // Assert: `id$Int` mono entry is registered in live (home-qualified
+        // `test_form_mod/id$Int`, FIXME 0519).
         let guard = modules.get(&module_path()).expect("module exists");
         assert!(
-            guard.get("id$Int").is_some(),
-            "id$Int should be registered after call 2 mono"
+            guard.get("test_form_mod/id$Int").is_some(),
+            "test_form_mod/id$Int should be registered after call 2 mono"
         );
     }
 

@@ -143,7 +143,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             });
         }
 
-        let mangled_name = build_mangled_name(fn_name, &concrete_param_types);
+        // The DEFINING module qualifies the mangled name (FIXME 0519): `home`
+        // for an imported generic (FIXME 0355), else the local `current_module`.
+        let home_path = home
+            .cloned()
+            .unwrap_or_else(|| state.current_module.clone());
+        let mangled_name = build_mangled_name(&home_path, fn_name, &concrete_param_types);
 
         // === P2 — verify constraints (module-switched) ===
         self.verify_mono_constraints(state, &scheme, &var_mapping, home, call_span)?;
@@ -179,6 +184,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // === P5 — self-recursion dispatch (0374) ===
         self.record_self_recursion_dispatch(
             &wrap_defn,
+            &home_path,
             fn_name,
             &mangled_name,
             &mono_expr_types,
@@ -353,6 +359,7 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
     fn record_self_recursion_dispatch(
         &self,
         wrap_defn: &Defn,
+        home: &ModuleFullPath,
         fn_name: &Symbol,
         mangled_name: &str,
         mono_expr_types: &HashMap<Span, Type>,
@@ -372,7 +379,8 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
             // Same concrete param types ⇒ same mono instance (`mangled_name`).
-            if build_mangled_name(fn_name, &self_arg_types) == mangled_name {
+            // Same instance ⇒ same defining home, so key with the same `home`.
+            if build_mangled_name(home, fn_name, &self_arg_types) == mangled_name {
                 resolutions.resolved_calls.insert(
                     *self_span,
                     ResolvedCall::SigDispatch {
@@ -784,7 +792,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             if inner_arg_types.len() != arg_spans.len() {
                 continue;
             }
-            let inner_mangled = build_mangled_name(inner_fn_name, &inner_arg_types);
+            // Inner constrained fns live in the SAME defining module as the
+            // outer (collected from `home` when imported, else current), so the
+            // inner mono instance's name is qualified by that same home.
+            let inner_home = home
+                .cloned()
+                .unwrap_or_else(|| state.current_module.clone());
+            let inner_mangled = build_mangled_name(&inner_home, inner_fn_name, &inner_arg_types);
             resolutions.resolved_calls.insert(
                 *inner_call_span,
                 ResolvedCall::SigDispatch {
@@ -1031,29 +1045,48 @@ pub(super) fn collect_self_apply_calls(
     });
 }
 
-pub(crate) fn build_mangled_name(fn_name: &Symbol, param_types: &[Type]) -> String {
+pub(crate) fn build_mangled_name(
+    home: &ModuleFullPath,
+    fn_name: &Symbol,
+    param_types: &[Type],
+) -> String {
+    // THE ONE canonical mono-instance name-composer (FIXME 0519, Principle 7).
+    // Grammar: `{home}/{bare}${recursive-concrete-sig}` where
+    //   - `home` = the DEFINING module's `ModuleFullPath` (distinguishes two
+    //     same-named imported generics `a/twist` vs `b/twist` registered into
+    //     one consumer table → cures the 0508 home-erasure silent miscompile);
+    //   - the sig recurses EVERY concrete param type through the ONE canonical
+    //     total type-mangler `program::mangle_type` — ADT args are recursed
+    //     (`Vec$Int` ≠ `Vec$String`, curing 0483) and `Fn` params are recursed
+    //     rather than dropped (curing the latent Fn-param-drop collision axis).
+    //
+    // Collision-free BY CONSTRUCTION (Principle 20): the name is a pure function
+    // of (defining home, bare name, recursively-mangled concrete sig); two
+    // instantiations differing in any one fact mint different names, and the
+    // "two distinct instantiations → one name" state is unrepresentable. All
+    // three facts are persisted (module path, symbol, concrete param types), so
+    // the name is cache-safe / compile-order-independent.
+    //
     // TRIPWIRE (Phase-4 part A, concrete-boundary-type.md §4-A "secondary
     // hardening", Principle 18). After the all-args-concrete collection gate,
-    // every minted instance has all-CONCRETE params (`is_concrete()`). The
-    // mangler intentionally NAMES only the head-typed params (`Int`, `Vec`, …)
-    // and drops `Fn`-typed params (`concrete_type_name` returns `None` for
-    // `Type::Fn` — a concrete-but-unnameable shape: `reduce$Int+Vec` legitimately
-    // omits its `(Fn ..)` first param). The hazard the spurious mint exhibited
-    // was a `Type::Var` param being dropped — producing a LOSSY name where two
-    // distinct partial instantiations collide. Trip on a non-`is_concrete()`
-    // param (a residual `Var`/`TyConApp`), NOT on the legitimate `Fn`-param drop,
-    // so a future spurious-mint site is caught here.
+    // every minted instance has all-CONCRETE params. A residual `Type::Var`
+    // reaching here is a lossy-name hazard (`mangle_type` would emit the shared
+    // token `Var`, collapsing two distinct partial instantiations). The §9.3
+    // concreteness gate in `monomorphise_call` returns a clean type error one
+    // step earlier; this `debug_assert!` is the belt-and-braces backstop for a
+    // future spurious-mint site.
     debug_assert!(
         param_types.iter().all(|t| t.is_concrete()),
-        "build_mangled_name({fn_name}) saw a non-concrete param type \
+        "build_mangled_name({home}/{fn_name}) saw a non-concrete param type \
          (lossy-name hazard — a spurious partial mono instance reached the \
          mangler): {param_types:?}"
     );
-    let type_names: Vec<String> = param_types
+    let sig = param_types
         .iter()
-        .filter_map(|t| concrete_type_name(t).map(|tn| tn.to_string()))
-        .collect();
-    format!("{}${}", fn_name, type_names.join("+"))
+        .map(crate::program::mangle_type)
+        .collect::<Vec<_>>()
+        .join("+");
+    format!("{home}/{fn_name}${sig}")
 }
 
 /// Extract the bare TypeName from a concrete (non-Var) type.

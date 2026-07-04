@@ -671,14 +671,32 @@ fn mangle_sig(name: &str, param_types: &[Type]) -> Symbol {
     }
 }
 
-/// Mangle a single type for name mangling.
-fn mangle_type(ty: &Type) -> String {
+/// Mangle a single concrete type into distinguishing text — THE ONE canonical,
+/// total type-mangler (FIXME 0519, Principle 7). Every concrete `Type` variant
+/// is recursed so that the produced string is a lossless, collision-free
+/// encoding of the type structure (Principle 20):
+///
+/// - `ADT(name, args)` recurses its args — `Vec$Int` ≠ `Vec$String` (cures the
+///   0483 ADT-arg-erasure axis).
+/// - `Fn(params, ret)` recurses params + ret in a balanced-bracket form
+///   `Fn(<p1>,<p2>;<ret>)` — NEVER dropped (curing the latent Fn-param-drop
+///   collision axis). Balanced parens keep nested `Fn` extents unambiguous.
+/// - `TyConApp` / scalars — present as distinguishing text.
+///
+/// Both mono-instance naming (`traits::build_mangled_name`, home-qualified) and
+/// multi-sig overload-variant naming (`mangle_sig`, same-module) route their
+/// type components through this single function, so the name grain and any
+/// dedup-key grain agree by construction.
+pub(crate) fn mangle_type(ty: &Type) -> String {
     match ty {
         Type::Int => "Int".to_string(),
         Type::Bool => "Bool".to_string(),
         Type::String => "String".to_string(),
         Type::Float => "Float".to_string(),
-        Type::Fn(_, _) => "Fn".to_string(),
+        Type::Fn(params, ret) => {
+            let param_parts: Vec<String> = params.iter().map(mangle_type).collect();
+            format!("Fn({};{})", param_parts.join(","), mangle_type(ret))
+        }
         Type::ADT(name, args) => {
             if args.is_empty() {
                 name.to_string()
@@ -688,7 +706,14 @@ fn mangle_type(ty: &Type) -> String {
             }
         }
         Type::Var(_) => "Var".to_string(),
-        Type::TyConApp(id, _) => format!("TyCon{id}"),
+        Type::TyConApp(id, args) => {
+            if args.is_empty() {
+                format!("TyCon{id}")
+            } else {
+                let arg_parts: Vec<String> = args.iter().map(mangle_type).collect();
+                format!("TyCon{id}${}", arg_parts.join("+"))
+            }
+        }
     }
 }
 
@@ -3433,6 +3458,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // Monomorphise each call site and record dispatch mappings
         let mut mono_defns = Vec::new();
         let mut seen: HashMap<String, JitSymbol> = HashMap::new();
+        // The caller's module — the fallback home for a LOCAL generic's mono
+        // name. `monomorphise_call` restores `state.current_module` per call, so
+        // capturing once here is stable across the loop (FIXME 0519).
+        let current_module = state.current_module.clone();
 
         for (fn_name, arg_spans, call_span, home_module) in &call_sites {
             // Look up concrete arg types from resolved expr_types
@@ -3465,11 +3494,18 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 continue;
             }
 
-            // Deduplicate: same fn + same arg types = same specialization
-            let key = format!("{}${}", fn_name, arg_types.iter()
-                .map(|t| format!("{}", t))
-                .collect::<Vec<_>>()
-                .join("+"));
+            // Deduplicate: same defining home + fn + arg types = same
+            // specialization. Route the dedup key through the ONE canonical
+            // mangler so the dedup grain == the minted-name grain (FIXME 0519):
+            // a home-blind key collapsed two same-named imported generics at the
+            // dedup step (the 0508 collapse point) even after the name grew a
+            // home. `arg_types` are the concrete param types (gated concrete
+            // above), so this key string is byte-identical to the `mono.defn.name`
+            // that `monomorphise_call` mints below.
+            let key_home = home_module
+                .clone()
+                .unwrap_or_else(|| current_module.clone());
+            let key = crate::traits::build_mangled_name(&key_home, fn_name, &arg_types);
 
             if let Some(mangled) = seen.get(&key) {
                 // Already generated this specialization — just record dispatch
@@ -3504,7 +3540,12 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         // becomes `(Box Int)` — concrete, classifying cleanly, no RC guard.
         let mut fn_value_rewrites: Vec<(Symbol, Span, Symbol)> = Vec::new();
         for (enclosing, arg_name, arg_span, param_types, home) in &fn_value_arg_sites {
-            let key = crate::traits::build_mangled_name(arg_name, param_types);
+            // Home-qualified dedup key == the minted name (FIXME 0519): `home`
+            // for an IMPORTED generic fn-value (FIXME 0488 sig b), else current.
+            let key_home = home
+                .clone()
+                .unwrap_or_else(|| current_module.clone());
+            let key = crate::traits::build_mangled_name(&key_home, arg_name, param_types);
             let mangled_sym = if let Some(existing) = seen.get(&key) {
                 Symbol::from(existing.as_ref())
             } else if let Some(mono) =

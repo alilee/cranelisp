@@ -233,7 +233,18 @@ pub mod linker;
 /// point. The bump rejects every v11 cache as `CacheStale::SchemaMismatch`
 /// (cache-miss → recompile). **One bump serves all of increment I** — the
 /// consuming change-sets (CS-B/CS-1..4, backend B1-be..B3.x) do NOT re-bump.
-pub const CACHE_SCHEMA_VERSION: u32 = 12;
+///
+/// **S102 bump 12 → 13 (FIXME 0519 — unified lossless mono-mangler).** The
+/// monomorphised-instance mangled name changed grammar from the lossy
+/// `{bare}${head-types}` to the canonical home-qualified lossless
+/// `{home}/{bare}${recursive-concrete-sig}` (`design/typecheck/monomorphisation.md`
+/// §3.5). The mangled name IS the persisted symbol-table entry key / `.meta.json`
+/// identity and the `LinkerSymbol` the GOT-slot dispatch resolves against, so a
+/// v12 cache carrying old-grammar mono keys would mis-resolve. The bump rejects
+/// every v12 cache as `CacheStale::SchemaMismatch` (cache-miss → recompile). No
+/// other cascade — the name is an opaque `String`/`LinkerSymbol` at every crate
+/// boundary (no `public-api.txt`, no `cranelisp-types`, no interfaces change).
+pub const CACHE_SCHEMA_VERSION: u32 = 13;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

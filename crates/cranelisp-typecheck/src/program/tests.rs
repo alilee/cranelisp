@@ -1343,8 +1343,9 @@
             "REPL expr should generate mono_defns for constrained fn calls"
         );
         assert!(
-            mono_names.iter().any(|n| n.as_ref() == "add$Int+Int"),
-            "expected add$Int+Int in mono entries, got {mono_names:?}"
+            // FIXME 0519: mono names are home-qualified `{home}/{bare}$sig`.
+            mono_names.iter().any(|n| n.as_ref() == "test/add$Int+Int"),
+            "expected test/add$Int+Int in mono entries, got {mono_names:?}"
         );
     }
 
@@ -1404,10 +1405,10 @@
         let variants = tc.mono_variants();
         let v = variants
             .iter()
-            .find(|v| v.name.as_ref() == "add$Int+Int")
+            .find(|v| v.name.as_ref() == "test/add$Int+Int")
             .unwrap_or_else(|| {
                 panic!(
-                    "expected a MonoDefnVariant for add$Int+Int, got {:?}",
+                    "expected a MonoDefnVariant for test/add$Int+Int, got {:?}",
                     variants.iter().map(|v| v.name.as_ref()).collect::<Vec<_>>()
                 )
             });
@@ -1475,11 +1476,11 @@
 
         tc.check_program_self(&[id_defn, main_defn]).unwrap();
 
-        // The mono instance `id$Int` is minted.
+        // The mono instance `id$Int` is minted (home-qualified, FIXME 0519).
         let mono_names = tc.mono_defn_names();
         assert!(
-            mono_names.iter().any(|n| n.as_ref() == "id$Int"),
-            "expected id$Int mono instance, got {mono_names:?}"
+            mono_names.iter().any(|n| n.as_ref() == "test/id$Int"),
+            "expected test/id$Int mono instance, got {mono_names:?}"
         );
 
         // `main` is a Concrete{slot} codegen target carrying a POST-mono
@@ -1525,8 +1526,9 @@
         let mut dispatches = Vec::new();
         collect_sig_dispatch(&main_view.body, &mut dispatches);
         assert!(
-            dispatches.iter().any(|d| d == "id$Int"),
-            "main's codegen_view must carry the post-mono SigDispatch{{id$Int}} \
+            // FIXME 0519: SigDispatch names the home-qualified mono `test/id$Int`.
+            dispatches.iter().any(|d| d == "test/id$Int"),
+            "main's codegen_view must carry the post-mono SigDispatch{{test/id$Int}} \
              for the (id 7) call; found dispatches: {dispatches:?}"
         );
     }
@@ -1590,8 +1592,9 @@
             "REPL defn should generate mono_defns for constrained fn calls in body"
         );
         assert!(
-            mono_names.iter().any(|n| n.as_ref() == "add$Int+Int"),
-            "expected add$Int+Int in mono entries, got {mono_names:?}"
+            // FIXME 0519: mono names are home-qualified `{home}/{bare}$sig`.
+            mono_names.iter().any(|n| n.as_ref() == "test/add$Int+Int"),
+            "expected test/add$Int+Int in mono entries, got {mono_names:?}"
         );
     }
 
@@ -4479,8 +4482,9 @@
             "the generic `id` template must stay slot-less Polymorphic",
         );
 
-        // The mono instance `id$Int` is Concrete, slotted, and concrete-typed.
-        match tc.symbol_table().get("id$Int") {
+        // The mono instance `id$Int` is Concrete, slotted, and concrete-typed
+        // (home-qualified `test/id$Int`, FIXME 0519).
+        match tc.symbol_table().get("test/id$Int") {
             Some(ModuleEntry::Def { kind, scheme, .. }) => {
                 let slot = match kind.as_ref() {
                     DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot, .. } } => {
@@ -4627,7 +4631,7 @@
         // own concrete param type `Int`) — a concrete, slotted mono instance
         // with a fully-concrete `(Fn [Int] (Box Int))` stored type (no residual
         // `Type::Var` ADT field).
-        match tc.symbol_table().get("mk$Int") {
+        match tc.symbol_table().get("test/mk$Int") {
             Some(ModuleEntry::Def { kind, scheme, .. }) => {
                 assert!(
                     matches!(
@@ -4975,7 +4979,7 @@
         let mono_count = tc
             .symbol_table()
             .all_symbols()
-            .filter(|(name, _)| name.as_ref().starts_with("reduce$"))
+            .filter(|(name, _)| name.as_ref().contains("reduce$"))
             .count();
         assert!(
             mono_count >= 1,
@@ -5060,16 +5064,23 @@
             .iter()
             .map(|v| v.name.as_ref().to_string())
             .collect();
+        // FIXME 0519: the mono name is home-qualified with a lossless recursive
+        // sig (`f`'s `Fn` type recursed, the `(Vec Int)` arg recursed FQ), so the
+        // exact string is `test/reduce-loop$Fn(...)+Int+.../Vec$Int+Int+Int`. The
+        // test's invariant is unchanged: exactly ONE genuine concrete instance,
+        // and NO spurious partial (a residual `Var` token in the sig).
+        let reduce_loop_monos: Vec<&String> =
+            mono_names.iter().filter(|n| n.contains("reduce-loop$")).collect();
         assert!(
-            mono_names.iter().any(|n| n == "reduce-loop$Int+Vec+Int+Int"),
-            "the genuine concrete `reduce-loop$Int+Vec+Int+Int` must be minted; \
+            !reduce_loop_monos.is_empty(),
+            "the genuine concrete `reduce-loop` mono must be minted; \
              mono variants: {mono_names:?}",
         );
         assert!(
-            !mono_names.iter().any(|n| n == "reduce-loop$Vec+Int+Int"),
-            "the SPURIOUS partial `reduce-loop$Vec+Int+Int` must NOT be minted \
-             (Phase-4 part A suppresses the generic-caller-recursion mint); \
-             mono variants: {mono_names:?}",
+            !reduce_loop_monos.iter().any(|n| n.contains("Var")),
+            "the SPURIOUS partial `reduce-loop` mint (a residual-`Var` lossy sig) \
+             must NOT be minted (Phase-4 part A suppresses the generic-caller \
+             recursion mint); mono variants: {mono_names:?}",
         );
     }
 
@@ -5111,9 +5122,9 @@
         // 2. The minted mono instance `id$Int` carries a view whose body root is
         //    `Int` (the identity body `x` at `Int`).
         let id_int_view = table
-            .get("id$Int")
+            .get("test/id$Int")
             .and_then(|e| e.codegen_view().cloned())
-            .expect("mono instance `id$Int` must carry Some(codegen_view)");
+            .expect("mono instance `test/id$Int` must carry Some(codegen_view)");
         assert_eq!(
             id_int_view.body.ty(),
             &ConcreteType::Int,
@@ -5317,7 +5328,8 @@
             .get(&caller)
             .unwrap()
             .all_symbols()
-            .filter(|(name, _)| name.as_ref().starts_with("cmp$"))
+            // FIXME 0519: mono name is home-qualified by cmp's DEFINING module.
+            .filter(|(name, _)| name.as_ref().contains("cmp$"))
             .map(|(name, entry)| {
                 let concrete = matches!(
                     entry,
@@ -5333,12 +5345,13 @@
             })
             .collect();
         assert!(
-            monos.iter().any(|(n, _)| n == "cmp$Int"),
-            "a `cmp$Int` mono variant must be created in the CALLER module for \
-             the imported constrained call (FIXME 0355); found: {monos:?}",
+            monos.iter().any(|(n, _)| n == "helper/cmp$Int"),
+            "a `helper/cmp$Int` mono variant must be created in the CALLER module \
+             for the imported constrained call (FIXME 0355; home-qualified by cmp's \
+             defining module `helper`, FIXME 0519); found: {monos:?}",
         );
         assert!(
-            monos.iter().find(|(n, _)| n == "cmp$Int").map(|(_, c)| *c).unwrap_or(false),
+            monos.iter().find(|(n, _)| n == "helper/cmp$Int").map(|(_, c)| *c).unwrap_or(false),
             "the `cmp$Int` mono entry must be a concrete UserFn owning its own \
              GOT slot (Option-A concrete-shape-owns-the-slot); found: {monos:?}",
         );
@@ -5437,7 +5450,8 @@
             .get(&consumer)
             .unwrap()
             .all_symbols()
-            .filter(|(name, _)| name.as_ref().starts_with("count$"))
+            // FIXME 0519: mono name is home-qualified by count's DEFINING module.
+            .filter(|(name, _)| name.as_ref().contains("count$"))
             .map(|(name, entry)| {
                 let concrete = matches!(
                     entry,
@@ -5860,19 +5874,20 @@
         tc.check_program_self(&program)
             .expect("two-hop polymorphic-result program must type-check");
 
-        // Both hops must have a monomorphised instance. `build_mangled_name`
-        // collapses fn-value args (their `concrete_type_name` is None) to an
-        // empty type-list, so the mono names are `h1$` and `h2$` — distinct
-        // names, one instantiation each. The presence of `h2$` is the multi-hop
-        // propagation guarantee: `h2` only became concrete during `h1`'s recheck.
+        // Both hops must have a monomorphised instance. FIXME 0519: the mono name
+        // is home-qualified with a lossless recursive sig — the `Fn`-typed `f`
+        // param is now RECURSED (not dropped), so the names are
+        // `test/h1$Fn(Int;Int)` / `test/h2$Fn(Int;Int)`. The presence of an `h2$`
+        // mono is the multi-hop propagation guarantee: `h2` only became concrete
+        // during `h1`'s recheck.
         let mono = tc.mono_defn_names();
         let mono_strs: Vec<String> = mono.iter().map(|s| s.as_ref().to_string()).collect();
         assert!(
-            mono_strs.iter().any(|n| n.starts_with("h1$")),
+            mono_strs.iter().any(|n| n.contains("h1$")),
             "h1 must be monomorphised (FIXME 0373 Tier 1); mono entries: {mono_strs:?}",
         );
         assert!(
-            mono_strs.iter().any(|n| n.starts_with("h2$")),
+            mono_strs.iter().any(|n| n.contains("h2$")),
             "h2 must ALSO be monomorphised — the concrete instantiation must \
              propagate through the hop chain (FIXME 0373 Tier 1, multi-hop); \
              mono entries: {mono_strs:?}",
@@ -5885,7 +5900,8 @@
             let st = tc.symbol_table();
             let (name, entry) = st
                 .all_symbols()
-                .find(|(n, _)| n.as_ref().starts_with(prefix))
+                // FIXME 0519: mono name home-qualified; match the `hN$` infix.
+                .find(|(n, _)| n.as_ref().contains(prefix))
                 .unwrap_or_else(|| panic!("no mono entry for {prefix}"));
             match entry {
                 ModuleEntry::Def { scheme, .. } => match &scheme.ty {
@@ -5965,7 +5981,8 @@
             let module = tc.modules.get(&caller).unwrap();
             let (name, entry) = module
                 .all_symbols()
-                .find(|(n, _)| n.as_ref().starts_with(prefix))
+                // FIXME 0519: mono name home-qualified; match the `hN$` infix.
+                .find(|(n, _)| n.as_ref().contains(prefix))
                 .unwrap_or_else(|| {
                     let all: Vec<String> = module
                         .all_symbols()
@@ -7244,27 +7261,27 @@
              (defn caller [] (test/iden 5))",
         );
 
-        // `iden$Int` minted, concrete + slotted, in the current module.
-        match tc.symbol_table().get("iden$Int") {
+        // `test/iden$Int` minted (home-qualified, FIXME 0519), concrete + slotted.
+        match tc.symbol_table().get("test/iden$Int") {
             Some(ModuleEntry::Def { kind, scheme, .. }) => {
                 assert!(
                     matches!(
                         kind.as_ref(),
                         DefKind::UserFn { fn_state: UserFnState::Concrete { .. } }
                     ),
-                    "iden$Int must be a Concrete (slotted) mono instance, got {kind:?}",
+                    "test/iden$Int must be a Concrete (slotted) mono instance, got {kind:?}",
                 );
-                assert!(scheme.ty.is_concrete(), "iden$Int type must be concrete");
+                assert!(scheme.ty.is_concrete(), "test/iden$Int type must be concrete");
             }
             other => panic!(
-                "same-module FQ call must mint `iden$Int` (FIXME 0488 sig a); got {other:?}"
+                "same-module FQ call must mint `test/iden$Int` (FIXME 0488 sig a); got {other:?}"
             ),
         }
-        // The caller's Apply node carries SigDispatch{iden$Int}.
+        // The caller's Apply node carries SigDispatch{test/iden$Int}.
         assert_eq!(
             first_sig_dispatch(&stored_body(&tc, "caller")).as_deref(),
-            Some("iden$Int"),
-            "the same-module FQ call node must carry SigDispatch{{iden$Int}}",
+            Some("test/iden$Int"),
+            "the same-module FQ call node must carry SigDispatch{{test/iden$Int}}",
         );
     }
 
@@ -7285,13 +7302,13 @@
     }
 
     // spec: spec/04-expressions.md §4.2.2 — a CROSS-module qualified call to an
-    //   imported generic fn MUST mint under the BARE mangled name (`iden2$Int`),
-    //   NOT `gen/iden2$Int`. RED on HEAD (FIXME 0488 sig a, cross-module
-    //   sub-cause): the imported collector records the raw qualified callee name,
-    //   and `get_constrained_fn`'s home-probe re-uses it as a table key in `gen`
-    //   → no mint.
+    //   imported generic fn MUST monomorphise + dispatch. FIXME 0519: the mono
+    //   name is HOME-QUALIFIED by the DEFINING module (`gen`), so the instance is
+    //   `gen/iden2$Int` (NOT the home-blind bare `iden2$Int`, whose ambiguity was
+    //   the 0508 silent-miscompile). The consumer registers the mono under the
+    //   home-qualified key in its own table and dispatches to it.
     #[test]
-    fn u_a2_cross_module_fq_call_mints_bare_name() {
+    fn u_a2_cross_module_fq_call_mints_home_qualified_name() {
         let mut tc = tc_with_prims();
         // Build the fixture module `gen` with a generic `iden2`.
         tc.set_current_module(ModuleFullPath::from("gen"));
@@ -7303,18 +7320,19 @@
         check_src(&mut tc, "(defn caller [] (gen/iden2 5))");
 
         assert!(
-            tc.symbol_table().get("iden2$Int").is_some(),
-            "cross-module FQ call must mint the BARE-mangled `iden2$Int` in the \
-             caller module (FIXME 0488 sig a)",
+            tc.symbol_table().get("gen/iden2$Int").is_some(),
+            "cross-module FQ call must mint the HOME-qualified `gen/iden2$Int` in \
+             the caller module (FIXME 0488 sig a + 0519 home-qualification)",
         );
         assert!(
-            tc.symbol_table().get("gen/iden2$Int").is_none(),
-            "the mono must NOT be minted under the qualified `gen/iden2$Int` name",
+            tc.symbol_table().get("iden2$Int").is_none(),
+            "the mono must NOT be minted under the home-blind bare `iden2$Int` \
+             name (the 0508 collision axis)",
         );
         assert_eq!(
             first_sig_dispatch(&stored_body(&tc, "caller")).as_deref(),
-            Some("iden2$Int"),
-            "the cross-module FQ call node must carry SigDispatch{{iden2$Int}}",
+            Some("gen/iden2$Int"),
+            "the cross-module FQ call node must carry SigDispatch{{gen/iden2$Int}}",
         );
     }
 
@@ -7339,14 +7357,15 @@
         );
 
         assert!(
-            tc.symbol_table().get("iden2$Int").is_some(),
-            "imported fn-value use must mint `iden2$Int` (FIXME 0488 sig b)",
+            // FIXME 0519: home-qualified by the DEFINING module `gen`.
+            tc.symbol_table().get("gen/iden2$Int").is_some(),
+            "imported fn-value use must mint `gen/iden2$Int` (FIXME 0488 sig b)",
         );
         // The fn-value `Var` in use1's body is rewritten to the mangled name.
         let body = stored_body(&tc, "use1");
         assert!(
-            body_has_var_named(&body, "iden2$Int"),
-            "the imported fn-value `Var` must be rewritten to `iden2$Int` in the \
+            body_has_var_named(&body, "gen/iden2$Int"),
+            "the imported fn-value `Var` must be rewritten to `gen/iden2$Int` in the \
              caller AST; body = {body:?}",
         );
         assert!(
@@ -7368,12 +7387,12 @@
              (defn use1 [] (call1 iden 5))",
         );
         assert!(
-            tc.symbol_table().get("iden$Int").is_some(),
-            "same-module fn-value use must still mint `iden$Int` (0374 regression fence)",
+            tc.symbol_table().get("test/iden$Int").is_some(),
+            "same-module fn-value use must still mint `test/iden$Int` (0374 regression fence)",
         );
         assert!(
-            body_has_var_named(&stored_body(&tc, "use1"), "iden$Int"),
-            "same-module fn-value `Var` must still be rewritten to `iden$Int`",
+            body_has_var_named(&stored_body(&tc, "use1"), "test/iden$Int"),
+            "same-module fn-value `Var` must still be rewritten to `test/iden$Int`",
         );
     }
 
@@ -7469,7 +7488,8 @@
         let st = tc.symbol_table();
         let (mono_name, scheme) = st
             .all_symbols()
-            .find(|(n, _)| n.as_ref().starts_with("vconcat$"))
+            // FIXME 0519: mono name is home-qualified with a lossless sig.
+            .find(|(n, _)| n.as_ref().contains("vconcat$"))
             .and_then(|(n, e)| match e {
                 ModuleEntry::Def { scheme, .. } => Some((n.as_ref().to_string(), scheme.clone())),
                 _ => None,

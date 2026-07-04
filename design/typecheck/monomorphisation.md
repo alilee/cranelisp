@@ -352,16 +352,52 @@ and chase reachable successors", with the slot-less-ness of `Polymorphic` defs a
 representation-level signal that a reached-but-unslotted instance still needs a
 concrete mint.
 
-### 3.5 Dedup — the cluster-level `done` set keyed on the mangled name
+### 3.5 Dedup — keyed on the canonical home-qualified mangled name
 
-Key each instance by the existing mangled name `build_mangled_name(fn_name,
-param_types)` (`traits.rs:1905`) — `name$T1+T2` — which is already the dedup key the
-per-pass4 `seen: HashMap<String, JitSymbol>` map uses (`program.rs:2396`) and which
-`register_mono_entry` already preserves-slot-on-collision. **Tier 2 promotes this
-from a per-pass4-call `seen` map to a cluster-level `done` set** so a diamond of hops
-converging on one specialisation is minted exactly once across the whole worklist.
-No new key scheme — the mangled name IS the GOT-slot / JIT-symbol identity the backend
-links against, so it must be the dedup identity (Principle 7).
+Key each instance by the canonical mangled name `build_mangled_name(home,
+fn_name, param_types)` (`traits/monomorphise.rs`), which is also the dedup key the
+per-pass4 `seen: HashMap<String, JitSymbol>` map uses and which
+`register_mono_entry` preserves-slot-on-collision. No new key scheme — the mangled
+name IS the GOT-slot / JIT-symbol identity the backend links against, so it must be
+the dedup identity (Principle 7). **The name path and the dedup-key path are the same
+function** (`build_mangled_name`) over the same inputs, so the two grains cannot
+disagree (the FIXME-0508 collapse point closed).
+
+#### Mangled-name grammar (FIXME 0519 — the ONE canonical lossless mangler)
+
+```
+{home}/{bare}${recursive-concrete-sig}
+```
+
+- **`home`** = the DEFINING module's `ModuleFullPath` — the `home:
+  Option<&ModuleFullPath>` threaded through `monomorphise_call` (FIXME 0355) when
+  `Some` (imported generic), else `state.current_module` (local fn). Home-qualifying
+  the key distinguishes two same-named imported generics `a/twist` vs `b/twist`
+  registered into ONE consumer table → cures the **0508** silent wrong-dispatch.
+- **`recursive-concrete-sig`** = each concrete param type mangled by the ONE canonical
+  **total** type-mangler `program::mangle_type` (Principle 7 — single-sourced; the
+  multi-sig `mangle_sig` composer routes its type components through the same
+  function). `mangle_type` recurses EVERY concrete `Type` variant:
+  - `ADT(fqtn, args)` → `{fqtn}$arg1+arg2+…` recursing args (`…/Vec$Int` ≠
+    `…/Vec$String`) → cures the **0483** ADT-arg-erasure SIGBUS. The head is the
+    FQTypeName (`{type-home}/{Name}`), so cross-module same-named types never collide.
+  - `Fn(params, ret)` → `Fn(p1,p2,…;ret)` recursing params + ret in a balanced-paren
+    form (nested `Fn` extents stay unambiguous). The `Fn` param is NEVER dropped →
+    cures the latent third collision axis (two instantiations differing only in a
+    concrete `Fn`-typed param no longer collide).
+  - `TyConApp`, scalars — present as distinguishing text.
+
+**Collision-free BY CONSTRUCTION (Principle 20):** the name is a pure function of
+(defining home, bare name, recursively-mangled concrete sig); two instantiations
+differing in any one distinguishing fact mint different names, and the "two distinct
+instantiations → one name" state is unrepresentable. **Cache-safe:** all three facts
+are persisted (module path, symbol, concrete param types) and compile-order-
+independent; the grammar change bumps `CACHE_SCHEMA_VERSION` 12→13 (the mangled name is
+the persisted `.meta.json` / symbol-table identity). The retired predecessor
+(`build_mangled_name(fn_name, param_types)` = `{bare}${head-types}`) was lossy on THREE
+axes: ADT args erased (`concrete_type_name` returned only `fqtn.name`), `Fn` params
+dropped (`filter_map`→None), and home-independent. `concrete_type_name` survives only
+for trait-impl TARGET naming (impl-on-type-constructor, head-name only).
 
 ### 3.6 No new boundary item for the mono output
 
