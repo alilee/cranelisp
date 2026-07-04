@@ -70,6 +70,16 @@ Redefining stdlib-INTERNAL behavior is unaffected (stdlib callers keep
 their own bindings — correct), so the blast radius is the user's own
 session surface.
 
+## /sprint addendum (S102 Wave 10a, 2026-07-04): fix ATTEMPTED, reverted — needs a /spec glob-exemption ruling FIRST
+
+The /int rejection fix (commit-gate: pre-scan staged Defs against live `Import` entries, reject the later-arriving conflicting form per /spec's §8.6.4 "definition-over-explicit-import is a compile-time ERROR" ruling) **flipped both 0484 guards but regressed ~30 prelude-dependent tests** (`stdlib_trait_impls`, `trait_imports` → `undefined variable: =`). Root cause (traced live): the universal prelude pattern `(export [primitives [*]])` (GLOB re-export of seeded ctors) + `(deftype (Option a) None …)` (shadowing `None`/`Some`) is **legitimate** shadowing — consistent with the standing "prelude-provided names stay shadowable" principle — but at the commit gate **glob and specific imports are shape-identical `ModuleEntry::Import` entries**, so the rejection cannot distinguish "shadowing a glob-re-exported seeded ADT ctor" (must be ALLOWED) from "defining over a specific explicit import" (the §8.6.4 error). Both 0484 commits were REVERTED; guards stay RED as documented carries.
+
+**The gating question is /spec's**: does the "definition-over-import is a compile-time error" rule apply to **glob** imports, or is glob-of-seeded-ADTs (the prelude pattern) exempt? The prelude's own dependence on shadowing `Some`/`None` strongly implies glob shadowing must stay legal while specific-import shadowing is the error. Once /spec pins that:
+- If glob is exempt: /int distinguishes at **import-processing time** (the `(export [m [*]])` vs `(import [m [x]])` spec form carries the glob/specific bit BEFORE the entries become shape-identical) — likely NO `cranelisp-types` change needed.
+- If a persisted glob/specific flag on `ModuleEntry::Import` is required: that is an /arch `cranelisp-types` change (schema cascade).
+
+Routing: **/spec** (glob-exemption ruling) → **/int** (import-time rejection) [→ **/arch** only if a persisted provenance flag proves necessary]. Orthogonal to increment I (module resolution, not ownership) — does NOT gate the mechanism ladder.
+
 ## /qa guard batch (S101 6b, 2026-07-03): guards LANDED — this file is now redundant as a record
 
 Reduced stdlib-free (local `util` module, fn `measure`). 1 RED guard + 1
