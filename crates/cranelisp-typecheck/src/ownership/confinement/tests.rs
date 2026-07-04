@@ -145,6 +145,35 @@ fn copy_param_never_crosses() {
 }
 
 #[test]
+fn shadowed_param_name_does_not_false_match_in_spark() {
+    // spec: §13.6(i) (F4, confinement precision) — an inner `let` binding that
+    // shadows param `p` must NOT make a spark-side consume of the SHADOWED `p`
+    // spuriously set `spark_ops` for the real param. Without the confiner's
+    // scope discipline the `param_idx` lookup matches the param name and
+    // over-widens toward Crossing (sound, but imprecise). `(let [p (readonly p)]
+    // (par [_r (consume p)] _r))`.
+    let env = TestEnv::default()
+        .summary("readonly", sm(vec![Mode::Borrowed], vec![false]))
+        .summary("consume", sm(vec![Mode::Owned], vec![false]));
+    let spark = MonoExpr::ParBind {
+        bindings: vec![(Symbol::from("_r"), call("consume", vec![var("p")]))],
+        body: Box::new(var("_r")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("p"), call("readonly", vec![var("p")]))],
+        body: Box::new(spark),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = confine(&owned_p(), &body, &env);
+    // The consumed `p` inside the spark is the inner (shadowing) binding, not the
+    // param ⇒ the param's spark_ops stays clear.
+    assert!(!r.spark_ops[0], "shadowed inner p must not false-match the param");
+}
+
+#[test]
 fn confined_facts_true_on_parent_false_in_spark() {
     // spec: §5.3 — allocation sites record confined=true parent-strand,
     // false (Crossing) inside a spark. Transferred is never emitted (§5.4).

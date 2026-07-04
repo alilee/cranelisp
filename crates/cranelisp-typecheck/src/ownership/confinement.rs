@@ -27,7 +27,16 @@ use std::collections::HashMap;
 use cranelisp_types::{Mode, MonoExpr, Span, Symbol};
 
 use super::classify::{classify_call, CallClass};
-use super::transfer::TransferEnv;
+use super::transfer::{collect_pattern_bindings, TransferEnv};
+
+/// A saved confinement scope frame (§13.6(i), F4 — the sibling walker gets the
+/// same lexical-scope discipline for precision + anti-recurrence). For every
+/// name a binding scope introduces, records the `param_idx` entry it shadows
+/// (`Some(idx)` when the name collides with a param, `None` otherwise). On scope
+/// exit the entry is restored, so an inner binding that shadows a param does not
+/// spuriously match the param (`spark_ops[i]` false-set toward `Crossing`). The
+/// over-approximation is sound either way (spine §5.2); this only tightens it.
+type ConfineFrame = Vec<(Symbol, Option<usize>)>;
 
 /// The confinement stratum's output for one callable.
 #[derive(Debug, Clone)]
@@ -67,6 +76,23 @@ struct Confiner<'e, E: TransferEnv> {
 }
 
 impl<'e, E: TransferEnv> Confiner<'e, E> {
+    /// Restore a confinement scope frame on scope exit (§13.6(i)): reinsert each
+    /// shadowed `param_idx` entry (`Some(idx)`) or drop the temporary shadow
+    /// (`None`, a no-op — the name was not a param). Reverse order so nested
+    /// shadows of one name unwind correctly.
+    fn restore_frame(&mut self, frame: ConfineFrame) {
+        for (name, prior) in frame.into_iter().rev() {
+            match prior {
+                Some(idx) => {
+                    self.param_idx.insert(name, idx);
+                }
+                None => {
+                    self.param_idx.remove(&name);
+                }
+            }
+        }
+    }
+
     fn walk(&mut self, expr: &MonoExpr, strand: Strand) {
         match expr {
             MonoExpr::StringLit { span, .. }
@@ -92,11 +118,16 @@ impl<'e, E: TransferEnv> Confiner<'e, E> {
             MonoExpr::IntLit { .. } | MonoExpr::FloatLit { .. } | MonoExpr::BoolLit { .. } => {}
             MonoExpr::Var { .. } => {}
             MonoExpr::Let { bindings, body, .. } => {
-                for (_, rhs) in bindings {
+                // §13.6(i) (F4): shadow the colliding param names for the body +
+                // subsequent RHSs, restore on scope exit.
+                let mut frame: ConfineFrame = Vec::with_capacity(bindings.len());
+                for (n, rhs) in bindings {
                     // A let-binding RHS is a lenient-eligible position.
                     self.walk(rhs, join_strand(strand, Strand::PotentialFork));
+                    frame.push((n.clone(), self.param_idx.remove(n)));
                 }
                 self.walk(body, strand);
+                self.restore_frame(frame);
             }
             MonoExpr::If { cond, then_branch, else_branch, .. } => {
                 self.walk(cond, strand);
@@ -106,7 +137,14 @@ impl<'e, E: TransferEnv> Confiner<'e, E> {
             MonoExpr::Match { scrutinee, arms, .. } => {
                 self.walk(scrutinee, strand);
                 for arm in arms {
+                    // §13.6(i) (F4): each arm shadows its pattern bindings, restored
+                    // before the sibling arm — no arm-binding leak.
+                    let mut names = Vec::new();
+                    collect_pattern_bindings(&arm.pattern, &mut names);
+                    let frame: ConfineFrame =
+                        names.iter().map(|n| (n.clone(), self.param_idx.remove(n))).collect();
                     self.walk(&arm.body, strand);
+                    self.restore_frame(frame);
                 }
             }
             MonoExpr::Apply { callee, args, resolved_call, span, .. } => {
@@ -160,11 +198,15 @@ impl<'e, E: TransferEnv> Confiner<'e, E> {
             }
             MonoExpr::Trace { body, .. } => self.walk(body, strand),
             MonoExpr::ParBind { bindings, body, .. } => {
-                for (_, rhs) in bindings {
+                // §13.6(i) (F4): same scope discipline as `Let`.
+                let mut frame: ConfineFrame = Vec::with_capacity(bindings.len());
+                for (n, rhs) in bindings {
                     // A ParBind binding runs on a joined spark strand.
                     self.walk(rhs, Strand::PotentialFork);
+                    frame.push((n.clone(), self.param_idx.remove(n)));
                 }
                 self.walk(body, strand);
+                self.restore_frame(frame);
             }
             MonoExpr::LaunchContinue { launched, continuation, .. } => {
                 self.walk(launched, Strand::Deferred);

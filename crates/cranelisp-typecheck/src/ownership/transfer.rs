@@ -156,6 +156,17 @@ struct BindState {
     param_idx: Option<usize>,
 }
 
+/// A saved lexical-scope frame (§13.6(i), F4 cure). For every name a binding
+/// scope (`Let`, `ParBind`, each `Match` arm) introduces, records the value
+/// `bindings` held for that name **before** the insertion (`None` if the name
+/// was unbound). On scope EXIT the frame is replayed in reverse so `bindings`
+/// faithfully models lexical scope: a name shadowed by an inner branch-sibling
+/// binding is restored to its outer/param `BindState` before a sibling scope is
+/// walked, closing the ABI-half narrowing (`param_modes` Owned→Borrowed) that
+/// the flat, never-restored map caused. Params are the base frame, never
+/// restored away.
+type ScopeFrame = Vec<(Symbol, Option<BindState>)>;
+
 struct Walker<'e, E: TransferEnv> {
     env: &'e E,
     bindings: HashMap<Symbol, BindState>,
@@ -273,6 +284,10 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             MonoExpr::Var { name, .. } => self.walk_var(name, ctx),
 
             MonoExpr::Let { bindings, body, .. } => {
+                // §13.6(i) (F4): a scope frame saves each shadowed prior so the
+                // bindings map is restored on scope exit (below) — lexical-scope
+                // discipline, not a flat leak.
+                let mut frame: ScopeFrame = Vec::with_capacity(bindings.len());
                 for (n, rhs) in bindings {
                     // The RHS value's escape is not yet known (forward info);
                     // walk it Neutral and record its origin so uses of `n`
@@ -284,11 +299,17 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     let origin = self.walk(rhs, UseCtx::Neutral);
                     // §13.6(d) let-shadow provenance guard (blocker 3, F2 helper).
                     self.drop_shadowed_provenance(n);
-                    self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
+                    // Save the shadowed prior BEFORE inserting (scope discipline).
+                    let prior = self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
+                    frame.push((n.clone(), prior));
                 }
                 let body_origin = self.walk(body, ctx);
-                // Blocker 1 (F1): re-propagate binding-mediated escapes to fixpoint.
-                self.drain_escaped(bindings);
+                // Blocker 1 (F1): re-propagate binding-mediated escapes to
+                // fixpoint. Runs BEFORE the frame restore, so RHS re-walks resolve
+                // in this let's defining scope (enclosing + this-let's bindings).
+                self.drain_escaped(bindings, &frame);
+                // Restore the shadowed priors in reverse (scope exit, §13.6(i)).
+                self.restore_frame(frame);
                 body_origin
             }
 
@@ -306,8 +327,13 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 let scrut_root = scrut_origin.root().cloned();
                 let mut acc: Option<Origin> = None;
                 for arm in arms {
-                    self.bind_pattern(&arm.pattern, scrut_root.as_ref(), arm);
+                    // §13.6(i) (F4): each arm gets its OWN scope frame — a pattern
+                    // binding is restored before the sibling arm (and the post-match
+                    // uses) are walked, so an arm binding that shadows a param/outer
+                    // binding cannot leak past its arm.
+                    let frame = self.bind_pattern(&arm.pattern, scrut_root.as_ref(), arm);
                     let o = self.walk(&arm.body, ctx);
+                    self.restore_frame(frame);
                     acc = Some(match acc.take() {
                         None => o,
                         Some(prev) => join_origin(prev, o),
@@ -345,17 +371,21 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 // A joined spark: bindings' RHS run on a spark strand but join
                 // within the frame's extent (non-escape, §4.3). Confinement
                 // (CS-3) handles the strand axis; here they are Neutral reads.
+                // §13.6(i) (F4): the same scope-frame discipline as `Let`.
+                let mut frame: ScopeFrame = Vec::with_capacity(bindings.len());
                 for (n, rhs) in bindings {
                     let origin = self.walk(rhs, UseCtx::Neutral);
                     self.drop_shadowed_provenance(n);
-                    self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
+                    let prior = self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
+                    frame.push((n.clone(), prior));
                 }
                 let body_origin = self.walk(body, ctx);
                 // Blocker 1 (F1): a joined-spark binding that flows out (returned /
                 // stored) escapes exactly like a `let` binding — drain to fixpoint.
                 // The non-escape property of §4.3 is a STRAND fact (confinement),
                 // not a frame-escape fact.
-                self.drain_escaped(bindings);
+                self.drain_escaped(bindings, &frame);
+                self.restore_frame(frame);
                 body_origin
             }
 
@@ -459,6 +489,24 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
         }
     }
 
+    /// Restore a lexical-scope frame on scope exit (§13.6(i), F4 cure): replay
+    /// the saved `(name, prior)` entries in **reverse** insertion order —
+    /// `Some(old)` reinserts the shadowed prior, `None` removes the binding.
+    /// This is what makes `bindings` faithfully model lexical scope, so an inner
+    /// branch-sibling binding never leaks past its scope.
+    fn restore_frame(&mut self, frame: ScopeFrame) {
+        for (name, prior) in frame.into_iter().rev() {
+            match prior {
+                Some(old) => {
+                    self.bindings.insert(name, old);
+                }
+                None => {
+                    self.bindings.remove(&name);
+                }
+            }
+        }
+    }
+
     /// Drain this lexical scope's binding-mediated escapes to **fixpoint**
     /// (§13.6(g), F1 cure). A `Fresh` binding used escaping in the body was
     /// recorded by [`Self::walk_var`]; re-walking its RHS in the escaping context
@@ -468,18 +516,25 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
     /// escapes), so we loop over `self.escaped` for THIS scope's names until it
     /// settles. Outer-scope entries bubble up (partitioned into `rest`).
     ///
-    /// **Termination guard (each `(name, ctx)` re-walked at most once).** A
-    /// self-aliasing binding `(let [a a] …)` — the `case`/`cond` macro shape,
-    /// which rebinds `__case__` to `__case__` — would otherwise spin forever:
-    /// because the `bindings` map is not scope-restored (§13.6(i)), re-walking
-    /// `a`'s RHS `var("a")` resolves the name to the just-inserted INNER `a`
-    /// (itself) and re-pushes it endlessly. Deduping on `(name, ctx)` breaks the
-    /// cycle while preserving the fold-chain fixpoint — re-walking one RHS in one
-    /// context is idempotent (monotone joins), so once done it need never repeat;
-    /// distinct escaping contexts of one binding (`IntoResult` return AND
-    /// `Retained` store) are STILL each re-walked, so no flow is under-widened.
-    /// Bounded by |bindings| × |UseCtx|.
-    fn drain_escaped(&mut self, bindings: &[(Symbol, MonoExpr)]) {
+    /// **Defining-scope re-walk (§13.6(i), F4).** Each RHS is re-walked with the
+    /// binding-being-drained temporarily restored to its shadowed (`prior`)
+    /// value from `frame`, so a self-alias RHS (`(let [a a] …)` — the
+    /// `case`/`cond` macro shape) and a forward-reference-shaped fold chain
+    /// resolve their free vars in the RHS's *defining* scope (the binding itself
+    /// is not yet in scope while its own RHS evaluates), which is the correct
+    /// sequential-let reading. Restored to the inner binding after each re-walk
+    /// so sibling bindings stay visible.
+    ///
+    /// **Defensive termination bound (each `(name, ctx)` re-walked at most
+    /// once).** Since escaped entries are `Symbol`-keyed, a self-aliasing binding
+    /// whose defining-scope re-walk resolves `var("a")` to a still-`Fresh`,
+    /// still-`"a"`-named outer binding re-pushes `("a", ctx)`; the `(name, ctx)`
+    /// dedup caps this at |bindings| × |UseCtx| re-walks. Scope discipline makes
+    /// the re-walk resolve correctly; the dedup is the belt-and-braces bound that
+    /// guarantees termination (§13.6(g) — role downgraded from the F1 cure's
+    /// termination mechanism to a defensive cap). Re-walking one RHS in one
+    /// context is idempotent (monotone joins), so no flow is under-widened.
+    fn drain_escaped(&mut self, bindings: &[(Symbol, MonoExpr)], frame: &ScopeFrame) {
         let mut done: HashSet<(Symbol, UseCtx)> = HashSet::new();
         loop {
             let escaped = std::mem::take(&mut self.escaped);
@@ -496,7 +551,27 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 if done.insert((name.clone(), esc_ctx))
                     && let Some((_, rhs)) = bindings.iter().find(|(n, _)| n == &name)
                 {
+                    // Re-walk in the RHS's defining scope: temporarily restore the
+                    // binding to its shadowed prior (the binding is not in scope
+                    // while its own RHS evaluates — sequential-let semantics).
+                    let prior = frame
+                        .iter()
+                        .find(|(n, _)| n == &name)
+                        .and_then(|(_, p)| p.clone());
+                    let inner = match prior {
+                        Some(p) => self.bindings.insert(name.clone(), p),
+                        None => self.bindings.remove(&name),
+                    };
                     self.walk(rhs, esc_ctx);
+                    // Restore the inner binding for subsequent sibling re-walks.
+                    match inner {
+                        Some(iv) => {
+                            self.bindings.insert(name.clone(), iv);
+                        }
+                        None => {
+                            self.bindings.remove(&name);
+                        }
+                    }
                 }
             }
         }
@@ -504,8 +579,15 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
 
     /// Bind a match-arm pattern's field bindings as borrowed projections rooted
     /// in the scrutinee's root (§4.2 rule 1), recording the arm provenance fact
-    /// with the §13.6(d) shadow guard.
-    fn bind_pattern(&mut self, pattern: &Pattern, scrut_root: Option<&Symbol>, arm: &MonoMatchArm) {
+    /// with the §13.6(d) shadow guard. Returns the arm's [`ScopeFrame`] — the
+    /// caller restores it after the arm body so a pattern binding does not leak
+    /// past its arm (§13.6(i), F4).
+    fn bind_pattern(
+        &mut self,
+        pattern: &Pattern,
+        scrut_root: Option<&Symbol>,
+        arm: &MonoMatchArm,
+    ) -> ScopeFrame {
         let mut names = Vec::new();
         collect_pattern_bindings(pattern, &mut names);
         // §13.6(d) shadow guard (arm-own): if any bound name would shadow the
@@ -515,6 +597,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
         if let Some(r) = &root {
             self.facts.provenance.insert(arm.span, r.clone());
         }
+        let mut frame: ScopeFrame = Vec::with_capacity(names.len());
         for n in names {
             // §13.6(d) shadow guard (pre-existing): a pattern binding also shadows
             // any OTHER live binding of that name — drop pre-existing provenance
@@ -524,8 +607,10 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 Some(r) => Origin::Projection(r.clone()),
                 None => Origin::Fresh,
             };
-            self.bindings.insert(n, BindState { origin, param_idx: None });
+            let prior = self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
+            frame.push((n, prior));
         }
+        frame
     }
 }
 
@@ -540,7 +625,7 @@ fn join_origin(a: Origin, b: Origin) -> Origin {
     }
 }
 
-fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<Symbol>) {
+pub(super) fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<Symbol>) {
     match pattern {
         Pattern::Var { name, .. } => out.push(name.clone()),
         // Ring-0/1 constructor patterns bind a flat list of field names.

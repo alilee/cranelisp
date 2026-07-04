@@ -1125,7 +1125,14 @@ per audit row.
   leaving `x`'s stale `g`-rooted provenance live ⇒ a backend eliding the
   materialize on a value that borrows a freed `g` (UAF, same class as the `Let`
   narrowing). The `bind_pattern` scrutinee-root `shadow` check (arm-own provenance
-  suppression) is a SEPARATE, complementary guard and stays.
+  suppression) is a SEPARATE, complementary guard and stays. **Wave 8c-R2 note
+  (§13.6(i)):** the scope-frame discipline now makes shadow *detection* precise
+  (the walker resolves a name to its lexically-correct binding), but the
+  `drop_shadowed_provenance` drop-to-`None` (⇒ Decision-24 materialize) STAYS as
+  the sound action at a genuine cross-boundary `Symbol` collision — provenance
+  leaves the walk as a bare `Symbol` the backend re-resolves against its own
+  `borrowed_vars`, so the drop is the boundary-safe behaviour regardless of
+  in-walk scope fidelity. The scope stack does not retire it.
 - **(g) Binding-mediated escape re-propagation** (amends §2.2 rules 1–5 for the
   let-indirected shape; FIXME 0512 blocker 1). §3.3's "a later escaping *use of
   `n`* re-classifies the param root through `n`'s Root/Projection origin" fires
@@ -1146,22 +1153,32 @@ per audit row.
   `x` escapes), so the drain loops — re-partitioning `self.escaped` for this
   scope's names and re-walking until no this-scope entry remains. **Termination
   is guarded by deduping each `(name, ctx)` re-walk** (bounded by |bindings| ×
-  |UseCtx|), NOT by any "flat lets forbid forward references" argument — that
-  argument is FALSE for a self-aliasing binding `(let [a a] …)`, the stdlib
-  `case`/`cond` macro shape (`` `(let [__case__ __case__] …) `` rebinds the name
-  to itself). Because the walker's `bindings` map is not scope-restored
-  (§13.6(i)), re-walking `a`'s RHS `var("a")` resolves the name to the
-  just-inserted INNER `a` (itself) and re-pushes it — an infinite spin (observed
-  as a `case`-macro compile hang) that the `(name, ctx)` dedup breaks. Deduping
+  |UseCtx|). **As-built (Wave 8c-R2, §13.6(i)):** the drain re-walks each RHS in
+  its DEFINING scope — the binding-being-drained is temporarily restored to its
+  shadowed prior, so `var("a")` in a self-aliasing binding `(let [a a] …)` (the
+  stdlib `case`/`cond` macro shape, `` `(let [__case__ __case__] …) ``) resolves
+  to the OUTER `a`, not itself. Because `self.escaped` is `Symbol`-keyed, a
+  still-`Fresh`, still-`"a"`-named outer binding is re-pushed as `("a", ctx)`, so
+  the `(name, ctx)` dedup remains the **defensive** termination cap — its ROLE
+  downgraded from the F1 cure's termination mechanism to a belt-and-braces bound
+  (the Principle-7 workaround did not fully retire because name-keying, not
+  unscoped bindings, is the residual re-push driver). Deduping
   preserves the fold-chain fixpoint: re-walking one RHS in one context is
   idempotent (monotone joins), so once done it never needs repeating; distinct
   escaping contexts of one binding are still each re-walked (no flow
   under-widened). Monotone ⇒ purely-local aggregates keep `escapes=false` /
-  `Consumed`. **A residual precision gap:** propagation through a self-aliasing
-  shadow chain (`(let [a (Some x)] (let [a a] a))`) does NOT reach the outer
-  binding — the inner `a` masks it — so `x` stays `Consumed` there; this is the
-  §13.6(i) unscoped-bindings limitation, not a drain defect, and its fix rides
-  the §13.6(i) hardening. **Applies at BOTH the `Let` and `ParBind` seams** —
+  `Consumed`. **A residual PRECISION gap (advisory-half only; NOT the F4
+  soundness issue, which §13.6(i) cured):** flow propagation through a
+  self-aliasing shadow chain (`(let [a (Some x)] (let [a a] a))`) still does NOT
+  reach the outer binding — the inner drain consumes the re-pushed `Symbol`-keyed
+  `"a"` escape and dedups it before it can bubble to the outer let — so `x` stays
+  `Consumed` there (verified empirically, Wave 8c-R2). Scope discipline reaches
+  the outer *`BindState`* on the re-walk, but the name-keyed `escaped`/dedup pair
+  means the escape does not *propagate* across the name collision; closing it
+  fully would require attributing escapes to binding identity rather than name
+  (out of the §13.6(i) scope; the earlier "0518 strike this caveat" premise did
+  not hold — the driver is name-keying, not the now-cured unscoped map).
+  **Applies at BOTH the `Let` and `ParBind` seams** —
   a joined-spark binding that is returned/stored escapes exactly like a `let`
   binding; §4.3's non-escape property is a STRAND fact (confinement), not a
   frame-escape fact, so `ParBind` must drain too (F1 second gap). ABI mode is
@@ -1182,27 +1199,47 @@ per audit row.
   provenance dropped — an un(fully)visited callable otherwise has no / below-truth
   escape entries, which the backend would trust to elide a retain (UAF). Cap is a
   shared test seam (`compute_cluster_with_cap(.., cap=0)` forces the reset).
-- **(i) Observation — the transfer walker's `bindings` map is NOT scope-restored**
-  (Wave 8c-R F4; recorded, NOT actioned this change-set). `Let` and `Match`-arm
-  bindings are inserted into the flat `Walker.bindings` map and never removed when
-  their lexical scope ends, so they leak past scope. For a name shared between a
-  param/outer binding and an inner **branch-sibling** binding — e.g. `(if c (let
-  [a (gcells g)] …) (consume a))`, where the then-branch inner `let` binds `a` and
-  the else-branch `(consume a)` means the PARAM `a` — the walker resolves the
-  post-scope use to the STALE inner `BindState`. Because the inner state is a
-  `Projection`/`Fresh` origin (not the param `Root`), `param_root` returns `None`
-  and `classify_param_use` never fires ⇒ the param that should widen to `Owned`
-  stays `Borrowed`: **a narrowing BELOW truth on the ABI-bearing `param_modes`
-  half — a latent SOUNDNESS issue, not merely precision.** Reachability requires a
-  name collision between an outer/param binding and a branch-sibling inner
-  binding, with the outer used after the inner scope; alpha-renamed `MonoExpr`
-  would avoid it, but that is not currently guaranteed. **Candidate increment-I
-  hardening:** scope-save/restore the `bindings` map (snapshot on `Let`/arm entry,
-  restore on exit) or thread a scoped chain. Flagged to `/sprint` for a fix
-  decision (may be a `cranelisp-types`/broader-scope question — e.g. whether
-  `MonoExpr` guarantees unique binding names); left untouched here per the Wave
-  8c-R brief. It widens the blast radius of any shadow-gap and should be resolved
-  before Wave 11 alongside the other seams.
+- **(i) The transfer walker models lexical scope — scope-save/restore**
+  (Wave 8c-R2, F4 cure; FIXME 0518). **Root cause (the third instance of the
+  scope-modeling class, with B1 and B3):** `Let`, `ParBind`, and `Match`-arm
+  bindings were inserted into the flat `Walker.bindings` map and never removed
+  when their lexical scope ended, so they leaked past scope. For a name shared
+  between a param/outer binding and an inner **branch-sibling** binding — e.g.
+  `(if c (let [a (gcells g)] …) (consume a))`, where the then-branch inner `let`
+  binds `a` and the else-branch `(consume a)` means the PARAM `a` — the walker
+  resolved the post-scope use to the STALE inner `BindState`. Because the inner
+  state is a `Projection`/`Fresh` origin (not the param `Root`), `param_root`
+  returned `None`, `classify_param_use` never fired, and the param that should
+  widen to `Owned` stayed `Borrowed`: **a narrowing BELOW truth on the
+  ABI-bearing `param_modes` half — a SOUNDNESS issue (ABI-half), not precision.**
+  `MonoExpr` carries no alpha-rename guarantee (names copied verbatim by
+  `from_expr`; the `case`/`cond` macros literally reuse `__case__`), so the walker
+  may not rely on binding-name uniqueness (spine "The boundary" invariant).
+  **As-built cure:** each binding scope pushes a `ScopeFrame`
+  (`Vec<(Symbol, Option<BindState>)>`) that saves, per bound name, the value
+  `bindings` held **before** insertion (the shadowed prior, or `None` if unbound);
+  `restore_frame` replays it in reverse on scope EXIT (`Some(old)` reinserts,
+  `None` removes). Params are the base frame, never restored away. `Let`/`ParBind`
+  each push one frame; **each `Match` arm gets its OWN frame** (subsuming the
+  arm-leak half of F4 — an arm binding is restored before the sibling arm and the
+  post-match uses are walked). This makes `bindings` faithfully model lexical
+  scope: a branch-sibling shadow no longer leaks, so the else/sibling use resolves
+  to the param `Root` and `param_modes` widens to truth (`Owned`). Guarded by
+  `transfer::tests::{branch_sibling_shadow_does_not_narrow_param_shadow_first,
+  branch_sibling_shadow_does_not_narrow_param_use_first,
+  match_arm_binding_does_not_leak_past_arm}`. **Confinement (`confinement.rs`) gets
+  the same discipline for precision + anti-recurrence** (a `ConfineFrame` shadows
+  the colliding `param_idx` entry on scope entry, restores on exit): its
+  scope-unawareness over-approximated toward `spark_ops=true`/Crossing (the sound
+  ⊤ direction, NOT a Wave-11 blocker), so this only tightens precision — a
+  shadowed inner name no longer false-matches the param
+  (`confinement::tests::shadowed_param_name_does_not_false_match_in_spark`).
+  **Interaction with the F1 drain (§13.6(g)):** the drain now runs BEFORE the
+  frame restore (enclosing + this-scope bindings still live) and re-walks each RHS
+  with the binding-being-drained temporarily restored to its shadowed prior — the
+  correct sequential-let reading (a binding is not in scope while its own RHS
+  evaluates). The `(name, ctx)` dedup is **downgraded to a defensive termination
+  cap** (see §13.6(g)).
 - **(e) Fixpoint re-entry rides harvested `DepSet` edges, not `call_graph_edges`**
   (§13.3's ruling; amends §3.2's "caller lookup inverts the cluster's `callees`
   edges" — the inversion now inverts the walk-harvested instance-grain set;
@@ -1255,6 +1292,12 @@ laid the strategy bare):**
   (single level) / FLAT fold-chain `[a (Some x) b (Some a)]` returned (the
   fixpoint-drain row — F1) / never-escaping local aggregate (negative, precision)
   / `ParBind`-bound aggregate returned (the strand-vs-frame row — F1).
+  **Lexical-scope discipline (§13.6(i), F4 — the ABI-half soundness rows):**
+  branch-sibling shadow, shadow-walked-FIRST ⇒ param must widen `Owned` in the
+  sibling branch (the load-bearing negative — narrows `Borrowed` pre-cure) /
+  branch-sibling shadow, use-walked-FIRST (the both-orderings guard) / match-arm
+  binding shadowing a param must not leak into the sibling arm / self-alias
+  `(let [a a] …)` terminates (the `case`-macro shape — dedup defensive cap).
   *Projection-depth matrix* — proj-of-`Borrowed`-param (root = param), chained
   projection collapses to ONE root (depth ≥ 3), proj-of-`Owned`-local (root =
   local), match-arm binding, accessor call with `ProjectionOf` summary
@@ -1297,7 +1340,11 @@ laid the strategy bare):**
   summary and so cannot catch the ordering defect; the driver row is the guard.
   *Negative* — emission never carries `Transferred` (collapse pin, §5.4); confinement
   never feeds back into modes (stratification pin, §3.2); a parent-only caller→callee
-  chain stays `Confined` (no fixpoint over-widening).
+  chain stays `Confined` (no fixpoint over-widening). **Lexical-scope precision
+  (§13.6(i), F4 — non-gating, over-approximation-toward-`Crossing` is sound):** a
+  `let`/`ParBind`/match-arm binding shadowing a param name must not false-match the
+  param via `param_idx` — a spark-side consume of the SHADOWED name leaves the real
+  param's `spark_ops` clear (`shadowed_param_name_does_not_false_match_in_spark`).
 - **`publish.rs` (CS-4).** *Placement matrix* — summary lands on `UserFn`-Concrete;
   `Constructor`/`PlatformEffect` stay `None` (negative); declared `Primitive` facts
   never overwritten by the pass (negative); staging vs live table mode

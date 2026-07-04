@@ -573,6 +573,100 @@ fn mixed_return_paths_join_to_fresh() {
     assert_eq!(r.summary.result, ResultMode::Fresh);
 }
 
+// =================== Lexical-scope discipline (F4) ===================
+
+#[test]
+fn branch_sibling_shadow_does_not_narrow_param_shadow_first() {
+    // spec: §13.6(i) (F4) — the load-bearing ABI-soundness cell. A param `a`
+    // shadowed by an inner `let` in the THEN branch (walked first) must NOT leak
+    // its inner `BindState` into the ELSE branch, where the bare `(consume a)`
+    // means the PARAM. Without scope discipline the walker reads the stale inner
+    // `Projection(g)` state, `param_root(a)` misses param 0, and `param_modes[0]`
+    // narrows Owned→Borrowed (the UNSOUND direction on the ABI-bearing half).
+    // `(defn f [a g] (if c (let [a (gcells g)] a) (consume a)))`.
+    let env = accessor_env()
+        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let then_branch = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
+        body: Box::new(var("a")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::If {
+        cond: Box::new(MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool }),
+        then_branch: Box::new(then_branch),
+        else_branch: Box::new(call("consume", vec![var("a")])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("a"), strparam("g")], body, env);
+    // The param `a` is consumed (Owned) in the else branch — truth is Owned.
+    assert_eq!(r.summary.param_mode(0), Mode::Owned, "param a must widen to Owned in the sibling branch");
+}
+
+#[test]
+fn branch_sibling_shadow_does_not_narrow_param_use_first() {
+    // spec: §13.6(i) (F4) — the both-orderings twin. Shadow in the ELSE branch,
+    // param use in the THEN branch (walked first). The cure must fix BOTH
+    // orderings; this ordering happens to widen under the pre-cure walker (use
+    // precedes shadow), so it is a regression guard the scope discipline must
+    // not break. `(defn f [a g] (if c (consume a) (let [a (gcells g)] a)))`.
+    let env = accessor_env()
+        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let else_branch = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
+        body: Box::new(var("a")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::If {
+        cond: Box::new(MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool }),
+        then_branch: Box::new(call("consume", vec![var("a")])),
+        else_branch: Box::new(else_branch),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("a"), strparam("g")], body, env);
+    assert_eq!(r.summary.param_mode(0), Mode::Owned, "param a must stay Owned regardless of branch order");
+}
+
+#[test]
+fn match_arm_binding_does_not_leak_past_arm() {
+    // spec: §13.6(i) (F4, match-arm-leak half) — a pattern binding shadowing a
+    // param must NOT leak into a sibling arm. Arm 1 binds field `a` (a borrowed
+    // projection of scrutinee `h`); arm 2's `(consume a)` means the PARAM `a`.
+    // Without a per-arm scope frame the leaked arm-1 `Projection(h)` state makes
+    // `param_root(a)` miss param 0 ⇒ `param_modes[0]` narrows below truth.
+    // `(defn f [a h] (match h [(Box a) a] [_ (consume a)]))`.
+    let env = TestEnv::default()
+        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let arm1 = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            bindings: vec![Symbol::from("a")],
+            span: s(),
+        },
+        body: var("a"),
+        span: Span::new(60, 61),
+        provenance: None,
+    };
+    let arm2 = MonoMatchArm {
+        pattern: Pattern::Wildcard { span: s() },
+        body: call("consume", vec![var("a")]),
+        span: Span::new(62, 63),
+        provenance: None,
+    };
+    let body = MonoExpr::Match {
+        scrutinee: Box::new(var("h")),
+        arms: vec![arm1, arm2],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("a"), strparam("h")], body, env);
+    assert_eq!(r.summary.param_mode(0), Mode::Owned, "param a must widen to Owned in the sibling arm");
+}
+
 // =================== Negatives ===================
 
 #[test]
@@ -602,3 +696,4 @@ fn deps_harvested_for_summarised_callee() {
     let r = run(&[strparam("p")], call("consume", vec![var("p")]), env);
     assert!(r.deps.iter().any(|fq| fq.symbol.as_ref() == "consume"));
 }
+
