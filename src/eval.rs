@@ -432,17 +432,26 @@ impl CompilerSession {
             // deleted.) The `Arc<Jit>` retention lives on the `__expr` entry's
             // `Code::Jit`, so the code stays mapped for the duration of the
             // call + the IO trampoline below.
-            let (value, ty) = crate::pipeline::execute_compiled_expr(
+            // A runtime TRAP (broken-symbol stub, exhaustiveness failure, empty
+            // `(select [])`, …) is NOT a compiler error — it surfaces as
+            // `ExprOutcome::Trap` and becomes an `EvalResult::RuntimeError` the
+            // printer renders per repl/spec.md §18.5 (`runtime error: {payload}`,
+            // no wrapper chain). Genuine compiler/platform faults still `?`.
+            match crate::pipeline::execute_compiled_expr(
                 check.display.as_ref(),
                 &self.shared.symbol_tables,
                 module,
-            )?;
-
-            Ok(EvalResult::Val {
-                value,
-                ty,
-                warnings: check.warnings.clone(),
-            })
+            )? {
+                crate::pipeline::ExprOutcome::Value { value, ty } => Ok(EvalResult::Val {
+                    value,
+                    ty,
+                    warnings: check.warnings.clone(),
+                }),
+                crate::pipeline::ExprOutcome::Trap { message } => Ok(EvalResult::RuntimeError {
+                    message,
+                    warnings: check.warnings.clone(),
+                }),
+            }
         } else {
             // Definition-only: extract the defined symbol name from the last
             // user-visible form. Inlined defns (mono, default methods, trait

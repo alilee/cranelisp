@@ -121,6 +121,18 @@ pub enum EvalResult {
         ty: Type,
         warnings: Vec<Warning>,
     },
+    /// An expression TRAPPED at runtime — a `(runtime_panic …)`-raised error
+    /// (a broken symbol's trap stub, an exhaustiveness failure, an empty
+    /// `(select [])`, …). Distinct from a compiler error (`Err(CranelispError)`)
+    /// so the printer can render it as the bare `runtime error: {message}`
+    /// §18.5 line — no `Error: ` / `codegen error at 0..0:` wrapper chain
+    /// (`repl/spec.md` §18.5; `pipeline::ExprOutcome::Trap` is the source).
+    /// `message` is the §18.5 payload WITHOUT the `runtime error: ` category
+    /// prefix (`format_eval_result_body` adds it).
+    RuntimeError {
+        message: String,
+        warnings: Vec<Warning>,
+    },
 }
 
 impl EvalResult {
@@ -128,6 +140,7 @@ impl EvalResult {
         match self {
             EvalResult::Def { warnings, .. } => warnings,
             EvalResult::Val { warnings, .. } => warnings,
+            EvalResult::RuntimeError { warnings, .. } => warnings,
         }
     }
 
@@ -135,22 +148,27 @@ impl EvalResult {
         match self {
             EvalResult::Def { warnings, .. } => warnings,
             EvalResult::Val { warnings, .. } => warnings,
+            EvalResult::RuntimeError { warnings, .. } => warnings,
         }
     }
 
-    /// The raw i64 value. Returns 0 for `Def`.
+    /// The raw i64 value. Returns 0 for `Def` and `RuntimeError` (a trapped
+    /// expression produced no value).
     pub fn value(&self) -> i64 {
         match self {
             EvalResult::Val { value, .. } => *value,
-            EvalResult::Def { .. } => 0,
+            EvalResult::Def { .. } | EvalResult::RuntimeError { .. } => 0,
         }
     }
 
-    /// The inferred type.
+    /// The inferred type. A trapped expression has no value type; `Int` is the
+    /// inert placeholder (nothing reads it — the printer renders the message).
     pub fn ty(&self) -> &Type {
+        static TRAP_TY: Type = Type::Int;
         match self {
             EvalResult::Val { ty, .. } => ty,
             EvalResult::Def { ty, .. } => ty,
+            EvalResult::RuntimeError { .. } => &TRAP_TY,
         }
     }
 

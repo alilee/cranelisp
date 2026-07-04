@@ -74,7 +74,7 @@ pub fn execute_compiled_expr(
     display: Option<&cranelisp_types::DisplayInfo>,
     symbol_tables: &dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
     current_module: &ModuleFullPath,
-) -> Result<(i64, Type), CranelispError> {
+) -> Result<ExprOutcome, CranelispError> {
     // Read the GOT address + inferred type for the compiled `__expr` entry.
     let (got_addr, expr_ty) = {
         let table = symbol_tables.get(current_module).ok_or_else(|| {
@@ -151,8 +151,32 @@ pub fn execute_compiled_expr(
     program_outcome_to_result(outcome, ty)
 }
 
+/// The outcome of running a compiled `__expr`: a computed value or a
+/// **runtime trap** (a `(runtime_panic …)`-raised error — a broken symbol's
+/// trap stub, an exhaustiveness failure, an empty `(select [])`, …).
+///
+/// A trap is NOT a compiler error, so it is deliberately NOT a
+/// `CranelispError`: `CranelispError`'s Display wraps every variant in a
+/// category+span prefix (`codegen error at 0..0: …`), and the REPL/`--run`
+/// printers then add `Error: …` — the wrapper chain repl/spec.md §18.5
+/// forbids. The trap payload rides this dedicated int-side outcome instead;
+/// the printer renders it as the bare `runtime error: {payload}` §18.5 line
+/// (s102-defect-wave.md §7.2 — the recommended int-side cut, no
+/// `cranelisp-types` change). Genuine compiler/platform faults (the dispatch
+/// funnel) stay `Err(CranelispError)`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExprOutcome {
+    /// A computed value with its (IO-unwrapped) type.
+    Value { value: i64, ty: Type },
+    /// A runtime trap. `message` is the §18.5 payload — the trap body with the
+    /// intrinsics-internal `runtime panic: ` slot prefix already normalized
+    /// away — WITHOUT the `runtime error: ` category prefix (the printer adds
+    /// that, matching §5.1's category+message model).
+    Trap { message: String },
+}
+
 /// Translate a [`cranelisp_intrinsics::panic::ProgramOutcome`] into
-/// `execute_compiled_expr`'s `(value, Type)` / `Result` contract. Split out
+/// `execute_compiled_expr`'s [`ExprOutcome`] / `Result` contract. Split out
 /// so this translation is unit-testable without a live JIT/symbol table —
 /// this is the exact seam where the pre-fix REPL path (FIXME 0499) silently
 /// dropped a runtime error raised DURING the IO drive: the former code never
@@ -160,22 +184,32 @@ pub fn execute_compiled_expr(
 fn program_outcome_to_result(
     outcome: cranelisp_intrinsics::panic::ProgramOutcome,
     ty: Type,
-) -> Result<(i64, Type), CranelispError> {
+) -> Result<ExprOutcome, CranelispError> {
     match outcome.error_kind {
         // 1 = runtime error: the runtime-error slot is SET (drain for text).
         // Reached whether the panic occurred pre-IO (during the bare
         // `__expr` call) or post-IO (during the trampoline/reactor drive,
         // e.g. FIXME 0499's empty `(select [])`) — the driver collapses both
-        // cases into one outcome kind.
+        // cases into one outcome kind. This is a runtime TRAP, not a compiler
+        // error: return the dedicated `ExprOutcome::Trap` (repl/spec.md §18.5)
+        // — NOT a `CranelispError::CodegenError`, which would wrap the payload
+        // as `codegen error at 0..0: runtime error: runtime panic: …` and then
+        // gain an `Error: ` prefix at the printer. Normalize the
+        // intrinsics-internal `runtime panic: ` slot prefix away HERE (the
+        // single chokepoint reading the slot); the printer supplies the §18.5
+        // `runtime error: ` category prefix.
         1 => {
-            let msg = cranelisp_intrinsics::panic::take_runtime_error()
+            let raw = cranelisp_intrinsics::panic::take_runtime_error()
                 .unwrap_or_else(|| "runtime panic".to_string());
-            Err(CranelispError::CodegenError {
-                message: format!("runtime error: {msg}"),
-                location: ErrorLocation::from_span(Span::SYNTHETIC),
-            })
+            let message = raw
+                .strip_prefix("runtime panic: ")
+                .map(str::to_string)
+                .unwrap_or(raw);
+            Ok(ExprOutcome::Trap { message })
         }
-        // 2 = platform-dispatch fault (FIXME 0327, the dispatch funnel).
+        // 2 = platform-dispatch fault (FIXME 0327, the dispatch funnel). This
+        // IS a genuine compiler/platform fault (a structured `PlatformError`),
+        // so it stays `Err(CranelispError)`.
         2 => {
             let fault = cranelisp_intrinsics::panic::take_dispatch_fault()
                 .unwrap_or_else(|| cranelisp_intrinsics::panic::DispatchFault {
@@ -189,7 +223,7 @@ fn program_outcome_to_result(
         // type the same way `unwrap_io_inline` used to.
         _ => {
             let result_ty = if ty.is_io() { ty.unwrap_io().clone() } else { ty };
-            Ok((outcome.exit_code, result_ty))
+            Ok(ExprOutcome::Value { value: outcome.exit_code, ty: result_ty })
         }
     }
 }
@@ -291,9 +325,8 @@ mod tests {
     #[test]
     fn program_outcome_to_result_clean_non_io_passthrough() {
         let outcome = ProgramOutcome { exit_code: 42, error_kind: 0 };
-        let (value, ty) = program_outcome_to_result(outcome, Type::Int).unwrap();
-        assert_eq!(value, 42);
-        assert_eq!(ty, Type::Int);
+        let got = program_outcome_to_result(outcome, Type::Int).unwrap();
+        assert_eq!(got, ExprOutcome::Value { value: 42, ty: Type::Int });
     }
 
     /// error_kind 0 (clean), IO type: the exit_code is already the
@@ -303,54 +336,50 @@ mod tests {
     #[test]
     fn program_outcome_to_result_clean_io_unwraps_type() {
         let outcome = ProgramOutcome { exit_code: 7, error_kind: 0 };
-        let (value, ty) = program_outcome_to_result(outcome, io_int_type()).unwrap();
-        assert_eq!(value, 7);
-        assert_eq!(ty, Type::Int, "expected unwrapped Int, got {ty:?}");
+        let got = program_outcome_to_result(outcome, io_int_type()).unwrap();
+        assert_eq!(
+            got,
+            ExprOutcome::Value { value: 7, ty: Type::Int },
+            "IO a result must unwrap to a"
+        );
     }
 
-    /// error_kind 1 (runtime error): this is the exact FIXME 0499 case — a
-    /// fatal runtime error raised DURING the IO drive (e.g. empty `(select
-    /// [])`'s count-zero guard) reaches this discriminant, and MUST produce
-    /// `Err`, never a synthesised value. The pre-fix REPL path never checked
-    /// the runtime-error slot after driving IO at all, so this is the
-    /// regression this test guards.
+    /// error_kind 1 (runtime error): a fatal runtime error (a broken symbol's
+    /// trap, an exhaustiveness failure, FIXME 0499's empty `(select [])`)
+    /// surfaces as `Ok(ExprOutcome::Trap)` — NOT a `CranelispError` (§18.5:
+    /// the printer renders `runtime error: {payload}` with no wrapper chain).
+    /// The intrinsics-internal `runtime panic: ` slot prefix is normalized
+    /// away at this chokepoint so the payload is the bare §18.5 message.
     #[test]
-    fn program_outcome_to_result_runtime_error_is_err() {
+    fn program_outcome_to_result_runtime_error_is_trap_with_normalized_message() {
         let _ = cranelisp_intrinsics::panic::take_runtime_error(); // clear any stale slot
         cranelisp_intrinsics::panic::set_runtime_error(
             "runtime panic: select over empty collection".to_string(),
         );
         let outcome = ProgramOutcome { exit_code: 0, error_kind: 1 };
-        let err = program_outcome_to_result(outcome, io_int_type())
-            .expect_err("error_kind 1 must surface as Err, not a synthesised value");
-        match err {
-            CranelispError::CodegenError { message, .. } => {
-                assert!(
-                    message.contains("select over empty collection"),
-                    "expected the drained runtime-error text in the message, got: {message}"
-                );
-            }
-            other => panic!("expected CodegenError, got {other:?}"),
-        }
+        let got = program_outcome_to_result(outcome, io_int_type())
+            .expect("a trap is Ok(Trap), not Err");
+        assert_eq!(
+            got,
+            ExprOutcome::Trap {
+                // the `runtime panic: ` prefix is stripped — the printer adds
+                // the §18.5 `runtime error: ` category prefix.
+                message: "select over empty collection".to_string(),
+            },
+        );
         // The slot was drained (take, not peek) — a second read is empty.
         assert_eq!(cranelisp_intrinsics::panic::take_runtime_error(), None);
     }
 
     /// error_kind 1 with an empty slot (defensive: the driver contract says
     /// the slot is SET on a non-zero kind, but the translation must not
-    /// panic/unwrap if it somehow isn't) falls back to a generic message
-    /// rather than propagating a missing value.
+    /// panic/unwrap if it somehow isn't) falls back to a generic message.
     #[test]
     fn program_outcome_to_result_runtime_error_missing_slot_falls_back() {
         let _ = cranelisp_intrinsics::panic::take_runtime_error(); // ensure empty
         let outcome = ProgramOutcome { exit_code: 0, error_kind: 1 };
-        let err = program_outcome_to_result(outcome, Type::Int).unwrap_err();
-        match err {
-            CranelispError::CodegenError { message, .. } => {
-                assert!(message.contains("runtime panic"), "got: {message}");
-            }
-            other => panic!("expected CodegenError, got {other:?}"),
-        }
+        let got = program_outcome_to_result(outcome, Type::Int).unwrap();
+        assert_eq!(got, ExprOutcome::Trap { message: "runtime panic".to_string() });
     }
 
     /// error_kind 2 (platform-dispatch fault, FIXME 0327): composed into a

@@ -2330,6 +2330,13 @@ impl CompilerSession {
                     )
                 }
             }
+            // A runtime TRAP renders as the bare §18.5 line: the `runtime error: `
+            // category prefix (§5.1) directly followed by the trap payload — no
+            // `Error: ` prefix, no `codegen error at 0..0:` wrapper, no
+            // `runtime panic: ` slot prefix (normalized away in `pipeline`).
+            EvalResult::RuntimeError { message, .. } => {
+                format!("runtime error: {message}")
+            }
         }
     }
 
@@ -3649,5 +3656,27 @@ mod fq_arg_tests {
             base_hits, 1,
             "the mono variant + its base collapse to ONE m/g entry; got: {referers:?}",
         );
+    }
+
+    // §18.5 (trap presentation): an `EvalResult::RuntimeError` renders as the
+    // bare `runtime error: {payload}` line — the §5.1 category prefix directly
+    // followed by the trap message, with NONE of the wrapper chain the pre-fix
+    // path emitted (`Error: codegen error at 0..0: runtime error: runtime
+    // panic: …`). spec: repl/spec.md §18.5
+    #[test]
+    fn runtime_error_renders_bare_normative_format() {
+        let s = session();
+        let payload = "user/g is broken by the redefinition of user/f: \
+                       type error at 24..34: type mismatch: expected \
+                       primitives/String, got primitives/Int";
+        let out = s.format_eval_result(&super::EvalResult::RuntimeError {
+            message: payload.to_string(),
+            warnings: Vec::new(),
+        });
+        assert_eq!(out, format!("runtime error: {payload}"));
+        assert!(!out.contains("Error:"), "no Error: prefix; got: {out}");
+        assert!(!out.contains("codegen error"), "no codegen wrapper; got: {out}");
+        assert!(!out.contains("runtime panic:"), "no slot prefix; got: {out}");
+        assert!(!out.contains("0..0"), "no synthetic span; got: {out}");
     }
 }
