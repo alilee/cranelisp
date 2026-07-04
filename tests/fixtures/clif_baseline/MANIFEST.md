@@ -82,3 +82,15 @@ The in-suite smoke (`tests/ownership_fences.rs::clif_golden_single_module_smoke`
 compares entry 06 (the smallest) against its golden on every canonical run —
 RED until B0-be lands the capture; the full-corpus diff runs via
 `tests/scripts/clif_golden.sh diff` at wave gates.
+
+## Re-baselines (scoped, attributed — MANIFEST §"Extension ≠ re-baseline")
+
+- **f4_sudoku** — re-captured S102 (fixture-driven, NON-codegen). Wave-A
+  `c09c0a2` edited `tests/fixtures/s99/f4_sudoku.cl` to redefine→re-export the
+  bootstrap-seeded `primitives/Option` instead of a local `deftype Option`, so
+  the two user-module constructor frames `user::None`/`user::Some` (formerly
+  emitted from the local ADT) are no longer user codegen — they come from the
+  primitives bootstrap seed. Delta is EXACTLY those two frames dropped
+  (45→43 frames); all 43 remaining frames are byte-identical to the `05818e9`
+  batch. Not a codegen change; the golden was stale against the checked-in
+  fixture. Verified `clif_golden.sh diff` empty across all 13 post-capture.

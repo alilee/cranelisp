@@ -167,16 +167,6 @@ block9:
     return v2
 }
 ; === end CLIF user::Grid.cells ===
-; === CLIF user::None ===
-function %None() -> i64 system_v {
-block0:
-    jump block1
-
-block1:
-    v0 = iconst.i64 0
-    return v0  ; v0 = 0
-}
-; === end CLIF user::None ===
 ; === CLIF user::Solved ===
 function %Solved(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
@@ -194,54 +184,6 @@ block1(v1: i64):
     return v3
 }
 ; === end CLIF user::Solved ===
-; === CLIF user::Some ===
-function %Some(i64) -> i64 system_v {
-    sig0 = (i64) -> i64 system_v
-    sig1 = (i64) -> i64 system_v
-    fn0 = u0:0 sig0
-    fn1 = u0:1 sig1
-
-block0(v0: i64):
-    jump block1(v0)
-
-block1(v1: i64):
-    v10 -> v1
-    v2 = iconst.i64 1024
-    v3 = icmp ult v1, v2  ; v2 = 1024
-    brif v3, block2, block3
-
-block3:
-    v4 = iadd_imm.i64 v1, 8
-    v5 = iconst.i64 1
-    v6 = atomic_rmw.i64 add v4, v5  ; v5 = 1
-    jump block2
-
-block2:
-    v7 = iconst.i64 16
-    v8 = call fn0(v7)  ; v7 = 16
-    v9 = iconst.i64 1
-    store notrap aligned v9, v8+16  ; v9 = 1
-    store.i64 notrap aligned v1, v8+24
-    v11 = iconst.i64 1024
-    v12 = icmp.i64 ult v1, v11  ; v11 = 1024
-    brif v12, block4, block5
-
-block5:
-    v13 = iadd_imm.i64 v1, 8
-    v14 = iconst.i64 1
-    v15 = atomic_rmw.i64 sub v13, v14  ; v14 = 1
-    v16 = icmp eq v15, v14  ; v14 = 1
-    brif v16, block6, block4
-
-block6:
-    fence 
-    v17 = call fn1(v1)
-    jump block4
-
-block4:
-    return v8
-}
-; === end CLIF user::Some ===
 ; === CLIF user::Success ===
 function %Success(i64) -> i64 system_v {
     sig0 = (i64) -> i64 system_v
@@ -336,7 +278,7 @@ block0(v0: i64):
 block1(v1: i64):
     v2 = iconst.i64 1
     v3 = global_value.i64 gv0
-    v4 = iadd_imm v3, 112
+    v4 = iadd_imm v3, 96
     v5 = load.i64 notrap aligned v4
     v6 = call_indirect sig0, v5(v1, v2)  ; v2 = 1
     return v6
@@ -362,7 +304,7 @@ block2:
 
 block3:
     v9 = global_value.i64 gv0
-    v10 = iadd_imm v9, 88
+    v10 = iadd_imm v9, 72
     v11 = load.i64 notrap aligned v10
     v12 = call_indirect sig0, v11(v2, v3)
     brif v12, block5, block6
@@ -434,11 +376,11 @@ function %box-of(i64) -> i64 system_v {
     sig18 = (i64, i64) -> i64 system_v
     fn0 = u0:18 sig0
     fn1 = u0:0 sig1
-    fn2 = colocated u0:79 sig2
+    fn2 = colocated u0:77 sig2
     fn3 = u0:14 sig3
     fn4 = u0:15 sig4
     fn5 = u0:0 sig5
-    fn6 = colocated u0:80 sig6
+    fn6 = colocated u0:78 sig6
     fn7 = u0:14 sig7
     fn8 = u0:15 sig8
     fn9 = u0:16 sig9
@@ -512,7 +454,7 @@ block8:
 
 block3:
     v34 = global_value.i64 gv0
-    v35 = iadd_imm v34, 128
+    v35 = iadd_imm v34, 112
     v36 = load.i64 notrap aligned v35
     v37 = call_indirect sig13, v36(v1)
     v38 = iconst.i64 3
@@ -547,7 +489,7 @@ block11:
     v55 = iconst.i64 3
     v56 = imul v54, v55  ; v55 = 3
     v57 = global_value.i64 gv3
-    v58 = iadd_imm v57, 136
+    v58 = iadd_imm v57, 120
     v59 = load.i64 notrap aligned v58
     v60 = call_indirect sig16, v59(v1)
     v61 = iconst.i64 3
@@ -597,7 +539,7 @@ function %cell-at$Grid+Int(i64, i64) -> i64 system_v {
     sig4 = (i64) -> i64 system_v
     fn0 = u0:2 sig0
     fn1 = u0:2 sig1
-    fn2 = colocated u0:88 sig2
+    fn2 = colocated u0:86 sig2
     fn3 = u0:11 sig3
     fn4 = u0:1 sig4
 
@@ -768,7 +710,7 @@ function %checksum(i64) -> i64 system_v {
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) system_v
     sig3 = (i64) -> i64 system_v
-    fn0 = colocated u0:88 sig1
+    fn0 = colocated u0:86 sig1
     fn1 = u0:11 sig2
     fn2 = u0:1 sig3
 
@@ -782,7 +724,7 @@ block1(v1: i64):
     v5 = iconst.i64 0
     v6 = iconst.i64 0
     v7 = global_value.i64 gv0
-    v8 = iadd_imm v7, 304
+    v8 = iadd_imm v7, 288
     v9 = load.i64 notrap aligned v8
     v10 = call_indirect sig0, v9(v1, v5, v6)  ; v5 = 0, v6 = 0
     v11 = iadd_imm v1, 8
@@ -823,7 +765,7 @@ function %checksum-helper(i64, i64, i64) -> i64 system_v {
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) system_v
     sig4 = (i64) -> i64 system_v
-    fn0 = colocated u0:88 sig2
+    fn0 = colocated u0:86 sig2
     fn1 = u0:11 sig3
     fn2 = u0:1 sig4
 
@@ -846,11 +788,11 @@ block3:
     v13 = iconst.i64 1
     v14 = atomic_rmw.i64 add v12, v13  ; v13 = 1
     v15 = global_value.i64 gv0
-    v16 = iadd_imm v15, 336
+    v16 = iadd_imm v15, 320
     v17 = load.i64 notrap aligned v16
     v18 = call_indirect sig0, v17(v3, v4)
     v19 = global_value.i64 gv1
-    v20 = iadd_imm v19, 152
+    v20 = iadd_imm v19, 136
     v21 = load.i64 notrap aligned v20
     v22 = call_indirect sig1, v21(v18)
     v23 = iadd.i64 v5, v22
@@ -903,7 +845,7 @@ block0(v0: i64):
 block1(v1: i64):
     v2 = iconst.i64 9
     v3 = global_value.i64 gv0
-    v4 = iadd_imm v3, 72
+    v4 = iadd_imm v3, 56
     v5 = load.i64 notrap aligned v4
     v6 = call_indirect sig0, v5(v1, v2)  ; v2 = 9
     return v6
@@ -947,7 +889,7 @@ function %eliminate(i64, i64, i64) -> i64 system_v {
     fn6 = u0:0 sig13
     fn7 = u0:2 sig14
     fn8 = u0:1 sig15
-    fn9 = colocated u0:88 sig16
+    fn9 = colocated u0:86 sig16
     fn10 = u0:11 sig17
     fn11 = u0:1 sig18
 
@@ -968,7 +910,7 @@ block1(v3: i64, v4: i64, v5: i64):
     v7 = iconst.i64 1
     v8 = atomic_rmw.i64 add v6, v7  ; v7 = 1
     v9 = global_value.i64 gv0
-    v10 = iadd_imm v9, 336
+    v10 = iadd_imm v9, 320
     v11 = load.i64 notrap aligned v10
     v12 = call_indirect sig0, v11(v3, v4)
     v115 -> v12
@@ -1058,7 +1000,7 @@ block17:
 block18:
     v45 = load.i64 notrap aligned v12+24
     v46 = global_value.i64 gv1
-    v47 = iadd_imm v46, 88
+    v47 = iadd_imm v46, 72
     v48 = load.i64 notrap aligned v47
     v49 = call_indirect sig3, v48(v45, v5)
     v50 = iconst.i64 1
@@ -1078,7 +1020,7 @@ block19:
 
 block20:
     v59 = global_value.i64 gv2
-    v60 = iadd_imm v59, 96
+    v60 = iadd_imm v59, 80
     v61 = load.i64 notrap aligned v60
     v62 = call_indirect sig5, v61(v45, v5)
     v63 = iconst.i64 0
@@ -1092,7 +1034,7 @@ block22:
 
 block23:
     v68 = global_value.i64 gv3
-    v69 = iadd_imm v68, 104
+    v69 = iadd_imm v68, 88
     v70 = load.i64 notrap aligned v69
     v71 = call_indirect sig6, v70(v62)
     v72 = iconst.i64 1
@@ -1105,7 +1047,7 @@ block25:
     v77 = iconst.i64 1
     v78 = atomic_rmw.i64 add v76, v77  ; v77 = 1
     v79 = global_value.i64 gv4
-    v80 = iadd_imm v79, 120
+    v80 = iadd_imm v79, 104
     v81 = load.i64 notrap aligned v80
     v82 = call_indirect sig7, v81(v62)
     v83 = iconst.i64 16
@@ -1114,7 +1056,7 @@ block25:
     store notrap aligned v85, v84+16  ; v85 = 1
     store notrap aligned v82, v84+24
     v86 = global_value.i64 gv5
-    v87 = iadd_imm v86, 344
+    v87 = iadd_imm v86, 328
     v88 = load.i64 notrap aligned v87
     v89 = call_indirect sig9, v88(v3, v4, v84)
     v90 = iconst.i64 16
@@ -1134,7 +1076,7 @@ block26:
     store notrap aligned v98, v97+16  ; v98 = 2
     store.i64 notrap aligned v62, v97+24
     v99 = global_value.i64 gv6
-    v100 = iadd_imm v99, 344
+    v100 = iadd_imm v99, 328
     v101 = load.i64 notrap aligned v100
     v102 = call_indirect sig12, v101(v3, v4, v97)
     v103 = iconst.i64 16
@@ -1233,7 +1175,7 @@ function %eliminate-from-peers(i64, i64, i64) -> i64 system_v {
     sig2 = (i64) -> i64 system_v
     sig3 = (i64, i64) system_v
     sig4 = (i64) -> i64 system_v
-    fn0 = colocated u0:88 sig2
+    fn0 = colocated u0:86 sig2
     fn1 = u0:11 sig3
     fn2 = u0:1 sig4
 
@@ -1246,12 +1188,12 @@ block1(v3: i64, v4: i64, v5: i64):
     v7 = iconst.i64 1
     v8 = atomic_rmw.i64 add v6, v7  ; v7 = 1
     v9 = global_value.i64 gv0
-    v10 = iadd_imm v9, 168
+    v10 = iadd_imm v9, 152
     v11 = load.i64 notrap aligned v10
     v12 = call_indirect sig0, v11(v4)
     v13 = iconst.i64 0
     v14 = global_value.i64 gv1
-    v15 = iadd_imm v14, 216
+    v15 = iadd_imm v14, 200
     v16 = load.i64 notrap aligned v15
     v17 = call_indirect sig1, v16(v3, v12, v5, v13)  ; v13 = 0
     v18 = iconst.i64 1024
@@ -1314,11 +1256,11 @@ function %eliminate-from-peers-helper(i64, i64, i64, i64) -> i64 system_v {
     fn0 = u0:0 sig0
     fn1 = u0:2 sig1
     fn2 = u0:2 sig3
-    fn3 = colocated u0:88 sig4
+    fn3 = colocated u0:86 sig4
     fn4 = u0:11 sig5
     fn5 = u0:1 sig6
     fn6 = u0:1 sig7
-    fn7 = colocated u0:88 sig8
+    fn7 = colocated u0:86 sig8
     fn8 = u0:11 sig9
     fn9 = u0:1 sig10
     fn10 = u0:11 sig11
@@ -1371,7 +1313,7 @@ block5:
     v33 = iconst.i64 1
     v34 = atomic_rmw.i64 add v32, v33  ; v33 = 1
     v35 = global_value.i64 gv1
-    v36 = iadd_imm v35, 208
+    v36 = iadd_imm v35, 192
     v37 = load.i64 notrap aligned v36
     v38 = call_indirect sig2, v37(v4, v31, v6)
     jump block9
@@ -1540,7 +1482,7 @@ function %find-min-candidates(i64) -> i64 system_v {
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) system_v
     sig3 = (i64) -> i64 system_v
-    fn0 = colocated u0:88 sig1
+    fn0 = colocated u0:86 sig1
     fn1 = u0:11 sig2
     fn2 = u0:1 sig3
 
@@ -1556,7 +1498,7 @@ block1(v1: i64):
     v6 = iconst.i64 -1
     v7 = iconst.i64 10
     v8 = global_value.i64 gv0
-    v9 = iadd_imm v8, 256
+    v9 = iadd_imm v8, 240
     v10 = load.i64 notrap aligned v9
     v11 = call_indirect sig0, v10(v1, v5, v6, v7)  ; v5 = 0, v6 = -1, v7 = 10
     v12 = iconst.i64 1024
@@ -1615,7 +1557,7 @@ function %find-min-helper(i64, i64, i64, i64) -> i64 system_v {
     fn0 = u0:0 sig0
     fn1 = u0:2 sig3
     fn2 = u0:1 sig4
-    fn3 = colocated u0:88 sig5
+    fn3 = colocated u0:86 sig5
     fn4 = u0:11 sig6
     fn5 = u0:1 sig7
 
@@ -1659,7 +1601,7 @@ block3:
     v21 = iconst.i64 1
     v22 = atomic_rmw.i64 add v20, v21  ; v21 = 1
     v23 = global_value.i64 gv0
-    v24 = iadd_imm v23, 336
+    v24 = iadd_imm v23, 320
     v25 = load.i64 notrap aligned v24
     v26 = call_indirect sig1, v25(v4, v5)
     jump block10
@@ -1676,7 +1618,7 @@ block13:
 block14:
     v31 = load.i64 notrap aligned v26+24
     v32 = global_value.i64 gv1
-    v33 = iadd_imm v32, 104
+    v33 = iadd_imm v32, 88
     v34 = load.i64 notrap aligned v33
     v35 = call_indirect sig2, v34(v31)
     v48 -> v35
@@ -1865,11 +1807,11 @@ function %first-success$SolveResult+SolveResult(i64, i64) -> i64 system_v {
     sig9 = (i64) -> i64 system_v
     fn0 = u0:0 sig0
     fn1 = u0:2 sig1
-    fn2 = colocated u0:88 sig2
+    fn2 = colocated u0:86 sig2
     fn3 = u0:11 sig3
     fn4 = u0:1 sig4
     fn5 = u0:1 sig5
-    fn6 = colocated u0:88 sig6
+    fn6 = colocated u0:86 sig6
     fn7 = u0:11 sig7
     fn8 = u0:1 sig8
     fn9 = u0:1 sig9
@@ -2084,13 +2026,13 @@ function %grids-differ-helper(i64, i64, i64) -> i64 system_v {
     sig34 = (i64) -> i64 system_v
     fn0 = u0:18 sig0
     fn1 = u0:0 sig1
-    fn2 = colocated u0:89 sig2
-    fn3 = colocated u0:90 sig3
+    fn2 = colocated u0:87 sig2
+    fn3 = colocated u0:88 sig3
     fn4 = u0:14 sig4
     fn5 = u0:15 sig5
     fn6 = u0:0 sig6
-    fn7 = colocated u0:91 sig7
-    fn8 = colocated u0:92 sig8
+    fn7 = colocated u0:89 sig7
+    fn8 = colocated u0:90 sig8
     fn9 = u0:14 sig9
     fn10 = u0:15 sig10
     fn11 = u0:16 sig11
@@ -2109,10 +2051,10 @@ function %grids-differ-helper(i64, i64, i64) -> i64 system_v {
     fn24 = u0:2 sig26
     fn25 = u0:1 sig27
     fn26 = u0:1 sig28
-    fn27 = colocated u0:88 sig29
+    fn27 = colocated u0:86 sig29
     fn28 = u0:11 sig30
     fn29 = u0:1 sig31
-    fn30 = colocated u0:88 sig32
+    fn30 = colocated u0:86 sig32
     fn31 = u0:11 sig33
     fn32 = u0:1 sig34
 
@@ -2418,14 +2360,14 @@ block6:
     v149 = iconst.i64 1
     v150 = atomic_rmw.i64 add v148, v149  ; v149 = 1
     v151 = global_value.i64 gv4
-    v152 = iadd_imm v151, 336
+    v152 = iadd_imm v151, 320
     v153 = load.i64 notrap aligned v152
     v154 = call_indirect sig21, v153(v3, v5)
     v155 = iadd_imm.i64 v4, 8
     v156 = iconst.i64 1
     v157 = atomic_rmw.i64 add v155, v156  ; v156 = 1
     v158 = global_value.i64 gv5
-    v159 = iadd_imm v158, 336
+    v159 = iadd_imm v158, 320
     v160 = load.i64 notrap aligned v159
     v161 = call_indirect sig22, v160(v4, v5)
     jump block53
@@ -2711,7 +2653,7 @@ function %is-solved(i64) -> i64 system_v {
     sig1 = (i64) -> i64 system_v
     sig2 = (i64, i64) system_v
     sig3 = (i64) -> i64 system_v
-    fn0 = colocated u0:88 sig1
+    fn0 = colocated u0:86 sig1
     fn1 = u0:11 sig2
     fn2 = u0:1 sig3
 
@@ -2724,7 +2666,7 @@ block1(v1: i64):
     v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
     v5 = iconst.i64 0
     v6 = global_value.i64 gv0
-    v7 = iadd_imm v6, 192
+    v7 = iadd_imm v6, 176
     v8 = load.i64 notrap aligned v7
     v9 = call_indirect sig0, v8(v1, v5)  ; v5 = 0
     v10 = iadd_imm v1, 8
@@ -2768,7 +2710,7 @@ function %is-solved-helper(i64, i64) -> i64 system_v {
     sig5 = (i64) -> i64 system_v
     fn0 = u0:2 sig1
     fn1 = u0:1 sig2
-    fn2 = colocated u0:88 sig3
+    fn2 = colocated u0:86 sig3
     fn3 = u0:11 sig4
     fn4 = u0:1 sig5
 
@@ -2790,7 +2732,7 @@ block3:
     v10 = iconst.i64 1
     v11 = atomic_rmw.i64 add v9, v10  ; v10 = 1
     v12 = global_value.i64 gv0
-    v13 = iadd_imm v12, 336
+    v13 = iadd_imm v12, 320
     v14 = load.i64 notrap aligned v13
     v15 = call_indirect sig0, v14(v2, v3)
     jump block7
@@ -2936,12 +2878,12 @@ function %main() -> i64 system_v {
     fn2 = u0:0 sig6
     fn3 = u0:0 sig7
     fn4 = u0:2 sig8
-    fn5 = colocated u0:88 sig9
+    fn5 = colocated u0:86 sig9
     fn6 = u0:11 sig10
     fn7 = u0:1 sig11
     fn8 = u0:1 sig12
     fn9 = u0:2 sig13
-    fn10 = colocated u0:88 sig14
+    fn10 = colocated u0:86 sig14
     fn11 = u0:11 sig15
     fn12 = u0:1 sig16
     fn13 = u0:1 sig17
@@ -2954,7 +2896,7 @@ block1:
     v1 = iconst.i64 81
     v2 = call fn0(v0, v1)  ; v1 = 81
     v3 = global_value.i64 gv1
-    v4 = iadd_imm v3, 184
+    v4 = iadd_imm v3, 168
     v5 = load.i64 notrap aligned v4
     v6 = call_indirect sig1, v5(v2)
     jump block4
@@ -2995,7 +2937,7 @@ block9:
     v23 = iconst.i64 1
     v24 = atomic_rmw.i64 add v22, v23  ; v23 = 1
     v25 = global_value.i64 gv2
-    v26 = iadd_imm v25, 296
+    v26 = iadd_imm v25, 280
     v27 = load.i64 notrap aligned v26
     v28 = call_indirect sig3, v27(v21)
     jump block12
@@ -3017,12 +2959,12 @@ block15:
     v37 = iconst.i64 1
     v38 = atomic_rmw.i64 add v36, v37  ; v37 = 1
     v39 = global_value.i64 gv3
-    v40 = iadd_imm v39, 312
+    v40 = iadd_imm v39, 296
     v41 = load.i64 notrap aligned v40
     v42 = call_indirect sig4, v41(v35)
     v43 = iconst.i64 251
     v44 = global_value.i64 gv4
-    v45 = iadd_imm v44, 72
+    v45 = iadd_imm v44, 56
     v46 = load.i64 notrap aligned v45
     v47 = call_indirect sig5, v46(v42, v43)  ; v43 = 251
     v48 = iconst.i64 16
@@ -3200,7 +3142,7 @@ block2:
     v20 = iconst.i64 0
     store notrap aligned v20, v18+16  ; v20 = 0
     v21 = global_value.i64 gv1
-    v22 = iadd_imm v21, 176
+    v22 = iadd_imm v21, 160
     v23 = load.i64 notrap aligned v22
     v24 = call_indirect sig2, v23(v1, v16, v18)  ; v16 = 0
     jump block4(v24)
@@ -3332,52 +3274,52 @@ function %make-grid-helper(i64, i64, i64) -> i64 system_v {
     fn1 = u0:0 sig1
     fn2 = u0:8 sig3
     fn3 = u0:0 sig6
-    fn4 = colocated u0:87 sig7
+    fn4 = colocated u0:85 sig7
     fn5 = u0:20 sig8
     fn6 = u0:8 sig9
     fn7 = u0:0 sig11
-    fn8 = colocated u0:87 sig12
+    fn8 = colocated u0:85 sig12
     fn9 = u0:20 sig13
     fn10 = u0:8 sig14
     fn11 = u0:0 sig16
-    fn12 = colocated u0:87 sig17
+    fn12 = colocated u0:85 sig17
     fn13 = u0:20 sig18
     fn14 = u0:8 sig19
     fn15 = u0:0 sig21
-    fn16 = colocated u0:87 sig22
+    fn16 = colocated u0:85 sig22
     fn17 = u0:20 sig23
     fn18 = u0:8 sig24
     fn19 = u0:0 sig26
-    fn20 = colocated u0:87 sig27
+    fn20 = colocated u0:85 sig27
     fn21 = u0:20 sig28
     fn22 = u0:8 sig29
     fn23 = u0:0 sig31
-    fn24 = colocated u0:87 sig32
+    fn24 = colocated u0:85 sig32
     fn25 = u0:20 sig33
     fn26 = u0:8 sig34
     fn27 = u0:0 sig36
-    fn28 = colocated u0:87 sig37
+    fn28 = colocated u0:85 sig37
     fn29 = u0:20 sig38
     fn30 = u0:8 sig39
     fn31 = u0:0 sig41
-    fn32 = colocated u0:87 sig42
+    fn32 = colocated u0:85 sig42
     fn33 = u0:20 sig43
     fn34 = u0:8 sig44
     fn35 = u0:0 sig46
-    fn36 = colocated u0:87 sig47
+    fn36 = colocated u0:85 sig47
     fn37 = u0:20 sig48
     fn38 = u0:8 sig49
     fn39 = u0:0 sig51
-    fn40 = colocated u0:87 sig52
+    fn40 = colocated u0:85 sig52
     fn41 = u0:20 sig53
     fn42 = u0:8 sig54
     fn43 = u0:0 sig57
-    fn44 = colocated u0:87 sig58
+    fn44 = colocated u0:85 sig58
     fn45 = u0:21 sig59
     fn46 = u0:20 sig60
     fn47 = u0:1 sig61
     fn48 = u0:1 sig62
-    fn49 = colocated u0:88 sig63
+    fn49 = colocated u0:86 sig63
     fn50 = u0:11 sig64
 
 block0(v0: i64, v1: i64, v2: i64):
@@ -3429,7 +3371,7 @@ block5:
     v37 = iconst.i64 1
     v38 = iadd.i64 v4, v37  ; v37 = 1
     v39 = global_value.i64 gv3
-    v40 = iadd_imm v39, 80
+    v40 = iadd_imm v39, 64
     v41 = load.i64 notrap aligned v40
     v42 = call_indirect sig5, v41()
     v43 = iconst.i64 16
@@ -3792,7 +3734,7 @@ block45:
     v240 = iconst.i64 1
     v241 = iadd.i64 v4, v240  ; v240 = 1
     v242 = global_value.i64 gv24
-    v243 = iadd_imm v242, 80
+    v243 = iadd_imm v242, 64
     v244 = load.i64 notrap aligned v243
     v245 = call_indirect sig56, v244()
     v246 = iconst.i64 16
@@ -3969,7 +3911,7 @@ block1(v1: i64):
     v6 = iconst.i64 0
     store notrap aligned v6, v4+16  ; v6 = 0
     v7 = global_value.i64 gv0
-    v8 = iadd_imm v7, 272
+    v8 = iadd_imm v7, 256
     v9 = load.i64 notrap aligned v8
     v10 = call_indirect sig1, v9(v1, v2, v4)  ; v2 = 1
     return v10
@@ -3998,7 +3940,7 @@ block2:
 
 block3:
     v10 = global_value.i64 gv0
-    v11 = iadd_imm v10, 88
+    v11 = iadd_imm v10, 72
     v12 = load.i64 notrap aligned v11
     v13 = call_indirect sig0, v12(v3, v4)
     brif v13, block5, block6
@@ -4115,7 +4057,7 @@ block1(v1: i64):
     v6 = iconst.i64 0
     store notrap aligned v6, v4+16  ; v6 = 0
     v7 = global_value.i64 gv0
-    v8 = iadd_imm v7, 160
+    v8 = iadd_imm v7, 144
     v9 = load.i64 notrap aligned v8
     v10 = call_indirect sig1, v9(v1, v2, v4)  ; v2 = 0
     return v10
@@ -4178,11 +4120,11 @@ function %peers-helper(i64, i64, i64) -> i64 system_v {
     sig46 = (i64, i64) system_v
     fn0 = u0:18 sig0
     fn1 = u0:0 sig1
-    fn2 = colocated u0:81 sig2
+    fn2 = colocated u0:79 sig2
     fn3 = u0:14 sig3
     fn4 = u0:15 sig4
     fn5 = u0:0 sig5
-    fn6 = colocated u0:82 sig6
+    fn6 = colocated u0:80 sig6
     fn7 = u0:14 sig7
     fn8 = u0:15 sig8
     fn9 = u0:16 sig9
@@ -4191,11 +4133,11 @@ function %peers-helper(i64, i64, i64) -> i64 system_v {
     fn12 = u0:17 sig12
     fn13 = u0:18 sig15
     fn14 = u0:0 sig16
-    fn15 = colocated u0:83 sig17
+    fn15 = colocated u0:81 sig17
     fn16 = u0:14 sig18
     fn17 = u0:15 sig19
     fn18 = u0:0 sig20
-    fn19 = colocated u0:84 sig21
+    fn19 = colocated u0:82 sig21
     fn20 = u0:14 sig22
     fn21 = u0:15 sig23
     fn22 = u0:16 sig24
@@ -4204,11 +4146,11 @@ function %peers-helper(i64, i64, i64) -> i64 system_v {
     fn25 = u0:17 sig27
     fn26 = u0:18 sig30
     fn27 = u0:0 sig31
-    fn28 = colocated u0:85 sig32
+    fn28 = colocated u0:83 sig32
     fn29 = u0:14 sig33
     fn30 = u0:15 sig34
     fn31 = u0:0 sig35
-    fn32 = colocated u0:86 sig36
+    fn32 = colocated u0:84 sig36
     fn33 = u0:14 sig37
     fn34 = u0:15 sig38
     fn35 = u0:16 sig39
@@ -4339,11 +4281,11 @@ block15:
 
 block10:
     v49 = global_value.i64 gv0
-    v50 = iadd_imm v49, 128
+    v50 = iadd_imm v49, 112
     v51 = load.i64 notrap aligned v50
     v52 = call_indirect sig13, v51(v4)
     v53 = global_value.i64 gv1
-    v54 = iadd_imm v53, 128
+    v54 = iadd_imm v53, 112
     v55 = load.i64 notrap aligned v54
     v56 = call_indirect sig14, v55(v3)
     v57 = icmp eq v52, v56
@@ -4417,11 +4359,11 @@ block25:
 
 block20:
     v100 = global_value.i64 gv2
-    v101 = iadd_imm v100, 136
+    v101 = iadd_imm v100, 120
     v102 = load.i64 notrap aligned v101
     v103 = call_indirect sig28, v102(v68)
     v104 = global_value.i64 gv3
-    v105 = iadd_imm v104, 136
+    v105 = iadd_imm v104, 120
     v106 = load.i64 notrap aligned v105
     v107 = call_indirect sig29, v106(v77)
     v108 = icmp eq v103, v107
@@ -4495,11 +4437,11 @@ block35:
 
 block30:
     v151 = global_value.i64 gv4
-    v152 = iadd_imm v151, 144
+    v152 = iadd_imm v151, 128
     v153 = load.i64 notrap aligned v152
     v154 = call_indirect sig43, v153(v119)
     v155 = global_value.i64 gv5
-    v156 = iadd_imm v155, 144
+    v156 = iadd_imm v155, 128
     v157 = load.i64 notrap aligned v156
     v158 = call_indirect sig44, v157(v128)
     v159 = icmp eq v154, v158
@@ -4583,11 +4525,11 @@ function %propagate(i64) -> i64 system_v {
     sig10 = (i64) -> i64 system_v
     fn0 = u0:0 sig2
     fn1 = u0:2 sig3
-    fn2 = colocated u0:88 sig4
+    fn2 = colocated u0:86 sig4
     fn3 = u0:11 sig5
     fn4 = u0:1 sig6
     fn5 = u0:1 sig7
-    fn6 = colocated u0:88 sig8
+    fn6 = colocated u0:86 sig8
     fn7 = u0:11 sig9
     fn8 = u0:1 sig10
 
@@ -4601,7 +4543,7 @@ block1(v1: i64):
     v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
     v5 = iconst.i64 0
     v6 = global_value.i64 gv0
-    v7 = iadd_imm v6, 232
+    v7 = iadd_imm v6, 216
     v8 = load.i64 notrap aligned v7
     v9 = call_indirect sig0, v8(v1, v5)  ; v5 = 0
     jump block4
@@ -4641,7 +4583,7 @@ block9:
     v28 = atomic_rmw.i64 add v26, v27  ; v27 = 1
     v29 = iconst.i64 0
     v30 = global_value.i64 gv1
-    v31 = iadd_imm v30, 240
+    v31 = iadd_imm v30, 224
     v32 = load.i64 notrap aligned v31
     v33 = call_indirect sig1, v32(v1, v21, v29)  ; v29 = 0
     brif v33, block10, block11
@@ -4794,18 +4736,18 @@ function %propagate-pass-helper(i64, i64) -> i64 system_v {
     sig18 = (i64) -> i64 system_v
     fn0 = u0:0 sig0
     fn1 = u0:2 sig3
-    fn2 = colocated u0:88 sig4
+    fn2 = colocated u0:86 sig4
     fn3 = u0:11 sig5
     fn4 = u0:1 sig6
     fn5 = u0:1 sig7
     fn6 = u0:2 sig9
-    fn7 = colocated u0:88 sig10
+    fn7 = colocated u0:86 sig10
     fn8 = u0:11 sig11
     fn9 = u0:1 sig12
     fn10 = u0:1 sig13
     fn11 = u0:2 sig14
     fn12 = u0:1 sig15
-    fn13 = colocated u0:88 sig16
+    fn13 = colocated u0:86 sig16
     fn14 = u0:11 sig17
     fn15 = u0:1 sig18
 
@@ -4836,7 +4778,7 @@ block3:
     v15 = iconst.i64 1
     v16 = atomic_rmw.i64 add v14, v15  ; v15 = 1
     v17 = global_value.i64 gv0
-    v18 = iadd_imm v17, 336
+    v18 = iadd_imm v17, 320
     v19 = load.i64 notrap aligned v18
     v20 = call_indirect sig1, v19(v2, v3)
     jump block7
@@ -4856,7 +4798,7 @@ block11:
     v27 = iconst.i64 1
     v28 = atomic_rmw.i64 add v26, v27  ; v27 = 1
     v29 = global_value.i64 gv1
-    v30 = iadd_imm v29, 224
+    v30 = iadd_imm v29, 208
     v31 = load.i64 notrap aligned v30
     v32 = call_indirect sig2, v31(v2, v3, v25)
     jump block14
@@ -4975,7 +4917,7 @@ block29:
     v77 = iconst.i64 1
     v78 = atomic_rmw.i64 add v76, v77  ; v77 = 1
     v79 = global_value.i64 gv3
-    v80 = iadd_imm v79, 224
+    v80 = iadd_imm v79, 208
     v81 = load.i64 notrap aligned v80
     v82 = call_indirect sig8, v81(v2, v3, v75)
     jump block32
@@ -5282,11 +5224,11 @@ function %set-cell$Grid+Int+Cell(i64, i64, i64) -> i64 system_v {
     sig5 = (i64, i64) system_v
     sig6 = (i64) -> i64 system_v
     sig7 = (i64) -> i64 system_v
-    fn0 = colocated u0:87 sig0
+    fn0 = colocated u0:85 sig0
     fn1 = u0:19 sig1
     fn2 = u0:0 sig2
     fn3 = u0:2 sig3
-    fn4 = colocated u0:88 sig4
+    fn4 = colocated u0:86 sig4
     fn5 = u0:11 sig5
     fn6 = u0:1 sig6
     fn7 = u0:1 sig7
@@ -5412,11 +5354,11 @@ function %solve(i64) -> i64 system_v {
     fn4 = u0:2 sig10
     fn5 = u0:1 sig11
     fn6 = u0:2 sig12
-    fn7 = colocated u0:88 sig13
+    fn7 = colocated u0:86 sig13
     fn8 = u0:11 sig14
     fn9 = u0:1 sig15
     fn10 = u0:1 sig16
-    fn11 = colocated u0:88 sig17
+    fn11 = colocated u0:86 sig17
     fn12 = u0:11 sig18
     fn13 = u0:1 sig19
 
@@ -5444,7 +5386,7 @@ block1(v1: i64):
     v3 = iconst.i64 1
     v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
     v5 = global_value.i64 gv0
-    v6 = iadd_imm v5, 248
+    v6 = iadd_imm v5, 232
     v7 = load.i64 notrap aligned v6
     v8 = call_indirect sig0, v7(v1)
     jump block4
@@ -5481,7 +5423,7 @@ block9:
     v22 = iconst.i64 1
     v23 = atomic_rmw.i64 add v21, v22  ; v22 = 1
     v24 = global_value.i64 gv1
-    v25 = iadd_imm v24, 200
+    v25 = iadd_imm v24, 184
     v26 = load.i64 notrap aligned v25
     v27 = call_indirect sig1, v26(v20)
     brif v27, block10, block11
@@ -5502,7 +5444,7 @@ block11:
     v36 = iconst.i64 1
     v37 = atomic_rmw.i64 add v35, v36  ; v36 = 1
     v38 = global_value.i64 gv2
-    v39 = iadd_imm v38, 264
+    v39 = iadd_imm v38, 248
     v40 = load.i64 notrap aligned v39
     v41 = call_indirect sig3, v40(v20)
     jump block15
@@ -5538,7 +5480,7 @@ block20:
     v56 = iconst.i64 1
     v57 = atomic_rmw.i64 add v55, v56  ; v56 = 1
     v58 = global_value.i64 gv3
-    v59 = iadd_imm v58, 336
+    v59 = iadd_imm v58, 320
     v60 = load.i64 notrap aligned v59
     v61 = call_indirect sig4, v60(v20, v53)
     v111 -> v61
@@ -5560,7 +5502,7 @@ block25:
 block26:
     v66 = load.i64 notrap aligned v61+24
     v67 = global_value.i64 gv4
-    v68 = iadd_imm v67, 280
+    v68 = iadd_imm v67, 264
     v69 = load.i64 notrap aligned v68
     v70 = call_indirect sig5, v69(v66)
     v94 -> v70
@@ -5585,7 +5527,7 @@ block28:
     v83 = iconst.i64 0
     v84 = load.i64 notrap aligned v70+16
     v85 = global_value.i64 gv5
-    v86 = iadd_imm v85, 328
+    v86 = iadd_imm v85, 312
     v87 = load.i64 notrap aligned v86
     v88 = call_indirect sig6, v87(v54, v53, v70, v83, v84)  ; v83 = 0
     jump block29(v88)
@@ -5820,20 +5762,20 @@ function %solve-range(i64, i64, i64, i64, i64) -> i64 system_v {
     fn1 = u0:0 sig1
     fn2 = u0:18 sig4
     fn3 = u0:0 sig5
-    fn4 = colocated u0:93 sig6
-    fn5 = colocated u0:94 sig7
+    fn4 = colocated u0:91 sig6
+    fn5 = colocated u0:92 sig7
     fn6 = u0:14 sig8
     fn7 = u0:15 sig9
     fn8 = u0:0 sig10
-    fn9 = colocated u0:95 sig11
-    fn10 = colocated u0:96 sig12
+    fn9 = colocated u0:93 sig11
+    fn10 = colocated u0:94 sig12
     fn11 = u0:14 sig13
     fn12 = u0:15 sig14
     fn13 = u0:16 sig15
     fn14 = u0:17 sig16
     fn15 = u0:16 sig17
     fn16 = u0:17 sig18
-    fn17 = colocated u0:88 sig25
+    fn17 = colocated u0:86 sig25
     fn18 = u0:11 sig26
     fn19 = u0:1 sig27
     fn20 = u0:11 sig28
@@ -5890,11 +5832,11 @@ block5:
     store notrap aligned v34, v33+16  ; v34 = 1
     store notrap aligned v31, v33+24
     v35 = global_value.i64 gv1
-    v36 = iadd_imm v35, 344
+    v36 = iadd_imm v35, 328
     v37 = load.i64 notrap aligned v36
     v38 = call_indirect sig2, v37(v5, v6, v33)
     v39 = global_value.i64 gv2
-    v40 = iadd_imm v39, 296
+    v40 = iadd_imm v39, 280
     v41 = load.i64 notrap aligned v40
     v42 = call_indirect sig3, v41(v38)
     jump block4(v42)
@@ -5974,7 +5916,7 @@ block12:
 
 block13:
     v86 = global_value.i64 gv3
-    v87 = iadd_imm v86, 352
+    v87 = iadd_imm v86, 336
     v88 = load.i64 notrap aligned v87
     v89 = call_indirect sig19, v88(v70, v78)
     jump block9(v89)
@@ -5987,11 +5929,11 @@ block8:
     v94 = iconst.i64 1
     v95 = atomic_rmw.i64 add v93, v94  ; v94 = 1
     v96 = global_value.i64 gv4
-    v97 = iadd_imm v96, 288
+    v97 = iadd_imm v96, 272
     v98 = load.i64 notrap aligned v97
     v99 = call_indirect sig20, v98(v8, v9)
     v100 = global_value.i64 gv5
-    v101 = iadd_imm v100, 328
+    v101 = iadd_imm v100, 312
     v102 = load.i64 notrap aligned v101
     v103 = call_indirect sig21, v102(v5, v6, v7, v8, v99)
     v104 = iadd_imm.i64 v5, 8
@@ -6001,15 +5943,15 @@ block8:
     v108 = iconst.i64 1
     v109 = atomic_rmw.i64 add v107, v108  ; v108 = 1
     v110 = global_value.i64 gv6
-    v111 = iadd_imm v110, 288
+    v111 = iadd_imm v110, 272
     v112 = load.i64 notrap aligned v111
     v113 = call_indirect sig22, v112(v8, v9)
     v114 = global_value.i64 gv7
-    v115 = iadd_imm v114, 328
+    v115 = iadd_imm v114, 312
     v116 = load.i64 notrap aligned v115
     v117 = call_indirect sig23, v116(v5, v6, v7, v113, v9)
     v118 = global_value.i64 gv8
-    v119 = iadd_imm v118, 352
+    v119 = iadd_imm v118, 336
     v120 = load.i64 notrap aligned v119
     v121 = call_indirect sig24, v120(v103, v117)
     jump block9(v121)
