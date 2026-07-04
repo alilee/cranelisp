@@ -17,9 +17,13 @@
 (export [primitives [*]])
 
 ;; --- Core ADTs ---
-
-(deftype (Option a) None (Some [:a val]))
-(deftype (Result a b) (Ok [:a val]) (Err [:b err]))
+;;
+;; `Option` (None/Some) and `Result` (Ok/Err) are SEEDED by `primitives`
+;; (src/bootstrap.rs steps 4 / 4c) — `primitives/Option` is THE Option under
+;; nominal typing (§3.8.4). The `[*]` glob above already RE-EXPORTS them, so
+;; this prelude reuses the one canonical type instead of REdefining a second,
+;; distinct ADT. Redefining here would author a define-over-(glob-import)
+;; collision forbidden by §8.6.4. Mirrors stdlib/fn/option.cl's reuse pattern.
 
 ;; --- Numeric trait + impls ---
 
