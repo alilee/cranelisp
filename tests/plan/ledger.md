@@ -239,6 +239,62 @@ RED is a named intentional guard). Suite before this change-set = 3727 run /
   inversions named by /arch: `worker::tests::commit_allows_defn_over_import_on_replace_path`,
   `imports/tests.rs:685`.)
 
+### Sprint 102 — module-compliance drive-out close: 2 collateral flip GREEN + 0516 #8 signal (/qa, 2026-07-04)
+
+Wave B's §8.6.4 enforcement (FIXME 0514, now live in ALL modes) correctly
+rejected 2 INLINE e2e test-body programs the Wave-A fixture sweep missed (they
+are test-body program strings, not `tests/fixtures/*.cl`). Both redefined the
+now-seeded `primitives/Option` under an Option-providing prelude. Fixed the same
+way the fixtures were — reuse the seeded type / suppress the prelude — restoring
+GREEN with behaviour preserved:
+
+| Test (file :: name) | Non-compliance | Fix | Now |
+|---|---|---|---|
+| `exemplar::t_s2_1_eliminate_contract_on_given_returns_none` | `(deftype (Option a) …)` over `(import [primitives [*]])` glob | dropped the deftype; reuse seeded `primitives/Option` (§3.8.4 nominal) — Some/None construct + match unchanged | GREEN |
+| `trace::trace_polymorphic_adt_result_renders` | `(deftype (Option a) …)` over PrimitivesOnly prelude | SUPPRESS the prelude (`repl_bare` = PreludeVariant::None) + keep its own `Option` (test wants its own type to trace-render; the asserted "Some" comes from the deftype's `;  None Some` match-hint line — the traced result string renders empty `""` for EITHER Option) | GREEN |
+
+**0516 #8 signal (new failing-not-ignored RED).**
+`spec_08_name_shadowing::import_over_def_repl_separate_turn_rejected` — the
+symmetric companion of def-over-import: a REPL `(defn foo …)` in turn 1 then
+`(import [m [foo]])` in a SEPARATE later turn is NOT rejected today (turn-2
+import silently accepted; `(foo …)` resolves to the local def), while batch
+(same cluster) rejects the identical shape. The test's batch leg is the GREEN
+anchor (already rejects); the REPL separate-turn leg is RED = the #8 hole.
+Flips GREEN when FIXME 0516 Issue 2 lands (reject an import/export whose bare
+name already resolves to a local `Def`, extended to the cross-cluster REPL
+case). Spec: §8.6.4 "Definition-Over-Import: Order-Independent, All Modes".
+
+**Canonical suite (two-tier confirm, 2026-07-04, this change-set):**
+`3746 run — 3732 passed / 14 failed / 1 skipped` @ 64s. The 14 = 13 pre-existing
+intentional guards (3× `vec_cow_value_use_leak` 0474, 3× `vec_query_value_use`
+0483, 3× `display_exact` {option-in-option, 2× macro-arity}, 4× `ownership_fences`
+{curry drop-glue collision, h2/h3 hooks owed, generic-Vec temp leak}) + the 1
+new 0516 #8 RED above. The 2 collateral flipped GREEN (no longer in the fail
+set). No genuine regression; no `f4_sudoku` golden drift observed in the fail
+set (the /dev-flagged golden drift is pre-existing and does not manifest as a
+suite failure here).
+
+**Sweep-completeness finding (deliverable 7 — NOT complete; broader class
+found).** The 2 collateral were the only inline sources whose assertions CAUGHT
+the rejection (→ RED). A grep sweep found a **broader class (~24 occurrences)**
+of inline test-body programs that redefine a seeded `Option`/`Result`/`Pair`
+under an Option-providing prelude (`repl_prims`/PrimitivesOnly/TestStandard) and
+now emit a silent §8.6.4 rejection error post-Wave-B, but stay GREEN because
+they only assert a downstream value (which resolves against the prelude's seeded
+type). Files: `spec_06_pattern_matching`, `spec_05_definitions`, `spec_12_runtime`,
+`spec_03_types`, `spec_07_traits`, `spec_10_io`, `repl_introspection`,
+`repl_negative`, `regression`, `trace::trace_adt_value_render_overflows_defect`
+(the raw count under-samples continuation-line forms like regression.rs's
+`(deftype Option None (Some [v]))`). **HAZARD:** two NEGATIVE tests —
+`spec_06_pattern_matching::{pattern_non_adt_scrut_rejects_adt_ctor_pattern_neg,
+pattern_nested_constructor_rejected_neg}` — assert `contains("error")`; the
+injected §8.6.4 deftype error now satisfies that, MASKING whether the real
+pattern-rejection (their intent) still fires. Recommend a follow-up wave
+(reuse-seeded / suppress-prelude per test; masked negatives need the deftype
+removed so the intended rejection surfaces, possibly with an annotation to reach
+it). Not fixed here — out of the /sprint-scoped "last 2"; per-test judgement
+needed (several assert `user/Option` display and would change output).
+
 ### Sprint 101 Phase 6a/6b defect set — proxy-exercise guards (/qa guard batch, 2026-07-03)
 
 The S101 Phase 6a/6b user-proxy exercise surfaced 12 defect items; per the

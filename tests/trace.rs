@@ -282,7 +282,18 @@ fn trace_neg_anonymous_lambda_not_traced() {
 // S81 (FIXME 0258); tracing a fn returning a user ADT value now renders cleanly.
 #[test]
 fn trace_polymorphic_adt_result_renders() {
-    let out = repl_prims(
+    // This test wants its OWN polymorphic `Option` to trace-render, so it
+    // SUPPRESSES the prelude (`repl_bare` = PreludeVariant::None) and defines
+    // `Option` locally. With no prelude in scope, the `(deftype (Option a) …)`
+    // is a fresh, legal definition — NOT a def-over-prelude shadow (§8.6.4) —
+    // and `Trace`/`TraceCall` are still reached via the explicit
+    // `(import [primitives [Trace TraceCall]])`. (Using the PrimitivesOnly
+    // prelude here would put `primitives/Option` in scope and reject the
+    // deftype; it would also drop the `;  None Some` deftype match-hint line
+    // that carries the "Some" this assertion checks for — the traced result
+    // string itself renders empty for either Option, so the deftype's own
+    // hint line is the load-bearing "Some" source.)
+    let out = repl_bare(
         "(import [primitives [Trace TraceCall]])\n\
          (deftype (Option a) None (Some [:a val]))\n\
          (defn wrap [x] (Some x))\n\

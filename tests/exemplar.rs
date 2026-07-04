@@ -132,7 +132,11 @@ fn t_s2_1_eliminate_contract_on_given_returns_none() {
   (Solved [:Int v])
   (Candidates [:Int mask]))
 
-(deftype (Option a) None (Some [:a v]))
+;; `Option` (None/Some) is SEEDED by `primitives` and reached via the
+;; `(import [primitives [*]])` glob above — reuse THE canonical
+;; `primitives/Option` (§3.8.4 nominal typing) rather than REdefining a
+;; second, distinct ADT (a definition-over-glob-import shadow, rejected
+;; per §8.6.4). Some/None construction + match below are unchanged.
 
 ;; Layer-1 contract: eliminate on a cell already fixed at value v, asked
 ;; to remove digit d, MUST return None when v == d (eliminating own value

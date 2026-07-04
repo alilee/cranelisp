@@ -359,6 +359,64 @@ fn mode_parity_def_over_import_same_rejection_all_modes() {
     );
 }
 
+// spec: spec/08-modules.md §8.6.4 "Definition-Over-Import: Order-Independent,
+// All Modes" — the #8 residual mode-divergence (FIXME 0516 Issue 2). The
+// SYMMETRIC companion of def-over-import: an `import` (or `export`) that brings
+// a bare name already bound by a LOCAL `def` in the current module MUST be
+// rejected identically — order-independent, all modes. Batch (same cluster)
+// already rejects it; the REPL, when the `import` arrives in a SEPARATE later
+// turn than the `def`, does NOT — no def is registered in the import's cluster,
+// so the def-registration seam never fires and the import installer skips.
+// That REPL/batch divergence IS the #8 hole; this test pins it.
+//
+// RED signal (FIXME 0516 Issue 2): the batch leg rejects (GREEN anchor — the
+// mode that is already correct); the REPL separate-turn leg FAILS today because
+// the turn-2 import is silently accepted over the turn-1 def. Failing-not-
+// ignored per `memory/feedback_failing_not_ignored.md`; it flips GREEN when
+// 0516 Issue 2 lands (reject an import/export whose bare name already resolves
+// to a local `Def`, extended to the cross-cluster REPL case). Ledger:
+// `tests/plan/ledger.md` §"Sprint 102 — 0516 #8 import-over-def REPL residual".
+#[test]
+fn import_over_def_repl_separate_turn_rejected() {
+    // Batch leg (import-over-def, single cluster) — GREEN anchor: already
+    // rejected. Establishes the shape the REPL leg must match.
+    let batch = Cranelisp::new()
+        .prelude(PRELUDE_PRIMS)
+        .file("util.cl", "(defn measure [v] (vec-len v))\n")
+        .file(
+            "main.cl",
+            "(defn measure [v] 99)\n\
+             (import [util [measure]])\n\
+             (defn main [] (Pure (measure [1 2 3])))\n",
+        )
+        .run("main.cl")
+        .output();
+    assert!(
+        has_collision_diagnostic(&batch),
+        "batch leg MUST reject the import-over-def (§8.6.4 is order-independent); {}",
+        combined(&batch)
+    );
+
+    // REPL leg — the def in turn 1, the import in a SEPARATE later turn. MUST
+    // reject with mode-parity. RED today: the #8 hole silently accepts it.
+    let repl = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file("util.cl", "(defn measure [v] (vec-len v))\n")
+        .stdin(
+            "(defn measure [v] 99)\n\
+             (import [util [measure]])\n\
+             (measure [1 2 3])\n",
+        )
+        .output();
+    assert!(
+        has_collision_diagnostic(&repl),
+        "REPL separate-turn import-over-def MUST reject with mode-parity to \
+         batch (§8.6.4 all-modes; FIXME 0516 Issue 2 — the #8 residual); {}",
+        combined(&repl)
+    );
+}
+
 // =============================================================================
 // 6. POSITIVE (legal) — the escape hatches the rule PRESERVES
 // =============================================================================
