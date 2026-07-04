@@ -997,6 +997,11 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         form: &TopLevel,
         accumulator: &mut ModuleCheckAccumulator,
     ) -> Result<FormCheckResult, CranelispError> {
+        // FIXME 0488 sig c: settle forward-reference chains in already-determined
+        // polymorphic templates so this form's body is checked against tied
+        // schemes, not the stale under-tied ones a 0344 writeback froze before a
+        // forward-referenced helper's own body ran.
+        self.resettle_polymorphic_schemes(state, accumulator);
         match form {
             TopLevel::Defn(defn) => {
                 if defn.is_multi_sig() {
@@ -1664,6 +1669,78 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                         };
                     }
                 }
+            }
+        }
+    }
+
+    /// Re-settle the stored schemes of already-determined **`Polymorphic`**
+    /// cluster members from their `defn_type_vars` source vars through the
+    /// current global substitution — scheme-only, no re-slotting (FIXME 0488
+    /// sig c).
+    ///
+    /// **The ordering bug this fixes.** A fn that FORWARD-references a
+    /// same-cluster helper (`vreduce` calling the later-defined `vreduce-loop`)
+    /// has its 0344 generalize-writeback run at the END of its OWN body check —
+    /// BEFORE the helper's body ties the accumulator↔result vars. The writeback
+    /// therefore freezes an UNDER-tied scheme (`vreduce : (Fn [f a (Vec b)] c)`,
+    /// result untied). A LATER sibling (`vconcat = (vreduce vec-push va vb)`)
+    /// then instantiates that stale scheme and inherits the under-tie into its
+    /// OWN scheme (`(Fn [a (Vec b)] c)`), which fails pass-4's all-args-concrete
+    /// guard at every composed consumer turn (`undefined function: <outer>`).
+    /// `finalize`'s [`Self::regeneralize_defn_schemes`] re-ties the
+    /// forward-referencing fn correctly — but only AFTER the sibling's body was
+    /// already checked against the stale scheme.
+    ///
+    /// Running this once BEFORE each subsequent form's body check settles the
+    /// forward-reference chain (`vreduce-loop`'s body has run → its ties are in
+    /// `state.subst` → `vreduce` re-ties) so the sibling sees the tied scheme.
+    /// It re-runs the SAME idempotent generalization `finalize` already
+    /// performs, only earlier; it does not change HOW generalization computes.
+    ///
+    /// **Scoped by construction (does not touch the 0344 balance).** A sibling
+    /// that USES a member instantiates a FRESH copy of the member's (now
+    /// generalized) scheme, so re-generalizing the member later never disturbs
+    /// the sibling's already-done inference — it only picks up ties from the
+    /// member's OWN forward-referenced helpers. Restricted to already-determined
+    /// `Polymorphic` templates (`NotDetermined` = not-yet-body-checked members
+    /// are skipped so a forward reference still binds their shared Pass-1 vars,
+    /// which 0349's mono-time result pinning relies on) and gated constraint-free
+    /// (mirroring the 0344 body-check writeback) so a `Constrained` fn's mono
+    /// Pass-1 entry is never disturbed. Concrete members carry no re-tieable vars
+    /// and are skipped after a cheap lookup.
+    fn resettle_polymorphic_schemes(
+        &self,
+        state: &mut CheckState,
+        accumulator: &ModuleCheckAccumulator,
+    ) {
+        for (name, (param_types, ret_ty)) in &accumulator.defn_type_vars {
+            // Only already-determined `Polymorphic` templates are re-tie
+            // candidates. The read guard is a temporary in this `matches!`.
+            let is_poly_determined = matches!(
+                self.current_symbol_table(state).view().lookup(name),
+                Some(ModuleEntry::Def { kind, .. })
+                    if matches!(
+                        kind.as_ref(),
+                        DefKind::UserFn { fn_state: UserFnState::Polymorphic(_) }
+                    )
+            );
+            if !is_poly_determined {
+                continue;
+            }
+            let fn_type = Type::Fn(
+                param_types.iter().map(|t| self.apply_subst(state, t)).collect(),
+                Box::new(self.apply_subst(state, ret_ty)),
+            );
+            let scheme = self.generalize(state, &fn_type);
+            // Pure-parametric only (mirror the 0344 writeback gate). A scheme
+            // that acquired constraints is left to the constrained-fn path.
+            if !scheme.constraints.is_empty() {
+                continue;
+            }
+            if let Some(ModuleEntry::Def { scheme: s, .. }) =
+                self.current_symbol_table_mut(state).symbols.get_mut(name)
+            {
+                *s = scheme;
             }
         }
     }

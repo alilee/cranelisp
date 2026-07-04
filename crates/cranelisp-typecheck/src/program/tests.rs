@@ -7376,3 +7376,109 @@
             "same-module fn-value `Var` must still be rewritten to `iden$Int`",
         );
     }
+
+    // The signature-(c) fixture, mirroring the e2e FOLD_MODULE: a same-module
+    // generic fold (`vreduce`/`vreduce-loop`) whose helper threads a polymorphic
+    // accumulator, and `vconcat` — a fold-bodied generic passing the builtin
+    // `vec-push` as a VALUE into the fold.
+    const FOLD_SRC: &str = "\
+        (defn vreduce [f init v] (vreduce-loop f init v (vec-len v) 0))\n\
+        (defn vreduce-loop [f acc v :primitives/Int len :primitives/Int i]\n  \
+          (if (ge-i64 i len) acc\n    \
+            (vreduce-loop f (f acc (vec-get v i)) v len (add-i64 i 1))))\n\
+        (defn vconcat [va vb] (vreduce vec-push va vb))";
+
+    // spec: spec/03-types.md §3.4 — after generalization a fold-bodied generic's
+    //   scheme MUST tie its result to its params: the body `(vreduce vec-push va
+    //   vb)` unifies va, vb and the result with vreduce's accumulator, so
+    //   `vconcat` generalizes to `(Fn [(Vec a) (Vec a)] (Vec a))`. RED on HEAD
+    //   (FIXME 0488 sig c ROOT CAUSE): HEAD publishes `(Fn [a (Vec b)] c)` —
+    //   result untied, first param degraded — because `vconcat`'s body is checked
+    //   against a STALE (under-tied) `vreduce` scheme (the forward-reference to
+    //   the later-defined `vreduce-loop` was not yet body-checked when the
+    //   0344 writeback froze `vreduce`).
+    #[test]
+    fn u_c1_fold_bodied_scheme_ties_result_to_params() {
+        let mut tc = tc_with_prims();
+        check_src(&mut tc, FOLD_SRC);
+
+        let scheme = match tc.symbol_table().get("vconcat") {
+            Some(ModuleEntry::Def { scheme, .. }) => scheme.clone(),
+            other => panic!("vconcat not a Def: {other:?}"),
+        };
+        // Exactly ONE quantified var — the element var shared across both
+        // (Vec _) params and the (Vec _) result.
+        assert_eq!(
+            scheme.type_vars.len(),
+            1,
+            "vconcat must generalize over exactly ONE var, got {:?}",
+            scheme,
+        );
+        // (Fn [(Vec x) (Vec x)] (Vec x)) — same inner var x throughout.
+        let vec_var = |t: &Type| -> Option<u32> {
+            match t {
+                Type::ADT(name, args)
+                    if name.name.as_ref() == "Vec" && args.len() == 1 =>
+                {
+                    match &args[0] {
+                        Type::Var(id) => Some(*id),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        };
+        match &scheme.ty {
+            Type::Fn(params, ret) => {
+                assert_eq!(params.len(), 2, "vconcat takes (va vb)");
+                let a = vec_var(&params[0]).unwrap_or_else(|| {
+                    panic!("param 0 must be (Vec x), got {:?}", params[0])
+                });
+                let b = vec_var(&params[1]).unwrap_or_else(|| {
+                    panic!("param 1 must be (Vec x), got {:?}", params[1])
+                });
+                let r = vec_var(ret).unwrap_or_else(|| {
+                    panic!("result must be (Vec x), got {:?}", ret)
+                });
+                assert!(
+                    a == b && b == r,
+                    "vconcat's two (Vec _) params and its (Vec _) result must \
+                     share ONE element var; got a={a} b={b} r={r} (FIXME 0488 sig c)",
+                );
+            }
+            other => panic!("vconcat scheme is not a function type: {other:?}"),
+        }
+    }
+
+    // spec: spec/03-types.md §3.4 / s84-concrete-types-ambiguity-ruling — a minted
+    //   mono instance's REGISTERED scheme must have a fully-concrete return type
+    //   (no residual `Type::Var` in a `Concrete` entry's scheme). RED on HEAD
+    //   (FIXME 0488 sig c secondary): the fold-bodied template's untied result
+    //   makes `register_mono_entry` capture a residual-var `concrete_ret_ty`
+    //   (`(Fn [(Vec Int) (Vec Int)] tN)`). The sig-(c) template-tie fix pins the
+    //   result at instantiation, so the mono scheme becomes concrete.
+    #[test]
+    fn u_c2_minted_mono_scheme_return_is_concrete() {
+        let mut tc = tc_with_prims();
+        check_src(
+            &mut tc,
+            &format!("{FOLD_SRC}\n(defn usec [] (vconcat [1 2] [3 4]))"),
+        );
+
+        // Find the minted vconcat mono instance.
+        let st = tc.symbol_table();
+        let (mono_name, scheme) = st
+            .all_symbols()
+            .find(|(n, _)| n.as_ref().starts_with("vconcat$"))
+            .and_then(|(n, e)| match e {
+                ModuleEntry::Def { scheme, .. } => Some((n.as_ref().to_string(), scheme.clone())),
+                _ => None,
+            })
+            .expect("a `vconcat$..` mono instance must be minted for the concrete call");
+        assert!(
+            scheme.ty.is_concrete(),
+            "the minted `{mono_name}` mono entry's registered scheme must be fully \
+             concrete (no residual result var); got {:?} (FIXME 0488 sig c secondary)",
+            scheme.ty,
+        );
+    }
