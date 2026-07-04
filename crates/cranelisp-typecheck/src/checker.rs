@@ -981,6 +981,81 @@ where
         )
     }
 
+    /// §8.6.4 definition-over-(import|export|prelude) rejection — the single,
+    /// mode-uniform seam (FIXME 0514). A `defn`/`deftype` whose name is already
+    /// bound IN SCOPE by anything OTHER than this module's OWN prior definition
+    /// is a compile-time error, resolved by the fully-qualified reference.
+    ///
+    /// The two-scope resolver [`Self::resolve_current_or_prelude`] is the single
+    /// chokepoint (Principle 7): it layers the staging-first inner-table view AND
+    /// the implicit-prelude outer scope (public-only head filter), chain-following
+    /// to the terminal. The decision is provenance, read off the resolved `home`:
+    ///
+    /// - resolve MISS (`Err`) ⇒ the name is not in scope ⇒ **free to define**
+    ///   (the §8.8.3 "not-loading" / fresh-name case);
+    /// - resolves with `home == current_module` ⇒ the module's OWN prior `Def`/
+    ///   `TypeDef` ⇒ ordinary **redefinition, ALLOWED** (the REPL redefine path);
+    /// - resolves with `home != current_module` ⇒ the sole in-scope binding is an
+    ///   explicit `import`/`export` inner entry (§8.4.0 — exports are
+    ///   `Import { Public }`, keyed on provenance not visibility) OR a prelude
+    ///   PUBLIC outer terminal (the no-exception ruling, 2026-07-04) ⇒ **ERROR**.
+    ///
+    /// Because Pass-0 installs all imports/exports and the prelude bit precedes
+    /// `check_forms`, "a Def whose name already resolves in scope" is
+    /// order-independent by construction — def-over-import AND import-over-def
+    /// (import installed first, def registered here) both reduce to this one
+    /// probe, identically in REPL/Additive and batch/Replace (the mode-parity
+    /// MUST). Private prelude/inner entries do not resolve here (the public-only
+    /// head filter treats them as not-found); the prelude module itself never
+    /// self-collides (`prelude_fallback_target` is `None` for it); redundant
+    /// `(import [m [X]]) (export [m [X]])` is import-over-import (§8.6.5
+    /// same-terminal dedup) and never reaches Def registration.
+    pub(crate) fn reject_def_over_binding(
+        &self,
+        state: &CheckState,
+        name: &Symbol,
+        span: Span,
+    ) -> Result<(), CranelispError> {
+        // Synthetic / mangled names (`__expr`, `__macro_*`, `f__v0`,
+        // `Trait.method$Type`, mono `cmp$Int+Int`) are never user-facing bare
+        // definitions contesting an import/export/prelude binding; skip them so
+        // the seam only ever fires on an authored bare name.
+        let n = name.as_ref();
+        if n.contains('$') || n.starts_with("__") {
+            return Ok(());
+        }
+        let resolved = match self.resolve_current_or_prelude(state, n, span) {
+            Ok(r) => r,
+            Err(_) => return Ok(()), // not in scope — free to define (§8.8.3)
+        };
+        if resolved.home == state.current_module {
+            return Ok(()); // own prior def/typedef — ordinary redefinition
+        }
+        // Collision. Name the source kind from the inner head (staging-aware,
+        // no chain-follow, no fallback): an inner `Import` entry is an explicit
+        // import (Private) or export (Public); absence means the binding came
+        // from the implicit-prelude outer scope.
+        let inner_head = self.probe_module_entry_owned(&state.current_module, n);
+        let kind = match &inner_head {
+            Some(e) if matches!(e, ModuleEntry::Import { .. }) && e.is_public() => "export",
+            Some(ModuleEntry::Import { .. }) => "import",
+            _ => "the implicit prelude",
+        };
+        let remedy = format!("{}/{}", resolved.home, resolved.fq.symbol);
+        let message = format!(
+            "error: definition of '{name}' conflicts with '{name}' already in scope \
+             via {kind} (spec/08-modules.md §8.6.4): a definition may not shadow a \
+             name brought into scope by import, export, or the implicit prelude. \
+             Rename the definition, suppress or rename the binding \
+             (§8.3.5 / §8.8.3), or reference the other symbol fully-qualified as \
+             '{remedy}'"
+        );
+        Err(CranelispError::TypeError {
+            message,
+            location: ErrorLocation::from_span(span),
+        })
+    }
+
     /// Whether a [`ResolveError`] is the neutral bare-name not-found class that
     /// the prelude fallback retries on (S78 §2.7.5). `PrivateInaccessible` and
     /// `QualifiedModuleUnknown` are excluded — those are decisive failures, not

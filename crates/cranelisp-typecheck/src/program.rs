@@ -880,6 +880,10 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 visibility,
                 span,
             } => {
+                // §8.6.4 (FIXME 0514): reject a type def whose name is already in
+                // scope via an explicit import/export or the implicit prelude —
+                // the same mode-uniform seam as the value-def case below.
+                self.reject_def_over_binding(state, &Symbol::from(name.as_ref()), *span)?;
                 self.register_type_def(
                     state, name, docstring, type_params, constructors, *visibility, *span,
                 )?;
@@ -896,6 +900,13 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
                 Ok(result)
             }
             TopLevel::Defn(defn) => {
+                // §8.6.4 (FIXME 0514): reject a definition whose bare name is
+                // already bound in scope by an explicit import/export or the
+                // implicit prelude (the no-exception ruling). Fires identically
+                // in every mode — the single shared seam both REPL/Additive and
+                // batch/Replace traverse. Own-redefinition (home == current) is
+                // NOT a collision and is left to the redefinition machinery.
+                self.reject_def_over_binding(state, &defn.name, defn.span)?;
                 if defn.is_multi_sig() {
                     self.check_form_register_multi_sig(state, defn, accumulator)
                 } else {

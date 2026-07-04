@@ -878,3 +878,259 @@
             other => panic!("expected the user defn for `v`, got {other:?}"),
         }
     }
+
+    // =====================================================================
+    // §8.6.4 definition-over-(import|export|prelude) rejection at the shared
+    // `check_forms` Pass-1 seam (FIXME 0514). These pin the mode-uniform
+    // rejection at the exact seam both REPL/Additive and batch/Replace call.
+    // =====================================================================
+
+    /// A public `Def` for `name` in a source module `src` — the terminal an
+    /// explicit import/export edge chain-follows to, and a prelude-provided
+    /// name's canonical entry.
+    fn seeded_public_def() -> ModuleEntry<()> {
+        ModuleEntry::def(
+            cranelisp_types::Scheme {
+                type_vars: vec![],
+                constraints: std::collections::HashMap::new(),
+                ty: cranelisp_types::Type::Int,
+            },
+            DefKind::UserFn {
+                fn_state: cranelisp_types::UserFnState::Concrete {
+                    got_slot: 0,
+                    mode_summary: None,
+                },
+            },
+        )
+        .visibility(Visibility::Public)
+        .build()
+    }
+
+    fn seed_module(
+        modules: &DashMap<ModuleFullPath, SymbolTable<(), ()>>,
+        module: &str,
+        name: &str,
+    ) {
+        let m = ModuleFullPath::from(module);
+        modules
+            .entry(m.clone())
+            .or_insert_with(|| SymbolTable::<(), ()>::new_with_params(m.clone()));
+        modules
+            .get_mut(&m)
+            .unwrap()
+            .insert(Symbol::from(name), seeded_public_def());
+    }
+
+    fn import_entry(src_module: &str, name: &str, vis: Visibility) -> ModuleEntry<()> {
+        ModuleEntry::Import {
+            source: cranelisp_types::FQSymbol {
+                module: ModuleFullPath::from(src_module),
+                symbol: Symbol::from(name),
+            },
+            visibility: vis,
+        }
+    }
+
+    /// A `defn` over a name in scope via an explicit `(import …)` is rejected;
+    /// the diagnostic names the symbol + the `module/name` FQ remedy.
+    #[test]
+    fn def_over_import_rejected_at_seam() {
+        let modules = modules();
+        seed_module(&modules, "util", "measure");
+        modules
+            .get_mut(&module_path())
+            .unwrap()
+            .insert(Symbol::from("measure"), import_entry("util", "measure", Visibility::Private));
+
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        let err = check_forms::<(), ()>(
+            vec![one_variant_defn("measure")],
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &no_fallback(),
+        )
+        .expect_err("defn over an imported name MUST be rejected (§8.6.4)");
+        let msg = match err {
+            CheckError::TypeError { message, .. } => message,
+            other => panic!("expected TypeError, got {other:?}"),
+        };
+        assert!(
+            msg.to_lowercase().contains("conflict")
+                && msg.contains("measure")
+                && msg.contains("util/measure")
+                && msg.contains("import"),
+            "diagnostic must name the symbol + FQ remedy + kind; got: {msg}",
+        );
+        // The import remains the binding (staging dropped on Err — live is
+        // byte-identical).
+        let guard = modules.get(&module_path()).unwrap();
+        assert!(matches!(guard.get("measure"), Some(ModuleEntry::Import { .. })));
+    }
+
+    /// A `defn` over a name in scope via an explicit `(export …)` — a Public
+    /// inner-scope Import edge (§8.4.0) — is rejected on the same terms; the
+    /// message names it an export.
+    #[test]
+    fn def_over_export_rejected_at_seam() {
+        let modules = modules();
+        seed_module(&modules, "util", "measure");
+        modules
+            .get_mut(&module_path())
+            .unwrap()
+            .insert(Symbol::from("measure"), import_entry("util", "measure", Visibility::Public));
+
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        let err = check_forms::<(), ()>(
+            vec![one_variant_defn("measure")],
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &no_fallback(),
+        )
+        .expect_err("defn over an exported name MUST be rejected (§8.4.0/§8.6.4)");
+        let msg = match err {
+            CheckError::TypeError { message, .. } => message,
+            other => panic!("expected TypeError, got {other:?}"),
+        };
+        assert!(
+            msg.contains("export") && msg.contains("util/measure"),
+            "diagnostic must name the export + FQ remedy; got: {msg}",
+        );
+    }
+
+    /// The no-exception ruling (2026-07-04): a `defn` over a PRELUDE-provided
+    /// public name is the same compile-time error — the prelude outer scope is
+    /// checked exactly like an explicit import.
+    #[test]
+    fn def_over_prelude_rejected_at_seam() {
+        let modules = modules();
+        seed_module(&modules, "prelude", "gulp");
+        let fallback = PreludeFallback::default();
+        fallback.insert(module_path(), true); // implicit prelude ON
+
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        let err = check_forms::<(), ()>(
+            vec![one_variant_defn("gulp")],
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &fallback,
+        )
+        .expect_err("defn over a prelude-provided name MUST be rejected (§8.8.1/§8.6.4)");
+        let msg = match err {
+            CheckError::TypeError { message, .. } => message,
+            other => panic!("expected TypeError, got {other:?}"),
+        };
+        assert!(
+            msg.to_lowercase().contains("conflict")
+                && msg.contains("prelude")
+                && msg.contains("prelude/gulp"),
+            "diagnostic must name the prelude source + FQ remedy; got: {msg}",
+        );
+    }
+
+    /// A module redefining its OWN prior `Def` (home == current module) is an
+    /// ordinary redefinition, NOT a collision — the seam must let it through.
+    #[test]
+    fn own_redefinition_allowed_at_seam() {
+        let modules = modules();
+        // First define `solo` (fresh — clean).
+        {
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::live(&modules, module_path());
+            check_forms::<(), ()>(
+                vec![one_variant_defn("solo")],
+                &mut ctx,
+                &modules,
+                &no_aliases(),
+                &no_fallback(),
+            )
+            .expect("first defn clean");
+        }
+        // Redefine it — own prior Def, must NOT be rejected as a collision.
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        check_forms::<(), ()>(
+            vec![one_variant_defn("solo")],
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &no_fallback(),
+        )
+        .expect("redefining the module's OWN def must NOT be rejected");
+    }
+
+    /// A fresh name that the prelude does NOT provide compiles cleanly even with
+    /// the prelude-fallback bit ON — the seam fires only on an actual in-scope
+    /// binding (the §8.8.3 not-loading / fresh-name case).
+    #[test]
+    fn def_of_fresh_name_with_prelude_on_allowed() {
+        let modules = modules();
+        seed_module(&modules, "prelude", "gulp");
+        let fallback = PreludeFallback::default();
+        fallback.insert(module_path(), true);
+
+        let mut ctx: SymbolTableAccess<'_, (), ()> =
+            SymbolTableAccess::live(&modules, module_path());
+        check_forms::<(), ()>(
+            vec![one_variant_defn("unrelated")],
+            &mut ctx,
+            &modules,
+            &no_aliases(),
+            &fallback,
+        )
+        .expect("a fresh name the prelude does not provide is free to define");
+    }
+
+    /// MODE PARITY: `check_forms` has no mode parameter — REPL/Additive and
+    /// batch/Replace call the IDENTICAL function, so the rejection is
+    /// structurally mode-uniform. This pins that both `ctx` variants both
+    /// sessions use — `Live` (Replace-analog) AND `Cluster`/staging
+    /// (Additive-analog) — reject the same def-over-import binding set.
+    #[test]
+    fn def_over_import_rejection_is_mode_uniform() {
+        // Live (Replace-analog).
+        {
+            let modules = modules();
+            seed_module(&modules, "util", "measure");
+            modules.get_mut(&module_path()).unwrap().insert(
+                Symbol::from("measure"),
+                import_entry("util", "measure", Visibility::Private),
+            );
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::live(&modules, module_path());
+            check_forms::<(), ()>(
+                vec![one_variant_defn("measure")],
+                &mut ctx,
+                &modules,
+                &no_aliases(),
+                &no_fallback(),
+            )
+            .expect_err("Live-mode def-over-import MUST reject");
+        }
+        // Cluster/staging (Additive-analog) — the import lives in live, the def
+        // stages; the union view sees the import; the seam rejects identically.
+        {
+            let modules = modules();
+            seed_module(&modules, "util", "measure");
+            modules.get_mut(&module_path()).unwrap().insert(
+                Symbol::from("measure"),
+                import_entry("util", "measure", Visibility::Private),
+            );
+            let mut staging = SymbolTable::<(), ()>::new_with_params(module_path());
+            let mut ctx: SymbolTableAccess<'_, (), ()> =
+                SymbolTableAccess::cluster(&modules, &mut staging, module_path());
+            check_forms::<(), ()>(
+                vec![one_variant_defn("measure")],
+                &mut ctx,
+                &modules,
+                &no_aliases(),
+                &no_fallback(),
+            )
+            .expect_err("Cluster-mode def-over-import MUST reject identically");
+        }
+    }
