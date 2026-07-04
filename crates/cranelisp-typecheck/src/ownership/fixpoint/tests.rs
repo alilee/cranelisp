@@ -262,3 +262,29 @@ fn cap_exhaustion_publishes_conservative_top() {
     assert_eq!(s.param_flow(0), cranelisp_types::ParamFlow::Retained);
     assert!(s.spark_op(0), "capped spark_ops must be ⊤ (Crossing)");
 }
+
+#[test]
+fn cap_exhaustion_forces_conservative_site_facts() {
+    // spec: §13.6 (F3) — on cap the SITE FACTS are forced ⊤ too: every escape
+    // fact `true`, provenance dropped. A callable un(fully)visited before the
+    // cap otherwise has no / too-low escape entries (below-truth ⇒ backend
+    // elides a retain ⇒ UAF). Without the reset, `c.facts` has no entry for the
+    // un-visited callable at all (indexing panics) — the failing-first shape.
+    let tf = TestFixture::new();
+    let module = ModuleFullPath::from("user");
+    let uni = vec![callable(
+        "f",
+        vec!["x"],
+        MonoExpr::Let {
+            bindings: vec![(Symbol::from("a"), boxed(vec![var("x")]))],
+            body: Box::new(var("a")),
+            span: s(),
+            ty: ConcreteType::String,
+        },
+    )];
+    let c = compute_cluster_with_cap(&tf.env(), &module, &uni, 0);
+    let f = &c.facts[&Symbol::from("f")];
+    assert!(!f.escapes.is_empty(), "conservative escape facts populated under cap");
+    assert!(f.escapes.values().all(|v| *v), "all escape facts forced ⊤ (true) under cap");
+    assert!(f.provenance.is_empty(), "provenance dropped under cap");
+}

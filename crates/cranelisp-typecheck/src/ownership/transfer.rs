@@ -81,7 +81,7 @@ pub(crate) trait TransferEnv {
 
 /// The context a sub-expression is evaluated in — determines how a param use
 /// classifies (widen + flow) and whether an allocation escapes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum UseCtx {
     /// The callee position of an `Apply` — a callable name here is a call, not
     /// a value-use.
@@ -282,31 +282,13 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     // binding's escape is re-classified through its origin at the
                     // escaping use of `n` (`param_root` reaches the param).
                     let origin = self.walk(rhs, UseCtx::Neutral);
-                    // §13.6(d) let-shadow provenance guard: when `n` shadows an
-                    // already-bound name that is a live provenance root, the two
-                    // bindings named `n` make any projection provenance rooted in
-                    // `n` ambiguous under a symbol-keyed backend — drop those
-                    // facts (emit `None` ⇒ Decision-24 materialize). Blocker 3.
-                    if self.bindings.contains_key(n) {
-                        self.facts.provenance.retain(|_, root| root != n);
-                    }
+                    // §13.6(d) let-shadow provenance guard (blocker 3, F2 helper).
+                    self.drop_shadowed_provenance(n);
                     self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
                 }
                 let body_origin = self.walk(body, ctx);
-                // Blocker 1: re-propagate binding-mediated escapes discovered in
-                // the body. Take the escaped set, re-walk this Let's own bindings
-                // in their escaping context, and hand the rest (outer-scope
-                // bindings) back for the enclosing Let to drain.
-                let escaped = std::mem::take(&mut self.escaped);
-                let (mine, rest): (Vec<_>, Vec<_>) = escaped
-                    .into_iter()
-                    .partition(|(name, _)| bindings.iter().any(|(n, _)| n == name));
-                self.escaped = rest;
-                for (name, esc_ctx) in mine {
-                    if let Some((_, rhs)) = bindings.iter().find(|(n, _)| n == &name) {
-                        self.walk(rhs, esc_ctx);
-                    }
-                }
+                // Blocker 1 (F1): re-propagate binding-mediated escapes to fixpoint.
+                self.drain_escaped(bindings);
                 body_origin
             }
 
@@ -365,9 +347,16 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 // (CS-3) handles the strand axis; here they are Neutral reads.
                 for (n, rhs) in bindings {
                     let origin = self.walk(rhs, UseCtx::Neutral);
+                    self.drop_shadowed_provenance(n);
                     self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
                 }
-                self.walk(body, ctx)
+                let body_origin = self.walk(body, ctx);
+                // Blocker 1 (F1): a joined-spark binding that flows out (returned /
+                // stored) escapes exactly like a `let` binding — drain to fixpoint.
+                // The non-escape property of §4.3 is a STRAND fact (confinement),
+                // not a frame-escape fact.
+                self.drain_escaped(bindings);
+                body_origin
             }
 
             MonoExpr::LaunchContinue { launched, continuation, .. } => {
@@ -458,20 +447,79 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
         }
     }
 
+    /// §13.6(d) shadow provenance guard — the ONE home shared by the `Let` and
+    /// `Match` binding seams (F2: single-sourced, no mirror). When `name` shadows
+    /// an already-bound binding, any pre-existing projection provenance rooted in
+    /// `name` becomes ambiguous under the symbol-keyed backend (two live bindings
+    /// answer to one `Symbol`), so drop those facts — `None` ⇒ Decision-24
+    /// materialize. No-op when `name` is not yet bound (no shadow).
+    fn drop_shadowed_provenance(&mut self, name: &Symbol) {
+        if self.bindings.contains_key(name) {
+            self.facts.provenance.retain(|_, root| root != name);
+        }
+    }
+
+    /// Drain this lexical scope's binding-mediated escapes to **fixpoint**
+    /// (§13.6(g), F1 cure). A `Fresh` binding used escaping in the body was
+    /// recorded by [`Self::walk_var`]; re-walking its RHS in the escaping context
+    /// widens the folded-in params and flips the aggregate's escape fact. A
+    /// re-walk can newly escape an EARLIER binding of the same flat `let`
+    /// fold-chain (`[a (Some x), b (Some a)]`, `b` returned ⇒ `a` escapes ⇒ `x`
+    /// escapes), so we loop over `self.escaped` for THIS scope's names until it
+    /// settles. Outer-scope entries bubble up (partitioned into `rest`).
+    ///
+    /// **Termination guard (each `(name, ctx)` re-walked at most once).** A
+    /// self-aliasing binding `(let [a a] …)` — the `case`/`cond` macro shape,
+    /// which rebinds `__case__` to `__case__` — would otherwise spin forever:
+    /// because the `bindings` map is not scope-restored (§13.6(i)), re-walking
+    /// `a`'s RHS `var("a")` resolves the name to the just-inserted INNER `a`
+    /// (itself) and re-pushes it endlessly. Deduping on `(name, ctx)` breaks the
+    /// cycle while preserving the fold-chain fixpoint — re-walking one RHS in one
+    /// context is idempotent (monotone joins), so once done it need never repeat;
+    /// distinct escaping contexts of one binding (`IntoResult` return AND
+    /// `Retained` store) are STILL each re-walked, so no flow is under-widened.
+    /// Bounded by |bindings| × |UseCtx|.
+    fn drain_escaped(&mut self, bindings: &[(Symbol, MonoExpr)]) {
+        let mut done: HashSet<(Symbol, UseCtx)> = HashSet::new();
+        loop {
+            let escaped = std::mem::take(&mut self.escaped);
+            // This scope's entries vs outer-scope entries (which bubble up).
+            let (mine, rest): (Vec<_>, Vec<_>) = escaped
+                .into_iter()
+                .partition(|(name, _)| bindings.iter().any(|(n, _)| n == name));
+            self.escaped = rest;
+            let todo: Vec<_> = mine.into_iter().filter(|pair| !done.contains(pair)).collect();
+            if todo.is_empty() {
+                break;
+            }
+            for (name, esc_ctx) in todo {
+                if done.insert((name.clone(), esc_ctx))
+                    && let Some((_, rhs)) = bindings.iter().find(|(n, _)| n == &name)
+                {
+                    self.walk(rhs, esc_ctx);
+                }
+            }
+        }
+    }
+
     /// Bind a match-arm pattern's field bindings as borrowed projections rooted
     /// in the scrutinee's root (§4.2 rule 1), recording the arm provenance fact
     /// with the §13.6(d) shadow guard.
     fn bind_pattern(&mut self, pattern: &Pattern, scrut_root: Option<&Symbol>, arm: &MonoMatchArm) {
         let mut names = Vec::new();
         collect_pattern_bindings(pattern, &mut names);
-        // §13.6(d) shadow guard: if any bound name would shadow a live
-        // provenance root, emit no provenance for the arm (conservative).
+        // §13.6(d) shadow guard (arm-own): if any bound name would shadow the
+        // scrutinee root, emit no provenance for the arm (conservative).
         let shadow = scrut_root.map(|r| names.iter().any(|n| n == r)).unwrap_or(false);
         let root = if shadow { None } else { scrut_root.cloned() };
         if let Some(r) = &root {
             self.facts.provenance.insert(arm.span, r.clone());
         }
         for n in names {
+            // §13.6(d) shadow guard (pre-existing): a pattern binding also shadows
+            // any OTHER live binding of that name — drop pre-existing provenance
+            // rooted in it (F2 mirror cure, single-sourced with the Let seam).
+            self.drop_shadowed_provenance(&n);
             let origin = match &root {
                 Some(r) => Origin::Projection(r.clone()),
                 None => Origin::Fresh,

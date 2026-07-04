@@ -79,15 +79,36 @@ fn bare_call(name: &str, args: Vec<MonoExpr>) -> MonoExpr {
     }
 }
 fn adt(fields: Vec<MonoExpr>) -> MonoExpr {
+    adt_sp(s(), fields)
+}
+/// A `ConstrADT` with an explicit span (distinct spans needed when a test
+/// inspects per-node escape facts — `s()` alone collides all nodes on SYNTHETIC).
+fn adt_sp(span: Span, fields: Vec<MonoExpr>) -> MonoExpr {
     MonoExpr::ConstrADT {
         type_name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")),
         tag: 0,
         fields,
-        span: s(),
+        span,
         ty: ConcreteType::ADT(FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")), vec![]),
         escapes: None,
         confined: None,
         unique_static: None,
+    }
+}
+/// A `SigDispatch` call with an explicit span.
+fn call_sp(span: Span, name: &str, args: Vec<MonoExpr>) -> MonoExpr {
+    MonoExpr::Apply {
+        callee: Box::new(var(name)),
+        args,
+        span,
+        resolved_call: Some(Box::new(cranelisp_types::ResolvedCall::SigDispatch {
+            mangled_name: JitSymbol::from(name),
+        })),
+        ty: ConcreteType::String,
+        escapes: None,
+        confined: None,
+        unique_static: None,
+        provenance: None,
     }
 }
 fn sm(param_modes: Vec<Mode>, result: ResultMode, param_flow: Vec<ParamFlow>) -> ModeSummary {
@@ -270,6 +291,145 @@ fn binding_local_fresh_aggregate_does_not_escape() {
     let r = run(&[strparam("x")], body, TestEnv::default());
     assert_eq!(r.summary.param_flow(0), ParamFlow::Consumed);
     assert!(r.facts.escapes.values().all(|v| !*v), "local aggregate must not escape");
+}
+
+#[test]
+fn binding_mediated_escape_flat_fold_chain_widens_all() {
+    // spec: §13.6(g) (F1) — a FLAT multi-binding let fold-chain re-propagates to
+    // FIXPOINT, not one level. `(defn f [x] (let [a (Some x) b (Some a)] b))`:
+    // b returned ⇒ a escapes ⇒ x escapes. The single-level drain left a's RHS
+    // never re-walked ⇒ x=Consumed / a's aggregate escapes=false (the F1 bug).
+    let a_span = Span::new(10, 11);
+    let b_span = Span::new(20, 21);
+    let body = MonoExpr::Let {
+        bindings: vec![
+            (Symbol::from("a"), adt_sp(a_span, vec![var("x")])),
+            (Symbol::from("b"), adt_sp(b_span, vec![var("a")])),
+        ],
+        body: Box::new(var("b")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult, "x flows out through the fold-chain");
+    assert_eq!(r.facts.escapes.get(&a_span), Some(&true), "a's aggregate escapes (embedded in returned b)");
+    assert_eq!(r.facts.escapes.get(&b_span), Some(&true), "b's aggregate escapes (returned)");
+}
+
+#[test]
+fn parbind_returned_binding_escapes_folded_param() {
+    // spec: §13.6(g) (F1) — a joined-spark binding that is RETURNED escapes its
+    // folded param; `ParBind` previously bound Fresh names but never drained.
+    // `(par [r (Some x)] r)`. The §4.3 non-escape property is a STRAND fact, not
+    // a frame-escape fact.
+    let r_span = Span::new(30, 31);
+    let body = MonoExpr::ParBind {
+        bindings: vec![(Symbol::from("r"), adt_sp(r_span, vec![var("x")]))],
+        body: Box::new(var("r")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult);
+    assert_eq!(r.facts.escapes.get(&r_span), Some(&true), "returned spark aggregate escapes");
+}
+
+#[test]
+fn self_aliasing_shadow_binding_terminates() {
+    // spec: §13.6(g)/(i) — the `case`/`cond` macro shape `(let [a a] …)` rebinds a
+    // name to itself. The drain MUST terminate (dedup on (name,ctx)): before the
+    // dedup, re-walking `a`'s RHS `var("a")` resolved the name to the
+    // just-inserted INNER `a` (itself, unscoped bindings §13.6(i)) and re-pushed
+    // forever — the observed stdlib `case`-macro compile hang.
+    // (defn f [x] (let [a (Some x)] (let [a a] a)))
+    let inner = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), var("a"))],
+        body: Box::new(var("a")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let outer = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), adt(vec![var("x")]))],
+        body: Box::new(inner),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    // Completing at all proves termination. Mode is Owned (constructor store, set
+    // in the forward walk). Full IntoResult propagation through the self-alias is
+    // blocked by the unscoped-bindings limitation (§13.6(i)), not the drain.
+    let r = run(&[strparam("x")], outer, TestEnv::default());
+    assert_eq!(r.summary.param_mode(0), Mode::Owned);
+}
+
+#[test]
+fn match_arm_shadow_drops_ambiguous_provenance() {
+    // spec: §13.6(d) (F2 mirror) — a MATCH arm binding shadowing a live
+    // provenance root (not the scrutinee root) drops that stale provenance —
+    // the same guard as the Let seam, single-sourced. Previously unfixed at the
+    // match seam. `(defn f [g h] (let [x (gcells g)] (match h [(Box g) x])))`.
+    let arm = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            bindings: vec![Symbol::from("g")],
+            span: s(),
+        },
+        body: var("x"),
+        span: Span::new(40, 41),
+        provenance: None,
+    };
+    let m = MonoExpr::Match {
+        scrutinee: Box::new(var("h")),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let outer = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), call_sp(Span::new(50, 51), "gcells", vec![var("g")]))],
+        body: Box::new(m),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("g"), strparam("h")], outer, accessor_env());
+    assert!(
+        r.facts.provenance.values().all(|root| root.as_ref() != "g"),
+        "match-arm shadow of g must drop the stale gcells provenance"
+    );
+}
+
+#[test]
+fn match_arm_no_shadow_keeps_provenance() {
+    // spec: §13.6(d) (F2 precision twin) — an arm binding NOT shadowing any live
+    // root keeps the pre-existing projection provenance.
+    // `(defn f [g h] (let [x (gcells g)] (match h [(Box k) x])))`.
+    let arm = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            bindings: vec![Symbol::from("k")],
+            span: s(),
+        },
+        body: var("x"),
+        span: Span::new(40, 41),
+        provenance: None,
+    };
+    let m = MonoExpr::Match {
+        scrutinee: Box::new(var("h")),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let outer = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), call_sp(Span::new(50, 51), "gcells", vec![var("g")]))],
+        body: Box::new(m),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("g"), strparam("h")], outer, accessor_env());
+    assert!(
+        r.facts.provenance.values().any(|root| root.as_ref() == "g"),
+        "unshadowed gcells provenance must survive"
+    );
 }
 
 #[test]

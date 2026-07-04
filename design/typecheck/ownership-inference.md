@@ -1114,13 +1114,18 @@ per audit row.
   whose root would be ambiguous under that name — conservative (the backend treats
   no-provenance as materialize-at-Decision-24), and pinned as a scenario row
   (§13.7 transfer matrix) so the cut is visible, not accidental. **As-built (S102,
-  FIXME 0512 blocker 3):** implemented at BOTH provenance-emitting seams — the
-  `Match` arm binding (`transfer.rs::bind_pattern`, the original) AND the `Let`
-  binding (`transfer.rs` `Let` arm): when a `let` binding name shadows an
-  already-bound name, `facts.provenance.retain(|_, root| root != n)` drops the
-  now-ambiguous facts. The earlier implementation guarded only the match seam
-  (the let-shadow case `(let [x (vec-get g 0)] (let [g …] x))` narrowed to root
-  `g`, the shadowing binding, instead of `None`).
+  FIXME 0512 blocker 3 + Wave 8c-R F2):** ONE single-sourced helper
+  `transfer.rs::drop_shadowed_provenance(name)` — `if bindings.contains_key(name)
+  { facts.provenance.retain(|_, root| root != name) }` — is called at **every**
+  binding-introducing seam: the `Let` arm, the `ParBind` arm, AND each `Match`
+  pattern binding in `bind_pattern`. The first cut (FIXME 0512) guarded only the
+  `Let` seam and left the match-arm MIRROR unfixed: `(defn f [g h] (let [x (gcells
+  g)] (match h [(Box g) x])))` — the arm binds field `g` (scrutinee `h≠g`, so the
+  arm's own scrutinee-root suppression does NOT fire) yet shadows the param `g`,
+  leaving `x`'s stale `g`-rooted provenance live ⇒ a backend eliding the
+  materialize on a value that borrows a freed `g` (UAF, same class as the `Let`
+  narrowing). The `bind_pattern` scrutinee-root `shadow` check (arm-own provenance
+  suppression) is a SEPARATE, complementary guard and stays.
 - **(g) Binding-mediated escape re-propagation** (amends §2.2 rules 1–5 for the
   let-indirected shape; FIXME 0512 blocker 1). §3.3's "a later escaping *use of
   `n`* re-classifies the param root through `n`'s Root/Projection origin" fires
@@ -1129,16 +1134,39 @@ per audit row.
   [box (Some x)] box))` narrowed to `escapes=false` on the returned aggregate and
   `x.param_flow=Consumed` when the truth is `escapes=true` + `IntoResult` (the
   DIRECT `(Some x)` was already correct+tested; the binding-indirected shape was
-  the bug). **As-built:** the transfer walker records each `Fresh` binding used in
-  an escaping context (`ctx.escapes()`) with that context; the enclosing `Let`
-  drains the record after its body walk and **re-walks the binding's RHS in the
-  escaping context**, so the folded-in params widen (`Consumed`→`IntoResult`/
-  `Retained` via the monotone `join_flow`) and the aggregate's `escapes` fact
-  flips `false`→`true`. Every re-walk join is monotone (idempotent) so precision
-  for purely-local aggregates is preserved (a never-escaping `box` keeps
-  `escapes=false`/`Consumed`). ABI mode is unaffected: a constructor field-store
-  is `Owned` on both paths, so `param_modes` never moves — this refinement is
-  advisory-half only (`param_flow` + the escape site fact).
+  the bug). **As-built (S102 blocker 1 + Wave 8c-R F1):** the transfer walker
+  records each `Fresh` binding used in an escaping context (`ctx.escapes()`) with
+  that context; `transfer.rs::drain_escaped(bindings)` re-walks the binding's RHS
+  in the escaping context, so the folded-in params widen
+  (`Consumed`→`IntoResult`/`Retained` via the monotone `join_flow`) and the
+  aggregate's `escapes` fact flips `false`→`true`. **The drain is a FIXPOINT over
+  the scope's own bindings, not one level** (F1 correction — the first cut
+  partitioned once): a re-walk can newly escape an EARLIER binding of the same
+  flat `let` fold-chain (`[a (Some x) b (Some a)]`, `b` returned ⇒ `a` escapes ⇒
+  `x` escapes), so the drain loops — re-partitioning `self.escaped` for this
+  scope's names and re-walking until no this-scope entry remains. **Termination
+  is guarded by deduping each `(name, ctx)` re-walk** (bounded by |bindings| ×
+  |UseCtx|), NOT by any "flat lets forbid forward references" argument — that
+  argument is FALSE for a self-aliasing binding `(let [a a] …)`, the stdlib
+  `case`/`cond` macro shape (`` `(let [__case__ __case__] …) `` rebinds the name
+  to itself). Because the walker's `bindings` map is not scope-restored
+  (§13.6(i)), re-walking `a`'s RHS `var("a")` resolves the name to the
+  just-inserted INNER `a` (itself) and re-pushes it — an infinite spin (observed
+  as a `case`-macro compile hang) that the `(name, ctx)` dedup breaks. Deduping
+  preserves the fold-chain fixpoint: re-walking one RHS in one context is
+  idempotent (monotone joins), so once done it never needs repeating; distinct
+  escaping contexts of one binding are still each re-walked (no flow
+  under-widened). Monotone ⇒ purely-local aggregates keep `escapes=false` /
+  `Consumed`. **A residual precision gap:** propagation through a self-aliasing
+  shadow chain (`(let [a (Some x)] (let [a a] a))`) does NOT reach the outer
+  binding — the inner `a` masks it — so `x` stays `Consumed` there; this is the
+  §13.6(i) unscoped-bindings limitation, not a drain defect, and its fix rides
+  the §13.6(i) hardening. **Applies at BOTH the `Let` and `ParBind` seams** —
+  a joined-spark binding that is returned/stored escapes exactly like a `let`
+  binding; §4.3's non-escape property is a STRAND fact (confinement), not a
+  frame-escape fact, so `ParBind` must drain too (F1 second gap). ABI mode is
+  unaffected: a constructor field-store is `Owned` on both paths, so `param_modes`
+  never moves — this refinement is advisory-half only (`param_flow` + escape).
 - **(h) Cap-exhaustion resets to the conservative ⊤** (hardens §3.2's worklist
   termination; FIXME 0512 blocker 4). The visit cap is defensive (unreachable
   under monotone convergence), but a partially-converged summary set is
@@ -1148,8 +1176,33 @@ per audit row.
   spark-set) before publishing; the confinement worklist (see §5.3) resets every
   `spark_ops` to all-`true` (Crossing). The reset is universe-wide, not
   queued-only: a non-queued entry may have converged against a still-too-low
-  queued callee, so ⊤-everywhere is the only sound recovery. Cap is a shared
-  test seam (`compute_cluster_with_cap(.., cap=0)` forces the reset).
+  queued callee, so ⊤-everywhere is the only sound recovery. **The SITE FACTS are
+  reset too** (Wave 8c-R F3): `fixpoint::conservative_site_facts` re-populates each
+  callable's `SiteFacts` with every escape-bearing node's span `escapes=true` and
+  provenance dropped — an un(fully)visited callable otherwise has no / below-truth
+  escape entries, which the backend would trust to elide a retain (UAF). Cap is a
+  shared test seam (`compute_cluster_with_cap(.., cap=0)` forces the reset).
+- **(i) Observation — the transfer walker's `bindings` map is NOT scope-restored**
+  (Wave 8c-R F4; recorded, NOT actioned this change-set). `Let` and `Match`-arm
+  bindings are inserted into the flat `Walker.bindings` map and never removed when
+  their lexical scope ends, so they leak past scope. For a name shared between a
+  param/outer binding and an inner **branch-sibling** binding — e.g. `(if c (let
+  [a (gcells g)] …) (consume a))`, where the then-branch inner `let` binds `a` and
+  the else-branch `(consume a)` means the PARAM `a` — the walker resolves the
+  post-scope use to the STALE inner `BindState`. Because the inner state is a
+  `Projection`/`Fresh` origin (not the param `Root`), `param_root` returns `None`
+  and `classify_param_use` never fires ⇒ the param that should widen to `Owned`
+  stays `Borrowed`: **a narrowing BELOW truth on the ABI-bearing `param_modes`
+  half — a latent SOUNDNESS issue, not merely precision.** Reachability requires a
+  name collision between an outer/param binding and a branch-sibling inner
+  binding, with the outer used after the inner scope; alpha-renamed `MonoExpr`
+  would avoid it, but that is not currently guaranteed. **Candidate increment-I
+  hardening:** scope-save/restore the `bindings` map (snapshot on `Let`/arm entry,
+  restore on exit) or thread a scoped chain. Flagged to `/sprint` for a fix
+  decision (may be a `cranelisp-types`/broader-scope question — e.g. whether
+  `MonoExpr` guarantees unique binding names); left untouched here per the Wave
+  8c-R brief. It widens the blast radius of any shadow-gap and should be resolved
+  before Wave 11 alongside the other seams.
 - **(e) Fixpoint re-entry rides harvested `DepSet` edges, not `call_graph_edges`**
   (§13.3's ruling; amends §3.2's "caller lookup inverts the cluster's `callees`
   edges" — the inversion now inverts the walk-harvested instance-grain set;
@@ -1198,10 +1251,16 @@ laid the strategy bare):**
   non-escaping closure capture (negative) / `ParBind` joined (non-escape) /
   `LaunchContinue.launched` (escape) / deferred continuation (escape) /
   owned-handoff opaque edge (escape) / borrowed handoff (non-escape, negative).
+  **Binding-mediated escape (§13.6(g)):** let-bound `Fresh` aggregate returned
+  (single level) / FLAT fold-chain `[a (Some x) b (Some a)]` returned (the
+  fixpoint-drain row — F1) / never-escaping local aggregate (negative, precision)
+  / `ParBind`-bound aggregate returned (the strand-vs-frame row — F1).
   *Projection-depth matrix* — proj-of-`Borrowed`-param (root = param), chained
   projection collapses to ONE root (depth ≥ 3), proj-of-`Owned`-local (root =
   local), match-arm binding, accessor call with `ProjectionOf` summary
-  (interprocedural root composition), `vec-get` declared row, escape-of-borrowed-proj
+  (interprocedural root composition), the §13.6(d) shadowed-root ⇒ `None` rows at
+  BOTH the `Let` and `Match` seams (F2 mirror, single-sourced) + the unshadowed
+  precision twins, `vec-get` declared row, escape-of-borrowed-proj
   ⇒ materialization fact at the edge (rule 5), return-proj-of-param ⇒
   `ProjectionOf(i)`, return-param ⇒ `AliasOf(i)`, return-proj-of-LOCAL ⇒ local
   escapes + `Fresh`, the §13.6(c) mixed-path joins, the §13.6(d) shadowed-root ⇒

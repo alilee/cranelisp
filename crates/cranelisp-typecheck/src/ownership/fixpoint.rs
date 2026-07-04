@@ -230,6 +230,13 @@ where
             // universe to the conservative ⊤ (all-Owned / Fresh / Retained /
             // spark-set) — the sound failure direction (blocker 4, §13.6).
             reset_to_top(&mut summaries, universe);
+            // F3: the SITE FACTS are unsound too — a callable un(fully)visited
+            // before the cap has no / too-low escape entries (an absent or
+            // `false` escape reads below truth). Force every callable's escape
+            // site-facts to ⊤ (true) and drop provenance (⇒ materialize).
+            for c in universe {
+                facts.insert(c.key.clone(), conservative_site_facts(&c.body));
+            }
             break;
         }
         let Some(c) = by_key.get(&key) else { continue };
@@ -356,6 +363,77 @@ fn top(params: &[(Symbol, ConcreteType)]) -> ModeSummary {
 fn reset_to_top(summaries: &mut HashMap<Symbol, ModeSummary>, universe: &[Callable]) {
     for c in universe {
         summaries.insert(c.key.clone(), top(&c.params));
+    }
+}
+
+/// The conservative ⊤ [`SiteFacts`] for a body: every escape-bearing node's span
+/// marked `escapes=true`, provenance empty (⇒ Decision-24 materialize). The sound
+/// facts to publish on cap exhaustion (F3): a partial transfer walk can leave a
+/// node `escapes=false` (or absent) below its true `true`, which the backend
+/// would trust to elide a retain ⇒ UAF. `true` everywhere is the safe ⊤. The
+/// confined axis is left absent (⊤ = Crossing/atomic through the accessor).
+fn conservative_site_facts(body: &MonoExpr) -> SiteFacts {
+    let mut f = SiteFacts::default();
+    collect_escape_spans(body, &mut f);
+    f
+}
+
+/// Mark every escape-bearing node's span `escapes=true` (mirrors the node set
+/// the transfer walk and `sites::annotate` touch), recursing into all children.
+fn collect_escape_spans(expr: &MonoExpr, f: &mut SiteFacts) {
+    match expr {
+        MonoExpr::StringLit { span, .. } => {
+            f.escapes.insert(*span, true);
+        }
+        MonoExpr::Lambda { span, body, .. } => {
+            f.escapes.insert(*span, true);
+            collect_escape_spans(body, f);
+        }
+        MonoExpr::Apply { span, callee, args, .. } => {
+            f.escapes.insert(*span, true);
+            collect_escape_spans(callee, f);
+            for a in args {
+                collect_escape_spans(a, f);
+            }
+        }
+        MonoExpr::VecLit { span, elements, .. } => {
+            f.escapes.insert(*span, true);
+            for e in elements {
+                collect_escape_spans(e, f);
+            }
+        }
+        MonoExpr::ConstrADT { span, fields, .. } => {
+            f.escapes.insert(*span, true);
+            for x in fields {
+                collect_escape_spans(x, f);
+            }
+        }
+        MonoExpr::Let { bindings, body, .. } | MonoExpr::ParBind { bindings, body, .. } => {
+            for (_, rhs) in bindings {
+                collect_escape_spans(rhs, f);
+            }
+            collect_escape_spans(body, f);
+        }
+        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            collect_escape_spans(cond, f);
+            collect_escape_spans(then_branch, f);
+            collect_escape_spans(else_branch, f);
+        }
+        MonoExpr::Match { scrutinee, arms, .. } => {
+            collect_escape_spans(scrutinee, f);
+            for arm in arms {
+                collect_escape_spans(&arm.body, f);
+            }
+        }
+        MonoExpr::Trace { body, .. } => collect_escape_spans(body, f),
+        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            collect_escape_spans(launched, f);
+            collect_escape_spans(continuation, f);
+        }
+        MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::Var { .. } => {}
     }
 }
 
