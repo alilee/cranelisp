@@ -37,7 +37,8 @@ pub(crate) mod classify;
 pub(crate) mod confinement;
 pub(crate) mod fixpoint;
 pub(crate) mod publish;
+pub(crate) mod sites;
+pub(crate) mod trace;
 pub(crate) mod transfer;
-// CS-4 adds `sites` (site-fact annotation) + `trace` (H5 observability).
 
 pub(crate) use fixpoint::run_pass5;

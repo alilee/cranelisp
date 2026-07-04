@@ -51,10 +51,8 @@ struct Callable {
 pub(crate) struct ClusterOwnership {
     /// Converged summary per callable key.
     pub summaries: HashMap<Symbol, ModeSummary>,
-    /// Site facts per callable key (escape + provenance + confined). Consumed
-    /// by CS-4's site-fact annotation walk + H5 trace; the scoped allow is
-    /// removed when CS-4 wires them.
-    #[allow(dead_code)]
+    /// Site facts per callable key (escape + provenance + confined) — consumed
+    /// by the CS-4 site-fact annotation walk + H5 trace.
     pub facts: HashMap<Symbol, SiteFacts>,
     /// Callable names referenced in value position anywhere in the cluster (§8.3).
     pub value_used: HashSet<Symbol>,

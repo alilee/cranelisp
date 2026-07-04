@@ -31,9 +31,13 @@ where
         let Some(entry) = guard.symbols.get_mut(key) else { continue };
         // Persisted twin on the callable DefKind variant (⇒ `.meta.json`).
         entry.set_mode_summary(Some(summary.clone()));
-        // Compile-in-hand carrier (the backend reads this during codegen).
+        // Compile-in-hand carrier + the one-shot post-convergence site-fact
+        // annotation walk (§13.6(b)) onto the stored codegen_view body.
         if let ModuleEntry::Def { codegen_view: Some(cv), .. } = entry {
             cv.mode_summary = Some(summary.clone());
+            if let Some(facts) = cluster.facts.get(key) {
+                super::sites::annotate(&mut cv.body, facts);
+            }
         }
     }
     // Value-use marks (§8.3): any callable referenced in value position.
@@ -42,4 +46,11 @@ where
             entry.set_value_use(true);
         }
     }
+    drop(guard);
+
+    // H5 observability (§11) — silent unless CRANELISP_OWNERSHIP_TRACE is set.
+    super::trace::emit(state, cluster);
 }
+
+#[cfg(test)]
+mod tests;
