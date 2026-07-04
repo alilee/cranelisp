@@ -2283,6 +2283,15 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
             }
         }
 
+        // Pass 5: interprocedural ownership inference (S102 CS-1..4;
+        // `design/typecheck/ownership-inference.md`). A post-pass over the
+        // now-settled cluster — mono done, callees written, `codegen_view`
+        // rebuilt post-mono. Read-path increment: summaries are emitted but
+        // UNconsumed by codegen (backend mechanisms are Wave 11), so the pass
+        // is behaviour-neutral. Toggle-gated at its entry (`CRANELISP_NO_OWNERSHIP`
+        // set ⇒ emits nothing, §13.5).
+        crate::ownership::run_pass5(self, state);
+
         // Build CheckResult from the accumulator (authoritative source).
         // Sprint 57 Wave 2 step 4: CheckResult slimmed to `{ warnings, display }`.
         // The legacy `method_resolutions` / `expr_types` / `mono_defns` /

@@ -33,14 +33,11 @@
 //! - [`confinement`] (CS-3) — strand-context classification + the per-cell join.
 //! - [`publish`] (CS-4) — summary / site-fact / value-use publication + the H5 trace.
 
-// CS-1 lands `classify` standalone (unit-tested); its items are consumed by
-// CS-2 (`transfer`) and CS-3 (the driver's real resolver). The scoped
-// `dead_code` allow is removed when CS-3 wires the driver.
-#[allow(dead_code)]
 pub(crate) mod classify;
-// CS-2 lands `transfer` (the pure body walk); consumed by CS-3's driver. The
-// scoped `dead_code` allow is removed when CS-3 wires the driver.
-#[allow(dead_code)]
+pub(crate) mod confinement;
+pub(crate) mod fixpoint;
+pub(crate) mod publish;
 pub(crate) mod transfer;
-// CS-3..CS-4 submodules (fixpoint, confinement, publish) and the
-// `pass5_ownership` driver land in the subsequent change-sets.
+// CS-4 adds `sites` (site-fact annotation) + `trace` (H5 observability).
+
+pub(crate) use fixpoint::run_pass5;
