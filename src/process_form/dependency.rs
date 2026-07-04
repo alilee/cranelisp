@@ -1288,6 +1288,39 @@ fn find_inline_mod_span(sexps: &[Sexp], name: &str) -> Option<Span> {
     None
 }
 
+/// Single-source the per-module implicit-prelude fallback bit (S78 §2.7;
+/// FIXME 0516 fold-in). The bit is ON iff the module is neither `prelude`
+/// itself nor explicitly references prelude in an `import`/`export` form
+/// (§8.8.1 — an explicit reference suppresses the implicit fallback). Both
+/// arms of [`super::process_cluster_once`] call this — the ONE spot the two
+/// arms write the same invariant (Principle 7); `fresh` selects the write
+/// discipline:
+///
+/// - `fresh == true` (Replace / batch recompile): the module's table is being
+///   rebuilt, so recompute from scratch. Writes the ON bit when the module
+///   neither is nor references prelude; leaves the entry absent otherwise
+///   (absence-is-OFF) — behaviour-identical to the former
+///   `inject_prelude_if_needed` ON-path set.
+/// - `fresh == false` (Additive / REPL eval): the bit was set ON at the
+///   module's startup compile and module state persists across turns, so apply
+///   only the incremental OFF delta — a later form that newly references
+///   prelude turns the implicit fallback OFF for this module.
+pub(super) fn ensure_prelude_bit(
+    ctx: &mut ModuleCompiler,
+    module: &ModuleFullPath,
+    sexps: &[Sexp],
+    fresh: bool,
+) {
+    let prelude_path = ModuleFullPath::from("prelude");
+    if fresh {
+        if *module != prelude_path && !sexps_reference_prelude(sexps) {
+            ctx.prelude_fallback.insert(module.clone(), true);
+        }
+    } else if sexps_reference_prelude(sexps) {
+        ctx.prelude_fallback.insert(module.clone(), false);
+    }
+}
+
 /// Inject prelude import for non-prelude modules, blocking if prelude needs loading.
 ///
 /// Per spec §8.8.1: the implicit `(import [prelude [*]])` is suppressed when the
@@ -1314,15 +1347,12 @@ pub(super) fn inject_prelude_if_needed(
     }
 
     // S78 §2.7 — prelude is an OUTER SCOPE, not flattened into this module's
-    // table. We are on the ON path (the module neither IS `prelude` nor
-    // references it), so record the per-module fallback bit ON: bare-name
-    // inner-table misses in this module fall back to prelude's own table
-    // (chain-following its `(export [primitives [*]])` re-exports). The bit
-    // is set unconditionally here — every code path below merely ensures
-    // prelude is LOADED (so the fallback has a table to consult); none of
-    // them flatten prelude's symbols into this module anymore.
-    ctx.prelude_fallback.insert(module.clone(), true);
-
+    // table. The per-module fallback bit is now written by the single-source
+    // `ensure_prelude_bit` (called by BOTH the Replace and Additive arms of
+    // `process_cluster_once` — FIXME 0516 fold-in), NOT here. This function
+    // keeps only the prelude-LOADING responsibility on the ON path: every code
+    // path below ensures prelude is LOADED (so the fallback has a table to
+    // consult); none flatten prelude's symbols into this module.
     if !ctx.symbol_tables.contains_key(&prelude_path) {
         // Discover prelude through the same lazy path as any user import.
         let prelude_file = crate::session_setup::resolve_prelude(

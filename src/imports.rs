@@ -546,17 +546,48 @@ fn insert_detecting_ambiguity(
             continue;
         };
 
+        // Import-over-def (§8.6.4 symmetric companion; FIXME 0516 #8). The
+        // existing entry is a module-LOCAL definition (`Def`/`TypeDef`) and
+        // `new_entry` is an incoming import/export edge. This is the ONLY place
+        // this direction can be caught: no def registers in THIS import's
+        // cluster, so the typecheck def-event seam never fires (the REPL
+        // separate-turn hole). Reject via the SAME shared predicate the
+        // def-event uses (`check_binding_addition`) — one rule, both events,
+        // all modes. It fires ONLY across clusters: within a single cluster
+        // Pass-0 install precedes Pass-1 def-register, so no local def exists at
+        // install time (that case is caught by the def-event) — no double-fire.
+        if matches!(existing, ModuleEntry::Def { .. } | ModuleEntry::TypeDef { .. }) {
+            let incoming = if new_entry.is_public() {
+                cranelisp_types::BindingProvenance::Export
+            } else {
+                cranelisp_types::BindingProvenance::Import
+            };
+            // The FQ remedy is the incoming import's terminal identity — the
+            // symbol the user should reference qualified rather than bind bare
+            // over the local definition.
+            let remedy = terminal_identity(symbol_tables, &new_entry)
+                .map(|(module, symbol)| FQSymbol { module, symbol })
+                .unwrap_or_else(|| match &new_entry {
+                    ModuleEntry::Import { source, .. } => source.clone(),
+                    _ => FQSymbol { module: current_module.clone(), symbol: name.clone() },
+                });
+            return cranelisp_types::check_binding_addition(
+                &name,
+                incoming,
+                cranelisp_types::BindingProvenance::Definition,
+                &remedy,
+                span,
+            );
+        }
+
         let both_indirect = matches!(
             (&existing, &new_entry),
             (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
         );
         if !both_indirect {
-            // The existing entry is a module-LOCAL definition (`Def`/`TypeDef`)
-            // and `new_entry` is an incoming import/export binding. The §8.6.4
-            // def/import collision is now rejected uniformly at the shared
-            // typecheck `check_forms` seam (FIXME 0514) — a def registered over
-            // an already-installed import — so the installer no longer rejects
-            // here. Existing directly-defined entry takes priority — skip new.
+            // The existing entry is some other directly-bound kind (`Ambiguous`,
+            // `SpecialForm`, `IntrinsicType`) — it takes priority; skip the new
+            // import/export edge.
             continue;
         }
 

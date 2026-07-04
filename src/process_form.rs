@@ -52,8 +52,7 @@ mod dependency;
 use self::platform::handle_platform;
 use self::dependency::{
     BlockAction, handle_import, handle_export, handle_mod, drive_submodules,
-    drive_module_dep, fq_module_is_loaded, inject_prelude_if_needed,
-    sexps_reference_prelude,
+    drive_module_dep, ensure_prelude_bit, fq_module_is_loaded, inject_prelude_if_needed,
 };
 // `register_dep` (the per-dep prologue) lives in `dependency`; `cache_restore`
 // reaches it via `super::register_dep`, so it must be in the parent's scope.
@@ -189,8 +188,10 @@ pub fn process_cluster_once(
         // lands in the same slots.
         clear_module_codegen(ctx, module);
 
-        // Prelude injection: inject (import [prelude [*]]) for non-prelude
-        // modules unless the source explicitly references prelude (§8.8.1).
+        // Prelude fallback bit (§8.8.1) — single-sourced via `ensure_prelude_bit`
+        // (FIXME 0516 fold-in), fresh-recompute discipline for the Replace path.
+        // Then ensure prelude is LOADED so the fallback has a table to consult.
+        ensure_prelude_bit(ctx, module, sexps, true);
         if let Some(dep) = inject_prelude_if_needed(ctx, module, sexps)? {
             return Ok(ClusterOnce::Gap { dep });
         }
@@ -200,14 +201,14 @@ pub fn process_cluster_once(
         ctx.set_current_module(module.clone());
 
         // S78 §2.7 — the per-module prelude-fallback bit was set ON at the
-        // entry module's startup compile. If a REPL form now explicitly
-        // references prelude (`(import [prelude []])` refusal, or a selective
-        // `(import [prelude [...]])`), the implicit fallback must turn OFF for
-        // this module (spec §8.8.1) — matching the Replace-path gate. The bit
-        // is OFF iff the module references prelude (absence-is-OFF).
-        if sexps_reference_prelude(sexps) {
-            ctx.prelude_fallback.insert(module.clone(), false);
-        }
+        // entry module's startup compile and persists across REPL turns. If a
+        // REPL form now explicitly references prelude (`(import [prelude []])`
+        // refusal, or a selective `(import [prelude [...]])`), the implicit
+        // fallback must turn OFF for this module (spec §8.8.1). Single-sourced
+        // via `ensure_prelude_bit` (FIXME 0516 fold-in), incremental-delta
+        // discipline for the Additive path — the SAME invariant the Replace arm
+        // writes fresh, one helper.
+        ensure_prelude_bit(ctx, module, sexps, false);
 
         // Static cycle gate for the eval path too (S93 Invariant PP). The eval
         // thread is the genuine barrier waiter; a REPL `(import …)` whose static

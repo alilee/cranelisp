@@ -628,21 +628,24 @@
     }
 
     // =====================================================================
-    // §8.6.4 (FIXME 0514) — the def/import symmetric collision moved to the
-    // shared typecheck `check_forms` seam (a def registered over an
-    // already-installed import, mode-uniform). The installer no longer rejects
-    // an import over an existing local def; it simply skips (existing wins).
-    // The rejection itself is unit-tested at the typecheck seam
-    // (`cranelisp_typecheck::form::tests::def_over_import_*`).
+    // §8.6.4 (FIXME 0516) — the def/import symmetric collision is enforced at
+    // ONE shared predicate (`cranelisp_types::check_binding_addition`), called
+    // at BOTH binding events. The def-event fires at the typecheck `check_forms`
+    // seam (a def registered over an installed import); the IMPORT-event fires
+    // HERE (an import/export installed over an existing module-local def — the
+    // #8 cross-cluster REPL case the def-seam cannot catch, because no def
+    // registers in the import's cluster). Same rule, both events, all modes —
+    // no dual path (the pre-0516 installer silently SKIPPED this direction,
+    // which was the #8 mode-divergence hole).
     // =====================================================================
 
-    // spec: 08-modules.md §8.6.4 — the installer no longer rejects an import
-    // over an existing module-local definition (the §8.6.4 rejection now fires
-    // at the typecheck seam when a DEF is registered over an installed import).
-    // Here the installer must NOT error and the local def stays the binding
-    // (existing-directly-defined takes priority; the import is skipped).
+    // spec: 08-modules.md §8.6.4 — the IMPORT-event arm: an `import` that binds
+    // a bare name already held by a module-LOCAL definition is a collision,
+    // rejected via the shared predicate (the symmetric companion of
+    // def-over-import; closes the #8 REPL separate-turn hole, FIXME 0516
+    // Issue 2). The FQ remedy names the import's terminal.
     #[test]
-    fn import_over_local_def_installer_skips_not_rejects() {
+    fn import_over_local_def_rejected_via_shared_predicate() {
         let tables = tables();
         ensure(&tables, "base");
         ensure(&tables, "user");
@@ -656,15 +659,58 @@
             .unwrap()
             .insert(Symbol::from("measure"), primitive_def());
 
-        install_imports(
+        let err = install_imports(
             &tables,
             &ModuleFullPath::from("user"),
             &aliases,
             &no_pf(),
             &[specific_spec("base", "measure")],
         )
-        .expect("installer no longer rejects an import over a local def");
-        // The local def wins (import skipped).
+        .expect_err(
+            "an import over an existing module-local def MUST reject \
+             (§8.6.4 symmetric companion; FIXME 0516 #8)",
+        );
+        let msg = match &err {
+            CranelispError::TypeError { message, .. } => message.to_lowercase(),
+            other => panic!("expected a TypeError, got {other:?}"),
+        };
+        assert!(msg.contains("conflict"), "collision diagnostic: {msg}");
+        assert!(msg.contains("base/measure"), "remedy FQ present: {msg}");
+        // The local def stays the binding — the rejected import had no effect.
+        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
+        assert!(matches!(user.get("measure"), Some(ModuleEntry::Def { .. })));
+    }
+
+    // spec: 08-modules.md §8.6.4/§8.4.0 — the EXPORT order: an `export` (a
+    // Public inner Import edge) over an existing module-local def rejects
+    // identically (the incoming Export vs existing Definition arm of the shared
+    // predicate). Pins event-parity across import AND export incoming edges.
+    #[test]
+    fn export_over_local_def_rejected_via_shared_predicate() {
+        let tables = tables();
+        ensure(&tables, "base");
+        ensure(&tables, "user");
+        tables
+            .get_mut(&ModuleFullPath::from("user"))
+            .unwrap()
+            .insert(Symbol::from("measure"), primitive_def());
+        tables
+            .get_mut(&ModuleFullPath::from("base"))
+            .unwrap()
+            .insert(Symbol::from("measure"), primitive_def());
+
+        let err = install_exports(
+            &tables,
+            &ModuleFullPath::from("user"),
+            &no_pf(),
+            &[specific_export("base", "measure")],
+        )
+        .expect_err("an export over a module-local def MUST reject (§8.6.4)");
+        let msg = match &err {
+            CranelispError::TypeError { message, .. } => message.to_lowercase(),
+            other => panic!("expected a TypeError, got {other:?}"),
+        };
+        assert!(msg.contains("conflict"), "collision diagnostic: {msg}");
         let user = tables.get(&ModuleFullPath::from("user")).unwrap();
         assert!(matches!(user.get("measure"), Some(ModuleEntry::Def { .. })));
     }
