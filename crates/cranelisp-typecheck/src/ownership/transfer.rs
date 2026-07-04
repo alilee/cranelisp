@@ -158,7 +158,6 @@ struct BindState {
 
 struct Walker<'e, E: TransferEnv> {
     env: &'e E,
-    copy: &'e CopyClassifier,
     bindings: HashMap<Symbol, BindState>,
     /// Per-param accumulated mode (index-aligned with the formal list).
     param_modes: Vec<Mode>,
@@ -490,7 +489,6 @@ pub(crate) fn transfer<E: TransferEnv>(
     }
     let mut w = Walker {
         env,
-        copy,
         bindings,
         param_modes,
         param_flow: vec![ParamFlow::Consumed; n],
