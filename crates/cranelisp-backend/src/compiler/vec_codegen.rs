@@ -37,6 +37,59 @@ pub(crate) struct VecSetCow {
     /// The OLD element's heap category (drives the mutate-in-place dec).
     pub old_elem_category: Option<HeapCategory>,
     pub dealloc_id: cranelift_module::FuncId,
+    /// The consumed-source RC polarity (§13.3 Ruling 2) — whether the copy
+    /// branch must release an owned reference to the source Vec.
+    pub source_ownership: SourceOwnership,
+}
+
+/// Consumed-source RC polarity for the shared COW cores
+/// (`design/backend/ownership-codegen.md` §13.3 Ruling 2).
+///
+/// A COW op has three runtime branches: **mutate** (rc==1, `vec-set`) /
+/// **grow** (rc==1, `vec-push`) return the *same* Vec pointer, so the consumed
+/// source reference transfers into the returned value — nothing to release; the
+/// **copy** branch (rc>1) allocates a *new* Vec and returns it, so any owned
+/// reference to the source that the op consumed becomes unreachable at the call
+/// and MUST be released there or it leaks (FIXME 0474).
+///
+/// This is a *contract* (Principle 18), not a spot dec: every call site states
+/// its truth explicitly, so a new call-site shape cannot silently re-open the
+/// leak. It is a leak-only class — the polarity errs on the retain side, never
+/// a UAF/double-free.
+pub(crate) enum SourceOwnership {
+    /// The caller handed the core an owned reference the op consumes — wrapper
+    /// and curry bodies whose params arrive owned under the consuming-closure
+    /// protocol. The copy branch rc-checked-decs the source via `vec_drop`
+    /// (freeing struct + data buffer + retained-element refs only at rc==1).
+    /// Carries the teardown materials the release needs.
+    Owned {
+        vec_drop_func_id: cranelift_module::FuncId,
+        elem_dec_fn_ptr: Value,
+    },
+    /// The source reference is owned elsewhere (a live scope binding / borrow):
+    /// the caller's arg compilation emitted no consuming inc, so the copy branch
+    /// releases nothing (scope cleanup dec's the binding). Static in-place COW
+    /// sites (`compile_vec_set` / `compile_vec_push` last-use arm) pass this.
+    Borrowed,
+}
+
+/// Emit the copy-branch consumed-source release for a COW core (§13.3 Ruling 2).
+/// No-op for `Borrowed`; rc-checked `vec_drop` for `Owned`. Called AFTER the
+/// copy extern (which reads + retains the shared source elements), so a
+/// last-reference source teardown cannot free elements the new copy still holds.
+fn release_consumed_source<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    vec_val: Value,
+    source_ownership: &SourceOwnership,
+) {
+    if let SourceOwnership::Owned {
+        vec_drop_func_id,
+        elem_dec_fn_ptr,
+    } = source_ownership
+    {
+        emit_vec_rc_dec_with_drop(builder, module, vec_val, *vec_drop_func_id, *elem_dec_fn_ptr);
+    }
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -247,6 +300,12 @@ where
                     inc_fn_ptr,
                     old_elem_category,
                     dealloc_id: self.ctx.dealloc_func_id,
+                    // Static in-place site: the Vec arg was compiled by
+                    // `compile_arg_list` (no consuming inc), so this reference
+                    // is owned by the live scope binding (or is a transferring
+                    // temporary) — the scope dec's it. Copy branch releases
+                    // nothing (§13.3 Ruling 2, static-site polarity).
+                    source_ownership: SourceOwnership::Borrowed,
                 },
                 span,
             )
@@ -308,6 +367,9 @@ where
                 vec_val,
                 new_val,
                 inc_fn_ptr,
+                // Static in-place site: source owned by scope (or transferring
+                // temporary) — copy branch releases nothing (§13.3 Ruling 2).
+                SourceOwnership::Borrowed,
                 span,
             )
         } else {
@@ -921,6 +983,30 @@ where
     /// Unlike `resolve_elem_dec_fn_ptr` which emits into `self.builder`,
     /// this takes an explicit `&mut FunctionBuilder` so it can be used from
     /// `emit_standalone_field_decs` (which is building a different function).
+    /// Build the `SourceOwnership::Owned` release descriptor for a COW core
+    /// emitted into a wrapper/curry body (§13.3 Ruling 2): the source Vec's
+    /// teardown func id + its per-element dec fn ptr. The op consumes an owned
+    /// reference here (consuming-closure protocol), so the copy branch releases
+    /// it via `vec_drop` (rc-checked). Mirrors the vec-get arm's teardown setup.
+    fn owned_source_release(
+        &mut self,
+        elem_type: &Option<Type>,
+        builder: &mut FunctionBuilder,
+        span: Span,
+    ) -> Result<SourceOwnership, CranelispError> {
+        let vec_drop_func_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
+            CranelispError::CodegenError {
+                message: "runtime/vec_drop not declared".into(),
+                location: ErrorLocation::from_span(span),
+            }
+        })?;
+        let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr_into(elem_type, builder, span)?;
+        Ok(SourceOwnership::Owned {
+            vec_drop_func_id,
+            elem_dec_fn_ptr,
+        })
+    }
+
     fn resolve_elem_dec_fn_ptr_into(
         &mut self,
         elem_type: &Option<Type>,
@@ -1052,6 +1138,12 @@ where
             ("vec-set", 3) => {
                 let inc_fn_ptr =
                     self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
+                // Wrapper / curry body: params arrive OWNED (consuming-closure
+                // protocol), so the copy branch must release the source Vec's
+                // owned reference (§13.3 Ruling 2 — the FIXME-0474 cure). The
+                // vec-get arm's release above is the precedent.
+                let source_ownership =
+                    self.owned_source_release(elem_type, builder, span)?;
                 emit_vec_set_cow_core(
                     builder,
                     self.module,
@@ -1062,6 +1154,7 @@ where
                         inc_fn_ptr,
                         old_elem_category: elem_category,
                         dealloc_id: self.ctx.dealloc_func_id,
+                        source_ownership,
                     },
                     span,
                 )
@@ -1069,12 +1162,17 @@ where
             ("vec-push", 2) => {
                 let inc_fn_ptr =
                     self.resolve_elem_inc_fn_ptr_into(elem_type, builder, span)?;
+                // Wrapper / curry body: params arrive owned — release the source
+                // on the copy branch (§13.3 Ruling 2).
+                let source_ownership =
+                    self.owned_source_release(elem_type, builder, span)?;
                 emit_vec_push_cow_core(
                     builder,
                     self.module,
                     params[0],
                     params[1],
                     inc_fn_ptr,
+                    source_ownership,
                     span,
                 )
             }
@@ -1205,6 +1303,7 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         inc_fn_ptr,
         old_elem_category,
         dealloc_id,
+        source_ownership,
     } = op;
 
     // Load RC and check if == 1 (unique owner).
@@ -1262,6 +1361,10 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         &[vec_val, idx_val, new_val, inc_fn_ptr],
         span,
     )?;
+    // §13.3 Ruling 2: the copy branch returns a NEW Vec, so release the
+    // consumed source's owned reference here (iff Owned). AFTER the copy extern
+    // so its retained-element incs land before a last-reference source teardown.
+    release_consumed_source(builder, module, vec_val, &source_ownership);
     builder.ins().jump(merge_block, &[copy_result]);
 
     // Merge.
@@ -1282,6 +1385,7 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
     vec_val: Value,
     new_val: Value,
     inc_fn_ptr: Value,
+    source_ownership: SourceOwnership,
     span: Span,
 ) -> Result<Value, CranelispError> {
     // Load RC.
@@ -1348,6 +1452,9 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
         &[vec_val, new_val, inc_fn_ptr],
         span,
     )?;
+    // §13.3 Ruling 2: copy branch returns a NEW Vec — release the consumed
+    // source's owned reference here (iff Owned), after the copy's retained incs.
+    release_consumed_source(builder, module, vec_val, &source_ownership);
     builder.ins().jump(merge_block, &[copy_result]);
 
     // Merge.
@@ -1528,6 +1635,9 @@ mod vec_push_rc_tests;
 
 #[cfg(test)]
 mod vec_set_rc_tests;
+
+#[cfg(test)]
+mod cow_polarity_tests;
 
 #[cfg(test)]
 mod temp_drop_rc_tests;
