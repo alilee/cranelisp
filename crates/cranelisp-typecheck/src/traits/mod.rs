@@ -51,13 +51,9 @@ pub(crate) use registry::*;
 pub(crate) use monomorphise::*;
 pub(crate) use type_resolve::*;
 // `dispatch`'s only `pub(crate)` free fn (`primitive_for_trait_method`) is
-// consumed internally by `dispatch.rs` directly and externally only by the
-// `primitive_dispatch_tests` sibling — so the re-export is test-only.
-#[cfg(test)]
-pub(crate) use dispatch::*;
+// consumed internally by `dispatch.rs` directly; its tests moved to the
+// `dispatch::tests` sibling (S102 FIXME 0497 de-pool), reaching it via their
+// own `use super::*` — so the traits-root test-only re-export is retired.
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod primitive_dispatch_tests;
