@@ -355,3 +355,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(Type::Fn(param_types, Box::new(ret_type)))
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -1069,3 +1069,6 @@ pub(crate) fn concrete_type_name(ty: &Type) -> Option<TypeName> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

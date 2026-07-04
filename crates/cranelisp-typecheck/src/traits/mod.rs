@@ -29,20 +29,6 @@ mod dispatch;
 mod monomorphise;
 mod type_resolve;
 
-// Imports the sibling `#[cfg(test)]` modules reach via `use super::*` (child
-// modules see an ancestor's private `use` aliases). Pre-split these lived on
-// `traits.rs` itself; the test files (`tests.rs`, `primitive_dispatch_tests.rs`)
-// rely on them being in scope at the `traits` module root.
-#[cfg(test)]
-use std::collections::HashMap;
-#[cfg(test)]
-use cranelisp_types::{
-    CranelispError, DefKind, FQTraitName, FQTypeName, ResolvedCall, Symbol, TraitName,
-    Type, TypeId, TypeName, UserFnState,
-};
-#[cfg(test)]
-use crate::checker::TypeCheckEnv;
-
 // Crate-internal re-exports. The other typecheck modules reach these as
 // `crate::traits::X` (unchanged from the pre-split `traits.rs` paths); the
 // sibling test modules reach the production items through `use super::*`.
@@ -55,5 +41,11 @@ pub(crate) use type_resolve::*;
 // `dispatch::tests` sibling (S102 FIXME 0497 de-pool), reaching it via their
 // own `use super::*` — so the traits-root test-only re-export is retired.
 
+// The former pooled `traits/tests.rs` (~41 tests) was de-pooled (S102 FIXME
+// 0497) across per-submodule sibling test modules — `registry/tests.rs`,
+// `impl_check/tests.rs`, `dispatch/tests.rs`, `monomorphise/tests.rs`,
+// `type_resolve/tests.rs` — each declared `#[cfg(test)] mod tests;` next to
+// the code it exercises. Their shared fixtures + assertion helpers live in
+// `test_helpers` so no test is duplicated (Principle 23).
 #[cfg(test)]
-mod tests;
+mod test_helpers;

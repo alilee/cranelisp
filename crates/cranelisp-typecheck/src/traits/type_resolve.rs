@@ -451,3 +451,6 @@ pub(super) fn find_applied_arity(texpr: &cranelisp_types::TypeExpr, con_name: &S
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

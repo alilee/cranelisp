@@ -840,3 +840,6 @@ impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> TypeCheckEn
         Ok(defaults)
     }
 }
+
+#[cfg(test)]
+mod tests;
