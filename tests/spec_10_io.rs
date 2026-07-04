@@ -630,9 +630,11 @@ fn then_discard_string_result() {
 // spec: spec/10-io.md §10.3 — discard a Mixed-heap ADT result, keep an Int.
 #[test]
 fn then_discard_adt_result() {
+    // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
+    // deftype under the Option-providing prelude is a define-over-prelude
+    // collision). Discarding a Mixed-heap ADT result is unaffected.
     repl(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (bind (Pure (Some 99)) (fn [_] (Pure 42)))\n",
+        "(bind (Pure (Some 99)) (fn [_] (Pure 42)))\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
@@ -663,9 +665,9 @@ fn then_unused_named_heap_param() {
 // inline and the Option ADT is the displayed value.
 #[test]
 fn pure_wraps_option_none() {
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn mk [] (Pure None))\n\
+        "(defn mk [] (Pure None))\n\
          (mk)\n",
     )
     .assert_stdout_contains("Option");
@@ -674,9 +676,9 @@ fn pure_wraps_option_none() {
 // spec: spec/10-io.md §10.2.3 — Pure wraps an Option (Some 42).
 #[test]
 fn pure_wraps_option_some() {
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn mk [] (Pure (Some 42)))\n\
+        "(defn mk [] (Pure (Some 42)))\n\
          (mk)\n",
     )
     .assert_stdout_contains("Some");

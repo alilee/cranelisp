@@ -537,9 +537,12 @@ fn hkt_impl_on_primitive_type_is_rejected_neg() {
 // (carry: legacy/ring2.rs::hkt_trait_declaration)
 #[test]
 fn hkt_functor_impl_on_option_dispatches_via_match() {
+    // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
+    // deftype under the Option-providing prelude is a define-over-prelude
+    // collision). `(impl Functor Option …)` targets the seeded Option; the
+    // HKT dispatch-via-match behaviour is unchanged.
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
          (impl Functor Option\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
          (match (fmap (fn [x] (add-i64 x 1)) (Some 41)) [(Some v) v None 0])\n",
     )
@@ -557,9 +560,11 @@ fn hkt_functor_impl_on_option_dispatches_via_match() {
 // (carry: legacy/ring2.rs::hkt_impl_bare_constructor)
 #[test]
 fn hkt_impl_targets_bare_type_constructor_not_applied_form() {
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
+    // The bare-vs-applied impl-target distinction (`(impl Functor Option …)`)
+    // is still isolated — the target is the bare seeded type constructor.
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
+        "(deftrait (Functor f) (fmap [:(Fn [a] b) func :(f a) x] (f b)))\n\
          (impl Functor Option\n  (defn fmap [func opt]\n    (match opt [None None (Some x) (Some (func x))])))\n\
          (match (fmap (fn [x] (add-i64 x 1)) (Some 99)) [(Some v) v None 0])\n",
     )

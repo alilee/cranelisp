@@ -108,9 +108,11 @@ fn adt_product_alloc_and_match_unwrap() {
 // spec: spec/12-runtime.md §12.1.4 — ADT sum (Some) heap-allocated; matched and freed
 #[test]
 fn adt_sum_some_alloc_and_match() {
+    // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
+    // deftype under the Option-providing prelude is a define-over-prelude
+    // collision). The Some-alloc-and-match RC path is unchanged.
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (match (Some 42) [(Some x) x None 0])\n",
+        "(match (Some 42) [(Some x) x None 0])\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
@@ -120,9 +122,9 @@ fn adt_sum_some_alloc_and_match() {
 fn adt_sum_none_no_heap_alloc() {
     // Wrap None in a fn returning the Option to anchor the type variable;
     // bare `None` at top-level would leave `a` unconstrained.
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn opt-int-none [] (match None [(Some x) (add-i64 x 0) None 0]))\n\
+        "(defn opt-int-none [] (match None [(Some x) (add-i64 x 0) None 0]))\n\
          (opt-int-none)\n",
     )
     .assert_stdout_contains(":primitives/Int 0");
@@ -131,9 +133,9 @@ fn adt_sum_none_no_heap_alloc() {
 // spec: spec/12-runtime.md §12.3.1 — ADT with String field; both freed cleanly
 #[test]
 fn adt_with_string_field_freed() {
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (match (Some \"hello\") [(Some s) (str-len s) None 0])\n",
+        "(match (Some \"hello\") [(Some s) (str-len s) None 0])\n",
     )
     .assert_stdout_contains(":primitives/Int 5");
 }
@@ -235,9 +237,10 @@ fn empty_vec_let_bound_freed() {
 // (carry: legacy/sketch_port.rs::sketch_rc_match_temporary_scrutinee_freed)
 #[test]
 fn match_temporary_scrutinee_freed_on_exit() {
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
+    // The temporary-scrutinee cleanup path is exercised identically.
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (match (Some \"hello\") [None 0 (Some s) (str-len s)])\n",
+        "(match (Some \"hello\") [None 0 (Some s) (str-len s)])\n",
     )
     .assert_stdout_contains(":primitives/Int 5");
 }

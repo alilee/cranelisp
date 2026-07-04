@@ -295,9 +295,12 @@ fn polymorphic_identity_at_string() {
 // (carry: legacy/ring1.rs::identity_on_adt)
 #[test]
 fn polymorphic_identity_at_adt() {
+    // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local
+    // `(deftype (Option a) …)` under the Option-providing prelude would be a
+    // define-over-prelude collision). Identity at an ADT type is exercised
+    // identically against the seeded Option.
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn id [x] x)\n\
+        "(defn id [x] x)\n\
          (match (id (Some 42)) [(Some x) x None 0])\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
@@ -311,9 +314,9 @@ fn polymorphic_identity_at_adt() {
 // (carry: legacy/ring1.rs::higher_order_on_adt)
 #[test]
 fn polymorphic_higher_order_returning_adt() {
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn apply-fn [f x] (f x))\n\
+        "(defn apply-fn [f x] (f x))\n\
          (match (apply-fn (fn [x] (Some x)) 42) [(Some x) x None 0])\n",
     )
     .assert_stdout_contains(":primitives/Int 42");

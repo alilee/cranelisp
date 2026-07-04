@@ -343,9 +343,15 @@ fn trace_polymorphic_adt_result_renders() {
 // S84 — the original render defect is gone; this guards against its recurrence.
 #[test]
 fn trace_adt_value_render_overflows_defect() {
+    // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
+    // deftype under the PrimitivesOnly prelude is a define-over-prelude
+    // collision). Unlike the sibling `trace_polymorphic_adt_result_renders`
+    // (which SUPPRESSES the prelude because it needs its own Option's
+    // match-hint line to source the "Some" it asserts), this test asserts only
+    // the `:primitives/String` result-type prefix, which the seeded Option's
+    // trace-render produces identically — so reuse preserves the overflow guard.
     repl_prims(
         "(import [primitives [Trace TraceCall]])\n\
-         (deftype (Option a) None (Some [:a val]))\n\
          (defn mk [] :(Option Int) None)\n\
          (match (trace (mk)) [(TraceCall n p r c ns) r])\n",
     )

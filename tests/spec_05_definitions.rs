@@ -197,11 +197,21 @@ fn deftype_product_construct_and_destructure() {
 // (carry: legacy/sketch_port.rs::sketch_adt_shortcut_syntax)
 #[test]
 fn deftype_product_shortcut_field_names() {
-    repl_prims(
-        "(deftype Pair [first second])\n\
-         (match (Pair 7 8) [(Pair a b) a])\n",
-    )
-    .assert_stdout_contains(":primitives/Int 7");
+    // This test validates the bare-field-name SHORTCUT SYNTAX itself, so it
+    // must define its OWN `Pair` — reuse of the seeded `primitives/Pair` would
+    // erase the syntax under test. `Pair` is prelude-seeded, so the deftype is
+    // only legal with the prelude SUPPRESSED (§8.6.4). Run bare (no prelude):
+    // `Pair` is then not in scope and the shortcut deftype is a fresh, legal
+    // definition; the Int literal still displays as `:primitives/Int`.
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::None)
+        .stdin(
+            "(deftype Pair [first second])\n\
+             (match (Pair 7 8) [(Pair a b) a])\n",
+        )
+        .output()
+        .assert_stdout_contains(":primitives/Int 7");
 }
 
 // spec: spec/05-definitions.md §5.2 — constructor as first-class value
@@ -397,9 +407,11 @@ fn defns_mutual_forward_references() {
 // (carry: legacy/ring1.rs::adt_containing_closure_result)
 #[test]
 fn data_constructor_arg_from_closure_call_result() {
+    // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
+    // deftype under the Option-providing prelude is a define-over-prelude
+    // collision). The ctor-arg-from-closure-result shape is unaffected.
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (let [f (fn [x] (add-i64 x 1))]\n\
+        "(let [f (fn [x] (add-i64 x 1))]\n\
            (match (Some (f 41)) [(Some x) x None 0]))\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
@@ -786,9 +798,9 @@ fn data_constructor_undefined_lookup_neg() {
 // (carry: legacy/ring1.rs::vec_of_adts)
 #[test]
 fn vec_containing_adt_elements_get_and_match() {
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (match (vec-get [(Some 1) None (Some 3)] 0) [(Some x) x None 0])\n",
+        "(match (vec-get [(Some 1) None (Some 3)] 0) [(Some x) x None 0])\n",
     )
     .assert_stdout_contains(":primitives/Int 1");
 }

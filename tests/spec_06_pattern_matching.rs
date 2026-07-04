@@ -54,8 +54,11 @@ fn pattern_data_constructor_binds_fields() {
 // spec: spec/06-pattern-matching.md §6.2.1 — Some constructor binding
 #[test]
 fn pattern_some_binds_value() {
+    // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
+    // deftype under the Option-providing prelude is a define-over-prelude
+    // collision). Some-binding behaviour is unchanged.
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n(match (Some 42) [(Some v) v None 0])\n",
+        "(match (Some 42) [(Some v) v None 0])\n",
     )
     .assert_stdout_contains(":primitives/Int 42");
 }
@@ -71,9 +74,9 @@ fn pattern_nullary_constructor() {
     // then call match in a sibling defn so the type checker has enough
     // context. `(None : (Option Int))` annotation form does not parse in
     // the current binary (Wave 4 finding); use a defn-anchored shape.
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn classify [o] (match o [None 0 (Some _) 1]))\n\
+        "(defn classify [o] (match o [None 0 (Some _) 1]))\n\
          (classify (Some 5))\n(classify (None : (Option Int)))\n",
     )
     // Only assert the Some branch matches; None branch may need annotation.
@@ -217,9 +220,11 @@ fn pattern_non_exhaustive_match_on_adt_neg() {
 #[test]
 fn nested_match_in_arm_body() {
     // Option/Some-None shape: outer match on Some(10), inner match on Some(32) → 42.
+    // Reuse the prelude-seeded `primitives/Option` (§8.6.4: a local Option
+    // deftype under the Option-providing prelude is a define-over-prelude
+    // collision). The (List a) shape below is a non-seeded name — legal.
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn add-options [a b]\n\
+        "(defn add-options [a b]\n\
            (match a [None 0\n\
                      (Some x)\n\
                        (match b [None x (Some y) (add-i64 x y)])]))\n\
@@ -250,9 +255,9 @@ fn nested_match_in_arm_body() {
 // (carry: legacy/ring1.rs::closure_capturing_int_returning_match_result)
 #[test]
 fn higher_order_fn_over_option_functor_map_shape() {
+    // Reuse the prelude-seeded `primitives/Option` (see §8.6.4 note above).
     repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn map-opt [opt f]\n\
+        "(defn map-opt [opt f]\n\
            (match opt [(Some x) (Some (f x)) None None]))\n\
          (match (map-opt (Some 10) (fn [x] (mul-i64 x 2)))\n\
            [(Some x) x None 0])\n",
@@ -353,17 +358,26 @@ fn pattern_match_empty_arms_rejected_neg() {
 // (carry: legacy/ring1.rs::neg_match_non_adt_scrut_with_adt_constructor_rejected)
 #[test]
 fn pattern_non_adt_scrut_rejects_adt_ctor_pattern_neg() {
+    // Reuse the prelude-seeded `primitives/Option` for `None`/`(Some _)` — a
+    // local Option deftype under the Option-providing prelude would inject a
+    // §8.6.4 define-over-prelude error that MASKS this negative's real intent
+    // (the earlier `contains("error")` was satisfied by that collision, not by
+    // the pattern rejection under test). With the collision gone, the ONLY
+    // error is the genuine §6.5.2 rejection: `None`/`(Some _)` patterns force
+    // the scrutinee to `(Option _)`, so calling `(pick 5)` with an `Int` is a
+    // type mismatch. Assert on that specific mismatch, not a bare "error".
     let out = repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (defn pick [n] (match n [None 1 (Some _) 2]))\n\
+        "(defn pick [n] (match n [None 1 (Some _) 2]))\n\
          (pick 5)\n",
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
+    let lc = combined.to_lowercase();
     assert!(
-        combined.to_lowercase().contains("error")
-            || combined.to_lowercase().contains("type")
-            || combined.to_lowercase().contains("mismatch"),
-        "constructor patterns on non-ADT scrutinee MUST be rejected per §6.5.2, got: {combined}"
+        lc.contains("type mismatch")
+            && lc.contains("option")
+            && combined.contains("primitives/Int"),
+        "constructor patterns on a non-ADT (Int) scrutinee MUST be rejected \
+         per §6.5.2 with an Option-expected/Int-got type mismatch, got: {combined}"
     );
 }
 
@@ -378,18 +392,26 @@ fn pattern_non_adt_scrut_rejects_adt_ctor_pattern_neg() {
 //  consolidates legacy/ring1.rs::neg_nested_pattern_rejected)
 #[test]
 fn pattern_nested_constructor_rejected_neg() {
+    // Reuse the prelude-seeded `primitives/Option` for `Some`/`None` — a local
+    // Option deftype under the Option-providing prelude would inject a §8.6.4
+    // define-over-prelude error that MASKS this negative's real intent (the
+    // earlier `contains("error")` was satisfied by that collision). `Point` is
+    // a non-seeded name, so its deftype stays. With the Option collision gone,
+    // the ONLY rejection is the genuine §6.6.1 one: the nested constructor
+    // pattern `(Some (Point x y))` does not parse (one level deep only) — the
+    // parser expects a symbol binder after `Some`, not a nested ctor form.
     let out = repl_prims(
-        "(deftype (Option a) None (Some [:a val]))\n\
-         (deftype Point [:Int x :Int y])\n\
+        "(deftype Point [:Int x :Int y])\n\
          (defn bad [opt] (match opt [(Some (Point x y)) (add-i64 x y) None 0]))\n\
          (bad None)\n",
     );
     let combined = format!("{}{}", out.stdout, out.stderr);
+    let lc = combined.to_lowercase();
     assert!(
-        combined.to_lowercase().contains("error")
-            || combined.to_lowercase().contains("nested")
-            || combined.to_lowercase().contains("pattern"),
-        "nested constructor pattern MUST be rejected per §6.6.1, got: {combined}"
+        lc.contains("parse error") && lc.contains("expected symbol"),
+        "nested constructor pattern `(Some (Point x y))` MUST be rejected per \
+         §6.6.1 (patterns are one level deep) — the parser rejects the nested \
+         ctor form with `expected symbol`, got: {combined}"
     );
 }
 

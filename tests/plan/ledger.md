@@ -295,6 +295,76 @@ removed so the intended rejection surfaces, possibly with an annotation to reach
 it). Not fixed here — out of the /sprint-scoped "last 2"; per-test judgement
 needed (several assert `user/Option` display and would change output).
 
+### Sprint 102 — full silent-non-compliance drive-out (the ~24 class) (/qa, 2026-07-04)
+
+Completes the sweep the prior entry flagged as incomplete. The prior close fixed
+only the 2 inline programs whose assertions CAUGHT the §8.6.4 rejection (→ RED);
+this pass drives out the entire remaining SILENT class — inline test-body programs
+that redefine a seeded `Option`/`Result`/`Pair` under an Option-providing prelude
+(`repl_prims`/PrimitivesOnly/`repl`→PrimitivesOnly/TestStandard/`repl_with_gulp_prelude`),
+now emitting a masked §8.6.4 rejection but staying GREEN by asserting a downstream
+value that resolves against the seeded type.
+
+**Enumeration (complete).** A per-test classifier (enclosing-fn × prelude) over all
+47 `deftype (Option|Result|Pair)` occurrences in `tests/*.rs` found **21 SEEDED
+collisions** (vs the ~24 estimate — the estimate double-counted comment lines and
+the 2 already-fixed collateral). The other 26 occurrences are BARE-prelude
+(`PreludeVariant::None`/`repl`/`repl_bare` — legal fresh definitions, e.g. all of
+`regression.rs`'s mono-ambiguity negatives, `spec_12_runtime`'s `run_tests_*`,
+`repl_negative`/`repl_introspection` bare-repl tests). No explicit-import-then-
+deftype collisions exist (`concurrency_spark`/`spec_12_runtime` import `Result Ok
+Err` but correctly USE, not redefine). `deftype Result` appears only as
+`SolveResult` (non-seeded name). Verified empirically: the seeded prelude emits
+`definition of 'Option' conflicts … via the implicit prelude (§8.6.4)` and the
+downstream match resolves to `:primitives/Int`.
+
+**Disposition — 18 REUSE, 1 SUPPRESS, 2 DE-MASK:**
+
+| File :: test | Disp | Note |
+|---|---|---|
+| `spec_03_types::{polymorphic_identity_at_adt, polymorphic_higher_order_returning_adt}` | reuse | assert `:primitives/Int 42` unchanged |
+| `spec_05_definitions::{data_constructor_arg_from_closure_call_result, vec_containing_adt_elements_get_and_match}` | reuse | asserts unchanged |
+| `spec_05_definitions::deftype_product_shortcut_field_names` | **suppress** | validates the bare-field SHORTCUT SYNTAX itself → needs its OWN `Pair`; run `PreludeVariant::None` (Pair not in scope, deftype legal); `:primitives/Int 7` unchanged |
+| `spec_06_pattern_matching::{pattern_some_binds_value, pattern_nullary_constructor, nested_match_in_arm_body, higher_order_fn_over_option_functor_map_shape}` | reuse | asserts unchanged; `nested_match` keeps its non-seeded `(List a)` deftype |
+| `spec_07_traits::{hkt_functor_impl_on_option_dispatches_via_match, hkt_impl_targets_bare_type_constructor_not_applied_form}` | reuse | `(impl Functor Option …)` targets seeded Option; bare-vs-applied distinction still isolated; asserts unchanged |
+| `spec_10_io::{then_discard_adt_result, pure_wraps_option_none, pure_wraps_option_some}` | reuse | `contains("Option")`/`contains("Some")` substring-robust across the `user/`→`primitives/` identity change |
+| `spec_12_runtime::{adt_sum_some_alloc_and_match, adt_sum_none_no_heap_alloc, adt_with_string_field_freed, match_temporary_scrutinee_freed_on_exit}` | reuse | RC paths exercised identically; asserts unchanged |
+| `trace::trace_adt_value_render_overflows_defect` | reuse | asserts only `:primitives/String` prefix (unlike sibling `trace_polymorphic_adt_result_renders`, which suppresses for its "Some" hint line); seeded-Option trace-render produces it identically — overflow guard preserved |
+
+**Assertion updates for the `user/Option` → `primitives/Option` identity change:**
+NONE required. No test in the class asserted a `user/Option`/`user/Some`/`user/Pair`
+DISPLAY string — the display assertions (`contains("Option")`/`contains("Some")`)
+are substring-robust, and the value-line assertions are all `:primitives/Int N`
+(the Int literal's type, prelude-independent). The prior entry's caution ("several
+assert `user/Option` display and would change output") did not bear out.
+
+**DE-MASKED the 2 correctness-hazard negatives** (`spec_06_pattern_matching`):
+
+- `pattern_non_adt_scrut_rejects_adt_ctor_pattern_neg` — dropped the Option deftype
+  (reuse seeded); the ONLY error is now the genuine §6.5.2 rejection. Tightened
+  `contains("error")` → **`type mismatch` AND `option` AND `primitives/Int`**: the
+  `None`/`(Some _)` patterns force the scrutinee to `(Option _)`, so `(pick 5)` with
+  an `Int` is the real mismatch (`type mismatch: expected (primitives/Option t6),
+  got primitives/Int`).
+- `pattern_nested_constructor_rejected_neg` — dropped the Option deftype (reuse
+  seeded), kept the non-seeded `Point` deftype; the ONLY rejection is now the
+  genuine §6.6.1 one. Tightened `contains("error"|"nested"|"pattern")` →
+  **`parse error` AND `expected symbol`**: `(Some (Point x y))` does not parse
+  (patterns one level deep only; the parser wants a symbol binder after `Some`).
+
+**Re-grep confirmation.** The classifier reports **0 SEEDED** collisions remaining;
+the silent-non-compliance class is fully driven out.
+
+**Canonical suite (2026-07-04, two consecutive runs, identical fail set):**
+`3746 run — 3732 passed / 14 failed / 1 skipped` @ ~68s. The 14 = the 13
+pre-existing intentional guards (3× `vec_cow_value_use_leak` 0474, 3×
+`vec_query_value_use` 0483, 3× `display_exact`, 4× `ownership_fences`) + the 1
+0516 #8 RED (`import_over_def_repl_separate_turn_rejected`). NO test flipped RED
+from the cleanup (the class was green-by-masking; now green-by-compliance). One
+transient: `exemplar_web::…fans_out_concurrent_requests_overlap` FAILed once under
+full-suite parallel contention, PASSed in isolation and on the confirming re-run
+(known concurrency-timing flake, untouched by this change-set) — not counted.
+
 ### Sprint 101 Phase 6a/6b defect set — proxy-exercise guards (/qa guard batch, 2026-07-03)
 
 The S101 Phase 6a/6b user-proxy exercise surfaced 12 defect items; per the
