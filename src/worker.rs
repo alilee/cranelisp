@@ -174,7 +174,6 @@ pub(crate) fn check_program_compat(
     module: &ModuleFullPath,
     working_program: &[TopLevel],
     shared: Option<&crate::session_v4::SharedState>,
-    reject_def_over_import: bool,
 ) -> Result<
     (
         Option<cranelisp_types::ResolutionGap>,
@@ -204,7 +203,6 @@ pub(crate) fn check_program_compat(
         module,
         working_program,
         shared,
-        reject_def_over_import,
     )
 }
 
@@ -238,10 +236,6 @@ pub(crate) fn check_program_compat_no_gap(
         // these callers commit (`__expr`, `__macro_*` clauses) are
         // gate-exempt anyway (S101, `redefine::is_gate_exempt_internal`).
         None,
-        // Non-incremental paths (macro-clause compile, cache-load typecheck,
-        // `/type` introspection) re-establish whole units — no def-over-import
-        // rejection (§8.6.4 gates on the incremental REPL path only).
-        false,
     )? {
         (None, _warnings, _redefs) => Ok(()),
         (Some(gap), _warnings, _redefs) => Err(CranelispError::TypeError {
@@ -272,7 +266,6 @@ pub(crate) fn process_cluster_with_staging(
     module: &ModuleFullPath,
     working_program: &[TopLevel],
     shared: Option<&crate::session_v4::SharedState>,
-    reject_def_over_import: bool,
 ) -> Result<
     (
         Option<cranelisp_types::ResolutionGap>,
@@ -309,8 +302,7 @@ pub(crate) fn process_cluster_with_staging(
         // so int can thread them onto `ProcessedCluster.warnings` and the
         // REPL can render them as `; warning: <message>` lines.
         Ok(warnings) => {
-            let redefs =
-                commit_staging_to_live(symbol_tables, module, staging, shared, reject_def_over_import)?;
+            let redefs = commit_staging_to_live(symbol_tables, module, staging, shared)?;
             Ok((None, warnings, redefs))
         }
         // A recoverable resolution gap (e.g. an FQ reference to a module not
@@ -433,7 +425,6 @@ fn commit_staging_to_live(
     module: &ModuleFullPath,
     staging: crate::code::SessionSymbolTable,
     shared: Option<&crate::session_v4::SharedState>,
-    reject_def_over_import: bool,
 ) -> Result<Vec<crate::redefine::RedefinitionOutcome>, CranelispError> {
     use crate::redefine::{
         allocate_live_got_slot, classify_redefinition, RedefKind, RedefinitionOutcome,
@@ -485,36 +476,13 @@ fn commit_staging_to_live(
         return Ok(Vec::new());
     };
 
-    // §8.6.4 definition-over-(import|export) rejection (FIXME 0484). A staged
-    // definition (`Def`/`TypeDef`) whose name is already bound in the live inner
-    // scope by an EXPLICIT import or export (a `ModuleEntry::Import` entry —
-    // §8.4.0 unifies the two, differing only in visibility) is a compile-time
-    // ERROR: the rejected form has NO effect (the import/export stays the
-    // binding; introspection keeps describing it), so the reject is a PRE-SCAN
-    // ahead of any live mutation below — a rejected commit leaves live
-    // byte-identical. Gated on `reject_def_over_import` (the incremental REPL
-    // Additive path): a whole-module (Replace) load's own defs and its own
-    // (glob or specific) imports/exports co-arrive in one cluster — the module's
-    // own definition legitimately wins (same-cluster; this is also what keeps a
-    // re-exporting/redefining prelude fixture loading), so batch loads leave the
-    // flag `false`. The check does NOT consult the glob/specific shape
-    // (constraint #3) — only "is the pre-existing binding an explicit
-    // import/export". Prelude-PROVIDED names are an OUTER scope (S78 §2), never
-    // `Import` entries in this table, so they stay shadowable (the 0475 pins).
-    if reject_def_over_import {
-        for (name, entry) in &drained {
-            if matches!(entry, ModuleEntry::Def { .. } | ModuleEntry::TypeDef { .. })
-                && let Some(import_entry @ ModuleEntry::Import { .. }) = live.symbols.get(name)
-            {
-                return Err(crate::imports::def_over_binding_error(
-                    name,
-                    import_entry,
-                    Span::SYNTHETIC,
-                    true,
-                ));
-            }
-        }
-    }
+    // §8.6.4 definition-over-(import|export|prelude) rejection now lives at the
+    // shared typecheck seam (`check_forms` Pass-1, FIXME 0514) — the single
+    // mode-uniform chokepoint both REPL/Additive and batch/Replace traverse,
+    // and the only place that also sees the prelude OUTER scope. By the time a
+    // cluster reaches this commit gate it has already passed `check_forms`
+    // cleanly, so a colliding def never arrives here. The former Additive-gated
+    // int-side pre-scan (retired e1fe4a8) is gone.
 
     let mut outcomes: Vec<RedefinitionOutcome> = Vec::new();
 

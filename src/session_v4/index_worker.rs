@@ -597,9 +597,9 @@ fn index_typecheck_into_private(
         cranelisp_frontend::extract_module_declarations(module, sexps)
             .map_err(|e| format!("structural peel error: {e}"))?;
 
-    crate::imports::install_imports(priv_tables, module, priv_aliases, &decls.import_specs)
+    crate::imports::install_imports(priv_tables, module, priv_aliases, prelude_fallback, &decls.import_specs)
         .map_err(|e| format!("import install error: {e}"))?;
-    crate::imports::install_exports(priv_tables, module, &decls.export_specs)
+    crate::imports::install_exports(priv_tables, module, prelude_fallback, &decls.export_specs)
         .map_err(|e| format!("export install error: {e}"))?;
 
     let program = crate::worker::build_program_compat(&remaining)

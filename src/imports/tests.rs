@@ -6,6 +6,13 @@
         SessionTables::new()
     }
 
+    /// Empty prelude-fallback ⇒ every module's bit OFF (no implicit-prelude
+    /// outer scope). The default for import-mechanics tests that do not
+    /// exercise the distinct-terminal prelude-overlap poison (FIXME 0514).
+    fn no_pf() -> PreludeFallback {
+        PreludeFallback::default()
+    }
+
     fn ensure(tables: &SessionTables, path: &str) {
         let p = ModuleFullPath::from(path);
         tables
@@ -69,6 +76,7 @@
             &tables,
             &ModuleFullPath::from("prelude"),
             &aliases,
+            &no_pf(),
             &[glob_spec("primitives")],
         )
         .unwrap();
@@ -88,6 +96,7 @@
             &tables,
             &ModuleFullPath::from("user"),
             &aliases,
+            &no_pf(),
             &[glob_spec("prelude")],
         )
         .unwrap();
@@ -123,6 +132,7 @@
         install_exports(
             &tables,
             &ModuleFullPath::from("prelude"),
+            &no_pf(),
             &[glob_export("primitives")],
         )
         .unwrap();
@@ -141,6 +151,7 @@
             &tables,
             &ModuleFullPath::from("user"),
             &aliases,
+            &no_pf(),
             &[glob_spec("prelude")],
         )
         .unwrap();
@@ -203,6 +214,7 @@
             &tables,
             &ModuleFullPath::from("relay"),
             &aliases,
+            &no_pf(),
             &[specific_spec("base", "base-val")],
         )
         .unwrap();
@@ -218,6 +230,7 @@
         install_exports(
             &tables,
             &ModuleFullPath::from("relay"),
+            &no_pf(),
             &[specific_export("base", "base-val")],
         )
         .unwrap();
@@ -236,6 +249,7 @@
             &tables,
             &ModuleFullPath::from("downstream"),
             &aliases,
+            &no_pf(),
             &[specific_spec("relay", "base-val")],
         )
         .expect(
@@ -264,6 +278,7 @@
         install_exports(
             &tables,
             &ModuleFullPath::from("relay"),
+            &no_pf(),
             &[specific_export("base", "base-val")],
         )
         .unwrap();
@@ -272,6 +287,7 @@
             &tables,
             &ModuleFullPath::from("relay"),
             &aliases,
+            &no_pf(),
             &[specific_spec("base", "base-val")],
         )
         .unwrap();
@@ -309,6 +325,7 @@
         install_exports(
             &tables,
             &ModuleFullPath::from("reexp"),
+            &no_pf(),
             &[specific_export("prim", "Foo")],
         )
         .unwrap();
@@ -318,6 +335,7 @@
             &tables,
             &ModuleFullPath::from("main"),
             &aliases,
+            &no_pf(),
             &[glob_spec("prim")],
         )
         .expect("glob of prim installs Foo");
@@ -327,6 +345,7 @@
             &tables,
             &ModuleFullPath::from("main"),
             &aliases,
+            &no_pf(),
             &[specific_spec("reexp", "Foo")],
         )
         .expect(
@@ -370,6 +389,7 @@
             &tables,
             &ModuleFullPath::from("main"),
             &aliases,
+            &no_pf(),
             &[specific_spec("a", "Bar")],
         )
         .expect("first bare import of Bar installs cleanly");
@@ -379,6 +399,7 @@
             &tables,
             &ModuleFullPath::from("main"),
             &aliases,
+            &no_pf(),
             &[specific_spec("b", "Bar")],
         )
         .expect_err(
@@ -434,6 +455,7 @@
             &tables,
             &ModuleFullPath::from("shell"),
             &aliases,
+            &no_pf(),
             &[specific_spec("child", "foo")],
         )
         .expect(
@@ -467,6 +489,7 @@
             &tables,
             &ModuleFullPath::from("shell"),
             &aliases,
+            &no_pf(),
             &[specific_spec("nope", "foo")],
         )
         .expect_err("a bare name with no submodule candidate must still error");
@@ -605,113 +628,43 @@
     }
 
     // =====================================================================
-    // §8.6.4 (FIXME 0484) — definition/import symmetric collision (the
-    // import-over-local-def direction; the def-over-import direction lives at
-    // the commit gate in `worker::commit_staging_to_live`).
+    // §8.6.4 (FIXME 0514) — the def/import symmetric collision moved to the
+    // shared typecheck `check_forms` seam (a def registered over an
+    // already-installed import, mode-uniform). The installer no longer rejects
+    // an import over an existing local def; it simply skips (existing wins).
+    // The rejection itself is unit-tested at the typecheck seam
+    // (`cranelisp_typecheck::form::tests::def_over_import_*`).
     // =====================================================================
 
-    // spec: 08-modules.md §8.6.4 — an import that would bind a bare name
-    // ALREADY bound by a module-local definition is the later-arriving
-    // conflicting form and MUST be rejected on the incremental (REPL/Additive)
-    // path. `install_imports_gated(reject_over_local_def=true)` is that path.
+    // spec: 08-modules.md §8.6.4 — the installer no longer rejects an import
+    // over an existing module-local definition (the §8.6.4 rejection now fires
+    // at the typecheck seam when a DEF is registered over an installed import).
+    // Here the installer must NOT error and the local def stays the binding
+    // (existing-directly-defined takes priority; the import is skipped).
     #[test]
-    fn import_over_local_def_rejected_on_additive_path() {
+    fn import_over_local_def_installer_skips_not_rejects() {
         let tables = tables();
         ensure(&tables, "base");
         ensure(&tables, "user");
         let aliases = ModuleAliases::default();
-
-        // user has a module-LOCAL definition of `measure`.
         tables
             .get_mut(&ModuleFullPath::from("user"))
             .unwrap()
             .insert(Symbol::from("measure"), primitive_def());
-        // base publishes a DIFFERENT `measure` for the import to try to bind.
         tables
             .get_mut(&ModuleFullPath::from("base"))
             .unwrap()
             .insert(Symbol::from("measure"), primitive_def());
 
-        let err = install_imports_gated(
+        install_imports(
             &tables,
             &ModuleFullPath::from("user"),
             &aliases,
+            &no_pf(),
             &[specific_spec("base", "measure")],
-            true, // Additive/REPL path — reject over a local def.
         )
-        .expect_err("import over a local definition MUST be rejected (§8.6.4)");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("measure") && msg.contains("base/measure"),
-            "diagnostic must name the symbol + the FQ remedy; got: {msg}",
-        );
-        // The local definition is UNCHANGED (the rejected import has no effect).
-        let user = tables.get(&ModuleFullPath::from("user")).unwrap();
-        assert!(
-            matches!(user.get("measure"), Some(ModuleEntry::Def { .. })),
-            "the local definition MUST remain the binding after rejection",
-        );
-    }
-
-    // spec: 08-modules.md §8.6.4 — glob and specific BOTH reject (constraint
-    // #3: the decision does not consult the import shape). Same shape as above
-    // but the colliding name arrives via a GLOB import.
-    #[test]
-    fn glob_import_over_local_def_rejected_on_additive_path() {
-        let tables = tables();
-        ensure(&tables, "base");
-        ensure(&tables, "user");
-        let aliases = ModuleAliases::default();
-        tables
-            .get_mut(&ModuleFullPath::from("user"))
-            .unwrap()
-            .insert(Symbol::from("base-val"), primitive_def());
-        tables
-            .get_mut(&ModuleFullPath::from("base"))
-            .unwrap()
-            .insert(Symbol::from("base-val"), primitive_def());
-
-        let err = install_imports_gated(
-            &tables,
-            &ModuleFullPath::from("user"),
-            &aliases,
-            &[glob_spec("base")],
-            true,
-        )
-        .expect_err("glob import over a local def MUST reject too (§8.6.4)");
-        assert!(format!("{err}").contains("base-val"));
-    }
-
-    // spec: 08-modules.md §8.6.4 — a whole-module (Replace / non-incremental)
-    // load does NOT reject: the module's own defs and its own imports/exports
-    // co-arrive as one cluster (same-cluster; the local def legitimately wins).
-    // This is the negative that keeps a re-exporting-and-redefining prelude
-    // fixture (`(export [primitives [*]])` + `(deftype (Option a) …)`) loading.
-    #[test]
-    fn import_over_local_def_allowed_on_replace_path() {
-        let tables = tables();
-        ensure(&tables, "base");
-        ensure(&tables, "user");
-        let aliases = ModuleAliases::default();
-        tables
-            .get_mut(&ModuleFullPath::from("user"))
-            .unwrap()
-            .insert(Symbol::from("measure"), primitive_def());
-        tables
-            .get_mut(&ModuleFullPath::from("base"))
-            .unwrap()
-            .insert(Symbol::from("measure"), primitive_def());
-
-        // reject_over_local_def = false (Replace/batch/index/cache path).
-        install_imports_gated(
-            &tables,
-            &ModuleFullPath::from("user"),
-            &aliases,
-            &[specific_spec("base", "measure")],
-            false,
-        )
-        .expect("Replace-path import over a local def must NOT reject");
-        // The local def wins (import skipped) — current same-cluster behaviour.
+        .expect("installer no longer rejects an import over a local def");
+        // The local def wins (import skipped).
         let user = tables.get(&ModuleFullPath::from("user")).unwrap();
         assert!(matches!(user.get("measure"), Some(ModuleEntry::Def { .. })));
     }
@@ -734,6 +687,7 @@
         install_exports(
             &tables,
             &ModuleFullPath::from("user"),
+            &no_pf(),
             &[specific_export("base", "helper")],
         )
         .unwrap();
@@ -751,12 +705,11 @@
     }
 
     // spec: 08-modules.md §8.6.4 (terminal-source dedup) — the redundant
-    // `(import [base [x]]) (export [base [x]])` pair is NOT a collision even on
-    // the incremental (Additive) path: both edges name the same terminal
-    // (`base/x`), so they dedup (import → Public upgrade), never reject. The
-    // critical negative for constraint #2.
+    // `(import [base [x]]) (export [base [x]])` pair is NOT a collision: both
+    // edges name the same terminal (`base/x`), so they dedup (import → Public
+    // upgrade), never reject. The critical negative for constraint #2.
     #[test]
-    fn redundant_import_then_export_allowed_on_additive_path() {
+    fn redundant_import_then_export_dedups_to_public() {
         let tables = tables();
         ensure(&tables, "base");
         ensure(&tables, "user");
@@ -766,20 +719,20 @@
             .unwrap()
             .insert(Symbol::from("x"), primitive_def());
 
-        install_imports_gated(
+        install_imports(
             &tables,
             &ModuleFullPath::from("user"),
             &aliases,
+            &no_pf(),
             &[specific_spec("base", "x")],
-            true,
         )
         .expect("import installs cleanly");
         // The SAME name via export — redundant, must dedup+upgrade, not reject.
-        install_exports_gated(
+        install_exports(
             &tables,
             &ModuleFullPath::from("user"),
+            &no_pf(),
             &[specific_export("base", "x")],
-            true,
         )
         .expect("redundant import+export of the same terminal must NOT collide");
 

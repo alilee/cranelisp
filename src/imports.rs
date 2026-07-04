@@ -25,6 +25,7 @@ use cranelisp_types::{
     ModuleAliasEntry, ModuleAliases, ModuleEntry, ModuleFullPath, Span, Symbol, TraitName,
     Visibility,
 };
+use cranelisp_typecheck::PreludeFallback;
 
 use crate::code::{Code, SessionSymbolTable};
 
@@ -33,34 +34,21 @@ type SessionTables = dashmap::DashMap<ModuleFullPath, SessionSymbolTable>;
 /// Install resolved import bindings for `specs` into `current_module`'s symbol
 /// table, plus any module-path aliases into `module_aliases`. Replaces the
 /// struck `cranelisp_typecheck::register_imports`.
+///
+/// `prelude_fallback` carries the per-module implicit-prelude bit so
+/// [`insert_detecting_ambiguity`] can poison a **distinct-terminal** overlap
+/// between an incoming import and a prelude-provided name of the same bare name
+/// (§8.6.5 — the prelude is just an implicit import; FIXME 0514/0515). The
+/// former Additive-gated import-over-local-def rejection is retired: the
+/// symmetric §8.6.4 def/import collision now fires uniformly at the shared
+/// typecheck `check_forms` seam (a def registered over an already-installed
+/// import), so the installer keeps only ambiguity detection.
 pub(crate) fn install_imports(
     symbol_tables: &SessionTables,
     current_module: &ModuleFullPath,
     module_aliases: &ModuleAliases,
+    prelude_fallback: &PreludeFallback,
     specs: &[ImportSpec],
-) -> Result<(), CranelispError> {
-    // Default (non-incremental) install: a whole-module (Replace) load, a
-    // background index worker, cache restore, or a unit-test harness. These do
-    // NOT reject an import bringing a name a local definition already owns —
-    // the module re-establishes itself as one unit (same-cluster; the local
-    // def wins). Only the incremental REPL (Additive) Pass-0 path opts into the
-    // symmetric §8.6.4 import-over-def rejection via `install_imports_gated`.
-    install_imports_gated(symbol_tables, current_module, module_aliases, specs, false)
-}
-
-/// As [`install_imports`], but `reject_over_local_def` opts into the §8.6.4
-/// symmetric rejection: an import whose bare name is already bound by a
-/// module-local definition (`Def`/`TypeDef`) is a compile-time error. The REPL
-/// Additive Pass-0 sets it `true` (an import entered over an existing local
-/// definition is the later-arriving conflicting form); every whole-module load
-/// leaves it `false` (Replace re-establishes its own defs and its own imports
-/// co-arrive — same-cluster, the local def wins).
-pub(crate) fn install_imports_gated(
-    symbol_tables: &SessionTables,
-    current_module: &ModuleFullPath,
-    module_aliases: &ModuleAliases,
-    specs: &[ImportSpec],
-    reject_over_local_def: bool,
 ) -> Result<(), CranelispError> {
     for spec in specs {
         // Module-path alias (§8.3.4) → ModuleAliases keyed by <owner>.<alias>.
@@ -122,9 +110,9 @@ pub(crate) fn install_imports_gated(
         insert_detecting_ambiguity(
             symbol_tables,
             current_module,
+            prelude_fallback,
             to_add,
             spec.span,
-            reject_over_local_def,
         )?;
     }
     Ok(())
@@ -135,25 +123,15 @@ pub(crate) fn install_imports_gated(
 /// Re-export edges resolve their source module via try-as-is then
 /// child-of-current (spec §8.6.x relative form) and install `Public`-visible
 /// `ModuleEntry::Import` bindings (the retired `Reexport` variant's effect).
+///
+/// `export` populates the inner scope identically to `import` (§8.4.0), so it
+/// runs through the SAME [`insert_detecting_ambiguity`] path (including the
+/// distinct-terminal prelude-overlap poison, §8.6.5).
 pub(crate) fn install_exports(
     symbol_tables: &SessionTables,
     current_module: &ModuleFullPath,
+    prelude_fallback: &PreludeFallback,
     specs: &[ExportSpec],
-) -> Result<(), CranelispError> {
-    // Default (non-incremental) install — see `install_imports` for the
-    // gating rationale. `export` populates the inner scope identically to
-    // `import` (§8.4.0, differing only in visibility), so it carries the same
-    // symmetric-rejection opt-in.
-    install_exports_gated(symbol_tables, current_module, specs, false)
-}
-
-/// As [`install_exports`], but `reject_over_local_def` opts into the §8.6.4
-/// symmetric rejection (export-over-local-def). See [`install_imports_gated`].
-pub(crate) fn install_exports_gated(
-    symbol_tables: &SessionTables,
-    current_module: &ModuleFullPath,
-    specs: &[ExportSpec],
-    reject_over_local_def: bool,
 ) -> Result<(), CranelispError> {
     for spec in specs {
         // Resolve module path: try as-is, then as child-of-current.
@@ -191,9 +169,9 @@ pub(crate) fn install_exports_gated(
         insert_detecting_ambiguity(
             symbol_tables,
             current_module,
+            prelude_fallback,
             to_add,
             spec.span,
-            reject_over_local_def,
         )?;
     }
     Ok(())
@@ -293,53 +271,65 @@ fn missing_current_module(current_module: &ModuleFullPath, span: Span) -> Cranel
     }
 }
 
-/// §8.6.4 definition-over-(import|export) collision diagnostic — the single
-/// message source for BOTH the commit-gate def-over-import direction
-/// (`worker::commit_staging_to_live`) and the symmetric Pass-0 import-over-def
-/// direction ([`insert_detecting_ambiguity`]).
-///
-/// `import_entry` is the in-scope `ModuleEntry::Import` binding the definition
-/// contests — a private `(import …)` or a public `(export …)` edge (§8.4.0
-/// makes them the same bring-into-scope operation, differing only in
-/// visibility); it carries the terminal source that becomes the fully-qualified
-/// remedy. `def_is_later` selects the phrasing: `true` when a definition arrives
-/// over an existing import/export (commit gate), `false` when an import/export
-/// arrives over an existing local definition (Pass-0). The message names the
-/// source module and the `module/name` FQ remedy per §8.6.4's diagnostics
-/// requirement.
-pub(crate) fn def_over_binding_error(
-    name: &Symbol,
-    import_entry: &ModuleEntry<Code>,
-    span: Span,
-    def_is_later: bool,
-) -> CranelispError {
-    let (src_module, src_symbol) = match import_entry {
-        ModuleEntry::Import { source, .. } => {
-            (source.module.to_string(), source.symbol.to_string())
-        }
-        _ => (String::new(), name.to_string()),
-    };
-    let kind = if import_entry.is_public() { "export" } else { "import" };
-    let message = if def_is_later {
-        format!(
-            "error: definition of '{name}' conflicts with the explicit {kind} of \
-             '{name}' from '{src_module}' (spec/08-modules.md §8.6.4): a definition \
-             may not shadow a name brought into scope via import or export. Rename \
-             the definition, use a renamed {kind} (§8.3.5), or drop '{name}' from \
-             the {kind} list and reference the other symbol fully-qualified as \
-             '{src_module}/{src_symbol}'"
-        )
+/// The implicit-prelude module (§8.8.1). A module whose `prelude_fallback` bit
+/// is ON resolves bare-name misses against this module's OWN public table.
+const PRELUDE_MODULE: &str = "prelude";
+
+/// The prelude module `current_module` falls back to as its OUTER scope, or
+/// `None` when there is no fallback (bit OFF, or `current_module` IS the
+/// prelude — a module never falls back onto itself). Mirrors typecheck's
+/// `prelude_fallback_target` (S78 §2.7) on the int side.
+fn prelude_fallback_target(
+    prelude_fallback: &PreludeFallback,
+    current_module: &ModuleFullPath,
+) -> Option<ModuleFullPath> {
+    if current_module.as_ref() != PRELUDE_MODULE
+        && prelude_fallback.get(current_module).map(|b| *b).unwrap_or(false)
+    {
+        Some(ModuleFullPath::from(PRELUDE_MODULE))
     } else {
-        format!(
-            "error: {kind} of '{name}' from '{src_module}' conflicts with the local \
-             definition of '{name}' (spec/08-modules.md §8.6.4): an import or export \
-             may not shadow a module-local definition. Rename the definition, use a \
-             renamed {kind} (§8.3.5), or drop '{name}' from the {kind} list and \
-             reference the other symbol fully-qualified as '{src_module}/{src_symbol}'"
-        )
+        None
+    }
+}
+
+/// The prelude OUTER-scope terminal `(home, symbol)` for bare `name`, or `None`
+/// when the prelude does not provide `name` as a reachable bare binding.
+///
+/// Public-only head filter (I-1 discipline, S78 §2): only a PUBLIC prelude head
+/// entry is reachable as a bare name from a user module (never in prelude's
+/// subtree), so a private prelude entry is treated as not-found and cannot
+/// poison. The public head is chain-followed to its terminal via the shared
+/// `cranelisp_types` primitive (so a prelude re-export of `primitives/x` shares
+/// the same terminal as a direct `(import [primitives [x]])` — same terminal,
+/// no poison).
+fn prelude_terminal(
+    symbol_tables: &SessionTables,
+    prelude_path: &ModuleFullPath,
+    name: &str,
+) -> Option<(ModuleFullPath, Symbol)> {
+    let head_public = {
+        let guard = symbol_tables.get(prelude_path)?;
+        guard.get(name)?.is_public()
     };
+    if !head_public {
+        return None;
+    }
+    cranelisp_types::resolve_terminal_entry_and_home(symbol_tables, prelude_path, name)
+        .map(|(_, home)| (home, Symbol::from(name)))
+}
+
+/// §8.6.5 ambiguity diagnostic naming both qualified alternatives.
+fn ambiguity_error(
+    name: &Symbol,
+    alt_a: &str,
+    alt_b: &str,
+    span: Span,
+) -> CranelispError {
     CranelispError::TypeError {
-        message,
+        message: format!(
+            "ambiguous bare name '{name}' — provided by distinct sources \
+             '{alt_a}' and '{alt_b}'; use a qualified reference to disambiguate"
+        ),
         location: ErrorLocation::from_span(span),
     }
 }
@@ -508,10 +498,18 @@ fn collect_member_glob(
 fn insert_detecting_ambiguity(
     symbol_tables: &SessionTables,
     current_module: &ModuleFullPath,
+    prelude_fallback: &PreludeFallback,
     imports: Vec<(Symbol, ModuleEntry<Code>)>,
     span: Span,
-    reject_over_local_def: bool,
 ) -> Result<(), CranelispError> {
+    // The prelude OUTER scope this module falls back to (S78 §2.7), if any.
+    // An incoming import/export whose bare name ALSO resolves in the prelude
+    // outer scope with a DISTINCT terminal is a §8.6.5 ambiguity — the prelude
+    // is just an implicit import, so a distinct-terminal overlap poisons the
+    // bare name (FIXME 0514/0515). A SAME-terminal overlap (e.g. importing
+    // `primitives/x` while the prelude re-exports it) is not a conflict.
+    let prelude_target = prelude_fallback_target(prelude_fallback, current_module);
+
     for (name, new_entry) in imports {
         // Snapshot the existing entry (clone + release the read guard) before
         // any cross-module terminal reads — never hold a guard on
@@ -524,7 +522,24 @@ fn insert_detecting_ambiguity(
         };
 
         let Some(existing) = existing else {
-            // No prior entry — install directly.
+            // No prior INNER entry. Before installing, check the prelude OUTER
+            // scope: a distinct-terminal overlap poisons the bare name.
+            if let Some(prelude_path) = &prelude_target
+                && let Some(prelude_term) = prelude_terminal(symbol_tables, prelude_path, name.as_ref())
+                && let Some(new_term) = terminal_identity(symbol_tables, &new_entry)
+                && prelude_term != new_term
+            {
+                if let Some(mut guard) = symbol_tables.get_mut(current_module) {
+                    guard.insert(
+                        name.clone(),
+                        ModuleEntry::Ambiguous { visibility: Visibility::Public },
+                    );
+                }
+                let alt_import = format!("{}/{}", new_term.0, new_term.1);
+                let alt_prelude = format!("{}/{}", prelude_term.0, prelude_term.1);
+                return Err(ambiguity_error(&name, &alt_import, &alt_prelude, span));
+            }
+            // No prelude overlap (or same terminal) — install directly.
             if let Some(mut guard) = symbol_tables.get_mut(current_module) {
                 guard.insert(name, new_entry);
             }
@@ -536,27 +551,12 @@ fn insert_detecting_ambiguity(
             (ModuleEntry::Import { .. }, ModuleEntry::Import { .. })
         );
         if !both_indirect {
-            // The existing entry is a module-LOCAL definition (`Def`/`TypeDef`),
-            // and `new_entry` is an incoming import/export binding. Under the
-            // §8.6.4 unified rule this is the symmetric collision: an import (or
-            // export) that would bind a bare name already bound by a local
-            // definition is the later-arriving conflicting form. Reject it when
-            // the caller is the incremental REPL (Additive) path — a whole-module
-            // (Replace) load's own imports co-arrive with its own defs
-            // (same-cluster; the local def legitimately wins, and this is also
-            // how a module re-establishes itself on reload). NB: the glob/specific
-            // shape is NOT consulted — the decision is prior-local-def vs
-            // co-arriving, per constraint #3.
-            if reject_over_local_def
-                && matches!(new_entry, ModuleEntry::Import { .. })
-                && matches!(
-                    existing,
-                    ModuleEntry::Def { .. } | ModuleEntry::TypeDef { .. }
-                )
-            {
-                return Err(def_over_binding_error(&name, &new_entry, span, false));
-            }
-            // Existing directly-defined entry takes priority — skip new.
+            // The existing entry is a module-LOCAL definition (`Def`/`TypeDef`)
+            // and `new_entry` is an incoming import/export binding. The §8.6.4
+            // def/import collision is now rejected uniformly at the shared
+            // typecheck `check_forms` seam (FIXME 0514) — a def registered over
+            // an already-installed import — so the installer no longer rejects
+            // here. Existing directly-defined entry takes priority — skip new.
             continue;
         }
 

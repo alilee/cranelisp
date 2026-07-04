@@ -1518,7 +1518,7 @@
             mk_def_with_got(DefKind::UserFn { fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None } }, Some(trivial_variant()), Some(1)),
         );
 
-        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None, false)
+        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
             .expect("commit into an empty live table cannot exhaust the GOT");
         // Fresh symbols into an empty live table classify `New` (S101 gate).
         assert!(
@@ -1535,116 +1535,17 @@
     }
 
     // =====================================================================
-    // §8.6.4 (FIXME 0484) — the commit-gate def-over-(import|export) rejection.
-    // The def-over-import direction (a staged Def displacing a live explicit
-    // import/export entry) is checked in a PRE-SCAN ahead of any live mutation,
-    // so a rejected commit leaves live byte-identical (the import/export stays
-    // the binding; introspection keeps describing it).
+    // §8.6.4 (FIXME 0514) — the def-over-(import|export|prelude) rejection
+    // moved OFF the commit gate onto the shared typecheck `check_forms` Pass-1
+    // seam (mode-uniform, prelude-scope-aware). By the time a cluster reaches
+    // `commit_staging_to_live` it has already passed `check_forms`, so no
+    // colliding def arrives here — the former Additive-gated commit-gate
+    // pre-scan + its unit tests (`commit_rejects_defn_over_explicit_{import,
+    // export}`, `commit_allows_defn_over_import_on_replace_path`) are retired.
+    // The rejection is now unit-tested at its new home
+    // (`cranelisp_typecheck::form::tests::def_over_{import,export,prelude}_*`,
+    // including the Additive==Replace mode-parity property).
     // =====================================================================
-
-    /// A live inner-scope import/export edge: `ModuleEntry::Import` with the
-    /// given visibility (`Private` = `(import …)`, `Public` = `(export …)`).
-    fn import_entry(src_module: &str, src_symbol: &str, vis: Visibility) -> ModuleEntry<crate::code::Code> {
-        ModuleEntry::Import {
-            source: FQSymbol {
-                module: ModuleFullPath::from(src_module),
-                symbol: Symbol::from(src_symbol),
-            },
-            visibility: vis,
-        }
-    }
-
-    fn commit_gate_fixture(
-        import: ModuleEntry<crate::code::Code>,
-    ) -> (
-        dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable>,
-        ModuleFullPath,
-        crate::code::SessionSymbolTable,
-    ) {
-        let module = ModuleFullPath::from("user");
-        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
-            dashmap::DashMap::new();
-        let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        live.insert(Symbol::from("measure"), import);
-        symbol_tables.insert(module.clone(), live);
-
-        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
-        staging.next_got_slot = 1;
-        staging.insert(
-            Symbol::from("measure"),
-            mk_def_with_got(
-                DefKind::UserFn {
-                    fn_state: cranelisp_types::UserFnState::Concrete {
-                        got_slot: 0,
-                        mode_summary: None,
-                    },
-                },
-                Some(trivial_variant()),
-                Some(0),
-            ),
-        );
-        (symbol_tables, module, staging)
-    }
-
-    // spec: 08-modules.md §8.6.4 — a definition over an explicit `(import …)`
-    // is a compile-time error on the incremental (REPL/Additive) path; the
-    // rejected form has NO effect (the import stays the binding).
-    #[test]
-    fn commit_rejects_defn_over_explicit_import() {
-        let (symbol_tables, module, staging) =
-            commit_gate_fixture(import_entry("util", "measure", Visibility::Private));
-        let err = commit_staging_to_live(&symbol_tables, &module, staging, None, true)
-            .expect_err("defining an imported name MUST be rejected (§8.6.4)");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("measure") && msg.contains("util/measure"),
-            "diagnostic must name the symbol + FQ remedy; got: {msg}",
-        );
-        // Live is BYTE-IDENTICAL — the import remains the binding.
-        let live = symbol_tables.get(&module).unwrap();
-        assert!(
-            matches!(live.get("measure"), Some(ModuleEntry::Import { .. })),
-            "the import MUST remain the binding after rejection",
-        );
-    }
-
-    // spec: 08-modules.md §8.4.0 + §8.6.4 — the UNIFIED case: a definition over
-    // an explicit `(export …)` (a Public inner-scope Import edge) is rejected on
-    // the same terms. The gate reads the inner scope uniformly and does not
-    // distinguish import from export (constraint #1).
-    #[test]
-    fn commit_rejects_defn_over_explicit_export() {
-        let (symbol_tables, module, staging) =
-            commit_gate_fixture(import_entry("util", "measure", Visibility::Public));
-        let err = commit_staging_to_live(&symbol_tables, &module, staging, None, true)
-            .expect_err("defining an EXPORTED name MUST be rejected (§8.4.0/§8.6.4)");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("measure") && msg.contains("util/measure") && msg.contains("export"),
-            "diagnostic must name the export source + FQ remedy; got: {msg}",
-        );
-        let live = symbol_tables.get(&module).unwrap();
-        assert!(matches!(live.get("measure"), Some(ModuleEntry::Import { .. })));
-    }
-
-    // spec: 08-modules.md §8.6.4 — a whole-module (Replace / non-incremental)
-    // commit does NOT reject: the module's own def and its own import/export
-    // co-arrive as one cluster (same-cluster; the def legitimately wins). This
-    // is the negative that keeps a re-exporting-and-redefining prelude fixture
-    // loading (`reject_def_over_import = false`).
-    #[test]
-    fn commit_allows_defn_over_import_on_replace_path() {
-        let (symbol_tables, module, staging) =
-            commit_gate_fixture(import_entry("util", "measure", Visibility::Public));
-        commit_staging_to_live(&symbol_tables, &module, staging, None, false)
-            .expect("Replace-path commit over an import must NOT reject");
-        // The definition won (displaced the import) — current same-cluster shape.
-        let live = symbol_tables.get(&module).unwrap();
-        assert!(
-            matches!(live.get("measure"), Some(ModuleEntry::Def { .. })),
-            "the definition displaces the co-arriving import on the Replace path",
-        );
-    }
 
     /// Minimal `SharedState` for commit-gate unit tests that need the S101
     /// retention pool (`retained_code`). Mirrors the construction in
@@ -1730,7 +1631,7 @@
             mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
         );
 
-        commit_staging_to_live(&symbol_tables, &module, staging, Some(&shared), false)
+        commit_staging_to_live(&symbol_tables, &module, staging, Some(&shared))
             .expect("slot-less commit cannot exhaust the GOT");
 
         // The staged slot-less entry replaced the prior in live...
@@ -1802,7 +1703,7 @@
             Symbol::from("f"),
             mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
         );
-        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None, false)
+        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
             .expect("slot-less commit cannot exhaust the GOT");
         assert_eq!(outcomes.len(), 1, "displacement shape emits ONE outcome: {outcomes:?}");
         let o = &outcomes[0];
@@ -1830,7 +1731,7 @@
             Symbol::from("t"),
             mk_def_with_got(DefKind::Overloaded { variants: vec![] }, None, None),
         );
-        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None, false)
+        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
             .expect("slot-less commit cannot exhaust the GOT");
         assert_eq!(outcomes.len(), 1, "template-over-template emits ONE outcome: {outcomes:?}");
         let o = &outcomes[0];
@@ -1886,7 +1787,7 @@
         staging.insert(Symbol::from("imp"), concrete(1));
         staging.insert(Symbol::from("fresh"), concrete(2));
 
-        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None, false)
+        let outcomes = commit_staging_to_live(&symbol_tables, &module, staging, None)
             .expect("commit cannot exhaust the GOT");
         let by_name = |n: &str| {
             outcomes
