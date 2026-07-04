@@ -167,6 +167,13 @@ struct Walker<'e, E: TransferEnv> {
     facts: SiteFacts,
     deps: DepSet,
     value_uses: HashSet<Symbol>,
+    /// Fresh-aggregate bindings discovered to escape (used in a return / store /
+    /// retained-arg context) during the enclosing `Let` body walk, with the
+    /// escaping context. Drained per-`Let` after its body: the RHS is re-walked
+    /// in `ctx` so folded-in params widen (`Consumed`→`IntoResult`/`Retained`)
+    /// and the aggregate's escape fact flips (§13.6, blocker 1). Monotone —
+    /// every re-walk only widens.
+    escaped: Vec<(Symbol, UseCtx)>,
 }
 
 impl<'e, E: TransferEnv> Walker<'e, E> {
@@ -269,16 +276,38 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 for (n, rhs) in bindings {
                     // The RHS value's escape is not yet known (forward info);
                     // walk it Neutral and record its origin so uses of `n`
-                    // propagate provenance. A param stored into a let-bound
-                    // aggregate that later escapes is handled conservatively
-                    // (the aggregate walk widens to Retained when its own ctx
-                    // escapes; a Neutral RHS keeps params un-widened — sound
-                    // because a later escaping *use of `n`* re-classifies the
-                    // param root through `n`'s Root/Projection origin).
+                    // propagate provenance. A param folded into a let-bound
+                    // *Fresh* aggregate that later escapes is re-propagated by
+                    // the post-body drain below (blocker 1); a `Root`/`Projection`
+                    // binding's escape is re-classified through its origin at the
+                    // escaping use of `n` (`param_root` reaches the param).
                     let origin = self.walk(rhs, UseCtx::Neutral);
+                    // §13.6(d) let-shadow provenance guard: when `n` shadows an
+                    // already-bound name that is a live provenance root, the two
+                    // bindings named `n` make any projection provenance rooted in
+                    // `n` ambiguous under a symbol-keyed backend — drop those
+                    // facts (emit `None` ⇒ Decision-24 materialize). Blocker 3.
+                    if self.bindings.contains_key(n) {
+                        self.facts.provenance.retain(|_, root| root != n);
+                    }
                     self.bindings.insert(n.clone(), BindState { origin, param_idx: None });
                 }
-                self.walk(body, ctx)
+                let body_origin = self.walk(body, ctx);
+                // Blocker 1: re-propagate binding-mediated escapes discovered in
+                // the body. Take the escaped set, re-walk this Let's own bindings
+                // in their escaping context, and hand the rest (outer-scope
+                // bindings) back for the enclosing Let to drain.
+                let escaped = std::mem::take(&mut self.escaped);
+                let (mine, rest): (Vec<_>, Vec<_>) = escaped
+                    .into_iter()
+                    .partition(|(name, _)| bindings.iter().any(|(n, _)| n == name));
+                self.escaped = rest;
+                for (name, esc_ctx) in mine {
+                    if let Some((_, rhs)) = bindings.iter().find(|(n, _)| n == &name) {
+                        self.walk(rhs, esc_ctx);
+                    }
+                }
+                body_origin
             }
 
             MonoExpr::If { cond, then_branch, else_branch, .. } => {
@@ -355,6 +384,13 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             // A bound name. Classify the use against the param it roots in.
             if let Some(idx) = self.param_root(name) {
                 self.classify_param_use(idx, ctx);
+            }
+            // Blocker 1: a Fresh (freshly-constructed) binding used in an
+            // escaping context re-propagates to its defining RHS — recorded here
+            // and drained at the enclosing `Let`. `Root`/`Projection` bindings
+            // are already handled through `param_root` above.
+            if matches!(bs.origin, Origin::Fresh) && ctx.escapes() {
+                self.escaped.push((name.clone(), ctx));
             }
             bs.origin
         } else {
@@ -496,6 +532,7 @@ pub(crate) fn transfer<E: TransferEnv>(
         facts: SiteFacts::default(),
         deps: DepSet::new(),
         value_uses: HashSet::new(),
+        escaped: Vec::new(),
     };
     let body_origin = w.walk(body, UseCtx::Return);
     let result = w.origin_to_result_mode(&body_origin);

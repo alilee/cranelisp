@@ -233,6 +233,88 @@ fn launch_continue_launched_is_escape_edge() {
     assert_eq!(r.summary.param_flow(1), ParamFlow::Retained);
 }
 
+#[test]
+fn binding_mediated_escape_widens_flow_and_escape() {
+    // spec: §13.6 (blocker 1) — a returned let-bound Fresh aggregate that
+    // consumed a param marks that param IntoResult and flips the aggregate's
+    // escape fact. `(defn keep [x] (let [box (Some x)] box))`.
+    // The DIRECT shape `(Some x)` is covered by
+    // `constructor_field_store_into_returned_is_into_result`; this is the
+    // binding-indirected shape that was the narrowing.
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("box"), adt(vec![var("x")]))],
+        body: Box::new(var("box")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    // Mode stays Owned (constructor field-store; no ABI change either way).
+    assert_eq!(r.summary.param_mode(0), Mode::Owned);
+    // Flow widens Consumed → IntoResult (the returned aggregate carries x out).
+    assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult);
+    // The aggregate escapes (returned via the binding).
+    assert!(r.facts.escapes.values().any(|v| *v), "aggregate must escape");
+}
+
+#[test]
+fn binding_local_fresh_aggregate_does_not_escape() {
+    // spec: §13.6 (blocker 1, precision twin) — a let-bound Fresh aggregate that
+    // never escapes keeps escapes=false / Consumed (the fix must not over-widen
+    // purely-local aggregates). `(defn f [x] (let [box (Some x)] 0))`.
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("box"), adt(vec![var("x")]))],
+        body: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Consumed);
+    assert!(r.facts.escapes.values().all(|v| !*v), "local aggregate must not escape");
+}
+
+#[test]
+fn let_shadow_drops_ambiguous_provenance() {
+    // spec: §13.6(d) (blocker 3) — a let binding shadowing a live provenance
+    // root makes that projection's root ambiguous ⇒ provenance None (backend
+    // materializes at Decision-24). `(defn f [g] (let [x (gcells g)] (let [g (other)] x)))`.
+    let env = accessor_env().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let inner = MonoExpr::Let {
+        bindings: vec![(Symbol::from("g"), call("other", vec![]))],
+        body: Box::new(var("x")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let outer = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), call("gcells", vec![var("g")]))],
+        body: Box::new(inner),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("g")], outer, env);
+    // The gcells projection's provenance (root g) is dropped by the inner shadow.
+    assert!(
+        r.facts.provenance.values().all(|root| root.as_ref() != "g"),
+        "shadowed root g must not survive as provenance"
+    );
+}
+
+#[test]
+fn unshadowed_projection_keeps_provenance() {
+    // spec: §13.6(d) (blocker 3, precision twin) — with NO shadowing, the
+    // projection provenance survives. `(defn f [g] (let [x (gcells g)] x))`.
+    let outer = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), call("gcells", vec![var("g")]))],
+        body: Box::new(var("x")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("g")], outer, accessor_env());
+    assert!(
+        r.facts.provenance.values().any(|root| root.as_ref() == "g"),
+        "unshadowed projection root g must survive"
+    );
+}
+
 // =================== Projection-depth matrix ===================
 
 /// An accessor call `(acc x)` with a ProjectionOf(0) summary.

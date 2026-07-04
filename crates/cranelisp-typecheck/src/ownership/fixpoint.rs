@@ -181,6 +181,27 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
+    // Termination bound: each stratum's summary lattice height is O(params) per
+    // callable, so O(universe × (maxp+4)) visits suffice; the cap is a defensive
+    // guard (result-mode is not a clean lattice). Shared by both strata.
+    let max_params = universe.iter().map(|c| c.params.len()).max().unwrap_or(0);
+    let cap = universe.len().saturating_mul(max_params + 4) + 32;
+    compute_cluster_with_cap(env, current_module, universe, cap)
+}
+
+/// [`compute_cluster`] with an explicit visit cap (the cap is a test seam:
+/// `cap = 0` forces both strata to exhaust on the first visit, exercising the
+/// conservative-⊤ reset — blocker 4).
+fn compute_cluster_with_cap<C, L>(
+    env: &TypeCheckEnv<C, L>,
+    current_module: &ModuleFullPath,
+    universe: &[Callable],
+    cap: usize,
+) -> ClusterOwnership
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
     let copy = CopyClassifier::new();
 
     // Optimistic init: every param Borrowed/Copy, Fresh, Consumed, spark clear.
@@ -193,11 +214,7 @@ where
     let mut deps: HashMap<Symbol, HashSet<FQSymbol>> = HashMap::new();
     let mut value_used: HashSet<Symbol> = HashSet::new();
 
-    // Worklist — BFS, dedup via an in-queue set. Termination bound: the summary
-    // lattice height is O(params) per callable, so O(universe × (maxp+4)) visits
-    // suffice; the cap is a defensive guard (result-mode is not a clean lattice).
-    let max_params = universe.iter().map(|c| c.params.len()).max().unwrap_or(0);
-    let cap = universe.len().saturating_mul(max_params + 4) + 32;
+    // Worklist — BFS, dedup via an in-queue set.
     let mut queue: VecDeque<Symbol> = universe.iter().map(|c| c.key.clone()).collect();
     let mut queued: HashSet<Symbol> = queue.iter().cloned().collect();
     let by_key: HashMap<&Symbol, &Callable> = universe.iter().map(|c| (&c.key, c)).collect();
@@ -207,6 +224,12 @@ where
         queued.remove(&key);
         visits += 1;
         if visits > cap {
+            // Cap exhausted (defensive; unreachable under monotone convergence).
+            // The partially-converged summaries are monotone-BELOW their true
+            // fixpoint ⇒ too precise ⇒ UNSOUND to publish. Reset the whole
+            // universe to the conservative ⊤ (all-Owned / Fresh / Retained /
+            // spark-set) — the sound failure direction (blocker 4, §13.6).
+            reset_to_top(&mut summaries, universe);
             break;
         }
         let Some(c) = by_key.get(&key) else { continue };
@@ -233,8 +256,34 @@ where
         }
     }
 
-    // Confinement stratum (§5) over the converged summaries.
-    for c in universe {
+    // Confinement stratum (§5) over the converged summaries — a WORKLIST
+    // FIXPOINT, not a single unordered pass (blocker 2). `spark_ops` is
+    // interprocedural (a caller inherits a callee whose bit is set, §5.3): a
+    // single hash-order pass reads a not-yet-computed callee bit (init `false`)
+    // and never re-runs, under-reporting transitive `Crossing` as `Confined` and
+    // making the result order-dependent. The fixpoint re-enters a callable's
+    // callers (the same harvested `DepSet` edges the modes stratum uses) whenever
+    // its `spark_ops` widens; monotone (bits only flip false→true) so it
+    // converges in O(universe × maxp) visits.
+    let mut cqueue: VecDeque<Symbol> = universe.iter().map(|c| c.key.clone()).collect();
+    let mut cqueued: HashSet<Symbol> = cqueue.iter().cloned().collect();
+    let mut cvisits = 0usize;
+    while let Some(key) = cqueue.pop_front() {
+        cqueued.remove(&key);
+        cvisits += 1;
+        if cvisits > cap {
+            // Cap exhausted (defensive). Force every `spark_ops` to the
+            // conservative ⊤ (all `true` = Crossing/atomic) — the sound failure
+            // direction (blocker 4, mirroring the modes stratum).
+            for c in universe {
+                if let Some(s) = summaries.get_mut(&c.key) {
+                    s.spark_ops = vec![true; c.params.len()];
+                }
+            }
+            break;
+        }
+        let Some(c) = by_key.get(&key) else { continue };
+
         let param_modes: Vec<(Symbol, Mode)> = c
             .params
             .iter()
@@ -246,11 +295,23 @@ where
         let cluster_env =
             ClusterEnv { env, current_module: current_module.clone(), working: &summaries };
         let cr = confine(&param_modes, &c.body, &cluster_env);
+
+        let changed = summaries.get(&c.key).map(|s| s.spark_ops != cr.spark_ops).unwrap_or(true);
         if let Some(s) = summaries.get_mut(&c.key) {
             s.spark_ops = cr.spark_ops;
         }
         if let Some(f) = facts.get_mut(&c.key) {
             f.confined = cr.confined;
+        }
+        if changed {
+            // Re-enter callers: any callable whose harvested DepSet named this
+            // key inherits the newly-widened spark_ops (§5.3 transitive).
+            let this_fq = FQSymbol { module: current_module.clone(), symbol: key.clone() };
+            for (other, dset) in &deps {
+                if other != &key && dset.contains(&this_fq) && cqueued.insert(other.clone()) {
+                    cqueue.push_back(other.clone());
+                }
+            }
         }
     }
 
@@ -270,6 +331,31 @@ fn optimistic(params: &[(Symbol, ConcreteType)], copy: &CopyClassifier) -> ModeS
         param_flow: vec![cranelisp_types::ParamFlow::Consumed; n],
         spark_ops: vec![false; n],
         result_unique: false,
+    }
+}
+
+/// The conservative ⊤ summary — the Decision-24 point widened on every axis:
+/// params `Owned`, result `Fresh`, flow `Retained`, spark `true` (Crossing).
+/// The sound value to publish for an unconverged callable on cap exhaustion
+/// (blocker 4); `⊤ ⊒ true-fixpoint ⊒ any partial`.
+fn top(params: &[(Symbol, ConcreteType)]) -> ModeSummary {
+    let n = params.len();
+    ModeSummary {
+        param_modes: vec![Mode::Owned; n],
+        result: cranelisp_types::ResultMode::Fresh,
+        param_flow: vec![cranelisp_types::ParamFlow::Retained; n],
+        spark_ops: vec![true; n],
+        result_unique: false,
+    }
+}
+
+/// Reset every callable in the universe to the conservative ⊤ ([`top`]). Called
+/// when the modes worklist exhausts its cap: a partially-converged summary set is
+/// monotone-below its true fixpoint, so ANY entry may be too precise — the only
+/// sound recovery is to jump the whole universe to ⊤.
+fn reset_to_top(summaries: &mut HashMap<Symbol, ModeSummary>, universe: &[Callable]) {
+    for c in universe {
+        summaries.insert(c.key.clone(), top(&c.params));
     }
 }
 

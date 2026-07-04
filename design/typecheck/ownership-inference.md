@@ -452,6 +452,17 @@ leaves have it clear (primitives neither spark nor defer). The per-cell join the
 sites all parent-strand ∧ every callee receiving the cell has `spark_ops` clear for that
 position ∧ the cell does not itself cross a deferred edge.
 
+**The confinement stratum is a WORKLIST FIXPOINT, not a single unordered pass** (as-built
+S102, FIXME 0512 blocker 2). Because `spark_ops` is interprocedural — a caller inherits a
+callee whose bit is set — a single pass over the callables in symbol-table hash order reads a
+caller *before* its callee, sees the callee's not-yet-computed bit (init `false`), sets nothing,
+and never re-runs: transitive `Crossing` under-reports as `Confined` AND the result is
+order-dependent (a determinism/cache hazard). The stratum therefore runs the same worklist
+shape as the modes stratum, seeded with the whole universe and re-entering a callable's callers
+(the harvested `DepSet` edges the modes stratum already built) whenever its `spark_ops` widens.
+It is monotone (bits only flip `false`→`true`) so it converges in O(universe × maxp) visits; it
+remains **stratified after** the modes fixpoint (never feeds back into modes, §3.2).
+
 **Discharging the obligation on the S99 F2 shape** (the spine's target): the shared board `g`
 is captured by guess sparks **borrowed** (capture-by-borrow, subsumed §8.2-spine), read inside
 the spark via projections (`gcells`/`vec-get`) that are rc-free under §4 — the spark side has
@@ -1102,7 +1113,43 @@ per audit row.
   (`let x … let x …` shadowing), the walk emits `provenance: None` for projections
   whose root would be ambiguous under that name — conservative (the backend treats
   no-provenance as materialize-at-Decision-24), and pinned as a scenario row
-  (§13.7 transfer matrix) so the cut is visible, not accidental.
+  (§13.7 transfer matrix) so the cut is visible, not accidental. **As-built (S102,
+  FIXME 0512 blocker 3):** implemented at BOTH provenance-emitting seams — the
+  `Match` arm binding (`transfer.rs::bind_pattern`, the original) AND the `Let`
+  binding (`transfer.rs` `Let` arm): when a `let` binding name shadows an
+  already-bound name, `facts.provenance.retain(|_, root| root != n)` drops the
+  now-ambiguous facts. The earlier implementation guarded only the match seam
+  (the let-shadow case `(let [x (vec-get g 0)] (let [g …] x))` narrowed to root
+  `g`, the shadowing binding, instead of `None`).
+- **(g) Binding-mediated escape re-propagation** (amends §2.2 rules 1–5 for the
+  let-indirected shape; FIXME 0512 blocker 1). §3.3's "a later escaping *use of
+  `n`* re-classifies the param root through `n`'s Root/Projection origin" fires
+  only for `Root`/`Projection` origins — never for a **`Fresh`** binding (a
+  freshly-constructed `VecLit`/`ConstrADT`/`Lambda`). So `(defn keep [x] (let
+  [box (Some x)] box))` narrowed to `escapes=false` on the returned aggregate and
+  `x.param_flow=Consumed` when the truth is `escapes=true` + `IntoResult` (the
+  DIRECT `(Some x)` was already correct+tested; the binding-indirected shape was
+  the bug). **As-built:** the transfer walker records each `Fresh` binding used in
+  an escaping context (`ctx.escapes()`) with that context; the enclosing `Let`
+  drains the record after its body walk and **re-walks the binding's RHS in the
+  escaping context**, so the folded-in params widen (`Consumed`→`IntoResult`/
+  `Retained` via the monotone `join_flow`) and the aggregate's `escapes` fact
+  flips `false`→`true`. Every re-walk join is monotone (idempotent) so precision
+  for purely-local aggregates is preserved (a never-escaping `box` keeps
+  `escapes=false`/`Consumed`). ABI mode is unaffected: a constructor field-store
+  is `Owned` on both paths, so `param_modes` never moves — this refinement is
+  advisory-half only (`param_flow` + the escape site fact).
+- **(h) Cap-exhaustion resets to the conservative ⊤** (hardens §3.2's worklist
+  termination; FIXME 0512 blocker 4). The visit cap is defensive (unreachable
+  under monotone convergence), but a partially-converged summary set is
+  monotone-**below** its true fixpoint ⇒ **too precise** ⇒ unsound to publish.
+  **As-built:** on cap exhaustion the modes worklist resets the WHOLE universe to
+  the conservative ⊤ (`fixpoint::top` — all-`Owned` / `Fresh` / `Retained` /
+  spark-set) before publishing; the confinement worklist (see §5.3) resets every
+  `spark_ops` to all-`true` (Crossing). The reset is universe-wide, not
+  queued-only: a non-queued entry may have converged against a still-too-low
+  queued callee, so ⊤-everywhere is the only sound recovery. Cap is a shared
+  test seam (`compute_cluster_with_cap(.., cap=0)` forces the reset).
 - **(e) Fixpoint re-entry rides harvested `DepSet` edges, not `call_graph_edges`**
   (§13.3's ruling; amends §3.2's "caller lookup inverts the cluster's `callees`
   edges" — the inversion now inverts the walk-harvested instance-grain set;
@@ -1167,7 +1214,10 @@ laid the strategy bare):**
   to the identical summary set (the §13.3 demotion pin); instances appended after
   templates. *Re-entry* — callee widens ⇒ exactly the harvested `DepSet` callers
   re-enter (negative: an unrelated cluster member is not revisited). *Termination* —
-  adversarial widening chain bounded by O(Σ per-param lattice heights). *Memo* —
+  adversarial widening chain bounded by O(Σ per-param lattice heights); **cap
+  exhaustion resets the universe to the conservative ⊤** (`compute_cluster_with_cap`
+  `cap=0` seam ⇒ every callable Owned/Fresh/Retained/spark-set, never a too-precise
+  partial — FIXME 0512 blocker 4, §13.6(h)). *Memo* —
   hit skips the walk; template-module recompile drops entries; cross-module
   duplicate instances produce equal summaries (determinism pin). *Toggle* —
   env-set ⇒ driver returns at entry: zero summaries, zero facts, zero marks, memo
@@ -1179,9 +1229,16 @@ laid the strategy bare):**
   op ⇒ `Crossing`; borrowed spark read with zero surviving ops ⇒ `Confined` (the F2
   shape — the S99 target, positive AND its widening twin where the spark
   materializes); callee `spark_op(i)` set ⇒ `Crossing`; deferred edge ⇒ `Crossing`}.
-  *Propagation* — `spark_ops` transitive through a two-deep callee chain.
+  *Propagation* — `spark_ops` transitive through a two-deep callee chain. **The
+  transitive propagation is a DRIVER-LEVEL row** (`fixpoint::compute_cluster`,
+  `fixpoint/tests.rs::transitive_spark_ops_propagate_caller_before_callee`): two
+  callables, caller listed FIRST (processed before its callee), the caller must
+  still inherit the callee's `spark_ops` — the worklist-fixpoint guarantee
+  (FIXME 0512 blocker 2). The `confinement/tests.rs` unit rows pre-set the callee
+  summary and so cannot catch the ordering defect; the driver row is the guard.
   *Negative* — emission never carries `Transferred` (collapse pin, §5.4); confinement
-  never feeds back into modes (stratification pin, §3.2).
+  never feeds back into modes (stratification pin, §3.2); a parent-only caller→callee
+  chain stays `Confined` (no fixpoint over-widening).
 - **`publish.rs` (CS-4).** *Placement matrix* — summary lands on `UserFn`-Concrete;
   `Constructor`/`PlatformEffect` stay `None` (negative); declared `Primitive` facts
   never overwritten by the pass (negative); staging vs live table mode
