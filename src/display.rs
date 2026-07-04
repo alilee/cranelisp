@@ -551,6 +551,24 @@ fn collect_var_ids(ty: &Type, ids: &mut Vec<TypeId>) {
     }
 }
 
+/// Strip the `:{type_display} ` value-line prefix from a recursively-rendered
+/// ADT display, leaving just the constructor value form (e.g.
+/// `(Wrap.MkWrap 7)`).
+///
+/// `type_display` may itself contain spaces when the nested value is a
+/// PARAMETERIZED ADT — `(user/Wrap primitives/Int)`. A naive
+/// `split_once(' ')` split at the first space lands INSIDE the type
+/// (`:(user/Wrap` | `primitives/Int) …`), which is exactly the FIXME 0493
+/// garbling (a type token where the nested constructor should open, plus an
+/// unbalanced closing paren). Stripping the exact known prefix is space-safe.
+fn strip_type_prefix(rendered: String, type_display: &str) -> String {
+    let prefix = format!(":{type_display} ");
+    match rendered.strip_prefix(&prefix) {
+        Some(rest) => rest.to_string(),
+        None => rendered,
+    }
+}
+
 /// Substitute type variables in a field type using the given substitution.
 fn substitute_field_type(
     ty: &Type,
@@ -652,11 +670,13 @@ where
                     let inner = format_adt_heap_value(
                         value, &type_display, type_name_str, &info, args, symbol_tables,
                     );
-                    // Strip the leading `:Type ` prefix from the recursive call.
-                    inner.split_once(' ').map_or_else(
-                        || inner.clone(),
-                        |(_, rest)| rest.to_string(),
-                    )
+                    // Strip the leading `:{type_display} ` prefix, leaving just
+                    // the nested constructor value. `type_display` may itself
+                    // contain spaces for a PARAMETERIZED nested ADT (e.g.
+                    // `(user/Wrap primitives/Int)`), so the old `split_once(' ')`
+                    // split INSIDE the type — leaking a type token and dropping a
+                    // closing paren (FIXME 0493). Strip the exact known prefix.
+                    strip_type_prefix(inner, &type_display)
                 }
             } else {
                 format!("{value}")
@@ -670,6 +690,38 @@ where
 mod tests {
     use super::*;
     use cranelisp_types::FQTraitName;
+
+    // --- strip_type_prefix (FIXME 0493 — nested parameterized-ADT display) ---
+
+    // The garbling cell: a nested PARAMETERIZED ADT's type_display contains a
+    // space, so the pre-fix split_once(' ') split inside the type, leaking a
+    // type token + dropping a paren. The exact-prefix strip is space-safe.
+    #[test]
+    fn strip_type_prefix_parameterized_nested_type_is_space_safe() {
+        let rendered = ":(user/Wrap primitives/Int) (Wrap.MkWrap 7)".to_string();
+        assert_eq!(
+            strip_type_prefix(rendered, "(user/Wrap primitives/Int)"),
+            "(Wrap.MkWrap 7)"
+        );
+    }
+
+    #[test]
+    fn strip_type_prefix_simple_type() {
+        let rendered = ":user/Color Color.Red".to_string();
+        assert_eq!(strip_type_prefix(rendered, "user/Color"), "Color.Red");
+    }
+
+    // A doubly-nested value: the whole recursive form after the outer type is
+    // preserved (no premature split at the first inner space).
+    #[test]
+    fn strip_type_prefix_preserves_doubly_nested_value() {
+        let rendered =
+            ":(user/List primitives/Int) (List.Cons 1 (List.Cons 2 List.Nil))".to_string();
+        assert_eq!(
+            strip_type_prefix(rendered, "(user/List primitives/Int)"),
+            "(List.Cons 1 (List.Cons 2 List.Nil))"
+        );
+    }
 
     // --- format_value: scalar types ---
 
