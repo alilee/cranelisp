@@ -117,6 +117,37 @@ fn recursive_owned_cycle_widens_both() {
     assert_eq!(mode(&c, "b", 0), Mode::Owned);
 }
 
+#[test]
+fn tail_recursion_base_returns_param_is_alias_not_fresh() {
+    // spec: §4.2 (FIXME 0520) — the `build` repro (04_vec_cow_loop), driver
+    // grain. `(defn build [v i n] (if c v (build (grow v) i n)))`: the base case
+    // returns param `v`, the recursive case returns a fresh-derived vec. Pre-cure
+    // the partial-if join collapsed build's result to `Fresh` DESPITE the
+    // base-case param return — an ABI-half soundness narrowing (a consumer
+    // trusting Fresh frees the returned param → the observed SIGABRT). Truth:
+    // may-alias param 0 ⇒ AliasOf(0). `grow` is a boundary leaf (⊤: Owned/Fresh),
+    // so the recursive arg is fresh — exactly the vec-push COW shape.
+    let cond = MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool };
+    let recursive = call("build", vec![call("grow", vec![var("v")]), var("i"), var("n")]);
+    let body = MonoExpr::If {
+        cond: Box::new(cond),
+        then_branch: Box::new(var("v")),
+        else_branch: Box::new(recursive),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let uni = vec![callable("build", vec!["v", "i", "n"], body)];
+    let c = run(uni);
+    let build = &c.summaries[&Symbol::from("build")];
+    assert_eq!(
+        build.result,
+        cranelisp_types::ResultMode::AliasOf(0),
+        "build returns param v in the base case ⇒ AliasOf(0), never Fresh"
+    );
+    // v is returned (IntoResult) ⇒ Owned; the ABI param half was already correct.
+    assert_eq!(mode(&c, "build", 0), Mode::Owned, "the returned param v is Owned");
+}
+
 // =================== Ordering / determinism ===================
 
 #[test]

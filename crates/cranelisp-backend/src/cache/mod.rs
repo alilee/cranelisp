@@ -244,7 +244,21 @@ pub mod linker;
 /// every v12 cache as `CacheStale::SchemaMismatch` (cache-miss → recompile). No
 /// other cascade — the name is an opaque `String`/`LinkerSymbol` at every crate
 /// boundary (no `public-api.txt`, no `cranelisp-types`, no interfaces change).
-pub const CACHE_SCHEMA_VERSION: u32 = 13;
+///
+/// **S102 bump 13 → 14 (FIXME 0520 — result-mode partial-param-return cure).**
+/// The pass5 ownership analysis no longer collapses a param returned through a
+/// PARTIAL control-flow path to `ResultMode::Fresh`; such a callable's persisted
+/// `ModeSummary.result` changes value (`Fresh` → `AliasOf(i)`/`ProjectionOf(i)`).
+/// A stale v13 `.meta.json` written between 0519 and 0520 carries the pre-cure
+/// `Fresh`. The backend's B3.2 `Apply`-body restriction guards the DIRECT case
+/// (a partial-return body is an `if`/`match`, never a direct `Apply`, so its own
+/// codegen never trusts `result`), but NOT the CROSS-MODULE composition: a
+/// post-0520 caller whose body IS a direct `Apply` `(f v)` reading an imported,
+/// stale `f.result = Fresh` would elide its return protect and free a returned
+/// param → UAF. The bump rejects every v13 cache as `CacheStale::SchemaMismatch`
+/// (cache-miss → recompute the correct summary). Serde shape is UNCHANGED (a
+/// value-only change); the bump is a soundness invalidation, not a format change.
+pub const CACHE_SCHEMA_VERSION: u32 = 14;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

@@ -138,12 +138,23 @@ enum Origin {
     Root(Symbol),
     /// A borrowed view rooted in the named binding.
     Projection(Symbol),
+    /// A value that MAY be rooted in a param on some control-flow path and be
+    /// fresh (or a different param) on another — the conservative not-`Fresh`
+    /// join of divergent return paths (FIXME 0520, correcting §13.6(c)). `rep`
+    /// is a representative param-rooted binding (lowest reaching param index
+    /// when several may reach — see [`Walker::join_origin`]); `projection` marks
+    /// a may-borrowed-view (⇒ `ProjectionOf`) vs a may-alias (⇒ `AliasOf`).
+    /// `Fresh` is reserved for the provably-no-param-reaches-result case, so
+    /// this variant is what keeps a partial param-return from collapsing to the
+    /// elision-permitting `Fresh` (the ABI-half soundness cure).
+    MayParam { rep: Symbol, projection: bool },
 }
 
 impl Origin {
     fn root(&self) -> Option<&Symbol> {
         match self {
             Origin::Root(s) | Origin::Projection(s) => Some(s),
+            Origin::MayParam { rep, .. } => Some(rep),
             Origin::Fresh => None,
         }
     }
@@ -204,14 +215,20 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             }
             match &bs.origin {
                 Origin::Root(s) => cur = s.clone(),
+                // A may-alias binding roots (on its param-reaching path) in
+                // `rep`; follow it so a store of such a binding widens the param
+                // (over-approximating toward Owned/IntoResult — always sound).
+                Origin::MayParam { rep, .. } => cur = rep.clone(),
                 _ => return None,
             }
         }
     }
 
     /// Map the body's final value origin to a [`ResultMode`] (§3.3). The
-    /// §13.6(c) multi-path join is already applied via [`join_origin`] at
-    /// `If`/`Match` — a disagreement has collapsed to `Fresh` before here.
+    /// multi-path join (§13.6(c) as corrected by FIXME 0520) is already applied
+    /// via [`Walker::join_origin`] at `If`/`Match`: a partial param-return has
+    /// become a [`Origin::MayParam`] (not `Fresh`), and only a provably-no-param
+    /// path yields `Fresh`.
     fn origin_to_result_mode(&self, origin: &Origin) -> ResultMode {
         match origin {
             Origin::Root(s) => match self.param_root(s) {
@@ -222,7 +239,65 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 Some(idx) => ResultMode::ProjectionOf(idx),
                 None => ResultMode::Fresh,
             },
+            Origin::MayParam { rep, projection } => match self.param_root(rep) {
+                Some(idx) if *projection => ResultMode::ProjectionOf(idx),
+                Some(idx) => ResultMode::AliasOf(idx),
+                None => ResultMode::Fresh,
+            },
             Origin::Fresh => ResultMode::Fresh,
+        }
+    }
+
+    /// The param a value origin can carry to the result, if any: `(param index,
+    /// is-projection, representative param-rooted symbol)`, or `None` when the
+    /// origin roots in no param (fresh, or an owned local returned by value —
+    /// both `Fresh` at the result). The single reach classifier both
+    /// [`Walker::join_origin`] strata and the result-mode read share.
+    fn reach(&self, o: &Origin) -> Option<(usize, bool, Symbol)> {
+        match o {
+            Origin::Fresh => None,
+            Origin::Root(s) => self.param_root(s).map(|i| (i, false, s.clone())),
+            Origin::Projection(s) => self.param_root(s).map(|i| (i, true, s.clone())),
+            Origin::MayParam { rep, projection } => {
+                self.param_root(rep).map(|i| (i, *projection, rep.clone()))
+            }
+        }
+    }
+
+    /// Join two value origins from divergent control-flow paths — the result may
+    /// be `a` OR `b` (FIXME 0520, correcting §13.6(c)). The join is `Fresh`
+    /// **only** when NEITHER path can carry a param to the result; any path that
+    /// may alias/project a param makes the join a not-`Fresh` [`Origin::MayParam`].
+    ///
+    /// Collapsing a param-reaching disagreement to `Fresh` (the old rule) is the
+    /// ABI-half soundness narrowing 0520 cures: `Fresh` means "not aliased to any
+    /// param", which a borrow-elision consumer trusts to drop a needed RC op and
+    /// free the returned param. Widening toward not-`Fresh` (may-alias) is always
+    /// sound; `Fresh` is reserved for provably-no-param-reaches-result.
+    ///
+    /// When both paths reach the SAME param with the SAME kind, the definite
+    /// origin is preserved (a full-`if`/same-param-`match` stays the precise
+    /// `AliasOf(i)`/`ProjectionOf(i)`). Otherwise (a param vs fresh, two distinct
+    /// params, or mixed alias/projection kinds) the conservative may-alias:
+    /// representative = the reaching param of LOWEST index (deterministic);
+    /// `projection` only when EVERY reaching path is a projection (a mixed
+    /// alias/projection join is the stronger `AliasOf`, keeping protect).
+    fn join_origin(&self, a: Origin, b: Origin) -> Origin {
+        match (self.reach(&a), self.reach(&b)) {
+            (None, None) => Origin::Fresh,
+            (Some((ia, pa, _)), Some((ib, pb, _))) if ia == ib && pa == pb => {
+                // Same param, same kind ⇒ both paths definitely alias it: keep
+                // the definite origin (over-claiming aliasing is the safe
+                // direction if either input was itself a may-alias).
+                a
+            }
+            (Some((ia, pa, sa)), Some((ib, pb, sb))) => {
+                let (idx_sym, _) = if ia <= ib { (sa, ia) } else { (sb, ib) };
+                Origin::MayParam { rep: idx_sym, projection: pa && pb }
+            }
+            (Some((_, p, s)), None) | (None, Some((_, p, s))) => {
+                Origin::MayParam { rep: s, projection: p }
+            }
         }
     }
 
@@ -318,8 +393,9 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 // Both branches are in the enclosing context (tail-preserving).
                 let a = self.walk(then_branch, ctx);
                 let b = self.walk(else_branch, ctx);
-                // Origin join: identical roots survive; otherwise Fresh.
-                join_origin(a, b)
+                // Origin join (FIXME 0520): a param-reaching path survives as a
+                // may-alias; only both-Fresh collapses to `Fresh`.
+                self.join_origin(a, b)
             }
 
             MonoExpr::Match { scrutinee, arms, .. } => {
@@ -336,7 +412,7 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     self.restore_frame(frame);
                     acc = Some(match acc.take() {
                         None => o,
-                        Some(prev) => join_origin(prev, o),
+                        Some(prev) => self.join_origin(prev, o),
                     });
                 }
                 acc.unwrap_or(Origin::Fresh)
@@ -447,20 +523,30 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     let o = self.walk(arg, UseCtx::Arg { mode, flow });
                     arg_origins.push(o);
                 }
-                // Result origin from the callee's result mode.
+                // Result origin from the callee's result mode. A may-alias arg
+                // (FIXME 0520) is carried through as a may-alias — an `AliasOf`/
+                // `ProjectionOf` result of a param-reaching arg never collapses
+                // to `Fresh`, so a partial param-return composes soundly through
+                // an `Apply` body (the borrow-elision consumer's binary read).
                 let result = summary.as_ref().map(|s| s.result).unwrap_or(ResultMode::Fresh);
                 let origin = match result {
-                    ResultMode::ProjectionOf(k) => match arg_origins.get(k).and_then(|o| o.root()) {
-                        Some(root) => {
-                            self.facts.provenance.insert(*span, root.clone());
-                            Origin::Projection(root.clone())
+                    ResultMode::ProjectionOf(k) => {
+                        match arg_origins.get(k).cloned().unwrap_or(Origin::Fresh) {
+                            Origin::Root(root) | Origin::Projection(root) => {
+                                self.facts.provenance.insert(*span, root.clone());
+                                Origin::Projection(root)
+                            }
+                            // May-projection: not-`Fresh` (keeps protect) but the
+                            // root is ambiguous ⇒ no provenance fact (the backend
+                            // materializes at Decision-24 — the safe direction).
+                            Origin::MayParam { rep, .. } => {
+                                Origin::MayParam { rep, projection: true }
+                            }
+                            Origin::Fresh => Origin::Fresh,
                         }
-                        None => Origin::Fresh,
-                    },
-                    ResultMode::AliasOf(k) => match arg_origins.get(k).and_then(|o| o.root()) {
-                        Some(root) => Origin::Root(root.clone()),
-                        None => Origin::Fresh,
-                    },
+                    }
+                    // The result IS arg k — carry its origin through verbatim.
+                    ResultMode::AliasOf(k) => arg_origins.get(k).cloned().unwrap_or(Origin::Fresh),
                     ResultMode::Fresh => Origin::Fresh,
                 };
                 // The Apply node is itself an allocation/result site.
@@ -611,17 +697,6 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             frame.push((n, prior));
         }
         frame
-    }
-}
-
-/// Join two value origins: identical roots survive; any disagreement (mixed
-/// roots, mixed kinds, any `Fresh`) collapses to `Fresh` (the conservative
-/// point — §13.6(c) applied at the value level).
-fn join_origin(a: Origin, b: Origin) -> Origin {
-    match (&a, &b) {
-        (Origin::Root(x), Origin::Root(y)) if x == y => a,
-        (Origin::Projection(x), Origin::Projection(y)) if x == y => a,
-        _ => Origin::Fresh,
     }
 }
 

@@ -557,20 +557,169 @@ fn shadowed_root_emits_no_provenance() {
     assert!(r.facts.provenance.is_empty());
 }
 
-#[test]
-fn mixed_return_paths_join_to_fresh() {
-    // spec: §13.6(c) — disagreeing return paths ⇒ Fresh.
-    // (if c p (other))  — one path AliasOf(0), the other Fresh ⇒ Fresh.
-    let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
-    let body = MonoExpr::If {
+// ============ Result-mode partial-param-return matrix (FIXME 0520) ============
+//
+// The ABI-half soundness cure: a param returned through a PARTIAL control-flow
+// path (some but not all return arms yield the param) must NOT collapse to
+// `Fresh` (which permits the borrow-elision consumer to drop a needed RC op and
+// free the returned param → UAF). `Fresh` is reserved for
+// provably-no-param-reaches-result. Each cell asserts the exact `ResultMode`,
+// and the regression pins guard against OVER-widening a genuinely-fresh result
+// (which would keep an unneeded inc → leak). See §4.2 / §13.6(c) as-corrected.
+
+/// An `if` with a `BoolLit` cond over the two given branches.
+fn if_(then_branch: MonoExpr, else_branch: MonoExpr) -> MonoExpr {
+    MonoExpr::If {
         cond: Box::new(MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool }),
-        then_branch: Box::new(var("p")),
-        else_branch: Box::new(call("other", vec![])),
+        then_branch: Box::new(then_branch),
+        else_branch: Box::new(else_branch),
+        span: s(),
+        ty: ConcreteType::String,
+    }
+}
+
+#[test]
+fn partial_if_one_arm_param_other_fresh_is_alias_not_fresh() {
+    // spec: §4.2/§13.6(c) (FIXME 0520) — THE bug. `(if c p (other))` returns
+    // param p in the then-arm, a fresh value in the else-arm. Pre-cure this
+    // collapsed to `Fresh` (UNSOUND: p may be returned yet the consumer elides
+    // its protect). Truth: may-alias param 0 ⇒ AliasOf(0), not Fresh.
+    let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let body = if_(var("p"), call("other", vec![]));
+    let r = run(&[strparam("p")], body, env);
+    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "partial param-return must be AliasOf(0), not Fresh");
+}
+
+#[test]
+fn nested_partial_if_param_reaches_is_alias_not_fresh() {
+    // spec: §4.2 (FIXME 0520, nested-control-flow sibling) —
+    // `(if c1 (if c2 p (other)) (other))`. The param reaches through a nested
+    // branch; every join level must preserve the may-alias, never collapse Fresh.
+    let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let inner = if_(var("p"), call("other", vec![]));
+    let body = if_(inner, call("other", vec![]));
+    let r = run(&[strparam("p")], body, env);
+    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "param reaching through nested if must be AliasOf(0)");
+}
+
+#[test]
+fn let_bound_alias_returned_partially_is_alias_not_fresh() {
+    // spec: §4.2 (FIXME 0520, let-alias sibling) —
+    // `(let [w p] (if c w (other)))`. `w` aliases param p; returning it on one
+    // arm must yield AliasOf(0) — provenance carries through the let alias.
+    let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("w"), var("p"))],
+        body: Box::new(if_(var("w"), call("other", vec![]))),
         span: s(),
         ty: ConcreteType::String,
     };
     let r = run(&[strparam("p")], body, env);
-    assert_eq!(r.summary.result, ResultMode::Fresh);
+    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "let-aliased partial param-return must be AliasOf(0)");
+}
+
+#[test]
+fn partial_match_some_arms_param_others_fresh_is_alias_not_fresh() {
+    // spec: §4.2 (FIXME 0520, match sibling) — one arm returns the scrutinee
+    // param `p`, the other returns fresh ⇒ may-alias param 0, not Fresh.
+    // `(match p [(Box _k) (other)] [_ p])` — arm 1 fresh, arm 2 returns p.
+    let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let arm1 = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            bindings: vec![Symbol::from("k")],
+            span: s(),
+        },
+        body: call("other", vec![]),
+        span: Span::new(90, 91),
+        provenance: None,
+    };
+    let arm2 = MonoMatchArm {
+        pattern: Pattern::Wildcard { span: s() },
+        body: var("p"),
+        span: Span::new(92, 93),
+        provenance: None,
+    };
+    let body = MonoExpr::Match {
+        scrutinee: Box::new(var("p")),
+        arms: vec![arm1, arm2],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("p")], body, env);
+    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "match with one param-returning arm must be AliasOf(0)");
+}
+
+#[test]
+fn partial_if_projection_arm_is_projection_not_fresh() {
+    // spec: §4.2 (FIXME 0520, projection sibling) —
+    // `(if c (gcells p) (other))`. One arm is a borrowed VIEW of param p
+    // (ProjectionOf), the other fresh ⇒ may-projection ⇒ ProjectionOf(0), not
+    // Fresh (a Fresh here would dec the borrowed field as a temp → double-free).
+    let env = accessor_env().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let body = if_(call("gcells", vec![var("p")]), call("other", vec![]));
+    let r = run(&[strparam("p")], body, env);
+    assert_eq!(r.summary.result, ResultMode::ProjectionOf(0), "partial projection-return must be ProjectionOf(0)");
+}
+
+#[test]
+fn multi_distinct_param_return_is_not_fresh() {
+    // spec: §4.2 (FIXME 0520, multi-param sibling) — `(if c v w)` may return
+    // EITHER param. The existing lattice cannot name "may alias 0 or 1"; the
+    // sound conservative choice is the lowest reaching index (AliasOf(0)) — any
+    // not-`Fresh` value keeps the consumer's protect (binary read). Strictly more
+    // sound than the pre-cure `Fresh` (which elided protect on a returned param).
+    let body = if_(var("v"), var("w"));
+    let r = run(&[strparam("v"), strparam("w")], body, TestEnv::default());
+    assert_ne!(r.summary.result, ResultMode::Fresh, "multi-distinct-param return must not be Fresh");
+    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "conservative representative is the lowest reaching index");
+}
+
+// ---- regression pins: the definite cases must stay precise (no OVER-widen) ----
+
+#[test]
+fn full_if_both_arms_same_param_is_alias() {
+    // spec: §4.2 (0520 regression pin) — `(if c v v)`: both arms return the SAME
+    // param ⇒ the DEFINITE AliasOf, unchanged by the cure (v is param 1 here).
+    let body = if_(var("v"), var("v"));
+    let r = run(&[strparam("b"), strparam("v")], body, TestEnv::default());
+    assert_eq!(r.summary.result, ResultMode::AliasOf(1), "full-if same-param stays the precise AliasOf(1)");
+}
+
+#[test]
+fn both_arms_fresh_stays_fresh_no_over_widen() {
+    // spec: §4.2 (0520 OVER-widen guard) — `(if c (other) (other))`: NEITHER arm
+    // carries a param ⇒ the result is genuinely `Fresh`. The cure must NOT widen
+    // a provably-fresh result to not-`Fresh` (that would keep an unneeded inc →
+    // leak). `Fresh` is reserved for provably-no-param-reaches-result.
+    let env = TestEnv::default().summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let body = if_(call("other", vec![]), call("other", vec![]));
+    let r = run(&[strparam("p")], body, env);
+    assert_eq!(r.summary.result, ResultMode::Fresh, "both-fresh must stay Fresh (no over-widen)");
+}
+
+#[test]
+fn direct_apply_alias_composition_unchanged() {
+    // spec: §4.2 (0520 regression pin) — `(idv v)` where idv: AliasOf(0). A
+    // direct Apply body composes the callee result: v (param) flows through ⇒
+    // AliasOf(0). The cure preserves this (the fixpoint composes Apply results).
+    let env = TestEnv::default().summary("idv", sm(vec![Mode::Owned], ResultMode::AliasOf(0), vec![ParamFlow::IntoResult]));
+    let r = run(&[strparam("v")], call("idv", vec![var("v")]), env);
+    assert_eq!(r.summary.result, ResultMode::AliasOf(0), "direct-Apply AliasOf composition stays AliasOf(0)");
+}
+
+#[test]
+fn apply_alias_of_fresh_arg_stays_fresh_no_over_widen() {
+    // spec: §4.2 (0520 OVER-widen guard, composition) — `(idv (other))`: idv
+    // returns AliasOf(0) but the arg is a FRESH value ⇒ the result is genuinely
+    // fresh. Carrying the arg origin through must keep `Fresh` (a not-Fresh here
+    // would keep an unneeded inc on a fresh temporary → leak, and move codegen).
+    let env = TestEnv::default()
+        .summary("idv", sm(vec![Mode::Owned], ResultMode::AliasOf(0), vec![ParamFlow::IntoResult]))
+        .summary("other", sm(vec![], ResultMode::Fresh, vec![]));
+    let r = run(&[strparam("p")], call("idv", vec![call("other", vec![])]), env);
+    assert_eq!(r.summary.result, ResultMode::Fresh, "AliasOf of a fresh arg stays Fresh (no over-widen)");
 }
 
 // =================== Lexical-scope discipline (F4) ===================

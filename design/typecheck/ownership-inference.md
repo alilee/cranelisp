@@ -1100,12 +1100,41 @@ per audit row.
   linear walk per callable — inside §3.4's structural budget (still
   annotation-only, no `Type` traffic).
 - **(c) Multi-path `ResultMode` join, pinned** (completes §3.3's return-position
-  rule): all return paths `ProjectionOf(i)` for the same `i` ⇒ `ProjectionOf(i)`;
-  all paths `AliasOf(i)` for the same `i` ⇒ `AliasOf(i)`; any disagreement (mixed
-  roots, mixed kinds, any `Fresh` path) ⇒ `Fresh`, with §4.2-rule-5 materialization
-  emitted on each non-`Fresh` path (the returned borrow escapes at that return
-  edge). Monotone: `Fresh` is the result-mode conservative point (Decision-24
-  as-built).
+  rule). **As-built (S102, FIXME 0520 — the ABI-half soundness cure; SUPERSEDES
+  the original "any disagreement ⇒ `Fresh`" rule, which was UNSOUND).** The join
+  is over the may-alias each path can carry to the result. `Fresh` is **NOT** the
+  conservative point — it is the DANGEROUS point: `Fresh` means "no param reaches
+  the result", which a borrow-elision consumer trusts to DROP a needed RC op and
+  free the returned param → UAF. The conservative (safe, protect-preserving)
+  direction is **not-`Fresh`**. Rule:
+  - all return paths `AliasOf(i)`/`ProjectionOf(i)` for the SAME `i` and kind ⇒
+    that precise mode (a full-`if`/same-param-`match` stays exact);
+  - any path that MAY carry a param to the result (a param on one arm, a fresh or
+    a DIFFERENT param on another, or mixed alias/projection kinds) ⇒ a
+    **not-`Fresh`** may-alias: `AliasOf(i)` (or `ProjectionOf(i)` when EVERY
+    reaching path is a projection), where `i` is the reaching param of LOWEST
+    index (the deterministic conservative representative when several may reach);
+  - `Fresh` is emitted **only** when NO path can carry a param (both/all paths
+    provably fresh — an owned local returned by value is `Fresh` at the result).
+
+  This is the cure for the partial control-flow collapse: `(defn build [v i n]
+  (if c v (build (vec-push v i) …)))` returns param `v` in the base case, so its
+  result is `AliasOf(0)`, never `Fresh` — despite the recursive arm being fresh.
+  The implementation carries an internal `Origin::MayParam { rep, projection }`
+  through `If`/`Match` joins and through `Apply` composition (a may-alias arg to
+  an `AliasOf`/`ProjectionOf` callee stays a may-alias — never collapses to
+  `Fresh`), mapping to the `ResultMode` at the boundary. **Monotone soundness:**
+  widening toward not-`Fresh` is always sound (only less precise — an unneeded
+  retain, i.e. a leak, never an elided one). **Lattice-sizing residual (existing
+  lattice retained):** for a return that may alias MULTIPLE DISTINCT params (the
+  `(if c v w)` shape), the existing 3-element `ResultMode` cannot name "may alias
+  0 or 1"; the representative-lowest-index choice is sound for the live
+  borrow-elision consumer (which needs only the BINARY `Fresh`-vs-not) and is
+  strictly more sound than the pre-cure `Fresh`, but a future index-specific
+  provenance consumer would need a distinct ⊤ element (`MayAliasParam`/
+  `AliasOfAny`) — a `cranelisp-types` carrier change routed to `/arch` as
+  FIXME 0521, not required by increment I. `§4.2-rule-5 materialization is still
+  emitted on each non-`Fresh` path (the returned borrow escapes at that edge).
 - **(d) Provenance is symbol-keyed, with a shadowing guard.** `MonoExpr` bindings
   are `Symbol`-named; the backend's `borrowed_vars`/last-use machinery is
   symbol-keyed already, so the provenance site fact carries the root binding's
