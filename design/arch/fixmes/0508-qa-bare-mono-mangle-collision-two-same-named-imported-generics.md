@@ -27,3 +27,26 @@ The **fix owner is an /arch-level question** (route on once the repro exists): s
 ## Operational implication
 
 Silent miscompiles are the worst defect class — the failing repro is the trigger + regression guard. Full evidence: `sprints/SPRINT.md` §Notes Wave-8a review entry.
+
+## /arch ruling 2026-07-04 — mangling question RESOLVED; this FIXME kept OPEN for its /qa-repro half only
+
+The "/arch-level question" half of this FIXME is answered. **Home-qualify the
+mono mangle key** — this is the SAME cure as 0483 (ADT-arg erasure): both are
+`build_mangled_name` dropping distinguishing facts. The unified fix — one
+canonical, total, home-qualified mangler with grammar
+`{home}/{bare}${recursive-concrete-sig}` — is designed in **FIXME 0516**
+(`target: /dev`, cranelisp-typecheck) and cures 0483 + 0508 in one change-set.
+There is no cheaper `register_mono_entry`-local disambiguation: the collision
+also fires at the home-blind `seen`-dedup key (`program.rs:~3469`), so the fix
+must live in the shared mangler, not a spot patch. Durable invariant recorded at
+`design/arch/interfaces.md` §"Mono-instance linker identity is lossless by
+construction" (Principle 7 + Principle 20).
+
+**This FIXME stays OPEN as the /qa-repro half.** The two-same-named-imported-home
+failing-not-ignored e2e repro (two modules, same bare generic name, same arg
+type, both FQ-referenced in one consumer → assert both bodies dispatch
+correctly; currently the second silently dispatches the first's body) is still
+owed and is the durable guard for the HOME axis (distinct from the 0483×3
+guards, which cover the ADT-arg axis). Author it RED against HEAD; the 0516
+mangler fix flips it green. `// spec:` annotated, pointing at 0516 as the
+resolver. Not folded/deleted — the repro is 0508's reason to exist.
