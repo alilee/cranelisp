@@ -43,7 +43,15 @@
 ;; Spec: appendix-a-builtins §A.3, plan-stdlib.md §3.3, §26.8
 
 (import [prelude []])
-(import [primitives [*]])
+;; Import hygiene (spec §8.6.4, FIXME 0484): this module DEFINES
+;; `bit-and`/`bit-or`/`bit-xor`/`bit-not`/`popcount` (curated pass-through
+;; wrappers), so it must NOT also import those names from `primitives` —
+;; defining a name you import is a compile-time collision under the S102
+;; FQ-resolution ruling. It selectively imports only the non-colliding
+;; primitive names it uses bare (`shl`/`shr`/`eq-i64`/`not` + the `Int`/`Bool`
+;; types) and fully-qualifies every reference to the colliding primitives
+;; (`primitives/bit-and`, `primitives/popcount`, …) in the wrapper bodies.
+(import [primitives [Int Bool shl shr eq-i64 not]])
 
 ;; ── Direct logical ops (thin pass-throughs over the primitives) ───────────
 
