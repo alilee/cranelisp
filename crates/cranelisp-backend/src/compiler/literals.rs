@@ -424,3 +424,90 @@ where
         Ok(base_ptr)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Relocated crate-root tests (FIXME 0495 step 1); harness via
+    // `crate::test_support`. Verbatim bodies from the former `src/tests.rs`.
+    use crate::test_support::*;
+
+
+// spec: 04-expressions §4.1.1 — integer literal codegen
+#[test]
+fn test_compile_and_run_expr() {
+    let expr = Expr::IntLit {
+        value: 99,
+        span: Span::new(0, 2),
+        inferred_type: None,
+    };
+    let check = empty_check();
+
+    let value = test_compile_and_run(&expr, &check, &empty_tables()).unwrap();
+    assert_eq!(value, 99);
+}
+
+
+// spec: 04-expressions §4.1.3 — boolean literal codegen
+#[test]
+fn test_compile_and_run_expr_bool() {
+    let expr = Expr::BoolLit {
+        value: true,
+        span: Span::new(0, 4),
+        inferred_type: None,
+    };
+    let check = empty_check();
+
+    let value = test_compile_and_run(&expr, &check, &empty_tables()).unwrap();
+    assert_eq!(value, 1);
+}
+
+
+// --- Ring 1 tests ---
+
+// spec: 04-expressions §4.1.4 — string literal codegen, heap allocation
+#[test]
+fn test_compile_string_literal() {
+    let expr = Expr::StringLit {
+        value: "hello".to_string(),
+        span: Span::new(0, 7),
+        inferred_type: None,
+    };
+    let check = empty_check();
+
+    let result = test_compile_and_run(&expr, &check, &empty_tables());
+    assert!(result.is_ok(), "string literal should compile: {result:?}");
+    let ptr = result.unwrap();
+    // ptr should be a heap pointer (> NULLARY_TAG_THRESHOLD)
+    assert!(ptr > 1024, "expected heap pointer, got {ptr}");
+
+    // Read back the string content via runtime API.
+    let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
+    assert_eq!(s, "hello");
+
+    // Clean up the allocation.
+    cranelisp_intrinsics::alloc::heap_dealloc(ptr);
+}
+
+
+// spec: 04-expressions §4.1.4 — empty string literal codegen
+#[test]
+fn test_compile_empty_string_literal() {
+    let expr = Expr::StringLit {
+        value: String::new(),
+        span: Span::new(0, 2),
+        inferred_type: None,
+    };
+    let check = empty_check();
+
+    let result = test_compile_and_run(&expr, &check, &empty_tables());
+    assert!(result.is_ok(), "empty string should compile: {result:?}");
+    let ptr = result.unwrap();
+    assert!(ptr > 1024, "expected heap pointer, got {ptr}");
+
+    let s = unsafe { cranelisp_intrinsics::heap_string::read_string_as_str(ptr) };
+    assert_eq!(s, "");
+
+    cranelisp_intrinsics::alloc::heap_dealloc(ptr);
+}
+
+}

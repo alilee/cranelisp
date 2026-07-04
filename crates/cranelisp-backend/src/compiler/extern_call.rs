@@ -55,3 +55,208 @@ where
         Ok(self.builder.inst_results(call)[0])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Relocated crate-root tests (FIXME 0495 step 1); harness via
+    // `crate::test_support`. Verbatim bodies from the former `src/tests.rs`.
+    use crate::test_support::*;
+
+
+// Note: `test_expand_multi_sig_missing_type_info` and
+// `test_concrete_type_name_all_primitives` were retired in Sprint 56 Wave 1
+// with the deletion of `expand_multi_sig_defn` / `concrete_type_name`. The
+// equivalent mangled-name construction now lives in `/typecheck`, and the
+// "missing overload info" error surface is exercised by the backend's
+// `ast: None` error path (see `test_compile_to_module_ast_none_errors` in
+// the Sprint 56 Wave 1 unit tests below).
+
+// spec: appendix-a-builtins §A.2 — extern primitive dispatch via resolved_call
+//
+// Isolates the "undefined function: macros/sconcat" failure from
+// repl_defmacro_rest_splice. When compile_apply receives an Apply node
+// with resolved_call: Some(BuiltinFn { name: "sconcat" }), per Decision
+// 0048 §"Structural invariant — backend dep-ban" it MUST take the
+// standard GOT-indirect dispatch path (`compile_direct_call` →
+// `resolve_got_target` → load slot from `__cranelisp_got_primitives`).
+// Pre-Decision-0048 the path was direct extern via `compile_extern_call`;
+// that path is now reserved for non-module backend-emitted-call targets
+// (intrinsics — `vec-set-copy`, `runtime/alloc`, etc.). Primitives reach
+// the JIT via GOT-indirect uniformly with user-defined functions.
+//
+// Test setup: seed a `primitives` module with a `sconcat` entry that
+// carries `got_slot: Some(_)`, write the extern fn ptr into that slot,
+// then assert backend compiles + executes the call through the GOT.
+#[test]
+fn test_extern_primitive_via_resolved_call_succeeds() {
+    use cranelisp_types::ResolvedCall;
+    use cranelisp_types::{DefKind, ModuleEntry, Scheme, Visibility};
+
+    // Build: (defn __expr__ [] (sconcat 0 0))
+    let apply_span = Span::new(2000, 2030);
+
+    let mut method_resolutions = HashMap::new();
+    method_resolutions.insert(
+        apply_span,
+        ResolvedCall::BuiltinFn {
+            name: Symbol::from("sconcat"),
+        },
+    );
+
+    let expr = Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from("macros/sconcat"),
+            span: Span::new(2001, 2015),
+            resolved_call: None,
+            inferred_type: None,
+        }),
+        args: vec![
+            Expr::IntLit { value: 0, span: Span::new(2016, 2017), inferred_type: None },
+            Expr::IntLit { value: 0, span: Span::new(2018, 2019), inferred_type: None },
+        ],
+        span: apply_span,
+        resolved_call: None, // enrichment will set this from method_resolutions
+        inferred_type: None,
+    };
+
+    let check = TestCheckResult {
+        method_resolutions,
+        constrained_fn_names: HashSet::new(),
+        mono_defns: Vec::new(),
+        expr_types: HashMap::new(),
+        default_method_defns: Vec::new(),
+        warnings: Vec::new(),
+        display: None,
+    };
+
+    // Seed a primitives module with `sconcat` and a GOT slot. Backend's
+    // `resolve_got_target` consults this via its global-fallback walk
+    // when the caller's module (`user`) has no local binding for the
+    // unqualified name `sconcat`. Per Decision 0048's backend dep-ban,
+    // we cannot reference `cranelisp_primitives::marshal::sconcat`
+    // directly; we provide a local 2-arg stub matching the signature
+    // and wire that fn ptr into the GOT slot. The test asserts
+    // compilation + GOT-indirect dispatch — it does NOT assert the
+    // semantics of `sconcat` (which is covered by the e2e
+    // `mode_equiv_macro_user_defined` test).
+    extern "C" fn sconcat_stub(_a: i64, _b: i64) -> i64 { 0 }
+    let tables = empty_tables();
+    let primitives_path = ModuleFullPath::from("primitives");
+    let mut prim_table: SymbolTable = SymbolTable::new(primitives_path.clone());
+    let slot = prim_table.allocate_got_slot();
+    prim_table.got.store_slot(slot, sconcat_stub as *const u8);
+    prim_table.insert(
+        Symbol::from("sconcat"),
+        ModuleEntry::Def {
+            scheme: Scheme {
+                type_vars: Vec::new(),
+                constraints: HashMap::new(),
+                ty: Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int)),
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+            param_names: vec![Symbol::from("a"), Symbol::from("b")],
+            kind: Box::new(DefKind::primitive(slot)),
+            callees: Vec::new(),
+            trait_origin: None,
+            seq: 0,
+            ast: None,
+            codegen_view: None,
+            code: None,
+            value_use: false,
+        },
+    );
+    tables.insert(primitives_path, prim_table);
+
+    // With resolved_call present (via enrichment), compilation should
+    // succeed via GOT-indirect dispatch through the primitives module.
+    // The JIT also needs the `__cranelisp_got_primitives` data symbol
+    // wired to the table's GOT base — register via
+    // `Jit::new_with_symbols` (a separate code path from
+    // `test_compile_and_run`'s `Jit::new`).
+    let got_data_name = crate::compiler::got_data_symbol_name(
+        &ModuleFullPath::from("primitives"),
+    );
+    let prim_got_base = tables
+        .get(&ModuleFullPath::from("primitives"))
+        .map(|st| st.got.base_ptr())
+        .expect("primitives table just inserted");
+    let extras: Vec<(&str, *const u8)> = vec![(got_data_name.as_str(), prim_got_base)];
+
+    let mut defn = Defn {
+        name: Symbol::from("__expr__"),
+        docstring: None,
+        variants: vec![DefnVariant {
+            params: vec![],
+            body: expr.clone(),
+            span: Span::SYNTHETIC,
+        }],
+        visibility: Visibility::Public,
+        span: Span::SYNTHETIC,
+    };
+    enrich_defn_from_side_maps(&mut defn, &check.method_resolutions, &check.expr_types);
+
+    let user_module = ModuleFullPath::from("user");
+    let name = defn.name.clone();
+    {
+        let mut st = tables
+            .entry(user_module.clone())
+            .or_insert_with(|| SymbolTable::new(user_module.clone()));
+        st.insert(name.clone(), make_def_entry(defn));
+    }
+
+    let mut jit = Jit::new_with_symbols(&extras).expect("jit init");
+    let aliases = empty_aliases();
+    let result = compile_to_module(user_module, &[name], &tables, &aliases, jit.jit_module(), true);
+    assert!(
+        result.is_ok(),
+        "extern primitive sconcat should compile via GOT-indirect when resolved_call is BuiltinFn: {}",
+        result.err().map(|e| format!("{e:?}")).unwrap_or_default(),
+    );
+}
+
+
+// spec: appendix-a-builtins §A.2 — missing resolved_call causes "undefined function"
+//
+// Companion to the test above: when resolved_call is None (not enriched),
+// compile_apply falls through to compile_var_apply -> compile_direct_call
+// which fails because "macros/sconcat" has no GOT slot or FuncId.
+// This is the broken path that the integration test hits.
+#[test]
+fn test_extern_primitive_without_resolved_call_fails() {
+    // Build: (defn main [] (macros/sconcat 0 0))
+    // No resolved_call, no GOT entry, no FuncId — should fail.
+    let apply_span = Span::new(2100, 2130);
+
+    // No method_resolutions — resolved_call stays None.
+    let expr = Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from("macros/sconcat"),
+            span: Span::new(2101, 2115),
+            resolved_call: None,
+            inferred_type: None,
+        }),
+        args: vec![
+            Expr::IntLit { value: 0, span: Span::new(2116, 2117), inferred_type: None },
+            Expr::IntLit { value: 0, span: Span::new(2118, 2119), inferred_type: None },
+        ],
+        span: apply_span,
+        resolved_call: None,
+        inferred_type: None,
+    };
+
+    let check = empty_check();
+
+    let result = test_compile_and_run(&expr, &check, &empty_tables());
+    assert!(
+        result.is_err(),
+        "macros/sconcat without resolved_call should fail"
+    );
+    let err_msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_msg.contains("undefined function"),
+        "error should be 'undefined function', got: {err_msg}"
+    );
+}
+
+}

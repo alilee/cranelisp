@@ -1716,6 +1716,10 @@ mod concrete_boundary_phase3_tests {
 #[cfg(test)]
 mod clif_dump_tests;
 
-
+// Shared harness for the relocated crate-root tests (FIXME 0495 step 1).
 #[cfg(test)]
-mod tests;
+pub(crate) mod test_support;
+
+// Relocated crate-root module-assembly + GOT-emission tests (FIXME 0495 step 1).
+#[cfg(test)]
+mod module_assembly_tests;

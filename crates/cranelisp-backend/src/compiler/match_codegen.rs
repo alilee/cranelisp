@@ -586,3 +586,124 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // Relocated crate-root tests (FIXME 0495 step 1); harness via
+    // `crate::test_support`. Verbatim bodies from the former `src/tests.rs`.
+    use crate::test_support::*;
+
+
+// spec: 12-runtime §12.1.4 — data constructor heap layout [tag | fields]
+#[test]
+fn test_compile_adt_data_constructor() {
+    // Expression: (Some 42)
+    let some_span = Span::new(0, 10);
+    let expr = Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from("Some"),
+            span: Span::new(1, 5),
+            resolved_call: None,
+            inferred_type: None,
+        }),
+        args: vec![Expr::IntLit {
+            value: 42,
+            span: Span::new(6, 8),
+            inferred_type: None,
+        }],
+        span: some_span,
+        resolved_call: None,
+        inferred_type: None,
+    };
+
+    let check = empty_check();
+    let tables = option_type_tables();
+
+    let result = test_compile_and_run(&expr, &check, &tables);
+    assert!(result.is_ok(), "ADT constructor should compile: {result:?}");
+    let ptr = result.unwrap();
+    assert!(ptr > 1024, "expected heap pointer, got {ptr}");
+
+    // Verify the heap layout: [header(16) | tag(1) | field(42)]
+    unsafe {
+        let base = ptr as *const u8;
+        let tag = *(base.add(16) as *const i64);
+        assert_eq!(tag, 1, "tag should be 1 for Some");
+        let val = *(base.add(24) as *const i64);
+        assert_eq!(val, 42, "field should be 42");
+    }
+
+    cranelisp_intrinsics::alloc::heap_dealloc(ptr);
+}
+
+
+// spec: 04-expressions §4.8 — match expression with constructor patterns and field extraction
+#[test]
+fn test_compile_match_with_fields() {
+    use cranelisp_types::{MatchArm, Pattern};
+
+    // (match (Some 99) [(Some x) x (None) 0])
+    let some_span = Span::new(10, 20);
+    let match_span = Span::new(0, 50);
+    let scrutinee = Expr::Apply {
+        callee: Box::new(Expr::Var {
+            name: Symbol::from("Some"),
+            span: Span::new(11, 15),
+            resolved_call: None,
+            inferred_type: None,
+        }),
+        args: vec![Expr::IntLit {
+            value: 99,
+            span: Span::new(16, 18),
+            inferred_type: None,
+        }],
+        span: some_span,
+        resolved_call: None,
+        inferred_type: None,
+    };
+
+    let expr = Expr::Match {
+        scrutinee: Box::new(scrutinee),
+        arms: vec![
+            MatchArm {
+                pattern: Pattern::Constructor {
+                    name: cranelisp_types::SymbolRef::new(None, Symbol::from("Some")),
+                    bindings: vec![Symbol::from("x")],
+                    span: Span::new(22, 30),
+                },
+                body: Expr::Var {
+                    name: Symbol::from("x"),
+                    span: Span::new(31, 32),
+                    resolved_call: None,
+                    inferred_type: None,
+                },
+                span: Span::new(22, 32),
+            },
+            MatchArm {
+                pattern: Pattern::Constructor {
+                    name: cranelisp_types::SymbolRef::new(None, Symbol::from("None")),
+                    bindings: vec![],
+                    span: Span::new(34, 40),
+                },
+                body: Expr::IntLit {
+                    value: 0,
+                    span: Span::new(41, 42),
+                    inferred_type: None,
+                },
+                span: Span::new(34, 42),
+            },
+        ],
+        span: match_span,
+        compiler_generated: false,
+        inferred_type: None,
+    };
+
+    let check = empty_check();
+    let tables = option_type_tables();
+
+    let result = test_compile_and_run(&expr, &check, &tables);
+    assert!(result.is_ok(), "match with fields should compile: {result:?}");
+    assert_eq!(result.unwrap(), 99, "match should extract field value");
+}
+
+}

@@ -39,6 +39,10 @@ fn vec_query_elem_from_fn_type(fn_type: Option<&Type>) -> Option<Type> {
 #[cfg(test)]
 mod ctor_value_tests;
 
+// Relocated crate-root fn-as-value + value-use tests (FIXME 0495 step 1).
+#[cfg(test)]
+mod value_use_tests;
+
 /// Borrowed-builder form of `FnCompiler::emit_adt_construct` (apply.rs): emit an
 /// ADT construction (`alloc` + tag + field stores) onto an arbitrary `builder`,
 /// used to inline-construct a data constructor inside a generated wrapper body

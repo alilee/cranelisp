@@ -1531,3 +1531,6 @@ mod vec_set_rc_tests;
 
 #[cfg(test)]
 mod temp_drop_rc_tests;
+
+#[cfg(test)]
+mod tests;

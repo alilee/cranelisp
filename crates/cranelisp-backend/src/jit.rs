@@ -905,3 +905,6 @@ pub(crate) fn declare_intrinsics_generic<M: Module>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod disasm_tests;

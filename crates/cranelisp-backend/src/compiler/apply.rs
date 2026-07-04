@@ -1729,3 +1729,6 @@ mod platform_fn_name_stamp_tests;
 
 #[cfg(test)]
 mod io_combinator_spark_tests;
+
+#[cfg(test)]
+mod dispatch_tests;
