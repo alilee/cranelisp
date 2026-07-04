@@ -1534,6 +1534,60 @@
         assert_eq!(slot_of("main"), Some(2), "main keeps staged slot 2");
     }
 
+    // spec/08-modules.md §8.6.4 (FIXME 0484) — a definition whose name is
+    // bound by an EXPLICIT import is a compile-time ERROR (order-independent,
+    // all modes). The commit gate rejects a staged `Def` over a live `Import`
+    // BEFORE any live mutation, so the import stays the binding and the
+    // rejected form has no effect.
+    #[test]
+    fn commit_staging_rejects_defn_over_explicit_import() {
+        use cranelisp_types::FQSymbol;
+        let module = ModuleFullPath::from("user");
+
+        let symbol_tables: dashmap::DashMap<ModuleFullPath, crate::code::SessionSymbolTable> =
+            dashmap::DashMap::new();
+        let mut live = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        // Live carries an explicit import binding `measure` ← `util/measure`.
+        live.insert(
+            Symbol::from("measure"),
+            ModuleEntry::Import {
+                source: FQSymbol {
+                    module: ModuleFullPath::from("util"),
+                    symbol: Symbol::from("measure"),
+                },
+                visibility: Visibility::Private,
+            },
+        );
+        symbol_tables.insert(module.clone(), live);
+
+        // Staging defines `measure` — a shadow of the import.
+        let mut staging = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        staging.next_got_slot = 1;
+        staging.insert(
+            Symbol::from("measure"),
+            mk_def_with_got(
+                DefKind::UserFn {
+                    fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
+                },
+                Some(trivial_variant()),
+                Some(0),
+            ),
+        );
+
+        let err = commit_staging_to_live(&symbol_tables, &module, staging, None)
+            .expect_err("defining an imported name MUST be rejected (§8.6.4)");
+        let msg = format!("{err}");
+        assert!(msg.contains("measure") && msg.contains("util/measure"), "got: {msg}");
+
+        // The rejected commit left live BYTE-IDENTICAL: the import is still the
+        // binding (no partial mutation), so subsequent resolution is unchanged.
+        let live = symbol_tables.get(&module).unwrap();
+        assert!(
+            matches!(live.get("measure"), Some(ModuleEntry::Import { .. })),
+            "the import MUST remain the binding after rejection",
+        );
+    }
+
     /// Minimal `SharedState` for commit-gate unit tests that need the S101
     /// retention pool (`retained_code`). Mirrors the construction in
     /// `scheduler/tests.rs::nice_worker_lifecycle_spawn_and_shutdown`; no

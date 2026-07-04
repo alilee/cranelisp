@@ -476,6 +476,32 @@ fn commit_staging_to_live(
         return Ok(Vec::new());
     };
 
+    // FIXME 0484 / spec/08-modules.md §8.6.4 — a definition whose name is bound
+    // by an EXPLICIT import is a compile-time ERROR, order-independent, all
+    // modes (the /spec S102 ruling: the rejected form has no effect, the import
+    // stays the binding). Reject in a PRE-SCAN, before any live mutation below,
+    // so a rejected commit leaves live byte-identical (the import keeps
+    // resolving; introspection keeps describing it). Prelude-PROVIDED names do
+    // NOT hit this — the prelude is an outer scope (S78 §2), not flattened, so
+    // a prelude name is not an `Import` entry in this table and stays shadowable
+    // (the 0475 pins). Only genuine `(import …)` / `(export …)` bindings live as
+    // `ModuleEntry::Import` here.
+    for (name, entry) in &drained {
+        if matches!(entry, ModuleEntry::Def { .. })
+            && let Some(ModuleEntry::Import { source, .. }) = live.symbols.get(name)
+        {
+            return Err(CranelispError::TypeError {
+                message: format!(
+                    "cannot define '{name}': the name is imported from \
+                     '{}/{}' — a definition may not shadow an explicit import \
+                     (spec/08-modules.md §8.6.4)",
+                    source.module, source.symbol,
+                ),
+                location: ErrorLocation::from_span(Span::SYNTHETIC),
+            });
+        }
+    }
+
     let mut outcomes: Vec<RedefinitionOutcome> = Vec::new();
 
     for (name, mut entry) in drained.drain(..) {
