@@ -200,18 +200,15 @@ block1(v1: i64):
     v13 = iadd_imm v12, 352
     v14 = load.i64 notrap aligned v13
     v15 = call_indirect sig2, v14(v11)
-    v16 = iadd_imm v15, 8
+    v16 = iadd_imm v1, 8
     v17 = iconst.i64 1
-    v18 = atomic_rmw.i64 add v16, v17  ; v17 = 1
-    v19 = iadd_imm v1, 8
-    v20 = iconst.i64 1
-    v21 = atomic_rmw.i64 sub v19, v20  ; v20 = 1
-    v22 = icmp eq v21, v20  ; v20 = 1
-    brif v22, block3, block2
+    v18 = atomic_rmw.i64 sub v16, v17  ; v17 = 1
+    v19 = icmp eq v18, v17  ; v17 = 1
+    brif v19, block3, block2
 
 block3:
     fence 
-    v23 = call fn1(v1)
+    v20 = call fn1(v1)
     jump block2
 
 block2:

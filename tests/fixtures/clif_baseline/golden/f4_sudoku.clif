@@ -1086,7 +1086,6 @@ block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
 
 block1(v3: i64, v4: i64, v5: i64):
-    v23 -> v3
     v6 = iadd_imm v3, 8
     v7 = iconst.i64 1
     v8 = atomic_rmw.i64 add v6, v7  ; v7 = 1
@@ -1099,18 +1098,17 @@ block1(v3: i64, v4: i64, v5: i64):
     v15 = iadd_imm v14, 200
     v16 = load.i64 notrap aligned v15
     v17 = call_indirect sig1, v16(v3, v12, v5, v13)  ; v13 = 0
-    v18 = iconst.i64 1024
-    v19 = icmp ult v17, v18  ; v18 = 1024
-    brif v19, block2, block3
+    v18 = iadd_imm v3, 8
+    v19 = iconst.i64 1
+    v20 = atomic_rmw.i64 sub v18, v19  ; v19 = 1
+    v21 = icmp eq v20, v19  ; v19 = 1
+    brif v21, block3, block2
 
 block3:
-    v20 = iadd_imm.i64 v17, 8
-    v21 = iconst.i64 1
-    v22 = atomic_rmw.i64 add v20, v21  ; v21 = 1
-    jump block2
-
-block2:
-    v24 = iadd_imm.i64 v3, 8
+    fence 
+    v22 = load.i64 notrap aligned v3+24
+    v23 = func_addr.i64 fn0
+    v24 = iadd_imm v22, 8
     v25 = iconst.i64 1
     v26 = atomic_rmw.i64 sub v24, v25  ; v25 = 1
     v27 = icmp eq v26, v25  ; v25 = 1
@@ -1118,24 +1116,14 @@ block2:
 
 block5:
     fence 
-    v28 = load.i64 notrap aligned v3+24
-    v29 = func_addr.i64 fn0
-    v30 = iadd_imm v28, 8
-    v31 = iconst.i64 1
-    v32 = atomic_rmw.i64 sub v30, v31  ; v31 = 1
-    v33 = icmp eq v32, v31  ; v31 = 1
-    brif v33, block7, block6
-
-block7:
-    fence 
-    call fn1(v28, v29)
-    jump block6
-
-block6:
-    v34 = call fn2(v3)
+    call fn1(v22, v23)
     jump block4
 
 block4:
+    v28 = call fn2(v3)
+    jump block2
+
+block2:
     return v17
 }
 ; === end CLIF user::eliminate-from-peers ===
@@ -1393,7 +1381,6 @@ block0(v0: i64):
     jump block1(v0)
 
 block1(v1: i64):
-    v17 -> v1
     v2 = iadd_imm v1, 8
     v3 = iconst.i64 1
     v4 = atomic_rmw.i64 add v2, v3  ; v3 = 1
@@ -1404,18 +1391,17 @@ block1(v1: i64):
     v9 = iadd_imm v8, 240
     v10 = load.i64 notrap aligned v9
     v11 = call_indirect sig0, v10(v1, v5, v6, v7)  ; v5 = 0, v6 = -1, v7 = 10
-    v12 = iconst.i64 1024
-    v13 = icmp ult v11, v12  ; v12 = 1024
-    brif v13, block2, block3
+    v12 = iadd_imm v1, 8
+    v13 = iconst.i64 1
+    v14 = atomic_rmw.i64 sub v12, v13  ; v13 = 1
+    v15 = icmp eq v14, v13  ; v13 = 1
+    brif v15, block3, block2
 
 block3:
-    v14 = iadd_imm.i64 v11, 8
-    v15 = iconst.i64 1
-    v16 = atomic_rmw.i64 add v14, v15  ; v15 = 1
-    jump block2
-
-block2:
-    v18 = iadd_imm.i64 v1, 8
+    fence 
+    v16 = load.i64 notrap aligned v1+24
+    v17 = func_addr.i64 fn0
+    v18 = iadd_imm v16, 8
     v19 = iconst.i64 1
     v20 = atomic_rmw.i64 sub v18, v19  ; v19 = 1
     v21 = icmp eq v20, v19  ; v19 = 1
@@ -1423,24 +1409,14 @@ block2:
 
 block5:
     fence 
-    v22 = load.i64 notrap aligned v1+24
-    v23 = func_addr.i64 fn0
-    v24 = iadd_imm v22, 8
-    v25 = iconst.i64 1
-    v26 = atomic_rmw.i64 sub v24, v25  ; v25 = 1
-    v27 = icmp eq v26, v25  ; v25 = 1
-    brif v27, block7, block6
-
-block7:
-    fence 
-    call fn1(v22, v23)
-    jump block6
-
-block6:
-    v28 = call fn2(v1)
+    call fn1(v16, v17)
     jump block4
 
 block4:
+    v22 = call fn2(v1)
+    jump block2
+
+block2:
     return v11
 }
 ; === end CLIF user::find-min-candidates ===

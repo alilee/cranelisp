@@ -115,6 +115,22 @@ where
     /// These are NEVER eligible for last-use transfer.
     pub(crate) captured_vars: std::collections::HashSet<Symbol>,
 
+    /// The ownership summary ([`cranelisp_types::ModeSummary`]) of the function
+    /// currently being compiled — read from its `codegen_view`
+    /// (`MonoDefnVariant.mode_summary`) on the `compile_to_module` path;
+    /// `None` on the lenient JIT/REPL path (no `codegen_view`) and for every
+    /// inner compiler (lambda / continuation / drop-glue bodies).
+    ///
+    /// Borrow-elision consumer (B3.2, `design/backend/ownership-codegen.md`
+    /// §3.3): `protect_return_value` skips its protective inc when this summary
+    /// is **present** with `result == ResultMode::Fresh` — a Fresh result is
+    /// provably not aliased to any scope binding (the analysis widens any
+    /// returned/escaping param away from Fresh before emitting the summary),
+    /// so scope cleanup cannot free it and no protection is owed. Gated on
+    /// PRESENCE — absent ⇒ Decision-24 (protect), so `CRANELISP_NO_OWNERSHIP`
+    /// (which suppresses all summaries) is byte-identical to pre-B3.2.
+    pub(crate) current_mode_summary: Option<cranelisp_types::ModeSummary>,
+
     /// Set while compiling an `if`/`match` that is itself a **direct tail-call
     /// argument** (`compile_tail_self_call`). Under this flag, `compile_if` /
     /// `compile_match` emit a protective `rc_inc` on any branch/arm result that
@@ -261,6 +277,7 @@ where
             last_uses,
             borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
+            current_mode_summary: None,
             tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
             drop_glue_depth: 0,
@@ -303,6 +320,36 @@ where
         )
     }
 
+    /// B3.2 borrow-elision return-protect gate
+    /// (`design/backend/ownership-codegen.md` §3.3): `true` iff the function's
+    /// ownership summary proves its return value is a fresh (non-aliased) value,
+    /// so `protect_return_value`'s inc is dead weight and is elided (curing the
+    /// G2 / item-26 over-inc leak).
+    ///
+    /// Two conditions, both required for soundness:
+    ///
+    /// 1. **`body` is a direct `Apply`.** The ABI-bearing `result` mode is
+    ///    reliable for a single-`Apply` body — the interprocedural fixpoint
+    ///    composes the callee's result, so `(idv v)` correctly yields
+    ///    `AliasOf(0)` and a param-aliasing Apply body is never `Fresh`. It
+    ///    COLLAPSES a *partial* control-flow return to `Fresh` when only one arm
+    ///    returns a param (`(if (eq i n) v (build …))` reports `result=Fresh`
+    ///    yet returns param `v` in the base case), so trusting `Fresh` for an
+    ///    `if`/`match`/`let` body would drop a NEEDED inc and free the returned
+    ///    param → UAF (verified: `04_vec_cow_loop`'s `build` SIGABRTs under the
+    ///    unrestricted gate). Restricting to `Apply` excludes exactly that
+    ///    control-flow-collapse class.
+    /// 2. **A summary is PRESENT with `result == Fresh`.** Absent ⇒ Decision-24
+    ///    (protect verbatim), so a `CRANELISP_NO_OWNERSHIP` build (no summaries)
+    ///    is byte-identical to pre-B3.2.
+    ///
+    /// The typecheck-side result-mode collapse (case 1) is reported as a
+    /// separate finding; the `Apply` restriction is the sound consumer-side
+    /// counterweight until the analysis widens partial param-returns.
+    pub(crate) fn return_is_fresh_by_summary(&self, body: &MonoExpr) -> bool {
+        return_is_fresh_by_summary(body, self.current_mode_summary.as_ref())
+    }
+
     /// Compile a function definition body into Cranelift IR.
     ///
     /// This is the main entry point called by Jit::compile_defn.
@@ -311,6 +358,7 @@ where
     pub fn compile_body(
         defn: &Defn,
         body: &MonoExpr,
+        mode_summary: Option<cranelisp_types::ModeSummary>,
         func: &mut cranelift::codegen::ir::Function,
         func_ctx: &mut FunctionBuilderContext,
         module: &'a mut M,
@@ -356,6 +404,7 @@ where
             last_uses,
             borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
+            current_mode_summary: mode_summary,
             tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
             drop_glue_depth: 0,
@@ -377,7 +426,15 @@ where
         // variable arguments before the call.
         let skip_var = Self::return_var_in_scope(body, compiler.scope_stack.last());
         let result = compiler.compile_expr(body)?;
-        compiler.protect_return_value(&skip_var, result, body);
+        // B3.2 borrow-elision (`design/backend/ownership-codegen.md` §3.3): skip
+        // the function-return protect inc when the ownership summary proves this
+        // function's result is `Fresh`. Applied ONLY here (the function's actual
+        // return expression, where `current_mode_summary.result` describes the
+        // value) — never at the nested `let`/`match` protect sites, whose bodies
+        // are not the function's tail return.
+        if !compiler.return_is_fresh_by_summary(body) {
+            compiler.protect_return_value(&skip_var, result, body);
+        }
         compiler.pop_scope_with_cleanup(skip_var.as_ref());
 
         // Return the result.
@@ -831,5 +888,115 @@ where
     /// Mark a variable as borrowed (skip scope-exit dec — owner handles cleanup).
     pub(crate) fn mark_borrowed(&mut self, name: &Symbol) {
         self.borrowed_vars.insert(name.clone());
+    }
+}
+
+/// B3.2 borrow-elision return-protect decision
+/// (`design/backend/ownership-codegen.md` §3.3): `true` iff the compiled
+/// function's return-protect inc (`protect_return_value`) may be elided because
+/// its ownership summary proves the return value is a fresh (non-aliased) value.
+///
+/// Sound-consumer contract — BOTH conditions required (see
+/// [`FnCompiler::return_is_fresh_by_summary`] for the full rationale):
+///
+/// 1. `body` is a direct [`MonoExpr::Apply`] — the ABI `result` mode is reliable
+///    for a single-`Apply` body (the fixpoint composes the callee's result;
+///    `(idv v)` → `AliasOf(0)`), but COLLAPSES a partial control-flow return to
+///    `Fresh` (`(if c v (mk …))` reports `Fresh` yet returns param `v` on one
+///    arm). The `Apply` restriction excludes that unsound-`Fresh` class, keeping
+///    `if`/`match`/`let` bodies at Decision-24.
+/// 2. `summary` is `Some` with `result == ResultMode::Fresh`. `None` ⇒ Decision-24
+///    (protect verbatim) — the byte-identical-`CRANELISP_NO_OWNERSHIP` guarantee.
+pub(crate) fn return_is_fresh_by_summary(
+    body: &MonoExpr,
+    summary: Option<&cranelisp_types::ModeSummary>,
+) -> bool {
+    matches!(body, MonoExpr::Apply { .. })
+        && summary.is_some_and(|s| s.result == cranelisp_types::ResultMode::Fresh)
+}
+
+#[cfg(test)]
+mod return_protect_tests {
+    //! B3.2 return-protect elision decision matrix (Principle 23 —
+    //! `design/backend/ownership-codegen.md` §13.5 apply/rc_emission row):
+    //! body-variant × result-mode × summary-presence → skip-protect verdict.
+    use super::return_is_fresh_by_summary;
+    use cranelisp_types::{ConcreteType, ModeSummary, MonoExpr, ResultMode, Span, Symbol};
+
+    fn int_ty() -> ConcreteType {
+        ConcreteType::Int
+    }
+
+    fn apply_body() -> MonoExpr {
+        MonoExpr::Apply {
+            callee: Box::new(MonoExpr::Var {
+                name: Symbol::from("f"),
+                span: Span::new(0, 1),
+                resolved_call: None,
+                ty: int_ty(),
+            }),
+            args: vec![],
+            span: Span::new(0, 3),
+            resolved_call: None,
+            ty: int_ty(),
+            escapes: None,
+            confined: None,
+            unique_static: None,
+            provenance: None,
+        }
+    }
+
+    fn if_body() -> MonoExpr {
+        MonoExpr::If {
+            cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::new(0, 1), ty: ConcreteType::Bool }),
+            then_branch: Box::new(MonoExpr::Var { name: Symbol::from("v"), span: Span::new(1, 2), resolved_call: None, ty: int_ty() }),
+            else_branch: Box::new(MonoExpr::Var { name: Symbol::from("w"), span: Span::new(2, 3), resolved_call: None, ty: int_ty() }),
+            span: Span::new(0, 4),
+            ty: int_ty(),
+        }
+    }
+
+    fn var_body() -> MonoExpr {
+        MonoExpr::Var { name: Symbol::from("v"), span: Span::new(0, 1), resolved_call: None, ty: int_ty() }
+    }
+
+    fn fresh() -> ModeSummary {
+        ModeSummary { result: ResultMode::Fresh, ..Default::default() }
+    }
+    fn alias0() -> ModeSummary {
+        ModeSummary { result: ResultMode::AliasOf(0), ..Default::default() }
+    }
+    fn proj0() -> ModeSummary {
+        ModeSummary { result: ResultMode::ProjectionOf(0), ..Default::default() }
+    }
+
+    // POSITIVE: only cell that elides — direct Apply body + PRESENT Fresh summary.
+    #[test]
+    fn apply_body_fresh_summary_elides() {
+        assert!(return_is_fresh_by_summary(&apply_body(), Some(&fresh())));
+    }
+
+    // NEGATIVE (byte-identical-off): no summary ⇒ never elide, ANY body.
+    #[test]
+    fn absent_summary_never_elides() {
+        assert!(!return_is_fresh_by_summary(&apply_body(), None));
+        assert!(!return_is_fresh_by_summary(&if_body(), None));
+        assert!(!return_is_fresh_by_summary(&var_body(), None));
+    }
+
+    // NEGATIVE (control-flow-collapse safety): if/match/var bodies keep protect
+    // even under a Fresh summary — the `build` UAF class.
+    #[test]
+    fn non_apply_body_never_elides_even_fresh() {
+        assert!(!return_is_fresh_by_summary(&if_body(), Some(&fresh())));
+        assert!(!return_is_fresh_by_summary(&var_body(), Some(&fresh())));
+    }
+
+    // NEGATIVE (aliasing result modes): AliasOf / ProjectionOf keep protect —
+    // the returned value aliases a param and scope cleanup may free it.
+    #[test]
+    fn aliasing_result_modes_never_elide() {
+        assert!(!return_is_fresh_by_summary(&apply_body(), Some(&alias0())));
+        assert!(!return_is_fresh_by_summary(&apply_body(), Some(&proj0())));
     }
 }

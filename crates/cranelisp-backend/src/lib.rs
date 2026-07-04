@@ -802,6 +802,13 @@ where
     // `ConcreteType`), NOT reconstructed from `ast`. Carried in lockstep with
     // `defns`.
     let mut bodies: Vec<cranelisp_types::MonoExpr> = Vec::with_capacity(names.len());
+    // The compile-in-hand ownership summary for each body (B3.2), read from the
+    // same `codegen_view` the body comes from. `None` on the lenient fallback
+    // (no view) and whenever the ownership analysis did not run
+    // (`CRANELISP_NO_OWNERSHIP` ⇒ typecheck emits no summaries). Carried in
+    // lockstep with `bodies`.
+    let mut summaries: Vec<Option<cranelisp_types::ModeSummary>> =
+        Vec::with_capacity(names.len());
     {
         let table = symbol_tables.get(&module_path).ok_or_else(|| {
             CranelispError::CodegenError {
@@ -882,13 +889,16 @@ where
             // lenient builder shares the `ConcreteType::from_type` choke point with
             // the strict view, the structural guarantee (no `Type::Var` reaches
             // `classify`) holds on BOTH paths.
-            let body = match codegen_view {
-                Some(view) if requires_codegen_view(kind.as_ref()) => view.body.clone(),
-                _ => lenient_mono_from_expr(&variant.body),
+            let (body, mode_summary) = match codegen_view {
+                Some(view) if requires_codegen_view(kind.as_ref()) => {
+                    (view.body.clone(), view.mode_summary.clone())
+                }
+                _ => (lenient_mono_from_expr(&variant.body), None),
             };
 
             defns.push(defn);
             bodies.push(body);
+            summaries.push(mode_summary);
         }
     }
 
@@ -959,7 +969,7 @@ where
     // many times.
     let clif_dump_filter: Option<String> = std::env::var("CRANELISP_CODEGEN_DUMP").ok();
 
-    for (defn, body) in defns.iter().zip(bodies.iter()) {
+    for ((defn, body), mode_summary) in defns.iter().zip(bodies.iter()).zip(summaries.iter()) {
         let compile_ctx = CompileContext {
             func_ids: &func_ids,
             func_arities: &func_arities,
@@ -991,6 +1001,7 @@ where
         let art = compile_defn_in_module(
             defn,
             body,
+            mode_summary.clone(),
             module,
             &mut func_ctx,
             &func_ids,
@@ -1560,9 +1571,11 @@ mod trap_stub_tests {
 
 /// Compile a single defn into a module using FnCompiler, returning the
 /// per-symbol introspection artifacts captured during codegen.
+#[allow(clippy::too_many_arguments)] // codegen threading: +mode_summary (B3.2)
 fn compile_defn_in_module<M, C, L>(
     defn: &Defn,
     body: &cranelisp_types::MonoExpr,
+    mode_summary: Option<cranelisp_types::ModeSummary>,
     module: &mut M,
     func_ctx: &mut FunctionBuilderContext,
     func_ids: &HashMap<Symbol, FuncId>,
@@ -1592,7 +1605,7 @@ where
         sig,
     );
 
-    FnCompiler::compile_body(defn, body, &mut func, func_ctx, module, compile_ctx)?;
+    FnCompiler::compile_body(defn, body, mode_summary, &mut func, func_ctx, module, compile_ctx)?;
 
     // Capture CLIF IR text before define_function consumes the context — but
     // only when the caller will consume it (FIXME 0325). When `capture_clif`

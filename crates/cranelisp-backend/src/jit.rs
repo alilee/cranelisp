@@ -634,6 +634,9 @@ impl Jit {
         FnCompiler::compile_body(
             defn,
             &body,
+            // Lenient JIT/REPL/dev-session path: no `codegen_view`, hence no
+            // ownership summary — protect_return_value stays Decision-24.
+            None,
             &mut self.ctx.func,
             &mut self.func_ctx,
             module,
