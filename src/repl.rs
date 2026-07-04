@@ -241,55 +241,6 @@ pub(crate) fn format_mem_snapshot() -> String {
     )
 }
 
-/// Format a module entry signature for /sig display.
-pub(crate) fn format_entry_sig(entry: &ModuleEntry<Code>, name: &str) -> String {
-    match entry {
-        // S70 macro-unification / S69 Submission 35-36 (W-Absorb): constructors
-        // and macros are now `Def` entries discriminated by `kind`; special
-        // forms are their own `ModuleEntry::SpecialForm` variant.
-        ModuleEntry::Def { scheme, kind, docstring, .. } => {
-            match kind.as_ref() {
-                DefKind::Overloaded { variants } if !variants.is_empty() => {
-                    // Multi-sig: one line per variant per repl/spec.md §4.1.1.
-                    format_overloaded_variants_bare(name, variants, docstring.as_deref())
-                }
-                DefKind::Constructor { type_name, .. } => {
-                    format!(":{} {} ; constructor of {}", scheme.ty, name, type_name)
-                }
-                DefKind::Macro { clauses_meta, .. } => {
-                    let arity = clauses_meta.first().map(|c| c.params.len()).unwrap_or(0);
-                    format!(
-                        "{name} ; defmacro ({} clause(s), arity {})",
-                        clauses_meta.len(),
-                        arity
-                    )
-                }
-                _ => {
-                    let classification = match kind.as_ref() {
-                        DefKind::Overloaded { .. } => "defn (multi)",
-                        _ => "defn",
-                    };
-                    let base = format!(":{} {} ; {}", scheme.ty, name, classification);
-                    append_docstring_comment(base, docstring.as_deref())
-                }
-            }
-        }
-        ModuleEntry::SpecialForm { scheme, description, .. } => {
-            format_special_form_display(name, scheme, description)
-        }
-        ModuleEntry::TypeDef { .. } => {
-            format!("{name} ; deftype")
-        }
-        ModuleEntry::TraitDecl { info, .. } => {
-            format!("{name} ; deftrait ({} method(s))", info.methods.len())
-        }
-        ModuleEntry::Import { source, .. } => {
-            format!("{name} ; imported from {}/{}", source.module, source.symbol)
-        }
-        _ => name.to_string(),
-    }
-}
-
 /// Format an overloaded (multi-sig) function as one line per variant, with
 /// fully-qualified `module/name` per spec §4.1.1. Used by bare-symbol display
 /// (`format_def_entry`).
@@ -312,28 +263,6 @@ pub(crate) fn format_overloaded_variants(
             append_docstring_comment(base, docstring)
         } else {
             format!(":{type_str} {module}/{name}")
-        };
-        lines.push(line);
-    }
-    lines.join("\n")
-}
-
-/// /sig variant of `format_overloaded_variants` — bare name (no module prefix)
-/// to match the rest of `format_entry_sig`'s output. One line per variant.
-pub(crate) fn format_overloaded_variants_bare(
-    name: &str,
-    variants: &[OverloadVariant],
-    docstring: Option<&str>,
-) -> String {
-    let mut lines = Vec::with_capacity(variants.len());
-    for (i, v) in variants.iter().enumerate() {
-        let fn_ty = Type::Fn(v.param_types.clone(), Box::new(v.ret_type.clone()));
-        let type_str = format_type_qualified(&fn_ty);
-        let line = if i == 0 {
-            let base = format!(":{type_str} {name} ; defn");
-            append_docstring_comment(base, docstring)
-        } else {
-            format!(":{type_str} {name}")
         };
         lines.push(line);
     }
@@ -756,31 +685,24 @@ impl CompilerSession {
         if intrinsic_type_from_name(name).is_some() {
             return format!("{name} ; type - builtin type");
         }
-        let was_qualified = name.contains('/');
         match self.resolve_entry_arg(name) {
             Some((entry, lookup_module, bare)) => {
-                // §3.8 (FIXME 0487): a module-qualified argument OR a bare
-                // IMPORTED name resolves through its import chain to the
-                // defining entry and shows that entry's FULL, module-qualified
-                // signature line (the same `:(Fn …) module/name ; defn` shape
-                // bare-value display uses) — not the bare `mf ; imported from
-                // …` stub. A bare name that resolves LOCALLY keeps the existing
-                // bare-name `/sig` rendering (the §3.8 local-agreement tightening
-                // is 0492 / a later wave).
-                let is_import = matches!(entry, ModuleEntry::Import { .. });
-                if was_qualified || is_import {
-                    let (resolved_entry, resolved_module) =
-                        self.resolve_entry_for_display(&entry, &lookup_module);
-                    let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
-                    return match self.broken_status_line(name, &resolved_module) {
-                        Some(line) => format!("{sig}\n{line}"),
-                        None => sig,
-                    };
-                }
-                let sig = format_entry_sig(&entry, &bare);
+                // §3.8 (FIXME 0492): `/sig`'s primary line MUST be byte-identical
+                // to bare lookup's — fully-qualified type names (§1.4) AND a
+                // fully-qualified symbol name (§1.1). EVERY resolved argument —
+                // module-qualified, bare-imported, AND bare-LOCAL — routes
+                // through the same `resolve_entry_for_display` +
+                // `format_def_entry` composition the bare-value display path uses
+                // (`format_eval_result_body`'s Def arm), so the two surfaces
+                // cannot diverge. The former bare-local arm rendered the short,
+                // UNqualified `format_entry_sig` form (`:(Fn [Int] Int) k`) — the
+                // §3.8 non-conformance this flips.
+                let (resolved_entry, resolved_module) =
+                    self.resolve_entry_for_display(&entry, &lookup_module);
+                let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
                 // S101 (repl/spec.md §18.4): a broken symbol's /sig shows the
                 // same primary line plus the provenance comment line.
-                match self.broken_status_line(name, &lookup_module) {
+                match self.broken_status_line(name, &resolved_module) {
                     Some(line) => format!("{sig}\n{line}"),
                     None => sig,
                 }
@@ -3396,28 +3318,6 @@ mod overloaded_display_tests {
         );
     }
 
-    // /sig path uses bare names per `format_entry_sig` convention; make sure
-    // bare variant of the helper drops the module prefix.
-    #[test]
-    fn overloaded_display_bare_omits_module_prefix() {
-        let variants = vec![
-            variant(vec![Type::Int], Type::Int, "pick$Int"),
-            variant(vec![Type::Int, Type::Int], Type::Int, "pick$Int+Int"),
-        ];
-        let out = format_overloaded_variants_bare("pick", &variants, None);
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 2);
-        for line in &lines {
-            assert!(
-                !line.contains("user/pick"),
-                "bare variant must NOT include module prefix, got: {line}"
-            );
-            assert!(
-                line.contains(" pick"),
-                "bare variant must include the bare name, got: {line}"
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3427,80 +3327,10 @@ mod overloaded_display_tests {
 // design: design/int/dual-path-persistence-collapse.md §9.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
-mod format_entry_sig_tests {
+mod sig_display_helper_tests {
     use super::*;
-    use cranelisp_types::{DefKind, Scheme, Type, Visibility};
+    use cranelisp_types::Scheme;
     use std::collections::HashMap as StdHashMap;
-
-    fn mk_def_entry(
-        ty: Type,
-        docstring: Option<String>,
-    ) -> ModuleEntry<Code> {
-        let mut builder = ModuleEntry::def(
-            Scheme { type_vars: vec![], constraints: StdHashMap::new(), ty },
-            DefKind::UserFn {
-                fn_state: cranelisp_types::UserFnState::Concrete { got_slot: 0, mode_summary: None },
-            },
-        )
-        .visibility(Visibility::Public);
-        if let Some(doc) = docstring {
-            builder = builder.docstring(doc);
-        }
-        builder.build()
-    }
-
-    // spec: repl/spec.md §1.1 — "; classification - docstring-first-line"
-    #[test]
-    fn format_entry_sig_defn_includes_docstring_after_dash() {
-        let fn_ty = Type::Fn(vec![Type::Int, Type::Int], Box::new(Type::Int));
-        let entry = mk_def_entry(fn_ty, Some("Add two ints".to_string()));
-        let out = format_entry_sig(&entry, "add");
-        assert!(
-            out.ends_with(" ; defn - Add two ints"),
-            "output must end with `; defn - <doc>`, got: {out}"
-        );
-    }
-
-    // spec: repl/spec.md §1.1 — "If the symbol has no docstring, only the
-    //                           classification appears."
-    #[test]
-    fn format_entry_sig_defn_without_docstring_omits_dash() {
-        let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
-        let entry = mk_def_entry(fn_ty, None);
-        let out = format_entry_sig(&entry, "id");
-        assert!(
-            out.ends_with(" ; defn"),
-            "output must end with `; defn` (no trailing dash), got: {out}"
-        );
-        assert!(
-            !out.contains(" - "),
-            "no-docstring output MUST NOT contain ` - ` separator, got: {out}"
-        );
-    }
-
-    // spec: repl/spec.md §1.1 — "The docstring is the first line of the
-    //                           symbol's documentation."
-    #[test]
-    fn format_entry_sig_defn_docstring_uses_first_line_only() {
-        let fn_ty = Type::Fn(vec![Type::Int], Box::new(Type::Int));
-        let entry = mk_def_entry(
-            fn_ty,
-            Some("First line\nSecond line\nThird line".to_string()),
-        );
-        let out = format_entry_sig(&entry, "f");
-        assert!(
-            out.contains(" - First line"),
-            "docstring first line must be appended, got: {out}"
-        );
-        assert!(
-            !out.contains("Second line"),
-            "only first line must be appended; second line leaked: {out}"
-        );
-        assert!(
-            !out.contains("Third line"),
-            "only first line must be appended; third line leaked: {out}"
-        );
-    }
 
     // spec: repl/spec.md §4.1.5 — a special form's `:Type` prefix is rendered
     //   from the entry's own `Fn` scheme (single source), NOT a hardcoded sig
@@ -3694,6 +3524,37 @@ mod fq_arg_tests {
         assert!(!out.contains("unknown symbol"), "got: {out}");
         assert!(out.contains("m/mf"), "the FQ name must appear; got: {out}");
         assert!(out.contains("(Fn ["), "the full signature must appear; got: {out}");
+    }
+
+    // §3.8 (FIXME 0492): /sig on a bare LOCAL name renders the SAME
+    // fully-qualified primary line as bare-value display — the
+    // `format_def_entry` composition — not the short unqualified
+    // `:(Fn [Int] Int) dbl` form the pre-fix bare-local arm used. Asserted as
+    // byte-equality with `format_def_entry` at the display seam so the two
+    // surfaces cannot drift.
+    #[test]
+    fn handle_sig_bare_local_matches_format_def_entry_fully_qualified() {
+        let s = session();
+        let user = s.current_module_path();
+        let entry = userfn_def(Some("Multiply by 2"));
+        if let Some(mut table) = s.shared.symbol_tables.get_mut(&user) {
+            table.insert(Symbol::from("dbl"), entry.clone());
+        } else {
+            let mut table = SessionSymbolTable::new_with_params(user.clone());
+            table.insert(Symbol::from("dbl"), entry.clone());
+            s.shared.symbol_tables.insert(user.clone(), table);
+        }
+        let sig = s.handle_sig("dbl");
+        let expected = s.format_def_entry(&entry, "dbl", &user);
+        assert_eq!(
+            sig, expected,
+            "/sig bare-local MUST render the identical §3.8 primary line as \
+             format_def_entry (bare-value display); got: {sig}"
+        );
+        assert!(
+            sig.starts_with(":(Fn [primitives/Int] primitives/Int) user/dbl ; defn"),
+            "primary line MUST be fully qualified in BOTH positions; got: {sig}"
+        );
     }
 
     // /info on a module-qualified name resolves (not `unknown symbol`) and
