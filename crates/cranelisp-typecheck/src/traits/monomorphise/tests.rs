@@ -242,6 +242,77 @@ fn build_mangled_name_nested_fn_param() {
     );
 }
 
+// --- Depth ≥3 + cross-axis nesting (recursion terminates + distinguishes at
+//     depth, and the ADT axis and Fn axis compose) ---
+
+// spec: design/typecheck/monomorphisation.md §3.5 — edge: nesting depth 3. The
+// recursion terminates AND distinguishes `Vec (Vec (Vec Int))` from the String
+// tail. Dev's matrix pinned depth 2 (`nested_adt_arg`); this pins depth ≥3 per
+// the strategy-matrix requirement (each additional level recurses, no cap).
+#[test]
+fn build_mangled_name_triple_nested_adt_arg() {
+    let vvv_int = Type::ADT(
+        test_fqtn("Vec"),
+        vec![Type::ADT(test_fqtn("Vec"), vec![Type::ADT(test_fqtn("Vec"), vec![Type::Int])])],
+    );
+    let vvv_str = Type::ADT(
+        test_fqtn("Vec"),
+        vec![Type::ADT(test_fqtn("Vec"), vec![Type::ADT(test_fqtn("Vec"), vec![Type::String])])],
+    );
+    assert_eq!(
+        build_mangled_name(&m(), &Symbol::from("f"), &[vvv_int]),
+        "m/f$test/Vec$test/Vec$test/Vec$Int"
+    );
+    assert_eq!(
+        build_mangled_name(&m(), &Symbol::from("f"), &[vvv_str]),
+        "m/f$test/Vec$test/Vec$test/Vec$String"
+    );
+}
+
+// spec: design/typecheck/monomorphisation.md §3.5 — cross-axis: an ADT whose
+// argument is a `Fn` recurses through BOTH axes (`Vec (Fn [Int] Int)`). Neither
+// the pure-ADT cells nor the pure-Fn cells cover the ADT-contains-Fn composition
+// — this pins that the two axes compose in the one canonical mangler.
+#[test]
+fn build_mangled_name_adt_arg_containing_fn() {
+    let vec_of_fn = Type::ADT(
+        test_fqtn("Vec"),
+        vec![Type::Fn(vec![Type::Int], Box::new(Type::Int))],
+    );
+    assert_eq!(
+        build_mangled_name(&m(), &Symbol::from("f"), &[vec_of_fn]),
+        "m/f$test/Vec$Fn(Int;Int)"
+    );
+}
+
+// spec: design/typecheck/monomorphisation.md §3.5 — cross-axis: a `Fn` whose
+// RETURN type is an ADT recurses the ret position into the ADT axis
+// (`Fn [Int] (Vec Int)`). Complements `nested_fn_param` (Fn-returns-Fn) and
+// `adt_arg_containing_fn` (ADT-contains-Fn) — closes the 2×2 axis-composition
+// matrix. The balanced `Fn(…;…)` parens keep the ADT ret extent unambiguous.
+#[test]
+fn build_mangled_name_fn_returning_adt() {
+    let fn_ret_vec = Type::Fn(
+        vec![Type::Int],
+        Box::new(Type::ADT(test_fqtn("Vec"), vec![Type::Int])),
+    );
+    assert_eq!(
+        build_mangled_name(&m(), &Symbol::from("g"), &[fn_ret_vec]),
+        "m/g$Fn(Int;test/Vec$Int)"
+    );
+}
+
+// spec: design/typecheck/monomorphisation.md §3.5 — a bare `String` scalar param
+// mangles to `String` (the scalar cells pin Int/Float; String/Bool were only
+// exercised structurally inside ADT/Fn args — this pins the bare-scalar leg).
+#[test]
+fn build_mangled_name_bare_string_scalar() {
+    assert_eq!(
+        build_mangled_name(&m(), &Symbol::from("id"), &[Type::String]),
+        "m/id$String"
+    );
+}
+
 // --- Mirror consistency (the 0508 dedup/name inconsistency guard) ---
 
 // spec: design/typecheck/monomorphisation.md §3.5 — the pass4 seen-dedup key and

@@ -126,6 +126,45 @@ lossy mangler, different erasure axis; 0519 cures both + the latent Fn-param
 axis in one change-set. `// spec:` anchor `spec/08-modules.md §8.5`
 (spec_link_check clean).
 
+### Sprint 102 — trait-method $Type-grain home collision (4th lossy-head instance) (/qa, 2026-07-04)
+
+**+1 intentional RED** from the FIXME 0519 sufficiency audit's Job-2 probe (the
+`/dev` declared the trait-method naming grain out-of-scope; this proves it a
+genuine 4th instance of the lossy-head mangle class). Baseline before: **3813
+run / 3805 passed / 8 failed / 1 skipped**; after this repro: **+1 RED** (the
+Job-1 completeness cells are all GREEN — see below). The 8 prior REDs unchanged
+(1 `display_exact` + 4 `ownership_fences` + 3 `vec_cow_value_use_leak`).
+
+| # | Tests (file :: name) | Lane / defect | Flips with |
+|---|---|---|---|
+| 31 | `trait_method_mangle_home_collision::two_same_named_types_same_trait_dispatch_to_own_impls` | 4th lossy-head instance — trait dispatch (`traits/dispatch.rs:52,88`) mints `Trait.method$Type` via `concrete_type_name` BARE head-name; two distinct nominal types `a/Widget`≠`b/Widget` (spec §3.8.4) each with `impl Describe Widget` both mint `Describe.describe$Widget` → collide → every `(describe x)` binds ONE impl body. `(add-i64 (describe a/WA) (describe b/WB))` → 200 (100+100, both a's body; import-b-reversed → 400) not 300 (100+200). SILENT wrong-dispatch. | FIXME (new, /dev typecheck) — extend the 0519 FQ-key unification to the trait-method grain (`dispatch.rs` mangled name + `impl_check.rs::finalize_impl_method_writeback` symbol key in lock-step) |
+
+Owning skill / target: `/dev` (typecheck); disposition: `out-of-scope
+(owner=/dev typecheck)`, awaiting `/sprint` routing (likely a follow-up
+typecheck /dev fix). Same lossy-head class as 0483 (ADT-arg erasure,
+`vec_query_value_use.rs`) and 0508 (home erasure, `mono_mangle_home_collision.rs`)
+— those two + the latent Fn-param axis were cured by 0519 at the MONO-instance
+grain; this is the SAME defect mirrored at the adjacent trait-method grain
+(P7/P8), which 0519 left uncovered. `// spec:` anchors `spec/07-traits.md §7.4`
++ `spec/03-types.md §3.8.4` (spec_link_check clean). SHA: this change-set.
+
+**Job-1 (mono-mangler matrix completeness) — GREEN completeness pins added**
+(FIXME 0519 sufficiency audit): the `/dev`'s strategy-matrix in
+`crates/cranelisp-typecheck/src/traits/monomorphise/tests.rs` was audited
+against every concrete `Type` variant (Int/Bool/String/Float/Fn/ADT reachable;
+Var/TyConApp non-concrete → tripwire-guarded) and found near-complete. 4
+genuinely-uncovered implied-matrix cells filled, all GREEN: depth-≥3 nesting
+(`build_mangled_name_triple_nested_adt_arg` — dev covered depth 2 only),
+cross-axis ADT-contains-Fn (`build_mangled_name_adt_arg_containing_fn`),
+cross-axis Fn-returns-ADT (`build_mangled_name_fn_returning_adt`), and the
+bare-`String` scalar leg (`build_mangled_name_bare_string_scalar`). Observation
+(NOT a live defect, sound within scope): the flat ADT-arg `$`/`+` grammar is NOT
+bracket-delimited (unlike the balanced `Fn(…;…)`); its injectivity relies on the
+per-`(home,name)` template having a FIXED arity, so no two mono instances of one
+template collide. The multi-sig OVERLOAD mangler (`program.rs::mangle_sig`,
+same `mangle_type`) does NOT have the fixed-arity guarantee across variants — a
+speculative separator-ambiguity worth an `/arch` glance but not reproduced here.
+
 **Wave-3R addendum (oracle hardening + ratification, /qa, 2026-07-03):** the
 four B0-be review findings landed on the L-B1 lane
 (`tests/scripts/clif_golden.sh` `dump()` + the
