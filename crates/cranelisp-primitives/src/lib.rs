@@ -149,6 +149,7 @@ pub mod float;
 pub mod int;
 pub mod marshal;
 pub(crate) mod operator;
+pub(crate) mod ownership_facts;
 pub mod ring0;
 pub mod string;
 pub mod vec;
@@ -243,7 +244,11 @@ fn insert_primitive_entry(
         // fields are spelled out at the declaration site.
         ModuleEntry::def(scheme, DefKind::Primitive {
             body: PrimitiveBody::Extern { got_slot: slot, borrowed_sibling_slot: None },
-            mode_summary: None,
+            // CS-B: the declared ownership-fact leaf, transcribed from the
+            // `ring2-rc.md` §3.3 audit (`ownership_facts::declared_mode_summary`).
+            // `None` = the Decision-24 conservative default for an unclassified
+            // heap leaf.
+            mode_summary: ownership_facts::declared_mode_summary(prim.name.as_ref(), &prim.ty),
         })
             .param_names(prim.param_names.clone())
             .docstring(prim.docstring)
@@ -348,6 +353,9 @@ fn insert_vec_query_entries(
         } else {
             PrimitiveBody::Inline
         };
+        // CS-B: the inline vec family's declared projection/COW facts (§9.3),
+        // via the same classifier as every other primitive leaf.
+        let mode_summary = ownership_facts::declared_mode_summary(name, &ty);
         let scheme = Scheme {
             type_vars: vec![A],
             constraints: HashMap::new(),
@@ -355,7 +363,7 @@ fn insert_vec_query_entries(
         };
         table.insert(
             Symbol::from(name),
-            ModuleEntry::def(scheme, DefKind::Primitive { body, mode_summary: None })
+            ModuleEntry::def(scheme, DefKind::Primitive { body, mode_summary })
                 .param_names(param_names)
                 .docstring(docstring)
                 .build(),

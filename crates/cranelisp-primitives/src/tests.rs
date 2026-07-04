@@ -570,3 +570,87 @@
             );
         }
     }
+
+    // ---- CS-B: declared ownership fact-table population (S102) ----
+
+    // spec: design/typecheck/ownership-inference.md §13.4 — the completeness
+    // contract: every `DefKind::Primitive` entry with a heap-typed parameter in
+    // its scheme carries a declared summary at construction (the S101 cat-1
+    // "convention-populated field" lesson applied at birth). No heap leaf may
+    // silently default to `None`.
+    #[test]
+    fn every_heap_param_primitive_carries_a_declared_summary() {
+        use cranelisp_types::{DefKind, ModuleEntry, Type};
+        fn is_scalar(t: &Type) -> bool {
+            matches!(t, Type::Int | Type::Bool | Type::Float)
+        }
+        for (name, entry) in PRIMITIVES_TABLE.symbols.iter() {
+            let ModuleEntry::Def { scheme, kind, .. } = entry else { continue };
+            if !matches!(**kind, DefKind::Primitive { .. }) {
+                continue;
+            }
+            let has_heap_param =
+                matches!(&scheme.ty, Type::Fn(ps, _) if ps.iter().any(|p| !is_scalar(p)));
+            if has_heap_param {
+                assert!(
+                    entry.mode_summary().is_some(),
+                    "heap-param primitive {name} must carry a declared summary (CS-B)"
+                );
+            }
+        }
+    }
+
+    // spec: design/typecheck/ownership-inference.md §9.1 — the declared leaf
+    // reaches pass5 through the ordinary entry accessor. Spot-check the built
+    // table for each fact class.
+    #[test]
+    fn built_table_entries_carry_the_expected_declared_facts() {
+        use cranelisp_types::{Mode, ResultMode};
+
+        // Scalar op — all-Copy / Fresh.
+        let add = PRIMITIVES_TABLE.get("add-i64").unwrap().mode_summary().unwrap();
+        assert_eq!(add.param_modes, vec![Mode::Copy, Mode::Copy]);
+        assert_eq!(add.result, ResultMode::Fresh);
+
+        // Only-read heap — Borrowed analysis fact.
+        let str_eq = PRIMITIVES_TABLE.get("str-eq").unwrap().mode_summary().unwrap();
+        assert_eq!(str_eq.param_modes, vec![Mode::Borrowed, Mode::Borrowed]);
+
+        // Transforming heap — Owned / Fresh.
+        let concat = PRIMITIVES_TABLE.get("str-concat").unwrap().mode_summary().unwrap();
+        assert_eq!(concat.param_modes, vec![Mode::Owned, Mode::Owned]);
+        assert_eq!(concat.result, ResultMode::Fresh);
+
+        // The alias leaf.
+        let ident = PRIMITIVES_TABLE.get("string-identity").unwrap().mode_summary().unwrap();
+        assert_eq!(ident.result, ResultMode::AliasOf(0));
+
+        // Inline vec family — projection.
+        let vget = PRIMITIVES_TABLE.get("vec-get").unwrap().mode_summary().unwrap();
+        assert_eq!(vget.param_modes, vec![Mode::Borrowed, Mode::Copy]);
+        assert_eq!(vget.result, ResultMode::ProjectionOf(0));
+
+        let vlen = PRIMITIVES_TABLE.get("vec-len").unwrap().mode_summary().unwrap();
+        assert_eq!(vlen.param_modes, vec![Mode::Borrowed]);
+    }
+
+    // spec: design/typecheck/ownership-inference.md §13.4 — the named scope cut:
+    // `DefKind::PrimitiveExtern` carries no summary at all (slot-less by-name
+    // dispatch, pinned Decision-24 boundary). Structural — the variant has no
+    // `mode_summary` field, so the accessor reads `None`.
+    #[test]
+    fn primitive_extern_carries_no_summary() {
+        use std::collections::HashMap;
+        use cranelisp_types::{DefKind, ModuleEntry, Scheme, Type};
+        let scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![Type::String], Box::new(Type::String)),
+        };
+        let entry: ModuleEntry<()> =
+            ModuleEntry::def(scheme, DefKind::PrimitiveExtern).build();
+        assert!(
+            entry.mode_summary().is_none(),
+            "PrimitiveExtern dispatches by-name and carries no declared facts"
+        );
+    }
