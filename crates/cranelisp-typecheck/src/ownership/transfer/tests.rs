@@ -697,3 +697,259 @@ fn deps_harvested_for_summarised_callee() {
     assert!(r.deps.iter().any(|fq| fq.symbol.as_ref() == "consume"));
 }
 
+// ============ Scope-stack mechanism matrix (S102 /qa audit) ============
+//
+// These cells audit the `ScopeFrame`/`restore_frame` primitive itself
+// (§13.6(i), F4 cure), not the specific bugs that motivated it. The existing
+// F4 cells above pin the branch-SIBLING shadow and the match-arm-leak found
+// bugs; the cells below fill the implied strategy matrix per
+// `feedback_dev_strategy_derived_unit_scenarios`: the `Option<BindState>`
+// restore BOTH arms (reinstate / remove), ≥3-deep nesting, multi-arm same-name
+// independence, Lambda framing, and the scope-stack × F1-drain interaction.
+// Every assertion pins the SPECIFIC resolved fact (the ABI-bearing
+// `param_modes` value, provenance, or value-use), not "no panic".
+
+#[test]
+fn sequential_shadow_scope_restores_param_reinstates() {
+    // spec: §13.6(i) (F4) — restore-REINSTATES arm, SEQUENTIAL (not sibling).
+    // An inner `let` shadows param `a` inside the RHS of an outer binding; after
+    // that inner scope closes, a later `(consume a)` in the ENCLOSING scope means
+    // the PARAM. The scope frame must reinstate the param `BindState` so
+    // `param_root(a)` reaches param 0 and it widens Owned. Without the reinstate,
+    // `a` stays the inner `Projection(g)`, `param_root` misses, and `param_modes[0]`
+    // narrows Owned→Borrowed (the ABI-half unsound direction). Distinct from the
+    // sibling-branch cells — here the shadow and the use are SEQUENTIAL, the inner
+    // scope fully closing before the use.
+    // `(defn f [a g] (let [x (let [a (gcells g)] a)] (consume a)))`.
+    let env = accessor_env()
+        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let inner_let = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
+        body: Box::new(var("a")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), inner_let)],
+        body: Box::new(call("consume", vec![var("a")])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("a"), strparam("g")], body, env);
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "param a must be reinstated after the inner shadow scope closes and widen Owned"
+    );
+}
+
+#[test]
+fn inner_scope_binding_removed_on_exit_unresolved_after() {
+    // spec: §13.6(i) (F4) — restore-REMOVES arm. A name UNBOUND on entry (`t`) is
+    // bound inside an inner scope, then used after that scope closes; the frame
+    // must REMOVE it (prior was `None`) so the later use is unresolved/free again —
+    // the inner binding did not leak. Observable: a use of `t` after the scope
+    // resolves as a free/global name ⇒ recorded in `value_uses` (§8.3). Had the
+    // inner binding leaked, `t` would resolve to the leaked `Fresh` binding and
+    // would NOT be a value-use.
+    // `(defn f [p] (let [x (let [t (Some p)] 0)] (consume t)))`.
+    let env = TestEnv::default()
+        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let inner_let = MonoExpr::Let {
+        bindings: vec![(Symbol::from("t"), adt(vec![var("p")]))],
+        body: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), inner_let)],
+        body: Box::new(call("consume", vec![var("t")])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("p")], body, env);
+    assert!(
+        r.value_uses.contains(&Symbol::from("t")),
+        "t must be unresolved (free) after its inner scope closes — the frame removed it, no leak"
+    );
+}
+
+#[test]
+fn triple_nested_shadow_unwinds_restore_param() {
+    // spec: §13.6(i) (F4) — nesting depth ≥3. Three nested `let` scopes each
+    // shadow the same param `a` (each RHS a projection of `g`); after all three
+    // close, a `(consume a)` in the enclosing scope must reach the PARAM. Each
+    // level's frame must restore correctly on unwind — a miss at ANY level leaves
+    // `a` a leaked `Projection(g)`, `param_root` misses, and `param_modes[0]`
+    // narrows Owned→Borrowed. `g` is only read borrowed by the accessors, so it
+    // must stay Borrowed throughout — the negative half (no nesting corruption).
+    // `(defn f [a g] (let [x (let [a (gcells g)] (let [a (gcells g)]
+    //                        (let [a (gcells g)] a)))] (consume a)))`.
+    let env = accessor_env()
+        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let l3 = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
+        body: Box::new(var("a")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let l2 = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
+        body: Box::new(l3),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let l1 = MonoExpr::Let {
+        bindings: vec![(Symbol::from("a"), call("gcells", vec![var("g")]))],
+        body: Box::new(l2),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), l1)],
+        body: Box::new(call("consume", vec![var("a")])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("a"), strparam("g")], body, env);
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "param a must be reinstated after 3-deep shadow unwinds and widen Owned"
+    );
+    assert_eq!(
+        r.summary.param_mode(1),
+        Mode::Borrowed,
+        "param g stays Borrowed — nesting must not corrupt the sibling param"
+    );
+}
+
+#[test]
+fn two_match_arms_same_name_independent_param_restored() {
+    // spec: §13.6(i) (F4) — multiple Match arms rebinding the SAME name, each in
+    // its own frame. Both arms bind field `g` (shadowing param `g`); arm 2's `g`
+    // must NOT see arm 1's `g` binding. After the match, a `(consume g)` in the
+    // enclosing scope means the PARAM. If arm 1's frame leaked, arm 2's
+    // `bind_pattern` would save arm 1's stale `Projection` as the prior and, on
+    // arm 2's restore, reinstate THAT (not the param) — permanently losing the
+    // param `g` ⇒ `param_modes[0]` narrows Owned→Borrowed. Each-arm-own-frame is
+    // what keeps arm 2 independent and the param recoverable.
+    // `(defn f [g h] (let [x (match h [(Box g) g] [(Cell g) g])] (consume g)))`.
+    let env = TestEnv::default()
+        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let arm1 = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            bindings: vec![Symbol::from("g")],
+            span: s(),
+        },
+        body: var("g"),
+        span: Span::new(70, 71),
+        provenance: None,
+    };
+    let arm2 = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Cell") },
+            bindings: vec![Symbol::from("g")],
+            span: s(),
+        },
+        body: var("g"),
+        span: Span::new(72, 73),
+        provenance: None,
+    };
+    let m = MonoExpr::Match {
+        scrutinee: Box::new(var("h")),
+        arms: vec![arm1, arm2],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), m)],
+        body: Box::new(call("consume", vec![var("g")])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("g"), strparam("h")], body, env);
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "param g must survive two same-name arms (each its own frame) and widen Owned"
+    );
+}
+
+#[test]
+fn lambda_binds_no_frame_outer_shadow_over_widens_sound() {
+    // spec: §13.6(i) (F4, Lambda determination) — the transfer walker's `Lambda`
+    // arm pushes NO scope frame and binds NONE of the lambda's own params into
+    // `bindings` (`transfer.rs` Lambda arm ignores `params`). Because it inserts
+    // nothing, it cannot LEAK a binding past its scope — so Lambda is NOT a fourth
+    // instance of the scope-leak class (no `param_modes` narrowing is reachable
+    // through it). The only effect of not modeling the lambda param is that an
+    // outer param shadowed by a same-named lambda param is OVER-widened at an
+    // escaping capture (the lambda-body use resolves to the OUTER param): here
+    // `(defn f [a] (fn [a] (consume a)))` widens the outer `a` to Owned even
+    // though the lambda's `a` shadows it. Over-widening (Borrowed→Owned) is the
+    // SOUND/conservative direction (an extra retain, never an elided one). This
+    // cell pins the determination; a future lambda-param frame would flip it.
+    let env = TestEnv::default()
+        .summary("consume", sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Consumed]));
+    let lambda = MonoExpr::Lambda {
+        params: vec![Symbol::from("a")],
+        body: Box::new(call("consume", vec![var("a")])),
+        span: s(),
+        ty: ConcreteType::Fn(vec![], Box::new(ConcreteType::String)),
+        escapes: None,
+        confined: None,
+        unique_static: None,
+    };
+    let r = run(&[strparam("a")], lambda, env);
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Owned,
+        "outer param a is over-widened (sound) — Lambda models no frame, cannot narrow"
+    );
+}
+
+#[test]
+fn fold_chain_in_shadowing_scope_drains_in_defining_scope() {
+    // spec: §13.6(g)+(i) — the scope-stack × F1-drain interaction. A flat fold
+    // chain whose FIRST binding shadows the param `p`, extending
+    // `binding_mediated_escape_flat_fold_chain_widens_all` into a shadowed context.
+    // `(defn f [p] (let [p (Some p) b (Some p)] b))`: `b` is returned ⇒ escapes;
+    // `b`'s RHS `(Some p)` folds the let-bound `p` (the shadow, Fresh) ⇒ `p`
+    // escapes ⇒ `p`'s OWN RHS `(Some p_outer)` must re-walk in its DEFINING scope
+    // (the binding `p` is not in scope while its own RHS evaluates — sequential-let
+    // semantics), resolving that `p` to the PARAM so the param flow widens
+    // Consumed→IntoResult. If the drain re-walked without restoring the defining
+    // scope, `p` would resolve to the Fresh shadow (param_root None) and the param
+    // would stay Consumed — the exact narrowing the defining-scope re-walk cures.
+    let x_span = Span::new(80, 81);
+    let b_span = Span::new(82, 83);
+    let body = MonoExpr::Let {
+        bindings: vec![
+            (Symbol::from("p"), adt_sp(x_span, vec![var("p")])),
+            (Symbol::from("b"), adt_sp(b_span, vec![var("p")])),
+        ],
+        body: Box::new(var("b")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("p")], body, TestEnv::default());
+    assert_eq!(
+        r.summary.param_flow(0),
+        ParamFlow::IntoResult,
+        "the fold chain must resolve p's RHS in its defining scope (the param), widening IntoResult"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&b_span),
+        Some(&true),
+        "the returned aggregate b escapes"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&x_span),
+        Some(&true),
+        "the shadowing p aggregate escapes (folded into returned b)"
+    );
+}
+

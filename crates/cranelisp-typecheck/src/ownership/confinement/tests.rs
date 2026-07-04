@@ -210,3 +210,148 @@ fn confined_facts_true_on_parent_false_in_spark() {
     assert_eq!(r.confined.get(&Span::new(100, 101)), Some(&true));
     assert_eq!(r.confined.get(&Span::new(200, 201)), Some(&false));
 }
+
+// ============ ConfineFrame scope-stack matrix (S102 /qa audit) ============
+//
+// The confinement mirror of the transfer scope-stack matrix (§13.6(i)).
+// `shadowed_param_name_does_not_false_match_in_spark` above is the seed
+// (restore-basic: an inner shadow does not false-match the param). These fill
+// the restore-REINSTATES arm + nesting + multi-arm same-name.
+//
+// NOTE on soundness direction: the confiner's `param_idx.remove(n)` on a
+// name-colliding binding is a PRECISION move (avoid a false Crossing on the
+// shadow). The paired `restore_frame` is soundness-preserving GIVEN the remove:
+// without the reinstate, a genuine later spark-consume of the REAL param would
+// miss `param_idx` and leave `spark_ops` clear — an UNDER-approximation (false
+// when truth is Crossing) that would pick non-atomic RC for an off-strand value.
+// So these reinstate cells guard a real soundness edge of the remove+restore
+// PAIR, and each asserts `spark_ops[0] == true` (the param IS consumed
+// off-strand after its shadow scope closes).
+
+#[test]
+fn confine_sequential_shadow_restores_param_reinstates() {
+    // spec: §13.6(i) (F4, confinement restore-REINSTATES). An inner `let` shadows
+    // param `p` inside an outer binding's RHS; after that scope closes, a spark
+    // `(consume p)` means the PARAM and must set `spark_ops[0]`. The frame must
+    // reinstate `p` in `param_idx`.
+    // `(let [x (let [p (readonly p)] p)] (par [_r (consume p)] _r))`.
+    let env = TestEnv::default()
+        .summary("readonly", sm(vec![Mode::Borrowed], vec![false]))
+        .summary("consume", sm(vec![Mode::Owned], vec![false]));
+    let inner_let = MonoExpr::Let {
+        bindings: vec![(Symbol::from("p"), call("readonly", vec![var("p")]))],
+        body: Box::new(var("p")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let spark = MonoExpr::ParBind {
+        bindings: vec![(Symbol::from("_r"), call("consume", vec![var("p")]))],
+        body: Box::new(var("_r")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), inner_let)],
+        body: Box::new(spark),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = confine(&owned_p(), &body, &env);
+    assert!(
+        r.spark_ops[0],
+        "param p must be reinstated after the inner shadow scope closes; the spark consume sets spark_ops"
+    );
+}
+
+#[test]
+fn confine_triple_nested_shadow_restores_param() {
+    // spec: §13.6(i) (F4, confinement nesting ≥3). Three nested `let` scopes each
+    // shadow param `p`; after all unwind, a spark `(consume p)` means the PARAM.
+    // Every level's frame must reinstate on exit or the param is lost from
+    // `param_idx` ⇒ missed Crossing.
+    // `(let [x (let [p (readonly p)] (let [p (readonly p)] (let [p (readonly p)] p)))]
+    //    (par [_r (consume p)] _r))`.
+    let env = TestEnv::default()
+        .summary("readonly", sm(vec![Mode::Borrowed], vec![false]))
+        .summary("consume", sm(vec![Mode::Owned], vec![false]));
+    let mk_let = |inner: MonoExpr| MonoExpr::Let {
+        bindings: vec![(Symbol::from("p"), call("readonly", vec![var("p")]))],
+        body: Box::new(inner),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let nest = mk_let(mk_let(mk_let(var("p"))));
+    let spark = MonoExpr::ParBind {
+        bindings: vec![(Symbol::from("_r"), call("consume", vec![var("p")]))],
+        body: Box::new(var("_r")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), nest)],
+        body: Box::new(spark),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = confine(&owned_p(), &body, &env);
+    assert!(
+        r.spark_ops[0],
+        "param p must be reinstated after 3-deep shadow unwinds; the spark consume sets spark_ops"
+    );
+}
+
+#[test]
+fn confine_two_match_arms_same_name_param_restored() {
+    // spec: §13.6(i) (F4, confinement multi-arm same-name). Both match arms bind
+    // field `p` (shadowing param `p`), each in its own frame; after the match a
+    // spark `(consume p)` means the PARAM. If an arm frame leaked, the param would
+    // stay shadowed out of `param_idx` and the spark consume would miss it.
+    // `(let [x (match h [(Box p) p] [(Cell p) p])] (par [_r (consume p)] _r))`.
+    let env = TestEnv::default().summary("consume", sm(vec![Mode::Owned], vec![false]));
+    let arm1 = cranelisp_types::MonoMatchArm {
+        pattern: cranelisp_types::Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            bindings: vec![Symbol::from("p")],
+            span: s(),
+        },
+        body: var("p"),
+        span: Span::new(70, 71),
+        provenance: None,
+    };
+    let arm2 = cranelisp_types::MonoMatchArm {
+        pattern: cranelisp_types::Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Cell") },
+            bindings: vec![Symbol::from("p")],
+            span: s(),
+        },
+        body: var("p"),
+        span: Span::new(72, 73),
+        provenance: None,
+    };
+    let m = MonoExpr::Match {
+        scrutinee: Box::new(var("h")),
+        arms: vec![arm1, arm2],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let spark = MonoExpr::ParBind {
+        bindings: vec![(Symbol::from("_r"), call("consume", vec![var("p")]))],
+        body: Box::new(var("_r")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("x"), m)],
+        body: Box::new(spark),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    // params: p (Owned, index 0) + h (scrutinee, Owned) so param_idx has both.
+    let params = vec![(Symbol::from("p"), Mode::Owned), (Symbol::from("h"), Mode::Owned)];
+    let r = confine(&params, &body, &env);
+    assert!(
+        r.spark_ops[0],
+        "param p must survive two same-name arms (each its own frame); the spark consume sets spark_ops"
+    );
+}
