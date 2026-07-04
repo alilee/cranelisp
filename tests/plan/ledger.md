@@ -107,6 +107,25 @@ B3.1. Post-addendum canonical baseline (verified this wave, full-suite run @
 stage-1 set + #28/#29 above, itemized fail set checked name-by-name (no
 regression; the drafting-finding-2 flake did not recur this run).
 
+### Sprint 102 — 0508 HOME-axis mono-mangle guard (/qa, 2026-07-04)
+
+**+1 intentional RED** authoring FIXME 0508's /qa-repro half (the durable
+record + trigger now REPLACES the FIXME file, which is deleted per
+`memory/feedback_no_fixme_with_failing_test`). Baseline before: **3804 run /
+3793 passed / 11 failed / 1 skipped**; after: **3805 / 3793 / 12 / 1**. The
+other 11 REDs unchanged.
+
+| # | Tests (file :: name) | Lane / defect | Flips with |
+|---|---|---|---|
+| 30 | `mono_mangle_home_collision::two_same_named_imported_generics_dispatch_to_own_bodies` | 0508 HOME axis — `build_mangled_name` is home-blind (`{bare}${types}`); two same-named imported generics (`a/twist`, `b/twist`) at `Int` in one consumer form both mint `twist$Int+Int`, second reuses first's body/slot → SILENT wrong-dispatch. Signature: `(add-i64 (a/twist 0 5) (b/twist 0 5))` → `:primitives/Int 210` (105+105) not 310 (105+205); order-confirmed (reversed → 410) | Wave 11 (B3.1b, FIXME 0519 unified lossless home-qualified mangler, /dev typecheck) |
+
+Owning skill / target: `/dev` (typecheck); disposition: `out-of-scope
+(owner=/dev typecheck)`, target Wave 11 (FIXME 0519). SHA: this change-set.
+Distinct from the 0483×3 ADT-arg guards (`vec_query_value_use.rs`) — same
+lossy mangler, different erasure axis; 0519 cures both + the latent Fn-param
+axis in one change-set. `// spec:` anchor `spec/08-modules.md §8.5`
+(spec_link_check clean).
+
 **Wave-3R addendum (oracle hardening + ratification, /qa, 2026-07-03):** the
 four B0-be review findings landed on the L-B1 lane
 (`tests/scripts/clif_golden.sh` `dump()` + the
