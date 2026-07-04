@@ -1329,6 +1329,23 @@ where
             .map(|a| self.compile_expr(a))
             .collect::<Result<_, _>>()?;
 
+        // Flush the live LET-scope heap bindings BEFORE the jump: the enclosing
+        // `compile_let_sequential`'s `pop_scope_with_cleanup` runs only AFTER
+        // `compile_expr(body)` returns, i.e. after this jump terminates the
+        // block, so those decs land dead. Skip any binding whose reference
+        // transfers into a tail argument (a direct `Var` arg — compiled with no
+        // consuming inc), else dec'ing it here double-frees the value the new
+        // iteration owns. (design/backend/ownership-codegen.md §13.3 — the
+        // vec_cow_value_use TCO leak the Ruling-2 COW-copy attribution missed.)
+        let transfer_skip: std::collections::HashSet<Symbol> = args
+            .iter()
+            .filter_map(|a| match a {
+                MonoExpr::Var { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        self.flush_let_scopes_before_tail_jump(&transfer_skip);
+
         // Jump to loop header with new argument values.
         let loop_block = self.tail_loop_block.unwrap_or_else(|| {
             unreachable!("invariant: tail_loop_block is Some when compile_tail_self_call is called")

@@ -564,80 +564,138 @@ where
         skip_var: Option<&Symbol>,
     ) {
         if let Some(frame) = self.scope_stack.last() {
-            // Collect bindings that need dec before we mutate state.
-            let to_dec: Vec<(Symbol, Type, bool)> = frame
-                .iter()
-                .filter(|name| {
-                    // Skip the return value variable.
-                    if let Some(skip) = skip_var
-                        && *name == skip {
-                            return false;
-                        }
-                    // Skip consumed variables (ownership transferred to callee).
-                    if self.consumed_vars.contains(*name) {
-                        return false;
+            let frame = frame.clone();
+            let to_dec = self.collect_frame_heap_decs(&frame, |this, name| {
+                // Skip the return value variable.
+                if let Some(skip) = skip_var
+                    && name == skip {
+                        return true;
                     }
-                    // Skip borrowed variables (owner handles cleanup).
-                    if self.borrowed_vars.contains(*name) {
-                        return false;
-                    }
-                    // Check if this binding is heap-typed.
-                    if let Some(ty) = self.variable_types.get(*name) {
-                        self.is_heap_type(ty)
-                    } else {
-                        false
-                    }
-                })
-                .map(|name| {
-                    let ty = self.variable_types.get(name).cloned()
-                        .unwrap_or(Type::Int); // fallback, should not happen
-                    let needs_guard = matches!(
-                        signature_heap_category(&ty, Some(self.ctx.symbol_tables)),
-                        HeapCategory::Mixed
-                    );
-                    (name.clone(), ty, needs_guard)
-                })
-                .collect();
-
-            // Emit rc_dec for each heap-typed binding.
-            let dealloc = self.ctx.dealloc_func_id;
-            for (name, ty, needs_guard) in &to_dec {
-                if let Some(var) = self.variables.get(name) {
-                    let val = self.builder.use_var(*var);
-
-                    // For closures (Type::Fn), use runtime-embedded drop glue.
-                    // This handles both locally-created closures AND closures
-                    // received as function parameters (where the static
-                    // closure_drop_glue map has no entry).
-                    if matches!(ty, Type::Fn(_, _)) {
-                        self.emit_closure_dec_inline(val, dealloc);
-                        continue;
-                    }
-
-                    // For Vec-typed bindings: must route through vec_drop to
-                    // dec each element and free the data buffer; the generic
-                    // rc_dec → dealloc path leaks both.
-                    if let Some(elem_ty) =
-                        crate::compiler::vec_codegen::vec_element_type(ty)
-                    {
-                        let elem_ty = elem_ty.clone();
-                        let span = cranelisp_types::Span::new(0, 0);
-                        let _ = self.emit_vec_aware_rc_dec(val, &elem_ty, span);
-                        continue;
-                    }
-
-                    // For ADTs: emit RC dec with inline drop glue in the
-                    // dealloc path. Field cleanup ONLY happens when RC
-                    // reaches 0 (inside the free branch), not unconditionally.
-                    // This prevents double-free when fields are independently
-                    // referenced (e.g., extracted via pattern match).
-                    self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, *needs_guard);
+                // Skip consumed variables (ownership transferred to callee).
+                if this.consumed_vars.contains(name) {
+                    return true;
                 }
-            }
+                // Skip borrowed variables (owner handles cleanup).
+                this.borrowed_vars.contains(name)
+            });
+            self.emit_heap_binding_decs(&to_dec);
         }
 
         // Now actually pop the scope (remove variables from maps).
         self.pop_scope();
+    }
+
+    /// Collect the heap-typed bindings in `frame` that need an `rc_dec`, minus
+    /// those `skip` returns `true` for. Extracted so `pop_scope_with_cleanup`
+    /// and the tail-call scope flush (`flush_let_scopes_before_tail_jump`) share
+    /// one filter + type-resolution (Principle 7).
+    fn collect_frame_heap_decs(
+        &self,
+        frame: &[Symbol],
+        skip: impl Fn(&Self, &Symbol) -> bool,
+    ) -> Vec<(Symbol, Type, bool)> {
+        frame
+            .iter()
+            .filter(|name| {
+                if skip(self, name) {
+                    return false;
+                }
+                if let Some(ty) = self.variable_types.get(*name) {
+                    self.is_heap_type(ty)
+                } else {
+                    false
+                }
+            })
+            .map(|name| {
+                let ty = self.variable_types.get(name).cloned().unwrap_or(Type::Int);
+                let needs_guard = matches!(
+                    signature_heap_category(&ty, Some(self.ctx.symbol_tables)),
+                    HeapCategory::Mixed
+                );
+                (name.clone(), ty, needs_guard)
+            })
+            .collect()
+    }
+
+    /// Emit the `rc_dec` for each collected heap binding (closures → embedded
+    /// drop glue; Vec → `vec_drop`; ADT → inline drop glue in the dealloc path).
+    /// Shared by scope-pop cleanup and the tail-call flush.
+    fn emit_heap_binding_decs(&mut self, to_dec: &[(Symbol, Type, bool)]) {
+        let dealloc = self.ctx.dealloc_func_id;
+        for (name, ty, needs_guard) in to_dec {
+            if let Some(var) = self.variables.get(name) {
+                let val = self.builder.use_var(*var);
+
+                // For closures (Type::Fn), use runtime-embedded drop glue.
+                // This handles both locally-created closures AND closures
+                // received as function parameters (where the static
+                // closure_drop_glue map has no entry).
+                if matches!(ty, Type::Fn(_, _)) {
+                    self.emit_closure_dec_inline(val, dealloc);
+                    continue;
+                }
+
+                // For Vec-typed bindings: must route through vec_drop to
+                // dec each element and free the data buffer; the generic
+                // rc_dec → dealloc path leaks both.
+                if let Some(elem_ty) = crate::compiler::vec_codegen::vec_element_type(ty) {
+                    let elem_ty = elem_ty.clone();
+                    let span = cranelisp_types::Span::new(0, 0);
+                    let _ = self.emit_vec_aware_rc_dec(val, &elem_ty, span);
+                    continue;
+                }
+
+                // For ADTs: emit RC dec with inline drop glue in the
+                // dealloc path. Field cleanup ONLY happens when RC
+                // reaches 0 (inside the free branch), not unconditionally.
+                // This prevents double-free when fields are independently
+                // referenced (e.g., extracted via pattern match).
+                self.emit_rc_dec_with_inline_drop_glue(val, ty, dealloc, *needs_guard);
+            }
+        }
+    }
+
+    /// Flush `rc_dec` for the live LET-scope bindings BEFORE a tail self-call
+    /// jump (`compile_tail_self_call`). Without this, the enclosing
+    /// `compile_let_sequential` emits `pop_scope_with_cleanup` AFTER
+    /// `compile_expr(body)` — but the tail-call jump has already terminated the
+    /// block, so those decs land in the dead post-jump block and never execute:
+    /// every heap-typed `let` binding that survives to a tail-recursive scope
+    /// exit leaks one allocation per iteration (the S102 drafting `vec_cow_value_use`
+    /// guards; the true root cause the §13.3 Ruling-2 COW-copy attribution missed).
+    ///
+    /// Scope frames `[1..]` are the `let`/match/lambda frames; frame `0` is the
+    /// function's parameter frame, which the TCO loop header *reuses* (its block
+    /// params are overwritten each iteration) — its RC is out of this fix's scope
+    /// (unchanged behaviour). `transfer_skip` names bindings whose reference
+    /// transfers into a tail-call argument (a direct `Var` arg — no consuming inc
+    /// is emitted for it), so dec'ing them here would double-free the value the
+    /// new iteration now owns. Consumed / borrowed bindings are skipped as in
+    /// `pop_scope_with_cleanup`. The frames are NOT popped — the enclosing
+    /// `compile_let_sequential` still pops them (into the now-dead block).
+    pub(crate) fn flush_let_scopes_before_tail_jump(
+        &mut self,
+        transfer_skip: &std::collections::HashSet<Symbol>,
+    ) {
+        if self.scope_stack.len() <= 1 {
+            return;
+        }
+        // Innermost-first: collect all eligible bindings across the let frames.
+        let mut to_dec: Vec<(Symbol, Type, bool)> = Vec::new();
+        for frame in self.scope_stack[1..].iter().rev() {
+            let frame = frame.clone();
+            let mut frame_decs = self.collect_frame_heap_decs(&frame, |this, name| {
+                if transfer_skip.contains(name) {
+                    return true;
+                }
+                if this.consumed_vars.contains(name) {
+                    return true;
+                }
+                this.borrowed_vars.contains(name)
+            });
+            to_dec.append(&mut frame_decs);
+        }
+        self.emit_heap_binding_decs(&to_dec);
     }
 
     /// If `body` is a direct variable reference to a name in the current scope

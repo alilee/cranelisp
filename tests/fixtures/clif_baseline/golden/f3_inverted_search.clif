@@ -257,6 +257,8 @@ function %copy-work(i64, i64, i64, i64) -> i64 system_v {
     sig6 = (i64, i64) system_v
     sig7 = (i64) -> i64 system_v
     sig8 = (i64, i64) system_v
+    sig9 = (i64) -> i64 system_v
+    sig10 = (i64, i64) system_v
     fn0 = u0:0 sig0
     fn1 = colocated u0:49 sig1
     fn2 = u0:19 sig2
@@ -265,6 +267,8 @@ function %copy-work(i64, i64, i64, i64) -> i64 system_v {
     fn5 = u0:11 sig6
     fn6 = colocated u0:50 sig7
     fn7 = u0:11 sig8
+    fn8 = colocated u0:50 sig9
+    fn9 = u0:11 sig10
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
@@ -316,44 +320,57 @@ block5:
     v38 = load.i64 notrap aligned v37
     v39 = call_indirect sig4, v38(v32)
     v40 = iadd.i64 v7, v39
-    jump block1(v4, v5, v18, v40)
-
-block7:
-    v52 = iconst.i64 0
-    v50 -> v52
-    v51 -> v52
-    v43 = iconst.i64 0
-    v42 -> v43
-    v41 = iconst.i64 0
-    v44 = func_addr.i64 fn4
-    v45 = iadd_imm v43, 8  ; v43 = 0
-    v46 = iconst.i64 1
-    v47 = atomic_rmw.i64 sub v45, v46  ; v46 = 1
-    v48 = icmp eq v47, v46  ; v46 = 1
-    brif v48, block9, block8
-
-block9:
-    fence 
-    call fn5(v43, v44)  ; v43 = 0
-    jump block8
+    v41 = func_addr.i64 fn4
+    v42 = iadd_imm.i64 v16, 8
+    v43 = iconst.i64 1
+    v44 = atomic_rmw.i64 sub v42, v43  ; v43 = 1
+    v45 = icmp eq v44, v43  ; v43 = 1
+    brif v45, block8, block7
 
 block8:
-    jump block4(v41, v52)  ; v41 = 0, v52 = 0
+    fence 
+    call fn5(v16, v41)
+    jump block7
 
-block4(v11: i64, v49: i64):
-    v53 = func_addr.i64 fn6
-    v54 = iadd_imm v49, 8
-    v55 = iconst.i64 1
-    v56 = atomic_rmw.i64 sub v54, v55  ; v55 = 1
-    v57 = icmp eq v56, v55  ; v55 = 1
-    brif v57, block11, block10
+block7:
+    jump block1(v4, v5, v18, v40)
+
+block9:
+    v57 = iconst.i64 0
+    v55 -> v57
+    v56 -> v57
+    v48 = iconst.i64 0
+    v47 -> v48
+    v46 = iconst.i64 0
+    v49 = func_addr.i64 fn6
+    v50 = iadd_imm v48, 8  ; v48 = 0
+    v51 = iconst.i64 1
+    v52 = atomic_rmw.i64 sub v50, v51  ; v51 = 1
+    v53 = icmp eq v52, v51  ; v51 = 1
+    brif v53, block11, block10
 
 block11:
     fence 
-    call fn7(v49, v53)
+    call fn7(v48, v49)  ; v48 = 0
     jump block10
 
 block10:
+    jump block4(v46, v57)  ; v46 = 0, v57 = 0
+
+block4(v11: i64, v54: i64):
+    v58 = func_addr.i64 fn8
+    v59 = iadd_imm v54, 8
+    v60 = iconst.i64 1
+    v61 = atomic_rmw.i64 sub v59, v60  ; v60 = 1
+    v62 = icmp eq v61, v60  ; v60 = 1
+    brif v62, block13, block12
+
+block13:
+    fence 
+    call fn9(v54, v58)
+    jump block12
+
+block12:
     return v11
 }
 ; === end CLIF user::copy-work ===
