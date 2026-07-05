@@ -88,6 +88,47 @@ file.
    Recorded per the flake-recording rule; if it recurs, it is an unisolated
    recurring suite failure to prioritise, not "flaky".
 
+**Wave-14 addendum (§3.3 projection-elision GUARD SET, /qa, 2026-07-05 —
+review item D):** the adversarial `/review` of the landed §3.3 consumer-driven
+vec-get projection elision (commits `e51629f` / `fb6a828`, I-G1 F1 1.54%→100%)
+ruled the seam SOUND but flagged a Major test-coverage gap: no committed proof
+the UNSAFE shapes are declined, no regression for the escaping-projection
+false-green class, no behavioural test of the 0522 fn-as-value wrapper. `/qa`
+authored **14 GREEN regression guards** in the new file
+`tests/projection_elision_guard.rs` — these PIN the now-sound behaviour and are
+NOT defect repros (a RED here would mean the review missed a defect → escalate
+/dev backend; none did). Suite run 3905 → **3919** (all 14 green; the 3 known
+REDs — `display_exact_option_in_option_value_line`, `h2_…`, `h3_…` — unchanged;
+zero new RED). spec_link_check clean (14/14). Guards, by class:
+
+- **Headline (2):** `elide_direct_vecget_into_borrowed_param_headline` +
+  `…balance_iteration_independent` — the one shape that elides (named-root
+  vec-get, heap element, direct into Borrowed param); output-oracle (ON ==
+  `CRANELISP_NO_OWNERSHIP=1`) + iteration-independent balance.
+- **Gate-decline (5):** `decline_owned_position_callee_returns_arg`,
+  `decline_neverheap_int_element`, `decline_fresh_rooted_vecget`,
+  `decline_control_flow_wrapped_arg`, `decline_let_bound_projection` — each
+  gate (Borrowed-mode ∧ heap-typed ∧ named-root ∧ direct-Apply) independently
+  declines; output-oracle pins the conservative path.
+- **Escaping-projection negatives (3):**
+  `escaping_projection_returned_survives_sustained` +
+  `…balance_iteration_independent`, `escaping_projection_stored_into_vec_survives_sustained`
+  — returned / stored projections materialize and release exactly once
+  (sustained 500–1000 crossings, iteration-independent balance).
+- **Sprint-61 false-green class (2):**
+  `sprint61_read_projection_cow_release_root_then_use` (output-oracle) +
+  `sprint61_read_projection_cow_release_under_malloc_perturb` — read a
+  projection, COW-release/mutate the root, use the projection; the perturbation
+  leg (`MALLOC_PERTURB_=165`, committed) is the exact false-green witness
+  (`memory/feedback_verify_fix_not_symptom_absence.md`). The full same-seed
+  f4_sudoku perturbation sweep remains the MANUAL witness recorded in `e51629f`.
+- **0522 fn-as-value wrapper (2):**
+  `fn_as_value_projectionof_wrapper_returns_element` +
+  `…balance_iteration_independent` — a ProjectionOf-result callee used as a
+  first-class closure value through the D24 wrapper (`emit_d24_adaptation`,
+  §3.4/§3.5); the reconcile-dropped inc nets exactly one owned reference (no
+  leak, no premature free). Previously ZERO behavioural coverage.
+
 **Wave-2 addendum (0488 isolation, /qa, 2026-07-03 —
 `tests/plan/0488-isolation.md`):** the 0488 seam attribution landed 2 further
 intentional REDs + 2 GREEN controls in `tests/generic_value_use_mono.rs`
