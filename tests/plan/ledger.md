@@ -88,6 +88,63 @@ file.
    Recorded per the flake-recording rule; if it recurs, it is an unisolated
    recurring suite failure to prioritise, not "flaky".
 
+### Sprint 102 Wave-19 — the 2 load-flaky tests ISOLATED (/qa, 2026-07-05)
+
+The two tests `/sprint` saw fail once on its Wave-18 verification RUN-1
+(passing isolated ×2 and on RUN-2) — `fact_row_char_at_arg_survives_and_balances`
+(`ownership_fences.rs`) and `fold_bodied_composition_with_pinning_annotation_control`
+(`generic_value_use_mono.rs`) — isolated per `feedback_frame_recurring_failure_by_symptom`
+(symptom = intermittent unisolated suite flake under full-parallel load).
+Unrelated to B4. **Reproduction budget spent** (this machine, HEAD `ff9ebf4`):
+5 bare full runs (load 5–16), 20 concentrated two-file runs (load 6), 288
+concurrent RC_STATS subprocess probes (load ≈10), 2 oversubscribed full runs
+(1.5× yes-hogs, load 23–25). **Neither suspect reproduced in any of them** —
+the oversubscribed runs surfaced a DIFFERENT (expected) flake class instead:
+the timing-witness parallelism tests (`concurrency_capacity::*`,
+`spec_12_runtime::lenient_vec_map_reduce_parallelizes`) which artificial CPU
+oversubscription legitimately starves; NOT the two suspects.
+
+1. **`fact_row_char_at…` — RC_STATS at-exit accounting race, FIXED (harness).**
+   *Mechanism (measured, not guessed):* the balance leg's `[RC_STATS]`
+   alloc/dealloc imbalance is subject to the drafting-finding-#1 at-exit race —
+   one dealloc racing the stats-print at process exit. The **288-run
+   high-concurrency probe capped the raw imbalance at ±1** (287× `0`, 1× `1`;
+   never negative, never a missing line). That bound alone **cannot trip** the
+   balance bar: each of the N=50 / N=1000 measurements ∈ {0,1} ⇒ |delta| ≤ 1 ≤ 2.
+   The rare full-suite FAIL is the pathological at-exit collision pushing ONE
+   measurement to 2–3 (delta ≥ 3) under the specific near-simultaneous exit of
+   many RC_STATS subprocesses + the cpu-perf timing tests hogging cores.
+   *Fix:* `assert_iteration_independent_imbalance` now distinguishes the
+   transient race from a real leak by REPETITION (ledger §Discipline: name the
+   race, don't call it "flaky") — best-of-3 measurement pairs, re-measuring
+   ONLY when a pair is ambiguous (delta > 2). The tight ≤2 bar is UNCHANGED, so
+   small-leak sensitivity is preserved; a genuine per-iteration leak is
+   deterministic and huge (≥ 950 at this N-spread, every pair — the #26
+   `vec_returned_from_generic_fn…` guard, 59× the bar) and fails all 3 pairs.
+   The deterministic clean case (delta 0–1) pays zero extra subprocess cost
+   (single pair, breaks immediately); only the rare race pair spends the retry
+   budget. Hardens the whole balance-leg fence family (14 call sites). Verified:
+   affected files (`ownership_fences` + `projection_elision_guard` +
+   `generic_value_use_mono`) all green post-change except the standing `h3` RED.
+2. **`fold_bodied_composition…` — random-victim of the shared REPL/import
+   worker-hang; NO test-local defect (report, don't paper).** This is a REPL
+   import test (`(import [gen3 [vconcat vcount]])`), reads NO RC_STATS, and is a
+   GREEN control with deterministic mono/typecheck logic — so its intermittent
+   is NOT a wrong-output or a balance race. It could not be reproduced across
+   the full budget above. Its signature (passes isolated + on re-run, fails
+   once under full-parallel) matches the **already-named shared concurrency
+   residue**: `.config/nextest.toml` documents "a random REPL/module test hits
+   the 30 s harness cap — a worker hang/starvation in the import/typecheck
+   pipeline… reproduces in REPL-binaries-ONLY runs" (the H5/H6/H7 heisenbug
+   class, effect-concurrency track). fold_bodied was simply the unlucky random
+   victim on RUN-1; there is nothing test-specific to fix, and bumping its 30 s
+   timeout would HIDE the shared hang (`feedback_verify_fix_not_symptom_absence`).
+   *Disposition:* no code change; routes to the effect-concurrency track if/when
+   the shared REPL-pipeline hang is next prioritised. Bug-not-flake: the race is
+   named (this file §Discipline + the nextest.toml note); if fold_bodied (or any
+   other random REPL/module test) recurs at the 30 s cap, it is that same
+   unisolated worker-hang to prioritise, not a new flake.
+
 **Wave-14 addendum (§3.3 projection-elision GUARD SET, /qa, 2026-07-05 —
 review item D):** the adversarial `/review` of the landed §3.3 consumer-driven
 vec-get projection elision (commits `e51629f` / `fb6a828`, I-G1 F1 1.54%→100%)
