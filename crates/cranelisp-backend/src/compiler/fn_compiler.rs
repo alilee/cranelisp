@@ -115,6 +115,18 @@ where
     /// These are NEVER eligible for last-use transfer.
     pub(crate) captured_vars: std::collections::HashSet<Symbol>,
 
+    /// Confined bindings (B3.3, `design/backend/ownership-codegen.md` §5.1) —
+    /// names whose bound cell is Confined (`confined = Some(true)`: every
+    /// surviving RC op on it runs on the owning strand). Populated at
+    /// `let`-binding creation from the RHS node's `confined` site fact (and
+    /// propagated through a bare-`Var` alias of an already-confined binding).
+    /// The durable per-binding carrier for the through-binding RC-op sites
+    /// (consuming-arg inc of a `Var` arg, scope-cleanup dec) whose SSA `Value`
+    /// identity is lost across `use_var`. **Empty when analysis is off**
+    /// (no `Some(true)` facts) ⇒ every derived atomicity is `Atomic` ⇒
+    /// byte-identical-off by construction.
+    pub(crate) confined_bindings: std::collections::HashSet<Symbol>,
+
     /// The ownership summary ([`cranelisp_types::ModeSummary`]) of the function
     /// currently being compiled — read from its `codegen_view`
     /// (`MonoDefnVariant.mode_summary`) on the `compile_to_module` path;
@@ -277,6 +289,7 @@ where
             last_uses,
             borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
+            confined_bindings: std::collections::HashSet::new(),
             current_mode_summary: None,
             tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
@@ -399,6 +412,7 @@ where
             last_uses,
             borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
+            confined_bindings: std::collections::HashSet::new(),
             current_mode_summary: mode_summary,
             tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
@@ -635,6 +649,42 @@ where
         }
     }
 
+    /// B3.3 (`design/backend/ownership-codegen.md` §5.1): the per-site RC
+    /// atomicity for a value produced DIRECTLY by `node` — `NonAtomic` iff the
+    /// node carries `confined = Some(true)`. Used at emission sites where the
+    /// allocation/capture-producing node is in hand (materialization incs).
+    /// `Some(false)` (Crossing) / `None` (fact absent / analysis off) ⇒
+    /// `Atomic`, verbatim today.
+    pub(crate) fn rc_atomicity_for_node(&self, node: &MonoExpr) -> heap::RcAtomicity {
+        match node_confined(node) {
+            Some(true) => heap::RcAtomicity::NonAtomic,
+            _ => heap::RcAtomicity::Atomic,
+        }
+    }
+
+    /// B3.3: the per-site RC atomicity for a named binding — `NonAtomic` iff the
+    /// binding is Confined (in `confined_bindings`). Used at the through-binding
+    /// RC-op sites (consuming-arg inc of a `Var` arg, scope-cleanup dec,
+    /// capture inc) whose SSA `Value` identity is lost across `use_var`.
+    pub(crate) fn rc_atomicity_for_binding(&self, name: &Symbol) -> heap::RcAtomicity {
+        if self.confined_bindings.contains(name) {
+            heap::RcAtomicity::NonAtomic
+        } else {
+            heap::RcAtomicity::Atomic
+        }
+    }
+
+    /// B3.3: the per-site RC atomicity for a consuming-position argument. A bare
+    /// `Var` handoff routes through the durable per-binding carrier
+    /// (`confined_bindings`); any other arg is a fresh temporary whose
+    /// confinement is read off the producing node's own site fact.
+    pub(crate) fn rc_atomicity_for_arg(&self, arg: &MonoExpr) -> heap::RcAtomicity {
+        match arg {
+            MonoExpr::Var { name, .. } => self.rc_atomicity_for_binding(name),
+            _ => self.rc_atomicity_for_node(arg),
+        }
+    }
+
     /// Allocate a fresh Cranelift Variable index.
     pub(crate) fn fresh_variable(&mut self) -> Variable {
         let idx = self.next_var;
@@ -651,6 +701,9 @@ where
             for name in frame {
                 self.variables.remove(&name);
                 self.variable_types.remove(&name);
+                // B3.3: drop any Confined mark so a name reused in a sibling
+                // scope does not inherit a stale confinement verdict.
+                self.confined_bindings.remove(&name);
             }
         }
     }
@@ -746,7 +799,10 @@ where
                 if let Some(elem_ty) = crate::compiler::vec_codegen::vec_element_type(ty) {
                     let elem_ty = elem_ty.clone();
                     let span = cranelisp_types::Span::new(0, 0);
-                    let _ = self.emit_vec_aware_rc_dec(val, &elem_ty, span);
+                    // B3.3 (§5.2): the scope-cleanup Vec dec goes non-atomic
+                    // when the binding is Confined (per-binding carrier).
+                    let atomicity = self.rc_atomicity_for_binding(name);
+                    let _ = self.emit_vec_aware_rc_dec(val, &elem_ty, span, atomicity);
                     continue;
                 }
 
@@ -855,12 +911,17 @@ where
             && self.tail_flush_will_dec(name)
             && let Some(ty) = self.variable_types.get(name).cloned()
         {
+            // B3.3 (§5.1): the protective inc balancing the tail-flush dec goes
+            // non-atomic when the aliased binding is Confined.
+            let atomicity = self.rc_atomicity_for_binding(name);
             match signature_heap_category(&ty, Some(self.ctx.symbol_tables)) {
                 HeapCategory::AlwaysHeap => {
-                    heap::emit_rc_inc(&mut self.builder, self.module, val);
+                    heap::emit_rc_inc_atomicity(&mut self.builder, self.module, val, atomicity);
                 }
                 HeapCategory::Mixed => {
-                    heap::emit_rc_inc_guarded(&mut self.builder, self.module, val);
+                    heap::emit_rc_inc_guarded_atomicity(
+                        &mut self.builder, self.module, val, atomicity,
+                    );
                 }
                 HeapCategory::NeverHeap => {}
             }
@@ -929,6 +990,33 @@ where
     /// Mark a variable as borrowed (skip scope-exit dec — owner handles cleanup).
     pub(crate) fn mark_borrowed(&mut self, name: &Symbol) {
         self.borrowed_vars.insert(name.clone());
+    }
+}
+
+/// B3.3 (`design/backend/ownership-codegen.md` §5.1): read the `confined` site
+/// fact off a [`MonoExpr`] node. Only the five allocation/capture-producing
+/// variants carry the fact (`StringLit`, `Lambda`, `Apply`, `VecLit`,
+/// `ConstrADT` — the enum-level rustdoc on `MonoExpr`); every other variant has
+/// no cell of its own to confine and answers `None` (⇒ conservative `Atomic`).
+/// Backend-local (no `cranelisp-types` accessor); kept a total match so a new
+/// fact-bearing variant is a compile error here.
+pub(crate) fn node_confined(node: &MonoExpr) -> Option<bool> {
+    match node {
+        MonoExpr::StringLit { confined, .. }
+        | MonoExpr::Lambda { confined, .. }
+        | MonoExpr::Apply { confined, .. }
+        | MonoExpr::VecLit { confined, .. }
+        | MonoExpr::ConstrADT { confined, .. } => *confined,
+        MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::Var { .. }
+        | MonoExpr::Let { .. }
+        | MonoExpr::If { .. }
+        | MonoExpr::Match { .. }
+        | MonoExpr::Trace { .. }
+        | MonoExpr::ParBind { .. }
+        | MonoExpr::LaunchContinue { .. } => None,
     }
 }
 
@@ -1033,5 +1121,70 @@ mod return_protect_tests {
     fn aliasing_result_modes_never_elide() {
         assert!(!return_is_fresh_by_summary(&apply_body(), Some(&alias0())));
         assert!(!return_is_fresh_by_summary(&apply_body(), Some(&proj0())));
+    }
+}
+
+#[cfg(test)]
+mod b33_node_confined_tests {
+    //! B3.3 confined-fact classifier (`design/backend/ownership-codegen.md`
+    //! §5.1; §13.5): `node_confined` reads the `confined` site fact off the five
+    //! allocation/capture-producing variants and answers `None` for every other
+    //! variant. The atomicity derivation is `Some(true) ⇒ NonAtomic`, else
+    //! `Atomic` — the classifier is the pure seam under it.
+    use super::node_confined;
+    use crate::heap::RcAtomicity;
+    use cranelisp_types::{ConcreteType, FQTypeName, ModuleFullPath, MonoExpr, Span, TypeName};
+
+    fn int() -> ConcreteType { ConcreteType::Int }
+
+    // The five fact-bearing variants, each parameterised over its `confined`.
+    fn string_lit(c: Option<bool>) -> MonoExpr {
+        MonoExpr::StringLit { value: "x".into(), span: Span::new(0, 1), ty: ConcreteType::String, escapes: None, confined: c, unique_static: None }
+    }
+    fn lambda(c: Option<bool>) -> MonoExpr {
+        MonoExpr::Lambda { params: vec![], body: Box::new(MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() }), span: Span::new(0, 1), ty: ConcreteType::Fn(vec![], Box::new(int())), escapes: None, confined: c, unique_static: None }
+    }
+    fn apply(c: Option<bool>) -> MonoExpr {
+        MonoExpr::Apply { callee: Box::new(MonoExpr::Var { name: "f".into(), span: Span::new(0, 1), resolved_call: None, ty: int() }), args: vec![], span: Span::new(0, 2), resolved_call: None, ty: int(), escapes: None, confined: c, unique_static: None, provenance: None }
+    }
+    fn vec_lit(c: Option<bool>) -> MonoExpr {
+        // node_confined reads only `confined`; the ty is immaterial here.
+        MonoExpr::VecLit { elements: vec![], span: Span::new(0, 1), ty: int(), escapes: None, confined: c, unique_static: None }
+    }
+    fn constr_adt(c: Option<bool>) -> MonoExpr {
+        MonoExpr::ConstrADT { type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("T")), tag: 0, fields: vec![], span: Span::new(0, 1), ty: int(), escapes: None, confined: c, unique_static: None }
+    }
+
+    // POSITIVE: each fact-bearing variant reports its own confined field.
+    #[test]
+    fn fact_bearing_variants_report_confined() {
+        for mk in [string_lit as fn(Option<bool>) -> MonoExpr, lambda, apply, vec_lit, constr_adt] {
+            assert_eq!(node_confined(&mk(Some(true))), Some(true));
+            assert_eq!(node_confined(&mk(Some(false))), Some(false));
+            assert_eq!(node_confined(&mk(None)), None);
+        }
+    }
+
+    // NEGATIVE: non-allocation variants have no cell of their own ⇒ None
+    // (⇒ conservative Atomic). Var / Let / If / Match are the through-carriers,
+    // never the fact source.
+    #[test]
+    fn non_fact_bearing_variants_are_none() {
+        let var = MonoExpr::Var { name: "v".into(), span: Span::new(0, 1), resolved_call: None, ty: int() };
+        let iflit = MonoExpr::If { cond: Box::new(MonoExpr::BoolLit { value: true, span: Span::new(0, 1), ty: ConcreteType::Bool }), then_branch: Box::new(var.clone()), else_branch: Box::new(var.clone()), span: Span::new(0, 2), ty: int() };
+        let intlit = MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() };
+        assert_eq!(node_confined(&var), None);
+        assert_eq!(node_confined(&iflit), None);
+        assert_eq!(node_confined(&intlit), None);
+    }
+
+    // The atomicity derivation: Some(true) ⇒ NonAtomic; Some(false)/None ⇒ Atomic.
+    // (mirrors `FnCompiler::rc_atomicity_for_node`; the classifier is the seam).
+    #[test]
+    fn atomicity_derivation_from_confined_fact() {
+        let map = |c: Option<bool>| match c { Some(true) => RcAtomicity::NonAtomic, _ => RcAtomicity::Atomic };
+        assert_eq!(map(node_confined(&constr_adt(Some(true)))), RcAtomicity::NonAtomic);
+        assert_eq!(map(node_confined(&constr_adt(Some(false)))), RcAtomicity::Atomic);
+        assert_eq!(map(node_confined(&constr_adt(None))), RcAtomicity::Atomic);
     }
 }

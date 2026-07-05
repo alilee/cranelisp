@@ -496,6 +496,71 @@ data.
 
 ## §5. Non-atomic RC for `Confined` (spine §10 item 9)
 
+> **AS-BUILT — B3.3 Wave 11 (this change-set).** The per-site re-gate landed.
+> Seams:
+> - **`heap.rs`** — a `RcAtomicity { Atomic, NonAtomic }` enum + a single
+>   `use_nonatomic_arm(atomicity)` decision point (the per-site gate ∨ the
+>   `CRANELISP_NONATOMIC_RC` probe — one code path, two gates, Principle 7).
+>   The five gated helpers each gained an `_atomicity` sibling
+>   (`emit_rc_inc_atomicity`, `emit_rc_inc_guarded_atomicity`,
+>   `emit_rc_dec_guarded_atomicity` — the `emit_rc_dec` path routes through it —
+>   and `emit_vec_rc_dec_with_drop_atomicity` in `vec_codegen.rs`); the plain
+>   names are retained as `Atomic`-delegating wrappers, so all ~40 non-participating
+>   call sites are UNTOUCHED (the §2.2 else-arm identity, byte-identical-off by
+>   construction).
+> - **Confinement carrier** — the `confined` fact reaches emission two ways:
+>   (a) `node_confined(&MonoExpr)` reads the fact off the five allocation/
+>   capture-producing variants directly, for materialization incs where the
+>   producing node is in hand (`protect_return_value`, the match auto-upgrade,
+>   the tail-arg protect); (b) a `confined_bindings: HashSet<Symbol>` on
+>   `FnCompiler`, populated at `let`-binding creation from the RHS node fact
+>   (and a bare-`Var` alias), for the through-binding sites whose SSA `Value`
+>   identity is lost across `use_var` (consuming-arg inc of a `Var` arg, the
+>   Vec scope-cleanup dec). `pop_scope` clears the mark. `Some(true) ⇒
+>   NonAtomic`; `Some(false) | None ⇒ Atomic`.
+>   *(Note: in the current confinement analysis a `let`-RHS is `PotentialFork`,
+>   so `confined_bindings` is populated only for Parent-strand-aliased binds;
+>   the dominant increment-I win is the materialization-inc class via (a). As
+>   typecheck's confinement precision grows, more cells become `Some(true)` and
+>   more sites go non-atomic with ZERO backend change.)*
+> - **Counter (h2 backend half)** — a codegen-time `(nonatomic, total)` RC-emit
+>   tally at the `use_nonatomic_arm` seam, read via `rc_emit_counts()`.
+>   **h2 stays RED**: flipping it needs the process-exit `[RC_STATS]` print
+>   surface (`cranelisp-intrinsics::rc::print_rc_stats`, a SEPARATE
+>   backend-paired crate) to read this tally — a cross-crate coordination
+>   deferred to B3.4 (noted, not crossed here).
+> - **Out of increment-I scope (conservative/atomic, noted):** ADT/closure
+>   scope-cleanup decs route through `emit_rc_dec_with_inline_drop_glue` /
+>   `emit_closure_dec_inline`, which open-code `atomic_rmw` and are NOT among
+>   the five named helpers — they stay atomic (sound; a §5.2-consistent gap).
+>   The vec COW consumed-source decs and static vec-op dec keep `Atomic` (their
+>   sources are crossing in the corpus); only the Vec scope-cleanup dec is
+>   binding-gated.
+>
+> **Proof (this change-set):**
+> - **Byte-identical-OFF — empirically PROVEN**: OFF-HEAD vs OFF-parent over the
+>   full 13-entry corpus = **0 mismatches** (manual capture, since
+>   `clif_golden.sh` strips the toggle). Structural: with analysis off no
+>   `Some(true)` fact exists ⇒ `confined_bindings` empty + all `node_confined`
+>   `None` ⇒ every derived atomicity is `Atomic` ⇒ `use_nonatomic_arm` false.
+> - **Golden re-baseline (analysis-ON): 6 entries** — 03_auto_curry,
+>   04_vec_cow_loop, 05_string_externs, 08_adt_in_vec_projection, f1_machinery,
+>   f2_contention. Each = one (or few) confined materialization inc(s) flipped
+>   `atomic_rmw add → load/iadd/store`, plus SSA renumber ripple; the
+>   surrounding `atomic_rmw sub` decs are UNCHANGED. `clif_golden.sh diff`
+>   EMPTY after re-baseline.
+> - **Concurrency correctness (the real gate):** *WIN* — a Confined cell's
+>   materialization inc emits the plain arm (verified in CLIF: the
+>   `keep-and-make` protect inc; f2's confined inc). *SAFETY / anti-race* — a
+>   Crossing board that crosses a spark boundary (F2's `g` into sparked
+>   `reduce-tree`) keeps ALL RC ops atomic (`reduce-tree`/`copy-work`/`leaf-work`
+>   = **0 non-atomic arms**, CLIF-verified). `s99_*_parallel_equals_serial`
+>   green; f1/f2/f3 parallel==serial over 15 runs.
+> - Unit matrix: `heap::tests::rc_atomicity_b33_tests` (5 helpers × atomicity,
+>   CLIF-text asserted, else-arm identity, counter) +
+>   `fn_compiler::b33_node_confined_tests` (classifier). Suite 3872/3869/3/1
+>   (the 3 REDs = display_exact + h2 + h3, unchanged by name).
+
 ### 5.1 The mechanism is already written — re-gate it
 
 The S99 probe left the backend with complete non-atomic emission arms in the SSOT:

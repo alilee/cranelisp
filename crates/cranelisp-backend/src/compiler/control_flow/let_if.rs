@@ -114,6 +114,19 @@ where
             self.builder.declare_var(var, types::I64);
             self.builder.def_var(var, val);
             self.variables.insert(name.clone(), var);
+            // B3.3 (`design/backend/ownership-codegen.md` §5.1): record the
+            // binding as Confined iff its RHS cell is Confined — the RHS node
+            // carries `confined = Some(true)`, or the RHS is a bare `Var`
+            // aliasing an already-Confined binding (confinement propagates
+            // through the alias). The durable per-binding carrier the
+            // through-binding RC-op sites read. Fact-absent (analysis off) ⇒
+            // never inserted ⇒ every derived atomicity is Atomic.
+            let rhs_confined = matches!(super::super::node_confined(val_expr), Some(true))
+                || matches!(val_expr, MonoExpr::Var { name: n, .. }
+                    if self.confined_bindings.contains(n));
+            if rhs_confined {
+                self.confined_bindings.insert(name.clone());
+            }
             self.scope_stack
                 .last_mut()
                 .unwrap_or_else(|| unreachable!("invariant: scope_stack non-empty"))

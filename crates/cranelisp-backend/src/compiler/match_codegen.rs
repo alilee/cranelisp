@@ -9,7 +9,7 @@ use cranelift::prelude::*;
 use cranelift_module::Module;
 
 use cranelisp_types::{ErrorLocation, CranelispError, MonoExpr, MonoMatchArm, Pattern, Span, Symbol};
-use crate::heap::HeapCategory;
+use crate::heap::{HeapCategory, RcAtomicity};
 
 use crate::heap::{self, HeapAdt};
 
@@ -197,7 +197,7 @@ where
                     {
                         let elem_ty = elem_ty.clone();
                         let span = cranelisp_types::Span::new(0, 0);
-                        let _ = self.emit_vec_aware_rc_dec(scrut_val, &elem_ty, span);
+                        let _ = self.emit_vec_aware_rc_dec(scrut_val, &elem_ty, span, RcAtomicity::Atomic);
                         return;
                     }
                     let needs_guard = matches!(category, HeapCategory::Mixed);
@@ -363,12 +363,19 @@ where
         {
             if let Some(ty) = self.variable_types.get(sv).cloned() {
                 let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
+                // B3.3 (§5.1): the auto-upgrade materialization inc goes
+                // non-atomic when the returned binding is Confined.
+                let atomicity = self.rc_atomicity_for_binding(sv);
                 match category {
                     HeapCategory::AlwaysHeap => {
-                        heap::emit_rc_inc(&mut self.builder, self.module, body_val);
+                        heap::emit_rc_inc_atomicity(
+                            &mut self.builder, self.module, body_val, atomicity,
+                        );
                     }
                     HeapCategory::Mixed => {
-                        heap::emit_rc_inc_guarded(&mut self.builder, self.module, body_val);
+                        heap::emit_rc_inc_guarded_atomicity(
+                            &mut self.builder, self.module, body_val, atomicity,
+                        );
                     }
                     HeapCategory::NeverHeap => {}
                 }

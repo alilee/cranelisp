@@ -15,7 +15,7 @@ use cranelisp_types::{ErrorLocation,
     ConcreteType, CranelispError, HeapHeader, MonoExpr, Span, Type,
 };
 
-use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, NULLARY_THRESHOLD_I64};
+use crate::heap::{self, HeapAdt, HeapCategory, HeapVec, RcAtomicity, NULLARY_THRESHOLD_I64};
 
 use super::control_flow::emit_extern_call_in_wrapper;
 use super::{collect_var_ids_from_type, signature_heap_category, substitute_type_inline, CtorMeta, FnCompiler};
@@ -528,6 +528,7 @@ where
         vec_val: Value,
         elem_type: &Type,
         span: Span,
+        atomicity: RcAtomicity,
     ) -> Result<(), CranelispError> {
         let vec_drop_id = self.ctx.vec_drop_func_id.ok_or_else(|| {
             CranelispError::CodegenError {
@@ -539,12 +540,15 @@ where
         // Build per-element dec fn (or null for NeverHeap elements).
         let elem_dec_fn_ptr = self.resolve_elem_dec_fn_ptr(&Some(elem_type.clone()), span)?;
 
-        emit_vec_rc_dec_with_drop(
+        // B3.3 (§5.2): the Vec-header dec goes non-atomic on a Confined vec
+        // cell (the one shared vec-inventory item that IS per-site-emitted).
+        emit_vec_rc_dec_with_drop_atomicity(
             &mut self.builder,
             self.module,
             vec_val,
             vec_drop_id,
             elem_dec_fn_ptr,
+            atomicity,
         );
         Ok(())
     }
@@ -1482,22 +1486,50 @@ pub(crate) fn emit_vec_rc_dec_with_drop<M: Module>(
     vec_drop_func_id: cranelift_module::FuncId,
     elem_dec_fn_ptr: Value,
 ) {
+    emit_vec_rc_dec_with_drop_atomicity(
+        builder, module, vec_val, vec_drop_func_id, elem_dec_fn_ptr, RcAtomicity::Atomic,
+    );
+}
+
+/// Vec-aware RC dec with per-site [`RcAtomicity`] (B3.3, §5.2 — the one shared
+/// vec-inventory item that IS per-site-emitted, so it CAN be gated). `Atomic`
+/// is byte-identical to the pre-B3.3 path; `NonAtomic` emits the plain
+/// load/`isub`/store count update (sound only on a Confined vec cell). The
+/// `old == 1` → `vec_drop` free path (element decs + buffer free + dealloc) is
+/// unchanged in both arms.
+pub(crate) fn emit_vec_rc_dec_with_drop_atomicity<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    vec_val: Value,
+    vec_drop_func_id: cranelift_module::FuncId,
+    elem_dec_fn_ptr: Value,
+    atomicity: RcAtomicity,
+) {
     use cranelift_codegen::ir::AtomicRmwOp;
 
     let cont_block = builder.create_block();
 
-    // Atomic dec RC.
+    // Dec RC — atomic_rmw, or the non-atomic plain load/isub/store arm on a
+    // Confined vec cell (B3.3). The pre-decrement value stands in for the
+    // atomic_rmw's returned old value in the non-atomic arm.
     let rc_addr = builder
         .ins()
         .iadd_imm(vec_val, i64::from(HeapHeader::RC_OFFSET));
     let one = builder.ins().iconst(types::I64, 1);
-    let old_rc = builder.ins().atomic_rmw(
-        types::I64,
-        MemFlags::trusted(),
-        AtomicRmwOp::Sub,
-        rc_addr,
-        one,
-    );
+    let old_rc = if crate::heap::use_nonatomic_arm(atomicity) {
+        let cur = builder.ins().load(types::I64, MemFlags::trusted(), rc_addr, 0);
+        let new = builder.ins().isub(cur, one);
+        builder.ins().store(MemFlags::trusted(), new, rc_addr, 0);
+        cur
+    } else {
+        builder.ins().atomic_rmw(
+            types::I64,
+            MemFlags::trusted(),
+            AtomicRmwOp::Sub,
+            rc_addr,
+            one,
+        )
+    };
 
     // Branch: if old_rc == 1 (last reference), call vec_drop.
     let cmp = builder.ins().icmp(IntCC::Equal, old_rc, one);

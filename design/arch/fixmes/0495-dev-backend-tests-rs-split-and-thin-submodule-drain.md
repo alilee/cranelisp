@@ -173,6 +173,28 @@ grain (the 9-entry ON re-baseline + the a–e class repros; §3 as-built). Statu
 stays **open** — the drain shrank by the `apply` caller matrix, not the whole
 taxonomy.
 
+## Progress — S102 Wave 11 B3.3 (step 2 PARTIAL: rc_emission/heap non-atomic RC cells; 2026-07-05)
+
+**Step-2 drain SHRINKS by the `heap.rs` + `rc_emission.rs` RC-atomicity cells.**
+B3.3 (per-site non-atomic RC for `Confined` cells,
+`design/backend/ownership-codegen.md` §5) landed its §13.5 matrix at seam grain:
+`heap::tests::rc_atomicity_b33_tests` (6 cells) pins the five gated helpers
+(`emit_rc_inc[_guarded]`, `emit_rc_dec[_guarded]`, `emit_vec_rc_dec_with_drop`)
+× `RcAtomicity` → {non-atomic arm, atomic arm verbatim}, CLIF-text asserted,
+INCLUDING the §2.2 negative/else-arm identity class (the plain helper ==
+`_atomicity(Atomic)` byte-for-byte) and the h2 non-atomic-op-share counter.
+`fn_compiler::b33_node_confined_tests` (3 cells) pins the `node_confined`
+classifier — the fact-bearing (StringLit/Lambda/Apply/VecLit/ConstrADT) vs
+non-fact-bearing variant matrix + the `Some(true)⇒NonAtomic` derivation. The
+through-binding confinement carrier (`confined_bindings` population + the
+materialization-inc/consuming-arg/vec-scope-dec wiring) is covered at
+golden/e2e grain (the 6-entry ON re-baseline: 03/04/05/08/f1/f2, each a
+confined materialization inc flipped `atomic_rmw add → load/iadd/store`; the
+anti-race SAFETY that a spark-crossing board keeps atomic RC). Status stays
+**open** — the drain shrank by the rc_emission/heap RC-atomicity cells, not the
+whole taxonomy (got exhaustion/freeze, let_if branch RC, match_codegen shape
+matrix, resolution/primitives_inline curry arms REMAIN).
+
 ## Operational implication / Context
 
 Sequencing: rides increment I's first backend change-sets — increment I lands on

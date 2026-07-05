@@ -387,17 +387,19 @@ block1:
     store notrap aligned v23, v25+24
     v27 = iadd_imm v25, 8
     v28 = iconst.i64 1
-    v29 = atomic_rmw.i64 add v27, v28  ; v28 = 1
-    v30 = func_addr.i64 fn2
-    v31 = iadd_imm v9, 8
-    v32 = iconst.i64 1
-    v33 = atomic_rmw.i64 sub v31, v32  ; v32 = 1
-    v34 = icmp eq v33, v32  ; v32 = 1
-    brif v34, block3, block2
+    v29 = load.i64 notrap aligned v27
+    v30 = iadd v29, v28  ; v28 = 1
+    store notrap aligned v30, v27
+    v31 = func_addr.i64 fn2
+    v32 = iadd_imm v9, 8
+    v33 = iconst.i64 1
+    v34 = atomic_rmw.i64 sub v32, v33  ; v33 = 1
+    v35 = icmp eq v34, v33  ; v33 = 1
+    brif v35, block3, block2
 
 block3:
     fence 
-    call fn3(v9, v30)
+    call fn3(v9, v31)
     jump block2
 
 block2:

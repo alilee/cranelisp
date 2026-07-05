@@ -12,7 +12,7 @@ use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{ConcreteType, ModuleFullPath, MonoExpr, Symbol, SymbolTable, Type};
 
-use crate::heap::{self, HeapCategory};
+use crate::heap::{self, HeapCategory, RcAtomicity};
 
 use super::{CtorMeta, FnCompiler};
 
@@ -221,7 +221,7 @@ where
                         // (vec_drop must be declared whenever Vec types are
                         // in play). Swallow the Result rather than propagate
                         // — emit_field_decs is infallible by signature.
-                        let _ = self.emit_vec_aware_rc_dec(field_val, &elem_ty, span);
+                        let _ = self.emit_vec_aware_rc_dec(field_val, &elem_ty, span, RcAtomicity::Atomic);
                     } else if matches!(resolved_ty, Type::ADT(_, _)) {
                         // For ADT-typed fields, recursively handle nested field cleanup.
                         self.emit_rc_dec_with_inline_drop_glue(
@@ -303,12 +303,20 @@ where
             return;
         }
         let category = HeapCategory::classify(body.ty(), Some(self.ctx.symbol_tables));
+        // B3.3 (§5.1): the materialization inc on the returned cell goes
+        // non-atomic when the producing node is Confined. `body` is the exact
+        // producing node (the let/fn-body return expression), so its `confined`
+        // site fact drives the atomicity. Fact-absent (analysis off) ⇒ Atomic,
+        // byte-identical.
+        let atomicity = self.rc_atomicity_for_node(body);
         match category {
             HeapCategory::AlwaysHeap => {
-                heap::emit_rc_inc(&mut self.builder, self.module, body_val);
+                heap::emit_rc_inc_atomicity(&mut self.builder, self.module, body_val, atomicity);
             }
             HeapCategory::Mixed => {
-                heap::emit_rc_inc_guarded(&mut self.builder, self.module, body_val);
+                heap::emit_rc_inc_guarded_atomicity(
+                    &mut self.builder, self.module, body_val, atomicity,
+                );
             }
             HeapCategory::NeverHeap => {}
         }
