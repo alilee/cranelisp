@@ -214,6 +214,35 @@ is **not** an escape edge (the callee provably does not extend its lifetime) —
 non-edge is what makes the interprocedural analysis strictly stronger than the backend-local walk
 release-doc §8.3 originally defaulted to.
 
+**The escape fact is valid only against the strict `MonoExpr` frame structure — backend
+frame-restructuring transformations owe a local decline (S102, FIXME 0525 ruling).** Q2
+answers "does the value escape *its defining frame*?" where "frame" means the frame the strict
+`MonoExpr` presents. The backend, at IR-generation time, performs transformations that
+**restructure or relocate frames the escape analysis never saw** — and wherever such a
+transformation moves an allocation relative to the frame the escape fact assumed, the value's
+storage may no longer outlive its use even though the fact says `NoEscape`. Two instances exist
+today, both cured the same way — a **backend-local, always-sound decline** at exactly the
+relocating site (never a widening of the fact, and never a new analysis input):
+
+1. **TCO back-edge** (`ownership-codegen.md` §4.1 gate 3) — a tail self-call reuses the
+   iteration frame under a live reference; the backend declines stack-alloc for the whole
+   self-recursive function.
+2. **Lenient-eval spark thunks** (`ownership-codegen.md` §4.1 gate 5, FIXME 0525) — the
+   backend synthesizes a spark thunk (`MonoExpr::Lambda`) whose frame pops at the join,
+   relocating a sparked arg / `let`-RHS computation out of the frame the escape fact was
+   computed against; the backend declines stack-alloc for any construction it compiles inside a
+   spark-thunk body. Spark placement is codegen-internal (`lenient-eval.md` §2; the confinement
+   §5.2 over-approximation is a coarse superset of this set, NOT a substitute for it — see the
+   0525 ruling for why confinement is the wrong axis).
+
+The pattern is a **property of the escape query's boundary**, not a mechanism: the escape fact
+is a per-strict-frame verdict, and the backend is the sole actor that knows its own
+frame-restructuring decisions, so the decline is backend-local by construction. Declining is
+always sound (heap is the conservative point), so a new backend transformation that relocates
+allocations across a frame boundary the strict analysis cannot see adds a gate of this family
+rather than a summary field. This is the counterpart, on the escape axis, of the confinement
+axis's "reachability rule survives as the conservative approximation" (§2.3).
+
 ### 2.3 The confinement axis (threads) — op-wise, not reachability-wise
 
 Per cell: `C = {Confined ⊑ Crossing}` (join toward `Crossing`). **What atomicity protects is

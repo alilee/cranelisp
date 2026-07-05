@@ -1,10 +1,13 @@
 ---
 number: 0525
-target: /arch
+target: /dev (cranelisp-backend)
 filed_by: /dev
 filed_at: 2026-07-05
 sprint_filed: 102
-refers_to: design/backend/ownership-codegen.md §4 (B3.4 stack slots) + §4.3 (ParBind/spark interaction), design/typecheck/ownership-inference.md §5.2 (confinement over-approximation), crates/cranelisp-backend/src/compiler/fn_compiler.rs (STACK_ALLOC_ESCAPE_FACT_SOUND)
+ruled_by: /arch
+ruled_at: 2026-07-05
+retargeted: /arch → /dev (cranelisp-backend) at the 0525 ruling (direction (d), backend-local emission gate)
+refers_to: design/backend/ownership-codegen.md §4 (B3.4 stack slots) + §4.1 gate 3 + §4.3 (ParBind/spark interaction), design/arch/ownership-inference.md §2.2 (escape axis — the frame-restructuring boundary note added by this ruling), design/typecheck/ownership-inference.md §5.2 (confinement over-approximation), crates/cranelisp-backend/src/compiler/fn_compiler.rs (constructor_call_stack_eligible / STACK_ALLOC_ESCAPE_FACT_SOUND), crates/cranelisp-backend/src/compiler/apply.rs:222-296 (the apply-arg spark site)
 status: open
 ---
 
@@ -116,6 +119,144 @@ activation. Candidate directions, for /arch to weigh (I am not choosing):
 4. **Defer B3.4 to a later increment** (region arena / thread-local RC / escape→
    stack under the Phase-H memory-model spine), if the lenient interaction is
    better solved there.
+
+## /arch ruling (2026-07-05) — direction (d): a backend-local emission gate ("gate 5"), mirroring gate 3
+
+**Chosen direction: (d).** Add one backend-local eligibility gate to
+`constructor_call_stack_eligible` — **decline stack-alloc for any construction the
+backend is about to relocate across a spark barrier** (i.e. any construction compiled
+inside a backend-synthesized spark-thunk body). This is a **small, contained,
+backend-only change** requiring **no typecheck / confinement work and no mode
+divergence**. Retargeted to `/dev (cranelisp-backend)`.
+
+### Why (d), and why NOT the others
+
+**Confinement is the WRONG AXIS (rejects (a)).** The /arch scrutiny the dispatch
+brief asked for lands squarely: confinement and stack-alloc-soundness are *distinct
+properties*.
+- Confinement (spine §2.3) answers **"may RC ops on this cell run *concurrently* on
+  >1 thread?"** — a property of *where RC operations execute*, protecting the refcount
+  word so it can be non-atomic.
+- Stack-alloc soundness asks **"does the value's backing STORAGE outlive every use?"**
+  — a property of *where the storage frame lives and when it pops*.
+
+  These come apart in both directions: a `Confined` cell (all RC ops parent-strand)
+  stack-allocated in a thunk frame that pops early still dangles → UAF; a `Crossing`
+  cell is perfectly safe to stack-allocate if its storage frame outlives all uses.
+  The reason confinement *appears* to flag the lenient case is **incidental**: the
+  confinement analysis over-approximates every apply-arg / let-RHS to
+  `PotentialFork`→`Crossing` (§5.2) precisely because those are the lenient-*sparkable*
+  positions — so its over-approximation set is a coarse SUPERSET of the real signal
+  (the *actually-sparked* constructions). Gating on it is therefore both semantically
+  wrong AND fatally imprecise (declines every apply-arg ⇒ dead win, Principle 8).
+  Worse, making confinement precise enough to distinguish "actually-sparked" from
+  "not-sparked" would require **typecheck to predict codegen's spark placement** —
+  which both design docs state is codegen-internal and invisible to typecheck
+  (`lenient-eval.md` §2; typecheck spine §5.2). Direction (a) asks the analysis to
+  compute a fact it structurally cannot see, at large cost, on the wrong axis. Rejected.
+
+**Direction (b) is strictly worse than (d).** Copying a stack arg to the heap before
+crossing pays TWO allocations (stack slot + heap copy) to undo a stack allocation the
+backend never needed to make. Since the backend *decides* the spark placement, the
+clean move is to **not stack-allocate the relocated construction in the first place**
+(decline → one heap alloc), not stack-then-copy. Medium-sized and wasteful. Rejected.
+
+**Direction (c) is the mode-gating "cancer" class.** Mode-gating B3.4 to non-lenient
+splits the emission path on a runtime-eval-strategy flag: the same program would
+stack-allocate under `--link`/`NO_LENIENT` and heap-allocate under lenient REPL/`--run`.
+Per `memory/feedback_investigate_suspected_dual_path.md`, mode-keyed codegen divergence
+is a serious red flag — enforcement belongs at the *shared seam*, not a mode-specific
+gate. (d) is NOT a mode divergence: it is ONE gate reading ONE local fact
+("is-this-construction-in-a-spark-thunk") that is present on both paths — under
+`NO_LENIENT` no thunk is synthesized, so the gate never fires and the full stack-alloc
+win still lands; under lenient, only the relocated constructions decline. Rejected.
+
+### (d) is the SAME shape as the existing gate 3 (the frame-restructuring pattern)
+
+Gate 3 (§4.1) already declines stack-alloc inside a TCO loop body, because a TCO
+back-edge is a **frame-lifetime transformation the per-frame escape analysis cannot
+see** — the value's iteration-frame is reused under a live reference. Lenient
+arg-sparking is the *identical shape one level over*: the backend synthesizes a spark
+thunk (`MonoExpr::Lambda`, `apply.rs:224`) whose frame pops at the join, relocating the
+arg computation — and its stack allocations — out of the frame the escape fact was
+computed against. **The escape fact is CORRECT for the strict `MonoExpr` frame
+structure; the backend then rewrites that structure underneath it.** The cure is the
+same as gate 3: a backend-local, always-sound decline at exactly the sites the backend
+itself relocates. The backend is the only actor that can compute this signal (it owns
+the spark-placement decision), which is why it is a backend-local gate, not an analysis
+fact. This is the "backend-local emission sharpening" boundary property now recorded in
+the spine (`design/arch/ownership-inference.md` §2.2).
+
+### Precise implementation guidance (for `/dev (cranelisp-backend)`)
+
+1. **The invariant to enforce:** *a stack slot must not cross a spark boundary.* A
+   construction compiled inside a backend-synthesized spark-thunk body must NOT
+   stack-allocate — the thunk frame pops at the join while the value is consumed after
+   it.
+
+2. **The gate.** Add **gate 5** to `constructor_call_stack_eligible`
+   (`fn_compiler.rs:730`), symmetric to gate 3's `self.fn_has_self_call` read: an
+   `in_spark_thunk` (name /dev's) boolean on `FnCompiler`, checked
+   `if self.in_spark_thunk { return false; }`. Declining is always sound.
+
+3. **Setting the flag — single-sourced across ALL three spark sites.** The flag must be
+   true while compiling any spark-thunk body, covering all backend spark emitters so the
+   gate is single-sourced (Principle 7):
+   - apply-arg sparks — `apply.rs:245` (`this.compile_expr(&thunk_expr)` in the Phase-1
+     loop);
+   - independent `let`-binding sparks — `compile_let_lenient` (`let_if.rs`);
+   - dependent `let`-binding sparks (§2.6 of `lenient-eval.md`).
+
+   **Propagation precedent is one line away:** `spark_capture_borrow` (`apply.rs:243-246`)
+   already does the exact save-set-restore-around-thunk-compile dance for the analogous
+   borrow-capture concern, and already reaches the inner `FnCompiler` that compiles the
+   thunk `Lambda` body (the construction `(Some 10)` lives in the lambda body, so gate 5
+   must be observed by the inner `FnCompiler`, not the outer one — mirror how
+   `spark_capture_borrow` crosses that boundary). Prefer factoring a single
+   "compile-this-expr-as-a-spark-thunk-body" helper that both raises `in_spark_thunk`
+   (and `spark_capture_borrow`) and restores them, so no spark site can forget the gate.
+
+4. **Scope for increment I: decline ALL stack-alloc inside a spark thunk.** Do NOT
+   attempt the tighter "decline only constructions reaching the thunk's tail/return"
+   refinement (the 0524 lambda-frame analogue) now — declining is always sound, the
+   thunk body is typically a single expensive `Apply` (spark cost heuristic), so
+   thunk-internal stack wins are marginal, and increment I ships the zero-obligation
+   class. The refinement is an increment-II option, not a blocker.
+
+5. **Activation.** With gate 5 in place, flip `STACK_ALLOC_ESCAPE_FACT_SOUND = true`
+   (`fn_compiler.rs:1156`) in the SAME change-set. Re-run the full killer/win/adversarial
+   + full-suite behavioral verification INCLUDING the multi-arg lenient shape, under
+   `MALLOC_PERTURB_`.
+
+### Acceptance
+
+- **The killer stays cured:** `nested_match_in_arm_body` (and the 2+-stack-ADT-arg
+  lenient shape generally) stays HEAP — its sparked-arg constructions decline via gate 5
+  — no UAF, value-correct (`(d (Some 10) (Some 32))` ⇒ `11`) under `MALLOC_PERTURB_`.
+- **The 0523/0524 killers stay cured** (`constructor_wrapped_in_lambda_applied_indirectly_works`,
+  `polymorphic_higher_order_returning_adt`) — unaffected by gate 5.
+- **B3.4 ACTIVATES:** the flag is `true`; the win fires.
+- **The WIN survives:** genuinely-frame-local single-use constructors NOT inside a spark
+  thunk still stack-allocate (`(MkBox 5)`, scalar lookup-table vecs). Under `NO_LENIENT`
+  gate 5 never fires — the full corpus win lands. `07_trait_dispatch`'s `(MkBox 5)`
+  stack-allocates in the golden.
+- **Byte-identical-OFF** holds (gate 5 is downstream of the `STACK_ALLOC_ESCAPE_FACT_SOUND`
+  early-return; with the flag off nothing changes).
+- Unit matrix: extend `fn_compiler::b34_stack_eligibility_tests` with a gate-5 cell
+  (in-spark-thunk ⇒ ineligible) alongside the existing gate-3 (TCO) cells.
+
+### Size / sprint disposition
+
+**CONTAINED — do-now (this sprint, if the ladder reaches it), NOT a defer-to-S103.**
+This is a backend-local emission gate mirroring an already-landed gate (gate 3), riding
+an already-landed propagation precedent (`spark_capture_borrow`), with the whole B3.4
+mechanism already implemented and held off behind one flag. No `cranelisp-types` change,
+no typecheck change, no confinement-precision work, no cache-schema bump, no
+mode divergence. `/sprint`: dispatch to `/dev (cranelisp-backend)`; B3.4 activation is a
+**small backend-local change**, not a large typecheck/confinement effort. (Per the S102
+best-judgment note, if the ladder has already moved past B3.4 toward the measurable
+increment when this lands, activating B3.4 with gate 5 remains a self-contained
+change-set that can land whenever scheduled — it no longer blocks on any other skill.)
 
 ## Operational implication / Context
 
