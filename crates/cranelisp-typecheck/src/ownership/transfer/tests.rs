@@ -818,6 +818,218 @@ fn match_arm_binding_does_not_leak_past_arm() {
 
 // =================== Negatives ===================
 
+// ============ Closure / spark capture as an escape edge (FIXME 0523) ============
+//
+// R6: capture (closure capture, suspension capture) IS an escape edge. A value
+// captured by a closure that escapes the frame escapes — INDEPENDENT of how the
+// value is used inside the closure body. The pre-cure walker propagated escape
+// through the closure body's OUTER context only; a capture used as a Borrowed
+// argument (or any non-escaping sub-position) inside the escaping closure lost
+// its escape edge (a hard UAF at the B3.4 stack-alloc consumer). Each cell pins
+// the SPECIFIC escape site fact / param mode; the over-widen twins pin that a
+// genuinely-non-escaping capture stays Some(false).
+
+/// A lambda `(fn params body)` with an explicit span.
+fn lambda_sp(span: Span, params: Vec<&str>, body: MonoExpr) -> MonoExpr {
+    MonoExpr::Lambda {
+        params: params.into_iter().map(Symbol::from).collect(),
+        body: Box::new(body),
+        span,
+        ty: ConcreteType::Fn(vec![], Box::new(ConcreteType::String)),
+        escapes: None,
+        confined: None,
+        unique_static: None,
+    }
+}
+
+#[test]
+fn intra_direct_closure_capture_of_local_escapes() {
+    // spec: R6 — `(defn f [x] (let [r (Box x)] (fn [] r)))`. The local `r`
+    // (a fresh aggregate) is captured by the RETURNED closure ⇒ escapes. The
+    // Box construction's escape site fact must be true.
+    let box_span = Span::new(100, 101);
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("r"), adt_sp(box_span, vec![var("x")]))],
+        body: Box::new(lambda_sp(Span::new(102, 103), vec![], var("r"))),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    assert_eq!(r.facts.escapes.get(&box_span), Some(&true), "captured local aggregate escapes");
+    // x is folded into the escaping aggregate ⇒ Owned/Retained.
+    assert_eq!(r.summary.param_mode(0), Mode::Owned);
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained);
+}
+
+#[test]
+fn intra_closure_capture_through_borrow_arg_escapes() {
+    // spec: R6 (THE gap) — `(defn f [x] (let [r (Box x)] (fn [] (readonly r))))`.
+    // The captured local `r` is used as a BORROWED argument inside the escaping
+    // closure. The pre-cure walker reset the context to Arg{Borrowed} at the
+    // apply and LOST the capture escape ⇒ `r`'s aggregate marked escapes=false
+    // (the hard UAF). Truth: capture escapes regardless of use-position.
+    let box_span = Span::new(110, 111);
+    let env = TestEnv::default().summary(
+        "readonly",
+        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+    );
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("r"), adt_sp(box_span, vec![var("x")]))],
+        body: Box::new(lambda_sp(Span::new(112, 113), vec![], call("readonly", vec![var("r")]))),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("x")], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&box_span),
+        Some(&true),
+        "a capture used as a Borrowed arg inside an escaping closure still escapes"
+    );
+}
+
+#[test]
+fn intra_closure_capture_of_param_widens_owned_retained() {
+    // spec: R6 — `(defn f [x] (fn [] (readonly x)))`. The param `x` is captured
+    // by the returned closure and used borrowed inside ⇒ escapes ⇒ Owned/Retained
+    // (so a caller passing a fresh value sees the escape at the call site).
+    let env = TestEnv::default().summary(
+        "readonly",
+        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+    );
+    let body = lambda_sp(Span::new(120, 121), vec![], call("readonly", vec![var("x")]));
+    let r = run(&[strparam("x")], body, env);
+    assert_eq!(r.summary.param_mode(0), Mode::Owned, "captured param widens Owned");
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained, "captured param is Retained");
+}
+
+#[test]
+fn inter_procedural_capture_via_callee_summary_escapes() {
+    // spec: R6 inter-procedural — `(defn f [x] (make-clo (Box x)))` where
+    // `make-clo` captures its param into a returned closure (summary: param0
+    // Owned/Retained). `f` has NO closure form of its own; the escape must ride
+    // the callee summary — a fresh value passed at the capturing position escapes.
+    let box_span = Span::new(130, 131);
+    let env = TestEnv::default().summary(
+        "make-clo",
+        sm(vec![Mode::Owned], ResultMode::Fresh, vec![ParamFlow::Retained]),
+    );
+    let body = call("make-clo", vec![adt_sp(box_span, vec![var("x")])]);
+    let r = run(&[strparam("x")], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&box_span),
+        Some(&true),
+        "a fresh value passed to a capturing callee param escapes at the call site"
+    );
+}
+
+#[test]
+fn make_clo_infers_captured_param_owned_retained() {
+    // spec: R6 — the producer half of the inter-procedural loop. `make-clo`'s
+    // body `(fn [] x)` captures param x into the returned closure ⇒ the inferred
+    // summary MUST be Owned/Retained (this is the fact the caller above consumes).
+    let body = lambda_sp(Span::new(140, 141), vec![], var("x"));
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    assert_eq!(r.summary.param_mode(0), Mode::Owned, "make-clo param is Owned");
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Retained, "make-clo param is Retained");
+}
+
+#[test]
+fn nested_closure_capture_escapes() {
+    // spec: R6 nested — `(defn f [x] (let [r (Box x)] (fn [] (fn [] r))))`. `r`
+    // is captured by an inner closure that is itself captured/returned by the
+    // outer escaping closure. Transitive capture ⇒ `r` escapes.
+    let box_span = Span::new(150, 151);
+    let inner = lambda_sp(Span::new(152, 153), vec![], var("r"));
+    let outer = lambda_sp(Span::new(154, 155), vec![], inner);
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("r"), adt_sp(box_span, vec![var("x")]))],
+        body: Box::new(outer),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    assert_eq!(r.facts.escapes.get(&box_span), Some(&true), "nested-captured local escapes");
+}
+
+#[test]
+fn suspension_capture_through_borrow_arg_escapes() {
+    // spec: R6 — `LaunchContinue.launched` is a suspension escape edge. A capture
+    // used borrowed inside the launched expression still escapes (same gap as the
+    // closure body). `launched = (readonly r)` where r is a fresh local aggregate.
+    let box_span = Span::new(160, 161);
+    let env = TestEnv::default().summary(
+        "readonly",
+        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+    );
+    let launched = call("readonly", vec![var("r")]);
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("r"), adt_sp(box_span, vec![var("x")]))],
+        body: Box::new(MonoExpr::LaunchContinue {
+            launched: Box::new(launched),
+            continuation: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+            span: s(),
+            ty: ConcreteType::Int,
+        }),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[strparam("x")], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&box_span),
+        Some(&true),
+        "a capture used borrowed in a suspension edge still escapes"
+    );
+}
+
+// ---- over-widen regression pins: a non-escaping capture stays Some(false) ----
+
+#[test]
+fn non_escaping_local_lambda_does_not_escape_capture() {
+    // spec: R6 (precision pin) — `(defn f [x] (let [r (Box x)] (let [c (fn [] r)] 0)))`.
+    // The closure `c` is bound but NEVER escapes (the body returns 0). `r` must
+    // stay escapes=false and `x` stay Consumed — the fix must not widen EVERY
+    // capture (that would defeat stack allocation entirely).
+    let box_span = Span::new(170, 171);
+    let inner = MonoExpr::Let {
+        bindings: vec![(Symbol::from("c"), lambda_sp(Span::new(172, 173), vec![], var("r")))],
+        body: Box::new(MonoExpr::IntLit { value: 0, span: s(), ty: ConcreteType::Int }),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("r"), adt_sp(box_span, vec![var("x")]))],
+        body: Box::new(inner),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    assert_eq!(
+        r.facts.escapes.get(&box_span),
+        Some(&false),
+        "a capture by a NON-escaping local closure does not escape (precision)"
+    );
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Consumed, "x stays Consumed (no over-widen)");
+}
+
+#[test]
+fn lambda_param_shadows_capture_no_spurious_escape() {
+    // spec: R6 (precision pin) — a lambda's OWN param is not a capture. In
+    // `(defn f [x] (fn [r] (readonly r)))` the `r` used inside is the lambda's
+    // param, NOT the enclosing scope — there is no capture of any enclosing local,
+    // so `x` (unused) must stay Borrowed. (The lambda escapes, but captures nothing.)
+    let env = TestEnv::default().summary(
+        "readonly",
+        sm(vec![Mode::Borrowed], ResultMode::Fresh, vec![ParamFlow::Consumed]),
+    );
+    let body = lambda_sp(Span::new(180, 181), vec!["r"], call("readonly", vec![var("r")]));
+    let r = run(&[strparam("x")], body, env);
+    assert_eq!(
+        r.summary.param_mode(0),
+        Mode::Borrowed,
+        "an unused enclosing param stays Borrowed — lambda param r is not a capture"
+    );
+}
+
 #[test]
 fn result_unique_never_set_in_increment_i() {
     // spec: §10 — result_unique is hardwired false throughout increment I.

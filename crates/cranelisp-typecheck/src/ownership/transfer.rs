@@ -429,13 +429,29 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 Origin::Fresh
             }
 
-            MonoExpr::Lambda { body, span, .. } => {
-                // The closure value is an allocation; if it escapes, its
-                // free-var captures escape (rule 3). Increment-I conservative:
-                // walk the body with EscapingCapture when the closure escapes,
-                // else Neutral.
+            MonoExpr::Lambda { params, body, span, .. } => {
+                // The closure value is an allocation; if it escapes, its captured
+                // free vars escape (rule 3 / R6).
                 let escapes = ctx.escapes();
                 self.facts.escapes.insert(*span, escapes);
+                if escapes {
+                    // Capture IS an escape edge — INDEPENDENT of how the captured
+                    // value is used inside the closure body (FIXME 0523). The
+                    // OUTER-context walk below only escapes a capture in a
+                    // directly-escaping sub-position; a capture used as a Borrowed
+                    // arg (or any non-escaping sub-position) resets the context at
+                    // the `Apply` and lost its escape (the hard UAF at B3.4). Drive
+                    // capture-escape from the free-var set so every captured
+                    // enclosing binding escapes, regardless of use-position.
+                    let mut caps = HashSet::new();
+                    free_vars(body, params, &mut caps);
+                    for c in &caps {
+                        self.classify_capture_escape(c);
+                    }
+                }
+                // Still walk the body: nested escaping allocation site facts,
+                // value-uses (§8.3), and nested-closure capture sets are recorded
+                // here. Monotone with the capture pass above (both only widen).
                 let inner = if escapes { UseCtx::EscapingCapture } else { UseCtx::Neutral };
                 self.walk(body, inner);
                 Origin::Fresh
@@ -466,8 +482,15 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             }
 
             MonoExpr::LaunchContinue { launched, continuation, .. } => {
-                // `launched` is a suspension escape edge (R6): anything it uses
-                // escapes. The continuation proceeds in the enclosing context.
+                // `launched` is a suspension escape edge (R6): every free var it
+                // captures escapes — independent of use-position, the same gap as
+                // closure capture (FIXME 0523). The continuation proceeds in the
+                // enclosing context.
+                let mut caps = HashSet::new();
+                free_vars(launched, &[], &mut caps);
+                for c in &caps {
+                    self.classify_capture_escape(c);
+                }
                 self.walk(launched, UseCtx::EscapingCapture);
                 self.walk(continuation, ctx)
             }
@@ -560,6 +583,39 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                 self.facts.escapes.insert(*span, ctx.escapes());
                 Origin::Fresh
             }
+        }
+    }
+
+    /// Mark a value captured by an escaping closure / suspension as escaping
+    /// (FIXME 0523, R6). Capture is an escape edge regardless of use-position:
+    ///
+    /// - roots in a **param** ⇒ widen it `Owned`/`Retained` (the escape rides the
+    ///   ABI, so a caller passing a fresh value at that position sees the escape —
+    ///   the inter-procedural half);
+    /// - a **Fresh** local (a fresh aggregate / `Fresh`-result) ⇒ push to the
+    ///   escaped worklist so the enclosing scope's drain re-walks its RHS in the
+    ///   escaping context (flips the allocation's escape site fact);
+    /// - a **borrowed view / alias of another local** ⇒ materialize at its root
+    ///   (§4.2 rule 5): follow to the owning local and escape that.
+    ///
+    /// A free name that is not a binding (a callable / global) is not a
+    /// capture-escape — its value-use is recorded by the body walk (§8.3).
+    fn classify_capture_escape(&mut self, name: &Symbol) {
+        if let Some(idx) = self.param_root(name) {
+            self.classify_param_use(idx, UseCtx::EscapingCapture);
+            return;
+        }
+        let Some(bs) = self.bindings.get(name).cloned() else { return };
+        match bs.origin {
+            Origin::Fresh => self.escaped.push((name.clone(), UseCtx::EscapingCapture)),
+            // Root/Projection of a non-param local (param_root missed above ⇒ its
+            // root is a local): follow to the owning binding and escape it.
+            // `param_root` does not chase `Projection`, so a projection rooted in a
+            // param is reached here and resolves on the recursion.
+            Origin::Root(s) | Origin::Projection(s) if s != *name => {
+                self.classify_capture_escape(&s)
+            }
+            Origin::Root(_) | Origin::Projection(_) | Origin::MayParam { .. } => {}
         }
     }
 
@@ -697,6 +753,105 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
             frame.push((n, prior));
         }
         frame
+    }
+}
+
+/// The free variables of `expr` — names used that are bound neither by `params`
+/// (a lambda's own formals; empty for a `LaunchContinue.launched` expr) nor by
+/// any binder inside `expr` (the R6 capture set; FIXME 0523).
+///
+/// Proper lexical scoping (binders save + restore) so the set never
+/// UNDER-reports a real capture — under-reporting is the unsound direction (a
+/// missed escape). Over-reporting is sound: a spuriously-included locally-bound
+/// name is absent from the caller's `bindings`, so [`Walker::classify_capture_escape`]
+/// no-ops on it.
+fn free_vars(expr: &MonoExpr, params: &[Symbol], out: &mut HashSet<Symbol>) {
+    let mut bound: HashSet<Symbol> = params.iter().cloned().collect();
+    collect_free(expr, &mut bound, out);
+}
+
+/// Push `names` that are newly bound into `bound`, returning the ones actually
+/// added (a name already bound — a shadow — is NOT re-added, so it is not
+/// removed on scope exit and stays bound as its outer occurrence).
+fn enter_scope(names: impl IntoIterator<Item = Symbol>, bound: &mut HashSet<Symbol>) -> Vec<Symbol> {
+    let mut added = Vec::new();
+    for n in names {
+        if bound.insert(n.clone()) {
+            added.push(n);
+        }
+    }
+    added
+}
+
+fn collect_free(expr: &MonoExpr, bound: &mut HashSet<Symbol>, out: &mut HashSet<Symbol>) {
+    match expr {
+        MonoExpr::Var { name, .. } => {
+            if !bound.contains(name) {
+                out.insert(name.clone());
+            }
+        }
+        MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::StringLit { .. } => {}
+        // A `let`/`par` is sequential: each RHS sees the prior bindings, so bind
+        // after walking each RHS; restore all on scope exit.
+        MonoExpr::Let { bindings, body, .. } | MonoExpr::ParBind { bindings, body, .. } => {
+            let mut added = Vec::new();
+            for (n, rhs) in bindings {
+                collect_free(rhs, bound, out);
+                added.extend(enter_scope([n.clone()], bound));
+            }
+            collect_free(body, bound, out);
+            for n in added {
+                bound.remove(&n);
+            }
+        }
+        MonoExpr::If { cond, then_branch, else_branch, .. } => {
+            collect_free(cond, bound, out);
+            collect_free(then_branch, bound, out);
+            collect_free(else_branch, bound, out);
+        }
+        MonoExpr::Match { scrutinee, arms, .. } => {
+            collect_free(scrutinee, bound, out);
+            for arm in arms {
+                let mut names = Vec::new();
+                collect_pattern_bindings(&arm.pattern, &mut names);
+                let added = enter_scope(names, bound);
+                collect_free(&arm.body, bound, out);
+                for n in added {
+                    bound.remove(&n);
+                }
+            }
+        }
+        MonoExpr::Apply { callee, args, .. } => {
+            collect_free(callee, bound, out);
+            for a in args {
+                collect_free(a, bound, out);
+            }
+        }
+        MonoExpr::Lambda { params, body, .. } => {
+            let added = enter_scope(params.iter().cloned(), bound);
+            collect_free(body, bound, out);
+            for n in added {
+                bound.remove(&n);
+            }
+        }
+        MonoExpr::Trace { body, .. } => collect_free(body, bound, out),
+        MonoExpr::VecLit { elements, .. } => {
+            for e in elements {
+                collect_free(e, bound, out);
+            }
+        }
+        MonoExpr::ConstrADT { fields, .. } => {
+            for f in fields {
+                collect_free(f, bound, out);
+            }
+        }
+        MonoExpr::LaunchContinue { launched, continuation, .. } => {
+            collect_free(launched, bound, out);
+            collect_free(continuation, bound, out);
+        }
     }
 }
 

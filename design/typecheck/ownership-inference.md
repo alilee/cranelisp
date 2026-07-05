@@ -1275,6 +1275,54 @@ per audit row.
   `call_graph_edges` seeds order only).
 - **(f) Anchor drift recorded:** §3.1's `program.rs:1901/:1999` are now
   `:1986/:2082–2084` post-S101; the seam and ordering are unchanged.
+- **(j) Closure/spark capture is an escape edge driven by the FREE-VAR set, not
+  context propagation** (Wave 11 B3.4 cure; FIXME 0523 — the second pass5
+  classifier gap after 0520, a hard UAF). **Root cause:** §3.3's `Lambda` case
+  walked the closure body with the `EscapingCapture` context and relied on that
+  context propagating to each captured use. But context does **not** propagate
+  through an `Apply`: at a call the args are re-classified `Arg{mode, flow}` from
+  the callee summary, so a captured value used as a **`Borrowed` argument** (or
+  any non-escaping sub-position) inside an escaping closure lost its escape edge —
+  `(defn f [x] (let [r (Box x)] (fn [] (readonly r))))` marked `r`'s aggregate
+  `escapes=false`, and `(defn f [x] (fn [] (readonly x)))` inferred `x` as
+  `Borrowed`. B3.4 (stack-alloc for `NoEscape` scalar-payload aggregates, the
+  first hard consumer) dangled on it — a use-after-free the RC-balance guards
+  cannot catch. The DIRECT capture shapes (`(fn [] r)` / `(fn [] x)`) were already
+  correct — the drain (§13.6(g)) flips a directly-captured `Fresh` local, and a
+  directly-captured param widens through `classify_param_use` — which is why the
+  gap hid behind the minimal repro. **As-built cure:** capture is an escape edge
+  **independent of use-position** (spine R6). When a `Lambda` escapes, the walker
+  computes the closure's **capture set** = the free variables of its body
+  (`transfer.rs::free_vars`, proper lexical scoping over inner `let`/`par`/`match`/
+  nested-`Lambda` binders minus the lambda's own params; over-approx is sound,
+  under-report is not, so binders save+restore) and runs
+  `classify_capture_escape` on each: a param-rooted capture widens
+  `Owned`/`Retained` (the escape rides the ABI — the inter-procedural half needs
+  **no new summary carrier**: a caller passing a fresh value to that
+  `Owned`/`Retained` position escapes at the call site through the existing
+  `UseCtx::Arg` classification); a `Fresh` local pushes to the escaped worklist so
+  the enclosing drain flips its allocation's escape fact; a borrowed
+  view/alias-of-a-local materializes at its root (§4.2 rule 5, followed
+  recursively). The `EscapingCapture` body walk is **retained** (nested escaping
+  allocation site facts / value-uses / deps) — the free-var pass is additive and
+  monotone with it. **`LaunchContinue.launched` gets the same free-var capture
+  pass** (suspension capture, R6 — same through-arg gap). `ParBind` bindings stay
+  non-escape (§4.3 — a joined spark's frame-escape is a STRAND fact, handled by
+  confinement, not a capture escape). **Precision preserved:** a closure that does
+  NOT escape (bound-and-discarded locally, walked `Neutral`) triggers no free-var
+  pass ⇒ its captures stay `escapes=false`/`Consumed`, so B3.4's stack-alloc win
+  survives (verified: `non_escaping_local_lambda_does_not_escape_capture`,
+  `lambda_param_shadows_capture_no_spurious_escape`). Guarded by the
+  `transfer::tests` capture-escape matrix (intra direct/through-borrow-arg/param,
+  inter-procedural via callee summary, nested, suspension, + the two over-widen
+  pins). **Cache:** value-only change to escape site facts + `param_modes`/
+  `param_flow` within the same schema; **rides `CACHE_SCHEMA_VERSION` 14** (the
+  0520 S102 summary-meaning bump) — serde shape unchanged, and no ACTIVE
+  cross-module consumer is exposed (B3.2 reads `result`, which this cure does not
+  move; the fields it does move — escape site facts, `param_modes`/`param_flow` —
+  have no active consumer with B3.4's flag OFF and increment-I summaries
+  emitted-but-unconsumed ⇒ codegen behaviour-neutral, golden-CLIF empty). B3.4
+  activation (the flag flip) is a separate future change-set.
 
 ### 13.7 The Principle-23 scenario space (the 0497 rider) — submodule × scenario class
 
