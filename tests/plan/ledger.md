@@ -54,7 +54,7 @@ file.
 | 1 | `repl_redefinition::t1_downgrade_report_names_stale_compiled_callers_exactly` | L-U1 — §18.1.1 downgrade report (exact header + exact caller set) | Wave 4 (A-1 T1 interim print, /int) |
 | 2–4 | `repl_lifecycle_matrix::{broken_symbol_restart_no_cache_reaches_prompt_and_accepts_repair, broken_symbol_restart_cache_wiped_reaches_prompt_and_accepts_repair, macro_defining_macro_restart_no_cache_recovers}` | L-S2 — 0489/D1 restart-mode neighbours (§18.8 floor / §15.1 round-trip) | Wave 5 (A-2 persistence cluster, /int) |
 | 5–10 | `repl_mod_devloop::{devloop_cache_restored_prelude_using_mod_turn_compiles, sig_accepts_fq_module_qualified_name, info_accepts_fq_module_qualified_name, refs_accepts_fq_module_qualified_name, sig_imported_name_shows_full_signature_line, cascade_report_broken_name_pasteable_into_info}` | L-S3 — 0487 faces 1+3 / D3 class (§8.8 env parity; §3.8/§3.6/§17.6.1 FQ args) | Wave 7 (A-3 dev-loop, /int) |
-| 11–14 | `display_exact::{display_exact_nested_parameterized_adt_wrap_in_wrap, display_exact_option_in_option_value_line, display_exact_vec_of_parameterized_adt_value_line, display_exact_user_list_recursive_form_whole_line}` | L-N1 — 0493 exact-shape acceptance (§1.5) | Wave 10 (A-4/A5 display batch) |
+| 11–14 | `display_exact::{display_exact_nested_parameterized_adt_wrap_in_wrap, display_exact_option_in_option_value_line, display_exact_vec_of_parameterized_adt_value_line, display_exact_user_list_recursive_form_whole_line}` | L-N1 — 0493 exact-shape acceptance (§1.5) | **ALL GREEN.** #11/#13/#14 flipped with the 0493 nested-parameterized-ADT display fix (Wave 10). #12 (`display_exact_option_in_option_value_line`) was NOT a 0493 defect: it was a **test-harness seeding bug** — it used the bare `repl` preset (no `Option` seeded), failing `undefined variable: Some`. Fixed 2026-07-05 by switching it to `repl_prims` (the primitives-only prelude re-exports the bootstrap-seeded `primitives/Option`); the compiler produces the asserted line verbatim (`:(primitives/Option (primitives/Option primitives/Int)) (Option.Some (Option.Some 42))`), confirming the nested-ADT mechanism — already proven GREEN by sibling #11 — was never the blocker. |
 | 15 | `display_exact::sig_info_bare_lookup_primary_line_agreement_healthy` | L-N1 — 0492 §3.8 byte-agreement | Wave 10 (0492 fix, /int `handle_sig`) |
 | 16 | `display_exact::trap_answer_line_exact_normative_format` | L-N1 — §18.5 exact trap line | Wave 10 (trap-format fix, /int) |
 | 17–18 | `display_exact::{macro_arity_diagnostic_carries_no_internal_artifacts, macro_arity_diagnostic_plain_call_no_debug_repr}` | L-N2 — 0485 class (FQSymbol Debug repr; internal `1000###..` span on the recursive shape) | Wave 10 tail (/frontend 0485) |
@@ -100,6 +100,12 @@ NOT defect repros (a RED here would mean the review missed a defect → escalate
 /dev backend; none did). Suite run 3905 → **3919** (all 14 green; the 3 known
 REDs — `display_exact_option_in_option_value_line`, `h2_…`, `h3_…` — unchanged;
 zero new RED). spec_link_check clean (14/14). Guards, by class:
+
+> **Update (2026-07-05, /qa):** `display_exact_option_in_option_value_line`
+> flipped GREEN — it was a harness seeding bug (bare `repl` preset omits
+> `Option`), not a 0493 display defect; now uses `repl_prims`. `h2_…` also
+> GREEN (entry 21 resolution). Only `h3_…` (entry 22, increment-II deferred)
+> remains RED.
 
 - **Headline (2):** `elide_direct_vecget_into_borrowed_param_headline` +
   `…balance_iteration_independent` — the one shape that elides (named-root

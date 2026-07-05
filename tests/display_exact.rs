@@ -182,11 +182,16 @@ fn display_exact_nested_parameterized_adt_wrap_in_wrap() {
     );
 }
 
-// spec: repl/spec.md §1.5 — the same class through the compiler-seeded
-// Option: `(Some (Some 42))`, whole line exact. RED on HEAD (FIXME 0493).
+// spec: repl/spec.md §1.5 — the same nested-parameterized-ADT class through
+// the primitives-seeded `Option`: `(Some (Some 42))`, whole line exact. The
+// nested-ADT display mechanism is already GREEN (sibling
+// `display_exact_nested_parameterized_adt_wrap_in_wrap` proves it, ex-0493);
+// this test needs `Some`/`Option` in scope, so it uses `repl_prims` (the
+// primitives-only prelude re-exports the bootstrap-seeded `primitives/Option`)
+// rather than the bare `repl` preset, which omits it.
 #[test]
 fn display_exact_option_in_option_value_line() {
-    let out = repl("(Some (Some 42))\n").assert_ok();
+    let out = repl_prims("(Some (Some 42))\n").assert_ok();
     assert_answer_line(
         &out,
         ":(primitives/Option (primitives/Option primitives/Int)) (Option.Some (Option.Some 42))",
