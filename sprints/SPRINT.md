@@ -1,6 +1,6 @@
 # Sprint 102: Increment I (read path) opens + the S101 defect/T1 wave
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — **PUSH-THROUGH decided (user, 2026-07-04: "continue with the original scope aspiration, no reason to stop")**. Close-short seam NOT taken; full increment-I read path delivered this sprint. **Module-system thread CLOSED (2026-07-04)** — §8.6.4 collision rule unified in one shared predicate, all modes, #8 green, CI guard installed; baseline **3756 / 3743 / 13 / 1**. **NOW RESUMING the ownership increment.** Remaining ladder: **Wave 8c (0512 advisory-half soundness — MANDATORY pre-Wave-11, ACTIVE)** → 0497 typecheck split → Wave 10b (frontend 0485 display tail) → 0495 backend harness (Wave-11 prep) → Wave 11 (mechanisms, re-baseline golden) → Wave 12 (0459) → Wave 13 (I-G1..I-G7 gates + wrap) → tail drains. Phase-7 close still needs explicit user sign-off.
+**Status**: **CLOSED (user sign-off, 2026-07-05)** — increment-I read-path memory-model spine + the full S101 defect/T1 wave DELIVERED and acceptance-certified. Both blocks landed: Block A (12 of 13 defect-guards flipped green, 13→1 failing) + Block B (four read-path mechanisms + B4 density gate + H2 counters, all I-G gates PASS with B4, I-G5 honestly reframed for the user-accepted trade). Final suite **3938 / 3937 / 1 / 1** (sole RED = the intentional inc-II-deferred `h3` owed-signal guard). All work on `main`, tree clean. Carries → S103 (see §"Carried to S103"). See §Outcome for the certified delivery record.
 
 **Goal**: Land ownership-inference increment I's read path (golden-CLIF baseline first, then `pass5_ownership` → `ModeSummary` → the four backend mechanisms) while draining the S101 defect wave with the T1 silent split-world at the top — the two are deliberately interleaved because the backend defect cluster (0474/0483/0476) rides increment I's own seam rework.
 
@@ -413,3 +413,9 @@ Design / int / arch / repl holes (→ respective owners):
 
 Effect-concurrency track (no code change; symptom-framed, not carried as debt):
 - The named **REPL/import worker-hang heisenbug** (the `fold_bodied…` flake was a random victim; its char-at sibling was fixed this sprint).
+
+## Next skills
+
+- `/sprint` — open **S103**: consciously admit/defer the 0495–0502 `/dev` drain set per the drain-all rule, and scope the increment-I **write path** (uniqueness / mutable-borrow), which is where FIXME 0526's escaping-projection cases and H3 sibling-expansion are owed.
+- `/arch` — pick up **FIXME 0526** (§3.3 producer-side / interprocedural projection-elision reframe) and **0515** (S78 entry-module prelude silent-shadow); both are cross-boundary rulings that gate later backend/int work.
+- `/typecheck` — the drain quartet 0509/0510/0511/0513 + 0521, ready to action in its next impl window.
