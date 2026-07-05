@@ -372,7 +372,16 @@ Organized 2026-07-03 from the six Phase-3 plans + /arch's exit-gate verdict. CS-
 
 **Sprint 102 DELIVERED — the increment-I read-path memory-model spine, complete and acceptance-certified. Awaiting explicit user close sign-off.**
 
-### Delivered
+### Delivered — Block A (the S101 defect / T1 wave)
+The full defect wave landed this sprint — 12 of the 13 in-scope defect-guards flipped green (suite failing count 13→1). Itemized:
+- **T1 silent split-world (risk-register #1)** — the interim cure shipped: the §18.1.1 stale downgrade now PRINTS (names the downgrade + affected callers, never silent). The full end-of-turn-sequenced module reload was **assessed and deferred to S103** (design hole captured in FIXME 0507); the print is the shipped mitigation.
+- **Persistence-integrity cluster** — D1 (def-poisons-directory), D2 (cwd `user.cl` adoption/data-loss), D3 (file-backed dependent recompile false-BROKEN), 0489 (restart lockout) — all cured (Waves 5, 7).
+- **0488** generic-fn missing monomorphisation (3 signatures) — cured, all typecheck-side, isolated-first per the minimal-repro rule (Wave 8a).
+- **§8.6.4 module-system thread** — name-shadow / import-collision unified in one shared predicate across all modes (0484 cured via spec sharpening + shared-seam enforcement, #8 green, CI guard installed).
+- **Display / diagnostic batch** — 0486 (bare-lookup /source corruption), 0491 (`__expr` cascade leak), 0485 (macro-clause span, both halves), 0492/0493/0490, trap-message §18.5 (Waves 4, 10a, 10b).
+- Plus 0497 typecheck de-pool, 0512 pass5 advisory-half soundness cure, 0516/0517 module seam.
+
+### Delivered — Block B (increment-I read-path spine)
 - **Ownership-inference read path** — `pass5_ownership` → `ModeSummary` → the four backend mechanisms all live, reviewed SOUND, guarded: **borrow-elision** (B3.2), **projection-elision** (§3.3, consumer-driven after a realized-UAF pivot away from the parallel-unsound producer-side model — FIXME 0526→/arch for the inc-II interprocedural half), **confined non-atomic RC** (B3.3), **escape→stack-slot** (B3.4, gate-5 spark-decline).
 - **B4 / FIXME 0459 density gate** — static alloc/RC-density admission axis on `is_worth_sparking` (single-source, threshold=1 measured, byte-identical-off). Ships with a **user-accepted trade** (Phase-7 ruling 2026-07-05): a real +~6% wall on the 1-worker config of speculative-search, in exchange for **−82% N-worker wall + −46% CPU** — I-G5 honestly reframed (density-declined cell grades the CPU dividend, prints the accepted wall trade visibly; §2.2.1a).
 - **H2 per-mechanism RC_STATS counters** (stack_slot / rc_nonatomic / rc_atomic + honest inc-II reuse placeholders); H3 deferred to inc-II.
@@ -389,4 +398,18 @@ Organized 2026-07-03 from the six Phase-3 plans + /arch's exit-gate verdict. CS-
 **3938 run / 3937 passed / 1 failed / 1 skipped** — the sole RED is `h3_rc_stats_reports_per_extern_adaptation_pairs` (intentional inc-II-deferred owed-signal guard). 2 load-flaky tests isolated (char-at RC_STATS at-exit race → best-of-3 repetition-distinguisher fix; fold_bodied = random victim of the named REPL worker-hang heisenbug, effect-concurrency track).
 
 ### Carried to S103
-FIXME 0526 (§3.3 interprocedural half, /arch), 0521/0509/0510/0511/0513 (typecheck), 0506/0507/0515/0505, H3/L-D5 sibling-expansion (inc-II), the deferred/drain set; and the effect-concurrency-track REPL worker-hang heisenbug.
+Deferred by the increment-I / increment-II boundary (not gaps — the read-path seam):
+- **FIXME 0526** (/arch) — §3.3 producer-side / interprocedural projection-elision, reframed after the realized-UAF pivot; the escaping-projection cases wait for inc-II uniqueness reasoning.
+- **H3 / L-D5** per-extern-adaptation RC_STATS sibling-expansion (inc-II) — the sole intentional RED (`h3_rc_stats_reports_per_extern_adaptation_pairs`, owed-signal guard).
+
+Typecheck drain (→ /typecheck impl window):
+- **0521** ResultMode multi-param may-alias top element · **0509** generalization-ordering resettle debt · **0510** `neq`/string has no primitive entry to carry declared facts · **0511** pass5 session-memo needs a threaded field · **0513** qualified lookup prefers phantom-child gap over loaded absolute module.
+
+Design / int / arch / repl holes (→ respective owners):
+- **0506** (/arch·backend) oracle-capture spec corrections · **0507** (/int·design) T1 full-cure trigger + 0491-exclusion design holes · **0515** (/arch) S78 entry-module prelude silent-shadow (reversed) · **0505** (/repl) pin-mod turn environment parity.
+
+`/dev` unit-tier drain set (open in FIXME dir; S103 must consciously in/out these per the drain-all rule):
+- **0495** backend `tests.rs` split + thin-submodule drain · **0496** src/ unit-tier (lifecycle.rs) · **0498** types marshal-drift guard · **0499** e2e-lane refactor (/qa) · **0500** frontend rendered-diagnostic unit tier · **0501** intrinsics io-guard strand coverage · **0502** platform declare-concurrency coverage.
+
+Effect-concurrency track (no code change; symptom-framed, not carried as debt):
+- The named **REPL/import worker-hang heisenbug** (the `fold_bodied…` flake was a random victim; its char-at sibling was fixed this sprint).
