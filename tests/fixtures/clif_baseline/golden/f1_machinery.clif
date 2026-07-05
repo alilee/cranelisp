@@ -459,9 +459,7 @@ function %read-work(i64, i64, i64, i64) -> i64 system_v {
     gv1 = symbol userextname2
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
     fn0 = u0:2 sig0
-    fn1 = u0:1 sig2
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
@@ -498,31 +496,16 @@ block5:
     v25 = imul.i64 v5, v24  ; v24 = 8
     v26 = iadd v23, v25
     v27 = load.i64 notrap aligned v26
-    v28 = iadd_imm v27, 8
-    v29 = iconst.i64 1
-    v30 = atomic_rmw.i64 add v28, v29  ; v29 = 1
-    v31 = global_value.i64 gv1
-    v32 = iadd_imm v31, 16
-    v33 = load.i64 notrap aligned v32
-    v34 = call_indirect sig1, v33(v27)
-    v35 = iadd_imm v27, 8
-    v36 = iconst.i64 1
-    v37 = atomic_rmw.i64 sub v35, v36  ; v36 = 1
-    v38 = icmp eq v37, v36  ; v36 = 1
-    brif v38, block8, block7
-
-block8:
-    fence 
-    v39 = call fn1(v27)
-    jump block7
+    v28 = global_value.i64 gv1
+    v29 = iadd_imm v28, 16
+    v30 = load.i64 notrap aligned v29
+    v31 = call_indirect sig1, v30(v27)
+    v32 = iadd.i64 v7, v31
+    jump block1(v4, v5, v13, v32)
 
 block7:
-    v40 = iadd.i64 v7, v34
-    jump block1(v4, v5, v13, v40)
-
-block9:
-    v41 = iconst.i64 0
-    jump block4(v41)  ; v41 = 0
+    v33 = iconst.i64 0
+    jump block4(v33)  ; v33 = 0
 
 block4(v11: i64):
     return v11

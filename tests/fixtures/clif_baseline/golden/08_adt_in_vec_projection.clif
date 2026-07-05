@@ -247,9 +247,7 @@ function %total(i64, i64, i64, i64) -> i64 system_v {
     gv1 = symbol userextname2
     sig0 = (i64, i64) -> i64 system_v
     sig1 = (i64) -> i64 system_v
-    sig2 = (i64) -> i64 system_v
     fn0 = u0:2 sig0
-    fn1 = u0:1 sig2
 
 block0(v0: i64, v1: i64, v2: i64, v3: i64):
     jump block1(v0, v1, v2, v3)
@@ -285,31 +283,16 @@ block5:
     v24 = imul.i64 v5, v23  ; v23 = 8
     v25 = iadd v22, v24
     v26 = load.i64 notrap aligned v25
-    v27 = iadd_imm v26, 8
-    v28 = iconst.i64 1
-    v29 = atomic_rmw.i64 add v27, v28  ; v28 = 1
-    v30 = global_value.i64 gv1
-    v31 = iadd_imm v30, 16
-    v32 = load.i64 notrap aligned v31
-    v33 = call_indirect sig1, v32(v26)
-    v34 = iadd_imm v26, 8
-    v35 = iconst.i64 1
-    v36 = atomic_rmw.i64 sub v34, v35  ; v35 = 1
-    v37 = icmp eq v36, v35  ; v35 = 1
-    brif v37, block8, block7
-
-block8:
-    fence 
-    v38 = call fn1(v26)
-    jump block7
+    v27 = global_value.i64 gv1
+    v28 = iadd_imm v27, 16
+    v29 = load.i64 notrap aligned v28
+    v30 = call_indirect sig1, v29(v26)
+    v31 = iadd.i64 v7, v30
+    jump block1(v4, v12, v6, v31)
 
 block7:
-    v39 = iadd.i64 v7, v33
-    jump block1(v4, v12, v6, v39)
-
-block9:
-    v40 = iconst.i64 0
-    jump block4(v40)  ; v40 = 0
+    v32 = iconst.i64 0
+    jump block4(v32)  ; v32 = 0
 
 block4(v10: i64):
     return v10

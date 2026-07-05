@@ -282,13 +282,48 @@ fence, spine §8.2).
 > pass-through; borrowed→Owned adaptation inc; temp+Borrowed post-call dec; moded
 > fn as closure value; auto-curry of a moded target).
 >
-> **STILL DEFERRED (optional follow-on, §3.3):** in-frame `vec-get` projection
-> elision + `ProjectionOf`/`AliasOf` in-frame consumption + the
-> `compute_last_uses` provenance extension. Not required by the coupled core; the
-> `ProjectionOf` **result-mode** materialization inc IS built (§3.4). The H2
-> per-mechanism RC_STATS counter (`ownership_fences::h2_*`, RED) is owed and needs
-> the `cranelisp-intrinsics` `print_rc_stats` surface (backend-paired runtime, out
-> of this crate); h3 (per-extern adaptation pairs) rides B3.3/B3.5.
+> **AS-BUILT — §3.3 in-frame projection elision (S102 Wave 14, this change-set).
+> The I-G1 HEADLINE: F1 rc_inc drop 1.54% → 100.00% (off=2129921 → on=2).** The
+> in-frame `vec-get` element-inc elision landed **CONSUMER-DRIVEN**, a deliberate
+> narrowing from the design's producer-side model below (see the §3.3 AS-BUILT box
+> for the parallel-soundness reason). Seams:
+> - **Consumer seam** — `compile_consuming_arg_list_moded` (`apply.rs`): when a
+>   heap-typed borrowed **projection** (`is_direct_vecget_projection` — a direct
+>   `vec-get` read the pass marked with the `provenance` site fact) is passed
+>   **directly into a `Borrowed` parameter**, the whole inc+dec pair collapses —
+>   it sets `FnCompiler::elide_vecget_span` to the read's span and emits NO
+>   post-call dec. This is the SOLE provably-safe elision.
+> - **Producer** — `compile_vec_get` / `emit_vec_get_core` (`vec_codegen.rs`) gain
+>   an `elide_elem_inc` param, driven by `elide_vecget_span == Some(span)`; the
+>   value-use wrapper path passes `false` (always materialize).
+> - **FIXME 0522 reconcile (option B)** — `emit_d24_adaptation` (`fn_as_value.rs`)
+>   DROPS its `ProjectionOf` result inc: a moded callee always returns a non-`Fresh`
+>   result carrying an owned reference (its `vec-get` inc / accessor / kept
+>   `protect_return_value` — `return_is_fresh_by_summary` stays `Fresh`-only), so
+>   callee-materialization and wrapper-adaptation can never both inc (the FIXME's
+>   double-count), and the ordering hazard dissolves with the inc. FIXME 0522
+>   deleted.
+>
+> **Proof:** I-G1 100.00% (release, `ig_gates.py --gates g1 --reps 3`).
+> **I-G2 unchanged by this change-set** (§3.3 does not fire in F2/F3/F4 — none has
+> the direct-`vec-get`→`Borrowed`-param shape; f4_hard's 39.76% drop is
+> pre-existing B3.2, byte-verified against the stashed parent binary — attribution
+> honest). **Byte-identical-OFF** proven (`08`+`f1` toggle-off HEAD == toggle-off
+> parent). **Behavioral (`MALLOC_PERTURB_` seeds 1/42/137/250):** F1 exit 9, f4
+> exit 154 (same-seed deterministic), a Sprint-61 read-proj→COW-release-root→use
+> repro exit 18 — all ON==OFF, no RC-underflow asserts. **Golden:** `08` + `f1`
+> re-baselined (vec-get inc + post-call dec collapsed), `clif_golden.sh diff` EMPTY.
+> Unit matrix: `apply::moded_arg_rc_tests::projection_elision_predicate`.
+>
+> **NOT built (design's producer-side §3.3):** the ProjectionOf/AliasOf result-mode
+> propagation across a function-return boundary, the let-binding-joins-`borrowed_vars`
+> case, and the `compute_last_uses` provenance extension. These were prototyped and
+> **REVERTED** — propagating a borrowed view past the consumer seam (return, store,
+> `Owned` position) is parallel-unsound: the escaping view races a concurrent
+> COW/free (reproduced as f4_sudoku same-seed non-determinism). The H2 per-mechanism
+> RC_STATS counter (`ownership_fences::h2_*`, RED) is owed and needs the
+> `cranelisp-intrinsics` `print_rc_stats` surface (backend-paired runtime, out of
+> this crate); h3 (per-extern adaptation pairs) rides B3.3/B3.5.
 
 ### 3.1 Caller side — `compile_consuming_arg_list` keyed off the vector
 
@@ -332,6 +367,35 @@ widens any returned/escaping param to `Owned`/`AliasOf` before the summary is em
 `return_var_in_scope`/`protect_return_value` time; it never needs an emission rule for it.
 
 ### 3.3 Result modes and provenance — the `compute_last_uses` extension
+
+> **AS-BUILT (S102 Wave 14) — the design below is the PRODUCER-SIDE model; the
+> landed mechanism is a CONSUMER-DRIVEN narrowing of it.** Implementation proved
+> the producer-side elision (elide the read's inc unconditionally at the
+> `vec-get`, then materialize/lend at every consumer, keeping the root live via
+> the `compute_last_uses` extension) **parallel-unsound**: a borrowed view that
+> escapes the producing function — returned (`get0 [v] (vec-get v 0)`), stored, or
+> passed to an `Owned` position — has no protective reference, so under lenient
+> (parallel) eval a sibling strand's COW/free races the borrowed read. Reproduced
+> as **f4_sudoku same-seed non-determinism** under `MALLOC_PERTURB_` (the release
+> binary false-greened; the debug binary and same-seed repetition exposed the
+> race — `memory/feedback_verify_fix_not_symptom_absence.md`). The
+> `compute_last_uses` extension orders in-frame liveness but cannot order across
+> the backend's spark-frame restructuring (the FIXME-0525 lesson, one level over).
+>
+> **The landed elision fires ONLY at the CONSUMER seam**
+> (`compile_consuming_arg_list_moded`): a direct `vec-get` projection passed
+> **directly into a `Borrowed` parameter** collapses its inc+dec pair. This is the
+> sole shape where the borrowed element provably (a) never escapes the enclosing
+> expression and (b) never outlives the root's fork-join-guaranteed liveness — the
+> callee borrows it in-place and the caller retains the root across the whole call.
+> It captures the entire F1 machinery-tax class (`(cell-value (vec-get g i))`) →
+> I-G1 100%. The result-mode return propagation, the `Let`-binding
+> `borrowed_vars` join, and the `compute_last_uses` extension are **NOT built**
+> (they are the escaping-projection cases the pivot excludes). `return_is_fresh_by_summary`
+> stays `Fresh`-only; a `ProjectionOf`/`AliasOf` result keeps its materialization.
+> The design paragraphs below are retained as the target for a future increment
+> that lands the interprocedural liveness (increment II / a confinement-gated
+> escaping-projection mechanism).
 
 Consuming the typecheck proposal's §4.2 rule 4 + FIXME 0467's result mode:
 
