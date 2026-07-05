@@ -6,6 +6,11 @@
 
 use std::alloc::{self, Layout};
 use std::sync::atomic::{AtomicUsize, Ordering};
+// Debug-only: the `LIVE_ALLOCS` / `FREED_TRACKED` databuf-liveness guards and the
+// `CRANELISP_HEAP_SCAN` gate below are all `#[cfg(debug_assertions)]`, so these
+// imports are unused in release. Gate the import to match (a plain `use` warns
+// unused in release; deleting it breaks the debug build — the two-profile trap).
+#[cfg(debug_assertions)]
 use std::sync::{LazyLock, Mutex};
 
 use cranelisp_types::HeapHeader;

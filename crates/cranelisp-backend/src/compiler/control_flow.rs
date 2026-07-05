@@ -43,6 +43,10 @@ pub(crate) use free_vars::find_free_vars;
 // the `sparkability` submodule itself is private to `control_flow`. The unit
 // tests reach `find_sparkable_args` via `super::` on the same re-export.
 pub(crate) use sparkability::{find_sparkable_args, CAPTURE_BORROW_ENABLED, LENIENT_DISABLED};
+// `spark_density` (B4 density axis, lenient-eval.md §2.7) — reached by the
+// `sparkability_tests` sibling via `super::` for exact-score matrix assertions.
+#[cfg(test)]
+pub(crate) use sparkability::spark_density;
 // Only the `sparkability_tests` sibling reaches this via `super::`.
 #[cfg(test)]
 pub(crate) use sparkability::find_sparkable_bindings;

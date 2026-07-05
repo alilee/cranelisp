@@ -1718,6 +1718,43 @@ supply: the axis reads `escapes`/`confined` site facts and the borrow-elision ou
 that B3.2–B3.4 make real; it is keyed off "pass5 ran" so the facts-absent path is
 admission-identical to today (the §2.2 discipline applied to a *scheduling* emission).
 
+**B4 as-built (S102 increment I).** Landed in
+`crates/cranelisp-backend/src/compiler/control_flow/sparkability.rs` as the density axis
+folded into the single shared `is_worth_sparking` helper — so **one** decline rule serves
+**both** `find_sparkable_bindings` (the `let` path) and `find_sparkable_args` (the apply
+path) with no apply-specific mirror (Principle 7). Mechanism:
+
+- **Score (`spark_density`)** walks the candidate `MonoExpr` subtree, reusing the
+  `node_escapes` / `node_confined` single-source readers B3.3/B3.4 use — zero new
+  fact-reading. Per fact-bearing **heap-result** site (`String`/`Fn`/`ADT` result — a
+  scalar-returning call such as `fib` / F1-F2's `Int`-returning `reduce-tree` accumulator
+  is **not** a scored site, which is what keeps compute-bound sparks admitted): `+1`
+  heap-pressure unless `escapes == Some(false)` (`NoEscape` ⇒ stack + immortal-RC, 0 to
+  both axes, §4.2), and `+1` surviving-RC unless `confined == Some(true)` or the site is a
+  borrow-elided projection (`Apply` with `provenance`). Fact-absent (`None`) counts dense.
+- **Engage gate = byte-identity discipline, structural.** `spark_density` returns `None`
+  when the subtree carries **no** `Some` ownership fact (⇒ pass5 did not annotate it:
+  `CRANELISP_NO_OWNERSHIP`, pre-increment-I, or any facts-absent unit) — the axis is inert
+  and admission is byte-for-byte pre-B4. With zero `Some` facts anywhere the axis provably
+  cannot change a decision, so the L-B1 golden differential for B4 is **empty on the
+  facts-absent / toggle-off codegen** (a decline only *omits* a gate branch where facts are
+  present — the intended, itemized admission-set change).
+- **Threshold = 1**, measured. `SPARK_DENSITY_MAX_DEFAULT = 1`; env override
+  `CRANELISP_SPARK_DENSITY_MAX=N` (`0` disables the axis). **Measurement** (release,
+  settled load, `CRANELISP_SPARK_DENSITY_TRACE=1` over the S99 fixtures): the score
+  distribution is bimodal — the identical D&C `reduce-tree` sparks score **0** in both F1
+  and F2 (38 each, admitted — the §9 compute win preserved), while F4's speculative
+  `(solve-range …)` search over the shared grid scores **2** (escaping, non-confined heap
+  `SolveResult`) or **4** (with a nested `set-cell` `Grid` allocation) and is **declined**;
+  there are **no** score-1 candidates in these fixtures, so a threshold of `1` cleanly
+  separates compute-bound (admit) from allocation-dominated (decline). Declining moves the
+  F4-hard parallel wall toward serial (its purpose) while leaving F1/F2's compute-bound
+  parallelism intact; I-G4 non-regression holds because the toggle-off oracle admits the
+  same compute-bound set. F2's *own* leaf contention is behind an `Int`-returning
+  `reduce-tree` accumulator (interprocedural, invisible to the local walk) and is **not**
+  reachable by this scheduler-side axis — it remains a Phase-H structural-cure target,
+  consistent with §2.6.2 / §3.6.3.
+
 ### 13.5 Scenario matrices + `tests.rs` split (0495; Principle 23)
 
 **The split (B3.0):** pure relocation of the crate-root `tests.rs` buckets to submodule

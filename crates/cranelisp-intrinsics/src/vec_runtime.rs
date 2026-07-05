@@ -373,6 +373,9 @@ pub extern "C" fn vec_push_copy(vec: i64, val: i64, elem_inc_fn: i64) -> i64 {
     let src = vec as *const u8;
     unsafe {
         let len = read_len(src);
+        // Only read in debug builds — the databuf liveness guard below is the
+        // sole consumer (release builds compile it out).
+        #[cfg(debug_assertions)]
         let cap = read_cap(src);
         let src_data = read_data_ptr(src);
         #[cfg(debug_assertions)]

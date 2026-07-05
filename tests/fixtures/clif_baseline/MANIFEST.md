@@ -94,3 +94,20 @@ RED until B0-be lands the capture; the full-corpus diff runs via
   (45→43 frames); all 43 remaining frames are byte-identical to the `05818e9`
   batch. Not a codegen change; the golden was stale against the checked-in
   fixture. Verified `clif_golden.sh diff` empty across all 13 post-capture.
+
+- **04_vec_cow_loop, 07_trait_dispatch, f3_inverted_search, f4_sudoku** —
+  re-captured S102 increment I, ladder entry **B4** (the static allocation/RC-
+  density admission axis on sparkability, `design/backend/lenient-eval.md` §2.7
+  / `ownership-codegen.md` §13.4). **Codegen change, facts-present only.** With
+  ownership facts present the density axis declines the allocation-dense heap-
+  returning sparks in these four fixtures (facts-present declines: 04×1, 07×2,
+  f3×3, f4×5), so each declined site emits its **sequential arm** instead of the
+  lenient create-gate (spark) branch — the CLIF for the enclosing frame shrinks
+  accordingly (e.g. `04::main` create-gate removed). The other 9 entries are
+  byte-identical (`clif_golden.sh diff` clean across all 13 post-capture). The
+  move is an **intended admission-set change**, not drift: it is exactly the
+  scheduler-side decline B4 exists to make. **Toggle-off is byte-identical** —
+  under `CRANELISP_NO_OWNERSHIP=1` the axis is inert (engaged=0 on all four),
+  so the facts-absent codegen is unchanged; the golden here is the facts-PRESENT
+  capture per the dump contract (§Capture contract unsets `NO_OWNERSHIP`).
+  Determinism self-test passes 13/13.

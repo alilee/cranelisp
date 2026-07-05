@@ -7,8 +7,8 @@
 // `find_sparkable_bindings` analysis pass directly — no session, no
 // runtime, no env-var — per `memory/project_test_strategy.md`. =====
 
-use super::{find_sparkable_args, find_sparkable_bindings};
-use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
+use super::{find_sparkable_args, find_sparkable_bindings, spark_density};
+use cranelisp_types::{ConcreteType, FQTypeName, MonoExpr, Span, Symbol};
 use std::collections::HashSet;
 
 fn sym(s: &str) -> Symbol {
@@ -292,4 +292,253 @@ fn sparkable_args_literal_var_excluded() {
     let args = vec![var(sym("x")), literal(1), call("compute")];
     let ctors = HashSet::new();
     assert!(find_sparkable_args(&args, &ctors).is_empty());
+}
+
+// ===== B4 static allocation/RC-density admission axis (lenient-eval.md §2.7;
+// ownership-codegen.md §13.4/§13.5 unit matrix). Seam × class grain per
+// `memory/feedback_dev_strategy_derived_unit_scenarios.md`: the matrix is
+// {facts present / absent} × {alloc-dense / compute-dense / mixed / NoEscape}
+// × {threshold boundary}, exercised through BOTH shared call sites
+// (`find_sparkable_bindings` = the `let` path, `find_sparkable_args` = the
+// apply path) so the single-source property (Principle 7 — one `is_worth_
+// sparking`, two callers) is verified from each.
+//
+// All end-to-end `find_sparkable_*` cells assume the DEFAULT threshold
+// (`SPARK_DENSITY_MAX_DEFAULT = 1`; `CRANELISP_SPARK_DENSITY_MAX` unset in the
+// test process): score ≤ 1 ⇒ admit, score ≥ 2 ⇒ decline. The `spark_density`
+// cells assert the raw `Option<usize>` and are threshold-independent. =====
+
+/// A heap-returning (ADT-typed) call `(callee)` carrying the given ownership
+/// site facts — the shape of a real spark candidate whose result is an ADT
+/// (F4's `(solve-range …)` returns a `SolveResult`). Heap result ⇒ a scored
+/// density site (unlike the `Int`-returning `call` helper above — F1/F2's
+/// `(reduce-tree …)` accumulator, which is never a scored site).
+fn heap_call(callee: &str, escapes: Option<bool>, confined: Option<bool>) -> MonoExpr {
+    MonoExpr::Apply {
+        callee: Box::new(var(sym(callee))),
+        args: vec![],
+        span: span(),
+        resolved_call: None,
+        ty: ConcreteType::ADT(FQTypeName { module: "user".into(), name: "SolveResult".into() }, vec![]),
+        confined,
+        escapes,
+        provenance: None,
+        unique_static: None,
+    }
+}
+
+/// An `Int`-returning call carrying facts — a compute-bound candidate that pass5
+/// annotated (engaged) but which allocates nothing at its own site (F1's
+/// `(reduce-tree …)`). Scores 0 → always admitted (the §9 compute-win).
+fn scalar_call_with_facts(callee: &str, escapes: Option<bool>, confined: Option<bool>) -> MonoExpr {
+    MonoExpr::Apply {
+        callee: Box::new(var(sym(callee))),
+        args: vec![],
+        span: span(),
+        resolved_call: None,
+        ty: ConcreteType::Int,
+        confined,
+        escapes,
+        provenance: None,
+        unique_static: None,
+    }
+}
+
+// --- `spark_density` raw-score matrix (threshold-independent) ---
+
+// spec: design/backend/lenient-eval.md §2.7 — facts-absent ⇒ axis inert (None)
+//
+// A heap-returning candidate with NO `Some` fact (escapes/confined both None)
+// is the CRANELISP_NO_OWNERSHIP / pre-increment-I / facts-absent state: the
+// engage gate reports `None`, so the axis never scores it and admission is
+// byte-identical to pre-B4. This is the structural byte-identity discipline.
+#[test]
+fn density_facts_absent_is_inert() {
+    // Even a heap ADT result, if pass5 did not annotate it, is inert.
+    assert_eq!(spark_density(&heap_call("solve", None, None)), None);
+    // The Int-returning fixtures used by every pre-B4 test are likewise inert.
+    assert_eq!(spark_density(&call("compute")), None);
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — alloc-dense (escaping, non-confined)
+//
+// The F4 `(solve-range …)` signature: a heap ADT result that escapes
+// (`escapes = Some(true)`) and is NOT confined (`confined = None` ⇒ conservative
+// atomic, cross-strand). +1 heap-pressure, +1 surviving-RC ⇒ score 2 (dense).
+#[test]
+fn density_alloc_dense_scores_two() {
+    assert_eq!(spark_density(&heap_call("solve-range", Some(true), None)), Some(2));
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — compute-dense heap-blind (score 0)
+//
+// An engaged scalar-returning candidate (`Int` result, pass5-annotated) is NOT
+// a scored density site — the density axis does not touch the compute win. It
+// is engaged (a `Some` fact) yet scores 0 ⇒ always admitted.
+#[test]
+fn density_compute_dense_scores_zero() {
+    assert_eq!(spark_density(&scalar_call_with_facts("reduce-tree", Some(true), None)), Some(0));
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — confined heap ⇒ boundary score 1
+//
+// A heap result that escapes but whose RC ops are CONFINED (`confined =
+// Some(true)` ⇒ non-atomic, no cross-core bounce): +1 heap-pressure, +0
+// surviving-RC ⇒ score 1 (== the default threshold ⇒ admitted, not declined).
+#[test]
+fn density_confined_heap_scores_one() {
+    assert_eq!(spark_density(&heap_call("mk", Some(true), Some(true))), Some(1));
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — NoEscape ⇒ score 0 (stack/immortal RC)
+//
+// `escapes = Some(false)` (a B3.4 stack-slot site) contributes 0 to BOTH axes:
+// stack/region-served with an immortal-RC header, no allocator contention and
+// no surviving RC traffic (§4.2). Engaged (a `Some` fact) but score 0.
+#[test]
+fn density_noescape_scores_zero() {
+    assert_eq!(spark_density(&heap_call("mk-box", Some(false), None)), Some(0));
+    // Even a non-confined NoEscape site stays 0 — the NoEscape short-circuit
+    // precedes the RC axis.
+    assert_eq!(spark_density(&heap_call("mk-box", Some(false), Some(false))), Some(0));
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — mixed: nested alloc sites sum
+//
+// A candidate whose top heap Apply (score 2) also carries a nested escaping
+// ConstrADT arg (score 2) sums across the subtree: the density walk recurses
+// every child, so an allocation deep in the candidate is counted. 2 + 2 = 4.
+#[test]
+fn density_mixed_nested_sites_sum() {
+    let nested_ctor = MonoExpr::ConstrADT {
+        type_name: FQTypeName { module: "user".into(), name: "Cell".into() },
+        tag: 0,
+        fields: vec![],
+        span: span(),
+        ty: ConcreteType::ADT(FQTypeName { module: "user".into(), name: "Cell".into() }, vec![]),
+        escapes: Some(true),
+        confined: None,
+        unique_static: None,
+    };
+    let candidate = MonoExpr::Apply {
+        callee: Box::new(var(sym("process"))),
+        args: vec![nested_ctor],
+        span: span(),
+        resolved_call: None,
+        ty: ConcreteType::ADT(FQTypeName { module: "user".into(), name: "SolveResult".into() }, vec![]),
+        escapes: Some(true),
+        confined: None,
+        provenance: None,
+        unique_static: None,
+    };
+    assert_eq!(spark_density(&candidate), Some(4));
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — borrow-elided Apply skips the RC axis
+//
+// A projection `Apply` with a `provenance` root (borrow-elided — its RC op is
+// elided entirely, §3.3): +1 heap-pressure, but the surviving-RC axis is
+// skipped ⇒ score 1, not 2.
+#[test]
+fn density_borrow_elided_skips_rc_axis() {
+    let mut proj = heap_call("vec-get", Some(true), None);
+    if let MonoExpr::Apply { provenance, .. } = &mut proj {
+        *provenance = Some(sym("root"));
+    }
+    assert_eq!(spark_density(&proj), Some(1));
+}
+
+// --- End-to-end admission through BOTH call sites (default threshold = 1) ---
+
+// spec: design/backend/lenient-eval.md §2.7 — LET path: alloc-dense pair DECLINED
+//
+// Two alloc-dense (score-2) heap bindings would clear the compute axis + ≥2
+// gate, but the density axis declines each (2 > 1) ⇒ the sparkable set drops
+// below 2 ⇒ empty (sequential codegen). The decline is always sound (§8).
+#[test]
+fn density_let_alloc_dense_pair_declined() {
+    let bindings = vec![
+        (sym("a"), heap_call("solve-range", Some(true), None)),
+        (sym("b"), heap_call("solve-range", Some(true), None)),
+    ];
+    let ctors = HashSet::new();
+    assert!(
+        find_sparkable_bindings(&bindings, &ctors).is_empty(),
+        "alloc-dense (score 2 > threshold 1) bindings must be declined"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — APPLY path: alloc-dense pair DECLINED
+//
+// The single-source density axis fires identically at the apply-argument site.
+#[test]
+fn density_args_alloc_dense_pair_declined() {
+    let args = vec![
+        heap_call("solve-range", Some(true), None),
+        heap_call("solve-range", Some(true), None),
+    ];
+    let ctors = HashSet::new();
+    assert!(
+        find_sparkable_args(&args, &ctors).is_empty(),
+        "alloc-dense apply arguments must be declined by the shared density axis"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — compute-dense pair ADMITTED (both sites)
+//
+// Two engaged scalar-returning (score-0) candidates are NOT touched by the
+// density axis — the compute win is preserved (§9). Both the `let` and apply
+// sites admit them.
+#[test]
+fn density_compute_dense_pair_admitted_both_sites() {
+    let a = scalar_call_with_facts("reduce-tree", Some(true), None);
+    let b = scalar_call_with_facts("reduce-tree", Some(true), None);
+    let ctors = HashSet::new();
+    assert_eq!(
+        find_sparkable_bindings(&[(sym("x"), a.clone()), (sym("y"), b.clone())], &ctors),
+        vec![0, 1],
+        "compute-bound (score 0) let bindings stay admitted"
+    );
+    assert_eq!(
+        find_sparkable_args(&[a, b], &ctors),
+        vec![0, 1],
+        "compute-bound (score 0) apply args stay admitted"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — confined-heap pair ADMITTED (boundary)
+//
+// Score-1 candidates sit exactly AT the threshold (1 > 1 is false) ⇒ admitted.
+// This is the boundary companion to the score-2 decline: a confined heap spark
+// is cheap enough to keep.
+#[test]
+fn density_confined_heap_pair_admitted_at_boundary() {
+    let args = vec![
+        heap_call("mk", Some(true), Some(true)),
+        heap_call("mk", Some(true), Some(true)),
+    ];
+    let ctors = HashSet::new();
+    assert_eq!(
+        find_sparkable_args(&args, &ctors),
+        vec![0, 1],
+        "score == threshold (1) is admitted, not declined"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §2.7 — facts-absent admits exactly as pre-B4
+//
+// Negative / byte-identity face: heap-returning candidates with NO facts (the
+// CRANELISP_NO_OWNERSHIP / facts-absent state) are admitted exactly as the
+// pre-B4 pipeline would — the axis is inert, so the admission set equals the
+// compute-axis-only result for the full shape.
+#[test]
+fn density_facts_absent_admits_like_pre_b4() {
+    // Two heap calls, no facts ⇒ inert ⇒ admitted purely on the compute axis.
+    let args = vec![heap_call("solve", None, None), heap_call("solve", None, None)];
+    let ctors = HashSet::new();
+    assert_eq!(
+        find_sparkable_args(&args, &ctors),
+        vec![0, 1],
+        "facts-absent heap candidates admit exactly as pre-B4 (axis inert)"
+    );
 }
