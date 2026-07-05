@@ -808,9 +808,13 @@ where
                 && let Some(ty) = self.variable_types.get(name) {
                     let category =
                         signature_heap_category(ty, Some(self.ctx.symbol_tables));
-                    // B3.3 (§5.1): the consuming inc goes non-atomic when the
-                    // handed-off binding is Confined (per-binding carrier).
-                    let atomicity = self.rc_atomicity_for_binding(name);
+                    // B3.3-R (§5.1): the consuming inc is always atomic. This was
+                    // a through-binding site (per-binding Confined carrier),
+                    // dropped as dead + latent-race code (/review B3.3) — the
+                    // analysis produces no confined let-bindings today. The
+                    // `_atomicity` mechanism is retained (probe-reachable); it is
+                    // fed `Atomic` here.
+                    let atomicity = heap::RcAtomicity::Atomic;
                     match category {
                         HeapCategory::AlwaysHeap => {
                             heap::emit_rc_inc_atomicity(
@@ -914,10 +918,13 @@ where
                 }
                 _ => (false, HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables))),
             };
-            // B3.3 (§5.1): the consuming inc (the adaptation path too) goes
-            // non-atomic when the arg's cell is Confined — a bare-`Var` handoff
-            // via the per-binding carrier, any other arg via its own node fact.
-            let atomicity = self.rc_atomicity_for_arg(arg);
+            // B3.3-R (§5.1): the consuming inc (the adaptation path too) is
+            // always atomic. This was a through-binding/arg site, dropped as dead
+            // + latent-race code (/review B3.3) — an arg node is walked off-parent
+            // (Crossing ⇒ Atomic) and the analysis produces no confined
+            // let-bindings today. The `_atomicity` mechanism is retained
+            // (probe-reachable); it is fed `Atomic` here.
+            let atomicity = heap::RcAtomicity::Atomic;
             match moded_arg_rc(category, mode, owned_binding) {
                 ModedArgRc::None => {}
                 ModedArgRc::Inc => {

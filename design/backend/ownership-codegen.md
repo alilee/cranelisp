@@ -508,21 +508,51 @@ data.
 >   names are retained as `Atomic`-delegating wrappers, so all ~40 non-participating
 >   call sites are UNTOUCHED (the §2.2 else-arm identity, byte-identical-off by
 >   construction).
-> - **Confinement carrier** — the `confined` fact reaches emission two ways:
->   (a) `node_confined(&MonoExpr)` reads the fact off the five allocation/
+> - **Confinement carrier** — the `confined` fact reaches emission through
+>   `node_confined(&MonoExpr)`, which reads the fact off the five allocation/
 >   capture-producing variants directly, for materialization incs where the
->   producing node is in hand (`protect_return_value`, the match auto-upgrade,
->   the tail-arg protect); (b) a `confined_bindings: HashSet<Symbol>` on
->   `FnCompiler`, populated at `let`-binding creation from the RHS node fact
->   (and a bare-`Var` alias), for the through-binding sites whose SSA `Value`
->   identity is lost across `use_var` (consuming-arg inc of a `Var` arg, the
->   Vec scope-cleanup dec). `pop_scope` clears the mark. `Some(true) ⇒
->   NonAtomic`; `Some(false) | None ⇒ Atomic`.
->   *(Note: in the current confinement analysis a `let`-RHS is `PotentialFork`,
->   so `confined_bindings` is populated only for Parent-strand-aliased binds;
->   the dominant increment-I win is the materialization-inc class via (a). As
->   typecheck's confinement precision grows, more cells become `Some(true)` and
->   more sites go non-atomic with ZERO backend change.)*
+>   producing node is in hand. The live consumer is `protect_return_value`
+>   (`rc_emission.rs`) — the returned cell's own node carries `confined`, and a
+>   Parent-strand return allocation is `Some(true)` ⇒ the non-atomic inc arm
+>   (the dominant increment-I win). `Some(true) ⇒ NonAtomic`; `Some(false) |
+>   None ⇒ Atomic`. As typecheck's confinement precision grows, more return
+>   nodes become `Some(true)` and go non-atomic with ZERO backend change.
+>
+>   > **B3.3-R (Wave 11, /review): the through-binding carrier was DROPPED.**
+>   > B3.3 originally added a second carrier — `confined_bindings: HashSet<Symbol>`
+>   > on `FnCompiler`, add-on-`let`-bind + remove-on-`pop_scope`, plus
+>   > `rc_atomicity_for_binding`/`rc_atomicity_for_arg` — for the through-binding
+>   > sites whose SSA `Value` identity is lost across `use_var` (consuming-arg
+>   > inc of a `Var` arg, the Vec scope-cleanup dec, the match auto-upgrade, the
+>   > tail-flush protect). It was **dead code carrying a latent data race**
+>   > (Principle 8): (i) the current confinement analysis over-approximates every
+>   > `let`-RHS to `Strand::PotentialFork` (`confinement.rs` — `join_strand(_,
+>   > PotentialFork)` always ranks ≥ 1 ⇒ `off_parent()` true ⇒ `Some(false)`),
+>   > so no `let`-binding is ever `Some(true)` and `confined_bindings` is
+>   > **provably always empty** — it delivered ZERO non-atomic ops; (ii) the
+>   > `HashSet<Symbol>` keyed carrier had add/remove but **no shadow
+>   > save/restore**, so on nested same-name shadowing (inner *crossing* `x`
+>   > inside outer *confined* `x`) it errs toward `contains("x") == true` ⇒
+>   > non-atomic on a crossing cell ⇒ a data race — the exact P7/P8 fragile
+>   > pattern that `confinement.rs::ConfineFrame` (the 8c-R2/F4 cure) already
+>   > solves correctly with save/restore. Dropping it removed a dead speculative
+>   > mechanism that was one confinement-precision tightening away from a live
+>   > heisenbug on the B3.4 seam. The four through-binding read-sites now pass
+>   > `RcAtomicity::Atomic` literally (the value the helpers provably always
+>   > returned), so emission is byte-identical — verified: golden diff EMPTY and
+>   > OFF-parent vs OFF-mychanges = 0 mismatches over the full 13-entry corpus.
+>   >
+>   > **Re-add discipline (when a live consumer arrives).** Re-introduce the
+>   > through-binding carrier ONLY once the analysis actually produces confined
+>   > `let`-bindings, and NOT with the `Symbol`-keyed add/remove pattern. Use
+>   > either (a) `ConfineFrame`-style save/restore mirroring
+>   > `confinement.rs::ConfineFrame` — snapshot the shadowed name's prior verdict
+>   > on bind, restore it on `pop_scope` — so nested shadowing cannot leak an
+>   > outer-confined verdict onto an inner crossing binding; or (b) key the
+>   > carrier on the Cranelift `Variable` identity, not the `Symbol` name — a
+>   > shadowing `let` gets a fresh `Variable`, so there is no name aliasing to
+>   > leak across. The `Symbol`-keyed `HashSet` (no save/restore) is retired —
+>   > do not repeat it.
 > - **Counter (h2 backend half)** — a codegen-time `(nonatomic, total)` RC-emit
 >   tally at the `use_nonatomic_arm` seam, read via `rc_emit_counts()`.
 >   **h2 stays RED**: flipping it needs the process-exit `[RC_STATS]` print
@@ -591,13 +621,24 @@ scope is honest:
 |---|---|---|
 | Vec element inc/dec fns | `build_elem_inc_fn`/`build_elem_dec_fn` (`vec_codegen.rs:723/:805`; cached per module by name `:735`) | one fn per (guardedness, elem type) serves every vec of that shape; per-cell atomicity would need per-atomicity variants passed per call site — an increment-II follow-up if data demands |
 | The Rust-side copy loops | `vec-set-copy`/`vec-push-copy` retained-element incs (`vec_runtime.rs:337–347/:381–385`), `rc_inc`/`consume_shallow` (`rc.rs:267/:202`, `AtomicI64` fetch ops) | inside extern bodies; per-call atomicity would need dual extern variants (§9's sibling pattern could carry it in II). **This is the S99 170M term — and it is cured by Q4/Q5 (§6/§7), not by Q3**, exactly as the spine states |
-| `emit_vec_rc_dec_with_drop` | `vec_codegen.rs:1214` — ungated `atomic_rmw` today | gains the same per-site atomicity input as the heap.rs helpers (it is emitted per site, so it CAN be gated — the one inventory item that moves in I) |
+| `emit_vec_rc_dec_with_drop` | `vec_codegen.rs` — `atomic_rmw`, plus an `_atomicity` sibling | gained the same per-site atomicity input as the heap.rs helpers (it is emitted per site, so it CAN be gated). **B3.3-R:** its one binding-gated caller (the Vec scope-cleanup dec) now feeds `Atomic` — the sibling stays only as the probe-reachable mechanism; no `confined` verdict reaches it in increment I |
 | Drop-glue bodies | closure drop glue, ADT drop glue fns | shared per type; same disposition as elem fns |
 
 The increment-I win is therefore the **inline population**: consuming-arg incs, scope-cleanup
 decs, capture incs, match-field incs, materialization incs — which is where the F2
 shared-board read shape's surviving ops live (typecheck §5.3: the spark side is rc-op-free
 under §3; the parent-side ops are exactly these inline ops).
+
+> **B3.3-R as-built (Wave 11):** of that inline population only the
+> **materialization incs** actually go non-atomic today, via the
+> `node_confined` node-path carrier (`protect_return_value`). The
+> through-binding inline sites (consuming-arg inc of a `Var` arg, Vec
+> scope-cleanup dec, match auto-upgrade, tail-flush protect) all emit `Atomic`:
+> their `confined_bindings` carrier was dropped as dead + latent-race code (see
+> the B3.3-R note in §5's AS-BUILT block) because the current analysis produces
+> no confined `let`-bindings. They rejoin the non-atomic population — with the
+> `ConfineFrame`-save/restore OR `Variable`-identity re-add discipline — when
+> the analysis actually confines a `let`-binding.
 
 ### 5.3 The free path
 

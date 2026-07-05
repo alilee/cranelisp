@@ -115,18 +115,6 @@ where
     /// These are NEVER eligible for last-use transfer.
     pub(crate) captured_vars: std::collections::HashSet<Symbol>,
 
-    /// Confined bindings (B3.3, `design/backend/ownership-codegen.md` §5.1) —
-    /// names whose bound cell is Confined (`confined = Some(true)`: every
-    /// surviving RC op on it runs on the owning strand). Populated at
-    /// `let`-binding creation from the RHS node's `confined` site fact (and
-    /// propagated through a bare-`Var` alias of an already-confined binding).
-    /// The durable per-binding carrier for the through-binding RC-op sites
-    /// (consuming-arg inc of a `Var` arg, scope-cleanup dec) whose SSA `Value`
-    /// identity is lost across `use_var`. **Empty when analysis is off**
-    /// (no `Some(true)` facts) ⇒ every derived atomicity is `Atomic` ⇒
-    /// byte-identical-off by construction.
-    pub(crate) confined_bindings: std::collections::HashSet<Symbol>,
-
     /// The ownership summary ([`cranelisp_types::ModeSummary`]) of the function
     /// currently being compiled — read from its `codegen_view`
     /// (`MonoDefnVariant.mode_summary`) on the `compile_to_module` path;
@@ -289,7 +277,6 @@ where
             last_uses,
             borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
-            confined_bindings: std::collections::HashSet::new(),
             current_mode_summary: None,
             tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
@@ -412,7 +399,6 @@ where
             last_uses,
             borrowed_vars: std::collections::HashSet::new(),
             captured_vars: std::collections::HashSet::new(),
-            confined_bindings: std::collections::HashSet::new(),
             current_mode_summary: mode_summary,
             tail_arg_protect: false,
             closure_drop_glue: HashMap::new(),
@@ -662,29 +648,6 @@ where
         }
     }
 
-    /// B3.3: the per-site RC atomicity for a named binding — `NonAtomic` iff the
-    /// binding is Confined (in `confined_bindings`). Used at the through-binding
-    /// RC-op sites (consuming-arg inc of a `Var` arg, scope-cleanup dec,
-    /// capture inc) whose SSA `Value` identity is lost across `use_var`.
-    pub(crate) fn rc_atomicity_for_binding(&self, name: &Symbol) -> heap::RcAtomicity {
-        if self.confined_bindings.contains(name) {
-            heap::RcAtomicity::NonAtomic
-        } else {
-            heap::RcAtomicity::Atomic
-        }
-    }
-
-    /// B3.3: the per-site RC atomicity for a consuming-position argument. A bare
-    /// `Var` handoff routes through the durable per-binding carrier
-    /// (`confined_bindings`); any other arg is a fresh temporary whose
-    /// confinement is read off the producing node's own site fact.
-    pub(crate) fn rc_atomicity_for_arg(&self, arg: &MonoExpr) -> heap::RcAtomicity {
-        match arg {
-            MonoExpr::Var { name, .. } => self.rc_atomicity_for_binding(name),
-            _ => self.rc_atomicity_for_node(arg),
-        }
-    }
-
     /// Allocate a fresh Cranelift Variable index.
     pub(crate) fn fresh_variable(&mut self) -> Variable {
         let idx = self.next_var;
@@ -701,9 +664,6 @@ where
             for name in frame {
                 self.variables.remove(&name);
                 self.variable_types.remove(&name);
-                // B3.3: drop any Confined mark so a name reused in a sibling
-                // scope does not inherit a stale confinement verdict.
-                self.confined_bindings.remove(&name);
             }
         }
     }
@@ -799,10 +759,15 @@ where
                 if let Some(elem_ty) = crate::compiler::vec_codegen::vec_element_type(ty) {
                     let elem_ty = elem_ty.clone();
                     let span = cranelisp_types::Span::new(0, 0);
-                    // B3.3 (§5.2): the scope-cleanup Vec dec goes non-atomic
-                    // when the binding is Confined (per-binding carrier).
-                    let atomicity = self.rc_atomicity_for_binding(name);
-                    let _ = self.emit_vec_aware_rc_dec(val, &elem_ty, span, atomicity);
+                    // B3.3-R (§5.2): the scope-cleanup Vec dec is always atomic.
+                    // The through-binding half (per-binding Confined carrier) was
+                    // dropped as dead + latent-race code (/review B3.3); the
+                    // analysis produces no confined let-bindings today, so this
+                    // dec was provably always atomic. The `_atomicity` mechanism
+                    // is retained (probe-reachable); it is fed `Atomic` here.
+                    let _ = self.emit_vec_aware_rc_dec(
+                        val, &elem_ty, span, heap::RcAtomicity::Atomic,
+                    );
                     continue;
                 }
 
@@ -911,9 +876,13 @@ where
             && self.tail_flush_will_dec(name)
             && let Some(ty) = self.variable_types.get(name).cloned()
         {
-            // B3.3 (§5.1): the protective inc balancing the tail-flush dec goes
-            // non-atomic when the aliased binding is Confined.
-            let atomicity = self.rc_atomicity_for_binding(name);
+            // B3.3-R (§5.1): the protective inc balancing the tail-flush dec is
+            // always atomic. This was a through-binding site (per-binding
+            // Confined carrier), dropped as dead + latent-race code (/review
+            // B3.3) — the analysis produces no confined let-bindings today, so
+            // the inc was provably always atomic. The `_atomicity` mechanism is
+            // retained (probe-reachable); it is fed `Atomic` here.
+            let atomicity = heap::RcAtomicity::Atomic;
             match signature_heap_category(&ty, Some(self.ctx.symbol_tables)) {
                 HeapCategory::AlwaysHeap => {
                     heap::emit_rc_inc_atomicity(&mut self.builder, self.module, val, atomicity);

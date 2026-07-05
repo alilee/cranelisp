@@ -363,9 +363,13 @@ where
         {
             if let Some(ty) = self.variable_types.get(sv).cloned() {
                 let category = signature_heap_category(&ty, Some(self.ctx.symbol_tables));
-                // B3.3 (§5.1): the auto-upgrade materialization inc goes
-                // non-atomic when the returned binding is Confined.
-                let atomicity = self.rc_atomicity_for_binding(sv);
+                // B3.3-R (§5.1): the auto-upgrade materialization inc is always
+                // atomic. This was a through-binding site (per-binding Confined
+                // carrier), dropped as dead + latent-race code (/review B3.3) —
+                // the analysis produces no confined let-bindings today. The
+                // `_atomicity` mechanism is retained (probe-reachable); it is fed
+                // `Atomic` here.
+                let atomicity = RcAtomicity::Atomic;
                 match category {
                     HeapCategory::AlwaysHeap => {
                         heap::emit_rc_inc_atomicity(
