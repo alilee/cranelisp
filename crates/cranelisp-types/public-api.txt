@@ -1666,6 +1666,15 @@ impl core::marker::Unpin for cranelisp_types::TypeRef
 impl core::marker::UnsafeUnpin for cranelisp_types::TypeRef
 impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::TypeRef
 impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::TypeRef
+#[non_exhaustive] pub struct cranelisp_types::ValueLayout
+pub cranelisp_types::ValueLayout::words: usize
+impl core::marker::Freeze for cranelisp_types::ValueLayout
+impl core::marker::Send for cranelisp_types::ValueLayout
+impl core::marker::Sync for cranelisp_types::ValueLayout
+impl core::marker::Unpin for cranelisp_types::ValueLayout
+impl core::marker::UnsafeUnpin for cranelisp_types::ValueLayout
+impl core::panic::unwind_safe::RefUnwindSafe for cranelisp_types::ValueLayout
+impl core::panic::unwind_safe::UnwindSafe for cranelisp_types::ValueLayout
 pub struct cranelisp_types::View<'a, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore>
 impl<'a, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> cranelisp_types::View<'a, C, L>
 pub fn cranelisp_types::View<'a, C, L>::iter(&self) -> alloc::boxed::Box<(dyn core::iter::traits::iterator::Iterator<Item = (&'a cranelisp_types::Symbol, &'a cranelisp_types::ModuleEntry<C>)> + 'a)>
@@ -1702,6 +1711,7 @@ pub const cranelisp_types::TAG_SEXP_LIST: i64
 pub const cranelisp_types::TAG_SEXP_STR: i64
 pub const cranelisp_types::TAG_SEXP_SYM: i64
 pub const cranelisp_types::TAG_SNIL: i64
+pub const cranelisp_types::VALUE_LAYOUT_MAX_WORDS: usize
 pub trait cranelisp_types::CodeStore: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 impl<T: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static> cranelisp_types::CodeStore for T
 pub trait cranelisp_types::LinkerStore: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
@@ -1731,6 +1741,7 @@ pub fn cranelisp_types::resolve_terminal_entry_and_home<C, L>(&dashmap::DashMap<
 pub fn cranelisp_types::resolve_with_fallback<C, L>(&cranelisp_types::SymbolTables<C, L>, &cranelisp_types::ModuleAliases, &cranelisp_types::View<'_, C, L>, &cranelisp_types::ModuleFullPath, &str, bool, &cranelisp_types::ModuleFullPath, cranelisp_types::Span) -> core::result::Result<cranelisp_types::Resolved<C>, cranelisp_types::ResolveError> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub fn cranelisp_types::substitute_module_alias(&cranelisp_types::ModuleAliases, &cranelisp_types::ModuleFullPath) -> cranelisp_types::ModuleFullPath
 pub fn cranelisp_types::type_var_names(&cranelisp_types::Type) -> std::collections::hash::map::HashMap<cranelisp_types::TypeId, alloc::string::String>
+pub fn cranelisp_types::value_layout<C, L>(&cranelisp_types::ConcreteType, core::option::Option<&cranelisp_types::SymbolTables<C, L>>) -> core::option::Option<cranelisp_types::ValueLayout> where C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore
 pub type cranelisp_types::CallGraph = std::collections::hash::map::HashMap<cranelisp_types::Symbol, cranelisp_types::CallInfo>
 pub type cranelisp_types::ModuleAliases = dashmap::DashMap<cranelisp_types::ModuleFullPath, cranelisp_types::ModuleAliasEntry>
 pub type cranelisp_types::PollFn = fn(*mut core::ffi::c_void, *const core::ffi::c_void, *const core::ffi::c_void) -> cranelisp_types::Poll

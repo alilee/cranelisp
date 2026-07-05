@@ -1871,6 +1871,24 @@ impl HeapHeader {
 }
 ```
 
+**R5 value-representation flattening — the single-sourced Copy/value-layout predicate (S103 Wave 1; `design/arch/ownership-inference.md` §6.3, `design/backend/ownership-codegen.md` §7.1).** Increment II's one genuinely-new cross-crate edge, landing beside `HeapHeader` in `crates/cranelisp-types/src/heap.rs` with a `CACHE_SCHEMA_VERSION` bump 14 → 15 (representation change; wholesale-invalidates every pre-R5 `.o` via the manifest `cache_format_version` global key).
+
+```rust
+pub const VALUE_LAYOUT_MAX_WORDS: usize = 1;      // one word (8 bytes), first landing (§7.2)
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueLayout { pub words: usize }        // the classification result (a HeapCategory analogue — recomputed, not persisted)
+
+pub fn value_layout<C, L>(
+    ty: &ConcreteType,
+    type_defs: Option<&SymbolTables<C, L>>,          // the same view HeapCategory::classify takes
+) -> Option<ValueLayout>
+where C: CodeStore, L: LinkerStore;
+```
+
+`Some(ValueLayout { words })` ⟺ **Copy-eligible** (a scalar, or a single-constructor ADT whose fields are all transitively value-eligible) **∧** the fully-flattened representation is `≤ VALUE_LAYOUT_MAX_WORDS` words; `None` ⟺ today's heap/scalar representation verbatim. **Soundness-coupled single-sourcing (Principle 7, resolving FIXME 0468):** typecheck's `Copy` mode classifier and the backend's `HeapCategory::Value` arm are two consumers that MUST agree — a param moded `Copy` whose representation the backend did *not* flatten is a pointer bit-copied with no `rc_inc` (a missing-inc UAF) — so ONE predicate lives here and both delegate; neither derives its own. **Monotone-sound conservatism** (first landing): `None` is always sound (keeps today's lowering), so multi-constructor ADTs, `Vec`/heap collections, and generic ctor fields whose stored scheme type is not already concrete (no per-instantiation substitution) all return `None`. The `HeapCategory::Value` consuming arm + the F2v single-ctor witness are the Wave-3 backend work; the carrier lands with the mechanism, never ahead (Principle 8) — Wave 1 is carrier + tests only.
+
 ### Resource scheduling — the `ctx` vtable handle model (ABI v9, S97, supersedes FIXME 0482)
 
 **Scheduling state never rides on a value** (`platform-interface.md` §6.8.0b;

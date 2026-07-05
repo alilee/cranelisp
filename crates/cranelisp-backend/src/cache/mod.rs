@@ -258,7 +258,27 @@ pub mod linker;
 /// param → UAF. The bump rejects every v13 cache as `CacheStale::SchemaMismatch`
 /// (cache-miss → recompute the correct summary). Serde shape is UNCHANGED (a
 /// value-only change); the bump is a soundness invalidation, not a format change.
-pub const CACHE_SCHEMA_VERSION: u32 = 14;
+///
+/// **S103 bump 14 → 15 (R5 value-representation flattening — the increment-II
+/// carrier).** The `value_layout` / `VALUE_LAYOUT_MAX_WORDS` predicate lands in
+/// `cranelisp-types` (`heap.rs`) as the single-sourced Copy/value-layout verdict
+/// both typecheck's `Copy` mode classifier and backend's `HeapCategory::Value`
+/// arm delegate to (`design/arch/ownership-inference.md` §6.3;
+/// `design/backend/ownership-codegen.md` §7.1/§7.4). Once the backend consumes
+/// it (Wave 3), a Copy-eligible single-ctor scalar-payload wrapper (`(Cell Int)`)
+/// is laid out **inline** — no header, no refcount, no drop glue — where a v14
+/// compile heap-allocated it: a **representation change to compiled code**. A
+/// stale v14 `.o`/`.meta.json` would carry the heap layout (header + per-element
+/// RC in a `Vec Cell`) while a v15 compile of a caller expects the flat value
+/// layout, so the layouts must never mix. The bump rejects every v14 cache as
+/// `CacheStale::SchemaMismatch` (cache-miss → recompile). Layout is a
+/// deterministic function of (type defs, size bound, toggle), so cache/`--link`
+/// parity holds by construction (§7.4). The carrier lands **with** this bump in
+/// the same Wave-1 change-set (the QA-first L-B3(4) schema-invalidation lane
+/// already tracks 14→15); the `HeapCategory::Value` mechanism it gates lands in
+/// Wave 3 without a re-bump. `cranelisp-types` `public-api.txt` gains the three
+/// items; no other `public-api.txt` / serde-shape change.
+pub const CACHE_SCHEMA_VERSION: u32 = 15;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///
