@@ -1,9 +1,14 @@
 # Session transaction — dependent recompilation + ABI-epoch slot versioning (R3 machinery, int half)
 
-> **Status: DESIGN (S101 Phase 3); implemented S101 Wave 4; amended S102 Phase 3** (the
-> §9.1.1 downgrade `stale:` section — interim T1 cure, `repl/spec.md` §18.1.1 — and the
-> §10 T1 full-cure end-of-turn mechanics + preconditions; companion doc
-> `design/int/s102-defect-wave.md`). Three deliberate as-built
+> **Status: DESIGN (S101 Phase 3); implemented S101 Wave 4; amended S102 Phase 3; T1 full-cure
+> promoted to implementation-ready S103 Phase 3** (the §9.1.1 downgrade `stale:` section — interim
+> T1 cure, `repl/spec.md` §18.1.1 — and the §10 T1 full-cure end-of-turn mechanics + preconditions;
+> companion doc `design/int/s102-defect-wave.md`). **S103 Phase-3 amendment (FIXME 0507, /design
+> src/): the §10 T1 full-cure change-sets are now implementation-ready** — its S102-preconditions
+> (regen fidelity D1/D2, the 0489 prompt floor, D3/0487 env) landed at S102, so §10 T1 lists the
+> dependency-ordered change-sets, the F2 slot-refined trigger, the F5a macro-target handling, the
+> two coherent-stale pins to flip, and the F3 0491-exclusion resolution (macro-clause staleness).
+> Three deliberate as-built
 > divergences, upheld at change-set review (FIXME 0477, drained by this amendment), are
 > recorded in place: the §10 T1 module-grain downgrade, the §7.3 deleted-symbol leg
 > (recorded gap), and the §9.2 rendering seam (`broken_status_line`, not
@@ -634,15 +639,50 @@ omit-when-empty, informational-only). The data contract this design owes it:
   scheme-equal redefinition of a polymorphic template leaves previously-minted mono
   instances (and their compiled callers) on the old body — the split world is about
   artifacts, not schemes.
+  - **Slot refinement (S103, FIXME 0507 Issue 1 / F2).** `is_t1_downgrade` also requires
+    `o.new_slot.is_none() || o.old_slot.is_none()`. The bare `prior_was_def && !per_symbol`
+    predicate over-fires for a **slotted prior replaced by a slotted staged entry** outside
+    per-symbol precision — the constructible shape is `deftype` re-entry, whose ctors are
+    slotted `DefKind::Constructor` Defs: the commit **reuses** the prior slot and patches
+    code in place, so compiled callers dispatch through the same GOT slot and **do** pick up
+    the new definition at their next call. Naming them `stale:` would violate §18.1.1's
+    negative MUST ("must not name any symbol that picks up the new definition at its next
+    call"). Requiring a slot-shape change keeps every designed cell (slot-less **staged** =
+    displacement/template shapes; slot-less **prior** = concrete-over-template mint-staleness)
+    and excludes the slotted→slotted late-binding case. This same slot-refined predicate gates
+    the **full-cure driver** below — a ctor re-entry that late-binds correctly must NOT trigger
+    a needless module reload. Gate before §18.1.1's rows earn `[Tested+Neg]`; the existing unit
+    `t1_downgrade_trigger_route_cells` fixture (both slots `None`) needs no rewrite, and /qa adds
+    the ctor-target e2e cell (both-slots-present ⇒ no `stale:`).
 - **`stale` set = the DIRECT reverse-edge callers of the target and of its `$`-mangled
   variants** (`callers_of(f) ∪ callers_of(f$…)` where the variant's base is `f`),
-  restricted to entries that hold compiled code (`code: Some` — "compiled callers"),
-  excluding `is_gate_exempt_internal` names (`__expr`/`__macro_*` — the 0491 rule applies
-  here identically). Never-compiled callers (templates, `ast`-only entries) late-bind at
+  restricted to entries that hold compiled code (`code: Some` — "compiled callers").
+  Never-compiled callers (templates, `ast`-only entries) late-bind at
   their next mint and MUST NOT appear (§18.1.1 exactness, negative half). The feed is the
   same on-demand `ReverseIndex` (§3.3) — built only on downgrade turns, so the L-D1 pin
   (body-only **concrete** redefinitions at today's cost) is untouched; a T1 turn pays one
   table scan, microseconds against the honesty it buys.
+  - **Gate-exempt exclusion is `__expr`-only at the FEED (S103, FIXME 0507 Issue 2 / F3 —
+    supersedes the "0491 rule applies identically" reading).** `ReverseIndex::build` excludes
+    only the synthetic `__expr` wrapper as a caller — never a `__macro_*` clause. The 0491
+    safety argument ("a stale wrapper is never re-invoked; each expression turn redefines it
+    before invoking") is true of `__expr` alone. A compiled macro clause
+    (`__macro_{name}_clause_{idx}`) **persists and IS re-invoked** at the next expansion, and
+    per spec §9.3.4/§9.12 a clause body **may** reference a dependency-module fn — so an
+    AbiChanging redefinition of that dependency fn leaves the clause coherent-stale (frozen
+    world, no crash) and, under the old blanket exclusion, invisible: a silently-stale
+    expansion path. Confirmed **reachable**; the feed keeps macro-clause reverse edges.
+  - **A macro-clause caller is RENDERED as its owning user macro, never the raw `__macro_*`
+    symbol** (§18.1.1 "no internal artifacts" — the same base-fold §18.1.1 applies to
+    `$`-mangled mono variants, extended to the `__macro_{name}_clause_{idx}` → `{name}`
+    prefix, qualified by the clause's home module). Its **disposition** is module-grain reload
+    of its home module, not per-symbol recompile — a synthesized clause has no standalone
+    re-typecheck-from-sexp (§4.2) and the only sound refresh is re-**expansion**, which is
+    Pass-1 whole-cluster (§9.12). This is exactly the §10 T1 full-cure machinery, so under the
+    cure a macro whose clause calls a redefined dependency fn reloads its module and the stale
+    set renders empty. (`/refs`' textual-scan leg is now redundant with the index leg for
+    macro-clause references — the exclusion no longer hides them — but `/refs` MUST likewise
+    render the owning macro, not the raw clause symbol.)
 - **Rendering** rides the same `TransactionReport`/`pending_cascade_reports` channel as
   §18.3's sections — the S102 arch review's Principle-8 pin verbatim: the full cure (§10
   T1 end-of-turn reload) recompiles exactly the callers this section names, rendering it
@@ -652,6 +692,14 @@ omit-when-empty, informational-only). The data contract this design owes it:
   slotted prior — the FIXME-0479 displacement site — and template-replacing-template);
   outcomes are the only channel the driver sees, so a T1 shape that produces no outcome
   is invisible to the print. `/dev` verifies and widens outcome production accordingly.
+- **Startup-load exception (S103, FIXME 0507 addendum 4).** `recover_startup_failure`
+  (CS-0489) drains `pending_cascade_reports` while re-driving the backing source
+  form-by-form against a warm table, so a Def-over-Def during that re-drive **classifies**
+  but MUST NOT print a `stale:` (or any cascade) section: startup is a **load**, not a user
+  redefinition turn. The suppression is the report-drain at the loader, not a trigger change
+  — the classification still runs (it must, to populate slot policy / retention), only the
+  rendering is elided at the startup path. The section resumes normally at the first
+  interactive redefinition turn.
 
 `recompiled` is exact by §4.1's skip test — the positive **and** negative L-R3 assertions
 read this report. Normative rendering (grouping, phrasing, the trap message text) is the
@@ -727,32 +775,90 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
   callers left on the previous definition. Informational only: nothing is recompiled,
   broken, or trapped — the coherent-stale residue itself stands until the full cure.
 
-  **Full-cure mechanics (designed S102; sizing verdict + change-set list in
-  `design/int/s102-defect-wave.md` §2 — recommended to land S103).** End-of-turn
-  sequencing dissolves both named blockers with machinery that already exists:
+  **Full-cure mechanics — IMPLEMENTATION-READY (S103 Phase 3, FIXME 0507).** The
+  end-of-turn-sequenced module reload replaces the S102 interim print. Its two original
+  blockers dissolve with machinery that already exists, and its S102-preconditions are now
+  landed (below), so this is an implementation-ready change-set set, not a deferred design.
+  End-of-turn sequencing dissolves both named blockers:
   (i) *resurrection* — the reload runs **after** `regenerate_backing_file`, so the
-  backing source carries the just-committed redefinition; (ii) *Invariant SW
-  re-entrancy* — the reload reuses the watcher discipline verbatim (`reload_module`:
-  pool-driven re-typecheck via `re_register_module`, eval thread blocked in
-  `wait_inmem_complete_blocking` — no second orchestrator because the eval thread is
-  waiting, exactly the S93 watcher ruling). The driver: after a turn whose outcomes
-  include a T1 downgrade, reload the target's module, then cascade dependents via the
-  `poll_and_reload` imports-scan, all through the §7.3 Replace commit gate (one slot
-  policy, both granularities). **Preconditions that gate the landing** — faithful
-  regeneration (D1/D2 cures: no expansion-artifact/origin double-persist; authorship
-  fidelity), the 0489 prompt floor (a reload failure must degrade to the §14.4
-  error-blocked state, never a lockout), and the FIXME-0343 `should_regenerate` guard
-  (a module whose regen is suppressed keeps the `stale:` print instead of reloading
-  stale disk source). Non-entry `/mod M` targets reload from `M`'s regenerated backing
-  file the same way — D2's authorship-fidelity cure is what makes that write
-  acceptable.
+  backing source carries the just-committed redefinition (never the pre-redefinition
+  source a mid-turn reload would resurrect); (ii) *Invariant SW re-entrancy* — the reload
+  reuses the watcher discipline verbatim (`re_register_module` resets the target to
+  `TypecheckFirst` + `sexps: Some` and a pool worker re-typechecks it while the eval thread
+  blocks in `wait_inmem_complete_blocking` — no second orchestrator because the eval thread
+  is waiting, exactly the S93 watcher ruling; the entry module never enters
+  `TypecheckBlocked` on this path either, so B1 stays closed).
 
-  The sound cure
-  is an **end-of-turn sequencing design** — module-grain reload *after*
-  `regenerate_backing_file`, never mid-commit — an increment-I-or-later item.
-  Consequence for the normative surface: `repl/spec.md` §18.1's coherence MUSTs are
-  satisfiable at stage M only for concrete single-sig `UserFn` targets — stage-M scope
-  note routed to `/repl` as FIXME 0481.
+  **The change-sets, in dependency order (rides the src/ window Block C1 opens):**
+
+  1. **CS-1 — the end-of-turn reload driver** (`eval.rs`/`process_form.rs` eval path).
+     After a turn whose `RedefinitionOutcome`s include a T1 downgrade **that survives the
+     §9.1.1 F2 slot-refined trigger** (`prior_was_def && !per_symbol && !gate-exempt(__expr)
+     && (new_slot.is_none() || old_slot.is_none())`), and **after** `regenerate_backing_file`
+     has run for the turn, reload the **target's module** via the watcher-discipline
+     `reload_module`/`re_register_module`, then cascade dependents through the `poll_and_reload`
+     imports-scan — all committing through the §7.3 Replace commit gate (one slot policy, both
+     granularities). Eval-synchronous; the eval thread blocks on the reload's terminal signal.
+     The macro-clause staleness of §9.1.1's F3 resolution is cured here for free: a module
+     whose `__macro_*` clause calls a redefined dependency fn is a **dependent** (it imports the
+     dependency) and reloads in the `poll_and_reload` cascade, re-expanding + recompiling its
+     clauses against the new definition.
+  2. **CS-2 — module-grain report integration** (`redefine.rs` report channel + a /repl
+     wording increment). Module-grain reload outcomes render through the same
+     `TransactionReport`/`pending_cascade_reports` channel as §18.3's sections and §9.1.1's
+     `stale:` — the Principle-8 pin: the full cure recompiles exactly the callers `stale:`
+     named, so the section renders **empty** (kept machinery, not throwaway). Module-grain
+     reporting needs a /repl normative-wording increment (routed at CS-2) — until it lands,
+     the report asserts the empty-`stale:` acceptance only.
+  3. **CS-3 — edge handling** (`lifecycle.rs`/`session_v4.rs`). A reload **failure** MUST
+     degrade to the §14.4 error-blocked state (the 0489 prompt floor), never a lockout or a
+     session exit; a module whose regen is **suppressed** (FIXME-0343 `should_regenerate`
+     guard — e.g. a read-only backing file) keeps the `stale:` print instead of reloading
+     stale disk source (the reload's input would be stale). Non-entry `/mod M` targets reload
+     from `M`'s regenerated backing file the same way — D2's authorship-fidelity cure is what
+     makes that write acceptable.
+
+  **Macro-target handling (S103, FIXME 0507 Issue 3 / F5a).** `defmacro` turns return early
+  in `eval.rs` (`eval.rs:329`) **before** `apply_redefinition_outcomes`, so a redefined-macro
+  target produces no outcome and the T1 route cannot fire for it today — currently moot because
+  macro heads carry no reverse edges, but the CS-1 driver must be reachable from the defmacro
+  path (place the end-of-turn reload trigger *after* regen on **both** the ordinary-def and
+  defmacro exits, or route the defmacro early-return through the shared post-regen driver).
+  A redefined macro whose clauses changed is otherwise cured by its own module's reload; a
+  redefined macro that dependents *use* is cured by the dependent cascade (their re-expansion
+  picks up the new macro). This closes the F5a pinning note the S102 Wave-4 review filed.
+
+  **Preconditions — now LANDED (S102), so the cure is unblocked** (the S103 scope ruling):
+  faithful regeneration (D1/D2 cures: no expansion-artifact/origin double-persist; authorship
+  fidelity — `regenerate_backing_file` now emits verbatim source-first, `src/CLAUDE.md`
+  §"Degraded startup load"), the 0489 prompt floor + §14.4 degrade path, and the D3/0487
+  cache-restore env recompute (a reloaded file-backed module recompiles). The FIXME-0343
+  `should_regenerate` guard is CS-3's edge. No increment-II (Block B) mechanism writes the
+  lifecycle/save seams the cure consumes, so the two tracks do not contend (§2.4 `AbiSurface`
+  seam untouched by the reload driver).
+  - **Regen-fidelity scope check (S103, FIXME 0507 addendum 8 / I-4 — precondition-adjacent).**
+    The reload reads the **regenerated** backing file, so the cure of a module containing
+    **traits/types/impls** depends on regen fidelity in sections 5–7, not only the section-8
+    (fns/macros) D1/D2 cures that were the S102 focus (`save::generate_fns_and_macros`'s
+    source-first + dedup is section-8-local). Before CS-1 reloads a trait/type-bearing module,
+    /dev must confirm sections 5–7 either share the source-first + dedup invariant or are
+    provably exempt (Matrix B's entry-kind axis). A section-5–7 regen-poison would silently
+    rewrite the user's trait/type source on a T1 reload — the same D1 class one section over.
+    This is the one precondition still to *verify* (not a new mechanism); flag to /dev in CS-1.
+
+  **The two coherent-stale pins to flip** (the §18.1 scope-note residue, each carries a flip
+  note): `tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale`
+  and `redefine_concrete_to_overloaded_caller_survives_coherent_stale` — under the cure the
+  compiled caller is **recompiled** against the new definition (or broken+trapped with
+  provenance), so their `:primitives/Int 6` old-chain pin flips to the cured value and the
+  §18.1.1 `stale:` section renders empty. The S102 L-U1 sibling
+  `redefine_unannotated_generic_target_caller_keeps_old_chain_sibling` and the report pair
+  (`t1_downgrade_report_*`) carry the same flip (the report pair's positive `stale:` assertions
+  invert to empty-section assertions); /qa owns the e2e flips, `/dev` the unit-level.
+  Consequence for the normative surface: `repl/spec.md` §18.1's coherence MUSTs, currently
+  satisfiable at stage M only for concrete single-sig `UserFn` targets (stage-M scope note,
+  FIXME 0481), become satisfiable for the T1 target kinds too once the cure lands — the §18.1
+  scope note + the two pins' flip notes retire together.
 
   (Mono/mangled variants of a *concrete* target do not arise — a single-sig concrete
   fn has none.) **T1 governs the redefined *target* only.** A slot-less entry reached
@@ -794,7 +900,7 @@ mechanism, two granularities, not two protocols.
 | **L-R1(f)** bounded RC-mid-panic leak | §5.4 (documented per-trap tolerance) |
 | **L-R2** frozen world + preserved late binding | §7.1 policy table (fresh+freeze vs reuse+patch), §4.3 no-window argument |
 | **L-R3** exact recompiled-set report, positive + negative | §4.1 skip test (incl. slot-less pass-through — templates never truncate the set) + §9.1 exact `recompiled`; fast path renders nothing (§2.3) |
-| **L-R4** type-change hole cured | the whole §2→§4→§5 pipeline at stage M (scheme-only comparand) — the sprint's own RED witness. Scope: concrete single-sig `UserFn` targets only — T1 target kinds retain the pre-existing hole as-built (§10 T1 named residue; guard = FIXME 0478's repro) |
+| **L-R4** type-change hole cured | the whole §2→§4→§5 pipeline at stage M (scheme-only comparand) — the sprint's own RED witness. Scope at S101/S102: concrete single-sig `UserFn` targets only — T1 target kinds retained the pre-existing hole as-built (§10 T1 named residue; guard = FIXME 0478's repro). **S103: the T1 full cure (§10 change-sets CS-1..3) extends the cure to T1 target kinds via module-grain end-of-turn reload — the two coherent-stale pins flip and the §18.1 scope note retires** |
 | **L-R5** persistence pins, two-session | §8 items 1–4 + broken round-trip |
 | **L-D1** body-only at today's cost | §2.3 (one compare; all slow-path cost gated), §3.3 (no index maintenance on the fast path) |
 
@@ -839,10 +945,41 @@ mechanism, two granularities, not two protocols.
   `Def.callees` enrichment + `CACHE_SCHEMA_VERSION` bump (typecheck, **FIXME 0470** — load-
   bearing for L-R3/L-R4, must land before or with the transaction); GOT slab-growth
   verification (backend `/dev`, §7.4).
+- **T1 full cure (S103, FIXME 0507 — §10 T1 change-sets, `src/`-only, no cross-crate)**:
+  - **`redefine.rs::is_t1_downgrade`** — add the F2 slot refinement (`&& (o.new_slot.is_none()
+    || o.old_slot.is_none())`); this needs `RedefinitionOutcome` to carry `old_slot`/`new_slot`
+    (verify the commit gate populates them — the ABI-epoch slot policy §7.1 already computes
+    both). Same predicate gates the CS-1 driver.
+  - **`redefine.rs::ReverseIndex::build`** — narrow the feed exclusion from
+    `is_gate_exempt_internal` to `__expr` only (`name == SYNTHETIC_EXPR_WRAPPER`); macro-clause
+    reverse edges are retained. (Note the predicate SPLIT: `is_gate_exempt_internal` stays the
+    **target**-exclusion at the trigger/classify sites — a macro clause is never a T1 redefinition
+    target — but the **caller/feed** exclusion narrows to `__expr` only; do not reuse the one
+    predicate at both sites.) Add a render-time base-fold: a `__macro_{name}_clause_{idx}`
+    caller renders as `{name}` (home-module-qualified) in `stale:`/`recompiled:`/`broken:`; its
+    disposition is module-grain reload, not per-symbol recompile. **This also closes the F3
+    per-symbol-transaction leg**: when a *concrete* dependency fn is redefined AbiChanging and a
+    cross-module macro clause calls it, the clause is now reachable in the §4.1 affected-set
+    closure; it has no standalone sexp, so it routes to §10 T2 module-grain reload (existing
+    machinery) — re-expansion refreshes the clause. Flag to /qa: a new scenario (AbiChanging dep
+    fn + macro-clause caller ⇒ clause's module T2-reloads).
+  - **CS-1 driver** (`eval.rs`/`process_form.rs`) — after `regenerate_backing_file`, for a
+    surviving-trigger T1 turn, `reload_module`(target) + `poll_and_reload` dependent cascade
+    through the §7.3 Replace gate; eval-synchronous. Reachable from BOTH the ordinary-def and
+    the `eval.rs:329` defmacro early-return (F5a).
+  - **CS-3 edges** (`lifecycle.rs`) — reload-failure → §14.4 error-blocked (0489 floor);
+    `should_regenerate`-suppressed module keeps the `stale:` print (no stale-disk reload).
+  - **Unit seams for `/dev`**: the slot-refined trigger (outcome in, bool out — ctor-shape both-
+    slots-present cell), the `__macro_*` render-fold (clause symbol in, base name out), the
+    `__expr`-only feed exclusion (`reverse_index_neg_excludes_only_expr` supersedes the former
+    `..._gate_exempt_internal` guard's `__macro_*` half). E2E is /qa's L-U1 flip + empty-`stale:`
+    acceptance (owns the two coherent-stale pin flips).
 
 ## Next skills
 
-- `/dev` (src/) — implement per §13 after `/qa`'s failing L-R1–R5 set exists (Phase 5).
+- `/dev` (src/) — implement per §13 after `/qa`'s failing L-R1–R5 set exists (Phase 5); **S103
+  adds the T1 full-cure change-sets (§10 T1 CS-1..3 + the F2 slot-refined trigger + the F3
+  `__expr`-only feed narrowing / macro-clause render-fold), `src/`-only, no cross-crate**.
 - `/typecheck` — resolve FIXME 0470 (edge-extraction widening + schema bump); sequenced
   before or with the transaction implementation.
 - `/dev` (cranelisp-backend) — `compile_trap_stub` (§8.3 pinned call 2) + the §8.2

@@ -1,6 +1,6 @@
 # S78 — Entry-module de-special-casing (target design)
 
-**Status:** AUDIT-FIRST TARGET DESIGN — for user sign-off. NO code/test changes enacted. §2 reshaped to the **settled** prelude-as-outer-scope model (user, 2026-06-11) + blast-radius walked.
+**Status:** AUDIT-FIRST TARGET DESIGN — for user sign-off. NO code/test changes enacted. §2 reshaped to the **settled** prelude-as-outer-scope model (user, 2026-06-11) + blast-radius walked. **§2 shadow-*conclusion* re-anchored 2026-07-04 (FIXME 0515, S103): the prelude carries NO exemption — def/distinct-terminal-shadow over a loaded prelude name is a compile-time error, not a silent shadow; the outer-scope resolution *mechanism* is unchanged; the impl seam is FIXME 0514.**
 **Owner:** `/arch` (Compiler Architect), Phase-5 PIVOT pass (2026-06-10) + settled-model §2 reshape (2026-06-11).
 **Sibling:** `design/int/s78-implementation.md` (the in-call-stack restructure — landed + verified sound). This doc addresses the **disease** behind that restructure's `/review` B1 finding: the **entry module** has accreted special-casing it should not have.
 
@@ -23,7 +23,30 @@
 
 **Doc map.** §1 = entry-module-as-first-class concept + the pre-seed vestigial verdict. §2 = the **prelude-as-outer-scope** import model (replacing `is_seeded`) + its **blast radius** (§2.5) + the `/imports` presentation decision (§2.6). §3 = single-orchestration for the entry module. §4 = expunge list (docs/comments). §5 = disposition, sizing, Principle recommendation. §6 = open items needing sign-off.
 
-**Dependency on `/spec`.** §2's outer-scope model is grounded in spec §8.6.4 (explicit imports shadow the implicit prelude *"just as inner `let` shadows outer"* — scope layering). /spec proposes sharpening §8.6.4/§8.8 to make prelude-as-outer-scope normative (vs. the current flattened-with-shadow-exception phrasing) — **pending user sign-off**. The model is settled by the user (2026-06-11); the /spec wording is editorial alignment, not a model decision. **No `cranelisp-types` change is needed for §2** (the prior provenance-marker proposal is rejected — see §2).
+**Dependency on `/spec` — ENACTED + REVERSED (2026-07-04, FIXME 0515 re-anchor).** §2's
+outer-scope *resolution mechanism* is grounded in spec §8.6.4 (prelude bindings resolved as an
+outer scope *"just as inner `let` shadows outer"* — scope layering). But the **conclusion** the
+original §2 drew from that layering — that an explicit import or a local definition *silently
+shadows* a prelude-provided name — has been **reversed by the user** (sole language arbiter,
+2026-07-04): **the prelude carries no exemption.** A prelude-provided name is in scope exactly
+like an explicit import; redefining or distinct-terminal-shadowing it is the **same compile-time
+error** as shadowing an explicit import (§8.6.4/§8.6.5). There are NO exceptions.
+
+`/spec` has **enacted** this in `spec/08-modules.md §8.6.1/§8.6.4/§8.8.1` (the change is a
+**semantic reversal**, not editorial): §8.6.4 "definition over a name in scope" now reads over
+`import` **∪** `export` **∪** the implicit prelude; §8.6.1 layer-2 / §8.8.1 state the outer/inner
+layering is an **implementation detail of resolution, not an exemption**; §8.8.3 pins the one
+still-legal escape hatch — *not loading* a prelude name (empty/suppressed prelude) is not the same
+as *shadowing* a loaded one. The **impl** has also landed: **FIXME 0514** moved the
+def-over-`(import|export|prelude)` rejection to the shared typecheck seam
+(`cranelisp_typecheck::check_forms` Pass-1 `TypeCheckEnv::reject_def_over_binding`) — the single
+mode-uniform chokepoint that also sees the prelude outer scope — and the int-side Pass-0 installer
+now poisons a **distinct-terminal** prelude overlap (`insert_detecting_ambiguity` consumes
+`prelude_fallback`; same-terminal overlaps still dedup). See `src/CLAUDE.md` §"§8.6.4
+definition-over-(import|export|prelude) rejection". This §2 therefore **defers the seam to 0514**;
+what is re-anchored below is the *conclusion* (no silent shadow), not the mechanism. **No
+`cranelisp-types` change is needed for §2** (the prior provenance-marker proposal is rejected — see
+§2); the fallback bit stays the session-side companion map of §2.7.
 
 ---
 
@@ -97,8 +120,26 @@ Spec §8.6.4 already states the mechanism: explicit imports shadow the implicit 
 
 Every consequence falls out **structurally** — there is no special rule, no precedence axis, no tier marker:
 
-1. **Explicit/local shadows prelude automatically.** Inner is consulted before the outer fallback. The shadow is a lookup ordering, not a same-table override.
-2. **Explicit-vs-explicit §8.6.4 ambiguity is unaffected.** Both colliding entries live in the inner table; the fallback never enters the picture. `Ambiguous` poisoning is exactly as today.
+1. **The prelude outer scope participates in the §8.6.4/§8.6.5 collision rules exactly as an
+   explicit import — NO silent shadow (REVERSED 2026-07-04, FIXME 0515).** The outer/inner
+   layering is the *resolution mechanism* (inner consulted first, prelude on a miss), but it does
+   **not** license a silent override. A local definition, or a distinct-terminal explicit import,
+   of a prelude-provided name is a **compile-time error** (def-over-prelude / distinct-terminal
+   poison) — the same error as colliding with an explicit import. The rejection is the shared
+   typecheck seam's job (FIXME 0514: `TypeCheckEnv::reject_def_over_binding` probes the defined
+   name through the two-scope resolver and rejects a resolve to a `home != current_module` — an
+   import/export edge or a prelude PUBLIC terminal; a resolve to the module's OWN prior `Def` is
+   ordinary redefinition; a miss is a free fresh definition). The only *silent* case that survives
+   is **not loading** the prelude name at all (bit OFF — refusal/selective import, §2.3 / §8.8.3):
+   with no outer scope for that name, defining it is free. (Historical note: the original §2 drew
+   the opposite conclusion — "explicit/local silently shadows prelude" — from the same layering;
+   the user reversed it. The mechanism below is unchanged; only this conclusion moved.)
+2. **Explicit-vs-explicit §8.6.5 ambiguity is unaffected — and now extends to the prelude.** Two
+   colliding *explicit* entries in the inner table poison as today (`Ambiguous`). The reversal adds
+   the symmetric case at the outer boundary: an incoming explicit import whose bare name resolves
+   to a **distinct terminal** in the prelude outer scope is likewise poisoned
+   (`insert_detecting_ambiguity` consumes `prelude_fallback`); a **same-terminal** overlap dedups
+   (the redundant-import case). This is 0514/0515's Pass-0 installer half.
 3. **No `is_seeded` name-check, no per-symbol provenance marker, no `cranelisp-types` change.** The flattening that *created* the collision is gone, so the bandage deletes with it. `imports.rs:311–317` is removed; `insert_detecting_ambiguity` reverts to uniform `Ambiguous` on any two indirect entries from different sources.
 4. **Primitives reach user code via prelude's re-export, resolved through the same fallback.** Prelude does `(export [primitives [*]])` → `add-i64` etc. are Public bindings in prelude's *own* table (`imports.rs:453–494` proves the shape). A user reference to `add-i64` misses the inner table, falls back to prelude, and chain-follows prelude's `Import`→primitives edge to the canonical entry (Decision 0048 uniformity). No per-module primitives seeding exists or is needed.
 
@@ -177,7 +218,7 @@ Today `/imports` lists prelude-provided names mixed into the Macros/Traits/Types
 **Decision: keep prelude names listed, but in a distinct group.** When the per-module fallback bit is ON, `/imports` appends a `Prelude (implicit)` section enumerating the prelude module's own public symbols, rendered with a clarifying comment (e.g. `; implicit — available via the prelude outer scope, shadowed by any explicit import/def of the same name`). Rationale:
 
 - **Discoverability is preserved** — a user still sees `map`, `filter`, etc. are available, satisfying the self-documenting-REPL design principle.
-- **The grouping makes the scope layering visible** — explicit imports (inner) are separated from prelude (outer), teaching the shadowing model the spec describes.
+- **The grouping makes the scope layering visible** — explicit imports (inner) are separated from prelude (outer), teaching the resolution model the spec describes. (Post-2026-07-04 the layering is an implementation detail of resolution, not a silent-shadow exemption: a def or distinct-terminal import over a listed prelude name is a compile-time error, §8.6.4/§8.8.1 + FIXME 0514 — the `Prelude (implicit)` group shows what is *in scope and protected*, not what is freely shadowable.)
 - **When the bit is OFF** (module refuses/references prelude) the group is absent — correctly reflecting that no implicit fallback is active.
 
 This is strictly an int/REPL presentation choice; it has no spec consequence and is owned by `/int` (REPL experience per `/repl` spec). It is sized with the §2 introspection work (§5.2).
@@ -292,9 +333,39 @@ fn probe_current_or_prelude(env, state, name) -> Option<ModuleEntry>:
 
 > **AS BUILT (S78 Wave 4) — caller-side retry CHOSEN; two-hop view REJECTED.** The implementation realized the fallback as a **caller-side retry** (`resolve_current_or_prelude`, `checker.rs:824`), NOT a two-hop view. The two-hop view was rejected because the shared `View` newtype carries **at most two sources** (staging + live) — `SymbolTableRead::Cluster { staging, live }` is exactly `View::union(staging, live)`; `Live` is `View::single(live)`. Adding prelude as a **third** source would require a `cranelisp-types` view-type change (a wider `View` arity), which §2.7.7 commits to NOT making (cranelisp-types-free). So the prelude hop is realized caller-side instead: `resolve_current_or_prelude` runs the normal first-hop `resolve`, and on a not-found-class error (`TypeNotFound`/`TraitNotFound`/`ConstructorNotFound`) retries `resolve` rooted at the `prelude` module with a **`View::single(prelude_live)`** view over prelude's own table. The retried resolve chain-follows prelude's `(export [primitives [*]])` re-export edges to the canonical entry, so primitives-via-prelude resolve through the fallback (not a name-key). `PrivateInaccessible` and `QualifiedModuleUnknown` are NOT retried. The realization is **sound and self-documented** in the `resolve_current_or_prelude` rustdoc (`checker.rs:788–823`), which carries the full rationale (the `View`-arity limit and the "No change to `cranelisp_types::resolve` itself" §2.7.5 constraint it honours). The six bare-name callers route through `resolve_current_or_prelude` (`checker.rs:920/955/983/1017/…`); `resolve_macro_head` (`resolve.rs:357`, via int's `recognize_macro_head`) flows through the same resolve with no separate change.
 
-**How this fixes the 3 import-shadow REDs (§/qa).** Under flattening, an explicit `(import [m [foo]])` of a prelude-provided `foo` produced TWO `Import` entries in M's inner table (the flattened prelude `foo` + the explicit `foo`) → `insert_detecting_ambiguity` fired `Ambiguous` → bare `foo` poisoned → "undefined variable". Under the outer-scope model, **prelude `foo` is no longer in M's inner table at all** (flattening removed, §2.7.4). M's table holds the explicit import as the *sole* `foo` entry → no ambiguity, it wins, exit-1005-clean. The fallback never enters (inner hit). **Fix is structural, not a skip.**
+**How this fixes the flattening scar — and the post-2026-07-04 outcome (FIXME 0515).** Under
+flattening, an explicit `(import [m [foo]])` of a prelude-provided `foo` produced TWO `Import`
+entries in M's inner table (the flattened prelude `foo` + the explicit `foo`) → `insert_detecting_ambiguity`
+fired `Ambiguous` → bare `foo` poisoned → "undefined variable". Removing the flattening deletes that
+spurious inner-table collision (§2.7.4) — that structural fix stands. What the *outcome* is now
+depends on the **terminals** (the reversal, not the original silent-shadow reading):
 
-**How this preserves the 12 greens.** Local-def shadow (inner hit before fallback); explicit-vs-explicit ambiguity ×2 (both in inner table, fallback never consulted); prelude refusal `(import [prelude []])` / selective (bit OFF → no fallback, exactly as the OFF gate today); primitives-via-prelude ×3 (the fallback hop chain-follows prelude's `(export [primitives [*]])` → canonical primitive entry, §2.7.5 chokepoint-1 bullet). The qualified-still-works greens are untouched (qualified never used flattening).
+- **Same terminal** — `m` re-exports the very definition prelude provides (`m/foo` chain-follows to
+  `prelude/foo`'s terminal): the explicit import **dedups** against the prelude outer scope and
+  wins, clean. (This is the common, benign case the original "3 REDs go green" claim had in mind.)
+- **Distinct terminal** — `m/foo` and `prelude/foo` name different definitions: this is now an
+  **ambiguity error** (distinct-terminal prelude overlap poison, `insert_detecting_ambiguity`
+  consuming `prelude_fallback`; 0514/0515), NOT a silent explicit-wins. The user must qualify.
+- **Local def over a prelude name** — `(defn foo …)` in M while `prelude/foo` is in scope: a
+  **compile-time error** (def-over-prelude, rejected at the FIXME-0514 shared typecheck seam), NOT
+  a silent shadow.
+
+**Fix is structural, not a skip — and the collision rules are now uniform across explicit imports
+and the prelude (no carve-out).**
+
+**Which cases stay green (post-reversal).** Explicit-vs-explicit ambiguity ×2 (both in inner
+table, fallback never consulted); primitives-via-prelude ×3 (the fallback hop chain-follows
+prelude's `(export [primitives [*]])` → canonical primitive entry, §2.7.5 chokepoint-1 bullet);
+qualified-still-works (qualified never used flattening). **The genuinely-free define/shadow cases
+are the *not-loading* ones:** prelude refusal `(import [prelude []])` and selective
+`(import [prelude [foo]])` (bit OFF for the un-listed names → no outer scope → free to define),
+per §8.8.3 — *not loading* a prelude name is distinct from *shadowing* a loaded one. The former
+"local-def shadow (inner hit before fallback)" green is **RETIRED** by the reversal: a local def
+over a *loaded* prelude name is now a compile-time error (FIXME 0514), not a silent green shadow.
+The still-green `/qa` cell for that shape is the *refusal/selective* variant, not the
+def-over-loaded-prelude variant. (As-built note: until 0514's seam is confirmed live in a given
+build, the resolver would still silently shadow — the reversal's impl is 0514's, this doc only
+re-anchors the target conclusion.)
 
 **AS BUILT (S78 Wave 4) — the prelude retry is PUBLIC-ONLY (`/review` I-1) + the fallback guard is extracted.** Two implementation realities the Phase-3 pin did not state, now recorded:
 
@@ -444,7 +515,20 @@ The "no module special-casing except synthetic + prelude" rule is currently **im
 
 ## 6. Open items requiring sign-off
 
-1. **/spec §8.6.4/§8.8 editorial alignment (NON-gating)** — the prelude-as-outer-scope model is **settled** (user, 2026-06-11) and grounded in the existing §8.6.4 `let`-analogy text; it needs no new model ruling. The minimal wording change makes the outer-scope framing *normative* rather than describing prelude as flattened-with-a-shadow-exception. **Specify (do not enact):** in §8.6.4, state that the implicit prelude is an **outer scope consulted on a resolution miss in the module's own (inner) scope**, not a set of bindings materialised into the module table; the existing "shadow just as inner `let` shadows outer" line then reads literally. In §8.8 (implicit-prelude injection / §8.8.1 "module does not reference prelude"), state that "injection" means **activating the prelude outer-scope fallback** for the module (ON unless the module refuses/references prelude), not copying prelude's bindings in. This is editorial; §2's implementation does **not** gate on it. File `target: /spec` FIXME at the resolving fire.
+1. **/spec §8.6.1/§8.6.4/§8.8.1 — ENACTED, and a SEMANTIC REVERSAL, not editorial (CLOSED
+   2026-07-04, FIXME 0515).** This item is resolved. The user (sole language arbiter, 2026-07-04)
+   ruled the prelude carries **no exemption**: a prelude-provided name is in scope like any explicit
+   import, and def/distinct-terminal-shadow over it is the same compile-time error. `/spec` enacted
+   this in `spec/08-modules.md §8.6.1/§8.6.4/§8.8.1` (the "Contrast — prelude-provided names remain
+   shadowable" paragraph was replaced with "The prelude carries no exemption — a loaded prelude name
+   is NOT shadowable"; the outer/inner layering is now stated as an implementation detail of
+   resolution, subject to §8.6.4 conflict + §8.6.5 ambiguity identically to explicit imports; §8.8.3
+   pins the *not-loading* escape hatch). The change is a **semantic reversal** of the original §2
+   conclusion, not the editorial "keep the silent shadow, make the framing normative" it was
+   originally scoped as. The **impl** landed at the shared typecheck seam (FIXME 0514,
+   `TypeCheckEnv::reject_def_over_binding` + the Pass-0 distinct-terminal-poison), not in §2's
+   resolver. §2's design narrative **defers the seam to 0514** and describes only the target
+   conclusion. No further /spec FIXME is owed.
 2. **§3 fix choice — (3b) minimal vs (3a) uniform** — recommended (3b) for S78-fold, (3a) deferred. **User picks** whether the Blocker fix is the minimal ownership-marker (3b) or the full submit+wait convergence (3a).
 3. **Disposition split (§5.1)** — S78-fold §3 / S79 §1+§2. **User confirms** the split (or folds all into S78). The blast-radius walk (§2.5) confirms §2 is `cranelisp-typecheck`+`src/` with **no cross-crate (`cranelisp-types`) dependency and no /spec model gate** — so the only reason to keep §2 in S79 is scope hygiene of the restructure close, not an external blocker.
 4. **Where the per-module fallback bit lives** — **RESOLVED (§2.7, Wave-4 design):** session-side companion `DashMap<ModuleFullPath, bool>` on `SharedState`, exactly parallel to `module_aliases`, threaded into typecheck as a new 5th read-only `check_forms` parameter `prelude_fallback: &PreludeFallback` and carried on `TypeCheckEnv`. The `SymbolTable`-field option is **rejected** (it would be a `cranelisp-types` data-model/cache-schema change). The session-side home keeps the bit unserialized and recomputed-per-session. **The one residual `/arch` touch** is a single `PreludeFallback` type-*alias* line beside `ModuleAliases` (`cranelisp-types/src/module.rs:419`) under realization (a) — an alias, NOT a data-model change; realization (b) defines it int-side for zero `cranelisp-types` touch. The `check_forms` +1-param signature change is an int↔typecheck boundary the two `/dev` agents land in lockstep (§2.7.3, §2.7.8). **/arch nod needed only for the alias line.**
@@ -457,4 +541,16 @@ The "no module special-casing except synthetic + prelude" rule is currently **im
 - 2026-06-10 (`/arch`, Phase-5 PIVOT audit-first pass): authored. Source-verified the four hardcoded-`"user"` manifestations + the dual-orchestration B1 against the working tree (`main.rs:172`, `session_v4.rs:1005/1154/2682/3626/4559/1953/2257`, `imports.rs:277/311`, `bootstrap.rs:295`, `scheduler.rs:89/334/1382`). Verdict: ctor pre-seed vestigial/deletable (special forms at root `""`, `register_builtins`→`mount_synthetic_modules` touches no `user`); two-tier import model recommended via a `cranelisp-types` implied-provenance marker (2.3a); single-orchestration via ownership-marker `sexps: None` (3b minimal, S78-fold) with submit+wait (3a) as S79 convergence; disposition split §3→S78 / §1+§2→S79; Principle 19 proposed for Phase-7 authoring. Audit-first: doc + surfaced sign-off items only; no canonical-set edits, no code/test changes enacted.
 - 2026-06-11 (`/design` (int), Wave-4 realization pin): authored **§2.7 REALIZATION** pinning the load-bearing unknown (§6 open-item 4) — fallback-bit home + cross-crate threading + resolution algorithm + `/dev` split. Source-confirmed: `ModuleAliases = DashMap<ModuleFullPath, ModuleAliasEntry>` (`module.rs:419`) on `SharedState` (`session_v4.rs:750`), threaded as `check_forms`'s 4th param (`form.rs:83`) onto `TypeCheckEnv` (`checker.rs:204`). **Pinned:** companion `PreludeFallback = DashMap<ModuleFullPath, bool>` session-side on `SharedState`, +1 read-only `check_forms` param, parallel to `module_aliases` at every call site — **no `cranelisp-types` data-model change** (only a one-line type-alias under realization (a), `/arch` nod; realization (b) is int-side, zero-touch). **Resolution algorithm:** `probe_current_or_prelude` wrapper at the 2 current-module chokepoints (`lookup_in_current_module`+`resolve_entry_in_current_module` via `probe_module_entry_owned`; `current_symbol_table`→`View` two-hop for the 6 `resolve` callers); explicit/`fq.module` probes do NOT fall back. Fixes the 3 import-shadow REDs structurally (prelude no longer in inner table → explicit import sole entry, no `Ambiguous`); preserves primitives-via-prelude via the fallback's chain-follow of prelude's `(export [primitives [*]])` (not a name-key). **§2.7.8 `/dev` split + landing order:** src/ lands field+alias first; lockstep `check_forms` signature flip; then typecheck chokepoints + src/ installer/`is_seeded`-delete/introspection, gated together on the 18-test set. §6 open-item-4 marked RESOLVED. Doc-only; no code/test changes; no canonical-set edits.
 - 2026-06-11 (`/design` (int), Wave-5 as-built reconciliation): refreshed §2.7.5 Chokepoint 2 (+ the §2.5 blast-radius note + the §2.7.8 split step 3) to record the as-built realization. **Caller-side retry CHOSEN; two-hop view REJECTED** — the shared `View` newtype carries at most two sources (staging+live), so adding a third prelude source would need a `cranelisp-types` view-type change, which §2.7.7 commits NOT to make; the prelude hop is realized caller-side in `resolve_current_or_prelude` (`checker.rs:824`) as a `resolve` retry rooted at prelude over `View::single(prelude_live)`, sound + self-documented in the function rustdoc (`checker.rs:788–823`). Noted the **Wave-4 I-1 follow-on**: the prelude retry is **public-only** (private prelude symbols are not bare-reachable; the retry is post-filtered on `prelude_terminal_visible` = `entry.is_public()` relative to the original user module; trait-method `Def` entries inherit their trait's declared visibility, `traits.rs:2047` `public_only`), and the duplicated bit+self guard is extracted into `prelude_fallback_target` (`checker.rs:758`), the single source of truth routed by every bare-name chokepoint. Doc-only; no code/test changes; no canonical-set edits.
+- 2026-07-04→S103 (`/design` (src/), FIXME 0515 re-anchor): re-anchored §2's shadow **conclusion**
+  to the user's 2026-07-04 no-exception reversal. Edits: the §0 "Dependency on /spec" block (now
+  ENACTED + a semantic reversal, deferring the seam to FIXME 0514), §2.2 consequence #1 (silent
+  shadow → def-over-prelude compile-time error) + #2 (distinct-terminal prelude-overlap poison
+  added), §2.6 presentation phrasing ("protected", not "freely shadowable"), §2.7.5 "3 REDs / 12
+  greens" reasoning (terminal-conditioned: same-terminal dedups, distinct-terminal poisons,
+  local-def-over-loaded-prelude errors; the surviving free-define green is the *not-loading*
+  variant), §6 open-item-1 (CLOSED — enacted in `spec/08-modules.md §8.6.1/§8.6.4/§8.8.1`; impl at
+  FIXME 0514's `TypeCheckEnv::reject_def_over_binding` + Pass-0 poison), and the status line. **The
+  outer-scope resolution MECHANISM is unchanged — only the conclusion moved** (user: the layering
+  is an implementation detail, not an exemption). Doc-only; the impl is 0514's (already landed per
+  `src/CLAUDE.md`); no code/test/canonical-set edits.
 - 2026-06-11 (`/arch`, settled-model §2 reshape + blast-radius walk): §2 rewritten from the two-tier-flattened model to the **prelude-as-outer-scope fallback** model settled by the user (2026-06-11; `project_prelude_outer_scope`). Provenance-marker (2.3a) + install-order (2.3b) proposals **deleted/rejected**; `cranelisp-types` dependency **dropped**. Added §2.5 BLAST RADIUS (source-walked: typecheck `probe_module_entry_owned` `checker.rs:979` + `current_symbol_table`→`View` `checker.rs:416` feeding 6 `cranelisp_types::resolve` callers — **two chokepoints**; installer `inject_prelude_if_needed` `worker.rs:3055` + `is_seeded` delete `imports.rs:311`; introspection `handle_imports` `session_v4.rs:2898` + `describe_symbol` `session_v4.rs:1451`; `/list`+`/exports` unaffected; **backend FQSymbol/GOT-based — UNAFFECTED**, verified `jit.rs:110–157`). Added §2.6 `/imports` presentation decision (distinct `Prelude (implicit)` group). §5 sizing re-scoped: §2 is `cranelisp-typecheck`+`src/`, **NO `cranelisp-types` change, NO marker, NO /spec model gate** (only editorial §8.6.4/§8.8 alignment). §6 reframed: dropped the marker open-item; added the per-module-fallback-bit home question (session-side recommended to stay cranelisp-types-free). §1, §3, §4 carried unchanged. Audit-first: doc-only; no code/test changes; no canonical-set edits.

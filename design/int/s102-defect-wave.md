@@ -73,7 +73,16 @@ binds to it). No cross-crate change; no `cranelisp-types` change.
 
 ## §2. T1 full cure — sizing verdict
 
-**VERDICT: OUT of S102 — defer to S103, with the print as shipped mitigation.**
+> **S103 UPDATE (FIXME 0507, /design src/): PROMOTED to implementation-ready.** The S102
+> preconditions named below (D1/D2 regen fidelity, the 0489 floor, D3/0487 env) all landed at
+> S102, so the deferral condition is discharged. The implementation-ready change-sets (CS-1
+> end-of-turn driver, CS-2 report integration, CS-3 edges) + the F2 slot-refined trigger + the
+> F5a macro-target handling + the F3 macro-clause resolution now live in
+> `session-transaction.md §10 T1` (the authoritative home). The §5.2 `error_modules` framing
+> below is corrected per 0507 addendum 5: the §14.4 gate WAS wired in `process_commands`; the
+> Wave-5 change was the §18.8 definition carve-out (`is_repair_definition_turn`).
+
+**VERDICT (as of S102): OUT of S102 — defer to S103, with the print as shipped mitigation.**
 Mechanics are designed (session-transaction.md §10 T1 amendment: end-of-turn reload
 after `regenerate_backing_file`, watcher-discipline `reload_module` + `poll_and_reload`
 dependents cascade, all through the §7.3 Replace gate). The honest sizing:

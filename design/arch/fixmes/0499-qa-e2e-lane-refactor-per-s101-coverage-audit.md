@@ -41,3 +41,20 @@ the two drafting-discovered fn_as_value defects came from artifact-minting
 probes; rule 2 — L-N1; rule 3 — L-S2 dirty-world rows; rule 4 — FIXME 0505).
 Item-3 housekeeping (tests/CLAUDE.md registration): DONE at Phase 3.
 **Remainder blocking deletion: L-S1 + L-M1's B3-wave growth.**
+
+## Per-lane status (S103 Phase-3 plan, 2026-07-05, /qa)
+
+The two remainder lanes are scheduled to land this sprint (increment II), per
+`tests/plan/s103-test-plan.md` §1.6 + §3:
+
+- **L-S1** session-history preambles — **PLANNED S103** (the deferred capacity-gated
+  tail; author the preamble-grid helper over `repl_introspection.rs` +
+  `repl_redefinition.rs`, generalizing beyond the 6a-burned cells). Defers to S104
+  with rationale at the gate only if capacity forces it again.
+- **L-M1** reference×referent×instantiation matrix — **GROWS WITH B3** (the
+  `fn_as_value` seam rework, backend §13.3): the 0483/0474 guards already flipped
+  GREEN in S102, so S103 growth = corpus EXTENSION with the newly-green shapes + the
+  new value-use × ≥2-instantiation cells the reuse-token/R5 seam introduces.
+
+**Deletion condition:** if L-S1 lands and L-M1's B3 growth is in, all 7 lanes exist
+→ /qa deletes this FIXME at S103 close. Else annotate + carry.

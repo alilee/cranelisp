@@ -9,6 +9,14 @@ types-crate dependency pin, the graph-feed verification against the S101 `callee
 widening (0470/0472), the fact-table coverage verdict, the toggle-off semantics pin,
 and the Principle-23 scenario space (the 0497 rider). §§0–12 stand unchanged except
 where §13.6 records refinements the implementation problem forces.
+**S103 Phase 3 addendum: §14 is the implementation-ready change-set staging for
+increment II's typecheck half (Sprint 103 Block B1)** — the typecheck-drain quartet
+disposition (0509/0511/0513; 0510 coordinated), the write-path query emission
+(static-uniqueness subset + `result_unique` chaining + `unique_static` site facts,
+the uniqueness stratum, cap-reset), the dynamic rc==1 handoff to the backend, the
+R5 `value_layout` coordination, and — the trigger check /arch is waiting on — the
+**FIXME 0521 verdict (NO; deferred)**. §7 (the S100 write-path ruling) is unchanged;
+§14 makes it implementation-ready.
 **Governing authority:** `design/arch/ownership-inference.md` (the S100 master spine, as amended
 2026-07-02). Where this proposal and the spine disagree, **the spine governs**; this proposal
 resolves the spine's §10 typecheck items 1–6 and elaborates within the spine's lattice
@@ -1504,7 +1512,397 @@ laid the strategy bare):**
   `codegen_view` post-pass; H5 dump smoke (present under the env var, silent
   without).
 
+## §14. Increment-II write-path change-set staging (S103 Phase 3 — Sprint 103 Block B1)
+
+Authored by `/design` (cranelisp-typecheck) at S103 Phase 3, against
+`sprints/SPRINT.md` Block B1 and the Phase-2 arch review. Block B1 — the
+**typecheck-drain foundation + the write-path queries** — is the real gate on the
+write-path mechanisms (reuse tokens + R5), which consume the S102-landed carriers
+and this foundation, not the Block-A surfaces. Everything here elaborates §7
+(the S100 write-path ruling, unchanged) and §§2–3 (the fixpoint); where §14 amends
+an earlier section it says so.
+
+**The one-line frame.** Increment II adds **no new typecheck-authored
+`cranelisp-types` carrier**. The two write-path carriers it emits — `result_unique`
+(summary half) and `unique_static` (site fact) — **already landed at S102 CS-A**
+(§3.3, schema v12, emitted `false`/`None` throughout increment I). Increment II
+starts *emitting them true* on a narrow proven subset; that is a **value change,
+not a shape change**. The only genuinely-new carrier in the sprint is /arch's R5
+`value_layout` predicate (§14.5), which is not typecheck-authored. This is the
+Principle-8 payoff of the S100 "every dimension from day one" contract (§7): the
+write path is a precision growth on a frozen shape.
+
+### 14.1 The typecheck-drain quartet — disposition and sizing (Block B1 foundation)
+
+The four accumulated typecheck debts that gate opening the crate for the write-path
+pass. Sized and dispositioned; the write-path emission (§14.2) rests on a clean
+foundation.
+
+- **FIXME 0509 — generalization-ordering resettle debt.** *Target `/design`
+  (typecheck); RESOLVED this pass — documentation-sufficient.* Recorded in its
+  proper home, `design/typecheck/monomorphisation.md §5.1` (it is a
+  generalization/scheme-writeback concern, not an ownership concern): the S102
+  `resettle_polymorphic_schemes` is sound but compensates (O(n²)) rather than
+  curing the 0344 writeback-before-forward-helper-tie root cause, and carries a
+  **reverse-definition-order under-tie gap** (no repro today). **Not a write-path
+  blocker** — pass5 reads *converged* schemes at the finalisation seam (§3.1),
+  after all bodies and all re-settles. The two O(n) cures (topo-order the per-form
+  generalization over the harvested `call_graph_edges`; or defer the 0344
+  writeback to finalize) are named for a future promotion; a `/qa` reverse-order
+  boundary test is requested so the gap is *tested*, not latent. **Sizing:
+  doc-only this sprint.**
+- **FIXME 0511 — pass5 session-memo threaded field.** *Target `/design`; RESOLVED
+  this pass — keep option 2 (in-pass memo), defer option 1 (session-threaded
+  field).* The §6 memo is a `DashMap` on the checker env, but `TypeCheckEnv` is
+  constructed fresh per `check_forms` and borrows all its state, so a
+  cross-invocation memo would have to be a session-owned `&'a DashMap` threaded
+  from `int` — a cross-crate signature change. **Ruling: not worth the plumbing
+  for increment II.** §6's own property holds — determinism makes the memo's
+  absence a *re-compute cost, never a wrong result* — and the R3 machinery is not
+  yet consuming summaries (Wave 9+), so the cross-invocation fast path has **no
+  live consumer to accelerate**. The in-pass memo (S102 CS-3 landing) converges
+  each callable once per compile; repeated mints within one compile are map hits.
+  **Increment-II caveat (new):** the uniqueness stratum (§14.2) adds a per-callable
+  greatest-fixpoint pass, so per-turn re-inference cost grows — **routed to `/qa`**
+  to fold the uniqueness-stratum cost into the L-D1 turn-latency lane (§3.5); if
+  that measurement ever shows re-inference material across REPL turns, option 1
+  (the session-owned memo) is the pre-designed upgrade, `int`-side, cite the
+  `TypeCheckEnv::new`/`new_with_staging` constructor signature. **No
+  `cranelisp-types` edit either way** — the memo is typecheck-internal state.
+  **Sizing: doc-only this sprint** (the in-pass memo already ships).
+- **FIXME 0513 — qualified-lookup phantom-child gap.** *Target `/typecheck`
+  (the impl skill — actioned by `/dev` in Phase 5); design specified here.* Not
+  an ownership concern per se; it is in the B1 drain because the crate is open and
+  it is a live resolution-correctness debt that a future qualified-name path not
+  flowing through `int`'s `finalize_cluster` gap seam would re-expose.
+  **The seam:** `Checker::lookup`'s `name.find('/')` arm
+  (`crates/cranelisp-typecheck/src/checker.rs` ~1188–1226) probes two candidates
+  for `mod/sym` — child-of-current (`{current}.{module_part}`) then absolute
+  (`{module_part}`) — and the gap-selection tail surfaces the **phantom child
+  gap** (`user.primitives/nosuchfn`) even when the **absolute module is loaded but
+  the member is absent** (a definitive member-not-found with no gap). **Fix design
+  (option (b), the narrower cut): suppress the child-probe gap when the
+  absolute-path candidate resolves the module but not the member.** When
+  `resolve_qualified(module_part, sym)` returns `Ok((None, None))` — module
+  loaded, member absent — that is a definitive member-not-found and MUST win over
+  the child probe's `ResolutionGap::SymbolTypechecked`. Prefer (b) over (a)
+  (synthesising a `TypeError` naming the real module+member at the var span
+  directly from `lookup`) as the minimal change: (b) removes the *misleading gap*
+  without moving diagnostic authorship out of the existing `infer_var`/int seam,
+  so the int-side `phantom_member_diagnostic` mitigation (S102 Wave 10a) stays as
+  a belt-and-suspenders guard until the resolution reorder proves out and can then
+  be removed. **Unit seam:** a `checker.rs` `#[cfg(test)]` case building a loaded
+  absolute module with a missing member and asserting `lookup` yields the honest
+  member-not-found (no phantom `<current>.<qualifier>` gap). **Sizing: small code
+  change (`/dev`, Phase 5) + one unit test;** spec adjacency `spec/08-modules.md
+  §8.6.4` (order-independence of qualified member-miss diagnostics).
+- **FIXME 0510 — `neq-string` has no primitive entry.** *Target `/design`
+  (backend); COORDINATED, not owned here.* Named for completeness: the
+  §13.4 fact-table coverage claim's one filed gap. `neq-string` is shim-only
+  (no `DefKind::Primitive` entry), reached via the `Eq.!=` `String` dispatch
+  path, so pass5's `Apply` classification of `(!= s1 s2)` chain-follows to a
+  missing entry ⇒ the Decision-24 default (args widen `Owned`) — a **precision
+  loss only, monotone-sound**, asymmetric with `str-eq` (which is a registered
+  entry). The classifier already encodes the correct `Borrowed` facts
+  (transcribed under CS-B), so `/design(backend)`'s choice is (a) register
+  `neq-string` as a `ring1` `PrimitiveDef` (restoring `==`/`!=` symmetry, assessed
+  against the golden corpus / `extern_shims` invariants) or (b) accept the
+  conservative default and amend §13.4 to name it a trait-dispatch leaf outside
+  the declared-fact table. **No typecheck action either way** — the classifier is
+  correct on both branches. Watch item for the write path: `neq-string`'s args
+  being `Owned` rather than `Borrowed` never affects *uniqueness/reuse* emission
+  (uniqueness is about the *result*, not the string comparands), so 0510 does not
+  gate any increment-II query.
+
+### 14.2 The write-path query emission — what pass5 newly emits in increment II
+
+Two facts, both on carriers that already exist (§3.3, S102 CS-A):
+
+- **`ModeSummary.result_unique: bool`** — the summary-half chaining discriminator.
+- **`MonoExpr.unique_static: Option<bool>`** — the per-use-site static-uniqueness
+  fact (present-but-never-`Some` in increment I; now `Some(true)` on proven uses).
+
+Neither is ABI-bearing — both are in the **advisory half** (a `false`/`None` is
+always sound; it degrades to the dynamic rc==1 check or to no-reuse). So the
+write-path emission adds **no summary-diff-gate surface** (§5.4 compares
+`param_modes` + `result` only, via `abi_eq` — §13.1 item 5), and the R3 machinery
+is unaffected by whether uniqueness is emitted.
+
+**The subset that earns `unique_static = Some(true)` (§7.2, restated as the
+emission rule).** At a consuming use site of `v`, emit `unique_static = Some(true)`
+iff all three hold:
+
+1. **Provenance is a fresh unique root.** `v` is (i) a fresh allocation or the
+   **`Fresh`**-result of a static call (read `result == Fresh` — a *binary* test,
+   never the `AliasOf` index; see §14.4), (ii) a freshly-COW'd copy, or (iii) a
+   param carrying a caller-side static proof (`result_unique` chained in) — **and**
+   every other reference taken from `v` between birth and this use is
+   `Borrowed`/projection-covered (rc-invisible by §4).
+2. **Single syntactic consuming use** (flow-insensitive: count consuming-use sites;
+   a projection read is not a consuming use). Multi-use / conditional-consume /
+   loop-carried values need use-*ordering* (last-use), which is backend-local — they
+   take the dynamic check (§7.1(a)), the mechanism built for them.
+3. **Layout-eligibility at mono** (the *eligibility* axis, static; permission stays
+   dynamic-or-proven — spine §10 item 5 two-axis separation): the concrete
+   instantiation is in-place-layout-compatible.
+
+**`result_unique = true` (the chaining bit, §7.2 clause 3).** A callable's summary
+carries `result_unique = true` iff its returned value is (1)-fresh **inside the
+callee** or an in-place-reused unique param — computed **intraprocedurally** from
+the callee's own converged transfer state (the `Origin` working state the walker
+already tracks — §13.6(c)), so a caller's clause-1(iii) proof re-emerges from the
+call as a **bool read**, never an index read. `result_unique` is emitted `false`
+throughout increment I and `false` whenever the proof does not hold — the sound
+default.
+
+**The uniqueness stratum — a third fixpoint stratum, stratified after modes and
+confinement.** `result_unique` chains across the cluster (a callee's bit feeds a
+caller's clause-1(iii)), so it is a per-cluster fixpoint, run **after** the
+modes/escape/flow stratum and the confinement stratum converge (§3.2
+stratification; nothing in modes or confinement reads `result_unique`, so the
+stratification is exact). Its shape and soundness:
+
+- **A must-property, greatest-fixpoint (co-inductive) iteration.** Uniqueness is a
+  *must* (v must be unique). Init **optimistic** (`result_unique = true` for every
+  cluster member), narrow to `false` on any return path that is not fresh /
+  not-unique-chained, iterate to the greatest fixpoint. This is the **same
+  "init-optimistic, move monotonically toward the conservative point" shape** as
+  the modes stratum (which inits `Borrowed`/`Fresh` and widens toward `Owned`) —
+  only the conservative point differs: **conservative = `false`** for
+  `result_unique` (degrades to the dynamic check). Re-entry rides the same
+  harvested `DepSet` edges as the modes stratum (§13.6(e)).
+- **Cap-exhaustion resets to `false` everywhere** (extends §13.6(h)). A
+  partially-converged greatest-fixpoint sits *above* its true fixpoint (too many
+  `true`s) ⇒ unsound to publish. On cap exhaustion the uniqueness stratum publishes
+  `result_unique = false` for the whole universe and drops every `unique_static`
+  site fact to `None` — the write-path analog of the §13.6(h) modes ⊤-reset and
+  site-fact reset. `fixpoint::conservative_site_facts` gains the `unique_static →
+  None` leg. This makes "publish only on clean convergence" structural, not a hope.
+- **Site facts written in the one-shot post-convergence walk** (§13.6(b)):
+  `unique_static = Some(true)` is annotated onto the `codegen_view`'s consuming-use
+  nodes in the same annotation walk that writes `escapes`/`confined`/`provenance`,
+  after all three strata converge. Budget unchanged: still annotation-only, no
+  `Type` traffic (§3.4).
+
+**Monotone soundness — absent facts ⇒ today's lowering.** Every write-path fact's
+absent/false reading is exactly the increment-I (and pre-increment) behaviour: an
+absent `result_unique`/`unique_static` (old cache, unconverged edge, toggle-off,
+cap-reset) reads `false`/`None` ⇒ the backend takes the **dynamic rc==1 check**
+(§14.3) or emits no reuse — never an unsound elision. The direction is one-way:
+the analysis only ever moves a value *toward* `false`/`None` when it cannot prove
+uniqueness, and the backend's default when it reads `false`/`None` is the safe
+copy-or-check path. This is the same monotone-soundness the increment-I contract
+established (§3.3, §13.5), extended to the uniqueness bit.
+
+**Toggle-off (spine §6.2, §13.5) extends unchanged.** With `CRANELISP_NO_OWNERSHIP`
+set, `pass5_ownership` returns at entry: no `result_unique` computed (⇒ default
+`false`), no `unique_static` site facts (⇒ `None`), the uniqueness stratum never
+runs. The differential oracle's byte-identity obligation holds on this crate's
+outputs by construction — a write-path-off compile is field-identical to a
+stage-M compile (serde: absent optional/default fields serialize away).
+
+### 14.3 The dynamic rc==1 discriminator — the typecheck/backend handoff
+
+The **general** write-path discriminator is the **dynamic rc==1 entry check**
+(spine §4.3, §7.1(a); Koka/Roc drop-guided reuse, what today's `vec-set-copy`
+mutate-in-place already is): one branch per *call*, copy-once-then-in-place. It is
+**not a typecheck output** — it carries no ResultMode index, no summary field, no
+site fact. The split of responsibility:
+
+- **Typecheck provides *eligibility* (static) + the *proof* (where it holds).**
+  Eligibility = layout-compatibility per instantiation, decided at mono
+  (`unique_static`'s clause 3; §7.3). The proof = `unique_static = Some(true)` /
+  `result_unique = true` on the narrow subset (§14.2). Where the proof holds, the
+  backend **elides** the rc==1 check (proof ⇒ permission — §7.1(c)-refined).
+- **Backend owns *permission* (dynamic) — the reuse mechanism itself.** Where
+  typecheck emits no proof (`false`/`None`), the backend runs the rc==1 check at
+  the call/drop site; the reuse token (function-local SSA maybe-null, **off the
+  ABI** — spine §3.5, §7 constraint) threads a drop site to a same-layout alloc
+  site intra-function. This is backend part 16 (`design/backend/ownership-codegen.md`),
+  consuming typecheck's site facts, never the reverse. **There is no third
+  mechanism**: §7.1(c)-refined *is* (a) with the check hoisted/elided by the proof,
+  and uniqueness never enters the ABI (R4).
+
+So typecheck's increment-II contribution to the general discriminator is purely
+*subtractive on the check* — it removes a dynamic branch where it can prove the
+branch's outcome, and is silent (⇒ the check runs) everywhere else. The backend's
+reuse machinery is complete without any typecheck emission; the emission is an
+optimisation on top.
+
+### 14.4 FIXME 0521 trigger verdict — **NO. The ⊤ element stays DEFERRED.**
+
+**The Phase-2 conditional (restated):** /design(typecheck) lands the `ResultMode`
+⊤ element (`AliasOfAny`, monotone-widening) in the B1 carrier change-set + a
+`CACHE_SCHEMA_VERSION` bump **iff** the static-uniqueness subset design introduces
+a consumer that reads the `AliasOf` **index** (the multi-distinct-param may-alias
+case); else 0521 stays deferred until the reader arrives.
+
+**Verdict: NO index-reader is introduced. 0521 stays deferred; no ⊤ element, no
+schema bump for it in B1.** The reasoning, definitively:
+
+1. **The subset's provenance clause admits only `Fresh` results — `AliasOf(i)` is
+   excluded by construction.** §14.2 clause 1(i) / §7.2 clause 1(i) require the
+   unique-candidate to be a *fresh allocation* or a **`Fresh`-result** of a static
+   call. An `AliasOf(i)` result aliases param `i`, whose uniqueness is
+   *call-site-dynamic* (R4) — not a statically-nameable unique root — so it is
+   **not admitted** into the unique-value set. The subset therefore never chases an
+   alias provenance for uniqueness, and never needs the aliased param's index.
+2. **The chaining discriminator is a bool, read binary.** A caller proving
+   clause-1(iii) reads the callee's `result_unique: bool`, and clause-1(i) reads
+   `result == Fresh` (a *binary* `Fresh`-vs-not test — the same read the live
+   increment-I borrow-elision consumer `return_is_fresh_by_summary` already makes).
+   Neither reads `AliasOf(k)`.
+3. **`result_unique` is computed intraprocedurally, not from a callee's index.**
+   A callable sets `result_unique` from its **own** converged `Origin` state
+   (fresh-inside / reused-unique-param — §14.2), not by reading another summary's
+   `AliasOf` index. No cross-summary index read arises in its computation.
+4. **The only `AliasOf`-index arithmetic that exists — `walk_apply`'s
+   `AliasOf(k) → arg_origins[k]` result-mode composition — is unchanged
+   increment-I machinery whose sole *acting* consumer remains the binary
+   `result == Fresh` gate** (0521's own finding: a multi-param body is an
+   `if`/`match`, never a direct `Apply`, so its codegen never trusts the specific
+   index). The write path adds no consumer that *acts* on the index `k`.
+5. **The write-path mechanisms read no index either.** Reuse tokens key on layout
+   (intra-function, off-ABI); R5 keys on `value_layout(ty)` (§14.5); the dynamic
+   rc==1 check reads nothing from `ResultMode`. None reads `AliasOf(k)`.
+
+**The named future trigger is outside increment II's committed floor.** 0521's own
+recommendation is to co-land the ⊤ element with "the first backend consumer that
+reads the `AliasOf` INDEX (rather than the binary `Fresh` test) — part 12/16
+borrow-elision keyed off the specific param." That per-index borrow-elision
+refinement is a backend part-12/16 item, **not** in the B1/increment-II committed
+floor (reuse tokens + R5 + the static-uniqueness subset). Until that reader lands,
+the 0520 lowest-index representative is sound for every live consumer. **0521 is
+the durable record; it does not action in S103.** (Monotone-soundness of the
+eventual add is preserved: `AliasOfAny` only ever widens a value *away from*
+`Fresh`, so it lands additively whenever its reader arrives, with its own schema
+bump in that change-set.)
+
+### 14.5 The R5 `value_layout` predicate — coordination (not typecheck-authored)
+
+R5 value-representation flattening (Block B3; spine §6.3) is the one genuinely-new
+`cranelisp-types` carrier of the sprint, and it is **/arch-authored**
+(`value_layout(ty) -> Option<ValueLayout>` + `VALUE_LAYOUT_MAX_WORDS = 1` in
+`heap.rs`), single-sourced because it is **soundness-coupled**: typecheck's `Copy`
+mode classifier (§2.2) and the backend's `HeapCategory::Value` arm both consume it,
+and a `Copy`-moded param the backend did not flatten is a UAF (spine §6.3). This
+crate's dependency on it:
+
+- **When R5 lands, the §2.2 `Copy` classifier gains the representation clause.**
+  Increment I's classifier is exactly `ConcreteType::{Int, Bool, Float}` (the
+  representation clause fails for every heap type — §2.2). When `value_layout`
+  lands, `Copy(T)` gains "…or an ADT/Vec all of whose field element types are
+  transitively `Copy` **and** `value_layout(T).is_some()`" — the classifier
+  *delegates* to the shared predicate, never recomputes it. This is a **value
+  change to which `ConcreteType`s classify `Copy`**, deterministic (post-mono ⇒
+  total), hence cache-key-safe.
+- **Landing discipline (Principle 8):** the predicate lands **in the B3
+  implementing change-set, never ahead of the R5 mechanism design** — the same
+  not-speculatively discipline the S100 carriers followed. Until it lands the
+  `Copy` point is scalars-only and no unsound configuration is reachable.
+- **Schema-version coordination (flag to /arch).** The sprint plan names the R5
+  bump as `CACHE_SCHEMA_VERSION 12→13`, but the **live schema is already 14**
+  (S102 Waves 8c-R/11 folded the 0520/0523/0524 summary-meaning bumps to 14 —
+  §13.6(c)(j)(k)). The R5 predicate's bump must therefore be from the
+  then-current value (14→15, or whatever S103's earlier waves reach), **not** the
+  stale 12→13 in the plan. **This crate does not author the bump** — it is named
+  here so /arch reconciles the number when authoring the B3 carrier change-set.
+
+### 14.6 CS staging + acceptance seams (Phase-5 handoff)
+
+The increment-II typecheck change-sets, in dependency order, each landing with its
+Principle-23 scenario matrix in the same commit and building on the S102
+`ownership/` cluster (`classify.rs`/`transfer.rs`/`fixpoint.rs`/`confinement.rs`/
+`publish.rs`):
+
+- **CS-II-0 — the drain quartet** (Block B1 foundation, §14.1). 0509 + 0511
+  doc-only (landed this pass); **0513** is the one code change — the
+  `checker.rs::lookup` qualified-arm reorder + its unit test. Order-independent of
+  the query CSes; lands first so the foundation is clean.
+- **CS-II-1 — the uniqueness stratum + `result_unique`** (`fixpoint.rs` +
+  `transfer.rs`). The third stratum (greatest-fixpoint, init-optimistic-true,
+  conservative-`false`, `DepSet` re-entry, cap-reset-to-`false`); the
+  intraprocedural `result_unique` computation from converged `Origin` state.
+  *Unit seam:* `fixpoint.rs`/`transfer.rs` `#[cfg(test)]` — the pure transfer/
+  fixpoint functions with `TestFixture` + hand-built `MonoExpr` bodies (the §11
+  testability pin). *Scenario classes:* fresh-return ⇒ `result_unique = true`;
+  aliased/projected-return ⇒ `false`; chaining across a two-call cluster;
+  recursive cluster greatest-fixpoint; cap-exhaustion ⇒ all-`false` (the
+  `compute_cluster_with_cap(cap=0)` seam extended to the uniqueness stratum);
+  toggle-off ⇒ stratum never runs.
+- **CS-II-2 — `unique_static` site-fact emission** (`transfer.rs` + `publish.rs`).
+  The §14.2 three-clause subset rule, annotated in the one-shot post-convergence
+  walk. *Unit seam:* `transfer.rs`/`publish.rs` `#[cfg(test)]`. *Scenario classes:*
+  fresh single-use ⇒ `Some(true)`; multi-use ⇒ `None` (the load-bearing negative);
+  conditional-consume ⇒ `None`; projection-read-is-not-a-consume; freshly-COW'd
+  copy ⇒ `Some(true)`; layout-ineligible instantiation ⇒ `None`; cap-reset ⇒
+  `None`.
+- **CS-II-3 (rides B3) — the `Copy` classifier's R5 clause** (`classify.rs`).
+  Delegates to /arch's `value_layout` when it lands (§14.5); until then the
+  scalars-only classifier is unchanged. *Unit seam:* `classify.rs` `#[cfg(test)]`
+  — the `Copy` predicate over `ConcreteType` (exactly `{Int,Bool,Float}` pre-R5;
+  the delegation-to-`value_layout` rows post-R5).
+
+**How Phase-5 /dev + /qa verify each change-set (unit seam × gate/guard):**
+
+| Change-set | /dev unit seam | /qa gate / guard |
+|---|---|---|
+| CS-II-0 (0513) | `checker.rs::lookup` qualified-arm unit test (loaded-module member-miss ⇒ honest not-found, no phantom child gap) | e2e: qualified-ref-missing-member diagnostic names the real module (existing `display_exact.rs::qualified_ref_missing_member_diagnostic_names_real_module` stays green when the int mitigation becomes redundant) |
+| CS-II-1 (`result_unique`) | `fixpoint`/`transfer` `#[cfg(test)]` stratum + chaining + cap-reset matrix | **II-G2** (reuse hit-rate ≥50% on F4; counter movement is the attribution prerequisite) — the chained-write shape `result_unique` feeds |
+| CS-II-2 (`unique_static`) | `transfer`/`publish` `#[cfg(test)]` subset matrix (single-use positive + multi-use/conditional negatives) | **II-G2/II-G3** (F4 floor: median wall ≤ 2× serial); **L-C3** reuse-corruption fence (reuse fired on a non-unique value ⇒ corruption — the differential-off + behavioral + ASan legs) |
+| CS-II-3 (R5 `Copy`) | `classify.rs` `#[cfg(test)]` `Copy`-over-`ConcreteType` (delegation to `value_layout`) | **II-G1** (R5 witness via the **F2v single-ctor fixture**: rc_inc collapses <1% of B2; F2v N-worker wall < serial — the first parallel-must-pay gate) |
+
+The differential oracle (`CRANELISP_NO_OWNERSHIP`) is byte-identical off throughout
+(spine §6.2; §14.2 toggle pin). II-G5/G6 re-run the I-G4/I-G5/I-G6 non-regression +
+overhead bars including F2v serial.
+
+### 14.7 Dependencies / coordination — the seam contracts
+
+- **From /arch:** (1) the R5 `value_layout` predicate carrier + `VALUE_LAYOUT_MAX_WORDS`
+  in `cranelisp-types/src/heap.rs`, landing **in the B3 change-set** with the schema
+  bump reconciled to the live value (§14.5 — 14→15, not the plan's stale 12→13);
+  single-sourced, consumed by this crate's `Copy` classifier and the backend's
+  `HeapCategory::Value` arm. (2) The 0521 verdict is **NO** (§14.4) — /arch takes
+  no action on the ⊤ element this sprint; the FIXME stays the durable record.
+  **No other new typecheck-authored carrier** — `result_unique`/`unique_static`
+  already landed at S102 CS-A.
+- **From /design(backend):** (1) the **dynamic rc==1 discriminator** is
+  backend-owned (§14.3) — the reuse-token mechanism (off-ABI, spine §3.5) consumes
+  this crate's `unique_static`/`result_unique` site facts to *elide* its entry
+  check where the proof holds, and runs the check everywhere else; the seam
+  contract is "absent proof ⇒ run the check" (monotone). (2) **FIXME 0510**
+  (`neq-string` entry) is /design(backend)'s call (§14.1); either branch leaves
+  the classifier correct and gates no increment-II query.
+- **To /qa:** (1) fold the **uniqueness-stratum re-inference cost** into the L-D1
+  turn-latency lane (§14.1, 0511 caveat) — the trigger for the deferred
+  session-memo. (2) The **L-C3 reuse-corruption fence** and **II-G1–G4** perf lanes
+  are the acceptance gates (§14.6 table); F2v is the honest R5 witness. (3) A
+  **reverse-order generalization under-tie boundary test** (§14.1, 0509) pinning
+  the known gap as tested, not latent.
+- **To /int:** the R3 summary-diff gate (`abi_eq`, §13.1 item 5) is **unaffected**
+  by the write-path emission — `result_unique`/`unique_static` are advisory-half,
+  outside the ABI surface `abi_eq` compares, so no gate widening is owed for
+  increment II.
+
 ## Next skills
+
+- `/arch` — take the **FIXME 0521 verdict: NO** (§14.4) — no ⊤ element, no schema
+  bump for it in B1; author the R5 `value_layout` carrier in the B3 change-set with
+  the schema bump reconciled to the live value (§14.5). Verify the §14.1/§14.6
+  foundation at the Phase-3 exit gate.
+- `/dev` (cranelisp-typecheck) — implement CS-II-0 (the 0513 `lookup` reorder +
+  unit test) → CS-II-1 (uniqueness stratum + `result_unique`) → CS-II-2
+  (`unique_static` emission) → CS-II-3 (R5 `Copy` clause, rides B3) per §14.6 with
+  the scenario matrices.
+- `/design` (cranelisp-backend) — the dynamic rc==1 reuse-token mechanism consumes
+  §14.2's site facts (elide-on-proof, check-otherwise, §14.3); resolve FIXME 0510.
+- `/qa` — L-C3 + II-G1–G4 (F2v witness); the L-D1 uniqueness-stratum cost lane
+  (0511 trigger); the reverse-order under-tie boundary test (0509).
+- `/sprint` — the write-path emission adds no ABI surface and no new
+  typecheck-authored carrier; sequence CS-II-0 first (foundation), CS-II-1/2 on the
+  S102 `ownership/` cluster, CS-II-3 riding B3's `value_layout`.
+
+### Next skills (S102 — superseded by the §14 list above for S103)
 
 - `/arch` — verify the §13.1 needs list at the Phase-3 exit gate and author CS-A
   (the v11→v12 `cranelisp-types` change-set, riding 0476); rule on item 12 (toggle

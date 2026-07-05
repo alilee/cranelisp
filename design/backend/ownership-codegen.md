@@ -8,7 +8,19 @@ change-set ladder with per-change-set oracle/gate obligations, the `fn_as_value`
 rework folding 0474/0483/0476, and the Principle-23 scenario matrices + `tests.rs` split
 plan; **amended S102 Wave 11 — §4 as-built: B3.4 ACTIVATED
 (`STACK_ALLOC_ESCAPE_FACT_SOUND = true`) via gate 5, the FIXME-0525 `/arch` spark-relocation
-cure — the stack-slot mechanism is now LIVE, the flag is the analysis-off oracle switch**)
+cure — the stack-slot mechanism is now LIVE, the flag is the analysis-off oracle switch**;
+**amended S103 Phase 3 — the increment-II write-path design pass: §14 added (the increment-II
+implementation staging — the reuse-token + R5 change-set ladder, the F2v witness path, the
+scenario matrices, II-G1–G4 acceptance); §6 sharpened (the static-uniqueness proof
+check-elision seam consuming `/design`(typecheck) §7.2, the `reuse_hit`/`reuse_miss` counters
+going live, the L-C3 reuse-corruption fence); §7 sharpened (consumes the `/arch`-authored
+`value_layout`/`VALUE_LAYOUT_MAX_WORDS` `cranelisp-types` carrier — FIXME 0468 resolved by
+spine §6.3; the `HeapCategory::Value` codegen arm + F2v single-ctor witness); §3.3 re-framed
+per the FIXME-0526 `/arch` direction ruling (consumer-driven = increment-I terminal;
+producer-side/escaping-projection promotes to increment II, gated by the Q4 uniqueness/
+confinement proof); §4.4 region-arena readiness verdict recorded (DEFER — the (a)-allocator
+co-design is not implementation-ready); §9/`ring2-rc.md` §3.3 the FIXME-0510 `neq-string`
+fact-entry ruling; §13.1 the FIXME-0506 capture-spec corrections**)
 — the per-crate codegen proposal for the five
 ownership-consuming backend mechanisms. Authored by `/design` narrow-deployed on
 `cranelisp-backend`, against the S100 sprint scope (`sprints/SPRINT.md` parts 12–16).
@@ -393,9 +405,26 @@ widens any returned/escaping param to `Owned`/`AliasOf` before the summary is em
 > `borrowed_vars` join, and the `compute_last_uses` extension are **NOT built**
 > (they are the escaping-projection cases the pivot excludes). `return_is_fresh_by_summary`
 > stays `Fresh`-only; a `ProjectionOf`/`AliasOf` result keeps its materialization.
-> The design paragraphs below are retained as the target for a future increment
-> that lands the interprocedural liveness (increment II / a confinement-gated
-> escaping-projection mechanism).
+>
+> **S103 RE-FRAME (FIXME 0526, `/arch` direction ruling 2026-07-05).** The
+> consumer-driven elision above is the increment-I **terminal** state — settled,
+> I-G1 100%, no further backend work owed at increment I. The producer-side /
+> escaping-projection model (the design paragraphs below) is **not discarded**; it
+> **promotes to increment II**, gated by the write-path proof this sprint lands.
+> The escaping-view race is exactly a **Crossing** edge (a borrowed view outliving
+> the root's fork-join liveness on another strand); the increment-II gate that
+> makes producer-side elision sound is the **uniqueness/confinement proof Q4
+> supplies** — a projection may be lent past the consumer seam (return, store,
+> `Owned` position) **only when its root is proved `Confined` OR uniquely owned
+> across the escape**, so no sibling strand can COW/free it concurrently. This
+> couples the promoted mechanism to the **static-uniqueness / reuse-token
+> machinery** of §6 (the same `unique_static` / `result_unique` chain,
+> `/design`(typecheck) §7.2) and to the confinement axis of §5 — it is an
+> increment-II mechanism, staged in §14 (change-set II-B3, deferred rider), not a
+> standalone read-path refinement. Until it lands, the `provenance` / `ProjectionOf`
+> site facts remain sound and emitted; the backend consumes the strict
+> consumer-driven subset. The design paragraphs below are the increment-II target,
+> now gated as stated.
 
 Consuming the typecheck proposal's §4.2 rule 4 + FIXME 0467's result mode:
 
@@ -694,6 +723,32 @@ joining parent **after** the join (the arm's result, which escapes the arm by co
 is heap-allocated as today). Detail deferred to the increment-II design pass with F-series
 data.
 
+> **S103 READINESS VERDICT — DEFER (deferred rider, not pulled back before the B3 seam).**
+> Sprint scope (`sprints/SPRINT.md` Block A4/B4) asked only whether the (a)-allocator
+> co-design is implementation-ready enough to optionally pull the region arena back before the
+> II close-short seam. **Verdict: it is not — DEFER to a follow-on.** Grounds, in order:
+> 1. **Serves no gate.** The `/arch` Phase-2 review confirmed (CLEAN) that the arena delivers
+>    none of I-G1–G7 or II-G1–G4 — II-G1←R5 (§7), II-G2/G3/G4←reuse tokens (§6); the only
+>    stack/region gate (I-G7) is already delivered by increment-I Cranelift stack slots (§4.1),
+>    not the arena. Pulling it back buys no acceptance movement this sprint.
+> 2. **The (a)-allocator axis is unresolved.** The arena's incremental reach over §4.1's stack
+>    slots is precisely (i) *dynamically-sized* `NoEscape` allocations and (ii) *extern-reached*
+>    allocations — and (ii) is gated on the thread-region handoff the S99 (a)/(b) allocator
+>    co-design must author (§4.1 gate 4: `alloc_with_rc` bodies cannot be redirected without an
+>    allocator seam). That seam is not designed; without it the arena's marginal class over
+>    stack slots is only (i), which no current F-fixture exercises. Building the arena ahead of
+>    the allocator seam would be a speculative interim (Principle 8).
+> 3. **No half-built interface is stranded by deferring.** The three §4.4 pins (same escape
+>    facts, shared immortal-header discipline, `ParBind`-arm lifetime) mean the arena composes
+>    additively onto the shipped stack-slot arm on the *same* boundary inputs whenever the
+>    allocator axis lands — deferral strands nothing (the `/arch` review concurs).
+>
+> **Trigger to pull back:** the (a)-allocator co-design reaching implementation-ready **and** an
+> F-series fixture whose hot allocation is `NoEscape` + dynamically-sized (or extern-reached),
+> so the arena delivers a *measured* win the stack-slot arm cannot. Until both hold, the arena
+> is a follow-on. The close-short seam therefore sits after II-B2 (reuse tokens + R5), exactly
+> as `sprints/SPRINT.md` §Sizing names it.
+
 ---
 
 ## §5. Non-atomic RC for `Confined` (spine §10 item 9)
@@ -913,6 +968,58 @@ failure mode to fence (routed to `/qa`): a reuse fired on a non-unique value is 
 corruption of the S98-bug-#2 family — the differential + ASan lanes and a
 starved-inc-style regression fence on the reuse emission are mandatory (spine §9).
 
+### 6.4 The static-uniqueness proof seam — check-elision, never a second mechanism (S103)
+
+The dynamic rc==1 token (§6.1) is the **general** discriminator (spine R4); the static proof
+(`/design`(typecheck) §7.2) is a **strict elision layer over it**, never a replacement. The
+seam is one advisory site fact and one advisory summary bit, both `#[serde(default)]`-absent
+⇒ Decision-24, so a missing/false proof degrades to the dynamic token with zero unsoundness
+(the §2.2 else-arm discipline applied to the write path):
+
+- **`unique_static: Option<bool>` on the consuming-use node** (spine §3.3 site fact; typecheck
+  §7.2 clauses 1–2 — single-syntactic-use, fresh-or-unique-derived, rc-invisible provenance).
+  Consumed **only** at reuse/COW sites the backend is already emitting a token for:
+  `Some(true)` ⇒ **emit the reuse/in-place body with the rc==1 probe elided** (the value is
+  proven unique — the branch is dead, take the `reuse_block`/in-place arm unconditionally);
+  `Some(false) | None` ⇒ emit the dynamic token verbatim (§6.1). The elision removes a
+  load+cmp+brif, never the reuse *body* — mechanism unchanged, one branch fewer.
+- **`result_unique: bool` on the callee summary** (spine §3.3 advisory half; typecheck §7.2
+  clause 3 — the callee's returned value is fresh-inside or an in-place-reused unique param).
+  This is what makes the proof **chain across a call boundary**: a `Fresh`/`ProjectionOf`
+  result whose summary carries `result_unique = true` lets the *caller* mint `unique_static =
+  Some(true)` on its use of the call result, so `(map inc (map dec v))` fuses to two in-place
+  passes (the spine's chaining metric, §10 item 5(b)). The backend **reads** `result_unique`
+  off the resolved callee summary at the static call site; it derives no uniqueness of its own
+  (the narrowness counterweight — Principle 2). Absent/false ⇒ the caller falls to the dynamic
+  token, sound.
+
+**Binding property (Principle 8):** the proof only *elides checks and chains them*; it never
+introduces a uniqueness-specialized second body (mode-in-mono-key stays out per typecheck
+§7.3, a measurement question deferred with data). So the reuse mechanism has exactly one
+emission shape — the §6.1 token — with the check optionally elided; there is no dual-body
+surface for II to migrate. **The proof-elided arm is UAF-critical**: eliding the rc==1 probe
+on a value the proof got wrong is the §6.3 heap-corruption class one layer worse (no dynamic
+backstop), so the L-C3 reuse-corruption fence (below) MUST cover a proof-elided reuse, not
+only a dynamic-token reuse.
+
+### 6.5 Reuse counters + acceptance mapping (II-G2/G3/G4; H2 family goes live)
+
+The H2 `[RC_STATS]` `reuse_hit` / `reuse_miss` fields (§13.2.1) are **placeholder-`0` in
+increment I** (printed honest, family present); **increment II makes them live**. Emission:
+at every reuse/COW site, a codegen-time push — `tally_reuse_hit` when the in-place/reuse arm
+is emitted-and-provably-taken (static proof) or dynamically-taken (the rc==1 branch is
+emitted, counted at run per the existing runtime-tally split of §13.2.1's honesty note), and
+`tally_reuse_miss` on the copy arm. Because reuse permission is **dynamic** (rc==1 per call),
+the hit/miss split for a token site is a **runtime** tally (like `rc_inc`/`rc_dec`), not a
+codegen-time count — the static-proof-elided sites are the codegen-time-certain hits. `/qa`'s
+II-G2 reads the hit-rate off this family. Acceptance mapping (qa plan §2.3):
+
+| Gate | What reuse tokens deliver | Backend seam graded |
+|---|---|---|
+| **II-G2** (reuse hit-rate ≥50% on F4) | the copy-once-then-in-place property (§6.2) drives the guess-grid write chain to a ≫50% hit-rate after the first COW | `reuse_hit`/`reuse_miss` on the `compile_vec_set/push_cow` sites; the count is the attribution prerequisite for any F4 wall claim |
+| **II-G3** (F4-hard median wall ≤ 2× serial) | the eliminated per-write alloc+free+element-inc traffic on the hot guess chain | the widened static gate (§6.2) + proof chaining (§6.4) reducing the copy population |
+| **II-G4** (F2 two-ctor honesty) | partial — reuse on chained copies of the shared grid; **not** silently graded as R5-covered (F2's two-ctor `Cell` is not flattened — §7.1), reported honestly per the qa-plan §5 limit 1 | reuse-token movement on F2's copy chain, reported as rc_inc drop + wall, distinct from R5's F2v collapse |
+
 ---
 
 ## §7. R5 value-representation flattening (spine §10 item 11 / §6.3 — increment II, designed now)
@@ -930,16 +1037,50 @@ transitively `Value`/scalar) **∧ within the size bound (§7.2) ∧ single-cons
 multi-ctor ADT needs a tag word alongside the payload — excluded from the first landing;
 `Mixed`-style tag-in-value is a designed extension, not a day-one case).
 
-**The single-source obligation (FIXME 0468, filed with this doc, `target: /arch`).** Two
+**The single-source obligation — RESOLVED (FIXME 0468, spine §6.3 ruling 2026-07-03).** Two
 consumers must agree on this predicate or the system is unsound: typecheck's `Copy` mode
 classifier (typecheck §2.2 — a `Copy`-moded param whose representation is *not* flattened
-would be pointer-copied without an inc) and the backend's layout decision (`classify`).
-Both are deterministic pure functions over the type defs, but two independently-maintained
-implementations of a soundness-coupled predicate is exactly the Principle-7 mirror-defect
-class. FIXME 0468 asks `/arch` to place one predicate where both crates consume it (natural
-candidate: `cranelisp-types` beside `HeapHeader`, landing with the R5-increment carrier
-change-set; until then the spine's rule stands — the `Copy` point is inhabited by scalars
-only, and `classify` has no `Value` arm).
+would be pointer-copied without an inc — a missing-inc UAF) and the backend's layout decision
+(`classify`). Both are deterministic pure functions over the type defs, but two
+independently-maintained implementations of a soundness-**coupled** predicate is exactly the
+Principle-7 mirror-defect class. The spine ruled it into `cranelisp-types` beside `HeapHeader`
+(`src/heap.rs`) as a **single `/arch`-authored carrier both crates delegate to** — no backend
+or typecheck copy:
+
+```rust
+// cranelisp-types/src/heap.rs — /arch-authored, S103 B3 change-set (NOT this crate's to write)
+pub const VALUE_LAYOUT_MAX_WORDS: usize = 1;               // one word, first landing (§7.2)
+pub fn value_layout(ty: &ConcreteType, type_defs: &…) -> Option<ValueLayout>;
+//   Some(ValueLayout{ words, .. }) ⇔ Copy-eligible ∧ ≤ VALUE_LAYOUT_MAX_WORDS ∧ single-ctor
+//   None                          ⇔ heap-represented (today's behaviour)
+```
+
+**Backend consumption (this crate's obligation).** `HeapCategory::classify`
+(`heap.rs`) gains its fourth arm by **delegating to `value_layout`** — `Some(_) ⇒
+HeapCategory::Value`, `None ⇒` today's `Owned`/`Mixed`/`NeverHeap` decision verbatim. The
+backend derives **no** flattening predicate of its own (the narrowness counterweight,
+Principle 2); it reads the carrier's verdict exactly as typecheck's mode classifier does.
+This is the one genuinely-new cross-crate edge of increment II (`sprints/SPRINT.md` Phase-2
+needs-list) and it lands **in the B3 implementing change-set, never ahead of the R5
+mechanism** (Principle 8 speculative-interface discipline), carrying the
+`public-api.txt`/`interfaces.md`/BC §7 + `CACHE_SCHEMA_VERSION` 12→13 cascade. Until the
+carrier lands, the spine's rule stands: the `Copy` point is scalars-only and `classify` has
+no `Value` arm.
+
+**The `HeapCategory::Value` codegen arm (the deterministic per-site behaviour).** A site whose
+concrete type classifies `Value`:
+- **construction** (`(Cell 5)`): no `alloc_with_rc`, no header, no field-inc — the constructor
+  is the identity/scalar move of the single flattened field into the value word (the
+  single-ctor constraint is what makes construction a bare move; a tag word is a multi-ctor
+  extension, §7.2);
+- **field read / match** (`(cell-value c)`): a bare-word move (no dereference, no element inc)
+  — the same shape a `NeverHeap` scalar field takes today;
+- **RC treatment = none**: no inc at consuming positions, no dec at scope exit, no
+  `borrowed_vars` entry, never a reuse-token drop site (§6 keys on `alloc_size`; a `Value` has
+  no heap allocation to reuse) — the §7.6 checklist confirms increment I already carries `Copy`
+  as this no-op row;
+- **inside a heap ADT/Vec**: a `Value`-typed field/element is skipped by drop glue exactly as
+  a `NeverHeap` field is (§7.2 Mixed-guard check).
 
 ### 7.2 The ABI/size-bound ruling — one word first
 
@@ -978,6 +1119,23 @@ is emitted with null elem fns and behaves byte-for-byte like `Vec Int`: `vec-set
 copy loop does no incs, `vec_drop` walks nothing. **Zero new runtime code** for the
 one-word bound; the entire change is classification (§7.1) driving the existing null-elem-fn
 emission plus constructor/match lowering of the wrapper type to bare-word moves.
+
+**The F2v single-ctor witness path (II-G1).** The qa plan's F2v fixture
+(`tests/plan/s100-ownership-verification.md` §1.1) is a single-constructor variant of F2 —
+`(deftype Cell (Cell [:Int value]))` replacing the two-ctor `(Given …)/(Solved …)`,
+everything else identical — authored precisely because R5's **first landing is one-word,
+single-constructor** and does NOT cover the S99 two-ctor `Cell`. Its end-to-end path through
+this design: `value_layout((Cell Int))` returns `Some(1-word)` ⇒ `classify` yields
+`HeapCategory::Value` ⇒ `(Cell v)` construction is a bare-word move (§7.1 arm), the 81-slot
+`Vec Cell` is emitted with **null elem fns** (§7.3) so its copy is a `memcpy` with zero
+per-element incs, and `(cell-value c)` reads a bare word. The B2 `rc_inc` term (169,902,081 —
+81 incs/copy × 2,097,152 copies) collapses to **near-zero, independent of uniqueness** — no
+reuse token needed, because there is no heap allocation to reuse. This is why **R5 alone
+delivers II-G1** (rc_inc < 1% of B2 + F2v N-worker wall < F2v serial — the first
+parallel-must-pay gate): the copy is now a flat `memcpy` of an all-value Vec, so the parallel
+strands no longer contend on atomic element RC. `/qa` grades F2v; the backend seam is the
+`value_layout`→`classify`→null-elem-fn chain, with the differential oracle
+(`CRANELISP_NO_OWNERSHIP`) restoring the heap-`Cell` + 81-inc copy byte-identically off.
 
 ### 7.4 `.o`-cache and `--link` parity
 
@@ -1207,6 +1365,52 @@ byte-identity (the consuming export is never edited, so even the *Rust* side is
 byte-identical off). `ring2-rc.md` §3.3's audit table gains a "borrowed sibling?" column at
 the landing change-set — the audit remains the single registry of extern RC behaviour.
 
+### 9.4 The `neq-string` fact-entry ruling (FIXME 0510) — RULING: register it as a `ring1` `DefKind::Primitive` entry
+
+The §3.1(a) hand-declared primitive fact table is the analysis' ground truth at the leaves;
+it can only attach to a symbol that has a `DefKind::Primitive` `ModuleEntry` for pass5 to
+read via `ModuleEntry::mode_summary()`. FIXME 0510 (`/dev`(primitives), S102) found the gap:
+`neq-string` — the `Eq.!=` counterpart of `str-eq`, two heap `String` args, verified consuming
+(`ring2-rc.md` §3.3 row, FIXME 0504) — is **shim-only**: `extern_shims()` harvests its fn ptr
+for GOT population, it is reached exclusively through the `Eq.!=` trait-dispatch path
+(`traits/dispatch.rs:177`, `("Eq","!=","String") → "neq-string"`), and it is registered in
+**no** entry source (neither `ring0/1/3_primitives()` nor the vec-query family). So pass5's
+`Apply` classification of `(!= s1 s2)` chain-follows to a missing entry ⇒ the Decision-24
+`Owned` default ⇒ `s1`/`s2` widen to `Owned` — **asymmetric** with `(== s1 s2)`, whose
+`str-eq` IS a `ring1` entry carrying the declared `Borrowed` facts. Precision loss only
+(monotone-sound), not a correctness defect.
+
+**Ruling: option (a) — register `neq-string` as a real `ring1` `DefKind::Primitive` entry,
+symmetric with `str-eq`.** Grounds:
+
+- **Principle 7 (mirror-defect class).** `==`/`!=` over `String` are one `Eq`-family pair with
+  identical RC behaviour (both only-read, both `rc::consume_shallow` both args); a table where
+  one path is precise and its twin conservatively widens is exactly the recurring-mirror
+  defect — the two must carry the same declared facts.
+- **The fix is a pure table registration — zero `ownership_facts` edit.** The classifier
+  already encodes the correct `Borrowed` facts for `neq-string`
+  (`ownership_facts::declared_mode_summary`, unit-witnessed by
+  `neq_string_transcribes_the_0504_borrowed_row`): the moment the entry exists, pass5's
+  chain-follow finds it and attaches the facts **by construction**, no new classifier code.
+- **The scalar `neq-*` siblings stay entry-less — correct.** `neq-i64`/`neq-f64`/`neq-bool`
+  are also shim-only trait-dispatch targets, but their args are **scalar** (`Copy`, never
+  inc'd), so their Decision-24 default costs nothing — no fact entry is owed. The gap bites
+  **only** the heap-arg member, `neq-string`.
+
+**Implementation seam (the coordination contract).** The registration lives in
+**`cranelisp-primitives`** (`ring1_primitives()` / `insert_primitive_entry`), not this crate —
+`/dev`(primitives) lands it, `/design`(backend) owns the *decision* and the `ring2-rc.md` §3.3
+audit-row update (the entry now exists, so the row cross-references its `ring1` home). Ride-alongs
+in the same change-set: (i) `neq-string` becomes **name-resolvable** (like `str-eq`), a
+deliberate golden-corpus perturbation handled by the **scoped re-baseline** discipline (§13.1);
+(ii) the `extern_shims_harvest_covers_full_inventory` test's "no `PRIMITIVES_TABLE` entry"
+invariant for `neq-string` is updated (it moves from the harvest-only set to the registered
+set); `neq-i64/f64/bool` + `sconcat` stay in the harvest-only set. **Seam with `/design`(typecheck):
+none owed** — pass5 reads the new entry's `mode_summary()` through the *unchanged* chain-follow;
+this is the whole point of routing declared facts through `DefKind::Primitive` entries. The
+§13.4 typecheck-side coverage claim (`design/typecheck/ownership-inference.md`) is **restored,
+not amended** — `neq-string` is once again a covered `DefKind::Primitive` leaf.
+
 ---
 
 ## §10. What ships when — and what must not ship
@@ -1365,12 +1569,22 @@ design.
 
 ### 13.1 Golden-CLIF capture — the backend half (Block B Wave 1; L-B1 substrate)
 
-**Mechanism.** Capture = `CRANELISP_CODEGEN_DUMP=*` on a **cold-cache `--run`** of each
-corpus module (cache hits do not re-codegen and dump nothing — cold cache is mandatory
-for full coverage; fresh tmpdir per capture run). The dump machinery exists
+**Mechanism.** Capture = `CRANELISP_CODEGEN_DUMP=*` on a **`--no-cache --run`** of each
+corpus module (fresh tmpdir per capture run). The dump machinery exists
 (`lib.rs:203–253`: filter grammar, `; === CLIF <module>::<symbol> ===` framing,
 `write_clif_dump`). `/qa`'s script harvests stderr; goldens live in
 `tests/fixtures/clif_baseline/` per the qa plan.
+
+> **Correction (FIXME 0506, `/sprint`, post-Wave-3R).** The earlier phrasing here — "cache
+> hits do not re-codegen and dump nothing … cold cache is mandatory" — was **stale/wrong**:
+> a warm-cache single-file `--run` still compiles and dumps **2×** per symbol (the second
+> frame is the nice-worker `.o` **cache-write** emission pass —
+> `src/session_v4/nice_worker.rs::emit_object` → `compile_to_module::<ObjectModule>`; `dump_this`
+> at `lib.rs:989` ignores the worker's `capture_clif: false`). Wave 3R therefore landed the
+> harness on **`--no-cache`** (`b82ebf1`): exactly one frame per symbol, the frame-dedup logic
+> deleted, and a **duplicate frame is now a hard error** (not silently deduped). See
+> normalization-contract item 5 below. (Whether the warm-cache 2× recompile is *intended* is an
+> `/int` classification question — flag only, not this doc's.)
 
 **Hook H1 — dump frame atomicity (the one backend change in the capture change-set).**
 `write_clif_dump` issues multiple writes per frame (header, body, footer) without holding
@@ -1399,11 +1613,31 @@ arm pre-emptively; harness-side sorting (below) handles frame *order*.
    `bake_descriptor_blob`) and platform-effect shapes (layout-hash bakes). If a future
    entry legitimately needs one, the masking rule is designed then, not pre-emptively
    (Principle 6).
+5. **One frame per symbol — a duplicate frame is a HARD ERROR, never deduped** (FIXME 0506,
+   Wave 3R as-built). Capture runs `--no-cache`, so a symbol codegens exactly once and dumps
+   exactly one frame; the earlier first-occurrence dedup is deleted. A duplicate frame at
+   capture means either cache leaked in (a `--no-cache` regression) or a genuine
+   double-codegen — both are findings routed to `/backend`, not masked. (The pre-Wave-3R
+   dedup existed only because warm-cache capture emitted the second `.o`-pass frame; on
+   `--no-cache` the object pass does not run for the corpus's `--run` capture.)
+6. **Scope pin: the oracle sees the JIT-emission pass ONLY.** L-B1 grades the JIT `--run`
+   codegen; the `.o` **object-pass** emission (its funcref-declaration order is
+   scheduler-timing-dependent, so its bytes are non-reproducible run-to-run — benign now,
+   relocations resolve by name + cache keys on source hashes; a Phase-H reproducible-builds
+   concern with a cheap eventual fix = sorted funcref declaration in `compile_to_module`) is
+   **permanently outside this oracle** — the `jit-object-convergence.md` class is guarded by
+   the mode-equivalence lanes instead. **Consequence for future waves:** if an ownership
+   mechanism is ever module-type-gated, its object-side delta is invisible to L-B1 and must be
+   covered by a mode-equivalence lane. Do not reason "the deduped frames are redundant
+   recompiles" — there are no deduped frames post-Wave-3R.
 
 **Capture-configuration pins (recorded in the corpus MANIFEST):** all emission-affecting
 env unset — `CRANELISP_NO_LENIENT`, `CRANELISP_NONATOMIC_RC`, `CRANELISP_CAPTURE_BORROW`,
 `CRANELISP_NO_OWNERSHIP` (pre-mechanism both polarities are byte-identical; the L-B1 lane
-thereafter compares HEAD **toggle-off** against this golden). Lenient-spark emission is
+thereafter compares HEAD **toggle-off** against this golden), **`CRANELISP_RC_DEC_CHECK`**
+(backend `heap.rs:270`, guarded-dec emission — emission-affecting) and
+**`CRANELISP_NO_IO_SCHEDULE`** (`src/process_form.rs:377`, pre-typecheck bind-chain transform
+shaping ParBind CLIF — emission-affecting). Lenient-spark emission is
 deliberately part of the golden surface (the corpus's ParBind/spark shapes pin it).
 Runtime-only knobs (`CRANELISP_SPARK_BUDGET`, `CRANELISP_SATURATION_GATE`) do not affect
 CLIF and are unpinned.
@@ -1413,7 +1647,11 @@ must be byte-identical before the golden commits. A mismatch is an H1-class find
 routed to `/backend` — never worked around by masking.
 
 > **B0-be capture verdict (S102 Wave 3, goldens at commit `05818e9`): Hook H1 is a
-> NO-OP — not implemented.** Zero mid-frame interleaving across 25 raw capture runs
+> NO-OP — not implemented.** *(Historical Wave-3 record. FIXME-0506 correction: the
+> "duplicate frames come from recompilation passes re-deriving the JIT symbol set" reading
+> below is WRONG — empirically they are the nice-worker `.o` **cache-write** emission pass;
+> Wave 3R moved capture to `--no-cache`, deleting dedup entirely (a duplicate is now a hard
+> error, item 5 above). Read this box as the pre-3R state.)* Zero mid-frame interleaving across 25 raw capture runs
 > (every `; === CLIF` start/end pair balanced, strictly alternating); the multi-write
 > frames never race in practice — only one dump-eligible module compiles at a time in
 > this corpus. What the (repaired) selftest DID find was content variance, not framing:
@@ -1848,17 +2086,157 @@ per-visit phrasing:
 
 ---
 
+## §14. Increment-II implementation staging (S103 Phase 3)
+
+Authored by `/design`(backend, narrow) against `sprints/SPRINT.md` S103 Block B (the write
+path). Increment I is landed (§13 as-built); increment II ships the **two designed-ready
+mechanisms — reuse tokens (§6) + R5 value flattening (§7) — resting on the settled increment-I
+read-path spine and the S102-landed carriers**. Governing constraints inherited: the
+close-short seam sits **after II-B2** (`sprints/SPRINT.md` §Sizing — the two mechanisms deliver
+II-G1–G4 on their own; region arena defers, §4.4 verdict); every change-set obeys the §2.2
+else-arm discipline (monotone soundness — any suffix carries to S104 unsoundly-free); the
+differential oracle (`CRANELISP_NO_OWNERSHIP`) is **byte-identical off throughout**. `/qa`'s
+concurrent plan (`tests/plan/s103-test-plan.md`) owns the F2v fixture, the II-G measurement
+lanes, and the L-C3 reuse-corruption fence; this section owns the backend half — the ladder,
+the carrier-consumption seam, the scenario matrices, and the acceptance mapping.
+
+### 14.1 What gates B2/B3 (the real dependency)
+
+Per the Phase-2 correction, the Block-A FIXMEs (0526/0521/0515) do **not** gate the mechanisms
+— they consume the S102 carriers + the **B1 typecheck-drain foundation**, not the A-surfaces.
+The genuine precondition is **B1** (`sprints/SPRINT.md`): typecheck's write-path queries —
+the **static-uniqueness proof subset** (`result_unique` chains + `unique_static` site fact,
+`/design`(typecheck) §7.2) and the general **dynamic rc==1 discriminator** carried to the
+backend. Reuse tokens (§6) consume the dynamic discriminator + the proof-elision facts; R5
+(§7) consumes the `/arch`-authored `value_layout` carrier. Neither reads a Block-A surface.
+
+### 14.2 The change-set ladder (ordered; each independently landable)
+
+`[oracle]` = the differential-oracle duty (`CRANELISP_NO_OWNERSHIP` byte-identical off; L-B1
+golden-diff expectation per change-set); `[gate]` = the II-G acceptance gate(s) it makes
+gradeable.
+
+| # | Change-set | Contents | Depends on | [oracle] | [gate] |
+|---|---|---|---|---|---|
+| **II-B1** | R5 carrier consumption + `HeapCategory::Value` arm | Consume the `/arch`-authored `cranelisp-types` carrier (`value_layout(ty) -> Option<ValueLayout>` + `VALUE_LAYOUT_MAX_WORDS=1`, §7.1); add the `HeapCategory::Value` arm by delegation (§7.1); construction/field-read/match lowering to bare-word moves; Vec-of-values null-elem-fn path (§7.3); trace descriptor arm (§7.5); `CACHE_SCHEMA_VERSION` **12→13**; `public-api.txt`/`interfaces.md`/BC §7 cascade **as consumer** (the carrier is `/arch`'s to author). Rides `0498` types marshal-drift guard (Block C2). | B1; the `/arch` `value_layout` carrier change-set (lands **with** this, never ahead — Principle 8) | emission-affecting where a type flattens: **scoped re-baseline** (F2v-shape `Cell` alloc→value-word; heap-`Cell` restored byte-identical off) | **II-G1** (F2v rc_inc < 1% of B2; F2v N-worker < serial) |
+| **II-B2** | Reuse tokens / drop-guided reuse | §6.1 token mechanism (function-local SSA maybe-null, drop-site→alloc-site, **never on the ABI** — spine §3.5, confirmed structurally in §6/§14.4); §6.2 per-call entry-check placement (copy-once-then-in-place); §6.4 static-proof check-elision + chaining (consume `unique_static` + `result_unique`); §6.5 `reuse_hit`/`reuse_miss` counters go live (H2 family, §13.2.1). The pairing analysis is intra-function, greedy, conservative (no pair ⇒ today's code). | B1 (dynamic rc==1 discriminator + `/design`(typecheck) §7.2 static proof); `0495` backend `tests.rs` split (Block C2) for scenario-test homes | emission-affecting: scoped re-baseline (reuse/in-place branches on the F4 guess chain + proof-elided sites) | **II-G2** (reuse hit-rate ≥50% on F4), **II-G3** (F4-hard median ≤ 2× serial), **II-G4** (F2 two-ctor honesty, reported not R5-graded) |
+| — | **CLOSE-SHORT SEAM** (`sprints/SPRINT.md` §Sizing) — II-B1+II-B2 deliver II-G1–G4; region arena defers | | | | |
+| **II-B3** | Producer-side escaping-projection elision (§3.3 promoted) — **DEFERRED RIDER** | The §3.3 producer-side model (return-boundary `ProjectionOf` propagation, `Let`-binding `borrowed_vars` join, `compute_last_uses` provenance extension), gated by the Q4 uniqueness/confinement proof (§3.3 re-frame + §6.4). Rides only if II-B2's proof machinery lands with capacity to spare; **not required for any II-G gate** (I-G1 is already 100% on the consumer-driven seam). | II-B2 (the uniqueness/confinement proof) | emission-affecting: scoped re-baseline (elided escaping projections) — behind the moded-summary check, byte-identical off | — (perf-additive; no II-G gate) |
+| — | *(region arena §4.4 — DEFERRED to a follow-on; §4.4 verdict; not on this ladder)* | | | | |
+
+Ordering rationale: II-B1 (R5) and II-B2 (reuse tokens) are **mutually independent in soundness**
+— R5 flattens the copy away, reuse tokens eliminate the alloc/free on the write chain; they
+attack different terms (R5 the F2v/`Cell` copy, reuse the F4 guess-grid mutation) and can land in
+either order or drop independently at a capacity squeeze. II-B1 is listed first because it is the
+cleaner, lower-risk mechanism (pure classification delegation, zero dynamic check) and delivers
+the first parallel-must-pay gate (II-G1). II-B3 is the §3.3 promotion, explicitly a deferred
+rider past the seam.
+
+### 14.3 Acceptance mapping (how Phase-5 `/dev` + `/qa` verify each)
+
+| Gate | Codegen seam Phase-5 grades | `/qa` lane / guard |
+|---|---|---|
+| **II-G1** | `value_layout`→`HeapCategory::Value`→null-elem-fn chain (§7.1/§7.3); the F2v `Cell` construction/copy path | F2v rc_inc < 1% of B2 **and** F2v N-worker wall < F2v serial (first parallel-must-pay gate); differential oracle restores heap-`Cell`+81-inc copy byte-identical off |
+| **II-G2** | `reuse_hit`/`reuse_miss` runtime tallies at `compile_vec_set/push_cow` (§6.5) | reuse hit-rate ≥ 50% on F4's guess-grid write chain (copy-once-then-in-place, §6.2); counter movement is the attribution prerequisite for any F4 wall claim |
+| **II-G3** | the widened static gate (§6.2) + proof chaining (§6.4) reducing the copy population on F4-hard | F4-hard 11-rep median wall ≤ 2× serial (from B7's 6–15×); distribution median-to-max below toggle-off's |
+| **II-G4** | reuse-token movement on F2's two-ctor copy chain (§6.5) | reported as rc_inc drop + wall ≤ 1.5× serial, **honestly not graded as R5-covered** (F2's two-ctor `Cell` is not flattened — §7.1; qa-plan §5 limit 1) |
+| **II-G5/G6** | = I-G4/I-G5/I-G6 re-run (non-regression) | same bars incl. F2v serial overhead |
+| **byte-identical-off** | every seam's else-arm is the pre-increment-II helper (§2.2); reuse-token pushes + `value_layout` reads are host-side, **no emitted IR** | L-B1 golden diff EMPTY on `CRANELISP_NO_OWNERSHIP` / facts-absent codegen across the corpus |
+| **L-C3 reuse fence** | the reuse emission — **including the proof-elided arm** (§6.4, UAF-critical: no dynamic backstop) | reuse-on-non-unique is heap corruption of the S98-bug-#2 family (differential + ASan + heap-balance on the reuse emission); `/qa` fences a **proof-elided** reuse, not only a dynamic-token reuse |
+
+The **h3 owed-signal** (`h3_rc_stats_reports_per_extern_adaptation_pairs`, the S102 intentional
+RED / inc-II owed-signal guard) flips green with the per-extern-adaptation `RC_STATS`
+sibling-expansion (`sprints/SPRINT.md` B5 / L-D5) — outside the two mechanisms, rides wherever
+§9's sibling attribution lands.
+
+### 14.4 The off-ABI confirmation (spine §3.5, structural)
+
+Restating the binding constraint and confirming it structurally for the two mechanisms:
+**nothing in increment II places a reuse token, a uniqueness bit, or a value-flattening
+decision on the call ABI.**
+- **Reuse tokens** are function-local SSA `Value`s threaded drop-site→alloc-site, both in-frame
+  by construction (§6.1) — never a param, return, or field. The `ModeSummary` type does not
+  gain a token field; the only summary bit II reads is `result_unique` (advisory, spine §3.3),
+  which was **already carried at S102 CS-A** (emitted `false` in I, `true` in II) — **no new
+  carrier**. `unique_static` is an advisory **site fact** (on the `MonoExpr` node, not the
+  ABI). Both are `#[serde(default)]`-absent ⇒ Decision-24.
+- **R5 flattening** changes representation, not the call convention: a one-word `Value` **is**
+  its i64 word, so it passes in registers, sits in Vec slots and ADT fields, and crosses every
+  existing boundary with **zero ABI change** (§7.2). The classification rides the deterministic
+  `value_layout` carrier both crates delegate to — soundness-coupled, single-sourced, schema-gated.
+
+Therefore II adds queries and mechanisms without reshaping I's contract (spine §3.5 / §4.3):
+the `ModeSummary` type never migrates; only emitted precision grows. This is the Principle-8
+"no interim to tear out" property the `/arch` Phase-2 review pinned.
+
+### 14.5 Scenario matrices (Principle 23 / `feedback_dev_strategy_derived_unit_scenarios`)
+
+`/dev` derives unit scenarios at submodule × scenario-class grain, through the facade where
+expressible; `/qa` audits coverage against these matrices. New for increment II (the increment-I
+matrices §13.5 stand for the read-path seams):
+
+- **`heap.rs::classify` + `HeapCategory::Value` arm (II-B1):** {`value_layout` = `Some(1-word)`,
+  `None`, toggle-off} × site {ADT construction, field read, match bind, Vec element, ADT field,
+  drop-glue skip} → {value-word move, heap verbatim}. Negative/else-arm class: `None` /
+  toggle-off emits the identical instruction sequence as pre-R5 (CLIF-text asserted — the L-B1
+  byte-identity half). Edge: a `Value`-typed field inside a heap ADT is drop-glue-skipped exactly
+  as `NeverHeap` (the §7.2 Mixed-guard check).
+- **`vec_codegen.rs` / `heap.rs` reuse tokens (II-B2):** {drop site pairs downstream alloc:
+  yes/no} × {rc==1 dynamic: hit/miss} × {static proof: `unique_static=Some(true)` (check elided),
+  `Some(false)`/`None` (dynamic token), `result_unique`-chained caller-mint} × call-site {static,
+  wrapper, curry} → exact RC balance per cell (allocs−deallocs = 0 over the cell's contract) +
+  {reuse body taken, copy body taken} + counter tally. Negative: no downstream-alloc pair ⇒
+  today's code, byte-identical. **UAF-critical row:** a proof-elided reuse on a value the proof
+  got wrong (the L-C3 fence's target — asserted value-correct + heap-balanced under
+  `MALLOC_PERTURB_`).
+- **`compute_last_uses` provenance extension + escaping-projection (II-B3, deferred rider):** the
+  §13.5 provenance matrix extended with the escape axis {projection escapes via return / store /
+  `Owned` position} × {root proved `Confined`/`unique_static` vs not} → {producer-side elide vs
+  Decision-24 materialize}. Only exercised if II-B3 lands.
+
+Every matrix's negative/else-arm class doubles as the unit-tier half of the L-B1 byte-identity
+obligation. `/qa`'s e2e lanes (F2v witness, II-G measurement, L-C3) sit above these.
+
+### 14.6 Coordination pins (what II consumes; the seam contracts)
+
+- **From `/arch`:** the R5 `value_layout(ty) -> Option<ValueLayout>` + `VALUE_LAYOUT_MAX_WORDS`
+  carrier in `cranelisp-types/src/heap.rs` (§7.1) — the one genuinely-new cross-crate edge of
+  increment II. **Seam contract:** `/arch` authors the carrier; the backend's `classify` and
+  typecheck's mode classifier both **delegate** to it (no local copy — the soundness-coupled
+  single source, spine §6.3). Lands **in the II-B1 change-set, never ahead** (Principle 8),
+  carrying the `CACHE_SCHEMA_VERSION` 12→13 + `public-api.txt`/`interfaces.md`/BC §7 cascade.
+- **From `/design`(typecheck):** (i) the **dynamic rc==1 discriminator** (the general write-path
+  permission check, spine §4.3 / typecheck §7.1(a)) — the backend emits the token; (ii) the
+  **static-uniqueness proof** — `unique_static` site fact + `result_unique` summary bit
+  (typecheck §7.2). **Seam contract:** both are advisory, `#[serde(default)]`-absent ⇒
+  Decision-24; the backend consumes them only at reuse/COW sites it already emits a token for,
+  eliding the dynamic check on `Some(true)` and chaining `result_unique` to mint a caller-side
+  `unique_static` — it derives no uniqueness of its own (narrowness counterweight). No new ABI
+  carrier (both already exist at S102 CS-A).
+- **From `/design`(typecheck), 0510 seam:** the `neq-string` `ring1` `DefKind::Primitive`
+  registration (§9.4) — pass5 reads its `mode_summary()` through the **unchanged** chain-follow;
+  no pass5 change owed. The registration lands in `cranelisp-primitives` (`/dev`), the decision +
+  `ring2-rc.md` §3.3 audit are this doc's.
+
+---
+
 ## Next skills
 
-- `/dev` (backend, narrow) — execute the §13.2 ladder in order: B0-be (H1) with the
-  capture wave; B1-be + B3.0 once the `/arch` types change-set lands; B3.1–B3.5 + B4
-  after the seam, each with its scenario matrix (§13.5) and scoped re-baseline (§13.1).
-- `/qa` — corpus + capture script + goldens per `tests/plan/s102-test-plan.md` §1.5/§4,
-  consuming the §13.1 normalization contract; observe guard flips per their §5 map.
-- `/arch` — author the types change-set (ModeSummary carrier + fact tables +
-  `PrimitiveBody::{Extern, Inline}` + `is_callable_target()` + `CACHE_SCHEMA_VERSION`
-  v11→v12) — B1-be and B2 consume it; approve the B1-be/0482 `public-api.txt` diffs.
-- `/sprint` — wave the ladder per §13.2's dependency column; hold the close-short
-  protocol (I-G5/I-G6 at the seam; 0474/0483 guards stay RED if B3.1 carries).
-- `/design` (int) — the T1 full-cure sizing is Block A's; no backend seam changes
-  needed beyond §8.3 (unchanged).
+- `/dev` (backend, narrow) — execute the §14.2 ladder: **II-B1** (R5 carrier consumption +
+  `HeapCategory::Value` arm) once the `/arch` `value_layout` carrier lands; **II-B2** (reuse
+  tokens) once B1's dynamic-rc==1 + static-proof facts land — each with its §14.5 scenario
+  matrix and scoped re-baseline (§13.1). **II-B3** (§3.3 producer-side promotion) only if
+  capacity survives the seam. Land the §9.4 `neq-string` registration (via `/dev`(primitives))
+  + the §13.1 FIXME-0506 capture-spec corrections (no code) + the Block C2 drains (0495/0498).
+- `/qa` — F2v fixture + the II-G measurement lanes + the L-C3 reuse-corruption fence (incl. the
+  proof-elided arm) per `tests/plan/s103-test-plan.md`; consume the §14.3 acceptance mapping and
+  the §14.5 matrices for the unit-tier audit.
+- `/arch` — author the R5 `value_layout`/`VALUE_LAYOUT_MAX_WORDS` `cranelisp-types` carrier
+  (`CACHE_SCHEMA_VERSION` 12→13); resolve FIXME 0526 (the §3.3 re-frame is authored here — the
+  producer-side model is now the II-B3 deferred-rider target, gated by the Q4 proof) and the
+  0521 conditional; approve the II-B1 `public-api.txt` diff.
+- `/design`(typecheck) — the dynamic rc==1 discriminator + the §7.2 static-uniqueness proof
+  (`unique_static`/`result_unique` emission), the B1 foundation II-B2 rests on; confirm the
+  §14.6 seam contract.
+- `/sprint` — wave the §14.2 ladder; hold the close-short protocol after II-B2 (region arena
+  defers per §4.4; II-B3 is a rider); route the stale-cured 0474/0483 deletions to `/backend`.

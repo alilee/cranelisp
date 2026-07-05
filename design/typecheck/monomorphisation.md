@@ -654,6 +654,52 @@ distinct instance; identical ⇒ reuse" — and the residual-`Var` defer ensures
 - The existing 0344/0349 unit tests in `cranelisp-typecheck`.
 - The Wave-0 e2e canary `mono_tier2_fold_accumulator_not_over_monomorphised`.
 
+### 5.1 Generalization-ordering debt — `resettle_polymorphic_schemes` compensates, does not cure (FIXME 0509)
+
+**Recorded S103 Phase 3 (`/design`), resolving FIXME 0509.** The S102 CS-488c
+fix for 0488(c) (fold-bodied scheme over-generalization) landed
+`resettle_polymorphic_schemes` (`program.rs:1714`), which re-runs the existing
+idempotent generalization eagerly at each form boundary. Review confirmed it
+**sound** (monotone toward more-tied; no over-tie shape exists) and the right
+shape for the S102 guard set — but it **compensates for the true root cause
+rather than curing it**, and that debt is now on the record so a future pass
+knows the seam:
+
+- **Root cause.** The 0344 generalize-writeback (`:919`/`:1129`,
+  `constraints.is_empty()`-keyed — see §2.2, §5) fires at the end of a fn's own
+  body check, **before** its forward-referenced helper's body has tied the
+  shared type vars. The scheme is generalized against a not-yet-tied
+  environment, over-generalizing.
+- **Chosen fix cost — O(forms × defns), worst-case O(n²).** The eager re-settle
+  re-runs `generalize` + `apply_subst` at every form boundary; an
+  all-polymorphic module pays quadratic `generalize`/`apply_subst`. Within the
+  Principle-6 budget for the S102 guard set at observed module sizes, but a
+  named cost, not a free one.
+- **Coverage gap (reverse definition order).** The eager re-settle only helps
+  when the tie-completing helper is body-checked **before** the consuming
+  sibling's form. In **reverse order** (consumer defined first, tie-completing
+  helper last) the scheme still under-ties — the *same* 0488(c) under-tie
+  symptom, merely uncovered. Not a regression, not an over-tie; a known boundary
+  with **no repro today** (all current fixtures define helpers-first).
+- **The principled cures (each O(n), complete for all orderings), for a future
+  promotion decision.** (a) **Topo-order** the per-form generalization so a fn
+  generalizes only after its forward callees' bodies run — the harvested
+  `call_graph_edges` (S101 0470/0472; the same forward edges pass5 walks —
+  ownership-inference §13.3) already give the dependency order a Kahn sort
+  consumes; or (b) **defer the 0344 writeback entirely to finalize**, generalizing
+  once when every body in the cluster has run. Either retires the eager re-settle
+  and its quadratic cost and closes the reverse-order gap.
+
+**Disposition (S103): documentation-sufficient — no promotion this sprint.** The
+eager fix ships as-is; the reverse-order gap is not a write-path blocker (pass5
+reads *converged* schemes at the finalisation seam, after all bodies and all
+re-settles — ownership-inference §3.1). Promotion to the O(n) topo-order/deferred
+cure is a candidate for the sprint that opens `program.rs`'s generalization seam
+for another reason. **`/qa` boundary test requested** (FIXME target `/qa` if not
+picked up inline): a reverse-order under-tie fixture pinning the gap as a *tested
+boundary* — a known limitation with a red-or-xfail guard — rather than a latent
+surprise a future edit silently widens.
+
 ---
 
 ## 6. Cross-crate impact — the `Polymorphic` variant + cache bump

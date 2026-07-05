@@ -65,3 +65,23 @@ Byte-identical-off holds (the whole seam sits behind the moded summary check).
 The typecheck-side `provenance`/`ProjectionOf` site facts are still sound and
 still emitted — the backend simply consumes a strict subset of them at increment
 I. No `cranelisp-types` or typecheck change is implied by this FIXME.
+
+## §3.3 re-frame AUTHORED (S103 Phase 3, `/design`(backend))
+
+Per the `/arch` Phase-2 direction ruling (direction 3 + gating from direction 1),
+the §3.3 prose re-frame is authored in `design/backend/ownership-codegen.md`:
+
+- The **consumer-driven** elision is recorded as the increment-I **terminal**
+  state (settled, I-G1 100%, no further backend work owed at increment I) — the
+  new S103 RE-FRAME box atop §3.3.
+- The **producer-side / escaping-projection** model **promotes to increment II**,
+  gated by the **Q4 uniqueness/confinement proof**: a projection may be lent past
+  the consumer seam only when its root is proved `Confined` OR uniquely owned
+  across the escape. It is coupled to the reuse-token / static-uniqueness
+  machinery (§6.4) and the confinement axis (§5), and staged as the **II-B3
+  deferred rider** in the new §14.2 ladder (past the close-short seam; serves no
+  II-G gate — I-G1 is already 100% on the consumer-driven seam).
+
+No `cranelisp-types` or typecheck change is implied; the site facts already
+emitted are consumed as a wider subset when II-B3 lands. **Left open for `/arch`
+to close** (target `/arch`) now that the backend content edit is landed.
