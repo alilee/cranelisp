@@ -3091,6 +3091,47 @@ handoff with its own narrowed repro if pursued.
 
 ## Current Entries (as of 2026-05-09, Sprint 66 Phase 5 Wave 1, post-S64 baseline carries forward)
 
+### Sprint 103 Phase-5 Stage-1 increment-II QA-first RED set (/qa, 2026-07-05)
+
+Increment-II (the write path: reuse tokens + R5 flattening + T1 full cure) QA-first
+drafting per `tests/plan/s103-test-plan.md`. All new tests assert the CORRECT
+spec/design behaviour, failing-not-ignored; they flip green as the named mechanism
+lands. Full suite after this batch: **3972 run / 3960 passed / 12 failed / 1
+skipped** (51.9s). The 12 reds = the sole carried intentional RED
+(`h3_rc_stats_reports_per_extern_adaptation_pairs`, unchanged, §1.3 flip criterion)
++ **11 new** QA-first reds below. No pre-existing green test regressed. One ONE-entry
+drafting batch per the S101 §6.1 precedent; carried reds at close get full entries
+and join the root-`CLAUDE.md` intentional count.
+
+| Test (binary::fn) | Mechanism → owner | Flip criterion (RED until) |
+|---|---|---|
+| `ownership_reuse::r5_value_flatten_rc_inc_collapses_vs_two_ctor` | R5 → /backend (B3) | F2v one-word single-ctor payload flattens (by-value copies, null elem fns) so its rc_inc collapses below the two-ctor F2 (backend §7.1). |
+| `ownership_reuse::l_c3_reuse_on_unique_value_reuse_hit_fires` | reuse tokens → /backend (B3) | reuse_hit>0 when a unique vec is mutated in place (rc.rs §H2 placeholder gains a writer, backend §6.1). |
+| `ownership_reuse::reuse_hit_nonzero_when_unique_vec_mutated_in_place` | reuse tokens → /backend | same — the minimal counter-movement smoke. |
+| `ownership_reuse::chaining_map_inc_map_dec_two_in_place_passes` | result_unique chaining + reuse → /backend + /typecheck (B1/B2) | the fused `(mapf inc (mapf dec v))` reuses the inner unique result (reuse_hit>0; typecheck §7.2). |
+| `ownership_reuse::chaining_toggle_off_allocates_intermediate` | reuse tokens → /backend | ownership-ON allocates strictly fewer than analysis-OFF for the chaining pipeline (differential twin). |
+| `ownership_reuse::l_c3_pure_ssa_alias_vec_set_preserves_value_semantics` | **defect discovered at drafting** → /backend | a pure SSA alias `(let [w v] ...)` is not counted as a use ⇒ in-place `vec-set` corrupts the alias (exit 198 vs correct 109); ownership use-counting / COW-eligibility seam, backend §6.3. Retained-alias `(id v)` + direct-reuse shapes COW correctly. |
+| `cache::cache_schema_version_bumped_for_r5_representation_change` | R5 schema bump → /backend (B3) | live `CACHE_SCHEMA_VERSION` (14) advances to ≥15 (Decision 34; R5 is a representation change). |
+| `cache::cache_pre_r5_schema_object_invalidated_wholesale` | R5 schema bump → /backend | a pre-R5-schema (14) dep object is wholesale-invalidated (recompiles) once the live schema bumps to 15 (backend §7.4). |
+| `ownership_fences::fact_row_neq_string_arg_survives_and_balances` | 0510 ring1 `neq-string` → /design(backend)+/dev | `neq-string` resolves (registered as a ring1 primitive per SPRINT.md §0510) — today `undefined variable`; then the declared-fact behavioral guard holds. |
+| `ownership_fences::fact_row_neq_string_both_comparands_survive` | 0510 → /design(backend)+/dev | same — the both-comparands-survive symmetry control. |
+| `repl_redefinition::t1_full_cure_recompiles_stale_callers_stale_section_empty` | T1 full cure → /int (Block C, session-transaction.md §10) | end-of-turn reload recompiles stale callers ⇒ post-turn `(gcall 1)`=102 (new def) AND the `stale:` section is omitted (repl/spec.md §18.1.1). |
+
+**GREEN-at-draft fences authored this batch** (load-bearing when the mechanism lands;
+NOT reds): F2v parallel≡serial + capture-borrow guards + byte-differential
+(`s99_fixtures`); L-C3 legs i/iii/iv/v + R5 soundness-couple negative fence + chaining
+value-correctness + reuse counter-family-present smoke (`ownership_reuse`); the T1
+full-cure over-trigger pin `t1_full_cure_body_only_edit_still_no_report_no_recompile`
++ L-S1 preamble-grid tests (`repl_redefinition` + `repl_introspection`); L-M1 write-path
+value-use × ≥2-instantiation cells (`vec_query_value_use`).
+
+**Coherent-stale pin reconciliation** (NOT reds; flip notes updated in place naming the
+S103 cure acceptance): `redefine_concrete_to_polymorphic_caller_survives_coherent_stale`,
+`redefine_concrete_to_overloaded_caller_survives_coherent_stale`, and the L-U1 unannotated
+siblings — each MUST flip (recompiled value) when
+`t1_full_cure_recompiles_stale_callers_stale_section_empty` flips green; none deleted or
+weakened.
+
 ### Sprint 81 close — failing-not-ignored repros for 7 Phase-6 defects (/qa, 2026-06-13, SHA `48dcea3`)
 
 Sprint 81 close-out authored failing-not-ignored e2e repros for the 7 Phase-6

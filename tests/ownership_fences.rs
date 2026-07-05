@@ -568,6 +568,56 @@ fn fact_row_string_identity_alias_row_var_still_usable() {
     fact_row_string("string-identity", "(str-len (string-identity s))", 5);
 }
 
+// spec: design/typecheck/ownership-inference.md §9.1 — S103 0510 write-path row
+// `neq-string` (the `!=` counterpart of `str-eq`; both params only-read, Fresh
+// Bool result). Extends the L-D3e per-declared-fact-row behavioral guards with
+// the row FIXME 0510 registers as a ring1 primitive so it can carry declared
+// facts (SPRINT.md §0510 ruled option (a)). RED-until-the-row-exists (probed
+// 2026-07-05): `neq-string` is shim-only today (`neq-string` export exists in
+// cranelisp-primitives but is NOT a resolvable `PrimitiveDef` entry) — the call
+// fails typecheck with `undefined variable: neq-string`. When 0510 registers it
+// as a ring1 primitive, the symbol resolves AND this behavioral guard asserts
+// the declared facts are sound: the Var arg SURVIVES the call, is USABLE after
+// (str-len), and the heap balances. A row that then mis-declares (says
+// only-read, actually retains/frees a comparand) fails this test rather than
+// corrupting silently. `s` = "Hello"; `(neq-string s "world")` is true ⇒ 1 per
+// iteration (per_iter 1 + str-len 5 = 6).
+#[test]
+fn fact_row_neq_string_arg_survives_and_balances() {
+    fact_row_string("neq-string", "(if (neq-string s \"world\") 1 0)", 1);
+}
+
+// spec: design/typecheck/ownership-inference.md §9.1 — 0510 symmetry control:
+// `neq-string` must leave BOTH string comparands usable, mirroring the
+// `fact_row_str_eq` row (uniqueness is about the result, not the comparands —
+// design §14.1 watch-item). Here the SECOND comparand is also a live var `t`
+// re-read after the call. RED-until-0510 (undefined variable today); when the
+// row lands, fails if a declared fact wrongly consumes either comparand.
+#[test]
+fn fact_row_neq_string_both_comparands_survive() {
+    let out = run_program(
+        "(import [primitives [*]])\n\
+         (defn spin [:Int n :Int acc :String s :String t]\n\
+         \x20 (if (eq-i64 n 0) acc\n\
+         \x20   (spin (sub-i64 n 1)\n\
+         \x20     (add-i64 acc (add-i64 (if (neq-string s t) 1 0)\n\
+         \x20                           (add-i64 (str-len s) (str-len t)))) s t)))\n\
+         (defn main [] (Pure (spin 200 0 \"Hello\" \"world\")))\n",
+    );
+    // per iter: neq ⇒ 1; str-len "Hello" 5 + str-len "world" 5 = 10; total 11.
+    assert_exit_value(out, 200 * 11);
+    assert_iteration_independent_imbalance(
+        "(import [primitives [*]])\n\
+         (defn spin [:Int n :Int acc :String s :String t]\n\
+         \x20 (if (eq-i64 n 0) acc\n\
+         \x20   (spin (sub-i64 n 1)\n\
+         \x20     (add-i64 acc (add-i64 (if (neq-string s t) 1 0)\n\
+         \x20                           (add-i64 (str-len s) (str-len t)))) s t)))\n\
+         (defn main [] (Pure (spin {N} 0 \"Hello\" \"world\")))\n",
+        "neq-string both-comparands",
+    );
+}
+
 // spec: design/typecheck/ownership-inference.md §9.3 — rows `vec-len` (extern
 // leaf, Borrowed-analysis) and `vec-get` (inline projection vocabulary:
 // params [Borrowed], result ProjectionOf(0)).

@@ -238,3 +238,107 @@ fn s99_f3_inverted_search_parallel_equals_serial() {
 fn s99_f4_sudoku_parallel_equals_serial() {
     assert_parallel_equals_serial("f4.cl", include_str!("fixtures/s99/f4_sudoku.cl"));
 }
+
+// =============================================================================
+// S103 increment-II — the F2v single-ctor witness fixture (qa plan
+// `tests/plan/s103-test-plan.md` §1.1, gate II-G1). F2v is the honest R5
+// witness: one-word single-constructor `(Cell [:Int value])`, the shape R5's
+// first landing (backend §7.1/§7.2) genuinely flattens. The *timing*/rc_inc
+// gate itself is a perf lane (`ig_gates.py`, §2); the durable in-suite
+// correctness guard is the same parallel≡serial invariant the F1–F4 rows carry
+// — GREEN at draft (holds off-mechanism, because the code is pure) and
+// LOAD-BEARING through R5: a flattening that corrupts the by-value copy path
+// diverges the parallel and serial checksums here.
+// =============================================================================
+
+// spec: design/backend/lenient-eval.md §2.1 — the sparkability algorithm's
+// speculative-parallel result MUST equal the serial result on the F2v
+// single-ctor reshaped workload (parallel ≡ serial). GREEN at draft.
+#[test]
+fn s99_f2v_single_ctor_parallel_equals_serial() {
+    assert_parallel_equals_serial(
+        "f2v.cl",
+        include_str!("fixtures/s99/f2v_single_ctor.cl"),
+    );
+}
+
+// spec: design/backend/ring2-rc.md §5.5.2.6 — the capture-borrow parallel≡serial
+// + no-corruption guard on F2v (the R5-witness shape). GREEN at draft;
+// load-bearing when the borrow-elision + R5 flattening seams both run.
+#[test]
+fn s99_f2v_single_ctor_capture_borrow_parallel_equals_serial() {
+    assert_borrow_parallel_equals_serial(
+        "f2v.cl",
+        include_str!("fixtures/s99/f2v_single_ctor.cl"),
+    );
+}
+
+// =============================================================================
+// S103 increment-II — L-B2(ii) byte-differential on the write-path fixtures
+// (qa plan §1.2 / §4). `CRANELISP_NO_OWNERSHIP=1` is the permanent correctness
+// oracle: R5 flattening is representation-internal + toggle-gated (toggle-off
+// forces all-heap, byte-identical to pre-R5), so the OBSERVABLE output of F2v
+// must be byte-identical with the toggle ON vs OFF regardless of which
+// mechanism has landed. GREEN at draft (nothing flattens yet) and LOAD-BEARING
+// when R5 lands — a flattening that changes an observable value fails here.
+// Each session pins its polarity EXPLICITLY (env_remove for OFF) so the legs
+// hold under the ambient-polarity L-B2(i) suite run.
+// =============================================================================
+
+/// Run a fixture under an explicit ownership-toggle polarity; return
+/// (exit_code, stdout). Panics (fails) on a SIGNAL — a toggle-induced heap
+/// corruption has no exit code.
+fn run_ownership_polarity(name: &str, src: &str, no_ownership: bool) -> (i32, String) {
+    let mut c = Cranelisp::new().with_prelude(PreludeVariant::None).file(name, src);
+    c = if no_ownership {
+        c.env("CRANELISP_NO_OWNERSHIP", "1")
+    } else {
+        c.env_remove("CRANELISP_NO_OWNERSHIP")
+    };
+    let out = c.run(name).output();
+    let code = out.status.code().unwrap_or_else(|| {
+        panic!("{name} terminated by SIGNAL under ownership polarity no_ownership={no_ownership}; stderr:\n{}", out.stderr)
+    });
+    (code, out.stdout)
+}
+
+/// Assert a fixture's observable output (exit code + stdout) is byte-identical
+/// under both ownership-toggle polarities — the L-B2(ii) differential oracle.
+fn assert_ownership_toggle_byte_identical(name: &str, src: &str) {
+    let (off_code, off_out) = run_ownership_polarity(name, src, false);
+    let (on_code, on_out) = run_ownership_polarity(name, src, true);
+    assert_eq!(
+        off_code, on_code,
+        "{name}: ownership-toggle changed the exit value (off {off_code} != on {on_code}) — \
+         the CRANELISP_NO_OWNERSHIP oracle demands byte-identical observable output \
+         (qa plan §4; s100-ownership-verification.md §0.1)"
+    );
+    assert_eq!(
+        off_out, on_out,
+        "{name}: ownership-toggle changed stdout — off:\n{off_out}\non:\n{on_out}"
+    );
+}
+
+// spec: tests/plan/s100-ownership-verification.md §3.1 — L-B2(ii) byte-
+// differential on F2v: toggle-on ≡ toggle-off observable output for the R5
+// witness. GREEN at draft; discriminating once R5 lands.
+#[test]
+fn s99_f2v_output_byte_identical_under_ownership_toggle() {
+    assert_ownership_toggle_byte_identical(
+        "f2v.cl",
+        include_str!("fixtures/s99/f2v_single_ctor.cl"),
+    );
+}
+
+// spec: tests/plan/s100-ownership-verification.md §3.1 — L-B2(ii) byte-
+// differential on F2 (the two-ctor nested-ADT witness) as the reuse-token
+// oracle: reuse tokens are off-ABI/function-local, so toggle-off forces the
+// conservative dealloc+alloc path — byte-identical to pre-reuse codegen.
+// GREEN at draft; load-bearing when reuse tokens land.
+#[test]
+fn s99_f2_output_byte_identical_under_ownership_toggle() {
+    assert_ownership_toggle_byte_identical(
+        "f2.cl",
+        include_str!("fixtures/s99/f2_contention.cl"),
+    );
+}

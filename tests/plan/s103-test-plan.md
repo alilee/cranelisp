@@ -302,3 +302,38 @@ cross-skill change requests.
 - Peer of `tests/plan/s100-ownership-verification.md` (whose §2.3 gates + §6 drafting list it
   executes for increment II) and `tests/plan/s102-test-plan.md` (the increment-I predecessor).
 - Ledger rows for all new tests land with the drafting commits (Phase 5), not this plan.
+
+---
+
+## §9 Phase-5 Stage-1 authoring status (2026-07-05, /qa)
+
+Written this pass. Full suite after the batch: **3972 run / 3960 passed / 12 failed /
+1 skipped** (51.9s) — 12 reds = the carried h3 + 11 new QA-first reds. No pre-existing
+green regressed. Ledger: `tests/plan/ledger.md` §"Sprint 103 Phase-5 Stage-1
+increment-II QA-first RED set".
+
+| Plan item | File(s) | Status |
+|---|---|---|
+| §1.1 F2v single-ctor fixture + parallel≡serial + capture-borrow guards | `tests/fixtures/s99/f2v_single_ctor.cl`, `tests/s99_fixtures.rs` | **written — GREEN** (correctness guards) |
+| §1.1 L-C3 reuse-corruption fence (5 legs) | `tests/ownership_reuse.rs` | **written** — legs i/iii/iv/v GREEN; leg ii RED (reuse_hit); + discovered-defect RED (pure SSA alias) |
+| §1.1 reuse hit/miss counter smoke (landed H2 grammar) | `tests/ownership_reuse.rs` | **written** — family-present GREEN; nonzero-when-fires RED |
+| §1.1 R5 value-flatten witness (rc_inc collapse) | `tests/ownership_reuse.rs` | **written — RED** (F2v≈F2 pre-R5) |
+| §1.1 R5 soundness-couple negative fence | `tests/ownership_reuse.rs` | **written — GREEN** |
+| §1.2 L-B2(ii) byte-differential on F2v/F2 under NO_OWNERSHIP | `tests/s99_fixtures.rs` | **written — GREEN** (oracle) |
+| §1.2 L-B3(4) `CACHE_SCHEMA_VERSION` 14→15 invalidation lane | `tests/cache.rs` | **written — RED ×2** (schema still 14) |
+| §1.4 T1 full-cure acceptance pair | `tests/repl_redefinition.rs` | **written** — recompile+empty-stale RED; body-only over-trigger GREEN |
+| §1.4 coherent-stale flip-note reconciliation | `tests/repl_redefinition.rs` | **written** — 4 pins' flip notes updated in place (none weakened) |
+| §1.3 h3 flip-shape confirmation | `tests/ownership_fences.rs` | **confirmed** — left RED, correctly shaped to flip at L-D5/H3 |
+| §1.5 0510 L-D3e `neq-string` fact rows (e2e) | `tests/ownership_fences.rs` | **written — RED ×2** (`neq-string` undefined until 0510 registers it) |
+| §1.5 chaining witness `(map inc (map dec v))` two-in-place + differential twin | `tests/ownership_reuse.rs` | **written** — value-correct GREEN; two-in-place + twin RED |
+| §1.6 L-S1 preamble-grid helper + tests | `tests/repl_introspection.rs`, `tests/repl_redefinition.rs` | **written — GREEN ×7** (robustness generalization) |
+| §1.6 L-M1 B3-wave value-use × ≥2-instantiation cells | `tests/vec_query_value_use.rs` | **written — GREEN ×3** (write-op/pipeline/constructor controls) |
+| §4 L-B2(i) suite-polarity allowed-delta note | `tests/scripts/suite_polarity.sh` | **updated** — expected shared set = `{h3}` + the transient S103 reds until they flip |
+
+**Pending a mechanism (all the reds above)** — each flips green in its named change-set;
+`/qa` observes the flip, annotates the ledger row + test-file note, never deletes/weakens.
+
+**FIXME 0499 disposition:** L-S1 landed + L-M1 B3-growth landed (both this pass). Per §3
+deletion condition, 0499's remainder lanes now exist → deletable by `/qa` at close if the
+per-lane audit confirms all 7 lanes present; else annotate + carry. Not deleted this pass
+(defer the deletion decision to the wave/close gate).

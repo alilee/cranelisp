@@ -4,9 +4,17 @@
 # tests/plan/s100-ownership-verification.md §3.1 L-B2(i) / §6.1: the entire
 # canonical `cargo nextest run` must produce the IDENTICAL pass/fail set under
 # both polarities of CRANELISP_NO_OWNERSHIP. The allowed delta between the two
-# runs is empty; the shared failure set must equal the ledgered
-# intentional-failing set at execution time (tests/plan/ledger.md — verify by
-# eye against the printed list).
+# runs is empty (the toggle changes no observable pass/fail); the shared failure
+# set must equal the ledgered intentional-failing set at execution time
+# (tests/plan/ledger.md — verify by eye against the printed list).
+#
+# S103 (2026-07-05): the expected shared failing set at execution time is `{h3}`
+# + the transient increment-II QA-first reds (ledger §"Sprint 103 Phase-5
+# Stage-1 increment-II QA-first RED set") until each flips with its mechanism.
+# These fail IDENTICALLY under both polarities (they are toggle-independent —
+# schema/rc_inc/reuse_hit/undefined-symbol/T1-reload facts), so the two failsets
+# still MATCH; the diff below stays empty. Re-run after each flip so the
+# expected shared set shrinks toward `{}`.
 #
 # GATE-TIME lane, NOT the per-commit loop: two full suite runs (~2 × suite
 # time). Executed at Phase-5 exit / wave gates per §6.1; run it AFTER the

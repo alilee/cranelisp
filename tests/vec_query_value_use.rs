@@ -346,3 +346,77 @@ fn vec_len_as_value_through_hof_returns_length_control() {
     .assert_ok()
     .assert_stdout_contains(":primitives/Int 3");
 }
+
+// =============================================================================
+// S103 increment-II — L-M1 B3-wave growth (qa plan
+// `tests/plan/s103-test-plan.md` §1.6; FIXME 0499 L-M1). The reference-shape ×
+// referent-kind × instantiation-count matrix grows with the fn_as_value/reuse
+// seam rework (backend §13.3): the 0474/0483 read-path guards flipped GREEN in
+// S102, so S103's growth is the new value-use × ≥2-instantiation cells the B3
+// reuse-token / R5 seam introduces on the WRITE path — one exemplar per
+// artifact-minting kind. Crashing cells become guards; passing cells are
+// one-line controls pinning the boundary. Each cell keys on artifact-minting
+// (drafting rule 1): a wrapper/mono instance minted per element type.
+// =============================================================================
+
+// spec: spec/04-expressions.md §4.6.2 — the WRITE-path analog of the 0483 cell:
+// `vec-set` (a write op, the reuse-token seam's subject) used as a VALUE through
+// ONE generic HOF at TWO element-type instantiations (Vec Int, Vec String). The
+// read-side trio flipped GREEN in S102; this pins the write op through the same
+// ≥2-instantiation wrapper path. Want vec-get[Int] 99 + str-len(vec-get[Str]) of
+// "zz" (2) = 101.
+#[test]
+fn vec_set_as_value_two_instantiations_of_one_hof() {
+    repl_prims(
+        "(defn apply-set [f v i x] (f v i x))\n\
+         (add-i64 (vec-get (apply-set vec-set [10 20 30] 0 99) 0)\n\
+         \x20        (str-len (vec-get (apply-set vec-set [\"x\" \"y\"] 1 \"zz\") 1)))\n",
+    )
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 101");
+}
+
+// spec: spec/04-expressions.md §4.6.2 — the reuse/result_unique seam exercised
+// through a generic in-place write pipeline (`mapf`, vec-set-bodied) at TWO
+// element-type instantiations, each result value-used. One mono instance minted
+// per element type (artifact-minting axis). Want (mapf inc [0 1 2])[2] = 3 plus
+// str-len of (mapf ids ["aa" "bb"])[0] = "aa" (2) = 5. CONTROL — GREEN on HEAD
+// (the write pipeline monomorphises cleanly at two element types).
+#[test]
+fn generic_write_pipeline_two_instantiations_value_used() {
+    Cranelisp::new()
+        .file(
+            "main.cl",
+            "(import [primitives [*]])\n\
+             (defn inc [x] (add-i64 x 1))\n\
+             (defn ids [s] s)\n\
+             (defn map-go [f v i n]\n\
+             \x20 (if (eq-i64 i n) v (map-go f (vec-set v i (f (vec-get v i))) (add-i64 i 1) n)))\n\
+             (defn mapf [f v] (map-go f v 0 (vec-len v)))\n\
+             (defn main []\n\
+             \x20 (let [a (mapf inc [0 1 2])\n\
+             \x20       b (mapf ids [\"aa\" \"bb\"])]\n\
+             \x20   (Pure (add-i64 (vec-get a 2) (str-len (vec-get b 0))))))\n",
+        )
+        .run("main.cl")
+        .output()
+        .assert_exit(5);
+}
+
+// spec: spec/04-expressions.md §4.6.2 — one-line CONTROL: a single-ctor ADT
+// constructor (`Cell`, the R5-flatten witness kind) used as a VALUE through a
+// generic HOF — the constructor-as-value artifact-minting cell that the R5 seam
+// touches. Constructors are one instantiation here (Int payload); the control
+// pins that constructor value-use through the wrapper path is sound before R5
+// changes the representation. Want cell-value of (apply Cell 7) = 7.
+#[test]
+fn single_ctor_constructor_as_value_through_hof_control() {
+    repl_prims(
+        "(deftype Cell (Cell [:Int value]))\n\
+         (defn cval [c] (match c [(Cell v) v]))\n\
+         (defn apply1 [f x] (f x))\n\
+         (cval (apply1 Cell 7))\n",
+    )
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 7");
+}

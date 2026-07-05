@@ -611,6 +611,11 @@ fn type_change_redefinition_polymorphic_caller_recompiles_and_works() {
 // downgrade turn PRINT the §18.1.1 `stale:` section — additive, this pin's
 // assertions are unaffected. Acceptance wording for the S103 flip:
 // report-or-recompile per §18.1.1's cure note (stale set renders empty).
+// S103 RECONCILIATION: the cure acceptance is
+// `t1_full_cure_recompiles_stale_callers_stale_section_empty` (below). When it
+// flips green, the end-of-turn reload recompiles `g`, so the `:primitives/Int 6`
+// pin here MUST flip to the recompiled value (5, `f x = x` ⇒ g(5)=5). This test
+// failing at that point is the prompt to update it — not a regression.
 #[test]
 fn redefine_concrete_to_polymorphic_caller_survives_coherent_stale() {
     let cap = repl_prims(
@@ -637,6 +642,11 @@ fn redefine_concrete_to_polymorphic_caller_survives_coherent_stale() {
 // above: when the full T1 cure lands (S103 per the S102 ruling), the
 // `:primitives/Int 6` pin MUST flip; the S102 A1 `stale:` print (§18.1.1) is
 // additive and does not disturb this pin.
+// S103 RECONCILIATION: sibling of the polymorphic pin above — the cure
+// acceptance `t1_full_cure_recompiles_stale_callers_stale_section_empty` (below)
+// flipping green recompiles `g` against the new Overloaded `f`, so the
+// `:primitives/Int 6` pin here MUST flip to the recompiled value (5, the Int
+// arm ⇒ g(5)=5). Update when the cure lands; do not weaken.
 #[test]
 fn redefine_concrete_to_overloaded_caller_survives_coherent_stale() {
     let cap = repl_prims(
@@ -805,6 +815,12 @@ fn bare_lookup_broken_symbol_info_still_shows_definition_source() {
 // pins below MUST flip to the cured behaviour (caller recompiled against the
 // new definition, or broken+trapped with provenance) and the §18.1.1 section
 // renders empty. A sibling failing at that point is the prompt to update it.
+// S103 RECONCILIATION: the cure acceptance surface is the pair at the end of
+// this file — `t1_full_cure_recompiles_stale_callers_stale_section_empty`
+// (positive: recompiled caller + empty stale section) and
+// `t1_full_cure_body_only_edit_still_no_report_no_recompile` (over-trigger
+// guard). When the positive one flips green, reconcile every coherent-stale
+// pin's disposition in the same change-set.
 // =============================================================================
 
 // spec: repl/spec.md §18.1.1 — the downgrade report: a T1 (reuse-and-patch)
@@ -1000,4 +1016,148 @@ fn redefine_unannotated_split_world_old_and_new_callers_coexist_sibling() {
     );
     let cap = cap.assert_stdout_does_not_contain("is broken by the redefinition");
     drop(cap);
+}
+
+// =============================================================================
+// S103 Block C — the T1 FULL-CURE acceptance pair (qa plan
+// `tests/plan/s103-test-plan.md` §1.4; repl/spec.md §18.1.1 negative-MUST;
+// design/int/session-transaction.md §10 T1).
+//
+// The full cure replaces the S102 interim `stale:` PRINT with an end-of-turn-
+// sequenced module reload: the callers the interim report named as `stale:` are
+// now RECOMPILED by the end-of-turn transaction, so (per §18.1.1 "omitted when
+// nothing is stale") the `stale:` section is omitted entirely AND a previously-
+// stale caller called after the turn observes the NEW definition. The cure keeps
+// the SAME report section (Principle-8, arch review pin), rendered empty.
+//
+// Under the cure the S102/S101 coherent-stale pins above
+// (redefine_concrete_to_polymorphic_caller_survives_coherent_stale,
+// redefine_concrete_to_overloaded_caller_survives_coherent_stale,
+// redefine_unannotated_generic_target_caller_keeps_old_chain_sibling,
+// redefine_unannotated_split_world_old_and_new_callers_coexist_sibling) FLIP:
+// their coherent-stale residue is superseded (caller recompiled) — each already
+// carries a flip note; `/qa` reconciles the disposition in the same change-set as
+// the cure lands. NONE deleted or weakened (the "permanently-RED test for
+// designed behaviour is wrong" ledger ruling: the flip note makes each fail
+// loudly exactly when the cure lands, which is the intended signal).
+// =============================================================================
+
+// spec: repl/spec.md §18.1.1 — the T1 full-cure positive acceptance: after a
+// downgrading (unannotated, generalizing) redefinition, the end-of-turn
+// transaction RECOMPILES the stale compiled callers, so the `stale:` section is
+// OMITTED entirely AND a previously-stale caller called after the turn observes
+// the NEW definition. RED at draft: today `gcall` keeps the old chain, so the
+// post-turn `(gcall 1)` prints 2 (old `id x = x` ⇒ id(2)=2), not the cured 102
+// (new `id x = add-i64 x 100` ⇒ id(2)=102). Flips when the cure lands.
+#[test]
+fn t1_full_cure_recompiles_stale_callers_stale_section_empty() {
+    let cap = repl_prims(
+        "(defn id [x] x)\n\
+         (defn gcall [x] (id (add-i64 x 1)))\n\
+         (gcall 1)\n\
+         (defn id [x] (add-i64 x 100))\n\
+         (gcall 1)\n",
+    )
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 2"); // pre-downgrade world (old id)
+    // Positive: the previously-stale caller, recompiled by the end-of-turn
+    // transaction, now sees the new `id` — id(2) = 102. RED until the cure.
+    let cap = cap.assert_stdout_contains(":primitives/Int 102");
+    // The `stale:` section is omitted (nothing is stale after the recompile) —
+    // the Principle-8 same-section-rendered-empty shape, NOT a printed stale set.
+    let cap = cap.assert_stdout_does_not_contain("; stale:");
+    drop(cap);
+}
+
+// spec: repl/spec.md §18.1.1 — the T1 full-cure negative (over-trigger) pin: a
+// BODY-ONLY edit (same signature) must NOT trigger a reload — it prints only the
+// §1.3 confirmation + late-binds the new body via the GOT (§18.2), with no
+// `stale:`/`recompiled:`/`broken:` section. Guards the cure against recompiling
+// the world on every turn. GREEN at draft (vacuously — no reload machinery);
+// load-bearing the moment the cure's end-of-turn transaction lands.
+#[test]
+fn t1_full_cure_body_only_edit_still_no_report_no_recompile() {
+    let cap = repl_prims(
+        "(defn f [:Int x] (add-i64 x 1))\n\
+         (defn g [:Int x] (f x))\n\
+         (g 1)\n\
+         (defn f [:Int x] (add-i64 x 2))\n\
+         (g 1)\n",
+    )
+    .assert_ok()
+    .assert_stdout_contains(":primitives/Int 3") // late-bound new body (§18.2)
+    .assert_stdout_does_not_contain("; stale:");
+    for needle in ["recompiled", "broken"] {
+        assert!(
+            !any_report_line_contains(&cap.stdout, needle),
+            "a body-only edit must not trigger a reload cascade `{needle}:` \
+             section (the cure must not over-trigger); stdout={}",
+            cap.stdout
+        );
+    }
+    drop(cap);
+}
+
+// =============================================================================
+// S103 increment-II — L-S1 session-history preamble grid on the REDEFINITION
+// surface (qa plan `tests/plan/s103-test-plan.md` §1.6; FIXME 0499 L-S1). A
+// redefinition outcome (body-only late-binding, defn confirmation) MUST be
+// invariant to what preceded it in the session — the generalization to the
+// surfaces 6a did NOT burn. GREEN-expected; a RED is a real history-sensitivity
+// defect. Companion of the repl_introspection.rs L-S1 grid.
+// =============================================================================
+
+/// The L-S1 preamble grid (redefinition surface).
+const LS1_PREAMBLES: &[(&str, &str)] = &[
+    ("empty", ""),
+    ("bare_lookup", "add-i64\n"),
+    ("expression_turn", "(add-i64 1 2)\n"),
+    ("prior_failed_turn", "(undefined-symbol-xyz 1)\n"),
+    ("reset", "/reset\n"),
+];
+
+/// Run `body` under each preamble (PrimitivesOnly REPL) and assert `needle`
+/// appears in stdout regardless of session history.
+fn assert_preamble_invariant(body: &str, needle: &str) {
+    for (label, pre) in LS1_PREAMBLES {
+        let cap = repl_prims(&format!("{pre}{body}"));
+        assert!(
+            cap.stdout.contains(needle),
+            "L-S1 preamble `{label}`: expected `{needle}` in stdout regardless \
+             of session history; stdout:\n{}\nstderr:\n{}",
+            cap.stdout,
+            cap.stderr
+        );
+    }
+}
+
+// spec: repl/spec.md §18.2 — a body-only redefinition late-binds the new body
+// regardless of session history (the caller sees the new result).
+#[test]
+fn ls1_body_only_redefinition_late_binds_invariant_to_session_history() {
+    assert_preamble_invariant(
+        "(defn f [:Int x] (add-i64 x 1))\n\
+         (defn g [:Int x] (f x))\n\
+         (g 10)\n\
+         (defn f [:Int x] (add-i64 x 2))\n\
+         (g 10)\n",
+        ":primitives/Int 12",
+    );
+}
+
+// spec: repl/spec.md §1.3 — a defn confirmation names the qualified symbol
+// regardless of session history.
+#[test]
+fn ls1_defn_confirmation_invariant_to_session_history() {
+    assert_preamble_invariant("(defn h [:Int x] (add-i64 x 7))\n", "user/h");
+}
+
+// spec: repl/spec.md §18.1 — a fresh definition-and-call answers correctly
+// regardless of session history (the coherent-execution baseline).
+#[test]
+fn ls1_fresh_definition_and_call_invariant_to_session_history() {
+    assert_preamble_invariant(
+        "(defn k [:Int x] (add-i64 x 5))\n(k 1)\n",
+        ":primitives/Int 6",
+    );
 }

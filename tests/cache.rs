@@ -1239,3 +1239,129 @@ fn cache_ownership_toggle_round_trip_and_same_polarity_stability() {
         stable.stderr
     );
 }
+
+// =============================================================================
+// L-B3(4) — the CACHE_SCHEMA_VERSION 14→15 wholesale-invalidation lane
+// (S103 increment-II; qa plan `tests/plan/s103-test-plan.md` §1.2 / §4).
+// =============================================================================
+//
+// R5's value-flattening is a representation change: a post-R5 `.o` stores
+// one-word single-ctor payloads BY VALUE where a pre-R5 `.o` boxed them, so a
+// pre-R5 object is silently incompatible and MUST NOT be consumed after R5
+// lands. Decision-34 handles this by bumping `CACHE_SCHEMA_VERSION`
+// (`crates/cranelisp-backend/src/cache/mod.rs`) — the live value is **14**
+// (verified at Phase-3), and R5 bumps it to **15** in the Wave-3 change-set. A
+// cache stamped with the pre-R5 schema then routes through
+// `CacheStale::SchemaMismatch` (cache-miss → recompute).
+//
+// Both tests below are RED at draft (schema is still 14) and flip GREEN with
+// the bump. Ledger: `tests/plan/ledger.md` §"Sprint 103 Phase-5 Stage-1
+// increment-II QA-first RED set".
+
+const SCHEMA_MAIN: &str =
+    "(import [primitives [Pure]])\n(import [util [helper]])\n(defn main [] (Pure (helper 21)))";
+const SCHEMA_UTIL: &str = "(import [primitives [add-i64]])\n(defn helper [x] (add-i64 x x))";
+
+/// The schema version the pre-R5 `.o` carries — the value R5's bump must reject.
+/// (= the live `CACHE_SCHEMA_VERSION` at S103 Phase-3.)
+const PRE_R5_SCHEMA: u32 = 14;
+
+/// Extract the integer `schema_version` field from raw `.meta.json` text.
+/// Narrow parser (avoids a serde_json dep), mirroring `extract_build_id`.
+fn extract_schema_version(meta_text: &str) -> Option<u32> {
+    let needle = "\"schema_version\":";
+    let idx = meta_text.find(needle)?;
+    let after = meta_text[idx + needle.len()..].trim_start();
+    let end = after.find(|c: char| !c.is_ascii_digit())?;
+    after[..end].parse().ok()
+}
+
+/// Rewrite the integer `schema_version` value in raw JSON text. Panics if the
+/// field is absent.
+fn set_schema_version(meta_text: &str, new_value: u32) -> String {
+    let needle = "\"schema_version\":";
+    let idx = meta_text
+        .find(needle)
+        .expect("meta text must contain schema_version field");
+    let before = &meta_text[..idx + needle.len()];
+    let after = &meta_text[idx + needle.len()..];
+    let ws = after.len() - after.trim_start().len();
+    let digits = &after.trim_start();
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .expect("schema_version value must be terminated");
+    let suffix = &after[ws + end..];
+    format!("{before}{}{new_value}{suffix}", &after[..ws])
+}
+
+// spec: design/backend/module-caching.md §4 — the schema version R5's
+// representation change stamps MUST advance past the pre-R5 value (14→15), so
+// no pre-R5 `.o` is schema-compatible. RED at draft (still 14); flips when R5
+// bumps CACHE_SCHEMA_VERSION.
+#[test]
+fn cache_schema_version_bumped_for_r5_representation_change() {
+    let out = project(&[("main.cl", SCHEMA_MAIN), ("util.cl", SCHEMA_UTIL)])
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+    let meta_path = out.tmpdir.join(".cranelisp-cache").join("util.meta.json");
+    let text = fs::read_to_string(&meta_path).expect("read util.meta.json");
+    let stamped = extract_schema_version(&text)
+        .unwrap_or_else(|| panic!("meta.json must carry an integer schema_version; got:\n{text}"));
+    assert!(
+        stamped >= PRE_R5_SCHEMA + 1,
+        "R5's value-flattening is a representation change and MUST bump \
+         CACHE_SCHEMA_VERSION past the pre-R5 value {PRE_R5_SCHEMA} (Decision 34); \
+         stamped schema_version={stamped}. RED until the Wave-3 R5 bump lands."
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §7.4 — a cached DEP object stamped
+// with the PRE-R5 schema is wholesale-invalidated after R5 lands: the dep
+// recompiles (cache miss) rather than serving the incompatible boxed-payload
+// object. Uses a dep module (`util`) because a single top-level module always
+// rewrites its `.o` (never cache-hits) — the dep is the observable cache-hit
+// surface (mirrors the L-B3 legs above). RED at draft: the pre-R5 schema (14)
+// EQUALS the live schema, so the patched dep still cache-hits (util.o not
+// rewritten) — no invalidation. Flips when R5 bumps the live schema to 15: the
+// patched-to-14 dep then mismatches and recompiles.
+#[test]
+fn cache_pre_r5_schema_object_invalidated_wholesale() {
+    let first = project(&[("main.cl", SCHEMA_MAIN), ("util.cl", SCHEMA_UTIL)])
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+    let meta_path = first.tmpdir.join(".cranelisp-cache").join("util.meta.json");
+    let original = fs::read_to_string(&meta_path).expect("read util.meta.json");
+    // Stamp the pre-R5 schema onto the dep object — simulate a cache written
+    // before R5's representation change.
+    let patched = set_schema_version(&original, PRE_R5_SCHEMA);
+    fs::write(&meta_path, &patched).expect("write patched meta");
+    assert_eq!(
+        extract_schema_version(&fs::read_to_string(&meta_path).unwrap()),
+        Some(PRE_R5_SCHEMA),
+        "patched meta must carry the pre-R5 schema"
+    );
+    nap_for_mtime();
+    let m1 = mtime(&first, ".cranelisp-cache/util.o");
+
+    let second = first
+        .run_again()
+        .env("CRANELISP_MODULE_TRACE", "1")
+        .run("main.cl")
+        .output()
+        .assert_exit(42);
+    assert!(
+        !second.stderr.contains("cache hit"),
+        "a pre-R5-schema ({PRE_R5_SCHEMA}) dep object MUST be wholesale-invalidated \
+         once R5 bumps the live schema — util must recompute, not cache-hit; \
+         stderr:\n{}",
+        second.stderr
+    );
+    let m2 = mtime(&second, ".cranelisp-cache/util.o");
+    assert_ne!(
+        m1, m2,
+        "util.o must be recompiled (rewritten) after a pre-R5 schema mismatch, \
+         not served stale"
+    );
+}

@@ -3423,3 +3423,78 @@ fn cheatsheet_sampled_example_compiles() {
         out.stdout
     );
 }
+
+// =============================================================================
+// S103 increment-II — L-S1 session-history preamble grid (qa plan
+// `tests/plan/s103-test-plan.md` §1.6; FIXME 0499 L-S1, the deferred
+// capacity-gated tail). A self-documenting introspection outcome MUST be
+// invariant to what preceded it in the session — the generalization to the
+// surfaces 6a did NOT burn (the 0486 bare-lookup-corruption / 0491 __expr /
+// 0484 import-shadow cells already have dedicated guards). The grid prepends
+// each of {∅, bare lookup, expression turn, prior failed turn, /reset} to the
+// body and asserts the outcome holds every time, so a history-sensitivity bug
+// is caught on whichever surface it burns. GREEN-expected (robustness
+// generalizations); a RED here is a real history-sensitivity defect.
+// =============================================================================
+
+/// The L-S1 preamble grid: (label, stdin-prefix) prepended to a test body.
+const LS1_PREAMBLES: &[(&str, &str)] = &[
+    ("empty", ""),
+    ("bare_lookup", "add-i64\n"),
+    ("expression_turn", "(add-i64 1 2)\n"),
+    ("prior_failed_turn", "(undefined-symbol-xyz 1)\n"),
+    ("reset", "/reset\n"),
+];
+
+/// Run `body` under each preamble (PrimitivesOnly REPL) and assert `needle`
+/// appears in stdout regardless of session history.
+fn assert_preamble_invariant(body: &str, needle: &str) {
+    for (label, pre) in LS1_PREAMBLES {
+        let cap = repl_prims(&format!("{pre}{body}"));
+        assert!(
+            cap.stdout.contains(needle),
+            "L-S1 preamble `{label}`: expected `{needle}` in stdout regardless \
+             of session history; stdout:\n{}\nstderr:\n{}",
+            cap.stdout,
+            cap.stderr
+        );
+    }
+}
+
+// spec: repl/spec.md §18.4 — `/sig` on a defined fn shows its qualified name
+// regardless of session history (L-S1 generalization of the §18.4 surface).
+#[test]
+fn ls1_sig_of_defn_invariant_to_session_history() {
+    assert_preamble_invariant(
+        "(defn foo [:Int x] (add-i64 x 1))\n/sig foo\n",
+        "user/foo",
+    );
+}
+
+// spec: repl/spec.md §1.4 — bare-name lookup of a user type resolves to its
+// qualified name regardless of session history.
+#[test]
+fn ls1_bare_lookup_of_type_invariant_to_session_history() {
+    assert_preamble_invariant(
+        "(deftype Color (Red) (Green))\nColor\n",
+        "user/Color",
+    );
+}
+
+// spec: repl/spec.md §18.4 — `/info` on a defn includes its definition source
+// regardless of session history (the 0486 source-corruption class,
+// generalized to a healthy defn).
+#[test]
+fn ls1_info_of_defn_shows_source_invariant_to_session_history() {
+    assert_preamble_invariant(
+        "(defn bar [:Int y] (mul-i64 y 2))\n/info bar\n",
+        "(defn bar",
+    );
+}
+
+// spec: repl/spec.md §1.2 — an expression result displays identically
+// regardless of session history.
+#[test]
+fn ls1_expression_result_invariant_to_session_history() {
+    assert_preamble_invariant("(add-i64 2 3)\n", ":primitives/Int 5");
+}
