@@ -100,6 +100,24 @@ pub(crate) enum ModedArgRc {
 ///
 /// `Copy` is never minted for a heap category in increment I; it is mapped to
 /// pass-through here for total, defensive coverage.
+/// §3.3: is `arg` a DIRECT `vec-get` read the ownership pass marked as a borrowed
+/// projection (`provenance` site fact set)? This is the only shape whose in-frame
+/// element inc `compile_consuming_arg_list_moded` elides — and only when the read
+/// feeds a `Borrowed` parameter, so the borrowed element is consumed in-place and
+/// never escapes. An accessor / user-fn `ProjectionOf`-call is NOT matched here:
+/// its callee already materialized the result with an owned reference (its return
+/// protect is kept, `return_is_fresh_by_summary`), so it is an ordinary owned
+/// temporary at the call site. `provenance = None` (analysis off, or a read the
+/// pass could not prove borrow-safe) ⇒ `false` ⇒ inc verbatim (§2.2).
+fn is_direct_vecget_projection(arg: &MonoExpr) -> bool {
+    matches!(
+        arg,
+        MonoExpr::Apply { provenance: Some(_), resolved_call: Some(rc), .. }
+            if matches!(rc.as_ref(),
+                ResolvedCall::BuiltinFn { name } if name.as_ref() == "vec-get")
+    )
+}
+
 pub(crate) fn moded_arg_rc(
     category: HeapCategory,
     mode: cranelisp_types::Mode,
@@ -919,6 +937,36 @@ where
                     post_call_decs.push((forced, HeapCategory::Mixed));
                 }
                 vals.push(forced);
+                continue;
+            }
+
+            // §3.3 consumer-driven in-frame projection elision
+            // (`design/backend/ownership-codegen.md` §3.3): when a heap-typed
+            // borrowed PROJECTION (a `vec-get` read the ownership pass marked with
+            // a `provenance` site fact) is passed DIRECTLY into a `Borrowed`
+            // parameter, the whole inc+dec pair collapses: `compile_vec_get` skips
+            // the element materialization inc (via `elide_vecget_span`) and NO
+            // post-call dec is owed. This is the F1 machinery-tax collapse and the
+            // SOLE provably-safe elision — the borrowed element is consumed
+            // in-place by the callee's borrow, never escapes the call, and never
+            // outlives the root's fork-join-guaranteed liveness. Propagating a
+            // borrowed projection across ANY other edge (an `Owned` position, a
+            // function return, a store) is parallel-unsound (an escaping view
+            // races a concurrent COW/free — observed in f4_sudoku), so those keep
+            // the materialization inc and take the ordinary temporary path below.
+            let elide_projection = mode == cranelisp_types::Mode::Borrowed
+                && is_direct_vecget_projection(arg)
+                && matches!(
+                    HeapCategory::classify(arg.ty(), Some(self.ctx.symbol_tables)),
+                    HeapCategory::AlwaysHeap | HeapCategory::Mixed
+                );
+            if elide_projection {
+                let saved = self.elide_vecget_span.replace(arg.span());
+                let val = self.compile_expr(arg)?;
+                self.elide_vecget_span = saved;
+                vals.push(val);
+                // No inc (elided) and NO post-call dec: the callee borrows the
+                // view and the root's owner keeps the element alive.
                 continue;
             }
 

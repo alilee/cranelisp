@@ -107,3 +107,91 @@ fn full_matrix_is_pinned() {
         );
     }
 }
+
+// --- §3.3 consumer-driven projection-elision predicate
+//     (`design/backend/ownership-codegen.md` §3.3). `is_direct_vecget_projection`
+//     recognises the ONE shape whose in-frame element inc collapses when passed
+//     into a `Borrowed` parameter: a DIRECT `vec-get` read the ownership pass
+//     marked with a `provenance` site fact. Everything else — an unmarked
+//     `vec-get`, a `ProjectionOf`-result USER call (accessor), a non-`Apply` — is
+//     an ordinary owned temporary and keeps its inc. ---
+mod projection_elision_predicate {
+    use super::super::is_direct_vecget_projection;
+    use cranelisp_types::{ConcreteType, FQTypeName, MonoExpr, ResolvedCall, Span, Symbol};
+
+    fn cell_ty() -> ConcreteType {
+        ConcreteType::ADT(
+            FQTypeName { module: "m".into(), name: "Cell".into() },
+            vec![],
+        )
+    }
+
+    fn vecget_apply(provenance: Option<Symbol>) -> MonoExpr {
+        MonoExpr::Apply {
+            callee: Box::new(MonoExpr::Var {
+                name: Symbol::from("vec-get"),
+                span: Span::new(0, 7),
+                resolved_call: None,
+                ty: cell_ty(),
+            }),
+            args: vec![],
+            span: Span::new(0, 12),
+            resolved_call: Some(Box::new(ResolvedCall::BuiltinFn { name: "vec-get".into() })),
+            ty: cell_ty(),
+            escapes: None,
+            confined: None,
+            unique_static: None,
+            provenance,
+        }
+    }
+
+    // POSITIVE: a provenance-marked vec-get read IS a borrowed projection.
+    #[test]
+    fn marked_vecget_is_projection() {
+        assert!(is_direct_vecget_projection(&vecget_apply(Some(Symbol::from("g")))));
+    }
+
+    // NEGATIVE (byte-identical-off): an UNMARKED vec-get (analysis off, or a read
+    // the pass could not prove borrow-safe) is NOT a projection — inc verbatim.
+    #[test]
+    fn unmarked_vecget_is_not_projection() {
+        assert!(!is_direct_vecget_projection(&vecget_apply(None)));
+    }
+
+    // NEGATIVE: a ProjectionOf-result USER call (accessor like `cell-at`) is NOT
+    // matched here even when marked — its callee already materialized the result
+    // with an owned reference, so it is an ordinary owned temporary at the call
+    // site (the escaping-projection parallel-soundness boundary).
+    #[test]
+    fn projectionof_user_call_is_not_direct_vecget() {
+        let accessor = MonoExpr::Apply {
+            callee: Box::new(MonoExpr::Var {
+                name: Symbol::from("cell-at"),
+                span: Span::new(0, 7),
+                resolved_call: None,
+                ty: cell_ty(),
+            }),
+            args: vec![],
+            span: Span::new(0, 12),
+            resolved_call: None, // not a BuiltinFn vec-get
+            ty: cell_ty(),
+            escapes: None,
+            confined: None,
+            unique_static: None,
+            provenance: Some(Symbol::from("g")),
+        };
+        assert!(!is_direct_vecget_projection(&accessor));
+    }
+
+    // NEGATIVE: a non-`Apply` node (a bare Var) is never a projection.
+    #[test]
+    fn non_apply_is_not_projection() {
+        let v = MonoExpr::Var {
+            name: Symbol::from("g"),
+            span: Span::new(0, 1),
+            resolved_call: None,
+            ty: cell_ty(),
+        };
+        assert!(!is_direct_vecget_projection(&v));
+    }
+}

@@ -436,21 +436,33 @@ where
     /// Guarded RC ops throughout (layout-safe for AlwaysHeap and Mixed alike).
     /// Reached ONLY for a non-ABI-conservative summary, so with analysis off it
     /// never runs — the wrapper body is byte-identical to today (§2.2).
+    ///
+    /// **No result materialization inc (FIXME 0522 reconcile, option B).** A
+    /// moded callee ALWAYS returns its `ProjectionOf`/`AliasOf` result carrying an
+    /// owned reference — its own `vec-get` inc, an accessor call, or
+    /// `protect_return_value` (`return_is_fresh_by_summary` keeps the protect for
+    /// every non-`Fresh` result; the §3.3 in-frame elision is confined to the
+    /// consumer seam and never crosses a function-return boundary, so a returned
+    /// projection is never un-inc'd). The wrapper therefore owes NO result inc: the
+    /// callee's materialization is the single owned reference, and the FIXME 0522
+    /// double-count (callee-protect AND wrapper-adaptation both inc'ing a
+    /// `ProjectionOf` result) can no longer arise. The prior wrapper inc — dormant
+    /// but a latent over-retain, and mis-ordered against the Borrowed decs — is
+    /// removed. The result already owns a reference, so the Borrowed-param decs
+    /// below (which may release the root the result projects into) cannot dangle
+    /// it — the FIXME's ordering hazard dissolves with the inc.
     fn emit_d24_adaptation(
         &mut self,
         builder: &mut FunctionBuilder,
         summary: &cranelisp_types::ModeSummary,
         args: &[Value],
-        result: Value,
+        _result: Value,
     ) {
         let dealloc_id = self.ctx.dealloc_func_id;
         for (i, &arg) in args.iter().enumerate() {
             if summary.param_mode(i) == cranelisp_types::Mode::Borrowed {
                 heap::emit_rc_dec_guarded(builder, self.module, arg, dealloc_id, None, true);
             }
-        }
-        if matches!(summary.result, cranelisp_types::ResultMode::ProjectionOf(_)) {
-            heap::emit_rc_inc_guarded(builder, self.module, result);
         }
     }
 

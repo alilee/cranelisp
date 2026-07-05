@@ -217,6 +217,18 @@ where
         let elem_category = self
             .vec_elem_type(vec_expr)
             .map(|t| signature_heap_category(&t, Some(self.ctx.symbol_tables)));
+        // §3.3 in-frame projection elision
+        // (`design/backend/ownership-codegen.md` §3.3): elide the heap-element inc
+        // when the CONSUMER of this exact `vec-get` requested it — the moded arg
+        // path (`compile_consuming_arg_list_moded`) sets `elide_vecget_span` to
+        // this node's span iff the read is a projection (site fact `provenance`)
+        // being passed DIRECTLY into a `Borrowed` parameter. That is the sole
+        // provably-safe elision: the borrowed element is consumed in-place by the
+        // callee's borrow and never escapes the enclosing expression nor outlives
+        // the root's fork-join-guaranteed liveness (the F1 machinery-tax collapse).
+        // `None` (analysis off, or any read the consumer did not request) ⇒ inc
+        // verbatim — byte-identical-off (§2.2).
+        let elide_elem_inc = self.elide_vecget_span == Some(span);
         emit_vec_get_core(
             &mut self.builder,
             self.module,
@@ -225,6 +237,7 @@ where
             vec_val,
             idx_val,
             span,
+            elide_elem_inc,
         )
     }
 
@@ -1126,6 +1139,11 @@ where
                     params[0],
                     params[1],
                     span,
+                    // Value-use wrapper body: the projection ALWAYS materializes
+                    // (the closure protocol owes a fresh owned value), and the Vec
+                    // arrives owned and is released below — never a borrowed
+                    // projection. So the element inc is never elided here (§3.3).
+                    false,
                 )?;
                 // Release the consumed (owned) Vec — rc-checked, and AFTER the
                 // element inc inside the core, so the element survives a
@@ -1222,6 +1240,7 @@ pub(crate) fn vec_element_type(ty: &Type) -> Option<&Type> {
 /// (`emit_vec_query_into`), which build in a separate Cranelift context.
 /// Consuming the Vec (the temporary/owned release) is the CALLER's decision —
 /// not emitted here.
+#[allow(clippy::too_many_arguments)] // +1 for the §3.3 elide_elem_inc gate
 pub(crate) fn emit_vec_get_core<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -1230,6 +1249,13 @@ pub(crate) fn emit_vec_get_core<M: Module>(
     vec_val: Value,
     idx_val: Value,
     span: Span,
+    // §3.3 in-frame projection elision
+    // (`design/backend/ownership-codegen.md` §3.3): when `true` the heap-element
+    // materialization inc is SKIPPED — the read is a borrowed projection rooted
+    // in a live root (the enclosing `Apply`'s `provenance` fact). `false` ⇒ the
+    // inc is emitted verbatim (byte-identical-off, and the value-use wrapper path
+    // which always materializes).
+    elide_elem_inc: bool,
 ) -> Result<Value, CranelispError> {
     // Load len from Vec.
     let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
@@ -1271,15 +1297,21 @@ pub(crate) fn emit_vec_get_core<M: Module>(
         .ins()
         .load(types::I64, MemFlags::trusted(), elem_addr, 0);
 
-    // If element type is heap, emit RC inc on the loaded value.
-    match elem_category {
-        Some(HeapCategory::AlwaysHeap) => {
-            heap::emit_rc_inc(builder, module, elem);
+    // If element type is heap, emit RC inc on the loaded value — UNLESS this read
+    // is a borrowed projection (§3.3): then the element is a view into the still-
+    // live root and its inc is elided (the F1 machinery-tax collapse). The root's
+    // owner keeps the element alive; a consuming use of the projection
+    // materializes it (`borrowed_projection_root`).
+    if !elide_elem_inc {
+        match elem_category {
+            Some(HeapCategory::AlwaysHeap) => {
+                heap::emit_rc_inc(builder, module, elem);
+            }
+            Some(HeapCategory::Mixed) => {
+                emit_guarded_rc_inc(builder, module, elem);
+            }
+            Some(HeapCategory::NeverHeap) | None => {}
         }
-        Some(HeapCategory::Mixed) => {
-            emit_guarded_rc_inc(builder, module, elem);
-        }
-        Some(HeapCategory::NeverHeap) | None => {}
     }
 
     Ok(elem)

@@ -271,6 +271,20 @@ where
     /// `NO_LENIENT` no thunk is synthesized so this never sets and the full
     /// stack-alloc win lands.
     pub(crate) in_spark_thunk: bool,
+
+    /// §3.3 in-frame projection elision — consumer-driven
+    /// (`design/backend/ownership-codegen.md` §3.3): the span of the ONE
+    /// `vec-get` node whose heap-element materialization inc `compile_vec_get`
+    /// should SKIP, or `None`. Set (with save/restore) by
+    /// [`FnCompiler::compile_consuming_arg_list_moded`] to the span of a borrowed
+    /// projection argument (site fact `provenance`) being passed DIRECTLY into a
+    /// `Borrowed` parameter — the sole provably-safe elision: the borrowed element
+    /// is consumed in-place by the callee's borrow, never escapes the enclosing
+    /// expression, and never outlives the root's fork-join-guaranteed liveness
+    /// (the F1 machinery-tax collapse). Span-matched so exactly that read elides
+    /// and no other. `None` ⇒ every `vec-get` incs verbatim — byte-identical-off
+    /// (§2.2).
+    pub(crate) elide_vecget_span: Option<Span>,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -327,6 +341,7 @@ where
             // explicitly (`compile_lambda_body` propagates the outer flag;
             // `dependent_spark.rs` sets it directly on its dedicated inner).
             in_spark_thunk: false,
+            elide_vecget_span: None,
         }
     }
 
@@ -459,6 +474,7 @@ where
             // Gate 5 (§4.3): a top-level `defn` body is never itself a spark thunk;
             // the flag is raised only around the backend-synthesized thunk compiles.
             in_spark_thunk: false,
+            elide_vecget_span: None,
         };
 
         // Seed the function's parameters into scope + variable_types.
@@ -1504,7 +1520,15 @@ mod b34_stack_eligibility_tests {
 /// `Fresh` is sound for **any** body shape now that `join_origin` no longer
 /// collapses a partial control-flow param-return to `Fresh` (a body that returns
 /// a param on any reachable path reports `AliasOf`/`ProjectionOf`, never
-/// `Fresh`). `_body` is retained for the seam signature but no longer read.
+/// `Fresh`). A `ProjectionOf`/`AliasOf` result KEEPS the protect: the callee
+/// materializes the returned projection with an owned reference (its `vec-get`
+/// inc, an accessor call, or `protect_return_value` under cleanup targets), so a
+/// direct caller consumes it as an ordinary owned temporary — the §3.3 in-frame
+/// elision is confined to the CONSUMER seam (`compile_consuming_arg_list_moded`),
+/// never propagated across a function-return boundary (that propagation is
+/// parallel-unsound — an escaping borrowed view races a concurrent COW/free,
+/// observed in f4_sudoku). `_body` is retained for the seam signature but no
+/// longer read.
 pub(crate) fn return_is_fresh_by_summary(
     _body: &MonoExpr,
     summary: Option<&cranelisp_types::ModeSummary>,
@@ -1586,8 +1610,10 @@ mod return_protect_tests {
         assert!(!return_is_fresh_by_summary(&var_body(), None));
     }
 
-    // NEGATIVE (aliasing result modes): AliasOf / ProjectionOf keep protect —
-    // the returned value aliases a param and scope cleanup may free it.
+    // NEGATIVE (aliasing result modes): AliasOf / ProjectionOf keep protect — the
+    // callee materializes the returned projection with an owned reference (§3.3
+    // confines the in-frame elision to the consumer seam, never a function
+    // return), so a direct caller consumes it as an owned temporary.
     #[test]
     fn aliasing_result_modes_never_elide() {
         assert!(!return_is_fresh_by_summary(&apply_body(), Some(&alias0())));
