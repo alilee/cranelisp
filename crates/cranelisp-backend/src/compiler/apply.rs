@@ -138,6 +138,11 @@ where
         span: Span,
         resolved_call: Option<&ResolvedCall>,
         apply_type: Option<&cranelisp_types::Type>,
+        // B3.4 (§4.1): the NoEscape + eligibility verdict for a use-site
+        // data-constructor call, computed at the `Apply` dispatch (the sole node
+        // carrying the escape fact). Consumed only by `compile_var_apply`'s
+        // constructor arm; `false` everywhere else ⇒ today's heap path verbatim.
+        stack: bool,
     ) -> Result<Value, CranelispError> {
         // TCO check: self-recursive call in tail position -> jump to loop header.
         if self.in_tail_position
@@ -257,6 +262,10 @@ where
                         // makes a nested apply / constructor incapable of
                         // consulting this map.
                         let saved_spark = this.sparked_args.replace((args.as_ptr(), map));
+                        // B3.4: the lenient/sparked arm keeps constructions on the
+                        // heap (`stack = false`) — the sparked-arg interplay is out
+                        // of the increment-I stack scope (§4.3). Sound: declining is
+                        // always correct.
                         let result = this.dispatch_apply(
                             callee,
                             args,
@@ -264,6 +273,7 @@ where
                             resolved_call,
                             apply_type,
                             saved_tail,
+                            false,
                         );
                         this.sparked_args = saved_spark;
                         result
@@ -279,6 +289,7 @@ where
                             resolved_call,
                             apply_type,
                             saved_tail,
+                            false,
                         )
                     },
                 );
@@ -289,13 +300,14 @@ where
         // non-lenient apply does NOT touch `sparked_args`; the pointer-identity
         // guard in `maybe_force_sparked_arg` ensures its own argument slice never
         // matches an enclosing apply's installed map.
-        self.dispatch_apply(callee, args, span, resolved_call, apply_type, saved_tail)
+        self.dispatch_apply(callee, args, span, resolved_call, apply_type, saved_tail, stack)
     }
 
     /// Dispatch a (non-TCO, args-not-in-tail) application through the resolved-
     /// call / var-apply / closure-call lowering. Shared by the sequential and
     /// lenient apply paths so the lenient pre-pass reuses the *unchanged* apply
     /// lowering (lenient-eval.md §4.4 Phase 3) rather than forking it.
+    #[allow(clippy::too_many_arguments)] // +1 for the B3.4 stack-eligibility hint
     fn dispatch_apply(
         &mut self,
         callee: &MonoExpr,
@@ -304,6 +316,9 @@ where
         resolved_call: Option<&ResolvedCall>,
         apply_type: Option<&cranelisp_types::Type>,
         saved_tail: bool,
+        // B3.4 (§4.1): stack-eligibility hint for a use-site constructor call;
+        // consumed by `compile_var_apply`.
+        stack: bool,
     ) -> Result<Value, CranelispError> {
         // Check for resolved call (builtin, trait method, sig-dispatch, auto-curry).
         if let Some(resolved) = resolved_call {
@@ -318,7 +333,7 @@ where
             ..
         } = callee
         {
-            return self.compile_var_apply(name, *var_span, callee, args, span, saved_tail);
+            return self.compile_var_apply(name, *var_span, callee, args, span, saved_tail, stack);
         }
 
         // Callee is not a variable -- could be a closure call (Ring 1).
@@ -669,6 +684,7 @@ where
 
     /// Compile a function application where the callee is a Var.
     /// Dispatches between data constructor, local closure, and direct call.
+    #[allow(clippy::too_many_arguments)] // +1 for the B3.4 stack-eligibility hint
     fn compile_var_apply(
         &mut self,
         name: &Symbol,
@@ -677,6 +693,9 @@ where
         args: &[MonoExpr],
         span: Span,
         saved_tail: bool,
+        // B3.4 (§4.1): stack-eligibility hint for this call IF it is a data
+        // constructor. `false` ⇒ heap. Ignored for non-constructor callees.
+        stack: bool,
     ) -> Result<Value, CranelispError> {
         // Check if this is a data constructor call.
         if let Some((tag, field_count)) = self.data_constructor_info(name) {
@@ -698,7 +717,12 @@ where
             // For temporary args, rc=1 transfers directly into the field.
             let arg_vals = self.compile_consuming_arg_list(args)?;
             self.in_tail_position = saved_tail;
-            return self.emit_adt_construct(tag, &arg_vals, span);
+            // B3.4 (§4.1/§4.2): a NoEscape, all-scalar-payload constructor call in
+            // a non-self-recursive function places its aggregate on a Cranelift
+            // stack slot (immortal-RC header) instead of the RC heap. `stack` is
+            // the verdict from `constructor_call_stack_eligible`; `false` ⇒ heap
+            // `emit_alloc`, byte-identical to pre-B3.4.
+            return self.emit_adt_construct_stackable(tag, &arg_vals, span, stack);
         }
 
         // Check if the callee is a local variable (holding a closure value).
@@ -1664,6 +1688,12 @@ where
         // Consuming-compile fields (nullary → empty), then route through the
         // single core emitter. `emit_adt_construct` handles the nullary
         // (`iconst tag`) and data (`alloc + tag + stores`) arms.
+        //
+        // This handler compiles the SYNTHETIC constructor-function body (a
+        // `ConstrADT` node), which always returns its value to the caller ⇒
+        // heap (B3.4 §4.1 — never a stack site). The use-site construction
+        // `(Rect n n)` is an `Apply` handled by `compile_var_apply`, which is
+        // where the B3.4 stack decision is consumed.
         let field_vals = self.compile_consuming_arg_list(fields)?;
         self.emit_adt_construct(tag, &field_vals, span)
     }
@@ -1687,26 +1717,44 @@ where
         field_vals: &[Value],
         span: Span,
     ) -> Result<Value, CranelispError> {
+        // Value-position / resolved-constructor-call callers reach here without an
+        // escape verdict in hand — heap verbatim (`stack = false`).
+        self.emit_adt_construct_stackable(tag, field_vals, span, false)
+    }
+
+    /// [`emit_adt_construct`] with the B3.4 (§4.1) stack-vs-heap decision made by
+    /// the caller. `stack = true` places the data-ctor aggregate on a Cranelift
+    /// stack slot with the immortal-RC header ([`heap::emit_stack_alloc`], §4.2);
+    /// `false` is today's heap `emit_alloc`, byte-identical to pre-B3.4. Only the
+    /// allocation instruction differs — the tag/field stores and the returned
+    /// pointer contract are identical (no call-site anywhere changes for
+    /// stack-ness). The nullary arm (bare tag, no allocation) ignores `stack`.
+    pub(crate) fn emit_adt_construct_stackable(
+        &mut self,
+        tag: usize,
+        field_vals: &[Value],
+        span: Span,
+        stack: bool,
+    ) -> Result<Value, CranelispError> {
         if field_vals.is_empty() {
             // Nullary constructor: bare tag, no heap allocation.
             return Ok(self.builder.ins().iconst(types::I64, tag as i64));
         }
 
-        let alloc_id =
-            self.ctx
-                .alloc_func_id
-                .ok_or_else(|| CranelispError::CodegenError {
-                    message: "runtime/alloc not declared (need declare_intrinsics)".into(),
-                    location: ErrorLocation::from_span(span),
-                })?;
-
         let payload_size = HeapAdt::payload_size(field_vals.len()) as i64;
-        let base_ptr = heap::emit_alloc(
-            &mut self.builder,
-            self.module,
-            alloc_id,
-            payload_size,
-        );
+        let base_ptr = if stack {
+            // B3.4: NoEscape scalar-payload ADT → Cranelift stack slot (§4.1/§4.2).
+            heap::emit_stack_alloc(&mut self.builder, payload_size)
+        } else {
+            let alloc_id =
+                self.ctx
+                    .alloc_func_id
+                    .ok_or_else(|| CranelispError::CodegenError {
+                        message: "runtime/alloc not declared (need declare_intrinsics)".into(),
+                        location: ErrorLocation::from_span(span),
+                    })?;
+            heap::emit_alloc(&mut self.builder, self.module, alloc_id, payload_size)
+        };
 
         // Store tag at HeapAdt::TAG_OFFSET (16).
         let tag_val = self.builder.ins().iconst(types::I64, tag as i64);

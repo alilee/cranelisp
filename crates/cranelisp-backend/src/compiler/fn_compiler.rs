@@ -10,7 +10,7 @@ use cranelift::prelude::*;
 use cranelift_module::{FuncId, Module};
 
 use cranelisp_types::{
-    CranelispError, Defn, MonoExpr, ModuleEntry, Span, Symbol, Type,
+    CranelispError, Defn, MonoExpr, ModuleEntry, ResolvedCall, Span, Symbol, Type,
 };
 
 use crate::heap::{self, HeapCategory};
@@ -241,6 +241,18 @@ where
     /// retained (§4.4.1 carve-out). Fresh inner compilers reset it to false, so
     /// it governs only the immediate thunk's capture store, not nested closures.
     pub(crate) spark_capture_borrow: bool,
+
+    /// B3.4 gate 3 (`design/backend/ownership-codegen.md` §4.1): `true` iff the
+    /// function body being compiled contains a self-recursive call (a potential
+    /// TCO loop back-edge). When set, stack-slot placement is declined for the
+    /// WHOLE function ([`stack_eligible`] → false) — a stack slot allocated once
+    /// per frame and reused across TCO iterations would clobber a loop-carried
+    /// value. Computed once by [`body_has_self_call`] in [`compile_body`];
+    /// `false` for every inner compiler (lambda / continuation / drop-glue
+    /// bodies), which is sound (they only DECLINE more, never enable — those
+    /// bodies' own allocations are compiled with the outer decision, and inner
+    /// bodies are heap by construction pending the spark/escape gates §4.3).
+    pub(crate) fn_has_self_call: bool,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -288,6 +300,11 @@ where
             gate_counter: 0,
             suppress_spark_gate: false,
             spark_capture_borrow: false,
+            // Inner compilers (lambda / continuation / drop-glue bodies) never
+            // enable stack placement of their own (§4.1/§4.3 — those bodies are
+            // heap by construction pending the spark/escape gates); `false` is
+            // the sound default.
+            fn_has_self_call: false,
         }
     }
 
@@ -384,6 +401,12 @@ where
         // Compute last-use info for the body.
         let last_uses = heap::compute_last_uses(body);
 
+        // B3.4 gate 3 (§4.1): a self-recursive call becomes a TCO loop back-edge;
+        // a stack slot (one per frame) reused across iterations would clobber a
+        // loop-carried value. Decline stack placement for the whole function when
+        // the body self-calls (conservative — see `body_has_self_call`).
+        let fn_has_self_call = body_has_self_call(body, &defn.name);
+
         let mut compiler = FnCompiler {
             builder,
             module,
@@ -410,6 +433,7 @@ where
             gate_counter: 0,
             suppress_spark_gate: false,
             spark_capture_borrow: false,
+            fn_has_self_call,
         };
 
         // Seed the function's parameters into scope + variable_types.
@@ -592,6 +616,16 @@ where
                 ty,
                 ..
             } => {
+                // B3.4 (§4.1): a use-site data-constructor call `(Rect n n)` is
+                // an `Apply` whose result is allocated in THIS (the caller's)
+                // frame (inlined via `emit_adt_construct`). The escape fact is on
+                // the `Apply` node (dropped by this dispatch), so compute the
+                // stack-vs-heap verdict here and thread it down — the constructor
+                // arm of `compile_var_apply` is the sole consumer. `false` ⇒
+                // today's heap path verbatim. (The synthetic `ConstrADT`
+                // constructor-function body is NOT a stack site — it returns its
+                // value to the caller and stays heap.)
+                let stack = self.constructor_call_stack_eligible(expr, args);
                 let apply_type = ty.to_type();
                 self.compile_apply(
                     callee,
@@ -599,6 +633,7 @@ where
                     *span,
                     resolved_call.as_deref(),
                     Some(&apply_type),
+                    stack,
                 )
             }
             MonoExpr::Match {
@@ -646,6 +681,108 @@ where
             Some(true) => heap::RcAtomicity::NonAtomic,
             _ => heap::RcAtomicity::Atomic,
         }
+    }
+
+    /// B3.4 (`design/backend/ownership-codegen.md` §4.1): is the use-site
+    /// data-constructor call `apply` (a `MonoExpr::Apply` whose callee is a
+    /// constructor, e.g. `(Rect n n)`) eligible for a Cranelift **stack slot**
+    /// (immortal-RC sentinel, §4.2) in the caller's frame instead of the RC heap?
+    ///
+    /// The construction is inlined in the caller's frame (`emit_adt_construct`,
+    /// `apply.rs`), so the caller's escape fact — carried on this `Apply` node —
+    /// authoritatively decides whether the aggregate may live on the stack. (The
+    /// synthetic `ConstrADT` constructor-*body* is a different node that always
+    /// returns to its caller and stays heap; it never reaches this predicate.)
+    ///
+    /// **All four eligibility gates, backend-local, CONSERVATIVE by default —
+    /// when in doubt, HEAP:**
+    /// 1. **Statically sized** — always true (`HeapAdt::payload_size(n_fields)`;
+    ///    the arg/field count is fixed).
+    /// 2. **All-scalar payload** — every constructor arg (= stored field)
+    ///    classifies `NeverHeap` (Int / Bool / Float / nullary tag). A stack
+    ///    aggregate holding a heap-typed field would owe a frame-exit field
+    ///    release its drop glue never runs (§4.2 — the immortal sentinel means the
+    ///    ADT never reaches rc=0, so its drop glue never decs the field ⇒ a leak).
+    ///    The zero-obligation scalar class ships first.
+    /// 3. **Not reachable by a TCO back-edge** — declined for the whole function
+    ///    when it self-calls ([`FnCompiler::fn_has_self_call`] / `body_has_self_call`).
+    /// 4. **Extern-produced values are ineligible by construction** — an inlined
+    ///    constructor allocation is backend-emitted, not an extern `alloc_with_rc`
+    ///    body; there is no allocator seam to redirect in increment I.
+    ///
+    /// The `escapes = Some(false)` precondition is the analysis' NoEscape verdict
+    /// (the FIRST hard consumer of the escape fact). `Some(true)` / `None`
+    /// (analysis off) ⇒ heap — so `CRANELISP_NO_OWNERSHIP` is byte-identical to
+    /// pre-B3.4 (no node carries `Some(false)`, this returns false everywhere).
+    ///
+    /// **Downstream guard:** the returned `bool` is a *hint*; it only becomes a
+    /// stack allocation if `compile_var_apply` confirms the callee is actually a
+    /// data constructor (`data_constructor_info`). For any other `Apply` shape
+    /// the hint is ignored — the aggregate emission (`emit_adt_construct`) is not
+    /// reached.
+    pub(crate) fn constructor_call_stack_eligible(
+        &self,
+        apply: &MonoExpr,
+        args: &[MonoExpr],
+    ) -> bool {
+        // ===================================================================
+        // B3.4 BLOCKED at the conservative point — the escape fact is NOT yet a
+        // sound hard-UAF decision (FIXME 0523, `target: /typecheck`).
+        //
+        // B3.4 is the FIRST hard consumer of `escapes = Some(false)`. Consuming
+        // it surfaced a soundness gap in the ownership escape analysis: a value
+        // **captured by a closure** is marked `escapes = Some(false)` even when
+        // the closure escapes the frame — INTRA-procedurally (`(let [p (Rect n
+        // n)] (fn [] … p …))` returned) AND INTER-procedurally (`(f (Rect n n))`
+        // where a callee `f` captures its arg into a returned closure). Both were
+        // proven to stack-allocate a value that then dangles (a "match failed"
+        // runtime panic once the popped frame is reused — a hard UAF, masked as a
+        // false-green when the frame is not yet clobbered).
+        //
+        // The backend CANNOT gate around this: the interprocedural case has no
+        // closure form in the constructing function's own body, so no syntactic
+        // backend scan detects it, and re-deriving interprocedural escape would
+        // violate the narrowness counterweight (the backend performs no escape
+        // reasoning of its own — §4.3). The analysis is sound for the return /
+        // store-into-ADT / call-through / vec-store escape edges (all verified
+        // `Some(true)`); ONLY closure/spark capture is unsound.
+        //
+        // Per the design's hard-UAF discipline (`memory/feedback_verify_fix_not
+        // _symptom_absence`), stack allocation stays OFF until the analysis
+        // treats closure/spark capture as an escape edge (R6
+        // suspension-points-as-escape-edges, spine §4.3). When FIXME 0523 lands,
+        // delete this early return — the complete mechanism (below + the
+        // `emit_stack_alloc` immortal-header emission + the four gates) activates
+        // unchanged. Byte-identical while OFF: this returns `false` everywhere, so
+        // no site stack-allocates.
+        if !STACK_ALLOC_ESCAPE_FACT_SOUND {
+            return false;
+        }
+        // Precondition: the analysis must have proved this allocation NoEscape.
+        if node_escapes(apply) != Some(false) {
+            return false;
+        }
+        // Gate 3: decline for any self-recursive (TCO-back-edge-bearing) function.
+        if self.fn_has_self_call {
+            return false;
+        }
+        // Gate 1 (statically sized: always) + Gate 2 (all-scalar payload) + Gate 4
+        // (backend-emitted). A zero-arg (nullary) constructor is a bare tag with no
+        // allocation, so `all` is vacuously true but the emission never reaches a
+        // stack slot — harmless.
+        !args.is_empty() && args.iter().all(|a| self.node_is_scalar(a.ty()))
+    }
+
+    /// B3.4 gate 2 helper: does `ty` classify as a scalar (`NeverHeap`) payload —
+    /// Int / Bool / Float / a nullary-only ADT (bare tag)? `AlwaysHeap` and
+    /// `Mixed` both fail (conservative: a `Mixed` field may be a live heap
+    /// pointer whose reference the stack aggregate's never-run drop glue would
+    /// leak).
+    fn node_is_scalar(&self, ty: &cranelisp_types::ConcreteType) -> bool {
+        matches!(
+            HeapCategory::classify(ty, Some(self.ctx.symbol_tables)),
+            HeapCategory::NeverHeap
+        )
     }
 
     /// Allocate a fresh Cranelift Variable index.
@@ -987,6 +1124,220 @@ pub(crate) fn node_confined(node: &MonoExpr) -> Option<bool> {
         | MonoExpr::ParBind { .. }
         | MonoExpr::LaunchContinue { .. } => None,
     }
+}
+
+/// B3.4 activation flag (`design/backend/ownership-codegen.md` §4; FIXME 0523).
+/// `false` holds stack-slot allocation at the conservative all-heap point while
+/// the ownership escape analysis is UNSOUND for closure/spark capture (a
+/// captured value is marked `escapes = Some(false)` even when its closure
+/// escapes — a hard UAF; see [`FnCompiler::constructor_call_stack_eligible`]).
+/// The full mechanism (gates + `emit_stack_alloc` immortal-header emission) is
+/// landed and unit-tested; flip this to `true` in the change-set that resolves
+/// FIXME 0523 (analysis treats closure/spark capture as an escape edge) and the
+/// mechanism activates unchanged. `false` ⇒ byte-identical to pre-B3.4.
+const STACK_ALLOC_ESCAPE_FACT_SOUND: bool = false;
+
+/// B3.4 (`design/backend/ownership-codegen.md` §4.1): read the `escapes` site
+/// fact off a [`MonoExpr`] node. Only the five allocation/capture-producing
+/// variants carry the fact (same set as [`node_confined`]); every other variant
+/// has no allocation of its own to place and answers `None` (⇒ the conservative
+/// heap path). `Some(false)` (NoEscape) is the eligibility precondition for
+/// stack-slot placement; `Some(true)` (escapes) / `None` (fact absent / analysis
+/// off) ⇒ heap, verbatim today. Kept a total match so a new fact-bearing variant
+/// is a compile error here.
+pub(crate) fn node_escapes(node: &MonoExpr) -> Option<bool> {
+    match node {
+        MonoExpr::StringLit { escapes, .. }
+        | MonoExpr::Lambda { escapes, .. }
+        | MonoExpr::Apply { escapes, .. }
+        | MonoExpr::VecLit { escapes, .. }
+        | MonoExpr::ConstrADT { escapes, .. } => *escapes,
+        MonoExpr::IntLit { .. }
+        | MonoExpr::FloatLit { .. }
+        | MonoExpr::BoolLit { .. }
+        | MonoExpr::Var { .. }
+        | MonoExpr::Let { .. }
+        | MonoExpr::If { .. }
+        | MonoExpr::Match { .. }
+        | MonoExpr::Trace { .. }
+        | MonoExpr::ParBind { .. }
+        | MonoExpr::LaunchContinue { .. } => None,
+    }
+}
+
+/// B3.4 gate 3 (`design/backend/ownership-codegen.md` §4.1): does `body` contain
+/// a **self-recursive call** that the TCO lowering turns into a loop back-edge?
+///
+/// A stack slot is allocated **once per frame**; a TCO loop reuses the frame
+/// across iterations via a jump to the loop header. If a stack-allocated value
+/// flows into a `recur` argument it becomes loop-carried — live across the
+/// back-edge — while the same slot site is re-reached and re-initialised on the
+/// next iteration, clobbering the value the previous iteration handed forward
+/// (a hard use-after-free the RC-balance guards cannot catch, per
+/// `memory/feedback_verify_fix_not_symptom_absence`). The escape fact is
+/// per-*frame*, not per-*iteration*, so it does not distinguish this case.
+///
+/// **First-landing gate (conservative, always sound to decline):** if the
+/// function body contains ANY self-referential call — call- or value-position,
+/// tail or not — decline stack allocation for the WHOLE function. This
+/// over-approximates the set of TCO back-edges (a non-tail self-call is a real
+/// call, not a back-edge, and is harmless — but declining is free correctness),
+/// which eliminates any chance of a per-flow scanner error placing a
+/// loop-carried value on the stack. Matches the two self-call shapes the TCO
+/// lowering detects (`compile_apply`): a `Var` callee naming the function, or a
+/// `SigDispatch` whose mangled name is the function. The sharper per-flow check
+/// ("only decline when the value flows into a `recur` arg") is a noted follow-on.
+pub(crate) fn body_has_self_call(body: &MonoExpr, fn_name: &Symbol) -> bool {
+    use cranelisp_types::MonoExpr as E;
+    fn is_self(callee: &E, resolved: Option<&ResolvedCall>, fn_name: &Symbol) -> bool {
+        if let E::Var { name, .. } = callee
+            && name == fn_name
+        {
+            return true;
+        }
+        matches!(
+            resolved,
+            Some(ResolvedCall::SigDispatch { mangled_name }) if mangled_name.as_ref() == fn_name.as_ref()
+        )
+    }
+    fn walk(e: &E, fn_name: &Symbol) -> bool {
+        match e {
+            E::Apply { callee, args, resolved_call, .. } => {
+                is_self(callee, resolved_call.as_deref(), fn_name)
+                    || walk(callee, fn_name)
+                    || args.iter().any(|a| walk(a, fn_name))
+            }
+            E::Let { bindings, body, .. } => {
+                bindings.iter().any(|(_, v)| walk(v, fn_name)) || walk(body, fn_name)
+            }
+            E::If { cond, then_branch, else_branch, .. } => {
+                walk(cond, fn_name) || walk(then_branch, fn_name) || walk(else_branch, fn_name)
+            }
+            E::Lambda { body, .. } => walk(body, fn_name),
+            E::Match { scrutinee, arms, .. } => {
+                walk(scrutinee, fn_name) || arms.iter().any(|a| walk(&a.body, fn_name))
+            }
+            E::VecLit { elements, .. } => elements.iter().any(|el| walk(el, fn_name)),
+            E::Trace { body, .. } => walk(body, fn_name),
+            E::ParBind { bindings, body, .. } => {
+                bindings.iter().any(|(_, v)| walk(v, fn_name)) || walk(body, fn_name)
+            }
+            E::LaunchContinue { launched, continuation, .. } => {
+                walk(launched, fn_name) || walk(continuation, fn_name)
+            }
+            E::ConstrADT { fields, .. } => fields.iter().any(|f| walk(f, fn_name)),
+            E::IntLit { .. }
+            | E::FloatLit { .. }
+            | E::BoolLit { .. }
+            | E::StringLit { .. }
+            | E::Var { .. } => false,
+        }
+    }
+    walk(body, fn_name)
+}
+
+#[cfg(test)]
+mod b34_stack_eligibility_tests {
+    //! B3.4 stack-slot eligibility gate predicates (Principle 23 —
+    //! `design/backend/ownership-codegen.md` §13.5 stack-slots row): the pure,
+    //! backend-local halves of `constructor_call_stack_eligible` —
+    //! `node_escapes` (the NoEscape precondition, total over the variant set) and
+    //! `body_has_self_call` (gate 3, the TCO-back-edge decline). The composed
+    //! method is held OFF at the conservative point pending FIXME 0523; these
+    //! pin the gates that activate when it flips.
+    use super::{body_has_self_call, node_escapes, STACK_ALLOC_ESCAPE_FACT_SOUND};
+    use cranelisp_types::{
+        ConcreteType, FQTypeName, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol,
+        TypeName,
+    };
+
+    fn int() -> ConcreteType {
+        ConcreteType::Int
+    }
+    fn var(name: &str) -> MonoExpr {
+        MonoExpr::Var { name: Symbol::from(name), span: Span::new(0, 1), resolved_call: None, ty: int() }
+    }
+    fn constr(escapes: Option<bool>) -> MonoExpr {
+        MonoExpr::ConstrADT {
+            type_name: FQTypeName::new(ModuleFullPath::from("m"), TypeName::from("T")),
+            tag: 0, fields: vec![], span: Span::new(0, 1), ty: int(),
+            escapes, confined: None, unique_static: None,
+        }
+    }
+    /// An `(f args…)` apply with the given callee name, escape fact, and resolved call.
+    fn apply(callee: &str, args: Vec<MonoExpr>, escapes: Option<bool>, resolved: Option<ResolvedCall>) -> MonoExpr {
+        MonoExpr::Apply {
+            callee: Box::new(var(callee)), args, span: Span::new(0, 3),
+            resolved_call: resolved.map(Box::new), ty: int(),
+            escapes, confined: None, unique_static: None, provenance: None,
+        }
+    }
+
+    // --- node_escapes: total match, fact-bearing vs non-bearing variants ------
+    #[test]
+    fn escapes_reads_the_five_fact_bearing_variants() {
+        // spec: design/backend/ownership-codegen.md §4.1 — escapes on ConstrADT/Apply/…
+        assert_eq!(node_escapes(&constr(Some(false))), Some(false));
+        assert_eq!(node_escapes(&constr(Some(true))), Some(true));
+        assert_eq!(node_escapes(&constr(None)), None);
+        assert_eq!(node_escapes(&apply("f", vec![], Some(false), None)), Some(false));
+        assert_eq!(
+            node_escapes(&MonoExpr::VecLit { elements: vec![], span: Span::new(0, 1), ty: int(), escapes: Some(false), confined: None, unique_static: None }),
+            Some(false)
+        );
+        assert_eq!(
+            node_escapes(&MonoExpr::Lambda { params: vec![], body: Box::new(var("x")), span: Span::new(0, 1), ty: ConcreteType::Fn(vec![], Box::new(int())), escapes: Some(true), confined: None, unique_static: None }),
+            Some(true)
+        );
+    }
+    #[test]
+    fn escapes_is_none_for_non_allocating_variants() {
+        // spec: design/backend/ownership-codegen.md §4.1 — non-fact-bearing ⇒ None ⇒ heap
+        assert_eq!(node_escapes(&var("v")), None);
+        assert_eq!(node_escapes(&MonoExpr::IntLit { value: 0, span: Span::new(0, 1), ty: int() }), None);
+    }
+
+    // --- body_has_self_call (gate 3): the TCO-back-edge whole-function decline --
+    #[test]
+    fn detects_direct_self_call() {
+        // spec: design/backend/ownership-codegen.md §4.1 gate 3 — self-call present
+        let f = Symbol::from("f");
+        assert!(body_has_self_call(&apply("f", vec![], None, None), &f));
+    }
+    #[test]
+    fn detects_self_call_nested_in_let_if_match_and_arg() {
+        let f = Symbol::from("f");
+        let call = || apply("f", vec![], None, None);
+        // in a let body
+        assert!(body_has_self_call(
+            &MonoExpr::Let { bindings: vec![], body: Box::new(call()), span: Span::new(0, 4), ty: int() }, &f));
+        // in an if branch
+        assert!(body_has_self_call(
+            &MonoExpr::If { cond: Box::new(var("c")), then_branch: Box::new(var("a")), else_branch: Box::new(call()), span: Span::new(0, 5), ty: int() }, &f));
+        // in an ARGUMENT position (non-tail self-call — still declined, conservative)
+        assert!(body_has_self_call(&apply("g", vec![call()], None, None), &f));
+    }
+    #[test]
+    fn detects_sig_dispatch_mangled_self_call() {
+        // spec: design/backend/ownership-codegen.md §4.1 gate 3 — mono self-call by mangled name
+        let f = Symbol::from("f$Int");
+        let e = apply("f", vec![], None, Some(ResolvedCall::SigDispatch { mangled_name: JitSymbol::from("f$Int") }));
+        assert!(body_has_self_call(&e, &f));
+    }
+    #[test]
+    fn no_self_call_for_foreign_callee() {
+        // spec: design/backend/ownership-codegen.md §4.1 gate 3 — a different name is not self
+        let f = Symbol::from("f");
+        assert!(!body_has_self_call(&apply("g", vec![var("x")], None, None), &f));
+        assert!(!body_has_self_call(&var("x"), &f));
+    }
+
+    // --- the composed method is gated OFF at the conservative point ------------
+    // spec: design/backend/ownership-codegen.md §4 — B3.4 blocked (FIXME 0523).
+    // The escape fact is unsound for closure/spark capture; stack allocation stays
+    // OFF (byte-identical to pre-B3.4) until the analysis is fixed. Compile-time
+    // guard so a stray flip cannot land without this test file being revisited.
+    const _: () = assert!(!STACK_ALLOC_ESCAPE_FACT_SOUND);
 }
 
 /// B3.2 borrow-elision return-protect decision

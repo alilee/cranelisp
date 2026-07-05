@@ -411,6 +411,83 @@ lazily-synthesized Decision-24 value wrapper; join-to-Owned rejected). The codeg
 
 ## §4. Stack/region mechanics for `NoEscape` (spine §10 item 8)
 
+> **AS-BUILT — B3.4 Wave 11 (this change-set): mechanism LANDED, HELD OFF at the
+> conservative point pending FIXME 0523 (escape-fact soundness).** B3.4 is the
+> FIRST hard consumer of the `escapes` site fact. The complete mechanism is
+> implemented and unit-tested; a single compile-time flag —
+> `STACK_ALLOC_ESCAPE_FACT_SOUND = false` (`fn_compiler.rs`) — holds it at the
+> all-heap conservative point (byte-identical to pre-B3.4). Seams:
+> - **Mechanism (`heap.rs`)** — `emit_stack_alloc(builder, payload_size)`:
+>   `create_sized_stack_slot(HeapHeader::SIZE + payload_size, align 8)` +
+>   `stack_addr` + header init (alloc_size @0, **`IMMORTAL_RC = 1<<62` @RC_OFFSET**,
+>   §4.2). Byte-identical layout to `alloc_with_rc` except the sentinel, so every
+>   downstream tag/field store and every RC/COW/drop path runs identically against
+>   the stack address — no call-site changes for stack-ness. Plus a
+>   `STACK_SLOT_HITS` codegen-time counter (`stack_slot_hits()`), the B3.4 h2 half.
+> - **Consumption site** — the escape fact lives on the **use-site `Apply`** node
+>   `(Rect n n)` (allocated in the caller's frame, inlined via `emit_adt_construct`
+>   at `apply.rs`), NOT on the synthetic `ConstrADT` constructor-*body* (which
+>   always returns to its caller and stays heap). So the verdict is computed at the
+>   `Apply` dispatch (`FnCompiler::constructor_call_stack_eligible`) and threaded
+>   `compile_apply → dispatch_apply → compile_var_apply →
+>   emit_adt_construct_stackable`. This first-consumer wiring gap is exactly the
+>   B3.2→0520 parallel (the fact is annotated one node away from where the naive
+>   reading expects it).
+> - **The four eligibility gates (`constructor_call_stack_eligible`), all
+>   backend-local, all CONSERVATIVE (when in doubt, HEAP):** (1) statically sized
+>   — always true for a constructor call; (2) all-scalar payload — every arg/field
+>   classifies `NeverHeap` (`node_is_scalar`); (3) not reachable by a TCO
+>   back-edge — declined for the WHOLE function when it self-calls
+>   (`body_has_self_call` / `fn_has_self_call`, over-approximating the back-edge
+>   set); (4) extern-produced ineligible — an inlined constructor is
+>   backend-emitted, not an `alloc_with_rc` body.
+> - **Scope of the first landing:** only scalar-payload **ADT constructor calls**.
+>   `Lambda` closures and `VecLit` DECLINED (heap): `VecLit` allocates its
+>   struct+buffer through the `runtime/vec_new` extern (gate-4-adjacent; needs
+>   inline stack construction), closures need the scalar-capture gate + the §4.3
+>   spark-escape audit. Declining is always sound. The vec-mutation heuristic
+>   (§4.2 — decline vecs with in-frame `vec-set`/`vec-push`) and the §4.3
+>   spark-capture handling ride the `VecLit`/`Lambda` enablement, deferred with them.
+>
+> **THE BLOCKER (FIXME 0523, `target: /typecheck`): the escape fact is UNSOUND for
+> closure capture.** A value captured by a closure is marked `escapes = Some(false)`
+> even when the closure escapes the frame — proven BOTH intra-procedurally
+> (`(let [p (Rect n n)] (fn [] … p …))` returned) AND inter-procedurally
+> (`(f (Rect n n))` where a callee captures its arg into a returned closure — `f`
+> has no closure in its own body, so no backend-local gate can catch it). Both
+> stack-allocate and DANGLE — verified behaviorally as a `runtime panic: match
+> failed` once the popped frame is reused (a false-green correct value without the
+> reuse). The analysis IS sound for return / store-into-ADT / call-through /
+> vec-store escape edges (all verified `Some(true)`); ONLY closure/spark capture is
+> unsound. The backend CANNOT gate around the inter-procedural case (it would
+> require inter-procedural escape reasoning — the narrowness counterweight forbids
+> it), so the mechanism stays OFF until the analysis treats closure/spark capture
+> as an escape edge (spine §R6). Flip `STACK_ALLOC_ESCAPE_FACT_SOUND = true` in the
+> change-set that resolves 0523 and the mechanism activates unchanged.
+>
+> **Proof (this change-set):** byte-identical-off HOLDS trivially (flag off ⇒ no
+> site stack-allocates ⇒ pre-B3.4 emission). With the flag momentarily forced on
+> during verification: the win fires (a NoEscape scalar ADT read locally emits
+> `explicit_slot 40` + `stack_addr` + the `iconst 0x4000_0000_0000_0000` immortal
+> header; value-correct under `MALLOC_PERTURB_` × 20 seeds) and every adversarial
+> non-eligible shape stays heap (escaping/returned ADT, heap-typed-field ADT,
+> TCO-loop local + loop-carried ADT, extern-produced) — EXCEPT the closure-capture
+> killers, which is the 0523 finding above. Unit matrix: `heap::stack_slot_b34_tests`
+> (emission + immortal header + counter) + `fn_compiler::b34_stack_eligibility_tests`
+> (`node_escapes` total match; `body_has_self_call` gate-3 scenarios).
+>
+> **h2 disposition — STAYS RED (coordination question, not crossed).** The h2 guard
+> asserts the process-exit `[RC_STATS]` line contains `"stack_slot"`, printed by
+> `cranelisp-intrinsics::rc::print_rc_stats`. The `STACK_SLOT_HITS` tally is a
+> backend **codegen-time** counter; `cranelisp-intrinsics` does **not** depend on
+> `cranelisp-backend` (the edge is backend→intrinsics only), so the print surface
+> cannot read it without a reverse/cyclic dependency — and codegen-time vs runtime
+> (and `--run` vs `--link`, which are different processes) makes it a genuine
+> design decision on WHERE per-mechanism counters live and how they reach the
+> runtime print surface (same coordination B3.3 flagged for the non-atomic-share
+> counter). Backend counter wired; h2 left RED; the cross-crate/design question is
+> reported to `/sprint` (likely an `/arch` + `cranelisp-intrinsics` touch).
+
 ### 4.1 Increment I — Cranelift stack slots for the statically-sized, scalar-payload class
 
 Today the backend stack-allocates nothing (sole `create_sized_stack_slot` use: the trace

@@ -348,6 +348,23 @@ mod rc_atomicity_b33_tests {
     // probe route through the SAME `use_nonatomic_arm` decision point (one
     // code path, two gates — Principle 7), verified by construction above.
 
+    // --- the codegen-time stack-slot-hit counter (h2 backend half, B3.4) ---
+    #[test]
+    fn stack_slot_hits_counter_tallies_emitted_slots() {
+        // spec: design/backend/ownership-codegen.md §11 — backend-side stack-slot counter
+        use crate::heap::{emit_stack_alloc, stack_slot_hits};
+        let h0 = stack_slot_hits();
+        let _ = clif_of(|b, _m, _p| {
+            let _ = emit_stack_alloc(b, crate::heap::HeapAdt::payload_size(2) as i64);
+        });
+        assert_eq!(stack_slot_hits(), h0 + 1, "one stack alloc must advance the counter");
+        let _ = clif_of(|b, _m, _p| {
+            let _ = emit_stack_alloc(b, crate::heap::HeapAdt::payload_size(1) as i64);
+            let _ = emit_stack_alloc(b, crate::heap::HeapAdt::payload_size(3) as i64);
+        });
+        assert_eq!(stack_slot_hits(), h0 + 3, "two more stack allocs must advance by 2");
+    }
+
     // --- the codegen-time non-atomic-op-share counter (h2 backend half) ---
     #[test]
     fn nonatomic_share_counter_tallies_emitted_ops() {
@@ -365,4 +382,81 @@ mod rc_atomicity_b33_tests {
         assert_eq!(na2, na1 + 1, "a NonAtomic emit must advance the non-atomic tally");
         let _ = heap::use_nonatomic_arm; // keep the shared decision point referenced
     }
+}
+
+// ===========================================================================
+// B3.4 stack-slot emission mechanism (design/backend/ownership-codegen.md
+// §4.1/§4.2): `emit_stack_alloc` places a statically-sized, scalar-payload,
+// NoEscape aggregate on a Cranelift stack slot with an IMMORTAL-RC header, so
+// the existing RC/COW machinery composes untouched. This module pins the
+// EMISSION mechanism at its seam (the consumption is gated OFF at the
+// conservative point pending FIXME 0523 — the escape-fact soundness gap). When
+// 0523 lands and the gate flips, this mechanism activates unchanged.
+// ===========================================================================
+#[cfg(test)]
+mod stack_slot_b34_tests {
+    use crate::heap::{emit_stack_alloc, HeapAdt, IMMORTAL_RC};
+    use cranelisp_types::HeapHeader;
+    use cranelift::prelude::*;
+
+    /// Build a trivial function, run `emit_stack_alloc` in it, return the CLIF.
+    fn clif_of(emit: impl FnOnce(&mut FunctionBuilder) -> Value) -> String {
+        let mut fbc = FunctionBuilderContext::new();
+        let mut func = cranelift::codegen::ir::Function::new();
+        {
+            let mut fb = FunctionBuilder::new(&mut func, &mut fbc);
+            let entry = fb.create_block();
+            fb.switch_to_block(entry);
+            fb.seal_block(entry);
+            let v = emit(&mut fb);
+            fb.ins().return_(&[v]);
+            fb.finalize();
+        }
+        func.display().to_string()
+    }
+
+    // spec: design/backend/ownership-codegen.md §4.1 — stack slot instead of runtime/alloc
+    #[test]
+    fn emits_explicit_slot_and_stack_addr_not_a_call() {
+        let clif = clif_of(|b| emit_stack_alloc(b, HeapAdt::payload_size(2) as i64));
+        assert!(clif.contains("explicit_slot"), "must declare an explicit stack slot:\n{clif}");
+        assert!(clif.contains("stack_addr"), "must take the slot's address:\n{clif}");
+        assert!(!clif.contains("call fn"), "stack alloc must NOT call runtime/alloc:\n{clif}");
+    }
+
+    // spec: design/backend/ownership-codegen.md §4.1 — slot size = header + payload
+    #[test]
+    fn slot_size_is_header_plus_payload() {
+        // 2-field ADT: HeapHeader(16) + payload_size(2)=24 → explicit_slot 40.
+        let total = HeapHeader::SIZE + HeapAdt::payload_size(2);
+        assert_eq!(total, 40);
+        let clif = clif_of(|b| emit_stack_alloc(b, HeapAdt::payload_size(2) as i64));
+        assert!(clif.contains("explicit_slot 40"), "slot must be header+payload bytes:\n{clif}");
+    }
+
+    // spec: design/backend/ownership-codegen.md §4.2 — immortal-RC sentinel header
+    #[test]
+    fn header_initialises_alloc_size_and_immortal_rc() {
+        let clif = clif_of(|b| emit_stack_alloc(b, HeapAdt::payload_size(2) as i64));
+        // alloc_size (total=40) stored at offset 0; IMMORTAL_RC stored at +8.
+        assert!(clif.contains("iconst.i64 40"), "must iconst the total size (40):\n{clif}");
+        // IMMORTAL_RC = 1<<62; Cranelift prints it as a hex immediate.
+        assert_eq!(IMMORTAL_RC, 1i64 << 62);
+        assert!(
+            clif.contains("0x4000_0000_0000_0000"),
+            "must iconst the IMMORTAL_RC sentinel (1<<62) for the rc field:\n{clif}"
+        );
+        // Two header stores at the header offsets (alloc_size@0, rc@8).
+        let stores = clif.matches("store").count();
+        assert!(stores >= 2, "must store both header fields:\n{clif}");
+    }
+
+    // spec: design/backend/ownership-codegen.md §4.2 — sentinel is far above the
+    // nullary-tag threshold AND clear of i64 overflow under +1 drift. Compile-time
+    // invariants (mirrors heap.rs's `const _: () = assert!(...)` layout guards).
+    const _: () = assert!(IMMORTAL_RC == 1i64 << 62);
+    const _: () = assert!(IMMORTAL_RC > crate::heap::NULLARY_THRESHOLD_I64);
+    // Never satisfies the free trigger (old==1) or the COW unique trigger (rc==1),
+    // and stays clear of i64::MAX under bounded +1 drift.
+    const _: () = assert!(IMMORTAL_RC != 1 && IMMORTAL_RC < i64::MAX - 1_000_000);
 }
