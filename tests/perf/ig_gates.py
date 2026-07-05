@@ -24,7 +24,11 @@ Gates implemented (tests/plan/s100-ownership-verification.md §2.2):
   I-G4  F2/F3 N-worker wall+user median: ≤ +5% vs toggle-off (F4: report-only
         distribution — never a single-number gate, §5 limit 7)
   I-G5  small-case overhead. Runtime: F2/F3 serial + 1-worker wall+user
-        median ≤ +3% (the resolution-bearing fixtures); F1/F4-easy REPORT-ONLY
+        median ≤ +3% (the resolution-bearing fixtures), EXCEPT density-declined
+        cells (B4 declines dense speculative sparks — currently only
+        f3/1worker): those grade user/CPU ≤+3% and print the 1-worker wall as a
+        VISIBLE user-accepted-trade line (Phase-7 ruling 2026-07-05, §2.2.1);
+        F1/F4-easy REPORT-ONLY
         (<60ms total wall → process-startup-dominated, pass5 delta below the
         noise floor; gross-regression tripwire ≤ +25% only). PLUS the
         compile-time probe (gap G-7): cold-cache --run-to-exit over the
@@ -224,13 +228,38 @@ def main():
         ok, parts, reports = True, [], []
         # Graded lanes: the resolution-bearing fixtures (~450-490ms wall) where
         # a ≤+3% bar is honestly measurable.
+        #
+        # Density-declined cells (S102 Wave-18; USER Phase-7 ruling 2026-07-05:
+        # "perfectly reasonable tradeoff. reframe i-g5 and keep the gains").
+        # B4's static alloc/RC-density admission axis DECLINES dense speculative
+        # sparks to the serial arm. On f3_inverted_search that kills parallel
+        # over-sparking contention (N-worker wall -82%, graded by I-G4) and drops
+        # user CPU everywhere (-46%), at the documented, user-ACCEPTED cost of
+        # forgoing eager speculation on the 1-worker critical path (wall +~6%).
+        # The 1-worker config is a measurement baseline, not a production mode.
+        # For THIS cell the acceptance property is CPU/user (must drop-or-hold
+        # ≤+3% — the anti-false-green guard: a mechanism that moved cost into CPU
+        # rather than removing it would trip here) PLUS serial wall (graded
+        # normally below). The 1-worker WALL is printed as an accepted-trade
+        # line — VISIBLE, not graded. The ordinary ≤+3% wall bar stays intact for
+        # every other (fixture,config), so this does NOT mask future regressions
+        # on non-density-declined workloads. See §2.2.1 of
+        # tests/plan/s100-ownership-verification.md.
+        DENSITY_DECLINED = {("f3_inverted_search", "1worker")}
         for fx in ("f2_contention", "f3_inverted_search"):
             for cfg in ("serial", "1worker"):
                 won, uon, _, _ = m.hires_median(binp, files[fx], cfg, args.reps, off=False)
                 woff, uoff, _, _ = m.hires_median(binp, files[fx], cfg, args.reps, off=True)
                 dw, du = pct(won, woff), pct(uon, uoff)
-                parts.append(f"{fx}/{cfg}: wall {dw:+.1f}% user {du:+.1f}%")
-                ok &= dw <= 3.0 and du <= 3.0
+                if (fx, cfg) in DENSITY_DECLINED:
+                    # Grade CPU/user (the density-decline dividend); keep the
+                    # user-accepted wall regression VISIBLE but ungraded.
+                    parts.append(f"{fx}/{cfg}: wall {dw:+.1f}% [accepted trade — "
+                                 f"density-declined spark, §2.2.1] user {du:+.1f}%")
+                    ok &= du <= 3.0
+                else:
+                    parts.append(f"{fx}/{cfg}: wall {dw:+.1f}% user {du:+.1f}%")
+                    ok &= dw <= 3.0 and du <= 3.0
         # Report-only lanes: F1 (~18ms) and F4-easy (~50ms) are process-startup-
         # dominated; the pass5 delta is below the wall noise floor, so a ≤+3%
         # gate cannot honestly resolve it (even hires medians swing several %
@@ -245,7 +274,9 @@ def main():
                 dw, du = pct(won, woff), pct(uon, uoff)
                 reports.append(f"{fx}/{cfg}: wall {dw:+.1f}% user {du:+.1f}%")
                 ok &= dw <= 25.0  # gross-regression tripwire only
-        verdict("I-G5/runtime", ok, "; ".join(parts) + " (graded bar ≤ +3%); "
+        verdict("I-G5/runtime", ok, "; ".join(parts) + " (graded bar ≤ +3% "
+                "wall+user; density-declined cells grade user only — the "
+                "1-worker wall is a user-accepted trade, §2.2.1); "
                 "report-only <60ms startup-dominated (tripwire ≤+25%): "
                 + "; ".join(reports))
 

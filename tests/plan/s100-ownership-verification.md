@@ -116,7 +116,7 @@ specification: §6.1.
 | **I-G2 (attribution honesty)** | F2/F3/F4 rc_inc | **Expected essentially unchanged** (within 1% of B2/B3): the 170M term lives inside the `vec-set-copy`/`vec-push-copy` Rust bodies (backend §5.2 table) and is a write-path/increment-II target. This is an assertion, not a concession — if increment I *does* move it, the attribution model is wrong and acceptance halts for re-diagnosis. |
 | **I-G3 (confinement correctness pin)** | per-mechanism counters on F2 | The shared board's cell classifies **Confined** (typecheck §5.3's F2 discharge) — asserted via the ownership-trace/counter hooks (§3.7), i.e. the surviving parent-side inline ops on it emit non-atomic. This is the designed attack on the S99 (b) shape and must be verified as a *classification*, independent of wall-clock. |
 | **I-G4 (parallel non-regression)** | F2/F3 N-worker wall+user, median-of-7 | ≤ +5% vs same-HEAD toggle-off. (Increment I is not expected to *cure* F2; it must not worsen it.) F4: distribution report only. |
-| **I-G5 (small-case overhead)** | F1–F4 serial + 1-worker, toggle-on vs toggle-off | wall+user median ≤ +3%, spreads overlapping-or-better. Plus batch compile-time of the fixture corpus (cold cache, `--run` to first output) ≤ +10% — the pass5 structural budget (typecheck §3.4). |
+| **I-G5 (small-case overhead)** | F1–F4 serial + 1-worker, toggle-on vs toggle-off | wall+user median ≤ +3%, spreads overlapping-or-better — EXCEPT density-declined cells (B4 declines dense speculative sparks; currently only f3/1worker), which grade user/CPU ≤+3% and print the 1-worker wall as a VISIBLE user-accepted-trade line (§2.2.1a). Plus batch compile-time of the fixture corpus (cold cache, `--run` to first output) ≤ +10% — the pass5 structural budget (typecheck §3.4). |
 | **I-G6 (interactive latency)** | L-D1 REPL turn lane | body-only redefinition turn ≤ 1.10× toggle-off median; ABI-changing turn reported with cone size (no numeric gate at first landing — the cone is the same set R3 must recompile anyway; typecheck §3.4). |
 | **I-G7 (stack/region)** | alloc counter on the stack-slot micro-fixture (statically-sized scalar-payload ADT/closure temporaries in a hot loop) | heap allocs at the eligible sites → 0 (stack-slot-hit counter = loop count); F-series alloc counts reported (F2's 2-allocs-per-copy are escaping COW copies — not increment-I-eligible, expected unchanged; stated so the gate is honest). |
 
@@ -237,6 +237,74 @@ SYS_BIN for the `cwd=tempdir` compile probe, signal-only crash guard);
 perf_counter + `os.wait4` rusage; existing `/usr/bin/time` helpers untouched,
 so the S99 record is preserved). The harness is a standalone perf tool,
 outside canonical `cargo nextest run` — no interaction with the suite baseline.
+
+#### 2.2.1a B4 accepted-trade reframe (S102 Wave-18 → user Phase-7 ruling, 2026-07-05)
+
+**This is categorically different from the three reconciliations above.** Those
+cured **false negatives** — the gate mis-measured a behaviour that was actually
+sound. This one records a **REAL regression the user explicitly chose to
+accept.** The distinction is load-bearing: the reframe does NOT erase the
+number — it keeps the measured +~6% VISIBLE in the gate output and this record
+as a documented accepted trade, and it grades the property that must NOT
+regress (CPU/user) so a genuinely dishonest "moved-cost-not-removed" outcome
+would still trip the gate. (This is the honest side of
+`memory/feedback_verify_fix_not_symptom_absence.md`: we did not relax a bar to
+bury a number; we regraded the correct property and left the accepted cost on
+the page.)
+
+**What B4 is.** Ladder rung B4 (commit `68cf4d8`, `feat(backend): B4 / FIXME
+0459 — static alloc/RC-density admission axis on sparkability`) adds a static
+allocation/RC-density admission gate on sparking: it **declines dense
+speculative-search sparks to the serial arm** rather than spawning them.
+
+**The trade on `f3_inverted_search` (settled load, reproducible at 1-min load
+0.88 and 6.0; pre-B4 the f3/1worker delta was +0.0%):**
+
+| Axis | Config | Δ vs toggle-off | Disposition |
+|---|---|---|---|
+| N-worker wall | N-worker | **−82%** | WIN — B4 kills parallel over-sparking contention (I-G4 territory) |
+| user CPU | everywhere | **−46%** | WIN — universal CPU savings (dense sparks no longer speculated) |
+| **1-worker wall** | **1worker** | **+~6% (measured +4.0% / +5.7% / sprint +6.1%)** | **ACCEPTED COST** — eager speculation had hidden latency on the 1-worker critical path; declining it defers that. The 1-worker config is a *measurement baseline, not a production mode.* |
+| serial wall | serial | ≈0% (−1.4%…+0.0%) | HELD — B4 does not regress serial |
+
+**User Phase-7 ruling (2026-07-05), verbatim:** *"perfectly reasonable
+tradeoff. reframe i-g5 and keep the gains."* The parallel win (−82% N-worker)
+plus the universal CPU savings (−46% user) dominate; the modest 1-worker-wall
+cost is the accepted price of forgoing eager speculation on a config that is
+only a measurement baseline.
+
+**The reframe (specific, not a blanket bar relaxation).** `ig_gates.py` now
+carries a `DENSITY_DECLINED = {("f3_inverted_search", "1worker")}` set. For that
+single cell I-G5/runtime grades **user/CPU ≤ +3%** (the density-decline
+dividend — measured −45.6% / −45.9%, which is also the anti-false-green guard:
+a mechanism that *moved* cost into CPU rather than removing it would trip here)
+and **prints the 1-worker wall as a VISIBLE accepted-trade line**, ungraded:
+
+```
+f3_inverted_search/1worker: wall +4.0% [accepted trade — density-declined spark, §2.2.1] user -45.6%
+```
+
+Serial wall for f3 is graded normally (≤+3%, held at −1.4%…+0.0%). **The
+ordinary ≤+3% wall+user bar is untouched for every other (fixture,config)** —
+f2/serial, f2/1worker, f3/serial all still gate on wall AND user, so this does
+NOT mask a future regression on any non-density-declined workload. The density
+exemption is one named cell, extended only when a new fixture is *shown* to be
+density-declined (add it to the set with its own record entry).
+
+**Verdict (reps=7, settled load 0.48–0.66, 2026-07-05, release binary rebuilt
+at HEAD):** two consecutive runs, both `all selected gates PASS`:
+
+```
+[I-G5/runtime] PASS — f2/serial w+1.4 u-1.1; f2/1worker w-1.2 u-0.8; f3/serial w+0.0 u-0.1;
+        f3/1worker wall +4.0% [accepted trade — density-declined spark, §2.2.1] user -45.6%
+        (graded bar ≤+3% wall+user; density-declined cells grade user only)
+[I-G5/compile] PASS — corpus aggregate cold-cache: on=0.121s off=0.120s Δ=+1.1% (bar ≤+10%)
+```
+
+Second run identical disposition: f3/1worker wall +5.7% [accepted trade] user
+−45.9%; I-G5/compile Δ−7.0%. The accepted +~6% is stable and always paired with
+the ~−46% CPU dividend. I-G4 (the −82% N-worker win) and the universal CPU drop
+are the gains this reframe keeps.
 
 ### 2.3 Stage II — increment I+II (write path: reuse tokens, R5 one-word flattening, region arena)
 
