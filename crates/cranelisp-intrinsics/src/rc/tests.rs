@@ -175,3 +175,107 @@ fn s99_measurement_gates_off_by_default() {
     assert!(!nonatomic_rc_enabled(), "CRANELISP_NONATOMIC_RC must default off");
     assert!(!rc_stats_enabled(), "CRANELISP_RC_STATS must default off");
 }
+
+// ---------------------------------------------------------------------------
+// H2 (S102 increment I) — per-mechanism attribution counters
+// (design/backend/ownership-codegen.md §13.2). Seam = the intrinsics-owned
+// counter state + the `[RC_STATS]` line grammar. Scenario classes:
+// complexity (each counter's advance path), edge (the atomic-vs-non-atomic
+// arm discrimination; the atomic-share derivation), negative (a counter that
+// must NOT move; the reuse placeholders that must stay 0).
+// ---------------------------------------------------------------------------
+
+// --- stack-slot counter (B3.4) ---
+
+// spec: design/backend/ownership-codegen.md §13.2 — stack_slot hit tally advances
+#[test]
+fn h2_tally_stack_slot_advances_the_counter() {
+    let h0 = stack_slot_hits();
+    tally_stack_slot();
+    assert_eq!(stack_slot_hits(), h0 + 1, "one stack-slot tally must advance by 1");
+    tally_stack_slot();
+    tally_stack_slot();
+    assert_eq!(stack_slot_hits(), h0 + 3, "two more tallies must advance by 2");
+}
+
+// spec: design/backend/ownership-codegen.md §13.2 — NEGATIVE: no tally ⇒ no move
+#[test]
+fn h2_stack_slot_counter_does_not_move_without_a_tally() {
+    let h0 = stack_slot_hits();
+    // A non-stack mechanism firing (an RC-emit tally) must NOT touch stack_slot.
+    tally_rc_emit(false);
+    tally_rc_emit(true);
+    assert_eq!(
+        stack_slot_hits(),
+        h0,
+        "stack_slot must not advance when only RC-emit tallies fire"
+    );
+}
+
+// --- non-atomic-op-share counter (B3.3): the arm discrimination ---
+
+// spec: design/backend/ownership-codegen.md §13.2 — atomic arm bumps total only
+#[test]
+fn h2_tally_rc_emit_atomic_bumps_total_not_nonatomic() {
+    let (na0, tot0) = rc_emit_counts();
+    tally_rc_emit(false); // atomic arm
+    let (na1, tot1) = rc_emit_counts();
+    assert_eq!(tot1, tot0 + 1, "an atomic emit must advance the total");
+    assert_eq!(na1, na0, "an atomic emit must NOT advance the non-atomic tally");
+}
+
+// spec: design/backend/ownership-codegen.md §13.2 — non-atomic arm bumps both
+#[test]
+fn h2_tally_rc_emit_nonatomic_bumps_both() {
+    let (na0, tot0) = rc_emit_counts();
+    tally_rc_emit(true); // non-atomic arm
+    let (na1, tot1) = rc_emit_counts();
+    assert_eq!(tot1, tot0 + 1, "a non-atomic emit must advance the total");
+    assert_eq!(na1, na0 + 1, "a non-atomic emit must advance the non-atomic tally");
+}
+
+// spec: design/backend/ownership-codegen.md §13.2 — the atomic share is derived
+// (rc_atomic = total − nonatomic); the counters never let nonatomic exceed total.
+#[test]
+fn h2_rc_atomic_is_total_minus_nonatomic() {
+    let (na0, tot0) = rc_emit_counts();
+    tally_rc_emit(false);
+    tally_rc_emit(true);
+    tally_rc_emit(false);
+    let (na1, tot1) = rc_emit_counts();
+    assert_eq!(tot1 - tot0, 3, "three emits advance the total by 3");
+    assert_eq!(na1 - na0, 1, "one of the three was non-atomic");
+    assert!(na1 <= tot1, "non-atomic count must never exceed the total");
+}
+
+// --- the [RC_STATS] line grammar + placeholder honesty ---
+
+// spec: design/backend/ownership-codegen.md §13.2 — the per-mechanism family is
+// present in the line (the H2 needle is the counter FAMILY name).
+#[test]
+fn h2_stats_line_carries_the_per_mechanism_family() {
+    let line = rc_stats_line();
+    assert!(line.starts_with("[RC_STATS]"), "line tag preserved: {line}");
+    for field in [
+        "rc_inc=", "rc_dec=", "allocs=", "deallocs=", // the pre-H2 fields, order kept
+        "stack_slot=", "reuse_hit=", "reuse_miss=", "rc_nonatomic=", "rc_atomic=",
+    ] {
+        assert!(line.contains(field), "RC_STATS line missing `{field}`: {line}");
+    }
+    // The pre-H2 four fields keep their leading order/position so every existing
+    // token/regex parser still matches.
+    let head = "[RC_STATS] rc_inc=";
+    assert!(line.starts_with(head), "leading field order changed: {line}");
+    let deallocs_at = line.find("deallocs=").unwrap();
+    let stack_at = line.find("stack_slot=").unwrap();
+    assert!(stack_at > deallocs_at, "per-mechanism family must follow the original four");
+}
+
+// spec: design/backend/ownership-codegen.md §13.2 — placeholder honesty: reuse
+// hit/miss are inert (increment-II) and print as 0, NOT fabricated.
+#[test]
+fn h2_reuse_placeholders_are_honest_zeros() {
+    let line = rc_stats_line();
+    assert!(line.contains("reuse_hit=0"), "reuse_hit must be an honest 0 placeholder: {line}");
+    assert!(line.contains("reuse_miss=0"), "reuse_miss must be an honest 0 placeholder: {line}");
+}

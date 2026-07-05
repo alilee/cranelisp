@@ -164,9 +164,13 @@ pub fn cranelisp_intrinsics::panic::take_runtime_error() -> core::option::Option
 pub mod cranelisp_intrinsics::rc
 pub fn cranelisp_intrinsics::rc::consume_shallow(i64)
 pub fn cranelisp_intrinsics::rc::is_rc_trace_enabled() -> bool
+pub fn cranelisp_intrinsics::rc::rc_emit_counts() -> (u64, u64)
 pub fn cranelisp_intrinsics::rc::rc_inc(i64)
 pub fn cranelisp_intrinsics::rc::rc_trace(&str, i64, i64)
 #[export_name = "runtime/rc_underflow_check"] pub c fn cranelisp_intrinsics::rc::rc_underflow_check(i64, i64) -> i64
+pub fn cranelisp_intrinsics::rc::stack_slot_hits() -> u64
+pub fn cranelisp_intrinsics::rc::tally_rc_emit(bool)
+pub fn cranelisp_intrinsics::rc::tally_stack_slot()
 pub mod cranelisp_intrinsics::trace
 #[repr(i32)] pub enum cranelisp_intrinsics::trace::DescriptorKind
 pub cranelisp_intrinsics::trace::DescriptorKind::Adt = 6

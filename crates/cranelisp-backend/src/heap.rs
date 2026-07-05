@@ -190,15 +190,14 @@ pub(crate) enum RcAtomicity {
 }
 
 // B3.3 codegen-time non-atomic-op-share counter (`design/backend/
-// ownership-codegen.md` §11 — the designed `/dev` extension of the S99 stats
-// hook). Tallies, at EMISSION time, how many RC ops were emitted on the
-// non-atomic arm vs total, so an A/B (analysis on vs off, or probe on vs off)
-// quantifies the confined-share. This is the BACKEND half; surfacing it in the
-// process-exit `[RC_STATS]` report is `cranelisp-intrinsics::rc::
-// print_rc_stats` (a SEPARATE crate, backend-paired) — h2 flips only once that
-// print surface reads these counts (B3.4 coordination note).
-static RC_EMIT_TOTAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static RC_EMIT_NONATOMIC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// ownership-codegen.md` §11 — the designed `/dev` per-mechanism stat; H2). The
+// counter STATE lives in `cranelisp-intrinsics::rc` (single source of truth —
+// it owns the process-exit `[RC_STATS]` print surface, which this crate cannot
+// own: no dependency edge points back). This crate is the sole WRITER, pushing
+// at EMISSION time via `tally_rc_emit`. Both the atomic and non-atomic arms are
+// counted so the confined-share is `nonatomic / total` (A/B: analysis on vs
+// off, or probe on vs off). Codegen-time push ⇒ no emitted IR ⇒ byte-identical
+// off is untouched.
 
 /// Decide the RC arm and tally it (one call per emitted op). Returns `true` for
 /// the non-atomic arm. The per-site sound gate ([`RcAtomicity::NonAtomic`]) and
@@ -207,30 +206,19 @@ static RC_EMIT_NONATOMIC: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 /// path, two gates (Principle 7).
 pub(crate) fn use_nonatomic_arm(atomicity: RcAtomicity) -> bool {
     let nonatomic = matches!(atomicity, RcAtomicity::NonAtomic) || nonatomic_rc_codegen_enabled();
-    RC_EMIT_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if nonatomic {
-        RC_EMIT_NONATOMIC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
+    cranelisp_intrinsics::rc::tally_rc_emit(nonatomic);
     nonatomic
 }
 
 /// Codegen-time RC-op emission tally: `(non_atomic_ops, total_ops)`. Backend
-/// half of the h2 non-atomic-op-share attribution (§11). Process-global,
-/// monotone over a run.
-///
-/// **h2 coordination note (B3.4):** this is the accumulation surface. h2 flips
-/// only once the process-exit `[RC_STATS]` report
-/// (`cranelisp-intrinsics::rc::print_rc_stats` — a SEPARATE, backend-paired
-/// crate) reads these counts and surfaces the non-atomic share. Crossing that
-/// crate boundary is out of B3.3 scope; the accumulation lands here now so the
-/// print surface has a single source to read. Unused in production until then
-/// (exercised by the `rc_atomicity_tests` unit matrix).
+/// half of the H2 non-atomic-op-share attribution (§11) — reads back the single
+/// source of truth owned by `cranelisp-intrinsics::rc` so this crate's unit
+/// matrix (`rc_atomicity_tests`) and the process-exit print agree by
+/// construction. The print surface (`cranelisp-intrinsics::rc::print_rc_stats`)
+/// reads the same counts to emit `rc_nonatomic=…`/`rc_atomic=…`.
 #[allow(dead_code)]
 pub(crate) fn rc_emit_counts() -> (u64, u64) {
-    (
-        RC_EMIT_NONATOMIC.load(std::sync::atomic::Ordering::Relaxed),
-        RC_EMIT_TOTAL.load(std::sync::atomic::Ordering::Relaxed),
-    )
+    cranelisp_intrinsics::rc::rc_emit_counts()
 }
 
 /// Emit inline atomic RC increment.
@@ -587,27 +575,23 @@ pub(crate) fn emit_alloc<M: Module>(
 pub(crate) const IMMORTAL_RC: i64 = 1 << 62;
 
 // B3.4 codegen-time stack-slot-hit counter (`design/backend/ownership-codegen.md`
-// §11 — the designed `/dev` per-mechanism stat, alongside `rc_emit_counts`).
-// Tallies, at EMISSION time, how many backend-emitted allocations were placed on
-// a Cranelift stack slot (NoEscape + all four eligibility gates) instead of the
-// RC heap. Backend half of the h2 attribution; surfacing it in the process-exit
-// `[RC_STATS]` report is `cranelisp-intrinsics::rc::print_rc_stats` (a SEPARATE
-// backend-paired crate — see `stack_slot_hits`).
-static STACK_SLOT_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// §11 — the designed `/dev` per-mechanism stat, alongside `rc_emit_counts`; H2).
+// The counter STATE lives in `cranelisp-intrinsics::rc` (single source of truth
+// — it owns the process-exit `[RC_STATS]` print surface). This crate is the sole
+// WRITER, pushing at EMISSION time via `tally_stack_slot` in `emit_stack_alloc`,
+// counting how many backend-emitted allocations were placed on a Cranelift stack
+// slot (NoEscape + all five eligibility gates) instead of the RC heap. Codegen-
+// time push ⇒ no emitted IR ⇒ byte-identical off is untouched.
 
 /// Codegen-time stack-slot-hit tally: the number of allocations lowered to a
-/// stack slot (B3.4). Process-global, monotone over a run.
-///
-/// **h2 coordination note:** this is the accumulation surface. h2 flips only
-/// once the process-exit `[RC_STATS]` report
-/// (`cranelisp-intrinsics::rc::print_rc_stats` — a SEPARATE, backend-paired
-/// crate) reads this count and surfaces `"stack_slot"`. Crossing that crate
-/// boundary needs a shared-location design decision (backend codegen-time vs
-/// intrinsics runtime); the accumulation lands here now so the print surface has
-/// a single source to read (exercised by the `stack_slot_tests` unit matrix).
+/// stack slot (B3.4). Reads back the single source of truth owned by
+/// `cranelisp-intrinsics::rc` so this crate's unit matrix (`stack_slot_tests`)
+/// and the process-exit print agree by construction. The print surface
+/// (`cranelisp-intrinsics::rc::print_rc_stats`) reads the same count to emit
+/// `stack_slot=…` (the H2 counter FAMILY needle).
 #[allow(dead_code)]
 pub(crate) fn stack_slot_hits() -> u64 {
-    STACK_SLOT_HITS.load(std::sync::atomic::Ordering::Relaxed)
+    cranelisp_intrinsics::rc::stack_slot_hits()
 }
 
 /// Emit a Cranelift **stack slot** for a statically-sized, all-scalar-payload,
@@ -646,7 +630,7 @@ pub(crate) fn emit_stack_alloc(builder: &mut FunctionBuilder, payload_size: i64)
         .ins()
         .store(MemFlags::trusted(), rc_val, base, HeapHeader::RC_OFFSET);
 
-    STACK_SLOT_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    cranelisp_intrinsics::rc::tally_stack_slot();
     base
 }
 

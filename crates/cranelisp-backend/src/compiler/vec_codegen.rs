@@ -1301,7 +1301,7 @@ pub(crate) fn emit_vec_get_core<M: Module>(
     // is a borrowed projection (§3.3): then the element is a view into the still-
     // live root and its inc is elided (the F1 machinery-tax collapse). The root's
     // owner keeps the element alive; a consuming use of the projection
-    // materializes it (`borrowed_projection_root`).
+    // materializes it.
     if !elide_elem_inc {
         match elem_category {
             Some(HeapCategory::AlwaysHeap) => {

@@ -1247,7 +1247,7 @@ fact-absent path (§2.2 discipline); GOT slot-hole reclamation (FIXME 0466 stand
   the `GotObserver` (FIXME 0099) covers §8's slot events; the toggle gives every observation
   an A/B baseline. A per-mechanism stat counter set (stack-slot hits, reuse hits/misses,
   non-atomic op share) is the designed `/dev` extension of the existing stats hook
-  (`heap.rs:294`/`rc.rs:117`).
+  (`heap.rs`/`rc.rs`) — **LANDED (H2, S102 increment I)**; the grammar is pinned in §13.2.
 - **Concurrency-safety:** the backend adds no strand reasoning and no shared state; every
   concurrency-sensitive decision (confinement, escape-across-suspension) arrives as a
   typecheck verdict whose soundness obligations live above the boundary. The immortal
@@ -1479,6 +1479,43 @@ capacity squeeze; they sit after B3.2 only because their *measured* value (I-G3'
 surviving-op population, I-G7's candidate set) is defined post-elision. B3.5 needs B3.2's
 borrow classification as an emission-gate leg. B4 is last: its signal is the residue the
 other mechanisms leave.
+
+#### 13.2.1 Hook H2 — the per-mechanism `[RC_STATS]` grammar (LANDED, increment I)
+
+The `CRANELISP_RC_STATS` at-exit line (`cranelisp-intrinsics::rc::print_rc_stats`) is
+extended with a per-mechanism attribution family so the I-G3/I-G7 acceptance gates can
+read the elision/mechanism shares. The four pre-H2 fields keep their leading order and
+position (every existing token/regex parser — `s99_measure.py`, `ig_gates.py`, the
+`tests/*.rs` `split_whitespace` field readers — still matches); the family is **appended**:
+
+```
+[RC_STATS] rc_inc=N rc_dec=N allocs=N deallocs=N \
+           stack_slot=N reuse_hit=N reuse_miss=N rc_nonatomic=N rc_atomic=N
+```
+
+| Field | Kind | Mechanism | Meaning |
+|---|---|---|---|
+| `stack_slot` | **codegen-time** count | B3.4 escape→stack-slot | # backend-emitted allocations lowered to a Cranelift stack slot (via `emit_stack_alloc`) instead of the RC heap |
+| `reuse_hit` / `reuse_miss` | **placeholder** (always `0`) | §6 drop-guided reuse | inert at increment I — slot-reuse is increment-II uniqueness-track work; printed as honest `0`, NOT fabricated, so the counter FAMILY is present from increment I |
+| `rc_nonatomic` | **codegen-time** count | B3.3 confined RC | # inline RC ops emitted on the non-atomic arm |
+| `rc_atomic` | **codegen-time** count (derived) | B3.3 | `rc_emit_total − rc_nonatomic`; the confined-share the consumer computes is `rc_nonatomic / (rc_nonatomic + rc_atomic)` |
+
+**Runtime-vs-compile-time honesty.** `stack_slot`, `rc_nonatomic`, `rc_atomic` are
+**codegen-time** counts — accumulated while the backend *lowers* the program, not while it
+runs. They are honest attribution for `--run`/JIT (compile + run share one process, so the
+counts are populated before the at-exit printer reads them). Under `--link` the compiled
+binary is a separate process that did no codegen, so its per-mechanism counts are honestly
+`0`. `rc_inc`/`rc_dec` remain **runtime** tallies (the S99 hooks).
+
+**Ownership / byte-identical-off.** The counter state lives in `cranelisp-intrinsics::rc`
+(single source of truth — it owns the print surface; `cranelisp-backend` has the sole
+dependency edge and is the sole *writer*, pushing via `tally_stack_slot` / `tally_rc_emit`
+at emission time). The pushes are host-side Rust calls during compilation — **no emitted
+IR** — so with `CRANELISP_RC_STATS` unset the compiled code is byte-identical (the L-B1
+golden differential, `tests/scripts/clif_golden.sh diff`, is empty across the 13-entry
+corpus). The family is printed **unconditionally** (present even when every counter is `0`);
+the H2 e2e needle is the counter FAMILY name (`stack_slot`), which `/qa` may tighten to the
+ratified grammar above.
 
 ### 13.3 The `fn_as_value` seam rework (B3.1) — folding 0474 / 0483 / 0476
 

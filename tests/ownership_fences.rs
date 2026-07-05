@@ -623,9 +623,12 @@ fn h2_rc_stats_reports_per_mechanism_counters() {
 
 // spec: design/backend/ownership-codegen.md §13.2 — Hook H3: per-extern
 // adaptation-pair attribution in CRANELISP_RC_STATS (needed by the L-D5
-// sibling-funding decision rule — report-grade, not gate-blocking). RED on
-// HEAD (/backend, B3 — or re-dispositioned if the sibling-expansion decision
-// defers it to increment II; annotate the ledger entry either way).
+// sibling-funding decision rule — report-grade, not gate-blocking).
+// RE-DISPOSITIONED → increment II (S102, /dev for /backend): per-extern
+// attribution needs a runtime name-keyed tally + per-extern emitted hooks that
+// ride the L-D5 sibling-expansion (str-len$borrowed, §9.2) — increment-II work,
+// not a cheap fall-out of H2's codegen-time counters. Stays RED as the owed
+// signal; see ledger.md #22 for the deferral rationale + target increment.
 #[test]
 fn h3_rc_stats_reports_per_extern_adaptation_pairs() {
     let (out, _) = run_with_rc_stats(
