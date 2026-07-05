@@ -727,34 +727,29 @@ where
     ) -> bool {
         // ===================================================================
         // B3.4 BLOCKED at the conservative point — the escape fact is NOT yet a
-        // sound hard-UAF decision (FIXME 0523, `target: /typecheck`).
+        // fully sound hard-UAF decision (FIXME 0524, `target: /typecheck`).
         //
-        // B3.4 is the FIRST hard consumer of `escapes = Some(false)`. Consuming
-        // it surfaced a soundness gap in the ownership escape analysis: a value
-        // **captured by a closure** is marked `escapes = Some(false)` even when
-        // the closure escapes the frame — INTRA-procedurally (`(let [p (Rect n
-        // n)] (fn [] … p …))` returned) AND INTER-procedurally (`(f (Rect n n))`
-        // where a callee `f` captures its arg into a returned closure). Both were
-        // proven to stack-allocate a value that then dangles (a "match failed"
-        // runtime panic once the popped frame is reused — a hard UAF, masked as a
-        // false-green when the frame is not yet clobbered).
-        //
-        // The backend CANNOT gate around this: the interprocedural case has no
-        // closure form in the constructing function's own body, so no syntactic
-        // backend scan detects it, and re-deriving interprocedural escape would
-        // violate the narrowness counterweight (the backend performs no escape
-        // reasoning of its own — §4.3). The analysis is sound for the return /
-        // store-into-ADT / call-through / vec-store escape edges (all verified
-        // `Some(true)`); ONLY closure/spark capture is unsound.
-        //
-        // Per the design's hard-UAF discipline (`memory/feedback_verify_fix_not
-        // _symptom_absence`), stack allocation stays OFF until the analysis
-        // treats closure/spark capture as an escape edge (R6
-        // suspension-points-as-escape-edges, spine §4.3). When FIXME 0523 lands,
-        // delete this early return — the complete mechanism (below + the
-        // `emit_stack_alloc` immortal-header emission + the four gates) activates
-        // unchanged. Byte-identical while OFF: this returns `false` everywhere, so
-        // no site stack-allocates.
+        // B3.4 is the FIRST hard consumer of the escape fact. FIXME 0523
+        // (`be6cff4`) cured the first gap — a value CAPTURED by an escaping
+        // closure was mis-classified `escapes = Some(false)` (fixed: capture is
+        // an escape edge, spine R6). But the B3.4-ACTIVATION attempt (2026-07-05)
+        // surfaced a SECOND, distinct gap (a 0523 SIBLING): a constructor that is
+        // the RETURN VALUE of a lambda, or that flows out through a higher-order
+        // call, is classified `escapes = Some(false)` and stack-allocated, then
+        // dangles once the lambda/callee frame pops — a hard UAF (`runtime panic:
+        // match failed`). Three existing REPL tests fail under activation
+        // (named on the `STACK_ALLOC_ESCAPE_FACT_SOUND` doc). A monomorphic
+        // constructor RETURNED from a NAMED `defn` is correctly `Some(true)` (the
+        // adversarial re-confirm passed); only the lambda/HOF-return path is
+        // unsound. The backend CANNOT gate around this (it would require
+        // interprocedural/lambda-return escape reasoning — the narrowness
+        // counterweight forbids it), so the mechanism stays OFF until the analysis
+        // treats a lambda's / HOF-returned constructor as an escape edge. Flip
+        // `STACK_ALLOC_ESCAPE_FACT_SOUND = true` in the change-set that resolves
+        // FIXME 0524 — the complete mechanism (below + the `emit_stack_alloc`
+        // immortal-header emission + the four gates) activates unchanged.
+        // Byte-identical while OFF: this returns `false` everywhere, so no site
+        // stack-allocates.
         if !STACK_ALLOC_ESCAPE_FACT_SOUND {
             return false;
         }
@@ -1126,15 +1121,26 @@ pub(crate) fn node_confined(node: &MonoExpr) -> Option<bool> {
     }
 }
 
-/// B3.4 activation flag (`design/backend/ownership-codegen.md` §4; FIXME 0523).
-/// `false` holds stack-slot allocation at the conservative all-heap point while
-/// the ownership escape analysis is UNSOUND for closure/spark capture (a
-/// captured value is marked `escapes = Some(false)` even when its closure
-/// escapes — a hard UAF; see [`FnCompiler::constructor_call_stack_eligible`]).
+/// B3.4 activation flag (`design/backend/ownership-codegen.md` §4; FIXME 0523/0524).
+/// `false` holds stack-slot allocation at the conservative all-heap point.
+///
+/// FIXME 0523 (`be6cff4`) cured the closure/spark-CAPTURE escape gap and the
+/// B3.4-ACTIVATION attempt (2026-07-05) flipped this to `true` — but that
+/// surfaced a SECOND, distinct escape-soundness gap (a 0523 SIBLING, FIXME 0524,
+/// `target: /typecheck`): a constructor that is the RETURN VALUE of a lambda or
+/// flows out through a higher-order call is classified `escapes = Some(false)`
+/// and stack-allocated, then dangles once the lambda/callee frame pops — a hard
+/// UAF (`runtime panic: match failed`). Three existing REPL tests
+/// (`regression::constructor_wrapped_in_lambda_applied_indirectly_works`,
+/// `spec_03_types::polymorphic_higher_order_returning_adt`,
+/// `spec_06_pattern_matching::nested_match_in_arm_body`) pass with the flag off
+/// and fail under activation. The backend cannot gate around this (the narrowness
+/// counterweight forbids interprocedural/lambda-return escape reasoning), so the
+/// flag stays `false` until 0524 lands. `false` ⇒ byte-identical to pre-B3.4.
 /// The full mechanism (gates + `emit_stack_alloc` immortal-header emission) is
-/// landed and unit-tested; flip this to `true` in the change-set that resolves
-/// FIXME 0523 (analysis treats closure/spark capture as an escape edge) and the
-/// mechanism activates unchanged. `false` ⇒ byte-identical to pre-B3.4.
+/// landed and unit-tested; flip to `true` in the change-set that resolves 0524
+/// (after re-verifying the killer/win/adversarial + full-corpus behavioral suite)
+/// and the mechanism activates unchanged.
 const STACK_ALLOC_ESCAPE_FACT_SOUND: bool = false;
 
 /// B3.4 (`design/backend/ownership-codegen.md` §4.1): read the `escapes` site
@@ -1333,10 +1339,15 @@ mod b34_stack_eligibility_tests {
     }
 
     // --- the composed method is gated OFF at the conservative point ------------
-    // spec: design/backend/ownership-codegen.md §4 — B3.4 blocked (FIXME 0523).
-    // The escape fact is unsound for closure/spark capture; stack allocation stays
-    // OFF (byte-identical to pre-B3.4) until the analysis is fixed. Compile-time
-    // guard so a stray flip cannot land without this test file being revisited.
+    // spec: design/backend/ownership-codegen.md §4 — B3.4 still blocked.
+    // FIXME 0523 (closure/spark CAPTURE escape) was cured, but the B3.4-ACTIVATION
+    // attempt (2026-07-05) surfaced a SECOND, distinct escape-soundness gap — a
+    // 0523 SIBLING (FIXME 0524, `target: /typecheck`): a constructor that is the
+    // RETURN VALUE of a lambda / flows out through a higher-order call is
+    // classified NoEscape and stack-allocated, then dangles (hard UAF — three
+    // existing REPL tests fail under activation). Stack allocation stays OFF
+    // (byte-identical to pre-B3.4) until 0524 lands. Compile-time guard so a stray
+    // flip cannot land without this test file being revisited.
     const _: () = assert!(!STACK_ALLOC_ESCAPE_FACT_SOUND);
 }
 

@@ -411,12 +411,35 @@ lazily-synthesized Decision-24 value wrapper; join-to-Owned rejected). The codeg
 
 ## §4. Stack/region mechanics for `NoEscape` (spine §10 item 8)
 
-> **AS-BUILT — B3.4 Wave 11 (this change-set): mechanism LANDED, HELD OFF at the
-> conservative point pending FIXME 0523 (escape-fact soundness).** B3.4 is the
-> FIRST hard consumer of the `escapes` site fact. The complete mechanism is
-> implemented and unit-tested; a single compile-time flag —
-> `STACK_ALLOC_ESCAPE_FACT_SOUND = false` (`fn_compiler.rs`) — holds it at the
-> all-heap conservative point (byte-identical to pre-B3.4). Seams:
+> **AS-BUILT — B3.4 Wave 11: mechanism LANDED, HELD OFF at the conservative
+> point. Activation ATTEMPTED 2026-07-05 and REVERTED — it surfaced a 0523
+> SIBLING (FIXME 0524, `target: /typecheck`).** B3.4 is the FIRST hard consumer
+> of the `escapes` site fact. The complete mechanism is implemented and
+> unit-tested; a single compile-time flag — `STACK_ALLOC_ESCAPE_FACT_SOUND =
+> false` (`fn_compiler.rs`) — holds it at the all-heap conservative point
+> (byte-identical to pre-B3.4).
+>
+> **The B3.4-ACTIVATION attempt (2026-07-05).** FIXME 0523 (`be6cff4`) cured the
+> closure/spark-CAPTURE escape gap, so activation was attempted: the flag flipped
+> `false → true`. Verification confirmed the FIRST escape gap was closed (both
+> 0523 killer shapes classify `escapes = Some(true)`, stay heap, correct under
+> `MALLOC_PERTURB_`; the win `(MkBox 5)` stack-allocates with the immortal header;
+> monomorphic constructors RETURNED from NAMED `defn`s / heap-field / TCO-loop /
+> extern shapes all correctly stay heap; full 13-entry corpus ON==OFF and
+> byte-identical-OFF held). **But the full suite surfaced THREE hard-UAF
+> regressions** (`regression::constructor_wrapped_in_lambda_applied_indirectly_works`,
+> `spec_03_types::polymorphic_higher_order_returning_adt`,
+> `spec_06_pattern_matching::nested_match_in_arm_body` — all `runtime panic: match
+> failed`, all pass flag-off / fail flag-on): a constructor that is the RETURN
+> VALUE of a **lambda**, or that flows out through a **higher-order call**, is
+> classified `escapes = Some(false)` and stack-allocated, then dangles once the
+> lambda/callee frame pops. This is a SECOND escape-soundness gap distinct from
+> 0523 (capture): 0523 was capture-by-closure; this is lambda/HOF *return*. The
+> backend cannot gate it (interprocedural/lambda-return reasoning is out of the
+> narrowness budget). **Filed FIXME 0524 (`target: /typecheck`); the flag was
+> reverted to `false`.** Re-attempt activation only after 0524 lands and the
+> killer/win/adversarial + full-corpus behavioral suite is re-verified. Seams
+> (the landed, held-off mechanism):
 > - **Mechanism (`heap.rs`)** — `emit_stack_alloc(builder, payload_size)`:
 >   `create_sized_stack_slot(HeapHeader::SIZE + payload_size, align 8)` +
 >   `stack_addr` + header init (alloc_size @0, **`IMMORTAL_RC = 1<<62` @RC_OFFSET**,
@@ -449,32 +472,40 @@ lazily-synthesized Decision-24 value wrapper; join-to-Owned rejected). The codeg
 >   (§4.2 — decline vecs with in-frame `vec-set`/`vec-push`) and the §4.3
 >   spark-capture handling ride the `VecLit`/`Lambda` enablement, deferred with them.
 >
-> **THE BLOCKER (FIXME 0523, `target: /typecheck`): the escape fact is UNSOUND for
-> closure capture.** A value captured by a closure is marked `escapes = Some(false)`
-> even when the closure escapes the frame — proven BOTH intra-procedurally
-> (`(let [p (Rect n n)] (fn [] … p …))` returned) AND inter-procedurally
-> (`(f (Rect n n))` where a callee captures its arg into a returned closure — `f`
-> has no closure in its own body, so no backend-local gate can catch it). Both
-> stack-allocate and DANGLE — verified behaviorally as a `runtime panic: match
-> failed` once the popped frame is reused (a false-green correct value without the
-> reuse). The analysis IS sound for return / store-into-ADT / call-through /
-> vec-store escape edges (all verified `Some(true)`); ONLY closure/spark capture is
-> unsound. The backend CANNOT gate around the inter-procedural case (it would
-> require inter-procedural escape reasoning — the narrowness counterweight forbids
-> it), so the mechanism stays OFF until the analysis treats closure/spark capture
-> as an escape edge (spine §R6). Flip `STACK_ALLOC_ESCAPE_FACT_SOUND = true` in the
-> change-set that resolves 0523 and the mechanism activates unchanged.
+> **THE BLOCKER (FIXME 0524, `target: /typecheck`): the escape fact is UNSOUND
+> for lambda-returned / HOF-returned constructors.** FIXME 0523 (`be6cff4`/
+> `d0c7684`) cured the first gap (closure CAPTURE — pass5 now computes an escaping
+> closure's capture set as the free vars of its body and classifies each as an
+> escape edge, spine R6). The B3.4-ACTIVATION verification confirmed that fix (the
+> 0523 killer shapes classify `escapes = Some(true)` and stay heap; a monomorphic
+> constructor RETURNED from a NAMED `defn` is also `Some(true)`, per the
+> adversarial re-confirm). But a constructor that is the RETURN VALUE of a
+> **lambda** — `(fn [y] (Some y))` — or that flows out through a **higher-order
+> call** — `(apply-it (fn [y] (Some y)) 7)` — is still classified `Some(false)`
+> and stack-allocates, then dangles once the lambda/callee frame pops (`runtime
+> panic: match failed`). The lambda does not appear in the ownership cluster
+> summaries, so its body-return `(Some y)` node never receives the escape edge its
+> named-`defn` sibling does. The backend cannot gate around this (interprocedural/
+> lambda-return escape reasoning is out of the narrowness budget), so the
+> mechanism stays OFF until the analysis treats a lambda's / HOF-returned
+> constructor as an escape edge. Flip `STACK_ALLOC_ESCAPE_FACT_SOUND = true` in
+> the change-set that resolves 0524 and the mechanism activates unchanged.
 >
-> **Proof (this change-set):** byte-identical-off HOLDS trivially (flag off ⇒ no
-> site stack-allocates ⇒ pre-B3.4 emission). With the flag momentarily forced on
-> during verification: the win fires (a NoEscape scalar ADT read locally emits
-> `explicit_slot 40` + `stack_addr` + the `iconst 0x4000_0000_0000_0000` immortal
-> header; value-correct under `MALLOC_PERTURB_` × 20 seeds) and every adversarial
-> non-eligible shape stays heap (escaping/returned ADT, heap-typed-field ADT,
-> TCO-loop local + loop-carried ADT, extern-produced) — EXCEPT the closure-capture
-> killers, which is the 0523 finding above. Unit matrix: `heap::stack_slot_b34_tests`
-> (emission + immortal header + counter) + `fn_compiler::b34_stack_eligibility_tests`
-> (`node_escapes` total match; `body_has_self_call` gate-3 scenarios).
+> **Proof (activation attempt, then reverted):** byte-identical-off HOLDS
+> trivially (flag off ⇒ no site stack-allocates ⇒ pre-B3.4 emission). With the
+> flag momentarily forced on during verification: the win fires (a NoEscape scalar
+> ADT read locally emits `explicit_slot` + `stack_addr` + the `iconst
+> 0x4000_0000_0000_0000` immortal header; value-correct under `MALLOC_PERTURB_`),
+> the 0523 killer shapes and the adversarial non-eligible shapes (returned-from-
+> `defn` ADT, heap-typed-field ADT, TCO-loop local, extern/VecLit-produced) all
+> stay heap and correct, and the full 13-entry corpus is ON==OFF — EXCEPT the
+> lambda/HOF-returned-constructor shapes, which is the 0524 finding above (three
+> existing REPL tests fail flag-on / pass flag-off). Unit matrix:
+> `heap::stack_slot_b34_tests` (emission + immortal header + counter) +
+> `fn_compiler::b34_stack_eligibility_tests` (`node_escapes` total match;
+> `body_has_self_call` gate-3 scenarios). The killer/win/adversarial + full-corpus
+> behavioral suite is the re-verification checklist for the 0524-resolving
+> change-set; the durable e2e guards are /qa's (the 0524 UAF repro).
 >
 > **h2 disposition — STAYS RED (coordination question, not crossed).** The h2 guard
 > asserts the process-exit `[RC_STATS]` line contains `"stack_slot"`, printed by
