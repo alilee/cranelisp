@@ -1,6 +1,6 @@
 # Sprint 103: Increment II — the write path (uniqueness → mutable-borrow → reuse)
 
-**Status**: PHASE 4 WAVE ORG — COMPLETE; ready for Phase 5 (Language: QA-first + the serial D/D/R ladder)
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Stage 1 QA-first
 
 **Goal**: Land ownership-inference increment II's write path — the two designed-ready mechanisms (reuse tokens + R5 value-flattening) on the settled increment-I read-path spine — resting on the typecheck-drain foundation and the /arch write-path rulings, while draining the T1 full cure (now unblocked) and the consciously-dispositioned /dev unit-tier drain set.
 
@@ -74,9 +74,9 @@ Open set at Phase 1 (27 files). Dispositions:
 | 0496 | /dev (src/) | open | Block C2 — IN (src/ open for T1 full cure) |
 | 0498 | /dev (types) | open | Block C2 — IN (types carrier extends) |
 | 0499 | /qa | open | Block C2 — IN, QA-first stage head |
-| 0500 | /dev (frontend) | open | Deferred — crate not opened; capacity-gated tail |
-| 0501 | /dev (intrinsics) | open | Deferred — crate not opened; capacity-gated tail |
-| 0502 | /dev (platform) | open | Deferred — crate not opened; capacity-gated tail |
+| 0500 | /dev (frontend) | open | **Wave 5** — pulled into scope (drain-all; user-approved 2026-07-05, no longer re-deferred) |
+| 0501 | /dev (intrinsics) | open | **Wave 5** — pulled into scope (drain-all; user-approved 2026-07-05) |
+| 0502 | /dev (platform) | open | **Wave 5** — pulled into scope (drain-all; user-approved 2026-07-05) |
 | 0505 | /repl | open | Block C3 — pin-mod env-parity spec-half |
 | 0474 | /qa→/backend | **STALE — cured** | P2 CONFIRMED (17/17 guards green): COW leak cured across S102 B3.1/B3.1a seam. Route deletion to /backend at a wave gate |
 | 0483 | /qa→/backend | **STALE — cured** | P2 CONFIRMED (guards green): cured by 0519 lossless FQ mono-mangler. Route deletion to /backend at a wave gate |
@@ -168,17 +168,23 @@ Open set at Phase 1 (27 files). Dispositions:
 | 2 | /dev → /review | `cranelisp-typecheck` | **B1 foundation + queries**: CS-II-0 (0513 lookup reorder + drain) → CS-II-1 (uniqueness stratum) → CS-II-2 (`unique_static` site-fact) → CS-II-3 (`Copy` R5 clause, consumes Wave-1 carrier). | scan `target:/typecheck`/`/design(typecheck)`; 0513 resolved; toggle-off skips stratum |
 | 3 | /dev → /review | `cranelisp-backend` (+ `cranelisp-primitives`) | **Mechanisms**: II-B1 (R5 arm, consumes Wave-1 carrier) → II-B2 (reuse tokens, consumes Wave-2 facts; `reuse_hit/miss` counters) + **0510** ring1 `neq-string` primitive + **h3/L-D5** per-extern RC_STATS emission + **0526** close (§3.3 re-frame) + **0495** backend `tests.rs` split drain. **★ CLOSE-SHORT SEAM after II-B2** — II-B3 (producer-side projection elision) is a deferred rider, rides only if capacity survives. | scan `target:/backend`/`/design(backend)`; **route 0474 + 0483 stale-cured deletions to /backend here**; L-C3 fence green incl. proof-elided reuse; differential golden EMPTY |
 | 4 | /dev → /review | `src/` | **T1 full cure (Block C1)**: CS-1 reload driver → CS-2 module-grain report (empty `stale:`) → CS-3 edge handling; + F2 slot-refinement + `__expr`-only exclusion narrowing + **0496** `lifecycle.rs` unit-tier drain + **0515** re-anchor verify. Verify I-4 regen-fidelity precondition before reloading a trait/type/impl-bearing module. | scan `target:/int`/`/design(src/)`; the two coherent-stale pins flip; §18.1.1 negative-MUST `[Tested+Neg]`; 0515 (→/int) resolved |
+| 5 | /dev → /review ×3 | `cranelisp-frontend`, `cranelisp-intrinsics`, `cranelisp-platform` | **Unit-tier drains** (drain-all rule — pure test-coverage additions, not write-path-gated): **0500** frontend rendered-diagnostic unit tier · **0501** intrinsics io-guard strand coverage · **0502** platform declare-concurrency coverage. Three independent mechanical passes (serial per single-writer). | scan `target:/dev(cranelisp-frontend\|intrinsics\|platform)`; each crate's submodule-thinness map (S101 audit) improved; suite green |
 
-### Deferred tail (explicit re-deferral, drain-all rule)
+**Wave 5 rationale (user-approved 2026-07-05)**: 0500/0501/0502 are actionable in any sprint (no Phase-H / concurrency / trigger gate); deferring them a 2nd time would be habit-deferral against the drain-all rule + approaching the METHOD §2.4 2× gate. Pulled into scope rather than re-deferred.
 
-- **0500** (/dev frontend), **0501** (/dev intrinsics), **0502** (/dev platform) — their crates are NOT opened by increment II; re-deferred with rationale, ride the next open of each crate.
-- **II-B3** (backend producer-side projection elision, 0526 mechanism half) — deferred rider past the close-short seam.
-- **Region arena** (backend §4.4) — deferred rider (allocator co-design not ready).
+### Deferred tail (drain-all rule — each against an allowed reason)
+
+- **II-B3** (backend producer-side projection elision, 0526 mechanism half) — deferred rider past the close-short seam (write-path dependency: needs Q4 uniqueness proof).
+- **Region arena** (backend §4.4) — deferred rider (allocator co-design not implementation-ready).
+- **0050 / 0052 / 0365 / 0416** — `--release`-polish pins (Phase-H-gated, after increment II settles).
+- **0463** — unmet trigger. **0466** — user-directed indefinite/trigger-based.
+- **0408** — inc-II write-path dependency; becomes a Phase-6 validation candidate once Wave 3 lands.
 
 ## Notes
 
 - 2026-07-05: **Phase 1 SCOPE DRAFT opened.** S102 archived (`sprints/archive/sprint-102.md`); ROADMAP updated (S102 CLOSED block + increment-I marked delivered, increment-II slotted S103). Scope inputs: S102 §"Carried to S103", the Phase-H sequence table, the 27-file FIXME set. Two FIXMEs (0474/0483) flagged for stale-open verification at Phase 2 (defects cured under S102 seam rework, guards green, owners owe deletion).
 - 2026-07-05: **Phase 1 CLOSED — user approved scope.** Region arena confirmed as a deferred rider (not in the committed floor); close-short seam after B3 stands. → Phase 2 arch review issued.
+- 2026-07-05: **Wave 5 added (user-approved).** 0500/0501/0502 unit-tier drains pulled into scope rather than deferred a 2nd time (drain-all rule; no Phase-H/trigger gate excuses them). S103 now actions 18 of 24 open FIXMEs; the remaining 6 are Phase-H-polish/trigger-gated. → Phase 5 launched.
 - 2026-07-05: **Phase 4 COMPLETE — waves organized.** Stage 1 QA-first (sprint-wide) + a 4-wave serial D/D/R ladder (types carrier → typecheck B1 → backend mechanisms [close-short seam after II-B2] → src/ T1 cure), unit-tier drains folded into their crate windows, wave gates set. Serial per the project single-writer rule. Deferred tail: 0500/0501/0502 + II-B3 + region arena.
 - 2026-07-05: **Phase 3 COMPLETE — four design plans collected (typecheck/backend/src + qa test plan), exit-gate READY.** Cross-consistent. Load-bearing outcomes: **0521 verdict NO** (no AliasOf-index reader → ⊤ element stays deferred, no schema bump); **schema-number corrected 14→15** (live is 14, not the stale "12→13"); reuse-tokens confirmed off-ABI; **region-arena DEFER** re-confirmed by /design(backend); 0510 ruled option (a) ring1 primitive; T1 full cure design DONE with the **`__expr`-only exclusion narrowing** (keep `__macro_*` reverse edges) + F2 slot-refinement; /qa `s103-test-plan.md` authored with II-G1–G4 gate plan + L-C3 UAF fence + R5 soundness-couple negative fence + h3 flip criterion. FIXMEs resolved+deleted P3: **0509, 0511** (doc rulings by /design-typecheck). 0526 §3.3 re-frame authored (left open → /arch closes). 0513/0510/0506/0507 stay open for Phase-5 action. No new interface beyond the /arch-owned R5 `value_layout` carrier (schema 14→15, lands in B3).
 - 2026-07-05: **Phase 2 COMPLETE — /arch PASS-with-revisions, exit-gate READY.** Block A downgraded from hard-gate to Phase-3 co-resolution (real gate = B1). R5 predicate named as an /arch-authored `cranelisp-types` carrier change-set (schema 12→13) landing in B3. 0515 re-targeted /arch→/int (now blocks Block C1). 0526 direction-ruled (kept open → Phase-3 backend fire); 0521 Phase-3 conditional. Region-arena deferral verified CLEAN (serves no I-G/II-G gate). **0474 + 0483 CONFIRMED stale-cured (17/17 guards green) — route deletions to /backend at a wave gate.** No `cranelisp-types` edit landed (not-speculatively). /arch's one edit: re-targeted FIXME 0515.
