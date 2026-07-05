@@ -22,7 +22,7 @@ Usage:
       python3 tests/perf/s99_measure.py [--reps 3] [--quick]
 If SYS_BIN/MI_BIN unset, builds them with cargo.
 """
-import os, sys, subprocess, re, statistics, tempfile, argparse, json, shutil
+import os, sys, subprocess, re, statistics, tempfile, argparse, json, shutil, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FIX = os.path.join(ROOT, "tests", "fixtures", "s99")
@@ -98,6 +98,37 @@ def median_time(binp, clfile, config, reps, nonatomic=False):
         w, u, s, code = time_run(binp, clfile, config, nonatomic)
         walls.append(w); users.append(u); syss.append(s); rc = code
     return (statistics.median(walls), statistics.median(users), statistics.median(syss), rc)
+
+
+def hires_time(binp, clfile, config, off=False, nonatomic=False):
+    """High-resolution single --run: perf_counter wall + wait4/getrusage
+    user+sys CPU (microsecond resolution), replacing time_run's /usr/bin/time
+    for sub-resolution fixtures. /usr/bin/time quantizes wall/user/sys to 0.01s,
+    which turns single-tick jitter on a <60ms workload into ±20-100% swings
+    (ig_gates I-G5 false negatives). This helper is the resolution-bearing
+    substitute: `off` toggles CRANELISP_NO_OWNERSHIP explicitly (independent of
+    ambient env), so the differential twin is self-contained. Added S102 (I-G
+    gate harness reconciliation)."""
+    e = env_for(config, nonatomic=nonatomic)
+    if off:
+        e["CRANELISP_NO_OWNERSHIP"] = "1"
+    else:
+        e.pop("CRANELISP_NO_OWNERSHIP", None)
+    t0 = time.perf_counter()
+    p = subprocess.Popen([binp, clfile, "--run"], env=e,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _, status, ru = os.wait4(p.pid, 0)
+    wall = time.perf_counter() - t0
+    return wall, ru.ru_utime, ru.ru_stime, os.waitstatus_to_exitcode(status)
+
+
+def hires_median(binp, clfile, config, reps, off=False, nonatomic=False):
+    walls, users, syss, code = [], [], [], None
+    for _ in range(reps):
+        w, u, s, c = hires_time(binp, clfile, config, off, nonatomic)
+        walls.append(w); users.append(u); syss.append(s); code = c
+    return (statistics.median(walls), statistics.median(users),
+            statistics.median(syss), code)
 
 
 def count_run(binp, clfile, config):
