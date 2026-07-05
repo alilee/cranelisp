@@ -1323,6 +1323,68 @@ per audit row.
   have no active consumer with B3.4's flag OFF and increment-I summaries
   emitted-but-unconsumed ⇒ codegen behaviour-neutral, golden-CLIF empty). B3.4
   activation (the flag flip) is a separate future change-set.
+- **(k) A lambda body is its OWN frame — its tail/return allocations escape the
+  lambda frame** (Wave 11 B3.4 cure; FIXME 0524 — the THIRD pass5 classifier gap
+  after 0520 result-mode and 0523 capture, a hard UAF). **Root cause (the class):**
+  the escape analysis was **cluster-centric** — it modeled named-`defn` frames
+  (via the top-level body walk in `UseCtx::Return` + the result-mode composition)
+  but walked an ANONYMOUS lambda body as a sub-expression of the *enclosing*
+  frame, in the context tied to whether the closure VALUE escapes
+  (`EscapingCapture` if the lambda value escapes, else `Neutral`). This conflates
+  two DISTINCT frames: "the closure value escapes the enclosing frame" (the
+  capture axis, §13.6(j)) vs "an allocation created in the lambda body escapes the
+  lambda frame" (this rule). A lambda whose value does **not** escape — passed as
+  a `Borrowed` arg to a HOF (`(apply-it (fn [y] (Some y)) 7)`), or
+  bound-and-discarded — had its body-return `(Some y)` walked `Neutral` ⇒
+  `escapes=Some(false)`; the anonymous lambda never appears in the cluster
+  summaries, so its body-return never got the escape edge its named-`defn` sibling
+  gets. B3.4 (stack-alloc for `NoEscape` scalar-payload aggregates) then
+  stack-allocated `(Some y)` in the lambda frame; once the lambda/HOF frame pops
+  the returned value dangles (UAF, `runtime panic: match failed`). **HOF-flow
+  (edge 4) needs NO new carrier:** the escape is intrinsic to the lambda
+  body-return (edge 2) — the allocation carries `escapes=true` at its own site, so
+  a HOF returning `(f x)` merely propagates an already-escaping value; the
+  interprocedural half rides the existing `ModeSummary`/site facts unchanged.
+  **As-built cure:** the `Lambda` walk splits on whether the closure value
+  escapes. When it does, the body is walked `EscapingCapture` (unchanged — its
+  allocations already escape via `escapes()==true`) atop the §13.6(j) free-var
+  capture pass. When it does **not**, the body is walked in `UseCtx::Return` (its
+  own frame's return) with an **ISOLATED escaped worklist**
+  (`std::mem::take(&mut self.escaped)` / restore): lambda-LOCAL fresh bindings
+  still drain WITHIN the body (their own `Let`/`ParBind` scopes run during the
+  walk), but a capture of an ENCLOSING fresh local must NOT bubble to the
+  enclosing drain — capture-escape is gated on the lambda VALUE escaping
+  (§13.6(j)), so a non-escaping lambda's captures stay in-frame. The only escaped
+  entries left after the body walk are those enclosing captures; restoring `outer`
+  discards them. **The complete outflow-edge model (edges 1–7, spine §2.2 + R6):**
+  (1) named-fn return — top-level body walk in `Return` + result-mode
+  (`return_direct_param_is_alias`, `return_embedded_in_constr_escapes`,
+  `named_fn_return_edge_reconfirmed_after_0524`); (2) lambda body-return — THIS
+  rule (`lambda_body_return_constructor_escapes_when_value_discarded`,
+  `…_veclit_escapes`, `…_through_let_tail_escapes`); (3) closure capture —
+  §13.6(j) free-var pass (`intra_*_capture_*`); (4) HOF-mediated flow — rides
+  edge 2 (`lambda_body_return_via_hof_borrowed_arg_escapes`); (5) store into an
+  escaping aggregate — `Field{flow}` + drain (`intra_direct_closure_capture_of_local_escapes`,
+  `binding_mediated_escape_widens_flow_and_escape`); (6) spark/suspension capture —
+  §13.6(j) `LaunchContinue` free-var pass (`suspension_capture_through_borrow_arg_escapes`);
+  (7) nested compositions — `nested_lambda_body_return_alloc_escapes`,
+  `lambda_body_return_in_match_arm_escapes`, `nested_closure_capture_escapes`.
+  **Precision preserved (B3.4's win survives):** a non-escaping lambda that
+  returns a bare param/scalar allocates nothing that escapes
+  (`lambda_body_return_scalar_no_spurious_escape`); a captured enclosing local
+  returned from a non-escaping lambda stays in-frame
+  (`non_escaping_lambda_returning_captured_local_stays_in_frame`,
+  `non_escaping_local_lambda_does_not_escape_capture`); a genuinely-frame-local
+  aggregate stays `escapes=false` (`binding_local_fresh_aggregate_does_not_escape`).
+  The cure is **monotone-sound** — it only flips lambda-body allocations
+  `false`→`true` (never the reverse) and never moves `param_modes` at the closure
+  boundary (a constructor field-store is `Owned` on both paths). **Cache:**
+  value-only change to escape site facts (+ advisory `param_flow` widening);
+  **rides `CACHE_SCHEMA_VERSION` 14** (the 0520/0523 summary-meaning bump) — serde
+  shape unchanged, no ACTIVE cross-module consumer with B3.4's flag OFF
+  (emitted-but-unconsumed ⇒ codegen behaviour-neutral, golden-CLIF empty). B3.4
+  activation (the flag flip) is the separate next change-set that re-runs the
+  killer/win/adversarial + full-corpus behavioral suite.
 
 ### 13.7 The Principle-23 scenario space (the 0497 rider) — submodule × scenario class
 
@@ -1365,6 +1427,16 @@ laid the strategy bare):**
   non-escaping closure capture (negative) / `ParBind` joined (non-escape) /
   `LaunchContinue.launched` (escape) / deferred continuation (escape) /
   owned-handoff opaque edge (escape) / borrowed handoff (non-escape, negative).
+  **Lambda body-return escape (§13.6(k), FIXME 0524 — the complete outflow-edge
+  audit):** lambda body-return constructor when the closure value is
+  discarded (edge 2) / returned through a BORROWING HOF (edge 4, rides edge 2) /
+  VecLit body-return / lambda-local `let`-tail body-return (drains within the
+  isolated frame) / constructor in a match-arm returned from a lambda (edge 7) /
+  lambda returning a lambda that constructs (nested edge 7) — each ⇒ the body
+  allocation `escapes=true`. **Over-widen pins:** a non-escaping lambda returning
+  a bare param/scalar allocates nothing that escapes / a captured ENCLOSING local
+  returned from a non-escaping lambda stays in-frame (the isolated-worklist guard —
+  the B3.4 win) / named-fn return edge unchanged (edge 1 re-confirm).
   **Binding-mediated escape (§13.6(g)):** let-bound `Fresh` aggregate returned
   (single level) / FLAT fold-chain `[a (Some x) b (Some a)]` returned (the
   fixpoint-drain row — F1) / never-escaping local aggregate (negative, precision)

@@ -431,16 +431,18 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
 
             MonoExpr::Lambda { params, body, span, .. } => {
                 // The closure value is an allocation; if it escapes, its captured
-                // free vars escape (rule 3 / R6).
+                // free vars escape (rule 3 / R6). The closure's OWN span carries
+                // the value-escape verdict; the body-return escape (below) is about
+                // the LAMBDA's frame, a distinct axis (FIXME 0524).
                 let escapes = ctx.escapes();
                 self.facts.escapes.insert(*span, escapes);
                 if escapes {
                     // Capture IS an escape edge — INDEPENDENT of how the captured
                     // value is used inside the closure body (FIXME 0523). The
-                    // OUTER-context walk below only escapes a capture in a
-                    // directly-escaping sub-position; a capture used as a Borrowed
-                    // arg (or any non-escaping sub-position) resets the context at
-                    // the `Apply` and lost its escape (the hard UAF at B3.4). Drive
+                    // body walk below only escapes a capture in a directly-escaping
+                    // sub-position; a capture used as a Borrowed arg (or any
+                    // non-escaping sub-position) resets the context at the `Apply`
+                    // and lost its escape (the hard UAF at B3.4). Drive
                     // capture-escape from the free-var set so every captured
                     // enclosing binding escapes, regardless of use-position.
                     let mut caps = HashSet::new();
@@ -448,12 +450,41 @@ impl<'e, E: TransferEnv> Walker<'e, E> {
                     for c in &caps {
                         self.classify_capture_escape(c);
                     }
+                    // The lambda VALUE escapes, so its body allocations already
+                    // escape via the `EscapingCapture` context (escapes()==true);
+                    // that context also records nested escaping-allocation site
+                    // facts, value-uses (§8.3) and nested-closure capture sets.
+                    // Monotone with the free-var pass above (both only widen).
+                    self.walk(body, UseCtx::EscapingCapture);
+                } else {
+                    // FIXME 0524 — the lambda/HOF-returned-constructor escape gap.
+                    // The lambda VALUE does NOT escape the enclosing frame (it is a
+                    // Borrowed arg to a HOF, or bound-and-discarded), but a lambda
+                    // body is its OWN frame: any allocation reaching the lambda's
+                    // tail/return position escapes the LAMBDA frame — the lambda
+                    // WILL be called (that is why it is a value) and its result
+                    // outlives its frame, exactly as a named `defn`'s returned
+                    // allocation does. The cluster-centric pre-cure walked this
+                    // body in the ENCLOSING frame's `Neutral` context, so the
+                    // returned `(Some y)` never received the escape edge its
+                    // named-`defn` sibling gets from the result-mode/`Return` walk
+                    // (`escapes = Some(false)` ⇒ B3.4 stack-allocs it ⇒ dangles
+                    // once the lambda/HOF frame pops). Walk the body in `Return` so
+                    // its tail allocations escape.
+                    //
+                    // ISOLATED escaped worklist: lambda-LOCAL fresh bindings still
+                    // drain within the body (their own `Let`/`ParBind` scopes run
+                    // during this walk), but a capture of an ENCLOSING fresh local
+                    // must NOT bubble to the enclosing drain — capture-escape is
+                    // gated on the lambda VALUE escaping (the branch above), so a
+                    // non-escaping lambda's captures stay in-frame (the §13.6(j)
+                    // precision pin that keeps B3.4's stack-alloc win alive). After
+                    // the body walk the only escaped entries left are those
+                    // enclosing captures; discard them by restoring `outer`.
+                    let outer = std::mem::take(&mut self.escaped);
+                    self.walk(body, UseCtx::Return);
+                    self.escaped = outer;
                 }
-                // Still walk the body: nested escaping allocation site facts,
-                // value-uses (§8.3), and nested-closure capture sets are recorded
-                // here. Monotone with the capture pass above (both only widen).
-                let inner = if escapes { UseCtx::EscapingCapture } else { UseCtx::Neutral };
-                self.walk(body, inner);
                 Origin::Fresh
             }
 

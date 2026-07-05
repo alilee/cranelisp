@@ -1030,6 +1030,262 @@ fn lambda_param_shadows_capture_no_spurious_escape() {
     );
 }
 
+// ===== Lambda / HOF body-return escape edge (FIXME 0524) =====
+//
+// A lambda body is its OWN frame: any allocation reaching the lambda's
+// tail/return position escapes the LAMBDA frame — the lambda WILL be called
+// (that is why it is a value) and its result outlives its frame, exactly as a
+// named `defn`'s returned allocation does. The cluster-centric pre-cure walked
+// an anonymous lambda body in the ENCLOSING frame's context: a lambda whose
+// VALUE does not escape (bound-and-discarded, or a Borrowed arg to a HOF) had
+// its returned `(Some y)` marked `escapes=Some(false)` (Neutral) — a hard UAF at
+// the B3.4 stack-alloc consumer. Each cell pins the body-return allocation's
+// escape fact; the over-widen pins keep the closure VALUE non-escape and a
+// captured enclosing local in-frame (B3.4's win). These are the crate-side
+// (classifier-output) reproductions of the three e2e regressions the FIXME names
+// (`constructor_wrapped_in_lambda_applied_indirectly_works`,
+// `polymorphic_higher_order_returning_adt`, `nested_match_in_arm_body`).
+
+fn int_lit(value: i64) -> MonoExpr {
+    MonoExpr::IntLit { value, span: s(), ty: ConcreteType::Int }
+}
+
+/// A `VecLit` with an explicit span.
+fn vec_sp(span: Span, elements: Vec<MonoExpr>) -> MonoExpr {
+    MonoExpr::VecLit { elements, span, ty: ConcreteType::String, escapes: None, confined: None, unique_static: None }
+}
+
+#[test]
+fn lambda_body_return_constructor_escapes_when_value_discarded() {
+    // spec: §13.6(k) (FIXME 0524, edge 2 — direct lambda body-return). A lambda
+    // bound-and-discarded (its VALUE does not escape) STILL has its body-return
+    // `(Some y)` escape the lambda frame. Pre-cure: Neutral ⇒ escapes=false (UAF).
+    // `(defn f [] (let [c (fn [y] (Some y))] 0))`.
+    let some_span = Span::new(200, 201);
+    let lam_span = Span::new(202, 203);
+    let lambda = lambda_sp(lam_span, vec!["y"], adt_sp(some_span, vec![var("y")]));
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("c"), lambda)],
+        body: Box::new(int_lit(0)),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[], body, TestEnv::default());
+    assert_eq!(
+        r.facts.escapes.get(&some_span),
+        Some(&true),
+        "the lambda body-return constructor escapes the lambda frame (edge 2)"
+    );
+    // The closure VALUE itself does not escape the enclosing frame (discarded).
+    assert_eq!(
+        r.facts.escapes.get(&lam_span),
+        Some(&false),
+        "the closure value does not escape (bound-and-discarded)"
+    );
+}
+
+#[test]
+fn lambda_body_return_via_hof_borrowed_arg_escapes() {
+    // spec: §13.6(k) (FIXME 0524, edge 4 — HOF-mediated flow; THE
+    // `constructor_wrapped_in_lambda_applied_indirectly_works` shape). The lambda
+    // flows to a HOF that BORROWS it (`apply-it`'s f param is Borrowed) and returns
+    // its result — `(Some y)` flows lambda-return → HOF-return → caller. The escape
+    // is intrinsic to the lambda body-return (edge 2); it needs NO new HOF-flow
+    // carrier — `apply-it` returning `(f x)` merely propagates an already-escaping
+    // allocation. `(apply-it (fn [y] (Some y)) 7)`.
+    let some_span = Span::new(210, 211);
+    let lam_span = Span::new(212, 213);
+    let env = TestEnv::default().summary(
+        "apply-it",
+        sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::Fresh, vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+    );
+    let lambda = lambda_sp(lam_span, vec!["y"], adt_sp(some_span, vec![var("y")]));
+    let body = call("apply-it", vec![lambda, int_lit(7)]);
+    let r = run(&[], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&some_span),
+        Some(&true),
+        "the constructor returned through a borrowing HOF escapes (edge 4 rides edge 2)"
+    );
+    assert_eq!(
+        r.facts.escapes.get(&lam_span),
+        Some(&false),
+        "the closure value is only Borrowed by the HOF — it does not escape"
+    );
+}
+
+#[test]
+fn lambda_body_return_veclit_escapes() {
+    // spec: §13.6(k) (FIXME 0524, edge 2 — VecLit body-return). Any fresh
+    // allocation at the lambda tail escapes, not only ADTs. `(fn [y] [y])` passed
+    // Borrowed to a HOF ⇒ the VecLit escapes the lambda frame.
+    let vec_span = Span::new(220, 221);
+    let env = TestEnv::default().summary(
+        "apply-it",
+        sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::Fresh, vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+    );
+    let lambda = lambda_sp(Span::new(222, 223), vec!["y"], vec_sp(vec_span, vec![var("y")]));
+    let body = call("apply-it", vec![lambda, int_lit(7)]);
+    let r = run(&[], body, env);
+    assert_eq!(r.facts.escapes.get(&vec_span), Some(&true), "the lambda body-return VecLit escapes");
+}
+
+#[test]
+fn lambda_body_return_through_let_tail_escapes() {
+    // spec: §13.6(k) (FIXME 0524, edge 2 through a lambda-LOCAL let). A fresh
+    // aggregate bound to a lambda-local `let` and returned from the lambda tail
+    // escapes the lambda frame: the lambda-local binding drains WITHIN the body
+    // (its own `Let` scope runs during the isolated body walk).
+    // `(fn [w] (let [z (Some w)] z))` bound-and-discarded.
+    let some_span = Span::new(230, 231);
+    let inner_let = MonoExpr::Let {
+        bindings: vec![(Symbol::from("z"), adt_sp(some_span, vec![var("w")]))],
+        body: Box::new(var("z")),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let lambda = lambda_sp(Span::new(232, 233), vec!["w"], inner_let);
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("c"), lambda)],
+        body: Box::new(int_lit(0)),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[], body, TestEnv::default());
+    assert_eq!(
+        r.facts.escapes.get(&some_span),
+        Some(&true),
+        "a lambda-local let-bound aggregate returned from the lambda tail escapes"
+    );
+}
+
+#[test]
+fn lambda_body_return_in_match_arm_escapes() {
+    // spec: §13.6(k) (FIXME 0524, edge 7 — constructor in a match arm returned
+    // from a lambda). `(fn [h] (match h [(Box k) (Some k)]))` passed Borrowed to a
+    // HOF ⇒ the `(Some k)` arm result escapes the lambda frame.
+    let some_span = Span::new(240, 241);
+    let arm = MonoMatchArm {
+        pattern: Pattern::Constructor {
+            name: cranelisp_types::SymbolRef { module: None, name: Symbol::from("Box") },
+            bindings: vec![Symbol::from("k")],
+            span: s(),
+        },
+        body: adt_sp(some_span, vec![var("k")]),
+        span: Span::new(242, 243),
+        provenance: None,
+    };
+    let m = MonoExpr::Match {
+        scrutinee: Box::new(var("h")),
+        arms: vec![arm],
+        span: s(),
+        compiler_generated: false,
+        ty: ConcreteType::String,
+    };
+    let env = TestEnv::default().summary(
+        "apply-it",
+        sm(vec![Mode::Borrowed, Mode::Copy], ResultMode::Fresh, vec![ParamFlow::Consumed, ParamFlow::Consumed]),
+    );
+    let lambda = lambda_sp(Span::new(244, 245), vec!["h"], m);
+    let body = call("apply-it", vec![lambda, int_lit(7)]);
+    let r = run(&[], body, env);
+    assert_eq!(
+        r.facts.escapes.get(&some_span),
+        Some(&true),
+        "a constructor in a match arm returned from a lambda escapes (edge 7)"
+    );
+}
+
+#[test]
+fn nested_lambda_body_return_alloc_escapes() {
+    // spec: §13.6(k) (FIXME 0524, edge 7 — a lambda returning a lambda whose body
+    // constructs). `(fn [] (fn [y] (Some y)))` bound-and-discarded. The OUTER
+    // lambda is non-escaping (isolated Return walk); the INNER lambda's value is at
+    // the outer tail (Return.escapes()==true ⇒ escaping branch), and its body
+    // `(Some y)` escapes. The inner constructor must escape at BOTH levels.
+    let some_span = Span::new(250, 251);
+    let inner = lambda_sp(Span::new(252, 253), vec!["y"], adt_sp(some_span, vec![var("y")]));
+    let outer = lambda_sp(Span::new(254, 255), vec![], inner);
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("c"), outer)],
+        body: Box::new(int_lit(0)),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[], body, TestEnv::default());
+    assert_eq!(
+        r.facts.escapes.get(&some_span),
+        Some(&true),
+        "the inner lambda's body-return constructor escapes (nested composition)"
+    );
+}
+
+// ---- over-widen regression pins: the non-escaping / no-outflow cases stay false ----
+
+#[test]
+fn non_escaping_lambda_returning_captured_local_stays_in_frame() {
+    // spec: §13.6(k) (FIXME 0524, precision pin — the isolated-worklist guard). A
+    // NON-escaping lambda whose body returns a CAPTURED enclosing fresh local must
+    // NOT escape that local — the lambda body-return rule escapes allocations
+    // CREATED in the body, not enclosing captures (capture-escape is gated on the
+    // lambda VALUE escaping, §13.6(j)). `(defn f [x] (let [r (Box x)] (let [c (fn [] r)] 0)))`
+    // is the existing `non_escaping_local_lambda_does_not_escape_capture` shape; this
+    // twin pins the DIRECT-tail return of the capture and the param staying in-frame.
+    let box_span = Span::new(260, 261);
+    let lambda = lambda_sp(Span::new(262, 263), vec![], var("r")); // returns captured `r`
+    let inner = MonoExpr::Let {
+        bindings: vec![(Symbol::from("c"), lambda)],
+        body: Box::new(int_lit(0)),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("r"), adt_sp(box_span, vec![var("x")]))],
+        body: Box::new(inner),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[strparam("x")], body, TestEnv::default());
+    assert_eq!(
+        r.facts.escapes.get(&box_span),
+        Some(&false),
+        "a captured enclosing local returned from a NON-escaping lambda stays in-frame"
+    );
+    assert_eq!(r.summary.param_flow(0), ParamFlow::Consumed, "x stays Consumed (no over-widen through the isolated frame)");
+}
+
+#[test]
+fn lambda_body_return_scalar_no_spurious_escape() {
+    // spec: §13.6(k) (FIXME 0524, no-outflow pin). A lambda whose body returns a
+    // scalar/param (no allocation created in the body) produces NO escape=true
+    // fact — the body-return rule only fires on genuine allocation sites.
+    // `(fn [y] y)` bound-and-discarded.
+    let lambda = lambda_sp(Span::new(270, 271), vec!["y"], var("y"));
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("c"), lambda)],
+        body: Box::new(int_lit(0)),
+        span: s(),
+        ty: ConcreteType::Int,
+    };
+    let r = run(&[], body, TestEnv::default());
+    assert!(
+        r.facts.escapes.values().all(|v| !*v),
+        "a lambda returning a bare param allocates nothing that escapes"
+    );
+}
+
+#[test]
+fn named_fn_return_edge_reconfirmed_after_0524() {
+    // spec: §13.6(k) (FIXME 0524, edge 1 re-confirm). The named-fn return edge is
+    // unchanged by the lambda-body-return cure: a constructor returned from the
+    // top-level body still escapes and the folded param is IntoResult.
+    // `(defn keep [x] (Box x))`.
+    let box_span = Span::new(280, 281);
+    let r = run(&[strparam("x")], adt_sp(box_span, vec![var("x")]), TestEnv::default());
+    assert_eq!(r.facts.escapes.get(&box_span), Some(&true), "named-fn returned constructor escapes (edge 1)");
+    assert_eq!(r.summary.param_flow(0), ParamFlow::IntoResult);
+}
+
 #[test]
 fn result_unique_never_set_in_increment_i() {
     // spec: §10 — result_unique is hardwired false throughout increment I.
