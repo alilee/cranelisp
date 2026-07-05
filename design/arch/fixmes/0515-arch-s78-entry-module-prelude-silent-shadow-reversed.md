@@ -1,6 +1,6 @@
 ---
 number: 0515
-target: /arch
+target: /int  # re-targeted by /arch 2026-07-05 (S103 Phase-2 review, per this FIXME's own §"Owner note" invitation): the §2 edit is a doc-coherence re-anchor of an int-domain design doc (design/int/s78-entry-module.md), NOT a /arch memory-model ruling. The normative question is already answered — the user ruled (no prelude exception), /spec enacted it in spec/08-modules.md §8.6.1/§8.6.4/§8.8.1, and FIXME 0514 carries the shared-seam impl + the 0475 re-anchor. No /arch normative ruling is owed; only the design/int/ prose needs re-anchoring at its (int-owned) manifestation site. Not a write-path (Block B) precondition — drains in the Block C1 /int window (T1 full cure opens design/int/ + src/).
 filed_by: /spec
 filed_at: 2026-07-04
 sprint_filed: 102
