@@ -1,6 +1,6 @@
 ---
 number: 0526
-target: /design  # cranelisp-backend
+target: /arch  # retargeted by /sprint 2026-07-05: no /design skill exists; producer-side vs consumer-side memory-model soundness + increment-II framing is a cross-boundary /arch ruling (design/backend/ownership-codegen.md content edits remain /backend's on /arch's ruling)
 filed_by: /dev   # cranelisp-backend, S102 Wave 14
 filed_at: 2026-07-05
 sprint_filed: 102
