@@ -710,6 +710,13 @@ where
     ///    constructor allocation is backend-emitted, not an extern `alloc_with_rc`
     ///    body; there is no allocator seam to redirect in increment I.
     ///
+    /// A fifth gate — "decline strand-crossing (`confined = Some(false)`) values"
+    /// — would be needed to make the mechanism sound under lenient eval (§4.3), but
+    /// the confinement analysis over-approximates every apply-arg/let-RHS to
+    /// crossing, so that gate declines the whole win. Resolving lenient-eval vs
+    /// stack-alloc is the FIXME-0525 `/arch` blocker; until then the flag holds the
+    /// mechanism off and none of these gates is reached.
+    ///
     /// The `escapes = Some(false)` precondition is the analysis' NoEscape verdict
     /// (the FIRST hard consumer of the escape fact). `Some(true)` / `None`
     /// (analysis off) ⇒ heap — so `CRANELISP_NO_OWNERSHIP` is byte-identical to
@@ -726,30 +733,25 @@ where
         args: &[MonoExpr],
     ) -> bool {
         // ===================================================================
-        // B3.4 BLOCKED at the conservative point — the escape fact is NOT yet a
-        // fully sound hard-UAF decision (FIXME 0524, `target: /typecheck`).
+        // B3.4 HELD OFF at the conservative point — the escape fact is sound, but
+        // stack-alloc is structurally incompatible with lenient eval (FIXME 0525,
+        // `target: /arch`).
         //
-        // B3.4 is the FIRST hard consumer of the escape fact. FIXME 0523
-        // (`be6cff4`) cured the first gap — a value CAPTURED by an escaping
-        // closure was mis-classified `escapes = Some(false)` (fixed: capture is
-        // an escape edge, spine R6). But the B3.4-ACTIVATION attempt (2026-07-05)
-        // surfaced a SECOND, distinct gap (a 0523 SIBLING): a constructor that is
-        // the RETURN VALUE of a lambda, or that flows out through a higher-order
-        // call, is classified `escapes = Some(false)` and stack-allocated, then
-        // dangles once the lambda/callee frame pops — a hard UAF (`runtime panic:
-        // match failed`). Three existing REPL tests fail under activation
-        // (named on the `STACK_ALLOC_ESCAPE_FACT_SOUND` doc). A monomorphic
-        // constructor RETURNED from a NAMED `defn` is correctly `Some(true)` (the
-        // adversarial re-confirm passed); only the lambda/HOF-return path is
-        // unsound. The backend CANNOT gate around this (it would require
-        // interprocedural/lambda-return escape reasoning — the narrowness
-        // counterweight forbids it), so the mechanism stays OFF until the analysis
-        // treats a lambda's / HOF-returned constructor as an escape edge. Flip
-        // `STACK_ALLOC_ESCAPE_FACT_SOUND = true` in the change-set that resolves
-        // FIXME 0524 — the complete mechanism (below + the `emit_stack_alloc`
-        // immortal-header emission + the four gates) activates unchanged.
-        // Byte-identical while OFF: this returns `false` everywhere, so no site
-        // stack-allocates.
+        // B3.4 is the FIRST hard consumer of the escape fact. FIXME 0523/0524 cured
+        // the escape classifier comprehensively (capture + the whole value-outflow
+        // edge space), and the re-activation completeness check confirmed the
+        // lambda/HOF-return regressions pass. But a THIRD, structurally distinct
+        // blocker surfaced that is NOT a classifier gap: the LENIENT (spark) eval
+        // path sparks a call's arguments onto separate strands — a backend-internal
+        // transformation the strict-`MonoExpr` `escapes` analysis cannot see. A
+        // stack slot built for a lenient-sparked arg lives in a thunk frame popped
+        // at the join, so a call with two or more stack-allocated scalar-ADT args
+        // dangles (`runtime error: match failed` — hard UAF; a single such arg
+        // passes by luck). The confinement fact flags it (`confined = Some(false)`),
+        // but over-approximates every apply-arg/let-RHS to crossing (§5.2), so
+        // gating on it makes the win dead code (Principle 8, per the B3.3 lesson).
+        // Neither gate is a sound activation; B3.4 waits on the /arch ruling
+        // (FIXME 0525). Byte-identical while OFF: this returns `false` everywhere.
         if !STACK_ALLOC_ESCAPE_FACT_SOUND {
             return false;
         }
@@ -1121,26 +1123,36 @@ pub(crate) fn node_confined(node: &MonoExpr) -> Option<bool> {
     }
 }
 
-/// B3.4 activation flag (`design/backend/ownership-codegen.md` §4; FIXME 0523/0524).
-/// `false` holds stack-slot allocation at the conservative all-heap point.
+/// B3.4 activation flag (`design/backend/ownership-codegen.md` §4; FIXME 0523/
+/// 0524/0525). `false` holds stack-slot allocation at the conservative all-heap
+/// point (byte-identical to pre-B3.4).
 ///
-/// FIXME 0523 (`be6cff4`) cured the closure/spark-CAPTURE escape gap and the
-/// B3.4-ACTIVATION attempt (2026-07-05) flipped this to `true` — but that
-/// surfaced a SECOND, distinct escape-soundness gap (a 0523 SIBLING, FIXME 0524,
-/// `target: /typecheck`): a constructor that is the RETURN VALUE of a lambda or
-/// flows out through a higher-order call is classified `escapes = Some(false)`
-/// and stack-allocated, then dangles once the lambda/callee frame pops — a hard
-/// UAF (`runtime panic: match failed`). Three existing REPL tests
-/// (`regression::constructor_wrapped_in_lambda_applied_indirectly_works`,
-/// `spec_03_types::polymorphic_higher_order_returning_adt`,
-/// `spec_06_pattern_matching::nested_match_in_arm_body`) pass with the flag off
-/// and fail under activation. The backend cannot gate around this (the narrowness
-/// counterweight forbids interprocedural/lambda-return escape reasoning), so the
-/// flag stays `false` until 0524 lands. `false` ⇒ byte-identical to pre-B3.4.
-/// The full mechanism (gates + `emit_stack_alloc` immortal-header emission) is
-/// landed and unit-tested; flip to `true` in the change-set that resolves 0524
-/// (after re-verifying the killer/win/adversarial + full-corpus behavioral suite)
-/// and the mechanism activates unchanged.
+/// Activation history — THREE reverts, and the third is NOT a classifier gap:
+/// FIXME 0523 (`d0c7684`) cured the closure/spark-CAPTURE escape gap; FIXME 0524
+/// (`936404b`) cured the escape CLASS — the whole value-outflow edge space
+/// (named-return / lambda-body-return / capture / HOF-flow / store-into-escaping /
+/// spark-suspension / nested), 9-cell strategy matrix. After 0524 the classifier
+/// is comprehensively sound, and the RE-ACTIVATION completeness check confirmed
+/// the two lambda/HOF-return regressions pass — BUT a third, structurally distinct
+/// blocker surfaced (FIXME 0525, `target: /arch`): the LENIENT (spark) eval path
+/// sparks a call's arguments onto separate strands, a backend-internal
+/// transformation the strict-`MonoExpr` `escapes` analysis cannot see. A stack
+/// slot built for a lenient-sparked arg lives in a thunk frame popped at the join,
+/// so a call with **two or more** stack-allocated scalar-ADT args dangles
+/// (`runtime error: match failed` — hard UAF; a single such arg passes by luck,
+/// the scalar is extracted before the popped slot is reused = a false-green). The
+/// confinement fact DOES flag these (`confined = Some(false)`, crossing) — but the
+/// confinement analysis over-approximates EVERY apply-arg / let-RHS to crossing
+/// (§5.2, and the B3.3 review), so gating stack-alloc on it declines every
+/// stack-eligible constructor and makes the whole mechanism dead code (the
+/// Principle-8 anti-pattern the B3.3 through-binding half was dropped for). So
+/// neither "trust escape alone" (UAF) nor "also require confined" (dead win) is a
+/// sound activation; B3.4 cannot activate until /arch rules on how stack-alloc
+/// interacts with lenient-eval arg-sparking (FIXME 0525). `false` ⇒ byte-identical
+/// to pre-B3.4. The full mechanism (gates + `emit_stack_alloc` immortal-header
+/// emission) is landed and unit-tested; it activates unchanged once 0525 is
+/// resolved and this flag flips (after re-verifying the killer/win/adversarial +
+/// full-corpus behavioral suite, INCLUDING the multi-arg lenient shape).
 const STACK_ALLOC_ESCAPE_FACT_SOUND: bool = false;
 
 /// B3.4 (`design/backend/ownership-codegen.md` §4.1): read the `escapes` site
@@ -1339,15 +1351,19 @@ mod b34_stack_eligibility_tests {
     }
 
     // --- the composed method is gated OFF at the conservative point ------------
-    // spec: design/backend/ownership-codegen.md §4 — B3.4 still blocked.
-    // FIXME 0523 (closure/spark CAPTURE escape) was cured, but the B3.4-ACTIVATION
-    // attempt (2026-07-05) surfaced a SECOND, distinct escape-soundness gap — a
-    // 0523 SIBLING (FIXME 0524, `target: /typecheck`): a constructor that is the
-    // RETURN VALUE of a lambda / flows out through a higher-order call is
-    // classified NoEscape and stack-allocated, then dangles (hard UAF — three
-    // existing REPL tests fail under activation). Stack allocation stays OFF
-    // (byte-identical to pre-B3.4) until 0524 lands. Compile-time guard so a stray
-    // flip cannot land without this test file being revisited.
+    // spec: design/backend/ownership-codegen.md §4 — B3.4 held off (2026-07-05).
+    // The escape classifier is comprehensively sound (FIXME 0523 + 0524), and the
+    // re-activation completeness check confirmed the lambda/HOF-return regressions
+    // pass — but a THIRD, structurally distinct blocker surfaced (FIXME 0525,
+    // `target: /arch`): under LENIENT (spark) eval a call's args are sparked onto
+    // separate strands (a backend-internal transformation the strict `escapes`
+    // analysis cannot see), so a call with two or more stack-allocated scalar-ADT
+    // args dangles at the join (hard UAF). The confinement fact flags it but
+    // over-approximates every apply-arg/let-RHS to crossing, so gating on it makes
+    // the win dead code (Principle 8). B3.4 cannot activate until /arch rules on
+    // lenient-eval vs stack-alloc. Stack allocation stays OFF (byte-identical to
+    // pre-B3.4). Compile-time guard so a stray flip cannot land without this test
+    // file (and the 0525 blocker) being revisited.
     const _: () = assert!(!STACK_ALLOC_ESCAPE_FACT_SOUND);
 }
 

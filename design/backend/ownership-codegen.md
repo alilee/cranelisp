@@ -412,12 +412,53 @@ lazily-synthesized Decision-24 value wrapper; join-to-Owned rejected). The codeg
 ## §4. Stack/region mechanics for `NoEscape` (spine §10 item 8)
 
 > **AS-BUILT — B3.4 Wave 11: mechanism LANDED, HELD OFF at the conservative
-> point. Activation ATTEMPTED 2026-07-05 and REVERTED — it surfaced a 0523
-> SIBLING (FIXME 0524, `target: /typecheck`).** B3.4 is the FIRST hard consumer
-> of the `escapes` site fact. The complete mechanism is implemented and
-> unit-tested; a single compile-time flag — `STACK_ALLOC_ESCAPE_FACT_SOUND =
-> false` (`fn_compiler.rs`) — holds it at the all-heap conservative point
-> (byte-identical to pre-B3.4).
+> point. Activation ATTEMPTED THREE times (2026-07-05) and each time held off.**
+> B3.4 is the FIRST hard consumer of the `escapes` site fact. The complete
+> mechanism is implemented and unit-tested; a single compile-time flag —
+> `STACK_ALLOC_ESCAPE_FACT_SOUND = false` (`fn_compiler.rs`) — holds it at the
+> all-heap conservative point (byte-identical to pre-B3.4).
+>
+> **The THIRD blocker (FIXME 0525, `target: /arch`) — NOT a classifier gap; a
+> structural stack-alloc-vs-lenient-eval mismatch.** After FIXME 0523 (capture)
+> and FIXME 0524 (the whole value-outflow edge space) cured the escape classifier
+> comprehensively, the RE-ACTIVATION completeness check confirmed the two
+> lambda/HOF-return regressions
+> (`constructor_wrapped_in_lambda_applied_indirectly_works`,
+> `polymorphic_higher_order_returning_adt`) PASS flag-ON under `MALLOC_PERTURB_` —
+> the 0524 cure is genuine. **But the third regression
+> (`nested_match_in_arm_body`) fails HARD flag-ON** (`runtime error: match
+> failed`). Root cause: under LENIENT eval the backend sparks a call's arguments
+> onto separate strands — a **codegen-internal transformation the strict
+> `MonoExpr` `escapes` analysis cannot see** — so a stack slot built for a
+> lenient-sparked arg lives in a thunk frame popped at the join; a call with two
+> or more stack-allocated scalar-ADT args dangles (a single such arg passes by
+> luck — the scalar is extracted before slot reuse, a false-green). Ablation:
+> `NO_OWNERSHIP` → correct (stack-alloc causal); `NO_LENIENT` → correct
+> (lenient-specific); one ADT arg → OK, two-to-one-call → UAF. **The escape fact
+> is CORRECT** (this is not a 4th/5th classifier gap); it is simply insufficient
+> as a stack-alloc precondition while the backend introduces strand crossings the
+> strict analysis can't model. The confinement fact DOES flag these
+> (`confined = Some(false)`, crossing) — but the confinement analysis
+> over-approximates EVERY apply-arg / let-RHS to crossing (§5.2 / the B3.3 review),
+> so gating stack-alloc on it (the §4.3 "decline crossing" rule) declines the
+> whole win and makes the mechanism dead code (Principle 8 — the exact anti-pattern
+> the B3.3 through-binding half was dropped for; measured: the golden diff goes
+> EMPTY, nothing stack-allocates anywhere). **Neither "trust escape alone" (UAF)
+> nor "also require confined" (dead win) is a sound activation.** B3.4 cannot
+> activate until /arch rules on how stack-alloc interacts with lenient-eval
+> arg-sparking (FIXME 0525: candidate directions = confinement precision so a
+> genuinely-local constructor is `Some(true)`, OR fix lenient multi-arg codegen to
+> copy stack args before crossing, OR mode-gate B3.4 to non-lenient compilation).
+> The flag was reverted to `false`; the mechanism (four gates + `emit_stack_alloc`
+> immortal header) is landed unchanged and activates the moment 0525 resolves and
+> the flag flips (after re-verifying killer/win/adversarial + the FULL suite
+> INCLUDING the multi-arg lenient shape).
+>
+> **The earlier two activation attempts (2026-07-05, both reverted).** FIXME 0523
+> (`be6cff4`) cured the closure/spark-CAPTURE escape gap; a first activation then
+> surfaced FIXME 0524 (lambda-body-return / HOF-flow classified `Some(false)`);
+> after 0524 (`936404b`) cured the whole escape class, the re-activation surfaced
+> the 0525 lenient blocker above. Historical detail of the 0524 signature:
 >
 > **The B3.4-ACTIVATION attempt (2026-07-05).** FIXME 0523 (`be6cff4`) cured the
 > closure/spark-CAPTURE escape gap, so activation was attempted: the flag flipped
