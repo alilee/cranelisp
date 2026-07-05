@@ -6,7 +6,10 @@ item 7 upgraded from triage note to fix brief; **amended S102 Phase 3 — §13 a
 increment-I implementation staging** — golden-CLIF capture backend half, the ordered
 change-set ladder with per-change-set oracle/gate obligations, the `fn_as_value` seam
 rework folding 0474/0483/0476, and the Principle-23 scenario matrices + `tests.rs` split
-plan) — the per-crate codegen proposal for the five
+plan; **amended S102 Wave 11 — §4 as-built: B3.4 ACTIVATED
+(`STACK_ALLOC_ESCAPE_FACT_SOUND = true`) via gate 5, the FIXME-0525 `/arch` spark-relocation
+cure — the stack-slot mechanism is now LIVE, the flag is the analysis-off oracle switch**)
+— the per-crate codegen proposal for the five
 ownership-consuming backend mechanisms. Authored by `/design` narrow-deployed on
 `cranelisp-backend`, against the S100 sprint scope (`sprints/SPRINT.md` parts 12–16).
 **Governing authority:** `design/arch/ownership-inference.md` (the S100 master spine, as amended
@@ -411,76 +414,37 @@ lazily-synthesized Decision-24 value wrapper; join-to-Owned rejected). The codeg
 
 ## §4. Stack/region mechanics for `NoEscape` (spine §10 item 8)
 
-> **AS-BUILT — B3.4 Wave 11: mechanism LANDED, HELD OFF at the conservative
-> point. Activation ATTEMPTED THREE times (2026-07-05) and each time held off.**
+> **AS-BUILT — B3.4 Wave 11: ACTIVATED (2026-07-05, FIXME 0525 `/arch` ruling).**
 > B3.4 is the FIRST hard consumer of the `escapes` site fact. The complete
-> mechanism is implemented and unit-tested; a single compile-time flag —
-> `STACK_ALLOC_ESCAPE_FACT_SOUND = false` (`fn_compiler.rs`) — holds it at the
-> all-heap conservative point (byte-identical to pre-B3.4).
+> mechanism (four gates + gate 5 + `emit_stack_alloc` immortal header) is
+> implemented, unit-tested, and LIVE: `STACK_ALLOC_ESCAPE_FACT_SOUND = true`
+> (`fn_compiler.rs`). The flag is now the **analysis-off oracle switch** — set
+> `false` (or `CRANELISP_NO_OWNERSHIP=1`) to restore the byte-identical pre-B3.4
+> all-heap point (verified: HEAD-activated under `NO_OWNERSHIP` is byte-for-byte
+> identical to the pre-activation parent across all 13 corpus entries). The WIN
+> fires: `07_trait_dispatch`'s `(MkBox 5)` (scalar-Int payload, used locally as a
+> `size` arg — NoEscape, not sparked/returned/captured) emits `ss0 = explicit_slot
+> 32` + `stack_addr` + the immortal header in the golden; its `(MkTag "abc")`
+> sibling (String payload) correctly stays heap (gate 2). Value-correct (exit 8)
+> under lenient / `NO_LENIENT` / `NO_OWNERSHIP` / `MALLOC_PERTURB_` seeds 1/42/165/250.
 >
-> **The THIRD blocker (FIXME 0525, `target: /arch`) — NOT a classifier gap; a
-> structural stack-alloc-vs-lenient-eval mismatch.** After FIXME 0523 (capture)
-> and FIXME 0524 (the whole value-outflow edge space) cured the escape classifier
-> comprehensively, the RE-ACTIVATION completeness check confirmed the two
-> lambda/HOF-return regressions
-> (`constructor_wrapped_in_lambda_applied_indirectly_works`,
-> `polymorphic_higher_order_returning_adt`) PASS flag-ON under `MALLOC_PERTURB_` —
-> the 0524 cure is genuine. **But the third regression
-> (`nested_match_in_arm_body`) fails HARD flag-ON** (`runtime error: match
-> failed`). Root cause: under LENIENT eval the backend sparks a call's arguments
-> onto separate strands — a **codegen-internal transformation the strict
-> `MonoExpr` `escapes` analysis cannot see** — so a stack slot built for a
-> lenient-sparked arg lives in a thunk frame popped at the join; a call with two
-> or more stack-allocated scalar-ADT args dangles (a single such arg passes by
-> luck — the scalar is extracted before slot reuse, a false-green). Ablation:
-> `NO_OWNERSHIP` → correct (stack-alloc causal); `NO_LENIENT` → correct
-> (lenient-specific); one ADT arg → OK, two-to-one-call → UAF. **The escape fact
-> is CORRECT** (this is not a 4th/5th classifier gap); it is simply insufficient
-> as a stack-alloc precondition while the backend introduces strand crossings the
-> strict analysis can't model. The confinement fact DOES flag these
-> (`confined = Some(false)`, crossing) — but the confinement analysis
-> over-approximates EVERY apply-arg / let-RHS to crossing (§5.2 / the B3.3 review),
-> so gating stack-alloc on it (the §4.3 "decline crossing" rule) declines the
-> whole win and makes the mechanism dead code (Principle 8 — the exact anti-pattern
-> the B3.3 through-binding half was dropped for; measured: the golden diff goes
-> EMPTY, nothing stack-allocates anywhere). **Neither "trust escape alone" (UAF)
-> nor "also require confined" (dead win) is a sound activation.** B3.4 cannot
-> activate until /arch rules on how stack-alloc interacts with lenient-eval
-> arg-sparking (FIXME 0525: candidate directions = confinement precision so a
-> genuinely-local constructor is `Some(true)`, OR fix lenient multi-arg codegen to
-> copy stack args before crossing, OR mode-gate B3.4 to non-lenient compilation).
-> The flag was reverted to `false`; the mechanism (four gates + `emit_stack_alloc`
-> immortal header) is landed unchanged and activates the moment 0525 resolves and
-> the flag flips (after re-verifying killer/win/adversarial + the FULL suite
-> INCLUDING the multi-arg lenient shape).
+> **The three blockers, all resolved.** FIXME 0523 (`d0c7684`) cured the closure/
+> spark-CAPTURE escape gap; FIXME 0524 (`936404b`) cured the escape CLASS (the whole
+> value-outflow edge space — named-return / lambda-body-return / capture / HOF-flow /
+> store-into-escaping / spark-suspension / nested). The THIRD blocker (FIXME 0525)
+> was NOT a classifier gap: under LENIENT eval the backend sparks a call's args onto
+> separate strands — a backend-internal transformation the strict-`MonoExpr`
+> `escapes` analysis cannot see — so a stack slot built for a lenient-sparked arg
+> lived in a thunk frame popped at the join, and a call with two or more
+> stack-allocated scalar-ADT args dangled (`match failed` — hard UAF; the
+> `nested_match_in_arm_body` signature). **The /arch ruling (2026-07-05, direction
+> (d)) cured it with backend-local gate 5** (§4.3), mirroring gate 3's TCO-back-edge
+> decline: decline stack-alloc for any construction the backend relocates into a
+> spark thunk. `nested_match_in_arm_body` now PASSES flag-ON under `MALLOC_PERTURB_`
+> (the sparked-arg constructions decline via gate 5, stay heap — value-correct 11);
+> the two 0524 lambda/HOF-return regressions stay green (unaffected by gate 5).
 >
-> **The earlier two activation attempts (2026-07-05, both reverted).** FIXME 0523
-> (`be6cff4`) cured the closure/spark-CAPTURE escape gap; a first activation then
-> surfaced FIXME 0524 (lambda-body-return / HOF-flow classified `Some(false)`);
-> after 0524 (`936404b`) cured the whole escape class, the re-activation surfaced
-> the 0525 lenient blocker above. Historical detail of the 0524 signature:
->
-> **The B3.4-ACTIVATION attempt (2026-07-05).** FIXME 0523 (`be6cff4`) cured the
-> closure/spark-CAPTURE escape gap, so activation was attempted: the flag flipped
-> `false → true`. Verification confirmed the FIRST escape gap was closed (both
-> 0523 killer shapes classify `escapes = Some(true)`, stay heap, correct under
-> `MALLOC_PERTURB_`; the win `(MkBox 5)` stack-allocates with the immortal header;
-> monomorphic constructors RETURNED from NAMED `defn`s / heap-field / TCO-loop /
-> extern shapes all correctly stay heap; full 13-entry corpus ON==OFF and
-> byte-identical-OFF held). **But the full suite surfaced THREE hard-UAF
-> regressions** (`regression::constructor_wrapped_in_lambda_applied_indirectly_works`,
-> `spec_03_types::polymorphic_higher_order_returning_adt`,
-> `spec_06_pattern_matching::nested_match_in_arm_body` — all `runtime panic: match
-> failed`, all pass flag-off / fail flag-on): a constructor that is the RETURN
-> VALUE of a **lambda**, or that flows out through a **higher-order call**, is
-> classified `escapes = Some(false)` and stack-allocated, then dangles once the
-> lambda/callee frame pops. This is a SECOND escape-soundness gap distinct from
-> 0523 (capture): 0523 was capture-by-closure; this is lambda/HOF *return*. The
-> backend cannot gate it (interprocedural/lambda-return reasoning is out of the
-> narrowness budget). **Filed FIXME 0524 (`target: /typecheck`); the flag was
-> reverted to `false`.** Re-attempt activation only after 0524 lands and the
-> killer/win/adversarial + full-corpus behavioral suite is re-verified. Seams
-> (the landed, held-off mechanism):
+> **Mechanism seams (as-built, ACTIVATED):**
 > - **Mechanism (`heap.rs`)** — `emit_stack_alloc(builder, payload_size)`:
 >   `create_sized_stack_slot(HeapHeader::SIZE + payload_size, align 8)` +
 >   `stack_addr` + header init (alloc_size @0, **`IMMORTAL_RC = 1<<62` @RC_OFFSET**,
@@ -497,14 +461,17 @@ lazily-synthesized Decision-24 value wrapper; join-to-Owned rejected). The codeg
 >   emit_adt_construct_stackable`. This first-consumer wiring gap is exactly the
 >   B3.2→0520 parallel (the fact is annotated one node away from where the naive
 >   reading expects it).
-> - **The four eligibility gates (`constructor_call_stack_eligible`), all
+> - **The five eligibility gates (`constructor_call_stack_eligible`), all
 >   backend-local, all CONSERVATIVE (when in doubt, HEAP):** (1) statically sized
 >   — always true for a constructor call; (2) all-scalar payload — every arg/field
 >   classifies `NeverHeap` (`node_is_scalar`); (3) not reachable by a TCO
 >   back-edge — declined for the WHOLE function when it self-calls
 >   (`body_has_self_call` / `fn_has_self_call`, over-approximating the back-edge
 >   set); (4) extern-produced ineligible — an inlined constructor is
->   backend-emitted, not an `alloc_with_rc` body.
+>   backend-emitted, not an `alloc_with_rc` body; **(5) not relocated across a
+>   spark boundary — declined when `FnCompiler::in_spark_thunk` is set (§4.3, the
+>   FIXME-0525 cure).** The escape precondition (`node_escapes(apply) == Some(false)`)
+>   gates all five; `Some(true)` / `None` (analysis off) ⇒ heap.
 > - **Scope of the first landing:** only scalar-payload **ADT constructor calls**.
 >   `Lambda` closures and `VecLit` DECLINED (heap): `VecLit` allocates its
 >   struct+buffer through the `runtime/vec_new` extern (gate-4-adjacent; needs
@@ -513,40 +480,17 @@ lazily-synthesized Decision-24 value wrapper; join-to-Owned rejected). The codeg
 >   (§4.2 — decline vecs with in-frame `vec-set`/`vec-push`) and the §4.3
 >   spark-capture handling ride the `VecLit`/`Lambda` enablement, deferred with them.
 >
-> **THE BLOCKER (FIXME 0524, `target: /typecheck`): the escape fact is UNSOUND
-> for lambda-returned / HOF-returned constructors.** FIXME 0523 (`be6cff4`/
-> `d0c7684`) cured the first gap (closure CAPTURE — pass5 now computes an escaping
-> closure's capture set as the free vars of its body and classifies each as an
-> escape edge, spine R6). The B3.4-ACTIVATION verification confirmed that fix (the
-> 0523 killer shapes classify `escapes = Some(true)` and stay heap; a monomorphic
-> constructor RETURNED from a NAMED `defn` is also `Some(true)`, per the
-> adversarial re-confirm). But a constructor that is the RETURN VALUE of a
-> **lambda** — `(fn [y] (Some y))` — or that flows out through a **higher-order
-> call** — `(apply-it (fn [y] (Some y)) 7)` — is still classified `Some(false)`
-> and stack-allocates, then dangles once the lambda/callee frame pops (`runtime
-> panic: match failed`). The lambda does not appear in the ownership cluster
-> summaries, so its body-return `(Some y)` node never receives the escape edge its
-> named-`defn` sibling does. The backend cannot gate around this (interprocedural/
-> lambda-return escape reasoning is out of the narrowness budget), so the
-> mechanism stays OFF until the analysis treats a lambda's / HOF-returned
-> constructor as an escape edge. Flip `STACK_ALLOC_ESCAPE_FACT_SOUND = true` in
-> the change-set that resolves 0524 and the mechanism activates unchanged.
->
-> **Proof (activation attempt, then reverted):** byte-identical-off HOLDS
-> trivially (flag off ⇒ no site stack-allocates ⇒ pre-B3.4 emission). With the
-> flag momentarily forced on during verification: the win fires (a NoEscape scalar
-> ADT read locally emits `explicit_slot` + `stack_addr` + the `iconst
-> 0x4000_0000_0000_0000` immortal header; value-correct under `MALLOC_PERTURB_`),
-> the 0523 killer shapes and the adversarial non-eligible shapes (returned-from-
-> `defn` ADT, heap-typed-field ADT, TCO-loop local, extern/VecLit-produced) all
-> stay heap and correct, and the full 13-entry corpus is ON==OFF — EXCEPT the
-> lambda/HOF-returned-constructor shapes, which is the 0524 finding above (three
-> existing REPL tests fail flag-on / pass flag-off). Unit matrix:
-> `heap::stack_slot_b34_tests` (emission + immortal header + counter) +
+> **The escape classifier is comprehensively sound** post-FIXME 0523 (closure/
+> spark-CAPTURE — pass5 computes an escaping closure's capture set as its body's
+> free vars, spine R6) + FIXME 0524 (the value-outflow edge CLASS — named-return /
+> lambda-body-return / HOF-flow / store-into-escaping / spark-suspension / nested).
+> Unit matrix: `heap::stack_slot_b34_tests` (emission + immortal header + counter) +
 > `fn_compiler::b34_stack_eligibility_tests` (`node_escapes` total match;
-> `body_has_self_call` gate-3 scenarios). The killer/win/adversarial + full-corpus
-> behavioral suite is the re-verification checklist for the 0524-resolving
-> change-set; the durable e2e guards are /qa's (the 0524 UAF repro).
+> `body_has_self_call` gate-3 scenarios; the gate-5 composed-method cell —
+> `in_spark_thunk` ⇒ ineligible, and the win survives when it is clear). The durable
+> e2e guards are the three activation regressions, now green flag-ON
+> (`nested_match_in_arm_body` via gate 5; the two 0524 lambda/HOF-return shapes via
+> escape classification).
 >
 > **h2 disposition — STAYS RED (coordination question, not crossed).** The h2 guard
 > asserts the process-exit `[RC_STATS]` line contains `"stack_slot"`, printed by
@@ -587,6 +531,14 @@ all backend-local and all conservative-by-default:
 4. **Extern-produced values are ineligible by construction** — Rust bodies allocate via
    `alloc_with_rc`; the backend cannot redirect them without an allocator seam. That seam is
    §4.4's region arena (increment II, the (a)-coupling).
+5. **Not relocated across a spark boundary** (`FnCompiler::in_spark_thunk`; the FIXME-0525
+   cure, §4.3) — a construction the backend relocates into a synthesized spark-thunk body
+   (lenient apply-arg / independent-`let` / dependent-`let` sparks) is declined. Its thunk
+   frame pops at the join, so the slot would dangle once the parent consumes the value. Like
+   gate 3, this is an emission-side sharpening of the (correct) escape fact — the fact is
+   computed against the strict `MonoExpr` frame, and the backend then rewrites that frame
+   structure by sparking. Always sound to decline; under `NO_LENIENT` no thunk is synthesized
+   so the gate never fires and the full win lands.
 
 ### 4.2 The immortal header — why residual RC traffic is harmless by construction
 
@@ -616,15 +568,52 @@ Scope-exit: no dec is emitted for stack bindings (nothing to release; payload is
 gate 2). `pop_scope_with_cleanup` skips them via a per-binding stack-ness mark — the same
 mechanism that already skips consumed and borrowed bindings.
 
-### 4.3 ParBind-arm and spark interaction
+### 4.3 Spark interaction — gate 5 (the FIXME-0525 cure)
 
 A joined spark reading a parent-frame stack slot through a borrowed capture is sound by the
 same structural argument as capture-by-borrow (`ring2-rc.md` §5.5.2.3: the parent frame is
 live across spark→join). The classification side is typecheck's (suspension crossings are
 escape edges, spine R6 — a capture flowing into a deferred continuation or `LaunchContinue`
 is `Escapes` and never stack-allocates); the backend consumes the per-site verdict and adds
-no strand reasoning of its own. Allocations *inside* a spark thunk body are ordinary — the
-thunk is a separately compiled fn whose frame lives on the worker's stack.
+no strand reasoning of its own.
+
+**But a construction the backend RELOCATES into a spark thunk is a different hazard**, and it
+is the one the escape fact cannot see. Under lenient eval the backend sparks a call's
+arguments (and independent/dependent `let`-bindings) onto separate strands by synthesizing a
+`MonoExpr::Lambda` spark-thunk body (`apply.rs` apply-arg site; `let_if.rs`
+`compile_let_lenient`; `dependent_spark.rs`) — a **codegen-internal transformation the strict
+`MonoExpr` `escapes` analysis never ran over**. A construction inside that thunk body carries
+the escape fact computed against the *original* frame (where it was a plain apply-arg — often
+`NoEscape`), but the backend has now moved it into a thunk frame that pops at the join. Its
+stack slot dangles once the parent forces the IVar and consumes the (freed) value: a call
+with two-or-more stack-allocated scalar-ADT args produces `match failed` (hard UAF, the
+`nested_match_in_arm_body` signature). A single such arg passes by luck (the scalar is
+extracted before slot reuse — a `feedback_verify_fix_not_symptom_absence` false-green, not a
+safety property).
+
+**Cure (FIXME 0525 `/arch` ruling 2026-07-05, direction (d)): backend-local gate 5, mirroring
+gate 3.** The backend OWNS the spark-placement decision, so it is the only actor that can
+compute this signal — a `FnCompiler::in_spark_thunk` flag raised while compiling any
+spark-thunk body, checked by `constructor_call_stack_eligible` (`if self.in_spark_thunk {
+return false; }`). It is single-sourced (Principle 7) through the
+`compile_spark_thunk(thunk_expr)` helper for the apply-arg + independent-`let` sparks (which
+raises both `in_spark_thunk` and — toggle-gated — `spark_capture_borrow`, then restores them
+error-safely) and set directly on the dependent-`let` thunk's dedicated inner compiler
+(`dependent_spark.rs` — the §4.5 capture-by-borrow carve-out excludes `spark_capture_borrow`
+there, but gate 5 still applies). The apply-arg / independent-`let` constructions live in the
+thunk's `Lambda` body, so the flag is propagated into the body's inner `FnCompiler` by
+`compile_lambda_body` (`inner_compiler.in_spark_thunk = self.in_spark_thunk`) — exactly how
+`spark_capture_borrow` crosses that boundary. Increment I declines ALL stack-alloc inside a
+spark thunk (no thunk-internal-tail refinement — the thunk body is typically a single
+expensive `Apply`, so thunk-internal wins are marginal; declining is always sound). Under
+`NO_LENIENT` no thunk is synthesized, `in_spark_thunk` never sets, and the full corpus win
+lands.
+
+Allocations *inside* a spark thunk body that are NOT relocated (genuinely written there in
+source, compiled by the thunk's own frame) are also declined by gate 5 in increment I — a
+conservative over-decline (the thunk is a separately compiled fn whose frame lives on the
+worker's stack, so a frame-local construction there is technically safe), accepted because
+declining is always sound and the thunk-internal win is marginal.
 
 ### 4.4 Increment II — the region arena (M7's shape, shared tier)
 
@@ -1415,7 +1404,7 @@ acceptance gate(s) it makes gradeable.
 | **B3.1** | `fn_as_value` seam rework — the defect half | §13.3: wrapper-identity scheme (0483 cure) + COW consumed-source polarity (0474 cure) + curry-path coverage; scenario-matrix unit tests per §13.5; 0488's fix rides here as a conditional rider iff `/qa`'s A3 isolation attributes it to this seam | B1-be (kinds), B3.0 (test homes) | emission-affecting: **scoped re-baseline** (wrapper names/COW branches) + **corpus extension** (newly-green 0483 shapes; EXCLUSIONS struck) | flips 0474×3 + 0483×3 guards; L-M1 matrix rides here |
 | **B3.2** | Borrow-elision core (modes-live) | §3.1 caller skip-inc + temp post-call dec; §3.2 `Borrowed` params join `borrowed_vars`; §3.3 ResultMode consumption + provenance-rooted `compute_last_uses` extension; §3.4 adaptation algebra; §3.5 R2 `__d24wrap_{fq}_{slot}__` wrapper + curry composition. **One atomic change-set**: the callee-side moded compilation, the caller-side vector consumption, and the R2 wrapper flip together (a moded body reachable from a Decision-24 value use without its adapter is the §3.5 invariant violated) | B2 (summaries), B3.1 (the wrapper machinery base + a clean seam) | emission-affecting: the largest attributed re-baseline of the sprint (elided incs/decs across the corpus); H2 elision counters land here | **I-G1** (F1 ≥99% rc_inc drop), I-G2 attribution honesty; S1–S4+S6 fences discriminating |
 | **B3.3** | Confined non-atomic RC | §5 re-gate of the existing `heap.rs` non-atomic arms on the per-site `confined` fact (`RcAtomicity` input on the emit helpers); `emit_vec_rc_dec_with_drop` gains the same input (§5.2's one moving inventory item); H2 non-atomic-op-share counter | B2 (facts); independent of B3.2 in soundness, sequenced after it because the surviving-op population I-G3 grades is post-elision | emission-affecting: scoped re-baseline (atomic→plain ops on Confined-classified corpus sites) | **I-G3** (F2 board classifies Confined; surviving parent-side ops non-atomic) |
-| **B3.4** | Stack slots | §4.1–§4.3: `create_sized_stack_slot` + immortal-RC sentinel (`IMMORTAL_RC` header init) at `escapes = Some(false)` sites passing the four eligibility gates (statically sized, all-scalar payload, no TCO back-edge flow, backend-emitted); scope-exit skip mark; vec write-use decline heuristic; H2 stack-slot-hit counter | B2 (facts); independent of B3.2/B3.3 | emission-affecting: scoped re-baseline (alloc→stack_slot at eligible corpus sites) | **I-G7** (eligible-site heap allocs → 0); L-C2 ASan lanes |
+| **B3.4** | Stack slots | §4.1–§4.3: `create_sized_stack_slot` + immortal-RC sentinel (`IMMORTAL_RC` header init) at `escapes = Some(false)` sites passing the **five** eligibility gates (statically sized, all-scalar payload, no TCO back-edge flow, backend-emitted, **not spark-relocated — gate 5, `in_spark_thunk`, the FIXME-0525 cure**); scope-exit skip mark; vec write-use decline heuristic; H2 stack-slot-hit counter. **ACTIVATED S102 Wave 11 (`STACK_ALLOC_ESCAPE_FACT_SOUND = true`)** | B2 (facts); independent of B3.2/B3.3 | emission-affecting: scoped re-baseline (`07_trait_dispatch` `(MkBox 5)` alloc→stack_slot) | **I-G7** (eligible-site heap allocs → 0); L-C2 ASan lanes |
 | **B3.5** | `str-len$borrowed` sibling | §9.1 authoring template (shared core, two exports) + primitives-table sibling slot + `borrowed_sibling_slot` linkage + §9.3 four-leg emission gate; `ring2-rc.md` §3.3 audit table gains the "borrowed sibling?" column | B3.2 (site borrow-classification is a gate leg) | consuming export untouched ⇒ Rust side byte-identical off; sibling call sites re-baseline scoped | S5 fence; L-D5 attribution lane seeds |
 | **B4** | 0459 density gate | The static allocation/RC-density admission axis on sparkability — designed in `lenient-eval.md` §2.7 (this sprint's doc edit); consumes the same per-site facts as B3.3/B3.4, active only when pass5 ran (facts-absent ⇒ axis inert ⇒ today's admission verbatim) | B2 (facts); most valuable after B3.2–B3.4 (density measures the *surviving* atomic/alloc population) | emission-affecting where it declines a spark (gate branch not emitted); toggle-off byte-identical by the axis-inert rule | **I-G4** (parallel non-regression) progress; lenient-eval §9 three-regime equivalence extended |
 

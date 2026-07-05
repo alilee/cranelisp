@@ -15,7 +15,7 @@ use crate::heap::HeapCategory;
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
 
-use super::control_flow::{find_sparkable_args, CAPTURE_BORROW_ENABLED, LENIENT_DISABLED};
+use super::control_flow::{find_sparkable_args, LENIENT_DISABLED};
 use super::{signature_heap_category, FnCompiler};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
@@ -230,21 +230,20 @@ where
                                 escapes: None,
                                 unique_static: None,
                             };
-                            // Capture-by-borrow (S99, FIXME 0461; lenient-eval.md
-                            // §4.4.1): this apply-arg spark is structurally
-                            // joined — Phase 2's barrier forces every sparked
-                            // IVar before the call instruction, so the parent
-                            // frame is provably live across spark→join→call. Raise
-                            // the borrow flag (toggle-gated; off ⇒ false ⇒ byte-
-                            // identical) around the thunk compile so its heap
-                            // captures are borrowed, not retained. Save/restore as
-                            // `sparked_args` does below; restore before `?` so an
-                            // error does not leak the flag.
-                            let saved_borrow = this.spark_capture_borrow;
-                            this.spark_capture_borrow = *CAPTURE_BORROW_ENABLED;
-                            let thunk_res = this.compile_expr(&thunk_expr);
-                            this.spark_capture_borrow = saved_borrow;
-                            let thunk_val = thunk_res?;
+                            // Compile the spark-thunk body via the single-source
+                            // helper (`compile_spark_thunk`), which raises BOTH
+                            // spark flags around the thunk compile and restores
+                            // them (error-safe):
+                            //  - Capture-by-borrow (S99, FIXME 0461; lenient-eval.md
+                            //    §4.4.1): this apply-arg spark is structurally joined
+                            //    — Phase 2's barrier forces every sparked IVar before
+                            //    the call instruction, so the parent frame is provably
+                            //    live across spark→join→call; the thunk's heap captures
+                            //    are borrowed, not retained (toggle-gated).
+                            //  - Gate 5 (§4.3, FIXME 0525): the relocated construction
+                            //    in the thunk body declines stack allocation (its slot
+                            //    would dangle at the join — hard UAF).
+                            let thunk_val = this.compile_spark_thunk(&thunk_expr)?;
                             let ivar_val = this.emit_extern_call(
                                 "cranelisp_ivar_create",
                                 &[thunk_val],

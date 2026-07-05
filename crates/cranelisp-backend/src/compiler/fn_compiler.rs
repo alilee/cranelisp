@@ -253,6 +253,24 @@ where
     /// bodies' own allocations are compiled with the outer decision, and inner
     /// bodies are heap by construction pending the spark/escape gates §4.3).
     pub(crate) fn_has_self_call: bool,
+
+    /// B3.4 gate 5 (`design/backend/ownership-codegen.md` §4.3; FIXME 0525
+    /// `/arch` ruling 2026-07-05): `true` while compiling a **backend-synthesized
+    /// spark-thunk body** — the `MonoExpr::Lambda` (or dependent-thunk RHS) the
+    /// backend relocates a lenient-sparked construction into. When set,
+    /// [`constructor_call_stack_eligible`] declines stack placement: the thunk
+    /// frame pops at the spark→join while the parent consumes the value, so a
+    /// stack slot built there dangles (hard UAF — the FIXME 0525 signature).
+    /// This is the identical frame-restructuring shape to gate 3 (TCO back-edge),
+    /// one strand over: the escape fact is correct for the strict `MonoExpr`
+    /// frame the analysis ran over, but the backend rewrites that frame structure
+    /// underneath it. Raised by [`FnCompiler::compile_spark_thunk`] (apply-arg +
+    /// independent-`let` sparks) and set directly on the dependent-thunk inner
+    /// compiler (`dependent_spark.rs`); propagated into the thunk-body inner
+    /// `FnCompiler` by `compile_lambda_body`. Declining is always sound; under
+    /// `NO_LENIENT` no thunk is synthesized so this never sets and the full
+    /// stack-alloc win lands.
+    pub(crate) in_spark_thunk: bool,
 }
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -305,6 +323,10 @@ where
             // heap by construction pending the spark/escape gates); `false` is
             // the sound default.
             fn_has_self_call: false,
+            // Gate 5 (§4.3): default off; spark-thunk-body inner compilers set it
+            // explicitly (`compile_lambda_body` propagates the outer flag;
+            // `dependent_spark.rs` sets it directly on its dedicated inner).
+            in_spark_thunk: false,
         }
     }
 
@@ -434,6 +456,9 @@ where
             suppress_spark_gate: false,
             spark_capture_borrow: false,
             fn_has_self_call,
+            // Gate 5 (§4.3): a top-level `defn` body is never itself a spark thunk;
+            // the flag is raised only around the backend-synthesized thunk compiles.
+            in_spark_thunk: false,
         };
 
         // Seed the function's parameters into scope + variable_types.
@@ -710,12 +735,18 @@ where
     ///    constructor allocation is backend-emitted, not an extern `alloc_with_rc`
     ///    body; there is no allocator seam to redirect in increment I.
     ///
-    /// A fifth gate — "decline strand-crossing (`confined = Some(false)`) values"
-    /// — would be needed to make the mechanism sound under lenient eval (§4.3), but
-    /// the confinement analysis over-approximates every apply-arg/let-RHS to
-    /// crossing, so that gate declines the whole win. Resolving lenient-eval vs
-    /// stack-alloc is the FIXME-0525 `/arch` blocker; until then the flag holds the
-    /// mechanism off and none of these gates is reached.
+    /// 5. **Not relocated across a spark boundary** ([`FnCompiler::in_spark_thunk`],
+    ///    §4.3; FIXME 0525 `/arch` ruling 2026-07-05) — a construction the backend
+    ///    relocates into a synthesized spark-thunk body (lenient apply-arg /
+    ///    independent-`let` / dependent-`let` sparks) lives in a thunk frame that
+    ///    pops at the join, so its stack slot dangles once the parent consumes the
+    ///    value. This is gate 3's frame-restructuring shape one strand over: the
+    ///    escape fact is correct for the strict `MonoExpr` frame the analysis ran
+    ///    over, but the backend rewrites that frame structure underneath it. The
+    ///    backend owns the spark-placement decision, so it is the only actor that can
+    ///    gate here — a backend-local emission sharpening, not an analysis fact.
+    ///    Declining is always sound; under `NO_LENIENT` no thunk is synthesized, the
+    ///    flag never sets, and the full stack-alloc win lands.
     ///
     /// The `escapes = Some(false)` precondition is the analysis' NoEscape verdict
     /// (the FIRST hard consumer of the escape fact). `Some(true)` / `None`
@@ -733,25 +764,15 @@ where
         args: &[MonoExpr],
     ) -> bool {
         // ===================================================================
-        // B3.4 HELD OFF at the conservative point — the escape fact is sound, but
-        // stack-alloc is structurally incompatible with lenient eval (FIXME 0525,
-        // `target: /arch`).
+        // B3.4 ACTIVATED (2026-07-05, FIXME 0525 `/arch` ruling). The escape fact
+        // (comprehensively sound post-FIXME 0523/0524) is the precondition; gate 5
+        // (`in_spark_thunk`) closes the lenient-eval-vs-stack-alloc structural gap.
         //
-        // B3.4 is the FIRST hard consumer of the escape fact. FIXME 0523/0524 cured
-        // the escape classifier comprehensively (capture + the whole value-outflow
-        // edge space), and the re-activation completeness check confirmed the
-        // lambda/HOF-return regressions pass. But a THIRD, structurally distinct
-        // blocker surfaced that is NOT a classifier gap: the LENIENT (spark) eval
-        // path sparks a call's arguments onto separate strands — a backend-internal
-        // transformation the strict-`MonoExpr` `escapes` analysis cannot see. A
-        // stack slot built for a lenient-sparked arg lives in a thunk frame popped
-        // at the join, so a call with two or more stack-allocated scalar-ADT args
-        // dangles (`runtime error: match failed` — hard UAF; a single such arg
-        // passes by luck). The confinement fact flags it (`confined = Some(false)`),
-        // but over-approximates every apply-arg/let-RHS to crossing (§5.2), so
-        // gating on it makes the win dead code (Principle 8, per the B3.3 lesson).
-        // Neither gate is a sound activation; B3.4 waits on the /arch ruling
-        // (FIXME 0525). Byte-identical while OFF: this returns `false` everywhere.
+        // The `STACK_ALLOC_ESCAPE_FACT_SOUND` const is now the analysis-off oracle
+        // switch: `false` restores the pre-B3.4 all-heap conservative point
+        // (byte-identical). With it `true`, a construction is stack-eligible iff the
+        // analysis proved it NoEscape (gate: escape precondition) AND none of the
+        // backend-local sharpenings (gates 3, 5) declines it.
         if !STACK_ALLOC_ESCAPE_FACT_SOUND {
             return false;
         }
@@ -761,6 +782,21 @@ where
         }
         // Gate 3: decline for any self-recursive (TCO-back-edge-bearing) function.
         if self.fn_has_self_call {
+            return false;
+        }
+        // Gate 5 (FIXME 0525, §4.3): decline any construction the backend relocates
+        // into a spark thunk. Under lenient eval the backend synthesizes a
+        // `MonoExpr::Lambda` spark-thunk body (apply-arg / independent-`let` /
+        // dependent-`let` sparks) whose frame pops at the join; a stack slot built
+        // there dangles once the parent consumes the freed value (`match failed` —
+        // hard UAF, the 0525 signature). The escape fact is CORRECT for the strict
+        // `MonoExpr` frame the analysis ran over — the backend REWRITES that frame
+        // underneath it (gate 3's shape one strand over). Raised by
+        // `compile_spark_thunk` / `define_dependent_thunk_body` and propagated into
+        // the thunk-body inner `FnCompiler`. Declining is always sound; under
+        // `NO_LENIENT` no thunk is synthesized so this never fires and the full win
+        // lands.
+        if self.in_spark_thunk {
             return false;
         }
         // Gate 1 (statically sized: always) + Gate 2 (all-scalar payload) + Gate 4
@@ -780,6 +816,41 @@ where
             HeapCategory::classify(ty, Some(self.ctx.symbol_tables)),
             HeapCategory::NeverHeap
         )
+    }
+
+    /// Compile `thunk_expr` as a backend-synthesized **spark-thunk body**
+    /// (`design/backend/ownership-codegen.md` §4.3; FIXME 0525 gate 5). Single
+    /// source (Principle 7) for the lenient-eval spark sites that relocate a
+    /// construction into a `MonoExpr::Lambda` thunk running on a separate strand:
+    /// the apply-arg spark (`apply.rs`) and the independent-`let` spark
+    /// (`let_if.rs`). It raises two flags for the duration of the thunk compile and
+    /// restores them (save/set/restore; restored on the error path too so a `?` in
+    /// the caller never leaks a raised flag):
+    ///
+    /// - **`spark_capture_borrow`** (toggle-gated by `CAPTURE_BORROW_ENABLED`) — the
+    ///   S99 capture-by-borrow flag, consumed in the OUTER frame's closure
+    ///   capture-store (`compile_lambda` / `build_closure_drop_glue`).
+    /// - **`in_spark_thunk`** (unconditional) — gate 5: propagated into the INNER
+    ///   `FnCompiler` that compiles the thunk's `Lambda` body (`compile_lambda_body`),
+    ///   where the relocated construction lives, so stack allocation is declined
+    ///   there (the thunk frame pops at the join — a stack slot dangles).
+    ///
+    /// The dependent-`let` spark (`dependent_spark.rs`) does NOT use this helper: it
+    /// deliberately EXCLUDES `spark_capture_borrow` (the §4.5 carve-out — its
+    /// synthetic IVar-pointer captures are keepalives, not live-parent borrows) and
+    /// sets `in_spark_thunk` directly on its dedicated inner compiler.
+    pub(crate) fn compile_spark_thunk(
+        &mut self,
+        thunk_expr: &MonoExpr,
+    ) -> Result<Value, CranelispError> {
+        let saved_borrow = self.spark_capture_borrow;
+        let saved_in_spark = self.in_spark_thunk;
+        self.spark_capture_borrow = *super::control_flow::CAPTURE_BORROW_ENABLED;
+        self.in_spark_thunk = true;
+        let res = self.compile_expr(thunk_expr);
+        self.spark_capture_borrow = saved_borrow;
+        self.in_spark_thunk = saved_in_spark;
+        res
     }
 
     /// Allocate a fresh Cranelift Variable index.
@@ -1124,36 +1195,30 @@ pub(crate) fn node_confined(node: &MonoExpr) -> Option<bool> {
 }
 
 /// B3.4 activation flag (`design/backend/ownership-codegen.md` §4; FIXME 0523/
-/// 0524/0525). `false` holds stack-slot allocation at the conservative all-heap
-/// point (byte-identical to pre-B3.4).
+/// 0524/0525). **ACTIVATED (2026-07-05) — now the analysis-off oracle switch:**
+/// `true` enables stack-slot allocation for NoEscape scalar-payload constructor
+/// calls (gated by the escape precondition + gates 3 & 5); `false` restores the
+/// conservative all-heap point (byte-identical to pre-B3.4), reachable as the
+/// differential oracle.
 ///
-/// Activation history — THREE reverts, and the third is NOT a classifier gap:
+/// Activation history — three blockers, all resolved:
 /// FIXME 0523 (`d0c7684`) cured the closure/spark-CAPTURE escape gap; FIXME 0524
 /// (`936404b`) cured the escape CLASS — the whole value-outflow edge space
 /// (named-return / lambda-body-return / capture / HOF-flow / store-into-escaping /
 /// spark-suspension / nested), 9-cell strategy matrix. After 0524 the classifier
-/// is comprehensively sound, and the RE-ACTIVATION completeness check confirmed
-/// the two lambda/HOF-return regressions pass — BUT a third, structurally distinct
-/// blocker surfaced (FIXME 0525, `target: /arch`): the LENIENT (spark) eval path
-/// sparks a call's arguments onto separate strands, a backend-internal
-/// transformation the strict-`MonoExpr` `escapes` analysis cannot see. A stack
-/// slot built for a lenient-sparked arg lives in a thunk frame popped at the join,
-/// so a call with **two or more** stack-allocated scalar-ADT args dangles
-/// (`runtime error: match failed` — hard UAF; a single such arg passes by luck,
-/// the scalar is extracted before the popped slot is reused = a false-green). The
-/// confinement fact DOES flag these (`confined = Some(false)`, crossing) — but the
-/// confinement analysis over-approximates EVERY apply-arg / let-RHS to crossing
-/// (§5.2, and the B3.3 review), so gating stack-alloc on it declines every
-/// stack-eligible constructor and makes the whole mechanism dead code (the
-/// Principle-8 anti-pattern the B3.3 through-binding half was dropped for). So
-/// neither "trust escape alone" (UAF) nor "also require confined" (dead win) is a
-/// sound activation; B3.4 cannot activate until /arch rules on how stack-alloc
-/// interacts with lenient-eval arg-sparking (FIXME 0525). `false` ⇒ byte-identical
-/// to pre-B3.4. The full mechanism (gates + `emit_stack_alloc` immortal-header
-/// emission) is landed and unit-tested; it activates unchanged once 0525 is
-/// resolved and this flag flips (after re-verifying the killer/win/adversarial +
-/// full-corpus behavioral suite, INCLUDING the multi-arg lenient shape).
-const STACK_ALLOC_ESCAPE_FACT_SOUND: bool = false;
+/// is comprehensively sound. The THIRD blocker (FIXME 0525) was NOT a classifier
+/// gap: under LENIENT (spark) eval the backend sparks a call's args onto separate
+/// strands — a backend-internal transformation the strict-`MonoExpr` `escapes`
+/// analysis cannot see — so a stack slot built for a lenient-sparked arg lives in
+/// a thunk frame popped at the join, and a call with two or more stack-allocated
+/// scalar-ADT args dangled (`runtime error: match failed` — hard UAF). The /arch
+/// ruling (2026-07-05, direction (d)) resolved it with a backend-local **gate 5**
+/// (`FnCompiler::in_spark_thunk`), mirroring gate 3's TCO-back-edge decline:
+/// decline stack-alloc for any construction the backend relocates into a spark
+/// thunk. Declining is always sound; under `NO_LENIENT` no thunk is synthesized so
+/// the full stack-alloc win still lands. With gate 5 in place the flag flips to
+/// `true` and the mechanism activates. `false` ⇒ byte-identical to pre-B3.4.
+const STACK_ALLOC_ESCAPE_FACT_SOUND: bool = true;
 
 /// B3.4 (`design/backend/ownership-codegen.md` §4.1): read the `escapes` site
 /// fact off a [`MonoExpr`] node. Only the five allocation/capture-producing
@@ -1259,10 +1324,10 @@ mod b34_stack_eligibility_tests {
     //! B3.4 stack-slot eligibility gate predicates (Principle 23 —
     //! `design/backend/ownership-codegen.md` §13.5 stack-slots row): the pure,
     //! backend-local halves of `constructor_call_stack_eligible` —
-    //! `node_escapes` (the NoEscape precondition, total over the variant set) and
-    //! `body_has_self_call` (gate 3, the TCO-back-edge decline). The composed
-    //! method is held OFF at the conservative point pending FIXME 0523; these
-    //! pin the gates that activate when it flips.
+    //! `node_escapes` (the NoEscape precondition, total over the variant set),
+    //! `body_has_self_call` (gate 3, the TCO-back-edge decline), and the composed
+    //! method itself (gate 5, the FIXME-0525 spark-relocation decline). B3.4 is
+    //! ACTIVATED (2026-07-05); these pin every gate.
     use super::{body_has_self_call, node_escapes, STACK_ALLOC_ESCAPE_FACT_SOUND};
     use cranelisp_types::{
         ConcreteType, FQTypeName, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol,
@@ -1350,21 +1415,80 @@ mod b34_stack_eligibility_tests {
         assert!(!body_has_self_call(&var("x"), &f));
     }
 
-    // --- the composed method is gated OFF at the conservative point ------------
-    // spec: design/backend/ownership-codegen.md §4 — B3.4 held off (2026-07-05).
-    // The escape classifier is comprehensively sound (FIXME 0523 + 0524), and the
-    // re-activation completeness check confirmed the lambda/HOF-return regressions
-    // pass — but a THIRD, structurally distinct blocker surfaced (FIXME 0525,
-    // `target: /arch`): under LENIENT (spark) eval a call's args are sparked onto
-    // separate strands (a backend-internal transformation the strict `escapes`
-    // analysis cannot see), so a call with two or more stack-allocated scalar-ADT
-    // args dangles at the join (hard UAF). The confinement fact flags it but
-    // over-approximates every apply-arg/let-RHS to crossing, so gating on it makes
-    // the win dead code (Principle 8). B3.4 cannot activate until /arch rules on
-    // lenient-eval vs stack-alloc. Stack allocation stays OFF (byte-identical to
-    // pre-B3.4). Compile-time guard so a stray flip cannot land without this test
-    // file (and the 0525 blocker) being revisited.
-    const _: () = assert!(!STACK_ALLOC_ESCAPE_FACT_SOUND);
+    // --- the composed method is ACTIVATED (2026-07-05, FIXME 0525 ruling) -------
+    // spec: design/backend/ownership-codegen.md §4 — B3.4 activated. The escape
+    // classifier is comprehensively sound (FIXME 0523 + 0524); the third blocker
+    // (FIXME 0525 — lenient spark-relocation UAF) is cured by gate 5
+    // (`in_spark_thunk`), a backend-local emission decline mirroring gate 3.
+    // Compile-time guard so an accidental revert of the activation cannot land
+    // without this test file being revisited (byte-identical-off stays reachable
+    // under the const=false / `CRANELISP_NO_OWNERSHIP` oracle path).
+    const _: () = assert!(STACK_ALLOC_ESCAPE_FACT_SOUND);
+
+    // --- gate 5 (FIXME 0525): a spark-relocated construction stays HEAP ---------
+    #[test]
+    fn gate5_declines_stack_alloc_for_a_spark_relocated_construction() {
+        // spec: design/backend/ownership-codegen.md §4.3 gate 5 (FIXME 0525) — a
+        // NoEscape scalar-payload constructor the backend relocates into a spark
+        // thunk (`in_spark_thunk`) is declined stack placement (would dangle at the
+        // join — hard UAF). The same node NOT inside a spark thunk is eligible (the
+        // win survives). Exercises the composed method, not just the sub-predicates.
+        use cranelift::codegen::ir::{Function, UserFuncName};
+        use cranelift::prelude::*;
+        use cranelift_module::Module;
+        use std::collections::HashMap as Map;
+
+        let tables: dashmap::DashMap<ModuleFullPath, cranelisp_types::SymbolTable> =
+            dashmap::DashMap::new();
+        let module_path = ModuleFullPath::from("user");
+        let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
+        let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
+        let aliases = cranelisp_types::ModuleAliases::default();
+        let func_ids: Map<Symbol, cranelift_module::FuncId> = Map::new();
+        let func_arities: Map<Symbol, usize> = Map::new();
+        let ctx = crate::compiler::CompileContext {
+            func_ids: &func_ids,
+            func_arities: &func_arities,
+            symbol_tables: &tables,
+            module_aliases: &aliases,
+            current_module: module_path,
+            alloc_func_id: intrinsic_ids.alloc,
+            dealloc_func_id: intrinsic_ids.dealloc.unwrap(),
+            alloc_string_func_id: intrinsic_ids.alloc_string,
+            panic_func_id: intrinsic_ids.panic,
+            vec_new_func_id: intrinsic_ids.vec_new,
+            vec_drop_func_id: intrinsic_ids.vec_drop,
+        };
+        let mut sig = jit.jit_module().make_signature();
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+        let mut fctx = FunctionBuilderContext::new();
+        let builder = FunctionBuilder::new(&mut func, &mut fctx);
+        let mut compiler =
+            crate::compiler::FnCompiler::inner(builder, jit.jit_module(), ctx, 0, Map::new());
+
+        // An otherwise-eligible NoEscape scalar-payload constructor call.
+        let app = apply("Some", vec![var("x")], Some(false), None);
+        let args = match &app {
+            MonoExpr::Apply { args, .. } => args.clone(),
+            _ => unreachable!(),
+        };
+
+        // The win: not relocated, no TCO self-call ⇒ eligible (stack-allocates).
+        compiler.fn_has_self_call = false;
+        compiler.in_spark_thunk = false;
+        assert!(
+            compiler.constructor_call_stack_eligible(&app, &args),
+            "a genuinely-local NoEscape scalar constructor must stay stack-eligible"
+        );
+
+        // Gate 5: relocated into a spark thunk ⇒ declined (heap) — the 0525 cure.
+        compiler.in_spark_thunk = true;
+        assert!(
+            !compiler.constructor_call_stack_eligible(&app, &args),
+            "a spark-relocated construction must decline stack placement (0525)"
+        );
+    }
 }
 
 /// B3.2 borrow-elision return-protect decision

@@ -425,6 +425,19 @@ where
         // path regardless of `current_fn_name`.
         inner_compiler.current_fn_name = Some(Symbol::from(inner_name));
 
+        // Gate 5 (`design/backend/ownership-codegen.md` §4.3; FIXME 0525):
+        // propagate the spark-thunk marker into the body's inner compiler. When
+        // this `compile_lambda` is compiling a backend-synthesized spark-thunk
+        // `Lambda` (the outer compiler raised `in_spark_thunk` via
+        // `compile_spark_thunk` at the apply-arg / independent-`let` spark site),
+        // the relocated construction lives in THIS body — so the gate must be
+        // observed by the inner compiler, not the outer one. For an ordinary lambda
+        // (outer flag `false`) the inner stays `false` and the stack-alloc win is
+        // preserved for genuinely-frame-local constructions in the lambda body.
+        // Declining is always sound, so propagating conservatively (a nested
+        // ordinary lambda inside a spark thunk also declines) is correct.
+        inner_compiler.in_spark_thunk = self.in_spark_thunk;
+
         // Bind captured variables from the environment.
         //
         // Record each capture's type in the inner compiler's `variable_types`

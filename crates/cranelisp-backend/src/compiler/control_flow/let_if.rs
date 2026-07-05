@@ -12,7 +12,7 @@ use cranelift_module::Module;
 
 use cranelisp_types::{ConcreteType, CranelispError, MonoExpr, Span, Symbol};
 
-use super::sparkability::{find_sparkable_bindings, CAPTURE_BORROW_ENABLED, LENIENT_DISABLED};
+use super::sparkability::{find_sparkable_bindings, LENIENT_DISABLED};
 use super::FnCompiler;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -201,19 +201,22 @@ where
                     escapes: None,
                     unique_static: None,
                 };
-                // Capture-by-borrow (S99, FIXME 0461; lenient-eval.md §4.4.1):
-                // this INDEPENDENT `let` spark is structurally joined — Phase 2
-                // forces it before the `let` body. Raise the borrow flag
-                // (toggle-gated) only around this independent-thunk compile.
-                // The DEPENDENT branch below is deliberately EXCLUDED: its
+                // Compile the spark-thunk body via the single-source helper
+                // (`compile_spark_thunk`), which raises BOTH spark flags around the
+                // thunk compile and restores them (error-safe):
+                //  - Capture-by-borrow (S99, FIXME 0461; lenient-eval.md §4.4.1):
+                //    this INDEPENDENT `let` spark is structurally joined — Phase 2
+                //    forces it before the `let` body, so its heap captures are
+                //    borrowed (toggle-gated).
+                //  - Gate 5 (§4.3, FIXME 0525): the relocated construction in the
+                //    thunk body declines stack allocation (dangles at the join).
+                // The DEPENDENT branch below is deliberately handled separately: its
                 // synthetic `§ivar_*` IVar-pointer captures are load-bearing
-                // keepalives, not live-parent borrows (§4.4.1 carve-out) — the
-                // flag must not reach `compile_dependent_thunk`.
-                let saved_borrow = self.spark_capture_borrow;
-                self.spark_capture_borrow = *CAPTURE_BORROW_ENABLED;
-                let thunk_res = self.compile_expr(&thunk_expr);
-                self.spark_capture_borrow = saved_borrow;
-                thunk_res?
+                // keepalives, not live-parent borrows (§4.4.1 carve-out), so the
+                // borrow flag must NOT reach `compile_dependent_thunk` — but the
+                // `in_spark_thunk` gate-5 flag MUST (set directly on its inner
+                // compiler in `dependent_spark.rs`).
+                self.compile_spark_thunk(&thunk_expr)?
             } else {
                 // Dependent binding: build the thunk manually with a force
                 // prologue that forces each dependency IVar on demand (§4.5).
