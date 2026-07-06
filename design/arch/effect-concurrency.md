@@ -105,7 +105,11 @@ the parallel-compute gain. The floor holds **unconditionally for compute-bound s
 for allocation-/RC-heavy sparks** until **Phase H** (the S99 ablation confirmed no
 pre-Phase-H substrate cure restores it — §3.1). The earlier unqualified "never slower than
 sequential" wording over-stated the guarantee; see §3.1 for the scope correction and the
-measured settlement.
+measured settlement. **A third floor-violation axis — distinct from both the machinery
+cost and the (a)/(b) substrate contention — was profiled at S103: scheduler spawn/park
+overhead paid per ultra-fine spark, on workloads that emit millions of near-trivial
+(sub-spawn-cost) sparks. It is NOT contention and NOT Phase-H-curable; it needs a distinct
+spark-overhead cost gate. See §3.1 "S103 correction."**
 
 - **Web is the reference / lead workload.** The model is a natural fit (independent
   requests, per-connection tokens, I/O-bound). The §10 server example is the worked
@@ -282,6 +286,67 @@ outright (spine §6.3). The (a)/(b) **coupling** finding is honoured as a carrie
 its missing allocation/RC-density axis becomes derivable from the analysis outputs (spine §8.3),
 so the gate's conservative declines convert to admits as the memory model lands — exactly layer
 (c) above.
+
+**S103 correction — on F4-hard (Sudoku) the DOMINANT floor-violation term is scheduler
+overhead, not the (a)/(b) substrate contention this section attributes it to (FIXME 0534
+profiling).** The S94/S99 model above holds for genuinely allocation-/RC-dense parallel work —
+the (b) vec-COW leaf-refcount volume is real, and the release-tier attribution lesson (attribute
+contention on release, not debug) stands unchanged. But it is **not the whole story**, and on the
+real Sudoku exemplar it is **not even the dominant term**. An S103 profiling investigation
+(user-mandated: "~110s CPU for work that completes in ~1s serially is ~100×; contention is
+implausible at that magnitude — prove where the wall goes") measured F4-hard directly on the
+release binary at a truly-idle 10 cores and PROVED a **distinct third axis**:
+
+- **It is parking, not spinning or bouncing.** F4-hard N-worker runs ~110s wall at only **240%
+  CPU** (≈7.6 of 10 cores idle at any instant — not a pegged spin-loop) with **6.3 M voluntary
+  context switches**; `wchan` sampling finds nearly every worker in `futex_do_wait`. The syscall
+  profile is **99.9% scheduler** (`sched_yield` 50.5% + `futex` 49.3%) and **0.1% allocator**
+  (`brk`/`madvise`/`mmap` barely register). Atomic-RC bouncing would show as high-CPU stalled-BUSY
+  cycles, not futex parking — both the allocator-lock and the atomic-RC hypotheses are refuted *at
+  the syscall layer* for this workload.
+- **The wall is LINEAR in spawn count.** A spawn-count sweep (all ownership-ON): `SPARK_BUDGET=0`
+  → 1.18s (0 spawns), `=4` → 3.34s (65 K spawns), saturation-cap-10 → 72.8s (3.04 M spawns),
+  default → 116s (9.45 M spawns). `wall ≈ serial + spawns × (fixed per-spark scheduling cost)`,
+  ~13 µs/spark — the signature of **fixed per-task scheduling overhead × task count**, NOT of
+  data-dependent cache contention. F4 admits **9.45 M ultra-fine "score-0" sparks** (per-cell
+  accessor/projection pairs, e.g. `(let [c1 (cell-at g1 i) c2 (cell-at g2 i)] …)`) whose real body
+  is ~20 ns, and the consumer forces each IVar almost immediately — so there is almost no
+  exploitable parallelism, yet every spark still pays a full spawn→wake-a-worker→run-20ns→park
+  round-trip (~13 µs) a serial inline call would skip. ~600× per-task overhead ratio.
+
+**So the dominant term on this workload is RAYON SCHEDULER CHURN, a separate axis the (a)/(b)
+contention model did not capture.** Two consequences correct this section's sequencing:
+
+1. **The create-gate bounds CONCURRENT sparks (memory = `O(cap)`), not the TOTAL spawn RATE.**
+   This section already noted (gap correction) that count is the wrong signal *for contention*; S103
+   sharpens *why the count bound does not help here at all*: a bounded `cap` of live sparks still
+   admits an unbounded steady-state **firehose** of spawns, each paying full scheduling cost. 9.45 M
+   ~20 ns bodies each paying ~13 µs is the create-gate's blind spot — it caps how many are in flight,
+   never how many are spawned per second.
+
+2. **Phase-H memory-model work does NOT restore the F4 floor — an important sequencing correction.**
+   This section's central claim is that the alloc/RC contention is Phase-H-curable (thread-local RC /
+   escape→stack/region / Perceus reuse). That remains true *for the (b) contention term it measured*.
+   But F4-hard is **not RC-bound** — thread-local RC and in-place reuse remove atomic bumps and
+   copy-churn, neither of which is the ~110s here (the allocator is at 0.1% of syscall time; `rc_inc`
+   is *identical* serial-vs-parallel). The floor-restoration for the **ultra-fine-spark class** needs
+   a **spark-overhead cost axis** — decline sparks whose body cost-to-run is below their cost-to-spawn
+   (the score-0 accessor/projection pairs), or hierarchically suppress fine sparks nested under a
+   declined-coarse subtree. That axis is distinct from *both* the compute-cost axis (§2.2 of
+   `lenient-eval.md`, which admits these because they are non-cheap-named `Apply`s) *and* the
+   allocation/RC-density (contention) axis (0459 / spine §8.3, which cannot see a trivial accessor as
+   costly). **Phase H alone does not close the F4 parallel floor; the spark-overhead gate is a
+   separate in-track deliverable available now, independent of the memory model.**
+
+**Disposition.** This is additive, not a retraction: the (a)/(b) model and the S99 in-track-cure-
+insufficiency verdict stand for the alloc/RC-dense workloads they measured; S103 adds the
+scheduler-overhead axis they did not measure and re-attributes the dominant F4-hard term to it. The
+cure is a **spark-overhead cost gate** (a per-spark cost/overhead lever, orthogonal to the density
+contention lever), designed at `design/backend/lenient-eval.md` §2.7. FIXME **0534** carries the full
+profiling evidence (CPU%, syscall profile, spawn-count sweep, spark-instance counts) and is
+re-pointed `/backend → /design` (concurrency track, S104) — it is a contention-model design question,
+not a bounded backend density-gate tune. `/qa`'s II-G3 acceptance gate is re-scoped in the same FIXME
+(grade against the composed end-state, or hold as a tripwire at a realistic `≤ OFF` bar).
 
 ## 4. The inferred half — how concurrency is extracted
 

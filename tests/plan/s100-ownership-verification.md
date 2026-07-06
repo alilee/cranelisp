@@ -312,7 +312,7 @@ are the gains this reframe keeps.
 |---|---|---|
 | **II-G1 (R5 witness)** | F2v rc_inc + wall | rc_inc collapses to **near-zero** (< 1% of B2): an 81-slot Vec of one-word value-`Cell`s copies by memcpy with null elem fns (backend §7.3). Wall: **F2v N-worker < F2v serial** — the first configuration where parallelism must actually pay on the copy shape. |
 | **II-G2 (reuse hit-rate)** | reuse hit/miss counters on F4 (copy-per-guess) | in-place reuse hit-rate on the guess-grid write chain ≥ 50% (provisional; the copy-once-then-in-place property of backend §6.2 predicts ≫ this for chained writes). Counter movement is the attribution prerequisite for any F4 wall claim (§0.3). |
-| **II-G3 (F4 floor progress)** | F4-hard 11-rep distribution | median wall ≤ **2× serial** (from B7's 6–15×), and the whole wall distribution's median-to-max below toggle-off's. |
+| **II-G3 (F4 floor progress)** | F4-hard 11-rep distribution | median wall ≤ **2× serial** (from B7's 6–15×), and the whole wall distribution's median-to-max below toggle-off's. **RE-SCOPED at S103 close (2026-07-06) — this bar is NOT increment-II-gradeable.** The S103 profiling investigation (FIXME 0534) PROVED F4-hard's parallel wall is **rayon scheduler churn** (9.45M ultra-fine score-0 sparks × ~13µs spawn/park each), not a write-path / RC / contention cost — so it is unreachable by ANY increment-II mechanism (R5 flattening, reuse tokens, borrow-elision leave it identical; it reproduces at increment-I HEAD). Its cure is a **spark-overhead cost axis** (decline sub-spawn-cost sparks), a concurrency-track /design deliverable (0534, re-pointed /design, carried to S104). II-G3 is therefore **regraded against the composed III-G / Phase-H+concurrency end-state** (III-G2, per spine §7 staging), gated on 0534's spark-overhead axis — NOT a Stage-II bar. See §2.3.1 for the measured S103 FAIL (kept VISIBLE — scope correction with proof, not a relaxation) + the interim ON-vs-OFF tripwire. |
 | **II-G4 (F2 two-ctor honesty)** | F2 rc_inc + wall | partial: report rc_inc drop from reuse on chained copies; wall ≤ 1.5× serial (from B7's 2.3×). F2's shared-grid copies-of-a-shared-root are *genuine shared materializations* — fully cured only by multi-ctor flattening or persistent DS (§5 limit 1); II-G4 must not be silently graded as if R5-first-landing covered it. |
 | **II-G5/G6** | = I-G4/I-G5/I-G6 re-run | same non-regression + overhead bars, including F2v serial. |
 
@@ -350,17 +350,55 @@ increment-II measured-acceptance artifact.
   the numeric gate — §2 chaining note). **II-G2 is met by the delivered
   mechanism; the `chaining_toggle_off` fusion witness (FIXME 0528) is NOT
   required for II-G2 — 0528 is a clean carry.**
-- **II-G3 (F4 floor progress) — FAIL, and a genuine regression.** F4-hard median
-  N-worker **108.8s** vs serial **0.91s** = **121×** (bar ≤ 2×; distribution
-  N=[104.1, 108.8, 109.7, 110.7, 112.0, 113.4, 116.7], serial≈0.91 tight). The
-  ON-vs-OFF differential attributes it cleanly: analysis-ON N-worker **108.8s**
-  vs analysis-OFF **5.46s** — analysis-ON is ~20× slower in parallel while serial
-  is unaffected. This did NOT exist at increment I (S102 §2.2.1 recorded F4-hard
-  N-worker ON ≈ OFF, max ~33s). `f4_sudoku.cl` unchanged since S102 → purely
-  compiler-side. Probable cause: increment-II density reduction defeats the B4
-  density-admission decline, re-exposing over-sparking contention (the
-  `effect-concurrency.md` §3.1 class). **Filed FIXME 0534 (`target: /backend`)** —
-  the one gate failure that is a real regression, not a designed limit.
+- **II-G3 (F4 floor progress) — FAILS AS WRITTEN (kept visible), but RE-SCOPED off
+  increment II: the target is unreachable by any increment-II mechanism (FIXME 0534,
+  profiling-proven).** F4-hard median N-worker **121× serial** at truly-idle 10 cores
+  (ON 108.8–116s vs serial 0.91s; bar ≤ 2×). **The number stays on the page — this is
+  a scope correction backed by a CPU/syscall/spawn-count profile, NOT a bar
+  relaxation** (the honest side of `memory/feedback_verify_fix_not_symptom_absence.md`;
+  the S102 I-G5 accepted-trade precedent — regrade the correct property, leave the
+  measured cost visible).
+  - *S103 result, honest:* the differential is clean — analysis-ON N-worker ~108s vs
+    analysis-OFF 5.46s, serial unaffected (ON ≈ OFF ≈ 0.9s). Distribution
+    N=[104.1, 108.8, 109.7, 110.7, 112.0, 113.4, 116.7] (tight, not cherry-picked).
+  - *Profiling attribution (FIXME 0534 §PROFILING ATTRIBUTION, /dev(backend), 2026-07-06
+    — the wall PROVEN, not "just contention"):* the ~110s is **rayon task-scheduling
+    overhead** — **9.45M ultra-fine score-0 sparks** (the per-cell accessor/projection
+    pairs, ~20ns real bodies) each paying **~13µs spawn/futex-wake/park**. Evidence:
+    **240% CPU** on 10 cores (⇒ ~7.6 cores idle — parking, NOT a pegged spin-loop),
+    **6.3M voluntary ctx-switches** (workers in `futex_do_wait`), syscall profile
+    **99.9% scheduler** (sched_yield 50% + futex 49%) / **~0% allocator** (glibc malloc
+    stays in userspace — allocator-lock hypothesis REFUTED at the syscall layer), and
+    a spawn-count sweep with **wall ≈ linear in spawn count** (halving spawns halves the
+    wall — the signature of fixed per-task scheduling cost × task count, not
+    data-dependent cache contention). `claim_wins == spawns` (no redundant recompute;
+    rc_inc identical serial-vs-ON at 31.7M ⇒ logical work unchanged).
+  - *Why it is NOT increment-II-gradeable — the re-scope:* it is **NOT
+    increment-II-introduced** (reproduces identically at increment-I HEAD `25ffe12`:
+    ON-default ~107s at 10 cores, same 104/4/6 density distribution — the S103 R5/reuse
+    change-sets did not cause it); the "regression vs S102" was a **measurement-condition
+    artifact** (S102's ON=[8.38…33.0] landed in the 2–6-effective-core band under
+    residual load; the 108s is the same pathology at truly-idle full 10 cores — a
+    textbook `feedback_verify_fix_not_symptom_absence.md` false read). It is **NOT
+    contention/RC-bound**, so Phase-H thread-local-RC/reuse/borrow would NOT fix it. The
+    real cure is a **spark-overhead cost axis** (decline sub-spawn-cost sparks — 0534
+    option (b)/(1a)), a **concurrency-track /design deliverable** (0534 re-pointed
+    `target: /design`, carried to S104, user-approved 2026-07-06). II-G3's target (F4
+    parallel ≤ 2× serial) therefore belongs to the **composed III-G / Phase-H+concurrency
+    end-state (III-G2)** per spine §7 staging — graded there, gated on 0534's
+    spark-overhead axis — not at Stage II. **Tracking record: FIXME 0534.**
+  - *The write-path mechanisms that II grades all PASS:* II-G1 (R5 rc_inc collapse),
+    II-G2 (reuse 100% hit), II-G5/G6 (I-G non-regression re-run) — see their bullets.
+    F4-hard's parallel wall is a **scheduler-admission** property, orthogonal to the
+    write-path facts increment II delivers; regrading II-G3 off Stage II does not
+    unground any delivered mechanism.
+  - *Interim actionable tripwire (kept as the standing S104-must-clear watch):* the 0534
+    diagnosis notes **ownership-ON must not be worse than ownership-OFF** — currently
+    **VIOLATED** (ON ~112s vs OFF 15.9s at full cores; B4's coarse-spark decline while
+    the fine sparks stay admitted strands them, making ON *net-harmful*, not merely
+    neutral). This is the real, bounded interim signal (≤ OFF, not ≤ 2× serial); the
+    S104 spark-overhead fix must clear it. Recorded here so the failure carries an
+    actionable bar in the interim rather than an unreachable one.
 - **II-G4 (F2 two-ctor honesty) — wall FAIL, but the DOCUMENTED §5-limit-1 case,
   NOT a regression.** rc_inc drop = **0.00%** (ON 169,902,081 = OFF — F2's
   two-ctor `Cell` is genuinely not R5-covered; the honest report, §5 limit 1).
@@ -384,11 +422,24 @@ increment-II measured-acceptance artifact.
 
 **Summary.** The two write-path mechanisms are individually validated: **R5
 collapses rc_inc (II-G1 rc_inc 0.019% of B2)** and **reuse tokens hit 100% on F4
-(II-G2)**; the differential oracle stays byte-identical-off. Two gate non-passes
-are designed/benign (II-G1 parallel-pay — R5's serial too cheap to beat; II-G4
-wall — the §5-limit-1 F2-not-cured case). **One gate failure is a genuine
-increment-II parallel regression on F4-hard (II-G3, FIXME 0534).** 0528 (the
-chaining witness) is a clean carry — not required for II-G2.
+(II-G2)**; the differential oracle stays byte-identical-off. **All the write-path
+gates that grade the delivered mechanisms PASS** (II-G1 rc_inc, II-G2, II-G5/G6).
+Two gate non-passes are designed/benign (II-G1 parallel-pay — R5's serial too
+cheap to beat; II-G4 wall — the §5-limit-1 F2-not-cured case). **II-G3 FAILS as
+written (121× at 10 cores) but is RE-SCOPED off increment II** (2026-07-06,
+S103 close): the S103 profiling investigation (FIXME 0534) PROVED its wall is
+**rayon scheduler churn** — 9.45M ultra-fine score-0 sparks each paying ~13µs
+spawn/park (240% CPU, 6.3M vol ctx-switches, syscalls 99.9% scheduler / ~0%
+allocator, wall linear in spawn count) — **not** a write-path/RC/contention cost,
+reproducing identically at increment-I HEAD and unreachable by any increment-II
+(or Phase-H RC/reuse) mechanism. Its cure is a **spark-overhead cost axis**
+(concurrency-track /design, 0534 re-pointed `target: /design`, carried S104,
+user-approved); it is regraded against the composed **III-G / III-G2** end-state.
+The failure number stays VISIBLE (scope correction with proof, per
+`feedback_verify_fix_not_symptom_absence.md` — mirroring the S102 I-G5 honest
+reframe), and carries an **interim tripwire** (ON must not be worse than OFF —
+currently violated 112s vs 15.9s — the bounded bar S104's fix must clear). 0528
+(the chaining witness) is a clean carry — not required for II-G2.
 
 **Harness (S103):** `tests/perf/ig_gates.py` gained the II-G runner
 (`run_ii_gates`, `reuse_counts`, B2 constant, `--gates ii`);
