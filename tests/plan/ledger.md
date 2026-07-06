@@ -3162,6 +3162,49 @@ double-counted as backend-owed (per `memory/feedback_no_fixme_with_failing_test`
 ledger owner column for this row is now **/typecheck (FIXME 0528)**, superseding the
 "reuse tokens → /backend" attribution in the increment-II RED-set table above.
 
+### Sprint 103 Phase-6 defect repros — R5 value-display + local-shadow-of-def-macro (/qa, 2026-07-06)
+
+Two Phase-6 defects surfaced by the user-proxy assessment, reduced to narrow
+failing-not-ignored repros. Full suite after this batch: **4100 run / 4092 passed /
+8 failed / 1 skipped** (48.8s). The 8 reds = the sole carried pre-existing RED
+(`chaining_toggle_off_allocates_intermediate`, FIXME 0528, /typecheck, unchanged) +
+**7 new** defect reds below. No pre-existing green regressed (both defect batches ship
+a GREEN control that isolates the fault and stays green).
+
+**Defect 1 — R5 value-layout ADT display (owner /backend; `tests/display_exact.rs`).**
+The Wave-3a `value_layout` flattening of single-ctor∧single-SCALAR-field ADTs was not
+taught to the REPL auto-display formatter (`src/display.rs`). Renders the flattened
+payload as `<tag:N>` instead of the ctor form; a `:Float` field is a hard crash (the
+f64 bits are deref'd as a heap pointer). Construct/match/extract are SOUND (GREEN control).
+
+| Test (binary::fn) | RED shape on HEAD | Flip criterion |
+|---|---|---|
+| `display_exact::display_r5_value_layout_int_shows_constructor_form` | `:user/Box <tag:99>` | formatter renders `:user/Box (Box 99)` (repl/spec.md §1.5). |
+| `display_exact::display_r5_value_layout_bool_shows_constructor_form` | `:user/B <tag:1>` | renders `:user/B (B true)`. |
+| `display_exact::display_r5_value_layout_float_does_not_crash` | **SIGABRT/SIGSEGV** (misaligned deref, `src/display.rs:463`) | exit 0 + `:user/F (F 3.14)` (spec/12-runtime.md §12.9). Most severe cell. |
+| `display_exact::display_r5_value_layout_nested_field_shows_constructor_form` | `:user/Wrap (Wrap <tag:5> 7)` | nested value_layout field recurses to `(Box 5)` ⇒ `:user/Wrap (Wrap (Box 5) 7)`. |
+| `display_exact::r5_value_layout_construct_match_extract_is_sound` | — (GREEN control) | stays green — value semantics sound; isolates defect to display. |
+
+**Defect 2 — lexical shadow of a `def`-macro breaks the expander (owner /int;
+`tests/spec_08_local_shadow_macro.rs`).** §8.6.3 PERMITS a `let`/`fn`/`match` local
+binding to shadow a module-scope name. A top-level `(def g …)` makes `g` a bare-symbol
+zero-arg macro; the expander (`src/expander.rs::expand_sexp_recursive`) then rewrites the
+BINDING-position `g` (fn-param / let-binding name / match pattern var — `Sexp::Bracket`
+and bare-`Sexp::Symbol` positions) into the macro expansion `(g-def)`, which fails
+`ast_builder.rs::expect_symbol`. The ~1,000,000 offset is a **quasiquote synthetic span**
+(`quasiquote.rs::SYNTHETIC_SPAN_COUNTER`), NOT a module-regen byte offset — the fault is
+in the EXPANDER, upstream of typecheck (fires in `ast_builder` before `checker.rs::lookup`),
+so the S103 Wave-2 `0513 checker.rs::lookup` reorder is NOT implicated; **pre-existing, not
+an S103 regression**. The expander already shields the `defmacro` name position (S102 CS-D1)
+but not the general binding-position class. Stdlib-free (inline `def` macro, PrimitivesOnly).
+
+| Test (binary::fn) | RED shape on HEAD | Flip criterion |
+|---|---|---|
+| `spec_08_local_shadow_macro::let_binding_shadows_top_level_def_macro` | `parse error at 1000131: expected symbol` | `let` body resolves the local shadow ⇒ `:primitives/Int 7` (spec/08-modules.md §8.6.3). |
+| `spec_08_local_shadow_macro::fn_param_shadows_top_level_def_macro` | `parse error at 1000131: expected symbol` | fn body resolves the param shadow ⇒ 7. |
+| `spec_08_local_shadow_macro::match_pattern_shadows_top_level_def_macro` | `parse error at 1000150: expected symbol` | match arm resolves the pattern-var shadow ⇒ 7 (reduced from the reported Option/match shape). |
+| `spec_08_local_shadow_macro::local_binding_no_collision_control_is_clean` | — (GREEN control) | stays green — renamed local (`h`) has no collision; isolates fault to the binder/macro-name clash. |
+
 **Condition 2 — corpus off-path confirmation (not a test change; a verification record).**
 `tests/scripts/clif_golden.sh diff` (facts-PRESENT config) diffs 12/13 entries (only
 `06_tco_loop` clean) and the changes are NOT FuncId-shuffle-only — they include real

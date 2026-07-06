@@ -351,6 +351,17 @@ where
         return format!(":{type_display} {value}");
     };
 
+    // R5 value-layout (Wave-3a): a flattened single-ctor single-value-field ADT
+    // stores the field value INLINE — the runtime word is neither a nullary tag
+    // nor a heap pointer. Recognise it before the tag/heap branching below, else
+    // the flat word is misread as a tag (`<tag:N>`) or, for a `Float` field,
+    // dereferenced as a pointer (SIGSEGV). Spec §12.9 / repl §1.5.
+    if let Some(form) =
+        format_value_layout_adt(value, fqtn, type_args, &type_info, symbol_tables)
+    {
+        return format!(":{type_display} {form}");
+    }
+
     // Determine if this is a nullary tag or a heap pointer.
     if (value as usize) < NULLARY_TAG_THRESHOLD {
         // Nullary constructor: value is the tag directly.
@@ -362,6 +373,46 @@ where
         // Data constructor: read tag and fields from heap.
         format_adt_heap_value(value, &type_display, type_name_str, &type_info, type_args, symbol_tables)
     }
+}
+
+/// R5 value-layout display (spec §12.9 / repl §1.5).
+///
+/// A single-constructor, single-value-field ADT (`(deftype Box (Box [:Int v]))`)
+/// is flattened by the Wave-3a `value_layout` optimisation: its runtime word is
+/// the field's value carried INLINE — NOT a nullary tag and NOT a heap pointer.
+/// The formatter recognises the shape via the SAME `cranelisp_types::value_layout`
+/// predicate the backend's `HeapCategory::Value` arm uses (single-sourced — the
+/// verdict is never re-derived here) and reconstructs `(Ctor field-value)` by
+/// reading the flattened word AS the field's value. A value-layout ADT field is
+/// itself value-eligible, so a nested value field recurses through
+/// `format_field_value`. Returns the value-only form (no `:Type` prefix), or
+/// `None` when the type is not value-layout (keeps the existing tag/heap path).
+fn format_value_layout_adt<C, L>(
+    value: i64,
+    fqtn: &FQTypeName,
+    type_args: &[Type],
+    type_info: &TypeDefInfo,
+    symbol_tables: &DashMap<ModuleFullPath, SymbolTable<C, L>>,
+) -> Option<String>
+where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    // Ask the single-sourced predicate — do NOT re-derive value-eligibility.
+    let ty = Type::ADT(fqtn.clone(), type_args.to_vec());
+    let concrete = cranelisp_types::ConcreteType::from_type(&ty).ok()?;
+    cranelisp_types::value_layout(&concrete, Some(symbol_tables))?;
+
+    // `value_layout` guarantees exactly one constructor with exactly one
+    // value-eligible field; the flattened `value` IS that field's value.
+    let ctor_name = type_info.constructors.first()?.to_string();
+    let field_types = ctor_field_types(fqtn, &ctor_name, symbol_tables);
+    let field_ty = field_types.first()?;
+    let subst = build_adt_subst(type_info, type_args, symbol_tables);
+    let field_ty = substitute_field_type(field_ty, &subst);
+    let field_str = format_field_value(value, &field_ty, symbol_tables);
+    let ctor_display = format_ctor_display(fqtn.name.as_ref(), &ctor_name, type_info);
+    Some(format!("({ctor_display} {field_str})"))
 }
 
 /// Format the type portion of an ADT display with qualification (spec §1.4).
@@ -661,7 +712,14 @@ where
             // Recursive ADT formatting with dot notation.
             let type_display = format_adt_type_qualified(fqtn, args);
             if let Some(info) = lookup_type_def_from_tables(fqtn, symbol_tables) {
-                if (value as usize) < NULLARY_TAG_THRESHOLD {
+                // R5 value-layout: a nested flattened single-value-field ADT
+                // stores its field value inline — recognise it before the
+                // tag/heap branch (else `<tag:N>` / pointer-deref crash).
+                if let Some(form) =
+                    format_value_layout_adt(value, fqtn, args, &info, symbol_tables)
+                {
+                    form
+                } else if (value as usize) < NULLARY_TAG_THRESHOLD {
                     let tag = value as usize;
                     let ctor_name = find_constructor_by_tag(&info, tag);
                     format_ctor_display(type_name_str, &ctor_name, &info)
@@ -1033,5 +1091,97 @@ mod tests {
         // The product ctor's name matches the type name → `format_ctor_display`
         // suppresses the redundant dot, yielding bare `Point` not `Point.Point`.
         assert_eq!(format_ctor_display("Point", "Point", &info), "Point");
+    }
+
+    // --- R5 value-layout display (S103 Defect 1, FIXME(/backend)) ---
+
+    /// Build a `user` module table holding a single-constructor, single-field
+    /// value-layout ADT `(deftype {name} ({name} [:{field} v]))`. Both the type
+    /// facet and the ctor `Def` (with a `(Fn [field] ADT)` scheme) live under the
+    /// `{name}` key — exactly the shape `value_layout` reads.
+    fn value_layout_tables(name: &str, field_ty: Type) -> DashMap<ModuleFullPath, SymbolTable> {
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        let mut table = SymbolTable::new(ModuleFullPath::from("user"));
+        let fqtn = FQTypeName {
+            module: ModuleFullPath::from("user"),
+            name: cranelisp_types::TypeName::from(name),
+        };
+        let info = TypeDefInfo {
+            name: fqtn.clone(),
+            type_params: Vec::new(),
+            constructors: vec![Symbol::from(name)],
+        };
+        let ctor_scheme = Scheme {
+            type_vars: Vec::new(),
+            constraints: HashMap::new(),
+            ty: Type::Fn(vec![field_ty], Box::new(Type::ADT(fqtn.clone(), Vec::new()))),
+        };
+        table.insert(
+            Symbol::from(name),
+            ModuleEntry::def(ctor_scheme, DefKind::Constructor {
+                got_slot: 0,
+                type_name: fqtn.clone(),
+                tag: 0,
+                field_count: 1,
+                internal: false,
+                type_def: Some(Box::new(info)),
+                mode_summary: None,
+            })
+            .param_names(vec![Symbol::from("v")])
+            .build(),
+        );
+        tables.insert(ModuleFullPath::from("user"), table);
+        tables
+    }
+
+    fn adt_ty(name: &str) -> Type {
+        Type::ADT(
+            FQTypeName {
+                module: ModuleFullPath::from("user"),
+                name: cranelisp_types::TypeName::from(name),
+            },
+            Vec::new(),
+        )
+    }
+
+    // spec: repl/spec.md §1.5 — a value_layout-flattened single-Int-field ADT
+    // renders as the constructor form `(Box 99)`, reading the flattened word AS
+    // the Int field value — NOT as a `<tag:99>` sentinel.
+    #[test]
+    fn format_result_value_r5_value_layout_int() {
+        let tables = value_layout_tables("Box", Type::Int);
+        let s = format_result_value(99, &adt_ty("Box"), &tables);
+        assert_eq!(s, ":user/Box (Box 99)");
+    }
+
+    // spec: spec/12-runtime.md §12.9 — the value_layout class over a `:Float`
+    // field: the flattened f64 bit-pattern MUST be read as the field value, never
+    // dereferenced as a heap pointer (the SIGSEGV the e2e repro pins). No crash.
+    #[test]
+    fn format_result_value_r5_value_layout_float_reads_field_not_pointer() {
+        let tables = value_layout_tables("F", Type::Float);
+        let bits = 2.5_f64.to_bits() as i64; // a huge word — a raw ptr-deref would crash
+        let s = format_result_value(bits, &adt_ty("F"), &tables);
+        assert_eq!(s, ":user/F (F 2.5)");
+    }
+
+    // spec: repl/spec.md §1.5 — the value_layout class over a `:Bool` field
+    // renders the discriminant word as the bool value: `(B true)`, not `<tag:1>`.
+    #[test]
+    fn format_result_value_r5_value_layout_bool() {
+        let tables = value_layout_tables("B", Type::Bool);
+        let s = format_result_value(1, &adt_ty("B"), &tables);
+        assert_eq!(s, ":user/B (B true)");
+    }
+
+    // spec: repl/spec.md §1.5 — a value_layout ADT nested as a FIELD of an outer
+    // (non-value_layout, 2-field) ADT recurses to its constructor form: the flat
+    // inner word renders `(Box 5)` inside the outer `format_field_value` path.
+    #[test]
+    fn format_field_value_r5_value_layout_nested() {
+        let tables = value_layout_tables("Box", Type::Int);
+        // Format the flattened Box word (5) as a nested Box field.
+        let s = format_field_value(5, &adt_ty("Box"), &tables);
+        assert_eq!(s, "(Box 5)");
     }
 }

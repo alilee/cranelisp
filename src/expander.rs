@@ -34,6 +34,8 @@ use cranelisp_types::{ErrorLocation,
     DefKind, NULLARY_TAG_THRESHOLD,
 };
 
+use std::collections::HashSet;
+
 use crate::code::Code;
 use crate::marshal;
 
@@ -739,6 +741,27 @@ pub(crate) fn expand_sexp_recursive(
     depth: usize,
     origin_span: Option<Span>,
 ) -> Result<Sexp, CranelispError> {
+    // Public entry: no lexical scope yet, so no shadowed names.
+    expand_scoped(sexp, resolver, depth, origin_span, &HashSet::new())
+}
+
+/// The scope-aware expansion core.
+///
+/// `shadows` is the set of names lexically bound by an enclosing `let` / `fn` /
+/// `defn` / `match` scope. Per §8.6.3 a local binding shadows a module-scope
+/// name of the same spelling, so a bound name must NOT be macro-expanded — not
+/// in its BINDER position (else a zero-arg `def`-macro binder `g` rewrites to
+/// `(g-def)` and fails `ast_builder::expect_symbol`) and not in a READ within
+/// the scope (else `g` in the body resolves to the top-level macro instead of
+/// the local). A name that is NOT lexically bound still expands normally — a
+/// free `g` read genuinely refers to the module-scope macro (do not over-shield).
+fn expand_scoped(
+    sexp: Sexp,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+) -> Result<Sexp, CranelispError> {
     if depth > EXPANSION_DEPTH_LIMIT {
         return Err(CranelispError::MacroError {
             message: format!(
@@ -749,17 +772,34 @@ pub(crate) fn expand_sexp_recursive(
     }
 
     match sexp {
-        Sexp::List(ref children, span) if !children.is_empty() => {
-            // Check if head is a macro name.
-            if let Sexp::Symbol(ref name, sym_span) = children[0]
-                && let Some(fq) = resolver.recognize(name, sym_span)? {
+        Sexp::List(children, span) if !children.is_empty() => {
+            // 1. Binding special forms establish a lexical scope (§8.6.3). Handle
+            //    them BEFORE macro-head recognition so binder positions are held
+            //    verbatim and body reads of a bound name resolve to the local.
+            if let Sexp::Symbol(head, _) = &children[0]
+                && is_binding_form(head)
+            {
+                let head = head.clone();
+                return expand_binding_form(
+                    &head, &children, span, resolver, depth, origin_span, shadows,
+                );
+            }
+            // 2. Check if head is a macro name — unless it is lexically shadowed.
+            if let Sexp::Symbol(name, sym_span) = &children[0] {
+                let sym_span = *sym_span;
+                if !shadows.contains(name.as_str())
+                    && let Some(fq) = resolver.recognize(name, sym_span)?
+                {
                     let args = &children[1..];
                     // Anchor errors at the original user call when we are inside
                     // an expansion; otherwise this form IS the user call.
                     let call_span = origin_span.unwrap_or(span);
-                    return expand_recognized_macro(fq, args, call_span, resolver, depth);
+                    return expand_recognized_macro(
+                        fq, args, call_span, resolver, depth, shadows,
+                    );
                 }
-            // Not a macro call — recurse into children.
+            }
+            // 3. Not a macro call — recurse into children.
             //
             // `(defmacro name …)` shield (S102 CS-D1): the NAME position of a
             // `defmacro` form is a binder, never an expression — expanding it
@@ -771,9 +811,6 @@ pub(crate) fn expand_sexp_recursive(
             // (poisoned-regen co-load, or a cache-preloaded table during the
             // restart recompile). Hold the head + name verbatim; the clauses
             // are recursed normally.
-            let Sexp::List(children, span) = sexp else {
-                unreachable!("invariant: sexp matched Sexp::List in outer arm");
-            };
             let is_defmacro_form = matches!(
                 children.first(),
                 Some(Sexp::Symbol(head, _)) if head == "defmacro" || head == "defmacro-"
@@ -786,29 +823,323 @@ pub(crate) fn expand_sexp_recursive(
                     if i < hold_verbatim {
                         Ok(c)
                     } else {
-                        expand_sexp_recursive(c, resolver, depth, origin_span)
+                        expand_scoped(c, resolver, depth, origin_span, shadows)
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::List(expanded, span))
         }
         Sexp::Symbol(ref name, span) => {
-            // Bare symbol: check for zero-arg macro.
-            if let Some(fq) = resolver.recognize(name, span)? {
+            // Bare symbol: check for zero-arg macro — unless lexically shadowed
+            // (a `let`/`fn`/`match`-bound local of the same name, §8.6.3).
+            if !shadows.contains(name.as_str())
+                && let Some(fq) = resolver.recognize(name, span)?
+            {
                 let call_span = origin_span.unwrap_or(span);
-                return expand_recognized_macro(fq, &[], call_span, resolver, depth);
+                return expand_recognized_macro(fq, &[], call_span, resolver, depth, shadows);
             }
             Ok(sexp)
         }
         Sexp::Bracket(children, span) => {
             let expanded: Vec<Sexp> = children
                 .into_iter()
-                .map(|c| expand_sexp_recursive(c, resolver, depth, origin_span))
+                .map(|c| expand_scoped(c, resolver, depth, origin_span, shadows))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Sexp::Bracket(expanded, span))
         }
         _ => Ok(sexp),
     }
+}
+
+/// Is `head` a binding special form whose binder positions establish a lexical
+/// scope the expander must shield (§8.6.3)? `defmacro`/`defmacro-` are excluded
+/// — their NAME position keeps the narrower CS-D1 verbatim shield above.
+fn is_binding_form(head: &str) -> bool {
+    matches!(head, "let" | "fn" | "lambda" | "defn" | "defn-" | "match")
+}
+
+/// Is `s` a `:Type`/`:Trait` annotation symbol (reader-macro-like, binds the
+/// following form)? Such symbols are held verbatim in binder brackets.
+fn is_annotation_symbol(s: &Sexp) -> bool {
+    matches!(s, Sexp::Symbol(n, _) if n.starts_with(':'))
+}
+
+/// Does `s` begin with an uppercase letter (a constructor name, not a binder)?
+fn starts_uppercase(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_uppercase())
+}
+
+/// Generic child recursion used as the defensive fall-back when a binding form
+/// does not match its expected shape (the AST builder reports the arity error).
+fn expand_children_clone(
+    children: &[Sexp],
+    span: Span,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+) -> Result<Sexp, CranelispError> {
+    let expanded: Vec<Sexp> = children
+        .iter()
+        .map(|c| expand_scoped(c.clone(), resolver, depth, origin_span, shadows))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Sexp::List(expanded, span))
+}
+
+/// The binder names introduced by a param bracket `[:Int x y]` — every bare
+/// (non-annotation) symbol. Returns `shadows ∪ params`.
+fn params_scope(param_items: &[Sexp], shadows: &HashSet<String>) -> HashSet<String> {
+    let mut scope = shadows.clone();
+    for item in param_items {
+        if let Sexp::Symbol(n, _) = item
+            && !n.starts_with(':')
+        {
+            scope.insert(n.clone());
+        }
+    }
+    scope
+}
+
+/// The variable binders a match pattern introduces: a bare lowercase symbol
+/// (`g`), or the non-head symbols of a constructor pattern (`(Box g)` → `g`).
+/// A wildcard `_`, a nullary constructor (uppercase), and the constructor head
+/// itself bind nothing.
+fn pattern_binders(pattern: &Sexp) -> Vec<String> {
+    match pattern {
+        Sexp::Symbol(n, _) => {
+            if n == "_" || starts_uppercase(n) {
+                vec![]
+            } else {
+                vec![n.clone()]
+            }
+        }
+        Sexp::List(items, _) => items
+            .iter()
+            .skip(1)
+            .filter_map(|s| match s {
+                Sexp::Symbol(n, _) if n != "_" => Some(n.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// Dispatch a binding special form to its scope-aware expander.
+fn expand_binding_form(
+    head: &str,
+    children: &[Sexp],
+    span: Span,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+) -> Result<Sexp, CranelispError> {
+    match head {
+        "let" => expand_let(children, span, resolver, depth, origin_span, shadows),
+        "fn" | "lambda" => expand_fn(children, span, resolver, depth, origin_span, shadows),
+        "defn" | "defn-" => expand_defn(children, span, resolver, depth, origin_span, shadows),
+        "match" => expand_match(children, span, resolver, depth, origin_span, shadows),
+        _ => unreachable!("invariant: is_binding_form gates expand_binding_form"),
+    }
+}
+
+/// `(let [name val …] body)` — each binding NAME is a binder held verbatim
+/// (never macro-expanded), each VALUE is expanded in the scope accumulated so
+/// far (sequential `let*` semantics), and the body is expanded with every bound
+/// name shadowing the module scope (§8.6.3).
+fn expand_let(
+    children: &[Sexp],
+    span: Span,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+) -> Result<Sexp, CranelispError> {
+    if children.len() != 3 {
+        return expand_children_clone(children, span, resolver, depth, origin_span, shadows);
+    }
+    let Sexp::Bracket(bind_items, bracket_span) = &children[1] else {
+        return expand_children_clone(children, span, resolver, depth, origin_span, shadows);
+    };
+    let mut scope = shadows.clone();
+    let mut new_items: Vec<Sexp> = Vec::with_capacity(bind_items.len());
+    let mut i = 0;
+    while i < bind_items.len() {
+        // Binding NAME — a fresh local binder; held verbatim, never expanded.
+        let binder = match &bind_items[i] {
+            Sexp::Symbol(n, _) => Some(n.clone()),
+            _ => None,
+        };
+        new_items.push(bind_items[i].clone());
+        i += 1;
+        // Optional `:Type` annotations on the value are held verbatim.
+        while i < bind_items.len() && is_annotation_symbol(&bind_items[i]) {
+            new_items.push(bind_items[i].clone());
+            i += 1;
+        }
+        // The value expression is expanded in the scope so far (the binder is
+        // NOT yet in scope for its own RHS — sequential `let`).
+        if i < bind_items.len() {
+            let v = expand_scoped(bind_items[i].clone(), resolver, depth, origin_span, &scope)?;
+            new_items.push(v);
+            i += 1;
+        }
+        // The binder now shadows subsequent bindings and the body.
+        if let Some(b) = binder {
+            scope.insert(b);
+        }
+    }
+    let body = expand_scoped(children[2].clone(), resolver, depth, origin_span, &scope)?;
+    Ok(Sexp::List(
+        vec![children[0].clone(), Sexp::Bracket(new_items, *bracket_span), body],
+        span,
+    ))
+}
+
+/// `(fn [params] body)` / `(lambda [params] body)` — the param bracket is held
+/// verbatim (binder names, never expanded) and the body is expanded with the
+/// params shadowing the module scope (§8.6.3).
+fn expand_fn(
+    children: &[Sexp],
+    span: Span,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+) -> Result<Sexp, CranelispError> {
+    if children.len() != 3 {
+        return expand_children_clone(children, span, resolver, depth, origin_span, shadows);
+    }
+    let Sexp::Bracket(param_items, _) = &children[1] else {
+        return expand_children_clone(children, span, resolver, depth, origin_span, shadows);
+    };
+    let scope = params_scope(param_items, shadows);
+    let body = expand_scoped(children[2].clone(), resolver, depth, origin_span, &scope)?;
+    Ok(Sexp::List(
+        vec![children[0].clone(), children[1].clone(), body],
+        span,
+    ))
+}
+
+/// `(defn name "doc"? [params] body…)` (single arity) or
+/// `(defn name "doc"? ([params] body) …)` (multi arity) — the head, name, and
+/// optional docstring are held verbatim; each variant's params are held
+/// verbatim and its body expanded with the params shadowing the module scope.
+fn expand_defn(
+    children: &[Sexp],
+    span: Span,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+) -> Result<Sexp, CranelispError> {
+    if children.len() < 3 {
+        return expand_children_clone(children, span, resolver, depth, origin_span, shadows);
+    }
+    let mut out: Vec<Sexp> = Vec::with_capacity(children.len());
+    out.push(children[0].clone()); // defn / defn-
+    out.push(children[1].clone()); // name (a binder — verbatim)
+    let mut idx = 2;
+    if let Some(Sexp::Str(..)) = children.get(idx) {
+        out.push(children[idx].clone()); // docstring
+        idx += 1;
+    }
+    match children.get(idx) {
+        // Single arity: [params] followed by the body form(s).
+        Some(Sexp::Bracket(param_items, _)) => {
+            let scope = params_scope(param_items, shadows);
+            out.push(children[idx].clone()); // params verbatim
+            for c in &children[idx + 1..] {
+                out.push(expand_scoped(c.clone(), resolver, depth, origin_span, &scope)?);
+            }
+        }
+        // Multi arity: each remaining child is a `([params] body)` variant.
+        Some(Sexp::List(..)) => {
+            for c in &children[idx..] {
+                out.push(expand_defn_variant(c, resolver, depth, origin_span, shadows)?);
+            }
+        }
+        // Unexpected shape — recurse generically (the AST builder reports it).
+        _ => {
+            for c in &children[idx..] {
+                out.push(expand_scoped(c.clone(), resolver, depth, origin_span, shadows)?);
+            }
+        }
+    }
+    Ok(Sexp::List(out, span))
+}
+
+/// A single multi-arity `defn` variant `([params] body)` — params verbatim,
+/// body expanded with the params shadowing the module scope.
+fn expand_defn_variant(
+    sexp: &Sexp,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+) -> Result<Sexp, CranelispError> {
+    let Sexp::List(items, vspan) = sexp else {
+        return expand_scoped(sexp.clone(), resolver, depth, origin_span, shadows);
+    };
+    let Some(Sexp::Bracket(param_items, _)) = items.first() else {
+        return expand_scoped(sexp.clone(), resolver, depth, origin_span, shadows);
+    };
+    if items.len() != 2 {
+        return expand_scoped(sexp.clone(), resolver, depth, origin_span, shadows);
+    }
+    let scope = params_scope(param_items, shadows);
+    let body = expand_scoped(items[1].clone(), resolver, depth, origin_span, &scope)?;
+    Ok(Sexp::List(vec![items[0].clone(), body], *vspan))
+}
+
+/// `(match scrutinee… [pat body pat body …])` — the scrutinee is expanded in
+/// the current scope; each arm's PATTERN is held verbatim (its variables are
+/// binders, not reads) and its BODY expanded with those pattern variables
+/// shadowing the module scope (§8.6.3). The arms bracket is the last child.
+fn expand_match(
+    children: &[Sexp],
+    span: Span,
+    resolver: &mut dyn MacroResolver,
+    depth: usize,
+    origin_span: Option<Span>,
+    shadows: &HashSet<String>,
+) -> Result<Sexp, CranelispError> {
+    if children.len() < 3 {
+        return expand_children_clone(children, span, resolver, depth, origin_span, shadows);
+    }
+    let last = children.len() - 1;
+    let Sexp::Bracket(arm_items, arms_span) = &children[last] else {
+        return expand_children_clone(children, span, resolver, depth, origin_span, shadows);
+    };
+    let mut out: Vec<Sexp> = Vec::with_capacity(children.len());
+    out.push(children[0].clone()); // match
+    // Scrutinee region (possibly a `:Type form` pair) — ordinary reads.
+    for c in &children[1..last] {
+        out.push(expand_scoped(c.clone(), resolver, depth, origin_span, shadows)?);
+    }
+    if !arm_items.len().is_multiple_of(2) {
+        // Malformed arms — recurse generically (the AST builder reports it).
+        let expanded: Vec<Sexp> = arm_items
+            .iter()
+            .map(|c| expand_scoped(c.clone(), resolver, depth, origin_span, shadows))
+            .collect::<Result<Vec<_>, _>>()?;
+        out.push(Sexp::Bracket(expanded, *arms_span));
+        return Ok(Sexp::List(out, span));
+    }
+    let mut new_arms: Vec<Sexp> = Vec::with_capacity(arm_items.len());
+    let mut i = 0;
+    while i + 1 < arm_items.len() {
+        let pattern = &arm_items[i];
+        let body = &arm_items[i + 1];
+        let mut scope = shadows.clone();
+        scope.extend(pattern_binders(pattern));
+        new_arms.push(pattern.clone()); // pattern verbatim (binders, not reads)
+        new_arms.push(expand_scoped(body.clone(), resolver, depth, origin_span, &scope)?);
+        i += 2;
+    }
+    out.push(Sexp::Bracket(new_arms, *arms_span));
+    Ok(Sexp::List(out, span))
 }
 
 /// Execute one recognized macro call through the [`JitMacroExpander`]
@@ -826,6 +1157,7 @@ fn expand_recognized_macro(
     call_span: Span,
     resolver: &mut dyn MacroResolver,
     depth: usize,
+    shadows: &HashSet<String>,
 ) -> Result<Sexp, CranelispError> {
     let result = {
         let expander = JitMacroExpander { symbol_tables: resolver.symbol_tables() };
@@ -838,7 +1170,9 @@ fn expand_recognized_macro(
     };
     // Re-expand the result (may contain further macro calls); nested calls in
     // the expansion inherit the user-call span as their error-attribution origin.
-    expand_sexp_recursive(result, resolver, depth + 1, Some(call_span))
+    // The expansion is spliced into the current position, so it stays under the
+    // enclosing lexical scope (`shadows`).
+    expand_scoped(result, resolver, depth + 1, Some(call_span), shadows)
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +1302,81 @@ mod tests {
             result.is_err(),
             "recognition led to invocation (which fails without clause code) — \
              the walk did not skip it"
+        );
+    }
+
+    // --- §8.6.3 lexical-shadow shield (S103 Defect 2) ---
+
+    fn shadow_stub(macro_name: &'static str) -> RecognizeOneStub {
+        RecognizeOneStub {
+            tables: dashmap::DashMap::new(),
+            macro_name,
+            asked: Vec::new(),
+        }
+    }
+
+    // spec: spec/08-modules.md §8.6.3 — a `let` binding named `g` lexically
+    // shadows a top-level zero-arg `def`-macro `g`. Neither the BINDER `g` nor
+    // the body READ `g` (which resolves to the local) may be macro-expanded; the
+    // form round-trips unchanged and the walk never even attempts to invoke `g`.
+    #[test]
+    fn let_binder_and_body_shadow_zero_arg_macro() {
+        let mut resolver = shadow_stub("g");
+        let form = cranelisp_frontend::parse("(let [g 7] g)").unwrap().remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
+            .expect("a lexically-shadowed g must not be macro-invoked");
+        assert_eq!(expanded.format_flat(), form.format_flat());
+        assert!(
+            !resolver.asked.contains(&"g".to_string()),
+            "a shadowed binder/read must not be recognized: asked={:?}",
+            resolver.asked
+        );
+    }
+
+    // spec: spec/08-modules.md §8.6.3 — a `fn`/`defn` PARAMETER named `g` shadows
+    // the top-level macro `g` in the body. The param binder (with its `:Int`
+    // annotation) and the body read are both held; the form round-trips.
+    #[test]
+    fn defn_param_shadows_zero_arg_macro() {
+        let mut resolver = shadow_stub("g");
+        let form = cranelisp_frontend::parse("(defn f [:Int g] g)").unwrap().remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
+            .expect("a shadowing param g must not be macro-invoked");
+        assert_eq!(expanded.format_flat(), form.format_flat());
+        assert!(!resolver.asked.contains(&"g".to_string()), "asked={:?}", resolver.asked);
+    }
+
+    // spec: spec/08-modules.md §8.6.3 — a `match` PATTERN variable `g` shadows the
+    // top-level macro `g` in the arm body. The pattern `(Box g)` is held verbatim
+    // (its `g` is a binder, not a read) and the arm body `g` resolves to the local.
+    #[test]
+    fn match_pattern_var_shadows_zero_arg_macro() {
+        let mut resolver = shadow_stub("g");
+        let form = cranelisp_frontend::parse("(match b [(Box g) g])").unwrap().remove(0);
+        let expanded = expand_sexp_recursive(form.clone(), &mut resolver, 0, None)
+            .expect("a shadowing pattern var g must not be macro-invoked");
+        assert_eq!(expanded.format_flat(), form.format_flat());
+        assert!(!resolver.asked.contains(&"g".to_string()), "asked={:?}", resolver.asked);
+    }
+
+    // Negative twin (don't over-shield reads): a `g` in VALUE position — a `let`
+    // binding whose VALUE reads `g` (a genuine read of the module-scope macro,
+    // NOT shadowed by the unrelated binder `h`) — IS still recognized and
+    // expanded. Recognition leads to invocation, which fails without clause code.
+    // spec: spec/08-modules.md §8.6.3
+    #[test]
+    fn free_read_in_let_value_still_expands() {
+        let mut resolver = shadow_stub("g");
+        let form = cranelisp_frontend::parse("(let [h g] h)").unwrap().remove(0);
+        let result = expand_sexp_recursive(form, &mut resolver, 0, None);
+        assert!(
+            resolver.asked.contains(&"g".to_string()),
+            "a free (unshadowed) read of g must still be recognized: asked={:?}",
+            resolver.asked
+        );
+        assert!(
+            result.is_err(),
+            "recognition of the free g led to invocation (fails without clause code)"
         );
     }
 

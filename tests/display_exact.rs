@@ -329,3 +329,83 @@ fn qualified_ref_missing_member_diagnostic_names_real_module() {
         .assert_stdout_does_not_contain("user.primitives") // no phantom module
         .assert_no_internal_artifacts(); // no 0..0 span, no '...' placeholder
 }
+
+// =============================================================================
+// S103 Defect 1 — R5 value-layout ADT display (owner /backend; FIXME(/backend))
+//
+// The Wave-3a `value_layout` optimisation flattened single-constructor,
+// single-SCALAR-field ADTs (`(deftype Box (Box [:Int v]))`) to a bare
+// unboxed representation. The REPL auto-display formatter (`src/display.rs`)
+// was NOT taught this shape: it renders the flattened payload as an opaque
+// `<tag:N>` sentinel instead of the constructor form, and for a `:Float`
+// field it dereferences the f64 bit-pattern AS A HEAP POINTER — a SIGSEGV
+// (exit 139 release / SIGABRT misaligned-deref in debug at src/display.rs).
+// Construct/match/extract are SOUND (the GREEN control below proves it); the
+// defect is display-only. RED on HEAD; flips GREEN when /backend teaches the
+// formatter the value_layout shape.
+// spec: repl/spec.md §1.5 + spec/12-runtime.md §12.9.
+// =============================================================================
+
+// spec: repl/spec.md §1.5 — a value_layout-eligible single-scalar-field ADT
+// MUST render as the constructor form `(Box 99)`, not the `<tag:99>` sentinel.
+// RED on HEAD (FIXME(/backend)): renders `:user/Box <tag:99>`.
+#[test]
+fn display_r5_value_layout_int_shows_constructor_form() {
+    let out = repl_prims("(deftype Box (Box [:Int v]))\n(Box 99)\n").assert_ok();
+    assert_answer_line(&out, ":user/Box (Box 99)");
+}
+
+// spec: repl/spec.md §1.5 — the same value_layout class over a `:Bool` field:
+// MUST render `(B true)`, not `<tag:1>` (the raw discriminant of the bool).
+// RED on HEAD (FIXME(/backend)): renders `:user/B <tag:1>`.
+#[test]
+fn display_r5_value_layout_bool_shows_constructor_form() {
+    let out = repl_prims("(deftype B (B [:Bool b]))\n(B true)\n").assert_ok();
+    assert_answer_line(&out, ":user/B (B true)");
+}
+
+// spec: spec/12-runtime.md §12.9 — the value_layout class over a `:Float`
+// field: the formatter MUST NOT deref the f64 bit-pattern as a pointer. MUST
+// render `(F 3.14)` with exit 0. RED on HEAD (FIXME(/backend)): the process
+// crashes (SIGSEGV release / misaligned-pointer SIGABRT in debug at
+// src/display.rs:463 — the f64 bits `0x40091eb851eb852f` deref'd as a ptr).
+// This is the most severe cell of the class — a display of a sound value
+// aborts the REPL.
+#[test]
+fn display_r5_value_layout_float_does_not_crash() {
+    let out = repl_prims("(deftype F (F [:Float x]))\n(F 3.14)\n").assert_ok();
+    assert_answer_line(&out, ":user/F (F 3.14)");
+}
+
+// spec: repl/spec.md §1.5 — a value_layout ADT nested as a FIELD of an outer
+// (non-value_layout) ADT MUST recurse to its constructor form: the inner
+// `(Box 5)` renders as `(Box 5)`, not `<tag:5>`. The outer `Wrap` already
+// renders correctly (its 2-field shape is not value_layout); only the nested
+// value_layout field is wrong. RED on HEAD (FIXME(/backend)): renders
+// `:user/Wrap (Wrap <tag:5> 7)`.
+#[test]
+fn display_r5_value_layout_nested_field_shows_constructor_form() {
+    let out = repl_prims(
+        "(deftype Box (Box [:Int v]))\n\
+         (deftype Wrap (Wrap [:Box b :Int n]))\n\
+         (Wrap (Box 5) 7)\n",
+    )
+    .assert_ok();
+    assert_answer_line(&out, ":user/Wrap (Wrap (Box 5) 7)");
+}
+
+// spec: spec/12-runtime.md §12.9 — GREEN control proving value semantics are
+// SOUND: constructing a value_layout `:Float` ADT, matching it, and extracting
+// the field yields the correct primitive value with NO crash. This isolates
+// the defect to the DISPLAY formatter — construct/match/extract are correct.
+// GREEN on HEAD (stays green; the sibling display tests above are the RED).
+#[test]
+fn r5_value_layout_construct_match_extract_is_sound() {
+    let out = repl_prims(
+        "(deftype F (F [:Float x]))\n\
+         (defn unf [f] (match f [(F v) v]))\n\
+         (unf (F 3.14))\n",
+    )
+    .assert_ok();
+    assert_answer_line(&out, ":primitives/Float 3.14");
+}
