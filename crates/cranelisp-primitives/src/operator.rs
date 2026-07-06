@@ -249,6 +249,25 @@ pub(crate) fn ring1_primitives() -> Vec<PrimitiveDef> {
             param_names: vec![Symbol::from("a"), Symbol::from("b")],
             docstring: "String equality (byte-wise)",
         },
+        // FIXME 0510 (ruled option (a), `design/backend/ownership-codegen.md`
+        // §9.4): register `neq-string` as a real `ring1` `DefKind::Primitive`
+        // entry, symmetric with `str-eq`. It is the `Eq.!=` counterpart of
+        // `str-eq` (two heap `String` args, only-read ⇒ declared `Borrowed`);
+        // previously shim-only (harvested for GOT population, reached only via
+        // the `Eq.!=` trait-dispatch path), so pass5's `Apply` classification of
+        // `(!= s1 s2)` chain-followed to a MISSING entry ⇒ the Decision-24
+        // `Owned` default ⇒ asymmetric precision loss vs `(== s1 s2)`. The moment
+        // the entry exists, pass5's chain-follow finds it and `ownership_facts::
+        // declared_mode_summary` attaches the `Borrowed` facts BY CONSTRUCTION
+        // (Principle 7 — the `==`/`!=` `Eq`-family pair carries identical facts).
+        // The scalar `neq-i64/f64/bool` siblings stay entry-less (scalar args are
+        // `Copy`, so their Decision-24 default costs nothing).
+        PrimitiveDef {
+            name: Symbol::from("neq-string"),
+            ty: Type::Fn(vec![Type::String, Type::String], Box::new(Type::Bool)),
+            param_names: vec![Symbol::from("a"), Symbol::from("b")],
+            docstring: "String inequality (byte-wise)",
+        },
         PrimitiveDef {
             name: Symbol::from("str-len"),
             ty: Type::Fn(vec![Type::String], Box::new(Type::Int)),

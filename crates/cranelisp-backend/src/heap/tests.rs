@@ -155,6 +155,123 @@ fn last_use_direct_arg_outlives_nested_sibling_arg() {
     );
 }
 
+// spec: design/backend/ownership-codegen.md §6.3 — pure-SSA alias liveness. A
+// `(let [w v …] …)` binding whose value is a bare `Var` makes `w` a second
+// handle on `v`'s buffer, so a use of `w` must extend `v`'s live range. Without
+// this, `v`'s use at an intervening `(vec-set v …)` is falsely marked last-use
+// ⇒ in-place COW ⇒ the aliased `w` reads corrupted data (the discovered S103
+// defect: exit 198 vs 109; e2e guard
+// `tests/ownership_reuse.rs::l_c3_pure_ssa_alias_vec_set_preserves_value_semantics`).
+// This unit pins the seam: `v`'s use at the `vec-set` span is NOT last-use, and
+// `v`'s last-use is the alias's later body occurrence (propagated by the alias
+// map in `compute_last_uses`).
+#[test]
+fn pure_ssa_alias_use_extends_root_live_range() {
+    use cranelisp_types::{ConcreteType, MonoExpr, Span, Symbol};
+
+    let v = Symbol::from("v");
+    let w = Symbol::from("w");
+    let vec_ty = ConcreteType::ADT(
+        cranelisp_types::FQTypeName {
+            module: cranelisp_types::ModuleFullPath::from("primitives"),
+            name: cranelisp_types::TypeName::from("Vec"),
+        },
+        vec![ConcreteType::Int],
+    );
+    let var = |name: Symbol, span: Span, ty: ConcreteType| MonoExpr::Var {
+        name,
+        span,
+        resolved_call: None,
+        ty,
+    };
+    let apply = |callee: Symbol, args: Vec<MonoExpr>, span: Span, ty: ConcreteType| MonoExpr::Apply {
+        callee: Box::new(var(callee, Span::new(span.start, span.start + 1), ty.clone())),
+        args,
+        span,
+        resolved_call: None,
+        ty,
+        confined: None,
+        escapes: None,
+        provenance: None,
+        unique_static: None,
+    };
+
+    // (let [v [10 20 30]                        ; VecLit
+    //       w v                                 ; pure SSA alias, v use @ (30,31)
+    //       v2 (vec-set v 0 99)]                ; v use @ (40,41), last binding use
+    //   (add-i64 (vec-get w 0) (vec-get v2 0))) ; w use @ (60,61) → propagates to v
+    let vlit = MonoExpr::VecLit {
+        elements: vec![],
+        span: Span::new(10, 11),
+        ty: vec_ty.clone(),
+        escapes: None,
+        confined: None,
+        unique_static: None,
+    };
+    let vec_set = apply(
+        Symbol::from("vec-set"),
+        vec![
+            var(v.clone(), Span::new(40, 41), vec_ty.clone()),
+            MonoExpr::IntLit { value: 0, span: Span::new(42, 43), ty: ConcreteType::Int },
+            MonoExpr::IntLit { value: 99, span: Span::new(44, 45), ty: ConcreteType::Int },
+        ],
+        Span::new(39, 46),
+        vec_ty.clone(),
+    );
+    let body = apply(
+        Symbol::from("add-i64"),
+        vec![
+            apply(
+                Symbol::from("vec-get"),
+                vec![
+                    var(w.clone(), Span::new(60, 61), vec_ty.clone()),
+                    MonoExpr::IntLit { value: 0, span: Span::new(62, 63), ty: ConcreteType::Int },
+                ],
+                Span::new(59, 64),
+                ConcreteType::Int,
+            ),
+            apply(
+                Symbol::from("vec-get"),
+                vec![
+                    var(Symbol::from("v2"), Span::new(70, 71), vec_ty.clone()),
+                    MonoExpr::IntLit { value: 0, span: Span::new(72, 73), ty: ConcreteType::Int },
+                ],
+                Span::new(69, 74),
+                ConcreteType::Int,
+            ),
+        ],
+        Span::new(50, 80),
+        ConcreteType::Int,
+    );
+    let expr = MonoExpr::Let {
+        bindings: vec![
+            (v.clone(), vlit),
+            (w.clone(), var(v.clone(), Span::new(30, 31), vec_ty.clone())),
+            (Symbol::from("v2"), vec_set),
+        ],
+        body: Box::new(body),
+        span: Span::new(0, 81),
+        ty: ConcreteType::Int,
+    };
+
+    let last_uses = compute_last_uses(&expr);
+    // v's use at the intervening vec-set is NOT last-use — the aliased w keeps
+    // v's buffer live, so COW must take the copy path, not mutate in place.
+    assert_eq!(
+        last_uses.get(&(v.clone(), Span::new(40, 41))),
+        Some(&false),
+        "v's vec-set use must NOT be last-use — alias w keeps the buffer live"
+    );
+    // v's genuine last use is the alias occurrence in the body (propagated via w).
+    assert_eq!(
+        last_uses.get(&(v.clone(), Span::new(60, 61))),
+        Some(&true),
+        "v's last use is the alias w's body occurrence (propagated)"
+    );
+    // The alias binding occurrence of v is also not last-use.
+    assert_eq!(last_uses.get(&(v.clone(), Span::new(30, 31))), Some(&false));
+}
+
 // spec: sprints/SPRINT.md §"Wave 0" R4 — byte-identical-off guard for the RC
 // inc codegen switch. With both S99 env gates unset (the test-process default),
 // `emit_rc_inc` must emit the blessed inline `atomic_rmw` and NO `rc_stat_inc`

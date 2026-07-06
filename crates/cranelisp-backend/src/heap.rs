@@ -895,7 +895,19 @@ expr: &cranelisp_types::MonoExpr,
     use cranelisp_types::{Symbol, Span};
 
     let mut uses: HashMap<Symbol, Vec<Span>> = HashMap::new();
-    collect_var_uses(expr, &mut uses);
+    // Pure-SSA alias map (alias name -> ultimate root), built as `Let` bindings
+    // are traversed. A `(let [w v] …)` binding whose value is a bare `Var` makes
+    // `w` a SECOND handle on the SAME buffer as `v` (`compile_var` returns the
+    // local via `use_var` — no fresh allocation), so a use of `w` is ALSO a use
+    // of `v` for last-use purposes: the root must stay live until the alias's
+    // last use. Without this, `(let [w v v2 (vec-set v 0 99)] (vec-get w 0) …)`
+    // marks the `vec-set` as `v`'s last use ⇒ in-place COW mutation ⇒ the aliased
+    // `w` reads corrupted data (the discovered S103 defect,
+    // `tests/ownership_reuse.rs::l_c3_pure_ssa_alias_vec_set_preserves_value_semantics`,
+    // exit 198 vs the correct 109; `design/backend/ownership-codegen.md` §6.3).
+    // Consumed by `record_var_use` at every `Var`/`Apply` occurrence.
+    let mut aliases: HashMap<Symbol, Symbol> = HashMap::new();
+    collect_var_uses(expr, &mut uses, &mut aliases);
 
     let mut result = HashMap::new();
     for (name, spans) in &uses {
@@ -907,6 +919,23 @@ expr: &cranelisp_types::MonoExpr,
     result
 }
 
+/// Record one variable occurrence at `span`, propagating it to the variable's
+/// pure-SSA alias root (if any). A `(let [w v] …)` binding registers `w -> v`
+/// in `aliases` (chains collapsed to the ultimate root at insertion), so a use
+/// of `w` counts as a use of BOTH `w` and `v` — the two share one buffer, so the
+/// root's live range must cover the alias's uses (see `compute_last_uses`).
+fn record_var_use(
+name: &cranelisp_types::Symbol,
+span: cranelisp_types::Span,
+uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
+aliases: &HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
+) {
+    uses.entry(name.clone()).or_default().push(span);
+    if let Some(root) = aliases.get(name) {
+        uses.entry(root.clone()).or_default().push(span);
+    }
+}
+
 /// Collect variable uses for a call sub-expression, *skipping* a direct
 /// top-level `Var` (its occurrence is recorded separately by the `Apply` arm,
 /// ordered after all nested uses — see the comment there). For any non-`Var`
@@ -914,38 +943,51 @@ expr: &cranelisp_types::MonoExpr,
 fn collect_var_uses_nested_only(
 expr: &cranelisp_types::MonoExpr,
 uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
+aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
 ) {
     if matches!(expr, cranelisp_types::MonoExpr::Var { .. }) {
         // Direct Var: recorded by the caller after nested uses.
         return;
     }
-    collect_var_uses(expr, uses);
+    collect_var_uses(expr, uses, aliases);
 }
 
 /// Collect all variable references in pre-order traversal.
+///
+/// `aliases` threads the pure-SSA alias map (see [`compute_last_uses`]): `Let`
+/// bindings whose value is a bare `Var` add an `alias -> root` edge, and every
+/// `Var`/`Apply` occurrence propagates a use to the root via [`record_var_use`].
 fn collect_var_uses(
 expr: &cranelisp_types::MonoExpr,
 uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
+aliases: &mut HashMap<cranelisp_types::Symbol, cranelisp_types::Symbol>,
 ) {
     use cranelisp_types::MonoExpr;
 
     match expr {
         MonoExpr::Var { name, span, .. } => {
-            uses.entry(name.clone()).or_default().push(*span);
+            record_var_use(name, *span, uses, aliases);
         }
         MonoExpr::Let { bindings, body, .. } => {
-            for (_, val) in bindings {
-                collect_var_uses(val, uses);
+            for (name, val) in bindings {
+                collect_var_uses(val, uses, aliases);
+                // A pure-SSA alias binding `(name val)` where `val` is a bare
+                // `Var`: register `name -> root`, resolving `val`'s own alias so
+                // chains (`(let [w v x w] …)`) collapse to the ultimate root.
+                if let MonoExpr::Var { name: src, .. } = val {
+                    let root = aliases.get(src).cloned().unwrap_or_else(|| src.clone());
+                    aliases.insert(name.clone(), root);
+                }
             }
-            collect_var_uses(body, uses);
+            collect_var_uses(body, uses, aliases);
         }
         MonoExpr::If { cond, then_branch, else_branch, .. } => {
-            collect_var_uses(cond, uses);
-            collect_var_uses(then_branch, uses);
-            collect_var_uses(else_branch, uses);
+            collect_var_uses(cond, uses, aliases);
+            collect_var_uses(then_branch, uses, aliases);
+            collect_var_uses(else_branch, uses, aliases);
         }
         MonoExpr::Lambda { body, .. } => {
-            collect_var_uses(body, uses);
+            collect_var_uses(body, uses, aliases);
         }
         MonoExpr::Apply { callee, args, .. } => {
             // Evaluation/consumption order is NOT pre-order textual order. A
@@ -970,48 +1012,48 @@ uses: &mut HashMap<cranelisp_types::Symbol, Vec<cranelisp_types::Span>>,
             // Fix: record direct-Var occurrences of callee+args AFTER recursing
             // into the nested (non-direct-Var) subexpressions, so a direct-Var
             // arg correctly counts as the latest live use within this call.
-            collect_var_uses_nested_only(callee, uses);
+            collect_var_uses_nested_only(callee, uses, aliases);
             for arg in args {
-                collect_var_uses_nested_only(arg, uses);
+                collect_var_uses_nested_only(arg, uses, aliases);
             }
             if let MonoExpr::Var { name, span, .. } = callee.as_ref() {
-                uses.entry(name.clone()).or_default().push(*span);
+                record_var_use(name, *span, uses, aliases);
             }
             for arg in args {
                 if let MonoExpr::Var { name, span, .. } = arg {
-                    uses.entry(name.clone()).or_default().push(*span);
+                    record_var_use(name, *span, uses, aliases);
                 }
             }
         }
         MonoExpr::Match { scrutinee, arms, .. } => {
-            collect_var_uses(scrutinee, uses);
+            collect_var_uses(scrutinee, uses, aliases);
             for arm in arms {
-                collect_var_uses(&arm.body, uses);
+                collect_var_uses(&arm.body, uses, aliases);
             }
         }
         MonoExpr::VecLit { elements, .. } => {
             for e in elements {
-                collect_var_uses(e, uses);
+                collect_var_uses(e, uses, aliases);
             }
         }
         MonoExpr::Trace { body, .. } => {
-            collect_var_uses(body, uses);
+            collect_var_uses(body, uses, aliases);
         }
         MonoExpr::ParBind { bindings, body, .. } => {
             for (_, val_expr) in bindings {
-                collect_var_uses(val_expr, uses);
+                collect_var_uses(val_expr, uses, aliases);
             }
-            collect_var_uses(body, uses);
+            collect_var_uses(body, uses, aliases);
         }
         MonoExpr::LaunchContinue { launched, continuation, .. } => {
             // Union over both sub-trees — the launched effect binds no name (its
             // result is discarded), so var uses come from both arms.
-            collect_var_uses(launched, uses);
-            collect_var_uses(continuation, uses);
+            collect_var_uses(launched, uses, aliases);
+            collect_var_uses(continuation, uses, aliases);
         }
         MonoExpr::ConstrADT { fields, .. } => {
             for f in fields {
-                collect_var_uses(f, uses);
+                collect_var_uses(f, uses, aliases);
             }
         }
         // Literals have no variable references.

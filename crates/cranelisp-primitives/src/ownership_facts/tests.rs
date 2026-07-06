@@ -75,8 +75,11 @@ fn only_read_binary_predicate_is_borrowed() {
 }
 
 // spec: design/backend/ring2-rc.md §3.3 (FIXME 0504) — `neq-string` transcribes
-// the audit row (only-read `Borrowed`), even though no `ModuleEntry` currently
-// consumes it (shim-only; `Eq.!=` trait dispatch).
+// the audit row (only-read `Borrowed`). FIXME 0510 registered `neq-string` as a
+// real `ring1` `DefKind::Primitive` entry, so a `ModuleEntry` now consumes this
+// classification (built-table spot-check:
+// `tests::built_table_entries_carry_the_expected_declared_facts`); the facts
+// still originate here at the declaration site (Principle 7).
 #[test]
 fn neq_string_transcribes_the_0504_borrowed_row() {
     let s = declared_mode_summary("neq-string", &fn_ty(vec![Type::String, Type::String], Type::Bool))

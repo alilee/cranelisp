@@ -554,18 +554,19 @@
         // population from other modules, but not registered in
         // `PRIMITIVES_TABLE` itself):
         //
-        // - `neq-i64` / `neq-f64` / `neq-bool` / `neq-string` — reachable
-        //   through trait-method resolution (`Eq.!=`), not surfaced as
-        //   entries in the typecheck-side `ring0_primitives()` table.
+        // - `neq-i64` / `neq-f64` / `neq-bool` — reachable through trait-method
+        //   resolution (`Eq.!=`) over SCALAR args, not surfaced as entries in the
+        //   typecheck-side `ring0_primitives()` table. (`neq-string` — the heap-arg
+        //   member — moved OUT of this harvest-only set: FIXME 0510 registered it
+        //   as a real `ring1` `DefKind::Primitive` entry so it carries the declared
+        //   `Borrowed` facts symmetric with `str-eq`; it now satisfies the
+        //   `PRIMITIVES_TABLE.get(name).is_some()` leg.)
         // - `sconcat` — registered in the synthetic `macros` module per
         //   `spec/09-macros.md`, not in `primitives`.
         for name in extern_shims().keys() {
             assert!(
                 PRIMITIVES_TABLE.get(name).is_some()
-                    || matches!(
-                        *name,
-                        "neq-i64" | "neq-f64" | "neq-bool" | "neq-string" | "sconcat"
-                    ),
+                    || matches!(*name, "neq-i64" | "neq-f64" | "neq-bool" | "sconcat"),
                 "shim {name} has no PRIMITIVES_TABLE entry"
             );
         }
@@ -615,6 +616,14 @@
         // Only-read heap — Borrowed analysis fact.
         let str_eq = PRIMITIVES_TABLE.get("str-eq").unwrap().mode_summary().unwrap();
         assert_eq!(str_eq.param_modes, vec![Mode::Borrowed, Mode::Borrowed]);
+
+        // FIXME 0510: `neq-string` is now a registered `ring1` entry carrying the
+        // SAME only-read `Borrowed` facts as `str-eq` (the `==`/`!=` `Eq`-family
+        // pair, Principle 7). Pre-0510 this entry did not exist (shim-only) so
+        // pass5 chain-followed to the Decision-24 `Owned` default — asymmetric
+        // with `str-eq`. The entry closes that asymmetry by construction.
+        let neq_string = PRIMITIVES_TABLE.get("neq-string").unwrap().mode_summary().unwrap();
+        assert_eq!(neq_string.param_modes, vec![Mode::Borrowed, Mode::Borrowed]);
 
         // Transforming heap — Owned / Fresh.
         let concat = PRIMITIVES_TABLE.get("str-concat").unwrap().mode_summary().unwrap();
