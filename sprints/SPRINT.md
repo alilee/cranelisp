@@ -1,6 +1,6 @@
 # Sprint 103: Increment II — the write path (uniqueness → mutable-borrow → reuse)
 
-**Status**: PHASE 6B USER-FACING ACTION — 6a assessment done (2 defects found: R5-display crash + shadow parse-error); defect repros + fixes + doc updates in progress.
+**Status**: PHASE 7 CLOSE — Outcome authored; awaiting explicit user close sign-off.
 
 **★ HARD Wave-3 requirements (from the Wave-2 /review):**
 1. **Read `unique_static` off the fresh-producing node** (`ConstrADT`/`VecLit`/`Apply`/`StringLit`), NOT the consuming-use `Var` (which has no such field). Reading the use site ⇒ every proof is `None` ⇒ the whole increment-II reuse/elision is silently dead. /qa L-C3 asserts the node identity. (Also: §14.2 prose says "consuming-use node" — doc-fidelity fix owed to /design(typecheck); impl is correct.)
@@ -227,4 +227,46 @@ Five user-proxies exercised the delivered surfaces. **Two real defects** + doc/a
 
 ## Outcome (Phase 7)
 
-_Pending close._
+**Sprint 103 DELIVERED — the increment-II write path, the T1 full cure, and the drain-all cleanup. Awaiting explicit user close sign-off.**
+
+### Delivered — the increment-II write path (the Phase-H spine)
+- **II-B1 R5 value-flattening** (`HeapCategory::Value`) — single-ctor∧single-field∧value-eligible ADTs flatten to a bare word (no heap alloc, no RC, drop-glue skip); rc_inc collapsed ~58× on the F2v witness. Consumes the /arch-authored `value_layout` carrier (`cranelisp-types`, schema 15→16); the co-landed typecheck `Copy`-classifier flip keeps the soundness couple exact. /review caught 2 UAF Blockers (the flatten-eligibility predicate expressed 3 disagreeing ways) → cured by single-sourcing the predicate to single-field∧≥1-word.
+- **II-B2 reuse tokens** (drop-guided Perceus) — function-local SSA maybe-null token (off-ABI), per-call entry check, static-uniqueness proof (`unique_static`, read off the fresh-producing node) elides the dynamic rc==1 check; live `reuse_hit/miss` counters. F4-hard reuse hit-rate 100%.
+- **Typecheck foundation** — the uniqueness stratum (greatest-fixpoint) + `result_unique`/`unique_static` emission; 0513 lookup fix; 0509/0511 drained doc-only.
+- **Acceptance — the write-path gates PASS**: II-G1 (R5 rc_inc 0.019% of B2), II-G2 (reuse ≥50% — 100% on F4), II-G5/G6 (non-regression; F2v serial −74.9% wall). Differential oracle byte-identical off throughout. II-G4 is a documented §5-limit-1 (F2 two-ctor not R5-covered). **II-G3 fails but is honestly re-scoped** (see Findings).
+
+### Delivered — the T1 full cure (Block C1)
+The silent split-world is genuinely cured: an unannotated-fn redefinition that S102 downgraded to a printed `; stale:` warning now RECOMPILES the stale callers at end-of-turn (they see the new definition; `stale:` renders empty). One shared `reload_module` path (not a REPL/--run fork). CS-1 driver + CS-2 empty-report + CS-3 error-blocked (liftable). /review-caught findings fixed: the macro-clause §18.3 leak in recompiled:/broken:, the P7 dependent-scan mirror (→ shared helper), the error-block recovery leg (first cut was itself a lockout, caught+corrected).
+
+### Delivered — drains, defects, and user-facing surfaces
+- **Drain-all**: 0495 backend tests-split, 0498 types marshal-drift, 0496 src/ lifecycle unit tier, 0499 e2e-lane heads, 0500/0501/0502 (frontend/intrinsics/platform unit tiers, user-pulled into scope), 0510 neq-string primitive, 0528-freed ctor-name unify (0528-ctor deleted). ~25 FIXMEs actioned/resolved.
+- **Defects found + fixed in-sprint**: the SSA-alias COW value-corruption (QA-first); the **R5 value-display crash** (Phase-6a — SIGSEGV on `(F 3.14)` in the auto-display path, an S103 Wave-3a regression); the **local-shadow parse error** (Phase-6a — pre-existing, broke the exemplar showcase; the expander is now §8.6.3 lexical-scope-aware); the P6 `module_extract` Debug-dump leak.
+- **User-facing (Phase 6b)**: repl/spec §18.1.1 rewritten for the cure + §1.5 R5-display note + §3.9/3.10 (0505 spec-half) + a T1-cure demo; `live-development.md` rewritten; exemplar/user.cl restored + now tracked (was never in git); examples 0483-comment corrected.
+
+### Deferred (with rationale)
+| Item | Rationale | Target |
+|---|---|---|
+| **II-G3 / FIXME 0534** (F4 parallel ≤2× serial) | PROVEN unreachable by any write-path mechanism — it's rayon scheduler overhead (spark-overhead cost axis), a concurrency-track /design deliverable. User-approved carry 2026-07-06. | S104 (/design) |
+| **FIXME 0528** (uniqueness-preservation / the map-fusion witness) | II-G2 met without it (100% reuse); a companion optimization, not required. Clean carry. | S104 (/typecheck) |
+| **II-B3** (producer-side projection elision, 0526 mechanism) | Deferred rider past the close-short seam; needs inc-II interprocedural uniqueness. | S104 |
+| **Region arena** (backend §4.4) | Deferred rider; allocator co-design not implementation-ready. | follow-on |
+| **/design FIXMEs 0526/0529/0530/0531/0532/0533**, 0506/0507 residue, 0515-successor | Cross-boundary rulings + doc holes surfaced this sprint | respective owners |
+
+### Findings
+- **★ Roadmap correction (the significant one)**: the profiling investigation (0534) proved the Sudoku parallel-floor problem is **rayon scheduler churn from over-fine sparks, NOT the allocator-lock/atomic-RC contention** effect-concurrency §3.1 assumed — so **Phase-H thread-local-RC/reuse would NOT restore the F4 parallel floor**. The floor for ultra-fine-spark workloads needs a separate **spark-overhead cost axis** (decline sub-spawn-cost sparks). §3.1 + s100-ownership-verification §2.3 corrected; the Phase-H narrative needs this course-correction (roadmap note owed at close).
+- **Process**: the wave-decomposition (user direction — "break into more waves, don't defer for size") was load-bearing — the focused single-mechanism sessions let /review catch the Wave-3a UAF Blockers that a bundled wave would have buried under a green suite. Review + QA-first + Phase-6a assessment caught 6 real defects/Blockers across the sprint (Wave-1 recursion, Wave-3a ×2 UAF, Wave-4 macro leak, + the SSA/R5-display/shadow defects). The user's push-back on the "it's just contention" hand-wave changed the 0534 diagnosis and corrected the roadmap.
+- **Hygiene**: `exemplar/user.cl` (the "committed showcase") had never been git-tracked (caught by a bare `.gitignore` pattern); fixed.
+
+### Suite
+**4108 run / 4107 passed / 1 failed / 1 skipped** (two identical runs) — the sole RED is `chaining_toggle_off_allocates_intermediate` (the intentional FIXME-0528 carry trigger, re-homed to /typecheck). Every correctness gate green; release binary rebuilt with all fixes.
+
+### Carried to S104
+- **0534** (spark-overhead cost axis, /design) + **0528** (uniqueness-preservation, /typecheck) + **II-B3** + region arena.
+- **B4-net-harmful signal** (the S102 I-G5 f3-trade revisit — B4 helps f3 but hurts F4-hard at full cores) → /design + user, coupled to 0534.
+- The /design/int/arch/repl FIXME set (0526/0529/0530/0531/0532/0533, 0506/0507 residue).
+
+## Next skills
+
+- `/sprint` — open **S104**: the concurrency-track spark-overhead cost axis (0534, the F4 parallel-floor cure) + the uniqueness-preservation analysis (0528), with the B4-trade revisit; plus draining the /design FIXME set. Consider whether increment II's write path is "settled enough" to open the `--release` tier (the Phase-H table's next step after II settles).
+- `/design` (concurrency) — pick up **0534** (spark-overhead cost model, `lenient-eval.md §2.7`) — the now-precisely-characterized F4 parallel regression.
+- `/typecheck` — **0528** uniqueness-preservation (unique-in ⇒ unique-out) for the map-fusion witness.
