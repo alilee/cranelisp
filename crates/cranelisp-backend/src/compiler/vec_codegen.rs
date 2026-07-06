@@ -290,7 +290,7 @@ where
                 Some(HeapCategory::Mixed) => {
                     emit_guarded_rc_inc(&mut self.builder, self.module, new_val);
                 }
-                Some(HeapCategory::NeverHeap) | None => {}
+                Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
             }
         }
 
@@ -366,7 +366,7 @@ where
                 Some(HeapCategory::Mixed) => {
                     emit_guarded_rc_inc(&mut self.builder, self.module, new_val);
                 }
-                Some(HeapCategory::NeverHeap) | None => {}
+                Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
             }
         }
 
@@ -479,7 +479,7 @@ where
 
         let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
-            HeapCategory::NeverHeap => Ok(self.builder.ins().iconst(types::I64, 0)),
+            HeapCategory::NeverHeap | HeapCategory::Value => Ok(self.builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_inc_fn(false, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
@@ -509,7 +509,7 @@ where
 
         let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
-            HeapCategory::NeverHeap => Ok(self.builder.ins().iconst(types::I64, 0)),
+            HeapCategory::NeverHeap | HeapCategory::Value => Ok(self.builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_dec_fn(false, ty, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
@@ -988,7 +988,7 @@ where
                         true,
                     );
                 }
-                HeapCategory::NeverHeap => {}
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
             }
         }
         Ok(())
@@ -1036,7 +1036,7 @@ where
 
         let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
-            HeapCategory::NeverHeap => Ok(builder.ins().iconst(types::I64, 0)),
+            HeapCategory::NeverHeap | HeapCategory::Value => Ok(builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_dec_fn(false, ty, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -1066,7 +1066,7 @@ where
 
         let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
         match category {
-            HeapCategory::NeverHeap => Ok(builder.ins().iconst(types::I64, 0)),
+            HeapCategory::NeverHeap | HeapCategory::Value => Ok(builder.ins().iconst(types::I64, 0)),
             HeapCategory::AlwaysHeap => {
                 let func_id = self.build_elem_inc_fn(false, span)?;
                 let func_ref = self.module.declare_func_in_func(func_id, builder.func);
@@ -1310,7 +1310,7 @@ pub(crate) fn emit_vec_get_core<M: Module>(
             Some(HeapCategory::Mixed) => {
                 emit_guarded_rc_inc(builder, module, elem);
             }
-            Some(HeapCategory::NeverHeap) | None => {}
+            Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
         }
     }
 
@@ -1377,7 +1377,7 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         Some(HeapCategory::Mixed) => {
             heap::emit_rc_dec_guarded(builder, module, old_elem, dealloc_id, None, true);
         }
-        Some(HeapCategory::NeverHeap) | None => {}
+        Some(HeapCategory::NeverHeap | HeapCategory::Value) | None => {}
     }
 
     // Store new value (the consuming inc was the caller's decision — none here).
@@ -1686,7 +1686,7 @@ fn element_consuming_inc(
         MonoExpr::Var { .. } => match elem_category {
             HeapCategory::AlwaysHeap => Some(HeapCategory::AlwaysHeap),
             HeapCategory::Mixed => Some(HeapCategory::Mixed),
-            HeapCategory::NeverHeap => None,
+            HeapCategory::NeverHeap | HeapCategory::Value => None,
         },
         // Temporaries (constructor calls, function results, literals, …) start at
         // rc=1 and transfer their single reference into the Vec — no caller inc.

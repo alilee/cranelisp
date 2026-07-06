@@ -681,7 +681,7 @@ where
                     true,
                 );
             }
-            crate::heap::HeapCategory::NeverHeap => {}
+            crate::heap::HeapCategory::NeverHeap | crate::heap::HeapCategory::Value => {}
         }
     }
 

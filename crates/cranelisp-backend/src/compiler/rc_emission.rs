@@ -261,7 +261,7 @@ where
                         );
                     }
                 }
-                HeapCategory::NeverHeap => {}
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
             }
         }
     }
@@ -318,7 +318,7 @@ where
                     &mut self.builder, self.module, body_val, atomicity,
                 );
             }
-            HeapCategory::NeverHeap => {}
+            HeapCategory::NeverHeap | HeapCategory::Value => {}
         }
     }
 

@@ -215,7 +215,7 @@ where
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
                         Some((i, ty.clone(), category))
                     }
-                    HeapCategory::NeverHeap => None,
+                    HeapCategory::NeverHeap | HeapCategory::Value => None,
                 }
             })
             .collect();
@@ -292,7 +292,7 @@ where
                         true,
                     );
                 }
-                HeapCategory::NeverHeap => {} // unreachable, filtered above
+                HeapCategory::NeverHeap | HeapCategory::Value => {} // unreachable, filtered above
             }
         }
 

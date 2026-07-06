@@ -706,8 +706,9 @@ where
                 tag,
                 fields,
                 span,
+                ty,
                 ..
-            } => self.compile_constr_adt(*tag, fields, *span),
+            } => self.compile_constr_adt(*tag, fields, *span, ty),
         }
     }
 
@@ -1113,7 +1114,7 @@ where
                         &mut self.builder, self.module, val, atomicity,
                     );
                 }
-                HeapCategory::NeverHeap => {}
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
             }
         }
         val

@@ -649,20 +649,12 @@ where
 {
     symbol_tables.get(&fqtn.module)
         .map(|table| {
-            // The TypeDefInfo lives on a `TypeDef` entry (sum/enum) or, for a
-            // single-ctor product type (S79 Option 3a), on the product ctor
-            // `Def`'s `type_def` facet — a product is never mixed (one ctor),
-            // but resolve uniformly for robustness.
-            let type_key = Symbol::from(fqtn.name.as_ref());
-            let ctor_names: Vec<Symbol> = match table.get(type_key.as_ref()) {
-                Some(ModuleEntry::TypeDef { info, .. }) => info.constructors.clone(),
-                Some(ModuleEntry::Def { kind, .. }) => match &**kind {
-                    cranelisp_types::DefKind::Constructor { type_def: Some(td), .. } => {
-                        td.constructors.clone()
-                    }
-                    _ => return false,
-                },
-                _ => return false,
+            // Constructor name-list via the SINGLE shared
+            // `cranelisp_types::type_ctor_names` reader (FIXME 0528 mirror cure) —
+            // a product is never mixed (one ctor), but resolve uniformly. `None`
+            // (non-type entry) ⇒ not mixed.
+            let Some(ctor_names) = cranelisp_types::type_ctor_names(table.value(), fqtn) else {
+                return false;
             };
             // Walk each constructor NAME → its DefKind::Constructor Def for the
             // field count (TypeDefInfo.constructors is Vec<Symbol> post-S70).
@@ -724,6 +716,19 @@ pub enum HeapCategory {
     AlwaysHeap,
     /// May or may not be heap: polymorphic types, some ADTs with mixed constructors
     Mixed,
+    /// R5 value-flattened (increment II, `design/backend/ownership-codegen.md`
+    /// §7.1): a Copy-eligible single-constructor ADT whose fully-flattened
+    /// representation fits in `≤ VALUE_LAYOUT_MAX_WORDS` (one word, first
+    /// landing). Represented **inline** — no header, no refcount, no drop glue.
+    /// RC treatment is **none** (identical to [`NeverHeap`](HeapCategory::NeverHeap)
+    /// at every RC/heap site), but the constructor/field structure is preserved
+    /// for construction (a bare-word move of the single field) and match (bind
+    /// the field to the scrutinee word, no dereference). Selected only when the
+    /// ownership analysis is ON (`!ownership_analysis_off()`) and
+    /// [`cranelisp_types::value_layout`] returns `Some` — so with the toggle off,
+    /// or facts absent, the ADT falls back to today's heap lowering
+    /// byte-identically (§2.2 differential-oracle obligation).
+    Value,
 }
 
 impl HeapCategory {
@@ -770,7 +775,37 @@ impl HeapCategory {
                 // Conservative: AlwaysHeap (closures are the common case after Ring 0).
                 HeapCategory::AlwaysHeap
             }
-            ConcreteType::ADT(fqtn, _) => Self::classify_adt(fqtn, symbol_tables),
+            ConcreteType::ADT(fqtn, _) => {
+                // R5 value-flattening (increment II, §7.1): the ADT arm delegates
+                // the flattening verdict to the single-sourced
+                // `cranelisp_types::value_layout` carrier (never a backend-local
+                // re-implementation — the narrowness counterweight, Principle 2;
+                // the soundness-coupled predicate typecheck's `Copy` mode
+                // classifier also consumes). `Some(_)` ⇒ `Value`; `None` ⇒ today's
+                // `classify_adt` verdict verbatim.
+                //
+                // Gated on `!ownership_analysis_off()`: the flattening changes
+                // emitted IR (bare-word move vs heap alloc), so with the master
+                // toggle OFF the differential oracle requires the pre-R5 heap
+                // lowering byte-identically (§2.2). `SymbolTables<C, L>` IS the
+                // `DashMap` `symbol_tables` already holds — no conversion.
+                // The verdict is read STRAIGHT from `value_layout.is_some()` — no
+                // backend-local refinement (the narrowness counterweight,
+                // Principle 2; the Wave-3a /review single-source ruling). The
+                // predicate itself now admits ONLY the single-ctor, single-value-
+                // field, exactly-1-word shape the `Value` arm implements, so this
+                // agrees with typecheck's `Copy` classifier (same `is_some()`
+                // call) and with `value_construct` / match field-binding by
+                // construction — a heap object can never cross a Copy edge
+                // unflattened, and a flattened value always has exactly one field.
+                if !cranelisp_types::ownership_analysis_off()
+                    && let Some(tables) = symbol_tables
+                    && cranelisp_types::value_layout(ty, Some(tables)).is_some()
+                {
+                    return HeapCategory::Value;
+                }
+                Self::classify_adt(fqtn, symbol_tables)
+            }
         }
     }
 
@@ -805,21 +840,13 @@ impl HeapCategory {
             return HeapCategory::Mixed;
         };
 
-        // The TypeDefInfo (which names the type's constructors) lives on a
-        // `TypeDef` entry (sum/enum) or, for a single-ctor **product** type
-        // (S79 Option 3a), on the got-slotted product ctor `Def`'s
-        // `DefKind::Constructor { type_def: Some(..) }` type facet — the
-        // product `type_name` key IS the ctor `Def`, not a `TypeDef`.
-        let type_key = Symbol::from(fqtn.name.as_ref());
-        let ctor_names: Vec<Symbol> = match table.get(type_key.as_ref()) {
-            Some(ModuleEntry::TypeDef { info, .. }) => info.constructors.clone(),
-            Some(ModuleEntry::Def { kind, .. }) => match &**kind {
-                cranelisp_types::DefKind::Constructor { type_def: Some(td), .. } => {
-                    td.constructors.clone()
-                }
-                _ => return HeapCategory::Mixed,
-            },
-            _ => return HeapCategory::Mixed,
+        // The constructor name-list (from a `TypeDef` sum/enum entry OR a
+        // single-ctor product ctor `Def`'s `type_def` facet, S79 Option 3a) is
+        // resolved by the SINGLE shared `cranelisp_types::type_ctor_names` reader
+        // — no backend-local copy of the `TypeDef`-vs-product-facet switch
+        // (FIXME 0528 mirror cure; the same resolver `value_layout` delegates to).
+        let Some(ctor_names) = cranelisp_types::type_ctor_names(table.value(), fqtn) else {
+            return HeapCategory::Mixed;
         };
 
         Self::classify_from_ctor_names(table.value(), &ctor_names)

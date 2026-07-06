@@ -196,13 +196,67 @@ fn nested_value_can_exceed_bound() {
     assert!(value_layout(&two, Some(&t)).is_none(), "2 words > bound");
 }
 
-// spec: design/backend/ownership-codegen.md §7.2 — nullary single-ctor product is a 0-word value
+// spec: design/backend/ownership-codegen.md §7.1 — a 0-FIELD single-ctor product
+// is NOT value-eligible. The flattening the backend implements is the identity
+// move of one value word; a fieldless product has no word to move. (Its heap
+// classification is `NeverHeap` — a bare tag — which is RC-free regardless of
+// mode, so keeping it `None`/non-Copy is consistent, not a precision loss that
+// matters.) Wave-3a /review single-source ruling: `Some(0)` here split
+// typecheck `Copy` from the backend verdict.
 #[test]
-fn nullary_single_ctor_product_is_zero_words() {
+fn nullary_single_ctor_product_is_not_a_value() {
     // (deftype Unit (Unit []))
     let t = tables(vec![("Unit", ctor_entry("Unit", vec![], true))]);
     let unit = ConcreteType::ADT(fqtn("Unit"), vec![]);
-    assert_eq!(value_layout(&unit, Some(&t)).unwrap().words, 0);
+    assert!(value_layout(&unit, Some(&t)).is_none());
+}
+
+// spec: design/backend/ownership-codegen.md §7.1 — Wave-3a /review BLOCKER 1
+// (0-word-but-≥1-field product): the divergence-class guard. `(P [:U u])` whose
+// sole field `U` is a nullary (0-word) product has word-count 0 but ONE field.
+// The OLD `sum ≤ 1` predicate returned `Some(0)` → typecheck's
+// `value_layout(..).is_some()` made P `Copy` (no caller `rc_inc`) while the
+// backend kept P a heap object → a heap value across a Copy edge with no inc →
+// leak/UAF. FIXED: single-field-∧-value-field ⇒ `None` (P is heap + Owned +
+// RC everywhere — typecheck and backend agree because they read THIS verdict).
+#[test]
+fn zero_word_field_product_is_not_a_value() {
+    // (deftype U (U []))  +  (deftype P (P [:U u]))
+    let u_ty = Type::ADT(fqtn("U"), vec![]);
+    let t = tables(vec![
+        ("U", ctor_entry("U", vec![], true)),
+        ("P", ctor_entry("P", vec![u_ty], true)),
+    ]);
+    let p = ConcreteType::ADT(fqtn("P"), vec![]);
+    assert!(
+        value_layout(&p, Some(&t)).is_none(),
+        "a single-ctor product whose one field is a 0-word type must NOT be \
+         value-eligible — else typecheck Copy and backend heap diverge (Blocker 1)",
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §7.1 — Wave-3a /review BLOCKER 2
+// (multi-field-but-≤1-word): the second divergence class. `(M [:Int x :U u])` is
+// Int(1) + U(0) = 1 word across TWO fields. The OLD word-count predicate
+// returned `Some(1)` → the backend classified M `Value`, but construction
+// (`value_construct` keys on `field_vals.len()==1`) kept the 2-field build on
+// the heap while the match `is_value` path bound EVERY field to the scrutinee
+// word → a garbage pointer + leak. FIXED: exactly-one-field ⇒ `None` (M is heap
+// everywhere; construction↔match agree).
+#[test]
+fn multi_field_one_word_product_is_not_a_value() {
+    // (deftype U (U []))  +  (deftype M (M [:Int x :U u]))
+    let u_ty = Type::ADT(fqtn("U"), vec![]);
+    let t = tables(vec![
+        ("U", ctor_entry("U", vec![], true)),
+        ("M", ctor_entry("M", vec![Type::Int, u_ty], true)),
+    ]);
+    let m = ConcreteType::ADT(fqtn("M"), vec![]);
+    assert!(
+        value_layout(&m, Some(&t)).is_none(),
+        "a ≥2-field product must NOT be value-eligible even at ≤1 word — else \
+         construction (heap) and match (flat) split the representation (Blocker 2)",
+    );
 }
 
 // spec: design/backend/ownership-codegen.md §7.1 — None type_defs classifies ADTs conservatively

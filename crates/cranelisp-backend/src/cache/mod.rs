@@ -275,10 +275,26 @@ pub mod linker;
 /// deterministic function of (type defs, size bound, toggle), so cache/`--link`
 /// parity holds by construction (§7.4). The carrier lands **with** this bump in
 /// the same Wave-1 change-set (the QA-first L-B3(4) schema-invalidation lane
-/// already tracks 14→15); the `HeapCategory::Value` mechanism it gates lands in
-/// Wave 3 without a re-bump. `cranelisp-types` `public-api.txt` gains the three
-/// items; no other `public-api.txt` / serde-shape change.
-pub const CACHE_SCHEMA_VERSION: u32 = 15;
+/// already tracks 14→15).
+///
+/// **S103 bump 15 → 16 (R5 mechanism activation — the actual representation
+/// change).** Wave 1's 14→15 landed the `value_layout` *carrier* only — no
+/// backend consumer existed, so a schema-15 `.o` from Waves 1–2 holds the
+/// **heap** `Cell` layout (header + per-element RC in a `Vec Cell`). The
+/// `HeapCategory::Value` flattening consumer lands **now** (Wave 3a): a schema-16
+/// `.o` holds the **flat** layout. These must never mix, and schema-15 alone
+/// does NOT distinguish them (both are "15"). The build-identifier global dim
+/// (`CACHE_BUILD_ID`) does not reliably separate them either: an *uncommitted*
+/// Wave-3a build stamps `git rev-parse HEAD` = Wave-2's sha, so a Wave-2
+/// heap-`Cell` `.o` and a dirty Wave-3a flat-`Cell` compile can share a build id
+/// AND schema-15 — the Wave-2 heap `.o` would then load into a flattening
+/// compile → mixed heap/flat representation → the exact Copy-on-a-heap-object
+/// UAF. Bumping the schema in the **landing** change-set (§7.4: "a
+/// representation change to compiled code ⇒ a bump in the landing change-set")
+/// seals the R5 epoch independent of the build id: every schema-15 `.o` is
+/// rejected wholesale as `CacheStale::SchemaMismatch`. Serde shape UNCHANGED
+/// (a value-only invalidation). Supersedes the Wave-1 "no re-bump" note.
+pub const CACHE_SCHEMA_VERSION: u32 = 16;
 
 /// Compile-time build identifier (Sprint 60 Workstream C).
 ///

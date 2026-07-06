@@ -205,18 +205,21 @@ where
     // CS-II-3: the `Copy` predicate DELEGATES to the single-sourced
     // `value_layout` carrier (never a local re-implementation) — the
     // soundness-coupled predicate the backend's `HeapCategory::Value` arm also
-    // consumes (§14.5). But the tables input stays **`None` (scalars-only)**
-    // until R5/B3 lands: the backend consumes `Mode::Copy` (skips RC — treats
-    // the value by-value) but does NOT yet flatten value-eligible ADTs (Wave-3;
-    // the R5/reuse witnesses are still RED). Classifying a single-scalar product
-    // `Copy` NOW would make the backend bit-copy a still-heap object with no
-    // `rc_inc` — a use-after-free (observed: the web-poll reactor's poll-leaf
-    // handle freed early ⇒ "leaf never completed"). §14.5 pins exactly this:
-    // "Until it lands the Copy point is scalars-only and no unsound configuration
-    // is reachable." The delegation mechanism is in place; B3 flips the input to
-    // `Some(env.modules())` in the SAME change-set that lands the backend
-    // flattening, so both surfaces grow precision together (the couple holds).
-    let copy = CopyClassifier::new(|ty| cranelisp_types::value_layout::<C, L>(ty, None).is_some());
+    // consumes (§14.5). **B3 CO-LAND (S103 Wave 3a):** the tables input is now
+    // **`Some(env.modules())`** — the REAL type defs, so value-eligible
+    // single-scalar single-ctor products classify `Copy` — landed in the SAME
+    // change-set as the backend `HeapCategory::Value` flattening arm. The two
+    // surfaces MUST grow precision together (the soundness couple): a `Copy`-moded
+    // param the backend flattens is a by-value word (no RC needed); flattening
+    // without the flip = dead flattening; flipping without flattening = a
+    // by-value bit-copy of a still-heap object with no `rc_inc` — a
+    // use-after-free (observed Wave-2: the web-poll reactor's poll-leaf handle
+    // freed early ⇒ "leaf never completed"). Both edits land here + in the
+    // backend, one commit. Under `CRANELISP_NO_OWNERSHIP` this pass does not run,
+    // so no `Copy` mode is emitted AND the backend does not flatten — the couple
+    // holds at both toggle polarities.
+    let copy =
+        CopyClassifier::new(|ty| cranelisp_types::value_layout(ty, Some(env.modules())).is_some());
 
     // Optimistic init: every param Borrowed/Copy, Fresh, Consumed, spark clear.
     let mut summaries: HashMap<Symbol, ModeSummary> = HashMap::new();

@@ -117,7 +117,10 @@
 //!   R5 value-representation predicate ([`value_layout`], [`ValueLayout`],
 //!   [`VALUE_LAYOUT_MAX_WORDS`]) — the single-sourced Copy/value-layout
 //!   verdict both typecheck's `Copy` mode classifier and backend's
-//!   `HeapCategory::Value` arm delegate to (soundness-coupled; spine §6.3).
+//!   `HeapCategory::Value` arm delegate to (soundness-coupled; spine §6.3) —
+//!   plus [`type_ctor_names`], the single ctor-name resolver both
+//!   `value_layout` and the backend heap classifiers delegate to (FIXME 0528
+//!   mirror cure).
 //! - **Errors and warnings** ([`CranelispError`], [`PlatformError`],
 //!   [`ErrorLocation`], [`LineCol`], [`LineColRange`], [`ResolutionGap`],
 //!   [`Warning`], [`WarningKind`]) — every error carries an
@@ -315,7 +318,7 @@ pub use heap::HeapHeader;
 // `HeapCategory::Value` arm (soundness-coupled — a `Copy`-moded param the
 // backend did NOT flatten is a UAF; one predicate, both delegate). See
 // `design/arch/ownership-inference.md` §6.3 + BC §7.
-pub use heap::{VALUE_LAYOUT_MAX_WORDS, ValueLayout, value_layout};
+pub use heap::{VALUE_LAYOUT_MAX_WORDS, ValueLayout, type_ctor_names, value_layout};
 // `HeapCategory` relocated to `cranelisp-backend` per S69 Sub 38 — backend-internal
 // codegen classification, not a cross-crate substrate. See `facades/backend.md`
 // §"Heap classification".

@@ -30,7 +30,7 @@ where
         match category {
             HeapCategory::AlwaysHeap => heap::emit_rc_inc(&mut self.builder, self.module, val),
             HeapCategory::Mixed => heap::emit_rc_inc_guarded(&mut self.builder, self.module, val),
-            HeapCategory::NeverHeap => {}
+            HeapCategory::NeverHeap | HeapCategory::Value => {}
         }
     }
 }
@@ -49,6 +49,6 @@ pub(crate) fn emit_capture_inc_into<M: Module>(
     match category {
         HeapCategory::AlwaysHeap => heap::emit_rc_inc(builder, module, val),
         HeapCategory::Mixed => heap::emit_rc_inc_guarded(builder, module, val),
-        HeapCategory::NeverHeap => {}
+        HeapCategory::NeverHeap | HeapCategory::Value => {}
     }
 }

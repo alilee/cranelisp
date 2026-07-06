@@ -9,7 +9,9 @@
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
 
-use cranelisp_types::{CranelispError, ErrorLocation, MonoExpr, ResolvedCall, Span, Symbol, Type};
+use cranelisp_types::{
+    ConcreteType, CranelispError, ErrorLocation, MonoExpr, ResolvedCall, Span, Symbol, Type,
+};
 
 use crate::heap::{self, HeapCategory, HeapClosure};
 use crate::primitives_inline;
@@ -527,7 +529,19 @@ where
         // constructors are functions"). This is RC-identical to direct
         // construction (`emit_adt_construct`): the wrapper's params arrive owned
         // (consuming convention) and are stored into the new ADT with no inc.
-        if let Some((_fqtn, ctor_info)) = self.ctx.lookup_constructor(target_name.as_ref()) {
+        if let Some((fqtn, ctor_info)) = self.ctx.lookup_constructor(target_name.as_ref()) {
+            // R5 (§7.1): a value-flattened single-ctor type constructs by a
+            // bare-word move of its single field — no alloc. MUST match the
+            // use-site (`compile_var_apply`) and synthetic-body
+            // (`compile_constr_adt`) flattening, or a `Cell`-as-value produced
+            // here (heap pointer) would be mis-read by a flattening match
+            // (`cval`) as a bare word — the representation split that returns a
+            // garbage pointer. `value_construct` is `None` off-toggle /
+            // non-`Value` ⇒ the heap `emit_adt_construct_into` below.
+            let adt_ty = ConcreteType::ADT(fqtn, vec![]);
+            if let Some(v) = self.value_construct(&adt_ty, user_params) {
+                return Ok(v);
+            }
             let alloc_id =
                 self.ctx
                     .alloc_func_id
@@ -934,7 +948,7 @@ where
             .enumerate()
             .filter_map(|(i, cat)| match cat {
                 HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, *cat)),
-                HeapCategory::NeverHeap => None,
+                HeapCategory::NeverHeap | HeapCategory::Value => None,
             })
             .collect();
 
@@ -1025,7 +1039,7 @@ where
                         true,
                     );
                 }
-                HeapCategory::NeverHeap => {} // unreachable, filtered above
+                HeapCategory::NeverHeap | HeapCategory::Value => {} // unreachable, filtered above
             }
         }
 

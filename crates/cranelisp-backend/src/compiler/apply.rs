@@ -125,7 +125,7 @@ pub(crate) fn moded_arg_rc(
 ) -> ModedArgRc {
     use cranelisp_types::Mode;
     match category {
-        HeapCategory::NeverHeap => ModedArgRc::None,
+        HeapCategory::NeverHeap | HeapCategory::Value => ModedArgRc::None,
         HeapCategory::AlwaysHeap | HeapCategory::Mixed => {
             let guarded = matches!(category, HeapCategory::Mixed);
             match (owned_binding, mode) {
@@ -376,7 +376,7 @@ where
                 HeapCategory::Mixed => {
                     heap::emit_rc_inc_guarded(&mut self.builder, self.module, result);
                 }
-                HeapCategory::NeverHeap => {}
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
             }
         }
 
@@ -734,6 +734,17 @@ where
             // For temporary args, rc=1 transfers directly into the field.
             let arg_vals = self.compile_consuming_arg_list(args)?;
             self.in_tail_position = saved_tail;
+            // R5 (§7.1): a value-flattened single-ctor type constructs by a
+            // bare-word move of its single field (no alloc/header/tag). Classify
+            // by the ctor's parent type (`value_layout` ignores the ADT's type
+            // args, so `ADT(fqtn, [])` classifies exactly). `None` off-toggle /
+            // non-`Value` ⇒ the heap/stack path below, byte-identical.
+            if let Some((fqtn, _)) = self.ctx.lookup_constructor(name.as_ref()) {
+                let adt_ty = ConcreteType::ADT(fqtn, vec![]);
+                if let Some(v) = self.value_construct(&adt_ty, &arg_vals) {
+                    return Ok(v);
+                }
+            }
             // B3.4 (§4.1/§4.2): a NoEscape, all-scalar-payload constructor call in
             // a non-self-recursive function places its aggregate on a Cranelift
             // stack slot (immortal-RC header) instead of the RC heap. `stack` is
@@ -867,7 +878,7 @@ where
                                 &mut self.builder, self.module, val, atomicity,
                             );
                         }
-                        HeapCategory::NeverHeap => {}
+                        HeapCategory::NeverHeap | HeapCategory::Value => {}
                     }
                 }
 
@@ -1037,7 +1048,7 @@ where
                         true,
                     );
                 }
-                HeapCategory::NeverHeap => {}
+                HeapCategory::NeverHeap | HeapCategory::Value => {}
             }
         }
     }
@@ -1539,7 +1550,7 @@ where
                 let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
-                    HeapCategory::NeverHeap => None,
+                    HeapCategory::NeverHeap | HeapCategory::Value => None,
                 }
             })
             .collect();
@@ -1598,7 +1609,7 @@ where
                         true,
                     );
                 }
-                HeapCategory::NeverHeap => {} // filtered above
+                HeapCategory::NeverHeap | HeapCategory::Value => {} // filtered above
             }
         }
 
@@ -1731,6 +1742,7 @@ where
         tag: usize,
         fields: &[MonoExpr],
         span: Span,
+        ty: &ConcreteType,
     ) -> Result<Value, CranelispError> {
         // Consuming-compile fields (nullary → empty), then route through the
         // single core emitter. `emit_adt_construct` handles the nullary
@@ -1742,7 +1754,47 @@ where
         // `(Rect n n)` is an `Apply` handled by `compile_var_apply`, which is
         // where the B3.4 stack decision is consumed.
         let field_vals = self.compile_consuming_arg_list(fields)?;
+        // R5 (§7.1): a value-flattened single-ctor type constructs by a bare-word
+        // move of its single field — NO alloc, NO header, NO tag. Keeps the
+        // synthetic ctor body's representation identical to the use-site
+        // `compile_var_apply` flattening, so `Cell`-as-a-value and `(Cell 5)`
+        // agree. `value_construct` is `None` off-toggle / for non-`Value` types
+        // ⇒ today's heap emitter, byte-identical.
+        if let Some(v) = self.value_construct(ty, &field_vals) {
+            return Ok(v);
+        }
         self.emit_adt_construct(tag, &field_vals, span)
+    }
+
+    /// R5 value-flattening construction (§7.1): when `ty` classifies as
+    /// [`HeapCategory::Value`], the construct is the **identity move** of the
+    /// single flattened field into the value word — `Some(field_vals[0])` for a
+    /// one-word single-field wrapper, `None` for a zero-word (fieldless) value
+    /// (which routes to the existing nullary `iconst tag` path, harmless — a
+    /// zero-information value). Returns `None` for every non-`Value` type and
+    /// whenever the ownership toggle is off (`classify` never yields `Value`
+    /// then), so callers fall through to today's heap emitter byte-identically.
+    ///
+    /// A `Value` type has **exactly one** field, guaranteed by `value_layout`'s
+    /// single-field invariant (the Wave-3a /review single-source ruling — a
+    /// ≥2-field product is `None`, never `Value`, even at ≤1 word). So
+    /// `field_vals.len() == 1` always holds for a `Value` here; it is an
+    /// invariant-consistent guard, not an independent predicate. The single field
+    /// is itself value-eligible (nested values compose), so the move needs no
+    /// per-field RC.
+    pub(crate) fn value_construct(
+        &self,
+        ty: &ConcreteType,
+        field_vals: &[Value],
+    ) -> Option<Value> {
+        if matches!(
+            HeapCategory::classify(ty, Some(self.ctx.symbol_tables)),
+            HeapCategory::Value
+        ) && field_vals.len() == 1
+        {
+            return Some(field_vals[0]);
+        }
+        None
     }
 
     /// The single ADT-construct emitter — both paths route through here.

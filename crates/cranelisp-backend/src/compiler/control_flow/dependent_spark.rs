@@ -305,7 +305,7 @@ where
                 let category = signature_heap_category(ty, Some(self.ctx.symbol_tables));
                 match category {
                     HeapCategory::AlwaysHeap | HeapCategory::Mixed => Some((i, category)),
-                    HeapCategory::NeverHeap => None,
+                    HeapCategory::NeverHeap | HeapCategory::Value => None,
                 }
             })
             .collect();
@@ -362,7 +362,7 @@ where
                         true,
                     );
                 }
-                HeapCategory::NeverHeap => {} // filtered above
+                HeapCategory::NeverHeap | HeapCategory::Value => {} // filtered above
             }
         }
 
