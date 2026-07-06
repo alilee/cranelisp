@@ -55,6 +55,13 @@ def gen_fixtures():
         p = os.path.join(WORK, name + ".cl")
         open(p, "w").write(scale_synth(os.path.join(FIX, name + ".cl"), LEAVES, COPIES))
         files[name] = p
+    # F2v (S103 increment-II): the honest R5 witness — single-ctor one-word Cell,
+    # same shape/scale as F2. Same S99-KNOB markers, so scale_synth applies.
+    f2v_path = os.path.join(FIX, "f2v_single_ctor.cl")
+    if os.path.exists(f2v_path):
+        p = os.path.join(WORK, "f2v.cl")
+        open(p, "w").write(scale_synth(f2v_path, LEAVES, COPIES))
+        files["f2v"] = p
     # F4: committed fixture ships a solved grid; substitute EASY / HARD for timing.
     f4 = open(os.path.join(FIX, "f4_sudoku.cl")).read()
     pe = os.path.join(WORK, "f4_easy.cl"); open(pe, "w").write(f4.replace(COMMITTED, EASY)); files["f4_easy"] = pe

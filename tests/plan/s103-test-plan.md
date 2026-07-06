@@ -176,6 +176,32 @@ seam (the two-sided small-case bar is live the moment a mechanism runs); II-G1�
 the second mechanism per the SPRINT.md seam ruling. The `ig_gates.py` II-G runner therefore
 lands in stage 1, not with B3.
 
+### §2.1 Measured results (2026-07-06, release binary, median-of-7, settled load)
+
+II-G runner landed in `ig_gates.py` (`--gates ii`); F2v added to
+`s99_measure.gen_fixtures`. Full durable record: `s100-ownership-verification.md`
+§2.3.1. Verdicts:
+
+| Gate | Result | Numbers |
+|---|---|---|
+| **II-G1** | rc_inc **PASS**; parallel-pay benign non-pass | F2v rc_inc on=32,769 = 0.019% of B2 (bar <1%); allocs halved (2.10M vs 4.19M). N-worker 0.55s ≮ serial 0.12s — but N-worker is 10× faster than OFF (5.34s); R5 made serial too cheap to beat, not a regression |
+| **II-G2** | **PASS** (decisive) | F4-hard reuse_hit=60 reuse_miss=0 = **100%** (bar ≥50%); f4_easy 49/0=100%. Counter moved. **Independent of the chaining witness** |
+| **II-G3** | **FAIL — genuine regression** | F4-hard N-worker 108.8s vs serial 0.91s = **121×** (bar ≤2×). ON 108.8s vs OFF 5.46s (~20× parallel slowdown, analysis-on). New vs increment-I. → **FIXME 0534 (/backend)** |
+| **II-G4** | wall FAIL = §5-limit-1 (not a regression) | F2 rc_inc drop 0.00% (honest — not R5-covered); N-worker 5.05s vs serial 0.52s = 9.69× (bar ≤1.5× from B7 mimalloc; ON≈OFF, system-alloc contention, III-G cure) |
+| **II-G5/G6** | **PASS** (settled load) | F2v serial ON vs OFF wall −74.9% user −76.9% (R5); I-G5 small-case medians within ≤+3% (single-run trips = noise); compile Δ+0.0% |
+
+**Task-3 verdict (0528 decision input):** II-G2 **IS met** by the delivered
+mechanism (F4-hard reuse hit-rate 100% ≥ 50%, measured off the landed
+`reuse_hit`/`reuse_miss` counters); the `chaining_toggle_off` `(map inc (map dec
+v))` fusion witness **is NOT required** for II-G2 (it is a companion optimization
+needing the typecheck uniqueness-preservation analysis, FIXME 0528). **0528 is a
+clean carry.**
+
+**Task-2 (FIXME 0527):** `cache_pre_r5_schema_object_invalidated_wholesale`
+re-pointed to patch the manifest's `cache_format_version` global key (the actual
+`check_manifest` invalidation gate) instead of the per-module `.meta.json`
+`schema_version` (a later secondary guard) — flips GREEN. 0527 deleted.
+
 ---
 
 ## §3 FIXME 0499 lane-refactor plan (the QA-first stage head)

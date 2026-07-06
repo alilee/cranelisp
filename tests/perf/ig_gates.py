@@ -133,13 +133,130 @@ def pct(on, off):
     return float("inf") if off == 0 else 100.0 * (on - off) / off
 
 
+# --- increment-II (write-path) additions (S103; qa plan §2 II-G1..G6) --------
+
+# B2: F2's program-attributable rc_inc baseline (s100-ownership-verification.md
+# §1.2 table). II-G1's "< 1% of B2" collapse bar keys on it.
+B2_F2_RC_INC = 169_902_081
+
+import re as _re  # noqa: E402
+_REUSE_RE = _re.compile(r"reuse_hit=(\d+) reuse_miss=(\d+)")
+
+
+def reuse_counts(binp, clfile, off=False):
+    """Parse (reuse_hit, reuse_miss) off the [RC_STATS] line for a serial --run.
+    The reuse_hit/reuse_miss family (H2, landed S102) tallies the COW in-place
+    (hit) vs copy (miss) arm — II-G2's hit-rate substrate."""
+    e = m.env_for("serial", rc_stats=True)
+    if off:
+        e["CRANELISP_NO_OWNERSHIP"] = "1"
+    else:
+        e.pop("CRANELISP_NO_OWNERSHIP", None)
+    r = subprocess.run([binp, clfile, "--run"], env=e,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    mm = _REUSE_RE.search(r.stderr.decode())
+    if not mm:
+        raise RuntimeError("no reuse parse: " + r.stderr.decode()[-300:])
+    return int(mm.group(1)), int(mm.group(2))
+
+
+def run_ii_gates(binp, files, base_on, base_off, reps, gates, verdict):
+    """II-G1..G6 — the increment-II (write-path) acceptance gates. Graded on the
+    analysis-ON binary against a fresh same-HEAD toggle-OFF baseline."""
+    def prog_inc(fx, off):
+        c = counts(binp, files[fx], off)
+        b = base_off if off else base_on
+        return c[0] - b[0]
+
+    if "iig1" in gates:
+        # R5 witness: F2v rc_inc collapses to < 1% of B2 AND F2v N-worker wall
+        # < F2v serial wall (the first parallel-must-pay gate). Attribution:
+        # rc_inc → near-zero is R5's own effect (RC_STATS), corroborated by the
+        # null-elem-fn CLIF (L-B1). Analysis ON for both walls.
+        on_inc = prog_inc("f2v", off=False)
+        off_inc = prog_inc("f2v", off=True)
+        frac = 100.0 * on_inc / B2_F2_RC_INC
+        rc_ok = on_inc < 0.01 * B2_F2_RC_INC
+        ws, _, _, _ = m.hires_median(binp, files["f2v"], "serial", reps, off=False)
+        wn, _, _, _ = m.hires_median(binp, files["f2v"], "Nworker", reps, off=False)
+        wall_ok = wn < ws
+        verdict("II-G1", rc_ok and wall_ok,
+                f"F2v rc_inc on={on_inc} (off={off_inc}) = {frac:.3f}% of B2 "
+                f"(bar <1%); N-worker wall={wn:.3f}s serial={ws:.3f}s "
+                f"(bar N<serial: {'PAY' if wall_ok else 'NO-PAY'})")
+
+    if "iig2" in gates:
+        # Reuse hit-rate ≥ 50% on F4 (the copy-per-guess grid). Counter movement
+        # (reuse_hit > 0) is the attribution prerequisite (§0.3). Graded on
+        # f4_hard; f4_easy reported. This gate is INDEPENDENT of the
+        # (map inc (map dec v)) chaining witness (that is a companion, not the
+        # numeric gate) — see the II-G2/0528 verdict.
+        ok, parts = True, []
+        for fx in ("f4_hard", "f4_easy"):
+            hit, miss = reuse_counts(binp, files[fx], off=False)
+            tot = hit + miss
+            rate = 100.0 * hit / tot if tot else 0.0
+            graded = fx == "f4_hard"
+            parts.append(f"{fx}: reuse_hit={hit} reuse_miss={miss} "
+                         f"hit-rate={rate:.1f}%{' (graded)' if graded else ' (report)'}")
+            if graded:
+                ok &= tot > 0 and rate >= 50.0
+        verdict("II-G2", ok, "; ".join(parts) + " (bar ≥50% on f4_hard, counter must move)")
+
+    if "iig3" in gates:
+        # F4 floor progress: F4-hard median N-worker wall ≤ 2× serial (from B7's
+        # 6-15×). Distribution reported (never a single-number gate, §5 limit 7).
+        ws_list = [m.time_run(binp, files["f4_hard"], "serial")[0] for _ in range(reps)]
+        wn_list = [m.time_run(binp, files["f4_hard"], "Nworker")[0] for _ in range(reps)]
+        med_s = statistics.median(ws_list)
+        med_n = statistics.median(wn_list)
+        ratio = med_n / med_s if med_s else float("inf")
+        verdict("II-G3", ratio <= 2.0,
+                f"F4-hard median N-worker={med_n:.3f}s serial={med_s:.3f}s "
+                f"ratio={ratio:.2f}× (bar ≤2×); dist N={sorted(round(x,2) for x in wn_list)} "
+                f"serial={sorted(round(x,2) for x in ws_list)}")
+
+    if "iig4" in gates:
+        # F2 two-ctor honesty: report rc_inc drop from reuse (expected ~0 — F2's
+        # shared-grid copies are genuine materializations, NOT R5-covered, §5
+        # limit 1); wall ≤ 1.5× serial (from B7's 2.3×). MUST NOT be graded as
+        # R5-covered.
+        on_inc = prog_inc("f2_contention", off=False)
+        off_inc = prog_inc("f2_contention", off=True)
+        drop = 100.0 * (off_inc - on_inc) / off_inc if off_inc else 0.0
+        ws, _, _, _ = m.hires_median(binp, files["f2_contention"], "serial", reps, off=False)
+        wn, _, _, _ = m.hires_median(binp, files["f2_contention"], "Nworker", reps, off=False)
+        ratio = wn / ws if ws else float("inf")
+        verdict("II-G4", ratio <= 1.5,
+                f"F2 rc_inc drop={drop:.2f}% (on={on_inc} off={off_inc}; "
+                f"NOT R5-covered — honest, §5 limit 1); N-worker wall={wn:.3f}s "
+                f"serial={ws:.3f}s ratio={ratio:.2f}× (bar ≤1.5×)")
+
+    if "iig5" in gates:
+        # II-G5/G6 = I-G non-regression re-run, INCLUDING F2v serial: increment II
+        # must not regress increment I's small-case bars. F2v serial ON vs OFF
+        # ≤ +3% wall+user (the new fixture's two-sided bar).
+        won, uon, _, _ = m.hires_median(binp, files["f2v"], "serial", reps, off=False)
+        woff, uoff, _, _ = m.hires_median(binp, files["f2v"], "serial", reps, off=True)
+        dw, du = pct(won, woff), pct(uon, uoff)
+        verdict("II-G5/f2v-serial", dw <= 3.0 and du <= 3.0,
+                f"F2v serial wall {dw:+.1f}% user {du:+.1f}% (bar ≤+3%); "
+                f"the I-G4/I-G5 re-run below covers the rest of II-G5/G6")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reps", type=int, default=3, help="7 for acceptance-grade medians")
     ap.add_argument("--gates", default="g1,g2,g4,g5",
-                    help="comma list from {g1,g2,g4,g5}; seam-mandatory subset = g5")
+                    help="comma list from {g1,g2,g4,g5,iig1,iig2,iig3,iig4,iig5}; "
+                         "seam-mandatory subset = g5; increment-II set = 'ii' "
+                         "(= iig1,iig2,iig3,iig4,iig5,g4,g5 — the II-G gates + the "
+                         "I-G non-regression re-run for II-G5/G6)")
     args = ap.parse_args()
     gates = set(args.gates.split(","))
+    if "ii" in gates:
+        gates.discard("ii")
+        gates |= {"iig1", "iig2", "iig3", "iig4", "iig5", "g4", "g5"}
 
     binp = os.environ.get("SYS_BIN") or os.path.join(ROOT, "target", "debug", "cranelisp")
     # Absolute: the compile probe runs with cwd=tempdir, so a relative SYS_BIN
@@ -303,6 +420,9 @@ def main():
         verdict("I-G5/compile", d <= 10.0,
                 f"corpus aggregate cold-cache: on={tot_on:.3f}s off={tot_off:.3f}s "
                 f"Δ={d:+.1f}% (bar ≤ +10%); " + "; ".join(parts2))
+
+    if gates & {"iig1", "iig2", "iig3", "iig4", "iig5"}:
+        run_ii_gates(binp, files, base_on, base_off, args.reps, gates, verdict)
 
     print()
     if failures:

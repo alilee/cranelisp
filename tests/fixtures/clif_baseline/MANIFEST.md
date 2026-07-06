@@ -111,3 +111,26 @@ RED until B0-be lands the capture; the full-corpus diff runs via
   so the facts-absent codegen is unchanged; the golden here is the facts-PRESENT
   capture per the dump contract (§Capture contract unsets `NO_OWNERSHIP`).
   Determinism self-test passes 13/13.
+
+- **12/13 entries (all but 06_tco_loop)** — re-captured S103 Wave-3c (`01464ba`),
+  facts-present. **Two attributed causes, one codegen change:**
+  1. **07_trait_dispatch = genuine ownership CHECK-ELISION.** With ownership
+     facts present, a proven-unique/borrowed site drops its dynamic guard
+     (`load + icmp + brif` → straight `jump`, the guard block removed), so the
+     `07::*` frames shrink. Verified **toggle-reversible**: the guard is PRESENT
+     under `CRANELISP_NO_OWNERSHIP=1` and ELIDED with facts on, both exit 8 —
+     the byte-identical-off oracle holds (toggle-off golden unchanged; this
+     golden is the facts-PRESENT capture per §Capture contract). Also carries
+     the B4 density-decline already attributed above.
+  2. **The other 11 entries (01/02/03/04/05/08/09 + f1/f2/f3/f4) = FuncId /
+     GOT-offset SHUFFLE** from the Wave-3b (II-B2 reuse-token) function
+     registration — the reuse-token runtime helpers (`runtime/reuse_hit` /
+     `runtime/reuse_miss` catalog entries) register new FuncIds, shifting the
+     numeric FuncId/GOT-slot operands baked into every frame's call sites. This
+     is a **numbering shuffle, not a semantic codegen change** — the instruction
+     structure of these 11 frames is otherwise unchanged. Not drift: it is the
+     mechanical consequence of adding the reuse-token catalog helpers. **06_tco_loop
+     is unchanged** (no calls to the shuffled helpers, no elision site).
+  Behaviorally spot-checked before trusting the regen (all 9 corpus exits + 17
+  s99 guards green); determinism self-test passes 13/13; `clif_golden.sh diff`
+  clean post-capture.

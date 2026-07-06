@@ -1276,22 +1276,31 @@ fn extract_schema_version(meta_text: &str) -> Option<u32> {
     after[..end].parse().ok()
 }
 
-/// Rewrite the integer `schema_version` value in raw JSON text. Panics if the
-/// field is absent.
-fn set_schema_version(meta_text: &str, new_value: u32) -> String {
-    let needle = "\"schema_version\":";
-    let idx = meta_text
+/// Rewrite an integer JSON field's value in raw text. Panics if the field is
+/// absent. `needle` is the field key including the trailing colon
+/// (e.g. `"\"cache_format_version\":"`).
+fn set_json_u32(text: &str, needle: &str, new_value: u32) -> String {
+    let idx = text
         .find(needle)
-        .expect("meta text must contain schema_version field");
-    let before = &meta_text[..idx + needle.len()];
-    let after = &meta_text[idx + needle.len()..];
+        .unwrap_or_else(|| panic!("text must contain field {needle}"));
+    let before = &text[..idx + needle.len()];
+    let after = &text[idx + needle.len()..];
     let ws = after.len() - after.trim_start().len();
     let digits = &after.trim_start();
     let end = digits
         .find(|c: char| !c.is_ascii_digit())
-        .expect("schema_version value must be terminated");
+        .expect("field value must be terminated");
     let suffix = &after[ws + end..];
     format!("{before}{}{new_value}{suffix}", &after[..ws])
+}
+
+/// Extract the manifest's global `cache_format_version` invalidation key.
+fn extract_manifest_format_version(manifest_text: &str) -> Option<u32> {
+    let needle = "\"cache_format_version\":";
+    let idx = manifest_text.find(needle)?;
+    let after = manifest_text[idx + needle.len()..].trim_start();
+    let end = after.find(|c: char| !c.is_ascii_digit())?;
+    after[..end].parse().ok()
 }
 
 // spec: design/backend/module-caching.md §4 — the schema version R5's
@@ -1316,31 +1325,37 @@ fn cache_schema_version_bumped_for_r5_representation_change() {
     );
 }
 
-// spec: design/backend/ownership-codegen.md §7.4 — a cached DEP object stamped
-// with the PRE-R5 schema is wholesale-invalidated after R5 lands: the dep
-// recompiles (cache miss) rather than serving the incompatible boxed-payload
-// object. Uses a dep module (`util`) because a single top-level module always
-// rewrites its `.o` (never cache-hits) — the dep is the observable cache-hit
-// surface (mirrors the L-B3 legs above). RED at draft: the pre-R5 schema (14)
-// EQUALS the live schema, so the patched dep still cache-hits (util.o not
-// rewritten) — no invalidation. Flips when R5 bumps the live schema to 15: the
-// patched-to-14 dep then mismatches and recompiles.
+// spec: design/backend/ownership-codegen.md §7.4 — a cache written before R5's
+// representation change is wholesale-invalidated after R5 lands: every module
+// recompiles (cache miss) rather than serving incompatible boxed-payload
+// objects. The wholesale-invalidation gate is `check_manifest`
+// (`crates/cranelisp-backend/src/cache/manifest.rs:150`), which keys on the
+// MANIFEST's global `cache_format_version` (== `CACHE_SCHEMA_VERSION`), NOT the
+// per-module `.meta.json schema_version` (that is a belt-and-suspenders
+// secondary guard checked later in `deserialise_meta`, after the "cache hit"
+// trace has already printed — FIXME 0527). So a faithful pre-R5-cache
+// simulation patches the manifest key, which is what a pre-bump binary would
+// have stamped. Uses a dep module (`util`) as the observable cache-hit surface
+// (a single top-level module always rewrites its own `.o`; mirrors the L-B3
+// legs above). GREEN once R5 has bumped the live schema past PRE_R5_SCHEMA: the
+// patched-to-14 manifest then mismatches the live 15 and every module recomputes.
 #[test]
 fn cache_pre_r5_schema_object_invalidated_wholesale() {
     let first = project(&[("main.cl", SCHEMA_MAIN), ("util.cl", SCHEMA_UTIL)])
         .run("main.cl")
         .output()
         .assert_exit(42);
-    let meta_path = first.tmpdir.join(".cranelisp-cache").join("util.meta.json");
-    let original = fs::read_to_string(&meta_path).expect("read util.meta.json");
-    // Stamp the pre-R5 schema onto the dep object — simulate a cache written
-    // before R5's representation change.
-    let patched = set_schema_version(&original, PRE_R5_SCHEMA);
-    fs::write(&meta_path, &patched).expect("write patched meta");
+    // Patch the MANIFEST's global format key to the pre-R5 value — simulate a
+    // cache written by a pre-bump binary (which stamps the manifest AND every
+    // .meta.json with the old schema together; the manifest key is the gate).
+    let manifest_path = first.tmpdir.join(".cranelisp-cache").join("manifest.json");
+    let original = fs::read_to_string(&manifest_path).expect("read manifest.json");
+    let patched = set_json_u32(&original, "\"cache_format_version\":", PRE_R5_SCHEMA);
+    fs::write(&manifest_path, &patched).expect("write patched manifest");
     assert_eq!(
-        extract_schema_version(&fs::read_to_string(&meta_path).unwrap()),
+        extract_manifest_format_version(&fs::read_to_string(&manifest_path).unwrap()),
         Some(PRE_R5_SCHEMA),
-        "patched meta must carry the pre-R5 schema"
+        "patched manifest must carry the pre-R5 format version"
     );
     nap_for_mtime();
     let m1 = mtime(&first, ".cranelisp-cache/util.o");
@@ -1353,15 +1368,14 @@ fn cache_pre_r5_schema_object_invalidated_wholesale() {
         .assert_exit(42);
     assert!(
         !second.stderr.contains("cache hit"),
-        "a pre-R5-schema ({PRE_R5_SCHEMA}) dep object MUST be wholesale-invalidated \
-         once R5 bumps the live schema — util must recompute, not cache-hit; \
-         stderr:\n{}",
+        "a pre-R5 ({PRE_R5_SCHEMA}) manifest MUST be wholesale-invalidated once R5 \
+         bumps the live schema — util must recompute, not cache-hit; stderr:\n{}",
         second.stderr
     );
     let m2 = mtime(&second, ".cranelisp-cache/util.o");
     assert_ne!(
         m1, m2,
-        "util.o must be recompiled (rewritten) after a pre-R5 schema mismatch, \
-         not served stale"
+        "util.o must be recompiled (rewritten) after a pre-R5 manifest-format \
+         mismatch, not served stale"
     );
 }

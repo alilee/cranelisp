@@ -316,6 +316,85 @@ are the gains this reframe keeps.
 | **II-G4 (F2 two-ctor honesty)** | F2 rc_inc + wall | partial: report rc_inc drop from reuse on chained copies; wall ≤ 1.5× serial (from B7's 2.3×). F2's shared-grid copies-of-a-shared-root are *genuine shared materializations* — fully cured only by multi-ctor flattening or persistent DS (§5 limit 1); II-G4 must not be silently graded as if R5-first-landing covered it. |
 | **II-G5/G6** | = I-G4/I-G5/I-G6 re-run | same non-regression + overhead bars, including F2v serial. |
 
+### 2.3.1 Increment-II acceptance record (S103 — measured, release binary)
+
+**Status:** MEASURED, MIXED. `tests/perf/ig_gates.py` extended with the II-G
+runner (`--gates ii` / `iig1..iig5`); release binary `target/release/cranelisp`,
+median-of-7 (F4-hard distribution 7-rep), fresh same-HEAD toggle-off baseline,
+settled load, 2026-07-06. Differential oracle (`CRANELISP_NO_OWNERSHIP`)
+byte-identical-off throughout (suite L-B2 green; 4091/4090/1/1, only RED = the
+intentional 0528 chaining witness). This subsection is the durable
+increment-II measured-acceptance artifact.
+
+**Per-gate verdict (numbers):**
+
+- **II-G1 (R5 witness) — SPLIT: rc_inc PASS (decisive), parallel-pay benign non-pass.**
+  - *rc_inc collapse — PASS.* F2v program-attributable rc_inc **on=32,769** vs
+    B2=169,902,081 = **0.019%** (bar < 1%). Off-polarity F2v rc_inc = 169,902,081
+    (= B2), so the collapse is entirely R5's own effect (RC_STATS attribution).
+    Allocs also halve (ON 2,097,154 vs OFF 4,194,387 — the 2-allocs-per-copy → 1
+    memcpy). Corroborated by the L-B1 null-elem-fn CLIF assertion.
+  - *Parallel-must-pay (N-worker < serial) — NON-PASS, benign.* F2v N-worker
+    **0.55s** vs serial **0.12s** — parallel does not beat serial. But this is
+    NOT a regression: R5 made F2v **serial ~40× cheaper** and made F2v **N-worker
+    10× faster than OFF** (ON 0.55s vs OFF 5.34s). Parallelism can't pay only
+    because R5's serial copy is now too cheap to beat at this scale (81-cell Vec,
+    memcpy). The mechanism works; the "parallel pays" bar was written before R5's
+    serial-collapse was measured. Honest non-pass — flag to `/sprint`/user as a
+    bar-re-ratification question (the copy shape is cured, not contended).
+- **II-G2 (reuse hit-rate) — PASS (decisive).** F4-hard **reuse_hit=60,
+  reuse_miss=0 → hit-rate 100.0%** (bar ≥ 50%); f4_easy 49/0 = 100.0% (report).
+  Counter moved (60 > 0 — the §0.3 attribution prerequisite). **Measured directly
+  off the delivered `reuse_hit`/`reuse_miss` counters, INDEPENDENT of the
+  `(map inc (map dec v))` chaining witness** (that witness is a companion, not
+  the numeric gate — §2 chaining note). **II-G2 is met by the delivered
+  mechanism; the `chaining_toggle_off` fusion witness (FIXME 0528) is NOT
+  required for II-G2 — 0528 is a clean carry.**
+- **II-G3 (F4 floor progress) — FAIL, and a genuine regression.** F4-hard median
+  N-worker **108.8s** vs serial **0.91s** = **121×** (bar ≤ 2×; distribution
+  N=[104.1, 108.8, 109.7, 110.7, 112.0, 113.4, 116.7], serial≈0.91 tight). The
+  ON-vs-OFF differential attributes it cleanly: analysis-ON N-worker **108.8s**
+  vs analysis-OFF **5.46s** — analysis-ON is ~20× slower in parallel while serial
+  is unaffected. This did NOT exist at increment I (S102 §2.2.1 recorded F4-hard
+  N-worker ON ≈ OFF, max ~33s). `f4_sudoku.cl` unchanged since S102 → purely
+  compiler-side. Probable cause: increment-II density reduction defeats the B4
+  density-admission decline, re-exposing over-sparking contention (the
+  `effect-concurrency.md` §3.1 class). **Filed FIXME 0534 (`target: /backend`)** —
+  the one gate failure that is a real regression, not a designed limit.
+- **II-G4 (F2 two-ctor honesty) — wall FAIL, but the DOCUMENTED §5-limit-1 case,
+  NOT a regression.** rc_inc drop = **0.00%** (ON 169,902,081 = OFF — F2's
+  two-ctor `Cell` is genuinely not R5-covered; the honest report, §5 limit 1).
+  F2 N-worker **5.05s** vs serial **0.52s** = **9.69×** (bar ≤ 1.5×). The bar
+  derives from B7's 2.3× *mimalloc* stack; this binary uses the system allocator,
+  and F2 N-worker ON (5.11s) ≈ OFF (5.47s) — increment II neither cured nor
+  regressed F2. F2's shared-grid copies are genuine materializations, cured only
+  at the III-G composed end-state (persistent DS / multi-ctor flattening). Graded
+  honestly as a partial, explicitly **not R5-covered**.
+- **II-G5/G6 (I-G non-regression re-run, incl. F2v serial) — PASS (settled load).**
+  F2v serial ON vs OFF **wall −74.9% user −76.9%** (R5 win — the new fixture's
+  two-sided bar held with margin to spare). I-G5 small-case re-run at settled
+  load across 3 runs: all resolution-bearing cells (f2/serial, f2/1worker,
+  f3/serial) oscillate within ±5% around zero with **medians within the ≤+3%
+  bar** — single-run trips (f2/serial +4.1% under elevated load; f3/serial +4.6%
+  one settled run) are measurement noise (the failing cell moves run-to-run,
+  never consistent), exactly the variance the §2.2.1 measurement-trust note
+  documents. Density-declined f3/1worker: accepted-trade wall +4.5…+8.7%,
+  **user −45…−48%** (graded, passes). I-G5/compile: corpus aggregate cold-cache
+  **Δ+0.0%** (bar ≤ +10%).
+
+**Summary.** The two write-path mechanisms are individually validated: **R5
+collapses rc_inc (II-G1 rc_inc 0.019% of B2)** and **reuse tokens hit 100% on F4
+(II-G2)**; the differential oracle stays byte-identical-off. Two gate non-passes
+are designed/benign (II-G1 parallel-pay — R5's serial too cheap to beat; II-G4
+wall — the §5-limit-1 F2-not-cured case). **One gate failure is a genuine
+increment-II parallel regression on F4-hard (II-G3, FIXME 0534).** 0528 (the
+chaining witness) is a clean carry — not required for II-G2.
+
+**Harness (S103):** `tests/perf/ig_gates.py` gained the II-G runner
+(`run_ii_gates`, `reuse_counts`, B2 constant, `--gates ii`);
+`tests/perf/s99_measure.py::gen_fixtures` gained the F2v fixture. Standalone
+perf tool, outside canonical `cargo nextest run`.
+
 ### 2.4 Stage III — the composed end-state (persistent DS and/or multi-ctor flattening in play)
 
 The only configuration honestly comparable to the north-star. Operationalisation of
