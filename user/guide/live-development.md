@@ -153,12 +153,12 @@ A broken symbol refuses to run, loudly and with the same provenance:
 
 ```
 user> (k 3)
-Error: codegen error at 0..0: runtime error: runtime panic: user/k is broken by the redefinition of user/f: type error at 12..29: type mismatch: expected primitives/String, got primitives/Int
+runtime error: user/k is broken by the redefinition of user/f: type error at 12..29: type mismatch: expected primitives/String, got primitives/Int
 ```
 
-(The `Error: codegen error at 0..0: runtime error: runtime panic:` prefix is a
-known wrapper defect being cleaned up; the message that matters is the
-`user/k is broken by the redefinition of user/f: …` trap itself.)
+The trap is presented through the ordinary runtime-error format (§5.1) — the
+`runtime error:` category followed by the provenance message — so it reads the
+same as any other runtime failure the REPL surfaces.
 
 This is a deliberate design ruling, not a limitation. The session *could* keep
 serving `k`'s old compiled code — it would be memory-safe — but silently
@@ -209,12 +209,6 @@ no need to re-enter it. Either way, a recovered symbol is indistinguishable
 from one that was never broken: it calls normally and carries no provenance
 line. ([`repl/spec.md §18.6`](../../repl/spec.md).)
 
-> If you have evaluated bare expressions since the break — `(g "hello")` or
-> `(k 3)` above — a cascade report may today also name `__expr`, the REPL's
-> internal slot for your most recent expression turn. It is cosmetic noise
-> (internal names do not belong in the report) and a defect has been filed to
-> drop it.
-
 ## Which world does an old value see?
 
 The two redefinition classes give two deliberately different answers for
@@ -236,40 +230,126 @@ before the change, and it is a session-memory artifact only: frozen chains die
 with the session, and a restart rebuilds everything from source in the current
 world. The precise contract is [`repl/spec.md §18.7`](../../repl/spec.md).
 
-## What the cascade doesn't cover yet
+## Beyond concrete functions — silent reloads and the remaining gaps
 
-The dependent-recompilation machinery above currently engages only when the
-redefined symbol is a **plain function with one concrete signature** (like
-every example on this page — which is why they use concretely-typed primitives
-such as `add-i64`). Redefining anything else — a generic or overloaded
-function, a macro, a type, a trait — takes the legacy path: no cascade report,
-and no broken marking. Existing compiled callers then keep running the **old**
-definition chain — consistent and crash-free, but silently stale:
+Everything above — the cascade report, broken marking, the trap — is the story
+for a **concrete single-signature function** (a plain `defn` with one
+monomorphic type, like every example on this page, which is why they use
+concretely-typed primitives such as `add-i64`). Redefining anything else takes
+a different path, and after the S103 fix those paths split in two: generic and
+overloaded functions are now recompiled for you; macros and types are not.
+
+### Generic and overloaded functions — now recompiled, silently
+
+Redefining a function whose type is **generic or overloaded** used to leave
+existing compiled callers silently running the old definition. That is now
+fixed. At the end of the turn the session reloads the affected module,
+recompiling every compiled caller against the new definition, so the caller
+picks it up at its next call. There is **no cascade report** — the recompile is
+silent, exactly like a body edit — because the reload leaves nothing stale to
+announce:
 
 ```
+user> (import [primitives [add-i64]])
 user> (defn f [x] (add-i64 x 1))
 :(Fn [primitives/Int] primitives/Int) user/f ; defn
 
 user> (defn g [x] (f x))
 :(Fn [primitives/Int] primitives/Int) user/g ; defn
 
-user> (defn f [x] x)                 ; concrete -> generic: no cascade runs
+user> (g 1)
+:primitives/Int 2
+
+user> (defn f [x] x)                 ; concrete -> generic — g is recompiled silently
 :(Fn [a] a) user/f ; defn
 
-user> (g 1)
-:primitives/Int 2                    ; g still runs the OLD f (x + 1)
-
-user> (f 5)
-:primitives/Int 5                    ; direct calls see the new f
+user> (g 1)                          ; picks up the new f
+:primitives/Int 1
 ```
 
-Note the shape of the residue: `(g 1)` returns `2`, not `1` — `g`'s compiled
-code still calls the old `f`. Redefine `g` itself (or restart the session) and
-it picks up the new world. This is a scoped, documented limitation of the
-current stage — the scope note in [`repl/spec.md §18.1`](../../repl/spec.md)
-is the authoritative statement, and closing it is planned work. Until then: if
-you want the cascade report to have your back, keep the functions you are
-actively reshaping on concrete signatures.
+Note the shape of the cure: `(g 1)` now returns `1`, not `2`. Under the old
+behaviour `g`'s compiled code still called the old `f` and returned `2`; the
+reload has moved `g` into the new world. The redefinition turn prints only its
+ordinary confirmation — no `recompiled:` line, no `stale:` section.
+
+**The one loud edge — a reload that can't typecheck.** If the redefinition
+leaves a compiled caller genuinely ill-typed — the sharpest case is a concrete
+function becoming *overloaded* in a way that makes an unannotated caller
+ambiguous — the reload cannot recompile it. Rather than answer with the old
+chain silently, the turn prints the interim `; stale:` section, and then blocks
+evaluation until you repair the source:
+
+```
+user> (import [primitives [add-i64 str-len]])
+user> (defn id [x] x)
+:(Fn [a] a) user/id ; defn
+
+user> (defn g [:primitives/Int y] (id (add-i64 y 1)))
+:(Fn [primitives/Int] primitives/Int) user/g ; defn
+
+user> (g 1)
+:primitives/Int 2
+
+user> (defn id [:primitives/String s] (str-len s))   ; downgrade leaves g's call ambiguous
+:(Fn [primitives/String] primitives/Int) user/id ; defn
+; stale: compiled callers keep the previous definition of user/id
+;  g
+
+user> (g 5)
+Cannot evaluate: module 'user' has errors. Fix the source file and save.
+
+user> (defn g [:primitives/Int y] (add-i64 y 100))   ; repair the caller — the block lifts
+:(Fn [primitives/Int] primitives/Int) user/g ; defn
+
+user> (g 5)
+:primitives/Int 105
+```
+
+The block is the [§14.4](../../repl/spec.md) error-blocked state, and it is
+recoverable: redefining `g` (or reverting `id`) so the module typechecks again
+lifts it, and the session carries on. The split world is **surfaced, never
+silently answered**.
+
+### Macros and types — still stale, silently
+
+Redefining a **macro**, a **type**, or a **constructor** is still on the legacy
+path: no reload, no report. An existing compiled caller keeps the **old**
+expansion or layout — consistent and crash-free, but silently stale:
+
+```
+user> (import [primitives [add-i64]])
+user> (defmacro m [x] `(add-i64 ~x 1))
+:user/m ; defmacro
+; [x] -> Sexp
+
+user> (defn g [x] (m x))             ; g compiles the OLD expansion into its body
+:(Fn [primitives/Int] primitives/Int) user/g ; defn
+
+user> (g 1)
+:primitives/Int 2
+
+user> (defmacro m [x] `(add-i64 ~x 100))   ; redefine the macro — silent
+:user/m ; defmacro
+; [x] -> Sexp
+
+user> (g 1)
+:primitives/Int 2                    ; g still runs the OLD expansion (x + 1)
+
+user> (m 5)
+:primitives/Int 6                    ; a fresh expansion sees the new macro
+```
+
+`(g 1)` returns `2`, not `101` — `g` was compiled with the old `m` already
+expanded into its body, and nothing re-expands it. Types and constructors
+behave the same way; a constructor **arity** change is the sharpest case
+(`(Box [x])` → `(Box [x y])` leaves an old caller building the old shape) and
+is tracked as FIXME 0533.
+
+This is a scoped, documented limitation — the scope note in
+[`repl/spec.md §18.1`](../../repl/spec.md) is the authoritative statement, and
+closing it is planned work. Until then: after redefining a macro or type,
+redefine (or reload) the callers you want to move to the new world, or restart
+the session — a restart rebuilds everything from source.
 
 ## Restarting with a broken symbol in the file
 

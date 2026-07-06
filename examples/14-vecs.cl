@@ -74,7 +74,10 @@
 ;; ordinary function value, so it can be passed to a higher-order
 ;; function just like a user-defined one (higher-order functions are
 ;; example 13's capability). Each helper below forwards its function
-;; argument to a call — note each helper is used with ONE vec primitive.
+;; argument to a call. The same generic higher-order function can be
+;; instantiated at several different vec primitives — e.g. `call-get`
+;; works whether you hand it `vec-get`, `vec-set`, or any function of
+;; the matching shape.
 
 (defn call-get [f v i] (f v i))
 (defn call-set [f v i x] (f v i x))

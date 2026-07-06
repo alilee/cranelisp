@@ -440,6 +440,28 @@ Values are runtime results and have no module scope. They are displayed bare.
 
 ADT fields MUST be recursively formatted according to this table.
 
+**Representation-flattening is invisible to display (R5).** A single-constructor ADT whose
+sole field is a scalar (`Int`, `Bool`, `Float`, or another such value) is **value-representation
+flattened** by the compiler — the value is stored as a bare unboxed word, with no heap object
+or tag word. This is a codegen optimisation (`design/arch/ownership-inference.md` §6.3 R5); it
+MUST have **no effect on display**. Such a value MUST render as the ordinary single-ctor
+constructor form `(Ctor value)` — identical to its non-flattened sibling — with the scalar
+field formatted per its own row above. The display MUST NOT leak the flattened representation
+(a raw `<tag:N>` sentinel is a non-conformance) and MUST NOT crash (a `Float` field's bit
+pattern MUST NOT be dereferenced as a pointer). A flattened ADT nested as a field of an outer
+ADT MUST likewise recurse to its constructor form.
+
+| Value | Display | Ring | Test |
+|---|---|---|---|
+| Single-ctor single-scalar-field ADT (R5-flattened), `Int` field, e.g. `(Box 99)` | `(Box 99)` — never `<tag:99>` | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_int_shows_constructor_form] |
+| … `Bool` field, e.g. `(B true)` | `(B true)` — never `<tag:1>` | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_bool_shows_constructor_form] |
+| … `Float` field, e.g. `(F 3.14)` | `(F 3.14)` — MUST NOT crash | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_float_does_not_crash] |
+| R5-flattened ADT nested as a field of an outer ADT | recurses to `(Ctor value)`, e.g. `(Wrap (Box 5) 7)` | 1 | [Tested tests/display_exact.rs::display_r5_value_layout_nested_field_shows_constructor_form] |
+
+Value semantics (construct / match / extract) are unaffected by flattening and were always
+correct — this note pins the **display** invariant so the representation stays invisible
+[Tested tests/display_exact.rs::r5_value_layout_construct_match_extract_is_sound].
+
 ### 1.5.1 Bare Polymorphic Values — Type Display via Introspection [Tested+Neg tests/repl_introspection::prelude_option_none_value_display_neg_definition_metadata]
 
 A **result-only-polymorphic value** is a value whose finalised type is polymorphic with no concrete instantiation forced by the surrounding context — e.g. a bare `None` (type `∀a. (Option a)`) or a bare empty literal `[]` (type `∀a. (Vec a)`) entered alone at the prompt. Such a value has **no concrete runtime representation** to show: under the slot⟺concrete model it is *slot-less* (`UserFnState::Polymorphic`) — it has no GOT slot and is not compiled as a runtime value.
@@ -770,6 +792,70 @@ Unqualified type names or an unqualified symbol name in `/sig` output are non-co
 | Requirement | Test |
 |---|---|
 | `/sig` primary line is byte-identical to bare lookup's (FQ type + FQ name + drawer) | [S102 — guard tests/repl_redefinition.rs::sig_broken_symbol_primary_line_matches_bare_lookup_fully_qualified, failing-not-ignored until the /int fix (FIXME 0492)] |
+
+### 3.9 `/mod` — Namespace Switch and Turn-Environment Parity [S102]
+
+`/mod [name]` switches the active module namespace. Its interactive behaviour — the prompt
+changes to the new module, no confirmation is printed, bare `/mod` returns to `user`, an
+unknown module gives an actionable error — is specified by the §8 module scenarios; this
+section pins the **compilation-environment** contract, which is the load-bearing invariant for
+the file-backed dev loop (`/mod M` + a defining form, editing a module in place).
+
+**Turn-environment parity (MUST).** A form entered in a module-namespace turn (`/mod M`
+followed by a `defn`/`deftype`/expression) MUST compile in the **same environment the module
+`M`'s file body was compiled in**. Concretely, all of the following MUST be in scope for that
+turn exactly as they are when `M`'s `.cl` file is loaded:
+
+- the **implicit prelude values** — the prelude-provided operators and functions (`+`, `-`,
+  `show`, …) are available as bare names (spec `08-modules.md` §8.8.1's implicit
+  `(import [prelude [*]])`); [S102]
+- the **prelude type aliases** — a bare `:Int` annotation resolves to `:primitives/Int` in the
+  turn's forms exactly as in the file body (spec `08-modules.md` §8.9.1); [S102]
+- **`M`'s own imports** — every name `M`'s file imports is in scope under the same binding it
+  has in the file body. [S102]
+
+**Parity is install-path-independent (MUST).** The environment MUST match `M`'s file-body
+environment **regardless of how `M` was installed this session** — whether `M` was freshly
+typechecked, or **restored from the module cache**. A cache-restored module MUST NOT present a
+degraded namespace turn (e.g. a restored module whose session environment lacks the prelude, so
+`(+ x 1)` fails with `undefined variable: +`). This is the parity axis: fresh and
+cache-restored `/mod M` turns are indistinguishable to the user. [S102]
+
+| Requirement | Test |
+|---|---|
+| a `/mod M` turn using prelude operators compiles (fresh session) | [Tested tests/repl_mod_devloop.rs::devloop_fresh_prelude_using_mod_turn_compiles] |
+| the SAME turn compiles identically in a cache-restored session (parity axis) | [Tested tests/repl_mod_devloop.rs::devloop_cache_restored_prelude_using_mod_turn_compiles] |
+| a bare `:Int` type alias resolves in a `/mod M` defining turn | [Tested tests/repl_mod_devloop.rs::devloop_fresh_mod_turn_bare_type_alias_resolves] |
+| the full file-backed dev loop (break → revert heal; cross-module + restart) works over `/mod M` turns | [Tested tests/repl_mod_devloop.rs::devloop_fresh_same_module_dependent_break_true_and_revert_heal, tests/repl_mod_devloop.rs::devloop_fresh_cross_module_revert_then_restart_runs_clean] |
+
+### 3.10 Module-Qualified Arguments to Introspection Commands [S102]
+
+The introspection commands' argument grammar MUST accept a **module-qualified name**
+(`module/symbol`, spec `08-modules.md` §8.5.1) wherever they accept a bare symbol name. This is
+a self-documentation requirement, not a convenience: the REPL's **own reports print
+module-qualified names** — the §18.3 cascade report, `/list`, `/imports`, and `/refs` all
+render dependents and callers as `m/mf` — and a name the REPL prints MUST be pasteable back
+into the command that reads it. A qualified name that the REPL emits but its own introspection
+commands reject is a broken self-documentation loop.
+
+- **`/sig`, `/info`, `/doc`, `/source`, `/refs`, `/tests-for` MUST resolve a module-qualified
+  argument** to the same symbol the bare form resolves to (when in scope), producing the same
+  output. `/sig m/mf` MUST NOT report `unknown symbol 'm/mf'` while bare `mf` is imported and
+  `m` is loaded. [S102]
+- **`/sig` (and `/info`) on an imported bare name MUST print the full §3.8 primary line** — the
+  `:(Fn …) m/mf ; defn - {doc}` signature line — not merely a `; imported from m/mf`
+  provenance note with no signature. An imported name is as introspectable as a locally-defined
+  one. [S102]
+- **The names a cascade/`broken:` report prints MUST be pasteable into `/info`** to read the
+  break details (the §18.3 ↔ §3.6 round trip). [S102]
+
+| Requirement | Test |
+|---|---|
+| `/sig` accepts a module-qualified name | [Tested tests/repl_mod_devloop.rs::sig_accepts_fq_module_qualified_name] |
+| `/info` accepts a module-qualified name | [Tested tests/repl_mod_devloop.rs::info_accepts_fq_module_qualified_name] |
+| `/refs` accepts a module-qualified name (bare form is the control) | [Tested tests/repl_mod_devloop.rs::refs_accepts_fq_module_qualified_name, tests/repl_mod_devloop.rs::refs_bare_name_lists_cross_module_caller_control] |
+| `/sig` on an imported bare name prints the full §3.8 primary line | [Tested tests/repl_mod_devloop.rs::sig_imported_name_shows_full_signature_line] |
+| a cascade `broken:` name is pasteable into `/info` | [Tested tests/repl_mod_devloop.rs::cascade_report_broken_name_pasteable_into_info] |
 
 ## 4. Self-Documentation Contract
 
@@ -2835,38 +2921,57 @@ compiled caller in one of exactly three states: **recompiled** against the new s
 internally-consistent chain (closure values only, §18.7). Silent unsoundness (an old-signature
 caller invoking a new-signature body) MUST NOT occur. [S101]
 
-> **Stage-M scope note (S101).** The coherence guarantee's MUSTs are currently delivered only
-> when the redefinition **target** is a **concrete single-signature function definition** (a
-> plain `defn` with one monomorphic signature). For every other target kind —
-> generic/constrained function, overloaded function, macro, type/constructor, trait declaration
-> or impl — redefinition takes the legacy reuse-and-patch path: **no dependent-recompilation
-> transaction runs, no §18.3 cascade report is printed, and no symbol is marked broken or
-> trapped.** (From S102 the downgrade itself is no longer silent — the turn prints the
-> §18.1.1 `stale:` section when compiled callers are left behind — but nothing is
-> recompiled, broken, or trapped.)
-> For those kinds a compiled caller of the old signature is neither recompiled nor trapped: it
-> keeps executing the **old, internally-consistent chain** (coherent-stale — e.g. redefining a
-> concrete `Int -> Int` function to a polymorphic `(Fn [a] a)` leaves an existing compiled
-> caller silently running the old concrete body). This does not crash and does not mix
-> signatures, but it is a scoped, known residue of the coherence guarantee — not conformance.
-> The cure is module-grain dependent reload with end-of-turn sequencing, an
-> increment-I-or-later item; see `design/int/session-transaction.md` §10 T1 (rationale and
-> triggers) and the pinning tests
-> `tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale`
-> / `redefine_concrete_to_overloaded_caller_survives_coherent_stale` (each carries a flip note
-> for when the cure lands). Requirements throughout §18.2–§18.8 are written against the full
-> guarantee; until the cure lands they are testable only within this scope.
+> **Scope note (S101 stage-M; T1 cure landed S103).** The coherence guarantee's MUSTs are
+> delivered by **two mechanisms**, keyed on the redefinition **target**:
+>
+> 1. **Concrete single-signature function definition** (a plain `defn` with one monomorphic
+>    signature) — the §18.3 **dependent-recompilation transaction**: affected callers are
+>    recompiled (or marked broken and trapped) and the turn prints the `recompiled:`/`broken:`
+>    cascade sections.
+> 2. **Every other (downgrade / reuse-and-patch) target kind** — generic/constrained function,
+>    overloaded function, macro, type/constructor, trait declaration or impl — the S103 **T1
+>    full cure**: an **end-of-turn module reload** recompiles every compiled caller that would
+>    otherwise be left on the previous definition, so the caller picks up the new definition
+>    at re-entry and the §18.1.1 `stale:` section renders **empty**. On the two edge paths
+>    where the reload cannot recompile the callers cleanly the split world is **surfaced, never
+>    silently answered**: a reload failure (a caller left genuinely ill-typed by the new
+>    definition — e.g. a concrete→overloaded downgrade that makes an unannotated caller
+>    ambiguous) degrades the turn to the §14.4 error-blocked state; a regen-suppressed target
+>    module (read-only backing file) keeps the interim `stale:` print. See
+>    `design/int/session-transaction.md` §10 T1 (mechanics, CS-1/2/3) and the acceptance pair
+>    `tests/repl_redefinition.rs::t1_full_cure_recompiles_stale_callers_stale_section_empty`
+>    (positive — recompiled caller, empty section) / `t1_full_cure_body_only_edit_still_no_report_no_recompile`
+>    (over-trigger guard — a body-only edit MUST NOT reload). The former coherent-stale pins
+>    `redefine_concrete_to_polymorphic_caller_survives_coherent_stale` /
+>    `redefine_concrete_to_overloaded_caller_survives_coherent_stale` **flipped** to the cured
+>    behaviour (recompiled value / error-blocked-and-surfaced, no old-chain answer).
+>
+> **Still-uncured T1 residue (confirmation-level, FIXME 0533).** The T1 trigger is gated on a
+> **slot change** (`new_slot.is_none() || old_slot.is_none()`), so a **slotted→slotted**
+> redefinition — both the old and new target keep a live GOT slot — is excluded from the
+> reload on the rationale that a reused slot late-binds correctly. The one edge that rationale
+> does not cover is a `deftype` **constructor arity change** (`Point [x]` → `Point [x y]`): it
+> is slotted→slotted, so it is excluded, yet it late-binds to an **incompatible arity** — a
+> residual silent split-world with no report. This is a rare, design-acknowledged residue (not
+> a shipped-defect regression), pending `/design`'s confirm-or-cure ruling. Requirements
+> throughout §18.2–§18.8 are written against the full guarantee; this narrow slotted→slotted
+> arity case is the only remaining gap.
 
-#### 18.1.1 The Downgrade Report — a Split World Is Never Silent [S102]
+#### 18.1.1 The Downgrade Report — a Split World Is Never Silent [Tested+Neg tests/repl_redefinition.rs::t1_full_cure_recompiles_stale_callers_stale_section_empty, tests/repl_redefinition.rs::t1_full_cure_body_only_edit_still_no_report_no_recompile]
 
-When a redefinition takes the scope note's reuse-and-patch path (a non-concrete target —
-the at-scale default for unannotated, generalizing functions) and at least one compiled
-caller keeps executing the previous definition, the turn MUST report it. The silent
-outcome — old behaviour continuing behind a fresh confirmation line with no indication —
-MUST NOT occur. [S102]
+When a redefinition takes the reuse-and-patch downgrade path (a non-concrete target — the
+at-scale default for unannotated, generalizing functions), the end-of-turn module reload
+(§18.1 scope note; `design/int/session-transaction.md` §10 T1) **recompiles** every compiled
+caller that would otherwise be left on the previous definition. The negative-MUST — the
+silent outcome, old behaviour continuing behind a fresh confirmation line with no
+indication — is satisfied **by construction**: no caller is left stale, so there is nothing
+to report and the `stale:` section renders **empty**. [S103]
 
-The report is one comment-line section printed after the §1.3 confirmation, in the same
-layout family as §18.3's `recompiled:`/`broken:` sections:
+The `stale:` section is a section of that same end-of-turn transaction report — the same
+`TransactionReport` channel as §18.3's `recompiled:`/`broken:` sections, in the same
+comment-line layout family, rendered empty on the normal (successful-cure) path and printed
+with a non-empty set only on the two edge paths where the reload cannot recompile the callers
+cleanly (below). Its header + name-line format when it does print:
 
 ```
 :{NewType} {module}/{name} ; defn
@@ -2880,20 +2985,30 @@ layout family as §18.3's `recompiled:`/`broken:` sections:
 - **The name lines** use the related-symbols layout of §1.1 (the §3.3 L0–L4 layout
   algorithm), exactly as §18.3's sections: callers in the current module appear bare;
   callers in other modules appear module-qualified. [S102]
-- **The set MUST be exact both ways**: it MUST name every compiled caller that keeps
-  reaching the previous definition after this turn, and MUST NOT name any symbol that picks
-  up the new definition at its next call (late-bound callers and never-compiled callers do
-  not appear). [S102]
-- **The section is omitted entirely when nothing is stale** — a downgraded redefinition
-  that leaves no compiled caller on the previous definition prints only the §1.3
-  confirmation, exactly like a body-only edit (§18.2). The report exists to prevent a
-  silent split world, not to annotate every redefinition. [S102]
-- **The report is informational only.** It recompiles, breaks, and traps nothing: the named
-  callers remain callable and run the old, internally-consistent chain (the scope note's
-  coherent-stale residue). [S102]
+- **The set MUST be exact both ways** (on an edge path, where it prints): it MUST name every
+  compiled caller the reload could **not** recompile against the new definition, and MUST NOT
+  name any symbol that picks up the new definition — recompiled callers, late-bound callers,
+  and never-compiled callers do not appear. [S103]
+- **The section is empty on the normal (successful-cure) path** — when the end-of-turn reload
+  recompiles the stale callers, the turn prints only the §1.3 confirmation (silently — no
+  `recompiled:` line either), exactly like a body-only edit (§18.2). A body-only edit itself
+  never triggers a reload (the over-trigger guard). The report exists to surface a split world
+  the reload could not close, not to annotate every redefinition. [S103]
+- **The section prints only on the two reload-edge paths, and always surfaces the split
+  world — never a silent answer.** It carries a non-empty `stale:` set only when the reload
+  cannot recompile the callers cleanly: (a) a **reload failure** — the recompiled caller no
+  longer type-checks against the new definition (e.g. a concrete→overloaded downgrade that
+  leaves an unannotated caller genuinely ambiguous) — degrades the turn to the §14.4
+  error-blocked state (never a lockout or a silent old-chain answer) and keeps the `stale:`
+  print; and (b) a **regen-suppressed** target module (read-only backing file — the
+  `should_regenerate` guard) keeps the interim `stale:` print, because reloading would read
+  stale disk source. On both edge paths the named callers keep running the old,
+  internally-consistent chain until the block is lifted or the file is made writable. [S103]
 
 Worked example — `id`'s prior definition is generic, so its redefinition takes the
-reuse-and-patch path; `g` was compiled against the old `id` and keeps it:
+reuse-and-patch downgrade path; `g` was compiled against the old `id`. The end-of-turn
+reload recompiles `g` against the new `id`, so no `stale:` section prints and `(g 1)` sees
+the new definition:
 
 ```
 user> (defn id [x] x)
@@ -2905,27 +3020,31 @@ user> (defn g [x] (id (+ x 1)))
 user> (g 1)
 :primitives/Int 2
 
-user> (defn id [x] (+ x 100))
+user> (defn id [x] (+ x 100))       ; g is recompiled silently — no stale, no recompiled: line
 :(Fn [primitives/Int] primitives/Int) user/id ; defn
-; stale: compiled callers keep the previous definition of user/id
-;  g
 
-user> (g 1)                          ; still the old id — but the report said so
-:primitives/Int 2
+user> (g 1)                          ; recompiled against the new id
+:primitives/Int 102
 ```
 
-> **Relationship to the cure (non-normative).** The full cure — module-grain dependent
-> reload with end-of-turn sequencing (`design/int/session-transaction.md` §10 T1) —
-> recompiles exactly the callers this report names, so under the cure the stale set is
-> empty and the section never prints. The `stale:` section is therefore a section of the
-> same transaction report the cure keeps (rendered empty), not throwaway output — the
-> Principle-8 shape the S102 architecture review pinned.
+The redefinition turn prints only its §1.3 confirmation — the recompile is **silent** (no
+`; stale:` section and no `; recompiled:` line): the cure leaves nothing stale to report.
+
+> **The Principle-8 shape (non-normative).** The end-of-turn module reload
+> (`design/int/session-transaction.md` §10 T1) recompiles exactly the callers a pre-cure
+> `stale:` set would have named, so the set is empty and the section does not print on the
+> normal path. The `stale:` section is therefore a section of the same transaction report the
+> reload keeps (rendered empty), not throwaway output — the Principle-8 shape the S102
+> architecture review pinned. It re-appears only on the reload-edge paths (a reload failure or
+> a regen-suppressed module), where it names the callers the reload could not recompile.
 
 | Requirement | Test |
 |---|---|
-| A type-changing redefinition with a compiled caller either recompiles the caller or marks it broken — the caller MUST NOT reach the new body uncorrected | [Tested+Neg tests/repl_redefinition.rs::type_change_redefinition_compiled_caller_never_reaches_new_body_uncorrected, tests/repl_redefinition.rs::type_change_redefinition_polymorphic_caller_recompiles_and_works] (stage-M scope per the §18.1 scope note: concrete single-sig UserFn targets — T1-kind targets remain coherent-stale, pinned by tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale and tests/repl_redefinition.rs::redefine_concrete_to_overloaded_caller_survives_coherent_stale with flip notes) |
-| A downgraded (reuse-and-patch) redefinition that leaves compiled callers on the previous definition prints the §18.1.1 `stale:` section — exact set, exact header line, never silent | [S102] |
-| A downgraded redefinition with no compiled caller left behind prints only the §1.3 confirmation — no `stale:` section | [S102] |
+| A type-changing redefinition with a compiled caller either recompiles the caller or marks it broken — the caller MUST NOT reach the new body uncorrected | [Tested+Neg tests/repl_redefinition.rs::type_change_redefinition_compiled_caller_never_reaches_new_body_uncorrected, tests/repl_redefinition.rs::type_change_redefinition_polymorphic_caller_recompiles_and_works] (concrete single-sig UserFn targets via §18.3; T1-kind targets via the S103 end-of-turn reload cure — tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale and tests/repl_redefinition.rs::redefine_concrete_to_overloaded_caller_survives_coherent_stale flipped to the cured behaviour) |
+| A downgraded (reuse-and-patch) redefinition recompiles its stale compiled callers at end-of-turn, so the §18.1.1 `stale:` section renders **empty** and a previously-stale caller sees the new definition at re-entry | [Tested+Neg tests/repl_redefinition.rs::t1_full_cure_recompiles_stale_callers_stale_section_empty, tests/repl_redefinition.rs::t1_downgrade_report_names_stale_compiled_callers_exactly] |
+| A body-only edit MUST NOT trigger the reload — it prints only the §1.3 confirmation, no `stale:`/`recompiled:`/`broken:` section (over-trigger guard) | [Tested+Neg tests/repl_redefinition.rs::t1_full_cure_body_only_edit_still_no_report_no_recompile, tests/repl_redefinition.rs::t1_downgrade_report_neg_body_only_turn_prints_no_stale_section] |
+| A downgraded redefinition with no compiled caller left behind prints only the §1.3 confirmation — no `stale:` section | [Tested tests/repl_redefinition.rs::t1_downgrade_report_neg_omitted_when_no_compiled_caller] |
+| On a reload-edge path the split world is surfaced, never silently answered: a reload failure degrades to §14.4 error-blocked (liftable by repair), keeping the `stale:` print | [Tested tests/repl_redefinition.rs::t1_reload_failure_error_block_lifts_on_caller_repair, tests/repl_redefinition.rs::redefine_concrete_to_overloaded_caller_survives_coherent_stale] |
 
 ### 18.2 Signature-Preserving Redefinition — Late Binding Preserved [Tested]
 

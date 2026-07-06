@@ -6,6 +6,43 @@ The **committed showcase target is the stdio CLI** — `user.cl` tells the full
 story end-to-end. The web platform is now built (S96) and is the marquee for
 **inferred concurrency**; see the S96 Phase 6 note below and `plan-exemplar.md`.
 
+## Current State (Sprint 103 Phase 6b — shadow parse defect FIXED; dead `g` scaffold removed; serial-perf win recorded)
+
+**`user.cl` runs end-to-end again.** The local-shadow parse error (a
+match-pattern-bound local `g` colliding with a top-level `def g` → runaway
+"expected symbol" parse error) was root-caused to the macro expander
+(`src/expander.rs`) and FIXED this sprint — the expander is now
+lexical-scope-aware (§8.6.3). Verified from a CLEAN scratch copy (no cache):
+`--run user.cl` produces the solved grid + the **2886-byte** HTML baseline,
+exit 0.
+
+**Dead scaffold removed (hygiene).** Two genuinely-unused top-level forms were
+deleted from `user.cl`: the `(defmacro g …)` emitting a never-referenced
+`g-def`, and the `(def g (make-grid "…"))` demo binding. Neither was reachable
+(the `g` in `report` is the match-pattern-bound local from `(Some g)`, not the
+top-level). Baseline is byte-identical after removal — **2886 bytes** on both
+the debug and release binaries. Bonus: removing the top-level `(def g)` also
+eliminates the shadow that tripped the OLD (pre-fix) codegen, so `user.cl` now
+loads even on a release binary built *before* the expander fix.
+
+**Serial-perf win (as-built observation, 6a measurement).** The exemplar solve
+now runs in **~0.3–0.45 s** wall on the release backend, versus the historical
+**~8–10 s** — a **~15–30× serial speedup**. Measured this session from a clean
+scratch copy: `solver.cl` **0.43 s (release) / 7.4 s (debug)** on identical
+source; `user.cl` end-to-end likewise (~0.2–0.3 s release / ~9 s debug). The
+gap is the optimized (release) backend — the debug backend still shows the
+historical ~8–10 s, so any timing quote must name the binary.
+
+**0408 stays deferred on 0534 (S104).** The copy-per-guess perf half (FIXME
+0408) remains carried; no exemplar action this sprint.
+
+> **Binary currency note:** the pre-built `target/release/cranelisp` used for
+> S103 6b verification was built *before* the expander fix landed, so on the
+> ORIGINAL `user.cl` it still parse-errored. The dead-`g` cleanup makes the
+> showcase run on that stale release binary regardless; a release rebuild is
+> still wanted so the release backend carries the §8.6.3 fix for other
+> shadow-shaped code.
+
 ## Current State (Sprint 101 Phase 6a — no regression; redefinition dev-loop assessed at scale)
 
 **Full regression pass on the S101 binary (commit-gate rewrite + GOT-slot

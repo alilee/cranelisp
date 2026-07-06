@@ -72,5 +72,19 @@ invoice
 (defn solo [:Int n] (+ n 1))
 (defn solo [:String s] (str s "?"))
 
+; The safety net reaches unannotated code too. id generalizes to (Fn [a] a);
+; g monomorphizes it at Int. Redefining id would strand g's compiled copy on
+; the old body — a silent split world. Instead the session recompiles g at
+; end of turn, silently: no report, because nothing is left stale.
+
+(defn id [x] x)
+(defn g [x] (id (+ x 1)))
+(g 1)
+
+; Redefine id. g's next call sees the new definition — 2 becomes 102:
+
+(defn id [x] (+ x 100))
+(g 1)
+
 ; Edit boldly: body edits are free, signature edits are accounted for,
 ; and nothing is ever silently wrong.
