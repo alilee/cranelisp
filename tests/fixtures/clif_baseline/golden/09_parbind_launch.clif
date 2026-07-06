@@ -105,19 +105,19 @@ function %reduce-range(i64, i64) -> i64 system_v {
     sig14 = (i64) -> i64 system_v
     sig15 = (i64, i64) -> i64 system_v
     sig16 = (i64, i64) -> i64 system_v
-    fn0 = u0:18 sig2
+    fn0 = u0:21 sig2
     fn1 = u0:0 sig3
-    fn2 = colocated u0:38 sig4
-    fn3 = u0:14 sig5
-    fn4 = u0:15 sig6
+    fn2 = colocated u0:41 sig4
+    fn3 = u0:17 sig5
+    fn4 = u0:18 sig6
     fn5 = u0:0 sig7
-    fn6 = colocated u0:39 sig8
-    fn7 = u0:14 sig9
-    fn8 = u0:15 sig10
-    fn9 = u0:16 sig11
-    fn10 = u0:17 sig12
-    fn11 = u0:16 sig13
-    fn12 = u0:17 sig14
+    fn6 = colocated u0:42 sig8
+    fn7 = u0:17 sig9
+    fn8 = u0:18 sig10
+    fn9 = u0:19 sig11
+    fn10 = u0:20 sig12
+    fn11 = u0:19 sig13
+    fn12 = u0:20 sig14
 
 block0(v0: i64, v1: i64):
     jump block1(v0, v1)

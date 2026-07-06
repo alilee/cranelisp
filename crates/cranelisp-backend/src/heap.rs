@@ -246,9 +246,7 @@ pub(crate) fn emit_rc_inc_atomicity<M: Module>(
     ptr: Value,
     atomicity: RcAtomicity,
 ) {
-    if rc_stats_codegen_enabled() {
-        emit_rc_stat_call(builder, module, "runtime/rc_stat_inc");
-    }
+    emit_rc_stat_call_gated(builder, module, "runtime/rc_stat_inc");
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
@@ -305,9 +303,7 @@ pub(crate) fn emit_rc_inc_guarded_atomicity<M: Module>(
     builder.seal_block(inc_block);
 
     // S99 stats: count only a real inc (bare nullary tags took the skip branch).
-    if rc_stats_codegen_enabled() {
-        emit_rc_stat_call(builder, module, "runtime/rc_stat_inc");
-    }
+    emit_rc_stat_call_gated(builder, module, "runtime/rc_stat_inc");
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));
@@ -490,9 +486,7 @@ pub(crate) fn emit_rc_dec_guarded_atomicity<M: Module>(
 
     // S99 stats: count the dec (placed after the nullary skip so bare tags,
     // which never reach here, are not counted).
-    if rc_stats_codegen_enabled() {
-        emit_rc_stat_call(builder, module, "runtime/rc_stat_dec");
-    }
+    emit_rc_stat_call_gated(builder, module, "runtime/rc_stat_dec");
     let rc_addr = builder
         .ins()
         .iadd_imm(ptr, i64::from(HeapHeader::RC_OFFSET));

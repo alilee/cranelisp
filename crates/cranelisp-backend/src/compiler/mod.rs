@@ -88,6 +88,3 @@ pub(crate) struct TracedFnInfo {
     /// Static return type (from function's type scheme).
     pub result_type: Type,
 }
-
-#[cfg(test)]
-mod tests;

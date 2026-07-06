@@ -27,22 +27,22 @@ function %main() -> i64 system_v {
     sig19 = (i64) -> i64 system_v
     sig20 = (i64) -> i64 system_v
     sig21 = (i64) -> i64 system_v
-    fn0 = u0:8 sig0
-    fn1 = u0:18 sig2
+    fn0 = u0:11 sig0
+    fn1 = u0:21 sig2
     fn2 = u0:0 sig3
-    fn3 = colocated u0:36 sig4
-    fn4 = colocated u0:37 sig5
-    fn5 = u0:14 sig6
-    fn6 = u0:15 sig7
+    fn3 = colocated u0:39 sig4
+    fn4 = colocated u0:40 sig5
+    fn5 = u0:17 sig6
+    fn6 = u0:18 sig7
     fn7 = u0:0 sig8
-    fn8 = colocated u0:38 sig9
-    fn9 = colocated u0:39 sig10
-    fn10 = u0:14 sig11
-    fn11 = u0:15 sig12
-    fn12 = u0:16 sig13
-    fn13 = u0:17 sig14
-    fn14 = u0:16 sig15
-    fn15 = u0:17 sig16
+    fn8 = colocated u0:41 sig9
+    fn9 = colocated u0:42 sig10
+    fn10 = u0:17 sig11
+    fn11 = u0:18 sig12
+    fn12 = u0:19 sig13
+    fn13 = u0:20 sig14
+    fn14 = u0:19 sig15
+    fn15 = u0:20 sig16
     fn16 = u0:0 sig20
     fn17 = u0:1 sig21
 
@@ -127,7 +127,7 @@ block3:
     v46 = iconst.i64 1
     v47 = atomic_rmw.i64 add v45, v46  ; v46 = 1
     v48 = global_value.i64 gv2
-    v49 = iadd_imm v48, 232
+    v49 = iadd_imm v48, 240
     v50 = load.i64 notrap aligned v49
     v51 = call_indirect sig17, v50(v6)
     v52 = iadd_imm.i64 v6, 8
@@ -136,11 +136,11 @@ block3:
     v55 = iconst.i64 0
     v56 = iconst.i64 2
     v57 = global_value.i64 gv3
-    v58 = iadd_imm v57, 280
+    v58 = iadd_imm v57, 288
     v59 = load.i64 notrap aligned v58
     v60 = call_indirect sig18, v59(v6, v55, v56)  ; v55 = 0, v56 = 2
     v61 = global_value.i64 gv4
-    v62 = iadd_imm v61, 232
+    v62 = iadd_imm v61, 240
     v63 = load.i64 notrap aligned v62
     v64 = call_indirect sig19, v63(v60)
     v65 = iadd v51, v64
@@ -181,7 +181,7 @@ function %shout(i64) -> i64 system_v {
     sig1 = (i64, i64) -> i64 system_v
     sig2 = (i64) -> i64 system_v
     sig3 = (i64) -> i64 system_v
-    fn0 = u0:8 sig0
+    fn0 = u0:11 sig0
     fn1 = u0:1 sig3
 
 block0(v0: i64):
@@ -199,7 +199,7 @@ block1(v1: i64):
     v10 = load.i64 notrap aligned v9
     v11 = call_indirect sig1, v10(v1, v7)
     v12 = global_value.i64 gv2
-    v13 = iadd_imm v12, 352
+    v13 = iadd_imm v12, 360
     v14 = load.i64 notrap aligned v13
     v15 = call_indirect sig2, v14(v11)
     v16 = iadd_imm v1, 8

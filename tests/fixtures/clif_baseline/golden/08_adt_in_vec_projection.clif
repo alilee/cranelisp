@@ -41,11 +41,11 @@ function %build(i64, i64, i64) -> i64 system_v {
     sig4 = (i64) -> i64 system_v
     sig5 = (i64, i64) system_v
     fn0 = u0:0 sig0
-    fn1 = colocated u0:40 sig1
-    fn2 = u0:21 sig2
-    fn3 = u0:20 sig3
-    fn4 = colocated u0:41 sig4
-    fn5 = u0:11 sig5
+    fn1 = colocated u0:43 sig1
+    fn2 = u0:24 sig2
+    fn3 = u0:23 sig3
+    fn4 = colocated u0:44 sig4
+    fn5 = u0:14 sig5
 
 block0(v0: i64, v1: i64, v2: i64):
     jump block1(v0, v1, v2)
@@ -188,10 +188,10 @@ function %main() -> i64 system_v {
     sig3 = (i64) -> i64 system_v
     sig4 = (i64) -> i64 system_v
     sig5 = (i64, i64) system_v
-    fn0 = u0:10 sig0
+    fn0 = u0:13 sig0
     fn1 = u0:0 sig3
-    fn2 = colocated u0:41 sig4
-    fn3 = u0:11 sig5
+    fn2 = colocated u0:44 sig4
+    fn3 = u0:14 sig5
 
 block0:
     jump block1
