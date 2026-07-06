@@ -332,6 +332,15 @@ impl CompilerSession {
                     // (defmacro, import, platform, mod). Return Def with name
                     // extracted from the original sexp.
                     if program.is_empty() {
+                        // F5a (S103, FIXME 0507 Issue 3): the defmacro exit
+                        // returns BEFORE the ordinary `apply_redefinition_outcomes`
+                        // call below, so the §10 T1 full-cure driver must be
+                        // reachable here too. Currently moot (macro heads carry
+                        // no reverse edges, so a redefined-macro target produces
+                        // an empty stale set and no reload), but the driver MUST
+                        // be reachable from BOTH exits — a redefined macro whose
+                        // dependents use it is cured by the dependent cascade.
+                        self.apply_redefinition_outcomes(&redefinitions);
                         return match extract_def_name_from_sexp(head_sexp) {
                             Some(symbol_name) => Ok(Some(EvalResult::Def {
                                 symbol: FQSymbol {

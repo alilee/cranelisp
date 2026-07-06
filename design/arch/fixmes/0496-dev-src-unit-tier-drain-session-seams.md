@@ -8,6 +8,29 @@ refers_to: src/session_v4/lifecycle.rs, src/display.rs, src/save.rs, src/eval.rs
 status: open
 ---
 
+## S103 Wave-4 update (/dev src/) — the lifecycle.rs HEADLINE is drained; residual narrowed
+
+The FIXME's headline claim (`lifecycle.rs` — "1,918 LOC, ZERO unit tests") is
+**stale as of S102/S103**: `lifecycle.rs` now carries a `degraded_startup_tests`
+module covering the reload/regen-fidelity DECISION seams the T1 full cure
+(§10 T1) depends on — `defined_symbol_of_form` (public + private defining heads,
+structural/expression/malformed negatives), `render_startup_error_report`,
+`append_failed_forms` (verbatim single + multi-form ordering + empty no-op),
+`first_line`. Combined with the T1 driver's own pure seams unit-tested in
+`redefine.rs` (`is_t1_downgrade` F2 slot-refinement incl. the ctor-reentry
+negative cell, the `__expr`-only feed narrowing keeping macro-clause edges, the
+`render_caller_base`/`macro_clause_base_name` fold, `stale_callers` folding a
+macro clause to its owning macro), the session-lifecycle-seam coverage this
+FIXME asked for at the reload path has landed.
+
+Other files gained per-fix coverage during S102: `display.rs` (27), `save.rs`
+(37), `repl.rs` (26), `dependency.rs` (6).
+
+**Residual (kept open for a future wave):** `process_form/cache_restore.rs`
+(0 tests — the D3 cache-restore axis), `process_form/macro_resolution.rs` (0),
+`eval.rs` (2 — the Matrix-E recording seam only). These are not touched by the
+T1 full-cure wave and stay as the narrowed remaining drain.
+
 # src/: unit-tier drain for the pre-S101 session/REPL strategy seams — the 6a defect surfaces
 
 **Crate**: src/ (the cranelisp binary+lib; `/dev` narrow).

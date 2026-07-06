@@ -859,6 +859,49 @@ impl CompilerSession {
         }
     }
 
+    /// The dependent modules (+ backing file paths) that import ANY module in
+    /// `changed`, excluding the changed modules themselves. **Single-sourced**
+    /// for both the watcher cascade (`poll_and_reload`) and the T1 full-cure
+    /// cascade (`redefine::reload_t1_dependents`) so the two never reload
+    /// different sets (Principle 7 — no drift; the P7 hazard `/review` flagged).
+    /// Path resolution is the `file_to_module` reverse map; a dependent absent
+    /// from it is skipped in BOTH callers identically. `ImportSpec.module_path`
+    /// is a `ModuleFullPath`, so the import match is a direct `==`.
+    pub(crate) fn dependent_modules(
+        &self,
+        changed: &HashSet<ModuleFullPath>,
+    ) -> Vec<(ModuleFullPath, PathBuf)> {
+        let file_to_mod = self
+            .shared
+            .file_to_module
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<(ModuleFullPath, PathBuf)> = Vec::new();
+        for entry in self.shared.symbol_tables.iter() {
+            let dependent = entry.key().clone();
+            if changed.contains(&dependent) {
+                continue; // A changed module is reloaded directly, not as a dependent.
+            }
+            let depends_on_changed = entry
+                .value()
+                .imports
+                .iter()
+                .any(|spec| changed.contains(&spec.module_path));
+            if !depends_on_changed {
+                continue;
+            }
+            if let Some(path) = file_to_mod
+                .iter()
+                .find(|(_, mp)| **mp == dependent)
+                .map(|(p, _)| p.clone())
+                && !out.iter().any(|(mp, _)| mp == &dependent)
+            {
+                out.push((dependent, path));
+            }
+        }
+        out
+    }
+
     /// Poll the file watcher for changed source files and reload them.
     ///
     /// Returns a list of user-visible messages (one per reloaded module).
@@ -892,34 +935,20 @@ impl CompilerSession {
                     modules_to_reload.push((module_path.clone(), path.clone()));
                 }
         }
-        // Cascade invalidation: find modules that import any changed module
-        // and add them to the reload list. Sprint 58 Step 5a: read `imports`
-        // off the per-module SymbolTable directly (was: parallel
-        // `module_structures.import_specs`).
         let changed_modules: HashSet<ModuleFullPath> = modules_to_reload
             .iter()
             .map(|(mp, _)| mp.clone())
             .collect();
-        for entry in self.shared.symbol_tables.iter() {
-            let dependent_module = entry.key().clone();
-            if changed_modules.contains(&dependent_module) {
-                continue; // Already being reloaded directly.
-            }
-            let depends_on_changed = entry.value().imports.iter().any(|spec| {
-                let import_mod = ModuleFullPath::from(spec.module_path.as_ref());
-                changed_modules.contains(&import_mod)
-            });
-            if depends_on_changed {
-                // Find the file path for this dependent module.
-                if let Some(dep_path) = file_to_mod.iter()
-                    .find(|(_, mp)| **mp == dependent_module)
-                    .map(|(p, _)| p.clone())
-                {
-                    modules_to_reload.push((dependent_module, dep_path));
-                }
+        drop(file_to_mod);
+        // Cascade invalidation: find modules that import any changed module
+        // and add them to the reload list — via the SHARED dependent-scan
+        // helper the T1 full-cure cascade also uses (Principle 7: one
+        // dependent set + path resolution, no drift).
+        for (dep_module, dep_path) in self.dependent_modules(&changed_modules) {
+            if !modules_to_reload.iter().any(|(mp, _)| mp == &dep_module) {
+                modules_to_reload.push((dep_module, dep_path));
             }
         }
-        drop(file_to_mod);
 
         let mut messages = Vec::new();
         for (module_path, file_path) in modules_to_reload {
@@ -2287,5 +2316,47 @@ mod degraded_startup_tests {
             append_failed_forms("", &[failed(None, "parse error", "(broken (")]),
             "(broken (\n"
         );
+    }
+
+    // spec: repl/spec.md §18.8 (FIXME 0496 — src/ unit-tier drain; the T1
+    // full-cure CS-3 regen-fidelity adjacency). The PRIVATE defining heads
+    // (`defn-`/`defmacro-`) are repairable/regenerable symbols exactly like
+    // their public forms — a T1 reload failure that retains a private def as a
+    // FailedForm must key it by name so regen re-emits it and `/info` names it.
+    #[test]
+    fn defined_symbol_of_form_private_defining_heads_yield_symbol() {
+        assert_eq!(defined_symbol_of_form(&p("(defn- helper [x] x)")), Some("helper".into()));
+        assert_eq!(defined_symbol_of_form(&p("(defmacro- m- [e] e)")), Some("m-".into()));
+    }
+
+    // spec: repl/spec.md §18.8 (FIXME 0496) — the CS-3 error-blocked floor may
+    // retain MORE THAN ONE failed form (e.g. a caller AND a transitively
+    // ill-typed sibling). Each rides its own verbatim block, in order, after
+    // the generated source — never merged, never dropped, never reordered.
+    #[test]
+    fn append_failed_forms_multiple_forms_each_own_block_in_order() {
+        let out = append_failed_forms(
+            "(defn f ([:Int x] x) ([:String s] (str-len s)))\n",
+            &[
+                failed(Some("g"), "ambiguous call to 'f'", "(defn g [y] (f y))"),
+                failed(Some("h"), "ambiguous call to 'f'", "(defn h [z] (f z))"),
+            ],
+        );
+        assert_eq!(
+            out,
+            "(defn f ([:Int x] x) ([:String s] (str-len s)))\n\n\
+             (defn g [y] (f y))\n\n(defn h [z] (f z))\n",
+            "each retained failed form is a verbatim block, in retention order"
+        );
+    }
+
+    // spec: repl/spec.md §18.5 (FIXME 0496) — `first_line` reduces a
+    // multi-line error rendering to its §18.3 one-line reason (leading line,
+    // trimmed); a single-line or empty input passes through.
+    #[test]
+    fn first_line_reduces_to_leading_trimmed_line() {
+        assert_eq!(first_line("  type error at 0..4: boom  \n  detail\n more"), "type error at 0..4: boom");
+        assert_eq!(first_line("single line"), "single line");
+        assert_eq!(first_line(""), "");
     }
 }

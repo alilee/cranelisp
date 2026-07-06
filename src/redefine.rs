@@ -104,11 +104,13 @@ pub(crate) struct RedefinitionOutcome {
     /// T1 shape the §18.1.1 downgrade report must see. A prior non-`Def`
     /// (e.g. an `Import` shadowed by a defn — 0484's territory) is `false`.
     pub prior_was_def: bool,
-    #[allow(dead_code)] // observability / unit-test seam
+    /// The prior live slot the commit displaced (`None` when the prior was
+    /// slot-less — a template redefined). Read by the F2 slot-refined
+    /// [`is_t1_downgrade`] trigger (S103, FIXME 0507 Issue 1).
     pub old_slot: Option<usize>,
     /// The committed live slot (`None` for a slot-less staged entry — the
-    /// template/overloaded T1 shapes have no callable slot to commit).
-    #[allow(dead_code)] // observability / unit-test seam
+    /// template/overloaded T1 shapes have no callable slot to commit). Read by
+    /// the F2 slot-refined [`is_t1_downgrade`] trigger.
     pub new_slot: Option<usize>,
 }
 
@@ -122,8 +124,25 @@ pub(crate) struct RedefinitionOutcome {
 /// never for per-symbol outcomes (the transaction handles those — mutual
 /// exclusion with `recompiled:`/`broken:` by construction), never for
 /// gate-exempt internals (`__expr`/`__macro_*`).
+///
+/// **F2 slot refinement (S103, FIXME 0507 Issue 1).** The bare
+/// `prior_was_def && !per_symbol` predicate over-fires for a **slotted prior
+/// replaced by a slotted staged entry** outside per-symbol precision — the
+/// constructible shape is a `deftype` ctor re-entry (slotted
+/// `DefKind::Constructor`): the commit **reuses** the prior slot and patches
+/// code in place, so compiled callers dispatch through the same GOT slot and
+/// **do** pick up the new definition at their next call. Naming them `stale:`
+/// (or reloading their module) would violate §18.1.1's negative MUST. Requiring
+/// a slot-shape change (`old_slot.is_none() || new_slot.is_none()`) keeps every
+/// designed T1 cell — slot-less **staged** (template/overloaded shapes,
+/// `new_slot: None`) and slot-less **prior** (concrete-over-template mint
+/// staleness, `old_slot: None`) — and excludes the slotted→slotted
+/// late-binding case. This same predicate gates the §10 T1 full-cure driver.
 pub(crate) fn is_t1_downgrade(o: &RedefinitionOutcome) -> bool {
-    o.prior_was_def && !o.per_symbol && !is_gate_exempt_internal(o.fq.symbol.as_ref())
+    o.prior_was_def
+        && !o.per_symbol
+        && !is_gate_exempt_internal(o.fq.symbol.as_ref())
+        && (o.new_slot.is_none() || o.old_slot.is_none())
 }
 
 /// Does this commit outcome clear the symbol's BROKEN record (§18.6 recovery
@@ -446,15 +465,29 @@ impl ReverseIndex {
         for shard in tables.iter() {
             let module = shard.key().clone();
             for (name, entry) in shard.value().all_symbols() {
-                // Gate-exempt internals (`__expr`/`__macro_*`) never join the
-                // index as CALLERS (FIXME 0491): the eval wrapper's Def
-                // carries real callees, so it would otherwise join closures,
-                // get re-typechecked/marked, and leak into every report
-                // section (`broken:`/`recompiled:`/`stale:` — both the break
-                // and revert directions). Safe by the frozen-world argument:
-                // a stale wrapper is never re-invoked — each expression turn
-                // redefines it before invoking.
-                if is_gate_exempt_internal(name.as_ref()) {
+                // The synthetic `__expr` eval wrapper never joins the index as
+                // a CALLER (FIXME 0491): its Def carries real callees, so it
+                // would otherwise join closures, get re-typechecked/marked, and
+                // leak into every report section (`broken:`/`recompiled:`/
+                // `stale:` — both the break and revert directions). Safe by the
+                // frozen-world argument: a stale wrapper is never re-invoked —
+                // each expression turn redefines it before invoking.
+                //
+                // The exclusion is `__expr`-ONLY (S103, FIXME 0507 Issue 2 /
+                // F3 — supersedes the "0491 rule applies identically" reading).
+                // A compiled macro clause (`__macro_{name}_clause_{idx}`)
+                // **persists and IS re-invoked** at the next expansion, and per
+                // spec §9.3.4/§9.12 a clause body may reference a
+                // dependency-module fn — so an AbiChanging redefinition of that
+                // dep leaves the clause coherent-stale and, under the old
+                // blanket exclusion, invisible. The feed keeps macro-clause
+                // reverse edges; the render fold (`render_caller_base`) shows
+                // such a caller as its owning user macro `{name}`, never the
+                // raw `__macro_*` symbol (§18.1.1 no-internal-artifacts). Note
+                // the predicate SPLIT: `is_gate_exempt_internal` stays the
+                // TARGET exclusion at the trigger/classify sites; only the
+                // CALLER/feed exclusion narrows to `__expr`.
+                if name.as_ref() == crate::worker::SYNTHETIC_EXPR_WRAPPER {
                     continue;
                 }
                 let callees = entry.callees();
@@ -539,9 +572,11 @@ pub(crate) fn stale_callers(tables: &SymbolTables, target: &FQSymbol) -> Vec<FQS
         if !compiled {
             continue;
         }
-        // Report at base-defn grain; the target itself (e.g. a recursive
-        // self-edge through an old mint) is not a member of its own set.
-        let base = base_fq(&caller);
+        // Report at base grain: a `$`-mangled mono caller names its base defn;
+        // a `__macro_*` clause names its owning user macro (§18.1.1). The
+        // target itself (e.g. a recursive self-edge through an old mint) is not
+        // a member of its own set.
+        let base = render_caller_base(&caller);
         if base == *target {
             continue;
         }
@@ -901,8 +936,15 @@ pub(crate) fn run_transaction(
                             if session.shared.broken.remove(base).is_some() {
                                 report.recovered.push(base.clone());
                             }
-                            if reported.insert(base.clone()) {
-                                report.recompiled.push(base.clone());
+                            // §18.3 no-internal-artifacts: fold the user-facing
+                            // report name (a `__macro_*` clause → its owning
+                            // macro, a `$`-mangled mono → its base) at the push
+                            // site; `base`/`units` stay RAW for the sexp lookup
+                            // and the broken-registry key. Dedup on the folded
+                            // name so two clauses of one macro collapse.
+                            let display = render_caller_base(base);
+                            if reported.insert(display.clone()) {
+                                report.recompiled.push(display);
                             }
                         }
                         touched_modules.insert(module.clone());
@@ -918,8 +960,9 @@ pub(crate) fn run_transaction(
                                 target,
                                 &err,
                             );
-                            if reported.insert(base.clone()) {
-                                report.broken.push((base.clone(), err.clone()));
+                            let display = render_caller_base(base);
+                            if reported.insert(display.clone()) {
+                                report.broken.push((display, err.clone()));
                             }
                         }
                         for &i in scc {
@@ -940,11 +983,16 @@ pub(crate) fn run_transaction(
                 let reloaded = module_grain_reload(session, &module);
                 for &i in scc {
                     let m = &members[i];
+                    // §18.3 no-internal-artifacts: the report name folds a
+                    // `__macro_*` clause to its owning macro (the F3 reachable
+                    // case — a cross-module macro clause with no standalone
+                    // sexp routes here via T2); the broken-registry key stays
+                    // RAW (`base_fq`).
+                    let display = render_caller_base(&m.fq);
                     if reloaded {
                         propagates.insert(m.fq.clone(), true);
-                        let base = base_fq(&m.fq);
-                        if reported.insert(base.clone()) {
-                            report.recompiled.push(base);
+                        if reported.insert(display.clone()) {
+                            report.recompiled.push(display);
                         }
                     } else {
                         // No backing file to reload from: trap rather than
@@ -961,8 +1009,8 @@ pub(crate) fn run_transaction(
                             target,
                             &err,
                         );
-                        if reported.insert(base.clone()) {
-                            report.broken.push((base, err));
+                        if reported.insert(display.clone()) {
+                            report.broken.push((display, err));
                         }
                         propagates.insert(m.fq.clone(), m.slotless);
                     }
@@ -991,6 +1039,28 @@ pub(crate) fn base_fq(fq: &FQSymbol) -> FQSymbol {
         },
         None => fq.clone(),
     }
+}
+
+/// Fold a synthetic `__macro_{name}_clause_{idx}` clause symbol to its owning
+/// user macro base name `{name}` (S103, FIXME 0507 Issue 2 / F3 — §18.1.1
+/// "no internal artifacts"). Returns `None` for a non-clause symbol.
+pub(crate) fn macro_clause_base_name(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("__macro_")?;
+    let idx = rest.rfind("_clause_")?;
+    (idx > 0).then(|| &rest[..idx])
+}
+
+/// Render a caller FQ at report grain: a `$`-mangled mono variant folds to its
+/// base defn, and a `__macro_*` clause folds to its owning user macro
+/// (home-module-qualified) — never a raw internal artifact (§18.1.1).
+pub(crate) fn render_caller_base(fq: &FQSymbol) -> FQSymbol {
+    if let Some(base) = macro_clause_base_name(fq.symbol.as_ref()) {
+        return FQSymbol {
+            module: fq.module.clone(),
+            symbol: Symbol::from(base),
+        };
+    }
+    base_fq(fq)
 }
 
 enum RecheckInputs {
@@ -1104,28 +1174,180 @@ impl CompilerSession {
                 self.shared.broken.remove(&o.fq);
             }
         }
+        // Surviving-trigger T1 downgrade targets, driven through the §10 T1
+        // full cure AFTER the per-symbol transactions settle (CS-1). Collected
+        // rather than driven inline so a multi-def cluster reloads each target
+        // module once and the driver's own regen/reload cannot perturb the
+        // outcome list mid-iteration.
+        let mut t1_targets: Vec<FQSymbol> = Vec::new();
         for o in outcomes {
             if o.kind == RedefKind::AbiChanging && o.per_symbol {
                 let report = run_transaction(self, &o.fq);
                 if let Some(text) = report.render(&self.current_module_path()) {
                     self.pending_cascade_reports.push(text);
                 }
-            } else if is_t1_downgrade(o) {
-                // S102 §18.1.1 interim cure: the T1 reuse-and-patch route is
-                // never silent when it leaves compiled callers on the
-                // previous definition. Informational only — nothing is
-                // recompiled, broken, or trapped; the on-demand ReverseIndex
-                // scan runs ONLY here (L-D1 untouched). Omitted entirely when
-                // nothing is stale.
-                let stale = stale_callers(&self.shared.symbol_tables, &o.fq);
-                if !stale.is_empty() {
-                    let mut report = TransactionReport::new(o.fq.clone());
-                    report.stale = stale;
-                    if let Some(text) = report.render(&self.current_module_path()) {
-                        self.pending_cascade_reports.push(text);
-                    }
-                }
+            } else if is_t1_downgrade(o) && !t1_targets.contains(&o.fq) {
+                t1_targets.push(o.fq.clone());
             }
+        }
+        for target in t1_targets {
+            self.drive_t1_full_cure(&target);
+        }
+    }
+
+    /// The §10 T1 full cure (S103, FIXME 0507, change-sets CS-1/2/3): a
+    /// surviving-trigger T1 downgrade of `target` leaves compiled callers on
+    /// the previous definition (the split world the S102 interim `stale:` print
+    /// exposed). This driver replaces that print with an end-of-turn-sequenced
+    /// module reload that RECOMPILES those callers, so the `stale:` section
+    /// renders empty (CS-2, the Principle-8 kept-machinery pin).
+    ///
+    /// - **CS-1.** `regenerate_backing_file` runs FIRST so the backing source
+    ///   carries the just-committed redefinition (never resurrect the
+    ///   pre-redefinition source a bare mid-turn reload would read), then
+    ///   `reload_module`(target) + the dependent cascade reload through the
+    ///   §7.3 Replace commit gate. Eval-synchronous: `reload_module` blocks the
+    ///   eval thread on `wait_inmem_complete_blocking` while a pool worker
+    ///   re-typechecks (the S93 watcher discipline — no second orchestrator,
+    ///   B1 stays closed). Reachable from BOTH the ordinary-def exit and the
+    ///   `eval.rs` defmacro early-return (F5a) via `apply_redefinition_outcomes`.
+    /// - **CS-2.** A successful reload cures the split world, so NO `stale:`
+    ///   report is pushed (the section renders empty). `stale_callers` cannot
+    ///   distinguish a recompiled caller from a stale one — the empty render is
+    ///   achieved by not pushing after a successful reload, not by a re-scan.
+    /// - **CS-3.** A reload FAILURE degrades to the §14.4 error-blocked state
+    ///   (the 0489 prompt floor — never a lockout or session exit) and keeps
+    ///   the interim `stale:` print; a module whose regen is SUPPRESSED
+    ///   (FIXME-0343 `should_regenerate` guard) keeps the print rather than
+    ///   reload stale disk source.
+    fn drive_t1_full_cure(&mut self, target: &FQSymbol) {
+        // The omission rule (§18.1.1): no compiled caller left behind ⇒ no
+        // reload, no report. The on-demand `ReverseIndex` scan runs ONLY here
+        // (L-D1 untouched — body-only concrete redefinitions never reach it).
+        let stale = stale_callers(&self.shared.symbol_tables, target);
+        if stale.is_empty() {
+            return;
+        }
+        // CS-3 (regen suppressed): reloading would read stale disk source.
+        if !self.module_regeneratable(&target.module) {
+            self.push_stale_report(target, stale);
+            return;
+        }
+        // CS-1: persist the just-committed redefinition, then reload.
+        self.regenerate_backing_file();
+        let Some(path) = self.module_backing_path(&target.module) else {
+            self.push_stale_report(target, stale);
+            return;
+        };
+        match self.reload_module(&target.module, &path) {
+            Ok(()) => {
+                self.reload_t1_dependents(&target.module);
+                // CS-2: the reload recompiled exactly the stale callers — the
+                // section renders EMPTY (push nothing). Kept machinery, not
+                // throwaway (Principle 8).
+            }
+            Err(e) => {
+                // CS-3 (reload failure): the regenerated source is now
+                // ill-typed (e.g. an unannotated caller made ambiguous under an
+                // overloaded target — a real error `--run` would report for
+                // this file too). Degrade to the §14.4 error-blocked floor.
+                self.enter_t1_reload_error_block(target, &stale, &first_line(&e.to_string()));
+                self.push_stale_report(target, stale);
+            }
+        }
+    }
+
+    /// Enter the §14.4 error-blocked floor after a CS-3 T1 reload failure —
+    /// **liftable by repair, never a lockout** (the 0489 floor).
+    ///
+    /// Resets the scheduler's Failed state so the session exits cleanly (never
+    /// a session exit), records each stale caller resident in the target module
+    /// as a `FailedForm` (keyed by module) from its introspection source, and
+    /// adds the module to `error_modules`. Recording the failed forms is
+    /// load-bearing for the "never a lockout" guarantee: `clear_repaired_failed_form`
+    /// lifts the block ONLY when `failed_forms` drains, and
+    /// `regenerate_backing_file` re-emits them verbatim (`append_failed_forms`)
+    /// so the ill-typed caller is never silently dropped. A repair definition
+    /// turn (re-defining the ambiguous caller) drains the set and reopens the
+    /// prompt. (Unlike a full degraded re-drive this does NOT re-enter the eval
+    /// path, so it cannot recurse or perturb the surviving module state.)
+    fn enter_t1_reload_error_block(&mut self, target: &FQSymbol, stale: &[FQSymbol], error: &str) {
+        use crate::session_v4::FailedForm;
+        self.shared.scheduler.reset_all_failed_modules();
+        let failed: Vec<FailedForm> = stale
+            .iter()
+            .filter(|fq| fq.module == target.module)
+            .filter_map(|fq| {
+                let text = self
+                    .shared
+                    .introspection
+                    .as_ref()
+                    .and_then(|m| m.get(fq))
+                    .and_then(|i| i.source.clone())?;
+                Some(FailedForm {
+                    symbol: Some(fq.symbol.clone()),
+                    error: error.to_string(),
+                    text,
+                })
+            })
+            .collect();
+        if !failed.is_empty() {
+            self.failed_forms
+                .entry(target.module.clone())
+                .or_default()
+                .extend(failed);
+        }
+        self.error_modules.insert(target.module.clone());
+    }
+
+    /// Push the §18.1.1 `stale:` interim report for `target` (the CS-3
+    /// suppressed / reload-failure fallbacks — the full cure otherwise renders
+    /// it empty).
+    fn push_stale_report(&mut self, target: &FQSymbol, stale: Vec<FQSymbol>) {
+        let mut report = TransactionReport::new(target.clone());
+        report.stale = stale;
+        if let Some(text) = report.render(&self.current_module_path()) {
+            self.pending_cascade_reports.push(text);
+        }
+    }
+
+    /// Whether `module`'s backing file may be regenerated (the FIXME-0343
+    /// `should_regenerate` guard — a body-bearing inline-submodule parent is
+    /// suppressed). CS-3 keeps the interim print for a suppressed module.
+    fn module_regeneratable(&self, module: &ModuleFullPath) -> bool {
+        self.shared
+            .symbol_tables
+            .get(module)
+            .map(|st| crate::save::should_regenerate(&st))
+            .unwrap_or(false)
+    }
+
+    /// The backing `.cl` path for `module` — the typecheck-product `file_path`,
+    /// or the `{project_root}/{module}.cl` fallback `regenerate_backing_file`
+    /// writes to (only when it exists on disk, so the reload has real source).
+    fn module_backing_path(&self, module: &ModuleFullPath) -> Option<std::path::PathBuf> {
+        if let Some(tp) = self.shared.typecheck_products.get(module)
+            && let Some(p) = tp.file_path.clone()
+        {
+            return Some(p);
+        }
+        let fallback = self.shared.project_root.join(format!("{module}.cl"));
+        fallback.exists().then_some(fallback)
+    }
+
+    /// CS-1 dependent cascade: reload every module importing `changed` from its
+    /// own backing file (the §7.3 imports-scan). A cross-module caller — or a
+    /// `__macro_*` clause's home module — that uses the redefined dependency
+    /// picks up the new definition through its re-typecheck / re-expansion.
+    /// Reload failures are non-fatal here (the primary target has already been
+    /// cured). The dependent set + path resolution come from the SHARED
+    /// `CompilerSession::dependent_modules` scan the watcher's `poll_and_reload`
+    /// also uses (Principle 7 — the two cascades cannot drift).
+    fn reload_t1_dependents(&mut self, changed: &ModuleFullPath) {
+        let mut changed_set: HashSet<ModuleFullPath> = HashSet::new();
+        changed_set.insert(changed.clone());
+        for (dep, path) in self.dependent_modules(&changed_set) {
+            let _ = self.reload_module(&dep, &path);
         }
     }
 
@@ -1454,24 +1676,27 @@ mod tests {
         assert!(!closure.contains(&fq("user", "f")), "target is not a member");
     }
 
-    // spec: repl/spec.md §18.3 (FIXME 0491) / design/int/s102-defect-wave.md
-    // §7.1 — gate-exempt internals are excluded at the FEED, not the
-    // rendering: `__expr`/`__macro_*` never appear as callers in the reverse
-    // index, so they never join a closure, are never re-typechecked/marked,
-    // and never appear in ANY report section (broken/recompiled/stale, break
-    // AND revert directions). Real user callers are unaffected.
+    // spec: repl/spec.md §18.3 (FIXME 0491) / design/int/session-transaction.md
+    // §9.1.1 (S103, FIXME 0507 Issue 2 / F3) — the CALLER/feed exclusion is
+    // `__expr`-ONLY (supersedes the former `..._gate_exempt_internal` guard's
+    // `__macro_*` half). The synthetic `__expr` eval wrapper never joins the
+    // reverse index (a stale wrapper is never re-invoked). A macro clause
+    // (`__macro_{name}_clause_{idx}`) IS re-invoked at the next expansion and
+    // may reference a redefined dependency fn, so its reverse edge is KEPT — it
+    // renders at report grain as its owning user macro `{name}`, never the raw
+    // clause symbol.
     #[test]
-    fn reverse_index_neg_excludes_gate_exempt_internal_callers() {
+    fn reverse_index_neg_excludes_only_expr_keeps_macro_clause() {
         let tables: SymbolTables = dashmap::DashMap::new();
         let user = ModuleFullPath::from("user");
         let mut ut = SessionSymbolTable::new_with_params(user.clone());
         ut.insert(Symbol::from("f"), def_with_callees(vec![], Some(0)));
-        // The eval wrapper and a macro clause both carry a REAL callee edge
-        // to f — the exact shape that leaked into `broken:` (FIXME 0491).
+        // The eval wrapper — EXCLUDED (the 0491 rule, `__expr`-only).
         ut.insert(
             Symbol::from("__expr"),
             def_with_callees(vec![fq("user", "f")], Some(1)),
         );
+        // A macro clause carrying a REAL callee edge to f — KEPT (F3).
         ut.insert(
             Symbol::from("__macro_m_clause_0"),
             def_with_callees(vec![fq("user", "f")], Some(2)),
@@ -1481,13 +1706,22 @@ mod tests {
         tables.insert(user.clone(), ut);
 
         let reverse = ReverseIndex::build(&tables);
+        // `__expr` excluded; `__macro_m_clause_0` and `g` both indexed (sorted
+        // by symbol — `_` < `g`).
         assert_eq!(
             reverse.callers_of(&fq("user", "f")),
-            &[fq("user", "g")],
-            "only the real caller is indexed"
+            &[fq("user", "__macro_m_clause_0"), fq("user", "g")],
+            "the eval wrapper is excluded; the macro clause is kept"
         );
-        let closure = affected_closure(&reverse, &fq("user", "f"));
-        assert_eq!(closure, vec![fq("user", "g")], "wrappers never join the closure");
+        // The macro clause folds to its owning user macro at report grain,
+        // never the raw `__macro_*` symbol (§18.1.1).
+        assert_eq!(
+            render_caller_base(&fq("user", "__macro_m_clause_0")),
+            fq("user", "m"),
+            "a macro-clause caller renders as its owning macro"
+        );
+        assert_eq!(macro_clause_base_name("__macro_m_clause_0"), Some("m"));
+        assert_eq!(macro_clause_base_name("g"), None, "non-clause names do not fold");
     }
 
     // spec: design/int/session-transaction.md §4.1 — SCC condensation emits
@@ -1723,6 +1957,63 @@ mod tests {
             false,
             true
         )));
+    }
+
+    // spec: design/int/session-transaction.md §9.1.1 (S103, FIXME 0507 Issue 1
+    // / F2) — the slot-refined trigger: a slotted prior replaced by a slotted
+    // staged entry (deftype ctor re-entry) reuses the slot and late-binds
+    // correctly, so it must NOT trigger the downgrade cure. A slot-shape change
+    // (either side `None`) is required — the template (staged `None`) and
+    // concrete-over-template (prior `None`) T1 cells still fire.
+    #[test]
+    fn t1_downgrade_trigger_f2_slot_refinement_ctor_reentry() {
+        let with_slots = |old_slot, new_slot| RedefinitionOutcome {
+            fq: fq("user", "Point"),
+            kind: RedefKind::AbiPreserving,
+            per_symbol: false,
+            prior_was_def: true,
+            old_slot,
+            new_slot,
+        };
+        // Ctor re-entry: slotted prior → slotted staged (both present) — the
+        // negative cell: reuse-and-patch late-binds, NO trigger.
+        assert!(
+            !is_t1_downgrade(&with_slots(Some(3), Some(3))),
+            "slotted→slotted ctor re-entry must NOT trigger the T1 cure"
+        );
+        assert!(
+            !is_t1_downgrade(&with_slots(Some(3), Some(7))),
+            "even a fresh-slotted→slotted shape late-binds via the GOT"
+        );
+        // Template redefinition (slot-less staged): fires.
+        assert!(is_t1_downgrade(&with_slots(Some(3), None)));
+        // Concrete-over-template (slot-less prior): fires.
+        assert!(is_t1_downgrade(&with_slots(None, Some(3))));
+    }
+
+    // spec: design/int/session-transaction.md §9.1.1 (F3) — a compiled
+    // macro-clause caller of a redefined dependency fn is stale (its reverse
+    // edge is now KEPT, not excluded) and renders as its owning user macro,
+    // never the raw `__macro_*` symbol (§18.1.1).
+    #[test]
+    fn stale_callers_folds_macro_clause_to_owning_macro() {
+        let tables: SymbolTables = dashmap::DashMap::new();
+        let user = ModuleFullPath::from("user");
+        let mut ut = SessionSymbolTable::new_with_params(user.clone());
+        ut.insert(Symbol::from("dep"), concrete_def(fn_ty(vec![Type::Int], Type::Int), 0));
+        // A compiled macro clause referencing the redefined dep fn.
+        ut.insert(
+            Symbol::from("__macro_m_clause_0"),
+            compiled(def_with_callees(vec![fq("user", "dep")], Some(1))),
+        );
+        tables.insert(user.clone(), ut);
+
+        let stale = stale_callers(&tables, &fq("user", "dep"));
+        assert_eq!(
+            stale,
+            vec![fq("user", "m")],
+            "the macro clause is stale and reports as its owning macro `m`"
+        );
     }
 
     // spec: repl/spec.md §18.1.1 / design §9.1.1 — the stale set is exact

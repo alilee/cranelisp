@@ -308,14 +308,16 @@ fn persist_body_only_redefinition_neg_keeps_slot() {
 // restart. GREEN pin (probed 2026-07-03 on the CS-A binary).
 // =============================================================================
 
-// spec: repl/spec.md §18.1 — L-U1 persistence sibling: the T1 split world is
-// a SESSION-MEMORY commitment only (§18.7's frozen-world rule applied to the
-// downgrade residue). After an unannotated (T1) redefinition leaves a
-// compiled caller on the old chain, `/quit` + restart rebuilds everything
-// from source in the current world: the caller sees the NEW definition.
-// GREEN pin — probed: live session g→2 (stale), restarted session g→52.
-// FLIP NOTE: none needed — the S103 full cure only makes the live session
-// match what this restart pin already shows.
+// spec: repl/spec.md §18.1 — L-U1 persistence sibling. S103 FLIPPED (2026-07-06,
+// T1 full cure landed): the caller `g` here is CONCRETE (`(add-i64 y 1)` forces
+// `y:Int`), so the end-of-turn reload recompiles it against the new `f` in the
+// LIVE session — the former coherent-stale second answer (2) is now the cured
+// value (52). The restart already showed 52; the cure makes the live session
+// match it too (as the prior "no flip needed" note anticipated in spirit — but
+// the live count assertion DID need updating: the second `(g 1)` is now 52, not
+// a second 2). Contrast the pure-template split-world sibling in
+// repl_redefinition.rs, whose generic `g` is never compiled concretely and
+// stays coherent-stale.
 #[test]
 fn persist_unannotated_downgrade_restart_unifies_on_latest_definition_sibling() {
     let first = prims_repl_session(
@@ -327,14 +329,16 @@ fn persist_unannotated_downgrade_restart_unifies_on_latest_definition_sibling() 
          /quit\n",
     )
     .assert_ok();
-    // Live session: coherent-stale — both calls answer through the old chain.
+    // Live session (CURED): the pre-downgrade `(g 1)` prints 2 (old identity:
+    // f(add 1 1)=2); the post-downgrade `(g 1)` is recompiled ⇒ f(2)=52.
     assert_eq!(
         first.stdout.matches(":primitives/Int 2").count(),
-        2,
-        "live session keeps the old chain for the compiled caller (T1 \
-         residue, §18.1 scope note); stdout={}",
+        1,
+        "only the pre-downgrade call prints 2; the post-turn call is \
+         recompiled (52), not coherent-stale; stdout={}",
         first.stdout
     );
+    let first = first.assert_stdout_contains(":primitives/Int 52");
     let meta = first.read_tmp(META);
     assert_meta_complete(&meta, &["f", "g"], "L-U1 persistence sibling");
 
