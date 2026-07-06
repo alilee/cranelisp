@@ -39,9 +39,46 @@
 //! See `design/backend/lenient-eval.md` for the full design.
 
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
 
 use crate::alloc::{alloc_with_rc, dealloc};
+
+// ── S103 FIXME-0534 profiling instrumentation (CRANELISP_SPARK_STATS=1) ──────
+// Temporary: counts spark instances + ivar_force outcomes to attribute the
+// F4-hard parallel wall. Gated behind an env var; zero cost when off.
+static SPARK_SPAWNS: AtomicU64 = AtomicU64::new(0);
+static FORCE_CALLS: AtomicU64 = AtomicU64::new(0);
+static FORCE_FASTPATH_RESOLVED: AtomicU64 = AtomicU64::new(0);
+static FORCE_CLAIM_WINS: AtomicU64 = AtomicU64::new(0);
+static FORCE_SPIN_WAITS: AtomicU64 = AtomicU64::new(0);
+static FORCE_SPIN_ITERS: AtomicU64 = AtomicU64::new(0);
+static SPARK_STATS_ATEXIT: std::sync::Once = std::sync::Once::new();
+
+fn spark_stats_enabled() -> bool {
+    static E: LazyLock<bool> = LazyLock::new(|| {
+        let on = std::env::var_os("CRANELISP_SPARK_STATS").is_some();
+        if on {
+            SPARK_STATS_ATEXIT.call_once(|| unsafe {
+                libc::atexit(print_spark_stats);
+            });
+        }
+        on
+    });
+    *E
+}
+
+extern "C" fn print_spark_stats() {
+    eprintln!(
+        "[SPARK_STATS] spawns={} force_calls={} force_fastpath_resolved={} \
+         force_claim_wins={} force_spin_waits={} force_spin_iters={}",
+        SPARK_SPAWNS.load(Ordering::Relaxed),
+        FORCE_CALLS.load(Ordering::Relaxed),
+        FORCE_FASTPATH_RESOLVED.load(Ordering::Relaxed),
+        FORCE_CLAIM_WINS.load(Ordering::Relaxed),
+        FORCE_SPIN_WAITS.load(Ordering::Relaxed),
+        FORCE_SPIN_ITERS.load(Ordering::Relaxed),
+    );
+}
 
 /// IVar states.
 const PENDING: i64 = 0;
@@ -261,6 +298,10 @@ pub extern "C" fn ivar_spark(ivar: i64) -> i64 {
         (*rc_ptr).fetch_add(1, Ordering::SeqCst);
     }
 
+    if spark_stats_enabled() {
+        SPARK_SPAWNS.fetch_add(1, Ordering::Relaxed);
+    }
+
     rayon::spawn(move || {
         // Release the in-flight-spark reservation on normal completion OR on a
         // Rust unwind (§3.6). Placed FIRST so its `drop` runs last, after the
@@ -348,9 +389,17 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
     // SAFETY: ivar is a valid base pointer. state at offset 16 is an aligned i64.
     let state_ptr = unsafe { &*((ivar as isize + STATE_OFFSET) as *const AtomicI64) };
 
+    let stats = spark_stats_enabled();
+    if stats {
+        FORCE_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
     // Fast path: already resolved.
     let state = state_ptr.load(Ordering::SeqCst);
     if state == RESOLVED {
+        if stats {
+            FORCE_FASTPATH_RESOLVED.fetch_add(1, Ordering::Relaxed);
+        }
         reraise_ferried_error(ivar);
         return unsafe { *((ivar as isize + VALUE_OFFSET) as *const i64) };
     }
@@ -358,6 +407,9 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
     // Try to claim the thunk.
     match state_ptr.compare_exchange(PENDING, EVALUATING, Ordering::SeqCst, Ordering::SeqCst) {
         Ok(_) => {
+            if stats {
+                FORCE_CLAIM_WINS.fetch_add(1, Ordering::Relaxed);
+            }
             // We won the CAS — evaluate the thunk.
             let thunk = unsafe { *((ivar as isize + THUNK_OFFSET) as *const i64) };
 
@@ -437,8 +489,14 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
             result
         }
         Err(_) => {
+            if stats {
+                FORCE_SPIN_WAITS.fetch_add(1, Ordering::Relaxed);
+            }
             // Another thread claimed it — spin-wait until RESOLVED.
             loop {
+                if stats {
+                    FORCE_SPIN_ITERS.fetch_add(1, Ordering::Relaxed);
+                }
                 let s = state_ptr.load(Ordering::SeqCst);
                 if s == RESOLVED {
                     // Join-side re-raise: a panic captured by the claimant is

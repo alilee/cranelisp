@@ -16,6 +16,123 @@ retarget_note: >
   §3.1) with a real cross-fixture trade (f3), not a B4 recalibration.
 ---
 
+## /dev(backend) PROFILING ATTRIBUTION — S103, 2026-07-06 (the ~110s PROVEN; it is NOT "just contention")
+
+**Mandate (user):** the prior diagnosis asserted "§3.1 contention" without proving
+where the wall goes. Spending ~110s CPU on work that completes in ~1s serially is
+~100×; "contention" is implausible at that magnitude. This section PROVES it with
+CPU%, a syscall profile, spark-instance counts, and a spawn-count sweep.
+
+**Verdict:** the ~110s is **rayon task-scheduling overhead (futex wake/park +
+sched_yield) paid ~13 µs per spark × 9.45 M ultra-fine score-0 sparks whose real
+body is ~20 ns.** It is **NOT** allocator-lock contention, **NOT** atomic-RC
+cache-bouncing, **NOT** redundant recomputation, and **NOT** a livelock. The user's
+instinct is correct — it is not cache contention; it is **over-sparking of
+near-trivial work overwhelming the work-stealing scheduler**, which is a more
+addressable class than the §3.1 "allocator lock + atomic RC" story implies. The
+§3.1 attribution is **partially misattributed**: on F4-hard the dominant term is
+scheduler churn, not the substrate.
+
+### Evidence (release binary, 10 cores, idle, `f4_hard.cl` HARD puzzle, exit 154)
+
+**(A) CPU utilization discriminates spin vs park — it is PARKING.**
+| Config | wall | %CPU | vol ctx-sw | invol ctx-sw |
+|---|---|---|---|---|
+| serial (`NO_LENIENT`) | 0.94s | 93% | 14 | 9 |
+| OFF (`NO_OWNERSHIP`) | 17.5s | 415% | 1,023,376 | 1,936,765 |
+| ON default (B4 active) | 116s | **240%** | **6,313,619** | 7,513,735 |
+
+240% CPU on 10 cores ⇒ ~7.6 cores idle at any instant ⇒ **not a pegged spin-loop**
+(that would be ~1000%). 6.3 M voluntary ctx-switches ⇒ threads repeatedly parking.
+`/proc/<tid>/wchan` sampling: nearly every worker in **`futex_do_wait`**.
+
+**(B) syscall profile (strace -c, F4-hard ON default) — 99.9% is scheduler, ~0% allocator.**
+```
+ 50.53%  sched_yield   365,181 calls    ← rayon workers idle-searching for work
+ 49.33%  futex         165,837 calls (52,766 EAGAIN)  ← park/unpark
+  0.07%  brk           0.04% madvise  0.00% mmap        ← allocator barely hits kernel
+```
+The allocator-lock hypothesis is REFUTED at the syscall layer (glibc malloc stays
+in userspace here). Atomic-RC bouncing would show as stalled-BUSY cycles (high CPU),
+not futex parking — also refuted by (A)'s low CPU.
+
+**(C) spark-instance + ivar_force outcome counts (instrumented, `CRANELISP_SPARK_STATS=1`).**
+ON default:
+```
+spawns=9,448,736   force_claim_wins=9,448,736 (= spawns ⇒ each spark evaluated EXACTLY once)
+force_fastpath_resolved=9,198,663   force_spin_waits=250,073 (2.6%)   force_spin_iters=896,424,350
+```
+- `claim_wins == spawns` ⇒ **no redundant recomputation** (corroborated: `rc_inc`
+  is IDENTICAL serial-vs-ON at 31.7 M — the logical work is unchanged; only 19 M
+  extra allocs appear = the IVar/thunk spark machinery).
+- The IVar spin-loop (`ivar.rs` line ~441, `std::hint::spin_loop()`, no park) burns
+  ~896 M iters ⇒ **~4–9s of the 116s** — real but secondary, NOT the dominant term.
+
+**(D) DECISIVE: wall is ~linear in spawn count (spawn-count sweep, all ownership-ON).**
+| knob | wall | spawns | µs/spark |
+|---|---|---|---|
+| `SPARK_BUDGET=0` (no sparks) | **1.18s** | 0 | — |
+| `SPARK_BUDGET=4` | **3.34s** | 65,026 | ~33 |
+| `SATURATION_GATE=1` (cap=10) | **72.8s** | 3,040,754 | ~24 |
+| default (cap=40) | **116s** | 9,448,736 | ~13 |
+
+wall ≈ serial + spawns × (per-spark scheduling cost). Halving spawns ~halves the wall.
+This is the signature of **fixed per-task scheduling overhead × task count**, not of
+data-dependent cache contention. 13–33 µs/spark = futex-wakeup scale; the actual body
+(a couple of `vec-get`s) is tens of ns ⇒ **~600× per-task overhead ratio**.
+
+**Root mechanism (the "why 100×"):** F4's admitted sparks are the **104 score-0 fine
+accessor/projection pairs** in the per-cell hot loops (e.g. `(let [c1 (cell-at g1 i)
+c2 (cell-at g2 i)] …)`), and the consumer forces each IVar almost immediately (a
+near-immediate data dependency). So there is **almost no exploitable parallelism**,
+yet every spark still pays a full spawn→wake-a-worker→run-20ns→park round-trip that a
+serial inline call would skip entirely. 9.45 M × ~13 µs ≈ 123s. The create-gate
+(`SPARK_BUDGET`) bounds *concurrent* in-flight sparks (memory = O(cap)) but does
+**not** bound the *total spawn rate* — the steady-state firehose each pays full
+scheduling cost.
+
+**(E) delta profile — why B4-declines-coarse (default) is WORSE than admit-all (MAX=0).**
+| Config | wall (uninstr.) | %CPU | spawns |
+|---|---|---|---|
+| ON default (B4 declines coarse) | 116s | **240%** (parked) | 9.45 M |
+| ON `SPARK_DENSITY_MAX=0` (admit coarse) | ~24s | **565%** (busy) | 15.3 M |
+
+MAX=0 admits MORE sparks (15.3 M) yet is 5× FASTER, because the coarse `solve-range`
+D&C sparks give genuine coarse-grain parallelism that keeps workers BUSY (565% CPU)
+and hides the per-spark wake/park latency. Default declines the coarse sparks →
+outer search runs serial → the fine sparks **strand** with no coarse structure to
+ride on → workers park constantly (240%) → each fine spark is a naked wake/park
+round-trip. This PROVES the FIXME §(2) "declined-coarse + admitted-fine = worst"
+claim with the CPU%/spawn-count mechanism, not just wall.
+
+### Disposition — real, attributable, addressable pre-Phase-H (NOT a fundamental floor)
+- The dominant cost is **scheduler overhead from over-sparking near-trivial work**,
+  not the §3.1 substrate (allocator lock / atomic RC). This is the FIXME's own
+  recommended-shape **option (b): a spark-overhead axis** — decline sparks whose body
+  cost-to-run < cost-to-spawn (the score-0 accessor/projection pairs) — or **option
+  (1a) hierarchical decline** (a declined coarse subtree suppresses nested fine
+  sparks, removing the strand). Either kills F4's over-spark firehose.
+- **NOT landed this sprint** and NOT a blind backend tune: the "no local signal
+  distinguishes F4's harmful score-0 fine sparks from F1's beneficial `fib`/`reduce-tree`
+  score-0 compute sparks" problem (FIXME §"Why it is NOT a bounded fix") is real — a
+  static cost model / body-size heuristic is a **/design** deliverable (lenient-eval.md
+  §2.7). `SPARK_BUDGET=4` reaches 3.34s here but would starve F1's genuine parallelism,
+  so a global budget cut is the wrong lever. The correct lever is a per-spark
+  cost/overhead axis distinct from the density (contention) axis.
+- **§3.1 correction for /arch:** on F4-hard the measured dominant term is rayon
+  scheduling churn (sched_yield 50% + futex 49% of syscall time), NOT the allocator
+  lock + atomic RC named in §3.1. The floor-violation is real but its *cause* here is
+  spawn-overhead-per-trivial-task; Phase-H thread-local RC / reuse would NOT fix it
+  (it is not RC-bound). The in-track cure is the spark-overhead gate, available now.
+
+**Reproduction:** `ivar.rs` carries uncommitted gated instrumentation (env
+`CRANELISP_SPARK_STATS=1`, zero-cost when off) that prints the `[SPARK_STATS]` line
+above; counters: `SPARK_SPAWNS` in `ivar_spark`, `FORCE_*` in `ivar_force`. Sweep via
+`CRANELISP_SPARK_BUDGET={0,4}` / `CRANELISP_SATURATION_GATE=1` / `CRANELISP_SPARK_DENSITY_MAX=0`
+over `f4_hard.cl` (HARD puzzle substituted per `tests/perf/s99_measure.py`).
+
+---
+
 ## /dev(backend) ABLATION DIAGNOSIS — S103, 2026-07-06 (hypothesis REFUTED; carry to S104 as a design item)
 
 **Summary:** The filed "increment-II density reduction defeats B4's decline →
