@@ -530,7 +530,11 @@ fn expect_symbol(sexp: &Sexp, context: &str) -> Result<String, CranelispError> {
     match sexp {
         Sexp::Symbol(name, _) => Ok(name.clone()),
         other => Err(CranelispError::ModuleError {
-            message: format!("expected symbol for {}, got {:?}", context, other),
+            // Render the offending form via its canonical single-line source
+            // form (`Sexp::format_flat`) — NOT `{:?}`, which would leak a Debug
+            // `Sexp`/`Span { .. }` struct dump into user-facing text (the P6
+            // diagnostic-quality class the 0500 rendered-diagnostic tier guards).
+            message: format!("expected symbol for {}, got {}", context, other.format_flat()),
             location: ErrorLocation::from_span_file(other.span(), None),
         }),
     }

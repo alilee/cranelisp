@@ -872,3 +872,120 @@
             other => panic!("expected List, got {other:?}"),
         }
     }
+
+    // -------------------------------------------------------------------
+    // Rendered-diagnostic tier (FIXME 0500)
+    //
+    // The reader is one of frontend's own diagnostic-emitting submodules.
+    // This tier institutionalizes the P6 diagnostic-quality class (0485):
+    // a user-facing reader diagnostic MUST carry a REAL source span (never
+    // a synthetic 1_000_000+ span), MUST NOT leak a Debug-format struct
+    // dump into its text, and MUST name the offending construct.
+    // Organized submodule × scenario-class per METHOD §2.2.
+    // spec: repl/spec.md §"Self-documenting REPL" — no opaque errors.
+    // -------------------------------------------------------------------
+    mod rendered_diagnostics {
+        use super::*;
+
+        /// Synthetic-span floor — the quasiquote/defmacro allocator base
+        /// (`quasiquote::SYNTHETIC_SPAN_COUNTER`). A reader diagnostic points
+        /// at real source bytes, so it must never carry a span at/above this.
+        const SYNTHETIC_SPAN_BASE: u32 = 1_000_000;
+
+        fn err(src: &str) -> CranelispError {
+            parse(src).expect_err("expected a reader error")
+        }
+
+        fn assert_real_span(e: &CranelispError, src: &str) {
+            let s = e.span();
+            assert!(
+                s.start < SYNTHETIC_SPAN_BASE && s.end < SYNTHETIC_SPAN_BASE,
+                "reader diagnostic carries a synthetic span {s}: {}",
+                e.message(),
+            );
+            assert!(
+                s.end as usize <= src.len(),
+                "reader span {s} exceeds source length {} for {src:?}",
+                src.len(),
+            );
+        }
+
+        fn assert_no_debug_artifacts(e: &CranelispError) {
+            let m = e.message();
+            assert!(!m.contains("Span {"), "message leaks a Debug span struct: {m}");
+            assert!(!m.contains("Sexp::"), "message leaks a Debug Sexp variant: {m}");
+            assert!(!m.contains("ErrorLocation"), "message leaks ErrorLocation: {m}");
+        }
+
+        // -- positive: the message names the offending construct --
+
+        // spec: 01-lexical §1.3.4 — unterminated string is a diagnosable error.
+        #[test]
+        fn unterminated_string_names_condition_with_real_span() {
+            let e = err("\"hello");
+            assert!(
+                e.message().contains("unterminated string"),
+                "got: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "\"hello");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // spec: 01-lexical §1.2 — a stray char is named in the diagnostic.
+        #[test]
+        fn unexpected_char_names_the_character() {
+            let e = err(")");
+            assert!(
+                e.message().contains("unexpected character"),
+                "got: {}",
+                e.message(),
+            );
+            assert!(
+                e.message().contains(')'),
+                "message should name the offending char: {}",
+                e.message(),
+            );
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- edge: escape + unclosed-delimiter boundaries --
+
+        // spec: 01-lexical §1.3.4 — unknown escape names the escape char.
+        #[test]
+        fn unknown_escape_names_the_escape() {
+            let e = err("\"\\q\"");
+            assert!(
+                e.message().contains("unknown escape sequence"),
+                "got: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "\"\\q\"");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // spec: 01-lexical §1.8 — unclosed list names the delimiter, real span.
+        #[test]
+        fn unclosed_paren_names_the_delimiter_with_real_span() {
+            let e = err("(a b");
+            assert!(e.message().contains("unclosed"), "got: {}", e.message());
+            assert!(
+                e.message().contains('('),
+                "message should name the delimiter: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "(a b");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- negative: no internal artifacts leak; every span is a real offset --
+
+        #[test]
+        fn no_reader_diagnostic_leaks_debug_or_synthetic_span() {
+            for src in ["\"open", ")", "(unterminated", "\"\\z\"", "[a b"] {
+                let e = err(src);
+                assert_no_debug_artifacts(&e);
+                assert_real_span(&e, src);
+            }
+        }
+    }

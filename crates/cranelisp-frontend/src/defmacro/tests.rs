@@ -300,3 +300,81 @@
         assert!(contains_symbol(&result, "macros/SList"));
         assert!(contains_symbol(&result, "macros/Sexp"));
     }
+
+    // -------------------------------------------------------------------
+    // Rendered-diagnostic tier (FIXME 0500)
+    //
+    // `parse_defmacro` emits ParseError diagnostics for malformed defmacro
+    // forms. This tier guards the P6 class (0485): a real source span, the
+    // defmacro requirement named, and NO Debug-format struct dump in the
+    // user-facing text. Submodule × scenario-class per METHOD §2.2.
+    // spec: repl/spec.md §"Self-documenting REPL" — no opaque errors.
+    // -------------------------------------------------------------------
+    mod rendered_diagnostics {
+        use super::*;
+
+        const SYNTHETIC_SPAN_BASE: u32 = 1_000_000;
+
+        fn err(src: &str) -> cranelisp_types::CranelispError {
+            let sexp = parse_one(src);
+            parse_defmacro(&sexp).expect_err("expected a defmacro error")
+        }
+
+        fn assert_real_span(e: &cranelisp_types::CranelispError, src: &str) {
+            let s = e.span();
+            assert!(
+                s.start < SYNTHETIC_SPAN_BASE && s.end < SYNTHETIC_SPAN_BASE,
+                "defmacro diagnostic carries a synthetic span {s}: {}",
+                e.message(),
+            );
+            assert!(
+                s.end as usize <= src.len(),
+                "defmacro span {s} exceeds source length {} for {src:?}",
+                src.len(),
+            );
+        }
+
+        fn assert_no_debug_artifacts(e: &cranelisp_types::CranelispError) {
+            let m = e.message();
+            assert!(!m.contains("Span {"), "message leaks a Debug span struct: {m}");
+            assert!(!m.contains("Sexp::"), "message leaks a Debug Sexp variant: {m}");
+            assert!(!m.contains("ErrorLocation"), "message leaks ErrorLocation: {m}");
+        }
+
+        // -- positive: too-few-forms names the defmacro requirement --
+
+        // spec: 07-macros §7.1 — defmacro requires a name and clause.
+        #[test]
+        fn defmacro_too_few_names_requirement_with_real_span() {
+            let e = err("(defmacro)");
+            assert!(e.message().contains("defmacro"), "got: {}", e.message());
+            assert_real_span(&e, "(defmacro)");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- edge: non-symbol name is diagnosed --
+
+        // spec: 07-macros §7.1 — defmacro name must be a symbol.
+        #[test]
+        fn defmacro_non_symbol_name_is_diagnosed_cleanly() {
+            let e = err("(defmacro 5 [] 1)");
+            assert!(
+                e.message().contains("name must be a symbol"),
+                "got: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "(defmacro 5 [] 1)");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- negative: no internal artifacts leak across a spread of shapes --
+
+        #[test]
+        fn no_defmacro_diagnostic_leaks_debug_or_synthetic_span() {
+            for src in ["(defmacro)", "(defmacro foo)", "(defmacro 5 [] 1)"] {
+                let e = err(src);
+                assert_no_debug_artifacts(&e);
+                assert_real_span(&e, src);
+            }
+        }
+    }

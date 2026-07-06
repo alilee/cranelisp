@@ -111,3 +111,109 @@ pub type PollFn = unsafe extern "C" fn(
 // (each effect's shape is `concurrency.blocking`). The reserved `drop_state`
 // poll-leaf teardown hook moved onto `crate::PlatformFn`.
 // ---------------------------------------------------------------------
+
+// ---------------------------------------------------------------------
+// v9 ctx-vtable layout tier (FIXME 0501/0502)
+//
+// concurrency.rs is pure `#[repr(C)]` ABI: the load-bearing invariant is
+// LAYOUT STABILITY (Principle 14 — a field reorder or size change silently
+// breaks every platform DLL's GOT-indirect dispatch). The host<->platform
+// vtable types (`HostCtx`, `Waker`, `WakerVTable`) have NO layout pins
+// anywhere; these pin their size/offset/align across the v9 contract.
+//
+// The `acquire`/`retire` RUNTIME pairing (double-retire, use-after-retire
+// under the debug tripwires) lives in the HOST reactor (`src/`/int), not in
+// this crate — a platform declares the vtable *shape* but never implements
+// it — so those cells are out-of-crate and are covered by the reactor's own
+// tier. Here we pin the acquire/retire result-enum ABI + the role byte the
+// `ConcurrencyDescriptor` carries. The descriptor/Poll layout pins live in
+// `cranelisp_types::scheduling::tests` (cited, not duplicated).
+// spec: design/arch/effect-concurrency.md §12 / §4.1.1 (the A2 ctx-vtable).
+// ---------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::{align_of, offset_of, size_of};
+
+    /// Pointer size on this target — every vtable field is pointer-sized.
+    const PTR: usize = size_of::<*const c_void>();
+
+    // layout: WakerVTable is four extern "C" fn pointers, contiguous, in order.
+    #[test]
+    fn waker_vtable_layout_is_four_contiguous_fn_ptrs() {
+        assert_eq!(offset_of!(WakerVTable, wake), 0);
+        assert_eq!(offset_of!(WakerVTable, wake_by_ref), PTR);
+        assert_eq!(offset_of!(WakerVTable, clone), 2 * PTR);
+        assert_eq!(offset_of!(WakerVTable, drop), 3 * PTR);
+        assert_eq!(size_of::<WakerVTable>(), 4 * PTR);
+        assert_eq!(align_of::<WakerVTable>(), PTR);
+    }
+
+    // layout: Waker is the (data, vtable) fat-pointer pair.
+    #[test]
+    fn waker_layout_is_data_then_vtable() {
+        assert_eq!(offset_of!(Waker, data), 0);
+        assert_eq!(offset_of!(Waker, vtable), PTR);
+        assert_eq!(size_of::<Waker>(), 2 * PTR);
+        assert_eq!(align_of::<Waker>(), PTR);
+    }
+
+    // layout / matrix: HostCtx is the six-slot v9 ctx-vtable in the documented
+    // order — the three register_* callbacks, then acquire, then retire, then
+    // the opaque host handle. A reorder breaks the C-ABI the host hands every
+    // poll-fn.
+    #[test]
+    fn host_ctx_v9_vtable_layout_is_stable() {
+        assert_eq!(offset_of!(HostCtx, register_readable), 0);
+        assert_eq!(offset_of!(HostCtx, register_writable), PTR);
+        assert_eq!(offset_of!(HostCtx, register_timer), 2 * PTR);
+        assert_eq!(offset_of!(HostCtx, acquire), 3 * PTR);
+        assert_eq!(offset_of!(HostCtx, retire), 4 * PTR);
+        assert_eq!(offset_of!(HostCtx, host), 5 * PTR);
+        assert_eq!(size_of::<HostCtx>(), 6 * PTR, "six pointer-sized slots");
+        assert_eq!(align_of::<HostCtx>(), PTR);
+    }
+
+    // ABI: the acquire result enum crosses the C-ABI as a plain i32 with byte-
+    // stable discriminants — `Acquired = 0` (proceed), `Parked = 1` (backpressure).
+    // Untested elsewhere; it is the return of `HostCtx::acquire`.
+    #[test]
+    fn acquire_result_is_repr_i32_acquired_zero_parked_one() {
+        assert_eq!(Acquire::Acquired as i32, 0);
+        assert_eq!(Acquire::Parked as i32, 1);
+        assert_eq!(size_of::<Acquire>(), size_of::<i32>());
+    }
+
+    // role byte: the per-effect leaf role rides one byte of ConcurrencyDescriptor
+    // (§4.1.1). Its discriminants are the manifest fact E2 grounds on —
+    // None/Produce/Consume/Retire = 0/1/2/3, `#[repr(u8)]`. The descriptor's
+    // FIELD offsets are pinned in cranelisp_types::scheduling::tests; here we pin
+    // the re-exported role byte's own discriminant values (unpinned there).
+    #[test]
+    fn resource_role_byte_discriminants_are_stable() {
+        assert_eq!(ResourceRole::None as u8, 0);
+        assert_eq!(ResourceRole::Produce as u8, 1);
+        assert_eq!(ResourceRole::Consume as u8, 2);
+        assert_eq!(ResourceRole::Retire as u8, 3);
+        assert_eq!(size_of::<ResourceRole>(), 1);
+    }
+
+    // re-export identity: concurrency.rs's strongly-typed PollFn is the same
+    // C-ABI shape as the type-crate PollFn — a conforming poll-fn coerces to it.
+    // This pins that concurrency.rs re-projects, not redeclares, the contract.
+    #[test]
+    fn strongly_typed_poll_fn_coerces_a_conforming_leaf() {
+        unsafe extern "C" fn leaf(
+            _state: *mut c_void,
+            _host: *const HostCtx,
+            _waker: *const Waker,
+        ) -> Poll {
+            Poll::Ready
+        }
+        let _f: PollFn = leaf;
+        // The projection's host pointers are pointer-sized (opaque in the type
+        // crate, strongly typed here) — same C-ABI.
+        assert_eq!(size_of::<*const HostCtx>(), PTR);
+        assert_eq!(size_of::<*const Waker>(), PTR);
+    }
+}

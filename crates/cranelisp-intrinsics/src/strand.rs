@@ -397,4 +397,176 @@ mod tests {
             "StrandCancelled records through the strand sink"
         );
     }
+
+    // -------------------------------------------------------------------
+    // Recording-sink strategy tier (FIXME 0501)
+    //
+    // The sink (`start_strand_recording` / `emit_strand_event` /
+    // `drain_strand_events`) is a stateful buffer: `None` = not recording,
+    // `Some(vec)` = recording. The strategy scenarios below (complexity /
+    // edge / negative per METHOD §2.2) are what the sink MUST and MUST NOT
+    // do — none are spec-derivable; only the buffer strategy knows they exist.
+    // Each `#[test]` is its own nextest process (module doc M3), so the
+    // process-global BUFFER is private per test.
+    // spec: design/arch/effect-concurrency.md App. B — strand observability hook.
+    // -------------------------------------------------------------------
+
+    // complexity: recording captures events in emission ORDER (drain returns
+    // them "in emission order").
+    #[test]
+    fn recording_preserves_emission_order() {
+        start_strand_recording();
+        let a = StrandId(1);
+        let b = StrandId(2);
+        emit_strand_event(StrandEvent::EffectDispatched { strand: a });
+        emit_strand_event(StrandEvent::EffectSuspended { strand: b });
+        emit_strand_event(StrandEvent::EffectResumed { strand: a });
+        let events = drain_strand_events();
+        assert_eq!(
+            events,
+            vec![
+                StrandEvent::EffectDispatched { strand: a },
+                StrandEvent::EffectSuspended { strand: b },
+                StrandEvent::EffectResumed { strand: a },
+            ],
+            "drain returns events in emission order",
+        );
+    }
+
+    // negative: emit BEFORE any recording is a no-op — the "costs nothing until
+    // a consumer records" invariant. The event MUST NOT be captured.
+    #[test]
+    fn emit_without_recording_is_dropped() {
+        // No start_strand_recording() call.
+        emit_strand_event(StrandEvent::EffectDispatched { strand: StrandId(1) });
+        // A later recording must not see the pre-recording event.
+        start_strand_recording();
+        emit_strand_event(StrandEvent::EffectResumed { strand: StrandId(2) });
+        let events = drain_strand_events();
+        assert_eq!(
+            events,
+            vec![StrandEvent::EffectResumed { strand: StrandId(2) }],
+            "an emit before start_strand_recording must be discarded",
+        );
+    }
+
+    // negative: drain WITHOUT a prior start returns empty, not garbage.
+    #[test]
+    fn drain_without_recording_is_empty() {
+        assert!(
+            drain_strand_events().is_empty(),
+            "drain with no active recording returns an empty vec",
+        );
+    }
+
+    // edge: a second start_strand_recording clears the prior (partial) buffer —
+    // recordings do not accumulate across restarts.
+    #[test]
+    fn restart_clears_prior_recording() {
+        start_strand_recording();
+        emit_strand_event(StrandEvent::EffectDispatched { strand: StrandId(1) });
+        // Restart: the first event must be dropped.
+        start_strand_recording();
+        emit_strand_event(StrandEvent::EffectSuspended { strand: StrandId(2) });
+        let events = drain_strand_events();
+        assert_eq!(
+            events,
+            vec![StrandEvent::EffectSuspended { strand: StrandId(2) }],
+            "restarting recording discards the previous buffer",
+        );
+    }
+
+    // edge + negative: drain STOPS recording (takes the buffer). A subsequent
+    // emit is a no-op and a second drain is empty.
+    #[test]
+    fn drain_stops_recording() {
+        start_strand_recording();
+        emit_strand_event(StrandEvent::EffectDispatched { strand: StrandId(1) });
+        let first = drain_strand_events();
+        assert_eq!(first.len(), 1, "first drain returns the recorded event");
+        // Recording is now stopped: this emit must be dropped.
+        emit_strand_event(StrandEvent::EffectResumed { strand: StrandId(2) });
+        assert!(
+            drain_strand_events().is_empty(),
+            "after a drain, emit is a no-op and a second drain is empty",
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Identity + event-correlation strategy tier (FIXME 0501)
+    // -------------------------------------------------------------------
+
+    // complexity: minted strand ids are monotonic, distinct, and never ROOT
+    // (ids start at 1; ROOT (0) is the top-level program).
+    #[test]
+    fn next_strand_is_monotonic_distinct_and_never_root() {
+        let a = next_strand();
+        let b = next_strand();
+        let c = next_strand();
+        assert_ne!(a, StrandId::ROOT, "minted ids are never the ROOT strand");
+        assert!(a.0 >= 1, "minted ids start at 1");
+        assert!(a.0 < b.0 && b.0 < c.0, "minted ids are strictly monotonic: {a:?} {b:?} {c:?}");
+    }
+
+    // matrix: `strand()` correlates EVERY event kind back to its strand — the
+    // token / launch / budget / completion / failure kinds the existing test
+    // did not cover.
+    #[test]
+    fn strand_accessor_covers_token_launch_and_budget_kinds() {
+        let s = StrandId(42);
+        let tok = 9u64;
+        let kinds = [
+            StrandEvent::TokenAcquired { strand: s, token: tok },
+            StrandEvent::TokenParked { strand: s, token: tok },
+            StrandEvent::TokenReleased { strand: s, token: tok },
+            StrandEvent::TokenCapacityMismatch {
+                strand: s,
+                token: tok,
+                first_capacity: 4,
+                requested_capacity: 8,
+            },
+            StrandEvent::StrandCompleted { strand: s },
+            StrandEvent::StrandFailed { strand: s, message: "boom".to_string() },
+            StrandEvent::GlobalBudgetParked { strand: s },
+            StrandEvent::GlobalBudgetAcquired { strand: s },
+            StrandEvent::GlobalBudgetReleased { strand: s },
+        ];
+        for ev in kinds {
+            assert_eq!(ev.strand(), s, "every kind correlates to its strand: {ev:?}");
+        }
+    }
+
+    // negative: `StrandLaunched.strand()` returns the CHILD (the freshly-minted
+    // detached strand), NOT the launching parent — the two must not be confused
+    // (the /strand dump ties handler→parent by keeping them distinct).
+    #[test]
+    fn strand_launched_correlates_to_child_not_parent() {
+        let child = StrandId(100);
+        let parent = StrandId(1);
+        let ev = StrandEvent::StrandLaunched { strand: child, parent };
+        assert_eq!(ev.strand(), child, "strand() is the launched child");
+        assert_ne!(ev.strand(), parent, "strand() must not be the launching parent");
+    }
+
+    // payload fidelity: TokenCapacityMismatch records the first (surviving) and
+    // requested (ignored) capacities distinctly — first-writer-wins reconciliation.
+    #[test]
+    fn token_capacity_mismatch_preserves_both_capacities() {
+        let ev = StrandEvent::TokenCapacityMismatch {
+            strand: StrandId(1),
+            token: 3,
+            first_capacity: 4,
+            requested_capacity: 8,
+        };
+        match ev {
+            StrandEvent::TokenCapacityMismatch { first_capacity, requested_capacity, .. } => {
+                assert_eq!(first_capacity, 4, "the first capacity stands");
+                assert_ne!(
+                    first_capacity, requested_capacity,
+                    "the disagreeing requested capacity is recorded, not merged",
+                );
+            }
+            other => panic!("expected TokenCapacityMismatch, got {other:?}"),
+        }
+    }
 }

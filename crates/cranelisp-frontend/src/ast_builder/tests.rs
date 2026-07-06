@@ -2547,3 +2547,96 @@
             other => panic!("expected Applied, got {other:?}"),
         }
     }
+
+    // -------------------------------------------------------------------
+    // Rendered-diagnostic tier (FIXME 0500)
+    //
+    // `ast_builder` emits ParseError diagnostics for malformed top-level
+    // forms. This tier guards the P6 class (0485): the diagnostic MUST carry
+    // a REAL source span (never a synthetic 1_000_000+ span), MUST name the
+    // offending form, and MUST NOT leak a Debug-format struct dump.
+    // Submodule × scenario-class per METHOD §2.2.
+    // spec: repl/spec.md §"Self-documenting REPL" — no opaque errors.
+    // -------------------------------------------------------------------
+    mod rendered_diagnostics {
+        use super::*;
+
+        const SYNTHETIC_SPAN_BASE: u32 = 1_000_000;
+
+        fn form_err(src: &str) -> cranelisp_types::CranelispError {
+            let sexps = crate::reader::parse(src).expect("parse failed");
+            build_form(&sexps[0]).expect_err("expected a build error")
+        }
+
+        fn assert_real_span(e: &cranelisp_types::CranelispError, src: &str) {
+            let s = e.span();
+            assert!(
+                s.start < SYNTHETIC_SPAN_BASE && s.end < SYNTHETIC_SPAN_BASE,
+                "build diagnostic carries a synthetic span {s}: {}",
+                e.message(),
+            );
+            assert!(
+                s.end as usize <= src.len(),
+                "build span {s} exceeds source length {} for {src:?}",
+                src.len(),
+            );
+        }
+
+        fn assert_no_debug_artifacts(e: &cranelisp_types::CranelispError) {
+            let m = e.message();
+            assert!(!m.contains("Span {"), "message leaks a Debug span struct: {m}");
+            assert!(!m.contains("Sexp::"), "message leaks a Debug Sexp variant: {m}");
+            assert!(!m.contains("ErrorLocation"), "message leaks ErrorLocation: {m}");
+        }
+
+        // -- positive: message names what a defn is missing --
+
+        // spec: 04-functions §4.1 — defn arity diagnostic.
+        #[test]
+        fn defn_missing_body_names_defn_with_real_span() {
+            let e = form_err("(defn)");
+            assert!(e.message().contains("defn"), "got: {}", e.message());
+            assert_real_span(&e, "(defn)");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- edge: unknown top-level form echoes the offending head symbol --
+
+        // spec: 02-grammar §2.9 — unknown top-level form.
+        #[test]
+        fn unknown_form_names_the_head_symbol() {
+            let e = form_err("(frobnicate 1)");
+            assert!(
+                e.message().contains("frobnicate"),
+                "message should name the unknown head symbol: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "(frobnicate 1)");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- edge: non-form input is diagnosed, not panicked --
+
+        #[test]
+        fn bare_atom_is_diagnosed_with_real_span() {
+            let e = form_err("42");
+            assert!(
+                e.message().contains("form") || e.message().contains("list"),
+                "got: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "42");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- negative: no internal artifacts leak across a spread of shapes --
+
+        #[test]
+        fn no_build_diagnostic_leaks_debug_or_synthetic_span() {
+            for src in ["(defn)", "(frobnicate)", "42", "(deftype)", "(deftrait)"] {
+                let e = form_err(src);
+                assert_no_debug_artifacts(&e);
+                assert_real_span(&e, src);
+            }
+        }
+    }

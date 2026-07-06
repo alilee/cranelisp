@@ -378,3 +378,126 @@
             panic!("expected list form");
         }
     }
+
+    // -------------------------------------------------------------------
+    // Rendered-diagnostic tier (FIXME 0500)
+    //
+    // `module_extract` emits ModuleError diagnostics for malformed
+    // mod/import/export/platform declarations. This tier guards the P6
+    // class (0485): a real source span, the offending construct named, and
+    // NO Debug-format struct dump in user-facing text. Submodule ×
+    // scenario-class per METHOD §2.2.
+    // spec: repl/spec.md §"Self-documenting REPL" — no opaque errors.
+    // -------------------------------------------------------------------
+    mod rendered_diagnostics {
+        use super::*;
+
+        const SYNTHETIC_SPAN_BASE: u32 = 1_000_000;
+
+        fn err(src: &str) -> CranelispError {
+            let sexps = parse(src);
+            extract_module_declarations(&ModuleFullPath::from("test"), &sexps)
+                .expect_err("expected a module error")
+        }
+
+        fn assert_real_span(e: &CranelispError, src: &str) {
+            let s = e.span();
+            assert!(
+                s.start < SYNTHETIC_SPAN_BASE && s.end < SYNTHETIC_SPAN_BASE,
+                "module diagnostic carries a synthetic span {s}: {}",
+                e.message(),
+            );
+            assert!(
+                s.end as usize <= src.len(),
+                "module span {s} exceeds source length {} for {src:?}",
+                src.len(),
+            );
+        }
+
+        fn assert_no_debug_artifacts(e: &CranelispError) {
+            let m = e.message();
+            assert!(!m.contains("Span {"), "message leaks a Debug span struct: {m}");
+            assert!(!m.contains("ErrorLocation"), "message leaks ErrorLocation: {m}");
+        }
+
+        // -- positive: mod-without-name names the requirement, real span --
+
+        // spec: 08-modules §8.2.1 — mod declaration requires a name.
+        #[test]
+        fn mod_missing_name_names_requirement_with_real_span() {
+            let e = err("(mod)");
+            assert!(
+                e.message().contains("mod declaration requires a name"),
+                "got: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "(mod)");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- edge: import missing names list echoes the module path --
+
+        // spec: 08-modules §8.3 — import requires a names list.
+        #[test]
+        fn import_missing_names_echoes_module_path() {
+            let e = err("(import [core.math])");
+            assert!(
+                e.message().contains("core.math"),
+                "message should name the module: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "(import [core.math])");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- edge: platform wrong arity --
+
+        // spec: 09-platform §9.2 — platform declaration takes exactly one name.
+        #[test]
+        fn platform_wrong_arity_is_diagnosed_cleanly() {
+            let e = err("(platform)");
+            assert!(
+                e.message().contains("platform declaration"),
+                "got: {}",
+                e.message(),
+            );
+            assert_real_span(&e, "(platform)");
+            assert_no_debug_artifacts(&e);
+        }
+
+        // -- negative: no internal artifacts leak across a spread of shapes --
+
+        #[test]
+        fn no_clean_module_diagnostic_leaks_debug_or_synthetic_span() {
+            for src in ["(mod)", "(import [core.math])", "(platform)", "(export)"] {
+                let e = err(src);
+                assert_no_debug_artifacts(&e);
+                assert_real_span(&e, src);
+            }
+        }
+
+        // -- negative (FAILING-NOT-IGNORED): the live P6 exhibit --
+        //
+        // `expect_symbol` (module_extract.rs:533) renders a non-symbol form
+        // with `{:?}`, dumping a Debug `Sexp` incl. a raw `Span { .. }` struct
+        // into a user-facing message — the exact 0485/P6 class this tier
+        // exists to catch. This test asserts the DESIRED behaviour (no Debug
+        // struct dump) and is RED until the message renders the offending form
+        // via Display / a form-kind description instead of `{:?}`. Do NOT
+        // ignore — it is the durable record + the flip-to-green trigger for
+        // the owning frontend fix. See FIXME 0500.
+        // spec: repl/spec.md §"Self-documenting REPL" — no internal-leaking errors.
+        #[test]
+        fn mod_name_non_symbol_does_not_leak_debug_struct() {
+            let e = err("(mod 42)");
+            let m = e.message();
+            assert!(
+                m.contains("mod declaration name"),
+                "message should name the context: {m}",
+            );
+            assert!(
+                !m.contains("Span {"),
+                "user-facing message leaks a Debug span struct dump: {m}",
+            );
+        }
+    }

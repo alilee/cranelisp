@@ -243,3 +243,135 @@ fn restore_signal_handlers(saved: SavedSignalHandlers) {
         libc::signal(libc::SIGSEGV, saved.segv);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fault-guard strategy tier (FIXME 0501)
+//
+// io_guard had ZERO unit coverage. The core `force_effect_thunk_protected`
+// needs a live platform Effect thunk (a DLL fixture), but the RETAINED
+// hardware-trap recovery half — the `sigsetjmp`/signal-handler/`siglongjmp`
+// mechanism (§io_guard "Hardware traps are still caught here") — IS unit-
+// testable in isolation. These tests exercise the strategy scenarios per
+// METHOD §2.2: the trap-recovery happy path, the four-signal install matrix,
+// and the install/restore round-trip negative (handlers must NOT be left
+// dangling). Each `#[test]` is its own nextest process, so mutating
+// process-global signal dispositions is isolated. Windows in which the real
+// trap handler is installed contain only straight-line, non-faulting reads.
+// spec: BC §4b invariant 14 — the single platform-Effect force-site guard.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn longjmp_handler_ptr() -> libc::sighandler_t {
+        signal_handler_longjmp as *const () as libc::sighandler_t
+    }
+
+    // complexity / positive: a SIGSEGV is recovered end-to-end through sigsetjmp
+    // + the installed handler + siglongjmp — the retained half the guard's Err
+    // arm relies on. The signal is delivered via `libc::raise` (synchronous, to
+    // this thread): it drives the identical handler -> siglongjmp path a genuine
+    // foreign-code hardware trap takes, without invoking memory UB (a real null
+    // deref is intercepted by Rust's own debug null-check + abort, and integer
+    // div-by-zero does not trap on aarch64 — neither reaches this handler).
+    #[test]
+    fn hardware_trap_recovers_via_sigsetjmp_handler() {
+        // SAFETY: mirrors `force_effect_thunk_protected`'s sigsetjmp dance; the
+        // handler resets the signal to SIG_DFL before siglongjmp, so no loop.
+        let recovered: libc::c_int = JMP_BUF.with(|buf| unsafe {
+            let sig = sigsetjmp(buf.get(), 1);
+            if sig != 0 {
+                // Reached via siglongjmp from the trap handler.
+                return sig;
+            }
+            let _old = install_signal_handlers();
+            // Deliver SIGSEGV to this thread; the installed handler siglongjmps back.
+            libc::raise(libc::SIGSEGV);
+            0 // unreachable — the handler jumps out.
+        });
+
+        // Tidy up: the trap path jumped out before restoring, and the handler
+        // reset SIGSEGV to SIG_DFL. Return every trap signal to the default so no
+        // stale-frame longjmp handler survives this test frame.
+        unsafe {
+            libc::signal(libc::SIGSEGV, libc::SIG_DFL);
+            libc::signal(libc::SIGFPE, libc::SIG_DFL);
+            libc::signal(libc::SIGILL, libc::SIG_DFL);
+            libc::signal(libc::SIGBUS, libc::SIG_DFL);
+        }
+
+        assert_eq!(
+            recovered,
+            libc::SIGSEGV,
+            "sigsetjmp + trap handler must recover the SIGSEGV and report the signal number",
+        );
+    }
+
+    // matrix / edge: install routes ALL FOUR trap signals (FPE/ILL/BUS/SEGV) to
+    // the guard's longjmp handler.
+    #[test]
+    fn install_covers_all_four_trap_signals() {
+        unsafe {
+            let o_fpe = libc::signal(libc::SIGFPE, libc::SIG_DFL);
+            let o_ill = libc::signal(libc::SIGILL, libc::SIG_DFL);
+            let o_bus = libc::signal(libc::SIGBUS, libc::SIG_DFL);
+            let o_segv = libc::signal(libc::SIGSEGV, libc::SIG_DFL);
+
+            // `_saved` (the prior dispositions install captured, all DFL here) is
+            // not needed — we restore the true originals directly below.
+            let _saved = install_signal_handlers();
+            // Read back each installed handler (swap DFL in, capture old). This
+            // window is straight-line with no faulting op.
+            let i_fpe = libc::signal(libc::SIGFPE, libc::SIG_DFL);
+            let i_ill = libc::signal(libc::SIGILL, libc::SIG_DFL);
+            let i_bus = libc::signal(libc::SIGBUS, libc::SIG_DFL);
+            let i_segv = libc::signal(libc::SIGSEGV, libc::SIG_DFL);
+
+            // Restore true originals.
+            libc::signal(libc::SIGFPE, o_fpe);
+            libc::signal(libc::SIGILL, o_ill);
+            libc::signal(libc::SIGBUS, o_bus);
+            libc::signal(libc::SIGSEGV, o_segv);
+
+            let expected = longjmp_handler_ptr();
+            for (name, got) in [
+                ("SIGFPE", i_fpe),
+                ("SIGILL", i_ill),
+                ("SIGBUS", i_bus),
+                ("SIGSEGV", i_segv),
+            ] {
+                assert_eq!(got, expected, "install must route {name} to the sigsetjmp trap handler");
+            }
+        }
+    }
+
+    // negative: install returns the PRIOR disposition and restore reverts it —
+    // the guard must NOT leave the trap handler dangling after the force. Proven
+    // on SIGFPE (never fires in straight-line code).
+    #[test]
+    fn install_returns_prior_and_restore_reverts() {
+        unsafe {
+            // Establish a known, non-default baseline for SIGFPE.
+            let true_orig = libc::signal(libc::SIGFPE, libc::SIG_IGN);
+
+            let saved = install_signal_handlers();
+            // Capture the installed handler, resetting FPE to the IGN baseline.
+            let installed = libc::signal(libc::SIGFPE, libc::SIG_IGN);
+            restore_signal_handlers(saved);
+            // Capture the post-restore handler, putting the true original back.
+            let restored = libc::signal(libc::SIGFPE, true_orig);
+
+            assert_eq!(
+                installed,
+                longjmp_handler_ptr(),
+                "install must set the sigsetjmp trap handler for SIGFPE (not the IGN baseline)",
+            );
+            assert_ne!(installed, libc::SIG_IGN);
+            assert_eq!(
+                restored,
+                libc::SIG_IGN,
+                "restore must revert SIGFPE to its saved (IGN) disposition, not leave the trap handler",
+            );
+        }
+    }
+}

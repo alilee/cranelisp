@@ -443,3 +443,177 @@ macro_rules! __declare_platform_body {
         }
     };
 }
+
+// ---------------------------------------------------------------------------
+// Platform-declaration tier (FIXME 0501/0502)
+//
+// declare.rs is the surface every platform DLL's correctness flows through and
+// had ZERO inline coverage. Two strategy scenario spaces per METHOD §2.2:
+//
+//  * `extract_layout_hash` — a pure `const fn` scanner. The crate-root
+//    `tests.rs::extract_layout_hash_reads_header` covers three basic cases;
+//    this DEEPENS to the boundary/negative cells it omits (mid-file marker,
+//    CRLF, EOF-without-newline, tab indent, empty input, near-miss markers).
+//  * `declare_platform!` — the three-exports emitter. The load-bearing invariant
+//    is **manifest order IS GOT slot order** (§5.1); we invoke the macro and
+//    pin it end-to-end (order, FQ-sig fidelity, count, abi_version, unused slots
+//    null) — untested anywhere (tests.rs builds manifests by hand, never via
+//    the macro).
+// spec: design/arch/platform-interface.md §5.5.4 / §5.1 / §6.1.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    // -- extract_layout_hash: boundary + negative cells --
+
+    use super::extract_layout_hash as elh;
+
+    #[test]
+    fn extract_layout_hash_finds_marker_not_on_first_line() {
+        assert_eq!(elh("(schema stuff)\n;; layout-hash: cafef00d\n"), "cafef00d");
+    }
+
+    #[test]
+    fn extract_layout_hash_handles_crlf_line_ending() {
+        // The end-of-line scan stops at \r, so the trailing CR is not captured.
+        assert_eq!(elh(";; layout-hash: abc123\r\n(schema)"), "abc123");
+    }
+
+    #[test]
+    fn extract_layout_hash_handles_eof_without_newline() {
+        assert_eq!(elh(";; layout-hash: 0f0f0f"), "0f0f0f");
+    }
+
+    #[test]
+    fn extract_layout_hash_trims_tab_indent_and_trailing_tabs() {
+        assert_eq!(elh(";; layout-hash:\t\tbeef\t\t\n"), "beef");
+    }
+
+    #[test]
+    fn extract_layout_hash_returns_first_of_multiple_markers() {
+        assert_eq!(
+            elh(";; layout-hash: first\n;; layout-hash: second\n"),
+            "first",
+        );
+    }
+
+    // negatives: what must NOT be matched.
+    #[test]
+    fn extract_layout_hash_empty_input_is_empty() {
+        assert_eq!(elh(""), "");
+    }
+
+    #[test]
+    fn extract_layout_hash_near_miss_marker_does_not_match() {
+        // Missing the space after ";;" — not the exact marker.
+        assert_eq!(elh(";;layout-hash: nope\n"), "");
+        // Missing the trailing colon — not the exact marker.
+        assert_eq!(elh(";; layout-hash nope\n"), "");
+    }
+
+    #[test]
+    fn extract_layout_hash_marker_with_empty_value_is_empty() {
+        assert_eq!(elh(";; layout-hash:\n(schema)"), "");
+        assert_eq!(elh(";; layout-hash:   \n"), "");
+    }
+
+    // -- declare_platform!: manifest order IS GOT slot order --
+
+    extern "C" fn eff_a() -> i64 { 1 }
+    extern "C" fn eff_b() -> i64 { 2 }
+    extern "C" fn eff_c() -> i64 { 3 }
+
+    static HOST: crate::HostContext = crate::HostContext::new();
+
+    crate::declare_platform! {
+        name: "declaretest",
+        version: "0.1.0",
+        host: HOST,
+        functions: [
+            eff_a {
+                cl_name: "eff-a",
+                sig: "(Fn [primitives/Int] (primitives/IO primitives/Int))",
+                doc: "first",
+                params: [n],
+                scheduling: crate::SchedulingClass::Sequential,
+            },
+            eff_b {
+                cl_name: "eff-b",
+                sig: "(Fn [primitives/Int] (primitives/IO primitives/Int))",
+                doc: "second",
+                params: [n],
+                scheduling: crate::SchedulingClass::Commutative,
+            },
+            eff_c {
+                cl_name: "eff-c",
+                sig: "(Fn [primitives/Int] (primitives/IO primitives/Int))",
+                doc: "third",
+                params: [n],
+                scheduling: crate::SchedulingClass::ResourceSerial,
+            },
+        ]
+    }
+
+    fn cl_name(f: &crate::PlatformFn) -> &str {
+        unsafe { std::str::from_utf8(std::slice::from_raw_parts(f.name, f.name_len)).unwrap() }
+    }
+
+    fn type_sig(f: &crate::PlatformFn) -> &str {
+        unsafe {
+            std::str::from_utf8(std::slice::from_raw_parts(f.type_sig, f.type_sig_len)).unwrap()
+        }
+    }
+
+    #[test]
+    fn declare_platform_manifest_order_is_got_slot_order() {
+        use std::sync::atomic::Ordering;
+
+        extern "C" fn t_alloc(_: i64) -> i64 { 0 }
+        let cb = crate::HostCallbacks {
+            alloc: t_alloc,
+            alloc_with_tag: crate::null_alloc_with_tag,
+        };
+        // SAFETY: `cb` is a valid HostCallbacks; the macro reads it via init.
+        let manifest = unsafe { cranelisp_platform_manifest(&cb) };
+
+        assert_eq!(manifest.abi_version, crate::ABI_VERSION, "stamps the crate ABI");
+        assert_eq!(manifest.function_count, 3, "three declared functions");
+
+        // SAFETY: the macro leaks a &'static [PlatformFn] of function_count entries.
+        let funcs =
+            unsafe { std::slice::from_raw_parts(manifest.functions, manifest.function_count) };
+
+        // The load-bearing invariant: GOT slot i holds functions[i].ptr, in
+        // declaration order (manifest order IS GOT slot order, §5.1).
+        for (i, f) in funcs.iter().enumerate() {
+            let slot = __CRANELISP_PLATFORM_GOT[i].load(Ordering::Acquire) as *const u8;
+            assert_eq!(slot, f.ptr, "GOT slot {i} must hold functions[{i}].ptr");
+            assert!(!f.ptr.is_null(), "declared slot {i} is populated");
+        }
+
+        // Declaration order is preserved through the manifest.
+        assert_eq!(cl_name(&funcs[0]), "eff-a");
+        assert_eq!(cl_name(&funcs[1]), "eff-b");
+        assert_eq!(cl_name(&funcs[2]), "eff-c");
+        // The three GOT slots hold three DISTINCT fn pointers (no aliasing).
+        assert_ne!(funcs[0].ptr, funcs[1].ptr);
+        assert_ne!(funcs[1].ptr, funcs[2].ptr);
+
+        // FQ signature carried verbatim (FQ-sig rendering).
+        assert_eq!(
+            type_sig(&funcs[0]),
+            "(Fn [primitives/Int] (primitives/IO primitives/Int))",
+        );
+
+        // Unused GOT slots (beyond the declared count) stay null.
+        assert!(
+            __CRANELISP_PLATFORM_GOT[3].load(Ordering::Acquire).is_null(),
+            "slot past the declared functions must stay null",
+        );
+        assert!(
+            __CRANELISP_PLATFORM_GOT[crate::GOT_TABLE_SIZE - 1]
+                .load(Ordering::Acquire)
+                .is_null(),
+            "the last GOT slot stays null for a 3-fn platform",
+        );
+    }
+}
