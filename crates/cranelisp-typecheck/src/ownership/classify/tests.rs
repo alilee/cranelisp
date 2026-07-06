@@ -133,26 +133,27 @@ fn resolved_call_dominates_and_resolver_not_consulted() {
     assert_eq!(got, CallClass::Summarised(Symbol::from("f$Int")));
 }
 
-// --- Copy classifier matrix ---
+// --- Copy classifier matrix (CS-II-3: R5 delegation to value_layout) ---
 
 #[test]
-fn copy_admits_exactly_scalars() {
-    // spec: §2.2 — increment-I Copy = {Int, Bool, Float}
-    let c = CopyClassifier::new();
+fn copy_scalars_only_admits_exactly_scalars() {
+    // spec: §2.2/§14.5 — the no-tables (scalars-only) classifier delegates to
+    // value_layout(_, None), which admits exactly {Int, Bool, Float}.
+    let c = CopyClassifier::scalars_only();
     assert!(c.is_copy(&ConcreteType::Int));
     assert!(c.is_copy(&ConcreteType::Bool));
     assert!(c.is_copy(&ConcreteType::Float));
 }
 
 #[test]
-fn copy_rejects_heap_and_fn_types() {
-    // spec: §2.2 (negative) — String / Vec / ADT / Fn are NOT Copy in increment I
-    let c = CopyClassifier::new();
+fn copy_scalars_only_rejects_heap_and_fn_types() {
+    // spec: §2.2/§14.5 (negative) — String / Vec / ADT / Fn are NOT Copy with no
+    // type tables (value_layout returns None for every heap type).
+    let c = CopyClassifier::scalars_only();
     assert!(!c.is_copy(&ConcreteType::String));
     assert!(!c.is_copy(&adt("Point")));
     assert!(!c.is_copy(&ConcreteType::Fn(vec![ConcreteType::Int], Box::new(ConcreteType::Int))));
-    // A Vec is an ADT in this representation; its element being Copy does not
-    // make the Vec Copy in increment I (representation clause fails).
+    // A Vec is an ADT in this representation; value_layout excludes Vec by name.
     assert!(!c.is_copy(&ConcreteType::ADT(
         FQTypeName::new(ModuleFullPath::from("primitives"), TypeName::from("Vec")),
         vec![ConcreteType::Int],
@@ -160,9 +161,28 @@ fn copy_rejects_heap_and_fn_types() {
 }
 
 #[test]
+fn copy_delegates_to_value_layout_predicate() {
+    // spec: §14.5 (CS-II-3) — the classifier DELEGATES to whatever value-layout
+    // predicate it is given; it does not re-implement the {Int,Bool,Float} test.
+    // A stub predicate admitting Int + a Copy-flattenable single-scalar product
+    // (`Cell`, the value_layout `Some` verdict the real predicate returns for
+    // `(Cell Int)`) makes the ADT classify Copy — the R5 precision growth.
+    let cell = adt("Cell");
+    let cell2 = cell.clone();
+    let c = CopyClassifier::new(move |ty| {
+        matches!(ty, ConcreteType::Int) || *ty == cell2
+    });
+    assert!(c.is_copy(&ConcreteType::Int));
+    assert!(c.is_copy(&cell), "delegation admits the value-flattenable ADT");
+    // A type the predicate rejects stays non-Copy.
+    assert!(!c.is_copy(&ConcreteType::String));
+    assert!(!c.is_copy(&adt("Point")));
+}
+
+#[test]
 fn copy_is_deterministic_under_memo() {
     // spec: §2.2 — memoized classifier returns identical verdicts across repeats
-    let c = CopyClassifier::new();
+    let c = CopyClassifier::scalars_only();
     for _ in 0..3 {
         assert!(c.is_copy(&ConcreteType::Int));
         assert!(!c.is_copy(&ConcreteType::String));

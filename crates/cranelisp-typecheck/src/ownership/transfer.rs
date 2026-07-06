@@ -52,6 +52,11 @@ pub(crate) struct SiteFacts {
     /// span → borrowed-projection root binding (Apply accessor / `vec-get` /
     /// match-arm sites; §4.4). Symbol-keyed with the §13.6(d) shadow rule.
     pub provenance: HashMap<Span, Symbol>,
+    /// span → `unique_static` verdict for a fresh-producing node proven a
+    /// unique single-use root (§14.2, CS-II-2, increment II). Only ever
+    /// `Some(true)` entries are inserted; absent ⇒ `None` ⇒ conservative
+    /// (no reuse). Filled by the uniqueness stratum (CS-3, [`super::uniqueness`]).
+    pub unique: HashMap<Span, bool>,
 }
 
 /// The result of one body transfer walk.
@@ -902,7 +907,7 @@ pub(crate) fn transfer<E: TransferEnv>(
     params: &[(Symbol, ConcreteType)],
     body: &MonoExpr,
     env: &E,
-    copy: &CopyClassifier,
+    copy: &CopyClassifier<'_>,
 ) -> TransferResult {
     let n = params.len();
     let mut param_modes = Vec::with_capacity(n);

@@ -1,11 +1,13 @@
 //! CS-4 — the one-shot post-convergence site-fact annotation walk
 //! (`design/typecheck/ownership-inference.md` §13.6(b), §2.3).
 //!
-//! Writes the converged escape / confined / provenance facts onto the stored
-//! `codegen_view` body. Runs **once**, after both strata converge (never
-//! mid-fixpoint — facts from a not-yet-converged environment could be stale).
-//! `unique_static` is left `None` (increment-I pin, §10). `None` everywhere is
-//! the conservative point — a backend ignoring any/all of these is correct.
+//! Writes the converged escape / confined / provenance / `unique_static` facts
+//! onto the stored `codegen_view` body. Runs **once**, after all three strata
+//! converge (never mid-fixpoint — facts from a not-yet-converged environment
+//! could be stale). `unique_static` carries the increment-II write-path proof
+//! (§14.2, CS-II-2): `Some(true)` on a proven unique single-use root, absent
+//! (⇒ `None`) everywhere else. `None` everywhere is the conservative point — a
+//! backend ignoring any/all of these is correct.
 
 use cranelisp_types::{MonoExpr, Span};
 
@@ -16,12 +18,23 @@ pub(crate) fn annotate(body: &mut MonoExpr, facts: &SiteFacts) {
     walk(body, facts);
 }
 
-fn set(span: Span, facts: &SiteFacts, escapes: &mut Option<bool>, confined: &mut Option<bool>) {
+fn set(
+    span: Span,
+    facts: &SiteFacts,
+    escapes: &mut Option<bool>,
+    confined: &mut Option<bool>,
+    unique_static: &mut Option<bool>,
+) {
     if let Some(v) = facts.escapes.get(&span) {
         *escapes = Some(*v);
     }
     if let Some(v) = facts.confined.get(&span) {
         *confined = Some(*v);
+    }
+    // Only `Some(true)` entries exist in `facts.unique`; a missing entry leaves
+    // `unique_static` at its conservative `None`.
+    if let Some(v) = facts.unique.get(&span) {
+        *unique_static = Some(*v);
     }
 }
 
@@ -29,8 +42,8 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
     match expr {
         MonoExpr::IntLit { .. } | MonoExpr::FloatLit { .. } | MonoExpr::BoolLit { .. } => {}
         MonoExpr::Var { .. } => {}
-        MonoExpr::StringLit { span, escapes, confined, .. } => {
-            set(*span, facts, escapes, confined);
+        MonoExpr::StringLit { span, escapes, confined, unique_static, .. } => {
+            set(*span, facts, escapes, confined, unique_static);
         }
         MonoExpr::Let { bindings, body, .. } => {
             for (_, rhs) in bindings {
@@ -43,12 +56,12 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
             walk(then_branch, facts);
             walk(else_branch, facts);
         }
-        MonoExpr::Lambda { body, span, escapes, confined, .. } => {
-            set(*span, facts, escapes, confined);
+        MonoExpr::Lambda { body, span, escapes, confined, unique_static, .. } => {
+            set(*span, facts, escapes, confined, unique_static);
             walk(body, facts);
         }
-        MonoExpr::Apply { callee, args, span, escapes, confined, provenance, .. } => {
-            set(*span, facts, escapes, confined);
+        MonoExpr::Apply { callee, args, span, escapes, confined, unique_static, provenance, .. } => {
+            set(*span, facts, escapes, confined, unique_static);
             if let Some(root) = facts.provenance.get(span) {
                 *provenance = Some(root.clone());
             }
@@ -66,8 +79,8 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
                 walk(&mut arm.body, facts);
             }
         }
-        MonoExpr::VecLit { elements, span, escapes, confined, .. } => {
-            set(*span, facts, escapes, confined);
+        MonoExpr::VecLit { elements, span, escapes, confined, unique_static, .. } => {
+            set(*span, facts, escapes, confined, unique_static);
             for e in elements {
                 walk(e, facts);
             }
@@ -83,8 +96,8 @@ fn walk(expr: &mut MonoExpr, facts: &SiteFacts) {
             walk(launched, facts);
             walk(continuation, facts);
         }
-        MonoExpr::ConstrADT { fields, span, escapes, confined, .. } => {
-            set(*span, facts, escapes, confined);
+        MonoExpr::ConstrADT { fields, span, escapes, confined, unique_static, .. } => {
+            set(*span, facts, escapes, confined, unique_static);
             for f in fields {
                 walk(f, facts);
             }

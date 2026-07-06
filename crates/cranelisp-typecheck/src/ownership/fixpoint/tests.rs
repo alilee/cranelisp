@@ -319,3 +319,127 @@ fn cap_exhaustion_forces_conservative_site_facts() {
     assert!(f.escapes.values().all(|v| *v), "all escape facts forced ⊤ (true) under cap");
     assert!(f.provenance.is_empty(), "provenance dropped under cap");
 }
+
+// =================== Uniqueness stratum (CS-II-1/2) ===================
+
+fn runique(c: &ClusterOwnership, key: &str) -> bool {
+    c.summaries[&Symbol::from(key)].result_unique
+}
+
+#[test]
+fn result_unique_fresh_return_true() {
+    // spec: §14.2 clause 3 (driver) — a body returning a fresh alloc is unique.
+    let uni = vec![callable("a", vec![], boxed(vec![]))];
+    let c = run(uni);
+    assert!(runique(&c, "a"));
+}
+
+#[test]
+fn result_unique_param_return_false() {
+    // spec: §14.2 (negative, driver) — returning a param aliases it ⇒ not unique.
+    let uni = vec![callable("c", vec!["x"], var("x"))];
+    let c = run(uni);
+    assert!(!runique(&c, "c"));
+}
+
+#[test]
+fn result_unique_chains_across_two_call_cluster() {
+    // spec: §14.2 clause 3 (driver) — `a() = (Box)` [unique]; `b() = (a)` chains
+    // the proof through the call ⇒ b unique.
+    let uni = vec![
+        callable("a", vec![], boxed(vec![])),
+        callable("b", vec![], call("a", vec![])),
+    ];
+    let c = run(uni);
+    assert!(runique(&c, "a"));
+    assert!(runique(&c, "b"), "b chains a.result_unique through the call");
+}
+
+#[test]
+fn result_unique_greatest_fixpoint_cycle_stays_true() {
+    // spec: §14.2 (greatest fixpoint) — a mutual cycle both returning fresh-or-
+    // each-other converges to `true` co-inductively (init-optimistic-true holds).
+    // ping() = (if c (Box) (pong)); pong() = (ping).
+    let cond = MonoExpr::BoolLit { value: true, span: s(), ty: ConcreteType::Bool };
+    let ping_body = MonoExpr::If {
+        cond: Box::new(cond),
+        then_branch: Box::new(boxed(vec![])),
+        else_branch: Box::new(call("pong", vec![])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let uni = vec![
+        callable("ping", vec![], ping_body),
+        callable("pong", vec![], call("ping", vec![])),
+    ];
+    let c = run(uni);
+    assert!(runique(&c, "ping"));
+    assert!(runique(&c, "pong"));
+}
+
+#[test]
+fn result_unique_narrows_through_chain() {
+    // spec: §14.2 (greatest fixpoint narrowing) — a non-unique leaf narrows its
+    // whole caller chain from the optimistic `true` init to `false`, in ANY
+    // processing order (the DepSet re-entry). leaf(x)=x [not unique] ⇒ mid(x)=
+    // (leaf x) ⇒ top(x)=(mid x): all false.
+    let uni = vec![
+        callable("top", vec!["x"], call("mid", vec![var("x")])),
+        callable("mid", vec!["x"], call("leaf", vec![var("x")])),
+        callable("leaf", vec!["x"], var("x")),
+    ];
+    let c = run(uni);
+    assert!(!runique(&c, "leaf"));
+    assert!(!runique(&c, "mid"), "mid narrows when leaf narrows");
+    assert!(!runique(&c, "top"), "top narrows when mid narrows");
+}
+
+#[test]
+fn cap_exhaustion_resets_uniqueness_to_false_and_no_sites() {
+    // spec: §14.2 cap-reset — under cap=0 the greatest fixpoint sits ABOVE its
+    // true fixpoint, so result_unique resets to `false` everywhere and every
+    // `unique_static` site fact drops to `None` (empty `unique` map). A body
+    // that would normally be unique (`(Box)`) must publish false under the cap.
+    let tf = TestFixture::new();
+    let module = ModuleFullPath::from("user");
+    let uni = vec![callable("a", vec![], boxed(vec![]))];
+    let c = compute_cluster_with_cap(&tf.env(), &module, &uni, 0);
+    assert!(!runique(&c, "a"), "cap-reset ⇒ result_unique false");
+    assert!(
+        c.facts[&Symbol::from("a")].unique.is_empty(),
+        "cap-reset ⇒ no unique_static site facts"
+    );
+}
+
+#[test]
+fn unique_static_site_fact_emitted_by_driver() {
+    // spec: §14.2 (CS-II-2 driver) — `f() = (let [v (Box@30)] (consume v))`: v is
+    // a fresh single-use root ⇒ the alloc @30 carries unique_static Some(true).
+    let boxsp = Span::new(30, 31);
+    let alloc = MonoExpr::ConstrADT {
+        type_name: FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")),
+        tag: 0,
+        fields: vec![],
+        span: boxsp,
+        ty: ConcreteType::ADT(
+            FQTypeName::new(ModuleFullPath::from("user"), TypeName::from("Box")),
+            vec![],
+        ),
+        escapes: None,
+        confined: None,
+        unique_static: None,
+    };
+    let body = MonoExpr::Let {
+        bindings: vec![(Symbol::from("v"), alloc)],
+        body: Box::new(call("consume", vec![var("v")])),
+        span: s(),
+        ty: ConcreteType::String,
+    };
+    let uni = vec![callable("f", vec![], body)];
+    let c = run(uni);
+    assert_eq!(
+        c.facts[&Symbol::from("f")].unique.get(&boxsp),
+        Some(&true),
+        "the fresh single-use alloc carries unique_static Some(true)"
+    );
+}

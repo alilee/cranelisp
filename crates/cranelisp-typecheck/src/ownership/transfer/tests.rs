@@ -122,7 +122,7 @@ fn intparam(n: &str) -> (Symbol, ConcreteType) {
     (Symbol::from(n), ConcreteType::Int)
 }
 fn run(params: &[(Symbol, ConcreteType)], body: MonoExpr, env: TestEnv) -> TransferResult {
-    transfer(params, &body, &env, &CopyClassifier::new())
+    transfer(params, &body, &env, &CopyClassifier::scalars_only())
 }
 
 // =================== Mode/flow join matrix ===================

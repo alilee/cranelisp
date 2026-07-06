@@ -31,6 +31,8 @@
 //! - [`transfer`] (CS-2) — the pure per-body transfer function.
 //! - [`fixpoint`] (CS-3) — the per-cluster worklist driver + SCC seeding + memo.
 //! - [`confinement`] (CS-3) — strand-context classification + the per-cell join.
+//! - [`uniqueness`] (CS-3, increment II) — the uniqueness stratum:
+//!   `result_unique` chaining + `unique_static` write-path site facts (§14.2).
 //! - [`publish`] (CS-4) — summary / site-fact / value-use publication + the H5 trace.
 
 pub(crate) mod classify;
@@ -40,5 +42,6 @@ pub(crate) mod publish;
 pub(crate) mod sites;
 pub(crate) mod trace;
 pub(crate) mod transfer;
+pub(crate) mod uniqueness;
 
 pub(crate) use fixpoint::run_pass5;

@@ -202,7 +202,21 @@ where
     C: cranelisp_types::CodeStore,
     L: cranelisp_types::LinkerStore,
 {
-    let copy = CopyClassifier::new();
+    // CS-II-3: the `Copy` predicate DELEGATES to the single-sourced
+    // `value_layout` carrier (never a local re-implementation) — the
+    // soundness-coupled predicate the backend's `HeapCategory::Value` arm also
+    // consumes (§14.5). But the tables input stays **`None` (scalars-only)**
+    // until R5/B3 lands: the backend consumes `Mode::Copy` (skips RC — treats
+    // the value by-value) but does NOT yet flatten value-eligible ADTs (Wave-3;
+    // the R5/reuse witnesses are still RED). Classifying a single-scalar product
+    // `Copy` NOW would make the backend bit-copy a still-heap object with no
+    // `rc_inc` — a use-after-free (observed: the web-poll reactor's poll-leaf
+    // handle freed early ⇒ "leaf never completed"). §14.5 pins exactly this:
+    // "Until it lands the Copy point is scalars-only and no unsound configuration
+    // is reachable." The delegation mechanism is in place; B3 flips the input to
+    // `Some(env.modules())` in the SAME change-set that lands the backend
+    // flattening, so both surfaces grow precision together (the couple holds).
+    let copy = CopyClassifier::new(|ty| cranelisp_types::value_layout::<C, L>(ty, None).is_some());
 
     // Optimistic init: every param Borrowed/Copy, Fresh, Consumed, spark clear.
     let mut summaries: HashMap<Symbol, ModeSummary> = HashMap::new();
@@ -322,12 +336,169 @@ where
         }
     }
 
+    // Uniqueness stratum (§14.2, CS-II-1/2, increment II) — the THIRD stratum,
+    // stratified after modes + confinement (nothing in them reads uniqueness, so
+    // exact). A greatest fixpoint: `result_unique` is a MUST-property, init
+    // optimistic-`true`, narrow to `false`. Conservative point = `false`
+    // (degrades to the backend's dynamic rc==1 check). Toggle-off never reaches
+    // here (the driver returned at entry); the modes/confinement cap-reset above
+    // leaves `result_unique = false` on every summary (the `top`/optimistic
+    // init), which the stratum re-derives from the conservative bodies.
+    run_uniqueness_stratum(env, current_module, universe, &by_key, &deps, &mut summaries, &mut facts, cap);
+
     ClusterOwnership { summaries, facts, value_used }
+}
+
+/// The uniqueness-stratum callee-fact env: converged modes summaries + the
+/// WORKING (mid-fixpoint) `result_unique` map + layout eligibility via
+/// `value_layout`.
+struct UniqClusterEnv<'e, 'a, C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> {
+    env: &'e TypeCheckEnv<'a, C, L>,
+    current_module: ModuleFullPath,
+    /// Converged modes summaries (param_modes / result / flow / spark_ops).
+    summaries: &'e HashMap<Symbol, ModeSummary>,
+    /// The mid-fixpoint `result_unique` working map for in-cluster callables.
+    working_unique: &'e HashMap<Symbol, bool>,
+}
+
+impl<C: cranelisp_types::CodeStore, L: cranelisp_types::LinkerStore> super::uniqueness::UniqEnv
+    for UniqClusterEnv<'_, '_, C, L>
+{
+    fn terminal_kind(&self, name: &Symbol) -> Option<TerminalKind> {
+        if self.summaries.contains_key(name) {
+            return Some(TerminalKind::UserFnConcrete);
+        }
+        let (entry, _home) =
+            self.env.resolve_terminal_entry_and_home(&self.current_module, name.as_ref())?;
+        kind_of_entry(&entry)
+    }
+
+    fn summary_of(&self, name: &Symbol) -> Option<ModeSummary> {
+        if let Some(s) = self.summaries.get(name) {
+            return Some(s.clone());
+        }
+        let (entry, _home) =
+            self.env.resolve_terminal_entry_and_home(&self.current_module, name.as_ref())?;
+        entry.mode_summary().cloned()
+    }
+
+    fn result_unique_of(&self, name: &Symbol) -> bool {
+        // In-cluster callee: read the WORKING map (mid-fixpoint chaining). An
+        // import / declared leaf: its persisted summary bit (false by default).
+        if let Some(v) = self.working_unique.get(name) {
+            return *v;
+        }
+        self.env
+            .resolve_terminal_entry_and_home(&self.current_module, name.as_ref())
+            .and_then(|(entry, _)| entry.mode_summary().map(|s| s.result_unique))
+            .unwrap_or(false)
+    }
+
+    fn layout_eligible(&self, ty: &ConcreteType) -> bool {
+        // Reuse targets a heap object with an overwritable slot. A scalar or a
+        // Copy-flattened value (`value_layout` returns `Some`) has no reusable
+        // heap slot; a `String`/heap-ADT/`Vec` keeps its heap representation
+        // (`value_layout` returns `None`) and IS reuse-eligible (§14.2 clause 3).
+        matches!(ty, ConcreteType::String | ConcreteType::ADT(..))
+            && cranelisp_types::value_layout(ty, Some(self.env.modules())).is_none()
+    }
+}
+
+/// Run the uniqueness stratum's greatest-fixpoint (§14.2). Updates each
+/// summary's `result_unique` bit and each callable's `unique` site facts.
+#[allow(clippy::too_many_arguments)]
+fn run_uniqueness_stratum<C, L>(
+    env: &TypeCheckEnv<C, L>,
+    current_module: &ModuleFullPath,
+    universe: &[Callable],
+    by_key: &HashMap<&Symbol, &Callable>,
+    deps: &HashMap<Symbol, HashSet<FQSymbol>>,
+    summaries: &mut HashMap<Symbol, ModeSummary>,
+    facts: &mut HashMap<Symbol, SiteFacts>,
+    cap: usize,
+) where
+    C: cranelisp_types::CodeStore,
+    L: cranelisp_types::LinkerStore,
+{
+    // Optimistic init: result_unique = true for every cluster member (greatest
+    // fixpoint). Narrow to false; conservative point = false.
+    let mut working_unique: HashMap<Symbol, bool> =
+        universe.iter().map(|c| (c.key.clone(), true)).collect();
+
+    let mut queue: VecDeque<Symbol> = universe.iter().map(|c| c.key.clone()).collect();
+    let mut queued: HashSet<Symbol> = queue.iter().cloned().collect();
+    let mut visits = 0usize;
+    let mut exhausted = false;
+    while let Some(key) = queue.pop_front() {
+        queued.remove(&key);
+        visits += 1;
+        if visits > cap {
+            // Cap exhausted: a partially-converged greatest-fixpoint sits ABOVE
+            // its true fixpoint (too many `true`s) ⇒ unsound to publish. Reset
+            // result_unique to `false` everywhere and drop every `unique_static`
+            // site fact to `None` — the write-path analog of the modes ⊤-reset
+            // (§14.2 cap-reset; §13.6(h)). The site-fact emission is SKIPPED
+            // entirely below (a directly-fresh allocation would otherwise still
+            // read `true` from `is_direct_fresh`), so `unique` stays empty.
+            for c in universe {
+                working_unique.insert(c.key.clone(), false);
+            }
+            exhausted = true;
+            break;
+        }
+        let Some(c) = by_key.get(&key) else { continue };
+
+        let uenv = UniqClusterEnv {
+            env,
+            current_module: current_module.clone(),
+            summaries,
+            working_unique: &working_unique,
+        };
+        let r = super::uniqueness::analyze_uniqueness(&c.params, &c.body, &uenv);
+
+        // Monotone narrowing: only true→false. Re-enter callers on a change.
+        let changed = working_unique.get(&key).copied().unwrap_or(true) != r.result_unique;
+        working_unique.insert(key.clone(), r.result_unique);
+        if changed {
+            let this_fq = FQSymbol { module: current_module.clone(), symbol: key.clone() };
+            for (other, dset) in deps {
+                if other != &key && dset.contains(&this_fq) && queued.insert(other.clone()) {
+                    queue.push_back(other.clone());
+                }
+            }
+        }
+    }
+
+    // Commit the converged result_unique bits.
+    for (key, u) in &working_unique {
+        if let Some(s) = summaries.get_mut(key) {
+            s.result_unique = *u;
+        }
+    }
+
+    // Site facts (§13.6(b)): computed ONCE, post-convergence, with the converged
+    // working_unique in hand — UNLESS the fixpoint exhausted its cap, in which
+    // case every `unique_static` fact drops to `None` (skip emission entirely).
+    if exhausted {
+        return;
+    }
+    for c in universe {
+        let uenv = UniqClusterEnv {
+            env,
+            current_module: current_module.clone(),
+            summaries,
+            working_unique: &working_unique,
+        };
+        let r = super::uniqueness::analyze_uniqueness(&c.params, &c.body, &uenv);
+        if let Some(f) = facts.get_mut(&c.key) {
+            f.unique = r.unique_sites;
+        }
+    }
 }
 
 /// The optimistic ⊥ summary for the fixpoint init: params `Copy`/`Borrowed`,
 /// result `Fresh`, flow `Consumed`, spark clear (§3.2).
-fn optimistic(params: &[(Symbol, ConcreteType)], copy: &CopyClassifier) -> ModeSummary {
+fn optimistic(params: &[(Symbol, ConcreteType)], copy: &CopyClassifier<'_>) -> ModeSummary {
     let n = params.len();
     ModeSummary {
         param_modes: params

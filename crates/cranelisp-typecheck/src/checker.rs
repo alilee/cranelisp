@@ -1285,11 +1285,27 @@ where
                     return (Some(scheme), None);
                 }
 
-                // Neither candidate resolved. Surface the absolute-path gap if
-                // present, otherwise the child-path gap.
+                // Neither candidate resolved a scheme. Choose which cause to
+                // surface (FIXME 0513, spec §8.6.4 order-independence):
                 let gap = match abs {
+                    // The absolute probe carried its own gap — its named module
+                    // was itself unknown to the session. Surface it.
                     Ok((_, Some(g))) => Some(g),
-                    _ => match child {
+                    // The absolute module is LOADED but the member is absent
+                    // (`Ok((None, None))` — a definitive member-not-found with no
+                    // gap). This MUST win over the child probe's phantom
+                    // `<current>.<qualifier>` gap: the honest diagnostic is
+                    // "module `<module_part>` has no member `<name_part>`" (authored
+                    // int-side from the absent-member fact), NOT a hunt for a
+                    // non-existent `<current>.<module_part>` submodule. Returning no
+                    // gap suppresses the phantom so the resolution is
+                    // order-independent (a loaded absolute module always beats an
+                    // unloaded child probe).
+                    Ok((_, None)) => None,
+                    // A hard error from the absolute probe (e.g. a visibility
+                    // violation) is not a member-absent verdict — preserve the
+                    // prior last-writer-wins fall-through to the child probe's gap.
+                    Err(_) => match child {
                         Ok((_, gap)) => gap,
                         Err(_) => None,
                     },

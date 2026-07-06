@@ -337,6 +337,52 @@
         assert!(result.is_some());
     }
 
+    // spec: 08-modules §8.6.4 — a qualified reference whose absolute module IS
+    // loaded but whose MEMBER is absent yields an HONEST member-not-found: no
+    // phantom `<current>.<qualifier>` child gap escapes `lookup` (FIXME 0513,
+    // CS-II-0). `resolve_qualified("primitives", "nosuchfn")` returns
+    // `Ok((None, None))` (module present, member absent — no gap); the child
+    // probe hits the UNLOADED `user.primitives` and would produce a phantom
+    // `SymbolTypechecked(user.primitives/nosuchfn)` gap — the absolute reality
+    // MUST suppress it.
+    #[test]
+    fn qualified_lookup_loaded_module_missing_member_has_no_phantom_child_gap() {
+        let mut tf = tf();
+        // `primitives` is a real, loaded module carrying `known` — but NOT
+        // `nosuchfn`. `user.primitives` is never created (the phantom child).
+        seed_module(&mut tf, "primitives", vec![("known", Visibility::Public)]);
+        tf.set_current_module(ModuleFullPath::from("user"));
+
+        let (scheme, gap) = tf.env().lookup(&tf.state, "primitives/nosuchfn");
+        assert!(scheme.is_none(), "the missing member does not resolve");
+        assert!(
+            gap.is_none(),
+            "a loaded-module member-miss is an honest not-found — no phantom \
+             `user.primitives/nosuchfn` child gap may escape, got {gap:?}",
+        );
+
+        // Control: the loaded member still resolves through the same arm.
+        let (scheme, gap) = tf.env().lookup(&tf.state, "primitives/known");
+        assert!(scheme.is_some(), "the present member resolves");
+        assert!(gap.is_none(), "a winning candidate carries no gap");
+    }
+
+    // spec: 08-modules §8.6.6 — a qualified reference whose absolute module is
+    // itself UNKNOWN to the session still surfaces the precise cross-module gap
+    // (the FIXME-0513 reorder must not swallow a genuine unknown-module gap).
+    #[test]
+    fn qualified_lookup_unknown_absolute_module_still_surfaces_gap() {
+        let mut tf = tf();
+        tf.set_current_module(ModuleFullPath::from("user"));
+
+        let (scheme, gap) = tf.env().lookup(&tf.state, "ghost/foo");
+        assert!(scheme.is_none());
+        assert!(
+            matches!(gap, Some(cranelisp_types::ResolutionGap::SymbolTypechecked(_))),
+            "an unknown absolute module surfaces its own SymbolTypechecked gap, got {gap:?}",
+        );
+    }
+
     // --- Builtin seeding in new modules ---
 
     // spec: 08-modules §8.9 — new module is empty (Principle 17 amendment,
