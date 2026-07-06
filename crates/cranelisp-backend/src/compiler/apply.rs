@@ -502,6 +502,22 @@ where
                     } else {
                         self.compile_consuming_arg_list(args)?
                     };
+                    // H3 per-extern adaptation-pair attribution (§9.2 / §13.2.1):
+                    // `str-len` is the single increment-I template instance of the
+                    // dual-symbol convention — a hand-audited only-read consuming
+                    // extern whose call sites pay a Decision-24 adaptation pair
+                    // (the consuming dec, plus an adaptation inc on a borrowed
+                    // arg). Tally the site into `CRANELISP_RC_STATS` so `/qa`'s
+                    // L-D5 lane reads the per-extern pair population. Runtime tally
+                    // (the pair is paid at run) gated on the codegen-time RC_STATS
+                    // switch (off ⇒ no emitted IR ⇒ byte-identical).
+                    if op_name.as_ref() == "str-len" {
+                        heap::emit_rc_stat_call_gated(
+                            &mut self.builder,
+                            self.module,
+                            "runtime/extern_adapt_str_len",
+                        );
+                    }
                     self.in_tail_position = saved_tail;
                     // Per Decision 0048 §"Structural invariant — backend
                     // dep-ban": every PRIMITIVE call site MUST emit

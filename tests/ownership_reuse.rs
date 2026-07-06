@@ -523,9 +523,27 @@ fn chaining_map_inc_map_dec_two_in_place_passes() {
 // spec: design/typecheck/ownership-inference.md §7.2 — the differential twin:
 // with the ownership analysis OFF (CRANELISP_NO_OWNERSHIP), the pipeline cannot
 // prove uniqueness, so each `vec-set` on the shared vec COW-copies — the
-// composition allocates strictly MORE than the reuse-enabled run. RED at draft:
-// on and off allocate the same (no reuse path exists to differentiate them).
-// Flips when reuse tokens make the ON run allocate fewer.
+// composition allocates strictly MORE than the reuse-enabled run.
+//
+// RE-HOMED TO /typecheck (S103 Wave-3b gate; FIXME 0528). This test stays RED —
+// it is the EXPECTED increment-II-boundary deferral, NOT a backend regression,
+// and NOT a RED beyond the known set. The II-B2 backend half is COMPLETE: reuse
+// tokens + `reuse_hit`/`reuse_miss` are live, and the static-proof check-elision
+// reads `unique_static` off the fresh-producing node and elides the dynamic
+// rc==1 probe when the proof holds (verified: `(vec-set [10 20 30] 0 99)` takes
+// the proof-elided in-place arm — see the proof-elided fence below). The backend
+// CANNOT flip this test: the missing precondition is a TYPECHECK
+// uniqueness-PRESERVATION analysis (unique-in ⇒ unique-out). `map-go`'s base case
+// `(if (eq-i64 i n) v …)` returns the PARAM `v` (not a fresh RHS), so
+// `result_unique = false`; the inner `(mapf dec v)` gets no `unique_static`, the
+// chaining proof never propagates, and both `map-go` first-iteration `vec-set`s
+// COW-copy IDENTICALLY on and off ⇒ `on < off` never holds. Root cause + the
+// proposed `result_unique` param-preservation extension: FIXME
+// design/arch/fixmes/0528-result-unique-param-preservation.md. Kept
+// failing-not-ignored (NO #[ignore]) — the failing test IS the trigger for 0528
+// (per memory/feedback_no_fixme_with_failing_test: the test + the FIXME coexist
+// only because 0528's resolution is a genuinely-testless typecheck design
+// change; NOT double-counted as backend-owed).
 #[test]
 fn chaining_toggle_off_allocates_intermediate() {
     let src = CHAIN_SRC.replace("{N}", "64");
@@ -554,4 +572,141 @@ fn chaining_toggle_off_allocates_intermediate() {
          conservative path COW-copies each pass): on allocs={on}, off allocs={off}. \
          RED until reuse tokens land (differential twin, qa plan §1.5)."
     );
+}
+
+// =============================================================================
+// The PROOF-ELIDED reuse fence (§6.4 MUST — S103 Wave-3b /review gate condition 1).
+//
+// All the L-C3 fences above drive the DYNAMIC rc==1 token path (Var/param-rooted
+// vecs threaded through recursion — the `elide_rc_check = false` arm). This group
+// covers the STATIC PROOF-ELIDED path: a directly-fresh `(vec-set [1 2 3] 0 9)`
+// whose vec node carries `unique_static = Some(true)` fires `elide_rc_check` —
+// the static proof SKIPS the dynamic rc==1 check and takes the in-place/reuse arm
+// UNCONDITIONALLY. Per §6.4 this arm is **UAF-critical**: eliding the rc==1 probe
+// on a value the proof got wrong is the §6.3 heap-corruption class one layer worse
+// — there is NO dynamic backstop. §6.4 phrases the fence obligation as a MUST for
+// exactly this reason. These are GREEN (the mechanism is delivered + sound per
+// /review); they are the durable regression guard for the elided UAF surface.
+//
+// Probed 2026-07-05: `(vec-set [10 20 30] 0 99)` ⇒ value 99, reuse_hit=1
+// reuse_miss=0, allocs==deallocs (the proof-elided in-place arm); the aliased
+// shape `(let [v [..] w (id v) v2 (vec-set v 0 99)])` ⇒ reuse_hit=0 reuse_miss=1
+// (COW — elision NOT taken, v is rc>1), value 109 (the retained ref unchanged).
+// =============================================================================
+
+// spec: design/backend/ownership-codegen.md §6.4 — proof-elided VALUE leg
+// (vec-set): a directly-fresh literal `(vec-set [10 20 30] 0 99)` is proven
+// unique (`unique_static = Some(true)`), so the dynamic rc==1 check is elided and
+// the in-place arm is taken unconditionally. The elided mutation MUST produce the
+// right value — index 0 reads 99. The reuse counters discriminate the ELIDED
+// path from the dynamic COW path: reuse_hit>0 (the in-place/reuse arm fired) and
+// reuse_miss==0 (no copy). If the proof-elision were mis-emitted (took the copy
+// arm, or corrupted the buffer) this fails on value or on the counter split.
+#[test]
+fn elided_proof_fresh_vec_set_value_correct() {
+    let out = run_with_rc_stats(
+        "(import [primitives [*]])\n\
+         (defn main [] (Pure (vec-get (vec-set [10 20 30] 0 99) 0)))\n",
+    );
+    let hits = rc_field(&out.stderr, "reuse_hit");
+    let misses = rc_field(&out.stderr, "reuse_miss");
+    assert!(
+        hits > 0,
+        "a directly-fresh proof-elided `(vec-set [10 20 30] 0 99)` MUST take the \
+         in-place/reuse arm (reuse_hit>0 — the static `unique_static=Some(true)` \
+         proof elides the rc==1 check, §6.4); got reuse_hit={hits}. stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(
+        misses, 0,
+        "the proof-elided arm takes the in-place path unconditionally — no copy \
+         (reuse_miss==0); got reuse_miss={misses}. stderr:\n{}",
+        out.stderr
+    );
+    assert_exit_value(out, 99);
+}
+
+// spec: design/backend/ownership-codegen.md §6.4 — proof-elided VALUE leg
+// (vec-push): the §6.4 MUST covers vec-push too. A directly-fresh
+// `(vec-push [10 20 30] 99)` is proven unique, elides the rc==1 check, and grows
+// in place; the appended element reads back at index 3. Same reuse-counter
+// discriminator (reuse_hit>0, reuse_miss==0) confirms the elided grow arm fired.
+#[test]
+fn elided_proof_fresh_vec_push_value_correct() {
+    let out = run_with_rc_stats(
+        "(import [primitives [*]])\n\
+         (defn main [] (Pure (vec-get (vec-push [10 20 30] 99) 3)))\n",
+    );
+    let hits = rc_field(&out.stderr, "reuse_hit");
+    let misses = rc_field(&out.stderr, "reuse_miss");
+    assert!(
+        hits > 0,
+        "a directly-fresh proof-elided `(vec-push [10 20 30] 99)` MUST take the \
+         in-place grow/reuse arm (reuse_hit>0, §6.4); got reuse_hit={hits}. \
+         stderr:\n{}",
+        out.stderr
+    );
+    assert_eq!(misses, 0, "proof-elided grow: no copy (reuse_miss==0); stderr:\n{}", out.stderr);
+    assert_exit_value(out, 99);
+}
+
+// spec: design/backend/ownership-codegen.md §6.4 — proof-elided HEAP-BALANCE leg:
+// the elided in-place path must not leak. Each iteration produces a fresh literal
+// `[10 20 30]` and proof-elides the `(vec-set … 0 99)` (allocate → mutate in
+// place → free); allocs==deallocs, and the imbalance is ITERATION-INDEPENDENT (a
+// per-iteration leak on the elided path would scale with N). Probed: N=50 → 51/51,
+// N=1000 → 1001/1001, reuse_hit scales with N (the elided arm fires each pass).
+#[test]
+fn elided_proof_fresh_heap_balance_iteration_independent() {
+    let template = "(import [primitives [*]])\n\
+        (defn spin [:Int n :Int acc]\n\
+        \x20 (if (eq-i64 n 0) acc\n\
+        \x20   (spin (sub-i64 n 1)\n\
+        \x20     (add-i64 acc (vec-get (vec-set [10 20 30] 0 99) 0)))))\n\
+        (defn main [] (Pure (spin {N} 0)))\n";
+    assert_iteration_independent_imbalance(template, "proof-elided fresh vec-set");
+}
+
+// spec: design/backend/ownership-codegen.md §6.4 — proof-elided ALIASING NEGATIVE:
+// the proof-elision MUST fire ONLY on genuinely-fresh/unique nodes. A fresh
+// literal that is RETAINED by a second owning reference (`w = (id v)`, rc>1) is
+// NOT proven unique at the `(vec-set v 0 99)` site (`unique_static = Some(false)`
+// / `None`), so the dynamic rc==1 check is NOT elided and the op COW-copies — the
+// retained `w` observes the ORIGINAL element. Value MUST be 10 + 99 = 109 (the
+// aliased reference unchanged); a wrong reuse-on-shared would give 198. The
+// counter split pins the mechanism CHOSE COW: reuse_hit==0, reuse_miss>0. This is
+// the exact UAF surface §6.4 flags — the proof-elided arm has no dynamic backstop,
+// so we fence that it is not taken where a second reference exists. (`(id v)`
+// mints a genuine retained ref; the pure-SSA-alias `(let [w v])` shape is a
+// separate known-defect guard — `l_c3_pure_ssa_alias_vec_set_preserves_value_semantics`.)
+#[test]
+fn elided_proof_not_taken_on_aliased_value_neg() {
+    let out = run_with_rc_stats(
+        "(import [primitives [*]])\n\
+         (defn id [x] x)\n\
+         (defn probe []\n\
+         \x20 (let [v [10 20 30]\n\
+         \x20       w (id v)\n\
+         \x20       v2 (vec-set v 0 99)]\n\
+         \x20   (add-i64 (vec-get w 0) (vec-get v2 0))))\n\
+         (defn main [] (Pure (probe)))\n",
+    );
+    let hits = rc_field(&out.stderr, "reuse_hit");
+    let misses = rc_field(&out.stderr, "reuse_miss");
+    assert_eq!(
+        hits, 0,
+        "the proof-elision MUST NOT fire on a value with a second owning reference \
+         (rc>1 via `(id v)`): reuse_hit must be 0 (COW, not elided in-place); got \
+         reuse_hit={hits}. A proof-elided reuse on a shared buffer is the §6.4 \
+         UAF class. stderr:\n{}",
+        out.stderr
+    );
+    assert!(
+        misses > 0,
+        "the shared-value `vec-set` must take the COW copy arm (reuse_miss>0); got \
+         reuse_miss={misses}. stderr:\n{}",
+        out.stderr
+    );
+    // Value semantics: the retained `w` reads the ORIGINAL 10; v2[0] is 99 ⇒ 109.
+    assert_exit_value(out, 10 + 99);
 }

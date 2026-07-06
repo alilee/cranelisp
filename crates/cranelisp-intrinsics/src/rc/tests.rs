@@ -271,11 +271,74 @@ fn h2_stats_line_carries_the_per_mechanism_family() {
     assert!(stack_at > deallocs_at, "per-mechanism family must follow the original four");
 }
 
-// spec: design/backend/ownership-codegen.md §13.2 — placeholder honesty: reuse
-// hit/miss are inert (increment-II) and print as 0, NOT fabricated.
+// spec: design/backend/ownership-codegen.md §6.5 — reuse hit/miss are LIVE
+// runtime tallies at increment II. Absent any tally (fresh process) they read 0
+// (honest, not fabricated); a tally advances them.
 #[test]
-fn h2_reuse_placeholders_are_honest_zeros() {
+fn reuse_counters_default_zero_and_advance_on_tally() {
+    let (h0, m0) = reuse_counts();
+    // Fresh process (nextest per-test isolation): nothing has tallied reuse.
+    assert_eq!(h0, 0, "reuse_hit reads 0 before any tally");
+    assert_eq!(m0, 0, "reuse_miss reads 0 before any tally");
+    tally_reuse_hit();
+    tally_reuse_hit();
+    tally_reuse_miss();
+    let (h1, m1) = reuse_counts();
+    assert_eq!(h1, h0 + 2, "two reuse-hit tallies advance the hit counter by 2");
+    assert_eq!(m1, m0 + 1, "one reuse-miss tally advances the miss counter by 1");
+}
+
+// spec: design/backend/ownership-codegen.md §6.5 — NEGATIVE: a reuse-hit tally
+// must NOT touch the reuse-miss counter (and vice versa) — the two arms are
+// distinct discriminator sides.
+#[test]
+fn reuse_hit_and_miss_are_independent() {
+    let (h0, m0) = reuse_counts();
+    tally_reuse_hit();
+    let (h1, m1) = reuse_counts();
+    assert_eq!(h1, h0 + 1, "reuse-hit tally advances hit");
+    assert_eq!(m1, m0, "reuse-hit tally must NOT advance miss");
+}
+
+// spec: design/backend/ownership-codegen.md §6.5 / §13.2.1 — the [RC_STATS] line
+// carries the reuse family reflecting the live counters (not a hardcoded 0).
+#[test]
+fn reuse_family_reflects_live_counters_in_the_line() {
+    tally_reuse_hit();
+    tally_reuse_miss();
+    let (h, m) = reuse_counts();
     let line = rc_stats_line();
-    assert!(line.contains("reuse_hit=0"), "reuse_hit must be an honest 0 placeholder: {line}");
-    assert!(line.contains("reuse_miss=0"), "reuse_miss must be an honest 0 placeholder: {line}");
+    assert!(
+        line.contains(&format!("reuse_hit={h}")),
+        "line must report the live reuse_hit={h}: {line}"
+    );
+    assert!(
+        line.contains(&format!("reuse_miss={m}")),
+        "line must report the live reuse_miss={m}: {line}"
+    );
+}
+
+// spec: design/backend/ownership-codegen.md §9.2 / §13.2.1 — H3: the per-extern
+// adaptation-pair family names `str-len` in the line (present even at count 0 —
+// the family-presence honesty), and its runtime tally hook advances the count.
+#[test]
+fn h3_str_len_adapt_family_present_and_advances() {
+    // Family name present at count 0 (fresh process).
+    assert!(
+        rc_stats_line().contains("str-len_adapt="),
+        "the H3 per-extern family must name str-len: {}",
+        rc_stats_line()
+    );
+    let c0 = str_len_adapt_count();
+    extern_adapt_str_len_stat();
+    extern_adapt_str_len_stat();
+    assert_eq!(
+        str_len_adapt_count(),
+        c0 + 2,
+        "the str-len adaptation hook must advance the per-extern tally"
+    );
+    assert!(
+        rc_stats_line().contains(&format!("str-len_adapt={}", c0 + 2)),
+        "the line must report the live str-len adaptation count"
+    );
 }

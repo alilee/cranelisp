@@ -70,11 +70,13 @@
 //! The 12 `cranelisp_trace_*` entries (incl. the pure descriptor-driven
 //! `cranelisp_trace_format`) ARE in this catalog — the 2026-06-04 user ruling
 //! retracted D40's trace-relocation-to-int and hosts the bodies here (BC §4b
-//! invariant 12; `design/arch/tracing.md`). The table is 34 entries: 22 core
+//! invariant 12; `design/arch/tracing.md`). The table is 37 entries: 25 core
 //! (incl. `catch-runtime-error`, the protected-call combinator,
 //! `design/arch/test-discovery.md` §6; `cranelisp_spark_budget_try_reserve`,
-//! the create-gate reservation primitive, lenient-eval.md §3.6.1, S92; and the
-//! 2 S99 `runtime/rc_stat_{inc,dec}` measurement tally helpers) + the 12
+//! the create-gate reservation primitive, lenient-eval.md §3.6.1, S92; the
+//! 2 S99 `runtime/rc_stat_{inc,dec}` measurement tally helpers; and the 3
+//! increment-II `runtime/{reuse_hit,reuse_miss,extern_adapt_str_len}` tally
+//! helpers, §6.5/§9.2) + the 12
 //! `cranelisp_trace_*` family. The catalog + its tests are the single owner of
 //! the trace name-agreement contract (closing the prior no-owner gap).
 
@@ -106,12 +108,14 @@ pub struct IntrinsicEntry {
 /// The published flat Import-catalog of this crate's backend-emitted-call
 /// targets (BC §4b invariant 11 — Decision-0048-for-intrinsics).
 ///
-/// Returns a `'static` slice of the 34 entries — 22 core (the set relocated
+/// Returns a `'static` slice of the 37 entries — 25 core (the set relocated
 /// from the retired `cranelisp_backend::jit::intrinsic_symbols()`, plus
 /// `cranelisp_ivar_dealloc`, the IVar-aware drop path;
 /// `cranelisp_spark_budget_try_reserve`, the create-gate primitive;
 /// `catch-runtime-error`, the protected-call combinator, test-discovery.md §6;
-/// and the 2 S99 `runtime/rc_stat_{inc,dec}` tally helpers) plus the 12
+/// the 2 S99 `runtime/rc_stat_{inc,dec}` tally helpers; and the 3 increment-II
+/// `runtime/{reuse_hit,reuse_miss,extern_adapt_str_len}` tally helpers,
+/// §6.5/§9.2) plus the 12
 /// `cranelisp_trace_*` family (S76 trace ruling, BC §4b invariant 12).
 /// See this module's `//!` for the consumer contract, the ABI guardrail, and the
 /// scope boundary.
@@ -139,6 +143,15 @@ pub fn intrinsics_table() -> &'static [IntrinsicEntry] {
         // the symbols when the gate is on. Measurement-only; see `crate::rc`.
         IntrinsicEntry { name: "runtime/rc_stat_inc", ptr: crate::rc::rc_stat_inc as *const u8, param_count: 0, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/rc_stat_dec", ptr: crate::rc::rc_stat_dec as *const u8, param_count: 0, has_return: true, is_runtime: true },
+        // Increment-II (§6.5 / §9.2) RC-stats tally helpers: zero-arg runtime
+        // tallies emitted on the reuse/copy arm of a COW site (`reuse_hit` /
+        // `reuse_miss`) and at each `str-len` call site (`extern_adapt_str_len`)
+        // ONLY under the backend's codegen-time `CRANELISP_RC_STATS` gate (off ⇒
+        // never emitted ⇒ inert entries). Registered unconditionally so JIT/link
+        // can resolve the symbols when the gate is on. Measurement-only.
+        IntrinsicEntry { name: "runtime/reuse_hit", ptr: crate::rc::reuse_hit_stat as *const u8, param_count: 0, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "runtime/reuse_miss", ptr: crate::rc::reuse_miss_stat as *const u8, param_count: 0, has_return: true, is_runtime: true },
+        IntrinsicEntry { name: "runtime/extern_adapt_str_len", ptr: crate::rc::extern_adapt_str_len_stat as *const u8, param_count: 0, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/alloc_string", ptr: crate::heap_string::heap_alloc_string as *const u8, param_count: 2, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/string_read", ptr: crate::heap_string::string_read as *const u8, param_count: 1, has_return: true, is_runtime: true },
         IntrinsicEntry { name: "runtime/vec_new", ptr: crate::vec_runtime::vec_new as *const u8, param_count: 1, has_return: true, is_runtime: true },

@@ -40,6 +40,13 @@ pub(crate) struct VecSetCow {
     /// The consumed-source RC polarity (§13.3 Ruling 2) — whether the copy
     /// branch must release an owned reference to the source Vec.
     pub source_ownership: SourceOwnership,
+    /// Increment-II static-uniqueness proof (§6.4): `true` when the source Vec
+    /// node carries `unique_static == Some(true)` — proven a fresh unique single-
+    /// use root. The dynamic `rc == 1` probe is then ELIDED (the branch is dead,
+    /// take the in-place arm unconditionally); the reuse mechanism is unchanged,
+    /// one load+cmp+brif fewer. `false` ⇒ emit the dynamic token verbatim
+    /// (proof absent/`None` ⇒ Decision-24, the §2.2 else-arm discipline).
+    pub elide_rc_check: bool,
 }
 
 /// Consumed-source RC polarity for the shared COW cores
@@ -89,6 +96,27 @@ fn release_consumed_source<M: Module>(
     } = source_ownership
     {
         emit_vec_rc_dec_with_drop(builder, module, vec_val, *vec_drop_func_id, *elem_dec_fn_ptr);
+    }
+}
+
+/// Read the increment-II `unique_static` write-path proof off a **fresh-
+/// producing** Vec node (§6.4; `design/backend/ownership-codegen.md` HARD
+/// requirement). The proof is a site fact emitted by typecheck on the value's
+/// ORIGIN — a `VecLit` / `Apply` / `ConstrADT` / `StringLit` — never on a
+/// consuming-use `Var` (which carries no `unique_static` field, so reading it
+/// there would make every proof `None` ⇒ the optimization silently dead). A COW
+/// site whose Vec arg IS such a fresh node (e.g. `(vec-set [1 2 3] 0 9)`) can
+/// therefore elide its dynamic `rc == 1` probe; a `Var`-rooted COW keeps the
+/// dynamic token (monotone-sound). `Some(true)` ⇒ proven unique; anything else
+/// (`Some(false)` / `None` / a non-fresh node / analysis-off) ⇒ conservative.
+pub(crate) fn node_unique_static(node: &MonoExpr) -> Option<bool> {
+    match node {
+        MonoExpr::VecLit { unique_static, .. }
+        | MonoExpr::Apply { unique_static, .. }
+        | MonoExpr::ConstrADT { unique_static, .. }
+        | MonoExpr::StringLit { unique_static, .. } => *unique_static,
+        // A `Var` (or any other node) carries no origin proof — conservative.
+        _ => None,
     }
 }
 
@@ -303,6 +331,11 @@ where
             let old_elem_category = elem_type
                 .as_ref()
                 .map(|t| signature_heap_category(t, Some(self.ctx.symbol_tables)));
+            // Increment-II static-uniqueness proof (§6.4): if the Vec arg is a
+            // FRESH-PRODUCING node proven unique (`unique_static == Some(true)`),
+            // the dynamic rc==1 probe is dead — take the in-place arm and elide
+            // the check. Read off the fresh node, NEVER a consuming-use Var.
+            let elide_rc_check = node_unique_static(vec_expr) == Some(true);
             emit_vec_set_cow_core(
                 &mut self.builder,
                 self.module,
@@ -319,6 +352,7 @@ where
                     // temporary) — the scope dec's it. Copy branch releases
                     // nothing (§13.3 Ruling 2, static-site polarity).
                     source_ownership: SourceOwnership::Borrowed,
+                    elide_rc_check,
                 },
                 span,
             )
@@ -373,6 +407,9 @@ where
         let is_last = self.is_vec_last_use(vec_expr);
 
         if is_last {
+            // Increment-II static-uniqueness proof (§6.4): elide the dynamic
+            // rc==1 probe when the Vec arg is a fresh node proven unique.
+            let elide_rc_check = node_unique_static(vec_expr) == Some(true);
             // Shared core with the §12.7 wrapper emission (Principle 7).
             emit_vec_push_cow_core(
                 &mut self.builder,
@@ -383,6 +420,7 @@ where
                 // Static in-place site: source owned by scope (or transferring
                 // temporary) — copy branch releases nothing (§13.3 Ruling 2).
                 SourceOwnership::Borrowed,
+                elide_rc_check,
                 span,
             )
         } else {
@@ -1177,6 +1215,11 @@ where
                         old_elem_category: elem_category,
                         dealloc_id: self.ctx.dealloc_func_id,
                         source_ownership,
+                        // Wrapper/curry body: the Vec arrives as an OWNED closure
+                        // param (a `Value`, not a fact-bearing MonoExpr node), so
+                        // no static uniqueness proof is available here — keep the
+                        // dynamic rc==1 token (conservative, §6.4).
+                        elide_rc_check: false,
                     },
                     span,
                 )
@@ -1195,6 +1238,8 @@ where
                     params[1],
                     inc_fn_ptr,
                     source_ownership,
+                    // Wrapper/curry body: no fact-bearing node — dynamic token.
+                    false,
                     span,
                 )
             }
@@ -1340,12 +1385,20 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
         old_elem_category,
         dealloc_id,
         source_ownership,
+        elide_rc_check,
     } = op;
 
-    // Load RC and check if == 1 (unique owner).
-    let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
-    let one = builder.ins().iconst(types::I64, 1);
-    let is_unique = builder.ins().icmp(IntCC::Equal, rc, one);
+    // Uniqueness discriminator (§6.4): with a static proof (`elide_rc_check`) the
+    // in-place arm is proven-taken — emit `is_unique = true` and skip the rc
+    // load+cmp (the copy block is then dead, DCE'd). Absent the proof, load rc
+    // and compare == 1 (the dynamic token, verbatim pre-II behaviour).
+    let is_unique = if elide_rc_check {
+        builder.ins().iconst(types::I64, 1)
+    } else {
+        let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
+        let one = builder.ins().iconst(types::I64, 1);
+        builder.ins().icmp(IntCC::Equal, rc, one)
+    };
 
     let mutate_block = builder.create_block();
     let copy_block = builder.create_block();
@@ -1359,6 +1412,12 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
     // Mutate-in-place path: dec old element, store new, return same vec.
     builder.switch_to_block(mutate_block);
     builder.seal_block(mutate_block);
+
+    // Increment-II reuse tally (§6.5): the in-place arm reuses the owned buffer
+    // (a reuse HIT — dynamically taken, or the proof-elided codegen-certain hit).
+    // Runtime tally gated on the codegen-time `CRANELISP_RC_STATS` switch (off ⇒
+    // no emitted IR).
+    heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_hit");
 
     // Load data_ptr and old element.
     let data_ptr = heap::heap_load(builder, vec_val, HeapVec::DATA_PTR_OFFSET);
@@ -1390,6 +1449,9 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
     // Copy path: call vec-set-copy extern.
     builder.switch_to_block(copy_block);
     builder.seal_block(copy_block);
+    // Increment-II reuse tally (§6.5): the copy arm cannot reuse (rc>1) — a
+    // reuse MISS. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
+    heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_miss");
     let copy_result = emit_extern_call_in_wrapper(
         builder,
         module,
@@ -1415,6 +1477,7 @@ pub(crate) fn emit_vec_set_cow_core<M: Module>(
 /// Builder-parameterized single source (Principle 7) for the static
 /// `compile_vec_push` last-use arm and the §12.7 wrapper emission. The
 /// new-element consuming inc is the CALLER's decision — not emitted here.
+#[allow(clippy::too_many_arguments)] // +1 for the §6.4 elide_rc_check proof gate
 pub(crate) fn emit_vec_push_cow_core<M: Module>(
     builder: &mut FunctionBuilder,
     module: &mut M,
@@ -1422,12 +1485,19 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
     new_val: Value,
     inc_fn_ptr: Value,
     source_ownership: SourceOwnership,
+    elide_rc_check: bool,
     span: Span,
 ) -> Result<Value, CranelispError> {
-    // Load RC.
-    let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
-    let one = builder.ins().iconst(types::I64, 1);
-    let is_unique = builder.ins().icmp(IntCC::Equal, rc, one);
+    // Uniqueness discriminator (§6.4): a static proof (`elide_rc_check`) makes the
+    // unique arm proven-taken — emit `is_unique = true`, skip the rc load+cmp (the
+    // copy block is dead, DCE'd). Absent the proof, the dynamic rc==1 token.
+    let is_unique = if elide_rc_check {
+        builder.ins().iconst(types::I64, 1)
+    } else {
+        let rc = heap::heap_load(builder, vec_val, HeapHeader::RC_OFFSET);
+        let one = builder.ins().iconst(types::I64, 1);
+        builder.ins().icmp(IntCC::Equal, rc, one)
+    };
 
     let unique_block = builder.create_block();
     let copy_block = builder.create_block();
@@ -1441,6 +1511,11 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
     // Unique path: check if len < cap.
     builder.switch_to_block(unique_block);
     builder.seal_block(unique_block);
+
+    // Increment-II reuse tally (§6.5): the unique (rc==1) arm reuses the owned
+    // Vec struct — whether the fast in-place store or the grow realloc — a reuse
+    // HIT. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
+    heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_hit");
 
     let len = heap::heap_load(builder, vec_val, HeapVec::LEN_OFFSET);
     let cap = heap::heap_load(builder, vec_val, HeapVec::CAP_OFFSET);
@@ -1481,6 +1556,9 @@ pub(crate) fn emit_vec_push_cow_core<M: Module>(
     // Copy path: call vec-push-copy extern.
     builder.switch_to_block(copy_block);
     builder.seal_block(copy_block);
+    // Increment-II reuse tally (§6.5): the copy arm cannot reuse (rc>1) — a
+    // reuse MISS. Gated on `CRANELISP_RC_STATS` (off ⇒ no emitted IR).
+    heap::emit_rc_stat_call_gated(builder, module, "runtime/reuse_miss");
     let copy_result = emit_extern_call_in_wrapper(
         builder,
         module,
@@ -1705,6 +1783,9 @@ mod cow_polarity_tests;
 
 #[cfg(test)]
 mod temp_drop_rc_tests;
+
+#[cfg(test)]
+mod reuse_proof_tests;
 
 #[cfg(test)]
 mod tests;

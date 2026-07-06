@@ -17,6 +17,12 @@ const EXPECTED_NAMES: &[&str] = &[
     // the stale 32-name pin.
     "runtime/rc_stat_inc",
     "runtime/rc_stat_dec",
+    // Increment-II (§6.5 / §9.2) RC-stats tally helpers: reuse-hit/miss runtime
+    // tallies on the COW arms + the `str-len` per-extern adaptation-pair tally.
+    // Env-gated via the backend's `CRANELISP_RC_STATS` codegen gate; inert off.
+    "runtime/reuse_hit",
+    "runtime/reuse_miss",
+    "runtime/extern_adapt_str_len",
     "runtime/alloc_string",
     "runtime/string_read",
     "runtime/vec_new",
@@ -46,13 +52,13 @@ const EXPECTED_NAMES: &[&str] = &[
     "cranelisp_trace_format",
 ];
 
-/// Name-set completeness + uniqueness: the table contains exactly the 34
+/// Name-set completeness + uniqueness: the table contains exactly the 37
 /// expected names — no more, no fewer — and no name repeats (BC §6
 /// guardrail; positive + negative coverage).
 #[test]
-fn name_set_is_exactly_the_expected_34() {
+fn name_set_is_exactly_the_expected_37() {
     let names: Vec<&str> = intrinsics_table().iter().map(|e| e.name).collect();
-    assert_eq!(names.len(), 34, "table must hold exactly 34 entries");
+    assert_eq!(names.len(), 37, "table must hold exactly 37 entries");
     assert_eq!(names.len(), EXPECTED_NAMES.len());
 
     // Every expected name present (no drop).
@@ -97,6 +103,9 @@ fn arity_matches_historical_signature() {
         ("runtime/rc_dec_check", 1, true),
         ("runtime/rc_stat_inc", 0, true),
         ("runtime/rc_stat_dec", 0, true),
+        ("runtime/reuse_hit", 0, true),
+        ("runtime/reuse_miss", 0, true),
+        ("runtime/extern_adapt_str_len", 0, true),
         ("runtime/alloc_string", 2, true),
         ("runtime/string_read", 1, true),
         ("runtime/vec_new", 1, true),

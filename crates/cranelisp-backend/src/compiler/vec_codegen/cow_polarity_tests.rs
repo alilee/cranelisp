@@ -85,6 +85,9 @@ fn cow_core_clif(set: bool, owned: bool) -> String {
                 old_elem_category: None,
                 dealloc_id,
                 source_ownership,
+                // Source-ownership polarity harness exercises the DYNAMIC rc==1
+                // token path (no static proof) — the copy branch must be reachable.
+                elide_rc_check: false,
             },
             Span::SYNTHETIC,
         )
@@ -96,6 +99,7 @@ fn cow_core_clif(set: bool, owned: bool) -> String {
             new_val,
             inc_fn,
             source_ownership,
+            false,
             Span::SYNTHETIC,
         )
     }

@@ -3132,6 +3132,51 @@ siblings — each MUST flip (recompiled value) when
 `t1_full_cure_recompiles_stale_callers_stale_section_empty` flips green; none deleted or
 weakened.
 
+### Sprint 103 Wave-3b gate — proof-elided reuse fence + re-home + corpus off-path confirm (/qa, 2026-07-06)
+
+Wave-3b /review gate conditions closed against the uncommitted II-B2 reuse-token
+change-set. Full suite after: **4040 run / 4037 passed / 3 failed / 1 skipped**
+(45.3s). The 3 reds are the expected set — `cache_pre_r5_schema_object_invalidated_wholesale`
+(0527), `chaining_toggle_off_allocates_intermediate` (re-homed below, FIXME 0528),
+`t1_full_cure_recompiles_stale_callers_stale_section_empty` (Wave-4). No green regressed.
+
+**Condition 1 — proof-elided reuse fence (§6.4 MUST), 4 new GREEN fences** in
+`tests/ownership_reuse.rs`. All prior L-C3 fences drive the DYNAMIC rc==1 token path;
+these cover the static PROOF-ELIDED path (`unique_static=Some(true)` on a directly-fresh
+node ⇒ `elide_rc_check` skips the rc==1 probe — UAF-critical, no dynamic backstop):
+
+| Test (binary::fn) | Asserts |
+|---|---|
+| `ownership_reuse::elided_proof_fresh_vec_set_value_correct` | fresh `(vec-set [10 20 30] 0 99)` reads 99; elided arm fired (reuse_hit>0, reuse_miss==0). |
+| `ownership_reuse::elided_proof_fresh_vec_push_value_correct` | fresh `(vec-push [10 20 30] 99)`[3]=99; elided grow arm fired (reuse_hit>0, reuse_miss==0). |
+| `ownership_reuse::elided_proof_fresh_heap_balance_iteration_independent` | the elided in-place path does not leak — allocs==deallocs, imbalance iteration-independent (N=50 vs 1000). |
+| `ownership_reuse::elided_proof_not_taken_on_aliased_value_neg` | proof-elision fires ONLY on genuinely-unique nodes — a fresh literal retained via `(id v)` (rc>1) COW-copies (reuse_hit==0, reuse_miss>0), retained ref unchanged (109 not 198). |
+
+**Condition 3 — re-home `chaining_toggle_off_allocates_intermediate` to /typecheck.**
+Doc comment updated: cross-references FIXME 0528, states the backend half is complete
+and cannot flip it (missing precondition = a typecheck uniqueness-PRESERVATION analysis;
+`map-go` returns param `v` ⇒ `result_unique=false` ⇒ no `unique_static` reaches the
+Var-rooted copy sites), notes it is the EXPECTED increment-II deferral (not a RED beyond
+the known set). Kept failing-not-ignored (NO `#[ignore]`) as the trigger for 0528; not
+double-counted as backend-owed (per `memory/feedback_no_fixme_with_failing_test`). The
+ledger owner column for this row is now **/typecheck (FIXME 0528)**, superseding the
+"reuse tokens → /backend" attribution in the increment-II RED-set table above.
+
+**Condition 2 — corpus off-path confirmation (not a test change; a verification record).**
+`tests/scripts/clif_golden.sh diff` (facts-PRESENT config) diffs 12/13 entries (only
+`06_tco_loop` clean) and the changes are NOT FuncId-shuffle-only — they include real
+deterministic branch-structure changes (load+icmp+brif→jump block removal = §6.4
+check-elision + B4 density declines), all on the facts-present path. `selftest` passes
+13/13 (deterministic at HEAD), so these are a real emission change, not run-to-run noise;
+the golden (pre-reuse-token capture) is owed a scoped re-baseline attributed to the II-B2
+reuse-token seam (`/dev`(backend)-executed per MANIFEST §Owner). The differential-oracle
+concern — reuse-emission leaking into the OFF path — is REFUTED: dumping all 13 entries
+with `CRANELISP_NO_OWNERSHIP=1` at the reuse-token HEAD vs the stashed pre-reuse baseline,
+every changed line is a FuncId immediate (`fnN = u0:N`); ZERO branch structure changed (no
+rc-load/icmp/brif appearing or disappearing). Reuse emission is correctly gated behind
+ownership facts. NOT a Blocker. `06_tco_loop` (the in-suite smoke entry) is byte-identical
+on both polarities.
+
 ### Sprint 81 close — failing-not-ignored repros for 7 Phase-6 defects (/qa, 2026-06-13, SHA `48dcea3`)
 
 Sprint 81 close-out authored failing-not-ignored e2e repros for the 7 Phase-6

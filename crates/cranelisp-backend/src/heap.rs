@@ -377,9 +377,24 @@ fn nonatomic_rc_codegen_enabled() -> bool {
 /// `runtime/rc_stat_inc` / `runtime/rc_stat_dec` catalog helper, which tallies the
 /// op (printed with the alloc counts at process exit — see `cranelisp-intrinsics::
 /// rc`). Off by default ⇒ no call emitted ⇒ byte-identical codegen.
-fn rc_stats_codegen_enabled() -> bool {
+pub(crate) fn rc_stats_codegen_enabled() -> bool {
     static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *E.get_or_init(|| std::env::var_os("CRANELISP_RC_STATS").is_some())
+}
+
+/// Emit a zero-arg `runtime/*` tally-helper call under the codegen-time
+/// `CRANELISP_RC_STATS` gate (a no-op when the gate is off, so callers may invoke
+/// unconditionally). The increment-II reuse/COW arms (`vec_codegen`) and the
+/// `str-len` per-extern adaptation site (`apply`) reach the stats surface through
+/// this one seam (Principle 7). Off ⇒ no emitted IR ⇒ byte-identical codegen.
+pub(crate) fn emit_rc_stat_call_gated<M: Module>(
+    builder: &mut FunctionBuilder,
+    module: &mut M,
+    symbol: &str,
+) {
+    if rc_stats_codegen_enabled() {
+        emit_rc_stat_call(builder, module, symbol);
+    }
 }
 
 /// Emit a call to a zero-arg `runtime/rc_stat_*` tally helper (S99 stats gate).

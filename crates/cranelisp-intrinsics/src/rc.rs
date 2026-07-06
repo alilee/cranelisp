@@ -182,6 +182,40 @@ static RC_EMIT_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// Emitted RC ops that took the NON-ATOMIC arm (B3.3 confined RC).
 static RC_EMIT_NONATOMIC: AtomicU64 = AtomicU64::new(0);
 
+// ---------------------------------------------------------------------------
+// H2 reuse counters (increment II, §6.5) — LIVE runtime tallies
+// ---------------------------------------------------------------------------
+//
+// `reuse_hit` / `reuse_miss` are the drop-guided-reuse / COW discriminator
+// (`design/backend/ownership-codegen.md` §6.5). Because reuse permission is
+// **dynamic** (rc==1 per call), the hit/miss split at a COW/reuse site is a
+// RUNTIME tally (like `rc_inc`/`rc_dec`, not the codegen-time `stack_slot` /
+// `rc_nonatomic` family): the backend emits a `runtime/reuse_hit` /
+// `runtime/reuse_miss` catalog-helper call on the in-place-reuse / copy arm of
+// every `emit_vec_set_cow_core` / `emit_vec_push_cow_core` site, ONLY under its
+// codegen-time `CRANELISP_RC_STATS` gate (off ⇒ no emitted IR ⇒ byte-identical
+// codegen — the §2.2 discipline). At increment II these become non-zero the
+// moment a unique vec is mutated in place.
+static REUSE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static REUSE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// ---------------------------------------------------------------------------
+// H3 per-extern adaptation-pair attribution (increment II, §9.2 / §13.2.1)
+// ---------------------------------------------------------------------------
+//
+// The L-D5 sibling-funding decision rule (`design/backend/ownership-codegen.md`
+// §9.2) is report-graded off a RUNTIME name-keyed tally of the Decision-24
+// adaptation pairs (a consuming dec, optionally paired with an adaptation inc)
+// paid at each hand-audited extern's statically-resolved call sites. Increment I
+// ships the pattern plus exactly ONE template instance — `str-len` — so the
+// family is a single registered extern. The backend emits a `runtime/extern_
+// adapt_str_len` catalog-helper call at each `str-len` call site, ONLY under its
+// codegen-time `CRANELISP_RC_STATS` gate (off ⇒ no emitted IR ⇒ byte-identical).
+// The name is printed in the family unconditionally under the gate (present even
+// at count 0 — the placeholder-honesty discipline the `reuse_*` family follows),
+// so `/qa`'s L-D5 attribution lane reads the per-extern pair population.
+static STR_LEN_ADAPT_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// Tally one backend-emitted stack-slot allocation (B3.4). Called from
 /// `cranelisp-backend::heap::emit_stack_alloc` at codegen time.
 #[inline]
@@ -205,6 +239,41 @@ pub fn tally_rc_emit(nonatomic: bool) {
 /// accessor so its unit matrix reads the single source of truth.
 pub fn stack_slot_hits() -> u64 {
     STACK_SLOT_HITS.load(Ordering::Relaxed)
+}
+
+/// Tally one drop-guided-reuse / COW **hit** (in-place reuse arm taken at
+/// runtime, §6.5). Runtime tally — called from the backend-emitted
+/// `runtime/reuse_hit` hook and (in-process) the intrinsic-side accessor tests.
+#[inline]
+pub(crate) fn tally_reuse_hit() {
+    REUSE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Tally one drop-guided-reuse / COW **miss** (copy arm taken at runtime, §6.5).
+#[inline]
+pub(crate) fn tally_reuse_miss() {
+    REUSE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Runtime `(reuse_hit, reuse_miss)` tallies (§6.5). `#[cfg(test)]`: unlike the
+/// codegen-time `stack_slot_hits`/`rc_emit_counts` (which the backend reads back
+/// as the SSOT for its H2 unit matrix), the reuse split is a RUNTIME tally, so
+/// the backend never reads it — the only consumer is this crate's own counter
+/// unit tests. Kept off both the public surface AND the non-test build (no
+/// facade entry owed, no dead-code in release).
+#[cfg(test)]
+pub(crate) fn reuse_counts() -> (u64, u64) {
+    (
+        REUSE_HIT_COUNT.load(Ordering::Relaxed),
+        REUSE_MISS_COUNT.load(Ordering::Relaxed),
+    )
+}
+
+/// Runtime per-extern adaptation-pair count for `str-len` (H3 / §9.2 template
+/// instance). `#[cfg(test)]` (runtime tally; consumed only by this crate's tests).
+#[cfg(test)]
+pub(crate) fn str_len_adapt_count() -> u64 {
+    STR_LEN_ADAPT_COUNT.load(Ordering::Relaxed)
 }
 
 /// Codegen-time `(non_atomic_ops, total_ops)` RC-emission counts (B3.3). The
@@ -241,14 +310,17 @@ fn rc_stats_line() -> String {
     let allocs = alloc::alloc_count();
     let deallocs = alloc::dealloc_count();
     let stack_slot = STACK_SLOT_HITS.load(Ordering::Relaxed);
+    let reuse_hit = REUSE_HIT_COUNT.load(Ordering::Relaxed);
+    let reuse_miss = REUSE_MISS_COUNT.load(Ordering::Relaxed);
     let rc_nonatomic = RC_EMIT_NONATOMIC.load(Ordering::Relaxed);
     let rc_atomic = RC_EMIT_TOTAL
         .load(Ordering::Relaxed)
         .saturating_sub(rc_nonatomic);
+    let str_len_adapt = STR_LEN_ADAPT_COUNT.load(Ordering::Relaxed);
     format!(
         "[RC_STATS] rc_inc={inc} rc_dec={dec} allocs={allocs} deallocs={deallocs} \
-         stack_slot={stack_slot} reuse_hit=0 reuse_miss=0 \
-         rc_nonatomic={rc_nonatomic} rc_atomic={rc_atomic}"
+         stack_slot={stack_slot} reuse_hit={reuse_hit} reuse_miss={reuse_miss} \
+         rc_nonatomic={rc_nonatomic} rc_atomic={rc_atomic} str-len_adapt={str_len_adapt}"
     )
 }
 
@@ -269,6 +341,36 @@ pub(crate) extern "C" fn rc_stat_inc() -> i64 {
 pub(crate) extern "C" fn rc_stat_dec() -> i64 {
     ensure_stats_atexit();
     tally_rc_dec();
+    0
+}
+
+/// Backend-inline reuse-**hit** tally hook (increment II, §6.5). Emitted on the
+/// in-place / reuse arm of a COW/reuse site ONLY under the backend's codegen-time
+/// `CRANELISP_RC_STATS` gate (off ⇒ never emitted ⇒ byte-identical codegen).
+/// `pub(crate)` + catalog-registered by fn pointer — NOT part of the public API.
+#[unsafe(export_name = "runtime/reuse_hit")]
+pub(crate) extern "C" fn reuse_hit_stat() -> i64 {
+    ensure_stats_atexit();
+    tally_reuse_hit();
+    0
+}
+
+/// Backend-inline reuse-**miss** tally hook (increment II, §6.5). Sibling of
+/// [`reuse_hit_stat`] — emitted on the copy arm of a COW/reuse site.
+#[unsafe(export_name = "runtime/reuse_miss")]
+pub(crate) extern "C" fn reuse_miss_stat() -> i64 {
+    ensure_stats_atexit();
+    tally_reuse_miss();
+    0
+}
+
+/// Backend-inline per-extern adaptation-pair tally hook for `str-len` (H3 /
+/// §9.2 template instance). Emitted at each `str-len` call site ONLY under the
+/// backend's codegen-time `CRANELISP_RC_STATS` gate.
+#[unsafe(export_name = "runtime/extern_adapt_str_len")]
+pub(crate) extern "C" fn extern_adapt_str_len_stat() -> i64 {
+    ensure_stats_atexit();
+    STR_LEN_ADAPT_COUNT.fetch_add(1, Ordering::Relaxed);
     0
 }
 
