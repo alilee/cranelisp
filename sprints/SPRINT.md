@@ -1,6 +1,6 @@
 # Sprint 103: Increment II — the write path (uniqueness → mutable-borrow → reuse)
 
-**Status**: PHASE 6A USER-FACING ASSESSMENT — write path DELIVERED; II-G3/0534 carried to S104 (concurrency track, user-approved 2026-07-06); 0528 clean carry.
+**Status**: PHASE 6B USER-FACING ACTION — 6a assessment done (2 defects found: R5-display crash + shadow parse-error); defect repros + fixes + doc updates in progress.
 
 **★ HARD Wave-3 requirements (from the Wave-2 /review):**
 1. **Read `unique_static` off the fresh-producing node** (`ConstrADT`/`VecLit`/`Apply`/`StringLit`), NOT the consuming-use `Var` (which has no such field). Reading the use site ⇒ every proof is `None` ⇒ the whole increment-II reuse/elision is silently dead. /qa L-C3 asserts the node identity. (Also: §14.2 prose says "consuming-use node" — doc-fidelity fix owed to /design(typecheck); impl is correct.)
@@ -207,6 +207,23 @@ Open set at Phase 1 (27 files). Dispositions:
 - 2026-07-05: **Phase 4 COMPLETE — waves organized.** Stage 1 QA-first (sprint-wide) + a 4-wave serial D/D/R ladder (types carrier → typecheck B1 → backend mechanisms [close-short seam after II-B2] → src/ T1 cure), unit-tier drains folded into their crate windows, wave gates set. Serial per the project single-writer rule. Deferred tail: 0500/0501/0502 + II-B3 + region arena.
 - 2026-07-05: **Phase 3 COMPLETE — four design plans collected (typecheck/backend/src + qa test plan), exit-gate READY.** Cross-consistent. Load-bearing outcomes: **0521 verdict NO** (no AliasOf-index reader → ⊤ element stays deferred, no schema bump); **schema-number corrected 14→15** (live is 14, not the stale "12→13"); reuse-tokens confirmed off-ABI; **region-arena DEFER** re-confirmed by /design(backend); 0510 ruled option (a) ring1 primitive; T1 full cure design DONE with the **`__expr`-only exclusion narrowing** (keep `__macro_*` reverse edges) + F2 slot-refinement; /qa `s103-test-plan.md` authored with II-G1–G4 gate plan + L-C3 UAF fence + R5 soundness-couple negative fence + h3 flip criterion. FIXMEs resolved+deleted P3: **0509, 0511** (doc rulings by /design-typecheck). 0526 §3.3 re-frame authored (left open → /arch closes). 0513/0510/0506/0507 stay open for Phase-5 action. No new interface beyond the /arch-owned R5 `value_layout` carrier (schema 14→15, lands in B3).
 - 2026-07-05: **Phase 2 COMPLETE — /arch PASS-with-revisions, exit-gate READY.** Block A downgraded from hard-gate to Phase-3 co-resolution (real gate = B1). R5 predicate named as an /arch-authored `cranelisp-types` carrier change-set (schema 12→13) landing in B3. 0515 re-targeted /arch→/int (now blocks Block C1). 0526 direction-ruled (kept open → Phase-3 backend fire); 0521 Phase-3 conditional. Region-arena deferral verified CLEAN (serves no I-G/II-G gate). **0474 + 0483 CONFIRMED stale-cured (17/17 guards green) — route deletions to /backend at a wave gate.** No `cranelisp-types` edit landed (not-speculatively). /arch's one edit: re-targeted FIXME 0515.
+
+## Phase 6a assessment (2026-07-06)
+
+Five user-proxies exercised the delivered surfaces. **Two real defects** + doc/artifact updates.
+
+**Defects (→ /qa narrow repro → owning skill):**
+- **★ R5 value-display crash (/repl-found, owner /backend)** — R5-flattened single-ctor∧single-scalar-field ADTs mis-display in the REPL auto-display path: `(Box 99)`→`:user/Box <tag:99>` (reads the flattened word as a raw tag instead of reconstructing `(Ctor v)`); **`(F 3.14)`→SIGSEGV** (f64 bits deref'd as a pointer); nested formatter also wrong. **Value semantics CORRECT** (construct/match/extract all sound — Wave-3a fences hold); display-only. A clear **S103 Wave-3a regression** — the `HeapCategory::Value` display path had no test for this shape. Fix this sprint (it's a crash S103 introduced).
+- **Shadow parse-error (/port-found, owner TBD /typecheck|/int)** — a local binding (match-pattern/`let`/fn-param) shadowing a same-named top-level `def` → runaway ~1MB `expected symbol` parse error (module-source regeneration blowup). Breaks the `user.cl` headline showcase. Minimal repro `r1.cl` (3 lines). Origin uncertain (0513 lookup reorder a suspect); /qa bisects S102-vs-S103.
+
+**Phase 6b artifact plans (per proxy):**
+- **/repl**: §18.1.1 spec-text update (0531 — "recompiles nothing" now false) + §1.5 R5-display normative note + **0505** pin-mod parity spec-half + a T1-cure demo (after §18.1.1 lands).
+- **/port**: de-shadow `user.cl` (remove vestigial `defmacro g`/`def g` lines 24–26/52–54 — unblocks the showcase regardless of the compiler fix); note the ~15–30× serial win (~8–10s→0.3s).
+- **/docs**: rewrite `live-development.md` "cascade doesn't cover yet" for the T1 cure (generic/overloaded → now silently recompiled; macro/type/ctor-arity → residual uncured) + 2 stale S102 corrections (trap format, `__expr` note). Land concurrent-with/after 0531.
+- **/examples**: correct the stale 0483 constraint comment in `14-vecs.cl` (the "two HOF instantiations SIGBUS" limitation is CURED — 0483 confirmed cured end-to-end); optional `neq-string` companion. Any exit-code change → /qa reconciles.
+- **/stdlib**: nothing warranted (write path transparent; keep `(not (str-eq a b))` for Eq-impl symmetry — no `neq-string` adoption).
+
+**Housekeeping**: an untracked `user.cl` (1321 bytes) in repo root contaminates REPL-from-root — delete.
 
 ## Outcome (Phase 7)
 
