@@ -508,6 +508,65 @@ same-layout allocation site, never as params/returns. With that constraint, II a
 mechanisms without reshaping I's contract: the `ModeSummary` type never migrates, only emitted
 precision grows.
 
+### 3.6 Conditional ruling — the `MutBorrowed` ABI mode (S105 Phase-2, gated on the stack-allocation build branch)
+
+**Conditional, not committed.** S105's build target is evidence-gated (`sprints/SPRINT.md`;
+`effect-concurrency.md` §3.1.6). If the attribution gate selects the **escape∧uniqueness stack
+allocation** lever *and* that lever requires passing a unique non-escaping value by **mutable**
+reference to a callee that mutates through it in place, a new ABI-bearing mode `MutBorrowed` is
+introduced (today the ABI modes are read-path `Borrowed`/`Owned` only; §3.1). This subsection
+pre-rules its admissibility so the branch is not blocked at design time. **It commits no build** —
+if the branch is not selected, or the stack lever uses only immutable references (which are the
+existing `Borrowed` mode, no new ABI), nothing here fires.
+
+**Ruling — `MutBorrowed` is admissible as a monotone-soundable extension of the `Borrowed`
+pattern, provided the uniqueness precondition stays OFF the ABI (R4-preserving).** The trap to avoid
+is smuggling a *static uniqueness guarantee* into the ABI: uniqueness is call-site-dynamic (R4 —
+`Unique` is deliberately not a `Mode`, stays out of the mono key and off the ABI). The sound framing
+splits the two facts:
+
+- **The ABI-bearing fact is "the callee mutates through this reference; it does not extend the
+  value's lifetime and does not dec it"** — structurally the `Borrowed` contract (caller retains
+  ownership, no callee dec) plus a mutate-in-place permission. This is a caller/callee *agreement*
+  exactly as `Borrowed` is: a callee compiled `MutBorrowed` that a caller invokes as `Owned`
+  (or vice-versa) mis-schedules the inc/dec pair — so it is genuinely ABI, and it rides `param_modes`
+  as one more `Mode` value.
+- **The exclusivity (uniqueness) precondition is the CALLER's dynamic-or-proven obligation, NOT an
+  ABI fact.** In-place mutation is sound only when the arg is exclusively owned for the call's dynamic
+  extent. The caller establishes that by **either** a static uniqueness proof (Q4, increment II)
+  **or** a dynamic `rc==1` guard (`rc==1 ? pass-mutborrowed : copy-then-pass` — precisely the §10
+  item 5(c) *refined* form, which is (a)-with-the-check-hoisted-to-the-caller, and the same family as
+  §4.3's caller-side adaptation). This keeps uniqueness dynamic-or-proven and off the ABI, exactly as
+  R4 requires: the ABI says *what the callee does*, the caller owns *whether it is safe here*.
+
+**Monotone soundness / fallback.** A caller that can establish neither a static nor a dynamic
+exclusivity witness simply **does not use the `MutBorrowed` convention** — it passes `Owned` and the
+callee takes its owned/dynamic-`rc==1`-reuse arm (exactly today's Vec-COW mutate-in-place). Widening
+`MutBorrowed → Owned` is always correct, only slower; the absent-summary ⇒ Decision-24 default
+(§3.3) holds unchanged. `MutBorrowed` is thus a strict refinement over the conservative point,
+never a new obligation the conservative lowering must honour — the §6.1 total-fallback property is
+preserved.
+
+**Interaction with §5 redefinition (it grows the ABI surface — already covered).** Adding a `Mode`
+variant widens the value space the §5.4 summary-diff gate compares; a redefinition that flips a
+param `Owned ↔ MutBorrowed` is **ABI-changing** and takes the §5.6 **fresh-slot / ABI-epoch**
+path (the old slot freezes, mixed-ABI edges stay unrepresentable by construction). This is **one more
+comparable value, no new machinery** — the slot-versioning discipline already compares the whole
+`param_modes` vector and does not care how many mode values exist. The §5.7 sequencing constraint
+(machinery lands before ABI-bearing modes reach the dev session) applies unchanged.
+
+**Interface impact (the two halves have different answers).** The escape→stack **mechanism** itself
+stays **backend-internal** — the `escapes` site fact is already an advisory `Option<bool>` on
+`MonoExpr` (§3.3), the stack slot + immortal header are backend-local (`ownership-codegen.md` §4),
+and no interface edit is owed to broaden it to statically-sized aggregates. But the **`MutBorrowed`
+ABI half DOES need a `cranelisp-types` carrier**: it is a new `Mode::MutBorrowed` variant in
+`crates/cranelisp-types/src/ownership.rs`, ABI-bearing on `param_modes`, therefore requiring a
+`CACHE_SCHEMA_VERSION` bump + `public-api.txt` regen + the `interfaces.md`/BC §7 cascade in the
+implementing change-set (the full baseline-diff discipline, `design/arch/CLAUDE.md`). Unlike the
+escape→stack fact, it **cannot** stay within the backend/intrinsics boundary — the mode vector is the
+typecheck→backend contract and crosses the crate edge by construction. `/arch` authors the variant at
+the implementing sprint; it is **not** landed speculatively in S105 (Phase-2 anti-speculation, §3.3).
+
 ---
 
 ## §4. Pipeline sequencing (part 3)

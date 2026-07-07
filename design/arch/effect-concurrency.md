@@ -560,6 +560,114 @@ design doc (`design/backend/lenient-eval.md`, being updated by `/design` in para
 sprint); recorded here only as the reason the built `D` cannot be raised arbitrarily. Cross-refer
 there for the mechanism; do not duplicate.
 
+### 3.1.6 S105 Phase-2 — the attribution/decomposition model for the post-inc-II residual (arch, S105 Phase 2)
+
+S105 opens with a **preparatory measurement-fidelity phase** whose load-bearing deliverable is a
+per-fixture **attribution vector** decomposing the F3/F4 residual (parallel ~2.3s vs serial
+~0.88s, ~2.6×) into four candidate causes — {scheduler-spread, (a)-allocation, residual-atomic-RC,
+unavailable-parallelism} — each with an oracle-bounded estimate of what its candidate lever would
+recover. This subsection is the arch ruling on **how that decomposition must be constructed and
+read**, because the naïve additive reading is *wrong by construction* (S99's (a)/(b) coupling) and
+would mis-select the build lever.
+
+**Ruling 1 — the decomposition is NON-ADDITIVE; the four terms do not sum to the residual.** S99
+proved (a) allocator-lock and (b) atomic-RC are **coupled**: removing the allocator lock (a↓) lets
+threads run concurrently and bounce shared RC cache lines *more* (b↑), so an (a)-only cure can be
+net-negative (§3.1 S99 settlement). An attribution that estimates "(a) is worth X" and "(b) is worth
+Y" independently and reports X+Y **double-counts the coupled region** and over-promises. The
+mandatory instrument for the (a)/(b) pair is therefore the **full 2×2 factorial**, not two
+independent toggles: measure {baseline, ¬a, ¬b, ¬a∧¬b} over {allocator-swap (mimalloc vs system)}
+× {`NO_OWNERSHIP`/per-mechanism-off} and report the **interaction term explicitly**
+(`I = baseline − ¬a − ¬b + ¬a∧¬b`). A large-magnitude `I` *is* the coupling; the attribution vector
+must carry `I` as a **named joint term owned by neither (a) nor (b) alone**, never silently folded
+into either. Reporting (a) and (b) as additive main-effects without `I` is the specific misread this
+ruling forbids.
+
+**Ruling 2 — the coupled (a)/(b) *interior split* is unidentifiable by construction, and that is
+decision-irrelevant.** Within the coupled region there is no experiment that cleanly partitions "pure
+allocator" from "pure RC-bouncing" wall — the interaction is a real physical term, not a measurement
+artifact. **Do not attempt to split it.** The gate does not need the split: it needs "which *lever*
+recovers the most," and **each candidate lever has its own direct oracle measured against the coupled
+baseline**, so the net recovery is measured directly, never derived from an additive decomposition:
+
+| Candidate lever | Direct oracle (net recovery vs coupled baseline) |
+|---|---|
+| (a)-via-**stack allocation** | the existing `STACK_ALLOC_ESCAPE_FACT_SOUND` immortal-sentinel toggle (`fn_compiler.rs`, §4 as-built) on the stack-witness fixture — measures the net wall the stack path removes *with (b) held at its coupled state*, which is the real win, not the (a)-isolated alloc-count delta |
+| (b)-via-**confinement/uniqueness** (0526/0528) | `CRANELISP_NONATOMIC_RC` + capture-borrow probes; atomic-vs-nonatomic RC split + HITM/cross-core line-transfer HW counters |
+| scheduler-spread | `SPARK_BUDGET=0` (serial) + the depth sweep `D`; identified by the 0534 spawn-count × wall linearity (`wall ≈ serial + spawns × ~const`) — a **park/syscall signature** (99.9% scheduler, `futex`/`sched_yield`), physically orthogonal to memory traffic and cleanly separable |
+| unavailable-parallelism | core-count sweep 1..nproc speedup curve + critical-path/useful-yield proxy |
+
+Because every lever is measured by its own toggle, the non-identifiable (a)/(b) interior split is
+**decision-irrelevant** — the selection reads the direct net-recovery column, not a reconstructed
+per-term additive breakdown.
+
+**Ruling 3 — the oracle set is sufficient, but its members operate at DIFFERENT granularities and
+must not be conflated.** `NO_OWNERSHIP` is the **coarse all-memory-model-off** switch (the §3.4
+differential oracle: byte-identical to the pre-analysis point) — it disables borrow + stack +
+non-atomic-RC + reuse *together*, so its on/off delta bounds the **combined** memory-model
+contribution, NOT (b) alone. The **fine per-mechanism probes** (`STACK_ALLOC_ESCAPE_FACT_SOUND`,
+`CRANELISP_NONATOMIC_RC`, capture-borrow, allocator-swap) are the per-term attributors. The
+attribution phase must use the coarse switch to establish the ceiling ("how much of the residual is
+memory-model-addressable *at all*") and the fine probes to apportion within it — treating
+`NO_OWNERSHIP` as a (b) toggle would over-attribute (b) by the whole stack/borrow contribution. With
+this granularity discipline the set {serial `SPARK_BUDGET=0`, allocator-swap, `NO_OWNERSHIP` +
+fine probes, depth sweep, core-count sweep, atomic/non-atomic RC split, HW HITM counters} is
+**sufficient and independent enough** to attribute the residual for lever selection. The doctrine
+guards (§S105 scope: wall with all counters OFF; counts from a separate run; HW counters external;
+no self-defeating idle-guard) carry from S104 unchanged.
+
+**Ruling 4 — escape∧uniqueness stack allocation IS separable from the deferred allocator co-design
+(item 3), with a sharp boundary and a governing parallel caveat.** The user's reframe — stack
+allocation *sidesteps* the allocator ("don't allocate" ⊥ "co-design the allocator lock") — is
+**sound for the statically-sized class and correctly routes around the region-arena blocker**, but
+only for that class:
+
+- **Separable (proceed independently of the allocator co-design):** statically-sized aggregates —
+  including the as-built scalar-payload ADTs (§4.1, live), a broadening to **heap-typed fields**
+  (needs only a backend-local frame-exit field-release path, §4.2 — a drop-obligation design, *not*
+  an allocator seam), and **fixed-size Vec/ADT buffers the backend constructs inline** rather than
+  via the `runtime/vec_new` extern. A static Cranelift `explicit_slot` genuinely never calls the
+  allocator, so this class is orthogonal to the S99 (a)/(b) allocator-lock co-design. The §4.4
+  region-arena DEFER is blocked specifically on **extern-reached** (`alloc_with_rc`-produced)
+  allocations (§4.1 gate 4) — a blocker that **does not apply** to a backend-inline static-size
+  slot. The Sudoku 81-cell working grid is fixed-size; if constructed inline it is in the separable
+  class.
+- **NOT separable (stays region-arena/allocator-coupled, deferred):** genuinely **dynamically-sized**
+  aggregates (variable-length Vecs) and **extern-reached** allocations — Cranelift static slots
+  cannot size them, and redirecting the extern needs the allocator seam §4.4 defers. This class
+  remains Phase-H per the §4.4 DEFER verdict.
+- **Governing parallel caveat — the 0525 spark-frame decline (FIXME 0525, `ownership-codegen.md`
+  §4.3 gate 5).** For the *parallel* Sudoku copy-per-guess witness, the per-branch grid is
+  constructed/copied **inside a spark thunk**, and gate 5 **declines stack-alloc for any construction
+  the backend relocates into a spark thunk** (the thunk frame pops at the join → the slot would
+  dangle). So escape∧uniqueness stack allocation directly serves the **serial / near-serial**
+  working-grid path but **does not, in increment I, fire on the sparked parallel-search branches** —
+  exactly the F4-hard residual. Increment I explicitly declined the thunk-internal stack win as
+  marginal-and-always-sound-to-forgo (§4.3). **The build branch must confront this:** an (a)-via-stack
+  lever recovers the residual only if the residual is (a)-allocation on paths gate 5 does *not*
+  decline, or if the branch additionally funds a spark-frame-aware stack path (a scope increase beyond
+  the increment-I decline). This is the load-bearing reason the preparatory phase's stack-witness
+  oracle must measure the *parallel* fixture, not only the serial one — the (a)-isolated fixture over-
+  states the parallel recovery precisely because gate 5 blocks it.
+
+**Ruling 5 — the preparatory phase is Principle-8-clean and interface-clean (items 4/5).** The phase
+is **measurement + gated instrumentation only, no interim mechanism**: the RC atomic/non-atomic split
+extends the existing H2 `RC_STATS` grammar (intrinsics-internal), the alloc counters are
+intrinsics-internal, and the stack-oracle toggle **already exists** as the
+`STACK_ALLOC_ESCAPE_FACT_SOUND` / `CRANELISP_NO_OWNERSHIP` switch. **No `cranelisp-types` edit and no
+new C-ABI symbol** for the preparatory phase — confirmed. One caveat carried, not resolved here: the
+`STACK_SLOT_HITS` backend **codegen-time** counter cannot reach the `cranelisp-intrinsics` runtime
+print surface without a reverse/cyclic dependency (the standing **h2-RED** coordination question,
+`ownership-codegen.md` §4). The measurement phase must **read that counter backend-side**
+(`CRANELISP_CODEGEN_TRACE` / a backend-side print) and **must not** force-resolve the counter-surface
+cross-crate seam under measurement pressure — that is a separate design question, not measurement
+scope. For the **build branches**, each selected lever is a target memory-model mechanism (stack
+allocation = the spine's Q2∧Q4; density-aware depth 0535 = the S104-utilization × §3.1-contention
+synthesis, composing with M-static + the structural depth bound; 0526/0528 = increment-II precision;
+accept-done = no build) — all **shaped-to-be-subsumed, none a throwaway interim** (Principle 8 clean).
+The one build-branch interface impact — the `MutBorrowed` ABI mode, *if* the stack branch needs
+callee-mutation-through-reference — is ruled conditionally in `ownership-inference.md` §3.6.
+
 ## 4. The inferred half — how concurrency is extracted
 
 The pure program emits effects ordered **only by data dependencies**. The trampoline
