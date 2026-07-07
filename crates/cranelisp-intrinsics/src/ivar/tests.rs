@@ -473,20 +473,22 @@ fn spark_budget_zero_try_reserve_always_rejects() {
 // off).
 #[test]
 fn saturation_gate_effective_cap_policy() {
-    // Gate OFF: the pre-S99 default is 4× the worker count (byte-identical off).
-    assert_eq!(effective_spark_cap(None, false, 1), 4, "off ⇒ 4×threads");
-    assert_eq!(effective_spark_cap(None, false, 8), 32, "off ⇒ 4×threads");
+    // Gate OFF, M-dynamic default (core_mult = 2): the S104 Wave-2 default is
+    // 2× the worker count (~2/core utilization cap, §2.8.3).
+    assert_eq!(effective_spark_cap(None, false, 2, 1), 2, "off ⇒ 2×threads (k=2)");
+    assert_eq!(effective_spark_cap(None, false, 2, 8), 16, "off ⇒ 2×threads (k=2)");
 
     // Gate ON (no explicit budget): cap at exactly the worker count — the
     // saturation policy (spark iff a worker is free; inline the overflow).
-    assert_eq!(effective_spark_cap(None, true, 1), 1, "saturation ⇒ 1×threads");
-    assert_eq!(effective_spark_cap(None, true, 8), 8, "saturation ⇒ 1×threads");
+    // The saturation gate takes precedence over the M-dynamic multiplier.
+    assert_eq!(effective_spark_cap(None, true, 2, 1), 1, "saturation ⇒ 1×threads");
+    assert_eq!(effective_spark_cap(None, true, 2, 8), 8, "saturation ⇒ 1×threads");
 
     // An explicit `CRANELISP_SPARK_BUDGET` override always wins, gate or not —
     // including the `=0` always-reject cap.
-    assert_eq!(effective_spark_cap(Some(3), true, 8), 3, "explicit override wins over gate");
-    assert_eq!(effective_spark_cap(Some(3), false, 8), 3, "explicit override wins by default");
-    assert_eq!(effective_spark_cap(Some(0), true, 8), 0, "explicit 0 wins (always-reject)");
+    assert_eq!(effective_spark_cap(Some(3), true, 2, 8), 3, "explicit override wins over gate");
+    assert_eq!(effective_spark_cap(Some(3), false, 2, 8), 3, "explicit override wins by default");
+    assert_eq!(effective_spark_cap(Some(0), true, 2, 8), 0, "explicit 0 wins (always-reject)");
 }
 
 // spec: design/backend/lenient-eval.md §3.6 — the grant decision is the
@@ -532,6 +534,152 @@ fn saturation_gate_env_caps_spark_budget_at_worker_count() {
         "at saturation (in_flight == workers) the gate rejects ⇒ inline"
     );
     IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+}
+
+// ---------------------------------------------------------------------------
+// M-dynamic — the utilization axis (S104 Wave 2, Stage 3; lenient-eval.md
+// §2.8.3/§2.8.4, gate G1). M-dynamic is a *re-parameterization* of the existing
+// create-gate cap toward `~2 × ncores`, default-on — NOT a new counter. The cap
+// default multiplier becomes `SPARK_CORE_MULT` (default `k = 2`), env-overridable
+// via `CRANELISP_SPARK_CORE_MULT=k` (the ~2/core tunable knob AND the M-dynamic
+// on/off selector: k=4 recovers the pre-Wave-2 `4×` default ⇒ M-dynamic off;
+// k=0 ⇒ fully serial). These tests exercise the re-parameterized cap policy
+// (`effective_spark_cap`), the cap-boundary spark/inline decision, and the
+// hierarchical-decline property (a spark dispatched into a busy pool inlines its
+// nested candidates) directly on the pure policy + the live counter, independent
+// of codegen. Both `effective_spark_cap` and `budget_grants` are pure (Principle
+// 5). The env-wiring tests rely on nextest's process-per-test isolation.
+// ---------------------------------------------------------------------------
+
+// spec: design/backend/lenient-eval.md §2.8.3 — M-dynamic re-parameterizes the
+// cap to `k × threads`, default `k = 2` (~2/core). The knob sweeps k∈{0,1,2,4}:
+// k=2 is the shipped default, k=1 == the saturation cap, k=4 recovers the
+// pre-Wave-2 `4×` budget (M-dynamic off), k=0 yields cap 0 (always-reject).
+#[test]
+fn mdynamic_effective_cap_core_mult_sweep() {
+    // Default k=2 across pool widths (~2/core).
+    assert_eq!(effective_spark_cap(None, false, 2, 1), 2, "k=2 ⇒ 2×threads");
+    assert_eq!(effective_spark_cap(None, false, 2, 4), 8, "k=2 ⇒ 2×threads");
+    assert_eq!(effective_spark_cap(None, false, 2, 8), 16, "k=2 ⇒ 2×threads");
+
+    // k=1 == the saturation cap (tightest collapse).
+    assert_eq!(effective_spark_cap(None, false, 1, 8), 8, "k=1 ⇒ 1×threads");
+    // k=4 recovers the pre-Wave-2 static budget (M-dynamic effectively OFF).
+    assert_eq!(effective_spark_cap(None, false, 4, 8), 32, "k=4 ⇒ pre-Wave-2 4×threads");
+    // k=0 ⇒ cap 0 ⇒ always-reject ⇒ fully serial (== CRANELISP_SPARK_BUDGET=0).
+    assert_eq!(effective_spark_cap(None, false, 0, 8), 0, "k=0 ⇒ cap 0 (fully serial)");
+
+    // Precedence is unchanged: an explicit budget still wins over the multiplier,
+    // and the saturation gate still wins over the multiplier default.
+    assert_eq!(effective_spark_cap(Some(5), false, 2, 8), 5, "explicit budget wins over k");
+    assert_eq!(effective_spark_cap(None, true, 2, 8), 8, "saturation gate wins over k");
+}
+
+// spec: design/backend/lenient-eval.md §2.8.3/§2.8.6 — the M-dynamic cap-boundary:
+// a candidate site SPARKS while in-flight sparks are under the ~2/core cap and
+// INLINES (direct arm, no IVar emission) once the pool is saturated at the cap.
+// Modeled at a 4-core pool with the default k=2 ⇒ cap = 8 (~2/core), driven off
+// the pure grant decision so it is independent of the host thread count.
+#[test]
+fn mdynamic_cap_boundary_sparks_under_inlines_at_cap() {
+    let ncores = 4;
+    let cap = effective_spark_cap(None, false, 2, ncores) as isize; // 2×4 = 8
+    assert_eq!(cap, 8, "k=2 on a 4-core pool ⇒ ~2/core cap of 8");
+
+    // Under the cap ⇒ spark.
+    assert!(budget_grants(0, 1, cap), "empty pool ⇒ spark");
+    assert!(budget_grants(cap - 1, 1, cap), "one slot free ⇒ spark the last strand");
+    // At / over the cap ⇒ inline (the ~2/core collapse: deeper sites take the
+    // direct arm and run their subtree serially, allocation-free).
+    assert!(!budget_grants(cap, 1, cap), "saturated at ~2/core ⇒ inline");
+    assert!(!budget_grants(cap + 3, 1, cap), "over-saturated ⇒ inline");
+    // All-or-nothing for a batch of nested candidates.
+    assert!(!budget_grants(cap - 1, 2, cap), "a 2-batch overflowing by 1 ⇒ inline wholesale");
+    assert!(budget_grants(cap - 2, 2, cap), "an exact-fit batch ⇒ spark");
+}
+
+// spec: design/backend/lenient-eval.md §2.8.4 — hierarchical decline (the
+// connective invariant): a spark dispatched into a BUSY pool inlines its nested
+// candidates. Once ~cap strands are in flight (`IN_FLIGHT_SPARKS ≥ cap`), a
+// strand's nested spark site's `try_reserve` returns 0 on a single load ⇒ it
+// takes the direct arm and runs its subtree serially — no further sparking
+// inside the serialized subtree. As a permit frees, a bounded frontier is
+// re-admitted. Driven off the live `SPARK_BUDGET` cap so it holds at any host
+// thread count.
+#[test]
+fn mdynamic_hierarchical_decline_busy_pool_inlines_nested() {
+    let cap = *SPARK_BUDGET as isize;
+    assert!(cap >= 2, "default cap (k=2 × threads) is ≥ 2 in a fresh process");
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+
+    // Pool saturated at the ~2/core cap: a strand's nested candidate INLINES.
+    IN_FLIGHT_SPARKS.store(cap, Ordering::SeqCst);
+    assert_eq!(
+        spark_budget_try_reserve(1),
+        0,
+        "busy pool (in_flight == cap) ⇒ nested candidate inlines (hierarchical decline)"
+    );
+    // A wider nested batch also inlines wholesale.
+    assert_eq!(
+        spark_budget_try_reserve(2),
+        0,
+        "busy pool ⇒ nested 2-batch inlines wholesale"
+    );
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        cap,
+        "declined nested reservations commit nothing (allocation-free direct arm)"
+    );
+
+    // A completing strand releases one permit (InFlightGuard drop): a bounded
+    // frontier is re-admitted — the next nested candidate sparks again.
+    IN_FLIGHT_SPARKS.store(cap - 1, Ordering::SeqCst);
+    assert_eq!(
+        spark_budget_try_reserve(1),
+        1,
+        "one permit freed ⇒ re-admit a bounded frontier (nested candidate sparks)"
+    );
+    assert_eq!(
+        IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+        cap,
+        "the re-admitted spark commits exactly one permit back to the cap"
+    );
+
+    IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
+}
+
+// spec: design/backend/lenient-eval.md §2.8.3 — end-to-end env wiring:
+// `CRANELISP_SPARK_CORE_MULT=1` re-parameterizes the process-global `SPARK_BUDGET`
+// cap to `1 × rayon::current_num_threads()` (the tightest ~1/core collapse).
+// Relies on nextest process-per-test isolation: the env var is set before
+// `SPARK_BUDGET` is first read in THIS fresh process.
+#[test]
+fn mdynamic_core_mult_1_caps_spark_budget_at_one_per_core() {
+    // SAFETY: single-threaded at this point, before any reserve reads the
+    // LazyLock; nextest isolates each test in its own process.
+    unsafe { std::env::set_var("CRANELISP_SPARK_CORE_MULT", "1") };
+    assert_eq!(
+        *SPARK_BUDGET,
+        rayon::current_num_threads(),
+        "CRANELISP_SPARK_CORE_MULT=1 must cap the budget at 1×threads (fresh process)"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §2.8.3 — the M-dynamic on/off selector:
+// `CRANELISP_SPARK_CORE_MULT=4` recovers the pre-Wave-2 `4×threads` default (i.e.
+// M-dynamic effectively OFF — the `mstatic-only` measurement config). Relies on
+// nextest process-per-test isolation.
+#[test]
+fn mdynamic_core_mult_4_recovers_prewave2_budget() {
+    // SAFETY: single-threaded at this point, before any reserve reads the
+    // LazyLock; nextest isolates each test in its own process.
+    unsafe { std::env::set_var("CRANELISP_SPARK_CORE_MULT", "4") };
+    assert_eq!(
+        *SPARK_BUDGET,
+        4 * rayon::current_num_threads(),
+        "CRANELISP_SPARK_CORE_MULT=4 recovers the pre-Wave-2 4×threads budget \
+         (M-dynamic off; fresh process)"
+    );
 }
 
 /// Build a panicking thunk carrying a custom message (for the dual-panic test).

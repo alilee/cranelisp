@@ -179,40 +179,92 @@ static SATURATION_GATE: LazyLock<bool> = LazyLock::new(|| {
     std::env::var("CRANELISP_SATURATION_GATE").is_ok_and(|v| v == "1")
 });
 
-/// The cap on [`IN_FLIGHT_SPARKS`]. Default `4 × rayon::current_num_threads()`
-/// (a small multiple of the pool width — enough slack for load imbalance while
-/// keeping live IVar/thunk memory and scheduler pressure `O(threads)`). The env
-/// override `CRANELISP_SPARK_BUDGET=N` sets it explicitly (style consistent with
+/// **M-dynamic — the utilization-axis multiplier `k`** (S104 Wave 2, Stage 3;
+/// `design/backend/lenient-eval.md` §2.8.3, gate G1). The in-flight-spark cap
+/// defaults to `k × rayon::current_num_threads()` with **`k = 2`** (~2/core),
+/// **default-on**. This is the utilization axis of the S104 utilization model:
+/// the emergent ~2/core collapse (§2.8.3) is delivered by tightening this cap so
+/// deeper spark sites see a full pool (`IN_FLIGHT_SPARKS ≥ cap`) and take the
+/// create-gate's direct/inline arm, capping recursive over-sparking to ~2/core.
+///
+/// **NOT a new counter — a re-parameterization of the existing create-gate cap**
+/// (§2.8.3; the FIXME-0442 one-counter ruling). Only the `SPARK_BUDGET` default
+/// multiplier + its default polarity move (`4 → 2`, default-on); the
+/// `spark_budget_try_reserve` primitive, `IN_FLIGHT_SPARKS`, and every codegen
+/// seam are unchanged.
+///
+/// The env override `CRANELISP_SPARK_CORE_MULT=k` (gate G1) lets the single-shot
+/// measurement sweep `k` cheaply — it is the tunable ~2/core knob AND the
+/// M-dynamic on/off selector for the `{mstatic-only, mdynamic-only, both}`
+/// measurement configs:
+/// - `k = 2` — M-dynamic default (the ~2/core cap collapse; the shipped policy);
+/// - `k = 1` — tightest collapse (== the [`SATURATION_GATE`] cap);
+/// - `k = 4` — the **pre-Wave-2 default**, i.e. **M-dynamic effectively OFF**
+///   (the old `4 × threads` static budget — use this for the `mstatic-only` row);
+/// - `k = 0` — cap `0` ⇒ [`spark_budget_try_reserve`] always rejects ⇒ fully
+///   serial (identical to `CRANELISP_SPARK_BUDGET=0`).
+///
+/// A non-parsing value falls back to the default `2`. Read once per process via
+/// `LazyLock`. Lower precedence than an explicit `CRANELISP_SPARK_BUDGET=N` and
+/// than [`SATURATION_GATE`] (see [`effective_spark_cap`]).
+static SPARK_CORE_MULT: LazyLock<usize> = LazyLock::new(|| {
+    std::env::var("CRANELISP_SPARK_CORE_MULT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(2)
+});
+
+/// The cap on [`IN_FLIGHT_SPARKS`]. Default `k × rayon::current_num_threads()`
+/// with **`k = 2`** (M-dynamic, S104 Wave 2 — the ~2/core utilization cap;
+/// [`SPARK_CORE_MULT`]). `k` is enough slack for load imbalance while keeping
+/// live IVar/thunk memory and scheduler pressure `O(threads)` and capping
+/// recursive over-sparking to ~2/core. The env override
+/// `CRANELISP_SPARK_BUDGET=N` sets the cap explicitly (style consistent with
 /// `CRANELISP_NO_LENIENT`); a non-parsing value falls back to the default; `=0`
 /// makes [`spark_budget_try_reserve`] always reject ⇒ every gate site takes the
-/// direct arm (≡ fully serial at the runtime layer). The
-/// `CRANELISP_SATURATION_GATE=1` toggle (with no explicit budget) tightens the
-/// default to exactly the worker count (see [`effective_spark_cap`] and
-/// [`SATURATION_GATE`]). Read once per process via `LazyLock`.
+/// direct arm (≡ fully serial at the runtime layer). `CRANELISP_SPARK_CORE_MULT=k`
+/// re-parameterizes the multiplier (default-on M-dynamic; `k=4` recovers the
+/// pre-Wave-2 `4×` budget). The `CRANELISP_SATURATION_GATE=1` toggle (with no
+/// explicit budget) tightens the cap to exactly the worker count (`1×`); see
+/// [`effective_spark_cap`], [`SATURATION_GATE`], and [`SPARK_CORE_MULT`]. Read
+/// once per process via `LazyLock`.
 static SPARK_BUDGET: LazyLock<usize> = LazyLock::new(|| {
     let explicit = std::env::var("CRANELISP_SPARK_BUDGET")
         .ok()
         .and_then(|v| v.parse::<usize>().ok());
-    effective_spark_cap(explicit, *SATURATION_GATE, rayon::current_num_threads())
+    effective_spark_cap(
+        explicit,
+        *SATURATION_GATE,
+        *SPARK_CORE_MULT,
+        rayon::current_num_threads(),
+    )
 });
 
-/// Compute the in-flight-spark cap from the three inputs, kept pure and
+/// Compute the in-flight-spark cap from the four inputs, kept pure and
 /// side-effect-free so the policy is unit-testable without touching the
 /// process-global `LazyLock`/env (Principle 5 — testability is structural).
 ///
 /// Precedence:
 /// 1. an explicit `CRANELISP_SPARK_BUDGET=N` override always wins (a manual cap);
 /// 2. else the **saturation gate** caps at exactly `num_threads` — spark iff a
-///    worker is free right now, else inline the overflow (Wave 1c);
-/// 3. else the default `4 × num_threads` static budget (pre-S99 behaviour).
-fn effective_spark_cap(explicit: Option<usize>, saturation_gate: bool, num_threads: usize) -> usize {
+///    worker is free right now, else inline the overflow (Wave 1c, `1×`);
+/// 3. else the **M-dynamic** default `core_mult × num_threads` — the ~2/core
+///    utilization cap with `core_mult = 2` by default (S104 Wave 2, §2.8.3).
+///    `core_mult = 4` recovers the pre-Wave-2 static budget (M-dynamic off);
+///    `core_mult = 0` yields cap `0` (always-reject ⇒ fully serial).
+fn effective_spark_cap(
+    explicit: Option<usize>,
+    saturation_gate: bool,
+    core_mult: usize,
+    num_threads: usize,
+) -> usize {
     if let Some(n) = explicit {
         return n;
     }
     if saturation_gate {
         return num_threads;
     }
-    4 * num_threads
+    core_mult * num_threads
 }
 
 /// Whether a batch of `n` permits fits under `cap` given `cur` already in
