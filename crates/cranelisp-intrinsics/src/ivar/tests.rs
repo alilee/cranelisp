@@ -682,6 +682,156 @@ fn mdynamic_core_mult_4_recovers_prewave2_budget() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Structural hierarchical decline (S104 Wave 2b, gate G3; lenient-eval.md §2.8.4).
+// A thread-local "inside a spark body" flag (`IN_SPARK_BODY`) is set for the
+// dynamic extent of a strand's thunk execution (the `SparkBodyGuard` bracket
+// around the `code_ptr(env)` call in `ivar_force`'s claim-win arm). While set,
+// every nested create-gate site inlines: `spark_budget_try_reserve` returns 0
+// INDEPENDENT of the counter. This collapses total spawn *count* to O(cores),
+// which the concurrent cap (permit-recycle) cannot. `CRANELISP_HIER_DECLINE=0`
+// disables the read (emergent-cap fallback). The flag is a per-thread Cell, so
+// each test thread sees its own — clean isolation under nextest AND cargo test.
+// ---------------------------------------------------------------------------
+
+// spec: design/backend/lenient-eval.md §2.8.4 — the flag forces the inline arm:
+// with spare capacity (so ONLY the flag can decline), `try_reserve` grants when
+// the flag is clear and returns 0 (commits nothing) when it is set. Default-on in
+// a fresh process.
+#[test]
+fn hier_decline_flag_forces_inline_when_in_spark_body() {
+    assert!(*HIER_DECLINE, "hierarchical decline is default-on");
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+    // Spare capacity, so the flag is the ONLY thing that can force inline.
+    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+    assert!(!IN_SPARK_BODY.with(|c| c.get()), "flag starts clear on this thread");
+
+    // Flag clear + spare capacity ⇒ grant (top-level site sparks under the cap).
+    assert_eq!(spark_budget_try_reserve(1), 1, "clear flag ⇒ spark under cap");
+    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst); // undo the committed permit
+
+    // Flag set ⇒ decline regardless of spare capacity (nested site inlines).
+    {
+        let _g = SparkBodyGuard::enter();
+        assert!(IN_SPARK_BODY.with(|c| c.get()), "guard sets the flag");
+        assert_eq!(
+            spark_budget_try_reserve(1),
+            0,
+            "inside a spark body ⇒ nested site inlines (hierarchical decline)"
+        );
+        assert_eq!(
+            spark_budget_try_reserve(4),
+            0,
+            "a nested batch inlines wholesale regardless of the counter"
+        );
+        assert_eq!(
+            IN_FLIGHT_SPARKS.load(Ordering::SeqCst),
+            0,
+            "declined nested reservations commit nothing (allocation-free arm)"
+        );
+    }
+    // Flag cleared on guard drop ⇒ top-level sites spark again.
+    assert!(!IN_SPARK_BODY.with(|c| c.get()), "flag cleared on scope exit");
+    assert_eq!(spark_budget_try_reserve(1), 1, "cleared flag ⇒ spark again");
+
+    IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
+}
+
+// spec: design/backend/lenient-eval.md §2.8.4 — the `SparkBodyGuard` bracket sets
+// the flag on entry and restores it on exit, INCLUDING on a Rust unwind out of
+// the bracketed body (the thunk-panic path). Save/restore semantics keep a nested
+// bracket from prematurely clearing an outer strand's flag.
+#[test]
+fn spark_body_guard_sets_and_clears_including_on_unwind() {
+    assert!(!IN_SPARK_BODY.with(|c| c.get()), "clear at start");
+
+    // Normal scope: set inside, cleared after.
+    {
+        let _g = SparkBodyGuard::enter();
+        assert!(IN_SPARK_BODY.with(|c| c.get()), "set within the bracket");
+    }
+    assert!(!IN_SPARK_BODY.with(|c| c.get()), "cleared on normal exit");
+
+    // Nested brackets: the inner drop restores the OUTER's `true`, not `false`.
+    {
+        let _outer = SparkBodyGuard::enter();
+        {
+            let _inner = SparkBodyGuard::enter();
+            assert!(IN_SPARK_BODY.with(|c| c.get()), "set within the nested bracket");
+        }
+        assert!(
+            IN_SPARK_BODY.with(|c| c.get()),
+            "inner drop restores the outer strand's true, not false"
+        );
+    }
+    assert!(!IN_SPARK_BODY.with(|c| c.get()), "outer drop restores false");
+
+    // Unwind: the flag must be restored even if the bracketed body panics — the
+    // exact path a thunk that raises a Rust panic takes through the guard's Drop.
+    let outcome = std::panic::catch_unwind(|| {
+        let _g = SparkBodyGuard::enter();
+        assert!(IN_SPARK_BODY.with(|c| c.get()), "set before the panic");
+        panic!("simulated thunk unwind inside the spark body");
+    });
+    assert!(outcome.is_err(), "the bracketed body must have unwound");
+    assert!(
+        !IN_SPARK_BODY.with(|c| c.get()),
+        "SparkBodyGuard::drop must restore the flag on the unwind path"
+    );
+}
+
+// spec: design/backend/lenient-eval.md §2.8.4 — the end-to-end hierarchical
+// property through a real force: a nested spark site hit WHILE a thunk executes
+// (the flag is set by `ivar_force`'s bracket around the thunk call) inlines —
+// `try_reserve` returns 0 even though the pool has spare capacity. This is the
+// whole mechanism observed through the production seam, not just the pure guard.
+#[test]
+fn hier_decline_nested_site_inside_forced_thunk_inlines() {
+    static NESTED_RESERVE: AtomicI64 = AtomicI64::new(-1);
+    static FLAG_SEEN: AtomicBool = AtomicBool::new(false);
+    extern "C" fn nested_fn(_env: i64) -> i64 {
+        // Executing inside the spark body: observe the flag + a nested reservation.
+        FLAG_SEEN.store(IN_SPARK_BODY.with(|c| c.get()), Ordering::SeqCst);
+        NESTED_RESERVE.store(spark_budget_try_reserve(1), Ordering::SeqCst);
+        7
+    }
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+    // Spare capacity, so ONLY the flag can force the nested site to inline.
+    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+
+    let thunk = {
+        let b = alloc_with_rc(16); // code_ptr + drop_glue, no captures
+        unsafe {
+            *((b as isize + 16) as *mut i64) = nested_fn as *const () as i64;
+            *((b as isize + 24) as *mut i64) = 0;
+        }
+        b as i64
+    };
+    let ivar = ivar_create(thunk);
+
+    // Inline claim on THIS thread: `ivar_force` wins the CAS and runs the thunk
+    // under the spark-body bracket (the main-thread claim-compute path).
+    let result = ivar_force(ivar);
+    assert_eq!(result, 7);
+    assert!(
+        FLAG_SEEN.load(Ordering::SeqCst),
+        "the flag must be set while the thunk (spark body) runs"
+    );
+    assert_eq!(
+        NESTED_RESERVE.load(Ordering::SeqCst),
+        0,
+        "a nested spark site inside a spark body inlines (structural decline)"
+    );
+    assert!(
+        !IN_SPARK_BODY.with(|c| c.get()),
+        "the flag is cleared once the force returns"
+    );
+
+    // Thunk was freed by ivar_force; free the cell.
+    unsafe { dealloc(ivar as *mut u8) };
+    IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
+}
+
 /// Build a panicking thunk carrying a custom message (for the dual-panic test).
 fn make_panicking_thunk_msg(msg: &'static str) -> i64 {
     // We bake the message pointer/len into two captures so one generic body

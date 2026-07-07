@@ -38,6 +38,7 @@
 //!
 //! See `design/backend/lenient-eval.md` for the full design.
 
+use std::cell::Cell;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
 
@@ -291,6 +292,70 @@ impl Drop for InFlightGuard {
     }
 }
 
+// **Hierarchical decline — structural form** (S104 Wave 2b, gate G3;
+// `design/backend/lenient-eval.md` §2.8.4). A thread-local "inside a spark
+// body" flag: `true` for the dynamic extent of a strand's thunk execution (set
+// around the `code_ptr(env)` call in `ivar_force`'s claim-win arm, via
+// `SparkBodyGuard`). While set, every nested create-gate site on this thread
+// takes the inline/direct arm (`spark_budget_try_reserve` returns `0`),
+// *independent of the counter value*.
+//
+// **Why structural, not emergent.** The concurrent-cap (`SPARK_BUDGET`) bounds
+// *concurrent* in-flight sparks (memory footprint = `O(cap)`) but **permits
+// recycle**: when a strand completes it frees a permit and the next recursive
+// node grabs it and sparks again, so *total* spawn count over a recursion stays
+// `O(nodes)` — the 0534 scheduler overhead (single-shot F5(fib): ~1.5M spawns at
+// every cap; a *tighter* cap gave MORE spawns). The cap is the wrong lever for
+// spawn *rate*. This flag collapses it structurally: once a worker is executing a
+// spark body, its ENTIRE subtree runs sequentially (a high-efficiency sequential
+// path) with no nested sparking, so top-level strands stay `~cap` (≈2/core) and
+// spawns collapse to `O(cores)`.
+//
+// **Composes with the cap** (`6dbed5a`'s `SPARK_CORE_MULT`): *top-level* sites
+// (flag clear) still spark subject to the ~2/core cap; *nested* sites (flag set)
+// always inline. The flag is a module-private thread-local — **no new export**.
+//
+// The bracket covers BOTH the rayon-worker path and the main-thread
+// claim-compute-at-barrier path (work conservation) — both are executing a
+// strand, so nested sites under either must inline.
+thread_local! {
+    static IN_SPARK_BODY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The **structural hierarchical-decline** toggle (`CRANELISP_HIER_DECLINE`,
+/// S104 Wave 2b, gate G3). **ON by default**; `CRANELISP_HIER_DECLINE=0` disables
+/// it so [`spark_budget_try_reserve`] ignores [`IN_SPARK_BODY`] and the scheduler
+/// falls back to the emergent-cap behaviour (nested sites throttled only by the
+/// concurrent cap) — the ablation row for isolating G3's effect. Any value other
+/// than `"0"` (or an unset var) is ON. The [`SparkBodyGuard`] bracket always sets
+/// the flag; only the *read* here is gated, so ON/OFF differ solely in whether a
+/// nested site consults the flag. Read once per process via `LazyLock`.
+static HIER_DECLINE: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("CRANELISP_HIER_DECLINE").map(|v| v != "0").unwrap_or(true)
+});
+
+/// RAII bracket marking the dynamic extent of one executing spark body. On entry
+/// it sets [`IN_SPARK_BODY`] `true` (saving the previous value); on drop — even on
+/// a Rust unwind out of the thunk — it restores the saved value. Save/restore
+/// (not unconditional-clear) keeps the invariant correct if a strand's thunk
+/// itself claim-computes a nested IVar inline at a barrier: the inner bracket
+/// restores the outer strand's `true`, never prematurely clearing it. Always
+/// armed (it is the mechanism, not instrumentation); the negligible thread-local
+/// write is off the per-instruction hot path (one per thunk execution).
+struct SparkBodyGuard(bool);
+
+impl SparkBodyGuard {
+    fn enter() -> SparkBodyGuard {
+        SparkBodyGuard(IN_SPARK_BODY.with(|c| c.replace(true)))
+    }
+}
+
+impl Drop for SparkBodyGuard {
+    fn drop(&mut self) {
+        IN_SPARK_BODY.with(|c| c.set(self.0));
+    }
+}
+
 /// Try to reserve `n` permits for the `n` sparkable arguments/bindings of one
 /// backend create-gate site (`design/backend/lenient-eval.md` §3.6.1).
 ///
@@ -311,6 +376,18 @@ pub extern "C" fn spark_budget_try_reserve(n: i64) -> i64 {
     let cap = *SPARK_BUDGET as isize;
     let n = n as isize;
     let stats = spark_stats_enabled();
+    // Structural hierarchical decline (§2.8.4, gate G3): if this thread is already
+    // executing a spark body, every nested candidate takes the inline/direct arm
+    // — independent of the counter — so a dispatched strand runs its ENTIRE
+    // subtree sequentially with no further sparking. Gated by CRANELISP_HIER_DECLINE
+    // (default-on); when off, the flag is ignored and only the concurrent cap
+    // throttles (the emergent-cap ablation).
+    if *HIER_DECLINE && IN_SPARK_BODY.with(|c| c.get()) {
+        if stats {
+            SPARK_SERIAL_CONTINUES.fetch_add(1, Ordering::Relaxed);
+        }
+        return 0;
+    }
     // Fast reject (the common case under explosion): a single load, no RMW.
     if !budget_grants(IN_FLIGHT_SPARKS.load(Ordering::SeqCst), n, cap) {
         if stats {
@@ -550,7 +627,17 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
             // right after the thunk returns so the count reflects *executing*,
             // not merely-claimed, sparks.
             let peak_guard = stats.then(PeakGuard::enter);
-            let result = call(thunk);
+            // Structural hierarchical decline (§2.8.4, gate G3): mark this thread
+            // as "inside a spark body" for the dynamic extent of the thunk call so
+            // every nested create-gate site inlines (see [`SparkBodyGuard`] /
+            // [`IN_SPARK_BODY`]). Scoped tightly around the call, so it clears even
+            // if the thunk unwinds. Covers BOTH the rayon-worker path (this
+            // `ivar_force` runs inside `ivar_spark`'s spawned closure) and the
+            // main-thread claim-compute-at-barrier path — both execute a strand.
+            let result = {
+                let _spark_body_guard = SparkBodyGuard::enter();
+                call(thunk)
+            };
             drop(peak_guard);
 
             // Fork-join error-slot ferry (worker-side): if the thunk raised a
