@@ -348,6 +348,218 @@ re-pointed `/backend → /design` (concurrency track, S104) — it is a contenti
 not a bounded backend density-gate tune. `/qa`'s II-G3 acceptance gate is re-scoped in the same FIXME
 (grade against the composed end-state, or hold as a tripwire at a realistic `≤ OFF` bar).
 
+### 3.1.1 S104 re-ruling — the cure is a UTILIZATION model, and B4 is net-harmful (arch, S104 Phase 2)
+
+The S103 correction above named the missing lever a "spark-overhead cost gate" — a
+per-spark *body-size* heuristic (decline sparks whose cost-to-run is below cost-to-spawn).
+S104's user-directed reframe **supersedes that framing with a sharper one**: the lever is
+**core utilization**, not per-spark body size. The goal is to dispatch a *small* number
+(~2/core) of distinct, probably-large work items that **separate** onto different cores and
+then each run forward on an efficient **sequential** path — populate the cores, then get out
+of the way. A body-size heuristic is a proxy for this; the utilization model targets it
+directly. This subsection is the arch-thesis home for the reframe; `design/backend/lenient-eval.md`
+(new utilization-model section, superseding §2.7's density-axis framing for this class) is
+the mechanism design.
+
+**Three admission axes, and how they relate (the architectural call).** The prior model had
+two axes — the S94 §2.2 *compute-cost* axis and the S94/S99 §2.7/§3.1 *contention (alloc/RC
+density)* axis. S104 adds two and re-ranks all of them for the recursive-parallel class:
+
+- **Large-work axis (M-static) — the primary *selection*.** Structural, compile-time: spark
+  only **non-tail recursion** (callee in a recursive SCC ∧ apply not in tail position). This
+  selects the divide-and-conquer / recursive forks (F1 `fib`/`reduce-tree`, F4 coarse
+  `solve-range`) and rejects flat non-recursive accessor pairs (F4's 104 `(cell-at g i)`
+  fine sparks). It replaces the purely-*syntactic* "non-cheap `Apply`" filter (§2.2) for this
+  class. Uses the **existing** Decision-21 `callees` call graph (already persisted on
+  `ModuleEntry::Def.callees`, enriched by FIXME 0470) + the existing backend `in_tail_position`
+  — **no new cross-crate interface, no `cranelisp-types` edit, no ABI change** (see §3.1.2).
+
+- **Utilization axis (M-dynamic) — the primary *throttle*.** Dynamic, runtime: bail out of
+  sparking when cores are already busy — inline (run serial) at a spark site when the count of
+  in-flight spark bodies is ≳ `ncores`. This is what makes ~2/core **emergent**: the first
+  forks populate the pool; every deeper fork sees a busy pool and inlines, running its subtree
+  serially. **This axis is NOT new machinery — it is a re-parameterization + default-on of the
+  existing `IN_FLIGHT_SPARKS` counter + saturation-gate mechanism** (`ivar.rs`; the create-gate
+  at cap `= ncores` already inlines when in-flight ≥ ncores). See §3.1.3 (counter unification).
+
+- **Contention axis (B4 / §2.7) — DEMOTED.** The static alloc/RC-density proxy is a
+  *contention* signal built against the S94/S99 (a)/(b) model. 0534 proves that on the
+  scheduler-churn class (F4) B4 is **net-harmful, not merely neutral**: it declines the coarse
+  D&C sparks (they score dense 2/4) while the fine score-0 accessor sparks stay admitted, so the
+  fine sparks **strand** on a serialized outer tree with no coarse structure to ride — 112s
+  (B4 default-on) vs 24s (B4 off, admit-all) vs 0.9s (serial). B4's decline is *incoherent*
+  when the declined subtree still sparks fine candidates. **Ruling: B4 is demoted from a
+  default-on admission axis to off-by-default, pending re-validation against the utilization
+  model.** Its default (`SPARK_DENSITY_MAX_DEFAULT = 1`, currently active whenever ownership
+  analysis ran) is to be flipped to disabled (`0`) by `/design`+`/dev` this sprint; the
+  contention-scoring *concept* is **not retired** — it remains valid for the genuinely
+  alloc/RC-dense *compute-bound* spark class (the S99 F2 vec-COW workloads) and may return
+  **Phase-H-composed** (scoring the surviving population the memory mechanisms define, per the
+  §2.7 sequencing) — but it is not the S104 admission mechanism, and it must never fire in the
+  incoherent "decline-coarse-while-admitting-nested-fine" state 0534 exposed.
+
+**Hierarchical decline is the connective invariant — and it is primarily M-dynamic's job.**
+Once a strand is dispatched it must run its sequential path with **no further sparking inside
+the serialized subtree** (0534: declined-coarse + admitted-fine is strictly the worst outcome).
+Note the interaction the sprint must not under-state: **M-static alone does NOT deliver this** —
+a D&C recursion is non-tail-recursive at *every* level, so M-static would re-select spark sites
+all the way down (the `fib`-explosion shape). The count collapse to ~2/core comes from
+**M-dynamic** (busy pool → inline), and hierarchical decline is enforced by the same busy signal
+(a strand's nested sites see a busy pool and inline). M-static's job is purely *quality* (spark
+coarse, not fine); M-dynamic's is *quantity* (collapse the tree to ~2/core). **The two are
+deeply complementary and neither alone clears F4** — measuring them independently (Stage 0's
+config matrix) is correct for attribution, but the north-star F4 collapse should be expected as
+an M-static × M-dynamic *interaction*, not a sum. If Stage 0's discrimination experiment wants
+hierarchical decline made *structural* (not just emergent from the busy signal), the cheapest
+form is a thread-local "am I already inside a spark body" flag that suppresses nested sparks —
+a refinement of M-dynamic, not a fourth mechanism.
+
+### 3.1.2 M-static needs no cross-crate interface (arch, S104 Phase 2)
+
+M-static's inputs both already exist: the recursive-SCC membership is derivable at the codegen
+site from `ModuleEntry::Def.callees` (Decision 21; a `cranelisp-types` field, present and
+FIXME-0470-enriched to every statically-resolved user-fn reference — the same edges the
+ownership fixpoint walks), and `in_tail_position` is already tracked in the backend (TCO + the
+§2.5.3 apply-arg gating). SCC computation is backend-internal graph analysis over an existing
+persisted field — **no new `cranelisp-types` type, no schema/baseline cascade.** Whether the
+"in a recursive SCC" predicate is computed on-demand in backend or materialized as a per-callable
+flag in typecheck is a `/design` interior choice, not a cross-crate one, **provided it stays off
+the public edge.** Soundness-toward-decline: a callee whose `Def` is not yet loaded (incremental
+dev session) is treated as non-recursive ⇒ not sparked ⇒ safe (the same conservative default the
+launch-eligibility predicate uses, §4.1).
+
+### 3.1.3 Counter unification — M-dynamic rides `IN_FLIGHT_SPARKS`, no third throttle (arch, S104 Phase 2)
+
+There are already two CPU-side spark controls and a compile-time axis in this area; S104 must not
+accrete a fourth runtime counter. The ledger:
+
+1. **`IN_FLIGHT_SPARKS`** (`ivar.rs`) — the one CPU-side runtime counter: reserved-through-completion
+   spark permits, `O(cap)` memory bound. The **saturation gate** is *not* a second counter — it is a
+   policy that lowers this counter's *cap* from `4×ncores` to `ncores`.
+2. **B4 / `SPARK_DENSITY_MAX`** — a *compile-time* static score, not a runtime counter (demoted, §3.1.1).
+
+**Ruling: M-dynamic's "executing-sparks / busy-core" signal IS the `IN_FLIGHT_SPARKS` +
+saturation-gate mechanism, re-parameterized (cap toward the ~2/core target) and flipped default-on.
+It does not stand up a new counter.** The create-gate's `spark_budget_try_reserve` already returns
+"inline vs spark" from a utilization-style cap; "inline when the pool is busy" is exactly a lower cap
+on that same primitive. This is the **§5 FIXME-0442 ruling honoured** — that ruling already committed
+the slice-1 CPU counter to *stay one plain counter + cap + single decision site, its signal (not its
+shape) refined later*; M-dynamic is precisely that signal refinement, and a competing "executing-sparks"
+static would violate it (Principle 8 shaped-to-be-subsumed; Principle 6 budget). If measurement shows the
+reserved-vs-executing gap (queued-but-not-yet-stolen tasks inflating the count) genuinely matters, the fix
+is to adjust *where the one counter is incremented*, not to add a second. The saturation gate having only
+recovered ~9% at S99 is **not** evidence against this axis: it was measured with B4 *still declining the
+coarse sparks*, so the pool never latched busy — with M-static feeding it long-lived coarse strands, the
+same mechanism latches and works.
+
+**Public-API disposition (baseline-diff discipline).** The sprint's "one new read-primitive C-ABI
+symbol" for M-dynamic is **not pre-approved and is expected to be unnecessary** — the existing
+`cranelisp_spark_budget_try_reserve(n: i64) -> i64` already delivers the inline-vs-spark decision from
+the utilization cap. `/design` Stage 1 must **justify** any new symbol against this; the default arch
+position is **no new symbol** (Principle 2 narrow interfaces). *If* Stage 1 proves a distinct non-consuming
+read is genuinely needed (a per-site utilization read decoupled from the batch reservation), the minimal
+approved shape is a single `cranelisp_spark_executing_count() -> i64` (or equivalent) `pub extern "C"`
+export in `cranelisp-intrinsics`, carrying the **same** Stage-3 cascade the existing budget symbol did:
+`cranelisp-intrinsics/public-api.txt` regen + `intrinsics_table()` entry + BC §4b invariant-11 narrative +
+`/arch` approval, all in the implementing (Stage 3) change-set. No `cranelisp-types` edit either way.
+
+### 3.1.4 Orthogonality + roadmap correction (arch, S104 Phase 2)
+
+Setting aside **all** memory/ownership work (0528 uniqueness, 0526 projection elision, region arena,
+`--release`) for S104 is **architecturally correct**: 0534 proves F4's floor is scheduler/utilization-bound,
+not RC/allocator-bound — it reproduces identically at increment-I HEAD, `rc_inc` is identical serial-vs-ON,
+and the allocator is at 0.1% of syscall time. Phase-H mechanisms (thread-local RC, escape→stack/region,
+Perceus reuse) leave F4 **identical**; **Phase-H does NOT restore the F4 utilization floor.** The
+utilization thesis and the memory-model spine (`ownership-inference.md`) are genuinely orthogonal tracks.
+This is a **roadmap course-correction** for `/sprint` to record in `sprints/ROADMAP.md`: the earlier
+reading (this §3.1 pre-S103, and the §7 "F4-at-north-star = III-G2" staging in `ownership-inference.md`)
+that Phase-H is the structural cure for the parallel floor is corrected — Phase-H cures the (b) alloc/RC
+contention term it measured, but the F4 scheduler-churn floor is a *separate* axis cured by the utilization
+gate, available now and independent of the memory model. No `design/arch/` roadmap doc carries the stale
+claim (there is no `design/arch/roadmap.md`); the correction lives here + rides to `sprints/ROADMAP.md`.
+
+### 3.1.5 AS-BUILT outcome — the utilization model is validated, and it re-motivates the contention axis (arch, S104 Phase 5)
+
+The utilization model ruled in §3.1.1–3.1.4 was implemented, measured, and validated this
+sprint. This subsection records the as-built result, one Phase-2 correction the build forced,
+and the precise S105 focus the boundary of the result re-motivates.
+
+**Validated — the cure works, and it delivers real speedup.** The built model is: **M-static**
+(`scc ∧ ¬tail` — spark only non-tail recursion in a recursive SCC) selects coarse work;
+**M-dynamic** (~2/core in-flight cap on `IN_FLIGHT_SPARKS`) throttles the pool; and a
+**worker-origin thread-local depth-D hierarchical decline** (default `D = floor(log2(nproc))`,
+plus IVar-force backoff — yield the core rather than busy-spin when forcing an unfulfilled IVar)
+bounds how deep a coarse tree sparks before every deeper site inlines. Results:
+
+- **The 0534 over-sparking pathology is CURED.** F4-hard (real Sudoku, the north-star)
+  55s → ~2.3s; the spawn count collapsed by **~6 orders of magnitude** (the 9.45 M ultra-fine
+  firehose no longer fires — the score-0 accessor pairs are flat non-recursive and M-static
+  never selects them, while the coarse D&C tree stops sparking past depth D).
+- **Real speedup on compute-parallel work.** F6 (heavy balanced compute) 3.10s → 0.82s
+  (**3.4×**); F5 (`fib`) 0.67s → 0.39s (**1.7×**). The model does what §3.1.1 set out to do:
+  populate the cores with a small number of coarse, long-lived strands, then get out of the way.
+
+**Phase-2 correction the build forced — structural hierarchical decline is MANDATORY, not
+emergent/optional.** §3.1.1 framed hierarchical decline as *primarily M-dynamic's job* and
+described a structural thread-local flag as an optional "cheapest form … a refinement of
+M-dynamic" (the gate-G3 framing). The build refutes the optionality: **the concurrent cap
+(M-dynamic) does NOT bound total spawn *count* — it bounds only concurrent in-flight sparks and
+permits recycle, so a recursive workload sits at ~1.5 M spawns at *every* cap value.** A busy
+pool inlines *momentarily*, but as each spark completes it frees a permit and the next nested
+site sparks — the tree drains and refills indefinitely at the same steady-state rate. The count
+collapse to ~2/core is therefore **not** an emergent property of the busy signal alone; it
+requires the **structural** worker-origin depth bound (a strand that started on a worker declines
+its own nested sparks past depth D). Record the correction: hierarchical decline is a
+**first-class mandatory mechanism** of the built model, not an emergent side-effect of M-dynamic
+and not the optional G3 refinement the pre-impl framing had. M-static selects quality, the
+structural depth bound delivers quantity; **M-dynamic alone delivers neither the count collapse
+nor hierarchical decline.**
+
+**The boundary — and the S105 focus.** The depth allowance is **blind to memory traffic**: it
+cannot distinguish **alloc-free compute fan-out** (F6 — parallelises and wins 3.4×) from
+**alloc-heavy contended fan-out** (F4-hard, F3 — the branches contend on the allocator lock and
+atomic-RC cache lines, so they stay *above* serial even when spread across cores). A single
+scalar depth `D` is the wrong knob for both classes at once: the compute-parallel win wants to go
+**deep** (more coarse strands = more core fill), while the alloc-heavy class wants to stay
+**shallow** (fewer concurrent contenders on the shared substrate). The distinguishing signal is
+exactly **allocation/RC density** — the contention axis this section (§3.1) and the memory-model
+spine (`ownership-inference.md`) already characterise. So the S104 boundary **re-motivates that
+work, now precisely scoped**:
+
+> **S105 focus = a *density-aware depth allowance*.** Make `D` a function of a strand's
+> alloc/RC density rather than a global constant: **go deep for alloc-free strands** (fill the
+> cores — the F6 win), **stay shallow for alloc-heavy strands** (limit concurrent contention —
+> the F4-hard/F3 floor). This is the clean **synthesis of the two axes**: the S104 *utilization*
+> axis (depth/core-fill) parameterised by the §3.1 *contention* (alloc/RC-density) axis. It is
+> **NOT** the old B4 admission-*decline* form (demoted §3.1.1 as net-harmful — a binary
+> spark/don't-spark verdict that stranded fine sparks on a serialised tree); it is a
+> *depth-modulating* use of the same density signal, composing with — not replacing — M-static
+> selection and the structural depth bound. The density input is the same analysis-derived
+> allocation/RC-density signal the demoted B4 scored and the memory-model spine makes derivable
+> (`ownership-inference.md` §8.3); its correct role is discovered here to be *depth modulation*,
+> not admission.
+
+**Floor-scope ruling still holds — with the F4-at-D3 trade noted.** §3.1's floor-scope ruling is
+unchanged: **alloc/RC-contended workloads above serial (F3, F4-hard) are the *contention* class,
+not a utilization defect.** The utilization model was never expected to cure them — it cures the
+scheduler-churn *over-sparking* (0534, now done) and wins the *compute-parallel* class (F6/F5).
+The residual "above serial" for the contended class is cured by the **density signal
+(S105, above) + Phase-H memory work** (thread-local RC / escape→stack/region / Perceus reuse
+removing the contention at its source), exactly as §3.1/§3.1.4 scope it. Concretely: **F4-hard at
+`D=3` is a mild floor regression versus `D=1`** — deeper sparking spreads more alloc-heavy
+branches concurrently and they contend — **an accepted trade for the F6 compute-parallel win**
+(user direction, 2026-07-07). The density-aware depth allowance is precisely what dissolves the
+trade: it would let F6 keep `D≈log2(nproc)` while F4-hard's alloc-heavy strands self-select back
+toward shallow depth.
+
+**Latent backend ceiling (cross-reference, not duplicated here).** There is a build-level ceiling
+on the depth mechanism: a create-gate **inline arm advances no depth**, so the effective bound
+is `D ≤ ~log2(cap)` without a backend hook that propagates depth across the inline decision.
+This is a backend-mechanism detail, not an arch-thesis commitment — it lives in the backend
+design doc (`design/backend/lenient-eval.md`, being updated by `/design` in parallel this
+sprint); recorded here only as the reason the built `D` cannot be raised arbitrarily. Cross-refer
+there for the mechanism; do not duplicate.
+
 ## 4. The inferred half — how concurrency is extracted
 
 The pure program emits effects ordered **only by data dependencies**. The trampoline
