@@ -136,6 +136,41 @@ const PENDING: i64 = 0;
 const EVALUATING: i64 = 1;
 const RESOLVED: i64 = 2;
 
+/// **IVar-force wait policy** (`CRANELISP_IVAR_SPIN`, S104 Wave 2d). The
+/// EVALUATING-wait arm of [`ivar_force`] (a thread that lost the claim CAS and
+/// must wait for the claimant to publish RESOLVED) uses a **bounded backoff**
+/// that yields the core, so N early-finishing waiters do not starve the 1
+/// running straggler by busy-spinning at 100% CPU (the F3 floor violation:
+/// imbalanced-search wall inflated ~7.5× over serial when idle waiters burned
+/// the cores the straggler's own thread needed). The backoff escalates:
+///
+/// 1. a short bounded `spin_loop()` burst ([`WAIT_SPIN_BURST`]) — cheap and
+///    latency-optimal for the overwhelmingly common fast-resolve case (the
+///    claimant publishes within a few hundred ns);
+/// 2. then a `yield_now()` burst ([`WAIT_YIELD_BURST`]) — hands the core to the
+///    OS scheduler so the computing thread runs;
+/// 3. then a capped short `sleep` ([`WAIT_SLEEP`]) for genuinely long waits — a
+///    waiter blocked on a multi-second straggler parks instead of spinning,
+///    freeing its core entirely.
+///
+/// Setting `CRANELISP_IVAR_SPIN=1` restores the pre-Wave-2d **pure busy-spin**
+/// (`loop { load; spin_loop() }`) for A/B comparison. The wait policy is a
+/// scheduling choice only — the CAS/state-machine protocol and the
+/// work-conservation claim-compute semantics (module `//!` §State Machine, the
+/// fork-join ferry) are byte-for-byte identical on either path; only the *wait*
+/// changes. Read once per process via `LazyLock`.
+static IVAR_SPIN: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("CRANELISP_IVAR_SPIN").is_ok_and(|v| v == "1"));
+
+/// Backoff schedule for [`ivar_force`]'s EVALUATING-wait arm ([`IVAR_SPIN`]).
+/// The first `WAIT_SPIN_BURST` wait iterations busy-spin (fast-resolve latency);
+/// the next `WAIT_YIELD_BURST` yield the core; beyond that each iteration sleeps
+/// `WAIT_SLEEP`. Tuned so a fast resolve pays only cheap spins while a long wait
+/// (the F3 straggler) drops to a ~parked poll that does not starve the runner.
+const WAIT_SPIN_BURST: u32 = 128;
+const WAIT_YIELD_BURST: u32 = 512;
+const WAIT_SLEEP: std::time::Duration = std::time::Duration::from_micros(50);
+
 /// Global in-flight-spark counter — the reservation half of the backend
 /// create-gate budget (`design/backend/lenient-eval.md` §3.6, Sprint 92).
 ///
@@ -743,7 +778,17 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
             if stats {
                 FORCE_SPIN_WAITS.fetch_add(1, Ordering::Relaxed);
             }
-            // Another thread claimed it — spin-wait until RESOLVED.
+            // Another thread claimed it — wait until RESOLVED. Bounded backoff
+            // that yields the core (S104 Wave 2d, [`IVAR_SPIN`]): a short spin
+            // burst (cheap for the common fast-resolve case), then `yield_now`,
+            // then a capped short sleep — so N early-finishing waiters do NOT
+            // busy-spin at 100% CPU and starve the 1 running straggler (the F3
+            // imbalanced-search floor violation). `CRANELISP_IVAR_SPIN=1`
+            // restores the pure busy-spin for comparison. The wait is the ONLY
+            // thing that changes: the RESOLVED handshake / ferry re-raise is
+            // identical to the pure-spin path.
+            let pure_spin = *IVAR_SPIN;
+            let mut waits: u32 = 0;
             loop {
                 if stats {
                     FORCE_SPIN_ITERS.fetch_add(1, Ordering::Relaxed);
@@ -756,7 +801,19 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
                     reraise_ferried_error(ivar);
                     return unsafe { *((ivar as isize + VALUE_OFFSET) as *const i64) };
                 }
-                std::hint::spin_loop();
+                if pure_spin {
+                    std::hint::spin_loop();
+                    continue;
+                }
+                // Escalating backoff: spin → yield → capped sleep.
+                waits = waits.saturating_add(1);
+                if waits <= WAIT_SPIN_BURST {
+                    std::hint::spin_loop();
+                } else if waits <= WAIT_SPIN_BURST + WAIT_YIELD_BURST {
+                    std::thread::yield_now();
+                } else {
+                    std::thread::sleep(WAIT_SLEEP);
+                }
             }
         }
     }

@@ -906,6 +906,161 @@ fn hier_decline_main_thread_claim_does_not_flag() {
     IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
 }
 
+// ---------------------------------------------------------------------------
+// IVar-force wait backoff (S104 Wave 2d, `IVAR_SPIN`). The EVALUATING-wait arm
+// of `ivar_force` (a thread that lost the claim CAS) uses a bounded
+// spin→yield→sleep backoff that yields the core so N idle waiters do not starve
+// the 1 running claimant. These tests pin the WAIT-side correctness: a value
+// forced while another thread is mid-EVALUATING resolves to the right value (no
+// deadlock, no lost wakeup), and a ferried panic re-raises correctly through the
+// backoff wait (unwind-safe). The wait changes; the RESOLVED handshake + ferry
+// do not — so these assert the protocol is preserved across the new wait.
+// ---------------------------------------------------------------------------
+
+/// Build a zero-arg thunk that spins on a shared gate before returning `value`,
+/// so a second thread is guaranteed to enter the EVALUATING-wait arm (and thus
+/// the backoff) while this claimant is still computing.
+fn make_gated_const_thunk(gate: &'static AtomicBool, value: i64) -> i64 {
+    // Two captures: the gate pointer and the value.
+    extern "C" fn gated_fn(env_ptr: i64) -> i64 {
+        let gate_ptr = unsafe { *((env_ptr as isize + 32) as *const i64) } as *const AtomicBool;
+        let value = unsafe { *((env_ptr as isize + 40) as *const i64) };
+        // Spin until released — keeps the IVar EVALUATING so the joiner waits.
+        while !unsafe { (*gate_ptr).load(Ordering::SeqCst) } {
+            std::hint::spin_loop();
+        }
+        value
+    }
+    let base = alloc_with_rc(32); // code_ptr + drop_glue + 2 captures
+    unsafe {
+        *((base as isize + 16) as *mut i64) = gated_fn as *const () as i64;
+        *((base as isize + 24) as *mut i64) = 0; // no drop glue
+        *((base as isize + 32) as *mut i64) = gate as *const AtomicBool as i64;
+        *((base as isize + 40) as *mut i64) = value;
+    }
+    base as i64
+}
+
+// spec: 12-runtime §12.4.3 — a value forced on a second thread while the
+// claimant is mid-EVALUATING resolves (through the backoff wait) to the correct
+// value: no deadlock, no lost wakeup. The claimant is gated so the joiner is
+// guaranteed to enter the wait arm and exercise the spin→yield→sleep backoff.
+#[test]
+fn ivar_force_backoff_wait_resolves_to_claimant_value() {
+    static GATE: AtomicBool = AtomicBool::new(false);
+    GATE.store(false, Ordering::SeqCst);
+
+    let thunk = make_gated_const_thunk(&GATE, 4242);
+    let ivar = ivar_create(thunk);
+
+    // Claimant thread: wins the CAS, spins in the gated thunk until released.
+    let claimant = std::thread::spawn(move || ivar_force(ivar));
+
+    // Ensure the claimant has claimed (EVALUATING) before we join.
+    let state_ptr = unsafe { &*((ivar as isize + STATE_OFFSET) as *const AtomicI64) };
+    assert!(
+        spin_until(
+            || state_ptr.load(Ordering::SeqCst) == EVALUATING,
+            Duration::from_secs(5),
+        ),
+        "claimant must reach EVALUATING"
+    );
+
+    // Joiner thread: lost the CAS, must WAIT via the backoff. Give it a real head
+    // start into the wait arm (past the spin burst into yield/sleep) before we
+    // release the claimant — this is exactly the F3 shape (waiter parked while
+    // the straggler runs).
+    let joiner = std::thread::spawn(move || ivar_force(ivar));
+    std::thread::sleep(Duration::from_millis(20));
+
+    // Release the claimant; both forces must return the claimant's value.
+    GATE.store(true, Ordering::SeqCst);
+    let claimant_val = claimant.join().expect("claimant thread panicked");
+    let joiner_val = joiner.join().expect("joiner thread panicked");
+    assert_eq!(claimant_val, 4242, "claimant computes the value");
+    assert_eq!(
+        joiner_val, 4242,
+        "the backoff waiter must resolve to the same value (no lost wakeup)"
+    );
+
+    // Two forces each held the cell (rc=1 at create); force does not touch rc,
+    // so the single create-time reference is still ours — free the cell + thunk
+    // was freed by the claimant's force.
+    unsafe { dealloc(ivar as *mut u8) };
+}
+
+// spec: 12-runtime §12.4.3 — first-error-wins is preserved across the backoff
+// wait: a thunk panic captured by the claimant is ferried and re-raised into a
+// backoff-WAITING joiner's slot (the wait path's `reraise_ferried_error` on the
+// RESOLVED handshake, unchanged by the backoff).
+#[test]
+fn ivar_force_backoff_wait_reraises_ferried_panic() {
+    static GATE: AtomicBool = AtomicBool::new(false);
+    GATE.store(false, Ordering::SeqCst);
+
+    // A gated panicking thunk: spin on the gate, then raise a runtime panic.
+    extern "C" fn gated_boom_fn(env_ptr: i64) -> i64 {
+        let gate_ptr = unsafe { *((env_ptr as isize + 32) as *const i64) } as *const AtomicBool;
+        while !unsafe { (*gate_ptr).load(Ordering::SeqCst) } {
+            std::hint::spin_loop();
+        }
+        let msg = "backoff boom";
+        crate::panic::runtime_panic(msg.as_ptr(), msg.len());
+        0
+    }
+    let thunk = {
+        let b = alloc_with_rc(24); // code_ptr + drop_glue + 1 capture (gate)
+        unsafe {
+            *((b as isize + 16) as *mut i64) = gated_boom_fn as *const () as i64;
+            *((b as isize + 24) as *mut i64) = 0;
+            *((b as isize + 32) as *mut i64) = &GATE as *const AtomicBool as i64;
+        }
+        b as i64
+    };
+    let ivar = ivar_create(thunk);
+
+    let claimant = std::thread::spawn(move || {
+        let _ = crate::panic::take_runtime_error(); // clear this thread's slot
+        let v = ivar_force(ivar);
+        let e = crate::panic::take_runtime_error();
+        (v, e)
+    });
+
+    let state_ptr = unsafe { &*((ivar as isize + STATE_OFFSET) as *const AtomicI64) };
+    assert!(
+        spin_until(
+            || state_ptr.load(Ordering::SeqCst) == EVALUATING,
+            Duration::from_secs(5),
+        ),
+        "claimant must reach EVALUATING"
+    );
+
+    let joiner = std::thread::spawn(move || {
+        let _ = crate::panic::take_runtime_error(); // clear this thread's slot
+        let v = ivar_force(ivar);
+        let e = crate::panic::take_runtime_error();
+        (v, e)
+    });
+    std::thread::sleep(Duration::from_millis(20)); // drive the joiner into backoff
+
+    GATE.store(true, Ordering::SeqCst);
+    let (cv, ce) = claimant.join().expect("claimant thread panicked");
+    let (jv, je) = joiner.join().expect("joiner thread panicked");
+
+    assert_eq!(cv, 0, "panicked thunk yields the sentinel on the claimant");
+    assert_eq!(jv, 0, "panicked thunk yields the sentinel through the backoff wait");
+    assert!(
+        ce.map(|m| m.contains("backoff boom")).unwrap_or(false),
+        "claimant re-raises the ferried panic"
+    );
+    assert!(
+        je.map(|m| m.contains("backoff boom")).unwrap_or(false),
+        "the backoff waiter must re-raise the SAME ferried panic (join-side)"
+    );
+
+    ivar_dealloc(ivar);
+}
+
 /// Build a panicking thunk carrying a custom message (for the dual-panic test).
 fn make_panicking_thunk_msg(msg: &'static str) -> i64 {
     // We bake the message pointer/len into two captures so one generic body
