@@ -1,6 +1,7 @@
 # S104 utilization-thesis measurement plan + acceptance instrument (Stage 0)
 
-**Author:** `/qa` · **Date:** 2026-07-06 (design); 2026-07-07 (Wave-0 RESULTS, §8) ·
+**Author:** `/qa` · **Date:** 2026-07-06 (design); 2026-07-07 (Wave-0 RESULTS, §8;
+Wave-1 M-static-only RESULTS, §8.5 — single-shot doctrine) ·
 **Status:** EXECUTED — Wave 0 (Stage 0) complete. The measurement instrument
 (`tests/perf/s104_utilization.py`), the config matrix, the discrimination experiment, and
 the fixture-adequacy verdict are DELIVERED; the Stage 2–4 acceptance gates (§6) stand for
@@ -524,6 +525,142 @@ reproduces the 0534 anchor; the config matrix attributes parked-vs-busy by
 `%CPU`+`spawns`; the acceptance bars (U-G1..U-G6) have their baselines. F5 is the
 prepared Regime-A positive witness for the Stage-4 `both` grade. No `/design`
 signal-refinement is owed before build.
+
+## §8.5 Wave-1 RESULTS (Stage 2 — M-static built) — `/qa`, 2026-07-07
+
+**Measurement doctrine change (user direction, 2026-07-07).** We chase
+**order-of-magnitude** wins this sprint, so precision measurement (reps /
+distributions / idle-guard / thread-sweep — the §1 rigorous
+`s104_utilization.py` matrix) is **premature for per-wave attribution** and
+*self-defeating*: a full sweep spends ~an hour measuring a ~2-minute runtime,
+and its idle-guard trips on the sweep's OWN load (`load1 < 0.5` never holds
+mid-sweep), forcing endless rep re-runs. **Per-wave attribution is now
+single-shot**: one run per (fixture, config) at `T=nproc`, wall + `spawns` from
+`[SPARK_STATS]`, site emits from `[SPARK_SITE_STATS]`. **The rigorous §1–§6
+matrix is retained for FINAL ACCEPTANCE only** (Stage 4 north-star grading on a
+confirmed-idle machine). New per-wave instrument: **`tests/perf/s104_spot.py`**
+(single-sourced against `s104_utilization.py` — config env, fixture gen,
+parsers, per-site comparison all imported, not mirrored). B4 stays off
+(`SPARK_DENSITY_MAX=0`) on the mstatic row per §2. `current-syntactic` now pins
+`CRANELISP_SPARK_ADMIT=syntactic` explicitly (the shipped default flipped to
+`mstatic` at `3804e42`, so relying on the default would silently measure
+M-static — the Wave-1 harness hazard, now closed in `config_env`).
+
+> ┌──────────────────────────────────────────────────────────────────────────┐
+> │ SINGLE-MECHANISM ROWS ARE DIAGNOSTIC, NOT PASS/FAIL (arch ruling §2/§6     │
+> │ U-G5). M-static is the QUALITY axis: it cuts WHICH sites spark (fine       │
+> │ accessors → 0) but NOT the COUNT (a non-tail-recursive D&C fires at every  │
+> │ level — the fib-explosion). The ~2/core quantity collapse is M-dynamic's   │
+> │ job (Wave 2). Grade the composed `both` row at Stage 4, not this row.      │
+> └──────────────────────────────────────────────────────────────────────────┘
+
+### §8.5.1 The headline: M-static-only vs current-syntactic (single-shot, T=10)
+
+`s104_spot.py`, release `target/release/cranelisp` at `3804e42`. `nproc=10`.
+Single-shot (one rep) — read as **order of magnitude**, not to ±%.
+
+**F4-hard** (the decisive fixture — has the fine `cell-at`/accessor firehose):
+
+| config | wall | spawns | peak-exec | exit | vs-serial |
+|---|---|---|---|---|---|
+| serial (`NO_LENIENT`) | 1.01s | — | — | 154 | 1× |
+| current-syntactic (B4-off) | **62.7s** | **15,474,094** | 16 | 154 | 62× |
+| **mstatic (M-static-only, B4-off)** | **2.39s** | **232** | 24 | 154 | **2.4×** |
+| admit-all (≡ current-syntactic post-flip) | ~same | ~same | — | 154 | — |
+
+**F5-compute** (the fib non-tail-recursion witness — no fine sites):
+
+| config | wall | spawns | peak-exec | exit | vs-serial |
+|---|---|---|---|---|---|
+| serial | 0.68s | — | — | 73 | 1× |
+| current-syntactic | 12.4s | 1,283,702 | 25 | 73 | 18× |
+| **mstatic** | **12.1s** | **1,536,584** | 25 | 73 | **17.7×** |
+
+**F2-contention** (copy-per-guess; set-aside class): serial 0.49s · syntactic
+5.40s / 278 · **mstatic 5.57s / 866**. **F3-inverted-search** (overlap; set-aside
+class): serial 1.15s · syntactic 1.91s / 3,630 · **mstatic 3.95s / 656**.
+**F1-machinery** (too-light, Wave-0 INADEQUATE): serial 0.02s · syntactic
+0.02s / 1,070 · mstatic 0.02s / 1,014.
+
+*Coordinator's independent single-shot cross-check (same doctrine, different
+run) agrees to order of magnitude: F4-hard syntactic 54.9s / 13,110,160,
+mstatic 2.4s / 182; F5 syntactic 12.4s / 1,886,472, mstatic 11.7s / 1,284,038.
+The F4-hard spread (55–63s syntactic; 182–232 mstatic spawns) is F4-hard's
+inherent speculative-search variance — the reason the RIGOROUS matrix reads it
+as a distribution; here it is immaterial to the order-of-magnitude verdict.*
+
+### §8.5.2 Accessor sites → 0 spawns — the M-static quality effect is ACTED ON
+
+The pivotal confirmation: the classifier's `admit=false` verdict is now
+**driving the spark decision** (Wave 0 only *measured* it). Per-site emits from
+`[SPARK_SITE_STATS]`, `current-syntactic → mstatic`, at T=10 (union of both
+modes' site sets, so a site that vanishes entirely shows as `N → 0`):
+
+| Fixture | fine / non-SCC sites (MUST → 0) | coarse recursive-non-tail sites (MUST retain) |
+|---|---|---|
+| **f4_hard** | `cell-at` 4→**0**, `box-of` 4→**0**, `col-of` 4→**0**, `row-of` 4→**0**, `div-i64` 2→**0**, `mul-i64` 2→**0** | `solve-range` 4→4 ✓ |
+| f5_compute | — (no fine sites) | `fib` 4→4 ✓, `reduce-tree` 4→4 ✓ |
+| f2_contention | `copies` 2→**0**, `rem-i64` 2→**0** | `reduce-tree` 4→4 ✓ |
+| f3_inverted_search | `copies` 2→**0**, `rem-i64` 2→**0** | `search-tree` 4→4 ✓ |
+| f1_machinery | `copies` 2→**0**, `rem-i64` 2→**0** | `reduce-tree` 4→4 ✓ |
+
+**Every fine / non-recursive-SCC accessor site emits 0 spawns under M-static;
+every coarse recursive-non-tail site is retained (emits > 0).** No misclassified
+site, no `FINE BUT NONZERO`, no `COARSE DROPPED`. The verdict holds by
+`{scc, tail}` alone across all five fixtures — structural, no per-fixture
+constant (§4.3 (c) confirmed on the *acted-on* build, not just the classifier).
+
+### §8.5.3 Attribution — M-static's quality effect is exactly as designed
+
+- **F4-hard: M-static nearly lands it ALONE — 15.47M → 232 spawns (−99.998%),
+  62.7s → 2.4s (≈26×).** F4's wall was dominated by the fine-accessor firehose
+  (0534's 104-class `(cell-at g i)` pairs); removing it collapses both spawn
+  count and wall to near-serial. The **232 residual spawns are `solve-range`
+  coarse D&C**, not accessors — and F4's `solve-range` recursion is *shallow*
+  (early speculative pruning), so M-static's quality cut *nearly suffices here*.
+  The last 2.4s → ~0.9s (and 232 → O(cores)) is M-dynamic's ~2/core cap (U-G1).
+- **F5-compute: M-static does NOT collapse it — 1.28M spawns retained, still
+  ~18× serial.** `fib` is non-tail recursion admitted at *every* level (the
+  fib-explosion). This is the **arch-ruled M-static × M-dynamic interaction**
+  made concrete: M-static is pure *quality* (it correctly keeps `fib` admitted —
+  it IS probably-large), and the *quantity* collapse is entirely M-dynamic's
+  (Wave 2). F5 is the fixture where M-static-alone is *expected* to show no win
+  — and it does not. This is a **diagnostic, not a failure** (banner).
+- **F2 / F3 (set-aside contention class):** fine sites → 0, but the coarse
+  `reduce-tree`/`search-tree` fib-explosion is retained, so wall is unchanged
+  (F2: 5.4→5.6s) or **worse** (F3: 1.9→3.95s). Parallel loses on copy-per-guess
+  regardless of admission quality; near-serial is the correct answer here
+  (M-dynamic's cap + the near-serial-is-correct recognition). **F3's
+  M-static-alone regression (1.9→3.95s) is flagged as a single-mechanism
+  diagnostic to watch at U-G3 (Stage 4)** — not graded this wave, but recorded
+  so the `both`-row grade is checked against it.
+- **F1 (too-light):** M-static removes `copies`/`rem-i64` (2→0 each) but the
+  bulk of f1's sparks are `reduce-tree` (fib-explosion, retained), so total
+  spawns barely move (1,070 → 1,014) and wall is startup/noise-dominated (0.02s)
+  — consistent with the Wave-0 INADEQUATE verdict.
+
+### §8.5.4 Wave-2 recommendation
+
+**M-static's QUALITY effect is AS DESIGNED — proceed to Wave 2 (build
+M-dynamic).** Accessors are gone (every fine site → 0 spawns, structurally by
+`{scc,tail}`), coarse recursion is retained, and the two fixtures that isolate
+the axes behave exactly as the arch ruling predicts: F4-hard (shallow coarse
+recursion) is *nearly* cured by M-static alone (26× wall, spawns → 232), while
+F5-compute (deep `fib` non-tail recursion) retains its 1.28M-spawn explosion —
+the **quantity** collapse M-dynamic owns. Wave 2 (M-dynamic: re-parameterize
+`IN_FLIGHT_SPARKS` + `try_reserve` toward the ~2/core cap) must:
+(i) collapse F5's 1.28M spawns → O(cores) while keeping its coarse-parallel win
+(U-G2), and (ii) close F4-hard's residual 232 → O(cores), 2.4s → ~serial (U-G1),
+without regressing F2/F3 (U-G3 — watch F3's M-static-alone 1.9→3.95s slip).
+
+> **Open follow-up owed to `/dev(cranelisp-backend)` (outside `/qa`'s Wave-1
+> edit scope):** the module-precision **negative** unit test `/review`
+> suggested for `3804e42` — an `other/g` (in `other`'s own recursive SCC) does
+> NOT admit a `user/g` call at a `user`-module site — belongs in
+> `crates/cranelisp-backend/src/.../utilization.rs` `#[cfg(test)]` (a `/dev`
+> unit tier, not a `/qa` `tests/` artefact). All F1–F5 fixtures are single-file
+> (single module) so no fixture exercises it; it needs a synthetic two-module
+> `FnCompiler` case. Recorded here as the Wave-1 test-owed item for `/dev`.
 
 ## Next skills
 

@@ -57,18 +57,23 @@ SPARK_STATS_RE = re.compile(
 SITE_RE = re.compile(
     r"\[SPARK_SITE_STATS\] site=(\S+) scc=(\w+) tail=(\w+) admit=(\w+) emits=(\d+)")
 
-# Wave-0-feasible config axis (the mechanisms that EXIST pre-M-static/M-dynamic).
-# Post the B4 default-flip (SPARK_DENSITY_MAX_DEFAULT 1→0), the shipped default
-# (`current-syntactic`) is env-identical to `admit-all` (SPARK_DENSITY_MAX=0);
-# both are kept as rows so the flip's effect is visible and confirmed.
-CONFIGS = ["serial", "off", "current-syntactic", "current-b4on", "admit-all"]
+# Config axis. Wave 0 was pre-M-static, so the shipped default WAS the syntactic
+# filter; post the Wave-1 build (`3804e42`) the shipped default flipped to
+# `CRANELISP_SPARK_ADMIT=mstatic` (M-static). Therefore `current-syntactic` MUST
+# now pin `CRANELISP_SPARK_ADMIT=syntactic` explicitly — relying on the default
+# would silently measure M-static (the Wave-1 hazard). `mstatic` is the Wave-1
+# M-static-only row (M-static ON, B4 off). `admit-all` is the syntactic firehose
+# ceiling with B4 explicitly off; post-flip it is env-identical to
+# `current-syntactic` (SPARK_DENSITY_MAX unset ≡ 0), kept as a row to reconfirm
+# that identity under the new binary.
+CONFIGS = ["serial", "off", "current-syntactic", "mstatic", "current-b4on", "admit-all"]
 
 
 def config_env(config, T, spark_stats=False):
     e = dict(os.environ)
     for k in ("CRANELISP_NO_LENIENT", "CRANELISP_NO_OWNERSHIP", "CRANELISP_SPARK_DENSITY_MAX",
               "RAYON_NUM_THREADS", "CRANELISP_SPARK_STATS", "CRANELISP_SATURATION_GATE",
-              "CRANELISP_SPARK_BUDGET"):
+              "CRANELISP_SPARK_BUDGET", "CRANELISP_SPARK_ADMIT"):
         e.pop(k, None)
     if T is not None:
         e["RAYON_NUM_THREADS"] = str(T)
@@ -77,11 +82,16 @@ def config_env(config, T, spark_stats=False):
     elif config == "off":
         e["CRANELISP_NO_OWNERSHIP"] = "1"
     elif config == "current-syntactic":
-        pass  # shipped default — B4 off post-flip
+        e["CRANELISP_SPARK_ADMIT"] = "syntactic"  # pin — default is now mstatic
+    elif config == "mstatic":
+        e["CRANELISP_SPARK_ADMIT"] = "mstatic"     # M-static-only (Wave 1)
+        e["CRANELISP_SPARK_DENSITY_MAX"] = "0"     # B4 off (attribution pin, plan §2)
     elif config == "current-b4on":
-        e["CRANELISP_SPARK_DENSITY_MAX"] = "1"  # old default; the ~112s parked anchor
+        e["CRANELISP_SPARK_ADMIT"] = "syntactic"  # old default admission …
+        e["CRANELISP_SPARK_DENSITY_MAX"] = "1"    # … + B4 on: the ~112s parked anchor
     elif config == "admit-all":
-        e["CRANELISP_SPARK_DENSITY_MAX"] = "0"  # explicit; == default post-flip
+        e["CRANELISP_SPARK_ADMIT"] = "syntactic"  # syntactic firehose ceiling …
+        e["CRANELISP_SPARK_DENSITY_MAX"] = "0"    # … B4 off; == current-syntactic post-flip
     else:
         raise ValueError("unknown config " + config)
     if spark_stats:
@@ -310,6 +320,97 @@ def run_baseline(binp, files, threads, reps, f4_reps, quick):
     return anchor_cells
 
 
+# ── WAVE 1: M-static-only attribution (plan §2 / §8.5) ────────────────────────
+# The M-static QUALITY axis alone (CRANELISP_SPARK_ADMIT=mstatic, B4 off) vs the
+# syntactic firehose (current-syntactic) and the admit-all ceiling. Per the arch
+# ruling (plan §2, §6 U-G5): SINGLE-MECHANISM ROWS ARE DIAGNOSTIC, NOT PASS/FAIL.
+# M-static cuts spawn QUALITY (fine flat-accessor sites → 0) but NOT quantity
+# (coarse D&C recursion still fires at every level — the fib-explosion; that is
+# M-dynamic's ~2/core job in Wave 2). Expect: fewer spawns than syntactic
+# (accessors gone), coarse recursion retained, wall improvement partial.
+def site_table(binp, clfile, config, T):
+    _, sites, _ = instrumented_run(binp, clfile, config, T)
+    return [(bare_callee(s), scc, tail, admit, emits)
+            for (s, scc, tail, admit, emits) in sites]
+
+
+def print_site_comparison(binp, clfile, fx, T=None):
+    """The M-static QUALITY proof: per-site emits under syntactic vs mstatic.
+    Iterates the UNION of both admission modes' site sets so a fine-accessor site
+    that VANISHES entirely under mstatic (declined → 0 sparks) is still shown as
+    `N -> 0`, the accessor-zero confirmation, rather than dropped from the table.
+    Aggregates per (callee, scc, tail) so the repeated-per-call-site rows collapse
+    to one line with a summed emit count."""
+    if T is None:
+        T = NPROC
+    def agg(rows):
+        d = {}
+        for (callee, scc, tail, admit, emits) in rows:
+            k = (callee, scc, tail)
+            v = d.setdefault(k, [admit, 0, 0])
+            v[0] = admit
+            v[1] += emits
+            v[2] += 1
+        return d
+    cs = agg(site_table(binp, clfile, "current-syntactic", T))
+    ms = agg(site_table(binp, clfile, "mstatic", T))
+    keys = sorted(set(cs) | set(ms))
+    print(f"  [site emits @ T={T}]  callee            scc   tail  syntactic→mstatic   admit(ms)  class")
+    for (callee, scc, tail) in keys:
+        e_cs = cs.get((callee, scc, tail), [None, "—", 0])[1]
+        adm_ms, e_ms, n = ms.get((callee, scc, tail), [False, 0, 0])
+        if callee in KNOWN_FLAT or not scc:
+            cls = "FINE  → 0 under mstatic ✓" if e_ms == 0 else "FINE  BUT NONZERO (!)"
+        else:
+            cls = "COARSE→ retained ✓" if e_ms > 0 else "COARSE→ DROPPED (!)"
+        print(f"    {callee:<18} {str(scc):<5} {str(tail):<5} {str(e_cs):>9} → {e_ms:<9} "
+              f"{str(adm_ms):<6} {cls}")
+    print()
+
+
+def run_wave1(binp, files, threads, reps, f4_reps, quick, only=None):
+    print("## WAVE-1 M-STATIC-ONLY ATTRIBUTION (plan §2 / §8.5)\n")
+    print("  ┌─────────────────────────────────────────────────────────────────┐")
+    print("  │ SINGLE-MECHANISM ROWS ARE DIAGNOSTIC, NOT PASS/FAIL.              │")
+    print("  │ M-static is the QUALITY axis: it cuts WHICH sites spark (fine     │")
+    print("  │ accessors → 0) but NOT the COUNT (coarse D&C fires every level).  │")
+    print("  │ The ~2/core quantity collapse is M-dynamic's job (Wave 2).        │")
+    print("  │ Grade the composed `both` row at Stage 4, not this row.           │")
+    print("  └─────────────────────────────────────────────────────────────────┘\n")
+
+    # (fixture, per-fixture reps). Contention fixtures get fewer reps (slow at high T).
+    fixtures = [("f1_machinery", reps), ("f5_compute", reps),
+                ("f2_contention", min(reps, 5)), ("f3_inverted_search", min(reps, 5)),
+                ("f4_hard", f4_reps)]
+    if only:
+        want = set(only.split(","))
+        fixtures = [(fx, r) for (fx, r) in fixtures if fx in want]
+    for (fx, r) in fixtures:
+        print(f"### {fx}  (reps={r})\n")
+        for T in threads:
+            cs = measure_cell(binp, files[fx], "current-syntactic", T, r)
+            ms = measure_cell(binp, files[fx], "mstatic", T, r)
+            print(f"  T={T:<3} current-syntactic  {fmt_cell(cs)}")
+            print(f"  T={T:<3} mstatic            {fmt_cell(ms)}")
+            # spawn-delta attribution (quality axis): syntactic - mstatic
+            sp_cs, sp_ms = cs.get("spawns"), ms.get("spawns")
+            if sp_cs is not None and sp_ms is not None:
+                drop = sp_cs - sp_ms
+                pct = (100.0 * drop / sp_cs) if sp_cs else 0.0
+                wr = ""
+                if cs.get("status") == "ok" and ms.get("status") == "ok":
+                    wr = "  wall_med %.3f→%.3f (%.2fx)" % (
+                        cs["wall_med"], ms["wall_med"],
+                        cs["wall_med"] / ms["wall_med"] if ms["wall_med"] else 0.0)
+                print(f"       Δspawns(syntactic−mstatic) = {drop:,} ({pct:.1f}% cut){wr}")
+            print()
+        # admit-all reconfirm at T=nproc (env-identical to current-syntactic post-flip)
+        aa = measure_cell(binp, files[fx], "admit-all", NPROC, r)
+        print(f"  T={NPROC:<3} admit-all         {fmt_cell(aa)}   (≡ current-syntactic post-flip)\n")
+        # ── per-site emits: the accessor-zero confirmation (M-static quality proof) ──
+        print_site_comparison(binp, files[fx], fx, NPROC)
+
+
 # ── Adequacy (plan §5) ────────────────────────────────────────────────────────
 def run_adequacy(binp, files, reps):
     print("## FIXTURE ADEQUACY (plan §5) — Regime-A positive witness\n")
@@ -343,10 +444,12 @@ def run_adequacy(binp, files, reps):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="all",
-                    choices=["all", "discriminate", "baseline", "adequacy"])
+                    choices=["all", "discriminate", "baseline", "adequacy", "wave1"])
     ap.add_argument("--reps", type=int, default=7)
     ap.add_argument("--f4-reps", type=int, default=3)
     ap.add_argument("--threads", default="1,2,4,6,8,10")
+    ap.add_argument("--fixtures", default=None,
+                    help="wave1 only: comma-list subset e.g. f4_hard,f3_inverted_search")
     ap.add_argument("--quick", action="store_true")
     args = ap.parse_args()
 
@@ -368,6 +471,8 @@ def main():
         run_discrimination(binp, files)
     if args.mode in ("all", "baseline"):
         run_baseline(binp, files, threads, args.reps, args.f4_reps, args.quick)
+    if args.mode == "wave1":
+        run_wave1(binp, files, threads, args.reps, args.f4_reps, args.quick, args.fixtures)
     if args.mode in ("all", "adequacy"):
         run_adequacy(binp, files, args.reps)
 
