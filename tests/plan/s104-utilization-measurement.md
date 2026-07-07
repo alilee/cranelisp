@@ -662,6 +662,71 @@ without regressing F2/F3 (U-G3 — watch F3's M-static-alone 1.9→3.95s slip).
 > (single module) so no fixture exercises it; it needs a synthetic two-module
 > `FnCompiler` case. Recorded here as the Wave-1 test-owed item for `/dev`.
 
+## §8.6 F6 — the HEAVY Regime-A speedup witness (Wave 2c) — `/qa`, 2026-07-07
+
+**Why F5 was inadequate as a *speedup* witness.** F5 (`f5_compute.cl`) uses naive
+`fib 32/33` leaves — only ~a few ms each — so the whole D&C runs in **~0.7s serial**
+and is DOMINATED by JIT/startup + IVar-force overhead. Parallelizing it only *ties*
+serial (§8.2 recorded 0.71s serial → 0.59s best-case at T=4; §8.5.1 the M-static wall
+barely moves). F5 can validate parallel≡serial *correctness*, but the per-leaf work is
+below the threshold where a filled core recovers its share of the wall, so F5 cannot
+exhibit a **speedup** and cannot witness the thesis's positive claim (Regime A: cores
+busy AND wall → serial/N). F4/F3 are speculative-search = near-serial-correct; F5 is
+too light. A dedicated heavy witness was missing.
+
+**F6 — what it is.** `tests/fixtures/s99/f6_parwin.cl`: a balanced binary D&C
+(`reduce-tree`, mirroring F1/F5's shape) over **16 genuinely-independent HEAVY pure
+integer-compute leaves**.
+
+- **Leaf work** = `spin`, a **tail-recursive** LCG integer loop of **40M iterations**
+  (~120ms sequential on this host, ~3ns/step). Tail-recursive ⇒ M-static DECLINES to
+  spark inside it (no internal sparks, no heap alloc, no RC traffic) — the ONLY
+  sparking is at the coarse `reduce-tree` level. This deliberately avoids the F2/F3
+  allocation-contention class; the sole question F6 poses is "does filling cores with
+  independent pure compute beat serial?".
+- **Split shape** = `reduce-tree` over `[0,16)`, a full balanced binary tree of depth
+  4. NON-tail recursive at every level (args of `add-i64`), so M-static's `scc∧¬tail`
+  ADMITS the coarse forks all the way down — the utilization mechanism can fill up to
+  16 coarse strands.
+- **Balanced leaves**: every leaf runs the SAME 40M iterations; only the LCG seed
+  varies by leaf index (so leaves don't CSE-fold to one constant) while per-leaf wall
+  is identical ⇒ parallel wall ≈ serial/N, a clean N× win (unlike F4/F5's
+  unbalanced/light shapes).
+- **Checksum** = reduced value `mod 251` as the process exit code; all branches pure
+  and combined with commutative `add-i64` ⇒ deterministic + order-independent, so
+  parallel≡serial is verifiable by exit-match (like F4/F5).
+
+**Single-shot sanity numbers** (release binary, `RAYON_NUM_THREADS=10`, machine
+confirmed idle `load1 ≈ 0.5–1.0`; single-shot order-of-magnitude per the no-rigorous-
+harness doctrine; `target/release/cranelisp` at 2026-07-07 02:25 — carries the
+**both-paths** hierarchical-decline form, pre the Wave-2c worker-only fix):
+
+| Config | wall (s) | exit | spawns | peak-executing | speedup vs serial |
+|---|---|---|---|---|---|
+| **serial** (`CRANELISP_NO_LENIENT=1`) | 3.10 (3.09/3.15/3.18, 3 reps) | 12 | — | — | 1.0× (floor) |
+| **default** (M-static + hierarchical decline) | 1.58 (1.58/1.58/1.65, 3 reps) | 12 | 8 | 8 | **~1.98×** |
+| **decline off** (`CRANELISP_HIER_DECLINE=0`) | 0.84 | 12 | 28 | 15 | **~3.7×** |
+
+**Verdict: F6 is a VALID Regime-A positive witness — it beats serial decisively.**
+Where F5 only ties, F6 shows a real ~2× wall reduction at the current default and a
+**~3.7×** reduction with hierarchical decline off — exit-code 12 identical across all
+three configs (parallel≡serial correctness holds). The `HIER_DECLINE=0` row is the key
+adequacy evidence: the fixture *shape* permits deep parallelism (28 spawns, 15
+concurrently executing, 0.84s), so the current default's 2× ceiling is bounded by the
+**hierarchical-decline both-paths mechanism** (the `/dev` Wave-2c worker-only fix
+target), NOT by the fixture. Once worker-only decline lands, the default config is
+expected to move toward the `HIER_DECLINE=0` ceiling. F6 does not yet reach the full
+10× (28 spawns over 16 leaves carries force/spin-wait overhead, and the tree depth caps
+the useful strand count), but it is the first fixture to put "cores busy AND wall →
+serial/N" decisively above measurement noise — the positive half the thesis needs.
+
+**Doctrine notes.** Single-shot order-of-magnitude only (no rigorous harness this
+phase); serial/default taken 3× for stability (tight: σ well under 5%). Machine idle
+confirmed before each timing (`/proc/loadavg` read; load1 < 1.5). F6 is a perf-lane
+fixture (like F1–F5), not a `cargo nextest` suite guard; the committed exit-match
+(12=12) is its parallel≡serial correctness record. Free-standing: bare primitives, no
+stdlib, no prelude.
+
 ## Next skills
 
 - `/design` (`lenient-eval.md`) — Stage 1 design convergence, consuming the §4
