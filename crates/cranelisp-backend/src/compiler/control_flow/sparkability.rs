@@ -62,7 +62,18 @@ const CHEAP_BUILTINS: &[&str] = &[
 /// while leaving every compute-bound / lightly-allocating shape admitted (the
 /// §9 near-linear-speedup acceptance unchanged, I-G4 non-regression held). See
 /// the as-built note in `ownership-codegen.md` §13.4.
-const SPARK_DENSITY_MAX_DEFAULT: usize = 1;
+///
+/// **S104 Wave 0 default-flip `1 → 0` (B4 off by default)** — `lenient-eval.md`
+/// §2.8.5, `effect-concurrency.md` §3.1.1. B4 is *net-harmful* at full cores on
+/// the recursion/search class (it declines the coarse D&C sparks while the fine
+/// score-0 accessors stay admitted — the incoherent decline-coarse-while-
+/// admitting-nested-fine state; 0534). With M-static owning *selection* and
+/// M-dynamic owning *quantity* (Waves 1–2), B4 has no role for that class. The
+/// §2.7 design + the scoring machinery are **preserved** (they still serve the
+/// alloc/RC-dense compute class and may return Phase-H-composed); only the
+/// default polarity changes. `CRANELISP_SPARK_DENSITY_MAX=N` still opts back in
+/// (the Stage-0 B4-on diagnostic row). `0` = axis inert (never declines).
+const SPARK_DENSITY_MAX_DEFAULT: usize = 0;
 
 /// The active density threshold. `CRANELISP_SPARK_DENSITY_MAX=N` overrides
 /// [`SPARK_DENSITY_MAX_DEFAULT`]; **`0` disables the axis entirely** (no

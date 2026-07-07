@@ -28,6 +28,10 @@ mod let_if;
 mod par_bind;
 mod select;
 mod sparkability;
+// S104 Wave 0 — the utilization-model measurement instrumentation (M-static
+// classification recording; `lenient-eval.md` §2.8). The recording methods are
+// `pub(crate)` on `FnCompiler`, reached directly from the two spark sites.
+mod utilization;
 
 // Cross-submodule bridges: these names are referenced by the sub-modules via
 // `super::…` (children can reach a parent's private `use` items). Re-exported

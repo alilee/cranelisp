@@ -304,9 +304,11 @@ fn sparkable_args_literal_var_excluded() {
 // sparking`, two callers) is verified from each.
 //
 // All end-to-end `find_sparkable_*` cells assume the DEFAULT threshold
-// (`SPARK_DENSITY_MAX_DEFAULT = 1`; `CRANELISP_SPARK_DENSITY_MAX` unset in the
-// test process): score ≤ 1 ⇒ admit, score ≥ 2 ⇒ decline. The `spark_density`
-// cells assert the raw `Option<usize>` and are threshold-independent. =====
+// (`SPARK_DENSITY_MAX_DEFAULT = 0` since S104 Wave 0 — B4 off by default;
+// `CRANELISP_SPARK_DENSITY_MAX` unset in the test process): the axis is inert,
+// so every compute-worthy candidate is admitted regardless of density score.
+// The `spark_density` cells assert the raw `Option<usize>` and are threshold-
+// independent (the score machinery is preserved for the opt-in / Phase-H path). =====
 
 /// A heap-returning (ADT-typed) call `(callee)` carrying the given ownership
 /// site facts — the shape of a real spark candidate whose result is an ADT
@@ -448,39 +450,48 @@ fn density_borrow_elided_skips_rc_axis() {
     assert_eq!(spark_density(&proj), Some(1));
 }
 
-// --- End-to-end admission through BOTH call sites (default threshold = 1) ---
-
-// spec: design/backend/lenient-eval.md §2.7 — LET path: alloc-dense pair DECLINED
+// --- End-to-end admission through BOTH call sites (default threshold = 0) ---
 //
-// Two alloc-dense (score-2) heap bindings would clear the compute axis + ≥2
-// gate, but the density axis declines each (2 > 1) ⇒ the sparkable set drops
-// below 2 ⇒ empty (sequential codegen). The decline is always sound (§8).
+// S104 Wave 0 flipped `SPARK_DENSITY_MAX_DEFAULT` `1 → 0` (`lenient-eval.md`
+// §2.8.5, B4 off by default). At the new default the density axis is INERT
+// (`max == 0` ⇒ `density_declines` returns false for every candidate), so a
+// score-2 alloc-dense pair that the old default declined is now ADMITTED. The
+// score itself is unchanged and still asserted, threshold-independent, by
+// `density_alloc_dense_scores_two`; only the default *use* of that score moved.
+
+// spec: design/backend/lenient-eval.md §2.8.5 — LET path: B4 off by default ⇒ admitted
+//
+// Two alloc-dense (score-2) heap bindings clear the compute axis + ≥2 gate; with
+// B4 default-off the density axis does not decline them, so both are admitted.
+// (The decline mechanism is preserved — re-enabled by CRANELISP_SPARK_DENSITY_MAX=N.)
 #[test]
-fn density_let_alloc_dense_pair_declined() {
+fn density_let_alloc_dense_pair_admitted_axis_off_by_default() {
     let bindings = vec![
         (sym("a"), heap_call("solve-range", Some(true), None)),
         (sym("b"), heap_call("solve-range", Some(true), None)),
     ];
     let ctors = HashSet::new();
-    assert!(
-        find_sparkable_bindings(&bindings, &ctors).is_empty(),
-        "alloc-dense (score 2 > threshold 1) bindings must be declined"
+    assert_eq!(
+        find_sparkable_bindings(&bindings, &ctors),
+        vec![0, 1],
+        "with B4 default-off (SPARK_DENSITY_MAX_DEFAULT = 0) the axis is inert ⇒ admitted"
     );
 }
 
-// spec: design/backend/lenient-eval.md §2.7 — APPLY path: alloc-dense pair DECLINED
+// spec: design/backend/lenient-eval.md §2.8.5 — APPLY path: B4 off by default ⇒ admitted
 //
-// The single-source density axis fires identically at the apply-argument site.
+// The single-source density axis is inert at the apply-argument site too.
 #[test]
-fn density_args_alloc_dense_pair_declined() {
+fn density_args_alloc_dense_pair_admitted_axis_off_by_default() {
     let args = vec![
         heap_call("solve-range", Some(true), None),
         heap_call("solve-range", Some(true), None),
     ];
     let ctors = HashSet::new();
-    assert!(
-        find_sparkable_args(&args, &ctors).is_empty(),
-        "alloc-dense apply arguments must be declined by the shared density axis"
+    assert_eq!(
+        find_sparkable_args(&args, &ctors),
+        vec![0, 1],
+        "with B4 default-off the shared density axis admits the alloc-dense pair"
     );
 }
 

@@ -67,6 +67,11 @@ where
             let constructors = self.collect_module_constructors();
             let sparkable = find_sparkable_bindings(bindings, &constructors);
             if sparkable.len() >= 2 {
+                // S104 Wave 0 — record the M-static classification of each
+                // sparkable binding for the discrimination experiment
+                // (measurement-only; gated on CRANELISP_SPARK_STATS; does NOT
+                // change admission). `lenient-eval.md` §2.8.6.
+                self.record_spark_sites_let(bindings, &sparkable);
                 // Create-gate (§3.6.2): a runtime budget branch wraps the site.
                 // Lenient arm = the spark path; direct arm = the existing
                 // fully-sequential `let` (no IVars, no allocation) when over

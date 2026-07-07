@@ -43,15 +43,31 @@ use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU64, Ordering};
 
 use crate::alloc::{alloc_with_rc, dealloc};
 
-// ── S103 FIXME-0534 profiling instrumentation (CRANELISP_SPARK_STATS=1) ──────
-// Temporary: counts spark instances + ivar_force outcomes to attribute the
-// F4-hard parallel wall. Gated behind an env var; zero cost when off.
+// ── Spark-stats profiling instrumentation (CRANELISP_SPARK_STATS=1) ──────────
+// Counts spark instances + ivar_force outcomes + the utilization-model signals
+// (S104 Wave 0, `tests/plan/s104-utilization-measurement.md` §3). Gated behind
+// an env var; **zero cost when off** — the hot paths read a single `LazyLock`
+// bool and skip every counter (no atomics executed when disabled), matching the
+// `CRANELISP_NO_LENIENT` / `SPARK_BUDGET` idioms. Origin: S103 FIXME-0534.
 static SPARK_SPAWNS: AtomicU64 = AtomicU64::new(0);
 static FORCE_CALLS: AtomicU64 = AtomicU64::new(0);
 static FORCE_FASTPATH_RESOLVED: AtomicU64 = AtomicU64::new(0);
 static FORCE_CLAIM_WINS: AtomicU64 = AtomicU64::new(0);
 static FORCE_SPIN_WAITS: AtomicU64 = AtomicU64::new(0);
 static FORCE_SPIN_ITERS: AtomicU64 = AtomicU64::new(0);
+/// S104 Wave 0 — the "continue-serial" half of the spawn/serial ratio
+/// (§3, `tests/plan/s104-utilization-measurement.md`). Incremented once per
+/// create-gate site that takes the direct/inline arm (`spark_budget_try_reserve`
+/// returns `0` — the over-budget branch, `lenient-eval.md` §3.6.2) instead of
+/// sparking.
+static SPARK_SERIAL_CONTINUES: AtomicU64 = AtomicU64::new(0);
+/// S104 Wave 0 — count of spark bodies *currently executing* (a worker running a
+/// thunk in `ivar_force`'s claim-win arm), and its high-water mark. This is the
+/// utilization signal M-dynamic will later read (measurement-only in Wave 0):
+/// the number that must move parked→busy. Distinct from `IN_FLIGHT_SPARKS`
+/// (reserved/created, not necessarily executing).
+static SPARK_EXECUTING: AtomicI64 = AtomicI64::new(0);
+static SPARK_PEAK_EXECUTING: AtomicU64 = AtomicU64::new(0);
 static SPARK_STATS_ATEXIT: std::sync::Once = std::sync::Once::new();
 
 fn spark_stats_enabled() -> bool {
@@ -67,11 +83,45 @@ fn spark_stats_enabled() -> bool {
     *E
 }
 
+/// RAII bracket around one executing spark body: inc `SPARK_EXECUTING` + bump the
+/// peak high-water on entry, dec on exit (even on a Rust unwind). Constructed
+/// **only** when spark-stats is enabled (`spark_stats_enabled().then(...)`), so
+/// the executing/peak atomics never run on the hot path when off.
+struct PeakGuard;
+
+impl PeakGuard {
+    fn enter() -> PeakGuard {
+        let cur = (SPARK_EXECUTING.fetch_add(1, Ordering::Relaxed) + 1) as u64;
+        let mut peak = SPARK_PEAK_EXECUTING.load(Ordering::Relaxed);
+        while cur > peak {
+            match SPARK_PEAK_EXECUTING.compare_exchange_weak(
+                peak,
+                cur,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(p) => peak = p,
+            }
+        }
+        PeakGuard
+    }
+}
+
+impl Drop for PeakGuard {
+    fn drop(&mut self) {
+        SPARK_EXECUTING.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 extern "C" fn print_spark_stats() {
     eprintln!(
-        "[SPARK_STATS] spawns={} force_calls={} force_fastpath_resolved={} \
-         force_claim_wins={} force_spin_waits={} force_spin_iters={}",
+        "[SPARK_STATS] spawns={} serial_continues={} peak_executing={} \
+         force_calls={} force_fastpath_resolved={} force_claim_wins={} \
+         force_spin_waits={} force_spin_iters={}",
         SPARK_SPAWNS.load(Ordering::Relaxed),
+        SPARK_SERIAL_CONTINUES.load(Ordering::Relaxed),
+        SPARK_PEAK_EXECUTING.load(Ordering::Relaxed),
         FORCE_CALLS.load(Ordering::Relaxed),
         FORCE_FASTPATH_RESOLVED.load(Ordering::Relaxed),
         FORCE_CLAIM_WINS.load(Ordering::Relaxed),
@@ -208,14 +258,21 @@ impl Drop for InFlightGuard {
 pub extern "C" fn spark_budget_try_reserve(n: i64) -> i64 {
     let cap = *SPARK_BUDGET as isize;
     let n = n as isize;
+    let stats = spark_stats_enabled();
     // Fast reject (the common case under explosion): a single load, no RMW.
     if !budget_grants(IN_FLIGHT_SPARKS.load(Ordering::SeqCst), n, cap) {
+        if stats {
+            SPARK_SERIAL_CONTINUES.fetch_add(1, Ordering::Relaxed);
+        }
         return 0;
     }
     // Commit the whole batch atomically (CAS loop) — all-or-nothing.
     loop {
         let cur = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
         if !budget_grants(cur, n, cap) {
+            if stats {
+                SPARK_SERIAL_CONTINUES.fetch_add(1, Ordering::Relaxed);
+            }
             return 0;
         }
         if IN_FLIGHT_SPARKS
@@ -435,7 +492,14 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
             // Call code_ptr(env_ptr) where env_ptr is the thunk's base pointer.
             let call: extern "C" fn(i64) -> i64 =
                 unsafe { std::mem::transmute(code_ptr as *const ()) };
+            // S104 Wave 0 — bracket the executing spark body so
+            // SPARK_PEAK_EXECUTING records the max concurrent bodies (the
+            // utilization signal). Only armed when spark-stats is on; dropped
+            // right after the thunk returns so the count reflects *executing*,
+            // not merely-claimed, sparks.
+            let peak_guard = stats.then(PeakGuard::enter);
             let result = call(thunk);
+            drop(peak_guard);
 
             // Fork-join error-slot ferry (worker-side): if the thunk raised a
             // runtime panic, it landed in THIS thread's slot. Take it and stash

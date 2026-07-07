@@ -215,6 +215,11 @@ where
             let constructors = self.collect_module_constructors();
             let sparkable = find_sparkable_args(args, &constructors);
             if sparkable.len() >= 2 {
+                // S104 Wave 0 — record the M-static classification of each
+                // sparkable argument for the discrimination experiment
+                // (measurement-only; gated on CRANELISP_SPARK_STATS; does NOT
+                // change admission). `lenient-eval.md` §2.8.6.
+                self.record_spark_sites_apply(args, &sparkable);
                 // Create-gate (§3.6.2): a runtime budget branch wraps the site,
                 // shared with the `let` site via `emit_create_gate`. The lenient
                 // arm runs the three-phase spark path (create+spark, force
