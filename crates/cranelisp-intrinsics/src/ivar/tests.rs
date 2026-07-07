@@ -683,15 +683,19 @@ fn mdynamic_core_mult_4_recovers_prewave2_budget() {
 }
 
 // ---------------------------------------------------------------------------
-// Structural hierarchical decline (S104 Wave 2b, gate G3; lenient-eval.md §2.8.4).
-// A thread-local "inside a spark body" flag (`IN_SPARK_BODY`) is set for the
-// dynamic extent of a strand's thunk execution (the `SparkBodyGuard` bracket
-// around the `code_ptr(env)` call in `ivar_force`'s claim-win arm). While set,
-// every nested create-gate site inlines: `spark_budget_try_reserve` returns 0
-// INDEPENDENT of the counter. This collapses total spawn *count* to O(cores),
-// which the concurrent cap (permit-recycle) cannot. `CRANELISP_HIER_DECLINE=0`
-// disables the read (emergent-cap fallback). The flag is a per-thread Cell, so
-// each test thread sees its own — clean isolation under nextest AND cargo test.
+// Structural hierarchical decline (S104 Wave 2b, gate G3; lenient-eval.md §2.8.4;
+// worker-only form since Wave 2c). A thread-local "inside a spark body" flag
+// (`IN_SPARK_BODY`) is set for the dynamic extent of a granted spark's execution.
+// In the default `HierDecline::Worker` mode the `SparkBodyGuard` bracket is armed
+// ONLY on the rayon-worker path (inside `ivar_spark`'s spawned closure); the
+// main-thread claim-compute arm in `ivar_force` is NOT flagged, so the main spine
+// keeps sparking to feed cores. While set, every nested create-gate site inlines:
+// `spark_budget_try_reserve` returns 0 INDEPENDENT of the counter. This collapses
+// total spawn *count* to O(cores), which the concurrent cap (permit-recycle)
+// cannot. `CRANELISP_HIER_DECLINE=0` disables the read (emergent-cap fallback);
+// `=both` also arms the main-thread arm (comparison mode, measured harmful). The
+// flag is a per-thread Cell, so each test thread sees its own — clean isolation
+// under nextest AND cargo test.
 // ---------------------------------------------------------------------------
 
 // spec: design/backend/lenient-eval.md §2.8.4 — the flag forces the inline arm:
@@ -700,7 +704,11 @@ fn mdynamic_core_mult_4_recovers_prewave2_budget() {
 // a fresh process.
 #[test]
 fn hier_decline_flag_forces_inline_when_in_spark_body() {
-    assert!(*HIER_DECLINE, "hierarchical decline is default-on");
+    assert_eq!(
+        *HIER_DECLINE,
+        HierDecline::Worker,
+        "hierarchical decline defaults to the worker-only form"
+    );
     let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
     // Spare capacity, so the flag is the ONLY thing that can force inline.
     IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
@@ -781,23 +789,28 @@ fn spark_body_guard_sets_and_clears_including_on_unwind() {
 }
 
 // spec: design/backend/lenient-eval.md §2.8.4 — the end-to-end hierarchical
-// property through a real force: a nested spark site hit WHILE a thunk executes
-// (the flag is set by `ivar_force`'s bracket around the thunk call) inlines —
-// `try_reserve` returns 0 even though the pool has spare capacity. This is the
-// whole mechanism observed through the production seam, not just the pure guard.
+// property through a real spark, WORKER path (S104 Wave 2c worker-only form): a
+// nested spark site hit WHILE a granted spark runs on a rayon worker inlines —
+// the worker bracket in `ivar_spark`'s closure sets the flag, so `try_reserve`
+// returns 0 even though the pool has spare capacity. This is the whole mechanism
+// observed through the production seam (`ivar_spark` → worker → `ivar_force`).
 #[test]
-fn hier_decline_nested_site_inside_forced_thunk_inlines() {
+fn hier_decline_nested_site_inside_worker_spark_inlines() {
     static NESTED_RESERVE: AtomicI64 = AtomicI64::new(-1);
     static FLAG_SEEN: AtomicBool = AtomicBool::new(false);
     extern "C" fn nested_fn(_env: i64) -> i64 {
-        // Executing inside the spark body: observe the flag + a nested reservation.
+        // Executing inside the spark body on the worker: observe the flag + a
+        // nested reservation.
         FLAG_SEEN.store(IN_SPARK_BODY.with(|c| c.get()), Ordering::SeqCst);
         NESTED_RESERVE.store(spark_budget_try_reserve(1), Ordering::SeqCst);
         7
     }
     let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
-    // Spare capacity, so ONLY the flag can force the nested site to inline.
-    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+    // Spare capacity, so ONLY the flag can force the nested site to inline. Model
+    // the one in-flight permit reserved for THIS spark (the worker's InFlightGuard
+    // drop pairs with it), leaving room for the nested reserve(1) to grant if the
+    // flag were clear.
+    IN_FLIGHT_SPARKS.store(1, Ordering::SeqCst);
 
     let thunk = {
         let b = alloc_with_rc(16); // code_ptr + drop_glue, no captures
@@ -809,23 +822,84 @@ fn hier_decline_nested_site_inside_forced_thunk_inlines() {
     };
     let ivar = ivar_create(thunk);
 
-    // Inline claim on THIS thread: `ivar_force` wins the CAS and runs the thunk
-    // under the spark-body bracket (the main-thread claim-compute path).
-    let result = ivar_force(ivar);
-    assert_eq!(result, 7);
+    // Dispatch onto a rayon worker — the flagged path. Do NOT call `ivar_force`
+    // on this thread (that would race the worker for the CAS and could run the
+    // thunk here, unflagged); spin-wait on the published state instead.
+    ivar_spark(ivar);
+    let state_ptr = unsafe { &*((ivar as isize + STATE_OFFSET) as *const AtomicI64) };
+    let mut spins = 0u64;
+    while state_ptr.load(Ordering::SeqCst) != RESOLVED {
+        std::hint::spin_loop();
+        spins += 1;
+        assert!(spins < 5_000_000_000, "worker never resolved the spark");
+    }
+
+    assert_eq!(
+        unsafe { *((ivar as isize + 24) as *const i64) },
+        7,
+        "worker computed the thunk result"
+    );
     assert!(
         FLAG_SEEN.load(Ordering::SeqCst),
-        "the flag must be set while the thunk (spark body) runs"
+        "the flag must be set while the spark body runs on the worker"
     );
     assert_eq!(
         NESTED_RESERVE.load(Ordering::SeqCst),
         0,
-        "a nested spark site inside a spark body inlines (structural decline)"
+        "a nested spark site inside a worker spark body inlines (structural decline)"
     );
+
+    // ivar_spark inc'd RC to 2 and the worker dec'd it back to 1; the thunk was
+    // freed inside the worker's `ivar_force`. Free the cell.
+    unsafe { dealloc(ivar as *mut u8) };
+    IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
+}
+
+// spec: design/backend/lenient-eval.md §2.8.4 — the worker-only NEGATION (S104
+// Wave 2c): the main-thread claim-compute arm in `ivar_force` is NOT flagged, so
+// a nested spark site hit while the MAIN thread inline-claims a thunk still sees a
+// clear flag and can spark (subject only to the concurrent cap). This is the
+// property that keeps the main spine feeding cores — the whole point of moving the
+// bracket off the both-paths form.
+#[test]
+fn hier_decline_main_thread_claim_does_not_flag() {
+    static NESTED_RESERVE: AtomicI64 = AtomicI64::new(-1);
+    static FLAG_SEEN: AtomicBool = AtomicBool::new(true);
+    extern "C" fn nested_fn(_env: i64) -> i64 {
+        FLAG_SEEN.store(IN_SPARK_BODY.with(|c| c.get()), Ordering::SeqCst);
+        NESTED_RESERVE.store(spark_budget_try_reserve(1), Ordering::SeqCst);
+        7
+    }
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+    // Spare capacity: the nested top-level site should grant (flag clear).
+    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+    assert!(!IN_SPARK_BODY.with(|c| c.get()), "flag starts clear on this thread");
+
+    let thunk = {
+        let b = alloc_with_rc(16);
+        unsafe {
+            *((b as isize + 16) as *mut i64) = nested_fn as *const () as i64;
+            *((b as isize + 24) as *mut i64) = 0;
+        }
+        b as i64
+    };
+    let ivar = ivar_create(thunk);
+
+    // Inline claim on THIS (main) thread: `ivar_force` wins the CAS and runs the
+    // thunk WITHOUT arming the spark-body bracket (worker-only default).
+    let result = ivar_force(ivar);
+    assert_eq!(result, 7);
     assert!(
-        !IN_SPARK_BODY.with(|c| c.get()),
-        "the flag is cleared once the force returns"
+        !FLAG_SEEN.load(Ordering::SeqCst),
+        "main-thread claim-compute must NOT set the flag (worker-only form)"
     );
+    assert_eq!(
+        NESTED_RESERVE.load(Ordering::SeqCst),
+        1,
+        "an unflagged main-thread nested site can spark under the cap"
+    );
+    // Undo the committed permit from the granted nested reserve.
+    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
 
     // Thunk was freed by ivar_force; free the cell.
     unsafe { dealloc(ivar as *mut u8) };

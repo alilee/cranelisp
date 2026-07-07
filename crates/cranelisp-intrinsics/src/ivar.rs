@@ -315,23 +315,53 @@ impl Drop for InFlightGuard {
 // (flag clear) still spark subject to the ~2/core cap; *nested* sites (flag set)
 // always inline. The flag is a module-private thread-local — **no new export**.
 //
-// The bracket covers BOTH the rayon-worker path and the main-thread
-// claim-compute-at-barrier path (work conservation) — both are executing a
-// strand, so nested sites under either must inline.
+// **Worker-only bracket** (S104 Wave 2c). The `SparkBodyGuard` is armed ONLY on
+// the rayon-worker path (inside `ivar_spark`'s spawned closure, around the
+// `ivar_force` call that runs a granted spark). The main thread's own
+// claim-compute-at-barrier arm in `ivar_force` is deliberately NOT flagged. This
+// is the `design/backend/lenient-eval.md` §2.8.4 form: a dispatched worker strand
+// inlines its whole subtree (hierarchical decline holds for the strand), but the
+// main thread at a barrier still sparks off its spine so cores stay fed.
+// Rationale (single-shot F5(fib) T=10, idle machine): the both-paths form made the
+// main thread inline its entire half serially + spin-wait, collapsing to ~2 cores
+// (5.8s); the worker-only form measures ~0.66s / peak_executing≈15 (serial 0.73s).
+// The both-paths form is retained behind `CRANELISP_HIER_DECLINE=both` for
+// comparison, off the default path.
 thread_local! {
     static IN_SPARK_BODY: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Which paths arm the hierarchical-decline flag ([`HIER_DECLINE`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HierDecline {
+    /// `CRANELISP_HIER_DECLINE=0` (or `off`): the flag is ignored entirely —
+    /// [`spark_budget_try_reserve`] never consults [`IN_SPARK_BODY`] and no path
+    /// arms the [`SparkBodyGuard`]. Emergent-cap ablation (only the concurrent cap
+    /// throttles).
+    Off,
+    /// Default (unset / any value but `0`, `off`, `both`): arm the guard ONLY on
+    /// the rayon-worker path (`ivar_spark`'s spawned closure). The main-thread
+    /// claim-compute arm in `ivar_force` is NOT flagged, so its spine keeps
+    /// sparking. The `design/backend/lenient-eval.md` §2.8.4 form.
+    Worker,
+    /// `CRANELISP_HIER_DECLINE=both`: arm the guard on BOTH the worker path AND the
+    /// main-thread claim-compute arm in `ivar_force`. Retained for measurement
+    /// comparison only — measured HARMFUL on an idle machine (the main thread
+    /// inlines its whole half serially + spin-waits, collapsing to ~2 cores).
+    Both,
+}
+
 /// The **structural hierarchical-decline** toggle (`CRANELISP_HIER_DECLINE`,
-/// S104 Wave 2b, gate G3). **ON by default**; `CRANELISP_HIER_DECLINE=0` disables
-/// it so [`spark_budget_try_reserve`] ignores [`IN_SPARK_BODY`] and the scheduler
-/// falls back to the emergent-cap behaviour (nested sites throttled only by the
-/// concurrent cap) — the ablation row for isolating G3's effect. Any value other
-/// than `"0"` (or an unset var) is ON. The [`SparkBodyGuard`] bracket always sets
-/// the flag; only the *read* here is gated, so ON/OFF differ solely in whether a
-/// nested site consults the flag. Read once per process via `LazyLock`.
-static HIER_DECLINE: LazyLock<bool> = LazyLock::new(|| {
-    std::env::var("CRANELISP_HIER_DECLINE").map(|v| v != "0").unwrap_or(true)
+/// S104 Wave 2b; worker-only default since Wave 2c, gate G3). Read once per
+/// process via `LazyLock`. Semantics: `0`/`off` ⇒ [`HierDecline::Off`];
+/// `both` ⇒ [`HierDecline::Both`] (both-paths, comparison only); anything else
+/// (including unset) ⇒ [`HierDecline::Worker`] (the default worker-only form).
+static HIER_DECLINE: LazyLock<HierDecline> = LazyLock::new(|| {
+    match std::env::var("CRANELISP_HIER_DECLINE").as_deref() {
+        Ok("0") | Ok("off") => HierDecline::Off,
+        Ok("both") => HierDecline::Both,
+        _ => HierDecline::Worker,
+    }
 });
 
 /// RAII bracket marking the dynamic extent of one executing spark body. On entry
@@ -339,9 +369,10 @@ static HIER_DECLINE: LazyLock<bool> = LazyLock::new(|| {
 /// a Rust unwind out of the thunk — it restores the saved value. Save/restore
 /// (not unconditional-clear) keeps the invariant correct if a strand's thunk
 /// itself claim-computes a nested IVar inline at a barrier: the inner bracket
-/// restores the outer strand's `true`, never prematurely clearing it. Always
-/// armed (it is the mechanism, not instrumentation); the negligible thread-local
-/// write is off the per-instruction hot path (one per thunk execution).
+/// restores the outer strand's `true`, never prematurely clearing it. Armed on the
+/// rayon-worker path in every mode but [`HierDecline::Off`], and additionally on
+/// the main-thread claim-compute arm in [`HierDecline::Both`]; the negligible
+/// thread-local write is off the per-instruction hot path (one per strand force).
 struct SparkBodyGuard(bool);
 
 impl SparkBodyGuard {
@@ -382,7 +413,7 @@ pub extern "C" fn spark_budget_try_reserve(n: i64) -> i64 {
     // subtree sequentially with no further sparking. Gated by CRANELISP_HIER_DECLINE
     // (default-on); when off, the flag is ignored and only the concurrent cap
     // throttles (the emergent-cap ablation).
-    if *HIER_DECLINE && IN_SPARK_BODY.with(|c| c.get()) {
+    if *HIER_DECLINE != HierDecline::Off && IN_SPARK_BODY.with(|c| c.get()) {
         if stats {
             SPARK_SERIAL_CONTINUES.fetch_add(1, Ordering::Relaxed);
         }
@@ -494,8 +525,21 @@ pub extern "C" fn ivar_spark(ivar: i64) -> i64 {
         // RC dec below — and runs even if anything in this closure unwinds.
         let _in_flight_guard = InFlightGuard;
 
-        // Force the IVar (evaluate thunk if still PENDING).
-        ivar_force(ivar);
+        // Structural hierarchical decline (§2.8.4, gate G3) — worker-only form
+        // (S104 Wave 2c). THIS is the flagged path: a granted spark, now executing
+        // on a rayon worker, marks the thread "inside a spark body" for the dynamic
+        // extent of its force so every nested create-gate site inlines (see
+        // [`SparkBodyGuard`] / [`IN_SPARK_BODY`]) — the strand's whole subtree runs
+        // sequentially. Armed in every mode but [`HierDecline::Off`]. The guard
+        // restores on scope exit even if `ivar_force` unwinds. The main-thread
+        // claim-compute arm in `ivar_force` is intentionally NOT flagged (default
+        // mode), keeping the main spine sparking to feed cores.
+        {
+            let _spark_body_guard =
+                (*HIER_DECLINE != HierDecline::Off).then(SparkBodyGuard::enter);
+            // Force the IVar (evaluate thunk if still PENDING).
+            ivar_force(ivar);
+        }
 
         // The ferry stashes any thunk panic in the IVar's error field and
         // `ivar_force` re-raises it into THIS (worker) thread's slot. The worker
@@ -627,15 +671,19 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
             // right after the thunk returns so the count reflects *executing*,
             // not merely-claimed, sparks.
             let peak_guard = stats.then(PeakGuard::enter);
-            // Structural hierarchical decline (§2.8.4, gate G3): mark this thread
-            // as "inside a spark body" for the dynamic extent of the thunk call so
-            // every nested create-gate site inlines (see [`SparkBodyGuard`] /
-            // [`IN_SPARK_BODY`]). Scoped tightly around the call, so it clears even
-            // if the thunk unwinds. Covers BOTH the rayon-worker path (this
-            // `ivar_force` runs inside `ivar_spark`'s spawned closure) and the
-            // main-thread claim-compute-at-barrier path — both execute a strand.
+            // Structural hierarchical decline (§2.8.4, gate G3) — worker-only form
+            // (S104 Wave 2c). This is the MAIN-THREAD claim-compute-at-barrier arm:
+            // in the default [`HierDecline::Worker`] mode it is deliberately NOT
+            // flagged, so the main thread's spine keeps sparking off its create-gate
+            // sites and cores stay fed. The rayon-worker path is flagged instead
+            // (see `ivar_spark`). Only [`HierDecline::Both`] arms the bracket here
+            // too (comparison mode; measured harmful on an idle machine). Scoped
+            // tightly around the call so it clears even if the thunk unwinds; the
+            // worker's outer bracket restores correctly under save/restore if the
+            // thunk itself claim-computes a nested IVar inline.
             let result = {
-                let _spark_body_guard = SparkBodyGuard::enter();
+                let _spark_body_guard =
+                    (*HIER_DECLINE == HierDecline::Both).then(SparkBodyGuard::enter);
                 call(thunk)
             };
             drop(peak_guard);
