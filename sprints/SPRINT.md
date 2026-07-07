@@ -1,6 +1,6 @@
 # Sprint 105: Lenient Eval — Attributing the Parallel Residual (measure-first)
 
-**Status**: PHASE 3 DESIGN
+**Status**: PHASE 4 WAVE ORG — spine Phase-3 complete; awaiting user go-ahead to launch Phase-5 Wave 0
 
 **Goal**: Increase measurement fidelity to **attribute the post-increment-II parallel residual** (F3/F4 above serial) *by mechanism* — scheduler-spread vs (a)-allocation vs residual-atomic-RC vs unavailable-parallelism — then build the lever the evidence selects. Lead hypothesis for the (a)-allocation case: **escape ∧ uniqueness stack allocation** (unique, non-escaping values as true RC-free stack locals, passed by mutable/immutable reference).
 
@@ -92,15 +92,50 @@ Phase-3 design runs **serially** (one source/doc-touching agent at a time — sh
 - Delivered the attribution plan: upgraded instrument `s105_attribution.py` (single-sourced against the S104 harnesses) → per-fixture attribution vector {scheduler-spread, (a)-allocation, residual-atomic-RC, unavailable-parallelism}; the **2×2 factorial** (allocator-swap × ownership-off, `I` reported); coarse-vs-fine oracle discipline; **direct-oracle net-recovery** lever selection; two new fixtures **F7** ((a)-isolating) + **F8** (parallel stack-alloc witness with the REQUIRED serial-vs-parallel gate-5 divergence property); the decision gate + accept-done→`--release` branch (core-sweep ≤~1.2× ceiling); S104 doctrine guards as INVALID-marking preconditions; the `STACK_SLOT_HITS` backend-side-read caveat; 2 failing-not-ignored perf-lane guards.
 - **NEW gated instrumentation for `/dev(cranelisp-backend)`** (all `CRANELISP_RC_STATS`-gated, zero-cost-off, intrinsics-internal, **no `cranelisp-types` edit / no new C-ABI symbol**): **N1** per-run alloc-bytes counter; **N2** per-branch/per-site alloc attribution (`[ALLOC_SITE_STATS]`); **N3** per-site residual-atomic-RC dump + Crossing/Confined tally (`[RC_SITE_STATS]`); **N4** a dedicated FINE stack-oracle env gate (`CRANELISP_NO_STACK_ALLOC=1`) flipping `STACK_ALLOC_ESCAPE_FACT_SOUND` at runtime-read.
 
-### /design(cranelisp-backend) — instrumentation seams — _issued next_
-- Document the N1–N4 seams against the as-built (`ownership-codegen.md`/`lenient-eval.md` measurement hooks); rule N4-vs-two-build-fallback (see wave-gate scope gap); confirm each is zero-cost-off + intrinsics-internal + no interface edit.
+### /design(cranelisp-backend) — instrumentation seams — **DONE (`9b343c4`)**
+- `ownership-codegen.md §13.2.2` (new) specifies all four seams against the as-built, each zero-cost-off + interface-clean (no `cranelisp-types` edit, no `public-api.txt` regen, no C-ABI symbol, no cache-schema bump; `lenient-eval.md §2.8.7` cross-refs it):
+  - **N1** — trivial: `alloc_with_rc` already tallies `BYTES_ALLOCATED`; N1 = an appended `alloc_bytes=` field in `rc_stats_line()`.
+  - **N2** — the heavy one (compile→run channel on the hot alloc path); **descoped-safe** to I1 syscall-share + F7 allocator-swap (the gate-5 sub-verdict rides F8's `STACK_SLOT_HITS`, not N2). Minimal-viable = a coarse in-spark-vs-parent two-bucket if wanted.
+  - **N3** — light, codegen-time; site + Confined/Crossing identity both in hand at `heap::use_nonatomic_arm`; backend-side `atexit` dump (does not re-open the h2-RED seam).
+  - **N4** — **ADOPTED (recommendation over two-build):** relocate `STACK_ALLOC_ESCAPE_FACT_SOUND` (const at `fn_compiler.rs:807`) to a `OnceLock` env read — exact sibling of `nonatomic_rc_codegen_enabled()`; codegen-time, byte-identical when unset; keeps the stack oracle on ONE binary + the same env-toggle doctrine as the other fine probes (two-build reserved for the allocator swap per the 2×2 discipline).
+- `STACK_SLOT_HITS` stays read backend-side; the h2-RED backend→intrinsics counter-surface seam is NOT force-resolved (standing design boundary).
 
 ### T1 track (parallel; separate commits) — _issued after the spine Phase-3_
 - `/design(int)` — 0529/0530/0533 dev-session reload design; `/repl` — 0531/0505; **`/arch`** — the small 0532 within-crate seam ruling (no interface impact) before `/int(src)` actions it.
 
 ## Waves (Phase 4)
 
-_Pending Phase 3._
+The spine is **inherently serial** — the instrument must be built before it can measure, and the build lever is selected only *after* the attribution. The T1 track runs parallel with separate commits, its source-touching work interleaved to honour "one source-touching agent at a time."
+
+### Wave 0 — build the instrument (Phase-5 Stage 0)
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /dev | cranelisp-backend | Commit N1 (`alloc_bytes`) + N3 (`[RC_SITE_STATS]`) + N4 (`CRANELISP_NO_STACK_ALLOC` const→`OnceLock`) gated instrumentation; zero-cost-off unit tests; N2 only if the coarse two-bucket is cheap. | pending |
+| /qa | — | Build `tests/perf/s105_attribution.py` (single-sourced on the S104 harnesses) + fixtures **F7** ((a)-isolating) + **F8** (parallel stack-alloc witness, serial-vs-parallel gate-5 divergence); the 2 failing-not-ignored perf-lane guards. | pending |
+
+### Wave 1 — run the attribution → the decision gate (Phase-5 Stage 1)
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /qa | — | Run the full attribution: the 2×2 allocator-swap × ownership-off factorial (+ `I`), the fine-probe apportionment, the core-count speedup-ceiling sweep, F8's gate-5 sub-verdict. Emit the per-fixture attribution vector + the decision-gate verdict. | pending |
+
+**Wave-1 gate = `/sprint` + user** — read the attribution, select the build lever (mid-sprint re-scope with user sign-off). This is the pivotal decision the whole preparatory phase exists to inform; it can legitimately say **accept-done → pivot to `--release`** (no build).
+
+### Wave 2 — build the evidence-selected lever (Phase-5 Stage 2; CONDITIONAL, scoped at the Wave-1 gate)
+| If the gate selects… | Skill | Crate | Task |
+|---|---|---|---|
+| (a)-allocation | /design→/dev | cranelisp-backend (+types if `MutBorrowed`) | escape∧uniqueness stack allocation (mind the 0525 gate-5 spark-frame scope caveat) |
+| residual-atomic-RC | /design→/dev | typecheck (+backend) | 0528 uniqueness-preservation / 0526 confinement-gated projection elision |
+| scheduler-spread | /design→/dev | cranelisp-backend | 0535 density-aware depth + 0536 depth-leak |
+| unavailable-parallelism | — | — | **no build** — record the settled verdict; pivot to `--release` mainline |
+
+### Wave T1 — dev-session reload residue (parallel; separate commits)
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /arch | — | The small 0532 within-crate seam ruling (explicit reload-instantiation vs implicit `__expr`-wrapper coupling; no interface impact). | pending |
+| /design → /dev | src/ (int) | 0529/0530/0533 dev-session reload design + fix; 0532 after the ruling. | pending |
+| /repl | repl/ | 0531/0505. | pending |
+
+Source-touching agents (Wave-0 /dev-backend, Wave-2 build, Wave-T1 /dev-int + /repl) run **serially** — never two editing the shared tree at once. Doc-only design + /qa harness authoring may overlap read-only work but commit disjoint files.
 
 ## Notes
 
@@ -108,7 +143,7 @@ _Pending Phase 3._
 - **Key insight the phase must confirm/refute:** after inc I + inc II, is the F3/F4 residual (a)-allocation (→ stack allocation), conservatively-atomic RC (→ 0528/0526), scheduler-spread (→ 0535), or simply unavailable-parallelism (→ accept-done, near-serial is correct)?
 - **The build is evidence-gated**, not pre-committed. The preparatory phase can legitimately conclude "little to win, pivot to `--release`."
 - **Bundling gate RESOLVED (user, 2026-07-07):** S105 bundles the T1-cure residue as a parallel track, committed separately from the lenient-eval work.
-- **Phase-3 `/qa` scope gaps → Phase-4 wave gate** (from `7a6728f`): **N4** (fine stack-oracle env gate) is a *real gap not polish* — R2 names `STACK_ALLOC_ESCAPE_FACT_SOUND` as the stack lever's direct oracle, but as-built it is a compile-time const whose only runtime-OFF path is the coarse `NO_OWNERSHIP` (R3-forbidden as a fine apportioner); decide N4 vs a two-build fallback at the wave gate. **N2** (per-site alloc attribution) may be heavier than N1/N3 — graceful-degrade to I1 (`brk`/`mmap` syscall share) + F7 allocator-swap delta. **I4** HW HITM counters are host-PMU-dependent — may read `UNAVAILABLE` on the VM, (b) attribution then rests on I3 alone. The **h2-RED counter-surface seam** (backend `STACK_SLOT_HITS` → intrinsics print) is a separate `/arch` + `cranelisp-intrinsics` question, explicitly OUT of S105 measurement scope.
+- **Phase-3 scope gaps — RESOLVED at the Phase-3→4 gate** (`/design(backend)` `9b343c4`): **N4 = adopt the runtime-read fine gate** (`CRANELISP_NO_STACK_ALLOC`, ~10-line const→`OnceLock` relocation, one binary). **N2 = descope-safe** to I1 + F7 (gate-5 sub-verdict rides F8 `STACK_SLOT_HITS`); build only if cheap coarse two-bucket. Still open/environmental: **I4** HW HITM counters are host-PMU-dependent — may read `UNAVAILABLE` on the VM, (b) attribution then rests on I3 alone (accept). The **h2-RED counter-surface seam** (backend `STACK_SLOT_HITS` → intrinsics print) stays a separate `/arch`+`cranelisp-intrinsics` question, OUT of S105 scope.
 
 ## Outcome (Phase 7)
 
