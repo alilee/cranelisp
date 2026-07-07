@@ -36,6 +36,39 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
+### Sprint 105 Phase-5 Wave-1 — residual-attribution durable RED records (/qa, 2026-07-07)
+
+The measure-first attribution phase (`tests/plan/s105-attribution-results.md`)
+delivered two failing-not-ignored perf-lane behavioural guards
+(`tests/s105_residual_attribution.rs`, §9.1 of the plan). They are the durable
+records of the two live findings; the primary gate verdict is **accept-done →
+`--release`** (no memory lever built this sprint), so both carry forward. This adds
+**2** to the suite's intentional failing count (22 → **24**).
+
+- **`cranelisp::s105_residual_attribution::f8_gate5_parallel_arm_stack_alloc_reachable`**
+  - SHA: (this commit) · Owner: **/backend** · Target sprint: future (build-gated)
+  - Signature: `stack_slot=0` on the recursive/sparked parallel-search arm — the
+    escape∧uniqueness stack path is declined by gate 3 (self-recursion) + gate 5
+    (spark relocation); `assertion failed: hits > 0`.
+  - Disposition: **out-of-scope (owner=/backend)** — the 0525 gate-5 parallel-
+    residual reachability gap. Flips GREEN only when a spark-frame-aware +
+    recursion-aware stack path lands (a scope increase beyond increment I). The
+    attribution shows the stack lever is NOT selected, so this is a carried record.
+- **`cranelisp::s105_residual_attribution::f3_shared_read_residual_atomic_rc_confined`**
+  - SHA: (this commit) · Owner: **/typecheck + /backend** · Target sprint: future (build-gated)
+  - Signature: `rc_atomic=18` on the shared-read parallel reduce (N3 site dump:
+    `build-grid class=Crossing`); `assertion left==right` (18 ≠ 0).
+  - Disposition: **out-of-scope (owner=/typecheck+/backend)** — the F3 dominant
+    term (NONATOMIC_RC recovers ~76%, sound-cure ceiling). Flips GREEN when 0526
+    confinement-gated projection elision / 0528 uniqueness-preservation prove the
+    shared reads Confined. Carried: F3-serial already beats F3-parallel 8×, so the
+    lever is only funded if F3-parallel competitiveness becomes a goal (user gate).
+
+The 3 companion tests (`f7_alloc_parallel_serial_exit_match`,
+`f8_stack_witness_parallel_serial_exit_match`, `f8_serial_arm_stack_allocates`) are
+GREEN — the fixtures' parallel≡serial correctness record + the stack-alloc positive
+control — and are NOT ledger entries (they pass).
+
 ### Sprint 102 Phase-5 Stage-1 QA-first RED set (/qa, 2026-07-03)
 
 The S102 stage-1 drafting batch (lanes L-U1, L-S2, L-S3, L-N1+L-N2, the
