@@ -683,49 +683,65 @@ fn mdynamic_core_mult_4_recovers_prewave2_budget() {
 }
 
 // ---------------------------------------------------------------------------
-// Structural hierarchical decline (S104 Wave 2b, gate G3; lenient-eval.md §2.8.4;
-// worker-only form since Wave 2c). A thread-local "inside a spark body" flag
-// (`IN_SPARK_BODY`) is set for the dynamic extent of a granted spark's execution.
-// In the default `HierDecline::Worker` mode the `SparkBodyGuard` bracket is armed
-// ONLY on the rayon-worker path (inside `ivar_spark`'s spawned closure); the
-// main-thread claim-compute arm in `ivar_force` is NOT flagged, so the main spine
-// keeps sparking to feed cores. While set, every nested create-gate site inlines:
-// `spark_budget_try_reserve` returns 0 INDEPENDENT of the counter. This collapses
-// total spawn *count* to O(cores), which the concurrent cap (permit-recycle)
-// cannot. `CRANELISP_HIER_DECLINE=0` disables the read (emergent-cap fallback);
-// `=both` also arms the main-thread arm (comparison mode, measured harmful). The
-// flag is a per-thread Cell, so each test thread sees its own — clean isolation
-// under nextest AND cargo test.
+// Structural hierarchical decline — depth-allowance form (S104 Wave 2b→2e, gate
+// G3; lenient-eval.md §2.8.4). A thread-local spark-nesting DEPTH counter
+// (`SPARK_DEPTH`) tracks the logical nesting depth of the spark body the current
+// thread is executing (top call = 0; `+1` per level, incremented around the thunk
+// call in `ivar_force`'s claim arm and propagated across the spawn boundary by
+// `ivar_spark`'s base-restore). A nested create-gate site inlines
+// (`spark_budget_try_reserve` returns 0) only when `SPARK_DEPTH >= SPARK_MAX_DEPTH`;
+// below the threshold it MAY spark (subject to the concurrent cap). So the top
+// `MAX_DEPTH` levels of the spark tree fan out (up to `2^MAX_DEPTH` strands — a
+// balanced coarse tree fills the cores) and everything below inlines (a deep
+// recursion collapses to `O(2^MAX_DEPTH)` spawns). `MAX_DEPTH = 1` reproduces the
+// Wave-2c boolean collapse; `MAX_DEPTH = 0` inlines everything.
+// `CRANELISP_HIER_DECLINE=0` disables the depth check entirely (emergent-cap
+// fallback). The counter is a per-thread `Cell`, so each test thread sees its own
+// — clean isolation under nextest AND cargo test.
 // ---------------------------------------------------------------------------
 
-// spec: design/backend/lenient-eval.md §2.8.4 — the flag forces the inline arm:
-// with spare capacity (so ONLY the flag can decline), `try_reserve` grants when
-// the flag is clear and returns 0 (commits nothing) when it is set. Default-on in
-// a fresh process.
+// spec: design/backend/lenient-eval.md §2.8.4 — the depth cutoff forces the inline
+// arm: with spare capacity (so ONLY the depth can decline), `try_reserve` grants
+// while `SPARK_DEPTH < MAX_DEPTH` and returns 0 (commits nothing) once
+// `SPARK_DEPTH >= MAX_DEPTH`. Driven relative to the process-default MAX_DEPTH
+// (machine-dependent) via the depth guard so the test is core-count-agnostic.
 #[test]
-fn hier_decline_flag_forces_inline_when_in_spark_body() {
-    assert_eq!(
-        *HIER_DECLINE,
-        HierDecline::Worker,
-        "hierarchical decline defaults to the worker-only form"
+fn hier_decline_depth_cutoff_forces_inline_at_or_above_max_depth() {
+    assert!(
+        *HIER_DECLINE_ON,
+        "hierarchical decline defaults to on in a fresh process"
     );
-    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
-    // Spare capacity, so the flag is the ONLY thing that can force inline.
-    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
-    assert!(!IN_SPARK_BODY.with(|c| c.get()), "flag starts clear on this thread");
+    let max = *SPARK_MAX_DEPTH;
+    assert!(max >= 1, "the default allowance is clamped to >= 1");
 
-    // Flag clear + spare capacity ⇒ grant (top-level site sparks under the cap).
-    assert_eq!(spark_budget_try_reserve(1), 1, "clear flag ⇒ spark under cap");
+    let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
+    // Spare capacity, so the DEPTH is the only thing that can force inline.
+    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth starts at 0 on this thread");
+
+    // Depth 0 < MAX (>= 1) + spare capacity ⇒ grant (a top-level site sparks).
+    assert_eq!(spark_budget_try_reserve(1), 1, "depth 0 < MAX ⇒ spark under cap");
     IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst); // undo the committed permit
 
-    // Flag set ⇒ decline regardless of spare capacity (nested site inlines).
+    // Just below the threshold (depth == MAX - 1) still grants.
     {
-        let _g = SparkBodyGuard::enter();
-        assert!(IN_SPARK_BODY.with(|c| c.get()), "guard sets the flag");
+        let _g = SparkDepthGuard::enter_base(max - 1);
+        assert_eq!(
+            spark_budget_try_reserve(1),
+            1,
+            "depth MAX-1 < MAX ⇒ still sparks under the cap"
+        );
+        IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+    }
+
+    // At the threshold (depth == MAX) ⇒ inline regardless of spare capacity.
+    {
+        let _g = SparkDepthGuard::enter_base(max);
+        assert_eq!(SPARK_DEPTH.with(|c| c.get()), max, "guard set the depth to MAX");
         assert_eq!(
             spark_budget_try_reserve(1),
             0,
-            "inside a spark body ⇒ nested site inlines (hierarchical decline)"
+            "depth >= MAX ⇒ nested site inlines (depth allowance spent)"
         );
         assert_eq!(
             spark_budget_try_reserve(4),
@@ -738,93 +754,133 @@ fn hier_decline_flag_forces_inline_when_in_spark_body() {
             "declined nested reservations commit nothing (allocation-free arm)"
         );
     }
-    // Flag cleared on guard drop ⇒ top-level sites spark again.
-    assert!(!IN_SPARK_BODY.with(|c| c.get()), "flag cleared on scope exit");
-    assert_eq!(spark_budget_try_reserve(1), 1, "cleared flag ⇒ spark again");
+    // Above the threshold ⇒ still inline.
+    {
+        let _g = SparkDepthGuard::enter_base(max + 5);
+        assert_eq!(spark_budget_try_reserve(1), 0, "depth > MAX ⇒ inline");
+    }
+    // Depth restored to 0 on guard drop ⇒ top-level sites spark again.
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth restored on scope exit");
+    assert_eq!(spark_budget_try_reserve(1), 1, "restored depth 0 ⇒ spark again");
 
     IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
 }
 
-// spec: design/backend/lenient-eval.md §2.8.4 — the `SparkBodyGuard` bracket sets
-// the flag on entry and restores it on exit, INCLUDING on a Rust unwind out of
-// the bracketed body (the thunk-panic path). Save/restore semantics keep a nested
-// bracket from prematurely clearing an outer strand's flag.
+// spec: design/backend/lenient-eval.md §2.8.4 — the `SparkDepthGuard` increments
+// the depth on entry (`enter` = +1; `enter_base` restores a captured base) and
+// restores the previous depth on exit, INCLUDING on a Rust unwind out of the
+// bracketed body (the thunk-panic path). Save/restore keeps a nested bracket from
+// corrupting an outer strand's depth.
 #[test]
-fn spark_body_guard_sets_and_clears_including_on_unwind() {
-    assert!(!IN_SPARK_BODY.with(|c| c.get()), "clear at start");
+fn spark_depth_guard_increments_and_restores_including_nesting_and_unwind() {
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth 0 at start");
 
-    // Normal scope: set inside, cleared after.
+    // Normal scope: +1 inside, restored after.
     {
-        let _g = SparkBodyGuard::enter();
-        assert!(IN_SPARK_BODY.with(|c| c.get()), "set within the bracket");
+        let _g = SparkDepthGuard::enter();
+        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 1, "enter() descends one level");
     }
-    assert!(!IN_SPARK_BODY.with(|c| c.get()), "cleared on normal exit");
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "restored on normal exit");
 
-    // Nested brackets: the inner drop restores the OUTER's `true`, not `false`.
+    // Nested enter()s stack: 0 → 1 → 2, and each drop restores the level below.
     {
-        let _outer = SparkBodyGuard::enter();
+        let _outer = SparkDepthGuard::enter();
+        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 1, "outer at depth 1");
         {
-            let _inner = SparkBodyGuard::enter();
-            assert!(IN_SPARK_BODY.with(|c| c.get()), "set within the nested bracket");
+            let _inner = SparkDepthGuard::enter();
+            assert_eq!(SPARK_DEPTH.with(|c| c.get()), 2, "inner at depth 2");
         }
-        assert!(
-            IN_SPARK_BODY.with(|c| c.get()),
-            "inner drop restores the outer strand's true, not false"
+        assert_eq!(
+            SPARK_DEPTH.with(|c| c.get()),
+            1,
+            "inner drop restores the outer strand's depth, not 0"
         );
     }
-    assert!(!IN_SPARK_BODY.with(|c| c.get()), "outer drop restores false");
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "outer drop restores 0");
 
-    // Unwind: the flag must be restored even if the bracketed body panics — the
+    // enter_base restores a captured parent depth (the stolen-child propagation
+    // path), and a claim-arm +1 on top of it lands at parent + 1.
+    {
+        let _base = SparkDepthGuard::enter_base(5);
+        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 5, "enter_base sets the captured base");
+        {
+            let _claim = SparkDepthGuard::enter();
+            assert_eq!(
+                SPARK_DEPTH.with(|c| c.get()),
+                6,
+                "claim-arm +1 lands a stolen child at parent + 1"
+            );
+        }
+        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 5, "claim drop restores the base");
+    }
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "base drop restores 0");
+
+    // Unwind: the depth must be restored even if the bracketed body panics — the
     // exact path a thunk that raises a Rust panic takes through the guard's Drop.
     let outcome = std::panic::catch_unwind(|| {
-        let _g = SparkBodyGuard::enter();
-        assert!(IN_SPARK_BODY.with(|c| c.get()), "set before the panic");
+        let _g = SparkDepthGuard::enter();
+        assert_eq!(SPARK_DEPTH.with(|c| c.get()), 1, "descended before the panic");
         panic!("simulated thunk unwind inside the spark body");
     });
     assert!(outcome.is_err(), "the bracketed body must have unwound");
-    assert!(
-        !IN_SPARK_BODY.with(|c| c.get()),
-        "SparkBodyGuard::drop must restore the flag on the unwind path"
+    assert_eq!(
+        SPARK_DEPTH.with(|c| c.get()),
+        0,
+        "SparkDepthGuard::drop must restore the depth on the unwind path"
     );
 }
 
-// spec: design/backend/lenient-eval.md §2.8.4 — the end-to-end hierarchical
-// property through a real spark, WORKER path (S104 Wave 2c worker-only form): a
-// nested spark site hit WHILE a granted spark runs on a rayon worker inlines —
-// the worker bracket in `ivar_spark`'s closure sets the flag, so `try_reserve`
-// returns 0 even though the pool has spare capacity. This is the whole mechanism
-// observed through the production seam (`ivar_spark` → worker → `ivar_force`).
+// spec: design/backend/lenient-eval.md §2.8.4 — the default depth allowance is
+// `floor(log2(threads))` (clamped to >= 1): a conservative fan-out kept under the
+// concurrent cap so a deep recursion still collapses. Pure formula test.
 #[test]
-fn hier_decline_nested_site_inside_worker_spark_inlines() {
-    static NESTED_RESERVE: AtomicI64 = AtomicI64::new(-1);
-    static FLAG_SEEN: AtomicBool = AtomicBool::new(false);
-    extern "C" fn nested_fn(_env: i64) -> i64 {
-        // Executing inside the spark body on the worker: observe the flag + a
-        // nested reservation.
-        FLAG_SEEN.store(IN_SPARK_BODY.with(|c| c.get()), Ordering::SeqCst);
-        NESTED_RESERVE.store(spark_budget_try_reserve(1), Ordering::SeqCst);
+fn default_spark_max_depth_is_floor_log2_clamped() {
+    assert_eq!(default_spark_max_depth(0), 1, "degenerate 0 clamps to 1");
+    assert_eq!(default_spark_max_depth(1), 1, "single core ⇒ 1");
+    assert_eq!(default_spark_max_depth(2), 1, "floor(log2 2) = 1");
+    assert_eq!(default_spark_max_depth(3), 1, "floor(log2 3) = 1");
+    assert_eq!(default_spark_max_depth(4), 2, "floor(log2 4) = 2");
+    assert_eq!(default_spark_max_depth(7), 2, "floor(log2 7) = 2");
+    assert_eq!(default_spark_max_depth(8), 3, "floor(log2 8) = 3");
+    assert_eq!(default_spark_max_depth(10), 3, "floor(log2 10) = 3 (the 10-core host)");
+    assert_eq!(default_spark_max_depth(16), 4, "floor(log2 16) = 4");
+    assert_eq!(default_spark_max_depth(1024), 10, "floor(log2 1024) = 10");
+}
+
+// spec: design/backend/lenient-eval.md §2.8.4 — the end-to-end depth property
+// through a real spark, WORKER path (S104 Wave 2e): a granted spark dispatched
+// from the main thread (depth 0) runs on a rayon worker at `SPARK_DEPTH == 1`
+// (`ivar_spark`'s base-restore of the captured parent depth 0, then the claim-arm
+// +1 in `ivar_force`). This is the whole propagation mechanism observed through
+// the production seam (`ivar_spark` → worker → `ivar_force` claim arm).
+#[test]
+fn hier_decline_worker_spark_runs_at_parent_plus_one_depth() {
+    static OBSERVED_DEPTH: AtomicI64 = AtomicI64::new(-1);
+    extern "C" fn observe_fn(_env: i64) -> i64 {
+        // Executing inside the spark body on the worker: record our depth.
+        OBSERVED_DEPTH.store(SPARK_DEPTH.with(|c| c.get()) as i64, Ordering::SeqCst);
         7
     }
     let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
-    // Spare capacity, so ONLY the flag can force the nested site to inline. Model
-    // the one in-flight permit reserved for THIS spark (the worker's InFlightGuard
-    // drop pairs with it), leaving room for the nested reserve(1) to grant if the
-    // flag were clear.
+    // Model the one in-flight permit reserved for THIS spark (the worker's
+    // InFlightGuard drop pairs with it).
     IN_FLIGHT_SPARKS.store(1, Ordering::SeqCst);
+    // The main test thread sparks from depth 0.
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "main thread sparks from depth 0");
 
     let thunk = {
         let b = alloc_with_rc(16); // code_ptr + drop_glue, no captures
         unsafe {
-            *((b as isize + 16) as *mut i64) = nested_fn as *const () as i64;
+            *((b as isize + 16) as *mut i64) = observe_fn as *const () as i64;
             *((b as isize + 24) as *mut i64) = 0;
         }
         b as i64
     };
     let ivar = ivar_create(thunk);
 
-    // Dispatch onto a rayon worker — the flagged path. Do NOT call `ivar_force`
-    // on this thread (that would race the worker for the CAS and could run the
-    // thunk here, unflagged); spin-wait on the published state instead.
+    // Dispatch onto a rayon worker — the base-restore path. Do NOT call
+    // `ivar_force` on this thread (that would race the worker for the CAS and could
+    // run the thunk here at the main depth); spin-wait on the published state.
     ivar_spark(ivar);
     let state_ptr = unsafe { &*((ivar as isize + STATE_OFFSET) as *const AtomicI64) };
     let mut spins = 0u64;
@@ -839,14 +895,10 @@ fn hier_decline_nested_site_inside_worker_spark_inlines() {
         7,
         "worker computed the thunk result"
     );
-    assert!(
-        FLAG_SEEN.load(Ordering::SeqCst),
-        "the flag must be set while the spark body runs on the worker"
-    );
     assert_eq!(
-        NESTED_RESERVE.load(Ordering::SeqCst),
-        0,
-        "a nested spark site inside a worker spark body inlines (structural decline)"
+        OBSERVED_DEPTH.load(Ordering::SeqCst),
+        1,
+        "a spark dispatched from depth 0 runs on the worker at depth 1 (parent + 1)"
     );
 
     // ivar_spark inc'd RC to 2 and the worker dec'd it back to 1; the thunk was
@@ -855,51 +907,46 @@ fn hier_decline_nested_site_inside_worker_spark_inlines() {
     IN_FLIGHT_SPARKS.store(base, Ordering::SeqCst);
 }
 
-// spec: design/backend/lenient-eval.md §2.8.4 — the worker-only NEGATION (S104
-// Wave 2c): the main-thread claim-compute arm in `ivar_force` is NOT flagged, so
-// a nested spark site hit while the MAIN thread inline-claims a thunk still sees a
-// clear flag and can spark (subject only to the concurrent cap). This is the
-// property that keeps the main spine feeding cores — the whole point of moving the
-// bracket off the both-paths form.
+// spec: design/backend/lenient-eval.md §2.8.4 — the SYMMETRIC increment (S104
+// Wave 2e, replacing the Wave-2c worker-only NEGATION): an inline claim-compute on
+// ANY thread — including the main thread at a barrier — increments the depth
+// around the thunk, so a thunk claim-computed inline at depth `d` runs at `d + 1`.
+// Unlike the Wave-2c boolean (which deliberately did NOT flag the main arm), the
+// depth allowance lets the main spine keep sparking for MAX_DEPTH levels before it
+// inlines, so the both-paths collapse-to-2-cores hazard does not recur. Here the
+// thunk observes its own depth while claim-computed on this thread.
 #[test]
-fn hier_decline_main_thread_claim_does_not_flag() {
-    static NESTED_RESERVE: AtomicI64 = AtomicI64::new(-1);
-    static FLAG_SEEN: AtomicBool = AtomicBool::new(true);
-    extern "C" fn nested_fn(_env: i64) -> i64 {
-        FLAG_SEEN.store(IN_SPARK_BODY.with(|c| c.get()), Ordering::SeqCst);
-        NESTED_RESERVE.store(spark_budget_try_reserve(1), Ordering::SeqCst);
+fn hier_decline_main_thread_claim_increments_depth() {
+    static OBSERVED_DEPTH: AtomicI64 = AtomicI64::new(-1);
+    extern "C" fn observe_fn(_env: i64) -> i64 {
+        OBSERVED_DEPTH.store(SPARK_DEPTH.with(|c| c.get()) as i64, Ordering::SeqCst);
         7
     }
     let base = IN_FLIGHT_SPARKS.load(Ordering::SeqCst);
-    // Spare capacity: the nested top-level site should grant (flag clear).
     IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
-    assert!(!IN_SPARK_BODY.with(|c| c.get()), "flag starts clear on this thread");
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth starts at 0 on this thread");
 
     let thunk = {
         let b = alloc_with_rc(16);
         unsafe {
-            *((b as isize + 16) as *mut i64) = nested_fn as *const () as i64;
+            *((b as isize + 16) as *mut i64) = observe_fn as *const () as i64;
             *((b as isize + 24) as *mut i64) = 0;
         }
         b as i64
     };
     let ivar = ivar_create(thunk);
 
-    // Inline claim on THIS (main) thread: `ivar_force` wins the CAS and runs the
-    // thunk WITHOUT arming the spark-body bracket (worker-only default).
+    // Inline claim on THIS thread from depth 0: `ivar_force` wins the CAS and runs
+    // the thunk under the claim-arm depth guard, so the thunk sees depth 1.
     let result = ivar_force(ivar);
     assert_eq!(result, 7);
-    assert!(
-        !FLAG_SEEN.load(Ordering::SeqCst),
-        "main-thread claim-compute must NOT set the flag (worker-only form)"
-    );
     assert_eq!(
-        NESTED_RESERVE.load(Ordering::SeqCst),
+        OBSERVED_DEPTH.load(Ordering::SeqCst),
         1,
-        "an unflagged main-thread nested site can spark under the cap"
+        "an inline claim-compute from depth 0 runs the thunk at depth 1 (symmetric increment)"
     );
-    // Undo the committed permit from the granted nested reserve.
-    IN_FLIGHT_SPARKS.store(0, Ordering::SeqCst);
+    // Depth is restored to 0 after the claim arm exits.
+    assert_eq!(SPARK_DEPTH.with(|c| c.get()), 0, "depth restored after the claim arm");
 
     // Thunk was freed by ivar_force; free the cell.
     unsafe { dealloc(ivar as *mut u8) };

@@ -327,98 +327,169 @@ impl Drop for InFlightGuard {
     }
 }
 
-// **Hierarchical decline — structural form** (S104 Wave 2b, gate G3;
-// `design/backend/lenient-eval.md` §2.8.4). A thread-local "inside a spark
-// body" flag: `true` for the dynamic extent of a strand's thunk execution (set
-// around the `code_ptr(env)` call in `ivar_force`'s claim-win arm, via
-// `SparkBodyGuard`). While set, every nested create-gate site on this thread
-// takes the inline/direct arm (`spark_budget_try_reserve` returns `0`),
-// *independent of the counter value*.
+// **Hierarchical decline — depth-allowance form** (S104 Wave 2b→2e, gate G3;
+// `design/backend/lenient-eval.md` §2.8.4). A thread-local **spark-nesting depth
+// counter** ([`SPARK_DEPTH`]): the logical nesting depth of the spark body the
+// current thread is executing. The top call (main, no thunk) is depth 0; every
+// level deeper into the spark tree is +1. A nested create-gate site takes the
+// inline/direct arm (`spark_budget_try_reserve` returns `0`) only when
+// `SPARK_DEPTH >= SPARK_MAX_DEPTH`; **below** that threshold a strand MAY re-spark
+// (still subject to the ~2/core `IN_FLIGHT_SPARKS` cap). So the top `MAX_DEPTH`
+// levels of the spark tree fan out; everything below inlines.
+//
+// **Why a depth allowance, not a boolean (Wave 2e).** The Wave-2c boolean form
+// ("inside a spark body ⇒ inline everything") collapsed each dispatched strand's
+// ENTIRE subtree to one sequential unit. That bounds spawns to `O(cores)` (curing
+// F5's 619K-spawn fib explosion) but also caps a *balanced coarse* tree to the
+// handful of splits the main spine can reach on its own (F6: peak ~8, ~1.9×) —
+// it leaves a balanced compute D&C's parallelism on the table. The depth counter
+// generalizes the boolean: `MAX_DEPTH = 1` reproduces the Wave-2c collapse
+// (dispatched strands inline immediately); a larger `MAX_DEPTH` lets a *bounded*
+// tree keep fanning out for `MAX_DEPTH` levels — up to `2^MAX_DEPTH` inline
+// strands — so a balanced 16-leaf tree (F6) fills the cores while a deep recursion
+// (F5 fib) still collapses once it descends past `MAX_DEPTH` (`2^MAX_DEPTH` spawns
+// then inline, independent of recursion depth).
 //
 // **Why structural, not emergent.** The concurrent-cap (`SPARK_BUDGET`) bounds
 // *concurrent* in-flight sparks (memory footprint = `O(cap)`) but **permits
 // recycle**: when a strand completes it frees a permit and the next recursive
 // node grabs it and sparks again, so *total* spawn count over a recursion stays
-// `O(nodes)` — the 0534 scheduler overhead (single-shot F5(fib): ~1.5M spawns at
-// every cap; a *tighter* cap gave MORE spawns). The cap is the wrong lever for
-// spawn *rate*. This flag collapses it structurally: once a worker is executing a
-// spark body, its ENTIRE subtree runs sequentially (a high-efficiency sequential
-// path) with no nested sparking, so top-level strands stay `~cap` (≈2/core) and
-// spawns collapse to `O(cores)`.
+// `O(nodes)` — the 0534 scheduler overhead. The cap is the wrong lever for spawn
+// *rate*. The depth cutoff collapses it structurally: once a strand descends past
+// `MAX_DEPTH` its whole remaining subtree runs sequentially with no nested
+// sparking, so total spawns stay `~2^MAX_DEPTH = O(cores)`.
 //
-// **Composes with the cap** (`6dbed5a`'s `SPARK_CORE_MULT`): *top-level* sites
-// (flag clear) still spark subject to the ~2/core cap; *nested* sites (flag set)
-// always inline. The flag is a module-private thread-local — **no new export**.
+// **Depth is the *logical* tree depth, propagated across the spawn boundary.**
+// The counter is incremented by +1 in `ivar_force`'s claim-compute arm (the single
+// choke point where a thunk runs — reached both from `ivar_spark`'s dispatched
+// closure AND from an inline barrier-force). To keep a *stolen* child at its true
+// logical depth (a fresh rayon worker rests at 0, not at its parent's depth),
+// `ivar_spark` captures the sparking thread's depth and its spawned closure
+// restores that base before running `ivar_force` — so the claim-arm +1 lands the
+// child at `parent + 1` whether it runs inline or on a stolen worker. The counter
+// is a module-private thread-local — **no new export**.
 //
-// **Worker-only bracket** (S104 Wave 2c). The `SparkBodyGuard` is armed ONLY on
-// the rayon-worker path (inside `ivar_spark`'s spawned closure, around the
-// `ivar_force` call that runs a granted spark). The main thread's own
-// claim-compute-at-barrier arm in `ivar_force` is deliberately NOT flagged. This
-// is the `design/backend/lenient-eval.md` §2.8.4 form: a dispatched worker strand
-// inlines its whole subtree (hierarchical decline holds for the strand), but the
-// main thread at a barrier still sparks off its spine so cores stay fed.
-// Rationale (single-shot F5(fib) T=10, idle machine): the both-paths form made the
-// main thread inline its entire half serially + spin-wait, collapsing to ~2 cores
-// (5.8s); the worker-only form measures ~0.66s / peak_executing≈15 (serial 0.73s).
-// The both-paths form is retained behind `CRANELISP_HIER_DECLINE=both` for
-// comparison, off the default path.
+// **Symmetric across main and workers (Wave 2e).** Unlike the Wave-2c worker-only
+// boolean (which deliberately did NOT flag the main-thread claim arm, to keep the
+// main spine sparking), the depth model increments on BOTH the main and worker
+// claim arms: the main spine now *also* inlines once it descends past `MAX_DEPTH`,
+// and the Wave-2c "worker-only vs both-paths" hazard is gone — the both-paths
+// boolean collapsed to ~2 cores only because a depth-1 flag inlined the WHOLE
+// remaining subtree; a `MAX_DEPTH`-deep allowance lets the main spine spark its
+// top `MAX_DEPTH` levels before inlining, so cores stay fed.
 thread_local! {
-    static IN_SPARK_BODY: Cell<bool> = const { Cell::new(false) };
+    static SPARK_DEPTH: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Which paths arm the hierarchical-decline flag ([`HIER_DECLINE`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum HierDecline {
-    /// `CRANELISP_HIER_DECLINE=0` (or `off`): the flag is ignored entirely —
-    /// [`spark_budget_try_reserve`] never consults [`IN_SPARK_BODY`] and no path
-    /// arms the [`SparkBodyGuard`]. Emergent-cap ablation (only the concurrent cap
-    /// throttles).
-    Off,
-    /// Default (unset / any value but `0`, `off`, `both`): arm the guard ONLY on
-    /// the rayon-worker path (`ivar_spark`'s spawned closure). The main-thread
-    /// claim-compute arm in `ivar_force` is NOT flagged, so its spine keeps
-    /// sparking. The `design/backend/lenient-eval.md` §2.8.4 form.
-    Worker,
-    /// `CRANELISP_HIER_DECLINE=both`: arm the guard on BOTH the worker path AND the
-    /// main-thread claim-compute arm in `ivar_force`. Retained for measurement
-    /// comparison only — measured HARMFUL on an idle machine (the main thread
-    /// inlines its whole half serially + spin-waits, collapsing to ~2 cores).
-    Both,
-}
-
-/// The **structural hierarchical-decline** toggle (`CRANELISP_HIER_DECLINE`,
-/// S104 Wave 2b; worker-only default since Wave 2c, gate G3). Read once per
-/// process via `LazyLock`. Semantics: `0`/`off` ⇒ [`HierDecline::Off`];
-/// `both` ⇒ [`HierDecline::Both`] (both-paths, comparison only); anything else
-/// (including unset) ⇒ [`HierDecline::Worker`] (the default worker-only form).
-static HIER_DECLINE: LazyLock<HierDecline> = LazyLock::new(|| {
-    match std::env::var("CRANELISP_HIER_DECLINE").as_deref() {
-        Ok("0") | Ok("off") => HierDecline::Off,
-        Ok("both") => HierDecline::Both,
-        _ => HierDecline::Worker,
+/// Compute the default [`SPARK_MAX_DEPTH`] from the worker count: `floor(log2(n))`
+/// (clamped to `≥ 1`). Kept pure for unit testing (Principle 5).
+///
+/// A depth-`D` cutoff lets the spark tree fan out to up to `2^D` strands before
+/// inlining. The default is deliberately **conservative** — `2^D ≤ n`, half the
+/// `2 × n` concurrent [`SPARK_BUDGET`] cap — for a measured reason: the depth
+/// counter only advances at `ivar_force` boundaries, so a *budget-induced* inline
+/// (a create-gate declined because [`IN_FLIGHT_SPARKS`] is at the cap, not because
+/// the depth allowance is spent) direct-calls its child at the SAME fork-depth. A
+/// deep recursion (e.g. F5's `fib`) that gets budget-inlined at a shallow depth
+/// then re-sparks via permit-recycle at that shallow depth — the 0534 spawn
+/// explosion — once the fan-out approaches the concurrent cap and the depth cutoff
+/// no longer bites first. Keeping `2^D ≤ n` (fan-out well under the `2n` cap) makes
+/// the depth cutoff bite *before* budget pressure, so a deep recursion collapses to
+/// `~2^D` spawns while a bounded coarse tree (F6: 16 alloc-free leaves) still fans
+/// out to fill the cores (measured on a 10-core host: `D = 3` ⇒ F6 peak≈12,
+/// ~3.4×; F5 stays at 14 spawns; `D ≥ 4` re-explodes F5 to >1M spawns via the
+/// budget-inline leak). `n ≤ 1` clamps to depth 1 (the Wave-2c boolean collapse).
+///
+/// `CRANELISP_SPARK_MAX_DEPTH=D` overrides this for the ablation sweep; a larger
+/// `D` on an alloc-free shape (F6) is safe and faster, but risks the budget-inline
+/// re-explosion on deep alloc-heavy recursions — the leak is a backend/design
+/// concern (the direct/inline arm has no runtime hook to advance the depth, so it
+/// cannot be closed in the runtime alone; `design/backend/lenient-eval.md` §2.8.4).
+fn default_spark_max_depth(num_threads: usize) -> u32 {
+    if num_threads <= 1 {
+        return 1;
     }
+    // floor(log2(n)) = (bit width of n) − 1 = index of the highest set bit.
+    u32::BITS - 1 - (num_threads as u32).leading_zeros()
+}
+
+/// The **spark-nesting depth allowance** `MAX_DEPTH` (`CRANELISP_SPARK_MAX_DEPTH`,
+/// S104 Wave 2e, gate G3). A create-gate site inlines (declines to spark) once the
+/// current thread's [`SPARK_DEPTH`] reaches this value, so the top `MAX_DEPTH`
+/// levels of the spark tree fan out and everything below runs sequentially. Read
+/// once per process via `LazyLock`.
+///
+/// Default: [`default_spark_max_depth`]`(rayon::current_num_threads())` —
+/// `floor(log2(threads))`, a conservative allowance that fans a balanced tree out
+/// to ~`threads` strands while keeping the fan-out under the concurrent
+/// [`SPARK_BUDGET`] cap so a deep recursion still collapses (see
+/// [`default_spark_max_depth`] for the budget-inline-leak rationale).
+/// `CRANELISP_SPARK_MAX_DEPTH=D` overrides it:
+/// - `D = 0` ⇒ every site inlines (`SPARK_DEPTH ≥ 0` always) — fully collapsed,
+///   ≡ the pre-lenient serial floor at the runtime layer;
+/// - `D = 1` ⇒ the Wave-2c boolean collapse (a dispatched strand inlines its whole
+///   subtree; only the main spine's top split sparks);
+/// - larger `D` ⇒ up to `2^D` inline strands.
+///
+/// A non-parsing value falls back to the computed default. Orthogonal to
+/// [`HIER_DECLINE_ON`] (`CRANELISP_HIER_DECLINE=0` disables the depth check
+/// entirely).
+static SPARK_MAX_DEPTH: LazyLock<u32> = LazyLock::new(|| {
+    std::env::var("CRANELISP_SPARK_MAX_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or_else(|| default_spark_max_depth(rayon::current_num_threads()))
 });
 
-/// RAII bracket marking the dynamic extent of one executing spark body. On entry
-/// it sets [`IN_SPARK_BODY`] `true` (saving the previous value); on drop — even on
-/// a Rust unwind out of the thunk — it restores the saved value. Save/restore
-/// (not unconditional-clear) keeps the invariant correct if a strand's thunk
-/// itself claim-computes a nested IVar inline at a barrier: the inner bracket
-/// restores the outer strand's `true`, never prematurely clearing it. Armed on the
-/// rayon-worker path in every mode but [`HierDecline::Off`], and additionally on
-/// the main-thread claim-compute arm in [`HierDecline::Both`]; the negligible
-/// thread-local write is off the per-instruction hot path (one per strand force).
-struct SparkBodyGuard(bool);
+/// The **hierarchical-decline** on/off toggle (`CRANELISP_HIER_DECLINE`, S104
+/// Wave 2b; depth-allowance form since Wave 2e, gate G3). `0`/`off` ⇒ the depth
+/// mechanism is disabled entirely (the [`SPARK_DEPTH`] counter is never touched
+/// and [`spark_budget_try_reserve`] never consults it) — the emergent-cap
+/// ablation, where only the concurrent [`SPARK_BUDGET`] cap throttles. Anything
+/// else (including unset) ⇒ on (the default depth-allowance form). Read once per
+/// process via `LazyLock`.
+static HIER_DECLINE_ON: LazyLock<bool> = LazyLock::new(|| {
+    !matches!(
+        std::env::var("CRANELISP_HIER_DECLINE").as_deref(),
+        Ok("0") | Ok("off")
+    )
+});
 
-impl SparkBodyGuard {
-    fn enter() -> SparkBodyGuard {
-        SparkBodyGuard(IN_SPARK_BODY.with(|c| c.replace(true)))
+/// RAII bracket over one level of spark-nesting depth. Two constructors:
+///
+/// - [`enter`](SparkDepthGuard::enter) — `+1`: descend one spark level. Armed
+///   around the `call(thunk)` in [`ivar_force`]'s claim-compute arm (the single
+///   choke point where a thunk runs), so a thunk at logical depth `k` executes
+///   with [`SPARK_DEPTH`]` == k`.
+/// - [`enter_base`](SparkDepthGuard::enter_base) — restore a captured parent
+///   depth: armed at the top of [`ivar_spark`]'s spawned closure so a *stolen*
+///   child (running on a fresh worker that rests at depth 0) picks up its parent's
+///   depth before the claim-arm `+1` lands it at `parent + 1`.
+///
+/// Both save the previous value and restore it on drop — even on a Rust unwind out
+/// of the thunk — so nested brackets never corrupt an outer strand's depth.
+struct SparkDepthGuard(u32);
+
+impl SparkDepthGuard {
+    /// Descend one level (`SPARK_DEPTH += 1`), saving the previous depth.
+    fn enter() -> SparkDepthGuard {
+        SparkDepthGuard(SPARK_DEPTH.with(|c| {
+            let prev = c.get();
+            c.set(prev + 1);
+            prev
+        }))
+    }
+
+    /// Restore a captured `base` depth (used to propagate a parent's depth to a
+    /// stolen child), saving the previous depth.
+    fn enter_base(base: u32) -> SparkDepthGuard {
+        SparkDepthGuard(SPARK_DEPTH.with(|c| c.replace(base)))
     }
 }
 
-impl Drop for SparkBodyGuard {
+impl Drop for SparkDepthGuard {
     fn drop(&mut self) {
-        IN_SPARK_BODY.with(|c| c.set(self.0));
+        SPARK_DEPTH.with(|c| c.set(self.0));
     }
 }
 
@@ -442,13 +513,16 @@ pub extern "C" fn spark_budget_try_reserve(n: i64) -> i64 {
     let cap = *SPARK_BUDGET as isize;
     let n = n as isize;
     let stats = spark_stats_enabled();
-    // Structural hierarchical decline (§2.8.4, gate G3): if this thread is already
-    // executing a spark body, every nested candidate takes the inline/direct arm
-    // — independent of the counter — so a dispatched strand runs its ENTIRE
-    // subtree sequentially with no further sparking. Gated by CRANELISP_HIER_DECLINE
-    // (default-on); when off, the flag is ignored and only the concurrent cap
-    // throttles (the emergent-cap ablation).
-    if *HIER_DECLINE != HierDecline::Off && IN_SPARK_BODY.with(|c| c.get()) {
+    // Structural hierarchical decline — depth-allowance form (§2.8.4, gate G3,
+    // Wave 2e): if this thread's spark-nesting depth has reached MAX_DEPTH, every
+    // nested candidate takes the inline/direct arm — independent of the concurrent
+    // counter — so once a strand descends past the allowance its ENTIRE remaining
+    // subtree runs sequentially with no further sparking. Below MAX_DEPTH a strand
+    // MAY re-spark (subject to the concurrent cap), letting a bounded tree fan out
+    // to ~2^MAX_DEPTH strands. Gated by CRANELISP_HIER_DECLINE (default-on); when
+    // off, the depth is ignored and only the concurrent cap throttles (the
+    // emergent-cap ablation).
+    if *HIER_DECLINE_ON && SPARK_DEPTH.with(|c| c.get()) >= *SPARK_MAX_DEPTH {
         if stats {
             SPARK_SERIAL_CONTINUES.fetch_add(1, Ordering::Relaxed);
         }
@@ -554,24 +628,33 @@ pub extern "C" fn ivar_spark(ivar: i64) -> i64 {
         SPARK_SPAWNS.fetch_add(1, Ordering::Relaxed);
     }
 
+    // Structural hierarchical decline (§2.8.4, gate G3, Wave 2e). Capture the
+    // sparking thread's current spark-nesting depth so a *stolen* child — which
+    // may run on a fresh rayon worker resting at depth 0 — is placed at its true
+    // logical depth. The spawned closure restores this base before forcing, so the
+    // claim-arm +1 in `ivar_force` lands the child at `parent + 1` regardless of
+    // which worker ends up running it. Read only when the mechanism is on.
+    let parent_depth = if *HIER_DECLINE_ON {
+        SPARK_DEPTH.with(|c| c.get())
+    } else {
+        0
+    };
+
     rayon::spawn(move || {
         // Release the in-flight-spark reservation on normal completion OR on a
         // Rust unwind (§3.6). Placed FIRST so its `drop` runs last, after the
         // RC dec below — and runs even if anything in this closure unwinds.
         let _in_flight_guard = InFlightGuard;
 
-        // Structural hierarchical decline (§2.8.4, gate G3) — worker-only form
-        // (S104 Wave 2c). THIS is the flagged path: a granted spark, now executing
-        // on a rayon worker, marks the thread "inside a spark body" for the dynamic
-        // extent of its force so every nested create-gate site inlines (see
-        // [`SparkBodyGuard`] / [`IN_SPARK_BODY`]) — the strand's whole subtree runs
-        // sequentially. Armed in every mode but [`HierDecline::Off`]. The guard
-        // restores on scope exit even if `ivar_force` unwinds. The main-thread
-        // claim-compute arm in `ivar_force` is intentionally NOT flagged (default
-        // mode), keeping the main spine sparking to feed cores.
+        // Restore the captured parent depth for the dynamic extent of this
+        // dispatched spark (§2.8.4, gate G3, Wave 2e): the fresh worker rests at
+        // depth 0, so without this a stolen deep child would look shallow and
+        // over-spark. `ivar_force`'s claim arm then adds the +1 that lands the
+        // thunk at `parent + 1`. Armed in every mode but off; the guard restores
+        // the worker's resting depth on scope exit even if `ivar_force` unwinds.
         {
-            let _spark_body_guard =
-                (*HIER_DECLINE != HierDecline::Off).then(SparkBodyGuard::enter);
+            let _depth_base =
+                (*HIER_DECLINE_ON).then(|| SparkDepthGuard::enter_base(parent_depth));
             // Force the IVar (evaluate thunk if still PENDING).
             ivar_force(ivar);
         }
@@ -706,19 +789,20 @@ pub extern "C" fn ivar_force(ivar: i64) -> i64 {
             // right after the thunk returns so the count reflects *executing*,
             // not merely-claimed, sparks.
             let peak_guard = stats.then(PeakGuard::enter);
-            // Structural hierarchical decline (§2.8.4, gate G3) — worker-only form
-            // (S104 Wave 2c). This is the MAIN-THREAD claim-compute-at-barrier arm:
-            // in the default [`HierDecline::Worker`] mode it is deliberately NOT
-            // flagged, so the main thread's spine keeps sparking off its create-gate
-            // sites and cores stay fed. The rayon-worker path is flagged instead
-            // (see `ivar_spark`). Only [`HierDecline::Both`] arms the bracket here
-            // too (comparison mode; measured harmful on an idle machine). Scoped
-            // tightly around the call so it clears even if the thunk unwinds; the
-            // worker's outer bracket restores correctly under save/restore if the
-            // thunk itself claim-computes a nested IVar inline.
+            // Structural hierarchical decline — depth-allowance form (§2.8.4, gate
+            // G3, Wave 2e). This is the SINGLE choke point where a thunk runs —
+            // reached both from `ivar_spark`'s dispatched worker closure AND from an
+            // inline barrier-force on the main thread or a worker. Descend one spark
+            // level around the call so a thunk at logical depth `k` executes with
+            // `SPARK_DEPTH == k`: combined with `ivar_spark`'s base-restore, this
+            // gives `parent + 1` whether the child ran inline or on a stolen worker.
+            // Symmetric across main and workers (no worker-only exemption): the depth
+            // allowance lets the main spine spark its top MAX_DEPTH levels before
+            // inlining, so the Wave-2c both-paths collapse-to-2-cores hazard (a
+            // depth-1 flag inlining the WHOLE subtree) does not recur. Scoped tightly
+            // around the call so it restores even if the thunk unwinds.
             let result = {
-                let _spark_body_guard =
-                    (*HIER_DECLINE == HierDecline::Both).then(SparkBodyGuard::enter);
+                let _depth_guard = (*HIER_DECLINE_ON).then(SparkDepthGuard::enter);
                 call(thunk)
             };
             drop(peak_guard);
