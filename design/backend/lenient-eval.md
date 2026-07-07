@@ -685,6 +685,21 @@ axis (F1 coarse-parallel, F4/F3 alloc-RC-dense, F5 deep-recursion count, F6 bala
 compute), so a single-shot wall + a stats-on count run on the relevant fixture attributes a change
 to its mechanism. Cross-ref: `effect-concurrency.md` §3.1 (the axis model these fixtures probe).
 
+**S105 fidelity uplift — the finer instruments this doctrine now needs.** Attributing the
+post-inc-II F3/F4 *residual* (~2.6×) is a **decomposition** problem, not a wall-precision one
+(`effect-concurrency.md` §3.1.6; `tests/plan/s105-residual-attribution.md`), so it wants *finer
+instruments*, not more reps — but the S104 doctrine above is preserved intact (wall with all
+counters OFF; counts from a separate run; HW counters external; no self-defeating idle-guard). The
+four NEW gated attribution seams `/qa` named — **N1** per-run alloc-bytes, **N2** per-branch/per-site
+alloc attribution, **N3** per-site residual-atomic-RC dump, **N4** the FINE stack-oracle env gate
+(`CRANELISP_NO_STACK_ALLOC`) — are specified where their mechanisms live, in
+`ownership-codegen.md` §13.2.2 (RC/alloc counters extend the §13.2.1 `[RC_STATS]` family; N4
+relocates the §4 `STACK_ALLOC_ESCAPE_FACT_SOUND` gate to a runtime env read). Each is zero-cost-off,
+intrinsics/backend-internal, and needs no `cranelisp-types`/public-API/C-ABI change (§3.1.6-R5). The
+recommendation on N4-vs-a-two-build-fallback (for the Phase-4 wave gate) and the `STACK_SLOT_HITS`
+backend-side-read boundary (the h2-RED counter-surface seam stays un-force-resolved) are recorded
+there, not duplicated here.
+
 #### 2.8.8 Remaining problems / open work
 
 The S104 mechanisms deliver the utilization-axis win (F6 balanced compute → ~3.4×; F5 deep recursion

@@ -1755,6 +1755,197 @@ corpus). The family is printed **unconditionally** (present even when every coun
 the H2 e2e needle is the counter FAMILY name (`stack_slot`), which `/qa` may tighten to the
 ratified grammar above.
 
+#### 13.2.2 S105 measurement instrumentation — the four NEW gated seams (N1–N4)
+
+The S105 preparatory measurement-fidelity phase (`tests/plan/s105-residual-attribution.md`;
+`effect-concurrency.md` §3.1.6) needs finer attribution than the aggregate §13.2.1 family
+supplies, to decompose the post-inc-II F3/F4 parallel residual (~2.6×) by mechanism BEFORE any
+lever is built. `/qa` named four new instruments. This subsection specifies each seam against the
+as-built: **where its mechanism lives, why it is zero-cost-off, and that none needs a
+`cranelisp-types` edit, a public-API change, or a new C-ABI symbol** (arch-confirmed, §3.1.6-R5).
+All four are **shaped-to-be-subsumed measurement, not interim mechanism** (Principle 8): they read
+signals the codegen already computes; they add no compiled behaviour. Cross-ref: the `/qa` plan
+§9.2 (the NEW-vs-already-present split) + §9.3 (the scope gaps routed to `/sprint` at the wave
+gate).
+
+**Precise NEW-vs-already-present split (do not rebuild what exists).** Already present, no backend
+work: the aggregate `rc_nonatomic`/`rc_atomic` codegen-time split (B3.3, §5); the per-run
+`allocs`/`deallocs` runtime count (`alloc::alloc_count`/`dealloc_count`); the `STACK_SLOT_HITS`
+codegen-time counter + `heap::stack_slot_hits()` accessor; `STACK_ALLOC_ESCAPE_FACT_SOUND` as the
+COARSE-via-`NO_OWNERSHIP` stack oracle; the `SPARK_STATS`/`SPARK_SITE_STATS` registries
+(`utilization.rs`); the fine probes `CRANELISP_NONATOMIC_RC`/`CRANELISP_CAPTURE_BORROW`/
+`CRANELISP_NO_OWNERSHIP`. The four seams below are the *deltas*.
+
+##### N1 — per-run alloc BYTES counter (`alloc_bytes=` in `[RC_STATS]`)
+
+**Purpose (I2).** The `[RC_STATS]` line already carries alloc *count* (`allocs=`) but not alloc
+*volume*; the (a)-allocation term needs bytes, not just count, to weight the allocator contribution.
+
+**Mechanism — already tallied; only the print is new.** The emission site is
+`alloc_with_rc(payload_size)` (`cranelisp-intrinsics::alloc`), which **already** accumulates
+`BYTES_ALLOCATED.fetch_add(total_size, Relaxed)` on every allocation (alongside the existing
+`ALLOC_COUNT` bump) and exposes `alloc::bytes_allocated()`. N1 is therefore **only** the addition
+of an `alloc_bytes={…}` field to the appended tail of the `[RC_STATS]` grammar, read from
+`alloc::bytes_allocated()` in `rc::rc_stats_line()` — sibling of the existing
+`allocs=alloc::alloc_count()` read. Grammar (the field is **appended** so every positional parser
+still matches):
+
+```
+[RC_STATS] rc_inc=N rc_dec=N allocs=N deallocs=N \
+           stack_slot=N reuse_hit=N reuse_miss=N rc_nonatomic=N rc_atomic=N \
+           str-len_adapt=N alloc_bytes=N
+```
+
+**Zero-cost-off + no interface change.** The `BYTES_ALLOCATED` atomic runs unconditionally today —
+N1 introduces **no new runtime cost whatsoever** (the counter is pre-existing; only the at-exit
+print, itself only wired when `CRANELISP_RC_STATS` is set, reads it). `rc_stats_line()` calls
+`alloc::bytes_allocated()` **crate-internally** (same path as its existing `alloc::alloc_count()`
+call) so no crate-root re-export is added: no public-API line, no `cranelisp-types` edit, no C-ABI
+symbol. This is the smallest of the four — effectively one format-string field.
+
+##### N2 — per-site / per-branch alloc attribution (`[ALLOC_SITE_STATS]`)
+
+**Purpose (I2).** Attribute allocations to the *parallel* branch that caused them — the
+gate-5-relevant question (§4.3): is the residual (a)-allocation on the sparked path or the parent?
+Today only the aggregate count/bytes exist.
+
+**Where the site key comes from.** The spark-site identity already exists at compile time:
+`utilization.rs::record_site` keys `[SPARK_SITE_STATS]` on `site_id = "{callee_fq}@{start}..{end}"`
+(the `Apply` node's resolved callee FQ + span). N2 reuses that exact key form. The difficulty is
+that the *key is compile-time* (backend) while the *allocation is runtime* (`alloc_with_rc`, an
+intrinsic invoked from JIT'd code): attributing a runtime alloc to a spark site needs a compile→run
+channel the aggregate counters do not. Two shapes:
+- **Coarse (recommended minimal viable N2)** — a two-bucket *in-spark-thunk vs parent-frame* alloc
+  tally, keyed off a thread-local marker the spark runtime already has the hook for
+  (`ivar_spark`/the rayon spark closure sets a TLS "in-spark" flag on thunk entry; `alloc_with_rc`
+  reads it under the stats gate). This directly answers the gate-5 question (allocs-on-sparked-path
+  vs not) at one gated TLS read per alloc.
+- **Fine (`[ALLOC_SITE_STATS]`, spark-site-keyed)** — the full per-`site_id` dump analogous to
+  `[SPARK_SITE_STATS]`, requiring the compile-time `site_id` to be threaded to the runtime alloc
+  (thread-local *current-site* set at each spark-thunk entry, or codegen-time site tagging on the
+  alloc call). This is **materially heavier than N1/N3**: it touches the hot alloc path with more
+  than a bool check and needs the compile→run site channel.
+
+**Flag: N2 is the heavy one and IS safe to descope.** Per the `/qa` plan §9.3(2), if the fine form
+proves expensive the attribution **degrades gracefully** to I1's `brk`/`mmap` syscall share
+(`strace -c`, external) as the (a)-on-parallel-path proxy plus F7's allocator-swap delta as the
+(a)-magnitude bound — no `[ALLOC_SITE_STATS]` counter required. **Recommendation:** land the coarse
+two-bucket form if any N2 lands (it is cheap and answers the gate-5 question); treat the fine
+per-site dump as descopable to I1+F7. Descoping N2 entirely does **not** block the gate — the
+gate-5 sub-verdict is carried by the F8 stack-witness's per-arm `STACK_SLOT_HITS` read (§4.3, N4
+below) independent of N2.
+
+**Zero-cost-off + no interface change.** Gated on `CRANELISP_RC_STATS`
+(`heap::rc_stats_codegen_enabled()` for any emitted tag; the intrinsic-side tally behind the same
+stats-on `LazyLock<bool>` as the alloc-counter print path). Off ⇒ one relaxed bool load on the
+alloc path (negligible against the pre-existing `ALLOC_COUNT` atomic) and no map touch; the TLS
+marker set in the spark closure is intrinsics-internal. No emitted-IR change for the coarse form
+(the work is inside the intrinsic body + spark runtime, not in JIT'd code); the fine form's
+optional codegen-time site tag emits only under the stats gate (byte-identical-off, the S99
+`rc_stat_inc` precedent). No `cranelisp-types` edit, no public-API change, no C-ABI symbol.
+
+##### N3 — per-SITE residual-atomic-RC dump + Crossing/Confined tally (`[RC_SITE_STATS]`)
+
+**Purpose (I3).** The aggregate `rc_nonatomic`/`rc_atomic` split (B3.3) says *how many* RC ops stay
+atomic but not *where*; 0526/0528 need the *sites* of the residual atomic ops to target the right
+cells.
+
+**Where the site/confinement identity is available.** At the emission point, in the backend, both
+are in hand — this is a **codegen-time** counter like `rc_nonatomic`/`stack_slot`, not a runtime
+one. The decision point is `heap::use_nonatomic_arm(atomicity)` (heap.rs:208), fed the per-site
+`confined` fact via `node_confined(&MonoExpr)` (`fn_compiler.rs`; live consumer
+`protect_return_value`, `rc_emission.rs`). At that point the backend holds (i) the emitting node's
+span + the enclosing fn FQ (`self.ctx.current_module` + fn name — the same identity
+`utilization.rs` keys `[SPARK_SITE_STATS]` on) and (ii) the confinement class
+(`Some(true)`=Confined⇒NonAtomic / `Some(false)`=Crossing⇒Atomic / `None`⇒Atomic). N3 dumps, at
+process exit, per-site `(site-id, atomic-op-count, confinement-class)` — a `BTreeMap` populated at
+the `use_nonatomic_arm` seam and dumped by an `atexit` hook, structurally the twin of
+`utilization.rs::dump_site_stats`. Apportioned by the FINE probes (`CRANELISP_NONATOMIC_RC` +
+`CRANELISP_CAPTURE_BORROW`), never by `NO_OWNERSHIP` (§3.1.6-R3).
+
+**Zero-cost-off + no interface change.** N3 is codegen-time and host-side (no emitted IR — the map
+push happens while the backend *lowers*, exactly like the existing `tally_rc_emit` counter), so it
+is byte-identical-off by construction. Gated behind a `CRANELISP_RC_STATS`-checked `LazyLock<bool>`
+(mirroring `spark_stats_enabled()` in `utilization.rs`): off ⇒ one bool check at each
+`use_nonatomic_arm`, no map. Honest for `--run`/JIT (compile+run share the process); honestly `0`
+under `--link` (the linked binary did no codegen) — the same runtime-vs-compile-time honesty
+§13.2.1 states for `stack_slot`/`rc_nonatomic`. Because the map lives backend-side and is dumped by
+a backend-side `atexit` (not via the `cranelisp-intrinsics::rc` print surface), N3 does **not** re-open
+the h2-RED counter-surface seam (below). No `cranelisp-types` edit, no public-API change, no C-ABI
+symbol.
+
+##### N4 — a dedicated FINE stack-oracle env gate (`CRANELISP_NO_STACK_ALLOC=1`)
+
+**Purpose (§3/§4 oracle granularity).** §3.1.6-R2 names the `STACK_ALLOC_ESCAPE_FACT_SOUND` toggle
+as the stack lever's **direct oracle**, but as-built it is a **compile-time `const`**
+(`fn_compiler.rs:1252`), and the only runtime-OFF path is the COARSE `CRANELISP_NO_OWNERSHIP`
+(`ownership_analysis_off()`), which §3.1.6-R3 forbids as a fine apportioner because it disables
+borrow + stack + non-atomic-RC + reuse *together*. Reading the stack lever's net recovery requires
+**stack OFF while borrow / RC / reuse stay ON** — a fine gate that does not exist at runtime today.
+
+**Seam — relocate the gate value from a `const` read to a runtime env read.** The gate lives at
+`FnCompiler::constructor_call_stack_eligible` (`fn_compiler.rs:807`), which today short-circuits on
+`if !STACK_ALLOC_ESCAPE_FACT_SOUND { return false; }`. N4 replaces that const read with a
+`stack_alloc_enabled()` helper — the exact sibling of `heap::nonatomic_rc_codegen_enabled()`
+(heap.rs:366): a `OnceLock<bool>` seeded from `!std::env::var_os("CRANELISP_NO_STACK_ALLOC").is_some()`,
+AND-ed with the existing `STACK_ALLOC_ESCAPE_FACT_SOUND` const default. This is a **codegen-time**
+read (once, at compile) — **zero runtime cost regardless** — and it is a *fine* gate: it declines
+stack-alloc only, leaving the borrow/RC/reuse mechanisms live. It sits ABOVE the existing
+`node_escapes`/gate-3/gate-5 chain, so all the soundness sharpenings are unaffected.
+
+**Zero-cost-off + no interface change.** With `CRANELISP_NO_STACK_ALLOC` unset, `stack_alloc_enabled()`
+returns the const's current value (`true`) ⇒ **byte-identical codegen** to today (the exact
+byte-identical-off discipline §2.2 requires; the `const _: () = assert!(STACK_ALLOC_ESCAPE_FACT_SOUND)`
+at fn_compiler.rs:1457 stays valid as the default). It reads the same class of process-global env as
+every other fine probe. No `cranelisp-types` edit, no public-API change, no C-ABI symbol — the const
+and the gate already exist; N4 only relocates WHERE the gate value is sourced.
+
+**N4-vs-two-build recommendation for the Phase-4 wave gate (the routed scope gap, `/qa` §9.3(1)).**
+The stack lever's direct oracle can be read two ways; `/sprint` decides at wave org:
+
+| Option | Cost | Risk | Effect on the harness |
+|---|---|---|---|
+| **N4** (make the toggle a runtime-read fine gate) | Small `/dev(backend)` change — relocate one const read at `fn_compiler.rs:807` to a `OnceLock` env read, exactly mirroring the proven `nonatomic_rc_codegen_enabled()` pattern. Codegen-time ⇒ no runtime cost. | **LOW.** Same pattern as an already-shipped, `/review`-cleared sibling; codegen-time so no ABI/IR/cache-key impact; byte-identical-off verified by the env-unset ⇒ const-default equivalence. | One binary; the stack oracle reads by env-toggle like every other fine probe (`NONATOMIC_RC`, `CAPTURE_BORROW`, `NO_OWNERSHIP`) — matches the §2/§7 env-toggle doctrine. |
+| **Two-build fallback** (build the const `true` vs `false`) | No new code. | LOW-MECHANICALLY but adds a **second build-config axis** distinct from the deliberate mimalloc two-build, and measures the stack oracle on a *different binary* than the other fine probes. | Harness carries a second stack-oracle build; the §2 2×2 discipline (G-two-build) reserves cross-binary comparison for the allocator swap alone — a second two-build axis on top must be labelled + kept from mixing into any median, and the stack oracle then cannot be composed on the same binary as `NONATOMIC_RC`/`CAPTURE_BORROW`. |
+
+**Recommendation: N4.** It is a genuinely cheap, low-risk change because the mechanism (const +
+gate + escape/gate-3/gate-5 chain) is entirely in place — N4 only moves the gate value from a
+compile-time const to a compile-time env read, the identical relocation `nonatomic_rc_codegen_enabled()`
+already embodies. It keeps the stack oracle on **one binary** and on the **same env-toggle doctrine**
+as the other fine probes, avoiding a second build axis and a cross-binary comparison the 2×2
+discipline otherwise reserves for the allocator swap. The two-build fallback is the honest no-new-code
+alternative and is acceptable if `/sprint` prefers zero `/dev(backend)` instrumentation this wave —
+but it buys nothing over N4 except skipping a ~10-line diff, at the cost of harness-side build-axis
+complexity.
+
+##### The `STACK_SLOT_HITS` backend-side-read caveat is a standing design boundary (not force-resolved)
+
+`STACK_SLOT_HITS` is a backend **codegen-time** counter (`heap::stack_slot_hits()`, tallied via
+`tally_stack_slot` at `emit_stack_alloc`). `cranelisp-intrinsics` does **not** depend on
+`cranelisp-backend` (the edge is backend→intrinsics only), so this counter **cannot reach the
+intrinsics runtime print surface** (`rc::print_rc_stats`) without a reverse/cyclic dependency — the
+standing **h2-RED** coordination question (§4 "h2 disposition — STAYS RED"). The `[RC_STATS]` line
+carries a `stack_slot=` field, but its runtime-reachability across `--run` vs `--link` (different
+processes) is exactly that RED seam. **The S105 measurement reads `STACK_SLOT_HITS` backend-side**
+— via `CRANELISP_CODEGEN_TRACE` or the `heap::stack_slot_hits()` accessor surfaced through a
+codegen-trace line — per-arm for the F8 stack witness (serial arm hits > 0, parallel arm hits = 0
+under the gate-5 decline). **This measurement phase MUST NOT force-resolve the counter-surface
+cross-crate seam under measurement pressure** (§3.1.6-R5): WHERE per-mechanism counters live and how
+they reach the runtime print surface is a separate `/arch` + `cranelisp-intrinsics` design question,
+out of measurement scope. N3 above is deliberately shaped to honour this boundary — its dump lives
+backend-side and is emitted by a backend-side `atexit`, so it does not need the intrinsics print
+surface and does not re-open the seam. The measurement reads each counter where it already lives; it
+does not build the bridge.
+
+##### Regeneration ledger — nothing regenerates
+
+For explicitness (§"Baseline-diff discipline"): none of N1–N4 changes any crate's public surface.
+N1 adds a crate-internal format field; N2/N3 are gated intrinsics-internal / backend-internal
+counters emitting no IR; N4 relocates a compile-time const read to a compile-time env read. **No
+`cranelisp-types` edit, no `public-api.txt` regeneration for any crate, no new C-ABI
+`#[export_name]` symbol, no cache-schema bump** (the counters are not codegen-affecting; N4 is
+byte-identical when its env is unset). Confirmed against §3.1.6-R5.
+
 ### 13.3 The `fn_as_value` seam rework (B3.1) — folding 0474 / 0483 / 0476
 
 **Actors (Principle 21).** The three wrapper families and their naming
