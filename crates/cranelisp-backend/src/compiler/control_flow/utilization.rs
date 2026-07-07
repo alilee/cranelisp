@@ -16,6 +16,7 @@
 // load per spark site and nothing else.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
 use std::sync::{LazyLock, Mutex};
 
 use cranelift_module::Module;
@@ -291,12 +292,63 @@ where
             return None;
         };
         let fq = callee_fqsymbol(&self.ctx.current_module, name);
-        let is_self = self
-            .current_fn_name
-            .as_ref()
-            .is_some_and(|cur| bare_name(cur.as_ref()) == bare_name(name.as_ref()));
+        // Direct self-recursion recovery (the self-edge the `callees` feed drops).
+        // MODULE-PRECISE (S104 Wave 1, Task 0 — `/review` of 4924c26): a bare-name
+        // match alone false-admits a cross-module call `other/fib` from inside
+        // `user/fib` as self-recursive. `fq` is the *resolved* callee FQ and
+        // `self.ctx.current_module` is the enclosing module, so compare the whole
+        // identity — module AND source bare symbol — mirroring the exact-equality
+        // self-call idiom at `apply.rs:169/189`. `current_fn_name` may itself carry
+        // a `module/…$mono` shape, so normalise it through `bare_name` too.
+        let is_self = self.current_fn_name.as_ref().is_some_and(|cur| {
+            fq.module == self.ctx.current_module
+                && fq.symbol.as_ref() == bare_name(cur.as_ref())
+        });
         let scc = is_self || recursive.contains(&fq);
         Some((fq.to_string(), scc, false, *span))
+    }
+
+    /// The recursive-SCC membership set over the loaded call graph, built once
+    /// and cached per `FnCompiler` (`design/backend/lenient-eval.md` §2.8.6 —
+    /// "cached per compile unit and read at each candidate site"). M-static
+    /// (Wave 1) consults this at *every* spark-eligible `let`/apply site, so the
+    /// O(defs) Tarjan pass must not rerun per site. The cache is interior-mutable
+    /// (`RefCell`) so it populates lazily on the `&self` admission path; an inner
+    /// compiler (lambda / thunk body) has its own fresh cache, which is correct —
+    /// the graph is a pure function of the (unchanging) loaded symbol tables, so
+    /// a rebuild yields the identical set.
+    pub(crate) fn mstatic_recursive_set(&self) -> Rc<HashSet<FQSymbol>> {
+        if let Some(set) = self.mstatic_recursive_cache.borrow().as_ref() {
+            return set.clone();
+        }
+        let graph = self.build_call_graph();
+        let set = Rc::new(recursive_scc_members(&graph));
+        *self.mstatic_recursive_cache.borrow_mut() = Some(set.clone());
+        set
+    }
+
+    /// The M-static admission verdict for one spark candidate
+    /// (`design/backend/lenient-eval.md` §2.8.2) — the `worth` predicate the
+    /// `find_sparkable_*_with` cores call in `CRANELISP_SPARK_ADMIT=mstatic`.
+    ///
+    /// Admits iff [`classify_spark_callee`] resolves the candidate to a callee in
+    /// a recursive SCC (incl. direct self-recursion) that is **not** in tail
+    /// position — [`mstatic_admits`]. A non-`Apply`, a computed (non-`Var`)
+    /// callee, or an unresolved/unloaded callee classifies as `None` ⇒
+    /// **decline**: the soundness-toward-decline default (§2.8.2 —
+    /// spark-vs-inline is a scheduling choice only, §8, so declining is always
+    /// sound). This is a deliberate divergence from the syntactic filter, which
+    /// *sparks* a computed callee (unknown cost); M-static declines it because a
+    /// HOF/closure indirection is not a resolved recursive SCC.
+    pub(crate) fn mstatic_admits_candidate(
+        &self,
+        candidate: &MonoExpr,
+        recursive: &HashSet<FQSymbol>,
+    ) -> bool {
+        match self.classify_spark_callee(candidate, recursive) {
+            Some((_, scc, tail, _)) => mstatic_admits(scc, tail),
+            None => false,
+        }
     }
 
     /// Record the M-static classification of every sparkable apply argument at an
@@ -461,5 +513,145 @@ mod tests {
         let cur = ModuleFullPath::from("user");
         assert_eq!(callee_fqsymbol(&cur, "fib$Int"), fq("user", "fib"));
         assert_eq!(callee_fqsymbol(&cur, "other/g$Int"), fq("other", "g"));
+    }
+
+    // --- M-static admission through the real classifier (Wave 1) ---
+    //
+    // Drives `classify_spark_callee` / `mstatic_admits_candidate` / the
+    // `find_sparkable_args_with` seam through a throwaway `FnCompiler` over a JIT
+    // module (the `trace_codegen::tests` harness pattern), so the Task-0
+    // module-blind self-call fix and the §2.8.2 admission matrix are exercised on
+    // the *actual* codegen methods, not a mirror of their logic.
+
+    fn apply_var(callee: &str, ret: cranelisp_types::ConcreteType) -> MonoExpr {
+        MonoExpr::Apply {
+            callee: Box::new(MonoExpr::Var {
+                name: Symbol::from(callee),
+                span: Span::new(0, 0),
+                resolved_call: None,
+                ty: cranelisp_types::ConcreteType::Int,
+            }),
+            args: vec![],
+            span: Span::new(0, 0),
+            resolved_call: None,
+            ty: ret,
+            confined: None,
+            escapes: None,
+            provenance: None,
+            unique_static: None,
+        }
+    }
+
+    // spec: design/backend/lenient-eval.md §2.8.2 — M-static admission =
+    // (recursive-SCC ∧ non-tail), and the Task-0 module-precise self-call fix.
+    #[test]
+    fn mstatic_admission_and_module_blind_fix() {
+        use cranelift::codegen::ir::{Function, UserFuncName};
+        use cranelift::prelude::*;
+        use cranelift_module::Module;
+        use cranelisp_types::{ConcreteType, ModuleFullPath, SymbolTable};
+        use dashmap::DashMap;
+
+        use crate::compiler::control_flow::find_sparkable_args_with;
+
+        // Empty call graph: `mstatic_admits_candidate` is fed the `recursive` set
+        // directly, so no populated symbol tables are needed. The per-site
+        // self-call check (`classify_spark_callee`) recovers direct self-recursion
+        // independent of the graph — the seam Task 0 fixes.
+        let module_path = ModuleFullPath::from("user");
+        let tables: DashMap<ModuleFullPath, SymbolTable> = DashMap::new();
+        tables.insert(module_path.clone(), SymbolTable::<(), ()>::new(module_path.clone()));
+
+        let mut jit = crate::jit::Jit::new_with_symbols(&[]).unwrap();
+        let intrinsic_ids = crate::jit::declare_intrinsics_generic(jit.jit_module()).unwrap();
+        let module_aliases = cranelisp_types::ModuleAliases::default();
+        let func_ids: HashMap<Symbol, cranelift_module::FuncId> = HashMap::new();
+        let func_arities: HashMap<Symbol, usize> = HashMap::new();
+
+        let ctx = crate::compiler::CompileContext {
+            func_ids: &func_ids,
+            func_arities: &func_arities,
+            symbol_tables: &tables,
+            module_aliases: &module_aliases,
+            current_module: module_path.clone(),
+            alloc_func_id: intrinsic_ids.alloc,
+            dealloc_func_id: intrinsic_ids.dealloc.unwrap(),
+            alloc_string_func_id: intrinsic_ids.alloc_string,
+            panic_func_id: intrinsic_ids.panic,
+            vec_new_func_id: intrinsic_ids.vec_new,
+            vec_drop_func_id: intrinsic_ids.vec_drop,
+        };
+
+        let mut sig = jit.jit_module().make_signature();
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let mut func = Function::with_name_signature(UserFuncName::user(0, 0), sig);
+        let mut fctx = FunctionBuilderContext::new();
+        let builder = FunctionBuilder::new(&mut func, &mut fctx);
+        let mut compiler =
+            crate::compiler::FnCompiler::inner(builder, jit.jit_module(), ctx, 1, HashMap::new());
+
+        let empty: HashSet<FQSymbol> = HashSet::new();
+
+        // (1) Direct self-recursion in the current module → admit (recovered by
+        //     the per-site self-call check even with an empty graph).
+        compiler.current_fn_name = Some(Symbol::from("fib"));
+        assert!(
+            compiler.mstatic_admits_candidate(&apply_var("fib", ConcreteType::Int), &empty),
+            "self-recursive non-tail `fib` → admit"
+        );
+
+        // (2) Task-0 module-blind fix: `other/fib` called from inside `user/fib`
+        //     resolves to module `other` ≠ current `user`, so it is NOT self —
+        //     with an empty graph it is declined (the false-admit the bare-name
+        //     check produced before the fix).
+        assert!(
+            !compiler.mstatic_admits_candidate(&apply_var("other/fib", ConcreteType::Int), &empty),
+            "cross-module same-bare-name `other/fib` is NOT self-recursive → decline"
+        );
+
+        // (3) Flat non-recursive accessor → decline (the 0534 firehose class).
+        compiler.current_fn_name = Some(Symbol::from("loop"));
+        assert!(
+            !compiler.mstatic_admits_candidate(&apply_var("cell-at", ConcreteType::Int), &empty),
+            "flat non-recursive accessor `cell-at` → decline"
+        );
+
+        // (4) Mutual-recursion member (in the recursive-SCC set) → admit.
+        let mut rec: HashSet<FQSymbol> = HashSet::new();
+        rec.insert(fq("user", "g"));
+        assert!(
+            compiler.mstatic_admits_candidate(&apply_var("g", ConcreteType::Int), &rec),
+            "recursive-SCC member `g` (non-tail) → admit"
+        );
+
+        // (5) Through the `find_sparkable_args_with` seam: two recursive
+        //     candidates admitted, the flat accessor declined, the ≥2 gate then
+        //     returns exactly the two recursive indices.
+        compiler.current_fn_name = Some(Symbol::from("fib"));
+        let args = vec![
+            apply_var("fib", ConcreteType::Int),
+            apply_var("cell-at", ConcreteType::Int),
+            apply_var("fib", ConcreteType::Int),
+        ];
+        let idxs =
+            find_sparkable_args_with(&args, |e| compiler.mstatic_admits_candidate(e, &empty));
+        assert_eq!(
+            idxs,
+            vec![0, 2],
+            "two recursive `fib` candidates admitted, flat `cell-at` declined, ≥2 gate passes"
+        );
+
+        // (6) Below the ≥2 gate: a single recursive candidate + flat accessor →
+        //     no sparks (the gate suppresses lone candidates).
+        let args_one = vec![
+            apply_var("fib", ConcreteType::Int),
+            apply_var("cell-at", ConcreteType::Int),
+        ];
+        assert!(
+            find_sparkable_args_with(&args_one, |e| compiler.mstatic_admits_candidate(e, &empty))
+                .is_empty(),
+            "single recursive candidate below the ≥2 gate → no sparks"
+        );
     }
 }

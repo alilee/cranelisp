@@ -180,6 +180,18 @@ where
     /// (Principle 18). Set/restored around each lenient `compile_apply` dispatch.
     pub(crate) sparked_args: Option<(*const MonoExpr, HashMap<usize, Value>)>,
 
+    /// Lazily-built, per-compiler cache of the recursive-SCC membership set over
+    /// the loaded call graph — the M-static QUALITY-axis signal
+    /// (`design/backend/lenient-eval.md` §2.8.2/§2.8.6). Populated on first use by
+    /// `mstatic_recursive_set` (interior-mutable so the `&self` admission path can
+    /// fill it) and read at every spark-eligible `let`/apply site under
+    /// `CRANELISP_SPARK_ADMIT=mstatic` (the default), so the O(defs) Tarjan pass
+    /// runs once per compiler instance rather than per candidate site. Empty until
+    /// the first M-static admission decision; never built under the `syntactic`
+    /// filter or when no site is spark-eligible.
+    pub(crate) mstatic_recursive_cache:
+        std::cell::RefCell<Option<std::rc::Rc<std::collections::HashSet<cranelisp_types::FQSymbol>>>>,
+
     /// Accumulated create-gate **arm discriminator** for span-derived inner-
     /// function names (lenient-eval.md §3.6.2). The create-gate compiles the
     /// *same* source expressions on BOTH its lenient and direct arms, so without
@@ -328,6 +340,7 @@ where
             pending_closure_drop_glue: None,
             in_trace_body: false,
             sparked_args: None,
+            mstatic_recursive_cache: std::cell::RefCell::new(None),
             gate_arm_disc: String::new(),
             gate_counter: 0,
             suppress_spark_gate: false,
@@ -466,6 +479,7 @@ where
             pending_closure_drop_glue: None,
             in_trace_body: false,
             sparked_args: None,
+            mstatic_recursive_cache: std::cell::RefCell::new(None),
             gate_arm_disc: String::new(),
             gate_counter: 0,
             suppress_spark_gate: false,

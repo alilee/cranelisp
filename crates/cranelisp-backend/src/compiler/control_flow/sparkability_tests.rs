@@ -7,12 +7,27 @@
 // `find_sparkable_bindings` analysis pass directly — no session, no
 // runtime, no env-var — per `memory/project_test_strategy.md`. =====
 
-use super::{find_sparkable_args, find_sparkable_bindings, spark_density};
+use super::{
+    find_sparkable_args, find_sparkable_args_with, find_sparkable_bindings,
+    find_sparkable_bindings_with, spark_density,
+};
 use cranelisp_types::{ConcreteType, FQTypeName, MonoExpr, Span, Symbol};
 use std::collections::HashSet;
 
 fn sym(s: &str) -> Symbol {
     Symbol::from(s)
+}
+
+/// The callee name of an `Apply` candidate (for the synthetic admission
+/// predicate below). Non-`Apply` / computed callee → `None`.
+fn callee_name(e: &MonoExpr) -> Option<&str> {
+    match e {
+        MonoExpr::Apply { callee, .. } => match callee.as_ref() {
+            MonoExpr::Var { name, .. } => Some(name.as_ref()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn span() -> Span {
@@ -207,6 +222,62 @@ fn dependent_chain_over_sparked_deps_all_admitted() {
     ];
     let ctors = HashSet::new();
     assert_eq!(find_sparkable_bindings(&bindings, &ctors), vec![0, 1, 2]);
+}
+
+// ===== `_with` cores (S104 Wave 1, lenient-eval.md §2.8.2/§2.8.6) — the
+// admission-predicate-parametric seam M-static plugs into. These pin that the
+// `let`-path independence carve-out (§2.6) and the ≥2 gate compose with an
+// ARBITRARY `worth` predicate (here a synthetic M-static-style filter that
+// admits only recursive callees `rec*` and declines flat accessors), verifying
+// the composition Principle 7 keeps single-source across both admission
+// filters. The classifier itself is exercised on the real `FnCompiler` in
+// `utilization.rs` tests. =====
+
+// spec: design/backend/lenient-eval.md §2.8.2 — through the seam, recursive
+// candidates admitted / flat accessor declined / ≥2 gate passes.
+#[test]
+fn find_sparkable_args_with_admits_recursive_declines_flat() {
+    let args = vec![call("rec-a"), call("cell-at"), call("rec-b")];
+    let admit = |e: &MonoExpr| callee_name(e).is_some_and(|n| n.starts_with("rec"));
+    assert_eq!(find_sparkable_args_with(&args, admit), vec![0, 2]);
+}
+
+// spec: design/backend/lenient-eval.md §2.8.2 — a lone admitted candidate is
+// below the ≥2 gate → no sparks, identical composition for any predicate.
+#[test]
+fn find_sparkable_args_with_below_gate_is_empty() {
+    let args = vec![call("rec-a"), call("cell-at")];
+    let admit = |e: &MonoExpr| callee_name(e).is_some_and(|n| n.starts_with("rec"));
+    assert!(find_sparkable_args_with(&args, admit).is_empty());
+}
+
+// spec: design/backend/lenient-eval.md §2.6 + §2.8.2 — the dependency-on-sparked
+// carve-out composes with an arbitrary admission predicate: a dependent binding
+// whose earlier dep was DECLINED by the predicate (a flat accessor here) is
+// itself declined, even though its own callee is admitted.
+#[test]
+fn find_sparkable_bindings_with_dependent_on_declined_dep_is_declined() {
+    let bindings = vec![
+        (sym("a"), call("cell-at")),               // declined by predicate
+        (sym("b"), call_with_arg("rec-b", "a")),   // admitted callee, dep on declined `a`
+        (sym("c"), call("rec-c")),                 // independent, admitted
+    ];
+    let admit = |e: &MonoExpr| callee_name(e).is_some_and(|n| n.starts_with("rec"));
+    // `a` declined (flat); `b` depends on non-sparked `a` → declined; only `c`
+    // survives → below the ≥2 gate → empty.
+    assert!(find_sparkable_bindings_with(&bindings, admit).is_empty());
+}
+
+// spec: design/backend/lenient-eval.md §2.6 + §2.8.2 — the dependency-on-sparked
+// carve-out admits a dependent binding when its dep WAS admitted by the predicate.
+#[test]
+fn find_sparkable_bindings_with_dependent_on_sparked_dep_is_admitted() {
+    let bindings = vec![
+        (sym("a"), call("rec-a")),                 // admitted
+        (sym("b"), call_with_arg("rec-b", "a")),   // admitted, dep on sparked `a`
+    ];
+    let admit = |e: &MonoExpr| callee_name(e).is_some_and(|n| n.starts_with("rec"));
+    assert_eq!(find_sparkable_bindings_with(&bindings, admit), vec![0, 1]);
 }
 
 // ===== `find_sparkable_args` — the apply-argument sibling (Sprint 92,

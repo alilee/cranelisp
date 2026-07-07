@@ -18,6 +18,43 @@ pub(crate) static LENIENT_DISABLED: std::sync::LazyLock<bool> =
         std::env::var("CRANELISP_NO_LENIENT").is_ok_and(|v| v == "1")
     });
 
+/// Which admission filter governs *which* spark candidates are admitted
+/// (`design/backend/lenient-eval.md` §2.8.2 / §2.8.6). Selected once per process
+/// by `CRANELISP_SPARK_ADMIT`:
+///
+/// - `mstatic` (**default**, S104 Wave 1) — the M-static QUALITY axis: a
+///   candidate `Apply` is admitted iff its resolved callee is in a **recursive
+///   SCC** of the static call graph (incl. direct self-recursion) **and** the
+///   apply is **not** in tail position — the *probably-large* (non-tail
+///   recursion) signal that declines the fine flat-accessor firehose (0534)
+///   structurally while keeping the coarse divide-and-conquer sparks. Wired at
+///   both spark sites via `FnCompiler::mstatic_admits_candidate` over the
+///   single-sourced classifier (`control_flow::utilization`).
+/// - `syntactic` — the pre-S104 §2.2 filter ([`is_worth_sparking`]: a non-cheap,
+///   non-constructor `Apply`). Kept selectable so `/qa`'s Stage-0 matrix can run
+///   the old admission as its comparison row against `mstatic`.
+///
+/// The independence rule (`let`-path §2.6 carve-out / apply-path §2.5.2) and the
+/// ≥2-candidate gate are unchanged and single-source across both filters — only
+/// the per-candidate "worth admitting" predicate swaps (Principle 7).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SparkAdmit {
+    Mstatic,
+    Syntactic,
+}
+
+/// The active spark-admission filter. `CRANELISP_SPARK_ADMIT=syntactic` selects
+/// the pre-S104 syntactic filter; any other value (including unset and
+/// `mstatic`) selects M-static, the S104 Wave-1 default. Read once per process.
+pub(crate) static SPARK_ADMIT: std::sync::LazyLock<SparkAdmit> =
+    std::sync::LazyLock::new(|| match std::env::var("CRANELISP_SPARK_ADMIT")
+        .ok()
+        .as_deref()
+    {
+        Some("syntactic") => SparkAdmit::Syntactic,
+        _ => SparkAdmit::Mstatic,
+    });
+
 /// Whether capture-by-borrow across structured fork-join is enabled via
 /// `CRANELISP_CAPTURE_BORROW=1` (Sprint 99 Wave 1b, FIXME 0461 / `ring2-rc.md`
 /// §5.5.2 + `lenient-eval.md` §4.4.1).
@@ -123,6 +160,31 @@ pub(crate) fn find_sparkable_bindings(
     bindings: &[(Symbol, MonoExpr)],
     constructors: &HashSet<Symbol>,
 ) -> Vec<usize> {
+    // The syntactic §2.2 admission filter (`CRANELISP_SPARK_ADMIT=syntactic`).
+    find_sparkable_bindings_with(bindings, |e| is_worth_sparking(e, constructors))
+}
+
+/// Admission-predicate-parametric core of [`find_sparkable_bindings`]
+/// (`design/backend/lenient-eval.md` §2.8.2). The `worth` predicate is the sole
+/// per-candidate admission test; the **independence carve-out** (§2.6 —
+/// dependency-on-sparked) and the **≥2-candidate gate** stay here, single-source
+/// (Principle 7), so both the syntactic filter and the M-static recursion signal
+/// compose with them identically:
+///
+/// - Syntactic filter — `worth = |e| is_worth_sparking(e, constructors)`
+///   ([`find_sparkable_bindings`]).
+/// - M-static filter — `worth = |e| self.mstatic_admits_candidate(e, &recursive)`
+///   (the recursive-SCC ∧ non-tail signal; wired at `compile_let`'s §4.1 seam).
+///
+/// A binding at index `i` is admitted iff `worth(rhs)` holds AND every
+/// earlier-bound free var it references is *itself* already in the admitted set
+/// (available as an IVar to force on demand). Because `let` bindings are
+/// sequential, dependencies only point backward, so a single left-to-right pass
+/// suffices. Returns an empty vec if fewer than 2 candidates survive.
+pub(crate) fn find_sparkable_bindings_with(
+    bindings: &[(Symbol, MonoExpr)],
+    worth: impl Fn(&MonoExpr) -> bool,
+) -> Vec<usize> {
     let mut bound_names: HashSet<Symbol> = HashSet::new();
     // Names of earlier bindings that were themselves admitted as sparks — the
     // dependency-on-sparked carve-out tests membership here.
@@ -142,7 +204,7 @@ pub(crate) fn find_sparkable_bindings(
             .filter(|v| bound_names.contains(*v))
             .all(|v| sparked_names.contains(v));
 
-        if is_worth_sparking(val_expr, constructors) && deps_all_sparked {
+        if worth(val_expr) && deps_all_sparked {
             sparkable.push(i);
             sparked_names.insert(name.clone());
         }
@@ -181,10 +243,27 @@ pub(crate) fn find_sparkable_args(
     args: &[MonoExpr],
     constructors: &HashSet<Symbol>,
 ) -> Vec<usize> {
+    // The syntactic §2.2 admission filter (`CRANELISP_SPARK_ADMIT=syntactic`).
+    find_sparkable_args_with(args, |e| is_worth_sparking(e, constructors))
+}
+
+/// Admission-predicate-parametric core of [`find_sparkable_args`]
+/// (`design/backend/lenient-eval.md` §2.8.2). Apply arguments are mutually
+/// independent by construction (§2.5.2 — nothing binds into a sibling's scope),
+/// so admission collapses to the per-candidate `worth` predicate plus the ≥2
+/// gate — no independence carve-out. The `worth` predicate is single-source
+/// (Principle 7): the syntactic wrapper passes [`is_worth_sparking`]; the
+/// M-static seam at `compile_apply` §4.4 passes the recursive-SCC ∧ non-tail
+/// signal (`FnCompiler::mstatic_admits_candidate`). Returns an empty vec if
+/// fewer than 2 candidates survive.
+pub(crate) fn find_sparkable_args_with(
+    args: &[MonoExpr],
+    worth: impl Fn(&MonoExpr) -> bool,
+) -> Vec<usize> {
     let sparkable: Vec<usize> = args
         .iter()
         .enumerate()
-        .filter(|(_, arg)| is_worth_sparking(arg, constructors))
+        .filter(|(_, arg)| worth(arg))
         .map(|(i, _)| i)
         .collect();
 

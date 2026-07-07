@@ -226,6 +226,14 @@ fn heap_capturing_launch() -> Expr {
 //       and a drop glue per thunk. This is the byte-identical-off baseline.
 #[test]
 fn capture_borrow_off_retains_joined_spark_heap_captures() {
+    // The `strwork`-capturing spark bindings are non-recursive, which the S104
+    // default M-static admission filter (recursive-SCC ∧ non-tail) declines. This
+    // test exercises the capture-borrow *emission* machinery — admission-
+    // independent — so pin the syntactic filter that admits these shapes. nextest
+    // isolates this per-process, so the set_var cannot leak (as with
+    // CRANELISP_CAPTURE_BORROW below).
+    // SAFETY: single-threaded test entry, before the SPARK_ADMIT LazyLock is read.
+    unsafe { std::env::set_var("CRANELISP_SPARK_ADMIT", "syntactic") };
     assert!(
         std::env::var("CRANELISP_CAPTURE_BORROW").is_err(),
         "this baseline test must run with the toggle unset (nextest isolates it)"
@@ -255,7 +263,11 @@ fn capture_borrow_off_retains_joined_spark_heap_captures() {
 #[test]
 fn capture_borrow_on_elides_joined_spark_heap_captures() {
     // SAFETY: single-threaded test entry, before any spark compile reads the
-    // `CAPTURE_BORROW_ENABLED` LazyLock in this (nextest-isolated) process.
+    // `CAPTURE_BORROW_ENABLED` / `SPARK_ADMIT` LazyLocks in this (nextest-
+    // isolated) process. Pin the syntactic filter: the non-recursive `strwork`
+    // spark shape is declined by the S104 default M-static filter, but this test
+    // exercises admission-independent capture-borrow emission.
+    unsafe { std::env::set_var("CRANELISP_SPARK_ADMIT", "syntactic") };
     unsafe { std::env::set_var("CRANELISP_CAPTURE_BORROW", "1") };
     let clif = clif_of_body_with_fns(heap_capturing_spark_let(), &[("strwork", 1)]);
     // Only the 2 direct-arm consuming incs remain; the 2 lenient-arm capture
@@ -287,7 +299,12 @@ fn capture_borrow_on_elides_joined_spark_heap_captures() {
 #[test]
 fn capture_borrow_on_launch_continuation_still_retains_heap_capture_neg() {
     // SAFETY: single-threaded test entry, before any spark compile reads the
-    // `CAPTURE_BORROW_ENABLED` LazyLock in this (nextest-isolated) process.
+    // `CAPTURE_BORROW_ENABLED` / `SPARK_ADMIT` LazyLocks in this (nextest-
+    // isolated) process. Pin the syntactic filter so the joined-spark `spark_clif`
+    // sanity leg genuinely exercises the spark path (the non-recursive `strwork`
+    // shape is declined by the S104 default M-static filter); the LaunchContinue
+    // leg is admission-independent.
+    unsafe { std::env::set_var("CRANELISP_SPARK_ADMIT", "syntactic") };
     unsafe { std::env::set_var("CRANELISP_CAPTURE_BORROW", "1") };
 
     // The joined spark elides its capture incs under the toggle (4 → 2)…
@@ -383,6 +400,13 @@ fn add_i64(lhs: Expr, rhs: Expr, span: Span) -> Expr {
 //       absent for a purely-independent pair.
 #[test]
 fn let_path_dependent_binding_sparks_as_ivar_forced_on_demand() {
+    // The dependent binding `b = (add-i64 a a)` has a non-recursive `add-i64`
+    // callee, which the S104 default M-static admission filter declines — so `b`
+    // would not spark and the dependent-thunk mechanism under test would not fire.
+    // Pin the syntactic filter (admission-independent from the §4.5 dependent-thunk
+    // emission this test guards). nextest isolates the set_var per-process.
+    // SAFETY: single-threaded test entry, before the SPARK_ADMIT LazyLock is read.
+    unsafe { std::env::set_var("CRANELISP_SPARK_ADMIT", "syntactic") };
     let body = Expr::Let {
         bindings: vec![
             (Symbol::from("a"), probe_call(Span::new(1, 2))),

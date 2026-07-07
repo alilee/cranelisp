@@ -15,7 +15,9 @@ use crate::heap::HeapCategory;
 use crate::heap::{self, HeapAdt, HeapClosure};
 use crate::primitives_inline;
 
-use super::control_flow::{find_sparkable_args, LENIENT_DISABLED};
+use super::control_flow::{
+    find_sparkable_args, find_sparkable_args_with, SparkAdmit, LENIENT_DISABLED, SPARK_ADMIT,
+};
 use super::{signature_heap_category, FnCompiler};
 
 /// Absolute byte offset of the `IO_TAG_EFFECT` node's fn-name handle field
@@ -212,8 +214,24 @@ where
             && !self.suppress_spark_gate
             && !is_io_combinator_call(resolved_call)
         {
-            let constructors = self.collect_module_constructors();
-            let sparkable = find_sparkable_args(args, &constructors);
+            // Admission filter (lenient-eval.md §2.8.2 / §2.8.6): M-static (the
+            // default) admits only recursive-SCC ∧ non-tail candidates via the
+            // single-sourced classifier; `CRANELISP_SPARK_ADMIT=syntactic` selects
+            // the pre-S104 §2.2 filter for `/qa`'s comparison row. Apply args carry
+            // no independence carve-out (§2.5.2); the ≥2 gate composes identically
+            // inside `find_sparkable_args_with` for both filters (Principle 7).
+            let sparkable = match *SPARK_ADMIT {
+                SparkAdmit::Syntactic => {
+                    let constructors = self.collect_module_constructors();
+                    find_sparkable_args(args, &constructors)
+                }
+                SparkAdmit::Mstatic => {
+                    let recursive = self.mstatic_recursive_set();
+                    find_sparkable_args_with(args, |e| {
+                        self.mstatic_admits_candidate(e, &recursive)
+                    })
+                }
+            };
             if sparkable.len() >= 2 {
                 // S104 Wave 0 — record the M-static classification of each
                 // sparkable argument for the discrimination experiment

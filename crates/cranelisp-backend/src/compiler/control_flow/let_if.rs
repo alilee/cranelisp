@@ -12,7 +12,10 @@ use cranelift_module::Module;
 
 use cranelisp_types::{ConcreteType, CranelispError, MonoExpr, Span, Symbol};
 
-use super::sparkability::{find_sparkable_bindings, LENIENT_DISABLED};
+use super::sparkability::{
+    find_sparkable_bindings, find_sparkable_bindings_with, SparkAdmit, LENIENT_DISABLED,
+    SPARK_ADMIT,
+};
 use super::FnCompiler;
 
 impl<'a, M: Module, C, L> FnCompiler<'a, M, C, L>
@@ -62,10 +65,26 @@ where
         // Skip sparkability analysis inside trace bodies — trace must
         // execute sequentially to produce deterministic trace trees.
         if !*LENIENT_DISABLED && !self.in_trace_body && !self.suppress_spark_gate {
-            // Collect known constructor names to exclude from sparking (shared
-            // with the apply-arg lenient site, Principle 7).
-            let constructors = self.collect_module_constructors();
-            let sparkable = find_sparkable_bindings(bindings, &constructors);
+            // Admission filter (lenient-eval.md §2.8.2 / §2.8.6): M-static (the
+            // default) admits only recursive-SCC ∧ non-tail candidates via the
+            // single-sourced classifier; `CRANELISP_SPARK_ADMIT=syntactic` selects
+            // the pre-S104 §2.2 filter for `/qa`'s comparison row. The independence
+            // carve-out (§2.6) and the ≥2 gate compose identically inside
+            // `find_sparkable_bindings_with` for both filters (Principle 7).
+            let sparkable = match *SPARK_ADMIT {
+                SparkAdmit::Syntactic => {
+                    // Constructor names are excluded from the syntactic cost
+                    // heuristic (shared with the apply-arg site, Principle 7).
+                    let constructors = self.collect_module_constructors();
+                    find_sparkable_bindings(bindings, &constructors)
+                }
+                SparkAdmit::Mstatic => {
+                    let recursive = self.mstatic_recursive_set();
+                    find_sparkable_bindings_with(bindings, |e| {
+                        self.mstatic_admits_candidate(e, &recursive)
+                    })
+                }
+            };
             if sparkable.len() >= 2 {
                 // S104 Wave 0 — record the M-static classification of each
                 // sparkable binding for the discrimination experiment
