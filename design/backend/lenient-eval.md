@@ -68,6 +68,14 @@ Expressions that are NOT function calls — literals, variable references, lambd
 
 Non-variable callees (e.g., `((get-fn) arg)` — an application of a computed function) are conservatively treated as worth sparking, since the callee's cost is unknown.
 
+> **Superseded for the recursion / speculative-search class (S104, §2.8).** This purely
+> *syntactic* "non-cheap `Apply`" filter falsifiably over-sparks on divide-and-conquer
+> recursion and speculative search (F1 `fib`, F4 Sudoku): it emitted 9.45M tiny sparks on
+> F4-hard, cores parked not computing (FIXME 0534). For that class, **§2.8's utilization
+> model** replaces this filter — M-static (non-tail recursion) governs *which* candidates
+> spark and M-dynamic (busy-core bail-out) governs *how many*. This §2.2 filter stays the
+> admission rule for the compute-bound `let`/apply spark classes it still serves.
+
 ### 2.3 Trace Body Exclusion
 
 Inside `(trace ...)` bodies, sparkability analysis is disabled. Lenient evaluation would interleave traced execution across threads, producing non-deterministic trace output. When `self.in_trace_body` is true, `find_sparkable_bindings` returns an empty vec.
@@ -193,6 +201,30 @@ brief names; §4.5 is the codegen.
 
 ### 2.7 The static allocation/RC-density admission axis (FIXME 0459 gate half — designed S102; implementation rides increment I)
 
+> **DEMOTED + default-flipped OFF at S104 (arch ruling, `effect-concurrency.md` §3.1.1;
+> FIXME 0534).** This axis (call it **B4**, its ownership-codegen ladder name) is a
+> *contention* proxy built against the S94/S99 (a)/(b) alloc/RC model. 0534 profiled F4-hard
+> and proved that for the **recursion / speculative-search workload class** the dominant cost
+> is **rayon scheduler churn, not contention**, and that B4 is there **net-harmful, not merely
+> neutral**: it declines the coarse divide-and-conquer sparks (they score dense 2/4) while the
+> fine score-0 accessor sparks stay admitted, so the fine sparks **strand** on a serialized
+> outer tree — 112s (B4 default-on) vs 24s (B4 off, admit-all) vs 0.9s (serial). The
+> decline-coarse-while-admitting-nested-fine state is *incoherent*. **This sprint flips
+> `SPARK_DENSITY_MAX_DEFAULT` `1 → 0`** (B4 off by default; see §2.8 "B4 default-flip"). The
+> *concept* below is **not retired** — it stays valid for the genuinely alloc/RC-dense
+> *compute-bound* class (the S99 F2 vec-COW workloads) and may return **Phase-H-composed**
+> (scoring the surviving population the memory mechanisms define, per §2.7 "Sequencing"). But
+> it is **not** the S104 admission mechanism, it must never default-fire in the incoherent
+> state 0534 exposed, and for the recursion/search class **§2.8 supersedes this section's
+> framing** (M-static handles *selection* structurally; the as-built worker-origin `SPARK_DEPTH`
+> bound — not the concurrent cap — handles *quantity*, §2.8.4). The design text below is preserved
+> as-is for the compute-bound class it still serves.
+>
+> **S105 forward-pointer (as-built):** when the density signal returns it comes back as the
+> *depth-gate input* to §2.8.4's `MAX_DEPTH` — a **density-aware depth allowance** (deep for
+> alloc-free strands, shallow for alloc-heavy) — **NOT** the admission-*decline* form this section
+> designs. See §2.8.8 (the S105 focus) and FIXME 0535.
+
 The contention-aware gate 0459 asked for, static layer (`effect-concurrency.md` §3.1's
 first layer). The dynamic layer landed opt-in as the saturation gate (§3.6.3) and stays
 deferred with the FIXME-0442 unified-budget family; this section designs the **static
@@ -230,12 +262,16 @@ admission set is byte-for-byte today's. (This polarity matters: if the axis naiv
 scored a facts-absent build, everything would score dense and sparking would vanish —
 the wrong failure mode for the oracle toggle.)
 
-**Threshold + knob.** A named constant with an env override
-(`CRANELISP_SPARK_DENSITY_MAX=N`; `0` disables the axis), default set **by measurement at
-the landing change-set** against the F2/F4 fixtures (must decline their
-allocation-dominated shared-data branches) and the fib/compute-bound shapes (must stay
-admitted — the §9 near-linear-speedup acceptance is unchanged). No number is pinned in
-this doc; the sprint plan's gate (I-G4 parallel non-regression) is the arbiter.
+**Threshold + knob.** A named constant `SPARK_DENSITY_MAX_DEFAULT` with an env override
+(`CRANELISP_SPARK_DENSITY_MAX=N`; `0` disables the axis). **S104: the default is
+`0` (disabled)** — flipped from the increment-I `1` per the demotion banner above and
+`effect-concurrency.md` §3.1.1. When the axis is re-enabled Phase-H-composed for the
+alloc/RC-dense compute-bound class, its non-zero threshold is set **by measurement at that
+landing change-set** against the F2/F4 fixtures (must decline their allocation-dominated
+shared-data branches) and the fib/compute-bound shapes (must stay admitted — the §9
+near-linear-speedup acceptance is unchanged). No non-zero number is pinned in this doc; the
+sprint plan's gate is the arbiter. Opt-in `CRANELISP_SPARK_DENSITY_MAX=N` remains available
+this sprint as the B4-on diagnostic row of the Stage-0 config matrix.
 
 **Acceptance shape (for `/qa`):** the §9 three-regime equivalence gains a fourth regime
 (density-declined ≡ serial ≡ the other three); the F4-hard distribution's parallel wall
@@ -251,6 +287,451 @@ the borrow-elision / non-atomic / stack-slot mechanisms, because the score measu
 mechanisms themselves) remains the primary attack on the S99 term; this axis is the
 scheduler-side complement that stops sparking the branches the mechanisms cannot yet
 serve.
+
+### 2.8 The utilization model — spark for core occupancy, not fine-grained parallelism (Sprint 104)
+
+> **AS-BUILT (S104 Waves 1–2e; reconciled Phase 5).** This section was authored pre-implementation
+> (Phase 3). Measurement moved two rulings; the mechanism text below is reconciled to what shipped.
+> **(1)** M-static (§2.8.2) shipped as-designed — `admit? = (in recursive SCC) ∧ ¬in_tail_position`,
+> toggle `CRANELISP_SPARK_ADMIT=mstatic|syntactic`, default `mstatic`. **(2)** The M-dynamic
+> *concurrent cap* does **NOT** bound cumulative spawn count — permits recycle on completion, so F5
+> stayed ~1.5M spawns at *every* cap (§2.8.3). Structural hierarchical decline is therefore
+> **MANDATORY, not optional**, and shipped as a **worker-origin thread-local `SPARK_DEPTH`** with
+> cross-spawn base propagation, default `MAX_DEPTH = floor(log2(nproc)) = 3` (§2.8.4). A both-paths
+> variant was measured harmful (collapsed to peak 2); pure worker-only with no allowance made F3 7.5×
+> slower — the depth-allowed worker-origin form fills the cores. **(3)** `ivar_force` now backs off
+> (`spin → yield_now → sleep`), CPU hygiene not a wall fix (§2.8.4 backoff block). The §2.8.7
+> measurement doctrine and §2.8.8 remaining-problems/limits (S105 density-aware depth, budget-inline
+> ceiling, alloc/RC floor, F4-at-D3 trade) are the honest open record. Cross-ref
+> `effect-concurrency.md` §3.1.1–3.1.5 (arch, updated in parallel).
+
+**Measured outcome (S104 Waves 1–2e; D=3 default) — the headline result.** Compute-parallel wins and
+the pathology cure (see §2.8.8 for the limits and open work these numbers sit against; not duplicated
+here):
+
+| Fixture | Serial | Parallel (as-built) | Result |
+|---|---|---|---|
+| F6 — 16 heavy balanced (alloc-free) leaves | 3.10s | 0.82s | **3.4× speedup** |
+| F5 — `fib` recursive fork | 0.67s | 0.39s | **1.7× speedup** |
+| F4-hard — Sudoku speculative search | ~55s | ~2.3s | **pathology cured** (spawns collapsed ~6 orders of magnitude) |
+
+**The limit (deliberately out of scope this sprint — the set-aside memory class):** alloc/RC-contended
+search (F3, and the alloc-heavy part of F4) stays *above* serial. The uniform depth allowance cannot
+distinguish alloc-free compute fan-out (F6, wins) from alloc-heavy *contended* fan-out (F4, loses) —
+the distinguishing signal is **allocation/RC density**, the deliberately-set-aside memory work. That is
+the **S105 focus (§2.8.8): a density-aware depth allowance** — deep for alloc-free strands, shallow for
+alloc-heavy — composed with the Phase-H memory cure. The **budget-inline depth-leak ceiling** (`D`
+cannot exceed ~`log2(cap)`; F5 re-explodes to 1.3M spawns at D=4 without a backend hook on the
+create-gate inline arm) is recorded in §2.8.8; the shipped D=3 sits safely under it.
+
+This section supersedes the §2.2 syntactic filter and the §2.7 density-axis framing **for the
+recursion / speculative-search workload class** (F1 `fib`/`reduce-tree`, F4 Sudoku
+`solve-range`). Its thesis home is `effect-concurrency.md` §3.1.1–3.1.4 (arch-ruled, S104
+Phase 2); this section is the backend **mechanism** design. The §2.2/§2.5/§2.6 filters and the
+§2.7 concept stay valid for the classes they still serve (compute-bound `let`/apply sparks, the
+alloc/RC-dense compute class); §2.8 replaces *how a candidate is admitted* for the class where
+the syntactic filter falsifiably over-sparks.
+
+**The reframe (why the old model failed — the actors tell the story below).** The §2.2 filter
+is purely *syntactic*: "a non-cheap `Apply`" is worth sparking. On F4-hard that emits **9.45M
+tiny sparks clustered at the work frontier** — the 104 score-0 `(cell-at g i)` accessor pairs
+in per-cell hot loops — each paying a ~13µs spawn/wake/park round-trip against a ~20ns body
+(0534: `wall ≈ serial + spawns × per-spark-overhead`; ~600× overhead-to-work ratio; 240% CPU on
+10 cores = cores *parked in futex*, not computing). The goal is **not** fine-grained
+parallelism. The goal is **core utilization**: dispatch a *small* number — on the order of
+**~2 per core** — of distinct, probably-large work items that **separate** onto different cores
+and then each run forward on an **efficient sequential path**. Populate the cores, then get out
+of the way. The old model had a *create-gate* (§3.6, bounds concurrent IVar count → memory) but
+no *utilization gate*: it estimated neither the benefit (is this piece big enough to be worth
+separating?) nor the cost (are the cores already busy?) of a spark.
+
+#### 2.8.1 Actors and the functions between them (before any mechanism — Principle 21)
+
+The mechanism is meaningless until the actors and the functions between them are explicit. Four
+actors participate in every spark:
+
+| Actor | What it is | Where it lives |
+|---|---|---|
+| **Producer** | the codegen decision site that, per candidate work item (a `let` binding RHS or an apply argument), chooses *spark* (emit the IVar/thunk on the lenient arm) or *inline* (the direct arm). | `compile_let` §4.1 / `compile_apply` §4.4 — compile-time for quality, emits a runtime branch for quantity |
+| **Pool / cores** | the fixed rayon work-stealing pool of `ncores` worker threads — the **shared resource being utilized**. | `ivar_spark` → `rayon::spawn` (§3.4) |
+| **Strand** | a dispatched spark body — one IVar's thunk running its **sequential subtree** forward on a worker. "Good" work is a strand that separated onto its own core and runs straight-line. | the spawned closure in `ivar_spark` |
+| **Consumer / forcer** | the code that joins a strand back — forces the IVar at the barrier before the enclosing call/body. | `ivar_force` at the §4.2/§4.4 Phase-2 barrier |
+
+The **functions** between them (each with its cost, which is the whole point):
+
+1. **produce-or-inline** (Producer → {spark, inline}). The admission decision. Cost: compile-time
+   (the *quality* axis, M-static) plus **one atomic** at runtime (the *quantity* axis, M-dynamic's
+   create-gate `try_reserve`). This is the function the utilization model redesigns.
+2. **dispatch** (Producer → Pool). `ivar_create` + `ivar_spark` + `rayon::spawn`. Cost ≈ **13µs**
+   of wake/park/steal round-trip (0534). Only worth paying if the strand then **separates** onto an
+   idle core and runs a body far larger than 13µs.
+3. **sequential execution** (Strand on a core). The strand runs its subtree straight-line, **with no
+   further sparking inside it**. This is where the useful work happens; it must dominate the
+   dispatch cost.
+4. **force / join** (Consumer ← Strand). `ivar_force` (§3.5): RESOLVED fast-path, spin-wait, or
+   claim-compute (work conservation). If the consumer forces *almost immediately* after dispatch (a
+   near-immediate data dependency, exactly F4's accessor pairs), the strand never got to run forward
+   — the dispatch cost bought nothing.
+
+**What "good" looks like.** ~2/core distinct **large** strands that (i) **separate** — each spawned
+onto a distinct otherwise-idle core, not clustered at the frontier — and (ii) then **run a
+high-efficiency sequential path** — no nested spawns, no per-node dispatch cost. Cores **busy**
+(F4 admit-all coarse: 565% CPU on 10 cores, workers computing) rather than **parked** (F4
+default: 240%, workers in `futex_do_wait`). Small count, large bodies — the exact inverse of 9.45M
+tiny sparks.
+
+**The two failure modes the model must structurally avoid**, named against the actors:
+
+- **Over-production at the frontier** — the Producer emits millions of tiny candidates (function 1
+  fires indiscriminately); dispatch (function 2) dominates; strands never separate (all at the
+  frontier); the Consumer forces immediately (function 4), so sequential execution (function 3)
+  never happens. *This is the F4 firehose.* → cured by **M-static** (stop producing the fine
+  candidates). *(As-built note: the concurrent cap does NOT then bound the residual count — §2.8.3;
+  the depth explosion is cured separately below.)*
+- **Internal re-explosion** — the Producer emits coarse strands, but each strand *re-produces*
+  internally (a divide-and-conquer recursion is non-tail-recursive at every level, so the same
+  quality signal re-fires all the way down); the tree explodes again from within. → cured by
+  **worker-origin depth decline** (§2.8.4, as-built MANDATORY): a dispatched strand stops sparking
+  once its logical nesting depth reaches `MAX_DEPTH`.
+
+#### 2.8.2 M-static — the quality axis (spark coarse, not fine)
+
+**Rule.** For this class, replace the §2.2 syntactic "non-cheap `Apply`" filter with a structural
+*probably-large* signal: **non-tail recursion** — a candidate `Apply` is sparkable iff
+
+> its resolved callee is a member of a **recursive strongly-connected component (SCC)** of the
+> static call graph, **AND** the apply is **not** `in_tail_position`.
+
+**How recursive-SCC membership is derived at codegen — no new interface.** The signal is computed
+backend-internally from data that already exists:
+
+- Each persisted `ModuleEntry::Def` carries `callees` (Decision 21) — the set of statically-resolved
+  user-fn references the def makes, **FIXME-0470-enriched** to *every* statically-resolved user-fn
+  reference (the same edges the ownership fixpoint walks), not just direct top-level calls.
+- The backend builds the directed call graph over the loaded defs (nodes = FQ callables, edges =
+  `callees`), runs an SCC pass (Tarjan/Kosaraju — plain graph analysis), and marks a callee **in a
+  recursive SCC** iff its SCC has >1 node (mutual recursion) **or** it has a self-edge (direct
+  self-recursion — a singleton SCC with a self-loop). The result is cached once per compile unit
+  and read at each candidate site.
+- `in_tail_position` is **already** tracked in the backend (TCO + the §2.5.3 apply-arg gating), so
+  the second conjunct is a free read.
+
+Per `effect-concurrency.md` §3.1.2: this uses an **existing** `cranelisp-types` field via
+backend-internal analysis — **no new cross-crate type, no schema/baseline cascade, no ABI change**.
+Whether "in a recursive SCC" is computed on-demand in backend or materialized as a per-callable
+flag is a `/design`/`/dev` interior choice, **provided it stays off the public edge** (it does).
+**Soundness is toward decline:** a callee whose `Def` is not yet loaded (incremental dev session),
+or reached through a HOF/closure/extern indirection (unresolved), is treated as **non-recursive ⇒
+not sparked ⇒ safe** — the same conservative default the launch-eligibility predicate uses
+(`effect-concurrency.md` §4.1). Declining is always sound: spark-vs-inline is a scheduling choice
+only (§8 observational equivalence).
+
+**Discrimination check (the Stage-0 experiment this must pass).** The signal must separate
+beneficial from harmful *structurally*, not by an F4-specific threshold:
+
+| Candidate | Recursive SCC? | Tail? | M-static |
+|---|---|---|---|
+| F1 `(add-i64 (fib a) (fib b))` | yes (self-edge) | non-tail | **spark** ✓ |
+| F1 `reduce-tree` recursive fork | yes | non-tail | **spark** ✓ |
+| F4 coarse `(solve-range …)` D&C search | yes | non-tail | **spark** ✓ |
+| F4 fine `(cell-at g i)` accessor pair | **no** (flat accessor, no recursive SCC) | non-tail | **decline** ✓ |
+| tail-recursive loop step (accumulator) | yes | **tail** | decline (TCO jump; also §2.5.3) |
+| flat call in tail position | no | tail | decline |
+
+The 104 F4 score-0 accessor sparks — 0534's pure-overhead firehose — are declined **structurally**
+because `cell-at` is in no recursive SCC, while F1's beneficial `fib`/`reduce-tree` sparks and F4's
+coarse `solve-range` sparks are kept. This is the quality separation the syntactic filter could not
+make (both scored as "non-cheap `Apply`").
+
+**As-built (shipped as-designed) + toggle + measured.** M-static shipped exactly as specified:
+`admit? = (in recursive SCC) ∧ ¬in_tail_position`, selectable via
+`CRANELISP_SPARK_ADMIT=mstatic|syntactic` (**default `mstatic`**; `syntactic` restores the §2.2
+non-cheap-`Apply` filter for A/B measurement). **Measured (F4-hard):** declining the fine
+`(cell-at g i)` accessor firehose *structurally* took fine-accessor spawns **13.1M → 182** and wall
+**~55s → ~2.4s** — M-static alone is the dominant F4-hard win, because that fine frontier
+cross-section was the bulk of the firehose.
+
+**M-static is a QUALITY axis ONLY — it does NOT deliver the ~2/core collapse.** A divide-and-conquer
+recursion is non-tail-recursive at *every* level: each `fib`/`solve-range` node re-applies the
+recursive callee non-tail, so M-static **re-selects spark sites all the way down the tree** — the
+`fib`-explosion shape. M-static prunes the fine *frontier cross-section* (the accessor firehose); it
+leaves the recursive *depth* explosion fully intact. **As-built, the count collapse is the
+worker-origin `SPARK_DEPTH` mechanism's (§2.8.4), NOT the concurrent cap's** — measurement showed the
+cap does not bound cumulative spawns (§2.8.3). Grade F4 as an **M-static × depth-decline interaction**,
+not a sum: neither alone clears it (M-static keeps the good work but still explodes in depth; the depth
+bound collapses the count but, without M-static, spends its frontier on the fine accessors).
+
+#### 2.8.3 M-dynamic — the measured reversal: the concurrent cap does NOT bound cumulative spawns
+
+**Pre-implementation (Phase 3) this section claimed** the ~2/core collapse was *emergent* from
+re-parameterizing the existing create-gate (§3.6.2): tune the `SPARK_BUDGET` cap toward `~2 × ncores`,
+flip it default-on, and every deeper recursion site would see a full pool, `try_reserve` returns `0`,
+and inline. The create-gate emits, per site:
+
+```
+granted = call cranelisp_spark_budget_try_reserve(n)   // 1 = spark (lenient arm), 0 = inline (direct arm)
+brif granted, lenient_block, direct_block
+```
+
+with `spark_budget_try_reserve` (§3.6.1) returning `1` when `IN_FLIGHT_SPARKS + n ≤ cap`.
+
+**S104 Wave-2 measurement falsified the emergent-collapse claim.** The create-gate counts *concurrent*
+in-flight sparks and **recycles permits on completion** — each strand's `InFlightGuard` drop releases a
+permit (§3.6.1). A divide-and-conquer recursion therefore never latches the pool full: as root strands
+complete they free permits, deeper sites immediately re-reserve, and the exponential tree keeps
+spawning. **F5 (`fib`) stayed at ~1.5M spawns at *every* cap value tested** — the concurrent cap bounds
+*simultaneity*, not *cumulative count*. The "emergent hierarchical decline" the pre-impl §2.8.4
+described **does not exist**: there is no busy signal that stays latched under a recycling permit pool.
+
+**Consequence (the reversal).** The count collapse is **not** the cap's to deliver, so structural
+hierarchical decline (§2.8.4) is **MANDATORY, not optional** (this is what resolves gate G3 by
+measurement). The `SPARK_BUDGET` create-gate is retained for exactly what it always bounded —
+*concurrent* IVar allocation to `O(cap)`, the memory floor (§3.6.3) — but it is **not** the utilization
+mechanism. Gate **G1** (the "~2/core cap multiplier") is moot for count-collapse: the depth counter
+(§2.8.4), not the cap, sets utilization. The **reserved-vs-executing gap (G2)** is likewise moot for
+the shipped mechanism — the depth bound is a worker-origin thread-local, not a read of the in-flight
+count, so no new symbol was needed (`cranelisp_spark_executing_count()` not taken; §2.8.6). The
+one-counter ruling (`effect-concurrency.md` §3.1.3, Principle 8) is preserved: `IN_FLIGHT_SPARKS`
+stays the single budget counter for the memory floor, and the depth mechanism adds no *counter*, only
+a module-private per-strand nesting level.
+
+#### 2.8.4 Hierarchical decline — worker-origin thread-local depth counter (as-built; MANDATORY), and IVar-force backoff
+
+**Invariant.** Once a strand is dispatched it runs its sequential path with **no further sparking
+inside its serialized subtree** (0534's core finding: declined-coarse + admitted-fine is strictly the
+*worst* outcome). Because the concurrent cap cannot deliver this emergently (§2.8.3), the shipped form
+is a **structural depth bound** — this is the count-collapse lever, not an optional refinement.
+
+**Mechanism (as-built — Wave 2e).**
+- A **module-private thread-local `SPARK_DEPTH`** tracks the current strand's spark-nesting depth on
+  the worker running it.
+- At a candidate site, spark is admitted only while `SPARK_DEPTH < MAX_DEPTH`; at or beyond the limit
+  the site takes the direct (inline) arm and runs its subtree serially, allocation-free (§3.6.3 floor).
+- **Worker-origin with cross-spawn base propagation.** Depth accumulates down the *logical* spark
+  tree, not the physical worker. When a strand is spawned, its **base depth is propagated across the
+  spawn** so a **stolen child lands at parent + 1**; on entry to a spawned strand's thunk
+  (`ivar_spark`'s spawned closure, Rust side) the thread-local is seeded from the propagated base and
+  each nested spark increments it. A stolen child therefore inherits its parent's logical depth
+  regardless of which worker steals it. (`/review` verified the cross-spawn propagation CORRECT.)
+- `MAX_DEPTH` default = `floor(log2(nproc))` (**= 3** on the 10-core measurement host), env override
+  `CRANELISP_SPARK_MAX_DEPTH=N`. Intuition: `2^D` leaves of a binary fork tree fills `D` levels ≈ one
+  strand per core — the ~2/core utilization target reached **structurally**, not via a busy signal.
+- **Total spawn count is now `O(2^MAX_DEPTH) = O(nproc)`, independent of tree size** — the bound the
+  concurrent cap could not provide. This collapses F5's ~1.5M spawns to a bounded frontier and, with
+  M-static declining the fine cross-section (§2.8.2), collapses F4-hard ~6 orders of magnitude.
+
+**Why depth-allowed worker-origin, not both-paths and not pure worker-only (both measured, both
+rejected).**
+- **Both-paths** (Wave 2b) incremented depth on the spark arm *and* the inline arm, so an inlined
+  subtree also burned the depth budget. Measured **HARMFUL**: it collapsed effective parallelism to a
+  **peak of 2** in-flight strands — the inline path exhausted the budget before the spark path could
+  fan out, starving the cores. Must not be reintroduced.
+- **Pure worker-only decline with no depth allowance** (Wave 2c) was too aggressive — it declined the
+  coarse strands that fill cores and made **F3 7.5× slower**.
+
+The shipped form (Wave 2e) is worker-origin decline **with a depth allowance of `D`**: depth advances
+only across actual spawns (propagated to stolen children), and up to `D` levels fan out before
+inlining. This fills the cores at depth `D` while bounding the count — the F6 3.4× / F5 1.7× result
+(top-of-section table).
+
+**IVar-force backoff — bounded wait (Wave 2d; CPU-efficiency hygiene, NOT a wall fix).** As-built,
+`ivar_force`'s wait loop (§3.5) for a PENDING/EVALUATING IVar is a **bounded escalation**
+`spin → yield_now → sleep`, replacing the previous pure `spin_loop`; `CRANELISP_IVAR_SPIN=1` restores
+the old unbounded spin. On decline-heavy shapes where many forcers wait on strands it roughly **halves
+CPU** — F3 dropped from **617% → 275%** CPU — at **neutral wall time**. It is **not** a parallelism
+win: profiling (S104) showed F3's cost is **contention** (allocator + atomic-RC cache-line traffic),
+not spin waste, so freeing the spin-burned cores lowers CPU without moving the wall. Recorded honestly
+so the backoff is not mistaken for a speedup — the F3/alloc-RC floor is the set-aside memory class
+(§2.8.8). (`/review` verified the backoff CORRECT — no Blocker/Important.)
+
+#### 2.8.5 B4 default-flip (the demoted contention axis)
+
+`SPARK_DENSITY_MAX_DEFAULT` flips **`1 → 0`** this sprint (B4 off by default), per the arch demotion
+(`effect-concurrency.md` §3.1.1; the §2.7 demotion banner). Rationale, recorded there and in §2.7:
+B4 is *net-harmful* at full cores on this class (112s default-on vs 24s off vs 0.9s serial) because
+it declines the coarse D&C sparks while the fine score-0 accessors stay admitted — the incoherent
+decline-coarse-while-admitting-nested-fine state. With **M-static** now owning *selection* (the fine
+accessors are declined structurally) and **M-dynamic** owning *quantity*, B4 has no role for the
+recursion/search class. The §2.7 design is **preserved, not deleted**: the contention-scoring concept
+stays valid for the alloc/RC-dense *compute-bound* class (S99 F2 vec-COW) and may return
+**Phase-H-composed** (scoring the surviving population the memory mechanisms define). It must never
+*default*-fire again in the incoherent state; opt-in `CRANELISP_SPARK_DENSITY_MAX=N` remains as the
+Stage-0 B4-on diagnostic row. This is a **constant value change** — no public surface, no cascade.
+
+#### 2.8.6 Codegen seams (for Phase-5 `/dev`) and the unit-scenario space
+
+Each mechanism lands at a named §4 seam; **none touches a public edge** (confirmed below):
+
+- **M-static** — in the sparkability pass (`sparkability.rs`), consumed at `compile_let`'s §4.1
+  decision point and `compile_apply`'s §4.4 decision point (and the §4.2 `let` lenient path). The
+  recursive-SCC ∧ non-tail predicate replaces/augments `is_worth_sparking` (§2.2) for this class. The
+  SCC pass is a backend-internal analysis built once over the loaded call graph (read from
+  `ModuleEntry::Def.callees`), cached per compile unit, and read at each candidate site;
+  `in_tail_position` is already available at the apply site (§2.5.3). `find_sparkable_bindings` /
+  `find_sparkable_args` gain the predicate.
+- **M-dynamic / create-gate** — the create-gate emission (§3.6.2) at both sites. **No codegen shape
+  change.** As-built it is retained as the **concurrent-memory floor only** (bounds in-flight IVar
+  allocation to `O(cap)`), **not** the count-collapse lever — measurement showed the cap does not bound
+  cumulative spawns (§2.8.3). The `spark_budget_try_reserve` branch, block structure, join-point, and
+  TCO composition are unchanged.
+- **Worker-origin depth decline** (as-built; **MANDATORY** — the shipped count-collapse lever, §2.8.4)
+  — a module-private **thread-local `SPARK_DEPTH`** seeded on entry to `ivar_spark`'s spawned closure
+  (`ivar.rs`, Rust side) with the parent's base depth **propagated across the spawn**, incremented per
+  nested spark, and read at the candidate site to force the inline arm once `SPARK_DEPTH ≥ MAX_DEPTH`
+  (default `floor(log2(nproc))`, env `CRANELISP_SPARK_MAX_DEPTH`). Module-private, no export.
+- **IVar-force backoff** (§2.8.4) — `ivar_force`'s PENDING/EVALUATING wait loop (§3.5) is a bounded
+  `spin → yield_now → sleep`; `CRANELISP_IVAR_SPIN=1` restores pure spin. Module-private, no export.
+- **B4 default-flip** — the `SPARK_DENSITY_MAX_DEFAULT` constant `1 → 0` in the density-axis site
+  (§2.7 / ownership-codegen B4).
+
+**No-new-symbol / no-types-edit — confirmed.** M-static reads the existing Decision-21
+`callees` field via backend-internal SCC analysis (no new type, no schema/baseline cascade).
+M-dynamic reuses `cranelisp_spark_budget_try_reserve` + `IN_FLIGHT_SPARKS` (no new export). The
+worker-origin `SPARK_DEPTH` counter and the `ivar_force` backoff loop are module-private thread-local /
+loop logic (no export). The B4 flip is a constant value. Therefore: **no backend `public-api.txt` diff,
+no `cranelisp-intrinsics` `public-api.txt` diff, no `cranelisp-types` edit** — the baseline-diff
+discipline is not triggered by this design, and the as-built landing confirmed it (SPRINT.md: "no API
+change"). Gate G2's last-resort `cranelisp_spark_executing_count()` was **not needed** as-built.
+
+**Unit-scenario space the implementation must cover** (Phase-5 `/dev`; feeds `/qa`'s Stage-0 matrix;
+mirrors §9's sparkability/gate tiers):
+
+- **Recursion-SCC classification — {recursive, non-recursive} × {tail, non-tail}** (the M-static
+  discrimination, §2.8.2's table as fixtures): self-recursive `fib` (recursive/non-tail → **spark**);
+  mutual recursion `a→b→a` (recursive-SCC>1/non-tail → **spark**); flat `cell-at` accessor
+  (non-recursive/non-tail → **decline**); tail-recursive accumulator loop (recursive/tail → decline);
+  flat call in tail position (non-recursive/tail → decline). Plus: unloaded/unresolved callee →
+  treated non-recursive → decline (soundness-toward-decline).
+- **Depth-decline boundary** (the as-built count-collapse lever): a candidate sparks while
+  `SPARK_DEPTH < MAX_DEPTH` and inlines at `≥ MAX_DEPTH`; a **stolen child observes `parent + 1`**
+  (cross-spawn base propagation), not the stealing worker's own depth; `CRANELISP_SPARK_MAX_DEPTH`
+  raises/lowers the bound. **Regression guards:** both-paths depth accounting must NOT be reintroduced
+  (collapses to peak-2, §2.8.4); `MAX_DEPTH` beyond ~`log2(cap)` re-explodes spawns (budget-inline
+  ceiling, §2.8.8) — the D=3 default stays under it.
+- **Create-gate memory floor** (unchanged shape; now the memory bound, not the utilization gate):
+  `IN_FLIGHT_SPARKS = cap−1` → next candidate sparks; `= cap` → inlines — the §3.6.1 `try_reserve`
+  all-or-nothing property.
+- **IVar-force backoff**: a decline-heavy shape holds neutral wall under `CRANELISP_IVAR_SPIN=1` vs the
+  bounded default while CPU drops (§2.8.4); no behavioural divergence between the two (spin-vs-backoff
+  is a scheduling choice only).
+- **B4-off byte-identity when facts absent**: with `SPARK_DENSITY_MAX_DEFAULT = 0` the density axis is
+  inert and admission is byte-for-byte the pre-B4 admission — confirm no density-decline fires (the
+  §2.7 activation-gating property with the default now disabling).
+
+Cross-refs: `effect-concurrency.md` §3.1.1 (thesis / axis re-ranking), §3.1.2 (M-static no
+interface), §3.1.3 (counter unification / no third throttle), §3.1.4 (orthogonality + roadmap
+correction).
+
+##### Gate dispositions (S104 — measurement resolved most; the routed originals are kept for the record)
+
+- **G1 — M-dynamic cap multiplier — MOOT (resolved by measurement).** The concurrent cap does not bound
+  cumulative spawns (§2.8.3), so the "~2/core cap value" is not the utilization knob. Utilization is set
+  *structurally* by `MAX_DEPTH` (default `floor(log2(nproc)) = 3`, env `CRANELISP_SPARK_MAX_DEPTH`); the
+  cap remains the memory floor at its existing default.
+- **G2 — reserved-vs-executing — MOOT for the shipped mechanism.** The depth bound is a worker-origin
+  thread-local and does not read the in-flight count, so the reserved-vs-executing gap is off the
+  count-collapse path. No new symbol was taken (`cranelisp_spark_executing_count()` not needed).
+- **G3 — emergent vs structural hierarchical decline — RESOLVED: structural, MANDATORY.** The emergent
+  (busy-signal) form does not exist under a recycling permit pool (§2.8.3); the worker-origin
+  `SPARK_DEPTH` counter (§2.8.4) is the shipped, required mechanism. A both-paths variant was measured
+  harmful (peak-2); pure worker-only with no allowance made F3 7.5× slower; worker-origin
+  **depth-allowed** decline is the shipped form.
+- **G4 — the f3 / B4-off trade — STILL OPEN, folded into the S105 focus (§2.8.8).** B4 default-off loses
+  f3's S102-recorded −82% N-worker benefit for the alloc/RC-dense class; f3 still meets the north-star
+  bar (B4-off ≈ toggle-off). This is the *same* limit §2.8.8 records — the uniform depth allowance can't
+  distinguish alloc-free from alloc-heavy fan-out. **S105 reclamation:** the demoted B4 density signal
+  returns as the *depth-gate input* (deep for alloc-free, shallow for alloc-heavy), **not** the old
+  admission-decline form. Cross-ref FIXME 0535.
+
+#### 2.8.7 Measurement strategy (the S104 doctrine)
+
+**Problem.** The utilization mechanisms above (M-static selection, M-dynamic ~2/core cap, the
+depth-allowance hierarchical decline) are all *order-of-magnitude* levers — they move a workload
+from 100×-serial to ~serial, or from serial to ~3×. Chasing that class of win with a
+rigorous statistical harness (fixed rep counts, idle-guards, thread-count sweeps) is the wrong
+instrument, and this sprint proved it does active harm. Two failure modes, both observed at S104:
+
+- **The idle-guard self-defeats mid-sweep.** A harness that refuses to time a rep until the
+  machine is idle cannot sweep: the sweep's *own* prior reps (and the parallel worker load they
+  generate) keep the machine busy, so the guard either blocks forever or admits reps under exactly
+  the contention it was meant to exclude. The guard invalidates the very series it gates.
+- **`CRANELISP_SPARK_STATS` inflates the wall it is meant to explain.** Under hierarchical decline
+  the per-declined-site counter (`SPARK_SERIAL_CONTINUES`) fires **hundreds of millions of times**
+  — once per inlined nested candidate across an exponential recursion. Even a single relaxed atomic
+  at that rate dominates the wall: it made F5 read **5.8 s** with stats on versus the real **0.7 s**
+  with stats off — an ~8× pure measurement artifact. Timing a wall with stats enabled measures the
+  instrument, not the mechanism.
+
+**Doctrine (S104, user-directed).** When chasing an order-of-magnitude win, measure **single-shot**:
+`T = nproc`, **one rep**, wall-clock plus a single cheap counter — not a rep/idle-guard/sweep
+harness. Specifically:
+
+1. **Time the wall with `CRANELISP_SPARK_STATS` OFF.** The stats atomics are a separate concern from
+   the wall; enabling them corrupts the number you are trying to read.
+2. **Get spawn / peak-executing counts from a SEPARATE stats-on run.** Counts and wall are two
+   different measurements of two different runs; never read both from one process. The count run's
+   wall is meaningless (see the 8× artifact); the wall run's counts do not exist.
+3. **Check `load1` is low before timing.** A single-shot wall has no averaging to hide a busy
+   machine, so confirm the host is quiet (`uptime` load-average near zero) immediately before the
+   timed run — this replaces the self-defeating idle-guard with an external precondition check.
+4. **Reserve the rigorous harness for final acceptance only.** `tests/perf/s104_utilization.py`
+   (rep counts, thread sweep, statistics) is the *acceptance* instrument — run it once, at the end,
+   to confirm the shipped default clears the north-star bar. It is not the exploration instrument.
+
+**The reproducible instrument.** The F1–F6 fixtures (`tests/perf/` + the §9 sparkability/gate
+tiers) plus the M-static discrimination experiment (§2.8.2's {recursive, non-recursive} ×
+{tail, non-tail} table as fixtures) are the reproducible measurement surface: each isolates one
+axis (F1 coarse-parallel, F4/F3 alloc-RC-dense, F5 deep-recursion count, F6 balanced alloc-free
+compute), so a single-shot wall + a stats-on count run on the relevant fixture attributes a change
+to its mechanism. Cross-ref: `effect-concurrency.md` §3.1 (the axis model these fixtures probe).
+
+#### 2.8.8 Remaining problems / open work
+
+The S104 mechanisms deliver the utilization-axis win (F6 balanced compute → ~3.4×; F5 deep recursion
+collapsed to `O(2^D)` spawns; the never-slower-than-serial floor held for the count-explosion class).
+Four problems remain open and are recorded here as the durable statement of what is left. All are
+cross-referenced to `effect-concurrency.md` §3.1 (the utilization-axis vs. contention-axis split).
+
+- **S105 focus — density-aware depth allowance.** The depth knob (`SPARK_MAX_DEPTH`) is a *single*
+  scalar: it fans the top `D` levels out and inlines below, blind to what the fanned-out strands
+  *do*. But the two classes it must serve pull in opposite directions: an alloc-free compute fan-out
+  (F6) *parallelizes* — deeper is better (measured 3.4× at D=3) — while an alloc-heavy contended
+  fan-out (F4/F3) *contends* on leaf refcount traffic — deeper drives it further above serial. A
+  single depth cannot be right for both. The fix is to gate depth on the **allocation/RC-density
+  signal** the ownership-inference read path already supplies (§2.7, the demoted B4 axis): *deep*
+  allowance for alloc-free strands, *shallow* (≈1) for alloc-heavy ones. This is the **synthesis of
+  the S104 utilization axis with the §3.1 contention axis** — the two axes composed rather than one
+  demoted — and is the S105 focus. Cross-ref: `effect-concurrency.md` §3.1.1 (axis re-ranking),
+  §2.7 (the density signal, preserved for this reuse).
+
+- **Budget-inline depth-leak ceiling (needs a backend hook).** The create-gate's inline/direct arm
+  advances **no** `SPARK_DEPTH` — it is emitted codegen with no runtime hook into the depth counter
+  (which only moves at `ivar_force` boundaries). So a create-gate site declined for *budget* reasons
+  (`IN_FLIGHT_SPARKS` at cap, not depth spent) direct-calls its child at the **same** fork-depth; a
+  deep recursion budget-inlined shallow then re-sparks via permit-recycle at that shallow depth. This
+  caps the usable depth allowance at `D ≈ log2(cap)`: above it the fan-out approaches the concurrent
+  cap before the depth cutoff bites, and the leak re-opens (measured: F5 re-explodes to **1.3M
+  spawns at D=4** on a 10-core host, vs. 14 spawns at D=3). The shipped **D=3 default sits safely
+  under** this ceiling (`2^3 = 8 ≤ nproc ≤ cap/2`), so it is a bounded ceiling, not a live defect —
+  but raising `D` for a deeper compute fan-out (the density-aware work above) first requires a
+  **backend hook that advances `SPARK_DEPTH` on the inline arm**, which cannot be closed in the
+  runtime alone (§2.8.4). Cross-ref: `effect-concurrency.md` §3.1.3 (counter unification).
+
+- **Alloc/RC-contention floor (F3, F4-hard) stays above serial.** The genuinely alloc/RC-dense
+  compute-bound class remains **above serial** even after the S104 cures, because its dominant cost is
+  in-leaf vec-COW leaf-refcount traffic bouncing across cores — a **memory-model** cost, not a
+  scheduler one. This is the deliberately-set-aside class: it is cured by the density signal (above) +
+  the **Phase-H** memory work (owned-copy mutate-in-place / non-atomic thread-local RC), **not** by
+  any create-gate or depth lever. Recording it here so it is not mistaken for an S104 regression.
+  Cross-ref: `effect-concurrency.md` §3.1 (contention axis is Phase-H), §3.6.3, §2.6.
+
+- **F4-at-D3 floor trade (accepted).** The shipped `D=3` default **regresses F4-hard relative to
+  `D=1`**: a deeper allowance fans F4's alloc-heavy tree out further, and (per the contention floor
+  above) that costs it. This was **accepted by the user (2026-07-07)** as the price of the F6
+  compute-parallel win (`D=1` would forfeit F6's 3.4× to protect an F4 class that is a Phase-H target
+  regardless). It is a conscious axis trade, not an oversight; the density-aware allowance (S105
+  focus) is what dissolves it — `D` deep for F6, shallow for F4 — so the trade is transitional.
+  Cross-ref: `effect-concurrency.md` §3.1.1.
 
 ## 3. IVar Runtime Primitives
 
