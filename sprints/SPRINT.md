@@ -1,6 +1,6 @@
 # Sprint 105: Lenient Eval — Attributing the Parallel Residual (measure-first)
 
-**Status**: PHASE 4 WAVE ORG — spine Phase-3 complete; awaiting user go-ahead to launch Phase-5 Wave 0
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 0 (build the instrument)
 
 **Goal**: Increase measurement fidelity to **attribute the post-increment-II parallel residual** (F3/F4 above serial) *by mechanism* — scheduler-spread vs (a)-allocation vs residual-atomic-RC vs unavailable-parallelism — then build the lever the evidence selects. Lead hypothesis for the (a)-allocation case: **escape ∧ uniqueness stack allocation** (unique, non-escaping values as true RC-free stack locals, passed by mutable/immutable reference).
 
@@ -110,8 +110,8 @@ The spine is **inherently serial** — the instrument must be built before it ca
 ### Wave 0 — build the instrument (Phase-5 Stage 0)
 | Skill | Crate | Task | Status |
 |---|---|---|---|
-| /dev | cranelisp-backend | Commit N1 (`alloc_bytes`) + N3 (`[RC_SITE_STATS]`) + N4 (`CRANELISP_NO_STACK_ALLOC` const→`OnceLock`) gated instrumentation; zero-cost-off unit tests; N2 only if the coarse two-bucket is cheap. | pending |
-| /qa | — | Build `tests/perf/s105_attribution.py` (single-sourced on the S104 harnesses) + fixtures **F7** ((a)-isolating) + **F8** (parallel stack-alloc witness, serial-vs-parallel gate-5 divergence); the 2 failing-not-ignored perf-lane guards. | pending |
+| /dev | cranelisp-backend | Commit N1 (`alloc_bytes`) + N3 (`[RC_SITE_STATS]`) + N4 (`CRANELISP_NO_STACK_ALLOC` const→`OnceLock`) gated instrumentation; zero-cost-off unit tests; N2 only if the coarse two-bucket is cheap. | **done `3e923dc`** — N1/N3/N4 in, N2 skipped (hot-path cost; gate-5 rides F8 `STACK_SLOT_HITS`); seam×scenario unit tests; suite 4146/1(0528)/1, zero new REDs; nothing regenerates. |
+| /qa | — | Build `tests/perf/s105_attribution.py` (single-sourced on the S104 harnesses) + fixtures **F7** ((a)-isolating) + **F8** (parallel stack-alloc witness, serial-vs-parallel gate-5 divergence); the 2 failing-not-ignored perf-lane guards. | **in-progress** |
 
 ### Wave 1 — run the attribution → the decision gate (Phase-5 Stage 1)
 | Skill | Crate | Task | Status |
