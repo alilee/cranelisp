@@ -295,7 +295,9 @@ pub fn rc_emit_counts() -> (u64, u64) {
 /// codegen stack-slot hits (B3.4); `reuse_hit`/`reuse_miss` = increment-II
 /// placeholders (always `0` until slot-reuse lands, §6); `rc_nonatomic`/
 /// `rc_atomic` = emitted-op arm split (B3.3), consumer computes the share
-/// `rc_nonatomic / (rc_nonatomic + rc_atomic)`.
+/// `rc_nonatomic / (rc_nonatomic + rc_atomic)`; `alloc_bytes` = per-run alloc
+/// *volume* (N1, S105 §13.2.2 — appended tail field, sourced from the
+/// pre-existing `BYTES_ALLOCATED` tally).
 extern "C" fn print_rc_stats() {
     eprintln!("{}", rc_stats_line());
 }
@@ -309,6 +311,12 @@ fn rc_stats_line() -> String {
     let dec = RC_DEC_COUNT.load(Ordering::Relaxed);
     let allocs = alloc::alloc_count();
     let deallocs = alloc::dealloc_count();
+    // N1 (S105, §13.2.2): alloc *volume* — the (a)-allocation term needs bytes,
+    // not just count, to weight the allocator contribution (I2). Sourced from the
+    // pre-existing `BYTES_ALLOCATED` tally (`alloc_with_rc` already accumulates it
+    // unconditionally, alongside `ALLOC_COUNT`) — no new hot-path cost; only this
+    // at-exit print (itself only wired when `CRANELISP_RC_STATS` is set) reads it.
+    let alloc_bytes = alloc::bytes_allocated();
     let stack_slot = STACK_SLOT_HITS.load(Ordering::Relaxed);
     let reuse_hit = REUSE_HIT_COUNT.load(Ordering::Relaxed);
     let reuse_miss = REUSE_MISS_COUNT.load(Ordering::Relaxed);
@@ -320,7 +328,8 @@ fn rc_stats_line() -> String {
     format!(
         "[RC_STATS] rc_inc={inc} rc_dec={dec} allocs={allocs} deallocs={deallocs} \
          stack_slot={stack_slot} reuse_hit={reuse_hit} reuse_miss={reuse_miss} \
-         rc_nonatomic={rc_nonatomic} rc_atomic={rc_atomic} str-len_adapt={str_len_adapt}"
+         rc_nonatomic={rc_nonatomic} rc_atomic={rc_atomic} str-len_adapt={str_len_adapt} \
+         alloc_bytes={alloc_bytes}"
     )
 }
 

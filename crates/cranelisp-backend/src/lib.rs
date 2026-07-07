@@ -148,6 +148,10 @@ pub mod got_observer;
 pub mod heap;
 pub mod jit;
 pub mod primitives_inline;
+/// N3 (S105, `design/backend/ownership-codegen.md` §13.2.2): the gated,
+/// backend-side per-site residual-atomic-RC dump (`[RC_SITE_STATS]`). Internal —
+/// no public surface (codegen-time measurement counter, zero-cost-off).
+mod rc_site_stats;
 
 // Platform-interface schema generator (platform-interface.md §5.5/§6.0; BC §3
 // "the platform-interface codegen role"). The single generator with multiple

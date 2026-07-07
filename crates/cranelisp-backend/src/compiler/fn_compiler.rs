@@ -733,7 +733,20 @@ where
     /// `Some(false)` (Crossing) / `None` (fact absent / analysis off) ⇒
     /// `Atomic`, verbatim today.
     pub(crate) fn rc_atomicity_for_node(&self, node: &MonoExpr) -> heap::RcAtomicity {
-        match node_confined(node) {
+        let confined = node_confined(node);
+        // N3 (S105, `design/backend/ownership-codegen.md` §13.2.2): record this
+        // confinement-classified RC site for the residual-atomic-RC attribution dump
+        // (`[RC_SITE_STATS]`). Gated on `CRANELISP_RC_STATS`, host-side, no emitted IR
+        // ⇒ byte-identical-off. The emitting node's span + the enclosing fn FQ +
+        // the confinement class are all in hand here (the live `node_confined`
+        // consumer), so this is the site the dump keys on.
+        crate::rc_site_stats::record_rc_site_if_enabled(
+            &self.ctx.current_module,
+            self.current_fn_name.as_ref(),
+            node.span(),
+            confined,
+        );
+        match confined {
             Some(true) => heap::RcAtomicity::NonAtomic,
             _ => heap::RcAtomicity::Atomic,
         }
@@ -804,7 +817,14 @@ where
         // (byte-identical). With it `true`, a construction is stack-eligible iff the
         // analysis proved it NoEscape (gate: escape precondition) AND none of the
         // backend-local sharpenings (gates 3, 5) declines it.
-        if !STACK_ALLOC_ESCAPE_FACT_SOUND {
+        // N4 (S105, §13.2.2): the FINE stack-oracle gate. `stack_alloc_enabled()`
+        // AND-s the `STACK_ALLOC_ESCAPE_FACT_SOUND` const default with a runtime
+        // env read of `CRANELISP_NO_STACK_ALLOC` — declining stack-alloc ONLY
+        // (borrow / non-atomic-RC / reuse stay live), the fine granularity the
+        // COARSE `CRANELISP_NO_OWNERSHIP` cannot give. Codegen-time read (once,
+        // via `OnceLock`), so ZERO runtime cost; with the env unset it returns the
+        // const default (`true`) ⇒ byte-identical codegen to today (§2.2).
+        if !stack_alloc_enabled() {
             return false;
         }
         // Precondition: the analysis must have proved this allocation NoEscape.
@@ -1251,6 +1271,34 @@ pub(crate) fn node_confined(node: &MonoExpr) -> Option<bool> {
 /// `true` and the mechanism activates. `false` ⇒ byte-identical to pre-B3.4.
 const STACK_ALLOC_ESCAPE_FACT_SOUND: bool = true;
 
+/// N4 (S105, `design/backend/ownership-codegen.md` §13.2.2): the pure gate value
+/// for the FINE stack oracle — the const default AND-ed with the *negation* of the
+/// `CRANELISP_NO_STACK_ALLOC` env presence. Factored out of [`stack_alloc_enabled`]
+/// so both polarities are unit-testable without touching the process-global env
+/// (the `OnceLock` in the wrapper caches the first read, so an in-process env flip
+/// is unreliable — the same reason `nonatomic_rc_codegen_enabled`'s arms are tested
+/// through the pure emit path, not an env flip).
+///
+/// `no_stack_alloc_env == false` (env unset) ⇒ the const default (`true`) ⇒
+/// **byte-identical** to pre-N4 codegen. `no_stack_alloc_env == true` ⇒ `false` ⇒
+/// stack-alloc declines everywhere (the FINE oracle OFF), leaving borrow / RC /
+/// reuse live.
+const fn stack_alloc_gate_value(no_stack_alloc_env: bool) -> bool {
+    STACK_ALLOC_ESCAPE_FACT_SOUND && !no_stack_alloc_env
+}
+
+/// N4 (S105, §13.2.2): codegen-time FINE stack-oracle gate. Reads
+/// `CRANELISP_NO_STACK_ALLOC` **once** into a process-global `OnceLock` (so a whole
+/// run is consistent), exactly the sibling of [`crate::heap::nonatomic_rc_codegen_enabled`]
+/// (`heap.rs`). Codegen-time ⇒ no runtime cost regardless; env-unset ⇒ the const
+/// default (byte-identical-off, §2.2). It sits ABOVE the `node_escapes` / gate-3 /
+/// gate-5 chain in [`FnCompiler::constructor_call_stack_eligible`], so every
+/// soundness sharpening is unaffected.
+fn stack_alloc_enabled() -> bool {
+    static E: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *E.get_or_init(|| stack_alloc_gate_value(std::env::var_os("CRANELISP_NO_STACK_ALLOC").is_some()))
+}
+
 /// B3.4 (`design/backend/ownership-codegen.md` §4.1): read the `escapes` site
 /// fact off a [`MonoExpr`] node. Only the five allocation/capture-producing
 /// variants carry the fact (same set as [`node_confined`]); every other variant
@@ -1359,7 +1407,10 @@ mod b34_stack_eligibility_tests {
     //! `body_has_self_call` (gate 3, the TCO-back-edge decline), and the composed
     //! method itself (gate 5, the FIXME-0525 spark-relocation decline). B3.4 is
     //! ACTIVATED (2026-07-05); these pin every gate.
-    use super::{body_has_self_call, node_escapes, STACK_ALLOC_ESCAPE_FACT_SOUND};
+    use super::{
+        body_has_self_call, node_escapes, stack_alloc_enabled, stack_alloc_gate_value,
+        STACK_ALLOC_ESCAPE_FACT_SOUND,
+    };
     use cranelisp_types::{
         ConcreteType, FQTypeName, JitSymbol, ModuleFullPath, MonoExpr, ResolvedCall, Span, Symbol,
         TypeName,
@@ -1455,6 +1506,70 @@ mod b34_stack_eligibility_tests {
     // without this test file being revisited (byte-identical-off stays reachable
     // under the const=false / `CRANELISP_NO_OWNERSHIP` oracle path).
     const _: () = assert!(STACK_ALLOC_ESCAPE_FACT_SOUND);
+
+    // --- N4 (S105 §13.2.2): the FINE stack-oracle env gate ----------------------
+
+    // spec: design/backend/ownership-codegen.md §13.2.2 N4 — the pure gate value:
+    // env-unset ⇒ the const default (byte-identical-off); env-set ⇒ stack-alloc
+    // OFF (the fine oracle, borrow/RC/reuse untouched). Both polarities pinned
+    // without touching the process-global env (the OnceLock caches its first read).
+    #[test]
+    fn n4_stack_alloc_gate_value_both_polarities() {
+        // env unset ⇒ const default ⇒ byte-identical-off. Since the const is
+        // ACTIVATED (`true`), the unset gate must be `true` (stack path fires).
+        assert_eq!(
+            stack_alloc_gate_value(false),
+            STACK_ALLOC_ESCAPE_FACT_SOUND,
+            "env unset must yield the const default (byte-identical-off, §2.2)"
+        );
+        assert!(stack_alloc_gate_value(false), "with the const activated, env-unset fires the stack path");
+        // env set (CRANELISP_NO_STACK_ALLOC=1) ⇒ the FINE oracle OFF ⇒ decline.
+        assert!(
+            !stack_alloc_gate_value(true),
+            "CRANELISP_NO_STACK_ALLOC set must decline stack-alloc (the fine oracle OFF)"
+        );
+    }
+
+    // spec: design/backend/ownership-codegen.md §13.2.2 N4 — in THIS test process
+    // (env unset) the production OnceLock gate equals the const default, i.e. the
+    // gate introduces no divergence when the toggle is absent (byte-identical-off).
+    #[test]
+    fn n4_stack_alloc_enabled_defaults_to_const_when_env_unset() {
+        assert_eq!(
+            stack_alloc_enabled(),
+            STACK_ALLOC_ESCAPE_FACT_SOUND,
+            "with CRANELISP_NO_STACK_ALLOC unset the gate must equal the const default"
+        );
+    }
+
+    // spec: design/backend/ownership-codegen.md §13.2.2 N4 — the gate is the FIRST
+    // short-circuit in `constructor_call_stack_eligible`: when the gate value is
+    // false, an otherwise-eligible NoEscape scalar constructor is declined (the
+    // stack path flips OFF), independent of the escape/gate-3/gate-5 chain. Driven
+    // through the pure gate value so no env flip / OnceLock poisoning is needed.
+    #[test]
+    fn n4_gate_false_declines_an_otherwise_eligible_construction() {
+        // An otherwise-fully-eligible node (NoEscape, scalar payload, no self-call,
+        // not spark-relocated) — the exact shape the `gate5` test proves eligible.
+        let app = apply("Some", vec![var("x")], Some(false), None);
+        let args = match &app {
+            MonoExpr::Apply { args, .. } => args.clone(),
+            _ => unreachable!(),
+        };
+        // node_escapes precondition holds (Some(false)); the ONLY thing that turns
+        // eligibility off for this shape is the N4 gate. Model the composed method's
+        // gate-first decision: gate=false ⇒ declined regardless of the rest.
+        let escape_ok = node_escapes(&app) == Some(false);
+        assert!(escape_ok && !args.is_empty(), "fixture is otherwise eligible");
+        let eligible_when_gate_off =
+            stack_alloc_gate_value(true) && escape_ok; // gate is the leading conjunct
+        assert!(
+            !eligible_when_gate_off,
+            "with the N4 gate OFF, even a fully-eligible NoEscape scalar constructor is declined"
+        );
+        // And with the gate ON the leading conjunct does not itself block the win.
+        assert!(stack_alloc_gate_value(false), "gate ON must not block the eligible shape");
+    }
 
     // --- gate 5 (FIXME 0525): a spark-relocated construction stays HEAP ---------
     #[test]

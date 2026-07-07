@@ -318,6 +318,67 @@ fn reuse_family_reflects_live_counters_in_the_line() {
     );
 }
 
+// --- N1 (S105 §13.2.2): per-run alloc BYTES field ---------------------------
+
+// spec: design/backend/ownership-codegen.md §13.2.2 N1 — the `[RC_STATS]` line
+// carries the appended `alloc_bytes=` field (alloc volume, I2), positioned AFTER
+// the pre-existing tail so every positional parser still matches.
+#[test]
+fn n1_alloc_bytes_field_present_and_appended() {
+    let line = rc_stats_line();
+    assert!(line.contains("alloc_bytes="), "line must carry the N1 field: {line}");
+    // Appended after the prior tail field (`str-len_adapt=`) so the whole prefix
+    // grammar is byte-stable for existing token/regex readers.
+    let str_len_at = line.find("str-len_adapt=").expect("str-len_adapt field present");
+    let alloc_bytes_at = line.find("alloc_bytes=").unwrap();
+    assert!(
+        alloc_bytes_at > str_len_at,
+        "alloc_bytes must be appended at the tail, after str-len_adapt: {line}"
+    );
+    // The pre-N1 fields keep their leading order (regression guard for parsers).
+    assert!(line.starts_with("[RC_STATS] rc_inc="), "leading order preserved: {line}");
+}
+
+// spec: design/backend/ownership-codegen.md §13.2.2 N1 — the reported value is the
+// live `alloc::bytes_allocated()` tally (NOT count, NOT a fabricated constant).
+// `BYTES_ALLOCATED` is monotonic-cumulative and tracks ONLY `alloc_with_rc` (the
+// cranelisp heap), so Rust-side `format!`/`String` allocations do not perturb it.
+#[test]
+fn n1_alloc_bytes_reflects_the_live_bytes_allocated_tally() {
+    let b0 = crate::alloc::bytes_allocated();
+    // A known cranelisp-heap allocation: total_size = HeapHeader::SIZE (16) + 32.
+    let p = crate::alloc::alloc_with_rc(32);
+    let expected = b0 + cranelisp_types::HeapHeader::SIZE + 32;
+    let line = rc_stats_line();
+    assert!(
+        line.contains(&format!("alloc_bytes={expected}")),
+        "alloc_bytes must equal the live cumulative byte tally ({expected}): {line}"
+    );
+    // Clean up the chunk (BYTES_ALLOCATED is cumulative, so this does not rewind
+    // the counter — it only keeps the live-header scan tidy).
+    unsafe {
+        crate::alloc::dealloc(p);
+    }
+}
+
+// spec: design/backend/ownership-codegen.md §13.2.2 N1 — NEGATIVE: alloc_bytes is
+// distinct from the alloc COUNT (`allocs=`) — a single alloc advances bytes by its
+// full size, not by 1. Guards against the field being wired to the wrong counter.
+#[test]
+fn n1_alloc_bytes_is_volume_not_count() {
+    let c0 = crate::alloc::alloc_count();
+    let b0 = crate::alloc::bytes_allocated();
+    let p = crate::alloc::alloc_with_rc(64);
+    let dc = crate::alloc::alloc_count() - c0;
+    let db = crate::alloc::bytes_allocated() - b0;
+    assert_eq!(dc, 1, "one allocation advances the count by exactly 1");
+    assert_eq!(db, cranelisp_types::HeapHeader::SIZE + 64, "bytes advance by the full size, not 1");
+    assert_ne!(db, dc, "alloc_bytes must NOT track the same magnitude as allocs (count)");
+    unsafe {
+        crate::alloc::dealloc(p);
+    }
+}
+
 // spec: design/backend/ownership-codegen.md §9.2 / §13.2.1 — H3: the per-extern
 // adaptation-pair family names `str-len` in the line (present even at count 0 —
 // the family-presence honesty), and its runtime tally hook advances the count.
