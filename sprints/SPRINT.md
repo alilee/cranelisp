@@ -1,6 +1,6 @@
 # Sprint 105: Lenient Eval — Attributing the Parallel Residual (measure-first)
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 0 (build the instrument)
+**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 1b (acid test: hypothesis vs its real target classes)
 
 **Goal**: Increase measurement fidelity to **attribute the post-increment-II parallel residual** (F3/F4 above serial) *by mechanism* — scheduler-spread vs (a)-allocation vs residual-atomic-RC vs unavailable-parallelism — then build the lever the evidence selects. Lead hypothesis for the (a)-allocation case: **escape ∧ uniqueness stack allocation** (unique, non-escaping values as true RC-free stack locals, passed by mutable/immutable reference).
 
@@ -119,6 +119,15 @@ The spine is **inherently serial** — the instrument must be built before it ca
 | /qa | — | Run the full attribution: the 2×2 allocator-swap × ownership-off factorial (+ `I`), the fine-probe apportionment, the core-count speedup-ceiling sweep, F8's gate-5 sub-verdict. Emit the per-fixture attribution vector + the decision-gate verdict. | pending |
 
 **Wave-1 gate = `/sprint` + user** — read the attribution, select the build lever (mid-sprint re-scope with user sign-off). This is the pivotal decision the whole preparatory phase exists to inform; it can legitimately say **accept-done → pivot to `--release`** (no build).
+
+**Wave-1 result (`6b200818`):** F3/F4 residual = **unavailable-parallelism → accept-done for the parallel-backtracking class** (4 oracles agree; negative scaling; F8 gate-5 witness: stack-alloc fires serial hits=4 / parallel hits=0). **BUT** the user flagged (correctly) that F3/F4 are backtracking search — the *worst case* for the stack hypothesis (recursion gate 3 + spark gate 5 + no parallelism) and **not representative of the hypothesis's real target class**. The delivered inc-II reuse tokens already remove the *copy* when unique; the hypothesis's actual delta is the **(a)-allocator term** — stack-allocating unique non-escaping aggregates so there is no malloc/free at all. That was never measured. → **Wave-1b acid test** before the gate closes.
+
+### Wave 1b — the acid test: measure the hypothesis against its REAL target classes
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /qa | — | Measure who benefits from the (a)-stack delta. **(i) The gate-3/loop determinant** (pivotal): use the EXISTING statically-sized-all-scalar stack mechanism as a probe across straight-line / loop / non-tail-recursive shapes → read `STACK_SLOT_HITS` to map WHERE the built mechanism fires (does stack-alloc survive a loop body, or do loops-as-tail-recursion trip gate 3?). **(ii) Opportunity size** for realistic serial temp-aggregate code (non-scalar unique non-escaping Vec/record built/used/discarded) — `alloc_bytes`/count + N3 confinement + allocation wall-share (mimalloc-vs-system) = the (a) recoverable ceiling the *unbuilt* delta could recover. **(iii) F6 re-probe** — per-strand alloc volume + gate-5 decline count for the positive-scaling parallel case. Verdict: is the benefiting class common + hot enough to justify the delta increment? | pending |
+
+**Note the DELTA is not built** — the acid test measures (i) the built narrow mechanism's control-flow reach + (ii)/(iii) the *opportunity* (recoverable alloc volume), NOT the delta firing (which would need the increment).
 
 ### Wave 2 — build the evidence-selected lever (Phase-5 Stage 2; CONDITIONAL, scoped at the Wave-1 gate)
 | If the gate selects… | Skill | Crate | Task |
