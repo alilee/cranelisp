@@ -36,38 +36,64 @@ Every test currently failing in `cargo nextest run --no-fail-fast` MUST have an 
 
 A failing test without all six fields is treated as a sprint-blocking issue. `/sprint` MUST refuse to close a sprint that contains unentered failures.
 
-### Sprint 105 Phase-5 Wave-1 — residual-attribution durable RED records (/qa, 2026-07-07)
+### Sprint 105 Phase-7 close — residual-attribution guards RECLASSIFIED to GREEN (/qa, 2026-07-08)
+
+**Supersedes the Wave-1 "durable RED records" entry (below).** Phase-7 action 1
+(user-approved) reclassified the two Wave-1 failing-not-ignored guards in
+`tests/s105_residual_attribution.rs` from REDs-asserting-an-unbuilt-feature into
+**GREEN assertions of the current, correct behaviour**. Rationale: under the S105
+accept-done verdict (`tests/plan/s105-attribution-results.md` — F4-hard residual is
+unavailable-parallelism → accept-done → `--release`; NO memory or stack lever built),
+those RED assertions would stay failing forever, which **misuses failing-not-ignored**
+(that discipline is for defects with intent-to-fix). The behaviours are correct and
+we chose not to change them. **Both are now GREEN and removed from the intentional-RED
+set.** They remain live regression guards of the current behaviour, each carrying a
+`// FRONTIER:` note of the future increment that would legitimately re-polarise it.
+
+- **`f8_gate5_parallel_arm_stack_alloc_reachable` → `f8_gate5_parallel_arm_correctly_declines_stack_alloc`**
+  (GREEN). Asserts `stack_slot==0` on the recursive/sparked parallel-search arm —
+  the escape∧uniqueness stack lever CORRECTLY declines there (gate 3 self-recursion +
+  gate 5 spark relocation), firing only on the in-frame arm
+  (`f8_serial_arm_stack_allocates` positive control, GREEN). FRONTIER: **multi-field
+  SROA** would extend stack-alloc onto the parallel shape (re-polarise to
+  `stack_slot>0`). Frontier handed forward, not owed.
+- **`f3_shared_read_residual_atomic_rc_confined` → `f3_shared_read_currently_uses_atomic_rc`**
+  (GREEN). Asserts `rc_atomic>0` on the shared-read parallel reduce — atomic RC is
+  the SOUND default for cross-strand Crossing reads. FRONTIER: **confinement precision
+  0526/0528** (`design/arch/effect-concurrency.md` §3.1.6) would prove the reads
+  Confined and move them to the non-atomic arm (re-polarise to `rc_atomic==0`).
+  Frontier handed forward, not owed.
+
+The 3 companion tests (`f7_alloc_parallel_serial_exit_match`,
+`f8_stack_witness_parallel_serial_exit_match`, `f8_serial_arm_stack_allocates`) were
+already GREEN and stay GREEN. **Net: this file now contributes 0 REDs** (was 2).
+
+**Verified full-suite state at reclassification (S105 close), HEAD + this change-set:
+`cargo nextest run --no-fail-fast` → 4152 run / 4151 passed / 1 failed / 1 skipped.**
+The sole remaining standard RED is
+`cranelisp::ownership_reuse::chaining_toggle_off_allocates_intermediate` (FIXME 0528,
+/typecheck — the S103 carry). The S101-era guard set (once "22 intentional failing")
+was fully drained by S102/S103; the pre-reclassification set was only **3** (the two
+S105 guards + the 0528 carry), now **1**. NB: root `CLAUDE.md §Testing` still cites
+"22 intentional failing tests" — that figure is stale (flagged for /sprint → user).
+
+<details><summary>Superseded Wave-1 entry (2026-07-07) — kept for provenance</summary>
 
 The measure-first attribution phase (`tests/plan/s105-attribution-results.md`)
 delivered two failing-not-ignored perf-lane behavioural guards
-(`tests/s105_residual_attribution.rs`, §9.1 of the plan). They are the durable
+(`tests/s105_residual_attribution.rs`, §9.1 of the plan). They were the durable
 records of the two live findings; the primary gate verdict is **accept-done →
-`--release`** (no memory lever built this sprint), so both carry forward. This adds
-**2** to the suite's intentional failing count (22 → **24**).
+`--release`** (no memory lever built this sprint). At the time this was recorded as
+adding 2 to the suite's intentional failing count (22 → 24). **Reclassified to GREEN
+at S105 close — see the superseding entry above.**
 
-- **`cranelisp::s105_residual_attribution::f8_gate5_parallel_arm_stack_alloc_reachable`**
-  - SHA: (this commit) · Owner: **/backend** · Target sprint: future (build-gated)
-  - Signature: `stack_slot=0` on the recursive/sparked parallel-search arm — the
-    escape∧uniqueness stack path is declined by gate 3 (self-recursion) + gate 5
-    (spark relocation); `assertion failed: hits > 0`.
-  - Disposition: **out-of-scope (owner=/backend)** — the 0525 gate-5 parallel-
-    residual reachability gap. Flips GREEN only when a spark-frame-aware +
-    recursion-aware stack path lands (a scope increase beyond increment I). The
-    attribution shows the stack lever is NOT selected, so this is a carried record.
-- **`cranelisp::s105_residual_attribution::f3_shared_read_residual_atomic_rc_confined`**
-  - SHA: (this commit) · Owner: **/typecheck + /backend** · Target sprint: future (build-gated)
-  - Signature: `rc_atomic=18` on the shared-read parallel reduce (N3 site dump:
-    `build-grid class=Crossing`); `assertion left==right` (18 ≠ 0).
-  - Disposition: **out-of-scope (owner=/typecheck+/backend)** — the F3 dominant
-    term (NONATOMIC_RC recovers ~76%, sound-cure ceiling). Flips GREEN when 0526
-    confinement-gated projection elision / 0528 uniqueness-preservation prove the
-    shared reads Confined. Carried: F3-serial already beats F3-parallel 8×, so the
-    lever is only funded if F3-parallel competitiveness becomes a goal (user gate).
+- **`f8_gate5_parallel_arm_stack_alloc_reachable`** — was RED: `stack_slot=0` on the
+  recursive/sparked parallel-search arm (gate 3 + gate 5 decline). Owner was /backend.
+- **`f3_shared_read_residual_atomic_rc_confined`** — was RED: `rc_atomic=18` on the
+  shared-read parallel reduce (N3 site dump: `build-grid class=Crossing`). Owner was
+  /typecheck + /backend.
 
-The 3 companion tests (`f7_alloc_parallel_serial_exit_match`,
-`f8_stack_witness_parallel_serial_exit_match`, `f8_serial_arm_stack_allocates`) are
-GREEN — the fixtures' parallel≡serial correctness record + the stack-alloc positive
-control — and are NOT ledger entries (they pass).
+</details>
 
 ### Sprint 102 Phase-5 Stage-1 QA-first RED set (/qa, 2026-07-03)
 

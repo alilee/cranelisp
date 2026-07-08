@@ -8,28 +8,36 @@
 //! CORRECTNESS record (GREEN) and (b) the two failing-not-ignored BEHAVIOURAL
 //! guards that flip green when the selected build lever lands.
 //!
-//! Draft-time polarity (probed against HEAD 2026-07-07, release binary):
-//!   GREEN (correctness — the durable record independent of the perf verdict):
+//! Polarity (probed against HEAD 2026-07-07, release binary) — ALL GREEN:
+//!   Correctness record (durable, independent of the perf verdict):
 //!     f7_alloc_parallel_serial_exit_match
 //!     f8_stack_witness_parallel_serial_exit_match
 //!     f8_serial_arm_stack_allocates            (positive control: stack-alloc CAN fire)
-//!   RED (failing-not-ignored — the durable attribution records, §9.1):
-//!     f8_gate5_parallel_arm_stack_alloc_reachable  (§9.1.1 — the 0525 gate-5
-//!         reachability gap: the stack lever fires only on the non-recursive
-//!         in-frame arm, NEVER on the recursive/sparked parallel-search arm;
-//!         RED until a spark-frame-aware + recursion-aware stack path lands)
-//!     f3_shared_read_residual_atomic_rc_confined  (§9.1.2 — the F3 dominant
-//!         term: shared-read parallel reduce emits conservatively-atomic RC that
-//!         a confinement-precision lever (0526/0528) would move to the non-atomic
-//!         arm; RED until that lever lands)
+//!   Current-behaviour characterizations (the two attribution records, §9.1):
+//!     f8_gate5_parallel_arm_correctly_declines_stack_alloc  (§9.1.1 — the 0525
+//!         gate-5 behaviour: the stack lever fires only on the non-recursive
+//!         in-frame arm, and CORRECTLY declines on the recursive/sparked
+//!         parallel-search arm. This is the current, correct behaviour under
+//!         the accept-done verdict — the stack lever is NOT selected. FRONTIER:
+//!         multi-field SROA would extend stack-alloc onto the parallel shape.)
+//!     f3_shared_read_currently_uses_atomic_rc  (§9.1.2 — the F3 dominant term:
+//!         a shared-read parallel reduce CURRENTLY emits conservatively-atomic
+//!         RC (the sound confinement default). FRONTIER: a confinement-precision
+//!         lever (0526/0528) would prove the shared reads Confined and move them
+//!         to the non-atomic arm.)
 //!
-//! Verdict feeding these bars (`tests/plan/s105-attribution-results.md`): the
-//! F4-hard residual is **unavailable-parallelism → accept-done**; F3 carries a
-//! large residual-atomic-RC term (NONATOMIC_RC recovers ~76%). The stack lever is
-//! NOT selected — the gate-5 sub-verdict shows it never reaches the parallel path.
-//! These two RED guards are the durable records of the two live findings, kept
-//! failing-not-ignored per `memory/feedback_failing_not_ignored.md` +
-//! `memory/feedback_no_fixme_with_failing_test.md`.
+//! S105 CLOSE RECLASSIFICATION (Phase-7 action 1, user-approved): these two were
+//! authored Wave-1 as failing-not-ignored REDs asserting an unbuilt feature. Under
+//! the accept-done verdict (`tests/plan/s105-attribution-results.md`: the F4-hard
+//! residual is unavailable-parallelism → accept-done → `--release`; NO memory or
+//! stack lever built this sprint) those assertions would stay RED forever — a
+//! misuse of failing-not-ignored, which is reserved for defects with intent-to-fix.
+//! They are correct current behaviour we CHOSE not to change. Reclassified to GREEN
+//! assertions of the current behaviour, each carrying a `// FRONTIER:` note of the
+//! future increment that would flip the expectation. They remain live regression
+//! guards of the current behaviour (they catch an accidental change), not perpetual
+//! REDs. The frontier work (multi-field SROA; 0526/0528 confinement precision) is
+//! handed forward, not owed.
 //!
 //! Free-standing: every fixture is `(import [primitives [*]])` + inline helpers;
 //! zero stdlib dependency (root CLAUDE.md §Stdlib separation). Sources are small
@@ -163,58 +171,75 @@ fn f8_serial_arm_stack_allocates() {
 }
 
 // =============================================================================
-// FAILING-NOT-IGNORED attribution records (RED) — §9.1.
+// Current-behaviour attribution characterizations (GREEN) — §9.1.
+// Reclassified from failing-not-ignored REDs at S105 close (accept-done verdict):
+// each asserts the CURRENT, correct behaviour and carries a `// FRONTIER:` note of
+// the future increment that would flip it. Live regression guards, not perpetual
+// REDs. See the module doc comment for the reclassification rationale.
 // =============================================================================
 
 // spec: tests/plan/s105-residual-attribution.md §"Behavioural guards" (guard 1 / §4.1) — the 0525
-// gate-5 parallel-residual reachability gap. RED: the stack lever fires only on
-// the non-recursive in-frame arm (f8_serial_arm_stack_allocates, GREEN) and NEVER
-// on the recursive/sparked parallel-search arm — the shape the F3/F4 residual
-// actually lives on. Gate 3 (self-recursion) declines the recursive bearer AND
-// gate 5 declines any lenient spark relocation, so the SAME construction that
-// stack-allocates in-frame stays heap on the parallel path. This guard flips
-// GREEN only when a spark-frame-aware + recursion-aware stack path lands (a scope
-// increase beyond increment I). FIXME(/backend): spark-frame-aware stack path
-// (`design/backend/ownership-codegen.md` §4.3 gate 5 / gate 3 relaxation).
+// gate-5 parallel-residual behaviour. GREEN characterization: the stack lever fires
+// only on the non-recursive in-frame arm (f8_serial_arm_stack_allocates, GREEN) and
+// CORRECTLY declines on the recursive/sparked parallel-search arm — gate 3 (self-
+// recursion) declines the recursive bearer AND gate 5 declines any lenient spark
+// relocation, so the SAME construction that stack-allocates in-frame stays heap on
+// the parallel path. This is the current, correct behaviour under the S105 accept-
+// done verdict: the stack lever is NOT selected, and it must NOT silently start
+// firing on the sparked path (which would relocate a possibly-escaping alloc into a
+// spark frame). This guard pins that decline.
+//
+// FRONTIER: multi-field SROA (scalar-replacement of the phi-ADT's fields across the
+// spark boundary) is the future increment that would legitimately extend stack-
+// allocation onto the parallel shape; when that lands, this expectation flips to
+// stack_slot>0 and the test is re-polarised. Handed forward, not owed.
 #[test]
-fn f8_gate5_parallel_arm_stack_alloc_reachable() {
+fn f8_gate5_parallel_arm_correctly_declines_stack_alloc() {
     let out = run_rc_stats(F8_PARALLEL, /*serial=*/ false);
     let hits = rc_field(&out.stderr, "stack_slot");
-    assert!(
-        hits > 0,
-        "PARALLEL-RESIDUAL REACHABILITY GAP (0525 gate-5, RED): the recursive/\
-         sparked parallel-search arm's phi-ADT construction does NOT stack-\
-         allocate (stack_slot={hits}) — gate 3 (self-recursion) + gate 5 (spark \
-         relocation) decline it. The escape∧uniqueness stack lever therefore does \
-         NOT recover the (a)-allocation on the parallel path; a spark-frame-aware \
-         + recursion-aware stack path is a scope increase beyond increment I. \
-         This guard is the durable record; it flips GREEN when that path lands.\n{}",
+    assert_eq!(
+        hits, 0,
+        "PARALLEL-ARM GATE-5 DECLINE (0525, current correct behaviour): the \
+         recursive/sparked parallel-search arm's phi-ADT construction must NOT \
+         stack-allocate — gate 3 (self-recursion) + gate 5 (spark relocation) \
+         correctly decline it, so the escape∧uniqueness stack lever stays on the \
+         in-frame arm only (f8_serial_arm_stack_allocates is the positive control). \
+         Observed stack_slot={hits} (expected 0). A non-zero here means stack-alloc \
+         has started firing on the sparked path — either the FRONTIER multi-field \
+         SROA lever landed (re-polarise this test to stack_slot>0) or an unsound \
+         relocation regressed in (investigate before flipping).\n{}",
         out.stderr
     );
 }
 
 // spec: tests/plan/s105-residual-attribution.md §"Behavioural guards" (guard 2 / §6) — the F3
-// dominant term. RED: a shared-read parallel reduce emits conservatively-atomic
-// RC ops (rc_atomic>0) that a confinement-precision lever would move to the
-// non-atomic arm. The attribution measured NONATOMIC_RC recovering ~76% of F3's
-// parallel wall — the residual-atomic-RC term. A SOUND cure (not the unsound
-// blanket NONATOMIC_RC) is 0526 confinement-gated projection elision / 0528
-// uniqueness-preservation, which would prove more of these ops Confined and emit
-// the non-atomic arm. This guard asserts the atomic arm is eliminated for the
-// shared-read shape; RED until 0526/0528 lands. FIXME(/typecheck+/backend):
-// 0526/0528 confinement precision (`design/arch/effect-concurrency.md` §3.1.6).
+// dominant term. GREEN characterization: a shared-read parallel reduce CURRENTLY
+// emits conservatively-atomic RC ops (rc_atomic>0). This is the current, correct
+// behaviour — atomic RC is the SOUND default for reads the analysis marks Crossing
+// (a shared cell read across strands). The S105 attribution measured NONATOMIC_RC
+// recovering ~76% of F3's parallel wall, so this atomic RC is the F3 residual term;
+// but serial already beats parallel 8× and NO lever was funded, so the sound
+// conservative behaviour stands. This guard pins that the shared-read shape is
+// still routed through the atomic arm.
+//
+// FRONTIER: confinement precision (0526 confinement-gated projection elision / 0528
+// uniqueness-preservation, `design/arch/effect-concurrency.md` §3.1.6) is the future
+// increment that would prove these shared reads Confined and move them to the non-
+// atomic arm; when it lands, this expectation flips to rc_atomic==0 and the test is
+// re-polarised. Handed forward, not owed.
 #[test]
-fn f3_shared_read_residual_atomic_rc_confined() {
+fn f3_shared_read_currently_uses_atomic_rc() {
     let out = run_rc_stats(F3_SHARED_READ, /*serial=*/ false);
     let atomic = rc_field(&out.stderr, "rc_atomic");
-    assert_eq!(
-        atomic, 0,
-        "RESIDUAL-ATOMIC-RC (F3 dominant term, RED): the shared-read parallel \
-         reduce emits {atomic} conservatively-atomic RC ops. The S105 attribution \
-         found NONATOMIC_RC recovers ~76% of F3's parallel wall — this atomic RC \
-         is the F3 residual. A sound confinement-precision lever (0526/0528) would \
-         prove these ops Confined and emit the non-atomic arm (rc_atomic→0). This \
-         guard is the durable record; it flips GREEN when that lever lands.\n{}",
+    assert!(
+        atomic > 0,
+        "F3 SHARED-READ ATOMIC RC (current sound-default behaviour): the shared-read \
+         parallel reduce is expected to emit conservatively-atomic RC ops \
+         (rc_atomic>0) — the sound default for cross-strand Crossing reads. Observed \
+         rc_atomic={atomic}. A zero here means the shared reads are no longer routed \
+         through the atomic arm — either the FRONTIER confinement-precision lever \
+         (0526/0528) landed (re-polarise this test to rc_atomic==0) or an unsound \
+         non-atomic regression slipped in (investigate before flipping).\n{}",
         out.stderr
     );
 }
