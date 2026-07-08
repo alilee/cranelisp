@@ -232,3 +232,163 @@ own inc-I/II optimizations (stack-alloc, reuse, confinement) already eliminate t
 RC-light allocation class** (F7: 2.56 M allocs recover only ~10% under mimalloc;
 scalar ADTs SROA to `allocs=0`), so the (a) term barely exists in isolation — and
 the residual that remains is **negative parallel scaling**, not a memory term.
+
+---
+
+## § Acid test — the (a)-allocator delta's reach, opportunity, and commonality (Wave-1b)
+
+**Author:** `/qa` · **Date:** 2026-07-08 (Phase-5 Wave-1b) ·
+**Instrument:** `tests/perf/s105_acid.py` (focused sibling, single-sourced on
+`s105_attribution.py`) · **Fixtures:** `tests/fixtures/s99/f9_{straightline,loop,
+nontailrec}.cl` (§(i) shape probes), `f10_tempvec.cl` (§(ii) serial temp-vec, SL/LOOP
+arms), F6/F8-serial reused · **Binaries:** two release builds (system + mimalloc);
+nproc=10, reps=3, **two runs — all deterministic facts identical**; walls
+order-of-magnitude (busy_cores 0.10, load1 0.5 at start; no INVALID rows).
+
+> **Why this test.** Wave-1 settled the F3/F4 **backtracking-parallel** residual =
+> unavailable-parallelism → accept-done. But F3/F4 are the WORST case for the
+> "escape∧uniqueness stack allocation" hypothesis and unrepresentative of its real
+> target. The hypothesis's delta over what already shipped is the **(a)-allocator
+> term**: increment-II reuse tokens already remove the *copy* when a value is unique;
+> the delta is to **stack-allocate unique non-escaping aggregates so there is no
+> `malloc`/`free` at all**. That delta is **NOT built** (as-built escape→stack is
+> statically-sized-**all-scalar-only**). This test measures the two things the
+> delta's value depends on — NOT the delta firing.
+
+### (i) Control-flow reach — WHERE the as-built stack mechanism fires
+
+Probe: the EXISTING statically-sized-all-scalar stack path (the one F8's serial arm
+exercises, hits=4) over a fixed phi-ADT (`deftype P` two all-Int ctors — the exact
+F8 shape) placed in each control-flow shape. `stack_slot` is the codegen-time
+emission count (`[RC_STATS] stack_slot=`, backend-side, deterministic); the
+`NO_STACK_ALLOC` toggle confirms via the runtime `allocs` jump. **Cranelisp has NO
+`loop`/`recur`/`while` special form** — special forms are `begin/let/if/fn/match`, so
+a "loop" IS a tail-self-recursive function. Gate 3 (`fn_compiler.rs` §4.1
+`fn_has_self_call`) declines stack placement for the WHOLE function on ANY self-call,
+**tail or non-tail** (a slot allocated once per frame would clobber the loop-carried
+value across the TCO back-edge).
+
+| Control-flow shape | construction lives in | `stack_slot` | heap-alloc recovery (allocs OFF−ON) | fires? | gate reason |
+|---|---|---|---|---|---|
+| **straight-line** | non-recursive `one`, loop-driven | **4** | **2,000,000** | ✅ FIRES | gate 3 CLEAR (non-recursive fn) |
+| **loop (inline)** | INLINE in tail-self-rec `drive` | **0** | 0 | ❌ declines | **gate 3 TRIPS** (self-call → TCO) |
+| **non-tail recursion (inline)** | INLINE in non-tail D&C `drive` | **0** | 0 | ❌ declines | **gate 3 TRIPS** (self-call) |
+| **loop → non-rec helper** (F8 serial) | non-recursive `one`, D&C-loop-driven | **4** | 4,096 | ✅ FIRES | gate 3 CLEAR (helper frame) |
+
+**THE PIVOTAL ANSWER (read empirically, not inferred): loops DECLINE.** The as-built
+stack mechanism fires **only when the construction sits in a non-self-recursive
+function**. Any aggregate built *inline in a loop or recursion body* trips gate 3 and
+declines — and in Cranelisp *every* loop is a self-recursive function, so this
+excludes the entire iterative hot core. The **one escape hatch**: factoring the
+construction into a non-recursive **helper** called *from* the loop DOES fire (the
+stack slot lives in the helper's fresh per-call frame — the F8-serial / straight-line
+rows, hits=4). Wall on the pure construction-churn microbench: stackON 0.039s vs
+NO_STACK 0.067s (~40% of a *construction-dominated* wall — an upper bound; real code
+does other work per construction).
+
+⇒ **The delta's serial benefit is NARROW, not broad.** It reaches straight-line code
+and constructions factored into non-recursive helpers; it does **not** reach any
+aggregate built directly in a loop/recursion body. Since the task's own framing hinged
+on "does stack-alloc survive a loop body" — **it does not** (gate 3). Identifiability:
+this is unambiguous — there is no loop form to be lowered to tail-recursion *ambiguously*;
+a loop simply *is* a self-recursive function, and `stack_slot=0` is read directly.
+
+### (ii) Opportunity ceiling — realistic serial non-scalar temp-aggregate
+
+Fixture: a fresh Int `Vec` built, summed, and discarded within one frame (2 M
+constructions), in two arms — **SL** (built in a non-recursive helper `one`,
+loop-driven → the delta-eligible-by-shape case) and **LOOP** (built inline in the tail
+loop → gate-3-declined even under the delta). A Vec's payload is a heap buffer
+(non-scalar, dynamically sized) ⇒ it fails **gate 2 (all-scalar-payload)** ⇒ it never
+stack-allocs today regardless of shape. So this bounds what the delta *could* recover.
+
+| Arm | allocs | alloc_bytes | reuse_hit | rc_atomic | N3 confined/crossing | mimalloc Δ (wall-share) | strace alloc-share [brk/mmap] |
+|---|---|---|---|---|---|---|---|
+| **SL** (delta-eligible shape) | 2,000,001 | 80,000,032 | 64,000,000 | 6 | **0 / 1** (build-vec = **Crossing**) | ~0.020s (**~6%**) | 37% [brk=263 mmap=25] |
+| **LOOP** (gate-3-declined) | 2,000,001 | 80,000,032 | 64,000,000 | 8 | 1 / 1 (drive Confined, build-vec Crossing) | ~0.011s (**~4%**) | 10% [brk=3 mmap=25] |
+
+**Opportunity ceiling reads (all point the same way):**
+- **The copy is already gone.** `reuse_hit = 64 M` — increment-II in-place reuse is
+  firing on every `vec-push`; the residual `allocs` is one *initial* buffer per temp
+  vec (~40 bytes), not a per-op churn. The delta's only remaining prize is removing
+  that one `malloc`/`free` pair per temp vec.
+- **Removing that malloc/free is a SMALL wall term.** mimalloc — which removes the
+  allocator-*lock* cost, an upper bound on what a stack path saves — moves the wall
+  only **~4–6%** (system↔mimalloc), consistent with F7 (~10%) and Wave-1's whole
+  verdict. `strace` brk/mmap counts are tiny in absolute terms (brk=263 for 2 M
+  constructions ⇒ the allocator already amortizes; per-construction syscalls ≈ 0).
+- **The realistic temp-vec is NOT even cleanly delta-eligible.** N3 classes the
+  `build-vec` allocation site **Crossing** (confined_cells=**0** in the SL arm): the
+  vec is passed as a parameter across the `build-vec`→`sum-vec` call boundary, so the
+  static escape/confinement verdict is Crossing, not Confined+NoEscape. Stack-alloc
+  requires NoEscape; the delta could only fire here *after* an escape/confinement
+  precision improvement (the 0526/0528 axis) — a second, separate increment on top of
+  the non-scalar extension. So the "recoverable now" set is even smaller than the
+  gate-3 reach implies.
+
+### (iii) F6 re-probe — the parallel positive witness
+
+| metric | value |
+|---|---|
+| per-strand allocation | **allocs=29 total (leaves=16) ⇒ ~1 alloc / 86 bytes per strand** |
+| reuse_hit / rc_atomic / stack_slot | 0 / 0 / 0 |
+| gate-5 / M-static spark tally | **admit=2, decline=0** (both `reduce-tree` sites: scc=true tail=false) |
+| speedup (serial 2.79s → parallel@10 0.84s) | **~3.3×** (positive witness holds, both runs) |
+
+**F6 verdict: COMPUTE-BOUND with negligible per-strand allocation ⇒ NO alloc-bound
+parallel opportunity behind gate 5.** F6's leaves are pure LCG integer spin (by
+design — no alloc, no RC), so a spark-frame-aware stack path (the only parallel case
+gate 5 could unlock) would have **nothing to allocate**. There are 0 spark declines
+here anyway (both coarse sites admit); the residual is compute the cores are already
+splitting 3.3× — not memory. This closes the parallel door the same way Wave-1 did,
+now with the positive-scaling witness itself confirming there is no alloc term to
+chase.
+
+### Commonality verdict + recommendation
+
+**Is the benefiting class common + hot enough to justify the delta increment? NO.**
+
+The class that would benefit is the *intersection* of three gates: **non-scalar
+aggregate** (needs the delta — gate 2), **non-self-recursive frame** (gate 3), **and
+NoEscape/Confined** (gate 4 + confinement). The acid measurements show each gate
+prunes the hot cases:
+- **(i) gate 3 excludes the iterative core.** Loops and recursion — i.e. essentially
+  *all* of Cranelisp's hot iterative code, since iteration *is* recursion — decline.
+  Only straight-line code and non-recursive-helper constructions survive. That is not
+  where temp-aggregate churn concentrates.
+- **(ii) the surviving straight-line temp-aggregate has a small, already-eroded
+  prize.** inc-II reuse has removed the copy (reuse_hit=64 M); the residual
+  malloc/free is a ~4–6% wall term (mimalloc-bounded); and the realistic vec is
+  classed **Crossing** (escapes a call boundary), so it isn't even eligible without a
+  *further* confinement/escape increment.
+- **(iii) the parallel positive witness has zero per-strand alloc** — no opportunity
+  behind gate 5 either.
+
+**Recommendation: do NOT fund the non-scalar stack-alloc delta.** It is doubly gated
+away from the hot code (loops via gate 3, escaping temps via Crossing), its serial
+prize on the code it *does* reach is ~5% (the copy already being gone), and it unlocks
+nothing parallel. **Accept-done holds; the Wave-1 `--release` pivot stands.** If any
+stack-alloc money were ever spent, the evidence says the highest-leverage single
+change is **lifting gate 3 for loop bodies** (the broad determinant that gates out the
+entire iterative core) — NOT extending gate 2 to non-scalar payloads — but even that
+recovers only ~5% on construction-heavy serial code and nothing on compute-bound or
+parallel code, so it does not clear the bar either. The measure-first discipline again
+selects **accept-done** over a plausible-but-unrepresentative memory lever.
+
+### Caveats / identifiability
+
+- **Walls are order-of-magnitude** (reps=3, single host; busy_cores 0.10 at start, no
+  INVALID). The load-bearing facts — `stack_slot` (codegen, deterministic), `allocs`,
+  N3 classes, spark admit/decline — are **identical across both runs**; only the
+  absolute wall deltas carry ±. Directional reads (fires/declines, small/large) are
+  robust.
+- **The loop-shape answer is NOT inferred.** It is read from `stack_slot=0` +
+  `NO_STACK_ALLOC` allocs-flat on `f9_loop`/`f9_nontailrec`, and confirmed against the
+  gate-3 source (`fn_compiler.rs` `fn_has_self_call`, declines on *any* self-call).
+  There is no ambiguity about "did the loop lower to tail-recursion" — Cranelisp has
+  no other loop form.
+- **F6 correctness** (parallel≡serial exit checksum) is already the committed guard
+  `tests/s105_residual_attribution.rs::f8_.../f7_...` family; the (iii) re-probe adds
+  no new RED — it reuses the existing positive witness.
+- No new suite guards are added by the acid test (it is a measurement, not a defect
+  repro); the committed artefacts are the fixtures + `s105_acid.py` + this append.
