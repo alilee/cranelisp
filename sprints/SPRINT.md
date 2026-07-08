@@ -1,6 +1,6 @@
 # Sprint 105: Lenient Eval — Attributing the Parallel Residual (measure-first)
 
-**Status**: PHASE 5/6 — parallel investigation CLOSED (accept-done); building the REPL optimisation demo + T1 track, then wrap
+**Status**: PHASE 7 CLOSE — outcome drafted; awaiting user sign-off (2 close actions need approval before archive)
 
 **Goal**: Increase measurement fidelity to **attribute the post-increment-II parallel residual** (F3/F4 above serial) *by mechanism* — scheduler-spread vs (a)-allocation vs residual-atomic-RC vs unavailable-parallelism — then build the lever the evidence selects. Lead hypothesis for the (a)-allocation case: **escape ∧ uniqueness stack allocation** (unique, non-escaping values as true RC-free stack locals, passed by mutable/immutable reference).
 
@@ -171,4 +171,41 @@ Source-touching agents (Wave-0 /dev-backend, Wave-2 build, Wave-T1 /dev-int + /r
 
 ## Outcome (Phase 7)
 
-_Pending._
+**S105 = a measure-first sprint that answered "are there sizeable lenient-eval improvements left?" with evidence: NO in-track memory/scheduler lever remains, and the real frontier (register-resident loop locals via SROA) was located, IR-verified, and handed forward.** Plus the T1 dev-reload doc-coherence residue, drained.
+
+### Delivered
+- **The attribution instrument (durable).** `tests/perf/s105_attribution.py` + `s105_acid.py`, gated backend counters **N1/N3/N4** (`3e923dc`, zero-cost-off, no interface change), fixtures **F7** ((a)-isolator) + **F8** (parallel stack witness) + F9/F10 (control-flow reach). The 2×2 allocator×ownership factorial with explicit interaction term.
+- **The parallel-residual attribution (`6b200818`).** F3/F4 residual = **unavailable-parallelism → accept-done**; four independent oracles agree (negative scaling; F8 gate-5 witness). No memory/scheduler lever; near-serial is the ceiling.
+- **The acid test (`e24808a5`) — tested the stack hypothesis against its *real* target, not just backtracking.** (i) Loops decline stack-alloc **structurally** (iteration = tail-self-recursion × gate 3, general, not a Sudoku artifact); (ii) opportunity ~5% on a narrow class (copy already gone via inc-II reuse); (iii) F6 compute-bound, no parallel alloc opportunity.
+- **The optimizer CLIF demo (`93d8a423`).** A 9-step `/clif` walkthrough (Act 1 wins / Act 2 frontier) that **IR-verifies the diagnosis**: multi-field aggregate → stack *memory* (never SSA registers), single-field → flattened word (register boundary at field-count 1), gate 3 → heap in loops. Replay: `DEMO_FAST=1 ./repl/showcase optimization`.
+- **Arch rulings (`da260f5`).** `effect-concurrency.md §3.1.6` (non-additive 2×2 decomposition + direct-oracle selection + escape→stack separability + 0525 gate-5 caveat); `ownership-inference.md §3.6` (conditional `MutBorrowed` ABI, unbuilt).
+- **T1 dev-reload residue drained (parallel track, separate commits `76fb5ae7`/`e8429e60`/`adb85d92`/`57688a0c`).** FIXMEs 0529/0530/0531/0532/0533/0505/0537 all resolved+deleted; `/arch` ruled the `__expr`/reload-instantiation seam; code implementation routed to `/dev(src)` via **0537** (recorded) + new **0538**.
+
+### The headline finding — the real frontier (user-surfaced)
+The valuable output of the dig is **not** a built lever but a located one: **register-residency for loop-local aggregates requires multi-field SSA-decomposition (SROA / value-flattening)**, which is **not built** (value-flattening is single-field/scalar today). The stack-alloc path (gate-3-limited) yields Cranelift *memory*, not registers; and heap allocations are opaque to `--release`'s LLVM mem2reg/SROA — so **SROA in the shared lowering is the precondition for `--release` ever register-promoting these locals.** This is the identified serial-codegen-quality next-increment. IR-verified in the demo. Gate 3's whole-function over-conservatism (vs the designed per-site liveness check) is a secondary refinement on the lower-value stack path.
+
+### Deferred (with rationale)
+| Item | Rationale | Target |
+|---|---|---|
+| **Multi-field SROA / register-resident loop locals** | The located frontier; a serial-codegen increment + the `--release` register-promotion precondition. Not this sprint. | future / `--release`-era |
+| Gate-3 refinement (per-site liveness vs whole-function decline) | Secondary; unlocks the lower-value stack-*memory* path only (~slice of ~5%). | with the SROA work |
+| `MutBorrowed` ABI (§3.6) | Conditional ruling recorded; not needed (accept-done). | if a build branch ever selects it |
+| Confinement precision (0526/0528) | Demo showed non-atomic-RC is *built* but conservatively never default-fires; the unbuilt frontier for the (b) term. | future |
+| 0537 (`__expr` decouple) + 0538 (regen §5–7 source-first) | `/dev(src)` code, non-blocking, design recorded. | future `/dev(src)` |
+
+### Findings
+- **Measure-first earned its keep twice.** It stopped building the stack lever on the S104-close *asserted* attribution, then — after the user flagged F3/F4 as the backtracking worst-case — the acid test re-tested the hypothesis against its actual target and found the limiter is *structural and general* (gate 3 × iteration-as-tail-recursion), not workload-specific.
+- **The register win ≠ the stack path.** Cranelift stack slots are memory; the register form is SROA/SSA-decomposition, which gate 3 doesn't even gate. This redirected a plausible-but-wrong "lift gate 3" conclusion to the right target (multi-field SROA).
+- **Minor doc-coherence carry:** `repl/spec.md §18.1` scope note still references the now-resolved FIXME 0533 (flagged by `/repl`) — trivial `/repl` tidy.
+
+### Close actions — NEED USER SIGN-OFF before archive
+1. **Reclassify the 2 Wave-1 REDs** (`gate-5 reachability`, `F3 atomic-RC`; suite intentional-fail 22→24). Under accept-done they are *correct current behaviour we chose not to change*, not defects-to-fix — a perpetual-RED misuses failing-not-ignored. **Recommendation:** convert each to a GREEN assertion of current behaviour with a comment documenting the frontier (SROA / confinement-precision would flip the expectation), restoring the clean **22** intentional-fail count. (`/qa`, small test edit.)
+2. **ROADMAP update** — S105 close row; parallel-perf investigation closed (accept-done); credit multi-field SROA / register-residency as the identified next-increment; note it precedes/enables the `--release` register-promotion.
+
+### Suite
+Backend Wave-0 change-set verified green at `3e923dc` (4146/24/1 — the 24 = the standard 22 + the 2 Wave-1 characterization REDs pending reclassification per close-action 1). No regressions beyond the named guards.
+
+## Next skills
+- `/qa` — reclassify the 2 Wave-1 characterization REDs (close-action 1).
+- `/dev(src)` — 0537 (`__expr` reload decouple) + 0538 (regen §5–7 source-first), non-blocking.
+- A future sprint — **multi-field SROA / register-resident loop locals** (the located frontier), most naturally sequenced with the `--release` tier.
