@@ -1,6 +1,6 @@
 # Sprint 105: Lenient Eval — Attributing the Parallel Residual (measure-first)
 
-**Status**: PHASE 5 LANGUAGE (ACTIVE) — Wave 1b (acid test: hypothesis vs its real target classes)
+**Status**: PHASE 5/6 — parallel investigation CLOSED (accept-done); building the REPL optimisation demo + T1 track, then wrap
 
 **Goal**: Increase measurement fidelity to **attribute the post-increment-II parallel residual** (F3/F4 above serial) *by mechanism* — scheduler-spread vs (a)-allocation vs residual-atomic-RC vs unavailable-parallelism — then build the lever the evidence selects. Lead hypothesis for the (a)-allocation case: **escape ∧ uniqueness stack allocation** (unique, non-escaping values as true RC-free stack locals, passed by mutable/immutable reference).
 
@@ -128,6 +128,21 @@ The spine is **inherently serial** — the instrument must be built before it ca
 | /qa | — | Measure who benefits from the (a)-stack delta. **(i) The gate-3/loop determinant** (pivotal): use the EXISTING statically-sized-all-scalar stack mechanism as a probe across straight-line / loop / non-tail-recursive shapes → read `STACK_SLOT_HITS` to map WHERE the built mechanism fires (does stack-alloc survive a loop body, or do loops-as-tail-recursion trip gate 3?). **(ii) Opportunity size** for realistic serial temp-aggregate code (non-scalar unique non-escaping Vec/record built/used/discarded) — `alloc_bytes`/count + N3 confinement + allocation wall-share (mimalloc-vs-system) = the (a) recoverable ceiling the *unbuilt* delta could recover. **(iii) F6 re-probe** — per-strand alloc volume + gate-5 decline count for the positive-scaling parallel case. Verdict: is the benefiting class common + hot enough to justify the delta increment? | pending |
 
 **Note the DELTA is not built** — the acid test measures (i) the built narrow mechanism's control-flow reach + (ii)/(iii) the *opportunity* (recoverable alloc volume), NOT the delta firing (which would need the increment).
+
+**Wave-1b result (`e24808a5`) — the acid test is decisive and closes the parallel investigation:**
+- **(i) Loops decline stack-alloc, structurally.** Cranelisp has no `loop`/`recur` form — iteration *is* tail-self-recursion, and **gate 3** (`fn_has_self_call`, `fn_compiler.rs:835`) declines stack placement for the *whole* function on any self-call. So the escape→stack mechanism cannot fire in loop bodies in *any* workload — general, not a Sudoku artifact. Escape hatch: a construction hoisted to a non-recursive helper.
+- **(ii) Opportunity ~5%, narrow class.** Copy already gone (reuse `hit=64M`); residual malloc/free of a small fixed all-scalar aggregate is ~4–6% of wall; and the realistic temp is `Crossing` (escapes the call boundary), so not even NoEscape-eligible.
+- **(iii) F6 compute-bound** (~1 alloc/strand) — no alloc-bound parallel opportunity behind gate 5.
+- **Verdict: accept-done for the parallel residual.** No memory/scheduler lever; near-serial is the ceiling.
+
+**The deeper finding (user-surfaced, the real value of the dig) — register-residency, not stack:** the register win for loop-local aggregates is **SSA-decomposition (multi-field SROA / value-flattening)**, NOT the stack-slot path (Cranelift stack slots are *memory*, not registers; gate 3 gates that lower-value path). Multi-field SROA is **not built** (value-flattening is single-field/scalar today), and it is the precondition for `--release` (LLVM mem2reg/SROA promotes allocas/SSA, never heap) ever putting inner-loop aggregate locals in registers. **This is the identified next-direction — a serial codegen-quality increment in the shared lowering — recorded as a finding, not built this sprint.**
+
+### Wave 2 (revised) — REPL optimisation demo + wrap (user-directed 2026-07-08)
+No build lever (accept-done). Instead: a **REPL optimisation demo** (`/repl`) — a scripted series of compilations + `/clif` commands showing (a) what the optimizer does today (scalars→SSA/registers; single-field value ADTs→flattened words; reuse/mutate-in-place; borrow-elision + non-atomic RC; narrow escape→stack) and (b) the frontier/limits (multi-field aggregates heap-allocate; gate 3 blocks stack in loops; no multi-field SROA → not register-resident). The demo's `/clif` captures **double as the honest verification** of the gate-3/SROA diagnosis (narrate what the IR actually shows). Then: the T1 residue track (separate commits) + Phase-7 close.
+
+| Skill | Crate | Task | Status |
+|---|---|---|---|
+| /repl | repl/ | Build the optimisation demo (compilations + `/clif` sequence; current state + frontier); ground narration in captured CLIF; flag any divergence from the diagnosis. | pending |
 
 ### Wave 2 — build the evidence-selected lever (Phase-5 Stage 2; CONDITIONAL, scoped at the Wave-1 gate)
 | If the gate selects… | Skill | Crate | Task |
