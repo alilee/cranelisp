@@ -1,6 +1,6 @@
 # Sprint 105: Lenient Eval — Attributing the Parallel Residual (measure-first)
 
-**Status**: PHASE 7 CLOSE — outcome drafted; awaiting user sign-off (2 close actions need approval before archive)
+**Status**: COMPLETE (S105 closed 2026-07-08, user-approved)
 
 **Goal**: Increase measurement fidelity to **attribute the post-increment-II parallel residual** (F3/F4 above serial) *by mechanism* — scheduler-spread vs (a)-allocation vs residual-atomic-RC vs unavailable-parallelism — then build the lever the evidence selects. Lead hypothesis for the (a)-allocation case: **escape ∧ uniqueness stack allocation** (unique, non-escaping values as true RC-free stack locals, passed by mutable/immutable reference).
 
@@ -198,12 +198,15 @@ The valuable output of the dig is **not** a built lever but a located one: **reg
 - **The register win ≠ the stack path.** Cranelift stack slots are memory; the register form is SROA/SSA-decomposition, which gate 3 doesn't even gate. This redirected a plausible-but-wrong "lift gate 3" conclusion to the right target (multi-field SROA).
 - **Minor doc-coherence carry:** `repl/spec.md §18.1` scope note still references the now-resolved FIXME 0533 (flagged by `/repl`) — trivial `/repl` tidy.
 
-### Close actions — NEED USER SIGN-OFF before archive
-1. **Reclassify the 2 Wave-1 REDs** (`gate-5 reachability`, `F3 atomic-RC`; suite intentional-fail 22→24). Under accept-done they are *correct current behaviour we chose not to change*, not defects-to-fix — a perpetual-RED misuses failing-not-ignored. **Recommendation:** convert each to a GREEN assertion of current behaviour with a comment documenting the frontier (SROA / confinement-precision would flip the expectation), restoring the clean **22** intentional-fail count. (`/qa`, small test edit.)
-2. **ROADMAP update** — S105 close row; parallel-perf investigation closed (accept-done); credit multi-field SROA / register-residency as the identified next-increment; note it precedes/enables the `--release` register-promotion.
+### Close actions
+1. **Reclassify the 2 Wave-1 REDs — DONE (`36a9ea0c`).** `gate-5 reachability` and `F3 atomic-RC` converted from perpetual-RED assertions-of-unbuilt-features into GREEN assertions of the current correct behaviour (stack-alloc *correctly declines* on the sparked arm; F3 *correctly uses* atomic RC as the conservative Crossing default), each with a `// FRONTIER:` note (SROA / confinement-precision 0526/0528 would re-polarise). Ledger updated; both removed from the intentional-RED set.
+2. **ROADMAP update — DONE at close** (this commit): S105 close entry + Phase-H sequence row; parallel-perf investigation closed (accept-done); multi-field SROA / register-residency credited as the identified next-increment (precedes/enables `--release` register-promotion).
 
 ### Suite
-Backend Wave-0 change-set verified green at `3e923dc` (4146/24/1 — the 24 = the standard 22 + the 2 Wave-1 characterization REDs pending reclassification per close-action 1). No regressions beyond the named guards.
+**4152 run / 4151 passed / 1 failed / 1 skipped** (`36a9ea0c`, 53.5s). The sole RED is `ownership_reuse::chaining_toggle_off_allocates_intermediate` — the S103 carry (FIXME 0528, owner `/typecheck`). **The S101-era 22-guard set was fully drained by S102/S103** — the actual standard failing set is now **1**, not 22.
+
+### Finding for the user (routed, not auto-applied) — `CLAUDE.md §Testing` is stale
+Root `CLAUDE.md §Testing` still states "**22 intentional failing tests** … 3480 run — 3458 passed / 22 failed / 1 skipped" (an S101-close figure). Actual is **4152 run / 4151 passed / 1 failed / 1 skipped**, sole guard `chaining_toggle_off_allocates_intermediate` (FIXME 0528). `/sprint` cannot edit `CLAUDE.md`; routed to the user (S101 precedent — user-delegated) for the one-line correction.
 
 ## Next skills
 - `/qa` — reclassify the 2 Wave-1 characterization REDs (close-action 1).
