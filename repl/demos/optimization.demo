@@ -1,0 +1,164 @@
+; Under the hood — what the optimizer does, and where it stops
+; A guided read of the Cranelift IR the compiler actually emits. Each step
+; defines a tiny function and shows its /clif — the real IR, no filtering.
+; Two acts: the wins the optimizer lands today, then the frontier it stops at.
+
+; Everything here is free-standing on primitives — bare ops, no prelude sugar —
+; so the IR isolates exactly the optimization on display.
+
+(import [primitives [*]])
+
+
+; ─────────────────────────────────────────────────────────────────────
+; ACT 1 — THE WINS
+; ─────────────────────────────────────────────────────────────────────
+
+; 1. Scalars in a loop live in registers, not memory.
+; Cranelisp has no loop form — iteration IS tail-self-recursion. A tail call
+; lowers to a jump, and the loop-carried values ride the block parameters:
+
+(defn sumto [:Int n :Int acc] (if (eq-i64 n 0) acc (sumto (sub-i64 n 1) (add-i64 acc n))))
+/clif sumto
+
+; Read the IR: `block1(v2, v3)` are the loop header's parameters — n and acc,
+; in registers. The recursive tail is `jump block1(v9, v10)` — a back-edge, not
+; a call, not a stack frame. No allocation anywhere. This is the ideal.
+
+
+; 2. A single-field wrapper vanishes into a bare word.
+; A one-constructor, one-scalar-field ADT carries no more information than its
+; field, so the compiler represents it AS its field — no heap box, no header:
+
+(deftype Cell (MkCell [:Int v]))
+(defn unwrap [:Int n] (let [c (MkCell n)] (match c [(MkCell v) v])))
+/clif unwrap
+
+; Read the IR: `(MkCell n)` emits NOTHING. The argument v1 flows straight to
+; `block2(v1)` and returns. No alloc, no store, no load — the value is a
+; register the whole way through. Construction and match are free. Hold onto
+; this: it is exactly single-field that gets this treatment (see Act 2).
+
+
+; 3. Mutation happens in place when the value is unique.
+; A vec write does not always copy. The compiler emits BOTH paths and picks at
+; runtime on the refcount: rc==1 (unique) mutates in place; shared copies first
+; (copy-on-write). A freshly built vec is unique, so this takes the fast arm:
+
+(defn set-first [:Int n] (let [v (vec 1 2 3)] (vec-set v 0 n)))
+/clif set-first
+
+; Read the IR: `load v6+8` fetches the refcount, `icmp eq ..., 1` tests
+; uniqueness, and `brif block2, block3` forks. block2 stores in place;
+; block3 (`call fn1(...)`) is the copy-on-write fallback. Unique writes never
+; copy.
+
+
+; 4. Borrowing a value costs no reference-count traffic.
+; A parameter the callee only reads is passed as a borrow — the caller keeps
+; ownership, so there is no increment on entry and no decrement on exit:
+
+(deftype Box (MkBox [:Int a :Int b]))
+(defn get-h [:Box x] (match x [(MkBox a b) b]))
+/clif get-h
+
+; Read the IR: get-h reads the fields (`load x+24`, `load x+32`) and returns.
+; There is not a single atomic_rmw in the function — the inc/dec pair a naive
+; refcounting scheme would emit is elided entirely. Reads are free.
+
+
+; 5. A small fixed record that never escapes goes on the stack, not the heap.
+; When a value materialises (two constructors force a real object), is all
+; scalar, and does not escape its frame, the backend puts it in a stack slot
+; instead of calling the allocator:
+
+(deftype Rect (Portrait [:Int w :Int h]) (Landscape [:Int w :Int h]))
+(defn area [:Int a :Int b :Int flip] (let [r (if (eq-i64 flip 0) (Portrait a b) (Landscape a b))] (match r [(Portrait w h) (mul-i64 w h) (Landscape w h) (mul-i64 w h)])))
+/clif area
+
+; Read the IR: `ss0`/`ss1 = explicit_slot 40` are stack slots (one per arm),
+; addressed by `stack_addr`. The header stores an immortal refcount
+; `0x4000_0000_0000_0000` — so the residual `atomic_rmw sub` at the end can
+; never reach zero and the free path is dead code. No allocator call at all.
+; But note WHERE the fields live: `store ...v+24`, `load ...v+24` — stack
+; MEMORY. That detail is the whole story of Act 2.
+
+
+; ─────────────────────────────────────────────────────────────────────
+; ACT 2 — THE FRONTIER
+; ─────────────────────────────────────────────────────────────────────
+
+; 6. A multi-field record is never scalar-replaced into registers.
+; pair-sum builds a two-field record whose constructor is statically known,
+; that never escapes, in a straight-line (non-recursive) function — the BEST
+; possible case. Compare it to `unwrap` from Act 1:
+
+(deftype Pt (MkPt [:Int x :Int y]))
+(defn pair-sum [:Int n] (let [p (MkPt n (add-i64 n 1))] (match p [(MkPt x y) (add-i64 x y)])))
+/clif pair-sum
+
+; Read the IR: even here the record lands in a stack slot (`explicit_slot 40`,
+; `stack_addr`), and the two fields are written and read back through MEMORY
+; (`store v+24`, `store v+32`, then `load v+24`, `load v+32`). The single-field
+; Cell became a register; this two-field Pt does not. There is no multi-field
+; SSA-decomposition (SROA) — value-flattening is single-field-only today. A
+; stack slot is memory, not registers.
+
+
+; 7. Put that record in a loop and it goes to the heap.
+; The stack path is declined for ANY self-recursive function (a slot reused
+; each iteration would clobber the live loop-carried value). Since every loop
+; in Cranelisp is a self-recursive function, no loop body can stack-allocate:
+
+(defn sum-areas [:Int k :Int acc] (if (eq-i64 k 0) acc (let [r (if (eq-i64 (sub-i64 k (mul-i64 (div-i64 k 2) 2)) 0) (Portrait k k) (Landscape k k))] (sum-areas (sub-i64 k 1) (add-i64 acc (match r [(Portrait w h) (mul-i64 w h) (Landscape w h) (mul-i64 w h)]))))))
+/clif sum-areas
+
+; Read the IR: the SAME Rect that stack-allocated in `area` now heap-allocates
+; — `iconst.i64 24` (header + payload) into an allocator `call`, with a real
+; `atomic_rmw sub` decrement and free path per iteration. The escape is not the
+; problem; the self-call is. This gates out the entire iterative hot core.
+
+
+; 8. A record with a heap field stays on the heap regardless.
+; The stack path requires an all-scalar payload. One String field (itself a
+; heap value) disqualifies the whole aggregate:
+
+(deftype Tagged (TA [:Int n :String s]) (TB [:Int n :String s]))
+(defn label [:Int n :String s :Int flip] (let [t (if (eq-i64 flip 0) (TA n s) (TB n s))] (match t [(TA k u) k (TB k u) k])))
+/clif label
+
+; Read the IR: heap `call` allocation, and an `atomic_rmw add` — the refcount
+; increment keeping the String field alive inside the box. Nothing here can be
+; a register or a stack slot.
+
+
+; 9. A Vec local is heap-allocated — its size is dynamic.
+; Even read-only and non-escaping, a Vec is a dynamically-sized buffer, so it
+; cannot live in a fixed stack slot:
+
+(defn vsum [:Int n] (let [v (vec n n n)] (vec-get v 0)))
+/clif vsum
+
+; Read the IR: an allocator `call` for the backing buffer, fields stored
+; through the returned pointer, and an `atomic_rmw sub` + free on the way out.
+
+
+; ─────────────────────────────────────────────────────────────────────
+; WHAT THE IR SAYS
+; ─────────────────────────────────────────────────────────────────────
+; The optimizer is strong on the scalar/unique/borrow axes: loop scalars are
+; registers, single-field wrappers flatten to words, unique writes mutate in
+; place, borrows carry no refcount traffic, and small escape-free scalar
+; records dodge the allocator via a stack slot.
+;
+; The frontier is register-residency for AGGREGATES. A multi-field record never
+; decomposes into SSA registers — the best case is a stack SLOT, which is
+; memory; and that path is itself declined inside any loop (self-recursion) and
+; for any heap-field or dynamically-sized value. The missing piece is
+; multi-field SSA-decomposition (SROA / value-flattening beyond one word). That
+; is the precondition for a future `--release` tier — LLVM's mem2reg/SROA
+; promote such locals into registers, never onto the heap — to close the gap.
+; It is the identified next direction, not a defect: the IR here is correct and
+; conservative at every step.
+;
+; Every claim above is verified against the emitted IR in
+; optimization-clif-verification.md (this directory).

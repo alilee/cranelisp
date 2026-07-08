@@ -46,6 +46,21 @@ The language arc deliberately ends at `08-sudoku.demo`, which reuses every conce
 the prior demos introduced. The demos after it showcase the development *workflow*
 around that language — library discovery, live redefinition.
 
+## Under-the-hood demo (not part of the guided arc)
+
+`optimization.demo` (un-numbered, so it sorts *after* the numbered arc in `--list`)
+is a compiler-internals demo, not a language-capability one: it steps through a
+series of tiny compilations and their `/clif` output to show what the optimizer
+does today (loop scalars → registers, single-field ADTs → words, mutate-in-place,
+borrow-elision, escape→stack) and where it stops (multi-field aggregates never
+register-promote; gate 3 declines the stack path in loops; heap-field and Vec
+locals stay on the heap). It is deliberately outside the "demonstrate the language,
+not the changelog" arc — its subject is the IR, not a language feature — and its
+narration is verified line-by-line against emitted CLIF in
+`optimization-clif-verification.md`. Replay: `DEMO_FAST=1 ./repl/showcase optimization`.
+It uses bare `primitives` (like the perf fixtures) rather than the curated surface,
+so each function's IR isolates one optimization.
+
 ## The archive (regression guards)
 
 `archive/` holds the historical sprint/ring-named demos (`ring*`, `v4*`, `s81`).
