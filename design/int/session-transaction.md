@@ -590,6 +590,28 @@ Spine §5.6's binding facts, mapped to mechanism:
 4. **(iv) High-water = freeze boundary** — a new session allocates strictly above anything
    any cache references; frozen-slot **bindings** (retained `Code`, trap buffers, old code
    pointers) die with the session — restart is the zero-cost reclamation of §6's pools.
+5. **(v) The backing `.cl` is definitions-only — `__expr` omitted (FIXME 0537).**
+   `generate_fns_and_macros` **skips `$`-mangled names** (`save.rs:732`), so mono variants
+   never enter source; they ride the compiled `.meta`/`.o` channel. The one synthetic
+   non-definition it still leaks is the `Public` zero-arg `UserFn` `__expr` eval wrapper — a
+   transient REPL expression, not a module definition. Once the §10 T1 CS-1 driver carries the
+   same-module mono-instantiation trigger **explicitly** (§10 CS-1's explicit-capture step),
+   the persisted `__expr` becomes dead weight, and `generate_fns_and_macros` (and any sibling
+   regen section) SHALL **omit `__expr` and any synthetic non-definition** from the backing
+   file. This completes the source-is-definitions-only invariant — the same source-first /
+   no-double-persist regen discipline as the S102 D1/D2 cures (`src/CLAUDE.md` §"Degraded
+   startup load"), extended to the last leaking synthetic artifact. `__expr` is already
+   gate-exempt at classification and `__expr`-excluded at the ReverseIndex feed (§9.1.1 F3);
+   excluding it at the **persistence writer** closes the story — the wrapper never becomes
+   durable state in a channel it does not belong in.
+   **Sequencing — Q1 strictly precedes Q2.** The writer cannot omit `__expr` until the reload
+   path no longer depends on it (§10 CS-1's explicit trigger, Q1). So the explicit reload-time
+   instantiation trigger is the load-bearing prerequisite; the writer omission (Q2) is a
+   trivial filter that lands **only after** — never Q2 alone (that is the reverted Wave-4
+   filter that regressed polymorphic reload). Landing both in one change-set is acceptable and
+   cleaner (the omission is one predicate). Acceptance: the two coherent-stale reload pins and
+   the polymorphic-reload path that regressed under the Wave-4 filter stay green with `__expr`
+   absent from the regenerated `.cl`.
 
 **Broken-state round-trip (the designed restart semantics).** The backing file is
 regenerated with what the user actually has: new `f`, and `g`'s **unchanged (now-broken)
@@ -803,6 +825,27 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
      whose `__macro_*` clause calls a redefined dependency fn is a **dependent** (it imports the
      dependency) and reloads in the `poll_and_reload` cascade, re-expanding + recompiling its
      clauses against the new definition.
+
+     **Explicit same-module mono-variant capture (FIXME 0537 — decouple the reload trigger
+     from the persisted `__expr`).** The from-source reload re-typechecks + re-codegens the
+     target's module from its backing `.cl`, which carries only the module's **definitions**:
+     `$`-mangled mono variants are `save.rs:732`-skipped — they ride the compiled `.meta`/`.o`
+     channel, not source. The *same-module* mono instances originally minted by a REPL `__expr`
+     therefore have **no minter** on a from-source reload (a cross-module dependent re-mints its
+     own instances at the caller site — Principle 17 module locality; only the same-module mint
+     is orphaned). As-built, the persisted `__expr` wrapper de-facto re-drove that mint on
+     reload — an entanglement of persistence fidelity with mono-instantiation-triggering
+     through a user-visible synthetic artifact (the reverted Wave-4 omit-filter's blocker). The
+     reload driver SHALL instead carry this requirement as an **explicit reload-path input**:
+     capture the live table's `$`-mangled `UserFn` mono variants **before** the Replace commit
+     (or re-derive them from the `.meta` compiled-state channel that already holds them) and
+     **re-request their instantiation** after the from-source reload settles. The
+     mono-instantiation set is a **compiled-state** concern and MUST travel the compiled-state /
+     explicit-request channel — never the `.cl` source channel via a persisted `__expr`
+     (Principle 1 decoupling; Principle 7 single source of truth — the source file stops
+     doubling as an instantiation ledger; Principle 20 model-by-representation — the reload's
+     instantiation obligation is an explicit request, not implicit file content). This is the
+     **load-bearing prerequisite** for §8 pin (v)'s `__expr` omission (Q1 strictly precedes Q2).
   2. **CS-2 — module-grain report integration** (`redefine.rs` report channel + a /repl
      wording increment). Module-grain reload outcomes render through the same
      `TransactionReport`/`pending_cascade_reports` channel as §18.3's sections and §9.1.1's
@@ -836,25 +879,64 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
   `should_regenerate` guard is CS-3's edge. No increment-II (Block B) mechanism writes the
   lifecycle/save seams the cure consumes, so the two tracks do not contend (§2.4 `AbiSurface`
   seam untouched by the reload driver).
-  - **Regen-fidelity scope check (S103, FIXME 0507 addendum 8 / I-4 — precondition-adjacent).**
-    The reload reads the **regenerated** backing file, so the cure of a module containing
-    **traits/types/impls** depends on regen fidelity in sections 5–7, not only the section-8
-    (fns/macros) D1/D2 cures that were the S102 focus (`save::generate_fns_and_macros`'s
-    source-first + dedup is section-8-local). Before CS-1 reloads a trait/type-bearing module,
-    /dev must confirm sections 5–7 either share the source-first + dedup invariant or are
-    provably exempt (Matrix B's entry-kind axis). A section-5–7 regen-poison would silently
-    rewrite the user's trait/type source on a T1 reload — the same D1 class one section over.
-    This is the one precondition still to *verify* (not a new mechanism); flag to /dev in CS-1.
+  - **Regen-fidelity scope check (S103, FIXME 0507 addendum 8 / I-4 → verified + ruled, FIXME
+    0530).** The reload reads the **regenerated** backing file, so the cure of a module
+    containing **traits/types/impls** depends on regen fidelity in sections 5–7, not only the
+    section-8 (fns/macros) D1/D2 cures that were the S102 focus. **Verification result (FIXME
+    0530): sections 5–7 do NOT share the source-first invariant.** `generate_traits` /
+    `generate_types` (`save.rs:648/669`) render each `TraitDecl`/`TypeDef` from its stored
+    sexp via `render_decl_sexp` — a structural pretty-printer that desugars reader shorthand
+    and reformats whitespace — with no source-first branch, unlike section 8's
+    `sexp_matches_source` verbatim-slice fast path. **Reach is real but narrow:** a T1
+    fn-downgrade in a module that *also* declares traits/types reloads the whole module,
+    reformatting the co-resident trait/type declarations (deftype ctor re-entry and deftrait
+    redefinition do not themselves trigger the cure — the *target* is never a trait/type — so
+    the exposure is only the co-resident case). **Severity: cosmetic, not a semantic poison** —
+    `render_decl_sexp` is structurally faithful (drops nothing, corrupts nothing; the reloaded
+    module typechecks identically); what is lost is the user's original formatting + reader
+    shorthand — a fidelity regression, not data loss (distinct from the D1 double-persist /
+    dropped-form class).
+    **Ruling (`/design`): extend source-first to sections 5–7 — non-blocking.** Consistency
+    with section 8 and Principle 7 (single source of truth — the user's source is the truth a
+    reload must preserve) warrant the cure, and it is low-cost: the
+    `introspection_sexp_and_source` + `verbatim_slice` machinery section 8 uses is already
+    shared, so `generate_traits`/`generate_types` prefer the consistency-gated verbatim
+    `Introspection.source` slice and fall back to `render_decl_sexp` only on sexp mismatch —
+    the same pattern, one section over (Principle 6 — the complexity is already budgeted, not
+    premature). It is **not a T1-cure blocker**: a trait/type-bearing module's T1 reload is
+    semantically sound today; this is fidelity polish. Routed to `/dev (src/)` as a scoped
+    `save.rs` change-set with round-trip unit tests (METHOD §2.2 seam grain) — **FIXME 0538**.
+    The I-4 checkpoint is discharged (verified + ruled); it no longer needs re-opening.
 
-  **The two coherent-stale pins to flip** (the §18.1 scope-note residue, each carries a flip
-  note): `tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale`
-  and `redefine_concrete_to_overloaded_caller_survives_coherent_stale` — under the cure the
-  compiled caller is **recompiled** against the new definition (or broken+trapped with
-  provenance), so their `:primitives/Int 6` old-chain pin flips to the cured value and the
-  §18.1.1 `stale:` section renders empty. The S102 L-U1 sibling
-  `redefine_unannotated_generic_target_caller_keeps_old_chain_sibling` and the report pair
-  (`t1_downgrade_report_*`) carry the same flip (the report pair's positive `stale:` assertions
-  invert to empty-section assertions); /qa owns the e2e flips, `/dev` the unit-level.
+  **The two coherent-stale pins** (the §18.1 scope-note residue, each carries a flip note) do
+  NOT share one outcome under the cure (FIXME 0529 correction) — the target's *sibling kind*
+  decides which of three the reload takes, and only one is the clean "recompiles to the cured
+  value":
+
+  - `tests/repl_redefinition.rs::redefine_concrete_to_polymorphic_caller_survives_coherent_stale`
+    — **the success case.** The redefined target is polymorphic, so the unannotated caller
+    `g`'s regenerated body re-typechecks green (a polymorphic target imposes no ambiguity),
+    `g` is **recompiled** against the new definition, its `:primitives/Int 6` old-chain pin
+    flips to the cured value (5), and the §18.1.1 `stale:` section renders empty.
+  - `redefine_concrete_to_overloaded_caller_survives_coherent_stale` — **the CS-3
+    error-blocked case, NOT a clean recompile.** Here the target is redefined to an
+    `Overloaded` multi-sig, so the unannotated caller `(defn g [y] (f y))` has nothing to pin
+    `y` to `Int`: its from-source recompile is a genuine "ambiguous type; add an annotation"
+    error — identical to what `--run` would report for the regenerated file. The T1
+    module-grain reload therefore **fails**, and per CS-3 the turn degrades to the §14.4
+    error-blocked floor (0489 prompt floor): the session survives, the `stale:` print is kept
+    (informational), and subsequent expressions are refused until the user annotates/repairs
+    `g`. The old-chain pin does **not** flip to a cured value — it takes the error-blocked
+    disposition. This is neither "recompiled to 5" nor a per-symbol "broken+trapped with
+    provenance" (that path is concrete-single-sig only) — it is the third, correct outcome
+    CS-3 already specifies, and the impl already matches it. The e2e pin asserts the
+    error-blocked floor + kept `stale:`, not a cured value.
+
+  The S102 L-U1 sibling `redefine_unannotated_generic_target_caller_keeps_old_chain_sibling`
+  carries the polymorphic (success) flip; the report pair (`t1_downgrade_report_*`) carries
+  whichever outcome its target kind selects (a polymorphic target's positive `stale:`
+  assertions invert to empty-section; an overloaded target's stay under the error-blocked
+  floor). /qa owns the e2e flips, `/dev` the unit-level.
   Consequence for the normative surface: `repl/spec.md` §18.1's coherence MUSTs, currently
   satisfiable at stage M only for concrete single-sig `UserFn` targets (stage-M scope note,
   FIXME 0481), become satisfiable for the T1 target kinds too once the cure lands — the §18.1
@@ -867,6 +949,33 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
   §4.1's pass-through at per-symbol grain. Routing members here (that FIXME's option 2)
   was rejected because templates are pervasive in any polymorphic cone — the fallback
   would become the common case; see §4.1's ruling rationale.
+
+  **Known limitation — a `deftype` ctor arity-change stays uncured T1 residue (FIXME 0533).**
+  A ctor arity change (`Point [x]` → `Point [x y]`) is a T1 target kind (`Constructor`), but
+  its prior and staged entries are **both slotted** (both `got_slot` = `Some`), so the F2
+  slot-refined trigger (`new_slot.is_none() || old_slot.is_none()`, §9.1.1) **excludes** it:
+  no full-cure reload fires, and — because it also takes the §2.2 AbiPreserving
+  reuse-and-patch arm — no `stale:` section prints. **Ruling (`/design`): intended-uncured T1
+  residue at stage M** (option (a) of FIXME 0533). Rationale: arity-changing an *existing* ctor
+  mid-session is a low-frequency operation, and it inherits the general T1 residue disposition —
+  every T1 target kind is AbiPreserving-downgraded as-built (§10 T1 opening; FIXME 0477 item 1),
+  and the full cure reaches only the slot-shape-changing shapes the F2 predicate admits.
+
+  **Caveat — this shape's residue is qualitatively worse than the benign coherent-stale
+  shapes.** The other T1 residues are *sound* frozen-world (old callers keep running correct
+  old code through a frozen slot). A ctor arity change under AbiPreserving reuse-and-patch is
+  not: the reused slot is repointed to the new, wider ctor body, so a caller compiled against
+  the old arity late-binds to an **incompatible arity** at its next call (passes the old
+  argument count to the new body). This is a latent miscompile, not a benign split-world.
+  **Cure path if ever ruled in (option (b)):** the §7.1 slot policy would need a companion
+  **ABI-surface-delta signal** — a ctor arity/layout change forces a *fresh* slot rather than
+  reuse — which makes the case F2-visible (`new_slot` ≠ the frozen `old_slot`) so the full-cure
+  driver fires; the from-source reload of an unannotated caller against the new arity would then
+  most often surface the incompatibility as the CS-3 §14.4 error-blocked floor (the same
+  disposition as the concrete→overloaded pin above) rather than a silent miscompile. Deferred,
+  not adopted, at stage M (Principle 6 — the companion signal is slot-policy surface a rare case
+  does not yet justify). Should a real session hit the miscompile, `/qa` authors a repro per the
+  defect discipline and the cure is option (b).
 - **T2 — unrecoverable re-typecheck input.** A closure member's raw sexp is unavailable:
   no introspection record AND backing-file rehydration (§4.2) fails. Reload that member's
   module at module grain; continue the walk with the module's symbols treated as
@@ -980,6 +1089,17 @@ mechanism, two granularities, not two protocols.
 - `/dev` (src/) — implement per §13 after `/qa`'s failing L-R1–R5 set exists (Phase 5); **S103
   adds the T1 full-cure change-sets (§10 T1 CS-1..3 + the F2 slot-refined trigger + the F3
   `__expr`-only feed narrowing / macro-clause render-fold), `src/`-only, no cross-crate**.
+- `/dev` (src/) — **S105 `__expr` decoupling (FIXME 0537, `src/`-only, no cross-crate):
+  Q1 = the §10 T1 CS-1 driver's explicit same-module mono-variant capture / re-request
+  (`lifecycle.rs::reload_module` / the CS-1 driver), then Q2 = `save.rs::generate_fns_and_macros`
+  omitting the `__expr` wrapper (strictly after Q1) — see §10 CS-1 + §8 pin (v). Acceptance:
+  the two coherent-stale reload pins + the polymorphic-reload path stay green with `__expr`
+  absent from the regenerated `.cl`.**
+- `/dev` (src/) — **regen-fidelity source-first for sections 5–7 (FIXME 0538, `save.rs`,
+  non-blocking): `generate_traits`/`generate_types` prefer the consistency-gated verbatim
+  `Introspection.source` slice (the shared `introspection_sexp_and_source` + `verbatim_slice`
+  machinery), falling back to `render_decl_sexp` on sexp mismatch, with round-trip unit tests —
+  see §10 T1 I-4 note.**
 - `/typecheck` — resolve FIXME 0470 (edge-extraction widening + schema bump); sequenced
   before or with the transaction implementation.
 - `/dev` (cranelisp-backend) — `compile_trap_stub` (§8.3 pinned call 2) + the §8.2
