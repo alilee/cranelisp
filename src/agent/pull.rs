@@ -1467,7 +1467,7 @@ mod tests {
                     ty: cranelisp_types::Type::Int,
                 },
                 DefKind::UserFn {
-                    fn_state: UserFnState::Concrete { got_slot: 0 },
+                    fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
                 },
             )
             .visibility(Visibility::Public)

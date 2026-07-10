@@ -36,6 +36,57 @@ const SEARCH_INDEX_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// Poll interval while waiting on the `/search` index settle.
 const SEARCH_INDEX_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
+/// A `/search` result row = an index hit plus whether it is already in scope
+/// (which flips facet 4 from an `(import …)` form to the marker, §17.19.2 R13).
+struct SearchRow {
+    hit: crate::session_v4::index_worker::SearchHit,
+    in_scope: bool,
+}
+
+/// Maximum characters shown either side of the matched substring in a
+/// docstring-only excerpt (§17.19.2 facet 5).
+const DOC_EXCERPT_WINDOW: usize = 30;
+
+/// Build a short excerpt of `doc` around the first case-insensitive occurrence
+/// of `query`, elided with `…` on either side when the docstring extends past
+/// the window (§17.19.2 facet 5). Returns `None` when `query` is not found (the
+/// caller then omits the facet).
+///
+/// The match position is located by scanning the ORIGINAL text's char
+/// boundaries (per-char lowercased comparison) — NOT via a byte offset into
+/// `doc.to_lowercase()`, whose byte length can differ from `doc`'s when a
+/// codepoint's lowercase form is a different byte length (e.g. `İ` → `i` + U+0307).
+/// A byte offset from the lowercased string is not a valid boundary in `doc` and
+/// would split a codepoint or exceed `doc.len()`, panicking on user-supplied
+/// docstring text (src/CLAUDE.md — never panic on user input). All windowing is
+/// on `char` boundaries.
+fn docstring_excerpt(doc: &str, query: &str) -> Option<String> {
+    let query_lc = query.to_lowercase();
+    if query_lc.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = doc.chars().collect();
+    // Find the char index where a case-insensitive match of `query` begins, by
+    // lowercasing each candidate tail of the ORIGINAL text (so the returned
+    // index is always a valid `chars` position).
+    let match_char_start = (0..chars.len()).find(|&i| {
+        let tail: String = chars[i..].iter().collect();
+        tail.to_lowercase().starts_with(&query_lc)
+    })?;
+    let match_char_len = query.chars().count();
+    let start = match_char_start.saturating_sub(DOC_EXCERPT_WINDOW);
+    let end = (match_char_start + match_char_len + DOC_EXCERPT_WINDOW).min(chars.len());
+    let mut excerpt = String::new();
+    if start > 0 {
+        excerpt.push_str("… ");
+    }
+    excerpt.extend(&chars[start..end]);
+    if end < chars.len() {
+        excerpt.push_str(" …");
+    }
+    Some(excerpt)
+}
+
 // ---------------------------------------------------------------------------
 // Slash command types + top-level display free functions (relocated)
 // ---------------------------------------------------------------------------
@@ -699,7 +750,10 @@ impl CompilerSession {
                 // §3.8 non-conformance this flips.
                 let (resolved_entry, resolved_module) =
                     self.resolve_entry_for_display(&entry, &lookup_module);
-                let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
+                // §3.8: `/sig` is byte-identical to a bare lookup — a pure
+                // introspection surface, so a trait's `; impl:` section is
+                // structural (`true`, FIXME 0542).
+                let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module, true);
                 // S101 (repl/spec.md §18.4): a broken symbol's /sig shows the
                 // same primary line plus the provenance comment line.
                 match self.broken_status_line(name, &resolved_module) {
@@ -1019,28 +1073,70 @@ impl CompilerSession {
         // that type (spec §17.19.1 example). Heuristic: if it parses as a type
         // expression that resolves to a real `Type`, search Index B; otherwise
         // fall back to a name (Index A) search.
+        // Collect the raw hits per the query shape (spec §17.19.1):
+        //   - a scheme-shaped query (leading `(` or FQ leaf) → the SCHEME axis;
+        //   - a plain-text query → BOTH the NAME axis and the DOCSTRING axis,
+        //     merged so a symbol matching on both keeps its stronger (name) tier.
         let scheme_hits = self.try_search_by_scheme(query);
+        let is_name_query = scheme_hits.is_none();
         let hits = match scheme_hits {
-            Some(h) => h,
-            None => self.shared.importable_indices.search_by_name(query),
+            Some(scheme_hits) => scheme_hits,
+            None => self.collect_name_and_docstring_hits(query),
         };
 
-        // Filter out symbols already resident in the current session — `/search`
-        // covers what is importable-but-not-yet-in-scope (spec §17.19; the
-        // `_neg` already-imported guard). A name that resolves in the current
-        // module to the SAME originating module is already imported.
+        // Scope filter (spec §17.19 + R13, S106): a symbol already resident in the
+        // current session is normally excluded (`/search` covers what is
+        // importable-but-not-yet-in-scope). EXCEPTION: an EXACT-name match is
+        // surfaced regardless of scope — shown MARKED when it is already in scope.
+        // Partial / scheme hits keep the old behaviour (in-scope ⇒ excluded).
         let current = self.current_module_path();
-        let mut rows: Vec<crate::session_v4::index_worker::SearchHit> = hits
+        use crate::session_v4::index_worker::MatchTier;
+        let mut rows: Vec<SearchRow> = hits
             .into_iter()
-            .filter(|h| !self.is_already_in_scope(&h.name, &h.module, &current))
+            .filter_map(|hit| {
+                let in_scope = self.is_already_in_scope(&hit.name, &hit.module, &current);
+                if hit.tier == MatchTier::ExactName || !in_scope {
+                    Some(SearchRow { hit, in_scope })
+                } else {
+                    None // a partial / scheme match already in scope stays excluded
+                }
+            })
             .collect();
 
-        // Dedup identical (name, module) rows (a symbol may appear once per
-        // index entry); sort for deterministic output.
+        // Exact-in-scope synthesis (R13): an exact-name match resolvable bare in
+        // the current scope but NOT present in the index (e.g. a prelude symbol,
+        // which the indexer excludes) must still surface, marked. Only for a
+        // plain-text (name) query.
+        if is_name_query
+            && let Some(hit) = self.exact_in_scope_hit(query)
+            && !rows
+                .iter()
+                .any(|r| r.hit.name == hit.name && r.hit.module == hit.module)
+        {
+            rows.push(SearchRow { hit, in_scope: true });
+        }
+
+        // Dedup identical (name, module) rows (a symbol may match on more than one
+        // axis in the same collection), keeping the strongest tier.
         rows.sort_by(|a, b| {
-            (a.module.as_ref(), a.name.as_ref()).cmp(&(b.module.as_ref(), b.name.as_ref()))
+            (a.hit.module.as_ref(), a.hit.name.as_ref())
+                .cmp(&(b.hit.module.as_ref(), b.hit.name.as_ref()))
+                .then(a.hit.tier.cmp(&b.hit.tier))
         });
-        rows.dedup_by(|a, b| a.name == b.name && a.module == b.module);
+        rows.dedup_by(|a, b| a.hit.name == b.hit.name && a.hit.module == b.hit.module);
+
+        // Relevance ranking (spec §17.19.1a): total order by tier (strongest
+        // first), alphabetical (module, name) tie-break within a tier for
+        // deterministic output (§17.19.5).
+        rows.sort_by(|a, b| {
+            a.hit
+                .tier
+                .cmp(&b.hit.tier)
+                .then((a.hit.module.as_ref(), a.hit.name.as_ref()).cmp(&(
+                    b.hit.module.as_ref(),
+                    b.hit.name.as_ref(),
+                )))
+        });
 
         // Progress note when the burn-down is still in flight (spec §17.19.3).
         let pending = self.shared.importable_indices.pending_count();
@@ -1054,20 +1150,90 @@ impl CompilerSession {
             return format!("; no importable symbols matched '{query}'{note}");
         }
 
-        let mut out = String::new();
-        for hit in &rows {
-            let sig = crate::display::format_type_qualified(&hit.scheme);
-            // Four facets (spec §17.19.2): name, :Type signature, module, import.
-            out.push_str(&format!(
-                ":{sig} {name}\n  in {module}   — (import [{module} [{name}]])\n",
-                sig = sig,
-                name = hit.name.as_ref(),
-                module = hit.module.as_ref(),
-            ));
+        // Lead with a newline so the first result row starts on its own line
+        // below the prompt (matching the spec §17.19.2 examples, which show the
+        // rows beneath the `user> /search …` line) rather than glued to the
+        // prompt in a non-TTY/piped session where the input is not echoed.
+        let mut out = String::from("\n");
+        for row in &rows {
+            out.push_str(&self.render_search_row(row, query));
         }
         out.push_str(note.trim_start_matches('\n'));
         while out.ends_with('\n') {
             out.pop();
+        }
+        out
+    }
+
+    /// Collect the NAME-axis and DOCSTRING-axis hits for a plain-text query
+    /// (spec §17.19.1) and merge them: a symbol matching on both axes keeps its
+    /// stronger (name) tier — it is NOT re-reported as a docstring-only hit
+    /// (§17.19.1a tier 6). Dedup key is `(name, module)`.
+    fn collect_name_and_docstring_hits(
+        &self,
+        query: &str,
+    ) -> Vec<crate::session_v4::index_worker::SearchHit> {
+        let mut hits = self.shared.importable_indices.search_by_name(query);
+        let mut seen: std::collections::HashSet<(String, String)> = hits
+            .iter()
+            .map(|h| (h.name.to_string(), h.module.to_string()))
+            .collect();
+        for doc_hit in self.shared.importable_indices.search_by_docstring(query) {
+            let key = (doc_hit.name.to_string(), doc_hit.module.to_string());
+            if seen.insert(key) {
+                hits.push(doc_hit);
+            }
+        }
+        hits
+    }
+
+    /// Synthesize an exact-in-scope `SearchHit` for `query` when it resolves
+    /// bare in the current scope to a `Def` (R13, S106) — e.g. a prelude symbol,
+    /// which the importable index deliberately excludes. Returns `None` when the
+    /// query does not resolve, or resolves to a non-`Def` (special form, type).
+    fn exact_in_scope_hit(
+        &self,
+        query: &str,
+    ) -> Option<crate::session_v4::index_worker::SearchHit> {
+        use crate::session_v4::index_worker::{MatchTier, SearchHit};
+        let (entry, module) = self.lookup_with_prelude_fallback(query)?;
+        let (resolved, origin) = self.resolve_entry_for_display(&entry, &module);
+        if let ModuleEntry::Def { scheme, docstring, .. } = resolved {
+            Some(SearchHit {
+                name: Symbol::from(query),
+                module: origin,
+                scheme: scheme.ty.clone(),
+                docstring: docstring.clone(),
+                tier: MatchTier::ExactName,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Render one `/search` result row — the facets of spec §17.19.2. Facet 4 is
+    /// the `(import …)` form, REPLACED by the `already in scope — no import
+    /// needed` marker for an exact in-scope match (R13); facet 5 is the `; doc:`
+    /// excerpt, present ONLY on a docstring-only hit (§17.19.1a tier 6).
+    fn render_search_row(&self, row: &SearchRow, query: &str) -> String {
+        use crate::session_v4::index_worker::MatchTier;
+        let hit = &row.hit;
+        let sig = crate::display::format_type_qualified(&hit.scheme);
+        let name = hit.name.as_ref();
+        let module = hit.module.as_ref();
+        // Facet 4: import form, or the in-scope marker for an exact in-scope hit.
+        let action = if row.in_scope {
+            "already in scope — no import needed".to_string()
+        } else {
+            format!("(import [{module} [{name}]])")
+        };
+        let mut out = format!(":{sig} {name}\n  in {module}   — {action}\n");
+        // Facet 5: docstring excerpt, only for a docstring-only hit.
+        if hit.tier == MatchTier::DocstringOnly
+            && let Some(doc) = &hit.docstring
+            && let Some(excerpt) = docstring_excerpt(doc, query)
+        {
+            out.push_str(&format!("  ; doc: {excerpt}\n"));
         }
         out
     }
@@ -1343,7 +1509,9 @@ impl CompilerSession {
         };
         let (resolved_entry, resolved_module) =
             self.resolve_entry_for_display(&entry, &lookup_module);
-        let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module);
+        // §3.6: `/info` is a pure-introspection surface — a trait's `; impl:`
+        // section is structural (`true`, FIXME 0542).
+        let sig = self.format_def_entry(&resolved_entry, &bare, &resolved_module, true);
         // §3.6 third MUST component (FIXME 0480): the definition source,
         // rendered for BOTH the broken and healthy arms.
         let source = self.info_definition_source(&bare, &resolved_module);
@@ -1657,16 +1825,11 @@ impl CompilerSession {
             // scope layering visible. Absent when the bit is OFF (refusal).
             let prelude_names = self.prelude_implicit_names();
             if !prelude_names.is_empty() {
-                output.push_str(
-                    "Prelude (implicit):  \
-                     ; available via the prelude outer scope, \
-                     shadowed by any explicit import/def of the same name\n",
-                );
-                for name in &prelude_names {
-                    output.push_str("  ");
-                    output.push_str(name);
-                    output.push('\n');
-                }
+                // FIXME 0546: route the prelude group's names through the SAME
+                // shared §3.3 L0–L4 layout as every other category (was a
+                // one-name-per-line loop that bypassed `format_symbol_layout`).
+                // The header suffix comment is preserved by the helper.
+                output.push_str(&format_prelude_implicit_group(&prelude_names));
             }
 
             if special_forms.is_empty() && macros.is_empty() && traits.is_empty()
@@ -2199,20 +2362,21 @@ impl CompilerSession {
         self.current_module_path().to_string()
     }
 
-    /// Write the REPL prompt with timing info.
+    /// The REPL prompt string with timing info.
     /// Format: `{compile_ms}+{eval_ms}ms; {module}> `
-    pub fn write_prompt(&self, stdout: &mut impl Write, compile_ms: u64, eval_ms: u64) {
+    ///
+    /// Used both by the non-TTY read loop (written to stdout) and by the TTY
+    /// line editor (§10.8: passed to `readline`).
+    pub fn prompt_string(&self, compile_ms: u64, eval_ms: u64) -> String {
         let module = self.current_module_name();
-        let _ = write!(stdout, "{compile_ms}+{eval_ms}ms; {module}> ");
-        let _ = stdout.flush();
+        format!("{compile_ms}+{eval_ms}ms; {module}> ")
     }
 
-    /// Write the continuation prompt (for multi-line input).
-    pub fn write_continuation_prompt(&self, stdout: &mut impl Write, compile_ms: u64, eval_ms: u64) {
-        let module = self.current_module_name();
-        let prompt_len = format!("{compile_ms}+{eval_ms}ms; {module}> ").len();
-        let _ = write!(stdout, "{:>width$}", "...", width = prompt_len);
-        let _ = stdout.flush();
+    /// The continuation-prompt string (for multi-line input) — right-aligned
+    /// `...` to the width of the normal prompt.
+    pub fn continuation_prompt_string(&self, compile_ms: u64, eval_ms: u64) -> String {
+        let prompt_len = self.prompt_string(compile_ms, eval_ms).len();
+        format!("{:>width$}", "...", width = prompt_len)
     }
 
     /// Check if input has balanced parentheses.
@@ -2259,7 +2423,7 @@ impl CompilerSession {
     /// lines (FIXME 0363).
     fn format_eval_result_body(&self, result: &EvalResult) -> String {
         match result {
-            EvalResult::Def { symbol, .. } => {
+            EvalResult::Def { symbol, defined, .. } => {
                 let name = symbol.symbol.as_ref();
                 let module = &symbol.module;
 
@@ -2296,7 +2460,12 @@ impl CompilerSession {
                         return format!("{symbol} ; defined");
                     }
                 };
-                let body = self.format_def_entry(&entry, name, &resolved_module);
+                // FIXME 0542: a bare LOOKUP (`defined == false`) is pure
+                // introspection — a trait's `; impl:` section is structural
+                // (§4.1.4), shown even when empty. A definition ECHO
+                // (`defined == true`) follows §1.1 and omits the empty section.
+                let body =
+                    self.format_def_entry(&entry, name, &resolved_module, !*defined);
                 // S101 (repl/spec.md §18.4): bare lookup of a broken symbol is
                 // self-documenting — the ordinary per-class display (last-good
                 // signature) plus the provenance comment line.
@@ -2346,6 +2515,11 @@ impl CompilerSession {
         entry: &ModuleEntry<Code>,
         name: &str,
         module: &ModuleFullPath,
+        // FIXME 0542: when set, a trait entry's `; impl:` section is emitted
+        // even when empty (§4.1.4 pure-introspection displays: bare lookup,
+        // `/sig`, `/info`). A definition echo passes `false` (§1.1 omits the
+        // empty section). Ignored for every non-trait entry.
+        full_trait_sections: bool,
     ) -> String {
         match entry {
             ModuleEntry::Def { scheme, kind, docstring, .. } => {
@@ -2425,7 +2599,7 @@ impl CompilerSession {
                 self.format_type_display(name, module)
             }
             ModuleEntry::TraitDecl { docstring, .. } => {
-                self.format_trait_display(name, docstring.as_deref())
+                self.format_trait_display(name, docstring.as_deref(), full_trait_sections)
             }
             _ => {
                 // TraitImpl entries have `Trait.Type` symbol names and
@@ -2523,7 +2697,12 @@ impl CompilerSession {
     /// Format a trait for display (spec §4.1.4).
     ///
     /// Shows `:module/TraitName ; deftrait` with `; defn:` and `; impl:` sections.
-    pub(crate) fn format_trait_display(&self, trait_name: &str, docstring: Option<&str>) -> String {
+    pub(crate) fn format_trait_display(
+        &self,
+        trait_name: &str,
+        docstring: Option<&str>,
+        full_impl_section: bool,
+    ) -> String {
         let scope = self.current_module_path();
         // FIXME 0192 method 6: `defining_module_for` deleted; substitute with
         // the chain-follow from `resolve_terminal_entry_and_home` (Decision 45
@@ -2540,21 +2719,33 @@ impl CompilerSession {
         let tn = TraitName::from(trait_name);
         let mut result = format!(":{defining_module}/{trait_name} ; deftrait");
         result = append_docstring_comment(result, docstring);
+        // FIXME 0542 (§4.1.4): a bare trait lookup MUST ALWAYS surface BOTH the
+        // `; defn:` (method names) and `; impl:` (implementing types) sections —
+        // for user-module traits and stdlib traits alike, and even when the
+        // trait has no impls yet (the `; impl:` header appears with an empty
+        // body). This is DELIBERATELY UNCONDITIONAL, unlike the type-display
+        // rule (§4.1.3), where an empty `; impl:` section is omitted: a trait's
+        // related sections are structural, a type's are conditional.
         // FIXME 0192 method 4: `get_trait_methods` deleted; inline the 1-line
         // wrapper over `lookup_trait_decl_chain`.
-        if let Some(decl) = cranelisp_types::lookup_trait_decl_chain(
+        let method_names: Vec<String> = cranelisp_types::lookup_trait_decl_chain(
             &self.shared.symbol_tables, &scope, &tn,
-        ) && !decl.methods.is_empty() {
-            let names: Vec<&str> = decl.methods.iter().map(|m| m.name.as_ref()).collect();
-            result.push_str(&format_related_section("defn", &names));
-        }
-        let impl_types = cranelisp_types::get_implementing_types_chain(
+        )
+        .map(|decl| decl.methods.iter().map(|m| m.name.to_string()).collect())
+        .unwrap_or_default();
+        let impl_type_names: Vec<String> = cranelisp_types::get_implementing_types_chain(
             &self.shared.symbol_tables, &scope, &tn,
-        );
-        if !impl_types.is_empty() {
-            let names: Vec<&str> = impl_types.iter().map(|t| t.as_ref()).collect();
-            result.push_str(&format_related_section("impl", &names));
-        }
+        )
+        .iter()
+        .map(|t| t.to_string())
+        .collect();
+        let method_refs: Vec<&str> = method_names.iter().map(String::as_str).collect();
+        let impl_refs: Vec<&str> = impl_type_names.iter().map(String::as_str).collect();
+        result.push_str(&format_trait_related_sections(
+            &method_refs,
+            &impl_refs,
+            full_impl_section,
+        ));
         result
     }
 
@@ -2722,6 +2913,35 @@ pub(crate) fn format_related_section(label: &str, names: &[&str]) -> String {
     for row in format_symbol_layout(&owned) {
         out.push_str("\n;  ");
         out.push_str(&row);
+    }
+    out
+}
+
+/// Render a trait's related-symbol sections for introspection display
+/// (spec §4.1.4). The `; defn:` (method names) section is emitted whenever the
+/// trait declares methods. The `; impl:` (implementing types) section is
+/// emitted when the trait has impls OR when `full_impl_section` is set — the
+/// FIXME-0542 fix: a **pure introspection** display (a bare trait lookup, and
+/// its byte-identical `/sig`/`/info` siblings, §3.8/§3.6) MUST surface the
+/// `; impl:` section STRUCTURALLY, even when the trait has no impls yet (the
+/// header appears with an empty body). A **definition echo** (`(deftrait …)`
+/// result) passes `full_impl_section = false` so it follows the §1.1 example,
+/// which omits the empty `; impl:` for a freshly-defined impl-less trait — the
+/// same omit-when-empty rule the type display (§4.1.3) uses. Extracted as a
+/// free function so the emit contract is unit-testable without constructing a
+/// `CompilerSession` (`src/CLAUDE.md` testability discipline; mirrors
+/// `collect_related_for`).
+pub(crate) fn format_trait_related_sections(
+    method_names: &[&str],
+    impl_type_names: &[&str],
+    full_impl_section: bool,
+) -> String {
+    let mut out = String::new();
+    if !method_names.is_empty() {
+        out.push_str(&format_related_section("defn", method_names));
+    }
+    if full_impl_section || !impl_type_names.is_empty() {
+        out.push_str(&format_related_section("impl", impl_type_names));
     }
     out
 }
@@ -2944,6 +3164,20 @@ pub(crate) fn format_symbol_layout(names: &[String]) -> Vec<String> {
     rows
 }
 
+/// Emit the shared §3.3 L0–L4 layout rows for `names`, each indented two
+/// spaces (the `/list` / `/imports` / `/exports` body format). Single-sources
+/// the layout body used by both `append_name_category` and the `/imports`
+/// "Prelude (implicit)" group (FIXME 0546 — the prelude group formerly dumped
+/// one name per line, bypassing `format_symbol_layout`; routing both through
+/// this helper is the Principle-7 fix).
+fn append_layout_body(buf: &mut String, names: &[String]) {
+    for row in format_symbol_layout(names) {
+        buf.push_str("  ");
+        buf.push_str(&row);
+        buf.push('\n');
+    }
+}
+
 /// Append a category of names to a string buffer (for /list, /imports, /exports),
 /// rendering the symbol block through the shared §3.3 layout formatter.
 pub(crate) fn append_name_category(buf: &mut String, label: &str, names: &[String]) {
@@ -2952,11 +3186,24 @@ pub(crate) fn append_name_category(buf: &mut String, label: &str, names: &[Strin
     }
     buf.push_str(label);
     buf.push_str(":\n");
-    for row in format_symbol_layout(names) {
-        buf.push_str("  ");
-        buf.push_str(&row);
-        buf.push('\n');
-    }
+    append_layout_body(buf, names);
+}
+
+/// Build the `/imports` "Prelude (implicit)" group (spec §3.4). The header line
+/// carries a trailing suffix comment explaining the outer-scope semantics; the
+/// prelude names render through the SAME shared §3.3 L0–L4 layout as every
+/// other `/imports` category (FIXME 0546). The header suffix comment is
+/// preserved verbatim — the layout applies only to the name body. Extracted as
+/// a free function so the header-preservation + shared-layout routing is
+/// unit-testable without a `CompilerSession`.
+pub(crate) fn format_prelude_implicit_group(names: &[String]) -> String {
+    let mut out = String::from(
+        "Prelude (implicit):  \
+         ; available via the prelude outer scope, \
+         shadowed by any explicit import/def of the same name\n",
+    );
+    append_layout_body(&mut out, names);
+    out
 }
 
 /// Format a Sexp value as a readable string.
@@ -3552,7 +3799,9 @@ mod fq_arg_tests {
             s.shared.symbol_tables.insert(user.clone(), table);
         }
         let sig = s.handle_sig("dbl");
-        let expected = s.format_def_entry(&entry, "dbl", &user);
+        // `/sig` threads `full_trait_sections = true` (§3.8 pure introspection);
+        // match it so the byte-equality holds (the flag is inert for a fn).
+        let expected = s.format_def_entry(&entry, "dbl", &user, true);
         assert_eq!(
             sig, expected,
             "/sig bare-local MUST render the identical §3.8 primary line as \
@@ -3678,5 +3927,223 @@ mod fq_arg_tests {
         assert!(!out.contains("codegen error"), "no codegen wrapper; got: {out}");
         assert!(!out.contains("runtime panic:"), "no slot prefix; got: {out}");
         assert!(!out.contains("0..0"), "no synthetic span; got: {out}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FIXME 0542 — bare trait lookup always surfaces `; defn:` and `; impl:`
+// sections. Unit-tests the extracted always-emit section builder
+// (`format_trait_related_sections`) at the exact seam of the fix.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod trait_related_section_tests {
+    use super::*;
+
+    // spec: repl/spec.md §4.1.4 — a PURE INTROSPECTION display
+    // (`full_impl_section = true`: bare lookup / `/sig` / `/info`) surfaces the
+    // `; impl:` section even when the trait has NO implementing types yet (the
+    // header with an empty body). This is the FIXME-0542 seam.
+    #[test]
+    fn trait_sections_full_emits_impl_header_when_impls_empty() {
+        let out = format_trait_related_sections(&["show"], &[], true);
+        assert!(
+            out.contains("; defn:") && out.contains("show"),
+            "the `; defn:` method section MUST list `show`; got:\n{out}",
+        );
+        assert!(
+            out.contains("; impl:"),
+            "a full introspection display MUST surface the `; impl:` section \
+             even with no impls (§4.1.4, FIXME 0542); got:\n{out}",
+        );
+    }
+
+    // spec: repl/spec.md §1.1 — a DEFINITION ECHO (`full_impl_section = false`)
+    // of a freshly-defined impl-less trait OMITS the empty `; impl:` section
+    // (matching the §1.1 example) so introspection lists exactly one `; impl:`
+    // section for the trait. Regression guard for the negative /qa parser.
+    #[test]
+    fn trait_sections_echo_omits_empty_impl_header() {
+        let out = format_trait_related_sections(&["show"], &[], false);
+        assert!(
+            out.contains("; defn:") && out.contains("show"),
+            "the `; defn:` section MUST still appear on a definition echo; \
+             got:\n{out}",
+        );
+        assert!(
+            !out.contains("; impl:"),
+            "a definition echo MUST omit the empty `; impl:` section (§1.1); \
+             got:\n{out}",
+        );
+    }
+
+    // spec: repl/spec.md §4.1.4 — when impls exist the `; impl:` section lists
+    // the implementing types and NOTHING else (positive + negative in one).
+    // With impls present the section appears regardless of the flag.
+    #[test]
+    fn trait_sections_impl_lists_only_implementing_types() {
+        for full in [true, false] {
+            let out = format_trait_related_sections(&["show"], &["Int"], full);
+            // Isolate the `; impl:` body rows (comment lines after the header).
+            let impl_body: Vec<&str> = out
+                .lines()
+                .skip_while(|l| l.trim() != "; impl:")
+                .skip(1)
+                .take_while(|l| l.trim_start().starts_with(';'))
+                .collect();
+            let joined = impl_body.join(" ");
+            assert!(
+                joined.contains("Int"),
+                "the `; impl:` section MUST list `Int` (full={full}); \
+                 body={impl_body:?}",
+            );
+            assert!(
+                !joined.contains("Bool"),
+                "the `; impl:` section MUST NOT leak an unrelated type `Bool` \
+                 (full={full}); body={impl_body:?}",
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FIXME 0546 — `/imports` "Prelude (implicit)" group renders through the shared
+// §3.3 L0–L4 layout (not one name per line), preserving the header suffix
+// comment. Unit-tests the extracted `format_prelude_implicit_group` at the fix
+// seam + confirms `append_name_category` shares the same layout body.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod prelude_group_layout_tests {
+    use super::*;
+
+    // A 12-name set (2 operators + 10 letter-grouped names) that the shared
+    // layout MUST pack multi-column (≤6/line), not one-per-line.
+    fn names() -> Vec<String> {
+        [
+            "+", "-", "abs", "add", "ceil", "cons", "drop", "each", "map",
+            "nth", "when", "zip",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    }
+
+    // spec: repl/spec.md §3.4 — the "Prelude (implicit)" header suffix comment
+    // is preserved verbatim by the shared-layout routing (FIXME 0546).
+    #[test]
+    fn prelude_group_preserves_header_suffix_comment() {
+        let out = format_prelude_implicit_group(&names());
+        let header = out.lines().next().unwrap_or("");
+        assert!(
+            header.starts_with("Prelude (implicit):")
+                && header.contains("available via the prelude outer scope"),
+            "the header suffix comment MUST be preserved; header={header:?}",
+        );
+    }
+
+    // spec: repl/spec.md §3.3/§3.4 — the prelude names render through the SHARED
+    // multi-column layout: some body row packs ≥2 names, none exceeds 6, and the
+    // body is byte-identical to `format_symbol_layout` for the same name set —
+    // NOT one name per line (FIXME 0546).
+    #[test]
+    fn prelude_group_body_uses_shared_layout() {
+        let ns = names();
+        let out = format_prelude_implicit_group(&ns);
+        let body: Vec<&str> = out
+            .lines()
+            .skip(1) // header
+            .map(|l| l.strip_prefix("  ").unwrap_or(l))
+            .collect();
+        assert!(
+            body.iter().any(|l| l.split_whitespace().count() >= 2),
+            "the prelude group MUST use the shared multi-column layout, not \
+             one name per line; body={body:?}",
+        );
+        for row in &body {
+            assert!(
+                row.split_whitespace().count() <= 6,
+                "a shared-layout row holds at most 6 names; row={row:?}",
+            );
+        }
+        // Byte-identical to the shared formatter for this name set.
+        let expected = format_symbol_layout(&ns);
+        assert_eq!(
+            body, expected,
+            "the prelude group body MUST equal `format_symbol_layout` output \
+             (single-sourced §3.3 layout)",
+        );
+    }
+
+    // The prelude group and `append_name_category` share ONE layout body
+    // (Principle 7) — the same names produce the same rows through both.
+    #[test]
+    fn prelude_group_and_category_share_layout_body() {
+        let ns = names();
+        let prelude = format_prelude_implicit_group(&ns);
+        let prelude_body: Vec<&str> = prelude
+            .lines()
+            .skip(1)
+            .map(|l| l.strip_prefix("  ").unwrap_or(l))
+            .collect();
+
+        let mut cat = String::new();
+        append_name_category(&mut cat, "Fns", &ns);
+        let cat_body: Vec<&str> = cat
+            .lines()
+            .skip(1) // "Fns:" header
+            .map(|l| l.strip_prefix("  ").unwrap_or(l))
+            .collect();
+
+        assert_eq!(
+            prelude_body, cat_body,
+            "the prelude group and a normal category MUST share the layout body",
+        );
+    }
+}
+
+#[cfg(test)]
+mod search_excerpt_tests {
+    use super::*;
+
+    // spec: repl/spec.md §17.19.2 facet 5 — the docstring excerpt is produced
+    // around the matched substring, elided with `…` when the docstring extends
+    // past the window.
+    #[test]
+    fn excerpt_surrounds_match_with_ellipses() {
+        // The match sits well inside a docstring long enough on BOTH sides to
+        // overflow the window, so both ellipses appear.
+        let doc = "a long preamble that pads out the left side beyond the window, computes the \
+                   greatest common divisor of two integers, and then keeps going far past the \
+                   right edge of the window too";
+        let ex = docstring_excerpt(doc, "greatest common").expect("query is present");
+        assert!(ex.contains("greatest common"), "excerpt shows the match: {ex:?}");
+        assert!(ex.starts_with("… ") && ex.ends_with(" …"), "elided both ends: {ex:?}");
+    }
+
+    // spec: repl/spec.md §17.19.2 facet 5 — a query absent from the docstring
+    // yields no excerpt (the caller then omits the facet).
+    #[test]
+    fn excerpt_absent_query_is_none() {
+        assert!(docstring_excerpt("some documentation text", "absent").is_none());
+    }
+
+    // spec: src/CLAUDE.md — never panic on user input. A docstring whose
+    // lowercase form is a DIFFERENT byte length than the original (`İ`, U+0130,
+    // is 2 bytes but lowercases to `i` + U+0307 = 3 bytes) must not panic: a byte
+    // offset into `doc.to_lowercase()` is NOT a valid boundary in the original
+    // `doc`. Regression guard for the Unicode byte-offset bug (/review Important).
+    #[test]
+    fn excerpt_case_length_changing_docstring_no_panic() {
+        // `İİx`: two U+0130 chars (2 bytes each) then `x` — original len 5 bytes;
+        // lowercased len 7 bytes. The match for `x` is at lowercased byte 6, which
+        // is out of bounds in the 5-byte original. Must not panic and must show x.
+        let doc = "İİx";
+        let ex = docstring_excerpt(doc, "x").expect("query `x` is present");
+        assert!(ex.contains('x'), "excerpt contains the match: {ex:?}");
+
+        // A `ß`/`SS` case-fold widening in the middle of the text: the match after
+        // it must still land on a valid original boundary.
+        let doc2 = "straße number is the key detail here in the docs";
+        let ex2 = docstring_excerpt(doc2, "NUMBER").expect("case-insensitive match");
+        assert!(ex2.contains("number"), "excerpt contains the match: {ex2:?}");
     }
 }

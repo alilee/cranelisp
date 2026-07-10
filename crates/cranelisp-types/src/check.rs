@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[cfg(test)]
+mod tests;
+
 use crate::{
     Defn, FQSymbol, FQTraitName, FQTypeName, JitSymbol, Scheme, Span, Symbol, TraitMethodSig,
     TraitName, Type,

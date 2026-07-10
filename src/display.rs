@@ -781,6 +781,73 @@ mod tests {
         );
     }
 
+    // --- constructor-name decision seams (FIXME 0496 — the ADT-render core) ---
+    //
+    // `format_adt_value`/`format_adt_heap_value` are generic over the heap and
+    // hard to drive without a live JIT value, but the *decision* of which
+    // constructor name to render (and whether to suppress the redundant
+    // `Type.` prefix on a single-ctor product) is pure and is the seam the
+    // 0493 garbled-render defect lived at. These pin that decision directly.
+
+    fn type_info(type_name: &str, ctors: &[&str]) -> TypeDefInfo {
+        TypeDefInfo {
+            name: FQTypeName::new(
+                ModuleFullPath::from("user"),
+                cranelisp_types::TypeName::from(type_name),
+            ),
+            type_params: Vec::new(),
+            constructors: ctors.iter().map(|c| Symbol::from(*c)).collect(),
+        }
+    }
+
+    // spec: repl/spec.md §1.5 — data ctor at a valid tag renders its name
+    #[test]
+    fn find_constructor_by_tag_valid() {
+        let ti = type_info("Color", &["Red", "Green", "Blue"]);
+        assert_eq!(find_constructor_by_tag(&ti, 0), "Red");
+        assert_eq!(find_constructor_by_tag(&ti, 2), "Blue");
+    }
+
+    // spec: repl/spec.md §1.5 — an out-of-range tag falls back to `<tag:N>`
+    // rather than panicking or silently mis-indexing (negative/edge cell).
+    #[test]
+    fn find_constructor_by_tag_out_of_range_falls_back() {
+        let ti = type_info("Color", &["Red", "Green", "Blue"]);
+        assert_eq!(find_constructor_by_tag(&ti, 3), "<tag:3>");
+        assert_eq!(find_constructor_by_tag(&type_info("Empty", &[]), 0), "<tag:0>");
+    }
+
+    // spec: repl/spec.md §1.5 — single-ctor product (ctor name == type name)
+    // is the prefix-suppression trigger.
+    #[test]
+    fn is_single_matching_constructor_product_true() {
+        assert!(is_single_matching_constructor("Point", &type_info("Point", &["Point"])));
+    }
+
+    // spec: repl/spec.md §1.5 — a multi-ctor type is NOT prefix-suppressed
+    // (negative), nor is a lone ctor whose name differs from the type.
+    #[test]
+    fn is_single_matching_constructor_negatives() {
+        // two ctors → not a product
+        assert!(!is_single_matching_constructor("Color", &type_info("Color", &["Red", "Green"])));
+        // single ctor but name differs from the type
+        assert!(!is_single_matching_constructor("Wrap", &type_info("Wrap", &["MkWrap"])));
+    }
+
+    // spec: repl/spec.md §1.5 — product suppresses `Type.`; sum/enum keeps it.
+    #[test]
+    fn format_ctor_display_product_suppresses_prefix() {
+        let ti = type_info("Point", &["Point"]);
+        assert_eq!(format_ctor_display("Point", "Point", &ti), "Point");
+    }
+
+    #[test]
+    fn format_ctor_display_multi_ctor_keeps_prefix() {
+        let ti = type_info("Option", &["Some", "None"]);
+        assert_eq!(format_ctor_display("Option", "Some", &ti), "Option.Some");
+        assert_eq!(format_ctor_display("Option", "None", &ti), "Option.None");
+    }
+
     // --- format_value: scalar types ---
 
     #[test]

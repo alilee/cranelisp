@@ -311,6 +311,76 @@ fn debug_dump_slist(mut slist: i64, depth: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cranelisp_types::HeapHeader;
+
+    // --- Byte-layout drift-guard (FIXME 0498) --------------------------------
+    //
+    // The offset constants in this file (`RC_OFFSET`/`PAYLOAD_OFFSET`/
+    // `FIELD0_OFFSET`/`FIELD1_OFFSET`) are hardcoded literals whose rustdoc
+    // *claims* they follow the `HeapHeader` base-pointer layout (Decision 10)
+    // and stay byte-synced with the runtime-side marshaller
+    // (`cranelisp-primitives/src/marshal.rs`, which derives the same offsets
+    // from `HeapHeader::SIZE`). That was a guarding comment with no guard — the
+    // "true statement that rots silently" shape the S101 `kept_jits` finding
+    // flagged. These asserts turn the comment into a guard: a `HeapHeader`
+    // layout change (or a careless renumber here) now trips a test instead of
+    // silently corrupting the raw `read_i64`/`write_i64` accesses that read
+    // these offsets.
+
+    // spec: design/arch/fixmes/0498 — payload/tag sits immediately after the header
+    #[test]
+    fn payload_offset_tracks_heap_header_size() {
+        assert_eq!(
+            PAYLOAD_OFFSET,
+            HeapHeader::SIZE,
+            "ADT payload (tag) must sit at the first slot past the heap header; \
+             a HeapHeader size change must be mirrored here"
+        );
+    }
+
+    // spec: design/arch/fixmes/0498 — RC field offset matches the shared header layout
+    #[test]
+    fn rc_offset_matches_heap_header() {
+        assert_eq!(
+            RC_OFFSET as i32,
+            HeapHeader::RC_OFFSET,
+            "RC offset must match cranelisp_types::HeapHeader::RC_OFFSET (single source of truth)"
+        );
+    }
+
+    // spec: design/arch/fixmes/0498 — ADT fields are i64-strided past the tag,
+    // identical to the runtime-side marshaller's derived offsets.
+    #[test]
+    fn field_offsets_are_i64_strided_past_the_tag() {
+        const STRIDE: usize = core::mem::size_of::<i64>(); // 8
+        assert_eq!(FIELD0_OFFSET, PAYLOAD_OFFSET + STRIDE, "field 0 is one i64 past the tag");
+        assert_eq!(FIELD1_OFFSET, PAYLOAD_OFFSET + 2 * STRIDE, "field 1 is two i64s past the tag");
+        // Pin the concrete post-header values the raw accessors were written for
+        // (mirrors the `const _` asserts on the primitives side).
+        assert_eq!((PAYLOAD_OFFSET, FIELD0_OFFSET, FIELD1_OFFSET), (16, 24, 32));
+    }
+
+    // spec: design/arch/fixmes/0498 — the tag constants this file imports carry
+    // the discriminant values the marshaller's match arms are written against.
+    // (The canonical values also have their own guard in
+    // `crates/cranelisp-types/src/marshal/tests.rs`; this is the point-of-use
+    // witness on the compiler side.)
+    #[test]
+    fn imported_tag_constants_have_pinned_values() {
+        assert_eq!((TAG_SNIL, TAG_SCONS), (0, 1));
+        assert_eq!(
+            (
+                TAG_SEXP_INT,
+                TAG_SEXP_FLOAT,
+                TAG_SEXP_BOOL,
+                TAG_SEXP_STR,
+                TAG_SEXP_SYM,
+                TAG_SEXP_LIST,
+                TAG_SEXP_BRACKET,
+            ),
+            (0, 1, 2, 3, 4, 5, 6)
+        );
+    }
 
     // spec: 09-macros.md section 9.7 — marshal round-trip for Int
     #[test]

@@ -315,6 +315,22 @@ impl Cranelisp {
         self
     }
 
+    /// Make the embedded agent's provider genuinely UNREACHABLE regardless of
+    /// the runner's ambient environment: strip every var that
+    /// `src/agent/provider.rs::build_anthropic_state` reads as the reachability
+    /// gate — `ANTHROPIC_API_KEY`, its `CRANELISP_AGENT_KEY` alias, and the
+    /// `CRANELISP_AGENT_MODEL` model-id. A dev machine with an ambient
+    /// `ANTHROPIC_API_KEY` (+ model) would otherwise make a test that FORCES the
+    /// anthropic provider go live (a real network attempt), so "no provider ⇒
+    /// dormant" would be false. Use for every agent test whose contract is
+    /// "dormant / no provider reachable" (the `/ask` dormant notice and the pure
+    /// `/context` harvest dumps). Harness hermeticity fix, S106 close.
+    pub fn without_agent_provider(self) -> Self {
+        self.env_remove("ANTHROPIC_API_KEY")
+            .env_remove("CRANELISP_AGENT_KEY")
+            .env_remove("CRANELISP_AGENT_MODEL")
+    }
+
     /// Append a raw CLI flag passed to the cranelisp binary. Escape hatch.
     pub fn cli_flag(mut self, flag: &str) -> Self {
         self.cli_flags.push(flag.to_string());

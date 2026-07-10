@@ -615,3 +615,37 @@ pub fn compile_macro_for_repl(
 ) -> Result<(), CranelispError> {
     compile_macro_if_needed(ctx, module, info, span, accumulator)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec: src/CLAUDE.md §"Macro expansion" — the clause GOT-slot JIT name is
+    // `__macro_{name}_clause_{idx}`. `JitMacroExpander` loads the clause fn's
+    // code pointer by this exact name, so the format is an ABI contract between
+    // the macro compiler (which registers the slot) and the executor (which
+    // reads it) — a drift here silently breaks macro expansion with an
+    // "…not in memory…" abort.
+    #[test]
+    fn macro_clause_jit_name_format() {
+        assert_eq!(
+            macro_clause_jit_name(&Symbol::from("when"), 0).as_ref(),
+            "__macro_when_clause_0"
+        );
+        assert_eq!(
+            macro_clause_jit_name(&Symbol::from("cond"), 3).as_ref(),
+            "__macro_cond_clause_3"
+        );
+    }
+
+    // Distinct macros / distinct clause indices produce distinct slot names
+    // (no collision in the shared flat JIT namespace).
+    #[test]
+    fn macro_clause_jit_name_is_injective_over_name_and_index() {
+        let a = macro_clause_jit_name(&Symbol::from("m"), 0);
+        let b = macro_clause_jit_name(&Symbol::from("m"), 1);
+        let c = macro_clause_jit_name(&Symbol::from("n"), 0);
+        assert_ne!(a.as_ref(), b.as_ref());
+        assert_ne!(a.as_ref(), c.as_ref());
+    }
+}

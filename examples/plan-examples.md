@@ -41,7 +41,7 @@ skill; the authoritative inventory is the on-disk file set itself.
 
 ## 2. The Learning Sequence (current on-disk set)
 
-32 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
+33 top-level `.cl` files plus the `16-modules/` multi-file project. Each row
 is the **capability taught**. Exit code is the documented `main` return
 (sum of sub-test passes); it is the value `tests/examples.rs` asserts.
 
@@ -80,6 +80,7 @@ is the **capability taught**. Exit code is the documented `main` return
 | 31 | `31-bitwise.cl` | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) as bitmask set operations; inline single-bit helpers (`bit-test`/`bit-set`/`bit-clear`/`bit-flip`) and a permission bitmask | 19 |
 | 32 | `32-concurrency-combinators.cl` | Explicit-control concurrency (the CONTROL peer to 28/30's inferred half): `sleep` timer leaf, `race` (first-to-complete wins, loser cancelled), `select` (n-ary race over a Vec), and the `timeout` pattern expressed inline as `race`-against-a-deadline (stdlib `timeout` is off-limits to free-standing examples) | 6 |
 | 33 | `33-redefinition.cl` | Definitions are live: a later `defn` replaces the earlier one, existing dependents rebind, and rebinding cascades transitively | 136 |
+| 34 | `34-async-io-leaf.cl` | Poll-shape platform IO leaf: an async effect (`async-read`) that SUSPENDS on the host reactor and RESUMES with its result, vs. the blocking effects of 21–24; independent poll-shape leaves overlap on one reactor thread. Teaches the poll-shape leaf MECHANISM the network "server-with-no-spawn" shape is built on | 4 |
 
 ### Notes on specific entries
 
@@ -176,6 +177,53 @@ is the **capability taught**. Exit code is the documented `main` return
   by `/repl` scripts + `/docs` guide. Three sub-tests: direct call sees
   the later defn (6), dependent rebinds (18), transitive cascade (112) —
   exit **136**.
+
+- **34-async-io-leaf** (S106 Phase 6, FIXME 0463 partial) — the first
+  learning-sequence example of a **poll-shape (async) platform leaf**. Examples
+  21–24 use BLOCKING platform effects (`print`/`read-line` run to completion on
+  the calling turn); 34 introduces the other shape — an effect that does NOT
+  block but SUSPENDS on the host reactor and RESUMES when its event is ready
+  (the "server-with-no-spawn" mechanism: one reactor drives many suspended
+  effects, no thread-per-connection). The leaf is `async-read` from the in-tree
+  `async-demo` platform (`platforms/async-demo`, owned by `/platform`; a real
+  `declare_platform!` poll-shape `PollFn`, `blocking = 0`): `(async-read N)`
+  suspends ~N ms on the reactor's timer then produces N. Four sub-tests, each
+  pass=1 → exit **4**: single suspend/resume, continuation-runs-after-resume,
+  a data dependency threaded through two suspensions, and two INDEPENDENT leaves
+  that overlap on one reactor thread (asserted on RESULT values; the wall-clock
+  overlap is a runtime property covered by `tests/concurrency_reactor.rs`, not
+  an exit-code check — an exit-code timing assertion would be flaky).
+
+  - **Why a timer leaf, not a socket.** FIXME 0463 asks for the NETWORK
+    accept→read→send shape. That is still **not** free-standing-expressible: no
+    shared (non-exemplar) platform binds a socket, and there is no client-connect
+    leaf, so a single `--run` cannot self-drive a socket without hanging (the
+    S98 idle-armed-server caveat) or an external client. `async-read` is a
+    self-driving **timer** poll leaf — deterministic, no external client, no
+    hang — so it teaches the poll-shape leaf *mechanism* (declare / import /
+    bind / reactor-drive / suspend / resume / overlap) that the network shape is
+    built on, without the socket infrastructure that remains missing. The
+    network-socket showcase stays exemplar-only; **0463 is NOT closed by this
+    example** — it narrows to "a free-standing shared **socket** platform
+    (accept/read/send + a client-connect leaf) so the network shape can
+    self-drive." See §"Next skills".
+  - **Why it is now feasible (changed since the S101 re-check).** The S96
+    single-ABI + single-trampoline cutover (`platform-interface.md` §6.8.0)
+    RETIRED the off-by-default `concurrency`/`concurrency-runtime` features: the
+    host reactor + unified-ABI loader are now UNCONDITIONAL in every build, so
+    the DEFAULT `--run` binary drives a poll-shape leaf (verified: the probe
+    `(bind (async-read 55) (fn [r] (Pure r)))` exits 55). The `async-demo` DLL
+    is built suite-wide by the nextest setup script
+    (`tests/scripts/build-link-prereqs.sh`), and `tests/examples.rs` already
+    sets `CRANELISP_PLATFORM_PATH=target/debug` for every example — so 34
+    resolves in the harness with **no new symlink and no platform-wiring
+    change**, only a new expected-exit row.
+  - **Free-standing.** Uses only the `async-demo` platform DLL (a platform, not
+    `stdlib/` — consistent with 21–24 using `stdio`/`test-capture`) plus
+    `primitives` (`Pure`/`bind`/`add-i64`/`eq-i64`). Zero stdlib, zero exemplar
+    dependency. Exit **4** verified stable over 5 consecutive `--run` invocations
+    (2026-07-10) via the exact harness invocation
+    (`CRANELISP_PLATFORM_PATH=target/debug ./target/debug/cranelisp --run`).
 
 ## 2a. S101 Phase-6a assessment record (2026-07-03) — EXECUTED in 6b
 
@@ -285,6 +333,7 @@ the spec when annotating coverage.)
 | IO model (`Pure`, `bind`, platform IO, `read-line`) | 21, 22, 23, 24 |
 | Parallel evaluation (lenient eval: independent `let` bindings + apply-arguments) | 28, 30 |
 | Explicit-control concurrency combinators (`sleep`/`race`/`select` + inline `timeout` pattern) | 32 |
+| Poll-shape platform IO leaf (async effect suspends/resumes on the reactor; independent leaves overlap) | 34 |
 | `:Type` annotation model | 29 |
 | Redefinition (later `defn` replaces; dependents rebind) | 33 |
 | Bitwise integer primitives (`bit-and`/`bit-or`/`bit-xor`/`bit-not`/`shl`/`shr`/`popcount`) | 31 |
@@ -309,6 +358,32 @@ to reconcile that table.
 
 ## Next skills
 
+- `/qa` (S106 Phase 6) — reconcile the `tests/examples.rs` expected-exit table:
+  NEW file `34-async-io-leaf.cl` => **4** (verified stable over 5 `--run`
+  invocations 2026-07-10). **No platform-wiring change is needed**: the
+  `async-demo` DLL is already built suite-wide by
+  `tests/scripts/build-link-prereqs.sh` (`-p cranelisp-async-demo`), and the
+  harness already exports `CRANELISP_PLATFORM_PATH=target/debug` for every
+  example — only the `expected_exits()` row is owed.
+- `/sprint` — FIXME 0463 is **NOT closed** by example 34. 34 delivers the
+  poll-shape platform-leaf *mechanism* (suspend/resume/overlap via `async-read`,
+  a timer leaf); the NETWORK accept→read→send shape 0463's title asks for
+  remains blocked. **Narrow 0463** from "add a poll-shape network/platform leaf
+  example" to its precise unmet dependency: *a free-standing shared **socket**
+  platform under `platforms/` exposing poll-shape `accept`/`read`/`send` —
+  ideally plus a client-`connect` leaf so a single `--run` can self-drive (bind
+  ephemeral port → connect to self → accept → read → send → assert → exit N),
+  sidestepping the external-client and hangs-forever problems.* Owner
+  `/platform` (+ `/arch` for shared-vs-exemplar placement). Blocker #2
+  (harness-cannot-drive-a-server) is also softened: a self-driving socket leaf
+  needs no harness extension since 34 proves a self-driving poll leaf runs green
+  under the plain exit-code umbrella. Until the socket leaf lands, the network
+  showcase stays exemplar-only and 34 is the sequence's poll-shape-leaf teacher.
+- `/platform` — awareness: example 34 now depends on `platforms/async-demo`'s
+  `async-read` as a **taught, user-facing** surface (previously a reactor-e2e
+  test fixture only). It is referenced, not modified. If `async-demo`'s effect
+  name/signature/semantics change, example 34 and `tests/concurrency_reactor.rs`
+  must move together.
 - `/qa` (S101 Phase 6b) — reconcile the `tests/examples.rs` expected-exit
   table: `14-vecs.cl` **29 → 81** (new vec-ops-as-values sub-tests) and NEW
   file `33-redefinition.cl` => **136**. Both verified via

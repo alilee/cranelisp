@@ -528,21 +528,6 @@ fn generate_exports(specs: &[ExportSpec]) -> String {
     format!("(export [{}])", parts.join(" "))
 }
 
-/// Look up the canonical `sexp` for a symbol from the Introspection DashMap
-/// (per Decision 41: `Introspection` is the single store for source/sexp/
-/// expanded/clif_ir/code_size across all `DefKind` variants and
-/// `ModuleEntry::{TypeDef, TraitDecl}`). Returns `None` for cache-loaded
-/// modules whose Introspection has not been rehydrated — tracked at
-/// FIXME 0220 (lazy re-read on demand); the symmetric None-skip is the
-/// correct behaviour at this site.
-fn introspection_sexp(
-    introspection: Option<&DashMap<FQSymbol, Introspection>>,
-    module_path: &ModuleFullPath,
-    name: &cranelisp_types::Symbol,
-) -> Option<Sexp> {
-    introspection_sexp_and_source(introspection, module_path, name).0
-}
-
 /// The (sexp, source) pair off a symbol's introspection record. The verbatim
 /// `source` text is the S102 CS-D2 emission authority (§15.4.7 authorship
 /// fidelity); the `sexp` remains the structural authority (dedup identity,
@@ -645,6 +630,39 @@ fn emit_decl_text(sexp: &Sexp, source: Option<&str>, live_doc: Option<&str>) -> 
     render_decl_sexp(sexp, live_doc)
 }
 
+/// Choose the emitted text for one `deftrait` / `deftype` declaration (FIXME
+/// 0538 — source-first regen extended to save.rs §5–7, symmetric with §8's
+/// `generate_fns_and_macros`).
+///
+/// Emission is source-text-first: when the record carries a `sexp`, delegate to
+/// the shared `emit_decl_text` gate — verbatim `Introspection.source` when it
+/// re-parses to the recorded sexp (preserving the user's formatting + reader
+/// shorthand), else the reconciled `render_decl_sexp` pretty-printer. A
+/// declaration is NOT a `defn`, so no docstring is spliced (`None`).
+///
+/// The `(None, Some(source))` arm covers the REPL-defined decl case: a
+/// `deftrait`/`deftype` entered at the prompt records only the authored
+/// `Introspection.source` (via `eval::record_defining_turn_source`, keyed on the
+/// trait/type name) — no `sexp` is captured for a `TypeDef`/`TraitDecl` form.
+/// Before this fix the sexp-only gate dropped such declarations ENTIRELY from
+/// the regenerated file. Emit the verbatim authored source, gated on it
+/// re-parsing to a single well-formed form (a stale/garbage source is skipped,
+/// never corrupts the file). `None` ⇒ nothing recorded (e.g. a cache-restored
+/// module with no introspection) ⇒ caller drops the entry, as before.
+fn emit_decl_or_source(sexp: Option<Sexp>, source: Option<String>) -> Option<String> {
+    match (sexp, source) {
+        (Some(sexp), src) => Some(emit_decl_text(&sexp, src.as_deref(), None)),
+        (None, Some(src)) => {
+            let trimmed = src.trim();
+            match cranelisp_frontend::parse(trimmed) {
+                Ok(forms) if forms.len() == 1 => Some(trimmed.to_string()),
+                _ => None,
+            }
+        }
+        (None, None) => None,
+    }
+}
+
 fn generate_traits(
     st: &crate::code::SessionSymbolTable,
     introspection: Option<&DashMap<FQSymbol, Introspection>>,
@@ -652,10 +670,12 @@ fn generate_traits(
 ) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
-        if let ModuleEntry::TraitDecl { .. } = entry
-            && let Some(sexp) = introspection_sexp(introspection, module_path, name)
-        {
-            items.push((name.to_string(), render_decl_sexp(&sexp, None)));
+        if let ModuleEntry::TraitDecl { .. } = entry {
+            let (sexp, source) =
+                introspection_sexp_and_source(introspection, module_path, name);
+            if let Some(text) = emit_decl_or_source(sexp, source) {
+                items.push((name.to_string(), text));
+            }
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
@@ -673,10 +693,12 @@ fn generate_types(
 ) -> String {
     let mut items: Vec<(String, String)> = Vec::new();
     for (name, entry) in st.all_symbols() {
-        if let ModuleEntry::TypeDef { .. } = entry
-            && let Some(sexp) = introspection_sexp(introspection, module_path, name)
-        {
-            items.push((name.to_string(), render_decl_sexp(&sexp, None)));
+        if let ModuleEntry::TypeDef { .. } = entry {
+            let (sexp, source) =
+                introspection_sexp_and_source(introspection, module_path, name);
+            if let Some(text) = emit_decl_or_source(sexp, source) {
+                items.push((name.to_string(), text));
+            }
         }
     }
     items.sort_by(|a, b| a.0.cmp(&b.0));
@@ -727,9 +749,28 @@ fn generate_fns_and_macros(
         std::collections::HashMap::new();
 
     for (name, entry) in st.all_symbols() {
-        // Skip mangled names (impl methods like `show$Int`, macro clause
-        // variants like `m$clause-0`)
-        if name.contains('$') {
+        // Skip internal synthetic names — mangled entries ($-containing: impl
+        // methods like `show$Int`, macro clause variants like `m$clause-0`,
+        // mono variants like `g$Int`) AND the synthetic `__expr` eval wrapper.
+        //
+        // FIXME 0549 — a bare top-level EXPRESSION evaluation is recorded as a
+        // synthetic `__expr`-named `UserFn` (`wrap_exprs_as_defns`). It is
+        // transient session output, NOT module content, and MUST NOT be
+        // persisted to the backing source file (repl/spec.md §15.7). Only its
+        // SOURCE emission is suppressed — the live in-session `__expr` entry is
+        // left untouched. The reload/T1 cure re-reads the definitions-only file
+        // and re-injects the `__expr` instantiation driver EXPLICITLY (via
+        // `redefine::capture_instantiation_drivers` + `reload_module`'s
+        // `extra_forms`), so same-module polymorphic mono variants re-mint
+        // without the driver form entering the persisted `.cl`
+        // (`design/int/session-transaction.md` §10 CS-1; Q1 precedes Q2).
+        //
+        // The wrapper name is EXACTLY `"__expr"` (never suffixed), so match it
+        // exactly via `worker::is_internal_listing_name` — a user symbol like
+        // `__expr-helper` is a legitimate definition and MUST be preserved
+        // (Principle 7: one predicate encapsulates the `$`-contains + `__expr`
+        // pair, not an over-broad `starts_with`).
+        if crate::worker::is_internal_listing_name(name.as_ref()) {
             continue;
         }
         // Predicate: include both UserFn and Macro Def entries for
@@ -863,7 +904,8 @@ pub(crate) fn sexp_defines_symbol(sexp: &Sexp, name: &str) -> bool {
 /// because their source rides `DefKind::Macro.macro_sexp` (cache-serialized),
 /// but a cache-restored regular `UserFn` with no introspection record was
 /// silently DROPPED from the regenerated `.cl` by `generate_fns_and_macros`
-/// (its `introspection_sexp(..).or(macro_table_sexp)` covers macros only).
+/// (its `introspection_sexp_and_source(..).0.or(macro_table_sexp)` covers
+/// macros only).
 ///
 /// This re-reads + re-parses the backing `.cl` (always present — it is the
 /// cache key), locates each top-level form that defines a `UserFn` whose
@@ -2041,6 +2083,214 @@ mod tests {
         assert!(
             !out_none.starts_with(";;"),
             "a no-preamble module must regenerate without a leading block: {out_none:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0549 — non-defining `__expr` forms are NOT persisted
+    // -----------------------------------------------------------------------
+
+    // A bare top-level expression is recorded as a synthetic `__expr`-named
+    // `UserFn`. `generate_fns_and_macros` MUST suppress its SOURCE emission
+    // (symmetric with the `$`-mangled filter), while leaving the live
+    // in-session `__expr` symbol-table entry untouched — only emission is
+    // suppressed, not the entry the reload/T1 path reads.
+    // spec: repl/spec.md §15.7 — transient expressions are session-only
+    #[test]
+    fn regen_excludes_bare_expr_wrapper_keeps_defns() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        // The synthetic expression wrapper + a real user fn.
+        st.insert("__expr".into(), userfn_entry(0));
+        st.insert("g".into(), userfn_entry(1));
+
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "__expr".into() })
+            .or_default()
+            .source = Some("(add-i64 1 2)".to_string());
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "g".into() })
+            .or_default()
+            .sexp = Some(parse1("(defn g [x] (mul-i64 x 2))"));
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            !out.contains("add-i64") && !out.contains("__expr"),
+            "the transient `__expr` expression MUST NOT be persisted: {out:?}"
+        );
+        assert!(out.contains("(defn g"), "the real defn MUST be persisted: {out:?}");
+
+        // The live in-session entry is untouched — only its emission is
+        // suppressed (the reload / T1 / cache-restore paths read this entry).
+        assert!(
+            st.get(&cranelisp_types::Symbol::from("__expr")).is_some(),
+            "the live `__expr` symbol-table entry MUST remain after regeneration"
+        );
+    }
+
+    // Data-loss edge (the over-broad-filter guard): the exclusion matches the
+    // synthetic `__expr` wrapper EXACTLY, never as a prefix. A legitimate user
+    // definition whose name merely STARTS WITH `__expr` (`__expr-helper`) is
+    // real module content and MUST survive regeneration — an over-broad
+    // `starts_with("__expr")` filter would silently drop it.
+    // spec: repl/spec.md §15.7 — only the exact `__expr` wrapper is transient
+    #[test]
+    fn regen_preserves_user_defn_named_like_expr_wrapper() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        // A real user fn whose name starts with `__expr` but is NOT the wrapper.
+        st.insert("__expr-helper".into(), userfn_entry(0));
+        // The transient wrapper itself, for contrast.
+        st.insert("__expr".into(), userfn_entry(1));
+
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "__expr-helper".into() })
+            .or_default()
+            .sexp = Some(parse1("(defn __expr-helper [] 1)"));
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "__expr".into() })
+            .or_default()
+            .source = Some("(add-i64 1 2)".to_string());
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains("(defn __expr-helper [] 1)"),
+            "a user defn named like the wrapper MUST be preserved (exact-match \
+             filter, not prefix): {out:?}"
+        );
+        assert!(
+            !out.contains("add-i64"),
+            "the exact `__expr` wrapper's transient expression is still suppressed: {out:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0538 — source-first regen for §5–7 (traits/types)
+    // -----------------------------------------------------------------------
+
+    fn type_def_entry(module: &ModuleFullPath, type_name: &str) -> ModuleEntry<crate::code::Code> {
+        use cranelisp_types::{FQTypeName, TypeDefInfo, Visibility};
+        ModuleEntry::TypeDef {
+            info: TypeDefInfo {
+                name: FQTypeName::new(module.clone(), type_name.into()),
+                type_params: vec![],
+                constructors: vec![],
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+        }
+    }
+
+    fn trait_decl_entry(trait_name: &str) -> ModuleEntry<crate::code::Code> {
+        use cranelisp_types::{TraitDeclInfo, Visibility};
+        ModuleEntry::TraitDecl {
+            info: TraitDeclInfo {
+                name: trait_name.into(),
+                type_params: vec![],
+                methods: vec![],
+            },
+            visibility: Visibility::Public,
+            docstring: None,
+        }
+    }
+
+    // Source-first: a `deftype` record carrying BOTH sexp and a non-canonically
+    // formatted authored source that re-parses to the recorded sexp emits the
+    // VERBATIM source byte-for-byte (formatting preserved), not the pretty-
+    // printer's reflow.
+    // spec: repl/spec.md §15.4 — invariant 7 (authorship fidelity), §5–7
+    #[test]
+    fn regen_type_decl_source_first_verbatim() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("Pt".into(), type_def_entry(&module, "Pt"));
+
+        // Non-canonical spacing; re-parses to the recorded sexp.
+        let authored = "(deftype   Pt (MkPt [:Int x]  [:Int y]))";
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let mut rec = introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "Pt".into() })
+            .or_default();
+        rec.sexp = Some(parse1(authored));
+        rec.source = Some(authored.to_string());
+        drop(rec);
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains(authored),
+            "a matching source MUST regenerate byte-verbatim (source-first): {out:?}"
+        );
+    }
+
+    // Fallback: when the recorded source does NOT re-parse to the recorded sexp
+    // (stale / mismatched), the pretty-printer render of the sexp is emitted —
+    // never the stale source text.
+    // spec: repl/spec.md §15.4 — invariant 7 (consistency gate), §5–7
+    #[test]
+    fn regen_type_decl_falls_back_to_pretty_on_source_mismatch() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("Pt".into(), type_def_entry(&module, "Pt"));
+
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let mut rec = introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "Pt".into() })
+            .or_default();
+        rec.sexp = Some(parse1("(deftype Pt (MkPt [:Int x] [:Int y]))"));
+        // A stale source describing a DIFFERENT declaration.
+        rec.source = Some("(deftype Stale (Other [:Int z]))".to_string());
+        drop(rec);
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains("MkPt") && !out.contains("Stale"),
+            "a mismatched source MUST fall back to the sexp render, never the \
+             stale text: {out:?}"
+        );
+    }
+
+    // REPL-defined decls record only the authored `Introspection.source` (no
+    // sexp is captured for a `TypeDef`/`TraitDecl` form). Before FIXME 0538 the
+    // sexp-only gate dropped them entirely; now the verbatim source is emitted
+    // when it parses to a single form.
+    // spec: repl/spec.md §15.4 — §5–7 source-only emission
+    #[test]
+    fn regen_trait_decl_source_only_emits() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("Sizeable".into(), trait_decl_entry("Sizeable"));
+
+        let authored = "(deftrait (Sizeable a) (size [a] Int))";
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        introspection
+            .entry(FQSymbol { module: module.clone(), symbol: "Sizeable".into() })
+            .or_default()
+            .source = Some(authored.to_string()); // sexp intentionally None
+
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            out.contains(authored),
+            "a REPL-defined trait (source-only record) MUST regenerate from its \
+             verbatim authored source: {out:?}"
+        );
+    }
+
+    // Negative boundary: an entry with NO introspection record at all (neither
+    // sexp nor source — e.g. a cache-restored module) is skipped, not emitted
+    // as garbage. (Rehydration of cache-restored decls is a separate gap.)
+    // spec: repl/spec.md §15.4 — §5–7 no-record skip
+    #[test]
+    fn regen_type_decl_no_record_is_skipped() {
+        let module = ModuleFullPath::from("user");
+        let mut st = crate::code::SessionSymbolTable::new_with_params(module.clone());
+        st.insert("Pt".into(), type_def_entry(&module, "Pt"));
+        let introspection: DashMap<FQSymbol, Introspection> = DashMap::new();
+        let out = generate_module_source(&st, Some(&introspection), &module);
+        assert!(
+            !out.contains("Pt"),
+            "a decl with no introspection record is skipped (no garbage): {out:?}"
         );
     }
 

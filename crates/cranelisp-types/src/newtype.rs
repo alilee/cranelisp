@@ -251,3 +251,6 @@ impl std::fmt::Display for TypeRef {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

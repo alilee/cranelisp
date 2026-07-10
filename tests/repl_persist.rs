@@ -994,3 +994,219 @@ fn persist_expression_only_session_leaves_hand_authored_user_cl_untouched() {
     );
     drop(out);
 }
+
+// =============================================================================
+// S106 — backing-file authorship fidelity (FIXMEs 0548, 0549, 0538)
+//
+// The regenerated backing `.cl` file MUST faithfully reflect ONLY real, intended
+// module content: a FAILED structural form (import/export/mod/platform) that never
+// took effect MUST NOT be persisted (0548); a transient non-defining top-level
+// EXPRESSION evaluation MUST NOT be persisted (0549, repl/spec.md §15.7); and the
+// §5–7 trait/type regen sections MUST render the authored declaration faithfully
+// (0538). All RED-first on S106 HEAD; each flips green in its owning /dev change-set.
+// =============================================================================
+
+// spec: repl/spec.md §15.4 — a REPL import that FAILS resolution MUST NOT be
+// written into the regenerated backing file when a later successful form triggers
+// regeneration. RED on HEAD (FIXME 0548): the Pass-0 peel records the import onto
+// `symbol_table.imports` BEFORE `handle_import` resolves, so the failed import
+// survives to the next regen and corrupts the backing `.cl`.
+#[test]
+fn persist_failed_import_not_written_to_backing_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user("(defn seed [] 1)\n")
+        // Failing import (module does not exist) → then a GOOD defn (triggers regen).
+        .stdin("(import [platforms.stdio [*]])\n(defn g [x] (mul-i64 x 2))\n/quit\n")
+        .output();
+    assert!(
+        out.status.success(),
+        "session should exit cleanly (the import errors at the prompt, not fatally): stderr={}",
+        out.stderr
+    );
+    let regenerated = out.read_tmp("user.cl");
+    // Neg: the phantom failed import MUST be absent from the regenerated backing file.
+    assert!(
+        !regenerated.contains("platforms.stdio"),
+        "a FAILED import MUST NOT be persisted to the regenerated backing file \
+         (FIXME 0548, repl/spec.md §15.4); regenerated user.cl:\n{regenerated}"
+    );
+    // Pos: the real definitions ARE persisted.
+    assert!(
+        regenerated.contains("defn g") && regenerated.contains("defn seed"),
+        "the real defns MUST survive regeneration; regenerated user.cl:\n{regenerated}"
+    );
+}
+
+// spec: repl/spec.md §15.4 — end-to-end integrity: a session that fails an import
+// then defines `main` MUST regenerate a backing project that `--run`s cleanly (no
+// phantom `module ... not found`). RED on HEAD (FIXME 0548): the persisted phantom
+// import breaks the subsequent `--run`.
+#[test]
+fn persist_bad_import_then_run_succeeds_e2e() {
+    let first = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user("(defn seed [] 1)\n")
+        .stdin("(import [platforms.stdio [*]])\n(defn main [] (Pure 6))\n/quit\n")
+        .output();
+    assert!(
+        first.status.success(),
+        "session 1 should exit cleanly: stderr={}",
+        first.stderr
+    );
+    // Re-run the regenerated project. A clean backing file runs main (exit 6);
+    // a corrupted one fails on the phantom import.
+    let ran = first.run_again().run("user").output();
+    let combined = format!("{}{}", ran.stdout, ran.stderr);
+    assert!(
+        !combined.contains("not found") && !combined.contains("platforms.stdio"),
+        "the regenerated project MUST `--run` without a phantom-import module error \
+         (FIXME 0548 crosses REPL-persist → --run); stdout+stderr:\n{combined}"
+    );
+    assert_eq!(
+        ran.status.code(),
+        Some(6),
+        "the regenerated project's main MUST run (exit 6); stdout={} stderr={}",
+        ran.stdout,
+        ran.stderr
+    );
+}
+
+// spec: repl/spec.md §15.4 — the record-after-success fix MUST apply uniformly to
+// every structural form, not just `import`. A FAILED `export` (of a nonexistent
+// module) likewise MUST NOT be persisted. RED on HEAD (FIXME 0548): the same
+// record-before-resolve ordering afflicts export/mod/platform.
+#[test]
+fn persist_failed_export_not_written_to_backing_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user("(defn seed [] 1)\n")
+        .stdin("(export [ghostmod [*]])\n(defn g [x] (mul-i64 x 2))\n/quit\n")
+        .output();
+    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    let regenerated = out.read_tmp("user.cl");
+    assert!(
+        !regenerated.contains("ghostmod"),
+        "a FAILED export MUST NOT be persisted to the regenerated backing file — the \
+         fix applies uniformly across structural forms (FIXME 0548); regenerated \
+         user.cl:\n{regenerated}"
+    );
+    assert!(
+        regenerated.contains("defn g"),
+        "the real defn MUST survive regeneration; regenerated user.cl:\n{regenerated}"
+    );
+}
+
+// spec: repl/spec.md §15.7 — a bare top-level EXPRESSION evaluation is transient
+// session output and MUST NOT be persisted to the backing file, while the eval
+// itself still happens in-session. RED on HEAD (FIXME 0549): `generate_fns_and_macros`
+// has no `__expr` filter, so `(add-i64 1 2)` is re-emitted as module content.
+#[test]
+fn persist_bare_expr_not_written_to_backing_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user("(defn seed [] 1)\n")
+        .stdin("(add-i64 1 2)\n(defn g [x] (mul-i64 x 2))\n/quit\n")
+        .output();
+    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    // Pos: the in-session evaluation still happened (the ephemeral result appeared).
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "the bare expression MUST still evaluate in-session (§15.7 suppresses only its \
+         SOURCE emission, not the eval); stdout:\n{}",
+        out.stdout
+    );
+    let regenerated = out.read_tmp("user.cl");
+    // Neg: the transient expression form MUST NOT be persisted as module content.
+    assert!(
+        !regenerated.contains("(add-i64 1 2)"),
+        "a bare top-level expression MUST NOT be persisted to the backing file \
+         (FIXME 0549, repl/spec.md §15.7); regenerated user.cl:\n{regenerated}"
+    );
+    // Pos: the real defns ARE persisted.
+    assert!(
+        regenerated.contains("defn g") && regenerated.contains("defn seed"),
+        "the real defns MUST survive regeneration; regenerated user.cl:\n{regenerated}"
+    );
+}
+
+// spec: repl/spec.md §18.8 — after persisting a session that evaluated a bare
+// expression, re-running the project MUST load cleanly with no re-materialised dead
+// top-level expression (no double-eval, no error). RED on HEAD (FIXME 0549).
+#[test]
+fn persist_bare_expr_then_run_module_clean_e2e() {
+    let first = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .user("(defn seed [] 1)\n")
+        .stdin("(add-i64 1 2)\n(defn main [] (Pure 6))\n/quit\n")
+        .output();
+    assert!(first.status.success(), "session 1 should exit cleanly: stderr={}", first.stderr);
+    let regenerated = first.read_tmp("user.cl");
+    assert!(
+        !regenerated.contains("(add-i64 1 2)"),
+        "the transient expression MUST NOT be in the regenerated module (§15.7); \
+         regenerated user.cl:\n{regenerated}"
+    );
+    // The module runs cleanly (a re-materialised bare expression at top level would
+    // be dead code / a load-time surprise; here the module is clean and runs main).
+    let ran = first.run_again().run("user").output();
+    assert_eq!(
+        ran.status.code(),
+        Some(6),
+        "the regenerated module MUST run cleanly (exit 6) — no re-materialised dead \
+         top-level expression (§18.8); stdout={} stderr={}",
+        ran.stdout,
+        ran.stderr
+    );
+}
+
+// spec: repl/spec.md §15.4 — §5–7 regen fidelity: a `deftrait` authored/defined at
+// the REPL MUST survive backing-file regeneration faithfully. RED on HEAD (FIXME
+// 0538): `save.rs::generate_traits` (§5–7) does not render the trait declaration
+// from a source-first verbatim slice — the trait is lost from the regenerated file.
+// (The byte-identical verbatim-slice round-trip is the /dev unit obligation; this
+// e2e is the observable envelope: the declaration MUST be present + faithful.)
+#[test]
+fn persist_trait_decl_regen_preserves_source() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        // A trait with non-canonical spacing; then a defn triggers regen.
+        .stdin("(deftrait (Sizeable a) (size [a] Int))\n(defn g [x] (mul-i64 x 2))\n/quit\n")
+        .output();
+    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    let regenerated = out.read_tmp("user.cl");
+    assert!(
+        regenerated.contains("deftrait")
+            && regenerated.contains("Sizeable")
+            && regenerated.contains("size"),
+        "a REPL-defined `deftrait` MUST survive regeneration faithfully (§5–7 \
+         source-first regen, FIXME 0538); regenerated user.cl:\n{regenerated}"
+    );
+}
+
+// spec: repl/spec.md §15.4 — §5–7 regen fidelity: a `deftype` authored/defined at
+// the REPL MUST survive backing-file regeneration faithfully. RED on HEAD (FIXME
+// 0538): `save.rs::generate_types` (§5–7) drops the type declaration.
+#[test]
+fn persist_type_decl_regen_preserves_source() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .stdin("(deftype Pt (MkPt [:Int x] [:Int y]))\n(defn g [x] (mul-i64 x 2))\n/quit\n")
+        .output();
+    assert!(out.status.success(), "session should exit cleanly: stderr={}", out.stderr);
+    let regenerated = out.read_tmp("user.cl");
+    assert!(
+        regenerated.contains("deftype")
+            && regenerated.contains("Pt")
+            && regenerated.contains("MkPt"),
+        "a REPL-defined `deftype` MUST survive regeneration faithfully (§5–7 \
+         source-first regen, FIXME 0538); regenerated user.cl:\n{regenerated}"
+    );
+}

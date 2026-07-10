@@ -246,23 +246,54 @@ impl AgentState {
     /// tool_use OR adds a SPURIOUS second tool_result (the current 400).
     ///
     /// This method makes the choice structurally: it pushes a `ToolResult` ONLY
-    /// when the LAST transcript turn is an `AssistantToolCalls` whose id set
-    /// contains the result's id (i.e. there IS a trailing unpaired tool_use to
-    /// close). Otherwise the outer submit is already paired, so the outcome is
-    /// recorded as a benign `User` turn (the model still sees the give-up/decline
-    /// prose, the pairing stays valid). The same rule serves clean-submit,
-    /// 1-repair, cap-exhausted give-up, declined, and `--yes` uniformly.
+    /// when the GOVERNING `AssistantToolCalls` turn (the one that opened the
+    /// batch these results are closing) promises the result's id AND no prior
+    /// `ToolResult` in the batch has already covered it. Otherwise the outer
+    /// submit is already paired, so the outcome is recorded as a benign `User`
+    /// turn (the model still sees the give-up/decline prose, the pairing stays
+    /// valid). The same rule serves clean-submit, 1-repair, cap-exhausted
+    /// give-up, declined, and `--yes` uniformly.
+    ///
+    /// **Multi-call batches (FIXME 0541).** When one assistant turn issues N tool
+    /// calls, `agent_turn` records the `AssistantToolCalls(batch)` turn ONCE, then
+    /// loops this method once per call. After the first call's `ToolResult` is
+    /// pushed, `transcript.last()` is that `ToolResult` — not the governing
+    /// `AssistantToolCalls` — so a `.last()`-only check silently demoted calls
+    /// 2..N to `User` turns, leaving their `tool_use` ids uncovered and tripping
+    /// `assert_transcript_wire_valid` (a hard panic in a debug build). The fix
+    /// walks back past the contiguous trailing run of already-recorded
+    /// `ToolResult`s (the earlier calls of THIS same batch) to find the governing
+    /// `AssistantToolCalls`, and skips an id a prior `ToolResult` already covered.
     pub fn record_pull_result(&mut self, result: crate::agent::types::ToolCallResult) {
-        let closes_trailing_tool_use = matches!(
-            self.transcript.last(),
-            Some(Turn::AssistantToolCalls(calls)) if calls.iter().any(|c| c.id == result.id)
-        );
-        if closes_trailing_tool_use {
+        // Walk back over the contiguous run of trailing `ToolResult`s (calls
+        // 1..k of this batch, already recorded) to reach the governing
+        // `AssistantToolCalls` turn. Note if a prior result already covered this
+        // id (idempotence guard). NOTE: correlation is by raw id; in every live
+        // flow the id is non-empty (`toolu_…` / `stub-N`), so the empty-id case
+        // (two empty-id results in one batch "colliding") is not reachable — the
+        // wire membrane's command-fallback only ever applies to the never-live
+        // empty-id path (see `types.rs::tool_result_key`).
+        let mut i = self.transcript.len();
+        let mut already_covered = false;
+        while let Some(Turn::ToolResult(r)) =
+            i.checked_sub(1).and_then(|k| self.transcript.get(k))
+        {
+            if r.id == result.id {
+                already_covered = true;
+            }
+            i -= 1;
+        }
+        let closes_batch_tool_use = !already_covered
+            && matches!(
+                i.checked_sub(1).and_then(|k| self.transcript.get(k)),
+                Some(Turn::AssistantToolCalls(calls)) if calls.iter().any(|c| c.id == result.id)
+            );
+        if closes_batch_tool_use {
             self.transcript.push(Turn::ToolResult(result));
         } else {
-            // No trailing unpaired tool_use — recording a tool_result would be the
-            // unpaired-tool_result 400. Carry the outcome as a user turn instead
-            // (still visible to the model on the next turn).
+            // No governing tool_use for this id (or already covered) — recording a
+            // tool_result would be the unpaired-tool_result 400. Carry the outcome
+            // as a user turn instead (still visible to the model next turn).
             self.transcript.push(Turn::User(result.output));
         }
     }
@@ -1082,6 +1113,206 @@ mod tests {
         assert!(
             body.lines().any(|l| l.contains("turn=1") && l.contains("←response")),
             "a turn=1 response marker must be present (response shares request's turn): {body}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // FIXME 0541 — a single assistant turn issuing ≥2 tool calls must keep the
+    // transcript wire-valid. `agent_turn` records the `AssistantToolCalls(batch)`
+    // ONCE then loops `record_pull_result` per call; before the fix
+    // `record_pull_result` inspected only `transcript.last()`, so after call 1's
+    // `ToolResult` was pushed, calls 2..N were demoted to `User` turns — their
+    // `tool_use` ids left uncovered → `assert_transcript_wire_valid` (a hard
+    // panic on the continuation turn). These are the durable regression guard.
+    // -----------------------------------------------------------------------
+
+    /// The focused seam guard: drive `record_pull_result` directly over a 3-call
+    /// batch (the exact `agent_turn` loop shape) and assert every call closes as a
+    /// `ToolResult` and the transcript is wire-valid. Independent of the model
+    /// loop, so it pins the seam even if `agent_turn` changes. FAILS before the
+    /// fix (calls b/c demote to `User`, transcript wire-invalid).
+    // spec: repl/spec.md §17 — Anthropic tool_use↔tool_result pairing over a
+    // multi-tool-call batch (`types.rs::assert_transcript_wire_valid`).
+    #[test]
+    fn record_pull_result_closes_every_call_in_a_multi_call_batch() {
+        use crate::agent::types::{
+            assert_transcript_wire_valid, AgentState, ToolCallRequest, ToolCallResult, Turn,
+        };
+        let mut state = AgentState {
+            transcript: Vec::new(),
+            model: None,
+            provider_label: "test".to_string(),
+            auto_accept: false,
+            auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
+            current_turn: 1,
+        };
+        let calls = vec![
+            ToolCallRequest { id: "toolu_a".into(), name: "source".into(), argument: "f".into() },
+            ToolCallRequest { id: "toolu_b".into(), name: "info".into(), argument: "g".into() },
+            ToolCallRequest { id: "toolu_c".into(), name: "sig".into(), argument: "h".into() },
+        ];
+        // One assistant turn opens the batch, then one result per call in order.
+        state.record_assistant_tool_calls(calls.clone());
+        for c in &calls {
+            state.record_pull_result(ToolCallResult {
+                id: c.id.clone(),
+                command: format!("/{} {}", c.name, c.argument),
+                output: format!("output for {}", c.id),
+            });
+        }
+        // (a) all three close as ToolResult (none demoted to User).
+        let result_ids: Vec<&str> = state
+            .transcript
+            .iter()
+            .filter_map(|t| match t {
+                Turn::ToolResult(r) => Some(r.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            result_ids,
+            vec!["toolu_a", "toolu_b", "toolu_c"],
+            "every call in a multi-call batch must close as a ToolResult, not \
+             demote to User; transcript={:?}",
+            state.transcript
+        );
+        // (b) the assembled transcript is wire-valid in both directions.
+        assert!(
+            assert_transcript_wire_valid(&state.transcript).is_ok(),
+            "the multi-call batch transcript must be wire-valid: {:?}",
+            assert_transcript_wire_valid(&state.transcript)
+        );
+    }
+
+    // spec: repl/spec.md §17 — the full model↔tool loop through the REAL rig
+    // boundary with a 3-tool-call turn 1. Before the fix, turn 2's
+    // `assemble_request` `debug_assert!`-panicked on the wire-invalid transcript
+    // (the exact FIXME 0541 crash); after the fix the turn completes and the
+    // continuation request is wire-paired.
+    #[test]
+    fn multi_tool_call_turn_through_loop_stays_wire_valid() {
+        let call = |id: &str| {
+            AssistantContent::ToolCall(ToolCall::new(
+                id.to_string(),
+                ToolFunction::new("source".to_string(), serde_json::json!({"argument": "f"})),
+            ))
+        };
+        // Turn 1: THREE tool calls in ONE ModelResponse::ToolCalls; turn 2: Done.
+        let turn1 = vec![call("toolu_a"), call("toolu_b"), call("toolu_c")];
+        let turn2 = vec![AssistantContent::text("here are the three")];
+        let mut s = rig_session_with_source(vec![turn1, turn2], "(defn f [x] x)");
+        let mut sink: Vec<u8> = Vec::new();
+        let mut consent = crate::agent::types::NoConsent;
+        // Pre-fix: this call panics inside agent_turn (assemble_request's
+        // debug_assert). Post-fix: it returns cleanly.
+        s.agent_turn("show me f three times", &mut sink, &mut consent);
+
+        let transcript = &s.agent.as_ref().unwrap().transcript;
+        let result_ids: Vec<&str> = transcript
+            .iter()
+            .filter_map(|t| match t {
+                Turn::ToolResult(r) => Some(r.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            result_ids,
+            vec!["toolu_a", "toolu_b", "toolu_c"],
+            "every call in the 3-call batch must close as a ToolResult; \
+             transcript={transcript:?}"
+        );
+        assert!(
+            crate::agent::types::assert_transcript_wire_valid(transcript).is_ok(),
+            "the multi-call batch transcript must be wire-valid: {:?}",
+            crate::agent::types::assert_transcript_wire_valid(transcript)
+        );
+    }
+
+    // spec: repl/spec.md §17 — FIXME 0541 DOCUMENTED RESIDUAL (out of scope,
+    // /review IMPORTANT #2). 0541's scope is a batch of READ-ONLY pulls (the
+    // observed crash: `/imports`, `/search`, `/search`) — plus a CLEAN `submit`
+    // in a batch, which records nothing intervening and is handled (its result
+    // closes contiguously). The residual is NARROWER: a batch that places a
+    // `submit` NOT-last, where that submit needs REPAIR. `run_submit`'s
+    // `validate_and_repair` records its OWN `AssistantToolCalls`/`ToolResult`
+    // turns onto the MAIN transcript (pull.rs ~743/759), interposing them between
+    // the batch `AssistantToolCalls` and the later call's result. Two consequences,
+    // BOTH inherent to the interposition (not merely `record_pull_result`'s choice):
+    //   1. `record_pull_result` for the later call walks back over the interposed
+    //      repair pair, finds the repair `AssistantToolCalls` (which does not
+    //      promise the later id), and demotes the later result to a `User` turn;
+    //   2. even if it instead found the batch `AssistantToolCalls`, that turn is no
+    //      longer IMMEDIATELY followed by its results (the repair pair sits between)
+    //      — so `assert_transcript_wire_valid`'s forward rule fails REGARDLESS.
+    // Fully closing this needs a batch/repair *contiguity* restructure (defer the
+    // per-call results so a batch's results are recorded as one contiguous run),
+    // which is beyond 0541's read-only/clean-submit scope. This guard PINS the
+    // current behaviour (the later call demotes; the transcript is wire-invalid in
+    // this interleaved corner) so a future contiguity fix flips it — and the author
+    // then updates it to assert wire-VALID coverage of every batch id.
+    #[test]
+    fn submit_repair_interleaved_in_batch_is_known_wire_invalid_residual() {
+        use crate::agent::types::{
+            assert_transcript_wire_valid, AgentState, ToolCallRequest, ToolCallResult, Turn,
+        };
+        let mut state = AgentState {
+            transcript: Vec::new(),
+            model: None,
+            provider_label: "test".to_string(),
+            auto_accept: false,
+            auto_accept_notice_shown: false,
+            submit_gave_up: false,
+            submit_committed: false,
+            current_turn: 1,
+        };
+        // The batch: [a = submit (will repair), b = a read call]. submit NOT last.
+        state.record_assistant_tool_calls(vec![
+            ToolCallRequest { id: "a".into(), name: "submit".into(), argument: "(defn x [".into() },
+            ToolCallRequest { id: "b".into(), name: "source".into(), argument: "f".into() },
+        ]);
+        // run_submit(a)'s repair loop records its OWN paired ATC/TR onto the main
+        // transcript (the essence of the interposition) before the outer result.
+        state.record_assistant_tool_calls(vec![ToolCallRequest {
+            id: "a-repair".into(),
+            name: "submit".into(),
+            argument: "(defn x [] 0)".into(),
+        }]);
+        state.record_tool_result(ToolCallResult {
+            id: "a-repair".into(),
+            command: "submit".into(),
+            output: "compiler feedback".into(),
+        });
+        // Now the OUTER loop records the later batch call `b`'s result. It walks
+        // back over the interposed repair pair, hits the repair ATC (no `b`), and
+        // demotes `b` to a User turn — the documented current behaviour.
+        state.record_pull_result(ToolCallResult {
+            id: "b".into(),
+            command: "/source f".into(),
+            output: "(defn f [x] x)".into(),
+        });
+
+        // (1) `b` was demoted — there is NO ToolResult carrying id "b".
+        let has_b_result = state
+            .transcript
+            .iter()
+            .any(|t| matches!(t, Turn::ToolResult(r) if r.id == "b"));
+        assert!(
+            !has_b_result,
+            "documented residual: the later batch call demotes to User (no ToolResult \
+             for `b`); transcript={:?}",
+            state.transcript
+        );
+        // (2) The transcript is wire-INVALID in this interleaved corner (the batch
+        // ATC's `b` is uncovered / the batch ATC is not immediately followed by its
+        // results). Pinned as the accepted out-of-scope residual.
+        assert!(
+            assert_transcript_wire_valid(&state.transcript).is_err(),
+            "documented residual: a submit-repair interleaved inside a NON-last batch \
+             position is currently wire-invalid; a future contiguity fix flips this \
+             guard. transcript={:?}",
+            state.transcript
         );
     }
 }

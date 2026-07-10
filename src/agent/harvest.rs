@@ -285,7 +285,11 @@ impl CompilerSession {
         // the docstring and re-rendering through the SAME formatter keeps it the
         // single source of truth (Principle 7) rather than string-stripping.
         let stripped = strip_entry_docstring(entry.clone());
-        let sig = self.format_def_entry(&stripped, name, home);
+        // FIXME 0542: harvest renders the bare-symbol display a human gets by
+        // typing the name — the pure-introspection grain — so a trait's
+        // `; impl:` section is structural (`true`), byte-identical to a bare
+        // lookup / `/sig`.
+        let sig = self.format_def_entry(&stripped, name, home, true);
         // Full grain: name + FQ `:Type` signature + docstring — the bare-symbol
         // display a human gets by typing the name. EVERY feeder (own defn,
         // explicit import, implicit prelude) carries its docstring at full grain
@@ -294,7 +298,7 @@ impl CompilerSession {
         // budget ladder, not the symbol's source, drops the docstring (full →
         // sig → name) under pressure — `strip_entry_docstring` is that sig rung,
         // never the default for imports/prelude.
-        let full = self.format_def_entry(entry, name, home);
+        let full = self.format_def_entry(entry, name, home, true);
         InScopeEntry { name: name.to_string(), sig, full }
     }
 
@@ -390,7 +394,9 @@ mod in_scope_tests {
         };
         let entry = ModuleEntry::def(
             scheme,
-            DefKind::UserFn { fn_state: UserFnState::Concrete { got_slot: 0 } },
+            DefKind::UserFn {
+                fn_state: UserFnState::Concrete { got_slot: 0, mode_summary: None },
+            },
         )
         .visibility(Visibility::Public)
         .docstring(docstring.to_string())

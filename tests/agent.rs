@@ -132,10 +132,52 @@ fn prose_feature_off_falls_back_to_today() {
 // case — a script written for an agent build must not break on a default build)
 // ---------------------------------------------------------------------------
 
-// spec: repl/spec.md §0.6.1 — `--agent` is accepted (not "unknown flag") and is
-// a no-op in REPL mode; the session behaves exactly as today.
+// spec: repl/spec.md §0.6.1 — S106 user ruling: `--agent` on a binary built
+// WITHOUT the agent feature MUST be a HARD ERROR (usage hint to stderr, exit 1),
+// NOT an accepted no-op — the flag names a capability the binary does not have.
+// It MUST NOT print `unknown flag` (a recognised flag rejected for a specific
+// reason). RED on HEAD (FIXME 0539): the default build currently accepts `--agent`
+// as a no-op. (Flipped from the pre-S106 `agent_flag_accepted_not_unknown`.)
+#[cfg(not(feature = "agent"))]
 #[test]
-fn agent_flag_accepted_not_unknown() {
+fn agent_flag_errors_on_non_agent_build() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--agent")
+        .stdin("(add-i64 1 2)\n")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--agent on a non-agent build MUST exit 1 (§0.6.1, FIXME 0539); stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("--agent"),
+        "--agent rejection MUST print a usage hint naming the flag to stderr; stderr={}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("unknown flag"),
+        "--agent is a RECOGNISED flag rejected for a reason, NOT `unknown flag`; stderr={}",
+        out.stderr
+    );
+    // +neg: the session MUST NOT start — the flag is rejected before eval.
+    assert!(
+        !out.stdout.contains(":primitives/Int 3"),
+        "--agent on a non-agent build MUST NOT start the session; stdout={}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §0.6.1 — on an agent-CAPABLE build `--agent` stays accepted
+// (a request to enable the agent), a no-op in the byte-identical sense here. The
+// feature-not-compiled-in reversal (FIXME 0539) is scoped to the non-agent build.
+#[cfg(feature = "agent")]
+#[test]
+fn agent_flag_accepted_on_agent_build() {
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
@@ -144,76 +186,82 @@ fn agent_flag_accepted_not_unknown() {
         .output();
     assert!(
         !out.stderr.contains("unknown flag"),
-        "--agent must be accepted, stderr={}",
+        "--agent must be accepted on an agent build, stderr={}",
         out.stderr
     );
     assert!(out.stdout.contains("3"), "session must still eval, stdout={}", out.stdout);
 }
 
-// spec: repl/spec.md §0.6.2 — B.5 (DEFAULT-lane half, NOT cfg(agent)): `--yes`
-// on a DEFAULT (non-`agent`) build is an accepted no-op — never `unknown flag`,
-// the session evals exactly as today. A script written for an agent build with
-// `--yes` must run unchanged on a default build (the accepted-no-op discipline,
-// §20.1, identical to `--agent`). RED today: the default build does not yet
-// parse `--yes`, so it errors `unknown flag` — flips green when /dev 2d adds
-// the accepted-no-op parse (`main.rs:413`, sibling to `--agent`).
+// spec: repl/spec.md §0.6.2 — S106 user ruling: `--yes` on a binary built WITHOUT
+// the agent feature MUST be a HARD ERROR (usage hint to stderr, exit 1) — there is
+// no write-consent gate for it to auto-answer. NOT `unknown flag`. RED on HEAD
+// (FIXME 0539): the default build accepts `--yes` as a no-op. (Flipped from the
+// pre-S106 `yes_flag_accepted_no_op_default_build`.)
+#[cfg(not(feature = "agent"))]
 #[test]
-fn yes_flag_accepted_no_op_default_build() {
+fn yes_flag_errors_on_non_agent_build() {
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .cli_flag("--yes")
         .stdin("(add-i64 1 2)\n")
         .output();
-    assert!(
-        !out.stderr.contains("unknown flag"),
-        "`--yes` must be accepted on a default build (no-op), stderr={}",
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "`--yes` on a non-agent build MUST exit 1 (§0.6.2, FIXME 0539); stdout={} stderr={}",
+        out.stdout,
         out.stderr
     );
     assert!(
-        out.stdout.contains("3"),
-        "the session must still eval, stdout={}",
-        out.stdout
+        out.stderr.contains("--yes") || out.stderr.contains("agent"),
+        "`--yes` rejection MUST print a usage hint naming the flag/reason to stderr; stderr={}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("unknown flag"),
+        "`--yes` is a RECOGNISED flag rejected for a reason, NOT `unknown flag`; stderr={}",
+        out.stderr
     );
 }
 
-// spec: repl/spec.md §0.6.2 — `-y` (the short form of `--yes`) is likewise an
-// accepted no-op on a default build. RED today for a SUBTLE reason: `-y` does
-// not start with `--`, so today's parse loop (`main.rs:480`) swallows it as the
-// REPL *target* (a module name) rather than recognising it as a flag — the
-// session then runs in a `-y>` target context (a false-green if we only checked
-// `unknown flag`/eval). The load-bearing guard is that `-y` must be parsed as a
-// FLAG, NOT a target: the plain REPL prompt must NOT carry the `-y>` target
-// marker. Flips green when /dev 2d adds `-y` to the recognised-flag arm.
+// spec: repl/spec.md §0.6.2 — `-y` (the short form of `--yes`) MUST likewise be a
+// HARD ERROR on a non-agent build (exit 1, usage hint) — same reversal as `--yes`.
+// RED on HEAD (FIXME 0539): the default build accepts `-y` today. NOT `unknown
+// flag`, and NOT swallowed as the REPL target. (Flipped from the pre-S106
+// `y_short_flag_accepted_no_op_default_build`.)
+#[cfg(not(feature = "agent"))]
 #[test]
-fn y_short_flag_accepted_no_op_default_build() {
+fn y_short_flag_errors_on_non_agent_build() {
     let out = Cranelisp::new()
         .repl()
         .with_prelude(PreludeVariant::PrimitivesOnly)
         .cli_flag("-y")
         .stdin("(add-i64 1 2)\n")
         .output();
-    assert!(
-        !out.stderr.contains("unknown flag"),
-        "`-y` must be accepted on a default build (no-op), stderr={}",
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "`-y` on a non-agent build MUST exit 1 (§0.6.2, FIXME 0539); stdout={} stderr={}",
+        out.stdout,
         out.stderr
     );
-    // The +neg guard: `-y` must NOT be swallowed as the REPL target — the
-    // prompt must be the plain REPL prompt, never the `-y>` target context.
+    assert!(
+        !out.stderr.contains("unknown flag"),
+        "`-y` is a RECOGNISED flag rejected for a reason, NOT `unknown flag`; stderr={}",
+        out.stderr
+    );
+    // +neg: `-y` must be parsed as a FLAG, never swallowed as the REPL target.
     assert!(
         !out.stdout.contains("-y>"),
-        "`-y` must be parsed as a FLAG, not swallowed as the REPL target \
-         (no `-y>` target prompt), stdout={}",
-        out.stdout
-    );
-    assert!(
-        out.stdout.contains("3"),
-        "the session must still eval, stdout={}",
+        "`-y` MUST be parsed as a flag, not swallowed as the REPL target; stdout={}",
         out.stdout
     );
 }
 
-// spec: repl/spec.md §0.6.2 — `--no-agent` is likewise accepted.
+// spec: repl/spec.md §0.6.1 — `--no-agent` is UNAFFECTED by the S106 reversal:
+// asking for the agent to be OFF is trivially true on a non-agent build, so it
+// stays an accepted no-op (never `unknown flag`, never an error).
 #[test]
 fn no_agent_flag_accepted_not_unknown() {
     let out = Cranelisp::new()
@@ -228,6 +276,38 @@ fn no_agent_flag_accepted_not_unknown() {
         out.stderr
     );
     assert!(out.stdout.contains("3"), "stdout={}", out.stdout);
+}
+
+// spec: repl/spec.md §0.6.1 — NEG anchor of the S106 ruling (FIXME 0539): the
+// `--agent`/`--yes` error reversal is SCOPED and MUST NOT over-reach to
+// `--no-agent`. On a non-agent build `--no-agent` MUST NOT error (exit 0), MUST NOT
+// print `unknown flag`, and the session evals normally. GREEN-expected guard.
+#[test]
+fn no_agent_flag_still_accepted_no_op_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .cli_flag("--no-agent")
+        .stdin("(add-i64 1 2)\n")
+        .output();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "--no-agent MUST NOT error — the reversal is scoped to --agent/--yes \
+         (§0.6.1, FIXME 0539); stdout={} stderr={}",
+        out.stdout,
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains("unknown flag") && !out.stderr.contains("--no-agent requires"),
+        "--no-agent MUST NOT be rejected; stderr={}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains(":primitives/Int 3"),
+        "--no-agent session MUST eval normally; stdout={}",
+        out.stdout
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +483,9 @@ fn agent_on_context_dumps_request_to_file_dormant() {
         .cli_flag("--agent")
         .with_prelude(PreludeVariant::PrimitivesOnly)
         // No CRANELISP_AGENT_PROVIDER / key ⇒ dormant; /context still works.
+        // `without_agent_provider` strips any ambient key/model so the default
+        // anthropic provider cannot go live under the runner's env (S106 hermeticity).
+        .without_agent_provider()
         .stdin("(defn ctx-marker-fn [x] (add-i64 x 1))\n/context ctx-dump.txt\n");
     let out = cr.output();
     assert!(
@@ -725,7 +808,10 @@ fn agent_on_no_provider_is_dormant() {
         .repl()
         .cli_flag("--agent")
         .with_prelude(PreludeVariant::PrimitivesOnly)
-        // Force the anthropic provider with no key → dormant.
+        // Force the anthropic provider with no key → dormant. `without_agent_provider`
+        // strips any ambient ANTHROPIC_API_KEY / CRANELISP_AGENT_MODEL so the runner's
+        // env cannot make the forced provider go live (harness hermeticity, S106).
+        .without_agent_provider()
         .env("CRANELISP_AGENT_PROVIDER", "anthropic")
         .stdin("/ask anything\n")
         .output();
@@ -2088,6 +2174,8 @@ fn harvest_in_scope_shows_name_sig_docstring() {
         .cli_flag("--agent")
         .with_prelude(PreludeVariant::PrimitivesOnly)
         // Dormant: no provider key ⇒ `/context` still dumps (pure assembly).
+        // Strip any ambient key/model so the default provider stays unreachable (S106).
+        .without_agent_provider()
         .stdin(
             "(defn inc-doc \"adds one to its argument\" [x] (add-i64 x 1))\n\
              /context p2-grain.txt\n",
@@ -2176,6 +2264,8 @@ fn harvest_sig_is_fully_qualified_neg() {
         .repl()
         .cli_flag("--agent")
         .with_prelude(PreludeVariant::PrimitivesOnly)
+        // Dormant /context (pure): strip any ambient key/model (S106 hermeticity).
+        .without_agent_provider()
         .stdin(
             "(defn inc-doc \"adds one\" [x] (add-i64 x 1))\n\
              /context p2-fq.txt\n",
@@ -2243,6 +2333,8 @@ fn harvest_budget_degrades_grain_not_truncates_neg() {
         // Force a tiny harvest budget so degradation (not truncation) is exercised.
         // 2d testability-seam obligation: this env lever does not exist on HEAD.
         .env("CRANELISP_AGENT_HARVEST_BUDGET", "200")
+        // Dormant /context (pure): strip any ambient key/model (S106 hermeticity).
+        .without_agent_provider()
         .stdin(
             "(defn inc-doc \"a long descriptive docstring that costs many characters \
              and should be the first grain dropped under budget pressure\" [x] \
@@ -2637,11 +2729,12 @@ fn agent_log_graceful_on_unwritable_path_neg() {
 #[cfg(not(feature = "agent"))]
 #[test]
 fn agent_log_absent_on_default_build_neg() {
+    // NB: no `--agent` precondition — since S106 (FIXME 0539) `--agent` HARD-ERRORS
+    // on a non-agent build, so the log-absence guard stands on a plain default-build
+    // session (the log sink is agent-feature-gated regardless of any flag).
     let cl = Cranelisp::new()
         .repl()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        // `--agent` is an accepted no-op on the default build (§0.6.1).
-        .cli_flag("--agent");
+        .with_prelude(PreludeVariant::PrimitivesOnly);
     let log_path = cl.tmpdir_path().join("default-build.jsonl");
     let out = cl
         .env("CRANELISP_AGENT_LOG", log_path.to_str().unwrap())
@@ -3139,11 +3232,12 @@ fn agent_trace_graceful_on_unwritable_path_neg() {
 #[cfg(not(feature = "agent"))]
 #[test]
 fn agent_trace_absent_on_default_build_neg() {
+    // NB: no `--agent` precondition — since S106 (FIXME 0539) `--agent` HARD-ERRORS
+    // on a non-agent build; the trace-absence guard stands on a plain default-build
+    // session (the trace sink is agent-feature-gated regardless of any flag).
     let cl = Cranelisp::new()
         .repl()
-        .with_prelude(PreludeVariant::PrimitivesOnly)
-        // `--agent` is an accepted no-op on the default build (§0.6.1).
-        .cli_flag("--agent");
+        .with_prelude(PreludeVariant::PrimitivesOnly);
     let trace_path = cl.tmpdir_path().join("default-build-trace.txt");
     let out = cl
         .env("CRANELISP_AGENT_TRACE", trace_path.to_str().unwrap())

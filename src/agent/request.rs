@@ -11,7 +11,9 @@
 #![cfg(feature = "agent")]
 
 use rig_core::OneOrMany;
-use rig_core::completion::message::{AssistantContent, Message};
+use rig_core::completion::message::{
+    AssistantContent, Message, ToolResultContent, UserContent,
+};
 use rig_core::completion::request::ToolDefinition;
 
 use crate::agent::types::{AgentRequest, ModelResponse, ToolCallRequest, Turn};
@@ -29,34 +31,80 @@ pub fn preamble(req: &AgentRequest) -> String {
     p
 }
 
-/// The chat history (transcript turns) as rig `Message`s, in order (§3.4).
+/// Lower the whole transcript to rig `Message`s, in order, COALESCING each
+/// contiguous run of `Turn::ToolResult` into ONE `Message::User` that carries all
+/// N `tool_result` blocks (in order).
 ///
-/// CRITICAL — the history is every transcript turn EXCEPT the last: the LAST
-/// turn is the prompt (`prompt_message`), which rig appends as the final wire
-/// message (`completion_request(prompt).build()` pushes the prompt last). The
-/// model answers the LAST message, so the last message MUST be the most recent
-/// real turn — the just-fed-back `tool_result` on a continuation step, the user
-/// question on the opening step. Folding the whole transcript into history AND
-/// re-appending the original user turn as the prompt (the pre-fix shape) left
-/// the wire sequence ending `…, tool_result, user(original-question)` — so the
-/// model never "saw" the result as the thing to act on and re-requested the same
-/// tool forever (the S88 Lane-C pull-loop defect). Splitting head/last fixes it:
-/// history is the head, the prompt is the last turn (`prompt_message`).
-pub fn history_messages(req: &AgentRequest) -> Vec<Message> {
-    // All but the last transcript turn — the last is the prompt.
-    let head = req.transcript.len().saturating_sub(1);
-    let mut msgs = Vec::with_capacity(head);
-    for turn in req.transcript.iter().take(head) {
-        if let Some(msg) = turn_to_message(turn) {
-            msgs.push(msg);
+/// This is the WIRE half of the multi-tool-call fix (FIXME 0541; the recording
+/// half is `provider.rs::record_pull_result`). The Anthropic Messages API
+/// requires every `tool_result` for a single assistant `tool_use` turn to arrive
+/// in ONE following user message, and forbids two consecutive same-role messages.
+/// rig's Anthropic provider maps rig `Message`s **1:1** to API messages — it does
+/// NOT coalesce (verified in rig-core 0.39 `providers/anthropic/completion.rs`:
+/// `full_history.into_iter().map(Message::try_from).collect()`). So a batch of N
+/// tool calls, lowered one-`Message`-per-result, would send N consecutive `user`
+/// messages and 400 on the wire (the panic's live twin — symptom, not feature).
+/// Coalescing here keeps the wire valid: `assistant(tool_use a,b,c)` is followed
+/// by a single `user(tool_result a,b,c)`.
+fn transcript_to_messages(transcript: &[Turn]) -> Vec<Message> {
+    let mut msgs = Vec::with_capacity(transcript.len());
+    let mut i = 0;
+    while i < transcript.len() {
+        if matches!(transcript[i], Turn::ToolResult(_)) {
+            // Fold the whole contiguous run of ToolResults into ONE user message
+            // carrying every tool_result block in order (the Anthropic grouping
+            // rule). One user message per RUN, not per result.
+            let mut blocks: Vec<UserContent> = Vec::new();
+            while let Some(Turn::ToolResult(r)) = transcript.get(i) {
+                let id = tool_call_id(&r.id, &r.command);
+                blocks.push(UserContent::tool_result(
+                    id,
+                    OneOrMany::one(ToolResultContent::text(r.output.clone())),
+                ));
+                i += 1;
+            }
+            if let Ok(content) = OneOrMany::many(blocks) {
+                msgs.push(Message::User { content });
+            }
+        } else {
+            if let Some(msg) = turn_to_message(&transcript[i]) {
+                msgs.push(msg);
+            }
+            i += 1;
         }
     }
     msgs
 }
 
+/// The chat history (transcript turns) as rig `Message`s, in order (§3.4).
+///
+/// CRITICAL — the history is every wire message EXCEPT the last: the LAST message
+/// is the prompt (`prompt_message`), which rig appends as the final wire message
+/// (`completion_request(prompt).build()` pushes the prompt last). The model
+/// answers the LAST message, so the last message MUST be the most recent real
+/// content — the just-fed-back `tool_result`(s) on a continuation step, the user
+/// question on the opening step. Folding the whole transcript into history AND
+/// re-appending the original user turn as the prompt (the pre-fix shape) left the
+/// wire sequence ending `…, tool_result, user(original-question)` — so the model
+/// never "saw" the result as the thing to act on and re-requested the same tool
+/// forever (the S88 Lane-C pull-loop defect). Splitting head/last fixes it.
+///
+/// The split is over the COALESCED message sequence (`transcript_to_messages`),
+/// NOT the raw turns — so a trailing multi-`tool_result` run is ONE prompt
+/// message (all its blocks), never split across the history/prompt boundary into
+/// two consecutive user messages (FIXME 0541 wire half).
+pub fn history_messages(req: &AgentRequest) -> Vec<Message> {
+    let mut msgs = transcript_to_messages(&req.transcript);
+    msgs.pop(); // drop the last message — it is the prompt (`prompt_message`).
+    msgs
+}
+
 /// Lower one transcript `Turn` to a rig `Message`. Returns `None` for a turn
 /// that builds no meaningful message (an empty assistant tool-call set — the
-/// loop never records one, but guard defensively).
+/// loop never records one, but guard defensively). Contiguous `ToolResult` runs
+/// are coalesced by `transcript_to_messages` (the Anthropic grouping rule), so
+/// the single-result arm here builds the one-result user message used only when a
+/// `ToolResult` stands alone.
 fn turn_to_message(turn: &Turn) -> Option<Message> {
     match turn {
         Turn::User(text) => Some(Message::user(text.clone())),
@@ -116,18 +164,21 @@ fn assistant_tool_calls_message(calls: &[ToolCallRequest]) -> Option<Message> {
 /// The final (prompt) message — the LAST transcript turn, which rig appends as
 /// the final wire message and the model answers.
 ///
-/// On the opening loop step the last turn is the user's question (recorded by
+/// On the opening loop step the last message is the user's question (recorded by
 /// `record_user` before the loop); on a continuation step it is the just-fed-back
-/// `tool_result` (recorded by `record_tool_result`). Either way the model is
-/// answering the most recent real turn — NOT a stale re-statement of the original
-/// question (the pull-loop defect). Falls back to `req.user` only when the
-/// transcript is empty (a request assembled without `record_user`, e.g. a direct
-/// unit test) so the prompt is never absent (rig requires one).
+/// `tool_result`(s) (a CONTIGUOUS run coalesced into one user message). Either way
+/// the model is answering the most recent real content — NOT a stale re-statement
+/// of the original question (the pull-loop defect). Falls back to `req.user` only
+/// when the transcript is empty (a request assembled without `record_user`, e.g.
+/// a direct unit test) so the prompt is never absent (rig requires one).
+///
+/// Derives from the COALESCED sequence (`transcript_to_messages`), so a trailing
+/// multi-`tool_result` batch is ONE prompt message carrying all its blocks — the
+/// wire half of FIXME 0541.
 pub fn prompt_message(req: &AgentRequest) -> Message {
-    match req.transcript.last() {
-        Some(turn) => turn_to_message(turn).unwrap_or_else(|| Message::user(req.user.clone())),
-        None => Message::user(req.user.clone()),
-    }
+    transcript_to_messages(&req.transcript)
+        .pop()
+        .unwrap_or_else(|| Message::user(req.user.clone()))
 }
 
 /// The read-only tool allowlist (§4.2) as rig `ToolDefinition`s. Each tool takes
@@ -457,5 +508,111 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert!(assistant_tool_use_ids(&msgs[1]).is_empty());
         assert!(user_tool_result_ids(&msgs[0]).is_empty());
+    }
+
+    /// No two consecutive wire messages may share a role (the Anthropic
+    /// role-alternation requirement) — the general guard the multi-call wire
+    /// coalescing must satisfy.
+    fn assert_role_alternation(msgs: &[Message]) {
+        for w in msgs.windows(2) {
+            let same = matches!(
+                (&w[0], &w[1]),
+                (Message::User { .. }, Message::User { .. })
+                    | (Message::Assistant { .. }, Message::Assistant { .. })
+            );
+            assert!(!same, "two consecutive same-role messages on the wire: {msgs:?}");
+        }
+    }
+
+    // spec: repl/spec.md §17 — FIXME 0541 WIRE HALF: a single assistant turn
+    // issuing N tool calls whose results are the trailing turns must lower to
+    // EXACTLY ONE trailing user message carrying all N `tool_result` blocks in
+    // order (the Anthropic grouping rule), with role alternation. rig's Anthropic
+    // provider maps rig Messages 1:1 (no coalescing), so WITHOUT the membrane
+    // coalescing this lowered to N consecutive `user` messages → a live wire 400
+    // (the panic's twin). Pre-fix: msgs.len()==5, two consecutive users; post-fix:
+    // msgs.len()==3, one coalesced trailing user message.
+    #[test]
+    fn multi_tool_call_results_coalesce_into_one_trailing_user_message() {
+        let req = AgentRequest {
+            transcript: vec![
+                Turn::User("show me f three times".to_string()),
+                Turn::AssistantToolCalls(vec![
+                    tool_call("toolu_a", "source", "f"),
+                    tool_call("toolu_b", "source", "f"),
+                    tool_call("toolu_c", "source", "f"),
+                ]),
+                Turn::ToolResult(tool_result("toolu_a", "/source f", "body-a")),
+                Turn::ToolResult(tool_result("toolu_b", "/source f", "body-b")),
+                Turn::ToolResult(tool_result("toolu_c", "/source f", "body-c")),
+            ],
+            ..Default::default()
+        };
+
+        let msgs = wire_messages(&req);
+        // user(question), assistant(tool_use a,b,c), user(tool_result a,b,c) —
+        // THREE messages, NOT five (one-user-per-result).
+        assert_eq!(
+            msgs.len(),
+            3,
+            "the 3 tool_results must coalesce into ONE user message (wire = user, \
+             assistant, user), got {} messages: {msgs:?}",
+            msgs.len()
+        );
+        assert!(matches!(msgs[0], Message::User { .. }), "msg[0] is the user question");
+        assert!(matches!(msgs[1], Message::Assistant { .. }), "msg[1] is the assistant tool_use");
+        assert!(
+            matches!(msgs[2], Message::User { .. }),
+            "msg[2] is the ONE coalesced tool_result user message"
+        );
+        // All THREE tool_result ids present, IN ORDER, in the single user message.
+        assert_eq!(
+            user_tool_result_ids(&msgs[2]),
+            vec!["toolu_a".to_string(), "toolu_b".to_string(), "toolu_c".to_string()],
+            "the coalesced user message must carry all 3 tool_result ids in order"
+        );
+        // Each block's output content is preserved.
+        let text = user_tool_result_text(&msgs[2]);
+        assert!(
+            text.contains("body-a") && text.contains("body-b") && text.contains("body-c"),
+            "all three tool_result outputs must be present in the coalesced message: {text}"
+        );
+        assert_role_alternation(&msgs);
+    }
+
+    // spec: repl/spec.md §17 — FIXME 0541 WIRE HALF, run-in-history variant: when
+    // the multi-`tool_result` run is followed by a later turn (assistant prose),
+    // it lands in HISTORY (not the prompt slot). It must STILL coalesce to one
+    // user message and role-alternate — the boundary-split must not re-introduce
+    // two consecutive users. Pre-fix: user, assistant, user(a), user(b),
+    // assistant (5, two consecutive users); post-fix: user, assistant, user(a,b),
+    // assistant (4).
+    #[test]
+    fn multi_tool_call_results_coalesce_when_run_is_in_history() {
+        let req = AgentRequest {
+            transcript: vec![
+                Turn::User("two pulls".to_string()),
+                Turn::AssistantToolCalls(vec![
+                    tool_call("id-a", "source", "f"),
+                    tool_call("id-b", "info", "g"),
+                ]),
+                Turn::ToolResult(tool_result("id-a", "/source f", "body-f")),
+                Turn::ToolResult(tool_result("id-b", "/info g", "type-g")),
+                Turn::Assistant("here is what I found".to_string()),
+            ],
+            ..Default::default()
+        };
+        let msgs = wire_messages(&req);
+        assert_eq!(
+            msgs.len(),
+            4,
+            "user, assistant(a,b), user(tr a,tr b coalesced), assistant — got {msgs:?}"
+        );
+        assert_eq!(
+            user_tool_result_ids(&msgs[2]),
+            vec!["id-a".to_string(), "id-b".to_string()],
+            "the mid-history run must coalesce into one user message carrying both ids"
+        );
+        assert_role_alternation(&msgs);
     }
 }

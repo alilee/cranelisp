@@ -713,3 +713,98 @@ fn mod_no_arg_default_entry_is_user() {
         out.stdout
     );
 }
+
+// =============================================================================
+// S106 — FIXME 0551: piped `read-line` MUST NOT leak the next input line, and the
+// REPL session MUST continue after a read-line turn. The interactive-TTY exit
+// (fd-0 O_NONBLOCK leak → REPL exits) is TTY-only and NOT reachable through the
+// piped-stdin harness (no PTY — harness gap G-1); the fd-flag-restore and
+// WouldBlock-≠-EOF seams get named /dev UNIT tests (platforms/stdio + src/main.rs).
+// These e2e guards pin the REACHABLE piped-mode behaviour (the piped-vs-interactive
+// divergence noted in the FIXME).
+// =============================================================================
+
+/// A REPL session with the workspace `stdio` platform available and a `main` that
+/// reads a line then prints it.
+const READ_LINE_MAIN: &str = "(platform stdio)\n\
+     (import [platform.stdio [print read-line]])\n\
+     (defn m [] (bind (read-line) (fn [l] (print l))))\n";
+
+// spec: repl/spec.md §10.1 — [+neg] a piped `read-line` turn MUST consume its
+// input line, NOT leak it to the REPL reader as an `undefined variable`. RED on
+// HEAD (FIXME 0551): the piped read-line returns immediately without consuming the
+// next line (`zzleak`), which then leaks to the reader as a type/undefined error.
+#[test]
+fn piped_read_line_does_not_leak_next_line_as_undefined_var_neg() {
+    let out = Cranelisp::new()
+        .repl()
+        .use_workspace_platforms()
+        .with_prelude(helpers::e2e::PreludeVariant::PrimitivesOnly)
+        .stdin(&format!(
+            "{READ_LINE_MAIN}(m)\nzzleak\n(add-i64 4 5)\n",
+        ))
+        .output();
+    // Neg: the read-line input line MUST NOT leak to the REPL reader.
+    assert!(
+        !out.stdout.contains("undefined variable: zzleak"),
+        "a piped `read-line` MUST consume its input line, not leak `zzleak` to the \
+         REPL reader as an undefined variable (FIXME 0551); stdout:\n{}",
+        out.stdout
+    );
+    // Pos: the subsequent expression still evaluates.
+    assert!(
+        out.stdout.contains(":primitives/Int 9"),
+        "the form following the read-line turn MUST still evaluate; stdout:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §10.1 — the REPL session MUST continue after a `read-line`
+// turn: a plain form issued after it still evaluates (the session did not
+// terminate early). In piped mode the session already continues (the TTY-only
+// early-exit is not e2e-reachable — harness gap G-1); this is the reachable
+// robustness guard that a read-line turn does not silently kill the session.
+#[test]
+fn piped_read_line_session_continues_after_eval() {
+    let out = Cranelisp::new()
+        .repl()
+        .use_workspace_platforms()
+        .with_prelude(helpers::e2e::PreludeVariant::PrimitivesOnly)
+        .stdin(&format!("{READ_LINE_MAIN}(m)\n\n(add-i64 20 22)\n"))
+        .output();
+    assert!(
+        out.stdout.contains(":primitives/Int 42"),
+        "the session MUST continue after a read-line turn — a following `(add-i64 \
+         20 22)` MUST evaluate to 42 (FIXME 0551); stdout:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
+// S106 — FIXME 0544: interactive line editor (rustyline, TTY-gated). The line
+// editor is constructed ONLY on the interactive-TTY branch; the non-TTY (piped)
+// path MUST stay byte-for-byte identical (§10.8 BLOCKING invariant). Arrow-key /
+// history behaviour is TTY-only and NOT e2e-reachable (harness gap G-1) — the
+// durable /qa guard is this non-TTY byte-identical golden. The agent consent-line
+// read (§15.2 write gate) is agent-feature-gated and NOT reachable on the default
+// build, so its non-TTY invariant is a named coverage gap, not authored here.
+// =============================================================================
+
+// spec: repl/spec.md §10.8 — a fixed piped-stdin session's stdout is captured as a
+// golden (timing masked). rustyline is TTY-gated, so this non-TTY output MUST stay
+// byte-identical after the 0544 change lands. Captured on S106 HEAD (pre-change
+// baseline); the guard is that adding rustyline never perturbs a single byte of the
+// non-TTY path. GREEN-expected (byte-identical pre/post).
+#[test]
+fn non_tty_repl_output_byte_identical_line_editor_off() {
+    let out = repl_prims(
+        "(add-i64 1 2)\n\
+         (defn id [x] x)\n\
+         /list\n\
+         /sig id\n",
+    );
+    // Mask only the non-deterministic prompt timing (`N+Mms; <module>> `); every
+    // other byte of the non-TTY session output MUST match the committed golden.
+    let prompt_re = regex::Regex::new(r"\d+\+\d+ms; \w+> ").unwrap();
+    out.assert_golden_masked("non_tty_repl_line_editor_off", &[&prompt_re]);
+}

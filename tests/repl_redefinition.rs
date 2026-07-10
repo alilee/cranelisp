@@ -1253,3 +1253,56 @@ fn ls1_fresh_definition_and_call_invariant_to_session_history() {
         ":primitives/Int 6",
     );
 }
+
+// =============================================================================
+// S106 — L-S1 GENERALIZATION to the redefinition/cascade report surface (FIXME
+// 0499). Extends the grid to the §18.1.1 downgrade-report shape under the
+// {prior failed turn, /reset} preambles, plus the +neg no-`__expr`-noise guard.
+// GREEN-expected robustness guards.
+// =============================================================================
+
+/// Run `body` under each preamble and assert `needle` is ABSENT from stdout
+/// regardless of session history (the negative complement of
+/// `assert_preamble_invariant`).
+fn assert_preamble_invariant_absent(body: &str, needle: &str) {
+    for (label, pre) in LS1_PREAMBLES {
+        let cap = repl_prims(&format!("{pre}{body}"));
+        assert!(
+            !cap.stdout.contains(needle),
+            "L-S1 preamble `{label}`: `{needle}` MUST NOT appear regardless of \
+             session history; stdout:\n{}\nstderr:\n{}",
+            cap.stdout,
+            cap.stderr
+        );
+    }
+}
+
+// spec: repl/spec.md §18.1.1 — a redefinition that late-binds through a caller
+// produces the corrected result under every preamble (the cascade/late-binding
+// report is invariant to session history — 0491 cascade surface generalized).
+#[test]
+fn ls1_redefinition_cascade_result_invariant_to_session_history() {
+    assert_preamble_invariant(
+        "(defn base [:Int x] (add-i64 x 1))\n\
+         (defn caller [:Int x] (base x))\n\
+         (caller 10)\n\
+         (defn base [:Int x] (add-i64 x 100))\n\
+         (caller 10)\n",
+        ":primitives/Int 110",
+    );
+}
+
+// spec: repl/spec.md §18.1.1 — +neg: the redefinition report/surface MUST NOT leak
+// the synthetic `__expr` internal name regardless of session history (the 0491
+// cascade-report artifact-leak class).
+#[test]
+fn ls1_redefinition_no_expr_noise_neg() {
+    assert_preamble_invariant_absent(
+        "(defn base [:Int x] (add-i64 x 1))\n\
+         (defn caller [:Int x] (base x))\n\
+         (caller 10)\n\
+         (defn base [:Int x] (add-i64 x 100))\n\
+         (caller 10)\n",
+        "__expr",
+    );
+}

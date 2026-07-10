@@ -62,9 +62,50 @@ If the resolved entry module source file does not exist, the binary MUST print a
 
 ### 0.2.1 Link Mode (`--link`) [R4 S52]
 
-`cranelisp [target] --link` MUST compile the module graph rooted at the resolved entry module and produce a linkable object file. It MUST NOT execute any code and MUST NOT produce output to stdout. [R4 S52]
+`cranelisp [target] --link` MUST compile the module graph rooted at the resolved entry module and produce a linked, standalone **executable**. It MUST NOT execute any code and MUST NOT produce output to stdout (beyond the `; Linking: …` progress line). [R4 S52]
+
+> **Object-file → standalone-executable wording (SETTLED [S106], FIXME 0550).** The pre-S106 text
+> said `--link` produces "a linkable **object file**", but the implementation (and
+> `user/cli-reference.md`) produce a **standalone executable** — `--link` invokes `cc` to link the
+> object files into a runnable binary. The wording above is corrected to "standalone executable" to
+> match the shipped behaviour. [S106]
 
 `--run` and `--link` MUST NOT be used together. If both are present, the binary MUST print an error to stderr and exit with status code 1.
+
+#### 0.2.1.1 Output-Artifact Name and Location [S106]
+
+The output executable's **name** and **location** were previously an unspecified default: the impl named the artifact after the **entry module stem** and wrote it into the **current working directory** (`src/session_v4/lifecycle.rs`). For a directory-project target (§0.5.1 rule 3) the entry module defaults to `user`, so the artifact was `./user` — the least distinctive name possible — and `--link .proj6` from the repo root **collided** with the `user/` docs directory, failing with a raw `ld` "cannot open output file user: Is a directory" (FIXME 0550, reproduced). This subsection pins the corrected contract.
+
+**Name and location — the uniform rule (SETTLED [S106], FIXME 0550).** The output executable MUST
+be named after the **entry (root) module's source-file stem** and MUST be written **into the same
+directory as that module's source file** — not the project-directory name, not the current working
+directory. One rule covers both the file-target and directory-project cases:
+
+- **File target** (`examples/hello.cl`, or bare `mymod` resolving to `mymod.cl`): the entry module's
+  source is `examples/hello.cl` / `mymod.cl`, so the artifact is `examples/hello` / `mymod` — the
+  stem, beside the source. [S106]
+- **Directory-project target** (§0.5.1 rule 3 — `cranelisp myproject --link`, where `myproject/`
+  exists and no `myproject.cl` beside it, entry module `user`): the entry module's source is
+  `myproject/user.cl`, so the artifact is `myproject/user` — the stem, beside the source. **Not**
+  `myproject/myproject`, **not** `./user`. [S106]
+
+Because the artifact lands **next to its source** rather than in the CWD, the original
+CWD-collision (FIXME 0550: `--link .proj6` from the repo root writing `./user` and colliding with
+the `user/` docs directory) is resolved — the write target is the module's own directory, which the
+`user/` docs directory in an unrelated CWD can no longer shadow. On platforms with an executable
+suffix (Windows), the platform suffix applies: `myproject/user.exe`, `examples/hello.exe`. [S106]
+
+**`-o <path>` override (SETTLED [S106]):** an optional `-o <path>` flag sets the output path
+explicitly, overriding the derivation above. This is the standard CLI escape hatch (`cc -o`,
+`rustc -o`) for a user who wants the artifact somewhere specific. When `-o` is given, the resolved
+path is used verbatim (relative paths resolved against cwd). [S106]
+
+**Collision-diagnostic floor (MUST) [S106]:** if the resolved
+output path is an **existing directory**, the binary MUST emit a clear cranelisp diagnostic
+naming the path (e.g. `error: output path 'user' is a directory — use -o <path> to choose a
+different output`) and exit with status code 1, **rather than** surfacing a raw `ld`/`cc` linker
+error. This floor holds independently of the name/location rule above — a directory collision must
+never reach the user as an opaque toolchain error. [S106]
 
 ### 0.3 Error Handling
 
@@ -211,9 +252,9 @@ These flags modify behaviour but do not select a mode. They may appear in any mo
 | `--no-cache` | none | Bypass the on-disk module cache (recompile from source). **MUST error if combined with `--link`** (link mode relies on the object cache) — usage hint to stderr, exit code 1. | cache on |
 | `--priority-workers` | `N` (numeric) | Number of priority compilation workers. A non-numeric `N` is an error (usage hint to stderr, exit code 1). | `1` |
 | `--nice-workers` | `N` (numeric) | Number of background ("nice") compilation workers. A non-numeric `N` is an error. | `1` |
-| `--agent` | none | Enable the embedded LLM agent for this session (REPL only). Requires the binary to be **built** with the agent feature AND a backend key present at runtime; otherwise the agent stays dormant (see §17.4). Ignored — but accepted, not an error — by a binary built without the agent feature. | agent off |
-| `--no-agent` | none | Force the embedded agent off for this session even when built-in and a key is present. Always accepted. | — |
-| `--yes` (`-y`) | none | Autonomous-submit: auto-accept the agent's write-consent gates (Build form-submit, §17.14; Document preamble/docstring edit, §17.15) so the agent acts without the per-action `[y/N]` prompt. REPL only; meaningful only with an active agent. A no-op on default (non-`agent`) builds and when no agent is active — accepted, never an error. Auto-accepts **consent only**; the pre-flight validator (§17.14.3) still gates correctness. | off |
+| `--agent` | none | Enable the embedded LLM agent for this session (REPL only). Requires the binary to be **built** with the agent feature AND a backend key present at runtime; otherwise the agent stays dormant (see §17.4). **MUST error on a binary built without the agent feature** (usage hint to stderr, exit code 1 — same style as `--no-cache` + `--link`) — the flag names a capability the binary does not have. | agent off |
+| `--no-agent` | none | Force the embedded agent off for this session even when built-in and a key is present. **Always accepted** (a no-op on a non-agent build — asking for the agent off is trivially satisfied). | — |
+| `--yes` (`-y`) | none | Autonomous-submit: auto-accept the agent's write-consent gates (Build form-submit, §17.14; Document preamble/docstring edit, §17.15) so the agent acts without the per-action `[y/N]` prompt. REPL only; meaningful only with an active agent. **MUST error on a binary built without the agent feature** (usage hint to stderr, exit code 1); a no-op when no agent is active on an agent-**capable** build. Auto-accepts **consent only**; the pre-flight validator (§17.14.3) still gates correctness. | off |
 
 This table is kept consistent with `user/cli-reference.md`; the two MUST agree.
 
@@ -221,8 +262,13 @@ This table is kept consistent with `user/cli-reference.md`; the two MUST agree.
 
 The `--agent` and `--no-agent` flags are the runtime half of the agent's **opt-in-twice** discipline (§17.4). The embedded agent is a **dev-session capability only** — it is never part of `--run` or `--link`, and never ships in a release artifact. Accordingly:
 
-- `--agent` / `--no-agent` are meaningful **only in REPL mode**. In `--run` or `--link` mode they MUST be accepted (not an error) and have **no effect** — the agent does not participate in batch compilation or linking.
-- A binary **built without** the agent feature MUST accept `--agent` and `--no-agent` as recognised flags (so a script written for an agent-enabled build does not break on a default build) and treat them as no-ops. It MUST NOT print `unknown flag` for them. With the feature compiled out, the agent is unconditionally absent regardless of these flags.
+- `--agent` / `--no-agent` are meaningful **only in REPL mode**. In `--run` or `--link` mode they MUST be accepted (not an error) and have **no effect** — the agent does not participate in batch compilation or linking. (This mode clause applies only on an agent-**capable** build; on a non-agent build `--agent` errors regardless of mode per the next bullet.)
+- **`--agent` on a binary built WITHOUT the agent feature MUST be a hard error** (user ruling, 2026-07-09, S106). It MUST print a usage hint to stderr and exit with status code 1 — the **same error style** as `--no-cache` combined with `--link` (§0.6 table; §0.3): a short message naming the flag and the reason it is unsupported, e.g.
+  ```
+  error: --agent requires a binary built with the agent feature
+  ```
+  followed by the standard usage hint. This **reverses** the earlier accepted-no-op posture: the script-portability rationale (a script written for an agent-enabled build not breaking on a default build) does **not** apply — `--agent` names a capability the binary does not have, and silently ignoring it hides the mismatch. The binary MUST NOT print `unknown flag` (this is a *recognised* flag rejected for a *specific* reason, not an unknown token). [S106]
+- **`--no-agent` on a binary built WITHOUT the agent feature stays an accepted no-op** — asking for the agent to be *off* is trivially true when the feature is compiled out, so it MUST NOT error and MUST NOT print `unknown flag`. With the feature compiled out, the agent is unconditionally absent; `--no-agent` is redundant-but-harmless. [S106]
 - A binary **built with** the agent feature treats `--agent` as a request to enable the agent for the session and `--no-agent` as a request to keep it off. Even with `--agent`, the agent is **dormant** unless a backend key/config is also present at runtime (§17.4) — opt-in-twice. If `--agent` is given but no key is configured, the REPL SHOULD note at startup that the agent is built-in but dormant (no key), and `/ask` behaves per the dormant case (§17.1).
 - When both `--agent` and `--no-agent` are present, `--no-agent` wins (the safe default — off).
 
@@ -232,7 +278,7 @@ The default with no flag is **agent off**, even on an agent-built binary with a 
 
 `--yes` (short form `-y`) is a **policy knob** that auto-answers the agent's write-consent gates. Per the `/arch` ruling (`design/arch/repl-embedded-agent.md §7.4`), it auto-*accepts* the consent question; it does **not** relocate, widen, or remove the gate, and it does **not** touch the pre-flight validator (§17.14.3) — it changes who answers the `[y/N]`, not whether code is validated. It is **off by default**: the human answers each write gate unless `--yes` is given. The flag is **blanket** — one `--yes` covers **both** agent write classes (Build form-submit, §17.14, *and* Document preamble/docstring edits, §17.15), following the universal `-y` convention. Accordingly:
 
-- `--yes` / `-y` are meaningful **only in REPL mode** with an **active agent** (built `--features agent`, enabled per §0.6.1, and backed by a reachable provider — §17.4). In `--run` or `--link` mode, on a binary **built without** the agent feature, and whenever **no agent is active** (dormant or `--no-agent`), `--yes` MUST be accepted (not an error) and have **no effect** — consistent with `--agent` (§0.6.1). It MUST NOT print `unknown flag`.
+- `--yes` / `-y` are meaningful **only in REPL mode** with an **active agent** (built `--features agent`, enabled per §0.6.1, and backed by a reachable provider — §17.4). **On a binary built WITHOUT the agent feature, `--yes`/`-y` MUST be a hard error** (user ruling, 2026-07-09, S106) — usage hint to stderr, exit code 1, the same `--no-cache` + `--link` error style as `--agent` (§0.6.1) — because there is no write-consent gate for it to auto-answer and the flag names an agent-only policy the binary cannot honour. It MUST NOT print `unknown flag`. **On an agent-capable build**, however, `--yes` remains an **accepted no-op** whenever no agent is *active* — in `--run`/`--link` mode, or when the agent is dormant (no provider key) or disabled (`--no-agent`): the feature is present, so the flag is valid; there is simply no active gate to auto-answer. The reversal is scoped to the **feature-not-compiled-in** case only. [S106]
 - **Precedence / interaction with `--agent`.** `--yes` presupposes the agent is in play but **does not itself enable the agent.** It is **not** an implicit `--agent`, and it does **not** bypass the opt-in-twice posture (§17.4): with no agent feature, no enabling flag, or no provider key, `--yes` stays a no-op — there is no write gate to auto-answer, so there is nothing to escalate. To act autonomously a user opts in explicitly: enable the agent (`--agent`, §0.6.1) **and** pass `--yes`. (`--no-agent` keeps the agent off, so `--yes` is likewise inert.)
 - `--yes` auto-answers **consent, never validation.** The pre-flight validator (§17.14.3) runs on every submission regardless of `--yes`; only code that at least parses and type-checks ever reaches the session. `--yes` removes the question, not the correctness floor (§17.14.6).
 
@@ -626,15 +672,36 @@ The layout is a **MUST** (not SHOULD) so that exact output can be asserted in te
 
 The example below is illustrative of the rules above; it is the reference layout that tests assert as expected output.
 
+> **L3 rule-vs-example reconciliation (SETTLED [S106], FIXME 0545).** The pre-S106 illustrative
+> example **contradicted the L3 rule text**: it placed `double drop` (the `d` group, size 2) on a
+> fresh row even though the preceding row held only `abs add ceil concat` (4 names), and
+> `4 + 2 = 6 ≤ 6`, so L3-as-worded requires appending the group to that row. The same
+> eager-new-line-per-letter divergence recurred at the `e`/`f` groups, and the operator line showed
+> 9 operators unwrapped despite L2's "wrapping at 6 per line". So the RULE and the EXAMPLE genuinely
+> disagreed. **Ruling: the L0–L4 rule is the intended truth; the old example was flawed.** This
+> matches the user's stated intent (FIXME 0545): *"up to six per line … UNLESS the current line has
+> fewer than six symbols AND the next letter's group completes within the remaining gap to six (then
+> keep it on the same line)"* — which is **exactly** the L3 pack-to-six rule, not the eager
+> per-letter behaviour the old example encoded. The flawed example is replaced by the corrected,
+> fully L0–L4-conformant reference layout below (operators wrapped at 6 per L2; alphabetic groups
+> packed to six per L3). [S106]
+
+Reference layout (matches L0–L4 exactly for this name set: operators
+`+ - * / < > <= >= !=`; then groups a=`abs add`, c=`ceil concat`, d=`double drop`,
+e=`empty? even?`, f=`filter floor fold`, g=`get`):
+
 ```
 Fns:
-  + - * / < > <= >= !=
-  abs add ceil concat
-  double drop
-  empty? even? filter floor fold
-  get
-  ...
+  + - * / < >
+  <= >= !=
+  abs add ceil concat double drop
+  empty? even? filter floor fold get
 ```
+
+Row-by-row derivation (for the tests to pin): operators (9) wrap at 6 → `+ - * / < >` then
+`<= >= !=`, then a mandatory break (L2). Alphabetic packing (L3): a(2)→count 2; c(2)→4; d(2)→6
+(row full: `abs add ceil concat double drop`); e(2) would make 8>6 → flush, new row count 2;
+f(3)→5; g(1)→6 (`empty? even? filter floor fold get`). [S106]
 
 ### 3.4 `/imports` — Imports and Special Forms [Tested+Neg tests/repl_introspection::imports_lists_special_forms]
 
@@ -1375,6 +1442,97 @@ The TTY detection result SHOULD be computed once at startup and stored as a bool
 
 **Ring 4 Sprint 22**: Full terminal styling specification. Implementation targeted for a subsequent sprint.
 
+### 10.8 Interactive Line Editor and Input History [S106]
+
+On an **interactive terminal**, the REPL MUST provide a line editor with **command history** and
+**basic in-line editing** — the universal shell/REPL convention. Before S106 the read loop used a
+plain buffered line iterator (`stdin.lock().lines()`), so the up-arrow did nothing and there was
+no cursor editing (FIXME 0544). This section makes the line editor a normative requirement and
+pins the TTY gate + non-TTY fallback that keeps scripted/piped input working unchanged.
+
+**Implementation crate — `rustyline` (`/arch` Phase-2 §1 ruling, S106).** The line editor MUST be
+backed by **`rustyline`**, adopted as a **default-build** dependency of the `cranelisp` binary
+(not feature-gated) — it is markedly lighter than reedline's crossterm/nu stack and far smaller
+than the agent feature's HTTP/async tree, and it already owns the §14.3/§1698
+`ExternalPrinter` notification-reinstatement path. This is a binary-crate dependency only: no
+crate-boundary surface, no `public-api.txt` change. [S106]
+
+**History recall (MUST).** On an interactive TTY:
+
+- **Up-arrow** recalls the **previous** input entry; **down-arrow** moves toward the **more
+  recent** entry (and past the newest, back to the current fresh line). Repeated up/down cycles
+  through the history in order. [S106]
+- Each **successfully read input line** is added to the history. An implementation MAY skip
+  adding an entry that is empty or identical to the immediately preceding entry (the standard
+  "no consecutive duplicates" convention); this is at implementation discretion. [S106]
+- History recall populates the edit buffer with the recalled text; the user MAY edit it before
+  submitting, and MAY submit it unchanged. [S106]
+
+**In-line editing (MUST, basic set).** On an interactive TTY the editor MUST support at minimum:
+left/right cursor movement, insertion and deletion at the cursor (backspace/delete), and
+beginning/end-of-line movement. Richer editing (word-wise movement/delete, kill/yank, reverse
+history search) is **SHOULD** — rustyline provides the standard Emacs-style bindings by default,
+and the REPL SHOULD leave them enabled. [S106]
+
+**TTY gate + non-TTY fallback (MUST — BLOCKING invariant).** The line editor is constructed and
+used **only** on the interactive branch, gated on `std::io::IsTerminal` for **stdin**. When stdin
+is **not** a terminal — piped or redirected, which is how the e2e harness and scripted input drive
+the REPL — the read path MUST remain the **exact** plain line-reading behaviour (`stdin` locked,
+read line-by-line), and rustyline MUST NOT be instantiated. The non-TTY output MUST be
+**byte-for-byte identical** to the pre-S106 behaviour: the line editor changes the *interactive*
+experience only and MUST NOT alter a single byte of piped/redirected session output. This is both
+a normative pin here and a `/qa` guard (assert non-TTY output byte-identical pre/post). [S106]
+
+**Non-TTY invalid-UTF-8 carve-out — deliberate divergence (`/review`-sanctioned) [S106].** The
+byte-identical guarantee above holds for **valid UTF-8** input. Because S106 rewrote the non-TTY
+read path from `stdin.lock().lines()` to a direct byte-wise fd-0 reader, **invalid/malformed
+UTF-8** now diverges from pre-S106 by design: the new reader applies **lossy substitution**
+(U+FFFD) and the **session continues** — a malformed byte is NOT treated as end-of-input. Pre-S106,
+`.lines()` returned an error on invalid UTF-8 which the read loop treated as EOF, **killing the
+session**. This is a deliberate improvement judged BETTER by `/review` (a stray non-UTF-8 byte no
+longer terminates the session) and MUST NOT be re-broken back to the session-terminating behaviour.
+[S106]
+
+**Single input source — the agent consent-line read goes through the SAME editor (MUST).** The
+agent write-consent gate (§17.14, §15.2 write gate) reads the next input line to answer its
+`[y/N]` prompt. On the interactive branch that read MUST go through the **same `rustyline` editor
+instance** (a `readline` call), **not** a parallel `BufReader` alongside it: rustyline owns the
+terminal (raw mode during a read, cooked between), so a second raw reader would desync the line
+discipline and race the buffer. On the non-TTY branch the consent read stays the same plain
+line read from the same single reader. The REPL threads **one** input abstraction with a TTY impl
+(editor-backed) and a non-TTY impl (plain lines); the consent seam calls that abstraction, never a
+second reader. [S106]
+
+**Interaction with the §1698 notification-reinstatement note.** §14.3/§1698 already names
+rustyline's `ExternalPrinter` as the home for the "reinstate partial input after a notification"
+behaviour. The line editor is the natural owner of that behaviour: once the editor is wired in, a
+watcher/agent notification arriving mid-input SHOULD print on a new line and reinstate the partial
+input via `ExternalPrinter` (still a SHOULD/nice-to-have per §1698, not upgraded to a MUST here).
+[S106]
+
+**Testability note (coverage gap, honest).** Interactive arrow-key behaviour is observable **only
+on a real TTY**, which the piped-stdin e2e harness cannot drive. The durable automated guard is
+therefore the **non-TTY-byte-identical** assertion (above) plus any library-level history-recall
+unit test the chosen crate supports; the TTY-interactive surface (arrow keys, cursor editing) is
+**manually verified** in the `/repl` demo and flagged as an explicit e2e coverage gap — do not
+claim e2e coverage of arrow keys. [S106]
+
+**History persistence and bounded length (SETTLED [S106]).** These two user-experience decisions
+(routed by `/arch` Phase-2 §1 to `/repl` → user, not architecture questions) are now ruled:
+
+- **History persistence — per-project, to `<project_root>/.cranelisp_history` (MUST).** The command
+  history persists across sessions in a history file at `<project_root>/.cranelisp_history`, where
+  `project_root` is resolved per §0.5.1 — **not** the user's home directory. History is therefore
+  **per-project**: each project carries its own REPL history file beside its sources, so recall
+  reflects the work done in that project rather than a single global stream. The file is loaded at
+  TTY-session start and appended on `/quit`, so a user's prior-session history survives a restart.
+  rustyline supports this directly (`Editor::load_history` / `save_history`). The persistence file
+  MUST degrade gracefully: an unreadable/unwritable history file is a non-fatal warning, never a
+  failed session launch (same posture as the §0.5.7 scaffold). [S106]
+- **Bounded history length — cap at 1000 entries (MUST).** History MUST be bounded so it does not
+  grow without limit. The cap is **1000 entries** (rustyline's own default `max_history_size`),
+  oldest entries dropped first (FIFO). [S106]
+
 ## 9. Ring Testability Matrix
 
 | Requirement | Ring 0 | Ring 1 | Ring 2 | Ring 3 | Ring 4 |
@@ -1695,7 +1853,7 @@ The format is `[updated: <file>]` where `<file>` is the path relative to the pro
 
 The format is `[errors: <file>]` followed by the error details on indented lines. The error details use the standard error format (§5.1).
 
-**Input preservation (nice-to-have):** If the user is mid-input when a notification arrives, the notification SHOULD print on a new line, then reinstate the partial input line so typing is uninterrupted. Implementation MAY use rustyline's `ExternalPrinter` API for this. As an interim approach, notifications MAY be deferred until the next prompt boundary (before the prompt is printed). Notifications MUST NOT corrupt the user's input.
+**Input preservation (nice-to-have):** If the user is mid-input when a notification arrives, the notification SHOULD print on a new line, then reinstate the partial input line so typing is uninterrupted. Implementation SHOULD use rustyline's `ExternalPrinter` API for this — with the S106 line editor (§10.8) now a normative default-build dependency, `ExternalPrinter` is the wired-in home for this behaviour on the interactive branch. As an interim approach, notifications MAY be deferred until the next prompt boundary (before the prompt is printed). Notifications MUST NOT corrupt the user's input.
 
 ### 14.4 Error Blocking [Tested tests/repl_watch::watch_errors_block_evaluation_no_last_known_good]
 
@@ -1791,6 +1949,35 @@ The file watcher (§14) MUST ignore writes triggered by the REPL's own source re
 When the user redefines a name that already exists in the session, the regenerated source file MUST contain only the latest definition — the previous definition MUST be replaced, not duplicated. [R4 S52]
 
 The runtime semantics of redefinition — dependent recompilation on signature-changing edits, the cascade report, broken symbols, and frozen-world behaviour for pre-break closure values — are specified in §18. The persistence interaction (restoring a session that contains broken symbols) is §18.8. [S101]
+
+### 15.7 Backing-File Content — Definitions and Structural Forms Only [S106]
+
+The regenerated backing `.cl` file MUST contain **definitions and structural forms only**.
+Transient, **non-defining top-level expression evaluations are session-only and MUST NOT be
+persisted** to the backing source file. (`/arch` ruling, S106, FIXME 0549 — reconciled against the
+persisted-`__expr` reload model of FIXMEs 0532/0537; the exclusion is sound because nothing in the
+T1-reload / monomorphisation / cache-restore paths requires the expression to be in the *backing
+file* — the in-session symbol-table entry is unaffected, only its source emission is suppressed.)
+[S106]
+
+The boundary is precise:
+
+- **Persisted (module content):** definitions — `defn`, `deftype`, `deftrait`, `impl`, `defmacro`
+  — and structural forms — `mod`, `import`, `export`, `declare-platform` (the §15.4 rule-4
+  structural sections). These are the module the user is building. [S106]
+- **NOT persisted (transient session output):** bare top-level **expression** evaluations
+  (e.g. `(+ 1 2)`, `(print "hello")`). A REPL top-level expression is recorded internally as a
+  synthetic `__expr`-named entry so it can be evaluated and displayed; that entry is **session
+  state, not module content**, and MUST be excluded from source regeneration. Persisting it would
+  re-materialise the expression as module content on the next load — re-running it or leaving dead
+  code — polluting the module the user is building. [S106]
+
+**Why this is clean, not a loss of behaviour:** top-level expressions are a **REPL-interactive-only
+construct** (`spec/02-grammar.md §34`; a top-level expression in module-body position is "ambiguous
+and fragile", `spec/08-modules.md §1245`). There is no module-init-evaluates-top-level-expressions
+semantics to preserve — batch mode runs `main` — so excluding `__expr` forms from the backing file
+is semantically clean. This settled scribe **reverses** the earlier deliberate persist-`__expr`
+posture per the user ruling. [S106]
 
 ## 16. Test Discovery and Execution [R4]
 
@@ -2592,7 +2779,9 @@ in-scope symbol's actual signature without first having to `/list`/`/exports`** 
 > `repl-embedded-agent.md §11.1–§11.9` (commit `c699045`). The command was **renamed
 > `/lib-search` → `/search`** (R12), is now a **non-agent-gated default-build session
 > facility** (R9), searches symbols reachable on the **lib search path ∪ the project root**
-> (R10), matches by **name OR scheme, exact OR partial on both axes** (R6), and is served by
+> (R10), matches by **name, scheme, OR docstring** (exact-or-partial on the name/scheme axes,
+> case-insensitive substring on the docstring axis — the docstring axis added S106, FIXME
+> 0540) (R6), and is served by
 > an **eager-but-triggered** background index built by the nice workers (R4/R9b). Per the
 > `/arch` Phase-2 ruling (R1; `repl-embedded-agent.md §11.5`), Pillar 3 still ships as
 > **design only** in S90 — implementation is gated on the FIXME-0432 typecheck root fix
@@ -2609,10 +2798,22 @@ signature**. This is the experience of *"is there already a function that does t
 answered **before** writing the `(import …)`, for both the human and the agent. [S90 re-pin]
 
 **Reachable scope (R10).** `/search` searches symbols reachable on the **lib search path ∪
-the project root** that are **not yet imported** into the session — the same file-resolution
-rules `import` uses. Already-imported, in-scope symbols are surfaced by Pillar 2 (harvest,
-§17.18) and the deterministic `/list` family; `/search` covers what is *importable but not
-yet in scope*. [S90 re-pin]
+the project root** — the same file-resolution rules `import` uses. Its **primary** job is to
+surface what is **importable but not yet in scope**: for these results, an `(import …)` form is
+the actionable payoff (§17.19.2). Already-imported, in-scope symbols are otherwise surfaced by
+Pillar 2 (harvest, §17.18) and the deterministic `/list` family. [S90 re-pin]
+
+**Exception — an EXACT-name match is always surfaced, even when already in scope (R13, S106,
+FIXME 0543).** The original contract *dropped* an in-scope symbol entirely, so `/search show`
+could list four tangential partial matches from an unimported module while silently omitting the
+exact match `show` that the user can already reference bare — the confusing outcome the user
+reported. The rule is now: **an exact-name match MUST appear in the results regardless of its
+scope status.** When that exact match is *already in scope*, its row is **shown but marked**
+(§17.19.2) — labelled *already in scope — no import needed* instead of offering an `(import …)`
+form. This preserves the "not-yet-imported" intent for the import-form facet (an in-scope symbol
+truthfully needs no import) while never hiding the strongest match. Partial (substring / prefix)
+matches keep the original behaviour — a partial match that is already in scope stays excluded, as
+before; only the **exact** match earns the marked-but-shown treatment. [S106]
 
 **A normal session facility, not an agent feature (R9).** `/search` is an **ordinary
 default-build REPL command** — it works in **every** REPL session, with or without the
@@ -2650,12 +2851,48 @@ query is matched (per R6, `§11.4`) by either axis, **exact OR partial**:
   Bool)` with hole-instantiation + ranking) is a **`/typecheck`-owned follow-up**, and the
   **query-pattern syntax for holes/wildcards** is a **flagged `/spec` consult** (R6, `§11.4`)
   — *not* specified here. [S90 re-pin]
+- **by docstring** — `/search <text>`. **Case-insensitive substring** match against the
+  symbol's docstring text (the first-line/summary and body captured for the symbol, the same
+  text `/doc` shows). This closes the *"I remember roughly what it does but not what it's
+  called"* case, which name/scheme matching cannot reach: a query that matches neither the name
+  nor the signature but appears in the docstring MUST still surface the symbol. The docstring
+  axis has **no exact/partial distinction** — it is always a substring test (a whole-docstring
+  "exact" match is not a useful query shape). A symbol with **no docstring** simply cannot match
+  on this axis. [S106, FIXME 0540]
 
 How an implementation distinguishes a name query from a scheme query (e.g. a leading `(Fn …`,
-or an explicit flag) is at implementation discretion, but the command MUST support **both**
-axes and **both** exact and partial matching on each. An empty or no-match query re-prompts
-with a short "no importable symbols matched" note (self-documenting; never an opaque error).
-[S90 re-pin]
+or an explicit flag) is at implementation discretion, but the command MUST support **all three**
+axes. The name and scheme axes MUST each support **both** exact and partial matching; the
+docstring axis is always substring. A non-scheme-shaped query (plain text, no leading `(Fn …`)
+is matched against **both the name axis and the docstring axis** — a single word can match a
+symbol by name *or* by what its docstring says, and both kinds of hit are collected (then ranked
+per §17.19.1a). An empty or no-match query re-prompts with a short "no importable symbols
+matched" note (self-documenting; never an opaque error). [S90 re-pin] [S106]
+
+##### 17.19.1a Relevance Ranking — Exact Before Partial, Name/Scheme Before Docstring-Only [S106]
+
+Results MUST be ordered by **relevance**, not alphabetically (FIXME 0543 — the original
+alphabetic `(module, name)` sort let a partial match like `trace-show-tree` precede an exact
+`show`). The ranking is a **total order** applied across all collected hits, strongest first:
+
+1. **Exact-name match** — the query equals the symbol name exactly (an in-scope exact match, per
+   R13 above, ranks here too, carrying its *already in scope* marker). [S106]
+2. **Exact-scheme match** — the query type-shape matches the symbol's scheme up to
+   alpha-renaming (§17.19.1 "by scheme", exact). [S106]
+3. **Prefix-name match** — the symbol name starts with the query (a partial-name hit that is
+   stronger than an interior substring). [S106]
+4. **Substring-name match** — the query appears elsewhere inside the symbol name. [S106]
+5. **Structural-contains scheme match** — the query type-shape appears as a sub-structure of the
+   scheme (§17.19.1 "by scheme", partial). [S106]
+6. **Docstring-only match** — the query matched *only* in the docstring (name and scheme did not
+   match). A **name/scheme hit outranks a docstring-only hit** — a name or signature match is a
+   stronger relevance signal than a prose mention. A symbol that matches on *both* a
+   name/scheme axis and its docstring ranks by its **best (name/scheme) tier**, not as a
+   docstring-only hit. [S106]
+
+**Tie-break within a tier:** results at the same relevance tier MUST fall back to the original
+deterministic order — alphabetical by `(module, name)` — so output stays exactly reproducible for
+testing (§17.19.5 determinism). [S106]
 
 #### 17.19.2 The Result Row — Name, Signature, Module, How-To-Import [S90 re-pin]
 
@@ -2670,7 +2907,17 @@ Each result row MUST show enough for the reader to **decide and act** — four f
 4. **how to import it** — the exact `(import …)` form that would bring it into scope (e.g.
    `(import [solver.grid [grid-get]])`) — so a human can copy-paste it and the agent can
    propose-and-submit it (Build mode, §17.14) directly. This is the actionable payoff:
-   search → see the form → import. [S90 re-pin]
+   search → see the form → import. **For an exact-name match that is already in scope** (R13,
+   §17.19), this facet is **replaced** by the marker `already in scope — no import needed`
+   instead of an `(import …)` form: the symbol is usable bare, so no import is offered, but the
+   row is still shown (never hidden). [S106] [S90 re-pin]
+5. **why it matched, for a docstring-only hit** — when a result was surfaced **only** because
+   the query appears in its docstring (name and scheme did not match — §17.19.1a tier 6), the
+   row MUST include a short **excerpt** showing the matched text in context (a snippet of the
+   docstring around the matched substring, e.g. `… computes the greatest common divisor …` with
+   the matched span), so the reader is not left guessing which docstring hit fired. This facet
+   appears **only** on docstring-only rows — a name/scheme hit does not need it (the name or
+   signature already shows the reason it matched). [S106, FIXME 0540]
 
 Conceptually (rendering `/dev`-owned; this pins the facets):
 
@@ -2680,11 +2927,26 @@ grid-get :: (Fn [primitives/Int primitives/Int] primitives/Int)
   in solver.grid   — (import [solver.grid [grid-get]])
 gcd :: (Fn [primitives/Int primitives/Int] primitives/Int)
   in math.number   — (import [math.number [gcd]])
+
+user> /search show
+show :: (Fn [:Display a] primitives/String)
+  in text.display   — already in scope — no import needed
+trace-show :: (Fn [primitives/Trace] primitives/String)
+  in core.trace   — (import [core.trace [trace-show]])
+
+user> /search "greatest common"
+gcd :: (Fn [primitives/Int primitives/Int] primitives/Int)
+  in math.number   — (import [math.number [gcd]])
+  ; doc: … computes the greatest common divisor of two integers …
 ```
 
-Results use the **existing §10.3 palette roles** (the `/list` family) and **degrade under
-`--no-color`/non-TTY** (§10.1) to clean plain text — same rule as `/syntax` (§17.17.2) and
-every other deterministic command. [S90 re-pin]
+The first example shows scheme matches; the second shows the exact-name match `show` surfaced
+**marked** as already in scope (R13), ranked above the partial `trace-show` (§17.19.1a); the
+third shows a docstring-only hit (`gcd`'s name and signature contain neither word) carrying its
+excerpt facet. Results use the **existing §10.3 palette roles** (the `/list` family) — the
+docstring excerpt line uses the **dim `; ` comment role** (like a classification comment, §10.3)
+— and **degrade under `--no-color`/non-TTY** (§10.1) to clean plain text, same rule as `/syntax`
+(§17.17.2) and every other deterministic command. [S90 re-pin] [S106]
 
 #### 17.19.3 Eager-But-Triggered Index — Partial Results While Indexing [S90 re-pin]
 
@@ -3335,8 +3597,9 @@ a restart rebuilds everything from source in the current world (§18.8).
 ### 18.8 Interaction with Session Persistence [S101]
 
 Redefinition persistence follows §15: the backing file always reflects the latest source of every
-definition (§15.6), including definitions that are currently broken — the broken symbol's *source*
-is unchanged and still the user's authored truth. Broken-ness itself is session state, not
+definition (§15.6) — and **only** definitions and structural forms, never transient top-level
+expression evaluations (§15.7) — including definitions that are currently broken: the broken
+symbol's *source* is unchanged and still the user's authored truth. Broken-ness itself is session state, not
 persisted state: it is never written to disk as a trap, and is re-derived from source at restart.
 Consequences:
 

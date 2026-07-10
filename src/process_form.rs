@@ -223,37 +223,49 @@ pub fn process_cluster_once(
     // retries from the top once it is live.
     for sexp in sexps.iter() {
         match classify_form(sexp, module)? {
+            // FIXME 0548 — record the persistence entry only AFTER `handle_*`
+            // resolves successfully (`BlockAction::Continue`). A structural form
+            // that FAILS resolution errors via `?` before we reach the record,
+            // so it leaves no trace on the persistence list `save.rs` re-emits —
+            // a failed import/export/mod/platform is never written into the
+            // regenerated backing `.cl`. (`Block` is not a failure: the dep must
+            // load and the cluster retries from the top, where the successful
+            // resume records it.) Applied uniformly across all four forms.
             FormKind::Import(specs) => {
-                record_imports_on_symbol_table(ctx, module, &specs);
-                match handle_import(ctx, module, specs)? {
-                    BlockAction::Continue => {}
+                match handle_import(ctx, module, specs.clone())? {
+                    BlockAction::Continue => {
+                        record_imports_on_symbol_table(ctx, module, &specs);
+                    }
                     BlockAction::Block { dep_module } => {
                         return Ok(ClusterOnce::Gap { dep: dep_module });
                     }
                 }
             }
             FormKind::Export(specs) => {
-                record_exports_on_symbol_table(ctx, module, &specs);
                 match handle_export(ctx, module, &specs)? {
-                    BlockAction::Continue => {}
+                    BlockAction::Continue => {
+                        record_exports_on_symbol_table(ctx, module, &specs);
+                    }
                     BlockAction::Block { dep_module } => {
                         return Ok(ClusterOnce::Gap { dep: dep_module });
                     }
                 }
             }
             FormKind::Mod(decl) => {
-                record_submodule_on_symbol_table(ctx, module, &decl);
                 match handle_mod(ctx, module, &decl)? {
-                    BlockAction::Continue => {}
+                    BlockAction::Continue => {
+                        record_submodule_on_symbol_table(ctx, module, &decl);
+                    }
                     BlockAction::Block { dep_module } => {
                         return Ok(ClusterOnce::Gap { dep: dep_module });
                     }
                 }
             }
             FormKind::Platform(spec) => {
-                record_platform_on_symbol_table(ctx, module, &spec);
                 match handle_platform(ctx, module, &spec)? {
-                    BlockAction::Continue => {}
+                    BlockAction::Continue => {
+                        record_platform_on_symbol_table(ctx, module, &spec);
+                    }
                     BlockAction::Block { dep_module } => {
                         return Ok(ClusterOnce::Gap { dep: dep_module });
                     }

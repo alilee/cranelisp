@@ -590,28 +590,31 @@ Spine §5.6's binding facts, mapped to mechanism:
 4. **(iv) High-water = freeze boundary** — a new session allocates strictly above anything
    any cache references; frozen-slot **bindings** (retained `Code`, trap buffers, old code
    pointers) die with the session — restart is the zero-cost reclamation of §6's pools.
-5. **(v) The backing `.cl` is definitions-only — `__expr` omitted (FIXME 0537).**
-   `generate_fns_and_macros` **skips `$`-mangled names** (`save.rs:732`), so mono variants
+5. **(v) The backing `.cl` is definitions-only — `__expr` omitted (LANDED S106, FIXME 0549/0552).**
+   `generate_fns_and_macros` **skips `$`-mangled names** (`save.rs`), so mono variants
    never enter source; they ride the compiled `.meta`/`.o` channel. The one synthetic
-   non-definition it still leaks is the `Public` zero-arg `UserFn` `__expr` eval wrapper — a
-   transient REPL expression, not a module definition. Once the §10 T1 CS-1 driver carries the
-   same-module mono-instantiation trigger **explicitly** (§10 CS-1's explicit-capture step),
-   the persisted `__expr` becomes dead weight, and `generate_fns_and_macros` (and any sibling
-   regen section) SHALL **omit `__expr` and any synthetic non-definition** from the backing
-   file. This completes the source-is-definitions-only invariant — the same source-first /
-   no-double-persist regen discipline as the S102 D1/D2 cures (`src/CLAUDE.md` §"Degraded
-   startup load"), extended to the last leaking synthetic artifact. `__expr` is already
-   gate-exempt at classification and `__expr`-excluded at the ReverseIndex feed (§9.1.1 F3);
-   excluding it at the **persistence writer** closes the story — the wrapper never becomes
-   durable state in a channel it does not belong in.
-   **Sequencing — Q1 strictly precedes Q2.** The writer cannot omit `__expr` until the reload
-   path no longer depends on it (§10 CS-1's explicit trigger, Q1). So the explicit reload-time
-   instantiation trigger is the load-bearing prerequisite; the writer omission (Q2) is a
-   trivial filter that lands **only after** — never Q2 alone (that is the reverted Wave-4
-   filter that regressed polymorphic reload). Landing both in one change-set is acceptable and
-   cleaner (the omission is one predicate). Acceptance: the two coherent-stale reload pins and
-   the polymorphic-reload path that regressed under the Wave-4 filter stay green with `__expr`
-   absent from the regenerated `.cl`.
+   non-definition it formerly leaked is the `Public` zero-arg `UserFn` `__expr` eval wrapper — a
+   transient REPL expression, not a module definition. With the §10 T1 CS-1 driver-replay landed
+   (the same-module mono trigger now travels the in-memory `extra_forms` channel, not the
+   persisted `__expr` — §10 CS-1), the persisted `__expr` is dead weight, and
+   `generate_fns_and_macros` (and any sibling regen section) **omits `__expr` and any synthetic
+   non-definition** from the backing file. This completes the source-is-definitions-only
+   invariant — the same source-first / no-double-persist regen discipline as the S102 D1/D2 cures
+   (`src/CLAUDE.md` §"Degraded startup load"), extended to the last leaking synthetic artifact.
+   `__expr` is already gate-exempt at classification and `__expr`-excluded at the ReverseIndex
+   feed (§9.1.1 F3); excluding it at the **persistence writer** closes the story — the wrapper
+   never becomes durable state in a channel it does not belong in.
+   **Sequencing — Q1 strictly precedes Q2.** The *reason* the writer cannot omit `__expr` until
+   Q1 lands: the reload **re-reads the backing FILE** (`drive_t1_full_cure` →
+   `regenerate_backing_file` → `reload_module`), so while the same-module mono trigger lives in
+   the file **as a form**, dropping `__expr` from the file drops the trigger with it (the
+   reverted Wave-4 filter that regressed polymorphic reload). Q1 — the driver-replay — is what
+   removes that dependency: it moves the trigger to the in-memory `extra_forms` channel (NOT "the
+   reload reads the in-session entry"; the reload reads the file, so the trigger must be carried
+   into the reload explicitly). With Q1 landed, Q2 (the `save.rs` omit-filter) is **unblocked**
+   and is a trivial one-predicate filter — never Q2 alone. Acceptance (met): the two
+   coherent-stale reload pins and the polymorphic-reload path that regressed under the Wave-4
+   filter stay green with `__expr` absent from the regenerated `.cl`.
 
 **Broken-state round-trip (the designed restart semantics).** The backing file is
 regenerated with what the user actually has: new `f`, and `g`'s **unchanged (now-broken)
@@ -826,26 +829,66 @@ downgraded (below) and T3 is unimplemented-because-unreachable. The triggers, ex
      dependency) and reloads in the `poll_and_reload` cascade, re-expanding + recompiling its
      clauses against the new definition.
 
-     **Explicit same-module mono-variant capture (FIXME 0537 — decouple the reload trigger
-     from the persisted `__expr`).** The from-source reload re-typechecks + re-codegens the
-     target's module from its backing `.cl`, which carries only the module's **definitions**:
-     `$`-mangled mono variants are `save.rs:732`-skipped — they ride the compiled `.meta`/`.o`
-     channel, not source. The *same-module* mono instances originally minted by a REPL `__expr`
-     therefore have **no minter** on a from-source reload (a cross-module dependent re-mints its
-     own instances at the caller site — Principle 17 module locality; only the same-module mint
-     is orphaned). As-built, the persisted `__expr` wrapper de-facto re-drove that mint on
+     **Same-module mono-variant re-mint on reload — the driver-replay as-built (LANDED S106,
+     FIXME 0552).** The from-source reload re-typechecks + re-codegens the target's module from
+     its backing `.cl`, which carries only the module's **definitions**: `$`-mangled mono
+     variants are `save.rs`-skipped — they ride the compiled `.meta`/`.o` channel, not source.
+     The *same-module* mono instances originally minted by a REPL `__expr` therefore have **no
+     minter** on a from-source reload (a cross-module dependent re-mints its own instances at
+     the caller site — Principle 17 module locality; only the same-module mint is orphaned).
+     Formerly the persisted `__expr` wrapper *in the `.cl`* de-facto re-drove that mint on
      reload — an entanglement of persistence fidelity with mono-instantiation-triggering
-     through a user-visible synthetic artifact (the reverted Wave-4 omit-filter's blocker). The
-     reload driver SHALL instead carry this requirement as an **explicit reload-path input**:
-     capture the live table's `$`-mangled `UserFn` mono variants **before** the Replace commit
-     (or re-derive them from the `.meta` compiled-state channel that already holds them) and
-     **re-request their instantiation** after the from-source reload settles. The
-     mono-instantiation set is a **compiled-state** concern and MUST travel the compiled-state /
-     explicit-request channel — never the `.cl` source channel via a persisted `__expr`
-     (Principle 1 decoupling; Principle 7 single source of truth — the source file stops
-     doubling as an instantiation ledger; Principle 20 model-by-representation — the reload's
-     instantiation obligation is an explicit request, not implicit file content). This is the
-     **load-bearing prerequisite** for §8 pin (v)'s `__expr` omission (Q1 strictly precedes Q2).
+     through a user-visible synthetic artifact (the reverted Wave-4 omit-filter's blocker), and
+     the reason naively dropping `__expr` from the file regressed a green T1-cure guard. Note
+     the reload genuinely **re-reads the backing FILE** (`drive_t1_full_cure` →
+     `regenerate_backing_file` → `reload_module`); it does *not* read the in-session
+     symbol-table entry. So decoupling means moving the mint trigger to an **explicit in-memory
+     channel**, not relying on the reload reading a live entry.
+
+     *The as-built mechanism (driver-replay), tests green:*
+     - `redefine.rs::capture_instantiation_drivers(module)` reads the module's live `__expr`
+       `Introspection.sexp` (the single last top-level REPL expression) from the
+       **compiled/in-memory** channel — not the `.cl`.
+     - `lifecycle.rs::reload_module` gained an `extra_forms: &[Sexp]` parameter that
+       **re-injects the captured driver after the from-source parse**, so the same-module mono
+       re-mints through ordinary typecheck+codegen WITHOUT the `__expr` entering the
+       definitions-only `.cl`.
+     - `drive_t1_full_cure` captures the driver, runs `regenerate_backing_file`, then
+       `reload_module(module, path, &drivers)`.
+
+     This achieves the decoupling the design demanded (Principle 1 decoupling; Principle 7
+     single source of truth — the source file stops doubling as an instantiation ledger;
+     Principle 20 model-by-representation — the reload's instantiation obligation travels an
+     explicit request, not implicit file content) and is the **load-bearing prerequisite** for
+     §8 pin (v)'s `__expr` omission (Q1 strictly precedes Q2).
+
+     **Reachability rationale — why single-driver replay is CORRECT, not a stopgap.** Only the
+     last `__expr`'s mono variant is reachable-and-orphanable after a from-source reload.
+     Earlier `__expr` variants are either **dead** (a transient expression's value was displayed
+     and discarded — no durable holder) or **re-minted at durable call sites**: any *definition*
+     that uses a variant lives in the `.cl` and re-mints it at its own call site during the
+     from-source reload (Principle 17 module locality; cross-module dependents likewise re-mint
+     their own). So replaying the single live `__expr` covers exactly the set that the
+     from-source reload cannot otherwise reconstruct.
+
+     **Future generalisation — the SET-capture (FIXME 0553, deferred).** The originally-blessed
+     design captured the full `$`-mangled `UserFn` mono-variant SET (their type-argument tuples)
+     **before** the Replace commit — as *data, not a form* — and re-requested instantiation of
+     that SET after the reload settled. That is the more general cure, but its "re-request their
+     instantiation" step needs a typecheck+backend "instantiate symbol at concrete types" entry
+     point that **does not yet exist**. It is filed as **FIXME 0553** (`target: /typecheck`,
+     co-resolved by `/backend`), sequenced when the enabling monomorphisation seams open
+     (naturally, the increment-I `ModeSummary` sprint). `capture_instantiation_drivers` +
+     `reload_module(extra_forms)` retire when it lands.
+
+     **Known limitation — the stale-`__expr` degrade (parity, NOT a fresh regression).**
+     `introspection[__expr].sexp` is session-persistent (never cleared on a defn turn), so a T1
+     cure firing on an **unrelated later defn turn** can re-inject a now-ill-typed `__expr`,
+     making `reload_module` return `Err` → spuriously degrading a clean T1 cure to the §10 CS-3
+     error-blocked floor. This is **parity** with the prior persisted-`__expr`-in-file behaviour
+     (the same stale expression would have re-run from the file) — driver-replay only moved the
+     channel file→memory; it did not introduce the wart. The SET-capture (FIXME 0553) removes it
+     by requesting instantiation at recorded types rather than replaying a form.
   2. **CS-2 — module-grain report integration** (`redefine.rs` report channel + a /repl
      wording increment). Module-grain reload outcomes render through the same
      `TransactionReport`/`pending_cascade_reports` channel as §18.3's sections and §9.1.1's

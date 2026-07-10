@@ -121,6 +121,23 @@ ultimately calls — `print`, `read-line`, and so on. Different platforms provid
 different capabilities (a CLI `stdio` platform, a web platform, and so on), which is
 why an IO program names the platform it needs and the runtime loads the matching DLL.
 
+Using a platform is **two steps** — and missing the second is the usual first
+stumble:
+
+```clojure
+(platform stdio)                 ; step 1 — load the DLL, register the platform.stdio module
+(import [platform.stdio [*]])    ; step 2 — bring print/read-line into scope
+
+(defn main [] (print "hello world"))
+```
+
+`(platform stdio)` loads the library and registers a module named `platform.stdio`
+(**singular `platform`**, not `platforms`), but it does **not** put `print` into
+scope by itself — the `(import [platform.stdio [*]])` does. Without it, `(print …)`
+fails with `undefined variable: print`. For the full walkthrough — the two steps, the
+`platform.<name>` naming, and a troubleshooting checklist — see
+[guide/using-platforms.md](guide/using-platforms.md).
+
 ## Automatic parallelism
 
 Cranelisp parallelizes work for you — you never write threads, futures, or locks in
@@ -194,7 +211,10 @@ in [`spec/12-runtime.md §12.4.3`](../spec/12-runtime.md) (lenient evaluation) a
   [`guide/parallel-collections.md`](guide/parallel-collections.md) (`par-map`,
   `par-reduce`, `par-map-reduce`),
   [`guide/concurrency.md`](guide/concurrency.md) (the two-halves concurrency model:
-  inferred fan-out + the `sleep`/`race`/`select`/`timeout` control combinators), and
+  inferred fan-out + the `sleep`/`race`/`select`/`timeout` control combinators),
+  [`guide/using-platforms.md`](guide/using-platforms.md) (consuming a platform:
+  the `(platform <name>)` + `(import [platform.<name> [*]])` two-step and the
+  `platform.<name>` naming), and
   [`guide/writing-platforms.md`](guide/writing-platforms.md) (authoring a platform
   DLL: poll-shape effect leaves, the poll-in / wake-out reactor boundary, the
   handle model).

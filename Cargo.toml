@@ -76,6 +76,16 @@ version = "6"
 [dependencies.libc]
 version = "0.2"
 
+# Sprint 106 (FIXME 0544, /arch Phase-2 §1 ruling): the interactive REPL line
+# editor. DEFAULT-BUILD dependency (NOT feature-gated) — markedly lighter than
+# reedline's crossterm/nu stack and far smaller than the agent feature's
+# HTTP/async tree. Binary-crate-only: no crate-boundary surface, no
+# `public-api.txt` change. Constructed ONLY on the interactive-TTY branch
+# (`repl/spec.md` §10.8); the non-TTY path never instantiates it and stays
+# byte-identical (raw line reads). See `src/repl_input.rs`.
+[dependencies.rustyline]
+version = "14"
+
 [dependencies.libloading]
 version = "0.8"
 

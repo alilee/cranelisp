@@ -8,7 +8,7 @@ the practical reference for the command line. The normative contract lives in
 ## Synopsis
 
 ```
-cranelisp [target] [--run | --link] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent] [--yes]
+cranelisp [target] [--run | --link [-o <path>]] [--no-color] [--no-cache] [--priority-workers N] [--nice-workers N] [--agent | --no-agent] [--yes]
 ```
 
 - `[target]` is an optional positional argument naming the entry module / project
@@ -101,13 +101,65 @@ output comes from IO effects inside your program.
 
 ### Link (`--link`)
 
-`cranelisp [target] --link`
+`cranelisp [target] --link [-o <path>]`
 
 Compiles the module graph and produces a **standalone executable** from the object
-output. It does not execute any code and writes nothing to stdout. Linux/aarch64
-ELF standalone executables are supported.
+output. It does not execute any code and writes nothing to stdout (beyond a
+`; Linking: …` progress line). Linux/aarch64 ELF standalone executables are
+supported.
 
-**Artifact:** a linked standalone executable for the entry module.
+#### Where the executable is written
+
+By default the executable is named after the **entry module's source-file stem** and
+written **beside that source file** — not into the current directory, and not after
+the project-directory name. One rule covers both target shapes:
+
+- **File target** — `cranelisp examples/hello.cl --link` (or bare `cranelisp mymod
+  --link`, which resolves to `mymod.cl`) writes `examples/hello` (respectively
+  `mymod`), beside the source.
+- **Directory-project target** — `cranelisp myproject --link` (where `myproject/`
+  exists with no `myproject.cl` beside it, so the entry module is `user`) writes
+  `myproject/user`, beside `myproject/user.cl`. **Not** `myproject/myproject`, and
+  **not** `./user`.
+
+On a platform with an executable suffix (Windows) the suffix is added:
+`examples/hello.exe`, `myproject/user.exe`.
+
+Because the artifact lands next to its source rather than in the current directory,
+the common `entry.cl` + `entry/`-submodule layout links cleanly: `cranelisp app
+--link` writes `app` beside `app.cl`, never colliding with the `app/` submodule
+directory in the current directory.
+
+#### Choosing the output path — `-o <path>`
+
+Pass `-o <path>` to set the output path explicitly, overriding the derivation above
+(the standard `cc -o` / `rustc -o` escape hatch). The resolved path is used verbatim;
+a relative path is resolved against the current directory.
+
+```
+cranelisp myproject --link -o build/myapp
+```
+
+#### Output-path collision with a directory
+
+If the resolved output path is an **existing directory**, `cranelisp` emits a clear
+diagnostic naming the path and telling you to pass `-o`, rather than surfacing a raw
+linker error:
+
+```
+error: output path 'user' is a directory — use -o <path> to choose a different output
+```
+
+This is the case you hit if, for example, an entry module named `user` would write
+its executable next to a sibling `user/` directory. Choose a different path with
+`-o`.
+
+The output-artifact name, location, the `-o` override, and the collision-diagnostic
+floor are normatively specified in
+[`repl/spec.md §0.2.1.1`](../repl/spec.md).
+
+**Artifact:** a linked standalone executable, named after the entry module's source
+stem and written beside that source (or at the `-o` path).
 
 ## Options
 

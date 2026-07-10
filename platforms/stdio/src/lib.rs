@@ -69,15 +69,58 @@ static STDIN_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 /// nor with a real `CLString` base pointer once `Ready` overwrites it.
 const READ_LINE_ARMED: i64 = -1;
 
-/// Set stdin (fd 0) to `O_NONBLOCK` (idempotent). The poll-fn must never block
-/// inside the syscall — on no-data it returns `EWOULDBLOCK` and we park.
-fn set_stdin_nonblocking() {
-    // SAFETY: `fcntl`/`F_GETFL`/`F_SETFL` on fd 0 are sound; idempotent re-set.
+/// The original fd-0 status flags captured the first time `read-line` sets
+/// `O_NONBLOCK` in a session, so the poll leaf can restore fd 0 **as found** on
+/// its terminal (`Ready`/EOF) — FIXME 0551 (A). fd 0 is a process-global shared
+/// resource borrowed for the poll read; a poll leaf that mutates it and never
+/// restores leaves the host's blocking stdin reader (the REPL loop) reading a
+/// non-blocking fd, whose empty read returns `EWOULDBLOCK` and used to be
+/// misread as EOF → the REPL exited. Restoring the flags returns the fd unchanged.
+static ORIG_STDIN_FLAGS: Mutex<Option<i32>> = Mutex::new(None);
+
+/// Set `fd` to `O_NONBLOCK` (idempotent). The poll-fn must never block inside the
+/// syscall — on no-data it returns `EWOULDBLOCK` and we park.
+fn set_fd_nonblocking(fd: i32) {
+    // SAFETY: `fcntl`/`F_GETFL`/`F_SETFL` on a valid fd are sound; idempotent re-set.
     unsafe {
-        let flags = libc::fcntl(0, libc::F_GETFL);
+        let flags = libc::fcntl(fd, libc::F_GETFL);
         if flags >= 0 && (flags & libc::O_NONBLOCK) == 0 {
-            libc::fcntl(0, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
         }
+    }
+}
+
+/// Restore `fd`'s status flags to `orig` (FIXME 0551 (A) — return a borrowed
+/// shared fd as found).
+fn restore_fd_flags(fd: i32, orig: i32) {
+    // SAFETY: `F_SETFL` restoring previously-read flags on a valid fd is sound.
+    unsafe {
+        libc::fcntl(fd, libc::F_SETFL, orig);
+    }
+}
+
+/// Set stdin (fd 0) to `O_NONBLOCK`, recording its original flags once so the
+/// terminal `Ready`/EOF path can restore them ([`restore_stdin_flags`]).
+fn set_stdin_nonblocking() {
+    // Capture the original flags exactly once per not-yet-restored cycle.
+    // SAFETY: `F_GETFL` on fd 0 is sound.
+    let flags = unsafe { libc::fcntl(0, libc::F_GETFL) };
+    if flags >= 0 {
+        let mut orig = ORIG_STDIN_FLAGS.lock().expect("stdio ORIG_STDIN_FLAGS mutex poisoned");
+        if orig.is_none() {
+            *orig = Some(flags);
+        }
+    }
+    set_fd_nonblocking(0);
+}
+
+/// Restore fd 0's original flags captured by [`set_stdin_nonblocking`] (FIXME
+/// 0551 (A)). Called on the poll terminal (`Ready`/EOF), never on `Park` — while
+/// parked the fd must stay non-blocking for the re-poll.
+fn restore_stdin_flags() {
+    let mut orig = ORIG_STDIN_FLAGS.lock().expect("stdio ORIG_STDIN_FLAGS mutex poisoned");
+    if let Some(flags) = orig.take() {
+        restore_fd_flags(0, flags);
     }
 }
 
@@ -109,6 +152,53 @@ fn drain_buffered_all() -> String {
     String::from_utf8_lossy(&line).into_owned()
 }
 
+/// The progress of one non-blocking read attempt against a line-delimited fd.
+#[derive(Debug, PartialEq, Eq)]
+enum ReadProgress {
+    /// `buf` now ends with a `\n` — a complete line is delimited.
+    LineReady,
+    /// The fd reached EOF (writer closed, all bytes consumed).
+    Eof,
+    /// The read would block — park and re-poll on readiness.
+    WouldBlock,
+}
+
+/// Read from `fd` one byte at a time, appending into `buf`, until a `\n` delimits
+/// a line ([`ReadProgress::LineReady`]), EOF, or the read would block.
+///
+/// Byte-at-a-time (not a 1024-byte chunk) so the leaf **never consumes past the
+/// line delimiter** — fd 0 is shared with the REPL host's own line reader, and a
+/// chunk read would steal the host's next line into [`STDIN_BUF`] (the FIXME 0551
+/// (C) split-brain). Reading exactly up to `\n` leaves the remainder in the fd for
+/// the next consumer, so neither side over-reads the other. `EINTR` retries;
+/// `EWOULDBLOCK`/`EAGAIN` parks; a hard error is treated as terminal (EOF-shaped).
+fn read_line_bytes(fd: i32, buf: &mut Vec<u8>) -> ReadProgress {
+    loop {
+        let mut b = [0u8; 1];
+        // SAFETY: `fd` is valid; `b` is a valid 1-byte out-buffer.
+        let n = unsafe { libc::read(fd, b.as_mut_ptr() as *mut c_void, 1) };
+        if n > 0 {
+            buf.push(b[0]);
+            if b[0] == b'\n' {
+                return ReadProgress::LineReady;
+            }
+        } else if n == 0 {
+            return ReadProgress::Eof;
+        } else {
+            // SAFETY: read errno location after a failed `read`.
+            let err = unsafe { *libc::__errno_location() };
+            if err == libc::EWOULDBLOCK || err == libc::EAGAIN {
+                return ReadProgress::WouldBlock;
+            }
+            if err == libc::EINTR {
+                continue;
+            }
+            // Hard error: treat as a terminal so the strand does not wedge.
+            return ReadProgress::Eof;
+        }
+    }
+}
+
 /// Attempt to complete one `read-line`: drain buffered bytes / non-blocking-read
 /// more, returning `Ready(cls)` when a line is delimited (or at EOF) and `Park`
 /// (after registering stdin readiness) when the read would block.
@@ -118,36 +208,41 @@ fn drain_buffered_all() -> String {
 /// as the v6 blocking `read_line` did) — the consuming continuation, compiled
 /// from the `(IO String)` signature, adopts that reference (carrier-agnostic:
 /// the result is threaded identically to the blocking carrier).
+///
+/// FIXME 0551 (A): fd 0's original flags are restored on every terminal
+/// (`Ready`/EOF), never on `Park`.
 fn poll_read_line(reactor: &Reactor) -> PollStep {
     set_stdin_nonblocking();
-    loop {
-        if let Some(line) = take_buffered_line() {
+    // A complete line may already be buffered from a prior park.
+    if let Some(line) = take_buffered_line() {
+        restore_stdin_flags();
+        let cls: CLString = line.into();
+        return PollStep::Ready(cls.to_raw());
+    }
+    let progress = {
+        let mut buf = STDIN_BUF.lock().expect("stdio STDIN_BUF mutex poisoned");
+        read_line_bytes(0, &mut buf)
+    };
+    match progress {
+        ReadProgress::LineReady => {
+            // take_buffered_line removes exactly through the `\n`; the byte-wise
+            // read stopped there, so nothing is left behind for the next reader.
+            let line = take_buffered_line().unwrap_or_default();
+            restore_stdin_flags();
             let cls: CLString = line.into();
-            return PollStep::Ready(cls.to_raw());
+            PollStep::Ready(cls.to_raw())
         }
-        let mut chunk = [0u8; 1024];
-        // SAFETY: fd 0 is valid; `chunk` is a valid mutable out-buffer.
-        let n = unsafe { libc::read(0, chunk.as_mut_ptr() as *mut c_void, chunk.len()) };
-        if n > 0 {
-            STDIN_BUF
-                .lock()
-                .expect("stdio STDIN_BUF mutex poisoned")
-                .extend_from_slice(&chunk[..n as usize]);
-            continue; // re-check for a complete line, then read again if needed.
-        } else if n == 0 {
+        ReadProgress::Eof => {
             // EOF: return whatever remains as the last line (possibly empty).
+            restore_stdin_flags();
             let cls: CLString = drain_buffered_all().into();
-            return PollStep::Ready(cls.to_raw());
-        } else {
-            // SAFETY: read errno location after a failed `read`.
-            let err = unsafe { *libc::__errno_location() };
-            if err == libc::EWOULDBLOCK || err == libc::EAGAIN {
-                reactor.wake_on_readable(0);
-                return PollStep::Park;
-            }
-            // Hard error: surface an empty line rather than wedge the strand.
-            let cls: CLString = String::new().into();
-            return PollStep::Ready(cls.to_raw());
+            PollStep::Ready(cls.to_raw())
+        }
+        ReadProgress::WouldBlock => {
+            // Keep fd 0 non-blocking (flags NOT restored) for the re-poll; any
+            // partial line stays buffered in STDIN_BUF across the park.
+            reactor.wake_on_readable(0);
+            PollStep::Park
         }
     }
 }
@@ -228,4 +323,83 @@ declare_platform! {
             descriptor: READ_LINE_DESC,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pipe pair as a stand-in for a borrowed shared fd. Returns (read, write).
+    fn pipe() -> (i32, i32) {
+        let mut fds = [0i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe() failed");
+        (fds[0], fds[1])
+    }
+
+    fn is_nonblocking(fd: i32) -> bool {
+        let f = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        f >= 0 && (f & libc::O_NONBLOCK) != 0
+    }
+
+    // FIXME 0551 (A): the poll leaf must return a borrowed shared fd AS FOUND —
+    // set O_NONBLOCK for the non-blocking read, restore the captured original on
+    // the terminal. This round-trips the (A) mechanism on a pipe fd (fd 0 is the
+    // test runner's own stdin, unsafe to mutate in a parallel harness).
+    #[test]
+    fn fd_flags_capture_and_restore_round_trips() {
+        let (r, w) = pipe();
+        let orig = unsafe { libc::fcntl(r, libc::F_GETFL) };
+        assert_eq!(orig & libc::O_NONBLOCK, 0, "pipe read end starts blocking");
+        set_fd_nonblocking(r);
+        assert!(is_nonblocking(r), "set_fd_nonblocking sets O_NONBLOCK");
+        restore_fd_flags(r, orig);
+        assert!(
+            !is_nonblocking(r),
+            "restore_fd_flags returns the fd as found (O_NONBLOCK cleared)"
+        );
+        unsafe {
+            libc::close(r);
+            libc::close(w);
+        }
+    }
+
+    // FIXME 0551 (C-proximate): the read leaf must not consume past the line
+    // delimiter — it reads exactly one line and leaves the remainder in the fd for
+    // the next reader (the REPL host), so it never steals the host's next line.
+    #[test]
+    fn read_line_bytes_reads_exactly_one_line_no_overread() {
+        let (r, w) = pipe();
+        let data = b"hello\nworld\n";
+        assert_eq!(
+            unsafe { libc::write(w, data.as_ptr() as *const c_void, data.len()) },
+            data.len() as isize
+        );
+        let mut buf = Vec::new();
+        assert_eq!(read_line_bytes(r, &mut buf), ReadProgress::LineReady);
+        assert_eq!(buf, b"hello\n", "read exactly the first line, no over-read");
+        // The second line is still on the fd — NOT stolen into a private buffer.
+        let mut buf2 = Vec::new();
+        assert_eq!(read_line_bytes(r, &mut buf2), ReadProgress::LineReady);
+        assert_eq!(buf2, b"world\n");
+        unsafe {
+            libc::close(r);
+            libc::close(w);
+        }
+    }
+
+    // FIXME 0551 (B, platform half): a would-block read is distinct from EOF —
+    // the leaf parks on WouldBlock and only reports Eof when the writer closes.
+    #[test]
+    fn read_line_bytes_distinguishes_would_block_from_eof() {
+        let (r, w) = pipe();
+        set_fd_nonblocking(r);
+        let mut buf = Vec::new();
+        // No data yet, non-blocking → WouldBlock (NOT Eof).
+        assert_eq!(read_line_bytes(r, &mut buf), ReadProgress::WouldBlock);
+        assert!(buf.is_empty());
+        // Writer closes → genuine EOF.
+        unsafe { libc::close(w) };
+        assert_eq!(read_line_bytes(r, &mut buf), ReadProgress::Eof);
+        unsafe { libc::close(r) };
+    }
 }

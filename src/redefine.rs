@@ -1153,7 +1153,7 @@ fn module_grain_reload(session: &mut CompilerSession, module: &ModuleFullPath) -
     else {
         return false;
     };
-    session.reload_module(module, &path).is_ok()
+    session.reload_module(module, &path, &[]).is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -1195,6 +1195,29 @@ impl CompilerSession {
         }
     }
 
+    /// Q1 (FIXME 0549 / `design/int/session-transaction.md` §10 CS-1): capture
+    /// `module`'s live **instantiation-driver** forms — the source expression of
+    /// the synthetic `__expr` eval wrapper (a same-module REPL top-level
+    /// expression is the minter of same-module polymorphic mono variants like
+    /// `g$Int`). Read from the live REPL `Introspection` record, so the mono
+    /// re-instantiation obligation travels the compiled/in-memory channel rather
+    /// than the persisted `.cl` (which §8 pin (v) makes definitions-only). Empty
+    /// when the module has no live `__expr` (no same-module expression drove a
+    /// mint this session) — then the reload behaves as a plain from-source reload.
+    fn capture_instantiation_drivers(&self, module: &ModuleFullPath) -> Vec<Sexp> {
+        let fq = FQSymbol {
+            module: module.clone(),
+            symbol: Symbol::from(crate::worker::SYNTHETIC_EXPR_WRAPPER),
+        };
+        self.shared
+            .introspection
+            .as_ref()
+            .and_then(|m| m.get(&fq))
+            .and_then(|i| i.sexp.clone())
+            .into_iter()
+            .collect()
+    }
+
     /// The §10 T1 full cure (S103, FIXME 0507, change-sets CS-1/2/3): a
     /// surviving-trigger T1 downgrade of `target` leaves compiled callers on
     /// the previous definition (the split world the S102 interim `stale:` print
@@ -1233,13 +1256,22 @@ impl CompilerSession {
             self.push_stale_report(target, stale);
             return;
         }
+        // Q1 (FIXME 0549 / §10 CS-1 explicit-capture): capture the target
+        // module's live instantiation-driver forms (the synthetic `__expr` eval
+        // wrapper's source expression) BEFORE regen makes the backing file
+        // definitions-only. The from-source reload re-mints the same-module mono
+        // variants they instantiate through this explicit in-memory channel —
+        // never the persisted `.cl`. Q1 strictly precedes Q2 (the writer filter);
+        // without it, dropping `__expr` from the file would leave a stale mono
+        // caller uncured (the reverted Wave-4 regression).
+        let drivers = self.capture_instantiation_drivers(&target.module);
         // CS-1: persist the just-committed redefinition, then reload.
         self.regenerate_backing_file();
         let Some(path) = self.module_backing_path(&target.module) else {
             self.push_stale_report(target, stale);
             return;
         };
-        match self.reload_module(&target.module, &path) {
+        match self.reload_module(&target.module, &path, &drivers) {
             Ok(()) => {
                 self.reload_t1_dependents(&target.module);
                 // CS-2: the reload recompiled exactly the stale callers — the
@@ -1347,7 +1379,7 @@ impl CompilerSession {
         let mut changed_set: HashSet<ModuleFullPath> = HashSet::new();
         changed_set.insert(changed.clone());
         for (dep, path) in self.dependent_modules(&changed_set) {
-            let _ = self.reload_module(&dep, &path);
+            let _ = self.reload_module(&dep, &path, &[]);
         }
     }
 

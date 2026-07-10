@@ -549,3 +549,188 @@ fn flush_neg_does_not_block_on_index_work() {
          sibling `extra` MUST NOT be indexed (R18 abandon-not-drain + batch-inert)"
     );
 }
+
+// ===========================================================================
+// S106 — `/search` docstring axis (FIXME 0540) + exact-in-scope surfacing and
+// exact-above-partial ranking (FIXME 0543). All RED-first: docstring matching,
+// relevance ranking, and the marked-in-scope exact match are not yet implemented.
+// ===========================================================================
+
+/// The ordered list of result-symbol names in a `/search` capture. Each result
+/// header line has the shape `:<sig> <name>`; the name is the token after the
+/// final `") "` (schemes end in `)`; e.g. `:(Fn [..] primitives/Int) gcd2`).
+fn search_result_order(stdout: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in stdout.lines() {
+        let t = line.trim();
+        if t.starts_with(":(") || (t.starts_with(':') && t.contains(") ")) {
+            if let Some(name) = t.rsplit(") ").next() {
+                let name = name.trim();
+                if !name.is_empty() && !name.contains(' ') {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// A search session whose reachable lib module carries docstrings, for the
+/// docstring-axis and ranking tests. `foo`-style names left to the caller.
+fn search_session_docs(cmds: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/docmod.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn gcd2 \"compute the greatest common divisor of two integers\" \
+             [x y] (add-i64 x y))\n\
+             (defn divisor-count \"count something\" [x] (add-i64 x 1))\n",
+        )
+        .lib_dir("lib")
+        .stdin(cmds)
+        .output()
+}
+
+// spec: repl/spec.md §17.19.1 — the docstring axis: a query that appears in a
+// symbol's DOCSTRING (but not its name or scheme) MUST surface that symbol. RED on
+// HEAD (FIXME 0540): only name/scheme axes exist, so a docstring-only query returns
+// the no-match note.
+#[test]
+fn search_matches_docstring_only_hit() {
+    let out = search_session_docs("/search divisor\n");
+    // `gcd2`'s docstring says "greatest common divisor"; its name/scheme do not
+    // contain "divisor". The docstring axis MUST surface it.
+    out.assert_stdout_contains("gcd2");
+}
+
+// spec: repl/spec.md §17.19.1a — ranking: a name hit MUST rank above a
+// docstring-only hit. Query "divisor" matches `divisor-count` by NAME and `gcd2`
+// only by DOCSTRING; `divisor-count` MUST precede `gcd2`. RED on HEAD (FIXME
+// 0540/0543): no docstring axis and no relevance ranking (alphabetical only).
+#[test]
+fn search_docstring_hit_ranked_below_name_scheme_neg() {
+    let out = search_session_docs("/search divisor\n");
+    let order = search_result_order(&out.stdout);
+    let pos_name = order.iter().position(|n| n == "divisor-count");
+    let pos_doc = order.iter().position(|n| n == "gcd2");
+    assert!(
+        pos_name.is_some() && pos_doc.is_some(),
+        "both the name hit `divisor-count` and the docstring-only hit `gcd2` MUST \
+         appear (§17.19.1a); order={order:?}\nstdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        pos_name < pos_doc,
+        "a NAME hit (`divisor-count`) MUST rank ABOVE a docstring-only hit (`gcd2`) \
+         (§17.19.1a tier 1 vs tier 6); order={order:?}\nstdout:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.19.1 — NEG: a query matching NO name, NO scheme, and NO
+// docstring returns the self-documenting no-match note — the docstring axis does
+// not manufacture spurious hits. GREEN-expected guard.
+#[test]
+fn search_docstring_no_false_hit_neg() {
+    let out = search_session_docs("/search zzzncomatchanywhere\n");
+    let lc = out.stdout.to_lowercase();
+    assert!(
+        lc.contains("no importable") || lc.contains("no match") || lc.contains("nothing"),
+        "a query matching neither name/scheme nor docstring MUST render the no-match \
+         note (§17.19.1), never spurious hits; stdout:\n{}",
+        out.stdout
+    );
+}
+
+/// A search session with (a) an exact name `foo` reachable via the PRELUDE (so it
+/// is already in scope) and (b) partial out-of-scope matches `foobar`/`foobaz`.
+fn search_session_inscope(cmds: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .prelude("(export [primitives [*]])\n(defn foo [x] (add-i64 x 1))\n")
+        .repl()
+        .file(
+            "lib/more.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn foobar [x] (add-i64 x 1))\n\
+             (defn foobaz [x] (add-i64 x 2))\n",
+        )
+        .lib_dir("lib")
+        .stdin(cmds)
+        .output()
+}
+
+// spec: repl/spec.md §17.19 (R13) — an EXACT-name match that is already in scope
+// MUST be surfaced, MARKED "already in scope — no import needed", rather than
+// silently dropped. RED on HEAD (FIXME 0543): `is_already_in_scope` filters the
+// exact `foo` out entirely, leaving only the partial `foobar`/`foobaz`.
+#[test]
+fn search_exact_in_scope_match_surfaced_marked() {
+    let out = search_session_inscope("/search foo\n");
+    // The exact in-scope `foo` is surfaced with the marker.
+    assert!(
+        out.stdout.to_lowercase().contains("already in scope"),
+        "an EXACT in-scope match (`foo`) MUST be surfaced MARKED `already in scope` \
+         rather than dropped (§17.19 R13); stdout:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §17.19.2 — NEG: the marked exact in-scope row does NOT offer
+// an `(import …)` form (the symbol is already usable bare). RED on HEAD (the row is
+// absent today; after the fix it is shown marked, without an import form).
+#[test]
+fn search_exact_in_scope_not_offered_import_form_neg() {
+    let out = search_session_inscope("/search foo\n");
+    assert!(
+        !out.stdout.contains("(import [prelude [foo]])"),
+        "the marked exact in-scope match MUST NOT offer an `(import …)` form \
+         (§17.19.2 R13); stdout:\n{}",
+        out.stdout
+    );
+}
+
+/// A search session with an exact OUT-OF-SCOPE match `beta` and partial matches
+/// `alpha-beta` (interior substring) and `beta-gamma` (prefix). Alphabetically
+/// `alpha-beta` sorts first — so alphabetic order buries the exact match.
+fn search_session_ranking(cmds: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .repl()
+        .with_prelude(PreludeVariant::PrimitivesOnly)
+        .file(
+            "lib/g.cl",
+            "(import [primitives [add-i64]])\n\
+             (defn beta [x] (add-i64 x 1))\n\
+             (defn alpha-beta [x] (add-i64 x 2))\n\
+             (defn beta-gamma [x] (add-i64 x 3))\n",
+        )
+        .lib_dir("lib")
+        .stdin(cmds)
+        .output()
+}
+
+// spec: repl/spec.md §17.19.1a — an exact-name match MUST rank ABOVE partial
+// substring matches. `/search beta` MUST list exact `beta` before `alpha-beta`
+// (interior substring). RED on HEAD (FIXME 0543): results sort alphabetically, so
+// `alpha-beta` precedes `beta`.
+#[test]
+fn search_exact_ranked_above_partial() {
+    let out = search_session_ranking("/search beta\n");
+    let order = search_result_order(&out.stdout);
+    let pos_exact = order.iter().position(|n| n == "beta");
+    let pos_partial = order.iter().position(|n| n == "alpha-beta");
+    assert!(
+        pos_exact.is_some() && pos_partial.is_some(),
+        "both the exact match `beta` and the partial `alpha-beta` MUST appear; \
+         order={order:?}\nstdout:\n{}",
+        out.stdout
+    );
+    assert!(
+        pos_exact < pos_partial,
+        "the EXACT-name match `beta` MUST rank ABOVE the partial substring match \
+         `alpha-beta` (§17.19.1a tier 1 vs tier 4), not sort alphabetically; \
+         order={order:?}\nstdout:\n{}",
+        out.stdout
+    );
+}

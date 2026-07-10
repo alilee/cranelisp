@@ -1251,10 +1251,14 @@ pub(crate) const DEV_SESSION_ONLY_EXTERNS: &[&str] = &["discover-tests"];
 pub(crate) const SYNTHETIC_EXPR_WRAPPER: &str = "__expr";
 
 /// True when `name` is an internal compiler artifact that MUST NOT appear in a
-/// user-facing symbol listing — a `$`-mangled overload/mono/specialisation name
-/// or the synthetic top-level-expression wrapper (`SYNTHETIC_EXPR_WRAPPER`).
-/// Shared by `/list`, `/exports`, and the agent harvest so the exclusion is
-/// uniform (one predicate, not three drifting copies).
+/// user-facing symbol listing NOR in the persisted backing source — a
+/// `$`-mangled overload/mono/specialisation name (these ride the `.meta`/`.o`
+/// compiled-state channel, never source) or the synthetic top-level-expression
+/// wrapper (`SYNTHETIC_EXPR_WRAPPER`, always EXACTLY `"__expr"` — a user symbol
+/// like `__expr-helper` is a real definition and is NOT matched). Shared by
+/// `/list`, `/exports`, the agent harvest, and `save::generate_fns_and_macros`
+/// (FIXME 0549) so the exclusion is uniform (one predicate, not four drifting
+/// copies).
 pub(crate) fn is_internal_listing_name(name: &str) -> bool {
     name.contains('$') || name == SYNTHETIC_EXPR_WRAPPER
 }

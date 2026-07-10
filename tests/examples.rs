@@ -165,6 +165,12 @@ fn expected_exits() -> Vec<(&'static str, &'static [i32])> {
         // normal exit, so the harness observes 136 directly (verified
         // round-tripping through run_example at authoring, 2026-07-03).
         ("33-redefinition.cl", &[136]),
+        // 34: async-io platform-leaf demo (poll-shape reactor via the
+        // `async-demo` DLL, built suite-wide by build-link-prereqs.sh; the
+        // harness sets CRANELISP_PLATFORM_PATH=target/debug). main returns the
+        // sum of sub-test pass counts = 4 → exit 4 (verified by /examples on the
+        // direct run and reproduced under the harness, 2026-07-10).
+        ("34-async-io-leaf.cl", &[4]),
     ]
 }
 

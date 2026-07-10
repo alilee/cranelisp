@@ -47,11 +47,12 @@ pub(crate) struct ImportableIndices {
 
 #[derive(Debug, Default)]
 struct IndicesInner {
-    /// Index A — name lookup: `symbol → modules`, exact OR substring.
-    by_symbol: HashMap<Symbol, Vec<ModuleFullPath>>,
-    /// Index B — type lookup: `(scheme, symbol, module)`, exact OR partial
-    /// (structural-contains) via the `cranelisp-typecheck` predicates (§25.7).
-    by_scheme: Vec<(Type, Symbol, ModuleFullPath)>,
+    /// The importable-symbol table — one row per indexed public symbol, carrying
+    /// the three matchable axes (name / scheme / docstring, §17.19.1). Name,
+    /// scheme (exact OR structural-contains via the `cranelisp-typecheck`
+    /// predicates, §25.7), and docstring (case-insensitive substring, S106 FIXME
+    /// 0540) matching all iterate this single table.
+    entries: Vec<IndexedEntry>,
     /// Burn-down progress / skip-state guard: modules already processed (any
     /// branch). Doubles as the worklist-completeness signal.
     indexed: HashSet<ModuleFullPath>,
@@ -68,13 +69,48 @@ struct IndicesInner {
     armed: bool,
 }
 
-/// One result row of a `/search` (the four facets, spec §17.19.2).
+/// One indexed importable symbol — the three matchable axes plus its origin.
+#[derive(Debug, Clone)]
+struct IndexedEntry {
+    name: Symbol,
+    module: ModuleFullPath,
+    scheme: Type,
+    /// The symbol's docstring text (the same text `/doc` shows), for the
+    /// docstring axis (§17.19.1, S106) and the excerpt facet (§17.19.2 facet 5).
+    docstring: Option<String>,
+}
+
+/// Relevance tier of a `/search` hit — the §17.19.1a total order, strongest
+/// first. `Ord` sorts stronger (lower discriminant) before weaker so the ranking
+/// is a plain `sort_by_key`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum MatchTier {
+    /// 1 — the query equals the symbol name exactly.
+    ExactName = 1,
+    /// 2 — the query type-shape matches the scheme up to alpha-renaming.
+    ExactScheme = 2,
+    /// 3 — the symbol name starts with the query.
+    PrefixName = 3,
+    /// 4 — the query appears elsewhere inside the symbol name.
+    SubstringName = 4,
+    /// 5 — the query type-shape is a sub-structure of the scheme.
+    StructuralScheme = 5,
+    /// 6 — the query matched ONLY in the docstring (name/scheme did not match).
+    DocstringOnly = 6,
+}
+
+/// One result row of a `/search` (the facets of spec §17.19.2 + its ranking
+/// tier §17.19.1a).
 #[derive(Debug, Clone)]
 pub(crate) struct SearchHit {
     pub name: Symbol,
     pub module: ModuleFullPath,
     /// The matched signature, for the `:Type` facet.
     pub scheme: Type,
+    /// The symbol's docstring, for the excerpt facet on a docstring-only hit.
+    pub docstring: Option<String>,
+    /// Which axis/strength this hit matched on (§17.19.1a).
+    pub tier: MatchTier,
 }
 
 impl ImportableIndices {
@@ -123,46 +159,70 @@ impl ImportableIndices {
         g.indexed.insert(module.clone());
     }
 
-    /// Record the public entries of `module` into both indices and mark it
-    /// indexed. Each `(name, scheme.ty)` is one importable symbol.
-    fn record_entries(&self, module: &ModuleFullPath, entries: Vec<(Symbol, Type)>) {
+    /// Record the public entries of `module` into the index and mark it indexed.
+    /// Each `(name, scheme.ty, docstring)` is one importable symbol.
+    fn record_entries(&self, module: &ModuleFullPath, entries: Vec<(Symbol, Type, Option<String>)>) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        for (name, scheme) in entries {
-            g.by_symbol
-                .entry(name.clone())
-                .or_default()
-                .push(module.clone());
-            g.by_scheme.push((scheme, name, module.clone()));
+        for (name, scheme, docstring) in entries {
+            g.entries.push(IndexedEntry {
+                name,
+                module: module.clone(),
+                scheme,
+                docstring,
+            });
         }
         g.indexed.insert(module.clone());
     }
 
     /// `record_entries` variant taking the `.meta`-write triple
-    /// `(name, scheme.ty, entry)` — drops the entry, records `(name, ty)`.
+    /// `(name, scheme.ty, entry)` — reads the docstring off the entry's
+    /// `ModuleEntry::Def.docstring` (the docstring axis, S106) then records
+    /// `(name, ty, docstring)`.
     fn record_triples(
         &self,
         module: &ModuleFullPath,
         entries: Vec<(Symbol, Type, ModuleEntry<crate::code::Code>)>,
     ) {
-        let pairs: Vec<(Symbol, Type)> =
-            entries.into_iter().map(|(n, t, _e)| (n, t)).collect();
-        self.record_entries(module, pairs);
+        let rows: Vec<(Symbol, Type, Option<String>)> = entries
+            .into_iter()
+            .map(|(n, t, e)| {
+                let doc = match &e {
+                    ModuleEntry::Def { docstring, .. } => docstring.clone(),
+                    _ => None,
+                };
+                (n, t, doc)
+            })
+            .collect();
+        self.record_entries(module, rows);
     }
 
     /// Search by NAME — exact OR case-insensitive substring (§25.7 partial
-    /// name). Returns `(name, module)` pairs; the caller resolves the scheme
-    /// for the row from `by_scheme`.
+    /// name), each hit carrying its §17.19.1a tier (exact/prefix/substring).
     pub(crate) fn search_by_name(&self, query: &str) -> Vec<SearchHit> {
         let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let lc = query.to_lowercase();
         let mut hits = Vec::new();
-        for (scheme, name, module) in &g.by_scheme {
-            if name.as_ref().to_lowercase().contains(&lc) {
-                hits.push(SearchHit {
-                    name: name.clone(),
-                    module: module.clone(),
-                    scheme: scheme.clone(),
-                });
+        for e in &g.entries {
+            if let Some(tier) = name_match_tier(e.name.as_ref(), &lc) {
+                hits.push(e.hit(tier));
+            }
+        }
+        hits
+    }
+
+    /// Search by DOCSTRING — case-insensitive substring against the symbol's
+    /// docstring text (§17.19.1, S106 FIXME 0540). Every hit is a
+    /// `DocstringOnly` candidate; the caller merges with name hits and keeps the
+    /// stronger tier when a symbol matches on both axes (§17.19.1a tier 6).
+    pub(crate) fn search_by_docstring(&self, query: &str) -> Vec<SearchHit> {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let lc = query.to_lowercase();
+        let mut hits = Vec::new();
+        for e in &g.entries {
+            if let Some(doc) = &e.docstring
+                && doc.to_lowercase().contains(&lc)
+            {
+                hits.push(e.hit(MatchTier::DocstringOnly));
             }
         }
         hits
@@ -170,22 +230,54 @@ impl ImportableIndices {
 
     /// Search by SCHEME — exact OR partial (structural-contains), calling the
     /// `cranelisp-typecheck` predicates (§25.7). int CALLS them; does not own
-    /// them.
+    /// them. Exact matches carry `ExactScheme`, structural-contains matches
+    /// `StructuralScheme` (§17.19.1a tiers 2/5).
     pub(crate) fn search_by_scheme(&self, query: &Type) -> Vec<SearchHit> {
         let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut hits = Vec::new();
-        for (scheme, name, module) in &g.by_scheme {
-            let matched = cranelisp_typecheck::signature_matches_exact(query, scheme)
-                || cranelisp_typecheck::signature_matches_partial(query, scheme);
-            if matched {
-                hits.push(SearchHit {
-                    name: name.clone(),
-                    module: module.clone(),
-                    scheme: scheme.clone(),
-                });
+        for e in &g.entries {
+            let tier = if cranelisp_typecheck::signature_matches_exact(query, &e.scheme) {
+                Some(MatchTier::ExactScheme)
+            } else if cranelisp_typecheck::signature_matches_partial(query, &e.scheme) {
+                Some(MatchTier::StructuralScheme)
+            } else {
+                None
+            };
+            if let Some(tier) = tier {
+                hits.push(e.hit(tier));
             }
         }
         hits
+    }
+}
+
+impl IndexedEntry {
+    /// Build a `SearchHit` for this entry at the given relevance tier.
+    fn hit(&self, tier: MatchTier) -> SearchHit {
+        SearchHit {
+            name: self.name.clone(),
+            module: self.module.clone(),
+            scheme: self.scheme.clone(),
+            docstring: self.docstring.clone(),
+            tier,
+        }
+    }
+}
+
+/// The §17.19.1a name-axis tier for `name` against a lowercased `query`:
+/// exact → `ExactName`, prefix → `PrefixName`, interior substring →
+/// `SubstringName`, no match → `None`. Case-insensitive throughout (the name
+/// axis is case-insensitive, §17.19.1).
+fn name_match_tier(name: &str, query_lc: &str) -> Option<MatchTier> {
+    let nl = name.to_lowercase();
+    if nl == query_lc {
+        Some(MatchTier::ExactName)
+    } else if nl.starts_with(query_lc) {
+        Some(MatchTier::PrefixName)
+    } else if nl.contains(query_lc) {
+        Some(MatchTier::SubstringName)
+    } else {
+        None
     }
 }
 
@@ -378,7 +470,7 @@ fn try_branch_b(
     module: &ModuleFullPath,
     file: &std::path::Path,
     cache_dir: &std::path::Path,
-) -> Option<Vec<(Symbol, Type)>> {
+) -> Option<Vec<(Symbol, Type, Option<String>)>> {
     use cranelisp_backend::cache;
 
     // Source-content gate: hash the live source and consult the manifest loaded
@@ -665,11 +757,12 @@ fn public_entries_with_entry(
 }
 
 /// Read the PUBLIC, callable entries of a (deserialised or staged) symbol table
-/// into `(name, scheme.ty)` pairs — the importable symbols. Skips imports,
-/// non-public entries, and `$`-mangled internal names (mirrors `/exports`).
+/// into `(name, scheme.ty, docstring)` triples — the importable symbols. Skips
+/// imports, non-public entries, and `$`-mangled internal names (mirrors
+/// `/exports`). The docstring feeds the §17.19.1 docstring axis (S106).
 fn public_entries_from_table(
     table: &cranelisp_types::SymbolTable<impl cranelisp_types::CodeStore, impl cranelisp_types::LinkerStore>,
-) -> Vec<(Symbol, Type)> {
+) -> Vec<(Symbol, Type, Option<String>)> {
     let mut out = Vec::new();
     for (sym, entry) in table.all_symbols() {
         if matches!(entry, ModuleEntry::Import { .. }) {
@@ -683,8 +776,8 @@ fn public_entries_from_table(
             continue;
         }
         // Only function/value defs carry a usable scheme for the `:Type` facet.
-        if let ModuleEntry::Def { scheme, .. } = entry {
-            out.push((sym.clone(), scheme.ty.clone()));
+        if let ModuleEntry::Def { scheme, docstring, .. } = entry {
+            out.push((sym.clone(), scheme.ty.clone(), docstring.clone()));
         }
     }
     out
@@ -714,16 +807,26 @@ mod tests {
             Box::new(Type::Int),
         )
     }
+    /// A `(name, scheme, no-docstring)` row for the common test case.
+    fn row(name: &str, ty: Type) -> (Symbol, Type, Option<String>) {
+        (sym(name), ty, None)
+    }
+    /// A `(name, scheme, docstring)` row for the docstring-axis tests.
+    fn row_doc(name: &str, ty: Type, doc: &str) -> (Symbol, Type, Option<String>) {
+        (sym(name), ty, Some(doc.to_string()))
+    }
 
-    // spec: design/int/agent.md §25.3 — Index A name lookup, exact match.
+    // spec: design/int/agent.md §25.3 — Index A name lookup, exact match. An
+    // exact hit carries the ExactName tier (§17.19.1a tier 1).
     #[test]
     fn search_by_name_exact_hit() {
         let idx = ImportableIndices::default();
-        idx.record_entries(&m("mathx"), vec![(sym("gcd2"), int_arrow_int())]);
+        idx.record_entries(&m("mathx"), vec![row("gcd2", int_arrow_int())]);
         let hits = idx.search_by_name("gcd2");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name.as_ref(), "gcd2");
         assert_eq!(hits[0].module.as_ref(), "mathx");
+        assert_eq!(hits[0].tier, MatchTier::ExactName);
     }
 
     // spec: design/int/agent.md §25.7 — Index A partial = case-insensitive
@@ -731,31 +834,78 @@ mod tests {
     #[test]
     fn search_by_name_partial_substring_case_insensitive() {
         let idx = ImportableIndices::default();
-        idx.record_entries(&m("mathx"), vec![(sym("is-zero"), int_arrow_int())]);
+        idx.record_entries(&m("mathx"), vec![row("is-zero", int_arrow_int())]);
         assert_eq!(idx.search_by_name("ZERO").len(), 1, "case-insensitive substring");
         assert_eq!(idx.search_by_name("is-zero").len(), 1, "exact also matches");
         assert!(idx.search_by_name("nope").is_empty(), "non-substring misses");
     }
 
+    // spec: repl/spec.md §17.19.1a — the name axis assigns exact/prefix/substring
+    // tiers (1/3/4). `beta` is exact, `beta-gamma` is a prefix, `alpha-beta` is an
+    // interior substring.
+    #[test]
+    fn search_by_name_assigns_exact_prefix_substring_tiers() {
+        let idx = ImportableIndices::default();
+        idx.record_entries(
+            &m("g"),
+            vec![
+                row("beta", int_arrow_int()),
+                row("beta-gamma", int_arrow_int()),
+                row("alpha-beta", int_arrow_int()),
+            ],
+        );
+        let hits = idx.search_by_name("beta");
+        let tier_of = |n: &str| hits.iter().find(|h| h.name.as_ref() == n).map(|h| h.tier);
+        assert_eq!(tier_of("beta"), Some(MatchTier::ExactName));
+        assert_eq!(tier_of("beta-gamma"), Some(MatchTier::PrefixName));
+        assert_eq!(tier_of("alpha-beta"), Some(MatchTier::SubstringName));
+    }
+
+    // spec: repl/spec.md §17.19.1 — the docstring axis (S106 FIXME 0540): a query
+    // that appears only in the docstring surfaces the symbol at DocstringOnly tier;
+    // a symbol with no docstring cannot match; a non-substring query misses.
+    #[test]
+    fn search_by_docstring_substring_hit_and_misses() {
+        let idx = ImportableIndices::default();
+        idx.record_entries(
+            &m("docmod"),
+            vec![
+                row_doc("gcd2", int_arrow_int(), "greatest common divisor of two ints"),
+                row("no-doc", int_arrow_int()), // no docstring — cannot match
+            ],
+        );
+        let hits = idx.search_by_docstring("DIVISOR"); // case-insensitive
+        assert_eq!(hits.len(), 1, "only the docstring-bearing hit matches");
+        assert_eq!(hits[0].name.as_ref(), "gcd2");
+        assert_eq!(hits[0].tier, MatchTier::DocstringOnly);
+        assert!(
+            idx.search_by_docstring("absent-text").is_empty(),
+            "a non-substring docstring query misses"
+        );
+    }
+
     // spec: design/int/agent.md §25.7 — Index B scheme lookup via the typecheck
-    // predicates. Exact-shape query matches the same shape.
+    // predicates. Exact-shape query matches the same shape at ExactScheme tier.
     #[test]
     fn search_by_scheme_exact_shape() {
         let idx = ImportableIndices::default();
-        idx.record_entries(&m("mathx"), vec![(sym("gcd2"), int_arrow_int())]);
+        idx.record_entries(&m("mathx"), vec![row("gcd2", int_arrow_int())]);
         let hits = idx.search_by_scheme(&int_arrow_int());
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].name.as_ref(), "gcd2");
+        assert_eq!(hits[0].tier, MatchTier::ExactScheme);
     }
 
     // spec: design/int/agent.md §25.7 — Index B partial = structural-contains:
-    // a bare `Int` query matches a scheme MENTIONING Int (the §25.7 example).
+    // a bare `Int` query matches a scheme MENTIONING Int (the §25.7 example) at
+    // the StructuralScheme tier (§17.19.1a tier 5).
     #[test]
     fn search_by_scheme_partial_contains() {
         let idx = ImportableIndices::default();
-        idx.record_entries(&m("mathx"), vec![(sym("gcd2"), int_arrow_int())]);
+        idx.record_entries(&m("mathx"), vec![row("gcd2", int_arrow_int())]);
         let hits = idx.search_by_scheme(&Type::Int);
         assert_eq!(hits.len(), 1, "Int is a sub-structure of (Fn [Int Int] Int)");
+        assert_eq!(hits[0].tier, MatchTier::StructuralScheme);
     }
 
     // spec: design/int/agent.md §25.3 — `record_entries` marks the module
@@ -767,7 +917,7 @@ mod tests {
         idx.arm(vec![m("a"), m("b"), m("c")]);
         assert_eq!(idx.pending_count(), 3, "3 enumerated, 0 indexed");
         idx.mark_skipped(&m("a")); // branch-a SKIP
-        idx.record_entries(&m("b"), vec![(sym("f"), int_arrow_int())]); // branch b/c
+        idx.record_entries(&m("b"), vec![row("f", int_arrow_int())]); // branch b/c
         assert_eq!(idx.pending_count(), 1, "2 of 3 processed");
     }
 
@@ -789,7 +939,7 @@ mod tests {
     #[test]
     fn no_match_returns_empty() {
         let idx = ImportableIndices::default();
-        idx.record_entries(&m("mathx"), vec![(sym("gcd2"), int_arrow_int())]);
+        idx.record_entries(&m("mathx"), vec![row("gcd2", int_arrow_int())]);
         assert!(idx.search_by_name("absent").is_empty());
     }
 

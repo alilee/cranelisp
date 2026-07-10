@@ -14,8 +14,10 @@
 // path). With the feature compiled in but no provider configured/reachable,
 // the agent stays dormant and `/ask` renders a notice. The `--agent` /
 // `--no-agent` flags are the runtime half of the opt-in (off by default,
-// `--no-agent` wins on conflict) and are accepted no-ops in a feature-off
-// build. See `repl/spec.md §17.10` for the full normative enable+config scheme.
+// `--no-agent` wins on conflict). On a binary built WITHOUT the agent feature
+// `--agent` and `--yes`/`-y` are a HARD ERROR (usage hint, exit 1 — S106 user
+// ruling, FIXME 0539); `--no-agent` stays an accepted no-op. See
+// `repl/spec.md §17.10`/§0.6 for the full normative enable+config scheme.
 
 // Sprint 99 Wave 0.2 — thread-caching global allocator (parallelism-perf
 // measurement pre-wave). Feature-gated + OFF by default: with the feature
@@ -44,6 +46,12 @@ use cranelisp_types::{ErrorLocation, CodegenBehaviour, CranelispError, Span};
 use cranelisp::observability;
 use cranelisp::session_v4::{CommandResult, CompilerSession, RunMode, SessionSettings};
 use cranelisp::{got_trace, io_trace};
+
+// Sprint 106 (FIXMEs 0544 + 0551): the REPL input abstraction — TTY (rustyline
+// line editor + per-project history) vs non-TTY (raw fd-0 line reads, byte-
+// identical output). See `src/repl_input.rs`.
+mod repl_input;
+use repl_input::{ReadOutcome, ReplInput};
 
 // ---------------------------------------------------------------------------
 // Action enum (pipeline-v4.md §2.1)
@@ -127,7 +135,7 @@ fn main() {
     let _got_flush = got_trace::GotTraceFlushGuard::new();
     let _sched_flush = observability::SchedulerTraceFlushGuard::new();
 
-    let (action, project_root, entry_module, settings, agent_enabled, auto_accept, is_rule3) =
+    let (action, project_root, entry_module, settings, agent_enabled, auto_accept, is_rule3, output_override) =
         parse_args();
     cranelisp::style::init_color(settings.no_color);
 
@@ -139,6 +147,7 @@ fn main() {
         agent_enabled,
         auto_accept,
         is_rule3,
+        output_override.as_deref(),
     ) {
         let entry_file = project_root.join(format!("{entry_module}.cl"));
         eprintln!("{}", format_error(&e, &entry_file));
@@ -228,6 +237,7 @@ fn flush_traces() {
 /// One CompilerSession, one code path. Workers are persistent for the
 /// session lifetime. Run/Link/REPL differ only in what happens after
 /// compilation.
+#[allow(clippy::too_many_arguments)]
 fn run(
     action: Action,
     project_root: &Path,
@@ -236,8 +246,9 @@ fn run(
     agent_enabled: bool,
     auto_accept: bool,
     is_rule3: bool,
+    output_override: Option<&Path>,
 ) -> Result<(), CranelispError> {
-    use std::io::{self, BufRead, Write};
+    use std::io::{self, Write};
 
     // `agent_enabled` / `auto_accept` are consumed by the REPL arm's
     // `s.enable_agent` only under `#[cfg(feature="agent")]`; feature-off they are
@@ -290,11 +301,10 @@ fn run(
         Action::Link => {
             startup?;
             s.wait_object_complete()?;
-            s.link_by_name(entry_module_name)?;
+            s.link_by_name(entry_module_name, output_override)?;
         }
         // §6: REPL mode.
         Action::Repl => {
-            let stdin = io::stdin();
             let stdout = io::stdout();
             let mut stdout = stdout.lock();
 
@@ -364,21 +374,35 @@ fn run(
 
             s.print_banner(&mut stdout);
 
+            // Sprint 106 (FIXMEs 0544 + 0551): the single input abstraction. On an
+            // interactive TTY it is a rustyline editor (history + inline editing,
+            // per-project `.cranelisp_history`); on piped/redirected stdin it reads
+            // fd 0 line-by-line WITHOUT read-ahead (byte-identical output). The
+            // same abstraction backs the agent consent-line read (§15.2), so there
+            // is never a second reader desyncing line discipline against it.
+            let mut input = ReplInput::new(project_root, &mut stdout);
+
             let mut buffer = String::new();
             let mut compile_ms: u64 = 0;
             let mut eval_ms: u64 = 0;
-            s.write_prompt(&mut stdout, compile_ms, eval_ms);
 
-            // Hold the stdin line iterator explicitly (not a `for`) so the agent
-            // confirm-gate (§15.2 step 2) can pull the NEXT line of the SAME stdin
-            // as its `y`/`n` consent answer — the synchronous prompt-read at the
-            // REPL cadence. Feature-off this is byte-identical to a plain
-            // line-loop (no agent path reads it).
-            let mut lines = stdin.lock().lines();
-            while let Some(line) = lines.next() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(_) => break,
+            loop {
+                // Fresh-form prompt when the buffer is empty, continuation prompt
+                // while an unbalanced form is being accumulated. On the non-TTY
+                // branch `read_line` writes this to stdout verbatim (byte-identical
+                // to the pre-S106 `write_prompt`); on the TTY branch the editor
+                // owns the prompt via `readline`.
+                let prompt = if buffer.is_empty() {
+                    s.prompt_string(compile_ms, eval_ms)
+                } else {
+                    s.continuation_prompt_string(compile_ms, eval_ms)
+                };
+                let line = match input.read_line(&prompt, &mut stdout) {
+                    ReadOutcome::Line(l) => l,
+                    // Genuine EOF (Ctrl-D / closed stdin). FIXME 0551 (B): a
+                    // transient `WouldBlock`/`EINTR` is retried inside `read_line`,
+                    // NOT surfaced here as EOF — only a true terminal breaks.
+                    ReadOutcome::Eof => break,
                 };
 
                 buffer.push_str(&line);
@@ -388,11 +412,11 @@ fn run(
                 // (e.g., `/sh echo '(broken' > file.cl`).
                 if !buffer.trim_start().starts_with('/') && !s.parens_balanced(&buffer) {
                     buffer.push('\n');
-                    s.write_continuation_prompt(&mut stdout, compile_ms, eval_ms);
+                    // Loop back: the top prints the continuation prompt.
                     continue;
                 }
 
-                let input = buffer.trim().to_string();
+                let input_str = buffer.trim().to_string();
                 buffer.clear();
 
                 // §5.3 dispatch classifier (design/int/agent.md §2.4,
@@ -402,14 +426,15 @@ fn run(
                 // input that today produces a parse-error diagnostic anyway.
                 //
                 // §15.2 — `/ask` is ALSO intercepted here (feature-on) so the
-                // Build write gate has the consent line-reader (the next stdin
-                // line). The reader is a `FnConsent` closure over `&mut lines`,
-                // alive only for the agent call, dropped before the loop's next
-                // `lines.next()`. Feature-off `/ask` still flows through
+                // Build write gate has the consent line-reader (the next input
+                // line). The reader is a `FnConsent` closure over `&mut input` —
+                // the SAME abstraction the loop reads from (§10.8: no parallel
+                // reader), alive only for the agent call, dropped before the next
+                // top-of-loop read. Feature-off `/ask` still flows through
                 // `process_commands` (the dispatch body prints "not built in").
                 #[cfg(feature = "agent")]
                 {
-                    let ask_text: Option<String> = input
+                    let ask_text: Option<String> = input_str
                         .strip_prefix("/ask")
                         .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
                         .map(|r| r.trim().to_string());
@@ -422,7 +447,7 @@ fn run(
                     // The dormant short-circuit inside `agent_turn` stays the guard
                     // for the explicit `/ask` door ONLY (`ask_text` is unconditional).
                     let agent_text: Option<String> = if s.agent_is_active() {
-                        match s.classify_for_agent(&input) {
+                        match s.classify_for_agent(&input_str) {
                             cranelisp::agent::Classify::Agent(text) => Some(text),
                             _ => None,
                         }
@@ -430,21 +455,20 @@ fn run(
                         None
                     };
                     if let Some(text) = ask_text.or(agent_text) {
-                        let mut consent = cranelisp::agent::types::FnConsent(|| {
-                            lines.next().and_then(|r| r.ok())
-                        });
+                        let mut consent =
+                            cranelisp::agent::types::FnConsent(|| input.read_consent_line());
                         s.agent_turn(&text, &mut stdout, &mut consent);
                         drop(consent);
                         s.sync_watcher();
                         for msg in s.poll_and_reload() {
                             let _ = writeln!(stdout, "{msg}");
                         }
-                        s.write_prompt(&mut stdout, compile_ms, eval_ms);
+                        // Loop back: the top prints the next prompt.
                         continue;
                     }
                 }
 
-                match s.process_commands(&input, &mut stdout) {
+                match s.process_commands(&input_str, &mut stdout) {
                     CommandResult::Nothing => {}
                     CommandResult::Quit => break,
                     CommandResult::Final(text) => {
@@ -497,8 +521,12 @@ fn run(
                     let _ = writeln!(stdout, "{msg}");
                 }
 
-                s.write_prompt(&mut stdout, compile_ms, eval_ms);
+                // Loop back: the top prints the next prompt.
             }
+
+            // §10.8: persist the per-project history on session end (TTY only;
+            // covers both `/quit` and Ctrl-D). Non-fatal on failure.
+            input.save_history(&mut stdout);
 
             // EOF reached. If a form was still being accumulated (unbalanced
             // parens awaiting a continuation line that never came), it is an
@@ -549,25 +577,49 @@ fn run(
 // Argument parsing
 // ---------------------------------------------------------------------------
 
-fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool) {
+#[allow(clippy::type_complexity)]
+fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool, Option<PathBuf>) {
     let args: Vec<String> = std::env::args().collect();
+
+    // The usage line. The agent-related advertisement is cfg-split so usage never
+    // names a flag that immediately errors (MINOR-#3 consistency): an
+    // agent-capable build advertises `--agent`/`--yes` (accepted); a feature-off
+    // build advertises ONLY `--no-agent` (the sole still-valid agent flag —
+    // `--agent`/`--yes` hard-error there, FIXME 0539).
+    #[cfg(feature = "agent")]
+    const USAGE: &str = "usage: cranelisp [target] [--run | --link] [-o <path>] [--no-color] \
+                         [--no-cache] [--priority-workers N] [--nice-workers N] \
+                         [--agent | --no-agent] [--yes]";
+    #[cfg(not(feature = "agent"))]
+    const USAGE: &str = "usage: cranelisp [target] [--run | --link] [-o <path>] [--no-color] \
+                         [--no-cache] [--priority-workers N] [--nice-workers N] \
+                         [--no-agent]";
+
     let mut no_color = false;
     let mut no_cache = false;
     let mut priority_workers: Option<usize> = None;
     let mut nice_workers: Option<usize> = None;
     let mut action_run = false;
     let mut action_link = false;
-    // §0.6.1 agent toggle. `Some(true)` = `--agent`, `Some(false)` = `--no-agent`,
-    // `None` = default (off). When both flags are given, `--no-agent` wins (the
-    // safe default — off), enforced after the parse loop. In Wave 2 this is an
-    // accepted no-op in both builds; Wave 3 (agent feature) consumes it.
+    // §0.2.1.1 `-o <path>` output override (S106, FIXME 0550). Sets the `--link`
+    // output path explicitly, overriding the beside-the-source derivation. Only
+    // meaningful with `--link` (enforced after the parse loop).
+    let mut output_override: Option<PathBuf> = None;
+    // §0.6.1 agent toggle. `agent_on` = `--agent`, `agent_off` = `--no-agent`.
+    // When both flags are given, `--no-agent` wins (the safe default — off),
+    // enforced after the parse loop. On an agent-capable build `--agent` sets
+    // `agent_on`; on a feature-off build it hard-errors in the parse loop (so
+    // `agent_on` is never set — hence `mut` is agent-build-only, FIXME 0539).
+    #[cfg_attr(not(feature = "agent"), allow(unused_mut))]
     let mut agent_on = false;
     let mut agent_off = false;
-    // §0.6.2 `--yes` / `-y` autonomous-submit toggle (S89 §20.1). Accepted in
-    // BOTH builds: a no-op on a default / non-agent build (sibling to `--agent`),
-    // and threaded onto `AgentState.auto_accept` when the agent is active. The
-    // `-y` SHORT form must be recognised as a FLAG here, NOT swallowed as the
-    // REPL target (the `-y` false-green trap — it does not start with `--`).
+    // §0.6.2 `--yes` / `-y` autonomous-submit toggle (S89 §20.1). On an
+    // agent-capable build it is threaded onto `AgentState.auto_accept` when the
+    // agent is active; on a feature-off build `--yes`/`-y` hard-error in the
+    // parse loop (S106 ruling, FIXME 0539) — so `yes` is never set there (hence
+    // the agent-build-only `mut`). The `-y` SHORT form must be recognised as a
+    // FLAG, NOT swallowed as the REPL target (the `-y` false-green trap).
+    #[cfg_attr(not(feature = "agent"), allow(unused_mut))]
     let mut yes = false;
     let mut target: Option<String> = None;
     let mut i = 1;
@@ -614,47 +666,76 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool) 
                 action_link = true;
                 i += 1;
             }
-            // §0.6.1: `--agent` / `--no-agent` are the runtime half of the
-            // agent's opt-in-twice discipline. REPL-only. A binary built WITHOUT
-            // the agent feature MUST accept them as recognised flags (so a script
-            // written for an agent-enabled build does not break) and treat them as
-            // no-ops — never "unknown flag". Off by default. The agent feature
-            // build (Wave 3) wires these to the runtime agent toggle; in Wave 2
-            // they are accepted no-ops in BOTH builds.
+            // §0.2.1.1 `-o <path>` / `--output <path>` — the `--link` output-path
+            // override (S106, FIXME 0550). Takes the next argument as the path.
+            "-o" | "--output" => {
+                if i + 1 < args.len() {
+                    output_override = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                } else {
+                    eprintln!("error: -o requires a path");
+                    eprintln!("{USAGE}");
+                    process::exit(1);
+                }
+            }
+            // §0.6.1 (S106 user ruling 2026-07-09, FIXME 0539): `--agent` names
+            // the runtime half of the agent's opt-in-twice discipline. REPL-only.
+            // On an agent-CAPABLE build it is accepted (wired to the runtime
+            // toggle). On a binary built WITHOUT the agent feature it is a HARD
+            // ERROR (usage hint to stderr, exit 1 — the `--no-cache`+`--link`
+            // style), NOT an accepted no-op and NOT `unknown flag`: the flag names
+            // a capability the binary does not have. `--no-agent` is UNAFFECTED
+            // (asking for the agent OFF is trivially satisfied) — accepted no-op
+            // in both builds.
+            #[cfg(feature = "agent")]
             "--agent" => {
                 agent_on = true;
                 i += 1;
+            }
+            #[cfg(not(feature = "agent"))]
+            "--agent" => {
+                eprintln!(
+                    "error: --agent is not supported: this binary was built \
+                     without the agent feature"
+                );
+                eprintln!("{USAGE}");
+                process::exit(1);
             }
             "--no-agent" => {
                 agent_off = true;
                 i += 1;
             }
-            // §0.6.2 `--yes` (long) / `-y` (short) — accepted-no-op discipline
-            // identical to `--agent` (§20.1). The `-y` arm MUST live here, in the
-            // recognised-flag set, NOT in the `_` target-capture arm below — else
-            // `-y` (which does not start with `--`) is swallowed as the REPL
-            // target and the session runs in a `-y>` context (the false-green
-            // trap the B.5 short-flag test guards).
+            // §0.6.2 `--yes` (long) / `-y` (short) — the autonomous-submit toggle
+            // (§20.1). On an agent-capable build it is accepted (threaded onto
+            // `AgentState.auto_accept`). On a feature-off build it is a HARD ERROR
+            // (S106 ruling, FIXME 0539) — there is no agent write-consent gate for
+            // it to auto-answer; NOT `unknown flag`. The `-y` arm MUST live here,
+            // in the recognised-flag set, NOT in the `_` target-capture arm below
+            // — else `-y` (which does not start with `--`) is swallowed as the
+            // REPL target (the false-green trap the B.5 short-flag test guards).
+            #[cfg(feature = "agent")]
             "--yes" | "-y" => {
                 yes = true;
                 i += 1;
             }
+            #[cfg(not(feature = "agent"))]
+            "--yes" | "-y" => {
+                eprintln!(
+                    "error: --yes is not supported: this binary was built without \
+                     the agent feature (no agent write-consent gate to auto-answer)"
+                );
+                eprintln!("{USAGE}");
+                process::exit(1);
+            }
             arg if arg.starts_with("--") => {
                 eprintln!("error: unknown flag: {arg}");
-                eprintln!(
-                    "usage: cranelisp [target] [--run | --link] [--no-color] \
-                     [--no-cache] [--priority-workers N] [--nice-workers N] \
-                     [--agent | --no-agent] [--yes]"
-                );
+                eprintln!("{USAGE}");
                 process::exit(1);
             }
             _ => {
                 if target.is_some() {
                     eprintln!("error: unexpected argument: {}", args[i]);
-                    eprintln!(
-                        "usage: cranelisp [target] [--run | --link] [--no-color] \
-                         [--no-cache] [--priority-workers N] [--nice-workers N]"
-                    );
+                    eprintln!("{USAGE}");
                     process::exit(1);
                 }
                 target = Some(args[i].clone());
@@ -670,6 +751,14 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool) 
 
     if no_cache && action_link {
         eprintln!("error: --no-cache is not supported with --link");
+        process::exit(1);
+    }
+
+    // §0.2.1.1: `-o <path>` names the `--link` artifact; it is meaningless in
+    // `--run` / REPL mode (no output artifact is produced).
+    if output_override.is_some() && !action_link {
+        eprintln!("error: -o <path> is only supported with --link");
+        eprintln!("{USAGE}");
         process::exit(1);
     }
 
@@ -712,7 +801,7 @@ fn parse_args() -> (Action, PathBuf, String, SessionSettings, bool, bool, bool) 
         run_mode,
     };
 
-    (action, project_root, entry_module, settings, agent_enabled, auto_accept, is_rule3)
+    (action, project_root, entry_module, settings, agent_enabled, auto_accept, is_rule3, output_override)
 }
 
 /// Resolve a positional target to (project_root, entry_module) per spec §0.5.1.

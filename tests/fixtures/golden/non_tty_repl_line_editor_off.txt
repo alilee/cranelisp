@@ -1,0 +1,7 @@
+cranelisp REPL — type /help for help
+\d+\+\d+ms; \w+> :primitives/Int 3
+\d+\+\d+ms; \w+> :(Fn [a] a) user/id ; defn
+\d+\+\d+ms; \w+> Fns:
+  id
+\d+\+\d+ms; \w+> :(Fn [a] a) user/id ; defn
+\d+\+\d+ms; \w+> 

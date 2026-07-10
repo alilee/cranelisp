@@ -956,7 +956,7 @@ impl CompilerSession {
             let file_name = file_path.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or_else(|| module_path.as_ref());
-            match self.reload_module(&module_path, &file_path) {
+            match self.reload_module(&module_path, &file_path, &[]) {
                 Ok(()) => {
                     // `reload_module` itself clears `error_modules` +
                     // `failed_forms` on success (S102 W5R B-1).
@@ -1117,10 +1117,26 @@ impl CompilerSession {
     /// re-typecheck + re-codegen. Sprint 57 Wave 4 G11 per
     /// `persistent-workers.md` §4.6 — reload via scheduler falls out of
     /// persistent workers (same path as `register_module_with_source`).
+    /// Reload a module from its backing `.cl`, plus a set of in-memory
+    /// **instantiation-driver** forms appended to the parsed source before
+    /// re-registration (`extra_forms` empty ⇒ a plain from-source reload).
+    ///
+    /// The from-source reload re-typechecks + re-codegens a module from its
+    /// backing `.cl`, which is **definitions-only** (FIXME 0549 / §8 pin (v) —
+    /// the synthetic `__expr` eval wrapper is no longer persisted). A same-module
+    /// polymorphic mono variant (`g$Int`) originally minted by a REPL top-level
+    /// expression therefore has no minter on a from-source reload. The T1 CS-1
+    /// full-cure driver (`redefine.rs::drive_t1_full_cure`) captures those driver
+    /// expressions from the live table BEFORE regen and passes them here so the
+    /// workers re-mint exactly those mono variants against the reloaded
+    /// definitions — the mono-instantiation obligation travelling the explicit
+    /// in-memory channel, never the persisted `.cl` source channel
+    /// (`design/int/session-transaction.md` §10 CS-1; Q1 strictly precedes Q2).
     pub(crate) fn reload_module(
         &mut self,
         module_path: &ModuleFullPath,
         file_path: &Path,
+        extra_forms: &[Sexp],
     ) -> Result<(), CranelispError> {
         crate::observability::record_module_event(
             crate::observability::SchedulerTraceTag::RecompileModule,
@@ -1175,8 +1191,13 @@ impl CompilerSession {
         // Parse the new source; the sexps ride the re-register work packet
         // (S78 — no shared `module_sexps` map). Persistent workers parked on
         // the priority-work condvar wake and process it (G11 per §4.6).
-        let sexps: std::sync::Arc<[Sexp]> =
-            std::sync::Arc::from(cranelisp_frontend::parse(&source)?);
+        // Q1 (FIXME 0549): the captured instantiation-driver forms are appended
+        // in-memory so the reload re-mints the same-module mono variants they
+        // instantiate — without those transient expressions entering the
+        // definitions-only backing file.
+        let mut parsed = cranelisp_frontend::parse(&source)?;
+        parsed.extend_from_slice(extra_forms);
+        let sexps: std::sync::Arc<[Sexp]> = std::sync::Arc::from(parsed);
 
         // Module-preamble wiring (§8.16.5; design/frontend/module-preamble.md §5):
         // a reload re-reads fresh source, so re-capture the leading `;;` block
@@ -1859,6 +1880,7 @@ impl CompilerSession {
     pub fn link_by_name(
         &mut self,
         module_name: &str,
+        output_override: Option<&Path>,
     ) -> Result<(), CranelispError> {
         let module = ModuleFullPath::from(module_name);
 
@@ -1981,9 +2003,21 @@ impl CompilerSession {
         // Find the runtime bundle library.
         let bundle_lib = crate::exe::find_bundle_lib()?;
 
-        // Output path: entry module stem in CWD (not project root).
-        // E.g., `cranelisp --link examples/hello.cl` produces `./hello`.
-        let output_path = PathBuf::from(module_name.replace(".cl", ""));
+        // Output path (repl/spec.md §0.2.1.1, FIXME 0550): the artifact is named
+        // after the entry (root) module's source-file STEM and written BESIDE
+        // that source — in the project root, the directory holding
+        // `{module}.cl` — NOT the entry stem in the CWD. `-o <path>` overrides
+        // verbatim. E.g. `--link examples/hello.cl` → `examples/hello`;
+        // `--link myproject` (entry `user`) → `myproject/user`. This resolves
+        // the original CWD name-collision (writing `./user` from the repo root
+        // clashed with the `user/` docs directory).
+        let output_path =
+            derive_link_output_path(&self.shared.project_root, module_name, output_override);
+
+        // Collision floor (§0.2.1.1 MUST): a directory at the resolved output
+        // path is a clear cranelisp diagnostic naming the path, never a raw
+        // `ld`/`cc` "cannot open output file … Is a directory" error.
+        reject_output_path_is_directory(&output_path)?;
 
         // Compose the final .o list: nice-worker module .o files +
         // the `_main` alias .o. The alias is appended last so its Export
@@ -2228,6 +2262,144 @@ pub(crate) fn populate_ring0_got_slots(
             continue;
         };
         table.got.store_slot(dst_slot, ptr);
+    }
+}
+
+/// Derive the `--link` output-executable path per `repl/spec.md` §0.2.1.1
+/// (FIXME 0550).
+///
+/// The artifact is named after the entry (root) module's source-file **stem**
+/// and written **beside that source** — i.e. into the project root, which is the
+/// directory holding `{entry_module}.cl` (§0.5.1). One rule covers both cases:
+///
+/// - file target `examples/hello.cl` (project root `examples/`, entry `hello`)
+///   → `examples/hello`;
+/// - directory-project `myproject` (project root `myproject/`, entry `user`)
+///   → `myproject/user` — **not** `myproject/myproject`, **not** `./user`.
+///
+/// An explicit `-o <path>` override wins verbatim; a relative override is left
+/// relative, so the linker resolves it against the process cwd. On platforms
+/// with an executable suffix (Windows) the suffix is appended to the *derived*
+/// name (`myproject/user.exe`); an `-o` override is used exactly as given.
+pub(crate) fn derive_link_output_path(
+    project_root: &Path,
+    entry_module_name: &str,
+    output_override: Option<&Path>,
+) -> PathBuf {
+    if let Some(o) = output_override {
+        return o.to_path_buf();
+    }
+    // Defensive `.cl` strip — the resolved entry module name is already
+    // extension-free (§0.5.1), but never let a stray `.cl` leak into the name.
+    let stem = entry_module_name
+        .strip_suffix(".cl")
+        .unwrap_or(entry_module_name);
+    let mut name = stem.to_string();
+    name.push_str(std::env::consts::EXE_SUFFIX);
+    project_root.join(name)
+}
+
+/// Collision-diagnostic floor (`repl/spec.md` §0.2.1.1, MUST): if the resolved
+/// `--link` output path is an existing **directory**, reject with a clear
+/// cranelisp diagnostic naming the path, rather than surfacing a raw `ld`/`cc`
+/// "cannot open output file … Is a directory" error (FIXME 0550).
+fn reject_output_path_is_directory(output_path: &Path) -> Result<(), CranelispError> {
+    if output_path.is_dir() {
+        return Err(CranelispError::ModuleError {
+            message: format!(
+                "output path '{}' is a directory — use -o <path> to choose a \
+                 different output",
+                output_path.display()
+            ),
+            location: ErrorLocation::from_span_file(Span::SYNTHETIC, None),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod link_output_path_tests {
+    use super::*;
+
+    // spec: repl/spec.md §0.2.1.1 — file target: the artifact is the entry
+    // module stem beside its source (project root), not the stem in the CWD.
+    // `examples/hello.cl` (project root `examples/`, entry `hello`) → `examples/hello`.
+    #[test]
+    fn file_target_output_is_entry_stem_beside_source() {
+        let out =
+            derive_link_output_path(Path::new("/work/examples"), "hello", None);
+        assert_eq!(out, PathBuf::from(format!("/work/examples/hello{}", std::env::consts::EXE_SUFFIX)));
+    }
+
+    // spec: repl/spec.md §0.2.1.1 — directory-project target: entry defaults to
+    // `user`, source at `myproject/user.cl`, so the artifact is `myproject/user`
+    // (beside the source), NOT `myproject/myproject` and NOT `./user`.
+    #[test]
+    fn directory_project_output_is_user_stem_in_project_root() {
+        let out =
+            derive_link_output_path(Path::new("/work/myproject"), "user", None);
+        assert_eq!(out, PathBuf::from(format!("/work/myproject/user{}", std::env::consts::EXE_SUFFIX)));
+        // Negative: it is NOT the project-directory name, NOT the CWD stem.
+        assert_ne!(out, PathBuf::from("/work/myproject/myproject"));
+        assert_ne!(out, PathBuf::from("user"));
+    }
+
+    // spec: repl/spec.md §0.2.1.1 — `-o <path>` override wins verbatim; a
+    // relative override is left relative (linker resolves it against cwd).
+    #[test]
+    fn output_override_wins_verbatim() {
+        let abs = derive_link_output_path(
+            Path::new("/work/myproject"),
+            "user",
+            Some(Path::new("/tmp/out/bin")),
+        );
+        assert_eq!(abs, PathBuf::from("/tmp/out/bin"));
+        let rel = derive_link_output_path(
+            Path::new("/work/myproject"),
+            "user",
+            Some(Path::new("build/app")),
+        );
+        assert_eq!(rel, PathBuf::from("build/app"));
+    }
+
+    // spec: repl/spec.md §0.2.1.1 — defensive `.cl` strip: a stray extension on
+    // the entry name never leaks into the artifact name.
+    #[test]
+    fn entry_name_with_cl_extension_is_stripped() {
+        let out = derive_link_output_path(Path::new("/work"), "hello.cl", None);
+        assert_eq!(out, PathBuf::from(format!("/work/hello{}", std::env::consts::EXE_SUFFIX)));
+    }
+
+    // spec: repl/spec.md §0.2.1.1 — collision floor: an existing directory at
+    // the output path yields a clear cranelisp diagnostic naming it as a
+    // directory, exit-worthy, NOT a raw `ld`/`cc` error.
+    #[test]
+    fn existing_directory_output_path_is_rejected_with_diagnostic() {
+        let td = tempfile::tempdir().unwrap();
+        let dir_path = td.path().join("user");
+        std::fs::create_dir(&dir_path).unwrap();
+        let err = reject_output_path_is_directory(&dir_path)
+            .expect_err("a directory output path must be rejected");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.to_lowercase().contains("directory"),
+            "diagnostic must name that the path is a directory: {msg}"
+        );
+        // Negative: no raw linker error phrasing leaks from the cranelisp floor.
+        assert!(!msg.contains("cannot open output file"), "must not be a raw ld error: {msg}");
+    }
+
+    // spec: repl/spec.md §0.2.1.1 — a non-directory (or absent) output path is
+    // accepted by the collision floor.
+    #[test]
+    fn non_directory_output_path_is_accepted() {
+        let td = tempfile::tempdir().unwrap();
+        // Absent path: fine.
+        assert!(reject_output_path_is_directory(&td.path().join("user")).is_ok());
+        // A regular file at the path: fine (it will be overwritten by the linker).
+        let file_path = td.path().join("prog");
+        std::fs::write(&file_path, b"old").unwrap();
+        assert!(reject_output_path_is_directory(&file_path).is_ok());
     }
 }
 

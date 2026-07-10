@@ -3498,3 +3498,283 @@ fn ls1_info_of_defn_shows_source_invariant_to_session_history() {
 fn ls1_expression_result_invariant_to_session_history() {
     assert_preamble_invariant("(add-i64 2 3)\n", ":primitives/Int 5");
 }
+
+// =============================================================================
+// S106 — L-S1 preamble-grid GENERALIZATION beyond the 6a-burned cells
+// (FIXME 0499). The S103 grid pinned `/sig`/`/info`/bare-lookup/expression; the
+// S106 generalization extends the invariant to the surfaces 6a did NOT burn:
+// `/source` exact source, and the `/list` enumeration-layout body. GREEN-expected
+// robustness guards (a RED is a real session-history-sensitivity defect).
+// =============================================================================
+
+/// Run `body` under each L-S1 preamble and assert the Fns-category layout body is
+/// IDENTICAL regardless of session history (the enumeration surface generalization).
+fn assert_list_layout_invariant(body: &str) {
+    let mut baseline: Option<Vec<String>> = None;
+    for (label, pre) in LS1_PREAMBLES {
+        let cap = repl_prims(&format!("{pre}{body}"));
+        let fns = category_body_lines(&cap.stdout, "Fns");
+        match &baseline {
+            None => baseline = Some(fns),
+            Some(b) => assert_eq!(
+                &fns, b,
+                "L-S1 preamble `{label}`: the /list Fns layout MUST be invariant to \
+                 session history; baseline={b:?} got={fns:?}\nstdout:\n{}",
+                cap.stdout
+            ),
+        }
+    }
+}
+
+// spec: repl/spec.md §18.4 — `/source` on a defn shows its definition source
+// regardless of session history (the 0486 corruption class, generalized to the
+// `/source` surface 6a did NOT burn).
+#[test]
+fn ls1_source_of_defn_invariant_to_session_history() {
+    assert_preamble_invariant(
+        "(defn baz [:Int z] (add-i64 z 3))\n/source baz\n",
+        "(defn baz",
+    );
+}
+
+// spec: repl/spec.md §3.3 — the `/list` enumeration layout is byte-identical under
+// every preamble (generalizes L-S1 to the enumeration/layout surface — couples
+// with the 0545/0546 layout goldens).
+#[test]
+fn ls1_list_layout_invariant_to_session_history() {
+    assert_list_layout_invariant(
+        "(defn abs [] 1)\n(defn add [] 1)\n(defn ceil [] 1)\n\
+         (defn concat [] 1)\n(defn double [] 1)\n(defn drop [] 1)\n/list\n",
+    );
+}
+
+// spec: repl/spec.md §3.3 — a bare user-type lookup renders its qualified name
+// identically under every preamble (bare-lookup type-display generalization).
+#[test]
+fn ls1_bare_type_display_invariant_to_session_history() {
+    assert_preamble_invariant(
+        "(deftype Shade (Dark) (Light))\nShade\n",
+        "user/Shade",
+    );
+}
+
+// =============================================================================
+// S106 — FIXME 0542: bare trait lookup MUST surface the `; impl:` section
+// =============================================================================
+
+// spec: repl/spec.md §4.1.4 — a bare user-module trait lookup MUST surface the
+// `; impl:` (implementing-types) section per §4.1.4, even when the trait has no
+// impls yet. RED on HEAD (FIXME 0542): the bare-lookup path emits `; defn:` but
+// omits `; impl:` entirely when there are no impls.
+#[test]
+fn bare_user_trait_lookup_shows_impl_section() {
+    let out = repl_prims("(deftrait (Display a) (show [a] String))\nDisplay\n");
+    assert!(
+        out.stdout.contains("; deftrait"),
+        "bare trait 'Display' MUST surface '; deftrait'; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; defn:") && out.stdout.contains("show"),
+        "bare trait 'Display' MUST surface the '; defn:' method section; got:\n{}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("; impl:"),
+        "a bare user-module trait lookup MUST surface the '; impl:' section per \
+         §4.1.4 (FIXME 0542), even when the trait has no impls yet; got:\n{}",
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §4.1.4 — [Tested+Neg] with impls: the `; impl:` section lists
+// the implementing type and does NOT leak unrelated types. Currently GREEN when an
+// impl exists (the section appears with impls); pins the +neg boundary.
+#[test]
+fn bare_user_trait_lookup_impl_section_lists_type_not_others() {
+    let out = repl_prims(
+        "(deftrait (Display a) (show [a] String))\n\
+         (impl Display Int (defn show [x] \"i\"))\n\
+         Display\n",
+    );
+    // Locate the `; impl:` section body (the indented `;  <Type>` comment lines).
+    let impl_body: Vec<String> = out
+        .stdout
+        .lines()
+        .skip_while(|l| l.trim() != "; impl:")
+        .skip(1)
+        .take_while(|l| l.trim_start().starts_with(';'))
+        .map(|l| l.trim_start_matches(';').trim().to_string())
+        .collect();
+    assert!(
+        impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Int")),
+        "the '; impl:' section MUST list the implementing type `Int` (§4.1.4); \
+         impl body={impl_body:?}\nstdout:\n{}",
+        out.stdout
+    );
+    // +neg: no unrelated type (e.g. `Bool`) leaks into the impl section.
+    assert!(
+        !impl_body.iter().any(|l| l.split_whitespace().any(|t| t == "Bool")),
+        "the '; impl:' section MUST NOT leak an unrelated type `Bool` (§4.1.4 +neg); \
+         impl body={impl_body:?}\nstdout:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
+// S106 — FIXME 0546: `/imports` "Prelude (implicit)" group MUST use the shared
+// layout (not one symbol per line)
+// =============================================================================
+
+/// Collect the indented body lines of the `Prelude (implicit)` group. The header
+/// carries a trailing `; …` comment, so it is matched by substring, then the
+/// following `  `-indented lines are the group body.
+fn prelude_group_body(stdout: &str) -> Vec<String> {
+    let mut lines = stdout.lines();
+    while let Some(line) = lines.next() {
+        if line.contains("Prelude (implicit)") {
+            let mut body = Vec::new();
+            for next in lines.by_ref() {
+                if let Some(rest) = next.strip_prefix("  ") {
+                    body.push(rest.to_string());
+                } else {
+                    break;
+                }
+            }
+            return body;
+        }
+    }
+    Vec::new()
+}
+
+/// Pipe `lines` to a REPL whose project-root prelude re-exports primitives and
+/// defines a sentinel, so the `Prelude (implicit)` group is populated.
+fn repl_prelude_imports(lines: &str) -> helpers::e2e::CrOutput {
+    Cranelisp::new()
+        .prelude("(export [primitives [*]])\n(defn gulp [x] (add-i64 x 1))\n")
+        .repl()
+        .stdin(lines)
+        .output()
+}
+
+// spec: repl/spec.md §3.3 — the `/imports` "Prelude (implicit)" group MUST render
+// through the SHARED multi-column layout (L0–L4), byte-identical to its sibling
+// groups — NOT one symbol per line. RED on HEAD (FIXME 0546): the prelude group
+// does its own one-name-per-line loop instead of routing through
+// `format_symbol_layout`.
+#[test]
+fn imports_prelude_group_uses_shared_layout() {
+    let out = repl_prelude_imports("/imports\n");
+    let body = prelude_group_body(&out.stdout);
+    assert!(
+        !body.is_empty(),
+        "the `Prelude (implicit)` group MUST be present and populated; stdout:\n{}",
+        out.stdout
+    );
+    // The shared layout packs multiple names per line (≤6/line); one-per-line is the
+    // defect. At least one body line MUST carry two or more names.
+    let has_multi = body.iter().any(|l| l.split_whitespace().count() >= 2);
+    assert!(
+        has_multi,
+        "the `Prelude (implicit)` group MUST use the SHARED multi-column layout \
+         (§3.3), NOT one symbol per line (FIXME 0546); prelude body:\n{body:?}\n\
+         full stdout:\n{}",
+        out.stdout
+    );
+    // And no line may exceed the 6-per-line cap.
+    for l in &body {
+        assert!(
+            l.split_whitespace().count() <= 6,
+            "a shared-layout row MUST hold at most 6 names (§3.3 L2/L4); row={l:?}\n\
+             full stdout:\n{}",
+            out.stdout
+        );
+    }
+}
+
+// spec: repl/spec.md §3.4 — [Tested+Neg]: the fix preserves the group's header
+// suffix comment AND applies the shared layout (both, in one output). RED on HEAD
+// (the layout is one-per-line today; FIXME 0546).
+#[test]
+fn imports_prelude_group_preserves_header_suffix_comment() {
+    let out = repl_prelude_imports("/imports\n");
+    // The header suffix comment is preserved.
+    assert!(
+        out.stdout.contains("Prelude (implicit)")
+            && out.stdout.contains("available via the prelude"),
+        "the `Prelude (implicit)` header suffix comment MUST be preserved (§3.4); \
+         stdout:\n{}",
+        out.stdout
+    );
+    // +neg: NOT one-per-line — some body row packs multiple names.
+    let body = prelude_group_body(&out.stdout);
+    assert!(
+        body.iter().any(|l| l.split_whitespace().count() >= 2),
+        "the header comment MUST be preserved AND the shared layout applied — the \
+         body MUST NOT be one-name-per-line (§3.3/§3.4, FIXME 0546); body:\n{body:?}\n\
+         full stdout:\n{}",
+        out.stdout
+    );
+}
+
+// =============================================================================
+// S106 — FIXME 0545: §3.3 L3 letter-group packing reconcile (pack-to-six across
+// letter groups). GREEN guards pinning the reconciled §3.3 rule + corrected
+// example (the L3 rule wins; the flawed eager-per-letter example was replaced).
+// =============================================================================
+
+// spec: repl/spec.md §3.3 — L3 packs letter groups to six across group boundaries:
+// the previously-unpinned `current_count(4) + next_group_size(2) == 6` boundary the
+// existing `list_layout_l3_letter_group_early_break` did NOT cover. Groups
+// a=2,c=2,d=2 pack onto ONE row (`abs add ceil concat double drop`).
+#[test]
+fn list_layout_l3_pack_to_six_across_letter_groups() {
+    let out = repl(
+        "(defn abs [] 1)
+(defn add [] 1)
+(defn ceil [] 1)
+(defn concat [] 1)
+(defn double [] 1)
+(defn drop [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    assert_eq!(
+        body,
+        vec!["abs add ceil concat double drop".to_string()],
+        "L3: letter groups MUST pack to six across group boundaries (4+2=6 stays on \
+         one row) per the reconciled §3.3 rule (FIXME 0545); got body:\n{:?}\n\
+         full stdout:\n{}",
+        body,
+        out.stdout
+    );
+}
+
+// spec: repl/spec.md §3.3 — L3 negative boundary: a group that would push
+// `current_count + group_size` to 7 MUST flush first (never straddle). Groups
+// a=2,b=2 fill to 4; c=3 → 4+3=7>6 → c flushes to a fresh row.
+#[test]
+fn list_layout_l3_neg_boundary_no_straddle() {
+    let out = repl(
+        "(defn abs [] 1)
+(defn add [] 1)
+(defn ball [] 1)
+(defn bat [] 1)
+(defn cat [] 1)
+(defn cave [] 1)
+(defn cog [] 1)
+/list
+",
+    );
+    let body = category_body_lines(&out.stdout, "Fns");
+    assert_eq!(
+        body,
+        vec!["abs add ball bat".to_string(), "cat cave cog".to_string()],
+        "L3 negative: a group that would push the row past six MUST flush first \
+         (4+3=7>6 → `cat cave cog` on a fresh row), never straddle (§3.3, FIXME \
+         0545); got body:\n{:?}\nfull stdout:\n{}",
+        body,
+        out.stdout
+    );
+}

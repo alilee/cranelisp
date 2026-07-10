@@ -120,7 +120,7 @@
         std::fs::write(&file_path, "(defn updated [] 2)\n")
             .expect("rewrite reload_target.cl");
         let module = ModuleFullPath::from("reload_target");
-        s.reload_module(&module, &file_path)
+        s.reload_module(&module, &file_path, &[])
             .expect("reload should succeed via persistent workers");
 
         // Module must be in a non-failed state after reload. The post-reload
@@ -468,7 +468,7 @@
         // reload succeeds.
         std::fs::write(&file_path, "(defn fixed [] 1)\n(defn broken [] 2)\n")
             .expect("rewrite repairme.cl");
-        s.reload_module(&module, &file_path)
+        s.reload_module(&module, &file_path, &[])
             .expect("reload of the repaired file succeeds");
 
         assert!(

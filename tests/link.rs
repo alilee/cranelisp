@@ -94,9 +94,10 @@ fn link_main_returning_io_pure_zero_exits_zero_or_errors_clearly() {
 // 2. Output path derivation
 // =============================================================================
 
-// spec: design/backend/executable-generation.md §9 — output path default.
-//   `cranelisp --link examples/hello.cl` produces `hello` (entry stem,
-//   no extension) in cwd.
+// spec: repl/spec.md §0.2.1.1 — output path default (S106, FIXME 0550).
+//   `cranelisp --link examples/hello.cl` produces the entry-stem executable
+//   BESIDE its source (`examples/hello`), NOT the stem in the CWD (`./hello`).
+//   Reconciled to the settled §0.2.1.1 contract (was: `hello` at TempDir root).
 //
 // (carry: legacy/sprint23.rs::link_default_output_is_entry_stem)
 #[test]
@@ -108,8 +109,9 @@ fn link_default_output_is_entry_stem_no_extension() {
         .assert_ok();
 
     assert!(
-        out.tmp_exists("hello"),
-        "expected output 'hello' (entry stem) at TempDir root; tmpdir={}, stdout={:?}",
+        out.tmp_exists("examples/hello"),
+        "expected output 'examples/hello' (entry stem beside source, §0.2.1.1); \
+         tmpdir={}, stdout={:?}",
         out.tmpdir.display(), out.stdout
     );
 }
@@ -837,4 +839,75 @@ fn link_repeated_platform_adt_marshal_does_not_corrupt_heap() {
         .link_then_run("user.cl")
         .output()
         .assert_exit(0);
+}
+
+// =============================================================================
+// S106 — FIXME 0550: `--link` output-artifact name and location (§0.2.1.1)
+//
+// The output executable MUST be named after the entry (root) module's source-file
+// STEM and written INTO the same directory as that module's source — not the entry
+// name in the CWD. For a directory-project target `proj` (entry `user`), the
+// artifact is `proj/user`, beside `proj/user.cl`. And if the resolved output path
+// is an existing directory, the binary MUST emit a clear cranelisp diagnostic and
+// exit 1, not a raw `ld`/`cc` error. Both RED on HEAD (impl writes `./user` in CWD
+// with no collision diagnostic).
+// =============================================================================
+
+// spec: repl/spec.md §0.2.1.1 — the `--link` artifact for a directory-project
+// target MUST be written beside its source (`proj/user`), not as the entry-module
+// name in the CWD (`./user`). RED on HEAD (FIXME 0550): output_path = entry stem in
+// CWD.
+#[test]
+fn link_output_artifact_named_after_entry_stem_beside_source() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file("proj/user.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 5))\n")
+        .link("proj")
+        .output();
+    assert!(
+        out.tmp_exists("proj/user"),
+        "`--link proj` MUST write the executable beside its source at `proj/user` \
+         (§0.2.1.1, FIXME 0550), not as `./user` in the CWD; stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+}
+
+// spec: repl/spec.md §0.2.1.1 — [+neg] the collision-diagnostic floor: when the
+// resolved output path is an EXISTING DIRECTORY, `--link` MUST emit a clear
+// cranelisp diagnostic (naming the path, exit 1), NOT a raw `ld`/`cc` linker error.
+// RED on HEAD (FIXME 0550): the output collides at `ld` with a "cannot open output
+// file" error, or silently writes elsewhere.
+#[test]
+fn link_output_collision_with_directory_diagnoses_not_raw_ld_error() {
+    let out = Cranelisp::new()
+        .with_prelude(PreludeVariant::None)
+        .file("proj/user.cl", "(import [primitives [Pure]])\n(defn main [] (Pure 5))\n")
+        // Make the resolved output path `proj/user` an existing DIRECTORY.
+        .file("proj/user/keep.txt", "placeholder\n")
+        .link("proj")
+        .output();
+    // Exit 1 (clean rejection), not 0 (silent wrong-location write) and not a
+    // raw linker crash.
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "a directory collision at the output path MUST exit 1 (§0.2.1.1 floor); \
+         stdout:\n{}\nstderr:\n{}",
+        out.stdout,
+        out.stderr
+    );
+    let combined = format!("{}{}", out.stdout, out.stderr);
+    // A clear cranelisp diagnostic names the directory collision …
+    assert!(
+        combined.to_lowercase().contains("directory"),
+        "the collision diagnostic MUST name that the output path is a directory \
+         (§0.2.1.1); output:\n{combined}"
+    );
+    // … NOT a raw ld/cc error leaking through.
+    assert!(
+        !combined.contains("cannot open output file") && !combined.contains("collect2"),
+        "a directory collision MUST NOT surface a raw `ld`/`cc` error (§0.2.1.1 \
+         floor, FIXME 0550); output:\n{combined}"
+    );
 }
