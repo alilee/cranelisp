@@ -395,3 +395,139 @@ than `/dev (backend)`.
 
 *Appended at S108 Phase 1 by `/sprint` + the user — not by `/audit`. Each
 recommendation above: accepted (→ FIXME number) or declined (+ rationale).*
+
+---
+
+## Addendum — acid-test verdicts (2026-07-11, calibration correction)
+
+The `/audit` role was recalibrated the same day this assessment was filed: the
+amended `.claude/commands/audit.md` adds the acid test ("if we lost this
+context's code and docs but retained the insight from experience, and produced
+a lean, high-quality solution second time around — would it look like this?"),
+verdict-first structure, risk-weighted coverage, and the cure-the-risk done-bar.
+The inaugural assessment above graded hygiene and drift rigorously but never
+rendered the excellence verdict — the named exhibit being §2.5, whose caveat
+(the codegen unit tier probes a dead-in-prod front door) should have driven the
+coverage verdict instead of coexisting with "genuinely good", and R3, whose
+minimum done (`#[cfg(test)]`-gate) preserved that very risk. §1–§3 stand
+unaltered as the evidence record; this addendum renders the verdicts they
+lacked, with corrections where deeper reading changed a §2 claim.
+
+### A.1 Graded verdicts
+
+| Attribute | Verdict | Grounds |
+|---|---|---|
+| Design quality (fitness) | **strong** | The rewrite keeps the architecture wholesale: single scheduler-driven front door with D41 on-demand disasm (`lib.rs:1258` `produce_disasm`), typed cache invalidation (`cache/manifest.rs` `CacheInvalidReason`), per-module GOT with epoch fresh-slots, heap-category ownership model, pure extracted decision cores (`moded_arg_rc`, `node_unique_static`), env-gated byte-identical-off instrumentation. Two seams that history indicts (the `apply.rs` funnel, the glue skeleton ×3) are shape-level, graded under duplication/simplicity. |
+| Design realisation | **adequate** | Recent arc docs (ownership-codegen, lenient-eval, ring2-rc) faithful in both directions; the master doc is falsified both ways — dead facade authority pointers, `FunctionArtifacts` deletion overclaim (`backend.md:83` vs `lib.rs:267`), s66 acceptance row 1(d) never met (§2.4). |
+| Simplicity & volume — code | **adequate** | ~21–22k production lines mostly right-sized; the rewrite would not reproduce ~1k lines of pure stratum: the dead second front door + eager disasm (`jit.rs:587/:712/:35/:650`), the Wave-2b shim layer (§R2 inventory), the duplicate `build_isa`, and would not let one 323-line funnel absorb every call-site concern. |
+| Simplicity & volume — docs | **weak** | 15,680 lines across 22 files in `design/backend/`; ≥2,300 lines (8 files) are executed one-shots or sketch-voiced history sitting beside live docs despite `archive/` existing, and the 453-line master doc misleads on module inventory, authority, and deletions. The second-time doc set is roughly half this volume: the five maintained arc docs plus one lean, true master doc. |
+| Simplicity & volume — tests | **adequate** | The ~14k dedicated test lines are substantially warranted — the ownership/RC decision matrix, COW polarity, cache-invalidation space, and glue identity genuinely need the cells, and the per-submodule shape makes them attributable. The rewrite would not reproduce: the CLIF-probe tier's parallel front door (A.2 risk 6), and the 946-line `test_support.rs` self-described as "bridg[ing] legacy test scaffolding" (`test_support.rs:429`). |
+| Duplication | **weak** | Per the amended attribute's own threshold — "a defect class recurring across mirrors is past the consolidation threshold" — the glue-identity class has bitten twice on two of three mirrors (FIXME 0350; ledger item 25) with the discipline re-stated per site (§2.3), and the `build_isa` pair is on its third audit. Two families in 22k lines is not pervasive, but the threshold criterion is met. |
+| Risk-weighted coverage | **adequate** | Register at A.2: four of six top risks pinned on the production path or the real seam; but the sole UB-class risk (GOT exhaustion) is not pinned at all, and the CLIF unit tier rides a front door production never runs — context-construction drift there is unobservable by tests. "Genuinely good" (§2.5) was the right verdict for organisational shape only, which the amended role demotes to subordinate evidence. |
+| Maintainability | **adequate** | Seams, naming, and unsafe justification are strong (§2.2); comment honesty has three localized failure classes — contradictory single-source claims, 15-sprint-dead transient markers on live code, vacuous shim rationale — and dishonest comments actively mislead the maintainer, which caps the grade. |
+| Memory freshness | **weak** | `design/backend/CLAUDE.md` (2026-03-05) fails all four decay classes; `backend.md`'s authority pointers dangle and its inventory describes a tree three reorganizations old (§2.6). (The hours-old crate `CLAUDE.md` spot-checked accurate; excluded from grading per dispatch.) |
+
+**Correction to §2.5 while grading**: deeper reading splits the caveat more
+precisely than the original wording. The execution-tier helpers in
+`test_support.rs` DO ride the production path — `test_compile_and_run` /
+`test_compile_program_and_run` / `run_vec_query_value_consumer` all call
+`compile_to_module` (`test_support.rs:23,398,532,861`). The non-production
+front door (`Jit::compile_defn` / `build_compile_context`) is used specifically
+by the CLIF-text probe tier: `module_assembly_tests.rs`,
+`{par,poll,select}_codegen_tests.rs`, `temp_drop_rc_tests.rs`, `jit/tests.rs`,
+and the `launch.rs`/`resolution` test mods (the 14 sites in §1 F2). This
+narrows the exposure — execution behaviour is production-pinned — and makes
+R3-revised cheaper: only the probe tier's context construction needs
+re-seaming.
+
+**Correction to §2.3's coverage implication**: the glue-identity discipline is
+better pinned than "re-stated per site" implied. Both span-keyed mirrors carry
+identity tests — `resolution/tests.rs:79`
+(`closure_drop_glue_name_uniquifies_per_mono_instance`, the 0350 class) and
+`fn_as_value/curry_glue_name_tests.rs:21` (the ledger-25 class) — and the ADT
+mirror (`vec_codegen.rs:769`) keys identity by fully-qualified type name, not
+span, so the span×mono collision class does not apply to it. Caveat: both
+tests re-compose the production name format inline (`resolution/tests.rs:89`,
+literal `format!("runtime/closure_drop_glue_…")`) rather than calling the
+production builder — a format-string drift in `lambda.rs:238` escapes them;
+the discriminator-distinctness core (the actual defect mechanism) is what is
+pinned. R5's consolidation should close this: the single builder's test calls
+the production naming function, not a copy of it.
+
+### A.2 Risk-weighted coverage register
+
+Top technical risks, derived from the crate's invariants, unsafe seams, and
+defect history; each verdicted against the production path.
+
+| # | Risk | Verdict | Evidence |
+|---|---|---|---|
+| 1 | RC over/under-count → leak / UAF / double-free (the crate's dominant defect class: 0417, 0474, ledger 25/26, S102–S103 fence arc) | **Pinned, production path** | e2e leak fences with scale-with-N discrimination (`tests/ownership_reuse.rs:110-142`; `tests/tco_tail_arg_alias_uaf.rs`; `tests/spec_12_runtime.rs`) run the full pipeline; the pure decision matrix (`compiler/apply/moded_arg_rc_tests.rs`) pins every {heap-category × mode × binding} cell at the extracted core. The CLIF polarity probes ride the non-production door (risk 6) but the emission core (`FnCompiler`) is shared. |
+| 2 | GOT slot exhaustion → release-mode OOB write (UB) | **NOT pinned** | `cranelisp-types/src/got/tests.rs` covers store/load/init/concurrency only — no 1023→1024 boundary test exists anywhere; the sole guard is `debug_assert!` (`cranelisp-types/src/got.rs:135-150`), compiled out in release; allocation is unchecked monotone (`module.rs:609-613`). The only UB-class risk in the register, in the release-compiler phase. → R7, re-ranked A.3. |
+| 3 | Cache schema drift → stale artefact loaded across compiler/schema change | **Pinned, production path** | `cache/manifest/tests.rs:110+` exercises the real `check_manifest` across the full `CacheInvalidReason` space (format version, `CompilerChanged`, `TargetTriple`, `CraneliftVersion`, `OwnershipToggle` at `:169,:188,:209,:382`); `cache/serialize/tests.rs:93` pins deserialize-side version mismatch; `tests/cache.rs` covers e2e. |
+| 4 | Drop-glue identity collision → wrong capture-drop under monomorphisation | **Pinned with caveat** | Both span-keyed mirrors tested (`resolution/tests.rs:79`; `curry_glue_name_tests.rs:21`); ADT mirror type-keyed, class n/a. Caveat per A.1 correction: the tests re-compose the name format inline, so production format drift escapes; discriminator distinctness is pinned. R5 closes the caveat. |
+| 5 | Linker/relocation correctness (arm64 GOT-load relocs, symbol shadowing, preresolved locals) | **Pinned, production path** | `cache/linker/tests.rs:40/:171/:223` exercise the real `Linker::load_object` (`cache/linker.rs:229`) — the same function the cache-load production path runs; `tests/link.rs` + `tests/cache.rs` cover it e2e. Heap-layout offsets are additionally pinned by construction (`heap.rs` `const _: () = assert!`). |
+| 6 | Context-construction drift between the CLIF-probe front door and the production seam | **NOT pinned (definitionally)** | `build_compile_context` (`jit.rs:712`) assembles its own compilation context; nothing verifies equivalence with the context `compile_to_module` → `compile_defn_in_module` builds, so the probe tier can green-light CLIF that production would never emit (or miss CLIF it would). Cure is deletion + delegation, not equivalence testing → R3-revised. |
+
+### A.3 The acid-test answer
+
+Would the second-time backend look like this? **At the architectural grain,
+yes — at the stratum grain, no.** The rewrite keeps essentially every
+load-bearing design decision: the single compile front door with on-demand
+disassembly, the typed cache-invalidation manifest, the per-module GOT with
+epoch fresh-slots, the heap-category ownership model with its pure extracted
+decision cores, byte-identical-off instrumentation, and the per-submodule
+test shape with e2e leak fences that discriminate real leaks from stats noise
+— these are exactly what retained insight would rebuild, and several (the
+decision-core extraction, the scale-with-N fence design) are better than a
+first draft has any right to be. What the rewrite would not reproduce: in
+code, the dead second front door and its unconditional disasm capture, the
+Wave-2b shim stratum, the duplicate `build_isa`, and a 323-line call funnel
+that absorbed three sprints' concerns undivided; in docs, roughly half the
+15.7k-line set — the eight executed/sketch-voiced files would never exist and
+the master doc would be lean and true rather than 453 lines a reader cannot
+trust; in tests, the volume largely survives (the ownership matrix earns its
+cells) but the CLIF-probe tier would be built on the production seam from day
+one and the 946-line legacy-bridging support module would not exist. What the
+rewrite would add that is missing today: a checked GOT allocation whose
+exhaustion is a diagnosed error with a boundary test (the register's one
+unpinned UB-class risk), one glue-emission home whose identity test calls the
+production name builder, and CLIF probes whose context is production's by
+construction. Net: the insight is all here and the architecture passes the
+test; the accumulated stratum — perhaps 5% of code, half the docs, one test
+seam — is what the second-time solution would decline to carry.
+
+### A.4 Recommendation revisions
+
+**R3 — REVISED (cure-the-risk failure in the original done-bar).** The
+original minimum done — `#[cfg(test)]`-gate `compile_defn` /
+`build_compile_context` / `CompileArtifacts` — preserves the exact risk it
+responds to: a test-only context constructor whose drift from the production
+context remains unobservable (A.2 risk 6). Production-seam delegation, the
+original's "better, at `/dev`'s option", is now the requirement. **Done
+(revised)**: `Jit::compile_defn`, `build_compile_context`, and
+`CompileArtifacts` are **deleted**; the CLIF-probe tests obtain their compiled
+functions and CLIF/disasm text through the production
+`compile_to_module`/`compile_defn_in_module` seam (a thin `#[cfg(test)]`
+wrapper that only *delegates* — no context assembly of its own — is
+acceptable); the unconditional `set_disasm(true)` (`jit.rs:650`) is gone, with
+disasm needs served by the production `produce_disasm` or local opt-in.
+`design/backend/implementation-slice-s66.md` row 1(d) finally becomes true.
+Cost class moves small → **medium** honestly (14 call sites re-seam), softened
+by the A.1 correction: the execution tier already rides the production path,
+so only the probe tier moves.
+
+**R7 — RE-RANKED to top priority within its cost class (above R4).** The
+register makes the ranking argument the original list did not: GOT exhaustion
+is the only top risk that is *not pinned at all*, it is UB-class, the project
+is in the release-compiler phase, and the S101 epoch fresh-slot churn
+accelerates approach to the bound. Its done-bar already cures (release-mode
+diagnosed error + 1023→1024 boundary test); no content change.
+
+**R5 — one-line strengthening.** Add to the done-bar: the consolidated
+builder's identity test must call the **production naming function**, not
+re-compose the format inline (closes A.1's re-composed-format caveat, the
+residual gap in A.2 risk 4).
+
+No recommendations are added or withdrawn: R1, R2, R4, R6 done-bars already
+cure their risks, and A.2 surfaced no top risk outside the existing set plus
+R3-revised's scope.

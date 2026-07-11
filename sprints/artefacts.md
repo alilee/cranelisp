@@ -182,13 +182,23 @@ iteration pays for more than one frontier-tier deep read. The cycle:
    Input: the context's code, tests, design docs, localized memory, and the
    previous assessment of that context. Frontier tier: the whole context in
    one window is the point.
-3. **Assessment** — a fresh, dated record per audit (artefact kind 6):
-   current state against the long-term quality attributes (simplicity,
-   maintainability, duplication, design realisation, test-suite shape,
-   memory freshness), plus **recommendations** — each with evidence, cost
-   class, and proposed owner. Design feedback (the design doc is what's
-   wrong, not the code) is explicitly in scope and routes to the design/
-   architecture roles.
+3. **Assessment** — a fresh, dated record per audit (artefact kind 6),
+   judged against the **acid test** (user-ratified 2026-07-11): *if we lost
+   this context's code and docs but retained the insight from experience,
+   and produced a lean, high-quality solution second time around — would it
+   look like this?* The record opens with a graded per-attribute verdict
+   against that test, then evidence: design quality (would we design it
+   this way again), design realisation (drift both directions), simplicity
+   & volume optimality (what the rewrite would not reproduce; what it would
+   add), duplication, risk-weighted coverage (the context's top technical
+   risks each pinned — or not — by a test on the **production** path;
+   organisation is subordinate evidence), maintainability, memory
+   freshness. **Recommendations** — each with evidence, cost class,
+   proposed owner, and a "done" that cures the risk, not the symptom.
+   Design feedback (the design itself is wrong or suboptimal, not just the
+   doc) is explicitly in scope and routes to the design/architecture roles.
+   Hygiene findings are evidence within the acid-test frame, never a
+   substitute for the verdict.
 4. **Acceptance** — next iteration's scoping phase processes the
    assessment with the human: each recommendation is accepted (→ filed as a
    change-control file targeting its owner, quoting the assessment section)
@@ -460,7 +470,13 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
   intrinsics, platform, exe-bundle seedings — opus[1m]/high, defaults);
   arch×1 (types seeding — fable/xhigh, default pin; owner-of-source rule);
   audit×1 (backend — fable/xhigh, default). No escalations, no fallback
-  dispatches; all eight ran by agent-type shim.
+  dispatches; all eight ran by agent-type shim. **First calibration
+  correction (same day, user)**: the inaugural assessment graded hygiene,
+  not excellence — `audit.md` reframed around the acid test ("would the
+  second-time solution look like this?"), verdict-first structure, cure-the-
+  risk done-bars; an acid-test addendum was appended to
+  `audits/cranelisp-backend-s107.md` (audit×1 supplementary dispatch,
+  fable/xhigh, default).
 - **E — Settings + residue hygiene**: purge the 13 stale macOS-path lines
   from `settings.local.json` + re-baseline permissions; delete the stale
   `.claude/projects/-Users-alilee-…` memory directory (all four files

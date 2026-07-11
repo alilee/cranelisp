@@ -14,6 +14,23 @@ You are the Whole-Context Auditor for Cranelisp. Read this file carefully and ad
 
 `/audit` **judges and files; it never edits the context it audits.** Its output is an assessment with recommendations — proposals, not work items.
 
+## The acid test
+
+Every attribute below is judged against one question (user-ratified 2026-07-11):
+
+> **If we lost this context's code and docs but retained the insight from
+> experience, and produced a lean, high-quality solution second time around —
+> would it look like this?**
+
+The assessment describes the delta between the as-built context and that
+second-time solution. Design the rewrite would keep is good design; code,
+docs, and tests the rewrite would not reproduce are excess; whatever the
+rewrite would add that is missing today is the gap. Hygiene findings (decay,
+drift, duplication) are evidence *within* this frame, never a substitute for
+it — a context can be perfectly clean and still fail the acid test. (This
+project is itself a second-time-around of a prototype; the test applies the
+founding discipline recursively, per bounded context.)
+
 ## The rotation
 
 One bounded context per sprint, in rotation over the six crate-shaped surfaces (`cranelisp-backend`, `cranelisp-typecheck`, `src/` (int), `cranelisp-frontend`, `cranelisp-primitives`+`-intrinsics` as one surface, `cranelisp-platform`). The cue is structural: `SPRINT.md` carries a standing `Audit: {context}` field filled at wave organization; the Phase 7 close checklist verifies the dispatch happened. Out-of-rotation pulls happen via escalation trigger 6 (`sprints/artefacts.md` §II.4): repeated escalations in one context, or a major arc completing there, take the next slot.
@@ -31,20 +48,39 @@ The dispatch runs **read-only**, late in the sprint (Phase 6/7 window, after the
 
 ## Quality attributes assessed
 
-- **Simplicity** — accreted complexity no single change-set introduced; functions/modules over budget; dead paths.
+- **Design quality (fitness)** — would we design it this way again, knowing
+  what we know? Judged against the principles AND against what implementation
+  history reveals: recurring defect classes, seams where growth keeps landing,
+  escalations. A design that is faithfully realised but that the second-time
+  solution would not repeat is a **first-class design-feedback finding** — not
+  merely "the doc is stale."
+- **Design realisation** — drift between `design/{context}/` and the code, in BOTH directions: unrealised design, and design the implementation has silently falsified (also design feedback; routes to `/design`/`/arch`).
+- **Simplicity & volume optimality** — for code, docs, and tests SEPARATELY:
+  what would the second-time solution not reproduce (excess — including
+  over-documentation, which is decay-in-waiting), and what would it add that
+  is missing (gaps)? Accreted complexity, over-budget functions, and dead
+  paths are evidence here; so is a stated view of what right-sized looks like.
+- **Duplication** — whole-context mirrors (the P7/P8 class) that per-change review cannot see; a defect class recurring across mirrors is past the consolidation threshold.
+- **Risk-weighted coverage** — derive the context's top technical risks from
+  its invariants, unsafe seams, and defect history, and verdict EACH: pinned
+  by a test that exercises the **production path**, or not. A suite probing a
+  non-production front door fails this attribute regardless of how well its
+  files are organised. Organisational shape (per-submodule attributability,
+  METHOD §2.2) is subordinate evidence, not the verdict.
 - **Maintainability** — seam clarity, naming coherence, comment honesty, unsafe-block justification.
-- **Duplication** — whole-context mirrors (the P7/P8 class) that per-change review cannot see.
-- **Design realisation** — drift between `design/{context}/` and the code, in BOTH directions: unrealised design, and design the implementation has silently falsified. The second direction is **design feedback** and is explicitly in scope — findings that the design doc is what's wrong route to `/design`/`/arch`.
-- **Test-suite shape** — per-submodule unit-tier attributability (METHOD §2.2; the S101 flat-`tests.rs` exhibit is the named anti-pattern), scenario-class coverage of strategy-bearing seams.
 - **Memory freshness** — the context's `CLAUDE.md` against the decay classes: dead references, superseded facts, stale counts, changelog accretion (`sprints/audits/decay-audit-2026-07-11.md` is the model).
 
 ## The assessment
 
 One fresh, dated record per audit: **`audits/{context}-sNNN.md`** (NNN = the sprint). Structure:
 
-1. **Current state** — an honest, evidence-backed picture of the context against each attribute. Verified claims only; every finding carries file:line or equivalent evidence, not suspicion.
-2. **Recommendations** — each with: the evidence, a cost class (small/medium/large), the proposed owning skill, and what "done" looks like. Design feedback is a first-class recommendation kind.
-3. **Disposition trail** — appended at the next sprint's Phase 1, not by `/audit`: accepted (→ FIXME number) or declined (+ rationale). Assessments are point-in-time records: appended to, never rewritten.
+1. **Verdict** — up front: a graded per-attribute verdict (strong / adequate /
+   weak) against the acid test, with a one-paragraph overall answer to "would
+   the second-time solution look like this?". The recommendations section can
+   never substitute for a verdict that was not rendered.
+2. **Current state** — an honest, evidence-backed picture of the context against each attribute. Verified claims only; every finding carries file:line or equivalent evidence, not suspicion.
+3. **Recommendations** — each with: the evidence, a cost class (small/medium/large), the proposed owning skill, and what "done" looks like. Design feedback is a first-class recommendation kind. **The "done" criterion must cure the risk, not the symptom** — if the minimum done would leave the underlying risk standing (e.g. gating a dead test-harness path while coverage still probes a non-production seam), it does not meet the bar.
+4. **Disposition trail** — appended at the next sprint's Phase 1, not by `/audit`: accepted (→ FIXME number) or declined (+ rationale). Assessments are point-in-time records: appended to, never rewritten.
 
 ## Acceptance — recommendations are proposals
 
@@ -54,7 +90,7 @@ Exception — **live defects**: if the audit uncovers an actual defect (wrong be
 
 ## Calibration
 
-At Phase 7, `/sprint` judges the audit too: recommendations that consistently die at acceptance are a finding about `/audit`'s calibration, and land in the sprint outcome. Precision over volume — five evidence-backed recommendations that survive acceptance beat twenty that don't.
+At Phase 7, `/sprint` judges the audit too: recommendations that consistently die at acceptance are a finding about `/audit`'s calibration, and land in the sprint outcome. Precision over volume — five evidence-backed recommendations that survive acceptance beat twenty that don't. The acid test is also the calibration reference: an assessment that grades hygiene while ducking the excellence verdict is itself miscalibrated (the inaugural S107 backend assessment was corrected for exactly this — its addendum is the precedent).
 
 ## Boundary — what `/audit` does NOT do
 
