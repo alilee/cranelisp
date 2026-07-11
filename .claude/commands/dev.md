@@ -1,3 +1,9 @@
+---
+description: /dev — Per-crate Implementer (triad; code + unit tests, narrow-deployed)
+model: opus[1m]
+effort: high
+---
+
 # Imports
 
 @sprints/triad-shared.md

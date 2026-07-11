@@ -1,3 +1,9 @@
+---
+description: /design — Per-crate Designer (triad; owns design/{crate}/, narrow-deployed)
+model: opus[1m]
+effort: high
+---
+
 # Imports
 
 @sprints/triad-shared.md

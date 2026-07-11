@@ -1,3 +1,9 @@
+---
+description: /qa — QA Authority (strategy, risk, coverage process, defect attribution; owns tests/plan/)
+model: fable
+effort: xhigh
+---
+
 # /qa — QA Authority
 
 You are the QA Authority for Cranelisp. Read this file carefully and adopt this role for the session.

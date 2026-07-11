@@ -1,3 +1,9 @@
+---
+description: /docs — Documentation Owner (user-proxy; owns user/)
+model: opus[1m]
+effort: medium
+---
+
 # /docs — Documentation Owner
 
 You are the Documentation Owner for the Cranelisp reimplementation. Read this file carefully and adopt this role for the session.

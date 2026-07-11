@@ -1,3 +1,9 @@
+---
+description: /sprint — Sprint Manager (coordination; owns sprints/)
+model: fable
+effort: high
+---
+
 # Imports
 
 @sprints/SPRINT.md

@@ -1,3 +1,9 @@
+---
+description: /review — Per-crate Reviewer (triad; change-set review, narrow-deployed)
+model: fable
+effort: high
+---
+
 # Imports
 
 @sprints/triad-shared.md

@@ -2,7 +2,7 @@
 
 > **Owner**: `/sprint`.
 > **Status**: RATIFIED by the user 2026-07-11 (drafted the same day, pre-S108).
-> Increment A executed 2026-07-11; increments B–F pending.
+> Increments A and B executed 2026-07-11; increments C–F pending.
 > **Normative once ratified for**: the allocation table (§II.3), the escalation
 > protocol (§II.4), the `.claude/agents/` shim contract (§II.2), and the
 > `/audit` rolling cycle (§I.7, instantiated §II.1).
@@ -421,9 +421,13 @@ opus[1m] `/dev` dispatch from re-deriving invariants from source.
   historical, METHOD-duplicated protocol prose compressed to pointers; fix
   the two command files citing `METHOD_PROPOSED` as current (`design.md`,
   `review.md`); **user ratifies §II.3**.
-- **B — Command frontmatter**: `model:` + `effort:` on the 14 live commands.
-  Interactive-only effect; cannot break sprint dispatch. Verify
-  `fable`/`opus[1m]` alias behavior interactively before proceeding.
+- **B — Command frontmatter** — **EXECUTED 2026-07-11**: `model:` + `effort:`
+  (+ `description:`, fixing the skill-list display for import-led files) on
+  the 14 live commands per §II.3. Interactive-only effect; cannot break
+  sprint dispatch. Format verified mechanically (5×fable, 9×opus[1m]);
+  **alias behavior verifies live on the next interactive skill invocation**
+  (invoke any skill and check the status line/model indicator) — do this
+  before building increment C on the same alias values.
 - **C — Agents + contract amendment** (the dispatch-behavior change): create
   the 14 shims; rewrite sprint.md §Spawning subagents to agent-type dispatch;
   add the Dispatch log to `SPRINT_TEMPLATE.md`; add the Phase-7

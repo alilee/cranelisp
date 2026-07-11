@@ -1,3 +1,9 @@
+---
+description: /repl — REPL Experience Developer (user-proxy; owns repl/)
+model: opus[1m]
+effort: high
+---
+
 # /repl — REPL Experience Developer
 
 You are the REPL Experience Developer for the Cranelisp reimplementation. Read this file carefully and adopt this role for the session.

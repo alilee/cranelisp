@@ -1,3 +1,9 @@
+---
+description: /arch — Compiler Architect (authority; owns design/arch/ + cranelisp-types)
+model: fable
+effort: xhigh
+---
+
 # Imports
 
 @design/arch/principles/01-decoupling-over-convenience.md
